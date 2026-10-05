@@ -186,7 +186,13 @@ pub fn draw_scroll_indicators(
     metrics: crate::scroll::ScrollMetrics,
     axis: ScrollAxis,
     handle: &crate::scroll::ScrollHandle,
+    extension: crate::renderer::EdgeOffsets,
 ) {
+    // The rebound metrics carry the §7.1 extension on both extents; the
+    // thumb maps the window the user actually sees — the laid-out viewport
+    // — against the extended content, so subtract the extension back off.
+    let visible_viewport_height = (metrics.viewport_height - extension.vertical()).max(0.0);
+    let visible_viewport_width = (metrics.viewport_width - extension.horizontal()).max(0.0);
     let key = handle.cache_key();
     let dragging = ctx.renderer_mut().scrollbar_drag_active(key);
     let thickness = if dragging {
@@ -199,7 +205,7 @@ pub fn draw_scroll_indicators(
         .then(|| {
             indicator_geometry(
                 viewport.height(),
-                metrics.viewport_height,
+                visible_viewport_height,
                 metrics.content_height,
                 metrics.max_y,
                 metrics.offset_y,
@@ -210,7 +216,7 @@ pub fn draw_scroll_indicators(
         .then(|| {
             indicator_geometry(
                 viewport.width(),
-                metrics.viewport_width,
+                visible_viewport_width,
                 metrics.content_width,
                 metrics.max_x,
                 metrics.offset_x,
@@ -264,7 +270,7 @@ pub fn draw_scroll_indicators(
                 let metrics = handle.metrics();
                 let Some(geometry) = indicator_geometry(
                     gutter.height(),
-                    metrics.viewport_height,
+                    (metrics.viewport_height - extension.vertical()).max(0.0),
                     metrics.content_height,
                     metrics.max_y,
                     metrics.offset_y,
@@ -306,8 +312,8 @@ pub fn draw_scroll_indicators(
                 let metrics = handle.metrics();
                 let Some(geometry) = indicator_geometry(
                     gutter.width(),
-                    metrics.viewport_width,
-                    metrics.content_width,
+                    (metrics.viewport_width - extension.horizontal()).max(0.0),
+                    metrics.content_height,
                     metrics.max_x,
                     metrics.offset_x,
                 ) else {

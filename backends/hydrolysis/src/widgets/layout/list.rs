@@ -583,19 +583,10 @@ impl ListRenderState {
         }
     }
 
-    /// §7.1's scroll-surface rule, applied at the one place the handle is
-    /// bound: the viewport and the content grow by the extension layout
-    /// computed, so the scrollable range keeps the resting edges on the
-    /// avoided boundary while scrolling paints through the band.
-    fn surface_extension(&self) -> crate::renderer::EdgeOffsets {
-        self.surface
-            .facts
-            .get()
-            .map_or_else(crate::renderer::EdgeOffsets::default, |facts| {
-                facts.extension
-            })
-    }
-
+    /// §7.1's scroll-surface rule: [`ScrollSurfaceArea::extended`] grows the
+    /// viewport and content by the extension layout computed, so the
+    /// scrollable range keeps the resting edges on the avoided boundary
+    /// while scrolling paints through the band.
     #[expect(
         clippy::option_if_let_else,
         reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
@@ -606,27 +597,26 @@ impl ListRenderState {
         viewport_height: f64,
         content_height: f64,
     ) -> ScrollHandle {
-        let extension = self.surface_extension();
-        let viewport_width = viewport_width + extension.horizontal();
-        let viewport_height = viewport_height + extension.vertical();
-        let content_height = content_height + extension.vertical();
-        let content_width = viewport_width;
+        let (viewport, content) = self.surface.extended(
+            kurbo::Size::new(viewport_width, viewport_height),
+            kurbo::Size::new(viewport_width, content_height),
+        );
         let mut scroll = self.scroll.borrow_mut();
         if let Some(handle) = scroll.as_mut() {
             handle.rebind(
                 ScrollAxis::Vertical,
-                viewport_width,
-                viewport_height,
-                content_width,
-                content_height,
+                viewport.width,
+                viewport.height,
+                content.width,
+                content.height,
             )
         } else {
             let handle = ScrollHandle::new(
                 ScrollAxis::Vertical,
-                viewport_width,
-                viewport_height,
-                content_width,
-                content_height,
+                viewport.width,
+                viewport.height,
+                content.width,
+                content.height,
                 None,
             );
             *scroll = Some(handle.clone());
@@ -908,11 +898,11 @@ pub fn list_accessibility(
     {
         let metrics = handle.metrics();
         let (emit_range, leading_offset) = if is_rendered {
-            let extension = state.surface_extension();
-            let window = state.extent_index.borrow().visible_window(
-                metrics.offset_y - extension.top,
-                metrics.offset_y - extension.top + metrics.viewport_height,
-            );
+            let span = state.surface.visible_span(&metrics, ScrollAxis::Vertical);
+            let window = state
+                .extent_index
+                .borrow()
+                .visible_window(span.start, span.end);
             (window.start..window.end, window.leading_offset)
         } else {
             (0..row_count, 0.0)
@@ -947,7 +937,7 @@ pub fn list_accessibility(
         // The surface's §7.1 extension — the bounds rows may paint into —
         // while `viewport` stays the laid-out frame the row math is anchored
         // on.
-        let surface_viewport = crate::renderer::grow_rect(viewport, state.surface_extension());
+        let surface_viewport = crate::renderer::grow_rect(viewport, state.surface.extension());
         let mut y = viewport.y0 - metrics.offset_y + leading_offset;
         for index in emit_range {
             let row_env = env.clone();
@@ -1070,6 +1060,7 @@ pub fn list_accessibility(
                     index,
                     handle: handle.clone(),
                     extents: Rc::clone(&state.extent_index),
+                    extension: state.surface.extension(),
                     id: row_id,
                     selection: state.row_selection.clone(),
                 });
@@ -1428,7 +1419,7 @@ pub fn render_list_parts(
     // window all run on the frame grown by the extension layout computed —
     // the surface paints through the bands it touched. The row math stays
     // anchored on the laid-out frame.
-    let surface_viewport = crate::renderer::grow_rect(viewport, state.borrow().surface_extension());
+    let surface_viewport = crate::renderer::grow_rect(viewport, state.borrow().surface.extension());
     let content_height = state
         .borrow()
         .extent_index
@@ -1465,11 +1456,15 @@ pub fn render_list_parts(
         ctx.push_layer_rect(1.0, surface_viewport);
     }
 
-    let extension = state.borrow().surface_extension();
-    let window = state.borrow().extent_index.borrow().visible_window(
-        metrics.offset_y - extension.top,
-        metrics.offset_y - extension.top + metrics.viewport_height,
-    );
+    let span = state
+        .borrow()
+        .surface
+        .visible_span(&metrics, ScrollAxis::Vertical);
+    let window = state
+        .borrow()
+        .extent_index
+        .borrow()
+        .visible_window(span.start, span.end);
     // The delete/move handlers (`Option<Box<dyn Fn>>`) stay owned by the retained
     // config; per-row tap targets invoke them through the shared cell so they are
     // reused every flush instead of being consumed.
@@ -1543,14 +1538,15 @@ pub fn render_list_parts(
         // reveals rows the stale extents hid, and those rows must be resolved
         // into this frame's stack rather than leaving the viewport's tail
         // unpainted until the next refresh.
+        let span = state
+            .borrow()
+            .surface
+            .visible_span(&metrics, ScrollAxis::Vertical);
         let refreshed_end = state
             .borrow()
             .extent_index
             .borrow()
-            .visible_window(
-                metrics.offset_y - extension.top,
-                metrics.offset_y - extension.top + metrics.viewport_height,
-            )
+            .visible_window(span.start, span.end)
             .end;
         if refreshed_end <= end {
             break;
@@ -1971,12 +1967,15 @@ pub fn render_list_parts(
                         .take()
                         .expect("hydrolysis list row sub-view missing")
                 });
+                // A list row is scroll content: it lays out with no
+                // §7.1 context (its surface owns the edges).
                 subview.flush_in_rect(
                     ctx.renderer_mut(),
                     render_ctx,
                     &subtree_env,
                     bounded_proposal(content_rect),
                     content_rect,
+                    None,
                 );
             }
             #[cfg(feature = "accessibility")]
@@ -2050,7 +2049,15 @@ pub fn render_list_parts(
         .surface
         .end_flush(ctx.renderer_mut(), &handle, targets_start);
 
-    draw_scroll_indicators(ctx, env, viewport, metrics, ScrollAxis::Vertical, &handle);
+    draw_scroll_indicators(
+        ctx,
+        env,
+        viewport,
+        metrics,
+        ScrollAxis::Vertical,
+        &handle,
+        state.borrow().surface.extension(),
+    );
 }
 
 /// Ensures row `row_id` has a retained gesture binding and refreshes it with

@@ -97,7 +97,10 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
                 insets: WindowInsetsCompat,
                 runningAnimations: MutableList<WindowInsetsAnimationCompat>,
             ): WindowInsetsCompat {
-                lastRootInsets = insets
+                // Only the IME component is mid-animation state — the
+                // container keeps coming from the persisted dispatches
+                // (`lastRootInsets`), so a concurrent `pushMetrics` never
+                // reads the animation frame's container insets back out.
                 val imeRunning =
                     runningAnimations.any {
                         it.typeMask and WindowInsetsCompat.Type.ime() != 0

@@ -282,6 +282,7 @@ pub fn render_color_picker_parts(
         // The label's semantics are merged into the picker's own node by
         // `color_picker_accessibility`, so the sub-view flushes visual-only.
         let render_ctx = ctx.render_context();
+        let label_area = ctx.safe_area_for(label_bounds);
         let label_view = &mut state.label_view;
         ctx.renderer_mut()
             .with_suppressed_accessibility(|renderer| {
@@ -291,6 +292,7 @@ pub fn render_color_picker_parts(
                     env,
                     ProposalSize::UNSPECIFIED,
                     label_bounds,
+                    label_area,
                 );
             });
     }

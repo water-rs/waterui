@@ -211,7 +211,7 @@ fn retained_scene_capture_preserves_proposal_and_viewport_boundaries() {
     let rect = SceneRect::new(0.0, 0.0, 160.0, 20.0);
     let ctx = RenderContext::with_transforms(rect, Affine::IDENTITY, Affine::IDENTITY);
     let ideal = ProposalSize::new(None, Some(20.0));
-    retained.flush_in_rect(&mut renderer, ctx, &env, ideal, rect);
+    retained.flush_in_rect(&mut renderer, ctx, &env, ideal, rect, None);
     let outer = LazyViewport {
         bounds: SceneRect::new(0.0, 800.0, 160.0, 820.0),
         transform: Affine::translate((0.0, -800.0)),
@@ -224,11 +224,12 @@ fn retained_scene_capture_preserves_proposal_and_viewport_boundaries() {
             size,
             hit_transform: Affine::IDENTITY,
         },
+        None,
     );
     assert_eq!(renderer.lazy.lazy_viewport_stack.len(), 1);
     assert_eq!(renderer.lazy.lazy_viewport_stack[0].bounds, outer.bounds);
     trace.borrow_mut().clear();
-    retained.flush_in_rect(&mut renderer, ctx, &env, ideal, rect);
+    retained.flush_in_rect(&mut renderer, ctx, &env, ideal, rect, None);
     assert_eq!(
         trace.borrow().last().expect("offer changed").proposal,
         ideal
@@ -262,7 +263,7 @@ fn retained_subview_relayouts_when_a_layout_signal_invalidates() {
     let rect = SceneRect::new(0.0, 0.0, 800.0, 600.0);
     let ctx = RenderContext::with_transforms(rect, Affine::IDENTITY, Affine::IDENTITY);
     let proposal = ProposalSize::new(Some(800.0), Some(600.0));
-    retained.flush_in_rect(&mut renderer, ctx, &env, proposal, rect);
+    retained.flush_in_rect(&mut renderer, ctx, &env, proposal, rect, None);
     assert_eq!(
         trace.borrow().last().expect("mount places").proposal.width,
         Some(120.0)
@@ -272,7 +273,7 @@ fn retained_subview_relayouts_when_a_layout_signal_invalidates() {
         renderer.has_patch_request(),
         "the constraint signal must still schedule a refresh"
     );
-    retained.flush_in_rect(&mut renderer, ctx, &env, proposal, rect);
+    retained.flush_in_rect(&mut renderer, ctx, &env, proposal, rect, None);
     assert_eq!(
         trace
             .borrow()

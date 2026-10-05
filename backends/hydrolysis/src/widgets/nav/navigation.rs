@@ -2,6 +2,7 @@
 use crate::renderer::AccessibilityActionTarget;
 #[cfg(feature = "accessibility")]
 use crate::renderer::ROOT_NAVIGATION_IDENTITY;
+use crate::renderer::SafeAreaLayout;
 use crate::renderer::bounded_proposal;
 use crate::renderer::{
     CapturedScenePlacement, HydroNativeView, HydroState, HydrolysisRenderer, RenderContext,
@@ -704,6 +705,7 @@ pub fn render_navigation_view_parts(
             );
             if search_rect.width() > 0.0 && search_rect.height() > 0.0 {
                 let render_ctx = ctx.render_context();
+                let field_area = ctx.safe_area_for(search_rect);
                 if let Some(field) = state.borrow_mut().search_field.as_mut() {
                     field.flush_in_rect(
                         ctx.renderer_mut(),
@@ -711,6 +713,7 @@ pub fn render_navigation_view_parts(
                         env,
                         ProposalSize::UNSPECIFIED,
                         search_rect,
+                        field_area,
                     );
                 }
             }
@@ -725,12 +728,18 @@ pub fn render_navigation_view_parts(
     );
     if content_rect.width() > 0.0 && content_rect.height() > 0.0 {
         let render_ctx = ctx.render_context();
+        // §7.1: navigation content is chrome-hosted — it lays out against
+        // the boundaries the content frame leaves (the bars' band consumed),
+        // so a scroll surface inside extends to the window edge and an
+        // `.ignore_safe_area` inside still releases.
+        let content_area = ctx.content_area_for(content_rect);
         state.borrow_mut().content.flush_in_rect(
             ctx.renderer_mut(),
             render_ctx,
             env,
             bounded_proposal(content_rect),
             content_rect,
+            content_area,
         );
     }
 
@@ -820,12 +829,14 @@ fn flush_toolbar_group(
         let rect = kurbo::Rect::new(x, y, x + width, y + height);
         if rect.width() > 0.0 && rect.height() > 0.0 {
             let render_ctx = ctx.render_context();
+            let item_area = ctx.safe_area_for(rect);
             item.flush_in_rect(
                 ctx.renderer_mut(),
                 render_ctx,
                 env,
                 ProposalSize::UNSPECIFIED,
                 rect,
+                item_area,
             );
         }
         x += width + metrics.item_spacing;
@@ -866,22 +877,26 @@ fn flush_title_and_subtitle(
     let (title_rect, subtitle_rect) = title_and_subtitle_rects(bounds, title_size, subtitle_size);
     if title_rect.height() > 0.0 {
         let render_ctx = ctx.render_context();
+        let title_area = ctx.safe_area_for(title_rect);
         state.title.flush_in_rect(
             ctx.renderer_mut(),
             render_ctx,
             env,
             ProposalSize::UNSPECIFIED,
             title_rect,
+            title_area,
         );
     }
     if state.subtitle_present && subtitle_rect.height() > 0.0 {
         let render_ctx = ctx.render_context();
+        let subtitle_area = ctx.safe_area_for(subtitle_rect);
         state.subtitle.flush_in_rect(
             ctx.renderer_mut(),
             render_ctx,
             env,
             ProposalSize::UNSPECIFIED,
             subtitle_rect,
+            subtitle_area,
         );
     }
 }
@@ -1427,12 +1442,15 @@ pub fn render_navigation_split_parts(
 
     if let Some(primary_rect) = primary_rect {
         let render_ctx = ctx.render_context();
+        // A split column is chrome-hosted content, like navigation content.
+        let primary_area = ctx.content_area_for(primary_rect);
         state.borrow_mut().primary.flush_in_rect(
             ctx.renderer_mut(),
             render_ctx,
             env,
             bounded_proposal(primary_rect),
             primary_rect,
+            primary_area,
         );
     }
     if let Some(content_rect) = content_rect {
@@ -1482,12 +1500,14 @@ fn render_compact_split(
             back_selection = Some(selection.primary_binding);
         } else {
             let render_ctx = ctx.render_context();
+            let pane_area = ctx.content_area_for(bounds);
             state.borrow_mut().primary.flush_in_rect(
                 ctx.renderer_mut(),
                 render_ctx,
                 env,
                 bounded_proposal(bounds),
                 bounds,
+                pane_area,
             );
         }
     } else if selection.primary.is_some() {
@@ -1495,12 +1515,14 @@ fn render_compact_split(
         back_selection = Some(selection.primary_binding);
     } else {
         let render_ctx = ctx.render_context();
+        let pane_area = ctx.content_area_for(bounds);
         state.borrow_mut().primary.flush_in_rect(
             ctx.renderer_mut(),
             render_ctx,
             env,
             bounded_proposal(bounds),
             bounds,
+            pane_area,
         );
     }
 
@@ -1535,6 +1557,7 @@ fn render_split_content(
         let mut state = state.borrow_mut();
         state.ensure_content(selected, compact, ctx.renderer_mut(), env);
         let render_ctx = ctx.render_context();
+        let pane_area = ctx.content_area_for(bounds);
         state
             .content
             .as_mut()
@@ -1546,15 +1569,18 @@ fn render_split_content(
                 env,
                 bounded_proposal(bounds),
                 bounds,
+                pane_area,
             );
     } else {
         let render_ctx = ctx.render_context();
+        let pane_area = ctx.content_area_for(bounds);
         state.borrow_mut().placeholder.flush_in_rect(
             ctx.renderer_mut(),
             render_ctx,
             env,
             bounded_proposal(bounds),
             bounds,
+            pane_area,
         );
     }
 }
@@ -1571,6 +1597,7 @@ fn render_split_detail(
         let mut state = state.borrow_mut();
         state.ensure_detail(selected, compact, ctx.renderer_mut(), env);
         let render_ctx = ctx.render_context();
+        let pane_area = ctx.content_area_for(bounds);
         state
             .detail
             .as_mut()
@@ -1582,15 +1609,18 @@ fn render_split_detail(
                 env,
                 bounded_proposal(bounds),
                 bounds,
+                pane_area,
             );
     } else {
         let render_ctx = ctx.render_context();
+        let pane_area = ctx.content_area_for(bounds);
         state.borrow_mut().placeholder.flush_in_rect(
             ctx.renderer_mut(),
             render_ctx,
             env,
             bounded_proposal(bounds),
             bounds,
+            pane_area,
         );
     }
 }
@@ -1659,6 +1689,10 @@ fn navigation_entry_identity(
         .identity
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the call carries the page render's inputs; the safe-area context is the §7.1 addition that tips the count"
+)]
 fn render_navigation_page_scene(
     renderer: &mut HydrolysisRenderer,
     state: &Rc<RefCell<NavigationStackRenderState>>,
@@ -1667,6 +1701,7 @@ fn render_navigation_page_scene(
     env: &Environment,
     placement: CapturedScenePlacement,
     inactive: bool,
+    safe_area: Option<SafeAreaLayout>,
 ) -> crate::renderer::navigation_state::NavigationCapturedScene {
     let size = placement.size;
     let background = state.borrow().background();
@@ -1675,11 +1710,11 @@ fn render_navigation_page_scene(
         if inactive {
             state
                 .root_mut()
-                .render_built_navigation_scene_inactive(renderer, env, placement)
+                .render_built_navigation_scene_inactive(renderer, env, placement, safe_area)
         } else {
             state
                 .root_mut()
-                .render_built_scene(renderer, env, placement)
+                .render_built_scene(renderer, env, placement, safe_area)
         }
     } else {
         let (entries, pending_removed) = {
@@ -1705,9 +1740,11 @@ fn render_navigation_page_scene(
         if inactive {
             entry
                 .content
-                .render_built_navigation_scene_inactive(renderer, env, placement)
+                .render_built_navigation_scene_inactive(renderer, env, placement, safe_area)
         } else {
-            entry.content.render_built_scene(renderer, env, placement)
+            entry
+                .content
+                .render_built_scene(renderer, env, placement, safe_area)
         }
     };
     let bounds = kurbo::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height));
@@ -1947,6 +1984,10 @@ pub fn render_navigation_stack_parts(
         ),
         hit_transform: ctx.hit_transform,
     };
+    // A captured page is chrome-hosted content: it lays out against the
+    // boundaries the stack's frame leaves, so a scroll surface inside a page
+    // extends to the window edge and `.ignore_safe_area` inside releases.
+    let page_area = ctx.content_area_for(ctx.bounds);
     let background = state.borrow().background();
     let background = Paint::Solid(ctx.renderer_mut().read_signal(&background));
     let transform = ctx.transform;
@@ -1995,6 +2036,7 @@ pub fn render_navigation_stack_parts(
                 &departing_env,
                 page_placement,
                 true,
+                page_area.clone(),
             );
             ctx.renderer_mut()
                 .navigation
@@ -2014,6 +2056,7 @@ pub fn render_navigation_stack_parts(
         &local_env,
         page_placement,
         false,
+        page_area.clone(),
     );
 
     let now = ctx.renderer_mut().frame_instant();
@@ -2203,6 +2246,7 @@ pub fn render_navigation_stack_parts(
             &landing_env,
             page_placement,
             true,
+            page_area,
         );
         ctx.renderer_mut()
             .navigation

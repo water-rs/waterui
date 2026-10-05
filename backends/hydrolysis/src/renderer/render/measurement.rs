@@ -303,6 +303,20 @@ fn measure_view_dimensions_with_proposal_with_budget(
             theme,
         ));
     }
+    // Normalization keeps a `FixedContainer` plain (its `body` runs at
+    // build); the estimator measures it like the body-produced Native form.
+    if let Some(container) = view.downcast_ref::<FixedContainer>() {
+        let (layout, children) = container.as_parts();
+        return measure_layout_dimensions(
+            layout,
+            children.iter(),
+            proposal,
+            state,
+            &scoped_env,
+            theme,
+        );
+    }
+
     if let Some(dimensions) =
         dimensions_for_known_native_views(view, proposal, state, &scoped_env, theme)
     {
@@ -408,8 +422,14 @@ fn view_has_plain_alignment_dimensions(view: &AnyView) -> bool {
     if let Some(content) = passthrough_content(view) {
         return view_has_plain_alignment_dimensions(content);
     }
-    if let Some(container) = view.downcast_ref::<Native<FixedContainer>>() {
-        let (layout, children) = container.as_inner().as_parts();
+    // Normalization keeps a `FixedContainer` plain (its `body` runs at
+    // build), so both the modifier-time and the body-produced (Native) forms
+    // reach here.
+    if let Some(container) = view.downcast_ref::<FixedContainer>().or_else(|| {
+        view.downcast_ref::<Native<FixedContainer>>()
+            .map(Native::as_inner)
+    }) {
+        let (layout, children) = container.as_parts();
         return layout.explicit_horizontal_alignments().is_empty()
             && layout.explicit_vertical_alignments().is_empty()
             && children.iter().all(view_has_plain_alignment_dimensions);

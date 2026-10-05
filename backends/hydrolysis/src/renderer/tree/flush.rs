@@ -28,19 +28,21 @@ impl RenderNode {
             Self::Color(node) => {
                 renderer.state.counters.recorded_view_contents += 1;
                 let color = waterui_graphics::draw::Paint::Solid(renderer.read_signal(&node.color));
-                // §7.1's fill rule: a fill marked in a background slot
-                // paints through the bands its laid-out frame touched —
-                // the extension layout computed, nothing else moves.
-                let ctx = node
-                    .fill_extension
-                    .get()
-                    .map_or(ctx, |extension| fill_paint_ctx(ctx, extension));
                 renderer.scene_mut().fill_paint(
                     peniko::Fill::NonZero,
                     ctx.transform,
                     color,
                     &ctx.bounds,
                 );
+            }
+            // §7.1's fill rule, paint side: the extension layout recorded
+            // grows the child's paint rect — nothing else moves.
+            Self::Fill(node) => {
+                let ctx = node
+                    .extension
+                    .get()
+                    .map_or(ctx, |extension| fill_paint_ctx(ctx, extension));
+                node.child.flush(renderer, ctx, env);
             }
             Self::Text(text) => {
                 renderer.state.counters.recorded_view_contents += 1;
@@ -534,21 +536,18 @@ impl RenderNode {
                 // grown by the extension layout computed — the surface
                 // paints through the bands its frame touched, clips its
                 // content there, and its own subtree owns the inset.
-                let extension = node
-                    .surface
-                    .facts
-                    .get()
-                    .map_or_else(EdgeOffsets::default, |facts| facts.extension);
-                let viewport_rect = grow_rect(ctx.bounds, extension);
+                let viewport_rect = grow_rect(ctx.bounds, node.surface.extension());
                 let Some(handle) = node.handle.borrow().clone() else {
                     return;
                 };
-                let metrics = handle.metrics();
                 // The keyboard-moving clearance runs before the content
-                // paints: while the host's keyboard animation is in flight
-                // the offset follows it frame by frame, so this flush
-                // paints the field already clear.
+                // paints and before metrics are read: while the host's
+                // keyboard animation is in flight the offset follows it
+                // frame by frame, so this flush paints the field already
+                // clear — `begin_flush` first, metrics after (the order
+                // `List`/`Table` use).
                 let targets_start = node.surface.begin_flush(renderer, &handle);
+                let metrics = handle.metrics();
                 renderer.with_clip_rect_scope(
                     1.0,
                     LayerTransforms {
@@ -575,11 +574,14 @@ impl RenderNode {
                         // so a virtualized `LazyStack` child builds the rows
                         // painted inside the extended clip, not just the ones
                         // inside the laid-out frame.
+                        let horizontal =
+                            node.surface.visible_span(&metrics, ScrollAxis::Horizontal);
+                        let vertical = node.surface.visible_span(&metrics, ScrollAxis::Vertical);
                         let lazy_viewport = kurbo::Rect::new(
-                            metrics.offset_x - extension.leading,
-                            metrics.offset_y - extension.top,
-                            metrics.offset_x - extension.leading + metrics.viewport_width,
-                            metrics.offset_y - extension.top + metrics.viewport_height,
+                            horizontal.start,
+                            vertical.start,
+                            horizontal.end,
+                            vertical.end,
                         );
                         // Registered before the content so the content can be parented
                         // to it: a scroll region owns what it scrolls, and a label on
@@ -617,7 +619,7 @@ impl RenderNode {
                             bounds: lazy_viewport,
                             transform: content_ctx.transform,
                         });
-                        node.child.flush(renderer, content_ctx, &node.env);
+                        node.child.flush(renderer, content_ctx, env);
                         renderer.pop_lazy_viewport("hydrolysis render tree ScrollNode");
                         #[cfg(feature = "accessibility")]
                         if scroll_accessibility_node.is_some() {
@@ -632,7 +634,7 @@ impl RenderNode {
                 // extended clip: they stay visible at the avoided edge.
                 let scroll_ctx =
                     RenderContext::with_transforms(ctx.bounds, ctx.transform, ctx.hit_transform);
-                let mut widget_ctx = WidgetRenderContext::new(renderer, scroll_ctx);
+                let mut widget_ctx = WidgetRenderContext::new(renderer, scroll_ctx, None);
                 crate::widgets::draw_scroll_indicators(
                     &mut widget_ctx,
                     &node.env,
@@ -640,6 +642,7 @@ impl RenderNode {
                     metrics,
                     node.axis,
                     &handle,
+                    node.surface.extension(),
                 );
             }
             Self::LazyStack(node) => node.flush(renderer, ctx, env),
@@ -661,14 +664,12 @@ impl RenderNode {
                     merged = node.env.layered_on(env);
                     &merged
                 };
-                // A fill leaf marked in a background slot (the gradient —
-                // the color leaf is the `Color` arm) paints through the
-                // bands its laid-out frame touched.
-                let ctx = node
-                    .fill_extension
-                    .get()
-                    .map_or(ctx, |extension| fill_paint_ctx(ctx, extension));
-                Rc::clone(&node.behavior).render(renderer, ctx, env);
+                Rc::clone(&node.behavior).render(
+                    renderer,
+                    ctx,
+                    env,
+                    node.safe_area.borrow().clone(),
+                );
                 renderer.pop_render_owner();
             }
         }
@@ -880,6 +881,8 @@ impl RenderNode {
             Self::Filtered(node) => {
                 node.child.emit_accessibility(renderer, &node.env);
             }
+            // The slot fill is a paint marker: the semantic tree keeps the child.
+            Self::Fill(node) => node.child.emit_accessibility(renderer, env),
             Self::Scroll(node) => {
                 // The semantic scroll domain is unbounded — there is no layout
                 // to measure content against — so scroll actions move the

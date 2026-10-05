@@ -349,6 +349,7 @@ impl HydrolysisRenderer {
         self.hit_test.reset_scene();
         self.gesture_engine.clear_targets();
         self.text_editing.text_input_targets.clear();
+        self.text_editing.focused_clearance_claim = None;
         self.scene.reset();
         self.compositor.render_layers.clear();
         self.compositor.active_scene_layers.clear();

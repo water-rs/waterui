@@ -77,19 +77,10 @@ impl TableRenderState {
         }
     }
 
-    /// §7.1's scroll-surface rule, applied at the one place the handle is
-    /// bound: the viewport and the content grow by the extension layout
-    /// computed, so the scrollable range keeps the resting edges on the
-    /// avoided boundary while scrolling paints through the band.
-    fn surface_extension(&self) -> crate::renderer::EdgeOffsets {
-        self.surface
-            .facts
-            .get()
-            .map_or_else(crate::renderer::EdgeOffsets::default, |facts| {
-                facts.extension
-            })
-    }
-
+    /// §7.1's scroll-surface rule: [`ScrollSurfaceArea::extended`] grows the
+    /// viewport and content by the extension layout computed, so the
+    /// scrollable range keeps the resting edges on the avoided boundary
+    /// while scrolling paints through the band.
     #[expect(
         clippy::option_if_let_else,
         reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
@@ -101,27 +92,26 @@ impl TableRenderState {
         content_width: f64,
         content_height: f64,
     ) -> ScrollHandle {
-        let extension = self.surface_extension();
-        let viewport_width = viewport_width + extension.horizontal();
-        let viewport_height = viewport_height + extension.vertical();
-        let content_width = content_width + extension.horizontal();
-        let content_height = content_height + extension.vertical();
+        let (viewport, content) = self.surface.extended(
+            kurbo::Size::new(viewport_width, viewport_height),
+            kurbo::Size::new(content_width, content_height),
+        );
         let mut scroll = self.scroll.borrow_mut();
         if let Some(handle) = scroll.as_mut() {
             handle.rebind(
                 ScrollAxis::All,
-                viewport_width,
-                viewport_height,
-                content_width,
-                content_height,
+                viewport.width,
+                viewport.height,
+                content.width,
+                content.height,
             )
         } else {
             let handle = ScrollHandle::new(
                 ScrollAxis::All,
-                viewport_width,
-                viewport_height,
-                content_width,
-                content_height,
+                viewport.width,
+                viewport.height,
+                content.width,
+                content.height,
                 None,
             );
             *scroll = Some(handle.clone());
@@ -227,15 +217,22 @@ pub fn table_accessibility(
     #[cfg(feature = "accessibility")]
     {
         let scroll_metrics = handle.metrics();
-        let extension = state.borrow().surface_extension();
         let rendered = layout_metrics.is_some();
+        let row_span = state
+            .borrow()
+            .surface
+            .visible_span(&scroll_metrics, ScrollAxis::Vertical);
+        let column_span = state
+            .borrow()
+            .surface
+            .visible_span(&scroll_metrics, ScrollAxis::Horizontal);
         let row_window = {
             let state_ref = state.borrow();
             let slot = state_ref.slot.borrow();
             match layout_metrics {
                 Some(layout_metrics) => resolve_table_visible_rows(
-                    scroll_metrics.offset_y - extension.top,
-                    scroll_metrics.viewport_height,
+                    row_span.start,
+                    row_span.end - row_span.start,
                     slot.max_rows,
                     layout_metrics,
                 ),
@@ -252,8 +249,8 @@ pub fn table_accessibility(
             if rendered {
                 resolve_visible_column_window(
                     &slot.column_widths,
-                    scroll_metrics.offset_x - extension.leading,
-                    scroll_metrics.offset_x - extension.leading + scroll_metrics.viewport_width,
+                    column_span.start,
+                    column_span.end,
                 )
             } else {
                 VisibleColumnWindow {
@@ -283,8 +280,8 @@ pub fn table_accessibility(
             let slot = state_ref.slot.borrow();
             column_window = resolve_visible_column_window(
                 &slot.column_widths,
-                scroll_metrics.offset_x - extension.leading,
-                scroll_metrics.offset_x - extension.leading + scroll_metrics.viewport_width,
+                column_span.start,
+                column_span.end,
             );
         }
         let mut table_node =
@@ -491,7 +488,7 @@ pub fn render_table_parts(
     // windows all run on the frame grown by the extension layout computed —
     // the surface paints through the bands it touched. The cell origin math
     // stays anchored on the laid-out frame.
-    let extension = state.borrow().surface_extension();
+    let extension = state.borrow().surface.extension();
     let surface_viewport = crate::renderer::grow_rect(viewport, extension);
     let theme = ctx.theme();
     let layout_metrics = theme.table_metrics();
@@ -518,12 +515,20 @@ pub fn render_table_parts(
         .surface
         .begin_flush(ctx.renderer_mut(), &handle);
     let mut scroll_metrics = handle.metrics();
+    let row_span = state
+        .borrow()
+        .surface
+        .visible_span(&scroll_metrics, ScrollAxis::Vertical);
+    let column_span = state
+        .borrow()
+        .surface
+        .visible_span(&scroll_metrics, ScrollAxis::Horizontal);
     let row_window = {
         let state_ref = state.borrow();
         let slot = state_ref.slot.borrow();
         resolve_table_visible_rows(
-            scroll_metrics.offset_y - extension.top,
-            scroll_metrics.viewport_height,
+            row_span.start,
+            row_span.end - row_span.start,
             slot.max_rows,
             layout_metrics,
         )
@@ -531,11 +536,7 @@ pub fn render_table_parts(
     let mut column_window = {
         let state_ref = state.borrow();
         let slot = state_ref.slot.borrow();
-        resolve_visible_column_window(
-            &slot.column_widths,
-            scroll_metrics.offset_x - extension.leading,
-            scroll_metrics.offset_x - extension.leading + scroll_metrics.viewport_width,
-        )
+        resolve_visible_column_window(&slot.column_widths, column_span.start, column_span.end)
     };
     {
         let state_ref = state.borrow();
@@ -564,11 +565,8 @@ pub fn render_table_parts(
     {
         let state_ref = state.borrow();
         let slot = state_ref.slot.borrow();
-        column_window = resolve_visible_column_window(
-            &slot.column_widths,
-            scroll_metrics.offset_x - extension.leading,
-            scroll_metrics.offset_x - extension.leading + scroll_metrics.viewport_width,
-        );
+        column_window =
+            resolve_visible_column_window(&slot.column_widths, column_span.start, column_span.end);
     }
 
     ctx.push_layer_rect(1.0, surface_viewport);
@@ -693,7 +691,15 @@ pub fn render_table_parts(
         .surface
         .end_flush(ctx.renderer_mut(), &handle, targets_start);
 
-    draw_scroll_indicators(ctx, env, viewport, scroll_metrics, ScrollAxis::All, &handle);
+    draw_scroll_indicators(
+        ctx,
+        env,
+        viewport,
+        scroll_metrics,
+        ScrollAxis::All,
+        &handle,
+        state.borrow().surface.extension(),
+    );
 }
 
 /// Render one table cell's content through the per-widget [`VisibleSubviewCache`],
@@ -721,12 +727,15 @@ fn flush_cell_subview(
         let state_ref = state.borrow();
         let mut cache = state_ref.item_cache.borrow_mut();
         let subview = cache.entry(key, move || view);
+        // A table cell is scroll content: it lays out with no §7.1
+        // context (its surface owns the edges).
         subview.flush_in_rect(
             ctx.renderer_mut(),
             render_ctx,
             env,
             bounded_proposal(rect),
             rect,
+            None,
         );
     }
     #[cfg(feature = "accessibility")]
