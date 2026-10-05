@@ -47,9 +47,9 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::main_queue_owned::Shared;
 use cocoa_ui::capture::{CapturableSurface, CaptureDeferred, SurfaceCaptureCompletion};
 use cocoa_ui::{PlatformView, Retained};
-use dispatch2::MainThreadBound;
 use std::ptr::NonNull;
 
 use objc2::runtime::{AnyObject, ProtocolObject};
@@ -560,8 +560,9 @@ struct Prepared {
 
 /// Everything a capture completion needs after the content capture's
 /// callback crosses back to the main thread — wrapped in
-/// `MainThreadBound` so the hop is the sanctioned mechanism, not a manual
-/// `Send` assertion.
+/// `MainQueueOwned` so the hop is the sanctioned mechanism, a last drop
+/// off-main cannot run the synchronous `MainThreadBound` teardown, and
+/// no manual `Send` assertion is needed.
 struct CaptureWork {
     owner: Weak<NativeFilterOwner>,
     prepared: Prepared,
@@ -573,7 +574,7 @@ struct CaptureWork {
 /// The mount-time owner: the host view, presentation layer, attached
 /// screen filters, the capture-side filter instances, the parameter
 /// model and the signal watchers. Native callbacks hold it `Weak`
-/// through `MainThreadBound`; teardown clears `layer.filters` and drops
+/// through `MainQueueOwned`; teardown clears `layer.filters` and drops
 /// the watchers — no cycles.
 struct NativeFilterOwner {
     view: Retained<PlatformView>,
@@ -1360,14 +1361,14 @@ impl CapturableSurface for NativeFilterCapturable {
             completion(Err(CaptureDeferred));
             return;
         };
-        let work = Arc::new(MainThreadBound::new(
+        let work = crate::main_queue_owned::shared(
             CaptureWork {
                 owner: Rc::downgrade(&owner),
                 prepared,
                 completion: RefCell::new(Some(completion)),
             },
             mtm,
-        ));
+        );
         let input = Retained::clone(&work.get(mtm).prepared.input);
         owner.capture.capture(&input, move |captured| {
             let work = Arc::clone(&work);
@@ -1383,7 +1384,7 @@ impl CapturableSurface for NativeFilterCapturable {
 /// on the generation-owned queue — `Ok` settles only when Metal reports
 /// the command buffer completed.
 #[allow(clippy::too_many_lines)]
-fn finish_capture(work: &Arc<MainThreadBound<CaptureWork>>, captured: bool, mtm: MainThreadMarker) {
+fn finish_capture(work: &Shared<CaptureWork>, captured: bool, mtm: MainThreadMarker) {
     let work_inner = work.get(mtm);
     macro_rules! settle {
         ($result:expr) => {
@@ -1732,7 +1733,7 @@ pub fn mount(
             let weak = Rc::downgrade(&owner);
             description.visit_signals(|signal| {
                 let flat = signal.index();
-                let bound = Arc::new(dispatch2::MainThreadBound::new(Weak::clone(&weak), mtm));
+                let bound = crate::main_queue_owned::shared(Weak::clone(&weak), mtm);
                 guards.push(signal.watch_animated(move |target| {
                     let bound = Arc::clone(&bound);
                     cocoa_ui::main_queue::enqueue(move |mtm| {
