@@ -53,21 +53,24 @@ RUN echo 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/2
     dbus-x11 procps \
     && rm -rf /var/lib/apt/lists/*
 
-# rustup toolchain — installer sha256-verified, channel taken from the
-# repository's rust-toolchain.toml via the RUST_CHANNEL build-arg
+# rustup toolchain — installer sha256-verified against the immutable
+# archive URL (dist/ floats with each rustup release), channel taken
+# from the repository's rust-toolchain.toml via the RUST_CHANNEL
+# build-arg
 ARG TARGETARCH
 ARG RUST_CHANNEL=stable
+ARG RUSTUP_VERSION=1.29.1
 ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:/opt/flutter/bin:/usr/local/bin:$PATH
 RUN set -eu; \
     case "$TARGETARCH" in \
         amd64) RUSTUP_ARCH=x86_64-unknown-linux-gnu; \
-               RUSTUP_SHA256=15f6e4ce9f583b929c996c91562bad6d4454f3281de858b02cdfdef615fac433 ;; \
-        arm64) RUSTUP_ARCH=aarch64-unknown-linux-gnu; \
                RUSTUP_SHA256=dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71 ;; \
+        arm64) RUSTUP_ARCH=aarch64-unknown-linux-gnu; \
+               RUSTUP_SHA256=15f6e4ce9f583b929c996c91562bad6d4454f3281de858b02cdfdef615fac433 ;; \
         *) echo "unsupported image arch: $TARGETARCH" >&2; exit 1 ;; \
     esac; \
     curl -sSf -o /tmp/rustup-init \
-        "https://static.rust-lang.org/rustup/dist/${RUSTUP_ARCH}/rustup-init"; \
+        "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${RUSTUP_ARCH}/rustup-init"; \
     echo "${RUSTUP_SHA256}  /tmp/rustup-init" | sha256sum -c -; \
     chmod +x /tmp/rustup-init; \
     /tmp/rustup-init -y --default-toolchain "$RUST_CHANNEL" --profile minimal; \
