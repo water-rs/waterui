@@ -355,6 +355,18 @@ impl Mounts {
         }
     }
 
+    /// The display scale `key`'s held backdrop group was built for, `None`
+    /// while the mount holds none.
+    #[cfg(test)]
+    pub(crate) fn backdrop_display_scale(&self, key: RenderKey) -> Option<f64> {
+        self.keyed
+            .get(&key)
+            .expect("hydrolysis mounts: backdrop for an uncreated mount")
+            .backdrop
+            .as_ref()
+            .map(|backdrop| f64::from_bits(backdrop.display_scale))
+    }
+
     /// The segment layer `key`'s group orders group child `index` under,
     /// creating the group body and segment layers on first use.
     ///
