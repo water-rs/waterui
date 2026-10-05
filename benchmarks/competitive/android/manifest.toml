@@ -76,7 +76,6 @@ kind = "waterui"
 # invocation; each artifact is recorded separately under its ABI name.
 abi_apks = { arm64 = "app-arm64.apk", x86_64 = "app-x86_64.apk" }
 aab = "app-release.aab"
-gradle_project = "backends/android"
 
 [contestants.waterui-hydrolysis]
 dir = "../apps/waterui"
@@ -86,7 +85,6 @@ activity = ".MainActivity"
 kind = "waterui"
 abi_apks = { arm64 = "app-arm64.apk", x86_64 = "app-x86_64.apk" }
 aab = "app-release.aab"
-gradle_project = "backends/hydrolysis"
 
 [contestants.flutter]
 dir = "../apps/flutter"

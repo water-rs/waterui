@@ -400,23 +400,23 @@ def build_waterui(man, dist_dir: Path, e: dict):
     # a separate `water package --arch <abi>` invocation per ABI and
     # recorded separately (app-release.apk is the CLI's output name; the
     # manifest's per-ABI names are the dist names). `--distribution`
-    # yields the universal AAB. Release signing comes from
-    # [signing.android] in Water.toml — the debug keystore is generated
-    # at build time, never committed.
+    # yields the universal AAB. The managed backend is scaffolded into the
+    # CLI's build cache (outside the checkout); packaged artifacts land in
+    # the project's target/package/ (platforming::place_in_project).
+    # Release signing comes from [signing.android] in Water.toml — the
+    # debug keystore is generated at build time, never committed.
     ensure_debug_keystore(d / "debug.keystore")
     be = dict(e, WATERUI_ANDROID_STORE_PASSWORD="android",
               WATERUI_ANDROID_KEY_PASSWORD="android")
     base = ["water", "package", "--platform", "android", "--backend",
             backend, "--release", "-y"]
-    outs = d / man["gradle_project"] / "app" / "build" / "outputs"
+    outs = d / "target" / "package"
     for abi, name in man["abi_apks"].items():
         checked([*base, "--arch", abi], cwd=d, env=be)
-        shutil.copy(outs / "apk" / "release" / "app-release.apk",
-                    dist_dir / name)
+        shutil.copy(outs / "app-release.apk", dist_dir / name)
     checked([*base, "--arch", "arm64,x86-64", "--distribution"],
             cwd=d, env=be)
-    shutil.copy(outs / "bundle" / "release" / man["aab"],
-                dist_dir / man["aab"])
+    shutil.copy(outs / "app-release.aab", dist_dir / man["aab"])
 
 
 def rewrite_wrapper_pin(proj: Path, version: str) -> None:
