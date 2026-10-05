@@ -458,7 +458,7 @@ impl Renderer for NullRenderer {
     /// deliberately not `Send`, matching `NullRenderer::init` and the
     /// browser engine's own futures.
     #[cfg(target_arch = "wasm32")]
-    #[allow(
+    #[expect(
         clippy::future_not_send,
         reason = "the engine is single-threaded on wasm — FrameRedraw's shared request storage is Rc there"
     )]
