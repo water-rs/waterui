@@ -1,7 +1,4 @@
-//! Live capture harness for water-rs/hydrolysis#200: a context menu with a
-//! five-button accessory strip above the lifted source view, a subtitled
-//! command and a destructive last item. Run under Xvfb and press the
-//! secondary button on the card to open the drawn presentation.
+//! The example program, compiled where `hydrolysis::run` exists.
 
 use std::thread;
 use std::time::Duration;
@@ -100,7 +97,7 @@ fn app(env: Environment) -> App {
     )
 }
 
-fn main() {
+pub fn main() {
     if let Ok(seconds) = std::env::var("HYDROLYSIS_SHOWCASE_SECONDS") {
         thread::spawn(move || {
             thread::sleep(Duration::from_secs(

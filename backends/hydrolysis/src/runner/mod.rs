@@ -17,10 +17,7 @@ use nami::Signal as _;
 use std::cell::Cell;
 use std::time::Duration;
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
-#[cfg(any(
-    all(not(target_arch = "wasm32"), not(target_os = "android")),
-    all(target_arch = "wasm32", feature = "web")
-))]
+#[cfg(hydrolysis_run)]
 use waterui::app::App;
 #[cfg(all(
     not(target_arch = "wasm32"),

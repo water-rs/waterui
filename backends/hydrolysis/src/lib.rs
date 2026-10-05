@@ -79,13 +79,7 @@ pub use renderer::{
 pub use renderer::{FrameStageTimes, GpuIdentity};
 #[cfg(target_os = "android")]
 pub use runner::android;
-// `runner::run` exists on every non-Android shape except bare wasm without
-// `web`: wasm32 reaches no windowing model until the browser runner is
-// compiled in.
-#[cfg(all(
-    not(target_os = "android"),
-    any(not(target_arch = "wasm32"), feature = "web")
-))]
+#[cfg(hydrolysis_run)]
 pub use runner::run;
 pub use runner::{FrameCounters, FramePhases, FrameProfile, SemanticPumpResult, SemanticRuntime};
 #[cfg(not(target_arch = "wasm32"))]

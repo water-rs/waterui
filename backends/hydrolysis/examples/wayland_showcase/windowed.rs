@@ -1,5 +1,4 @@
-//! Wayland showcase: a window exercising the runner's widgets and input paths
-//! under a real compositor session.
+//! The example program, compiled where `hydrolysis::run` exists.
 
 use std::str::FromStr as _;
 use std::thread;
@@ -132,7 +131,7 @@ fn showcase_lifetime() -> Duration {
     Duration::from_secs(seconds)
 }
 
-fn main() {
+pub fn main() {
     thread::spawn(|| {
         thread::sleep(showcase_lifetime());
         std::process::exit(0);
