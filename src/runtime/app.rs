@@ -6,7 +6,7 @@ use core::pin::Pin;
 use nami::Computed;
 use suiteki::Str;
 use waterui_core::{
-    Environment,
+    Environment, State,
     handler::{Handler, HandlerOnce, ViewBuilder, boxed_action, boxed_action_once},
 };
 
@@ -206,6 +206,34 @@ impl App {
         self
     }
 
+    /// Injects cloneable state into the application's environment.
+    ///
+    /// The application-level counterpart of `ViewExt::state`: handlers that
+    /// run under the application's environment rather than a view's —
+    /// `App::menu_bar` commands, [`App::on_quit_request`] and
+    /// [`App::on_terminate`] — extract a `#[state]`-marked type or `State<T>`
+    /// the same way view handlers do. Repeated calls on the same type install
+    /// positional `State<T>` slots in call order.
+    ///
+    /// ```
+    /// # use waterui::prelude::*;
+    /// # use waterui::app::App;
+    /// #[waterui::state]
+    /// #[derive(Clone)]
+    /// struct Store;
+    ///
+    /// fn app(env: Environment) -> App {
+    ///     App::new(|| text!("Counter"), env)
+    ///         .state(&Store)
+    ///         .menu_bar(Menu::new("App", "Quit".action(|_store: Store| {})))
+    /// }
+    /// ```
+    #[must_use]
+    pub fn state<T: Clone + 'static>(mut self, state: &T) -> Self {
+        self.env = self.env.extending(State(state.clone()));
+        self
+    }
+
     /// Ask the application before it quits.
     ///
     /// `handler` runs when a *cancellable* termination request arrives: the
@@ -295,6 +323,8 @@ pub enum QuitReply {
 
 #[cfg(test)]
 mod tests {
+    use alloc::rc::Rc;
+
     use nami::{Binding, Signal};
     use waterui_core::layout::{LayoutDirection, layout_direction};
     use waterui_locale::locales;
@@ -353,5 +383,49 @@ mod tests {
 
         assert_eq!(app.windows().len(), 1);
         assert_eq!(app.last_window_policy(), LastWindowPolicy::Quit);
+    }
+
+    #[test]
+    fn a_menu_bar_command_extracts_state_installed_with_app_state() {
+        use core::cell::Cell;
+
+        use crate::component::menu::{CommandExt, ResolvedMenuItem, resolve_menu_bar_items};
+
+        #[waterui_macros::state]
+        #[derive(Clone)]
+        struct Tally {
+            hits: Rc<Cell<u32>>,
+        }
+
+        impl Tally {
+            fn bump(&self) {
+                self.hits.set(self.hits.get() + 1);
+            }
+        }
+
+        let hits = Rc::new(Cell::new(0_u32));
+        let tally = Tally {
+            hits: Rc::clone(&hits),
+        };
+        let app = App::new(|| (), Environment::new())
+            .state(&tally)
+            .menu_bar(Menu::new("App", "Bump".action(|tally: Tally| tally.bump())));
+
+        let bars = resolve_menu_bar_items(&app.menu_bar, &app.env).snapshot();
+        let [ResolvedMenuItem::Menu(menu)] = bars.as_slice() else {
+            panic!("expected one resolved menu, got {bars:?}");
+        };
+        let command = menu
+            .items
+            .snapshot()
+            .into_iter()
+            .find_map(|item| match item {
+                ResolvedMenuItem::Command(command) => Some(command),
+                _ => None,
+            })
+            .expect("the menu must contain the declared command");
+        command.action.call(&app.env);
+
+        assert_eq!(hits.get(), 1);
     }
 }
