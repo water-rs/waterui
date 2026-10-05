@@ -981,10 +981,19 @@ impl IntoFFI for ScrollView {
                 )
             },
             |controller| {
-                let target = controller.target();
+                // The FFI carries the request's target only; an animation on
+                // the request is the consuming backend's own concern.
+                let request = controller.request();
                 (
-                    target.clone().map(|point| point.x).computed().into_ffi(),
-                    target.map(|point| point.y).computed().into_ffi(),
+                    request
+                        .clone()
+                        .map(|request| request.target.x)
+                        .computed()
+                        .into_ffi(),
+                    request
+                        .map(|request| request.target.y)
+                        .computed()
+                        .into_ffi(),
                     controller.generation().into_ffi(),
                 )
             },

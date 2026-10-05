@@ -213,6 +213,8 @@ pub fn components_block_09() {
 // components.md § "## Scrolling" — rust block 10/29
 // ---------------------------------------------------------------------------
 pub fn components_block_10() {
+    use core::time::Duration;
+    use waterui::animation::Animation;
     use waterui::layout::scroll::ScrollController;
 
     fn row_view(r: Record) -> ListItem {
@@ -226,11 +228,16 @@ pub fn components_block_10() {
 
     let rows = ScrollController::<usize>::new(0);
     let list = List::for_each(records, row_view).scroll_controller(&rows);
-    rows.scroll_to(50_000); // does not materialize rows 0..50_000
+    rows.scroll_to(50_000); // jump — does not materialize rows 0..50_000
+    rows.animate_to(50_000, Animation::default()); // glide with the platform's smooth scroll
 
     let offset = ScrollController::<Point>::new(Point::zero());
     let view = scroll(content).scroll_controller(&offset);
     offset.scroll_to(Point::new(0.0, 2_400.0));
+    offset.animate_to(
+        Point::new(0.0, 2_400.0),
+        Animation::ease_in_out(Duration::from_millis(400)),
+    );
 
     let _ = (list, view);
 }

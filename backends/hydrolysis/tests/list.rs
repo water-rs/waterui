@@ -121,6 +121,93 @@ fn pending_scroll_target_above_row_count_waits_for_contents_offscreen() {
     app.query().label("row 0").assert_not_exists();
 }
 
+/// An `animate_to` request rides the request's curve to the row and lands
+/// exactly where `scroll_to` would — the row's measured offset
+/// (water-rs/waterui#1901). Mid-flight the reported `scroll_y` is strictly
+/// between the two requests' rest and landing points.
+#[test]
+fn animate_to_a_row_glides_and_lands_where_the_jump_would_offscreen() {
+    let items = ReactiveList::<SelfId<usize>>::new();
+    let _ = items.replace((0..GROWN_ROW_COUNT).map(SelfId::new).collect());
+    let controller = ScrollController::new(0);
+    let mut app = ui()
+        .viewport(320, 320)
+        .theme(Material3::defaults())
+        .mount_offscreen({
+            let controller = controller.clone();
+            move || pending_scroll_list(items.clone(), controller.clone())
+        });
+    app.settle();
+
+    let scroll_y = |app: &mut waterui_testing::OffscreenApp| -> f64 {
+        app.query()
+            .role(Role::LIST)
+            .label("messages")
+            .single()
+            .node()
+            .scroll_y()
+            .expect("the list reports a scroll offset")
+    };
+
+    // The jump lands on the row's offset immediately; it is the baseline the
+    // animated request must converge to.
+    controller.scroll_to(SCROLL_TARGET);
+    app.settle();
+    let jump_offset = scroll_y(&mut app);
+    let expected = support::usize_as_f64(SCROLL_TARGET) * ROW_HEIGHT;
+    assert!(
+        (jump_offset - expected).abs() < 1.0,
+        "jump should land on row {SCROLL_TARGET}'s offset ≈{expected}: {jump_offset}"
+    );
+
+    controller.scroll_to(0);
+    app.settle();
+
+    controller.animate_to(SCROLL_TARGET, waterui::animation::Animation::default());
+    app.pump_for(std::time::Duration::from_millis(100));
+    let midway = scroll_y(&mut app);
+    assert!(
+        midway > 0.0 && midway < jump_offset,
+        "animated list scroll should be in flight mid-duration: scroll_y={midway}"
+    );
+
+    app.settle();
+    assert_eq!(
+        scroll_y(&mut app),
+        jump_offset,
+        "an animated list scroll must land on the same offset as the jump"
+    );
+    app.query().label("row 8").assert_exists();
+    app.query().label("row 0").assert_not_exists();
+}
+
+/// The semantic runtime has no pump to advance an animation, so an animated
+/// request lands in place there, in row units like any other request.
+#[test]
+fn animate_to_a_row_lands_in_place_semantic() {
+    let items = ReactiveList::<SelfId<usize>>::new();
+    let _ = items.replace((0..GROWN_ROW_COUNT).map(SelfId::new).collect());
+    let controller = ScrollController::new(0);
+    controller.animate_to(SCROLL_TARGET, waterui::animation::Animation::default());
+    let mut app = ui().mount({
+        let controller = controller;
+        move || pending_scroll_list(items.clone(), controller.clone())
+    });
+    app.settle();
+    let scroll_y = app
+        .query()
+        .role(Role::LIST)
+        .label("messages")
+        .single()
+        .node()
+        .scroll_y()
+        .expect("the list reports a scroll offset");
+    assert!(
+        (scroll_y - support::usize_as_f64(SCROLL_TARGET)).abs() < 0.5,
+        "animated request should land on row {SCROLL_TARGET} on the semantic runtime: scroll_y={scroll_y}"
+    );
+}
+
 /// <https://github.com/water-rs/hydrolysis/issues/111>: a tap on `List` row
 /// content never fires once the row's content re-renders while the row's swipe
 /// gesture stays armed. The retained swipe re-registers with the hit-test order

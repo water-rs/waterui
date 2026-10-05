@@ -440,6 +440,140 @@ fn report_offset_writes_the_offset_on_controller_scroll_to() {
     );
 }
 
+// A controller `animate_to` rides the request's curve: mid-duration the
+// reported offset is strictly between start and target — a jump would
+// already sit at the target — and the run lands exactly on it once the
+// duration ends (water-rs/waterui#1901).
+#[test]
+fn animate_to_glides_along_its_curve_and_lands_on_the_target() {
+    let offset = waterui::binding(waterui::layout::Point::zero());
+    let controller = waterui_layout::scroll::ScrollController::new(waterui::layout::Point::zero());
+    let mut app = ui()
+        .viewport(180, 180)
+        .theme(hydrolysis_m3::Material3::defaults())
+        .mount_offscreen({
+            let offset = offset.clone();
+            let controller = controller.clone();
+            move || offset_rail(offset.clone(), Some(controller.clone()))
+        });
+    app.settle();
+
+    controller.animate_to(
+        waterui::layout::Point::new(0.0, 108.0),
+        waterui::animation::Animation::ease_in_out(std::time::Duration::from_millis(500)),
+    );
+    app.pump_for(std::time::Duration::from_millis(200));
+    let midway = offset.snapshot().y;
+    assert!(
+        midway > 0.0 && midway < 108.0,
+        "an animated scroll should be in flight mid-duration, offset {midway}"
+    );
+
+    app.pump_for(std::time::Duration::from_millis(500));
+    app.settle();
+    assert_eq!(
+        offset.snapshot(),
+        waterui::layout::Point::new(0.0, 108.0),
+        "the animation must land exactly on the target"
+    );
+}
+
+// A spring request settles on the target once its duration ends, however far
+// it overshoots in between.
+#[test]
+fn animate_to_with_a_spring_settles_on_the_target() {
+    let offset = waterui::binding(waterui::layout::Point::zero());
+    let controller = waterui_layout::scroll::ScrollController::new(waterui::layout::Point::zero());
+    let mut app = ui()
+        .viewport(180, 180)
+        .theme(hydrolysis_m3::Material3::defaults())
+        .mount_offscreen({
+            let offset = offset.clone();
+            let controller = controller.clone();
+            move || offset_rail(offset.clone(), Some(controller.clone()))
+        });
+    app.settle();
+
+    controller.animate_to(
+        waterui::layout::Point::new(0.0, 60.0),
+        waterui::animation::Animation::spring(100.0, 10.0),
+    );
+    app.settle();
+    assert_eq!(
+        offset.snapshot(),
+        waterui::layout::Point::new(0.0, 60.0),
+        "a spring scroll must settle exactly on the target"
+    );
+}
+
+// A `scroll_to` request carries no animation: it still lands in one frame.
+#[test]
+fn scroll_to_lands_in_one_frame() {
+    let offset = waterui::binding(waterui::layout::Point::zero());
+    let controller = waterui_layout::scroll::ScrollController::new(waterui::layout::Point::zero());
+    let mut app = ui()
+        .viewport(180, 180)
+        .theme(hydrolysis_m3::Material3::defaults())
+        .mount_offscreen({
+            let offset = offset.clone();
+            let controller = controller.clone();
+            move || offset_rail(offset.clone(), Some(controller.clone()))
+        });
+    app.settle();
+
+    controller.scroll_to(waterui::layout::Point::new(0.0, 60.0));
+    app.pump_for(std::time::Duration::from_millis(16));
+    assert_eq!(
+        offset.snapshot(),
+        waterui::layout::Point::new(0.0, 60.0),
+        "a jump must land within a single frame"
+    );
+}
+
+// The user scrolling takes over from an animation in flight: a trackpad
+// pixel delta cancels the run and moves the offset directly, so pumping the
+// rest of the duration moves nothing.
+#[test]
+fn a_user_scroll_during_animate_to_cancels_the_animation() {
+    let offset = waterui::binding(waterui::layout::Point::zero());
+    let controller = waterui_layout::scroll::ScrollController::new(waterui::layout::Point::zero());
+    let mut app = ui()
+        .viewport(180, 180)
+        .theme(hydrolysis_m3::Material3::defaults())
+        .mount_offscreen({
+            let offset = offset.clone();
+            let controller = controller.clone();
+            move || offset_rail(offset.clone(), Some(controller.clone()))
+        });
+    app.settle();
+
+    controller.animate_to(
+        waterui::layout::Point::new(0.0, 108.0),
+        waterui::animation::Animation::ease_in_out(std::time::Duration::from_millis(500)),
+    );
+    app.pump_for(std::time::Duration::from_millis(200));
+    let midway = offset.snapshot().y;
+    assert!(
+        midway > 0.0 && midway < 108.0,
+        "expected an in-flight offset, got {midway}"
+    );
+
+    let rail = app.query().label("offset-rail").single().bounds();
+    app.scroll_at(rail.x() + 60.0, rail.y() + 60.0, 0.0, -20.0, false);
+    let taken = offset.snapshot().y;
+    assert!(
+        (taken - (midway + 20.0)).abs() < 0.5,
+        "the pixel delta should move the offset directly: {midway} -> {taken}"
+    );
+
+    app.pump_for(std::time::Duration::from_millis(600));
+    assert!(
+        (offset.snapshot().y - taken).abs() < 0.5,
+        "a cancelled animation must not resume toward the target: {:?}",
+        offset.snapshot()
+    );
+}
+
 // Dragging the horizontal scrollbar's thumb moves `offset_x`: the gutter
 // target maps the pointer through the thumb geometry of the *horizontal*
 // axis, so the content width — not the height — sizes the thumb and its

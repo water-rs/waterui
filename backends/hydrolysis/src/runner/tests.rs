@@ -19,6 +19,7 @@ use waterui::component::list::{List, ListItem};
 use waterui::window::{Window, WindowState};
 use waterui::{Binding, Signal, ViewExt as _};
 use waterui_backend_core::widget::TextCaretMotion;
+use waterui_core::animation::Animation;
 use waterui_core::id::SelfId;
 use waterui_core::{AnyView, Environment, binding};
 use waterui_layout::scroll::ScrollController;
@@ -900,15 +901,15 @@ fn runtime_window_sized(
     )
 }
 
-/// An animated `List` jump must keep the window awake until it settles.
+/// An animated `List` scroll must keep the window awake until it settles.
 ///
 /// This drives the runtime the way the winit loop does — a frame runs only while
-/// the runtime is still asking to be woken — so a jump that fails to schedule
+/// the runtime is still asking to be woken — so a scroll that fails to schedule
 /// its own animation frames shows up as the loop going idle almost immediately.
 /// Pumping frames unconditionally cannot see that, because it supplies the very
 /// frames the bug withholds.
 #[test]
-fn an_animated_list_jump_keeps_the_window_awake_until_it_settles() {
+fn an_animated_list_scroll_keeps_the_window_awake_until_it_settles() {
     const ROWS: usize = 200;
     const TARGET_ROW: usize = 40;
     /// Hard stop so a runaway loop fails loudly instead of hanging.
@@ -936,9 +937,9 @@ fn an_animated_list_jump_keeps_the_window_awake_until_it_settles() {
         "the window never went idle before the jump"
     );
 
-    controller.scroll_to(TARGET_ROW);
+    controller.animate_to(TARGET_ROW, Animation::default());
     // The frame the button press itself produces: the loop is already running an
-    // iteration for that input, and this is where the jump gets armed.
+    // iteration for that input, and this is where the scroll gets armed.
     now += Duration::from_millis(16);
     let _ = advance_runtime(&mut runtime, &env, now);
     render_window(&mut runtime, &env, &mut || false);
@@ -948,15 +949,15 @@ fn an_animated_list_jump_keeps_the_window_awake_until_it_settles() {
 
     assert!(
         animation_frames < MAX_FRAMES,
-        "the jump never settled: the window stayed awake for {animation_frames} frames"
+        "the scroll never settled: the window stayed awake for {animation_frames} frames"
     );
-    // The approach eases with a ~180ms time constant, so a real animation spans
-    // many frames. A jump that teleported, or one whose frames were never
-    // scheduled, would idle again almost at once.
+    // `Animation::default()` resolves to a 250ms ease-in-out, so a real
+    // animation spans many frames. A scroll that teleported, or one whose
+    // frames were never scheduled, would idle again almost at once.
     assert!(
         animation_frames >= 8,
-        "an animated jump should span many frames; the window went idle after \
-         {animation_frames}, so the jump landed without animating"
+        "an animated scroll should span many frames; the window went idle after \
+         {animation_frames}, so the scroll landed without animating"
     );
 }
 

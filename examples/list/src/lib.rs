@@ -118,7 +118,7 @@ fn content(state: DemoState) -> impl View {
             ))
             .spacing(8.0),
             text(
-                "Animated jumps and the draggable scrollbar keep only viewport rows materialized.",
+                "Programmatic scrolls and the draggable scrollbar keep only viewport rows materialized.",
             )
             .caption()
             .muted(),
