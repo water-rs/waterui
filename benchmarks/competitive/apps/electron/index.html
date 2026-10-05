@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Bench</title>
+<style>
+  html, body { margin: 0; height: 100%; font-family: -apple-system, system-ui, sans-serif; }
+  #root { height: 100%; }
+  .center { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; gap: 16px; }
+  .btn { background: #0A84FF; color: #fff; border: 0; border-radius: 8px; padding: 10px 20px; font-size: 15px; font-weight: 600; cursor: pointer; }
+  .row { display: flex; align-items: center; gap: 12px; padding: 4px 16px; position: absolute; left: 0; right: 0; height: 48px; box-sizing: border-box; }
+  .avatar { width: 40px; height: 40px; border-radius: 50%; flex: none; }
+  .row-title { font-size: 16px; color: #111; }
+  .row-sub, .row-time { font-size: 13px; color: #666; }
+  .row-lines { flex: 1; }
+  .field { width: 720px; height: 440px; position: relative; margin: auto; }
+  .rect { width: 40px; height: 40px; border-radius: 10px; position: absolute; }
+  .scroller { height: 100vh; overflow-y: scroll; }
+  .vscroll { position: relative; }
+  .paragraph { padding: 6px 16px; font-size: 17px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="renderer.js"></script>
+</body>
+</html>

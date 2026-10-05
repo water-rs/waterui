@@ -1,0 +1,19 @@
+[package]
+name = "waterui-bench"
+version = "0.1.0"
+edition = "2024"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Competitive benchmark contestant app (water-rs/waterui#1262, #1864)"
+publish = false
+
+[lib]
+crate-type = ["lib"]
+
+[features]
+dev = ["waterui/dynamic_linking"]
+
+[dependencies.waterui]
+workspace = true
+default-features = false

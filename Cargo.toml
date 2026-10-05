@@ -24,6 +24,9 @@ members = [
     "ffi/generator",
     "macros",
     "examples/*",
+    # The shared competitive-benchmark WaterUI contestant (#1864): built by
+    # every platform leg through this checkout's CLI.
+    "benchmarks/competitive/apps/waterui",
     ".claude/skills/waterui/skill_snippets",
     "backends/apple",
     "backends/apple/cocoa-ui",

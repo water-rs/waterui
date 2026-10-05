@@ -12837,6 +12837,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "waterui-bench"
+version = "0.1.0"
+dependencies = [
+ "waterui",
+]
+
+[[package]]
 name = "waterui-browser-cef"
 version = "0.5.1"
 dependencies = [

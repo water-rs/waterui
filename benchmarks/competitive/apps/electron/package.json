@@ -1,0 +1,12 @@
+{
+  "name": "electron-bench",
+  "version": "1.0.0",
+  "description": "Competitive benchmark — Electron contestant (macOS), workloads W1-W4",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "44.4.3"
+  }
+}
