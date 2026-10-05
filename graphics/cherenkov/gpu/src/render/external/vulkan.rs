@@ -571,6 +571,9 @@ impl Shared {
     /// Queues `release` for the next flush — the renderer submits it after
     /// the last recorded read, retaining every object until the submission
     /// completes.
+    ///
+    /// # Panics
+    /// When the pending-release queue's lock is poisoned.
     pub fn retire(&self, release: Release) {
         self.vk
             .pending_release
