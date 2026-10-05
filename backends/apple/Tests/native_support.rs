@@ -176,8 +176,19 @@ pub fn bind_root_window_wires_a_live_window(mtm: MainThreadMarker) {
         Retained::retain(std::ptr::from_ref(window.native()).cast_mut())
             .expect("a live NSWindow retains")
     };
+    // The embedding's WaterUI-owned root inside the host's content view —
+    // the view a material background fills.
+    let root = cocoa_ui::appkit::HostView::new(mtm, window.content_rect());
+    cocoa_ui::view::add_subview(
+        &window
+            .native()
+            .contentView()
+            .expect("a new window has a content view"),
+        &root,
+    );
     let binding = crate::windows::bind_root_window(
         native,
+        &root,
         &env,
         &title,
         &frame,

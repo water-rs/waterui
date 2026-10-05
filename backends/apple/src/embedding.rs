@@ -310,6 +310,7 @@ fn bind_root(
         let toolbar = declaration.toolbar.take();
         *observed_binding.borrow_mut() = Some(crate::windows::bind_root_window(
             window,
+            root,
             &observed_env,
             &declaration.title,
             &declaration.frame,

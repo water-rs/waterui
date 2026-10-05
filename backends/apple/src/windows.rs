@@ -268,10 +268,11 @@ mod imp {
         // Background: the framework resolves the reactive background to a
         // colour — the theme background for opaque, the declared colour
         // otherwise — or the window's material, following a change of
-        // background and of colour alike. A material fills the content view
-        // behind the content.
+        // background and of colour alike. A material fills the host — the
+        // window's content view, which WaterUI owns here — behind the
+        // content.
         let background = declaration.resolved_background(env);
-        wire_background(&window, &mut keepalive, &background, env, mtm);
+        wire_background(&window, &host, &mut keepalive, &background, env, mtm);
 
         // The declared toolbar goes through the window's one `NSToolbar`:
         // each child becomes an `NSToolbarItem`, which is what gives it the
@@ -338,7 +339,10 @@ mod imp {
     }
 
     /// `WuiRootWindowBinding`'s port: binds the app's first declared window to
-    /// an `NSWindow` the host already created — the embed path.
+    /// an `NSWindow` the host already created — the embed path. `root` is
+    /// the WaterUI-owned view the embedding mounted the content in; the
+    /// window's content view belongs to the host application, so a material
+    /// background fills `root`, not it.
     ///
     /// The frame is the one exception to "the declaration wins": the host's
     /// window already has a position on a real screen, so the real (outer)
@@ -349,6 +353,7 @@ mod imp {
     #[expect(clippy::too_many_arguments, reason = "the declared window's surface")]
     pub fn bind_root_window(
         window: Retained<cocoa_ui::objc2_app_kit::NSWindow>,
+        root: &cocoa_ui::PlatformView,
         env: &Environment,
         title: &Computed<waterui::Str>,
         frame: &Binding<super::WRect>,
@@ -405,7 +410,7 @@ mod imp {
         wire_resize_increments(&window, &mut keepalive, resize_increments);
 
         let resolved = resolve_background(background, env);
-        wire_background(&window, &mut keepalive, &resolved, env, mtm);
+        wire_background(&window, root, &mut keepalive, &resolved, env, mtm);
 
         let (applying_state, publish_state) = state_publisher(state);
         wire_frame(&window, &mut keepalive, frame, &publish_state);
@@ -718,19 +723,17 @@ mod imp {
 
     /// `observeWindowBackground`'s wiring: the resolved background applies
     /// now and follows every change — a colour to the window, a material as
-    /// the effect view filling the window's content view behind the content.
+    /// the effect view filling `container`, the WaterUI-owned view holding
+    /// the window's content, behind that content.
     fn wire_background(
         window: &Rc<cocoa_ui::appkit::Window>,
+        container: &cocoa_ui::PlatformView,
         keepalive: &mut KeepAlive,
         resolved: &Computed<ResolvedWindowBackground>,
         env: &Environment,
         mtm: MainThreadMarker,
     ) {
-        let content = window
-            .native()
-            .contentView()
-            .expect("a window's background is wired after its content view is set");
-        crate::window_background::bind(keepalive, &content, resolved, env, mtm, {
+        crate::window_background::bind(keepalive, container, resolved, env, mtm, {
             let window = window.clone();
             move |color| apply_background(&window, color)
         });
