@@ -15,7 +15,6 @@ import android.view.autofill.AutofillValue
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
-import androidx.core.graphics.Insets
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsAnimationCompat
 import androidx.core.view.WindowInsetsCompat
@@ -67,6 +66,61 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     private var lastMaxFlingVelocity = Float.NaN
     private var lastScrollFriction = Float.NaN
     private var lastRootInsets: WindowInsetsCompat? = null
+
+    /**
+     * An IME `WindowInsetsAnimation` is running. While it is, the insets
+     * `onApplyWindowInsets` dispatches already carry the animation's *end*
+     * state — pushing them would jump the layout to the full keyboard
+     * height for one frame before `onProgress` pulls it back. The flag
+     * defers the keyboard region to `onProgress` (and `onEnd` for the
+     * settled value); the container region still tracks the dispatch.
+     */
+    private var imeAnimating = false
+
+    /**
+     * §7.1's keyboard-motion rule: the IME inset the session avoids by
+     * follows the platform's keyboard animation frame by frame, so every
+     * `onProgress` lands as its own metrics push instead of a single jump
+     * when the animation settles. The deferral described on [imeAnimating]
+     * covers the interactive swipe-dismiss path too — the same callbacks
+     * fire for an `InsetsController`-driven animation.
+     */
+    private val insetsAnimationCallback =
+        object : WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_CONTINUE_ON_SUBTREE) {
+            override fun onPrepare(animation: WindowInsetsAnimationCompat) {
+                if (animation.typeMask and WindowInsetsCompat.Type.ime() != 0) {
+                    imeAnimating = true
+                }
+            }
+
+            override fun onProgress(
+                insets: WindowInsetsCompat,
+                runningAnimations: MutableList<WindowInsetsAnimationCompat>,
+            ): WindowInsetsCompat {
+                lastRootInsets = insets
+                val imeRunning =
+                    runningAnimations.any {
+                        it.typeMask and WindowInsetsCompat.Type.ime() != 0
+                    }
+                if (imeAnimating && imeRunning) {
+                    val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+                    pushMetrics(intArrayOf(ime.left, ime.top, ime.right, ime.bottom))
+                } else {
+                    pushMetrics()
+                }
+                return insets
+            }
+
+            override fun onEnd(animation: WindowInsetsAnimationCompat) {
+                if (animation.typeMask and WindowInsetsCompat.Type.ime() != 0) {
+                    imeAnimating = false
+                    // The last progress frame is not guaranteed to carry
+                    // fraction 1.0 — publish the settled insets.
+                    lastRootInsets = ViewCompat.getRootWindowInsets(this@HydrolysisHostView)
+                    pushMetrics()
+                }
+            }
+        }
 
     /**
      * The live [HydrolysisInputConnection], if the IMM has bound one — the
@@ -121,25 +175,7 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         return super.onApplyWindowInsets(insets)
     }
 
-    /**
-     * §7.1's keyboard-motion rule: the IME inset the session avoids by
-     * follows the platform's keyboard animation frame by frame, so every
-     * `onProgress` lands as its own metrics push instead of a single jump
-     * when the animation settles.
-     */
-    private val insetsAnimationCallback =
-        object : WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_CONTINUE_ON_SUBTREE) {
-            override fun onProgress(
-                insets: WindowInsetsCompat,
-                runningAnimations: MutableList<WindowInsetsAnimationCompat>,
-            ): WindowInsetsCompat {
-                lastRootInsets = insets
-                pushMetrics()
-                return insets
-            }
-        }
-
-    private fun pushMetrics() {
+    private fun pushMetrics(keyboardEdgesOverride: IntArray? = null) {
         val session = session ?: return
         val metrics = resources.displayMetrics
         val configuration = resources.configuration
@@ -152,20 +188,24 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
                     WindowInsetsCompat.Type.systemBars() or
                         WindowInsetsCompat.Type.displayCutout()
                 )
-            val ime =
-                if (rootInsets.isVisible(WindowInsetsCompat.Type.ime())) {
-                    rootInsets.getInsets(WindowInsetsCompat.Type.ime())
-                } else {
-                    Insets.NONE
-                }
+            val ime = rootInsets.getInsets(WindowInsetsCompat.Type.ime())
             // §7.1's two regions travel apart: the container band is the
             // bars/cutout insets only, the keyboard band the IME insets
-            // only — no region ever absorbs the other.
+            // only — no region ever absorbs the other. While an IME
+            // animation runs, the keyboard region comes only from
+            // `onProgress`/`onEnd`; a dispatch carrying the end state
+            // leaves the last pushed value in place.
             containerEdges = intArrayOf(bars.left, bars.top, bars.right, bars.bottom)
-            keyboardEdges = intArrayOf(ime.left, ime.top, ime.right, ime.bottom)
+            keyboardEdges =
+                keyboardEdgesOverride
+                    ?: if (imeAnimating) {
+                        lastKeyboardInsets
+                    } else {
+                        intArrayOf(ime.left, ime.top, ime.right, ime.bottom)
+                    }
         } else {
             containerEdges = intArrayOf(0, 0, 0, 0)
-            keyboardEdges = intArrayOf(0, 0, 0, 0)
+            keyboardEdges = keyboardEdgesOverride ?: intArrayOf(0, 0, 0, 0)
         }
         val refreshHz = display?.refreshRate ?: 0f
         val viewConfiguration = ViewConfiguration.get(context)

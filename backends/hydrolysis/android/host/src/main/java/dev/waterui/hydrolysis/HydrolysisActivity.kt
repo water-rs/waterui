@@ -5,7 +5,7 @@ import android.view.View
 import androidx.activity.BackEventCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
-import androidx.core.view.WindowCompat
+import androidx.activity.enableEdgeToEdge
 
 /**
  * The minimal host activity: creates the [HydrolysisSession] once, mounts a
@@ -34,7 +34,10 @@ abstract class HydrolysisActivity : ComponentActivity() {
         // Edge to edge: the system bars and the IME arrive as window insets
         // the engine avoids by contract (layout-spec.md §7.1) — the window
         // and its rendering surface never resize for the keyboard.
-        WindowCompat.setDecorFitsSystemWindows(window, false)
+        // `enableEdgeToEdge` also drops the theme's opaque system-bar
+        // scrim on API 31-34, where the bands §7.1 fills paint into would
+        // otherwise be invisible.
+        enableEdgeToEdge()
         NativeBridge.load(nativeLibraryName, intent.getStringExtra(LOG_LEVEL_EXTRA))
         @Suppress("DEPRECATION")
         val retained = lastCustomNonConfigurationInstance as? HydrolysisSession

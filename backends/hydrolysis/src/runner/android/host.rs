@@ -797,13 +797,13 @@ impl AndroidSession {
         let container_insets_px = metrics.container_insets_px;
         let keyboard_insets_px = metrics.keyboard_insets_px;
         let density = metrics.density;
-        let (size_changed, insets_changed) = {
+        let (size_changed, container_changed, keyboard_changed) = {
             let platform = &mut self.runtime.platform;
             let size_changed = platform.metrics.width_px != metrics.width_px
                 || platform.metrics.height_px != metrics.height_px
                 || platform.metrics.density.to_bits() != metrics.density.to_bits();
-            let insets_changed = platform.metrics.container_insets_px != container_insets_px
-                || platform.metrics.keyboard_insets_px != keyboard_insets_px;
+            let container_changed = platform.metrics.container_insets_px != container_insets_px;
+            let keyboard_changed = platform.metrics.keyboard_insets_px != keyboard_insets_px;
             platform.metrics = metrics;
             if size_changed {
                 let (w, h) = platform.content_size();
@@ -812,12 +812,10 @@ impl AndroidSession {
                     height: h,
                 });
             }
-            if insets_changed {
-                // The bindings are the environment values the window
-                // pipeline reads; each write re-lays out through the
-                // subscription, and the explicit requests cover the frames
-                // before the first read landed one. The keyboard band's own
-                // binding keeps §7.1's two regions separate.
+            // Each binding write re-lays out through its own subscription, so
+            // a region only re-sets when its own value moved — an IME
+            // progress frame alone does not re-publish the container band.
+            if container_changed || keyboard_changed {
                 let density = crate::num_cast::f64_as_f32(density);
                 let to_insets = |px: [i32; 4]| {
                     let [leading, top, trailing, bottom] = px;
@@ -828,11 +826,16 @@ impl AndroidSession {
                         crate::num_cast::i32_as_f32(trailing) / density,
                     )
                 };
-                self.safe_area.set(to_insets(container_insets_px));
-                self.keyboard_area.set(to_insets(keyboard_insets_px));
+                if container_changed {
+                    self.safe_area.set(to_insets(container_insets_px));
+                }
+                if keyboard_changed {
+                    self.keyboard_area.set(to_insets(keyboard_insets_px));
+                }
             }
-            (size_changed, insets_changed)
+            (size_changed, container_changed, keyboard_changed)
         };
+        let insets_changed = container_changed || keyboard_changed;
         if size_changed || insets_changed {
             let metrics = &self.runtime.platform.metrics;
             tracing::debug!(
