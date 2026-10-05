@@ -46,7 +46,8 @@ impl core::error::Error for CpuFilterError {}
 ///
 /// The image's pixels are premultiplied RGBA in `space`, the working
 /// space. A filter whose stage declares [`crate::OperatingSpace::Srgb`]
-/// converts them into sRGB before its kernel and back after it — exactly
+/// converts them into sRGB before its kernel and back after it — with
+/// [`to_srgb`](crate::space::to_srgb)/[`from_srgb`](crate::space::from_srgb), exactly
 /// as a GPU executor brackets such a stage with conversion passes — so
 /// the kernel itself runs on its stage's operating space.
 ///
@@ -84,8 +85,9 @@ pub trait CpuKernel: ColorFilter {
     /// Applies the filter to `pixels` in place. `pixels` are premultiplied
     /// RGBA in `space`, the working space; a filter whose stage declares
     /// [`crate::OperatingSpace::Srgb`] converts them into sRGB before its
-    /// kernel and back after it, so the kernel itself runs on its stage's
-    /// operating space — the bracket the `#[derive(Filter)]`-generated
+    /// kernel and back after it — with [`to_srgb`](crate::space::to_srgb)/
+    /// [`from_srgb`](crate::space::from_srgb) — so the kernel itself runs on its
+    /// stage's operating space: the bracket the `#[derive(Filter)]`-generated
     /// implementation emits.
     fn apply_cpu(params: &Self::Params, space: &WorkingSpace, pixels: &mut [[f32; 4]]);
 

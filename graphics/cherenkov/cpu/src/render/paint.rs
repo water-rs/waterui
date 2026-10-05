@@ -7,14 +7,14 @@ use cherenkov::{ColorStop, Extend, Interpolation, Paint};
 use rustc_hash::FxHashMap;
 
 use cherenkov::RenderError;
-use filtrate::cpu::{
+use filtrate_core::space::{
     P3_TO_SRGB, SRGB_TO_P3, from_srgb, srgb_decode, srgb_encode, to_srgb, transform,
 };
 
 use crate::names;
 
 /// Convert a premultiplied pixel between linear P3 and encoded sRGB —
-/// filtrate's `to_srgb`/`from_srgb` conversion on a single pixel.
+/// filtrate-core's `to_srgb`/`from_srgb` conversion on a single pixel.
 pub(super) fn convert_pixel(pixel: [f32; 4], encode: bool) -> [f32; 4] {
     let mut pixel = [pixel];
     if encode {

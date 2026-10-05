@@ -56,8 +56,9 @@ values.
   blend's second image, a LUT) or the input of its previous stage (bloom's
   composite reads what its extraction pass started from).
 - **CPU kernels.** A colour filter may carry a SIMD CPU kernel (`CpuKernel`,
-  or `cpu = path` in the derive). `Brightness`, `Saturation`, `Grayscale`
-  and `ColorMatrix` do, and each is cross-checked against its shader.
+  or `cpu = path` in the derive). `Brightness`, `Saturation`, `Grayscale`,
+  `HueRotation`, `ColorMatrix` and `LumaCurve` do, and each is
+  cross-checked against its shader.
 
 ## The reference executor
 

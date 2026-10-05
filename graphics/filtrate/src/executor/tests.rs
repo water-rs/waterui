@@ -19,9 +19,11 @@ use crate::{
     CpuKernel, Effect, EffectContext, EffectFrameTiming, EffectInput, EffectOutput,
     EffectRenderError, EffectSetupError, Filter, FilterExt, FilterParam, Footprint, ImageVisitor,
     Interpolator, OperatingSpace, ParamArray, ParamSource, Placed, ShaderEffect, ShapeInput,
-    ShapeTextures, SpatialFilter, SpatialStage, StageCollector, WatchGuard, WorkingSpace,
-    cpu::{P3_TO_SRGB, SRGB_TO_P3, srgb_decode, srgb_encode, transform},
-    filters, kind,
+    ShapeTextures, SpatialFilter, SpatialStage, StageCollector, WatchGuard, WorkingSpace, filters,
+    kind,
+};
+use filtrate_core::space::{
+    P3_TO_SRGB, SRGB_TO_P3, from_srgb, srgb_decode, srgb_encode, to_srgb, transform,
 };
 
 // ============================================================================
@@ -88,32 +90,6 @@ impl SpatialFilter for UndeclaredShape {
     }
 }
 
-/// Inverts in sRGB, the way a CSS `invert()` does.
-struct CssInvert;
-
-impl Filter for CssInvert {
-    type Kind = kind::Color;
-    type Params = [f32; 0];
-
-    fn params(&self) -> [f32; 0] {
-        []
-    }
-
-    fn collect_stages<C: StageCollector>(&self, collector: &mut C) {
-        const STAGE: ColorStage = ColorStage {
-            name: "css_invert",
-            source: include_str!("../shaders/color/transform/invert.wgsl"),
-            params: &[],
-            space: OperatingSpace::Srgb,
-        };
-        collector.color(Placed::new(&STAGE));
-    }
-}
-
-impl ColorFilter for CssInvert {
-    const LINEAR: bool = false;
-}
-
 /// The premultiplied `a - rgb` invert: the identity on encoded values plus
 /// a known encoded-space operation — the kernel the reproduction uses to
 /// see what space it was handed.
@@ -124,18 +100,20 @@ fn encoded_invert(_: [f32; 0], _space: &WorkingSpace, pixels: &mut [[f32; 4]]) {
     }
 }
 
-/// An sRGB stage with a CPU kernel — the reproduction of #1942: the CPU
-/// path must convert into the stage's declared space before the kernel and
-/// back after it, like the GPU executor's conversion bracket.
+/// Inverts in sRGB, the way a CSS `invert()` does — and the reproduction
+/// of #1942: an sRGB stage whose kernel is the identity on encoded values
+/// plus a known encoded-space operation, so the CPU path must convert into
+/// the stage's declared space before the kernel and back after it, like
+/// the GPU executor's conversion bracket.
 #[derive(Filter)]
 #[filter(
     color,
     shader = "color/transform/invert.wgsl",
-    linear = true,
+    linear = false,
     space = srgb,
     cpu = encoded_invert
 )]
-struct EncodedInvert;
+struct CssInvert;
 
 /// One filtered sample at `uv * 0.5` — a pure bilinear read of the input.
 struct SampleHalf;
@@ -676,11 +654,11 @@ fn assert_kernel_matches_shader<F: CpuKernel>(name: &str, filter: &F) {
     for (cpu, colour) in pixels.iter().zip(COLOURS) {
         let mut expected = [colour];
         if srgb {
-            crate::cpu::to_srgb(&mut expected);
+            to_srgb(&mut expected);
         }
         expected[0] = evaluate(stage, &flattened, expected[0]);
         if srgb {
-            crate::cpu::from_srgb(&mut expected);
+            from_srgb(&mut expected);
         }
         assert_close(
             *cpu,
@@ -706,7 +684,7 @@ fn cpu_kernels_match_their_shaders() {
     );
     // sRGB kernels: the generated `apply_cpu` converts into the declared
     // space before the kernel and back after it.
-    assert_kernel_matches_shader("encoded_invert", &EncodedInvert);
+    assert_kernel_matches_shader("css_invert", &CssInvert);
     assert_kernel_matches_shader(
         "luma_curve",
         &luma_curve([0.9, 0.83, 0.925, 0.815], 0.75, 0.375, 0.1),
@@ -1401,7 +1379,7 @@ fn gpu_chains_match_their_cpu_kernels() {
         .then(filters::Grayscale(0.3_f32))
         .then(filters::HueRotation(60.0_f32))
         .then(filters::Brightness(-0.1_f32))
-        .then(EncodedInvert)
+        .then(CssInvert)
         .then(luma_curve([0.9, 0.83, 0.925, 0.815], 0.75, 0.375, 0.1));
     let mut pixels: Vec<[f32; 4]> = rgba
         .chunks(4)
@@ -1418,7 +1396,7 @@ fn gpu_chains_match_their_cpu_kernels() {
         &output,
         &expected,
         1,
-        "saturation, grayscale, hue rotation, brightness, encoded invert, luma curve",
+        "saturation, grayscale, hue rotation, brightness, css invert, luma curve",
     );
 }
 
@@ -1486,7 +1464,7 @@ fn gpu_srgb_stages_run_in_srgb() {
         .chunks(4)
         .map(|texel| core::array::from_fn(|i| from_unorm(texel[i])))
         .collect();
-    EncodedInvert.apply_cpu_now(&WorkingSpace::LINEAR_DISPLAY_P3, &mut cpu_pixels);
+    CssInvert.apply_cpu_now(&WorkingSpace::LINEAR_DISPLAY_P3, &mut cpu_pixels);
     let cpu_output: Vec<u8> = cpu_pixels
         .iter()
         .flatten()

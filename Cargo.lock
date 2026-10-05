@@ -3648,6 +3648,9 @@ dependencies = [
 [[package]]
 name = "filtrate-core"
 version = "0.2.0"
+dependencies = [
+ "libm",
+]
 
 [[package]]
 name = "filtrate-derive"

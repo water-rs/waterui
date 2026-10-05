@@ -1,7 +1,17 @@
 //! Luma curve filter implementation.
 
 use crate::Filter;
-use crate::cpu::SRGB_LUMA;
+
+/// The luma coefficients of sRGB primaries (ITU-R BT.709).
+///
+/// The Y row of the sRGB to XYZ matrix: the `LumaCurve` stage's `constants`
+/// and its CPU kernel's luma — the stage operates in sRGB, not the
+/// working space.
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "the `pub use` chains in `color` and `filters` would carry a `pub` item into filtrate's public API"
+)]
+pub(crate) const SRGB_LUMA: [f32; 3] = [0.2126, 0.7152, 0.0722];
 
 /// Moves luma along a tone curve and scales the chroma around it, in sRGB.
 ///
