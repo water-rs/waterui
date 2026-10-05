@@ -76,6 +76,7 @@ GRADLE_SUMS = {
     "9.6.1": "9c0f7faeeb306cb14e4279a3e084ca6b596894089a0638e68a07c945a32c9e14",
     "9.4.1": "2ab2958f2a1e51120c326cad6f385153bb11ee93b3c216c5fccebfdfbb7ec6cb",
     "8.14.1": "845952a9d6afa783db70bb3b0effaae45ae5542ca2bb7929619e8af49cb634cf",
+    "8.14.3": "bd71102213493060956ec229d946beee57158dbd89d0e62b91bca0fa2c5f3531",
 }
 GRADLE_DIST = (
     "https://services.gradle.org/distributions/gradle-{v}-bin.zip")

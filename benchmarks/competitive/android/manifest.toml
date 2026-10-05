@@ -103,8 +103,11 @@ kind = "reactnative"
 abi_apks = { arm64 = "app-arm64-v8a-release.apk", x86_64 = "app-x86_64-release.apk" }
 aab = "app-release.aab"
 gradle_project = "android"
-# RN 0.81.6 ships its own Gradle wrapper; other contestants use the
-# [toolchain.native] gradle_version.
+# RN 0.81.6 ships its own Gradle wrapper pin; other contestants use the
+# [toolchain.native] gradle_version. Its gradle-plugin compiles with
+# Kotlin 2.1.20, which cannot read Gradle >= 9.6's Kotlin 2.3 stdlib —
+# the pin must stay on RN's own Gradle 8.14.x.
+gradle_version = "8.14.3"
 
 [contestants.compose]
 dir = "compose"
