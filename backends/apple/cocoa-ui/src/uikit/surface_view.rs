@@ -219,7 +219,7 @@ define_class!(
                         .view()
                         .is_some_and(|view| view.downcast_ref::<UIScrollView>().is_some());
                     if this_scroll || other_scroll {
-                        return true.into();
+                        return true;
                     }
                     // Pinch and pan fire together; anything else is exclusive.
                     let is_pinch = gesture_recognizer
