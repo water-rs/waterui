@@ -77,8 +77,10 @@ fn run(command: &mut Command, what: &str) -> Output {
     output
 }
 
-/// The executable Cargo reported building for `app`'s `--bin` unit.
-fn built_executable(app_dir: &Path) -> PathBuf {
+/// The executable Cargo reported building for `app`'s `--bin` unit, plus
+/// every `dylib` artifact the same invocation reported — the runtime image
+/// set `BuiltTarget::shared_runtime_libraries` carries.
+fn built_executable(app_dir: &Path) -> (PathBuf, Vec<PathBuf>) {
     let mut child = Command::new("cargo")
         .args(["build", "--message-format=json"])
         .current_dir(app_dir)
@@ -98,12 +100,31 @@ fn built_executable(app_dir: &Path) -> PathBuf {
     let status = child.wait().expect("wait on cargo build");
     assert!(status.success(), "fixture `cargo build` failed: {status}");
 
+    let mut executable = None;
+    let mut dylibs = Vec::new();
     for line in stdout.lines() {
         let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
         if message["reason"] != "compiler-artifact" {
             continue;
+        }
+        let crate_types = message["target"]["crate_types"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        if crate_types.iter().any(|kind| kind == "dylib") {
+            for filename in message["filenames"].as_array().cloned().unwrap_or_default() {
+                if let Some(filename) = filename.as_str() {
+                    let path = PathBuf::from(filename);
+                    if matches!(
+                        path.extension().and_then(|extension| extension.to_str()),
+                        Some("so" | "dylib" | "dll")
+                    ) {
+                        dylibs.push(path);
+                    }
+                }
+            }
         }
         let kinds = message["target"]["kind"]
             .as_array()
@@ -112,11 +133,14 @@ fn built_executable(app_dir: &Path) -> PathBuf {
         if !kinds.iter().any(|kind| kind == "bin") {
             continue;
         }
-        if let Some(executable) = message["executable"].as_str() {
-            return PathBuf::from(executable);
+        if let Some(reported) = message["executable"].as_str() {
+            executable = Some(PathBuf::from(reported));
         }
     }
-    panic!("cargo reported no binary artifact for the fixture")
+    (
+        executable.expect("cargo reported no binary artifact for the fixture"),
+        dylibs,
+    )
 }
 
 /// Whether `name` — a recorded dynamic dependency — is supplied by the
@@ -232,18 +256,29 @@ fn shared_runtime_name(triple: &Triple) -> String {
     }
 }
 
-/// Vendor the fixture `waterui-dylib` crate into a git repository under
-/// `root` — so Cargo hashes the source into every `deps/` file name — and
-/// return its `file://` URL.
+/// Vendor the fixture `waterui-dylib` crate — plus the `waterui-dylib-foundation`
+/// layer image it loads, mirroring the layered chain the real crate splits
+/// into (water-rs/waterui#1615) — into a git repository under `root`, so
+/// Cargo hashes the source into every `deps/` file name, and return its
+/// `file://` URL.
 fn scaffold_dylib(root: &Path) -> String {
     let dylib_dir = root.join("waterui-dylib");
+    let layer_dir = dylib_dir.join("foundation");
+    write(
+        &layer_dir.join("Cargo.toml"),
+        "[package]\nname = \"waterui-dylib-foundation\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\nname = \"waterui_dylib_foundation\"\ncrate-type = [\"dylib\", \"rlib\"]\n",
+    );
+    write(
+        &layer_dir.join("src/lib.rs"),
+        "/// Marker the top image forwards — its DLL records the layer's name.\npub extern \"C\" fn layer_marker() -> u8 {\n    42\n}\n",
+    );
     write(
         &dylib_dir.join("Cargo.toml"),
-        "[package]\nname = \"waterui-dylib\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\nname = \"waterui_dylib\"\ncrate-type = [\"dylib\", \"rlib\"]\n",
+        "[package]\nname = \"waterui-dylib\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\nname = \"waterui_dylib\"\ncrate-type = [\"dylib\", \"rlib\"]\n\n[dependencies]\nwaterui-dylib-foundation = { path = \"foundation\" }\n",
     );
     write(
         &dylib_dir.join("src/lib.rs"),
-        "/// Marker the fixture binary calls so the linker keeps the dependency.\npub extern \"C\" fn fixture_marker() -> u8 {\n    42\n}\n",
+        "/// Marker the fixture binary calls so the linker keeps the dependency.\n/// Lives in the layer image — the reference forces the chain's `DT_NEEDED`.\npub extern \"C\" fn fixture_marker() -> u8 {\n    waterui_dylib_foundation::layer_marker()\n}\n",
     );
     run(
         Command::new("git")
@@ -434,7 +469,11 @@ fn packaged_binary_finds_every_shared_library_it_records() {
         let root = temporary.path();
         let app_dir = scaffold_fixture(root);
 
-        let executable = built_executable(&app_dir);
+        let (executable, dylibs) = built_executable(&app_dir);
+        assert!(
+            dylibs.len() > 1,
+            "the fixture's layered chain must report more than one dylib: {dylibs:?}"
+        );
         let profile_dir = app_dir.join("target/debug");
         let triple = Triple::host();
         let shared_runtime = profile_dir.join(shared_runtime_name(&triple));
@@ -448,6 +487,7 @@ fn packaged_binary_finds_every_shared_library_it_records() {
             profile_dir: profile_dir.clone(),
             artifact: executable.clone(),
             shared_runtime: Some(shared_runtime),
+            shared_runtime_libraries: dylibs,
             app_library: None,
         };
         let project = Project::open(&app_dir, ManagedBackends::NONE)
@@ -543,7 +583,7 @@ fn bump_vendored_dylib(root: &Path, backend_dir: &Path) {
     let dylib_dir = root.join("waterui-dylib");
     write(
         &dylib_dir.join("Cargo.toml"),
-        "[package]\nname = \"waterui-dylib\"\nversion = \"0.2.0\"\nedition = \"2021\"\n\n[lib]\nname = \"waterui_dylib\"\ncrate-type = [\"dylib\", \"rlib\"]\n",
+        "[package]\nname = \"waterui-dylib\"\nversion = \"0.2.0\"\nedition = \"2021\"\n\n[lib]\nname = \"waterui_dylib\"\ncrate-type = [\"dylib\", \"rlib\"]\n\n[dependencies]\nwaterui-dylib-foundation = { path = \"foundation\" }\n",
     );
     run(
         Command::new("git")
@@ -578,6 +618,26 @@ fn needed_name_file(recorded_name: &str) -> String {
         .next()
         .unwrap_or(recorded_name)
         .to_owned()
+}
+
+/// The `waterui_dylib` family file names the packaged artifact and the
+/// runtime's top image record, sorted and deduplicated — the full image set
+/// a staging must leave: the app's direct records plus every layer the top
+/// image loads (water-rs/waterui#1615).
+fn recorded_waterui_names(artifact: &Path, runtime: &Path) -> Vec<String> {
+    let mut names: Vec<String> =
+        needed_shared_libraries(artifact)
+            .expect("artifact needed")
+            .into_iter()
+            .chain(needed_shared_libraries(runtime).unwrap_or_else(|error| {
+                panic!("top image needed at {}: {error}", runtime.display())
+            }))
+            .filter(|name| name.contains("waterui_dylib"))
+            .map(|name| needed_name_file(&name))
+            .collect();
+    names.sort_unstable();
+    names.dedup();
+    names
 }
 
 /// The shared libraries a directory holds for `waterui_dylib`, sorted — the
@@ -628,25 +688,20 @@ fn restaging_replaces_a_stale_hashed_shared_runtime() {
             .parent()
             .expect("binary profile dir")
             .to_path_buf();
+        // Read the records first: staging sweeps the uplifted copy the
+        // reported path names, so the top image's own section is gone after.
+        let first_waterui =
+            recorded_waterui_names(&built.artifact, built.shared_runtime().expect("runtime"));
         RustDynamicLibraries::resolve(&built, &triple, &project)
             .await
             .expect("resolve first shared libraries")
             .stage(&runtime_dir)
             .await
             .expect("stage first runtime");
-        let first_waterui: Vec<String> = needed_shared_libraries(&built.artifact)
-            .expect("first needed")
-            .into_iter()
-            .filter(|name| name.contains("waterui_dylib"))
-            .collect();
         assert_eq!(
             staged_waterui_names(&runtime_dir).as_slice(),
-            first_waterui
-                .iter()
-                .map(|name| needed_name_file(name))
-                .collect::<Vec<_>>()
-                .as_slice(),
-            "first stage must leave exactly the recorded runtime name"
+            first_waterui.as_slice(),
+            "first stage must leave exactly the recorded runtime image set"
         );
 
         bump_vendored_dylib(root, &backend_dir);
@@ -657,11 +712,10 @@ fn restaging_replaces_a_stale_hashed_shared_runtime() {
             .build_binary("backend", false)
             .await
             .expect("rebuild after dylib bump");
-        let rebuilt_needed: Vec<String> = needed_shared_libraries(&rebuilt.artifact)
-            .expect("rebuilt needed")
-            .into_iter()
-            .filter(|name| name.contains("waterui_dylib"))
-            .collect();
+        let rebuilt_needed = recorded_waterui_names(
+            &rebuilt.artifact,
+            rebuilt.shared_runtime().expect("runtime"),
+        );
         assert_ne!(
             first_waterui, rebuilt_needed,
             "the fixture must change the recorded dylib name"
@@ -675,12 +729,8 @@ fn restaging_replaces_a_stale_hashed_shared_runtime() {
 
         assert_eq!(
             staged_waterui_names(&runtime_dir).as_slice(),
-            rebuilt_needed
-                .iter()
-                .map(|name| needed_name_file(name))
-                .collect::<Vec<_>>()
-                .as_slice(),
-            "restaging must replace the stale hashed runtime with the recorded one"
+            rebuilt_needed.as_slice(),
+            "restaging must replace the stale hashed runtime images with the recorded set"
         );
         assert_binary_runs_in_place(&rebuilt.artifact, &runtime_dir);
     });
