@@ -639,8 +639,8 @@ impl<K: Eq + core::hash::Hash + Clone> VisibleSubviewCache<K> {
 /// read env every frame), and the child node it recurses into.
 pub struct WrapperNode {
     pub(super) accessibility_identity: Rc<()>,
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
+    /// The node's render identity; a `Material` wrapper keys its engine
+    /// mount by it.
     pub(crate) render_id: RenderId,
     pub(super) effect: WrapperEffect,
     pub(super) env: Environment,
@@ -822,6 +822,12 @@ pub(super) enum WrapperEffect {
     /// fill (water-rs/hydrolysis#200). Draws nothing on targets that lack a
     /// `draw_text_context_menu_panel` implementation.
     PopupMenuSurface,
+    /// A within-window `Material` background (water-rs/waterui#1854): every
+    /// flush closes the scene segment painted so far — the content behind
+    /// the view — and presents a keyed mount that samples the material's
+    /// backdrop group inside the view's bounds, then flushes the child on
+    /// top. The runtime is shared with the mount the compositor installs.
+    Material(Rc<crate::renderer::material::MaterialRuntime>),
     /// An `.anchored_overlay(...)` (water-rs/waterui#1275): every flush the
     /// wrapper registers the anchor's live bounds plus the effect's handles
     /// for the post-flush `render_anchored_overlays` pass, which measures,

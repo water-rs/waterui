@@ -1152,7 +1152,9 @@ fn register_filter(
             filters::ColorMatrix(first.map(|value| value as f32))
                 .then(filters::ColorMatrix(second.map(|value| value as f32))),
         ),
-        LayerFilter::GaussianBlur { sigma } => engine.filter(filters::GaussianBlur(*sigma as f32)),
+        LayerFilter::GaussianBlur { sigma } => {
+            engine.filter(filters::GaussianBlur::new(*sigma as f32))
+        }
         LayerFilter::BoxBlur { radius } => engine.filter(filters::Blur(*radius as f32)),
         LayerFilter::BlendImage {
             image,
@@ -1545,7 +1547,7 @@ fn backdrop_group(
     Ok(match group.filters.as_slice() {
         [] => surface.backdrop_group_unfiltered(scale),
         [BackdropFilter::GaussianBlur { sigma }] => {
-            surface.backdrop_group(GaussianBlur(*sigma as f32), scale)
+            surface.backdrop_group(GaussianBlur::new(*sigma as f32), scale)
         }
         [BackdropFilter::ColorMatrix { matrix }] => {
             surface.backdrop_group(ColorMatrix(matrix.map(|v| v as f32)), scale)
@@ -1554,7 +1556,7 @@ fn backdrop_group(
             BackdropFilter::GaussianBlur { sigma },
             BackdropFilter::ColorMatrix { matrix },
         ] => surface.backdrop_group(
-            GaussianBlur(*sigma as f32).then(ColorMatrix(matrix.map(|v| v as f32))),
+            GaussianBlur::new(*sigma as f32).then(ColorMatrix(matrix.map(|v| v as f32))),
             scale,
         ),
         _ => return Err(unsupported()),

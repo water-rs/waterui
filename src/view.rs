@@ -259,7 +259,7 @@ pub trait ViewExt: View + Sized {
     /// // Color background
     /// text!("Hello").background(Color::red());
     ///
-    /// // Material background (platform backend best-effort)
+    /// // Material background: a frosted treatment of the content behind the view
     /// text!("Hello").background(Material::Regular);
     ///
     /// // Any view as background

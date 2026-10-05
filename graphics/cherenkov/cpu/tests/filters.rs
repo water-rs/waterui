@@ -191,7 +191,7 @@ fn nested_spatial_filters_match_full_surface_application_at_band_edges() {
     let filtered = engine
         .surface(Offscreen::new((32, 96), OffscreenFormat::LinearF32))
         .expect("filtered surface");
-    let gaussian_kernel = filters::GaussianBlur(3.0_f32);
+    let gaussian_kernel = filters::GaussianBlur::new(3.0_f32);
     let box_kernel = filters::Blur(5.0_f32);
     let gaussian = engine.filter(gaussian_kernel);
     let box_blur = engine.filter(box_kernel);
@@ -249,7 +249,7 @@ fn band_streamed_filtered_groups_match_offscreen_linear_f32() {
     let size = (32, 64);
     let width = usize::try_from(size.0).expect("width fits usize");
     let height = usize::try_from(size.1).expect("height fits usize");
-    let filter = engine.filter(filters::GaussianBlur(3.0_f32));
+    let filter = engine.filter(filters::GaussianBlur::new(3.0_f32));
     let (sink, streamed_bands) = mpsc::channel();
     let bands = engine
         .surface(Bands::new(size, OffscreenFormat::LinearF32, move |band| {
