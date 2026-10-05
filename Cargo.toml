@@ -199,13 +199,8 @@ serde_json = "1.0"
 # the trait bound.
 schemars = { version = "1.2", features = ["derive"] }
 smallvec = "1.16"
-# Local vendored dependency overrides via git submodule.
-# The [patch] below pins nami to dev rev 1a3711e4 (the `Signal::get` →
-# `snapshot` rename, water-rs/nami#26), whose manifest still reads 0.11.1; the
-# range is pinned to =0.11.1 so the patched package is the newest match —
-# crates.io 0.11.2 still ships `get` and must not satisfy this requirement.
-nami = "=0.11.1"
-nami-core = "0.3.3"
+nami = "0.12"
+nami-core = "0.4"
 # The 2D engine WaterUI's self-drawn content records and renders through
 # (water-rs/hydrolysis#205, water-rs/waterui#1449): recording, resource
 # registration, the layer tree and GPU content. The whole `cherenkov` family
@@ -298,7 +293,7 @@ waterui-mcp = { version = "0.5.1", path = "components/devtools/mcp/server" }
 # CLI reads these entries to scaffold a launcher crate. Each pins the
 # backend's nami-migration head — the published releases still require the
 # pre-rename nami line (`^0.11.2` and peers), which cannot resolve beside the
-# `nami = "=0.11.1"` pin above — so `dev`, `nightly` and local-checkout
+# `nami = "0.12"` requirement above — so `dev`, `nightly` and local-checkout
 # scaffolds declare the commit directly while `stable` withholds the packages
 # under `experimental-packages` (water-rs/nami#26). Drop the `git`/`rev` half
 # once each backend releases a migrated version.
@@ -623,15 +618,6 @@ xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e7
 # storage and takes its address as the opaque class pointer.
 block = { git = "https://github.com/Dicklesworthstone/rust-block", rev = "b39ae859d1ee8e8cb5eef6a516471f1578d26b96" }
 
-# nami#26 renames `Signal::get` to `Signal::snapshot` (trait-only), removes the
-# inherent `Binding::get`, and renames `BindingMailbox::get`/`get_as` to
-# `snapshot`/`snapshot_as` — a breaking change with no compatibility path.
-# Both nami crates this workspace names ride the same rev so the graph carries
-# a single `Signal` trait; `nami-derive` needs no entry because the rename
-# touched only its docs. Drop these once a nami release contains the rename.
-nami = { git = "https://github.com/water-rs/nami", rev = "c706e272247d92796eedac6180eb6a1ce0c03609" }
-nami-core = { git = "https://github.com/water-rs/nami", rev = "c706e272247d92796eedac6180eb6a1ce0c03609" }
-
 # The `cherenkov`/`filtrate` families live in this repository under
 # `graphics/` (water-rs/waterui#1449). Components pinned from sibling
 # repositories declare them as crates.io requirements — `cherenkov` is
@@ -694,23 +680,23 @@ waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "4f95
 waterui-particle = { git = "https://github.com/water-rs/particle", rev = "ae7bcb7f5260b22723dcb5892fb28f5d776c03eb" }
 waterui-image = { git = "https://github.com/water-rs/image", rev = "8b1aa2ce3f03d81ca02164f5563f2cefc34fb566" }
 waterui-svg = { git = "https://github.com/water-rs/svg", rev = "50a87217658e9cf40024bf50619c4d7555a6415b" }
-waterkit-build = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
-waterkit-camera = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
-waterkit-clipboard = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
-waterkit-dialog = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
-waterkit-fs = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
-waterkit-haptic = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
-waterkit-location = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
-waterkit-permission = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
-waterkit-screen = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
-waterkit-audio = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
-waterkit-codec = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
-waterkit-core = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
-waterkit-video = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
-waterkit-video-container = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
-waterkit-video-core = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
-waterkit-video-player = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
-waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
+waterkit-build = { git = "https://github.com/water-rs/waterkit", rev = "c09af3020c06e37c51d50d9afec84cf9c25d83e0" }
+waterkit-camera = { git = "https://github.com/water-rs/waterkit", rev = "c09af3020c06e37c51d50d9afec84cf9c25d83e0" }
+waterkit-clipboard = { git = "https://github.com/water-rs/waterkit", rev = "c09af3020c06e37c51d50d9afec84cf9c25d83e0" }
+waterkit-dialog = { git = "https://github.com/water-rs/waterkit", rev = "c09af3020c06e37c51d50d9afec84cf9c25d83e0" }
+waterkit-fs = { git = "https://github.com/water-rs/waterkit", rev = "c09af3020c06e37c51d50d9afec84cf9c25d83e0" }
+waterkit-haptic = { git = "https://github.com/water-rs/waterkit", rev = "c09af3020c06e37c51d50d9afec84cf9c25d83e0" }
+waterkit-location = { git = "https://github.com/water-rs/waterkit", rev = "c09af3020c06e37c51d50d9afec84cf9c25d83e0" }
+waterkit-permission = { git = "https://github.com/water-rs/waterkit", rev = "c09af3020c06e37c51d50d9afec84cf9c25d83e0" }
+waterkit-screen = { git = "https://github.com/water-rs/waterkit", rev = "c09af3020c06e37c51d50d9afec84cf9c25d83e0" }
+waterkit-audio = { git = "https://github.com/water-rs/waterkit", rev = "c09af3020c06e37c51d50d9afec84cf9c25d83e0" }
+waterkit-codec = { git = "https://github.com/water-rs/waterkit", rev = "c09af3020c06e37c51d50d9afec84cf9c25d83e0" }
+waterkit-core = { git = "https://github.com/water-rs/waterkit", rev = "c09af3020c06e37c51d50d9afec84cf9c25d83e0" }
+waterkit-video = { git = "https://github.com/water-rs/waterkit", rev = "c09af3020c06e37c51d50d9afec84cf9c25d83e0" }
+waterkit-video-container = { git = "https://github.com/water-rs/waterkit", rev = "c09af3020c06e37c51d50d9afec84cf9c25d83e0" }
+waterkit-video-core = { git = "https://github.com/water-rs/waterkit", rev = "c09af3020c06e37c51d50d9afec84cf9c25d83e0" }
+waterkit-video-player = { git = "https://github.com/water-rs/waterkit", rev = "c09af3020c06e37c51d50d9afec84cf9c25d83e0" }
+waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", rev = "c09af3020c06e37c51d50d9afec84cf9c25d83e0" }
 # codec@d266ae57 asks for shaderloom's `runtime` feature, added after the
 # 0.1.2 registry release. This rev is shaderloom's dev with
 # water-rs/shaderloom#24, whose default enables only `runtime`, so no

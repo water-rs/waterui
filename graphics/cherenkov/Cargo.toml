@@ -19,7 +19,7 @@ web-time = "1"
 filtrate-core = { path = "../filtrate/core" }
 kurbo = { version = "0.13.1", features = ["serde"] }
 libm = "0.2"
-nami-core = { version = "0.3.3", features = ["kurbo"] }
+nami-core = { version = "0.4", features = ["kurbo"] }
 # Text layout stays outside the engine; `TextLayout` lowers a shaped
 # layout. No system font backend: hosts bring their own font collection.
 parley = { version = "0.11.1", default-features = false, features = ["std"] }
@@ -35,7 +35,7 @@ wasm-bindgen-futures = "0.4"
 wasm-bindgen-test = "0.3"
 
 [dev-dependencies]
-nami = { version = "0.11.1", default-features = false, features = ["std", "kurbo"] }
+nami = { version = "0.12", default-features = false, features = ["std", "kurbo"] }
 
 [lints]
 workspace = true
