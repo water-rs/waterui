@@ -393,10 +393,7 @@ where
         Ok(Handle::new(image))
     }
 
-    fn register_rgba16f(
-        &self,
-        data: ImageData<Rgba16F>,
-    ) -> Result<Handle<ImageId>, ResourceError> {
+    fn register_rgba16f(&self, data: ImageData<Rgba16F>) -> Result<Handle<ImageId>, ResourceError> {
         let image = Self::image(self, engine_image::<Rgba16F, cherenkov::Rgba16F>(data))?;
         Ok(Handle::new(image))
     }
