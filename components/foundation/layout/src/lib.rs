@@ -78,7 +78,7 @@ pub use container::LazyContainer;
 
 pub use background::{BackgroundLayout, BackgroundView, background};
 pub use overlay::{Overlay, OverlayLayout, overlay};
-pub use safe_area::{EdgeSet, IgnoreSafeArea};
+pub use safe_area::{EdgeSet, IgnoreSafeArea, SafeAreaRegions};
 
 pub use absolute::{
     Absolute, AbsoluteLayout, PinConstraints, PositionExt, PositionTarget, PositionedChild,

@@ -851,7 +851,7 @@ impl ToJavaStruct for crate::WuiMetadataSelected {
     }
 }
 
-/// `MetadataIgnoreSafeAreaStruct(contentPtr: Long, top: Boolean, bottom: Boolean, leading: Boolean, trailing: Boolean)`
+/// `MetadataIgnoreSafeAreaStruct(contentPtr: Long, top: Boolean, bottom: Boolean, leading: Boolean, trailing: Boolean, container: Boolean, keyboard: Boolean)`
 impl ToJavaStruct for crate::WuiMetadataIgnoreSafeArea {
     fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -861,13 +861,15 @@ impl ToJavaStruct for crate::WuiMetadataIgnoreSafeArea {
             .expect("MetadataIgnoreSafeAreaStruct class not found");
         env.new_object(
             &class,
-            jni_sig!("(JZZZZ)V"),
+            jni_sig!("(JZZZZZZ)V"),
             &[
                 JValue::Long(self.content as jlong),
                 JValue::Bool(self.value.edges.top),
                 JValue::Bool(self.value.edges.bottom),
                 JValue::Bool(self.value.edges.leading),
                 JValue::Bool(self.value.edges.trailing),
+                JValue::Bool(self.value.regions.container),
+                JValue::Bool(self.value.regions.keyboard),
             ],
         )
         .expect("Failed to create MetadataIgnoreSafeAreaStruct")

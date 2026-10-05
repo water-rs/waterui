@@ -1892,11 +1892,33 @@ impl IntoFFI for waterui_layout::EdgeSet {
     }
 }
 
+/// FFI-safe representation of safe-area regions for safe area.
+#[repr(C)]
+#[derive(Debug)]
+pub struct WuiSafeAreaRegions {
+    /// Ignore the container region (system bars, cutouts, window chrome).
+    pub container: bool,
+    /// Ignore the keyboard region (software keyboard, input-method surfaces).
+    pub keyboard: bool,
+}
+
+impl IntoFFI for waterui_layout::SafeAreaRegions {
+    type FFI = WuiSafeAreaRegions;
+    fn into_ffi(self) -> Self::FFI {
+        WuiSafeAreaRegions {
+            container: self.container,
+            keyboard: self.keyboard,
+        }
+    }
+}
+
 /// FFI-safe representation of `IgnoreSafeArea`.
 #[repr(C)]
 #[derive(Debug)]
 pub struct WuiIgnoreSafeArea {
-    /// Which edges should ignore safe area.
+    /// Which safe-area regions are ignored.
+    pub regions: WuiSafeAreaRegions,
+    /// Which edges ignore the named regions.
     pub edges: WuiEdgeSet,
 }
 
@@ -1904,6 +1926,7 @@ impl IntoFFI for IgnoreSafeArea {
     type FFI = WuiIgnoreSafeArea;
     fn into_ffi(self) -> Self::FFI {
         WuiIgnoreSafeArea {
+            regions: self.regions.into_ffi(),
             edges: self.edges.into_ffi(),
         }
     }
