@@ -363,7 +363,7 @@ def ensure_gradle_wrapper(proj: Path, version: str, e: dict) -> None:
     want_sha = GRADLE_SUMS[version]
     if kv.get("distributionSha256Sum") != want_sha:
         # the checksum the regenerated wrapper pins, exactly as
-        # `gradle wrapper --distribution-sha256-sum` writes it
+        # `gradle wrapper --gradle-distribution-sha256-sum` writes it
         lines = props.read_text().splitlines()
         lines = [l for l in lines
                  if not l.startswith("distributionSha256Sum=")]
@@ -383,7 +383,8 @@ def ensure_gradle_wrapper(proj: Path, version: str, e: dict) -> None:
     gradle = dist / "bin" / "gradle"
     gradle.chmod(0o755)
     checked([str(gradle), "wrapper", "--gradle-version", version,
-             "--distribution-sha256-sum", want_sha, "--console=plain"],
+             "--gradle-distribution-sha256-sum", want_sha,
+             "--console=plain"],
             cwd=proj, env=e)
     for f in (proj / "gradlew", proj / "gradlew.bat",
               proj / "gradle" / "wrapper" / "gradle-wrapper.jar"):
