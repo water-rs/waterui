@@ -437,61 +437,82 @@ mod tests {
         let _ = WithinWindowLevel::of(Material::Thin);
     }
 
+    /// The colour stage `tone` applies to a uniform `grey` backdrop: on grey
+    /// the chroma term vanishes and the stage is
+    /// `(1 − amount)·Y + amount·bezier(Y) + brightness`, the formula filtrate
+    /// checks the `LumaCurve` shader against.
+    fn stage(tone: Tone, grey: f32) -> f32 {
+        let [v0, v1, v2, v3] = tone.curve;
+        let u = 1.0 - grey;
+        let bezier = (u * u * u).mul_add(
+            v0,
+            (3.0 * grey * u * u).mul_add(
+                v1,
+                (3.0 * grey * grey * u).mul_add(v2, grey * grey * grey * v3),
+            ),
+        );
+        tone.amount.mul_add(bezier - grey, grey) + tone.brightness
+    }
+
     /// Each tint reproduces the colour stage it stands in for on the grey
     /// ramp within the recorded worst residual.
     #[test]
     fn the_tints_reproduce_the_grey_ramp() {
-        // The stage's measured parameters per behind-window level and
-        // appearance: curve values, amount and brightness.
-        let stages: [(BehindWindowLevel, ColorScheme, [f32; 4], f32, f32, f32); 4] = [
+        // The stage measured on water-rs/waterui#1854 per behind-window level
+        // and appearance, and the tint's recorded worst residual in 8-bit
+        // levels.
+        let stages = [
             (
                 BehindWindowLevel::UltraThin,
                 ColorScheme::Light,
-                [0.45, 0.55, 0.65, 0.68],
-                0.5,
-                0.12,
+                Tone {
+                    curve: [0.45, 0.55, 0.65, 0.68],
+                    amount: 0.5,
+                    saturation: 1.1,
+                    brightness: 0.12,
+                },
                 2.33,
             ),
             (
                 BehindWindowLevel::UltraThin,
                 ColorScheme::Dark,
-                [0.24, 0.24, 0.3, 0.39],
-                0.5,
-                0.0,
+                Tone {
+                    curve: [0.24, 0.24, 0.3, 0.39],
+                    amount: 0.5,
+                    saturation: 1.1,
+                    brightness: 0.0,
+                },
                 2.72,
             ),
             (
                 BehindWindowLevel::Thin,
                 ColorScheme::Light,
-                [0.725, 0.825, 0.76, 0.73],
-                0.6,
-                0.12,
+                Tone {
+                    curve: [0.725, 0.825, 0.76, 0.73],
+                    amount: 0.6,
+                    saturation: 1.35,
+                    brightness: 0.12,
+                },
                 5.58,
             ),
             (
                 BehindWindowLevel::Thin,
                 ColorScheme::Dark,
-                [0.2, 0.21, 0.1, 0.15],
-                0.6,
-                0.0,
+                Tone {
+                    curve: [0.2, 0.21, 0.1, 0.15],
+                    amount: 0.6,
+                    saturation: 1.35,
+                    brightness: 0.0,
+                },
                 2.92,
             ),
         ];
-        for (level, scheme, [v0, v1, v2, v3], amount, brightness, worst) in stages {
+        for (level, scheme, tone, worst) in stages {
             let tint = level.tint(scheme);
             for step in 0..=10_u8 {
                 let grey = f32::from(step) / 10.0;
-                let u = 1.0 - grey;
-                let bezier = (u * u * u).mul_add(
-                    v0,
-                    (3.0 * grey * u * u).mul_add(
-                        v1,
-                        (3.0 * grey * grey * u).mul_add(v2, grey * grey * grey * v3),
-                    ),
-                );
-                let stage = amount.mul_add(bezier - grey, grey) + brightness;
                 let tinted = tint.alpha.mul_add(tint.color - grey, grey);
-                let residual = (stage - tinted).abs() * 255.0;
+                let residual = (stage(tone, grey) - tinted).abs() * 255.0;
                 assert!(
                     residual <= worst + 0.01,
                     "{level:?} {scheme:?} over {grey}: {residual} levels from the stage"
@@ -547,25 +568,13 @@ mod tests {
 
     /// Each level's colour stage maps a uniform grey backdrop to the measured
     /// interior within 2 levels; the blur after it leaves a uniform image
-    /// alone. On grey the chroma term vanishes and the stage is
-    /// `(1 − amount)·Y + amount·bezier(Y) + offset`, the formula filtrate
-    /// checks the `LumaCurve` shader against.
+    /// alone.
     #[test]
     fn the_table_reproduces_the_measured_interiors() {
         for (level, scheme, interiors) in MEASURED_INTERIORS {
-            let runtime = MaterialRuntime::new(level, &Computed::constant(scheme));
-            let [v0, v1, v2, v3, amount, _, offset] = runtime.tone.params();
+            let tone = level.treatment().tone(scheme);
             for (grey, interior) in [0.0_f32, 0.5, 1.0].into_iter().zip(interiors) {
-                let u = 1.0 - grey;
-                let bezier = (u * u * u).mul_add(
-                    v0,
-                    (3.0 * grey * u * u).mul_add(
-                        v1,
-                        (3.0 * grey * grey * u).mul_add(v2, grey * grey * grey * v3),
-                    ),
-                );
-                let out = amount.mul_add(bezier - grey, grey) + offset;
-                let level8 = out.clamp(0.0, 1.0) * 255.0;
+                let level8 = stage(tone, grey).clamp(0.0, 1.0) * 255.0;
                 assert!(
                     (level8 - f32::from(interior)).abs() <= 2.0,
                     "{level:?} {scheme:?} over {grey}: {level8} against the measured {interior}"
