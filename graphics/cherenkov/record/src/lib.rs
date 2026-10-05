@@ -57,7 +57,7 @@ pub use crate::display_list::{
     Command, Dirty, DisplayList, DisplayListView, Operand, OperandKind, OperandRef, Operands,
     Picture, ScopeError, Slot, SlotUpdate, blends_within, translucent_within,
 };
-pub use crate::error::{ResourceError, admit};
+pub use crate::error::ResourceError;
 pub use crate::frame::RefreshRange;
 pub use crate::glyph::{FontId, Glyph, GlyphRun, GlyphStyle};
 pub use crate::image::{

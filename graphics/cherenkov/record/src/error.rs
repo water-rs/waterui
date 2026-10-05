@@ -41,23 +41,3 @@ pub enum ResourceError {
     #[error("the render thread is gone")]
     Lost,
 }
-
-/// Checks an image size against a backend's limits: `Ok` when it is
-/// admitted, [`ResourceError::TooLarge`] naming the limits when it is
-/// not. Runs wherever a registration or replacement is made.
-///
-/// # Errors
-///
-/// [`ResourceError::TooLarge`] with the requested size and the limits
-/// checked against, when `limits` does not admit `width` × `height`.
-pub fn admit(limits: ImageLimits, width: u32, height: u32) -> Result<(), ResourceError> {
-    if limits.admits(width, height) {
-        Ok(())
-    } else {
-        Err(ResourceError::TooLarge {
-            width,
-            height,
-            limits,
-        })
-    }
-}

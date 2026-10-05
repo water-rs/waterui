@@ -964,16 +964,7 @@ impl SceneResources {
     /// the source is hashed for [`intern`](Self::intern), so an oversized
     /// image is rejected without hashing it at all.
     fn admit_image<F: Format>(&self, data: &ImageData<F>) -> Result<(), ResourceError> {
-        let limits = self.image_limits();
-        if limits.admits(data.width(), data.height()) {
-            Ok(())
-        } else {
-            Err(ResourceError::TooLarge {
-                width: data.width(),
-                height: data.height(),
-                limits,
-            })
-        }
+        self.image_limits().check(data.width(), data.height())
     }
 
     /// The live registration of `bytes` in `shape`, or a new one from
