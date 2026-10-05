@@ -2592,17 +2592,6 @@ fn plane_frames<'a>(
     frames
 }
 
-/// Rejects an image the device cannot hold as one texture.
-fn check_image_size(image: &ImageUpload, max: u32) -> Result<(), ResourceError> {
-    if image.width > max || image.height > max {
-        return Err(ResourceError::Image(format!(
-            "{}x{} exceeds the maximum texture size {max}",
-            image.width, image.height
-        )));
-    }
-    Ok(())
-}
-
 impl Renderer for GpuRenderer {
     type Target = GpuTarget;
     type Font = PreparedFont;
@@ -2982,8 +2971,15 @@ impl Renderer for GpuRenderer {
         }
     }
 
+    fn image_limits(&self) -> cherenkov::ImageLimits {
+        cherenkov::ImageLimits {
+            max_dimension: self.max_texture,
+            // The upload lands as f16 RGBA: eight bytes a texel.
+            max_texels: self.config.budget.gpu.0 / 8,
+        }
+    }
+
     fn add_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError> {
-        check_image_size(&image, self.max_texture)?;
         let data = image_texels_f16(&image)?;
         let image = upload_image(
             &self.device,
@@ -2998,7 +2994,6 @@ impl Renderer for GpuRenderer {
 
     fn replace_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError> {
         let _diag_guard = diag::Guard::scope(self.diag.as_ref());
-        check_image_size(&image, self.max_texture)?;
         let data = image_texels_f16(&image)?;
         let size = (image.width, image.height);
         let current = self

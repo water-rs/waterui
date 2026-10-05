@@ -47,10 +47,6 @@ pub enum GpuRuntimeError {
 }
 
 /// What creating or presenting a hosted engine layer's frame can fail with.
-///
-/// These renderers present inside platform frame callbacks where a panic is
-/// a process abort, so every failure a creation or frame can produce is a
-/// typed result instead of an expect.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum HostedLayerError {
@@ -63,13 +59,6 @@ pub enum HostedLayerError {
     /// The frame's engine render failed.
     #[error("hosted layer render failed: {0}")]
     Render(#[from] cherenkov::RenderError),
-    /// The created surface published no texture — the engine/target
-    /// contract is broken, not a recoverable state.
-    #[error("hosted layer surface published no texture")]
-    MissingTexture,
-    /// The host handed a zero-extent target — nothing can present into it.
-    #[error("hosted layer target is empty")]
-    EmptyTarget,
 }
 
 /// A handle that answers whether its device has been reported lost.
@@ -974,9 +963,8 @@ impl LayerHost {
     /// Assembles the host around a created engine and surface.
     ///
     /// # Errors
-    /// [`HostedLayerError::MissingTexture`] when the surface's creation
-    /// published no texture, or [`HostedLayerError::Engine`] when the
-    /// presentation shader set fails to build.
+    /// [`HostedLayerError::Engine`] when the presentation shader set fails to
+    /// build.
     fn assemble(
         surface: Surface<Gpu>,
         engine: Engine<Gpu>,
@@ -985,7 +973,7 @@ impl LayerHost {
     ) -> Result<Self, HostedLayerError> {
         let source = textures
             .try_recv()
-            .map_err(|_| HostedLayerError::MissingTexture)?;
+            .expect("a TextureTarget publishes its texture when its surface is created");
         let presenter = Presenter::new(
             context.device(),
             shader_delivery(context.adapter().get_info().backend, context.device())?,
@@ -1083,12 +1071,9 @@ impl LayerHost {
 }
 
 /// The size of the host texture `present` renders for.
-///
-/// # Errors
-/// [`HostedLayerError::EmptyTarget`] when `target` has a zero extent.
-fn target_size(target: &wgpu::Texture) -> Result<OffscreenSize, HostedLayerError> {
+fn target_size(target: &wgpu::Texture) -> OffscreenSize {
     OffscreenSize::try_from_pixels(target.width(), target.height())
-        .ok_or(HostedLayerError::EmptyTarget)
+        .expect("a wgpu texture has a non-zero extent")
 }
 
 /// A retained engine surface for GPU content presented by a native host.
@@ -1222,7 +1207,10 @@ impl GpuContentRenderer {
     /// Float targets carry extended linear Display P3; other targets carry sRGB.
     ///
     /// # Errors
-    /// When the destination is empty or rendering fails.
+    /// When rendering fails.
+    ///
+    /// # Panics
+    /// When `target` has a zero extent.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn present(
         &mut self,
@@ -1230,7 +1218,7 @@ impl GpuContentRenderer {
         display: Display,
         target_time: FrameTime,
     ) -> Result<Next, HostedLayerError> {
-        let next = self.render(target_size(target)?, display, target_time)?;
+        let next = self.render(target_size(target), display, target_time)?;
         self.host.composite(target, display);
         Ok(next)
     }
@@ -1239,7 +1227,10 @@ impl GpuContentRenderer {
     /// Float targets carry extended linear Display P3; other targets carry sRGB.
     ///
     /// # Errors
-    /// When the destination is empty or rendering fails.
+    /// When rendering fails.
+    ///
+    /// # Panics
+    /// When `target` has a zero extent.
     #[cfg(target_arch = "wasm32")]
     #[expect(
         clippy::future_not_send,
@@ -1252,7 +1243,7 @@ impl GpuContentRenderer {
         target_time: FrameTime,
     ) -> Result<Next, HostedLayerError> {
         let next = self
-            .render(target_size(target)?, display, target_time)
+            .render(target_size(target), display, target_time)
             .await?;
         self.host.composite(target, display);
         Ok(next)
@@ -1437,7 +1428,10 @@ impl ExternalFrameRenderer {
     /// Float targets carry extended linear Display P3; other targets carry sRGB.
     ///
     /// # Errors
-    /// When the destination is empty or rendering fails.
+    /// When rendering fails.
+    ///
+    /// # Panics
+    /// When `target` has a zero extent.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn present(
         &mut self,
@@ -1445,7 +1439,7 @@ impl ExternalFrameRenderer {
         display: Display,
         target_time: FrameTime,
     ) -> Result<Next, HostedLayerError> {
-        let next = self.render(target_size(target)?, display, target_time)?;
+        let next = self.render(target_size(target), display, target_time)?;
         self.host.composite(target, display);
         Ok(next)
     }
@@ -1454,7 +1448,10 @@ impl ExternalFrameRenderer {
     /// Float targets carry extended linear Display P3; other targets carry sRGB.
     ///
     /// # Errors
-    /// When the destination is empty or rendering fails.
+    /// When rendering fails.
+    ///
+    /// # Panics
+    /// When `target` has a zero extent.
     #[cfg(target_arch = "wasm32")]
     #[expect(
         clippy::future_not_send,
@@ -1467,7 +1464,7 @@ impl ExternalFrameRenderer {
         target_time: FrameTime,
     ) -> Result<Next, HostedLayerError> {
         let next = self
-            .render(target_size(target)?, display, target_time)
+            .render(target_size(target), display, target_time)
             .await?;
         self.host.composite(target, display);
         Ok(next)

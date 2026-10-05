@@ -135,6 +135,11 @@ pub struct ResolvedFramework {
     packages: BTreeMap<String, DependencyDetail>,
     #[serde(default, skip_serializing_if = "PatchSet::is_empty")]
     patches: PatchSet,
+    /// Every version the framework's own lock records for a package name —
+    /// the versions a patched name resolves to through the channel's
+    /// `[patch]` tables. Derived at resolution time and never persisted.
+    #[serde(skip)]
+    locked_versions: BTreeMap<String, Vec<String>>,
 }
 
 /// The selection in one line, as `water create` reports it: the channel and
@@ -418,6 +423,7 @@ impl ResolvedFramework {
             experimental_packages: BTreeMap::new(),
             packages: BTreeMap::new(),
             patches: PatchSet::default(),
+            locked_versions: locked_package_versions(&lock),
         }
         .validated()
     }
@@ -713,14 +719,18 @@ impl ResolvedFramework {
                 .and_then(toml_edit::Item::as_str)
                 .unwrap_or(&name)
                 .to_owned();
-            // The `*-path` members are workspace members, not registry
-            // packages: a scaffolded project's dependency on one is pinned
-            // by `member_source`, never rewritten to a version requirement.
-            if FRAMEWORK_MEMBERS
-                .iter()
-                .any(|member| member.package == package)
-                || !self.scaffold.contains_key(&format!("{package}-version"))
-            {
+            let scaffolded = self.scaffold.contains_key(&format!("{package}-version"));
+            // A package the selection provides through its patch table —
+            // every `*-path` member and each name the channel pins there —
+            // is written as the registry requirement the patch redirects:
+            // whatever source the entry declared, a `version` requirement is
+            // the one source form `[patch.crates-io]` can take over.
+            let patched = if scaffolded {
+                None
+            } else {
+                self.patched_version(&package)?
+            };
+            if !(scaffolded || patched.is_some()) {
                 continue;
             }
             if dependency.is_str() {
@@ -753,14 +763,75 @@ impl ResolvedFramework {
             ] {
                 table.remove(key);
             }
-            let source = toml_edit::ser::to_document(&self.dependency(&package))?;
-            for key in ["version", "git", "rev"] {
-                if let Some(value) = source.get(key) {
-                    table.insert(key, value.clone());
+            if scaffolded {
+                let source = toml_edit::ser::to_document(&self.dependency(&package))?;
+                for key in ["version", "git", "rev"] {
+                    if let Some(value) = source.get(key) {
+                        table.insert(key, value.clone());
+                    }
                 }
+            } else {
+                table.insert(
+                    "version",
+                    toml_edit::value(patched.expect("a provided name passed the check")),
+                );
             }
         }
         Ok(())
+    }
+
+    /// The registry requirement the selection's `[patch]` tables redirect a
+    /// provided name to: the version the framework's own lock records for
+    /// the package — the patch table pins the framework's own packages —
+    /// or, only for a name the framework lock does not record at all, the
+    /// requirement the patch entry itself declares. `Ok(None)` names a
+    /// package the selection does not provide; `Err` names one the lock
+    /// records ambiguously, or one nothing records a version for.
+    ///
+    /// A member whose crates.io name the table patches, or a third-party
+    /// crate the channel pins there, resolves identically through the
+    /// requirement: the patch substitutes the package the version names.
+    fn patched_version(&self, package: &str) -> Result<Option<String>> {
+        let Some(entry) = self
+            .patches
+            .values()
+            .find_map(|dependencies| dependencies.get(package))
+        else {
+            return Ok(None);
+        };
+        let channel = self
+            .channel()
+            .map_or_else(|| "local".to_owned(), |channel| channel.to_string());
+        match self
+            .locked_versions
+            .get(package)
+            .map_or(&[][..], Vec::as_slice)
+        {
+            [version] => return Ok(Some(version.clone())),
+            [] => {}
+            versions => {
+                bail!(
+                    "the {channel} channel's lock records {} versions of `{package}` \
+                     ({}); a dependency on it cannot be written as the registry \
+                     requirement the patch redirects",
+                    versions.len(),
+                    versions.join(", ")
+                )
+            }
+        }
+        let version = match entry {
+            cargo_toml::Dependency::Simple(version) => Some(version.to_string()),
+            cargo_toml::Dependency::Detailed(detail) => {
+                detail.version.as_ref().map(ToString::to_string)
+            }
+            cargo_toml::Dependency::Inherited(_) => None,
+        };
+        version.map(Some).ok_or_else(|| {
+            eyre!(
+                "the {channel} channel pins `{package}` through its patch table but \
+                 records no version for it"
+            )
+        })
     }
 
     pub(crate) fn validate_dependencies(
@@ -1366,6 +1437,7 @@ impl ResolvedFramework {
         };
         complete_scaffold(&mut scaffold, &lock)?;
 
+        let locked_versions = locked_package_versions(&lock);
         let (packages, patches, lockfile) = match channel {
             // A stable project resolves its graph from the registry; nothing is
             // pinned to the framework repository, so there is no package detail
@@ -1405,6 +1477,7 @@ impl ResolvedFramework {
                 experimental_packages,
                 packages,
                 patches,
+                locked_versions,
             }
             .validated()?,
             lockfile,
@@ -1429,6 +1502,20 @@ async fn managed_crate_metadata(
     .await
 }
 
+/// Every version the framework's own lock records for a package name —
+/// the only record that pins a `[patch]` name, kept as a list so several
+/// entries stay a reported ambiguity instead of an arbitrary pick.
+fn locked_package_versions(lock: &Lockfile) -> BTreeMap<String, Vec<String>> {
+    let mut versions: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for package in &lock.packages {
+        versions
+            .entry(package.name.to_string())
+            .or_default()
+            .push(package.version.to_string());
+    }
+    versions
+}
+
 /// The framework lock only covers its own workspace; an extracted backend
 /// pins its own repository revision whose graph (`winit`, `accesskit_winit`,
 /// `redox_syscall`, …) no framework entry names. Fold each pinned
@@ -1437,6 +1524,16 @@ async fn managed_crate_metadata(
 /// gates the backend graphs a generated project actually resolves
 /// (water-rs/cli#197). The `Source`'s recorded lock hash follows the merged
 /// bytes.
+///
+/// The channel lock is one resolution, not a union of locks — the same rule
+/// `seed_packages` applies to the project lock. A foreign package drops out
+/// only when the framework lock records its name in the same caret family:
+/// the framework's entry then wins, and a reference inside a kept package
+/// that named the dropped version resolves to the framework's highest
+/// entry in that family. A family the framework does not record stays as
+/// its own entry beside the framework's others — Cargo holds two majors of
+/// one name — and an edge onto it keeps resolving there, so no edge points
+/// at a package the merged lock does not carry (#1865).
 fn merge_foreign_lock(
     lock: &Lockfile,
     lock_bytes: Vec<u8>,
@@ -1446,8 +1543,37 @@ fn merge_foreign_lock(
     if foreign.is_empty() {
         return lock_bytes;
     }
+    let mut framework: BTreeMap<&str, Vec<&cargo_lock::Package>> = BTreeMap::new();
+    for package in &lock.packages {
+        framework
+            .entry(package.name.as_str())
+            .or_default()
+            .push(package);
+    }
     let mut merged = lock.clone();
-    merged.packages.extend(foreign);
+    for mut package in foreign {
+        let dropped = framework.get(package.name.as_str()).is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|entry| same_caret_family(&entry.version, &package.version))
+        });
+        if dropped {
+            continue;
+        }
+        for dependency in package
+            .dependencies
+            .iter_mut()
+            .chain(package.replace.iter_mut())
+        {
+            if let Some(entry) = framework
+                .get(dependency.name.as_str())
+                .and_then(|entries| framework_entry(dependency, entries))
+            {
+                *dependency = LockedDependency::from(entry);
+            }
+        }
+        merged.packages.push(package);
+    }
     merged.packages.sort_by(|left, right| {
         left.name
             .as_str()
@@ -1459,6 +1585,43 @@ fn merge_foreign_lock(
         *lock_sha256 = hex::encode(Sha256::digest(&merged_bytes));
     }
     merged_bytes
+}
+
+/// The framework entry a foreign dependency edge resolves to once the
+/// channel owns the name's caret family: the entry the edge already names
+/// when it resolves to the framework's identity, otherwise the highest
+/// entry in the edge's caret family — the only entries the foreign
+/// manifest's requirement can still satisfy. `None` when the framework
+/// records no entry of the family: the edge's target is a foreign package
+/// the merge keeps, not a version the channel displaced.
+fn framework_entry<'a>(
+    dependency: &LockedDependency,
+    entries: &'a [&'a cargo_lock::Package],
+) -> Option<&'a cargo_lock::Package> {
+    entries
+        .iter()
+        .copied()
+        .find(|entry| LockedDependency::from(*entry) == *dependency)
+        .or_else(|| {
+            entries
+                .iter()
+                .copied()
+                .filter(|entry| same_caret_family(&dependency.version, &entry.version))
+                .max_by(|left, right| left.version.cmp(&right.version))
+        })
+}
+
+/// Whether `candidate` sits in the caret family `base` resolved into — the
+/// versions a `^base` requirement ranges over: the same major when nonzero,
+/// the same minor for `0.x`, and the exact version for `0.0.x`.
+const fn same_caret_family(base: &semver::Version, candidate: &semver::Version) -> bool {
+    if base.major != candidate.major {
+        return false;
+    }
+    if base.major > 0 {
+        return true;
+    }
+    base.minor == candidate.minor && (base.minor > 0 || base.patch == candidate.patch)
 }
 
 /// The packages the generated crate's `Cargo.lock` seed carries.
@@ -2277,7 +2440,22 @@ pub(crate) mod test_fixtures {
             experimental_packages: experimental_scaffold_packages(),
             packages: BTreeMap::new(),
             patches: PatchSet::default(),
+            locked_versions: fixture_locked_versions(),
         }
+    }
+
+    /// The version map a resolution derives from the fixture lock —
+    /// `test_lock`'s packages plus the `*-path` members the checkout fixture
+    /// carries in-tree.
+    fn fixture_locked_versions() -> BTreeMap<String, Vec<String>> {
+        FRAMEWORK_PACKAGES
+            .iter()
+            .map(|name| ((*name).to_owned(), vec!["0.4.1".to_owned()]))
+            .chain([
+                ("hydrolysis".to_owned(), vec!["0.2.1".to_owned()]),
+                ("waterui-apple".to_owned(), vec!["0.4.1".to_owned()]),
+            ])
+            .collect()
     }
 
     /// The git-pinned scaffold packages the checkout fixture's
@@ -2366,6 +2544,7 @@ pub(crate) mod test_fixtures {
             experimental_packages,
             packages: BTreeMap::new(),
             patches: PatchSet::default(),
+            locked_versions: fixture_locked_versions(),
         }
     }
 
@@ -3680,6 +3859,126 @@ mod tests {
         assert_eq!(versions("app"), ["0.1.0"]);
     }
 
+    /// A pinned repository's lock folds into the channel lock under the same
+    /// rule the seed applies to the project lock: one resolution, the
+    /// framework's entry winning every name it records in the same caret
+    /// family. The union merge let a foreign `wasm-bindgen 0.2.128` stand
+    /// beside the framework's 0.2.129 — the lockstep split #177 reserved for
+    /// the seed — so the merged lock keeps the foreign-only package, drops
+    /// the displaced copy, and resolves the foreign dependent's edge to the
+    /// framework's entry. A caret family the framework does not record is
+    /// no collision: the foreign `rand 0.7.3` stays beside the framework's
+    /// `rand 0.8.5`, as Cargo keeps two majors of one name, and the edge
+    /// onto it stays put (#1865).
+    #[test]
+    fn the_merged_lock_resolves_every_foreign_edge_to_a_carried_package() {
+        let registry = Some("registry+https://github.com/rust-lang/crates.io-index");
+        let lock = |packages| Lockfile {
+            packages,
+            version: cargo_lock::ResolveVersion::V4,
+            root: None,
+            metadata: BTreeMap::default(),
+            patch: cargo_lock::Patch::default(),
+        };
+        let mut framework_dependent = package("waterui", "0.6.0", None);
+        framework_dependent.dependencies = vec![LockedDependency::from(&package(
+            "wasm-bindgen",
+            "0.2.129",
+            registry,
+        ))];
+        let framework = lock(vec![
+            package("wasm-bindgen", "0.2.129", registry),
+            package("rand", "0.8.5", registry),
+            framework_dependent,
+        ]);
+        let mut foreign_dependent = package(
+            "foreign-dependent",
+            "1.0.0",
+            Some(&format!(
+                "git+https://github.com/water-rs/kit?rev={0}#{0}",
+                'b'.to_string().repeat(40)
+            )),
+        );
+        foreign_dependent.dependencies = vec![
+            LockedDependency::from(&package("wasm-bindgen", "0.2.128", registry)),
+            LockedDependency::from(&package("rand", "0.7.3", registry)),
+        ];
+        let foreign = vec![
+            package("wasm-bindgen", "0.2.128", registry),
+            package("rand", "0.7.3", registry),
+            foreign_dependent,
+            package("foreign-only", "2.0.0", registry),
+        ];
+        let mut source = Source::Dev {
+            repository: framework_repository().to_owned(),
+            revision: 'a'.to_string().repeat(40),
+            lock_sha256: String::new(),
+        };
+
+        let merged_bytes = merge_foreign_lock(
+            &framework,
+            framework.to_string().into_bytes(),
+            foreign,
+            &mut source,
+        );
+        let text = String::from_utf8(merged_bytes).unwrap();
+        let merged: Lockfile = text
+            .parse()
+            .expect("the written lock parses as a Cargo.lock");
+
+        // The channel owns the name: exactly one `wasm-bindgen` entry, the
+        // framework's — cargo spells the edge bare once it is unambiguous.
+        let versions = |name: &str| {
+            merged
+                .packages
+                .iter()
+                .filter(|package| package.name.as_str() == name)
+                .map(|package| package.version.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(versions("wasm-bindgen"), ["0.2.129"]);
+        assert!(!text.contains("0.2.128"), "{text}");
+        assert!(text.contains(" \"wasm-bindgen\","), "{text}");
+        // A family the framework does not record is no collision: the
+        // foreign `rand` stands beside the framework's, and the foreign-only
+        // package enters.
+        assert_eq!(versions("rand"), ["0.7.3", "0.8.5"]);
+        assert_eq!(versions("foreign-only"), ["2.0.0"]);
+        let dependent = merged
+            .packages
+            .iter()
+            .find(|package| package.name.as_str() == "foreign-dependent")
+            .expect("the foreign-only dependent entered the merged lock");
+        // The displaced edge resolves to the framework's entry; the edge on
+        // the unrecorded family stays on the foreign package the merge
+        // keeps.
+        assert_eq!(
+            dependent.dependencies,
+            [
+                LockedDependency::from(&package("wasm-bindgen", "0.2.129", registry)),
+                LockedDependency::from(&package("rand", "0.7.3", registry)),
+            ]
+        );
+        // `cargo metadata --locked` consistency: every edge the merged lock
+        // carries resolves to a package it holds.
+        for package in &merged.packages {
+            for dependency in &package.dependencies {
+                assert!(
+                    merged
+                        .packages
+                        .iter()
+                        .any(|entry| LockedDependency::from(entry) == *dependency),
+                    "{dependency} resolves to no package the merged lock carries"
+                );
+            }
+        }
+        // The recorded lock hash follows the merged bytes.
+        let Source::Dev { lock_sha256, .. } = source else {
+            panic!("the dev source persists its lock hash");
+        };
+        assert_eq!(lock_sha256, hex::encode(Sha256::digest(text.as_bytes())));
+    }
+
     fn snapshot(lock: &Lockfile) -> (ResolvedFramework, Vec<u8>) {
         let bytes = lock.to_string().into_bytes();
         let scaffold = lock
@@ -3712,6 +4011,7 @@ mod tests {
             scaffold,
             experimental_packages: BTreeMap::new(),
             patches: PatchSet::default(),
+            locked_versions: locked_package_versions(lock),
         };
         (framework, bytes)
     }
@@ -4283,6 +4583,118 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
             document["dependencies"]["waterui"]["version"].as_str(),
             Some(scaffolded("waterui-version").as_str())
         );
+    }
+
+    /// The stale source an earlier selection wrote — the `hydrolysis` git pin
+    /// from before the backend moved into the monorepo — names a package the
+    /// new selection provides through `[patch.crates-io]`, so the update
+    /// rewrites it to the registry requirement the patch redirects (#1849).
+    #[test]
+    fn channel_update_rewrites_patch_provided_dependencies_to_the_patched_version() {
+        let mut framework = dev_framework();
+        let pin = |git: &str| {
+            toml::from_str::<toml::Value>(&format!(
+                "git = \"{git}\"\nrev = \"{}\"",
+                'a'.to_string().repeat(40)
+            ))
+            .unwrap()
+            .try_into::<Dependency>()
+            .unwrap()
+        };
+        framework
+            .patches
+            .entry("crates-io".into())
+            .or_default()
+            .extend([
+                (
+                    "hydrolysis".into(),
+                    pin("https://github.com/water-rs/waterui"),
+                ),
+                ("nami".into(), pin("https://github.com/water-rs/nami")),
+            ]);
+        framework
+            .locked_versions
+            .insert("nami".into(), vec!["0.3.4".to_owned()]);
+
+        let manifest = toml::toml! {
+            [dependencies]
+            hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "01172c0b1c2ec7ad99dba3e6e0e12c0a57a72e4a", default-features = false, features = ["winit"], optional = true }
+            vendored = { git = "https://github.com/example/vendored", rev = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }
+            [target."cfg(unix)".dependencies]
+            nami = { git = "https://github.com/water-rs/nami", rev = "cccccccccccccccccccccccccccccccccccccccc" }
+        };
+        let mut document = toml_edit::ser::to_document(&manifest).unwrap();
+        framework
+            .update_manifest(&mut document, &PatchSet::default())
+            .unwrap();
+
+        // The patched member becomes the registry requirement its patch
+        // redirects — the version the channel's lock records — while the
+        // entry's feature selection is kept.
+        let hydrolysis = &document["dependencies"]["hydrolysis"];
+        assert_eq!(hydrolysis["version"].as_str(), Some("0.2.1"));
+        assert_eq!(hydrolysis["features"][0].as_str(), Some("winit"));
+        assert_eq!(hydrolysis["default-features"].as_bool(), Some(false));
+        assert_eq!(hydrolysis["optional"].as_bool(), Some(true));
+        for key in ["git", "rev", "path", "branch", "tag"] {
+            assert!(
+                hydrolysis.get(key).is_none(),
+                "{key} must be stripped: {hydrolysis}"
+            );
+        }
+
+        // The same rewrite lands inside a target table.
+        let nami = &document["target"]["cfg(unix)"]["dependencies"]["nami"];
+        assert_eq!(nami["version"].as_str(), Some("0.3.4"));
+        for key in ["git", "rev"] {
+            assert!(nami.get(key).is_none(), "{key} must be stripped: {nami}");
+        }
+
+        // A dependency the selection provides nothing for keeps its source.
+        let vendored = &document["dependencies"]["vendored"];
+        assert_eq!(
+            vendored["git"].as_str(),
+            Some("https://github.com/example/vendored")
+        );
+        assert_eq!(
+            vendored["rev"].as_str(),
+            Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+        );
+        assert!(vendored.get("version").is_none());
+    }
+
+    /// Two lock entries under one patch-pinned name leave the registry
+    /// requirement unresolvable — the update refuses and names the package
+    /// and the versions rather than picking one.
+    #[test]
+    fn channel_update_rejects_an_ambiguously_locked_patch_package() {
+        let mut framework = dev_framework();
+        let hydrolysis: Dependency =
+            toml::from_str::<toml::Value>("git = \"https://github.com/water-rs/waterui\"")
+                .unwrap()
+                .try_into()
+                .unwrap();
+        framework
+            .patches
+            .entry("crates-io".into())
+            .or_default()
+            .insert("hydrolysis".into(), hydrolysis);
+        framework.locked_versions.insert(
+            "hydrolysis".into(),
+            vec!["0.2.1".to_owned(), "0.3.0".to_owned()],
+        );
+
+        let mut document: toml_edit::DocumentMut =
+            "[dependencies]\nhydrolysis = { git = \"https://github.com/water-rs/hydrolysis\" }\n"
+                .parse()
+                .unwrap();
+        let error = framework
+            .update_manifest(&mut document, &PatchSet::default())
+            .expect_err("two lock entries for one patch-pinned name is an error");
+        let text = format!("{error:#}");
+        for expected in ["hydrolysis", "0.2.1", "0.3.0"] {
+            assert!(text.contains(expected), "{text}");
+        }
     }
 
     #[test]
