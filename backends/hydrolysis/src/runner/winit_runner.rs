@@ -71,11 +71,10 @@ pub(super) enum RunnerEvent {
     /// [`TerminationHost`] sent it — so teardown happens on the event loop,
     /// where runtime cleanup is safe.
     TerminationFinished,
-    /// A console close, logoff or shutdown event, sent by
-    /// `console_session_end_handler`, which blocks until the sender sends —
-    /// once the machine reports `terminate`.
+    /// The console window closing, sent by `console_close_handler`, which
+    /// blocks until the sender sends — once the machine reports `terminate`.
     #[cfg(target_os = "windows")]
-    ConsoleSessionEnd(mpsc::Sender<()>),
+    ConsoleClose(mpsc::Sender<()>),
 }
 
 /// What a termination signal does, given how many arrived before it.
@@ -126,9 +125,10 @@ const FORCED_TERMINATION_EXIT_CODE: i32 = 130;
 /// The `termination` feature of `ctrlc` covers SIGINT, SIGTERM and SIGHUP on
 /// Unix and Ctrl+C and Ctrl+Break on Windows, so every way a desktop shell or
 /// session manager asks a windowed app to stop reaches the same teardown the
-/// last window closing does. Windows' console close, logoff and shutdown
-/// events go to `console_session_end_handler` instead, which holds the
-/// event open until `on_terminate` finished.
+/// last window closing does. Closing the Windows console goes to
+/// `console_close_handler` instead, which holds the event open until
+/// `on_terminate` finished; a logoff or shutdown reaches the application
+/// windows as `WM_ENDSESSION` (see `session_end_proc`).
 #[cfg(any(unix, windows))]
 fn install_termination_handler(event_proxy: &winit::event_loop::EventLoopProxy<RunnerEvent>) {
     let requests = TerminationRequests::default();
@@ -148,7 +148,7 @@ fn install_termination_handler(event_proxy: &winit::event_loop::EventLoopProxy<R
     })
     .expect("hydrolysis runner: failed to install the termination handler");
     #[cfg(target_os = "windows")]
-    install_console_session_end_handler(event_proxy);
+    install_console_close_handler(event_proxy);
 }
 
 /// Whether the event loop ends, given the application's last-window policy
@@ -192,10 +192,10 @@ impl TerminationHost for WinitTerminationHost {
 /// [`TerminationHost`].
 ///
 /// Windows ends the process as soon as a session-end notification returns —
-/// `WM_ENDSESSION` on an application window, or a console close, logoff or
-/// shutdown event — so each of them holds its notification open until the
-/// machine reports `terminate`, which is what proves `on_terminate` ran to
-/// completion.
+/// `WM_ENDSESSION` on an application window for a logoff or shutdown, or
+/// the console close event — so each of them holds its notification open
+/// until the machine reports `terminate`, which is what proves
+/// `on_terminate` ran to completion.
 #[cfg(target_os = "windows")]
 #[derive(Default)]
 struct SessionEnd {
@@ -260,18 +260,58 @@ struct TerminationSubclass {
 impl TerminationSubclass {
     /// Runs main-thread tasks until the machine reports `terminate`.
     ///
-    /// The event loop is not pumping while a window message is being
-    /// handled, so the hook futures advance only here: each runnable a waker
-    /// schedules — from this thread or another — arrives on the executor's
-    /// channel, and the wait for the next one blocks this thread, which has
-    /// nothing else left to do before the session ends.
+    /// The event loop is inside this window message, so it neither runs the
+    /// executor nor pumps the thread's message queue until the message
+    /// returns. This loop does both: it runs every runnable queued so far,
+    /// then waits for the queue to receive input and dispatches it. A waker
+    /// on any thread queues its runnable and posts the loop's wake-up
+    /// message, so the wait ends for executor work as well as for the
+    /// window and loop messages an `on_terminate` future may be awaiting.
+    ///
+    /// # Panics
+    ///
+    /// When `MsgWaitForMultipleObjectsEx` fails, with `GetLastError`.
     fn run_until_terminated(&self) {
-        while !self.session_end.terminated.get() {
-            let runnable = self
-                .runnables
-                .recv()
-                .expect("the main-thread executor outlives every application window");
-            runnable.run();
+        use windows_sys::Win32::Foundation::WAIT_FAILED;
+        use windows_sys::Win32::System::Threading::INFINITE;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            DispatchMessageW, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE,
+            PeekMessageW, QS_ALLINPUT, TranslateMessage,
+        };
+        loop {
+            while let Ok(runnable) = self.runnables.try_recv() {
+                runnable.run();
+            }
+            if self.session_end.terminated.get() {
+                return;
+            }
+            // SAFETY: no handles are passed, so the wait is on this thread's
+            // message queue alone.
+            let woke = unsafe {
+                MsgWaitForMultipleObjectsEx(
+                    0,
+                    std::ptr::null(),
+                    INFINITE,
+                    QS_ALLINPUT,
+                    MWMO_INPUTAVAILABLE,
+                )
+            };
+            assert!(
+                woke != WAIT_FAILED,
+                "hydrolysis runner: waiting for on_terminate at session end failed: {}",
+                std::io::Error::last_os_error()
+            );
+            // SAFETY: `MSG` is plain data, and the all-zero value is valid.
+            let mut msg: MSG = unsafe { std::mem::zeroed() };
+            // SAFETY: `msg` is a writable `MSG`; a null HWND takes every
+            // message of this thread.
+            while unsafe { PeekMessageW(&raw mut msg, 0, 0, 0, PM_REMOVE) } != 0 {
+                // SAFETY: `msg` was just filled by `PeekMessageW`.
+                unsafe {
+                    TranslateMessage(&raw const msg);
+                    DispatchMessageW(&raw const msg);
+                }
+            }
         }
     }
 }
@@ -295,9 +335,10 @@ const TERMINATION_SUBCLASS_ID: usize = 1;
 ///   to ask, so the message passes through, letting the session end.
 /// - `WM_ENDSESSION` with `wParam` `TRUE` says the session is ending
 ///   regardless — the user chose to end it anyway, or nobody vetoed. The
-///   proc files a required request and drives the local executor until the
-///   machine reports `terminate`, so `on_terminate` has finished before the
-///   message returns and Windows ends the process.
+///   proc files a required request, then runs the local executor and
+///   dispatches the thread's messages until the machine reports
+///   `terminate`, so `on_terminate` has finished before the message returns
+///   and Windows ends the process.
 #[cfg(target_os = "windows")]
 unsafe extern "system" fn session_end_proc(
     hwnd: windows_sys::Win32::Foundation::HWND,
@@ -402,66 +443,60 @@ fn remove_termination_subclass(hwnd: isize) {
 /// `SetConsoleCtrlHandler` calls a bare function pointer with no context
 /// argument, so the one piece of state the handler needs — how to reach the
 /// loop — has to live in a process-wide slot. It is set once, by
-/// [`install_console_session_end_handler`].
+/// [`install_console_close_handler`].
 #[cfg(target_os = "windows")]
-static CONSOLE_SESSION_END: std::sync::OnceLock<winit::event_loop::EventLoopProxy<RunnerEvent>> =
+static CONSOLE_CLOSE: std::sync::OnceLock<winit::event_loop::EventLoopProxy<RunnerEvent>> =
     std::sync::OnceLock::new();
 
-/// Holds a console close, logoff or shutdown event open until `on_terminate`
-/// finished.
+/// Holds the console close event open until `on_terminate` finished.
 ///
-/// Windows ends the process as soon as the handler for one of these events
-/// returns, and `ctrlc`'s handler returns at once, so the request it wakes
-/// the loop with would never be served. This handler runs first — the
-/// system calls the most recently registered handler first — files a
-/// required request on the loop, and blocks its own thread, which the
-/// system created for the event, until the machine reports `terminate`.
-/// Ctrl+C and Ctrl+Break fall through to `ctrlc`.
+/// Windows ends the process as soon as the handler for this event returns,
+/// and `ctrlc`'s handler returns at once, so the request it wakes the loop
+/// with would never be served. This handler runs first — the system calls
+/// the most recently registered handler first — files a required request on
+/// the loop, and blocks its own thread, which the system created for the
+/// event, until the machine reports `terminate`. Ctrl+C and Ctrl+Break fall
+/// through to `ctrlc`. The logoff and shutdown control events never arrive:
+/// the system withholds them from a process that loads user32, and the
+/// application windows receive `WM_ENDSESSION` instead.
 #[cfg(target_os = "windows")]
-unsafe extern "system" fn console_session_end_handler(
+unsafe extern "system" fn console_close_handler(
     ctrl_type: u32,
 ) -> windows_sys::Win32::Foundation::BOOL {
-    use windows_sys::Win32::System::Console::{
-        CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT,
-    };
-    if !matches!(
-        ctrl_type,
-        CTRL_CLOSE_EVENT | CTRL_LOGOFF_EVENT | CTRL_SHUTDOWN_EVENT
-    ) {
+    use windows_sys::Win32::System::Console::CTRL_CLOSE_EVENT;
+    if ctrl_type != CTRL_CLOSE_EVENT {
         return 0;
     }
-    let event_proxy = CONSOLE_SESSION_END
+    let event_proxy = CONSOLE_CLOSE
         .get()
         .expect("the console handler is registered after its event loop is recorded");
     let (released, release) = mpsc::channel();
     // A loop that already exited drops the event and its sender, which ends
     // the wait at once.
-    let _ = event_proxy.send_event(RunnerEvent::ConsoleSessionEnd(released));
+    let _ = event_proxy.send_event(RunnerEvent::ConsoleClose(released));
     let _ = release.recv();
     1
 }
 
-/// Registers [`console_session_end_handler`] ahead of `ctrlc`'s handler.
+/// Registers [`console_close_handler`] ahead of `ctrlc`'s handler.
 ///
 /// # Panics
 ///
 /// When it is called a second time in the process, or when
 /// `SetConsoleCtrlHandler` fails.
 #[cfg(target_os = "windows")]
-fn install_console_session_end_handler(
-    event_proxy: &winit::event_loop::EventLoopProxy<RunnerEvent>,
-) {
+fn install_console_close_handler(event_proxy: &winit::event_loop::EventLoopProxy<RunnerEvent>) {
     use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
     assert!(
-        CONSOLE_SESSION_END.set(event_proxy.clone()).is_ok(),
-        "hydrolysis runner: the console session-end handler is installed once per process"
+        CONSOLE_CLOSE.set(event_proxy.clone()).is_ok(),
+        "hydrolysis runner: the console close handler is installed once per process"
     );
-    // SAFETY: `console_session_end_handler` matches `PHANDLER_ROUTINE` and
-    // lives for the whole process.
-    let installed = unsafe { SetConsoleCtrlHandler(Some(console_session_end_handler), 1) };
+    // SAFETY: `console_close_handler` matches `PHANDLER_ROUTINE` and lives
+    // for the whole process.
+    let installed = unsafe { SetConsoleCtrlHandler(Some(console_close_handler), 1) };
     assert!(
         installed != 0,
-        "hydrolysis runner: failed to install the console session-end handler: {}",
+        "hydrolysis runner: failed to install the console close handler: {}",
         std::io::Error::last_os_error()
     );
 }
@@ -1490,7 +1525,7 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
                 self.termination.request(TerminationKind::Required);
             }
             #[cfg(target_os = "windows")]
-            RunnerEvent::ConsoleSessionEnd(release) => {
+            RunnerEvent::ConsoleClose(release) => {
                 self.session_end.release_console_on_terminate(release);
                 self.termination.request(TerminationKind::Required);
             }
