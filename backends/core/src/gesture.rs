@@ -247,10 +247,11 @@ fn localize_gesture_payload(payload: GesturePayload, bounds: kurbo::Rect) -> Ges
 /// Routes pointer input to the gesture targets registered during dispatch.
 ///
 /// On pointer-down (or pinch/rotation start) the engine hit-tests the
-/// registered targets, picks the topmost group under the pointer, and
-/// activates its recognizers ordered by depth, then z-order, then
-/// registration index; subsequent moves, ticks, and the final up/cancel are
-/// dispatched to that active set. The target list is rebuilt or truncated
+/// registered targets, picks the topmost group under the pointer with at
+/// least one recognizer accepting the press, and activates that group's
+/// accepting recognizers ordered by depth, then z-order, then registration
+/// index; subsequent moves, ticks, and the final up/cancel are dispatched to
+/// that active set. The target list is rebuilt or truncated
 /// around structural rebuilds while active recognizers persist across frames
 /// as long as their registrations stay live.
 #[derive(Debug, Default)]
@@ -574,9 +575,7 @@ impl GestureEngine {
             .filter(|(_, target)| {
                 target.group_id == group_id
                     && target.bounds.contains(point)
-                    && self.active_button.is_none_or(|button| {
-                        gesture_buttons(&target.recognizer.borrow().gesture).accepts(button)
-                    })
+                    && self.accepts_active_button(target)
             })
             .collect();
         targets.sort_by(|(left_index, left), (right_index, right)| {
@@ -590,16 +589,33 @@ impl GestureEngine {
         recognizers
     }
 
+    /// The topmost hit-test group under `point` that can drive the current
+    /// sequence. A button press only considers targets whose recognizer
+    /// accepts the button, so a group that cannot use the pressed button is
+    /// transparent to it; pinch and rotation carry no button and consider
+    /// every target.
     fn top_group_id_at(&self, point: kurbo::Point) -> Option<usize> {
         self.targets
             .iter()
             .enumerate()
-            .filter(|(_, target)| target.bounds.contains(point))
+            .filter(|(_, target)| {
+                target.bounds.contains(point) && self.accepts_active_button(target)
+            })
             .max_by(|(left_index, left), (right_index, right)| {
                 Self::target_priority(left, *left_index)
                     .cmp(&Self::target_priority(right, *right_index))
             })
             .map(|(_, target)| target.group_id)
+    }
+
+    /// Whether `target`'s recognizer may activate in the current sequence:
+    /// every recognizer qualifies while no button is in flight
+    /// (pinch/rotation), and a button press only reaches recognizers whose
+    /// gesture accepts it.
+    fn accepts_active_button(&self, target: &GestureTarget) -> bool {
+        self.active_button.is_none_or(|button| {
+            gesture_buttons(&target.recognizer.borrow().gesture).accepts(button)
+        })
     }
 
     fn active_recognizers_are_live(&self) -> bool {
@@ -1964,6 +1980,76 @@ mod tests {
             &env
         ));
         assert_eq!(hits.get(), 1);
+    }
+
+    #[test]
+    fn press_passes_through_group_that_rejects_its_button() {
+        use std::{cell::Cell, rc::Rc};
+        use waterui::gesture::TapGesture;
+        use waterui_core::handler::boxed_action;
+
+        let mut engine = GestureEngine::default();
+        let env = Environment::new();
+        let parent_hits = Rc::new(Cell::new(0u32));
+        let child_hits = Rc::new(Cell::new(0u32));
+
+        {
+            let parent_hits = Rc::clone(&parent_hits);
+            engine.register_target(
+                kurbo::Rect::new(0.0, 0.0, 200.0, 40.0),
+                Gesture::Tap(TapGesture::new()),
+                boxed_action(move |env: Environment| {
+                    env.get::<TapEvent>()
+                        .expect("tap action missing TapEvent in environment");
+                    parent_hits.set(parent_hits.get() + 1);
+                }),
+                0,
+                0,
+                1,
+            );
+        }
+        {
+            let child_hits = Rc::clone(&child_hits);
+            engine.register_target(
+                kurbo::Rect::new(0.0, 0.0, 120.0, 40.0),
+                Gesture::Tap(TapGesture::new().buttons(PointerButtons::MIDDLE)),
+                boxed_action(move |env: Environment| {
+                    env.get::<TapEvent>()
+                        .expect("tap action missing TapEvent in environment");
+                    child_hits.set(child_hits.get() + 1);
+                }),
+                1,
+                0,
+                2,
+            );
+        }
+
+        let start = Instant::now();
+        let point = kurbo::Point::new(50.0, 20.0);
+
+        // The nested child is topmost but accepts only middle presses, so a
+        // primary press must fall through to the parent's group.
+        engine.handle_pointer_down(point, start, PointerButton::Primary, &env);
+        assert!(engine.handle_pointer_up(
+            point,
+            start + Duration::from_millis(16),
+            PointerButton::Primary,
+            &env
+        ));
+        assert_eq!(parent_hits.get(), 1);
+        assert_eq!(child_hits.get(), 0);
+
+        // A middle press activates the child's group normally.
+        let middle = start + Duration::from_millis(400);
+        engine.handle_pointer_down(point, middle, PointerButton::Middle, &env);
+        assert!(engine.handle_pointer_up(
+            point,
+            middle + Duration::from_millis(16),
+            PointerButton::Middle,
+            &env
+        ));
+        assert_eq!(parent_hits.get(), 1);
+        assert_eq!(child_hits.get(), 1);
     }
 
     #[test]
