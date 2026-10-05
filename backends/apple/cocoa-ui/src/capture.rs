@@ -165,8 +165,9 @@ pub fn with_capture_transform<T>(
 }
 
 /// The transform that, applied to a layer at `position` in a superlayer
-/// whose content starts at the origin, lands the layer's content on the
-/// top-down pixel destination `geometry` describes.
+/// whose content starts at the origin, scales the layer's content onto the
+/// pixel destination `geometry` describes and, for an unflipped source,
+/// also mirrors it top-down.
 ///
 /// A layer transform acts on coordinates relative to the layer's anchor
 /// point, which sits at `position` in the superlayer. A content point at
