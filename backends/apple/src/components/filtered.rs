@@ -1352,8 +1352,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // The view retains its handlers and the state retains the view —
         // the `Rc<FilteredState> → HostView → handler → Rc<FilteredState>`
-        // cycle (WaterUI #1567) is broken by `NativeLeaf::detach`, which
-        // clears every handler slot before the leaf can be released.
+        // cycle (WaterUI #1567) is broken by the leaf's `Drop`, which
+        // clears every handler slot when the leaf is released.
         {
             let state = Rc::clone(&state);
             view.set_layout_handler(move |_| {

@@ -81,10 +81,11 @@ impl KeepAlive {
 /// A rendered component: its platform view, its layout face, and what keeps
 /// its reactivity alive.
 ///
-/// Drop order is fixed by field order: watchers and children stop first, the
-/// layout face next, the platform view last. Dropping a leaf does not detach
-/// its view from a superview; mount it through [`NativeLeaf::mount`] for
-/// that.
+/// Dropping a leaf first clears every handler its `HostView` holds, which
+/// releases the state those handlers capture; then watchers and children
+/// stop, the layout face drops next and the platform view last (field
+/// order). Dropping a leaf does not detach its view from a superview; mount
+/// it through [`NativeLeaf::mount`] for that.
 pub struct NativeLeaf {
     keepalive: KeepAlive,
     layout: Rc<dyn SubView>,
@@ -144,12 +145,12 @@ impl NativeLeaf {
     /// content size and the constraint system collapses it to zero.
     fn install_intrinsic_measure(view: &PlatformView, layout: &Rc<dyn SubView>) {
         if let Some(host) = view.downcast_ref::<HostView>() {
-            // The handler may hold the layout face strongly: the
-            // HostView → handler → SubView → leaf-state → HostView cycle
-            // it forms is broken by `detach`, which clears every handler
-            // slot before the leaf can be released (water-rs/waterui#1567).
-            // The leaf retains the layout for its mounted lifetime — the
-            // context-menu panel clones it through `layout_handle`.
+            // The handler may hold the layout face strongly: `detach`
+            // clears it when the leaf moves, and the leaf's `Drop` clears
+            // every handler slot, which breaks the HostView → handler →
+            // SubView → leaf-state → HostView cycle (water-rs/waterui#1567).
+            // The context-menu panel clones the layout through
+            // `layout_handle` for its own measure.
             let layout = Rc::clone(layout);
             host.set_measure_handler(move |_host, proposal| measure_layout(&layout, proposal));
         }
@@ -201,14 +202,13 @@ impl NativeLeaf {
         )
     )]
     fn detach(&mut self) {
-        // The ownership boundary: every handler slot the view holds is
-        // cleared so a platform callback delivered after detach — a queued
-        // layout pass, a superview/window move triggered by the removal
-        // itself — finds `None` and does nothing by construction, and the
-        // HostView → handler → leaf-state → HostView cycle is broken even
-        // while the platform view briefly outlives the leaf.
+        // The inverse of `mount`, and nothing more: a detached leaf may be
+        // mounted again (the iOS context-menu panel moves its preview and
+        // accessory in and out on every presentation), so the handlers its
+        // component installed at render time stay. Only the intrinsic
+        // measure `mount` installed goes, and `mount` installs it again.
         if let Some(host) = self.view.downcast_ref::<HostView>() {
-            host.clear_handlers();
+            host.clear_measure_handler();
         }
         #[cfg(target_os = "ios")]
         let controllers = std::mem::take(&mut self.attached_controllers);
@@ -225,13 +225,17 @@ impl NativeLeaf {
 }
 
 impl Drop for NativeLeaf {
-    /// A leaf that dies mounted — a `Mounted` dropped without `unmount`,
-    /// a leaf kept in a window's keepalive and released with it — passes
-    /// through the same detach teardown, so handler clearing stays total
-    /// instead of depending on which owner let go last. `detach` is
-    /// idempotent: the `Mounted` paths above already ran it once.
+    /// The leaf's release boundary: every handler slot its `HostView`
+    /// holds is cleared, so the state those handlers capture is released
+    /// with the leaf whichever owner lets go of it — a `Mounted`, a
+    /// window's keepalive, a navigation page — and a callback the platform
+    /// delivers to a view that outlives the leaf finds `None`. The view
+    /// stays where it is: removing it from its superview is the owner's
+    /// job, as [`Mounted`] does.
     fn drop(&mut self) {
-        self.detach();
+        if let Some(host) = self.view.downcast_ref::<HostView>() {
+            host.clear_handlers();
+        }
     }
 }
 

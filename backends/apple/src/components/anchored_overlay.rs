@@ -75,9 +75,10 @@ struct OverlayState {
             cocoa_ui::notification::NotificationObserver,
         )>,
     >,
-    /// The overlay's frame in window space, for the host's hit test (iOS).
+    /// The overlay's frame in window space, shared with the presentation
+    /// host's hit test (iOS).
     #[cfg(target_os = "ios")]
-    overlay_frame: Cell<KitRect>,
+    overlay_frame: Rc<Cell<KitRect>>,
 }
 
 impl core::fmt::Debug for OverlayState {
@@ -112,6 +113,7 @@ struct Presentation {
 #[cfg(target_os = "ios")]
 impl Drop for Presentation {
     fn drop(&mut self) {
+        self.host.clear_handlers();
         let host: &PlatformView = &self.host;
         view::remove_from_superview(host);
     }
@@ -224,13 +226,16 @@ fn present(state: &Rc<OverlayState>) {
         let host = HostView::new(state.mtm, view::bounds(&window));
         let host_view: &PlatformView = &host;
         view::set_autoresizing_flexible_size(host_view);
+        // The hit test owns only what it reads, never the state: the
+        // state owns this host through `presentation`, and a leaf released
+        // while presented (a popped navigation page, a closed window's
+        // content) must still release the state and so the presentation.
         host.set_hit_test_handler({
-            let state = Rc::downgrade(state);
+            let overlay_frame = Rc::clone(&state.overlay_frame);
+            let is_presented = state.is_presented.clone();
+            let dismissal = state.dismissal;
             move |_, point| {
-                let Some(state) = state.upgrade() else {
-                    return HitTest::Pass;
-                };
-                let frame = state.overlay_frame.get();
+                let frame = overlay_frame.get();
                 let inside = point.x >= frame.origin.x
                     && point.x <= frame.origin.x + frame.size.width
                     && point.y >= frame.origin.y
@@ -241,8 +246,8 @@ fn present(state: &Rc<OverlayState>) {
                     // `hitTest`'s `nil` did.
                     HitTest::PassIfSelf
                 } else {
-                    if state.dismissal == Dismissal::OutsideInteraction {
-                        state.is_presented.set(false);
+                    if dismissal == Dismissal::OutsideInteraction {
+                        is_presented.set(false);
                     }
                     HitTest::Pass
                 }
@@ -436,7 +441,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
             #[cfg(target_os = "macos")]
             watchers: RefCell::new(None),
             #[cfg(target_os = "ios")]
-            overlay_frame: Cell::new(KitRect::ZERO),
+            overlay_frame: Rc::new(Cell::new(KitRect::ZERO)),
         });
 
         // `layout`/`layoutSubviews`: the content fills the host and the

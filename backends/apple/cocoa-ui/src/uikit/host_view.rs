@@ -548,14 +548,22 @@ impl HostView {
         self.ivars().measure.replace(Some(Rc::new(handler)));
     }
 
-    /// Drops every installed handler — the detach boundary.
+    /// Drops the installed measure handler, after which measurements fall
+    /// back to `UIView`'s own intrinsic size.
+    pub fn clear_measure_handler(&self) {
+        self.ivars().measure.replace(None);
+    }
+
+    /// Drops every installed handler — the release boundary of the
+    /// view's owner.
     ///
     /// Each `set_*_handler` slot answers `None` afterwards, so a callback
     /// `UIKit` delivers to this view does nothing by construction rather
-    /// than reaching state the owner already released: layout, resize,
-    /// hit-test, window, superview, measure, primary content, scroll
-    /// surface, pointer and key. The hover recognizer is removed as well,
-    /// since it exists only to serve the pointer handler.
+    /// than reaching state the owner released, and the handlers no longer
+    /// keep that state alive: layout, resize, hit-test, window, superview,
+    /// measure, primary content, scroll surface, pointer and key. The
+    /// hover recognizer is removed as well, since it exists only to serve
+    /// the pointer handler.
     pub fn clear_handlers(&self) {
         let ivars = self.ivars();
         ivars.layout.replace(None);

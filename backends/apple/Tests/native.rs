@@ -149,6 +149,9 @@ fn mtm() -> MainThreadMarker {
 
 /// `NativeLeaf` mount/watch/bind against real views.
 mod leaf {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
     use waterui::reactive::binding;
     use waterui_apple::contract::NativeLeaf;
     use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
@@ -174,17 +177,30 @@ mod leaf {
 
     /// Mounting adds the leaf's view to the parent's subview list, and the
     /// returned `Mounted`'s `unmount` detaches it again and hands the leaf
-    /// back for reuse.
+    /// back for reuse: mounted again, the handlers its component installed
+    /// before the first mount still run.
     pub fn mount_attaches_and_unmount_detaches() {
         let mtm = mtm();
         let parent = HostView::new(mtm, cocoa_ui::Rect::new(0.0, 0.0, 200.0, 100.0));
+        let _window = attach(mtm, &parent);
         let child = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+        let laid_out = Rc::new(Cell::new(false));
+        child.set_layout_handler({
+            let laid_out = Rc::clone(&laid_out);
+            move |_| laid_out.set(true)
+        });
         let leaf = NativeLeaf::new(&*child, TestSubView);
         let mounted = leaf.mount(&parent);
         assert_eq!(cocoa_ui::view::subviews(&parent).len(), 1);
         let leaf = mounted.unmount();
         assert!(cocoa_ui::view::superview(leaf.view()).is_none());
         assert_eq!(cocoa_ui::view::subviews(&parent).len(), 0);
+
+        let _mounted = leaf.mount(&parent);
+        laid_out.set(false);
+        child.set_needs_layout();
+        child.layout_if_needed();
+        assert!(laid_out.get(), "a moved leaf keeps its layout handler");
     }
 
     /// Dropping a `Mounted` — how a container releases a replaced child —
