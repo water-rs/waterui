@@ -86,12 +86,18 @@ jobs:
       # families (cargo-sources-Linux-*, lint-target-Linux-X64-*) on its
       # own ref, then saves the replacement archives.
       actions: write
-    timeout-minutes: ${{ inputs.full && 90 || 10 }}
+    # Pull requests keep the 10-minute gate. An integration push that misses
+    # the exact `lint-target` key writes the archive every later run restores,
+    # so it sweeps the whole workspace, cold after a stable toolchain roll;
+    # it gets the room to finish instead of timing out unsaved.
+    timeout-minutes: ${{ inputs.full && 90 || ((github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && 30 || 10) }}
     steps:
       - uses: actions/checkout@v4
       # The fast gate owns the target-cache budget, including workspace check
-      # artifacts. Only integration-branch fast runs write it; pull requests
-      # and the full nightly lint restore without adding cache generations.
+      # artifacts. Only integration-branch fast runs write it, and only after
+      # the workspace sweep, so the archive covers what a workspace-scope pull
+      # request compiles; pull requests and the full nightly lint restore
+      # without adding cache generations.
       # The check-only Cargo profile avoids optimizing build dependencies for
       # runtime speed when this job only needs their compiler output.
       - uses: ./.github/actions/setup-rust
@@ -119,6 +125,13 @@ jobs:
           key: lint-target-${{ runner.os }}-${{ runner.arch }}-${{ steps.rustc-fingerprint.outputs.hash }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             lint-target-${{ runner.os }}-${{ runner.arch }}-${{ steps.rustc-fingerprint.outputs.hash }}-
+      # This run writes `lint-target` when it is a fast integration push that
+      # missed the exact key. The archive it saves is restored by every
+      # later run under that key, so it must hold the workspace sweep, not
+      # just whatever this push's affected scope compiled.
+      - name: Lint target cache writer
+        id: writer
+        run: echo "sweep=${{ !inputs.full && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && steps.lint-target.outputs.cache-hit != 'true' }}" >> "${GITHUB_OUTPUT}"
       - name: Install native dependencies
         uses: ./.github/actions/setup-linux-deps
       # waterui-cli's `#[cfg(test)]` font-subsetting module `include_bytes!`s
@@ -153,11 +166,11 @@ jobs:
       # dependency that could rebuild differently); a comment-only diff
       # narrows to rustdoc + clippy on the owning crates alone.
       - name: Clippy (workspace)
-        if: inputs.full || inputs.affected == 'workspace'
+        if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true'
         # waterui-apple / cocoa-ui compile only on Apple hosts; the macOS legs carry them.
         run: cargo clippy --locked --profile ci-check --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui --all-targets -- -D warnings
       - name: Check and clippy (affected packages)
-        if: inputs.full == false && inputs['comment-only'] == false && inputs.affected != 'workspace' && inputs.affected != ''
+        if: inputs.full == false && inputs['comment-only'] == false && inputs.affected != 'workspace' && inputs.affected != '' && steps.writer.outputs.sweep != 'true'
         run: |
           # `-p` and `--exclude` are mutually exclusive, so the Apple-only
           # crates are filtered out of the affected set on this Linux leg —
@@ -181,7 +194,7 @@ jobs:
       # Library only: `--all-targets` builds the dev-dependencies, whose
       # `waterui` turns `gpu` back on through feature unification.
       - name: Clippy (graphics effects without gpu)
-        if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'waterui-graphics')
+        if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' || contains(inputs.affected, 'waterui-graphics')
         run: cargo clippy --locked --profile ci-check -p waterui-graphics --no-default-features --features effects -- -D warnings
       # filtrate with the wgpu stack off: its `webgl` feature (a deliberate
       # compile_error off wasm32) is the only GPU runtime the crate has, so
@@ -191,7 +204,7 @@ jobs:
       # (#1449)). On the scoped gate it fires whenever a `filtrate*`
       # package is in scope.
       - name: Clippy (filtrate without wgpu)
-        if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'filtrate')
+        if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' || contains(inputs.affected, 'filtrate')
         run: cargo clippy --locked --profile ci-check -p filtrate --no-default-features --all-targets -- -D warnings
       # The scene crate's `generator` feature compiles the corpus-writing
       # binaries (`generate-corpus`, `prepare-fonts`) that every scene
@@ -199,7 +212,7 @@ jobs:
       # dedicated leg because a generator-only lint break cannot hide
       # behind the default-feature pass.
       - name: Clippy (cherenkov-scene generator)
-        if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'cherenkov-scene')
+        if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' || contains(inputs.affected, 'cherenkov-scene')
         run: cargo clippy --locked --profile ci-check -p cherenkov-scene --all-targets --features generator -- -D warnings
       # Then every crate's own optional features. This pass used to be
       # `cargo clippy --all-targets --all-features`, with neither `-p` nor
@@ -316,7 +329,7 @@ jobs:
           operation: save
           primary-key: ${{ steps.cargo-sources.outputs.cache-primary-key }}
       - name: Save lint target cache
-        if: ${{ !inputs.full && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && steps.lint-target.outputs.cache-hit != 'true' }}
+        if: steps.writer.outputs.sweep == 'true'
         uses: actions/cache/save@v4
         with:
           path: target
