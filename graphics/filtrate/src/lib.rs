@@ -24,6 +24,8 @@
 //! # Layout
 //!
 //! - [`filters`]: the built-in filters (`Brightness`, `Blur`, …).
+//! - [`cpu`]: the SIMD CPU kernels and the working-space ↔ sRGB conversion
+//!   that brackets kernels whose stages declare sRGB.
 //! - `Executor` (`gpu` feature): the reference wgpu executor, an `Effect`.
 //! - `ShaderEffect` (`gpu` feature): an application-supplied WGSL fragment
 //!   shader run over the input, an `Effect`.
@@ -77,7 +79,7 @@ compile_error!(
 );
 
 mod aux_image;
-mod cpu;
+pub mod cpu;
 #[cfg(feature = "gpu")]
 pub mod effect;
 #[cfg(feature = "gpu")]

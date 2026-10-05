@@ -1,9 +1,16 @@
-//! SIMD CPU kernels for colour filters.
+//! SIMD CPU kernels for colour filters, and the working-space colour
+//! conversion that brackets kernels whose stages declare another operating
+//! space.
 //!
-//! Every kernel here is a linear map on premultiplied RGBA, so each builds a
-//! 4x4 matrix from its parameters and runs the shared SIMD loop: one `f32x4`
-//! per pixel, the output accumulated column by column with fused
-//! multiply-adds.
+//! A kernel runs on premultiplied RGBA in its stage's operating space. Most
+//! kernels are linear maps in the linear working space itself, so each
+//! builds a 4x4 matrix from its parameters and runs the shared SIMD loop:
+//! one `f32x4` per pixel, the output accumulated column by column with
+//! fused multiply-adds. A kernel whose stage declares
+//! [`OperatingSpace::Srgb`] runs on sRGB-encoded pixels; the generated
+//! `apply_cpu` brackets it in [`to_srgb`]/[`from_srgb`], the CPU twins of
+//! the executor's `to_srgb`/`from_srgb` conversion stages
+//! (`shaders/space/{to,from}_srgb.wgsl`).
 
 use filtrate_core::{
     AuxData, AuxFormat, AuxImage, CpuFilter, CpuFilterError, CpuImage, FilterParam, OperatingSpace,
@@ -12,6 +19,11 @@ use filtrate_core::{
 use wide::f32x4;
 
 use crate::filters::{BlendWithImage, Blur, GAUSSIAN_RADIUS_PER_SIGMA, GaussianBlur};
+
+/// The luma coefficients of sRGB primaries (ITU-R BT.709), the Y row of the
+/// sRGB to XYZ matrix. They are the `LumaCurve` stage's `constants` and its
+/// CPU kernel's luma — the stage operates in sRGB, not the working space.
+pub(crate) const SRGB_LUMA: [f32; 3] = [0.2126, 0.7152, 0.0722];
 
 /// A 4x4 matrix on premultiplied RGBA, stored as columns: the output is
 /// `c[0] * r + c[1] * g + c[2] * b + c[3] * a`.
@@ -121,6 +133,29 @@ pub fn color_matrix(params: [f32; 12], _space: &WorkingSpace, pixels: &mut [[f32
     .apply(pixels);
 }
 
+/// [`LumaCurve`](crate::filters::LumaCurve): the Bézier tone curve on the
+/// sRGB luma plus the chroma gain, on premultiplied sRGB colour — the
+/// stage's declared operating space is sRGB, so the kernel runs between
+/// [`to_srgb`] and [`from_srgb`].
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "preserves the WGSL Bézier evaluation order"
+)]
+pub fn luma_curve(params: [f32; 7], _space: &WorkingSpace, pixels: &mut [[f32; 4]]) {
+    let [v0, v1, v2, v3, amount, chroma, offset] = params;
+    convert(pixels, |straight| {
+        let luma = straight[0].mul_add(
+            SRGB_LUMA[0],
+            straight[1].mul_add(SRGB_LUMA[1], straight[2] * SRGB_LUMA[2]),
+        );
+        let t = luma.clamp(0.0, 1.0);
+        let u = 1.0 - t;
+        let curve = u * u * u * v0 + 3.0 * t * u * u * v1 + 3.0 * t * t * u * v2 + t * t * t * v3;
+        let tone = amount.mul_add(curve - luma, luma) + offset;
+        straight.map(|channel| tone + chroma * (channel - luma))
+    });
+}
+
 impl<T: FilterParam> CpuFilter for GaussianBlur<T> {
     fn cpu_footprint(params: &Self::Params) -> filtrate_core::Footprint {
         Self::footprint_of(params)
@@ -205,7 +240,7 @@ pub const SRGB_TO_P3: [[f32; 3]; 3] = [
 /// The executor's `to_srgb` stage on the CPU: premultiplied working-space
 /// pixels to premultiplied sRGB, the transfer mirrored through zero so
 /// extended values stay extended.
-fn to_srgb(pixels: &mut [[f32; 4]]) {
+pub fn to_srgb(pixels: &mut [[f32; 4]]) {
     convert(pixels, |straight| {
         transform(&P3_TO_SRGB, straight).map(srgb_encode)
     });
@@ -213,13 +248,14 @@ fn to_srgb(pixels: &mut [[f32; 4]]) {
 
 /// The executor's `from_srgb` stage on the CPU: premultiplied sRGB back to
 /// premultiplied working-space pixels.
-fn from_srgb(pixels: &mut [[f32; 4]]) {
+pub fn from_srgb(pixels: &mut [[f32; 4]]) {
     convert(pixels, |straight| {
         transform(&SRGB_TO_P3, straight.map(srgb_decode))
     });
 }
 
 /// The sRGB transfer of one linear channel, mirrored through zero.
+#[must_use]
 pub fn srgb_encode(linear: f32) -> f32 {
     let magnitude = linear.abs();
     let curve = if magnitude > 0.003_130_8 {
@@ -232,6 +268,7 @@ pub fn srgb_encode(linear: f32) -> f32 {
 
 /// The inverse of [`srgb_encode`]: one encoded channel back to linear,
 /// mirrored through zero.
+#[must_use]
 pub fn srgb_decode(encoded: f32) -> f32 {
     let magnitude = encoded.abs();
     let curve = if magnitude > 0.040_45 {
@@ -245,7 +282,7 @@ pub fn srgb_decode(encoded: f32) -> f32 {
 /// Applies `map` to each pixel's straight-alpha colour, as the conversion
 /// stages do: the colour is unpremultiplied by `max(alpha, 1e-6)` and
 /// premultiplied again by alpha.
-fn convert(pixels: &mut [[f32; 4]], map: impl Fn([f32; 3]) -> [f32; 3]) {
+pub fn convert(pixels: &mut [[f32; 4]], map: impl Fn([f32; 3]) -> [f32; 3]) {
     for pixel in pixels {
         let alpha = pixel[3];
         let divisor = alpha.max(1.0e-6);
@@ -255,6 +292,7 @@ fn convert(pixels: &mut [[f32; 4]], map: impl Fn([f32; 3]) -> [f32; 3]) {
 }
 
 /// `matrix * rgb`, `matrix` given rows first.
+#[must_use]
 pub fn transform(matrix: &[[f32; 3]; 3], rgb: [f32; 3]) -> [f32; 3] {
     matrix.map(|row| row[0].mul_add(rgb[0], row[1].mul_add(rgb[1], row[2] * rgb[2])))
 }

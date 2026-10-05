@@ -114,6 +114,29 @@ impl ColorFilter for CssInvert {
     const LINEAR: bool = false;
 }
 
+/// The premultiplied `a - rgb` invert: the identity on encoded values plus
+/// a known encoded-space operation — the kernel the reproduction uses to
+/// see what space it was handed.
+fn encoded_invert(_: [f32; 0], _space: &WorkingSpace, pixels: &mut [[f32; 4]]) {
+    for pixel in pixels {
+        let [r, g, b, a] = *pixel;
+        *pixel = [a - r, a - g, a - b, a];
+    }
+}
+
+/// An sRGB stage with a CPU kernel — the reproduction of #1942: the CPU
+/// path must convert into the stage's declared space before the kernel and
+/// back after it, like the GPU executor's conversion bracket.
+#[derive(Filter)]
+#[filter(
+    color,
+    shader = "color/transform/invert.wgsl",
+    linear = true,
+    space = srgb,
+    cpu = encoded_invert
+)]
+struct EncodedInvert;
+
 /// One filtered sample at `uv * 0.5` — a pure bilinear read of the input.
 struct SampleHalf;
 
@@ -638,18 +661,30 @@ fn linear_colour_filters_are_linear_maps() {
     assert_linear("photo_effect_tonal", &PhotoEffectTonal);
 }
 
-/// Runs a filter's CPU kernel and its shader on the same pixels.
+/// Runs a filter's CPU kernel and its shader on the same pixels. An sRGB
+/// stage's shader is evaluated inside the conversion bracket the GPU
+/// executor plans and the CPU kernel applies (the CPU conversion — the
+/// evaluator does not evaluate the conversion stages' matrices).
 fn assert_kernel_matches_shader<F: CpuKernel>(name: &str, filter: &F) {
     let stage = colour_stage(filter);
     let params = filter.params();
     let mut flattened = vec![0.0; <F::Params as ParamArray>::LEN];
     params.write_to(&mut flattened);
+    let srgb = stage.space == OperatingSpace::Srgb;
     let mut pixels = COLOURS;
     F::apply_cpu(&params, &WorkingSpace::LINEAR_DISPLAY_P3, &mut pixels);
     for (cpu, colour) in pixels.iter().zip(COLOURS) {
+        let mut expected = [colour];
+        if srgb {
+            crate::cpu::to_srgb(&mut expected);
+        }
+        expected[0] = evaluate(stage, &flattened, expected[0]);
+        if srgb {
+            crate::cpu::from_srgb(&mut expected);
+        }
         assert_close(
             *cpu,
-            evaluate(stage, &flattened, colour),
+            expected[0],
             &format!("{name}'s CPU kernel disagrees with its shader"),
         );
     }
@@ -669,8 +704,18 @@ fn cpu_kernels_match_their_shaders() {
             0.9_f32, 0.1, 0.0, 0.05, 0.1, 0.8, 0.1, -0.02, 0.0, 0.2, 0.7, 0.1,
         ]),
     );
-    // A chain's kernel runs its halves in order.
-    let chain = Saturation(0.5_f32).then(Brightness(0.1_f32));
+    // sRGB kernels: the generated `apply_cpu` converts into the declared
+    // space before the kernel and back after it.
+    assert_kernel_matches_shader("encoded_invert", &EncodedInvert);
+    assert_kernel_matches_shader(
+        "luma_curve",
+        &luma_curve([0.9, 0.83, 0.925, 0.815], 0.75, 0.375, 0.1),
+    );
+    // A chain's kernel runs its halves in order, each link converting to
+    // its own operating space.
+    let chain = Saturation(0.5_f32)
+        .then(Brightness(0.1_f32))
+        .then(luma_curve([0.9, 0.83, 0.925, 0.815], 0.75, 0.375, 0.1));
     let mut chained = COLOURS;
     <filters::Saturation<f32> as CpuKernel>::apply_cpu(
         &[0.5],
@@ -679,6 +724,11 @@ fn cpu_kernels_match_their_shaders() {
     );
     <filters::Brightness<f32> as CpuKernel>::apply_cpu(
         &[0.1],
+        &WorkingSpace::LINEAR_DISPLAY_P3,
+        &mut chained,
+    );
+    <filters::LumaCurve<f32> as CpuKernel>::apply_cpu(
+        &[0.9, 0.83, 0.925, 0.815, 0.75, 0.375, 0.1],
         &WorkingSpace::LINEAR_DISPLAY_P3,
         &mut chained,
     );
@@ -1350,7 +1400,9 @@ fn gpu_chains_match_their_cpu_kernels() {
     let chain = filters::Saturation(1.4_f32)
         .then(filters::Grayscale(0.3_f32))
         .then(filters::HueRotation(60.0_f32))
-        .then(filters::Brightness(-0.1_f32));
+        .then(filters::Brightness(-0.1_f32))
+        .then(EncodedInvert)
+        .then(luma_curve([0.9, 0.83, 0.925, 0.815], 0.75, 0.375, 0.1));
     let mut pixels: Vec<[f32; 4]> = rgba
         .chunks(4)
         .map(|texel| core::array::from_fn(|i| from_unorm(texel[i])))
@@ -1366,7 +1418,7 @@ fn gpu_chains_match_their_cpu_kernels() {
         &output,
         &expected,
         1,
-        "saturation, grayscale, hue rotation, brightness",
+        "saturation, grayscale, hue rotation, brightness, encoded invert, luma curve",
     );
 }
 
@@ -1426,6 +1478,22 @@ fn gpu_srgb_stages_run_in_srgb() {
         .collect();
     let output = run(&gpu, CssInvert, size, &rgba, ShapeTextures::default());
     assert_rgba8_close(&output, &expected, 2, "invert in sRGB");
+
+    // The reproduction of #1942: the stage's CPU kernel runs on the sRGB
+    // pixels its declared space hands it, and the CPU output matches the
+    // GPU's.
+    let mut cpu_pixels: Vec<[f32; 4]> = rgba
+        .chunks(4)
+        .map(|texel| core::array::from_fn(|i| from_unorm(texel[i])))
+        .collect();
+    EncodedInvert.apply_cpu_now(&WorkingSpace::LINEAR_DISPLAY_P3, &mut cpu_pixels);
+    let cpu_output: Vec<u8> = cpu_pixels
+        .iter()
+        .flatten()
+        .map(|&value| to_unorm(value))
+        .collect();
+    assert_rgba8_close(&cpu_output, &expected, 2, "invert in sRGB on the CPU");
+    assert_rgba8_close(&cpu_output, &output, 1, "CPU kernel vs GPU output");
 }
 
 /// The executor's manual bilinear, as a CPU reference over f32 texels.

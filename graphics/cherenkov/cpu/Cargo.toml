@@ -10,6 +10,9 @@ publish = false
 [dependencies]
 cherenkov = { path = ".." }
 filtrate-core = { path = "../../filtrate/core" }
+# The CPU colour conversion lives in `filtrate::cpu`; `gpu` is off so the
+# backend carries no wgpu.
+filtrate = { path = "../../filtrate", default-features = false }
 kurbo = "0.13"
 skrifa = "0.44"
 png = "0.18"

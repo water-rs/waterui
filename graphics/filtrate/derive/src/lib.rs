@@ -17,7 +17,13 @@
 //!   classification, which executors trust when pushing a filter down.
 //!   `cpu = <path>` names a CPU kernel,
 //!   `fn([f32; N], &WorkingSpace, &mut [[f32; 4]])`, and implements
-//!   `CpuKernel` with it.
+//!   `CpuKernel` with it. The kernel runs on the stage's operating space:
+//!   `apply_cpu` receives working-space pixels and, for a `space = srgb`
+//!   stage, the generated implementation converts into sRGB before the
+//!   kernel and back after it, the way a GPU executor brackets the stage
+//!   with conversion passes. That bracket calls into `filtrate::cpu`, so
+//!   an sRGB kernel requires a `filtrate` dependency, not `filtrate-core`
+//!   alone.
 //! - `spatial, shader = "<path>"` declares a spatial filter, with either
 //!   `footprint = <expr>` and/or `footprint_extent = <expr>` (the constant
 //!   pixel and extent components of a [`Footprint`](filtrate_core::Footprint);
@@ -92,6 +98,25 @@ fn core_path() -> syn::Result<TokenStream2> {
         proc_macro2::Span::call_site(),
         "#[derive(Filter)] requires a dependency on `filtrate` or `filtrate-core`",
     ))
+}
+
+/// Resolves the path of `filtrate` itself, for generated code that calls
+/// `filtrate::cpu`: the working-space ↔ sRGB conversion an sRGB kernel is
+/// bracketed by lives in `filtrate` (`filtrate-core` is `no_std` and
+/// cannot provide it).
+fn filtrate_path() -> syn::Result<TokenStream2> {
+    match proc_macro_crate::crate_name("filtrate") {
+        Ok(proc_macro_crate::FoundCrate::Itself) => Ok(quote! { crate }),
+        Ok(proc_macro_crate::FoundCrate::Name(name)) => {
+            let ident = Ident::new(&name, proc_macro2::Span::call_site());
+            Ok(quote! { ::#ident })
+        }
+        Err(_) => Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "a `cpu` kernel for `space = srgb` requires a dependency on \
+             `filtrate`, whose `cpu` module provides the working-space conversion",
+        )),
+    }
 }
 
 /// Derives a complete single-stage filter from a `#[filter(...)]`
@@ -200,6 +225,15 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         quote! { #core::OperatingSpace::Working }
     };
 
+    // A `cpu` kernel for an sRGB stage is bracketed by the working-space
+    // conversion in `filtrate::cpu`, so the kernel itself runs on its
+    // declared operating space, as the GPU executor's conversion passes
+    // bracket the stage.
+    let conversion = if attrs.srgb && matches!(&attrs.kind, KindAttrs::Color { cpu: Some(_), .. }) {
+        Some(filtrate_path()?)
+    } else {
+        None
+    };
     let stage = StageTokens {
         core: &core,
         name: ident.to_string(),
@@ -212,7 +246,9 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         quote! { impl #impl_generics #trait_path for #ident #ty_generics #where_clause }
     };
     let (kind, stage, kind_impls) = match &attrs.kind {
-        KindAttrs::Color { linear, cpu } => stage.color(*linear, cpu.as_ref(), &impl_for),
+        KindAttrs::Color { linear, cpu } => {
+            stage.color(*linear, cpu.as_ref(), conversion.as_ref(), &impl_for)
+        }
         KindAttrs::Spatial { footprint, shape } => {
             stage.spatial(footprint, shape.as_ref(), &impl_for)
         }
@@ -254,10 +290,13 @@ struct StageTokens<'a> {
 impl StageTokens<'_> {
     /// The kind, the `collect_stages` body, and the `ColorFilter`,
     /// `CpuKernel`, and `CpuFilter` implementations of a colour filter.
+    /// `conversion` is the `filtrate` path when an sRGB kernel needs the
+    /// working-space conversion around it.
     fn color(
         &self,
         linear: bool,
         cpu: Option<&Path>,
+        conversion: Option<&TokenStream2>,
         impl_for: &dyn Fn(TokenStream2) -> TokenStream2,
     ) -> (TokenStream2, TokenStream2, TokenStream2) {
         let Self {
@@ -280,6 +319,15 @@ impl StageTokens<'_> {
         let kernel = cpu.map(|path| {
             let kernel_header = impl_for(quote! { #core::CpuKernel });
             let filter_header = impl_for(quote! { #core::CpuFilter });
+            let (before, after) = conversion.map_or_else(
+                || (TokenStream2::new(), TokenStream2::new()),
+                |filtrate| {
+                    (
+                        quote! { #filtrate::cpu::to_srgb(pixels); },
+                        quote! { #filtrate::cpu::from_srgb(pixels); },
+                    )
+                },
+            );
             quote! {
                 #kernel_header {
                     fn apply_cpu(
@@ -287,7 +335,9 @@ impl StageTokens<'_> {
                         space: &#core::WorkingSpace,
                         pixels: &mut [[f32; 4]],
                     ) {
+                        #before
                         #path(*params, space, pixels);
+                        #after
                     }
                 }
                 #filter_header {

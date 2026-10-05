@@ -1,10 +1,7 @@
 //! Luma curve filter implementation.
 
 use crate::Filter;
-
-/// The luma coefficients of sRGB primaries (ITU-R BT.709), the Y row of the
-/// sRGB to XYZ matrix: the stage operates in sRGB, not the working space.
-const SRGB_LUMA: [f32; 3] = [0.2126, 0.7152, 0.0722];
+use crate::cpu::SRGB_LUMA;
 
 /// Moves luma along a tone curve and scales the chroma around it, in sRGB.
 ///
@@ -48,7 +45,8 @@ const SRGB_LUMA: [f32; 3] = [0.2126, 0.7152, 0.0722];
     shader = "color/adjustment/luma_curve.wgsl",
     linear = false,
     space = srgb,
-    constants = [SRGB_LUMA[0], SRGB_LUMA[1], SRGB_LUMA[2]]
+    constants = [SRGB_LUMA[0], SRGB_LUMA[1], SRGB_LUMA[2]],
+    cpu = crate::cpu::luma_curve
 )]
 pub struct LumaCurve<T> {
     /// The Bézier control values `v0..v3` of the tone curve over luma.
