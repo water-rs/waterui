@@ -3,9 +3,9 @@
 use core::ops::Add;
 
 use crate::{
-    ImageVisitor, ParamArray, SignalVisitor, StageCollector,
+    FilterLink, ImageVisitor, LinkVisitor, ParamArray, SignalVisitor, StageCollector,
     kind::{self, ChainFootprint, Kind},
-    visitor::{OffsetCollector, OffsetImages, OffsetVisitor},
+    visitor::{OffsetCollector, OffsetImages, OffsetLinks, OffsetVisitor},
 };
 
 /// A filter: pure data describing the stages that apply it and the
@@ -41,6 +41,15 @@ pub trait Filter: 'static {
 
     /// Visits the auxiliary images, indexed `0..Self::IMAGES`.
     fn visit_images<V: ImageVisitor>(&self, _visitor: &mut V) {}
+
+    /// Visits every link of the filter in application order. A filter visits
+    /// itself; `Chain` forwards to its halves.
+    fn visit_links<V: LinkVisitor>(&self, visitor: &mut V)
+    where
+        Self: Sized,
+    {
+        visitor.link(FilterLink::new(self));
+    }
 }
 
 /// A filter that maps each pixel's colour to a colour, independently of its
@@ -178,6 +187,15 @@ impl<A: Filter, B: Filter> Filter for Chain<A, B> {
         self.first.visit_images(visitor);
         self.second
             .visit_images(&mut OffsetImages::new(visitor, A::IMAGES));
+    }
+
+    fn visit_links<V: LinkVisitor>(&self, visitor: &mut V) {
+        self.first.visit_links(visitor);
+        self.second.visit_links(&mut OffsetLinks::new(
+            visitor,
+            <A::Params as ParamArray>::LEN,
+            A::IMAGES,
+        ));
     }
 }
 
@@ -408,5 +426,70 @@ mod tests {
             recording.0,
             alloc::vec![("color", 0, 0), ("spatial", 1, 0), ("color", 3, 0)]
         );
+    }
+
+    /// Two images and no parameters, so a later link's `image_base` moves
+    /// and its `param_base` does not.
+    struct Stamp;
+    impl Filter for Stamp {
+        type Kind = kind::Spatial;
+        type Params = [f32; 0];
+        const IMAGES: usize = 2;
+
+        fn params(&self) -> [f32; 0] {
+            []
+        }
+
+        fn collect_stages<C: StageCollector>(&self, _: &mut C) {}
+    }
+
+    #[test]
+    fn visit_links_walks_a_nested_chain_and_shifts_offsets() {
+        struct Seen {
+            stamp: bool,
+            tint: bool,
+            spread: bool,
+            param_base: usize,
+            image_base: usize,
+        }
+
+        struct Recording(Vec<Seen>);
+        impl LinkVisitor for Recording {
+            fn link(&mut self, link: FilterLink<'_>) {
+                self.0.push(Seen {
+                    stamp: link.downcast_ref::<Stamp>().is_some(),
+                    tint: link.downcast_ref::<Tint>().is_some(),
+                    spread: link.downcast_ref::<Spread>().is_some(),
+                    param_base: link.param_base,
+                    image_base: link.image_base,
+                });
+            }
+        }
+
+        let mut recording = Recording(Vec::new());
+        Stamp.then(Tint).then(Spread).visit_links(&mut recording);
+
+        assert_eq!(recording.0.len(), 3);
+
+        let stamp = &recording.0[0];
+        assert!(stamp.stamp);
+        assert!(!stamp.tint);
+        assert!(!stamp.spread);
+        assert_eq!(stamp.param_base, 0);
+        assert_eq!(stamp.image_base, 0);
+
+        let tint = &recording.0[1];
+        assert!(!tint.stamp);
+        assert!(tint.tint);
+        assert!(!tint.spread);
+        assert_eq!(tint.param_base, 0);
+        assert_eq!(tint.image_base, 2);
+
+        let spread = &recording.0[2];
+        assert!(!spread.stamp);
+        assert!(!spread.tint);
+        assert!(spread.spread);
+        assert_eq!(spread.param_base, 1);
+        assert_eq!(spread.image_base, 2);
     }
 }
