@@ -4,6 +4,7 @@ pub use crate::render::filter::EffectBox;
 pub use crate::render::present::{
     DestinationPrimaries, DisplayProbe, OutputAlpha, OutputColor, OutputRequest, OutputSelection,
     Presenter, SelectionReason, TextureOutput, TransferEncoding, select_output,
+    surface_output_alpha,
 };
 pub use crate::render::shaders::{ShaderDelivery, delivery as shader_delivery};
 use std::future::Future;

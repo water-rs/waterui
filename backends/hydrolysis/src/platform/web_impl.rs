@@ -191,6 +191,10 @@ impl SurfaceProvider for BrowserSurface {
         self.output_color
     }
 
+    fn output_alpha(&self) -> cherenkov_gpu::interop::OutputAlpha {
+        cherenkov_gpu::interop::surface_output_alpha(self.config.alpha_mode)
+    }
+
     fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice {
         cherenkov_gpu::interop::SharedDevice {
             instance: self.instance.clone(),

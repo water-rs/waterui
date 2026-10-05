@@ -838,12 +838,13 @@ pub trait SurfaceProvider {
     /// from — all four from the same creation chain, which the shared
     /// Cherenkov engine requires of its [`SharedDevice`].
     fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice;
-    /// Whether the pixels written into this surface's textures are consumed
-    /// as premultiplied-alpha. True only for an OS surface configured
-    /// `CompositeAlphaMode::PreMultiplied`; offscreen/readback targets keep
-    /// their straight-alpha bytes and stay `false`.
-    fn premultiply_alpha(&self) -> bool {
-        false
+    /// The alpha convention the pixels written into this surface's textures
+    /// are presented with — the engine's `surface_output_alpha` verdict for
+    /// the surface's configured `CompositeAlphaMode`. Offscreen/readback
+    /// targets have no compositor and keep their straight-alpha bytes, so
+    /// the default is [`cherenkov_gpu::interop::OutputAlpha::Straight`].
+    fn output_alpha(&self) -> cherenkov_gpu::interop::OutputAlpha {
+        cherenkov_gpu::interop::OutputAlpha::Straight
     }
     /// The display's HDR headroom — the brightest white the surface
     /// presents, relative to SDR white. Every current surface is SDR, so
@@ -1993,7 +1994,7 @@ impl OffscreenSceneSurface {
             self.target.queue(),
             &texture,
             crate::engine::format_output_color(texture.format()),
-            true,
+            cherenkov_gpu::interop::OutputAlpha::Premultiplied,
             1.0,
         );
         crate::readback::readback_texture_rgba8(
@@ -2611,8 +2612,8 @@ mod winit_impl {
             self.surface.configure(&self.gpu.device, &self.config);
         }
 
-        fn premultiply_alpha(&self) -> bool {
-            self.config.alpha_mode == wgpu::CompositeAlphaMode::PreMultiplied
+        fn output_alpha(&self) -> cherenkov_gpu::interop::OutputAlpha {
+            cherenkov_gpu::interop::surface_output_alpha(self.config.alpha_mode)
         }
 
         fn gpu_context_id(&self) -> u64 {

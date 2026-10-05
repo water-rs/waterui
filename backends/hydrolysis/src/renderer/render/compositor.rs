@@ -724,23 +724,11 @@ impl HydrolysisRenderer {
         pub fn render_scene_to_texture(&mut self, target: HydrolysisRenderTarget<'_>) {
             let texture = target.texture;
             crate::engine::engine_await!(
-                self.render_scene_to_surface_with_alpha_mode(
-                    target.into_frame_target(), texture, false, true
-                )
-            );
-        }
-    }
-
-    crate::engine::cfg_async_fn! {
-        /// Renders the frame into `target`'s presentation surface.
-        ///
-        /// Async on wasm32, where the surface render inside awaits the browser
-        /// device.
-        pub fn render_scene_to_surface(&mut self, target: HydrolysisRenderTarget<'_>) {
-            let texture = target.texture;
-            crate::engine::engine_await!(
-                self.render_scene_to_surface_with_alpha_mode(
-                    target.into_frame_target(), texture, false, true
+                self.render_scene_to_texture_with_alpha(
+                    target.into_frame_target(),
+                    texture,
+                    cherenkov_gpu::interop::OutputAlpha::Straight,
+                    true,
                 )
             );
         }
@@ -853,21 +841,21 @@ impl HydrolysisRenderer {
     }
 
     crate::engine::cfg_async_fn! {
-        /// [`Self::render_scene_to_surface`] with the target's composite alpha
-        /// convention made explicit: `premultiply_alpha` selects the alpha
-        /// mode the presenter writes into `texture` — premultiplied for an OS
-        /// surface configured `CompositeAlphaMode::PreMultiplied`, straight
-        /// for offscreen/readback targets.
+        /// [`Self::render_scene_to_texture`] with the output's alpha
+        /// convention made explicit: `alpha` is the `OutputAlpha` the
+        /// presenter writes into `texture` — `surface_output_alpha`'s verdict
+        /// for an OS surface's `CompositeAlphaMode`, `OutputAlpha::Straight`
+        /// for an offscreen/readback target.
         ///
         /// `rasterize_scene_layers` is [`Self::render_engine_frame`]'s.
         ///
         /// Async on wasm32, where the engine calls inside await the browser
         /// device.
-        pub(crate) fn render_scene_to_surface_with_alpha_mode(
+        pub(crate) fn render_scene_to_texture_with_alpha(
             &mut self,
             target: FrameRenderTarget<'_>,
             texture: &wgpu::Texture,
-            premultiply_alpha: bool,
+            alpha: cherenkov_gpu::interop::OutputAlpha,
             rasterize_scene_layers: bool,
         ) {
             let (device, queue) = (target.device, target.queue);
@@ -880,7 +868,7 @@ impl HydrolysisRenderer {
                 queue,
                 texture,
                 crate::engine::format_output_color(texture.format()),
-                premultiply_alpha,
+                alpha,
             );
         }
     }
@@ -897,7 +885,7 @@ impl HydrolysisRenderer {
         queue: &wgpu::Queue,
         texture: &wgpu::Texture,
         color: cherenkov_gpu::interop::OutputColor,
-        premultiply_alpha: bool,
+        alpha: cherenkov_gpu::interop::OutputAlpha,
     ) {
         // The window map leaves `self` for the call, as in the render, so the
         // profiler mark may borrow the renderer.
@@ -909,14 +897,9 @@ impl HydrolysisRenderer {
                 "hydrolysis renderer: the engine frame's window left the renderer before its present",
             ),
         };
-        window.surface.present_into(
-            device,
-            queue,
-            texture,
-            color,
-            premultiply_alpha,
-            frame.headroom,
-        );
+        window
+            .surface
+            .present_into(device, queue, texture, color, alpha, frame.headroom);
 
         #[cfg(feature = "frame-profile")]
         self.gpu_profile_mark(window.gpu_profiler.as_ref(), device, queue, 2);

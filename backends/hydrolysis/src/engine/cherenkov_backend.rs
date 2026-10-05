@@ -352,18 +352,13 @@ impl CherenkovSurface {
         queue: &wgpu::Queue,
         output: &wgpu::Texture,
         color: cherenkov_gpu::interop::OutputColor,
-        premultiplied: bool,
+        alpha: cherenkov_gpu::interop::OutputAlpha,
         headroom: f32,
     ) {
         let (_, view) = self
             .texture
             .as_ref()
             .expect("hydrolysis renderer: present before the engine produced a texture");
-        let alpha = if premultiplied {
-            cherenkov_gpu::interop::OutputAlpha::Premultiplied
-        } else {
-            cherenkov_gpu::interop::OutputAlpha::Straight
-        };
         self.presenter.texture(
             device,
             queue,
