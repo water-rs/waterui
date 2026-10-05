@@ -674,20 +674,8 @@ fn participates_in_first_paint(view: &Retained<SurfaceView>) -> bool {
         && cocoa_ui::view::alpha(platform) > 0.01
         && bounds.size.width > 0.5
         && bounds.size.height > 0.5
-        && has_visible_ancestry(view)
+        && cocoa_ui::view::has_visible_ancestry(&cocoa_ui::view::retain_base(view))
         && can_present_now(view)
-}
-
-/// Whether this view and every ancestor is visible — `hasVisibleAncestry`.
-fn has_visible_ancestry(view: &Retained<SurfaceView>) -> bool {
-    let mut node = Some(cocoa_ui::view::retain_base(view));
-    while let Some(current) = node {
-        if cocoa_ui::view::is_hidden(&current) || cocoa_ui::view::alpha(&current) <= 0.0 {
-            return false;
-        }
-        node = cocoa_ui::view::superview(&current);
-    }
-    true
 }
 
 /// Whether the frame clock ticks — `isEffectivelyVisible`: narrower than
@@ -696,7 +684,7 @@ fn is_effectively_visible(view: &Retained<SurfaceView>) -> bool {
     let Some(window) = cocoa_ui::view::window(view.as_platform_view()) else {
         return false;
     };
-    if !has_visible_ancestry(view) {
+    if !cocoa_ui::view::has_visible_ancestry(&cocoa_ui::view::retain_base(view)) {
         return false;
     }
     #[cfg(target_os = "macos")]
@@ -853,7 +841,7 @@ fn display_rate(view: &Retained<SurfaceView>) -> Option<f32> {
     {
         window.windowScene().map(|scene| {
             #[expect(
-                clippy::cast_possible_truncation,
+                clippy::cast_precision_loss,
                 reason = "frame rates fit comfortably in f32"
             )]
             let rate = scene.screen().maximumFramesPerSecond().max(1) as f32;

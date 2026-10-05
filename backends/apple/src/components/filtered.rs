@@ -580,7 +580,8 @@ fn update_link_demand(state: &Rc<FilteredState>) {
         && !state.frame_presentation_in_flight.get()
         && state.capture_suppression.get() == 0
         && state.external_count.get() == 0
-        && ((has_visible_ancestry(&state.view) && !presentation_occluded(&state.view))
+        && ((cocoa_ui::view::has_visible_ancestry(&state.view)
+            && !presentation_occluded(&state.view))
             || state.first_paint_owed.get());
     if let Some(presenter) = state.presenter.borrow().as_ref() {
         presenter.set_paused(!demand);
@@ -1290,20 +1291,6 @@ impl SubView for FilteredSubView {
 
 // MARK: - Capturable surface and first-paint readiness
 
-/// `hasVisibleAncestry` — this view and every ancestor visible. A window
-/// at alpha 0 is not an ancestor, so a reveal window still passes while a
-/// hidden or transparent *view* ancestor parks the surface.
-fn has_visible_ancestry(view: &PlatformView) -> bool {
-    let mut node = Some(cocoa_ui::view::retain_base(view));
-    while let Some(current) = node {
-        if cocoa_ui::view::is_hidden(&current) || cocoa_ui::view::alpha(&current) <= 0.0 {
-            return false;
-        }
-        node = cocoa_ui::view::superview(&current);
-    }
-    true
-}
-
 /// `participatesInFirstPaintReady` — a filter whose window cannot present
 /// has no first frame to wait for. Hidden, zero-alpha, clipped or
 /// invisible-ancestry views do not participate and never owe a frame.
@@ -1314,7 +1301,7 @@ fn participates_in_first_paint_ready(state: &FilteredState) -> bool {
         && cocoa_ui::view::alpha(&state.view) > 0.01
         && bounds.size.width > 0.5
         && bounds.size.height > 0.5
-        && has_visible_ancestry(&state.view)
+        && cocoa_ui::view::has_visible_ancestry(&state.view)
         && can_attach_now(&state.view)
 }
 
