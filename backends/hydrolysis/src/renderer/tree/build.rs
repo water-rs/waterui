@@ -31,6 +31,22 @@ impl RenderNode {
         let view = match view.downcast::<Native<TextConfig>>() {
             Ok(text) => {
                 let config = (*text).into_inner();
+                let layout_dirty = Rc::new(Cell::new(false));
+                let invalidate = {
+                    let layout_dirty = Rc::clone(&layout_dirty);
+                    let signals = renderer.signals.clone();
+                    Rc::new(move || {
+                        layout_dirty.set(true);
+                        signals.request_refresh();
+                    })
+                };
+                let guards = vec![
+                    config.content.watch({
+                        let invalidate = Rc::clone(&invalidate);
+                        move |_| invalidate()
+                    }),
+                    config.paragraph_alignment.watch(move |_| invalidate()),
+                ];
                 return Self::Text(Box::new(TextNode {
                     memo_gate: Cell::default(),
                     memo_slots: RefCell::default(),
@@ -39,6 +55,8 @@ impl RenderNode {
                     content: config.content,
                     alignment: config.paragraph_alignment,
                     line_limit: config.line_limit.map(core::num::NonZeroUsize::get),
+                    layout_dirty,
+                    _guards: guards,
                 }));
             }
             Err(view) => view,

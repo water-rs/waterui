@@ -812,6 +812,14 @@ pub struct TextNode {
     pub(crate) alignment: Computed<HorizontalAlignment>,
     /// Maximum laid-out lines, from `TextConfig::line_limit`.
     pub(crate) line_limit: Option<usize>,
+    /// Set by the `content`/`alignment` subscriptions when a measurement input
+    /// changes. The text's size is a function of what it says, so an outer
+    /// `RetainedSubview` consumes this through [`RenderNode::take_layout_dirty`]
+    /// and re-places its tree: otherwise the leaf keeps the box it measured at
+    /// mount while the flush paints the new string wrapped inside it.
+    pub(crate) layout_dirty: Rc<Cell<bool>>,
+    /// The subscriptions that arm `layout_dirty`, owned by this retained leaf.
+    pub(crate) _guards: Vec<BoxWatcherGuard>,
 }
 
 pub struct ContainerNode {

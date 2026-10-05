@@ -35,6 +35,8 @@ fn text_node(content: &'static str) -> RenderNode {
         content: Computed::constant(StyledStr::plain(content)),
         alignment: Computed::constant(HorizontalAlignment::Leading),
         line_limit: None,
+        layout_dirty: Rc::new(Cell::new(false)),
+        _guards: Vec::new(),
     }))
 }
 

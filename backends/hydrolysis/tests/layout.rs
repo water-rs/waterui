@@ -295,6 +295,53 @@ fn a_line_limit_caps_the_reserved_height(ui: UiBuilder<Styled<hydrolysis_m3::Mat
     );
 }
 
+/// A text whose content changes after mount is measured again inside a
+/// retained sub-view (here a navigation page), so the box layout gives it —
+/// and the place of the view under it — follows the new string. Before
+/// waterui#1872 the page kept the one-line box the first string measured,
+/// and the flush wrapped the new string inside it, over the next view.
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (600, 600))]
+fn a_changed_text_is_measured_again_inside_a_navigation_page(
+    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
+) {
+    use waterui::navigation::{NavigationStack, NavigationView};
+
+    fn page(status: Binding<String>) -> impl View {
+        NavigationStack::new(NavigationView::new(
+            "Status",
+            vstack((
+                text(status).a11y_label("status").width(150.0),
+                text("below").a11y_label("below"),
+            )),
+        ))
+    }
+
+    let mut settled = ui
+        .clone()
+        .mount_offscreen(|| page(Binding::container(LONG.to_owned())));
+    let expected = settled.query().label("status").single().bounds();
+
+    let status = Binding::container(String::from("short"));
+    let mut app = ui.mount_offscreen({
+        let status = status.clone();
+        move || page(status.clone())
+    });
+    status.set(LONG.to_owned());
+    app.settle();
+
+    let measured = app.query().label("status").single().bounds();
+    let below = app.query().label("below").single().bounds();
+    assert!(
+        (measured.height() - expected.height()).abs() < 0.5,
+        "the changed text keeps the box it measured before the change: {measured:?}, \
+         while the same string mounted directly measures {expected:?}"
+    );
+    assert!(
+        below.y() >= measured.y() + measured.height() - 0.5,
+        "the view below must be placed under the re-measured text: {below:?} vs {measured:?}"
+    );
+}
+
 /// Compressed buttons keep their labels on one line instead of folding them
 /// into paragraphs — the webview example's toolbar rendered "Back" as
 /// "Bac / k" before button labels defaulted to a single truncated line.
