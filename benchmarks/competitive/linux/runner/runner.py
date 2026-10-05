@@ -233,9 +233,8 @@ ls -la "$D"
         inner = r'''
 set -e
 cd /bench/gtk4
-gcc -O2 -Wall -o gtk-bench main.c $(pkg-config --cflags --libs gtk4) -lm
 mkdir -p /bench/dist/gtk4
-cp gtk-bench /bench/dist/gtk4/app
+gcc -O2 -Wall -o /bench/dist/gtk4/app main.c $(pkg-config --cflags --libs gtk4) -lm
 '''
         docker_run_bash(inner)
         staged["gtk4"] = "dist/gtk4"
