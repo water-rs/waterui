@@ -5780,6 +5780,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "keyboard-panel-example"
+version = "0.1.0"
+dependencies = [
+ "waterui",
+]
+
+[[package]]
 name = "keyboard-types"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
