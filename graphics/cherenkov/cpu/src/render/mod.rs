@@ -119,11 +119,6 @@ pub struct RasterRenderer {
     image_replacements: u64,
     /// Counts rendered frames; the projective cache's recency clock.
     frame_count: u64,
-    /// The reusable [`FrameRedraw`] this renderer fills per frame and
-    /// returns as a cheap clone — the engine drops the previous result
-    /// before the next render, so reset and requests mutate uniquely
-    /// owned map storage with no fresh allocation.
-    redraw: FrameRedraw,
 }
 
 impl std::fmt::Debug for RasterRenderer {
@@ -167,7 +162,6 @@ pub fn init(config: RasterConfig) -> Result<(RasterRenderer, RasterInfo), Engine
                     bitmap_cache: bitmap::BitmapCache::new(config.budget.cpu.0),
                     image_replacements: 0,
                     frame_count: 0,
-                    redraw: FrameRedraw::default(),
                 },
                 info,
             )
@@ -481,10 +475,6 @@ impl Renderer for RasterRenderer {
     }
 
     #[cfg(target_arch = "wasm32")]
-    #[expect(
-        clippy::future_not_send,
-        reason = "the browser engine is single-threaded and its futures run on the page's event loop; FrameRedraw's copy-on-write map is Rc there"
-    )]
     fn render(
         &mut self,
         frame: &Frame<'_>,
@@ -643,10 +633,8 @@ impl RasterRenderer {
         self.filters.finish_frame(&used, &used_groups);
         // Every visible surface whose filter or backdrop group still
         // runs asks for the next frame on its own entry — the animated
-        // backdrop names the surface it draws into. The scratch map is
-        // retained across frames; resetting it reuses its storage.
-        let redraw = &mut self.redraw;
-        redraw.clear();
+        // backdrop names the surface it draws into.
+        let mut redraw = FrameRedraw::default();
         for (id, surface) in &self.surfaces {
             if surface.visibility != Visibility::Visible {
                 continue;
@@ -663,7 +651,7 @@ impl RasterRenderer {
                 redraw.request(*id, surface.refresh.clone());
             }
         }
-        Ok(self.redraw.clone())
+        Ok(redraw)
     }
 
     /// Gates every filter's and backdrop chain's wakes on the surfaces whose

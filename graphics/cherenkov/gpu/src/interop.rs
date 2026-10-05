@@ -759,38 +759,40 @@ impl ExternalFrame {
 
 /// Native external-frame import on Vulkan (issue #166).
 ///
-/// [`Device`] imports a producer [`FrameSource`] — a Linux [`DmaBuf`] or an
-/// Android `AHardwareBuffer` — as a [`Frame`] on the engine's shared
-/// `VkDevice`, synchronised through a Vulkan semaphore on the GPU. Install
-/// the frame on a layer through [`ExternalFrame::native`].
+/// [`Device`](vulkan::Device) imports a producer
+/// [`FrameSource`](vulkan::FrameSource) — a Linux [`DmaBuf`](vulkan::DmaBuf)
+/// or an Android `AHardwareBuffer` — as a [`Frame`](vulkan::Frame) on the
+/// engine's shared `VkDevice`, synchronised through a Vulkan semaphore on
+/// the GPU. Install the frame on a layer through [`ExternalFrame::native`].
 #[cfg(all(unix, not(target_vendor = "apple")))]
 pub mod vulkan {
     #[cfg(target_os = "android")]
     pub use crate::render::external::vulkan::Ahb;
     // The producer-facing surface: import descriptors, the imported frame,
-    // its capability record and the sync contract. The encode-side
+    // its capability record, the per-device context `Device::shared` and
+    // `Native::new` carry, and the sync contract. The encode-side
     // machinery (`Release`, `Views`, `submit_waits`, `mark_submitted`,
     // `drain_releases`, `create_pool`, `KIND_*`) stays `pub(crate)`;
     // `Generation`/`State` and the staging pair remain public for the
     // standalone Android device-test binary, recorded in docs/api.md.
     pub use crate::render::external::vulkan::{
         Caps, Device, DmaBuf, DmaBufPlane, Frame, FrameSource, Generation, Native, NativeError,
-        PendingAcquire, PendingWait, QueueFamily, ReleaseSync, Repr, State, Wait, cancel_staged,
-        stage_acquire,
+        PendingAcquire, PendingWait, QueueFamily, ReleaseSync, Repr, Shared, State, Wait,
+        cancel_staged, stage_acquire,
     };
 }
 
 /// Linux interop: presenting through exported DMA-BUFs (#1687).
 ///
-/// [`DmabufTarget`] is the zero-copy present target for hosts that can
-/// import Linux dma-bufs (e.g. `GdkDmabufTexture`, a Wayland compositor,
-/// GStreamer): the engine renders each frame into one image of a small
-/// pool of exportable Vulkan images and hands the host the image's
-/// planes, an explicit DRM format modifier and a sync-file acquire
-/// fence. The host returns each image with a release sync file; an image
-/// is reused only after that release has signalled, and a surface with
-/// no free image waits for a release rather than allocating — never a
-/// CPU wait on the render thread.
+/// [`DmabufTarget`](dmabuf::DmabufTarget) is the zero-copy present target
+/// for hosts that can import Linux dma-bufs (e.g. `GdkDmabufTexture`, a
+/// Wayland compositor, GStreamer): the engine renders each frame into one
+/// image of a small pool of exportable Vulkan images and hands the host the
+/// image's planes, an explicit DRM format modifier and a sync-file acquire
+/// fence. The host returns each image with a release sync file; an image is
+/// reused only after that release has signalled, and a surface with no free
+/// image waits for a release rather than allocating — never a CPU wait on
+/// the render thread.
 #[cfg(target_os = "linux")]
 pub mod dmabuf {
     use std::os::fd::OwnedFd;

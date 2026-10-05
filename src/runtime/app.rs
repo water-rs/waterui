@@ -1,12 +1,22 @@
 //! A `WaterUI` application representation.
 
+use core::future::Future;
+use core::pin::Pin;
+
 use nami::Computed;
 use suiteki::Str;
-use waterui_core::{Environment, handler::ViewBuilder};
+use waterui_core::{
+    Environment, State,
+    handler::{Handler, HandlerOnce, ViewBuilder, boxed_action, boxed_action_once},
+};
 
 use crate::{
     component::menu::{Menu, MenuBarView},
     window::Window,
+};
+
+pub use crate::runtime::termination::{
+    Quit, Termination, TerminationHandle, TerminationHost, TerminationKind,
 };
 
 /// Represents a `WaterUI` application.
@@ -23,8 +33,14 @@ pub struct App {
     last_window: LastWindowPolicy,
     /// Optional system menu bar menus.
     pub menu_bar: Computed<Vec<Menu>>,
-    /// The application environment containing injected services.
+    /// The application environment containing injected services. Values
+    /// installed with [`App::state`] are layered over it when the runner
+    /// takes the application apart with [`App::into_parts`].
     pub env: Environment,
+    /// The values installed with [`App::state`], the first call's nearest.
+    states: Environment,
+    /// The termination hooks, carried to the runner inside [`AppParts`].
+    termination: Termination,
 }
 
 /// What an application does once it has no open window.
@@ -67,6 +83,10 @@ pub struct AppParts {
     pub env: Environment,
     /// What the runner does once the application has no open window.
     pub last_window: LastWindowPolicy,
+    /// The application's termination hooks. The runner starts the machine
+    /// with [`Termination::start`] once its local executor exists, then
+    /// reports every quit path through the returned handle.
+    pub termination: Termination,
 }
 
 /// What this application is called, or empty when nothing said.
@@ -138,6 +158,8 @@ impl App {
             last_window: LastWindowPolicy::default(),
             menu_bar: Computed::constant(Vec::new()),
             env,
+            states: Environment::new(),
+            termination: Termination::default(),
         }
     }
 
@@ -189,31 +211,142 @@ impl App {
         self
     }
 
+    /// Injects cloneable state into the application's environment.
+    ///
+    /// The application-level counterpart of `ViewExt::state`: handlers that
+    /// run under the application's environment rather than a view's —
+    /// `App::menu_bar` commands, [`App::on_quit_request`] and
+    /// [`App::on_terminate`] — extract a `#[state]`-marked type or `State<T>`
+    /// the same way view handlers do. Repeated calls on the same type install
+    /// positional `State<T>` slots in call order, as a `ViewExt::state`
+    /// chain does: the first call's value binds the first `State<T>`
+    /// parameter. The values join the environment [`App::into_parts`] hands
+    /// the runner.
+    ///
+    /// ```
+    /// # use waterui::prelude::*;
+    /// # use waterui::app::App;
+    /// #[waterui::state]
+    /// #[derive(Clone)]
+    /// struct Store;
+    ///
+    /// fn app(env: Environment) -> App {
+    ///     App::new(|| text!("Counter"), env)
+    ///         .state(&Store)
+    ///         .menu_bar(Menu::new("App", "Quit".action(|_store: Store| {})))
+    /// }
+    /// ```
+    #[must_use]
+    pub fn state<T: Clone + 'static>(mut self, state: &T) -> Self {
+        // A `ViewExt::state` chain nests, so its first value ends up nearest.
+        // The values installed so far are layered over the new one to keep
+        // that order.
+        self.states = self
+            .states
+            .layered_on(&Environment::new().extending(State(state.clone())));
+        self
+    }
+
+    /// Ask the application before it quits.
+    ///
+    /// `handler` runs when a *cancellable* termination request arrives: the
+    /// user choosing Quit, the platform's quit gesture, a declared
+    /// `MenuItem::Quit`, or [`Quit::request`]. Returning
+    /// [`QuitReply::Cancel`] vetoes the quit and the application keeps
+    /// running; [`QuitReply::Quit`] lets termination proceed to
+    /// [`App::on_terminate`]. A *required* termination — a termination
+    /// signal, the last window closing under [`LastWindowPolicy::Quit`], or
+    /// a Windows session that ends whatever the application answered —
+    /// never asks. At most one question is open at a time; a required
+    /// request arriving while the question is open supersedes it.
+    ///
+    /// The handler extracts from the application environment like any other
+    /// [`Handler`], and its future is driven on the runner's local executor.
+    /// iOS, Android and web kill the process without notice and never call
+    /// this handler.
+    #[must_use]
+    pub fn on_quit_request<H, Args, Fut>(mut self, handler: H) -> Self
+    where
+        H: Handler<Args, Fut>,
+        Fut: Future<Output = QuitReply> + 'static,
+    {
+        let mut action = boxed_action(handler);
+        self.termination.on_quit_request = Some(Box::new(
+            move |env| -> Pin<Box<dyn Future<Output = QuitReply>>> { Box::pin(action(env)) },
+        ));
+        self
+    }
+
+    /// Run shutdown work once the application is actually ending.
+    ///
+    /// `handler` runs exactly once, after [`App::on_quit_request`] answered
+    /// [`QuitReply::Quit`] — or immediately for a *required* termination,
+    /// which skips the question: a termination signal, the last window
+    /// closing under [`LastWindowPolicy::Quit`], or a Windows session that
+    /// ends whatever the application answered. The runner waits for the
+    /// future to complete before tearing down, so this is where state is
+    /// persisted and resources released.
+    ///
+    /// The handler extracts from the application environment like any other
+    /// [`HandlerOnce`], and its future is driven on the runner's local
+    /// executor. iOS, Android and web kill the process without notice and
+    /// never call this handler.
+    #[must_use]
+    pub fn on_terminate<H, Args, Fut>(mut self, handler: H) -> Self
+    where
+        H: HandlerOnce<Args, Fut>,
+        Fut: Future<Output = ()> + 'static,
+    {
+        let action = boxed_action_once(handler);
+        self.termination.on_terminate =
+            Some(Box::new(move |env| -> Pin<Box<dyn Future<Output = ()>>> {
+                Box::pin(action(env))
+            }));
+        self
+    }
+
     /// Consume the app and return its windows, in declaration order.
     #[must_use]
     pub fn into_windows(self) -> Vec<Window> {
         self.windows
     }
 
-    /// Consume the app and return the parts a runner needs.
+    /// Consume the app and return the parts a runner needs, with the values
+    /// installed by [`App::state`] layered over its environment.
     #[must_use]
     pub fn into_parts(self) -> AppParts {
         AppParts {
             windows: self.windows,
             menu_bar: self.menu_bar,
-            env: self.env,
+            env: self.states.layered_on(&self.env),
             last_window: self.last_window,
+            termination: self.termination,
         }
     }
 }
 
+/// An application's answer to "may I quit?", returned by
+/// [`App::on_quit_request`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuitReply {
+    /// Allow termination: `on_terminate` runs, then the process ends.
+    Quit,
+    /// Veto termination: the application keeps running.
+    Cancel,
+}
+
 #[cfg(test)]
 mod tests {
+    use alloc::rc::Rc;
+    use alloc::vec::Vec;
+    use core::cell::{Cell, RefCell};
+
     use nami::{Binding, Signal};
     use waterui_core::layout::{LayoutDirection, layout_direction};
     use waterui_locale::locales;
 
     use super::*;
+    use crate::component::menu::CommandExt as _;
 
     #[test]
     fn application_direction_tracks_locale_binding() {
@@ -267,5 +400,77 @@ mod tests {
 
         assert_eq!(app.windows().len(), 1);
         assert_eq!(app.last_window_policy(), LastWindowPolicy::Quit);
+    }
+
+    /// Resolves `app`'s menu bar under the environment its runner receives
+    /// and runs the first command of its first menu.
+    fn run_first_menu_bar_command(app: App) {
+        use crate::component::menu::{ResolvedMenuItem, resolve_menu_bar_items};
+
+        let parts = app.into_parts();
+        let bars = resolve_menu_bar_items(&parts.menu_bar, &parts.env).snapshot();
+        let [ResolvedMenuItem::Menu(menu)] = bars.as_slice() else {
+            panic!("expected one resolved menu, got {bars:?}");
+        };
+        let command = menu
+            .items
+            .snapshot()
+            .into_iter()
+            .find_map(|item| match item {
+                ResolvedMenuItem::Command(command) => Some(command),
+                _ => None,
+            })
+            .expect("the menu must contain the declared command");
+        command.action.call(&parts.env);
+    }
+
+    #[test]
+    fn a_menu_bar_command_extracts_state_installed_with_app_state() {
+        #[waterui_macros::state]
+        #[derive(Clone)]
+        struct Tally {
+            hits: Rc<Cell<u32>>,
+        }
+
+        impl Tally {
+            fn bump(&self) {
+                self.hits.set(self.hits.get() + 1);
+            }
+        }
+
+        let hits = Rc::new(Cell::new(0_u32));
+        let tally = Tally {
+            hits: Rc::clone(&hits),
+        };
+        run_first_menu_bar_command(
+            App::new(|| (), Environment::new())
+                .state(&tally)
+                .menu_bar(Menu::new("App", "Bump".action(|tally: Tally| tally.bump()))),
+        );
+
+        assert_eq!(hits.get(), 1);
+    }
+
+    #[test]
+    fn same_typed_app_state_binds_in_call_order() {
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let record = Rc::clone(&seen);
+        run_first_menu_bar_command(
+            App::new(|| (), Environment::new())
+                .state(&"first")
+                .state(&"second")
+                .menu_bar(Menu::new(
+                    "App",
+                    "Record".action(
+                        move |first: State<&'static str>, second: State<&'static str>| {
+                            record.borrow_mut().extend([first.0, second.0]);
+                        },
+                    ),
+                )),
+        );
+
+        // The first `State<T>` parameter binds the first call's value, as in
+        // a `ViewExt::state` chain.
+        assert_eq!(*seen.borrow(), ["first", "second"]);
     }
 }

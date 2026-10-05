@@ -707,6 +707,9 @@ impl AndroidSession {
             // window asks to close the host finishes the activity, and the OS
             // itself decides whether the process stays resident.
             last_window: _,
+            // Android kills the process without notice, so the termination
+            // hooks are never called and the machine is never started.
+            termination: _,
         } = app.into_parts();
         let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
         waterui::inspector::install(&mut env, inspector);
