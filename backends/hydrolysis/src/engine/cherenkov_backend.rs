@@ -216,8 +216,10 @@ impl CherenkovSurface {
         size: (u32, u32),
     ) -> Self {
         let (target, textures) = cherenkov_gpu::interop::TextureTarget::new(size);
+        // The renderer requests its own frames through its frame signals,
+        // so the surface's wake has nothing further to reach.
         let surface = engine
-            .surface(target)
+            .surface(target, || {})
             .expect("hydrolysis renderer: failed to create the Cherenkov surface");
         Self::build(engine, device, backend, size, surface, textures)
     }
@@ -236,8 +238,10 @@ impl CherenkovSurface {
         size: (u32, u32),
     ) -> Self {
         let (target, textures) = cherenkov_gpu::interop::TextureTarget::new(size);
+        // The renderer requests its own frames through its frame signals,
+        // so the surface's wake has nothing further to reach.
         let surface = engine
-            .surface(target)
+            .surface(target, || {})
             .await
             .expect("hydrolysis renderer: failed to create the Cherenkov surface");
         Self::build(engine, device, backend, size, surface, textures)

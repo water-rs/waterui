@@ -140,7 +140,7 @@ fn recording_and_rendering_reuse_ui_thread_allocations() {
     })
     .expect("init");
     let surface = engine
-        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16))
+        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {})
         .expect("surface");
     let layer = surface.layer();
     let path = ShapeData::Path {

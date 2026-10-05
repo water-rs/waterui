@@ -623,7 +623,7 @@ mod macos {
         window: Surface<Gpu>,
         system: SystemCompositor,
         view: Retained<NSView>,
-        /// Set by the engine's wake callback: an attach landing on the
+        /// Set by the window surface's wake: an attach landing on the
         /// main queue asks for the frame that promotes its candidate.
         woke: Arc<AtomicBool>,
     }
@@ -653,11 +653,16 @@ mod macos {
             let host = view.layer().expect("a layer-backed view");
             host.setContentsScale(SCALE);
             let system = SystemCompositor::attach(&metal, &host);
+            let woke = Arc::new(AtomicBool::new(false));
+            let flag = Arc::clone(&woke);
             let window = engine
-                .surface(configure(WindowTarget::new(
-                    View(dispatch2::MainThreadBound::new(view.clone(), mtm)),
-                    SIZE,
-                )))
+                .surface(
+                    configure(WindowTarget::new(
+                        View(dispatch2::MainThreadBound::new(view.clone(), mtm)),
+                        SIZE,
+                    )),
+                    move || flag.store(true, Ordering::Release),
+                )
                 .expect("a window surface");
             window
                 .display(Display {
@@ -665,9 +670,6 @@ mod macos {
                     headroom: 1.0,
                 })
                 .expect("the display");
-            let woke = Arc::new(AtomicBool::new(false));
-            let flag = Arc::clone(&woke);
-            engine.set_waker(move || flag.store(true, Ordering::Release));
             Self {
                 metal,
                 engine,
@@ -912,7 +914,7 @@ mod macos {
         let buffer = bgra_buffer();
         let offscreen = fixture
             .engine
-            .surface(Offscreen::new(SIZE, OffscreenFormat::LinearF16))
+            .surface(Offscreen::new(SIZE, OffscreenFormat::LinearF16), || {})
             .expect("offscreen");
         let _engine_scene = scene_bar(
             &fixture.engine,
@@ -979,7 +981,7 @@ mod macos {
         let buffer = bgra_buffer();
         let offscreen = fixture
             .engine
-            .surface(Offscreen::new(SIZE, OffscreenFormat::LinearF16))
+            .surface(Offscreen::new(SIZE, OffscreenFormat::LinearF16), || {})
             .expect("offscreen");
         let _engine_scene = scene_bar(
             &fixture.engine,
@@ -1139,7 +1141,7 @@ mod macos {
         let opaque = Fixture::new();
         let offscreen = opaque
             .engine
-            .surface(Offscreen::new(SIZE, OffscreenFormat::LinearF16))
+            .surface(Offscreen::new(SIZE, OffscreenFormat::LinearF16), || {})
             .expect("offscreen");
         let _engine_scene = scene_bar(
             &opaque.engine,
@@ -1224,7 +1226,7 @@ mod macos {
         let fixture = Fixture::new();
         let offscreen = fixture
             .engine
-            .surface(Offscreen::new(SIZE, OffscreenFormat::LinearF16))
+            .surface(Offscreen::new(SIZE, OffscreenFormat::LinearF16), || {})
             .expect("offscreen");
         let build = |surface: &Surface<Gpu>| {
             surface.clear_color(WorkingColor::BLACK);
@@ -1432,7 +1434,7 @@ mod macos {
         };
         let offscreen = fixture
             .engine
-            .surface(Offscreen::new(SIZE, OffscreenFormat::LinearF16))
+            .surface(Offscreen::new(SIZE, OffscreenFormat::LinearF16), || {})
             .expect("offscreen");
         let _engine_scene = scene_bar(&fixture.engine, &offscreen, bgra(&fixture.metal), 1.0);
         let _window_scene = scene_bar(&fixture.engine, &fixture.window, bgra(&fixture.metal), 1.0);
@@ -1510,7 +1512,7 @@ mod macos {
         let _window_layer = layer(&fixture.window);
         let offscreen = fixture
             .engine
-            .surface(Offscreen::new(SIZE, OffscreenFormat::LinearF16))
+            .surface(Offscreen::new(SIZE, OffscreenFormat::LinearF16), || {})
             .expect("offscreen");
         let _offscreen_layer = layer(&offscreen);
         if fixture.promote() {
@@ -1554,7 +1556,7 @@ mod macos {
         let buffer = nv12_buffer(VIDEO);
         let offscreen = fixture
             .engine
-            .surface(Offscreen::new(SIZE, OffscreenFormat::LinearF16))
+            .surface(Offscreen::new(SIZE, OffscreenFormat::LinearF16), || {})
             .expect("offscreen");
         let _engine_scene = scene_bar(
             &fixture.engine,
@@ -1598,7 +1600,7 @@ mod macos {
         };
         let offscreen = fixture
             .engine
-            .surface(Offscreen::new(SIZE, OffscreenFormat::LinearF16))
+            .surface(Offscreen::new(SIZE, OffscreenFormat::LinearF16), || {})
             .expect("offscreen");
         let _engine_scene = scene(&fixture.engine, &offscreen, bgra(&fixture.metal));
         let _window_scene = scene(&fixture.engine, &fixture.window, bgra(&fixture.metal));

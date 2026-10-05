@@ -17,7 +17,7 @@ split_test! {
 fn pending_paths_reuse_their_coverage_layout() -> Result<(), Box<dyn std::error::Error>> {
     use cherenkov::kurbo::{Affine, Shape as _};
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
-    let surface = wait!(engine.surface(Offscreen::new((128, 80), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((128, 80), OffscreenFormat::LinearF16), || {}))?;
     surface.clear_color(CLEAR);
     let path = Circle::new((400.0, 450.0), 400.0).to_path(0.01);
     surface.update(|tx| {
@@ -67,7 +67,7 @@ fn render(
         Err(EngineError::Backend(_)) => return Ok(None),
         Err(e) => return Err(e.into()),
     };
-    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     surface.clear_color(CLEAR);
     let layer = surface.layer();
     surface.update(|tx| {
@@ -165,7 +165,7 @@ fn a_clipped_path_is_cached_per_offset() -> Result<(), Box<dyn std::error::Error
         Err(EngineError::Backend(_)) => return Ok(()),
         Err(e) => return Err(e.into()),
     };
-    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     surface.clear_color(CLEAR);
     let layer = surface.layer();
     surface.update(|tx| {
@@ -332,7 +332,7 @@ fn sized_surface(
     engine: &Engine<Gpu>,
     size: (u32, u32),
 ) -> Result<(cherenkov::Surface<Gpu>, cherenkov::Layer), Box<dyn std::error::Error>> {
-    let surface = wait!(engine.surface(Offscreen::new(size, OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new(size, OffscreenFormat::LinearF16), || {}))?;
     surface.clear_color(CLEAR);
     let layer = surface.layer();
     surface.update(|tx| {
@@ -726,7 +726,7 @@ use cherenkov::Instant;
         Err(EngineError::Backend(_)) => return Ok(()),
         Err(e) => return Err(e.into()),
     };
-    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     surface.clear_color(CLEAR);
     let layer = surface.layer();
     surface.update(|tx| {

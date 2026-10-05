@@ -55,8 +55,8 @@ split_test! {
 fn multi_surface_frame_grows_instances_once() -> Result<(), Box<dyn std::error::Error>> {
     let sink = Sink::new();
     let engine = wait!(diag_engine(&sink))?;
-    let a = wait!(engine.surface(Offscreen::new((128, 128), OffscreenFormat::LinearF16)))?;
-    let b = wait!(engine.surface(Offscreen::new((128, 128), OffscreenFormat::LinearF16)))?;
+    let a = wait!(engine.surface(Offscreen::new((128, 128), OffscreenFormat::LinearF16), || {}))?;
+    let b = wait!(engine.surface(Offscreen::new((128, 128), OffscreenFormat::LinearF16), || {}))?;
     // 40 fills a side: 80 instances ≫ the 16-instance initial buffer.
     for surface in [&a, &b] {
         surface.update(|tx| {
@@ -104,7 +104,7 @@ split_test! {
 fn atlas_growth_retries_and_commits() -> Result<(), Box<dyn std::error::Error>> {
     let sink = Sink::new();
     let engine = wait!(diag_engine(&sink))?;
-    let surface = wait!(engine.surface(Offscreen::new((512, 512), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((512, 512), OffscreenFormat::LinearF16), || {}))?;
     // 144 distinct stars with 34–48 px radii: each ~70–96² × 4 B of
     // fresh path cells ≈ 2–3.5 MiB, over the 1 MiB starting atlas.
     // Distinct geometry per star keeps the cells from deduplicating.
@@ -158,7 +158,7 @@ split_test! {
 fn stale_bind_groups_retire_at_capture_regen() -> Result<(), Box<dyn std::error::Error>> {
     let sink = Sink::new();
     let engine = wait!(diag_engine(&sink))?;
-    let surface = wait!(engine.surface(Offscreen::new((128, 128), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((128, 128), OffscreenFormat::LinearF16), || {}))?;
     let group = surface.backdrop_group_unfiltered();
     let glass = surface.layer();
     surface.update(|tx| {
@@ -213,7 +213,7 @@ split_test! {
 fn small_big_small_with_work_in_flight() -> Result<(), Box<dyn std::error::Error>> {
     let sink = Sink::new();
     let engine = wait!(diag_engine(&sink))?;
-    let surface = wait!(engine.surface(Offscreen::new((256, 256), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((256, 256), OffscreenFormat::LinearF16), || {}))?;
     let group = surface.backdrop_group_unfiltered();
     let glass = surface.layer();
     let start = Instant::now();

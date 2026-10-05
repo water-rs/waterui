@@ -112,7 +112,7 @@ fn the_engine_decodes_the_nv12_pattern() {
     .expect("host GPU engine");
     let (sw, sh) = (480u32, 270u32);
     let surface = engine
-        .surface(Offscreen::new((sw, sh), OffscreenFormat::LinearF16))
+        .surface(Offscreen::new((sw, sh), OffscreenFormat::LinearF16), || {})
         .expect("offscreen surface");
     let video = surface.layer();
     let (prod, sink) = engine.frame_producer();

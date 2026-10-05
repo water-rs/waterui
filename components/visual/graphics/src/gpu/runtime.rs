@@ -946,7 +946,9 @@ impl LayerHost {
     ) -> Result<Self, HostedLayerError> {
         let engine = runtime.engine_on(&context)?;
         let (target, textures) = TextureTarget::new((size.width(), size.height()));
-        let surface = engine.surface(target)?;
+        // The hosting view schedules this layer's frames itself, so the
+        // surface's wake has nothing to reach.
+        let surface = engine.surface(target, || {})?;
         Self::assemble(surface, engine, context, textures)
     }
 
@@ -967,7 +969,9 @@ impl LayerHost {
     ) -> Result<Self, HostedLayerError> {
         let engine = runtime.engine_on(&context).await?;
         let (target, textures) = TextureTarget::new((size.width(), size.height()));
-        let surface = engine.surface(target).await?;
+        // The hosting view schedules this layer's frames itself, so the
+        // surface's wake has nothing to reach.
+        let surface = engine.surface(target, || {}).await?;
         Self::assemble(surface, engine, context, textures)
     }
 

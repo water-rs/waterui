@@ -218,7 +218,7 @@ fn presented_pixels(
     source: &wgpu::Texture,
 ) -> Result<Vec<[f32; 4]>, Box<dyn std::error::Error>> {
     let (target, destinations) = TextureTarget::new((24, 24));
-    let destination = wait!(engine.surface(target))?;
+    let destination = wait!(engine.surface(target, || {}))?;
     let destination_texture = destinations.try_recv()?;
     let delivery = cherenkov_gpu::interop::shader_delivery(backend, device)?;
     let mut presenter = Presenter::new(device, delivery);
@@ -259,7 +259,7 @@ fn host_contracts_at_one_revision() -> Result<(), Box<dyn std::error::Error>> {
     // Retained texture output: the host gets a texture now and a notification
     // only when the allocation changes again.
     let (target, textures) = TextureTarget::new((16, 16));
-    let surface = wait!(engine.surface(target))?;
+    let surface = wait!(engine.surface(target, || {}))?;
     let first_output = textures.try_recv()?;
     assert_eq!((first_output.width(), first_output.height()), (16, 16));
 

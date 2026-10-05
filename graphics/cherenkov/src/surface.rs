@@ -82,10 +82,6 @@ impl<B: Backend> Queue<B> for EngineQueue<B> {
     fn wake(&self) {
         self.waker.wake();
     }
-
-    fn pending(&self, pending: bool) {
-        self.waker.note_pending(pending);
-    }
 }
 
 /// A surface: a render target plus its layer tree. `!Send`; dropping sends
@@ -228,58 +224,6 @@ impl<B: Backend> Surface<B> {
     #[must_use]
     pub fn next_frame(&self) -> crate::frame::Next {
         self.next_frame.borrow().clone()
-    }
-
-    /// Installs the surface's own wake-up callback — the per-surface host
-    /// model, for a host that keeps a presentation loop per surface
-    /// rather than one aggregate loop behind the whole engine.
-    ///
-    /// Queued changes (a `surface.update`, a layer drop, a bound signal
-    /// firing), the backend's completions for the surface and its
-    /// becoming visible fire `f` instead of the engine's
-    /// [`set_waker`](crate::Engine::set_waker) callback — coalesced
-    /// independently: at most once between two frames the surface
-    /// participates in. A hidden surface never calls it.
-    /// [`Engine::set_waker`](crate::Engine::set_waker) remains the host
-    /// API for applications that deliberately own one aggregate
-    /// presentation loop.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn set_waker(&self, f: impl Fn() + Send + Sync + 'static) {
-        self.waker.set_callback(SharedWaker::new(f));
-        self.wake_pending();
-    }
-
-    /// Installs the surface's own wake-up callback — the per-surface host
-    /// model, for a host that keeps a presentation loop per surface
-    /// rather than one aggregate loop behind the whole engine.
-    ///
-    /// Queued changes (a `surface.update`, a layer drop, a bound signal
-    /// firing), the backend's completions for the surface and its
-    /// becoming visible fire `f` instead of the engine's
-    /// [`set_waker`](crate::Engine::set_waker) callback — coalesced
-    /// independently: at most once between two frames the surface
-    /// participates in. A hidden surface never calls it.
-    /// [`Engine::set_waker`](crate::Engine::set_waker) remains the host
-    /// API for applications that deliberately own one aggregate
-    /// presentation loop.
-    #[cfg(target_arch = "wasm32")]
-    pub fn set_waker(&self, f: impl Fn() + 'static) {
-        self.waker.set_callback(SharedWaker::new(f));
-        self.wake_pending();
-    }
-
-    /// Wakes the surface's own callback once if work queued before it
-    /// landed is still unrendered — such a change already fired (and
-    /// disarmed) the aggregate engine wake, so without the nudge it would
-    /// sit until the next change. The queue's own `unrendered` flag
-    /// answers, never a borrow of the shared state: a `set_waker` that
-    /// lands while a transaction holds the borrow sees the queued ops'
-    /// flag and wakes, so reentrant callback replacement keeps the same
-    /// owed-wake semantics rather than guessing at pending state.
-    fn wake_pending(&self) {
-        if self.waker.has_pending() {
-            self.waker.wake();
-        }
     }
 
     /// Announces whether the user can see the surface, from the platform's

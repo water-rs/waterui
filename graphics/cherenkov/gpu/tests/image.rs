@@ -110,7 +110,7 @@ fn an_image_draws_nearest() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
     let image = two_by_two(&engine);
-    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
             c.image(image.id(), Rect::new(0., 0., 64., 64.), Sampling::Nearest);
@@ -133,7 +133,7 @@ fn an_image_interpolates_bilinear() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
     let image = two_by_two(&engine);
-    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
             c.image(image.id(), Rect::new(0., 0., 64., 64.), Sampling::Linear);
@@ -168,7 +168,7 @@ fn an_image_pattern_repeats() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
     let image = two_by_two(&engine);
-    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
             c.fill(
@@ -200,7 +200,7 @@ fn an_image_pattern_with_extend_none_is_transparent() -> Result<(), Box<dyn std:
         return Ok(());
     };
     let image = two_by_two(&engine);
-    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
             c.fill(
@@ -269,7 +269,7 @@ fn an_f16_image_keeps_hdr_and_wide_gamut() -> Result<(), Box<dyn std::error::Err
             .color_space(ImageColorSpace::LinearSrgb)
             .premultiplied(),
     )?;
-    let surface = wait!(engine.surface(Offscreen::new((8, 2), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((8, 2), OffscreenFormat::LinearF16), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
             c.image(hdr.id(), Rect::new(0., 0., 4., 2.), Sampling::Nearest);
@@ -304,7 +304,7 @@ fn an_image_beyond_the_texture_limit_fails_the_render_that_draws_it()
         device: Some(shared),
         ..GpuConfig::default()
     }))?;
-    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {}))?;
     let image = engine.image(ImageData::<Rgba8>::new(
         width,
         1,
@@ -340,7 +340,7 @@ fn an_image_released_before_its_replacement_is_installed_still_draws()
         return Ok(());
     };
     let image = two_by_two(&engine);
-    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     let pictured = surface.layer();
     let marker = surface.layer();
     surface.update(|tx| {

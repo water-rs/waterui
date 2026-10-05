@@ -28,7 +28,7 @@ fn assert_pixel(actual: [f32; 4], expected: [f32; 4], tolerance: f32) {
 fn unfiltered_member_samples_what_is_behind_it() {
     let engine = engine();
     let surface = engine
-        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     let group = surface.backdrop_group_unfiltered();
     let glass = surface.layer();
@@ -70,7 +70,7 @@ fn unfiltered_member_samples_what_is_behind_it() {
 fn capture_point_is_the_first_member_in_paint_order() {
     let engine = engine();
     let surface = engine
-        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     let group = surface.backdrop_group_unfiltered();
     let first = surface.layer();
@@ -110,7 +110,7 @@ fn capture_point_is_the_first_member_in_paint_order() {
 fn nested_groups_capture_in_paint_order() {
     let engine = engine();
     let surface = engine
-        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     let outer = surface.backdrop_group_unfiltered();
     let inner = surface.backdrop_group_unfiltered();
@@ -157,7 +157,7 @@ fn nested_groups_capture_in_paint_order() {
 fn member_inside_clip_only_isolation_sees_the_surface() {
     let engine = engine();
     let surface = engine
-        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     let group = surface.backdrop_group_unfiltered();
     let p = surface.layer();
@@ -201,7 +201,7 @@ fn member_sample_is_not_attenuated_by_layer_opacity() {
     fn render(opacity: f32) -> cherenkov::Readback {
         let engine = engine();
         let surface = engine
-            .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32))
+            .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32), || {})
             .expect("surface");
         let group = surface.backdrop_group_unfiltered();
         let member = surface.layer();
@@ -250,7 +250,7 @@ fn blurred_backdrop_matches_full_surface_blur_within_apron() {
     let engine = engine();
     let size = (32, 96);
     let surface = engine
-        .surface(Offscreen::new(size, OffscreenFormat::LinearF32))
+        .surface(Offscreen::new(size, OffscreenFormat::LinearF32), || {})
         .expect("surface");
     let group = surface.backdrop_group(filtrate::filters::GaussianBlur(4.0f32));
     let glass = surface.layer();
@@ -295,17 +295,20 @@ fn band_streamed_backdrop_matches_offscreen_byte_for_byte() {
     let height = usize::try_from(size.1).expect("height fits usize");
     let (sink, streamed_bands) = mpsc::channel();
     let bands = engine
-        .surface(Bands::new(size, OffscreenFormat::LinearF32, move |band| {
-            let pixels = match band.pixels {
-                BandPixels::F32(pixels) => pixels,
-                BandPixels::F16(_) => panic!("expected LinearF32 bands"),
-            };
-            sink.send((band.y, pixels.to_vec()))
-                .expect("stream pixels channel open");
-        }))
+        .surface(
+            Bands::new(size, OffscreenFormat::LinearF32, move |band| {
+                let pixels = match band.pixels {
+                    BandPixels::F32(pixels) => pixels,
+                    BandPixels::F16(_) => panic!("expected LinearF32 bands"),
+                };
+                sink.send((band.y, pixels.to_vec()))
+                    .expect("stream pixels channel open");
+            }),
+            || {},
+        )
         .expect("bands surface");
     let offscreen = engine
-        .surface(Offscreen::new(size, OffscreenFormat::LinearF32))
+        .surface(Offscreen::new(size, OffscreenFormat::LinearF32), || {})
         .expect("offscreen surface");
     let build = |surface: &cherenkov::Surface<Raster>| {
         let group = surface.backdrop_group(filtrate::filters::GaussianBlur(4.0f32));
@@ -362,7 +365,7 @@ fn band_streamed_backdrop_matches_offscreen_byte_for_byte() {
 fn multi_band_capture_has_no_band_seams() {
     let engine = engine();
     let surface = engine
-        .surface(Offscreen::new((32, 96), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((32, 96), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     let group = surface.backdrop_group(filtrate::filters::GaussianBlur(5.0f32));
     let member = surface.layer();
@@ -406,7 +409,10 @@ fn capture_memory_is_bounded_by_bands_not_capture_height() {
     let peak = |height: u32| -> u64 {
         let engine = engine();
         let surface = engine
-            .surface(Offscreen::new((32, height), OffscreenFormat::LinearF32))
+            .surface(
+                Offscreen::new((32, height), OffscreenFormat::LinearF32),
+                || {},
+            )
             .expect("surface");
         let group = surface.backdrop_group(filtrate::filters::GaussianBlur(4.0f32));
         let member = surface.layer();
@@ -437,7 +443,7 @@ fn capture_memory_is_bounded_by_bands_not_capture_height() {
 fn member_without_clip_is_unsupported() {
     let engine = engine();
     let surface = engine
-        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     let group = surface.backdrop_group_unfiltered();
     let member = surface.layer();
@@ -459,7 +465,7 @@ fn member_without_clip_is_unsupported() {
 fn dropped_group_fails_the_frame() {
     let engine = engine();
     let surface = engine
-        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     let member = surface.layer();
     {
@@ -482,7 +488,7 @@ fn dropped_group_fails_the_frame() {
 fn two_members_share_one_capture() {
     let engine = engine();
     let surface = engine
-        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     let group = surface.backdrop_group_unfiltered();
     let left = surface.layer();

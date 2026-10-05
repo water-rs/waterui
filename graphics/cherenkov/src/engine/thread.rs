@@ -988,7 +988,7 @@ mod tests {
     use crate::backend::Visibility;
     use crate::backend::{Backend, Display};
     use crate::display_list::{DisplayList, Picture};
-    use crate::engine::{SurfaceWaker, Waker};
+    use crate::engine::SurfaceWaker;
     use cherenkov_record::{ChangeSet, ContentOp, LayerId, LayerOp, Op, SurfaceId, SurfaceTree};
 
     use crate::testing::{Event, Null, NullConfig};
@@ -1019,7 +1019,7 @@ mod tests {
             content_animating: false,
             sampled_rate: None,
             visibility: Visibility::Visible,
-            waker: std::sync::Arc::new(SurfaceWaker::new(std::sync::Arc::new(Waker::new()))),
+            waker: std::sync::Arc::new(SurfaceWaker::new(Box::new(|| {}))),
         };
 
         let mut first = ChangeSet::<Null> {
@@ -1063,7 +1063,7 @@ mod tests {
         })
         .expect("init");
         let surface = engine
-            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16))
+            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {})
             .expect("surface");
         let layer = surface.layer();
         let mut pointers = Vec::new();

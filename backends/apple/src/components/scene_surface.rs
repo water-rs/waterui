@@ -215,17 +215,14 @@ impl ScenePart {
         // `TextureTarget::new` always opens on the engine's default range;
         // a `.rate(...)` builder would replace it at construction.
         let refresh = DEFAULT_REFRESH;
+        // This scene's queued work, completions and reveal requests wake
+        // only its own host, coalesced until the surface next participates
+        // in a frame.
+        let wake = redraw.clone();
         let surface = generation
             .engine()
-            .surface(target)
+            .surface(target, move || wake.request_redraw())
             .map_err(SceneError::Surface)?;
-        // Per-surface wake routing: this scene's queued work, completions
-        // and reveal requests wake only its own host, coalesced until the
-        // surface next participates in a frame.
-        {
-            let wake = redraw.clone();
-            surface.set_waker(move || wake.request_redraw());
-        }
         let source = textures
             .try_recv()
             .map_err(|_| SceneError::MissingTexture)?;
@@ -820,8 +817,8 @@ mod tests {
             .expect("scene generation settles");
 
         // The first record clears the seeded dirty bit. A fresh install on an
-        // idle engine may itself ask for a frame through `set_waker`; the
-        // invalidator's contribution is the delta each `set` adds.
+        // idle engine may itself ask for a frame through the surface's wake;
+        // the invalidator's contribution is the delta each `set` adds.
         renderer
             .record_if_needed(
                 &target(&renderer, 20),

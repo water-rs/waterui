@@ -28,7 +28,7 @@ A `GpuContentBox` moves a `Send` producer onto the render thread; `Engine::gpu_p
 
 A producer writes premultiplied linear Display P3. The engine composites its current frame through the same transform, clip, opacity, blend and filter paths as recorded content. The frame is retained between updates. `Frame::elapsed` and `delta` use the host's `FrameTime`, not a private wall clock. `Frame::request_redraw()` asks for another presentation; an asynchronous `RedrawHandle` request marks the frame dirty and wakes the host once until consumed.
 
-Detached producers retain pending requests but do not run or wake the host. Reattachment consumes their latest state. Removing content disables outstanding wake handles. Callbacks may run on producer threads, so use a thread-safe event-loop proxy. Ordinary live operands use the shared UI-thread `Engine::set_waker` contract.
+Detached producers retain pending requests but do not run or wake the host. Reattachment consumes their latest state. Removing content disables outstanding wake handles. Callbacks may run on producer threads, so use a thread-safe event-loop proxy. Ordinary live operands wake the host through the wake their surface was created with (`Engine::surface`).
 
 ## Shader paints
 

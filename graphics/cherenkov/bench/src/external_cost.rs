@@ -1037,7 +1037,7 @@ pub(crate) fn run(args: &ExternalCostArgs) -> Result<(), BenchError> {
     let idle = memory_snapshot(&engine, &shared, SampleDetail::Full);
     let mut producer = platform::Producer::new(&spec, &shared)?;
     let surface = engine
-        .surface(offscreen(&spec))
+        .surface(offscreen(&spec), || {})
         .map_err(|e| BenchError::Gpu(format!("external-cost surface: {e}")))?;
     let layer = surface.layer();
     let total = warmup
@@ -1307,7 +1307,7 @@ pub fn composite_frame(
     let (engine, shared) = engine_and_device()?;
     let mut producer = platform::Producer::new(&spec, &shared)?;
     let surface = engine
-        .surface(offscreen(&spec))
+        .surface(offscreen(&spec), || {})
         .map_err(|e| BenchError::Gpu(format!("external-cost surface: {e}")))?;
     let layer = surface.layer();
 

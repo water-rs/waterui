@@ -184,7 +184,8 @@ impl<F: Format> Image<F> {
     /// frame samples a partly written image. The same dimensions reuse the
     /// backing storage; different dimensions reallocate it behind the same
     /// id. The next render redraws the surfaces whose content draws this
-    /// image, and the engine's waker fires to request that render.
+    /// image, and each of those surfaces wakes its host to request that
+    /// render.
     ///
     /// `image` is validated by [`ImageData::new`]. A rejection only the
     /// backend can detect keeps the previous pixels and fails every render
@@ -485,7 +486,8 @@ pub struct FrameSink<B: crate::GpuContent> {
     dirty: Arc<std::sync::atomic::AtomicBool>,
     /// Open while any binding is drawn on a visible surface.
     gate: Arc<crate::WakeGate>,
-    /// The engine's host wake-up.
+    /// Wakes every live surface's host, each through its own coalesced
+    /// wake.
     wake: SinkWake,
 }
 
@@ -517,8 +519,10 @@ impl<B: crate::GpuContent> FrameSink<B> {
     /// Installs `frame` as the producer's current frame. The submit
     /// travels in order with the engine's messages; each surface a
     /// binding of the producer is drawn on treats it as the layer's frame
-    /// swap. Wakes the host once per new frame while the producer is on a
-    /// visible surface — submits coalesce like a producer's redraw.
+    /// swap. Once per new frame while the producer is on a visible
+    /// surface, it wakes the host of every live surface through that
+    /// surface's own wake — submits coalesce like a producer's redraw, and
+    /// a hidden surface wakes nothing.
     pub fn submit(&self, frame: impl Into<B::Frame>) {
         let frame = frame.into();
         let opaque = B::frame_opaque(&frame);

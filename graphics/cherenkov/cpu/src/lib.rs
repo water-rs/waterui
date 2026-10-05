@@ -31,7 +31,7 @@
 //! use cherenkov_cpu::{Raster, RasterConfig};
 //!
 //! let engine = Engine::<Raster>::new(RasterConfig::default())?;
-//! let surface = engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16))?;
+//! let surface = engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {})?;
 //! surface.update(|tx| {
 //!     tx[surface.root()].content(
 //!         surface.record(|c| c.fill(Rect::new(0., 0., 64., 64.), WorkingColor::WHITE)),

@@ -1380,10 +1380,10 @@ impl Engine for Cherenkov {
         };
         let surface = self
             .engine
-            .surface(Offscreen::new(
-                (input.scene.width, input.scene.height),
-                format,
-            ))
+            .surface(
+                Offscreen::new((input.scene.width, input.scene.height), format),
+                || {},
+            )
             .map_err(|e| BenchError::Gpu(format!("cherenkov surface: {e}")))?;
         surface.clear_color(working(&input.scene.clear));
         register_fonts(

@@ -1,7 +1,7 @@
 //! The engine: owns the render thread and every resource's identity.
 //! `!Send`, lives on the UI thread.
 
-use super::{SharedWaker, SurfaceWaker, Waker, thread};
+use super::{SharedWaker, SurfaceWaker, Wakes, thread};
 
 use std::cell::{Cell, RefCell};
 use std::marker::PhantomData;
@@ -80,7 +80,9 @@ pub struct Engine<B: Backend> {
     post: Rc<dyn Fn(Message<B>)>,
     /// The `Message::ReplaceImage` sender every image handle shares.
     replace_image: ReplaceImage,
-    waker: Arc<Waker>,
+    /// Every live surface's wake, for the engine-scoped wakes of frame
+    /// producers.
+    wakes: Arc<Wakes>,
     // `!Send`: the engine lives on the UI thread.
     _not_send: PhantomData<Rc<()>>,
 }
@@ -112,7 +114,6 @@ impl<B: Backend> Engine<B> {
             .recv()
             .map_err(|_| EngineError::Thread("render thread died during init".into()))??;
         let post_tx = tx.clone();
-        let waker = Arc::new(Waker::new());
         let replace_image = {
             let tx = tx.clone();
             // The render loop wakes the host through every visible surface
@@ -146,7 +147,7 @@ impl<B: Backend> Engine<B> {
                 let _ = post_tx.send(message);
             }),
             replace_image,
-            waker,
+            wakes: Arc::new(Wakes::new()),
             _not_send: PhantomData,
         })
     }
@@ -208,30 +209,6 @@ impl<B: Backend> Engine<B> {
     /// Reports system memory pressure. `Critical` drops every cache.
     pub fn trim(&self, pressure: Pressure) {
         let _ = self.tx.send(Message::Trim(pressure));
-    }
-
-    /// Registers the host wake-up callback.
-    ///
-    /// Changes made outside a frame (a `surface.update`, a layer drop, a
-    /// bound signal firing) are queued, not sent. When the display link is
-    /// paused after `Next::Idle`, the host must learn that a frame is
-    /// needed: the engine calls `f` at most once between two
-    /// [`Engine::render`]s, the first time something is queued on a
-    /// visible surface, and once when a surface becomes visible (see
-    /// [`Surface::visibility`]). A hidden surface never calls it. `f` may
-    /// run on the engine's thread, on the render thread — an image
-    /// replacement wakes the host from there once it knows a visible
-    /// surface draws the image — or on the main thread, where a
-    /// completion the render thread queued fires it, so it must be
-    /// [`Send`] and [`Sync`].
-    ///
-    /// This is the aggregate-host model: one callback behind every
-    /// visible surface's wake. A surface whose host keeps its own
-    /// presentation loop installs
-    /// [`Surface::set_waker`](crate::Surface::set_waker) instead; its
-    /// changes, completions and reveals then reach that callback alone.
-    pub fn set_waker(&self, f: impl Fn() + Send + Sync + 'static) {
-        self.waker.set(Arc::new(f));
     }
 
     fn alloc(cell: &Cell<u64>) -> u64 {
@@ -297,14 +274,36 @@ impl<B: Backend> Engine<B> {
     }
 
     /// Creates a surface over `target`: an [`Offscreen`](crate::Offscreen)
-    /// texture or an interop window target.
+    /// texture or an interop window target. `wake` is the surface's host
+    /// wake-up, fixed for the surface's life.
+    ///
+    /// Changes made outside a frame (a `surface.update`, a layer drop, a
+    /// bound signal firing) are queued, not sent. When the display link is
+    /// paused after `Next::Idle`, the host must learn that a frame is
+    /// needed: the engine calls `wake` at most once between two
+    /// [`Engine::render`]s the surface participates in — the first time
+    /// something is queued on it, a backend completion lands for it, an
+    /// image it draws is replaced, or a frame producer submits — and once
+    /// when the surface becomes visible (see [`Surface::visibility`]). A
+    /// hidden surface never calls it. `wake` may run on the engine's
+    /// thread, on the render thread — an image replacement wakes the host
+    /// from there once it knows the surface draws the image — on a frame
+    /// producer's thread, or on the main thread, where a completion the
+    /// render thread queued fires it, so it must be [`Send`] and [`Sync`].
+    ///
+    /// A host that keeps one presentation loop behind several surfaces
+    /// passes each of them the same request-redraw callback.
     ///
     /// # Errors
     /// [`SurfaceError`] when the backend cannot draw the target, or
     /// [`SurfaceError::Lost`] when the render thread is gone.
-    pub fn surface(&self, target: impl Into<B::Target>) -> Result<Surface<B>, SurfaceError> {
+    pub fn surface(
+        &self,
+        target: impl Into<B::Target>,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Result<Surface<B>, SurfaceError> {
         let id = SurfaceId::new(Self::alloc(&self.next_surface));
-        let waker = Arc::new(SurfaceWaker::new(Arc::clone(&self.waker)));
+        let waker = Arc::new(SurfaceWaker::new(Box::new(wake)));
         let (reply, rx) = std::sync::mpsc::channel();
         self.tx
             .send(Message::CreateSurface {
@@ -316,11 +315,13 @@ impl<B: Backend> Engine<B> {
             .map_err(|_| SurfaceError::Lost)?;
         let info = rx.recv().map_err(|_| SurfaceError::Lost)??;
         let surface = Surface::new(id, info, self.tx.clone(), waker);
-        self.surfaces.borrow_mut().push(super::SurfaceEntry {
+        let mut surfaces = self.surfaces.borrow_mut();
+        surfaces.push(super::SurfaceEntry {
             shared: Rc::downgrade(&surface.shared),
             waker: SharedWaker::clone(&surface.waker),
             next_frame: Rc::downgrade(&surface.next_frame),
         });
+        self.wakes.publish(&surfaces);
         Ok(surface)
     }
 
@@ -350,9 +351,9 @@ impl<B: Backend> Engine<B> {
         };
         let mut commits = std::mem::take(&mut *self.commits.borrow_mut());
         commits.clear();
+        // Re-arms each drained surface's wake before the render is sent:
+        // completions may arrive while it is in flight, before its reply.
         super::drain_visible(&mut self.surfaces.borrow_mut(), time, &mut commits);
-        // Completions may arrive while render is in flight, before its reply.
-        self.waker.arm();
         let next_scratch = std::mem::take(&mut *self.next_scratch.borrow_mut());
         if let Err(error) = self.tx.send(Message::Render {
             time,
@@ -565,7 +566,7 @@ impl<B: GpuContent> Engine<B> {
                 B::add_frame_producer(r, id, dirty, gate);
             }
         })));
-        let engine_waker = std::sync::Arc::clone(&self.waker);
+        let wakes = Arc::clone(&self.wakes);
         (
             GpuProducer::new(id, self.retire.clone()),
             FrameSink::new(
@@ -573,7 +574,7 @@ impl<B: GpuContent> Engine<B> {
                 self.tx.clone(),
                 dirty,
                 gate,
-                std::sync::Arc::new(move || engine_waker.wake()),
+                Arc::new(move || wakes.wake()),
             ),
         )
     }
@@ -632,10 +633,10 @@ mod tests {
         })
         .unwrap();
         let surface = engine
-            .surface(crate::Offscreen::new(
-                (16, 16),
-                crate::OffscreenFormat::LinearF16,
-            ))
+            .surface(
+                crate::Offscreen::new((16, 16), crate::OffscreenFormat::LinearF16),
+                || {},
+            )
             .unwrap();
         surface.visibility(crate::Visibility::Hidden).unwrap();
         let layer = surface.layer();
@@ -714,6 +715,54 @@ mod tests {
         filler.join().unwrap();
     }
 
+    /// An engine-scoped wake — what a frame producer's submit fires —
+    /// reaches every live surface through its own wake: coalesced per
+    /// surface until it next renders, silent for a hidden surface and for
+    /// a dropped one.
+    #[test]
+    fn engine_scoped_wakes_fan_out_to_each_visible_surface() {
+        let (events, _rx) = std::sync::mpsc::channel();
+        let engine = Engine::<Null>::new(NullConfig {
+            events,
+            reject: std::collections::HashSet::default(),
+        })
+        .unwrap();
+        let counted = |count: &Arc<AtomicUsize>| {
+            let count = Arc::clone(count);
+            move || {
+                count.fetch_add(1, Ordering::Relaxed);
+            }
+        };
+        let target = || crate::Offscreen::new((8, 8), crate::OffscreenFormat::LinearF16);
+        let (visible, hidden, dropped) = (
+            Arc::new(AtomicUsize::new(0)),
+            Arc::new(AtomicUsize::new(0)),
+            Arc::new(AtomicUsize::new(0)),
+        );
+        let _shown = engine.surface(target(), counted(&visible)).unwrap();
+        let concealed = engine.surface(target(), counted(&hidden)).unwrap();
+        drop(engine.surface(target(), counted(&dropped)).unwrap());
+        concealed.visibility(crate::Visibility::Hidden).unwrap();
+
+        engine.wakes.wake();
+        engine.wakes.wake();
+        assert_eq!(
+            visible.load(Ordering::Relaxed),
+            1,
+            "coalesced until a render"
+        );
+        assert_eq!(hidden.load(Ordering::Relaxed), 0, "a hidden surface woke");
+        assert_eq!(dropped.load(Ordering::Relaxed), 0, "a dropped surface woke");
+
+        engine.render(FrameTime::now()).unwrap();
+        engine.wakes.wake();
+        assert_eq!(
+            visible.load(Ordering::Relaxed),
+            2,
+            "a render re-arms the wake"
+        );
+    }
+
     #[test]
     fn completion_before_render_reply_wakes_the_host() {
         let (events, _) = std::sync::mpsc::channel();
@@ -722,21 +771,26 @@ mod tests {
             reject: std::collections::HashSet::default(),
         })
         .unwrap();
+        let wake_count = Arc::new(AtomicUsize::new(0));
+        let surface = engine
+            .surface(
+                crate::Offscreen::new((8, 8), crate::OffscreenFormat::LinearF16),
+                {
+                    let wake_count = Arc::clone(&wake_count);
+                    move || {
+                        wake_count.fetch_add(1, Ordering::Relaxed);
+                    }
+                },
+            )
+            .unwrap();
         // Replace only the render transport. The real native render method
         // receives a completion after submission but before its reply.
         engine.tx.send(Message::Shutdown).unwrap();
         engine.thread.take().unwrap().join().unwrap();
         let (tx, rx) = crossbeam_channel::bounded(1);
         engine.tx = tx;
-        let wake_count = Arc::new(AtomicUsize::new(0));
-        engine.set_waker({
-            let wake_count = Arc::clone(&wake_count);
-            move || {
-                wake_count.fetch_add(1, Ordering::Relaxed);
-            }
-        });
-        engine.waker.wake();
-        let waker = Arc::clone(&engine.waker);
+        surface.waker.wake();
+        let waker = Arc::clone(&surface.waker);
         engine.thread = Some(std::thread::spawn(move || {
             let Message::Render { commits, reply, .. } = rx.recv().unwrap() else {
                 panic!("expected render");
@@ -753,10 +807,12 @@ mod tests {
                     sender: reply.clone(),
                 })
                 .unwrap();
+            assert!(matches!(rx.recv().unwrap(), Message::DestroySurface { .. }));
             assert!(matches!(rx.recv().unwrap(), Message::Shutdown));
         }));
         assert_eq!(engine.render(FrameTime::now()).unwrap(), Next::Idle);
         assert_eq!(wake_count.load(Ordering::Relaxed), 2);
+        drop(surface);
     }
 
     /// `Surface::next_frame` publishes each surface's own deadline and
@@ -773,16 +829,16 @@ mod tests {
         })
         .unwrap();
         let surface = engine
-            .surface(crate::Offscreen::new(
-                (16, 16),
-                crate::OffscreenFormat::LinearF16,
-            ))
+            .surface(
+                crate::Offscreen::new((16, 16), crate::OffscreenFormat::LinearF16),
+                || {},
+            )
             .unwrap();
         let peer = engine
-            .surface(crate::Offscreen::new(
-                (16, 16),
-                crate::OffscreenFormat::LinearF16,
-            ))
+            .surface(
+                crate::Offscreen::new((16, 16), crate::OffscreenFormat::LinearF16),
+                || {},
+            )
             .unwrap();
         // Property animations give each surface real frame demand while
         // they run; the peer's long curve outlives the short one, so an
