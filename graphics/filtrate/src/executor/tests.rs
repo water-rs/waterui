@@ -734,7 +734,10 @@ fn luma_curve_moves_luma_along_the_curve_and_scales_chroma() {
     let filter = luma_curve([0.9, 0.83, 0.925, 0.815], 0.75, 0.375, 0.1);
     let stage = colour_stage(&filter);
     let params = filter.params();
-    for colour in COLOURS {
+    // Extended colours whose straight luma lies above 1 and below 0, where
+    // the curve evaluates at the nearer end of its domain.
+    let outside = [[1.5, 1.2, 1.1, 1.0], [-0.24, -0.08, 0.16, 0.8]];
+    for colour in COLOURS.into_iter().chain(outside) {
         assert_close(
             evaluate(stage, &params, colour),
             luma_curve_reference(&filter, colour),
