@@ -325,7 +325,7 @@ impl RetainedSubview {
         built.needs_layout |= structural | built.node.take_layout_dirty();
         if built.needs_layout || size != built.laid_out || built.laid_out_proposal != Some(proposal)
         {
-            built.node.layout(renderer, env, proposal, size);
+            built.node.layout(renderer, env, None, proposal, size);
             built.laid_out = size;
             built.laid_out_proposal = Some(proposal);
             built.needs_layout = false;
@@ -382,7 +382,7 @@ impl RetainedSubview {
         built.needs_layout |= structural | built.node.take_layout_dirty();
         if built.needs_layout || size != built.laid_out || built.laid_out_proposal != Some(proposal)
         {
-            built.node.layout(renderer, env, proposal, size);
+            built.node.layout(renderer, env, None, proposal, size);
             built.laid_out = size;
             built.laid_out_proposal = Some(proposal);
             built.needs_layout = false;
@@ -425,7 +425,7 @@ impl RetainedSubview {
         let proposal = ProposalSize::new(Some(size.width), Some(size.height));
         if built.needs_layout || size != built.laid_out || built.laid_out_proposal != Some(proposal)
         {
-            built.node.layout(renderer, env, proposal, size);
+            built.node.layout(renderer, env, None, proposal, size);
             built.laid_out = size;
             built.laid_out_proposal = Some(proposal);
             built.needs_layout = false;
@@ -600,6 +600,10 @@ pub struct WrapperNode {
     pub(crate) render_id: RenderId,
     pub(super) effect: WrapperEffect,
     pub(super) env: Environment,
+    /// The per-edge release [`SafeAreaLayout::release`] computed for an
+    /// `IgnoreSafeArea` wrapper — the flush mirrors it into the child's
+    /// context. Zero for every other effect.
+    pub(super) released_offsets: Cell<EdgeOffsets>,
     pub(super) child: RenderNode,
 }
 
@@ -610,12 +614,12 @@ pub trait WidgetBehavior {
         0
     }
 
-    /// Whether the leaf is a §7.1 *fill* — its paint extends past its frame
-    /// into the safe-area bands on every edge its frame touches. The color
-    /// node and the gradient answer `true`; every other leaf does not.
-    fn is_fill(&self) -> bool {
-        false
-    }
+    /// §7.1's scroll-surface facts, handed from layout each pass — `None`
+    /// where the leaf has no safe-area context (inside a scroll surface's
+    /// content, or in the semantic pipeline). The surfaces that own a
+    /// [`crate::scroll::ScrollHandle`] (list, table) store it; the default
+    /// is a no-op for every other widget.
+    fn update_scroll_surface(&self, _facts: Option<ScrollSurfaceFacts>) {}
 
     /// Whether this leaf draws nothing — `WaterUI`'s empty view `()`.
     ///
@@ -671,6 +675,15 @@ pub struct WidgetNode {
     pub(crate) render_id: RenderId,
     pub(super) behavior: Rc<dyn WidgetBehavior>,
     pub(super) stretch: StretchAxis,
+    /// Whether this leaf paints a fill — the gradient — marking it
+    /// eligible for §7.1's background-slot paint extension. Set at build
+    /// by [`RenderNode::build_gradient`]; a `Color` leaf is a fill by its
+    /// own variant instead.
+    pub(super) fill_leaf: bool,
+    /// `Some` when this leaf sits in a background slot as a fill:
+    /// [`SafeAreaLayout::touched_edge_offsets`] recomputes the paint
+    /// extension at layout and the flush grows the leaf's bounds by it.
+    pub(super) fill_extension: Cell<Option<EdgeOffsets>>,
     pub(super) env: Environment,
 }
 
@@ -853,6 +866,10 @@ pub struct ColorNode {
     #[allow(dead_code)]
     pub(crate) render_id: RenderId,
     pub(crate) color: Computed<waterui_graphics::draw::WorkingColor>,
+    /// `Some` when this fill sits in a background slot:
+    /// [`SafeAreaLayout::touched_edge_offsets`] recomputes the paint
+    /// extension at layout and the flush grows the fill's bounds by it.
+    pub(super) fill_extension: Cell<Option<EdgeOffsets>>,
 }
 
 pub struct TextNode {
@@ -982,19 +999,13 @@ pub struct ScrollNode {
     /// measure would count as re-measurement; `patch` and
     /// `take_layout_dirty` reset it when the subtree changes underneath.
     pub(super) non_scrolling_minimum: Cell<Option<f32>>,
-    /// Environment captured at build — carrying the scroll surface's
-    /// safe-area reset for its subtree — for scroll-target accessibility and
+    /// Environment captured at build — for scroll-target accessibility and
     /// the child layout/flush environment.
     pub(super) env: Environment,
-    /// The keyboard band's depth into this surface's frame as last flushed:
-    /// a growing value means the keyboard is animating in, so the
-    /// focused-field clearance follows the host's frames with a direct
-    /// scroll instead of an animated jump.
-    pub(super) last_keyboard_cover: Cell<f64>,
-    /// Whether the focused field last computed clear of the keyboard: the
-    /// animated clearance scroll fires only on the clear→covered edge, so a
-    /// user scroll that re-covers the field is not fought frame by frame.
-    pub(super) focused_field_clear: Cell<bool>,
+    /// §7.1's scroll-surface bookkeeping: the extension and clearance
+    /// bounds layout computed once (the handle is rebound exactly once per
+    /// layout with them), plus the focused-field state the flush drives.
+    pub(super) surface: ScrollSurfaceArea,
 }
 
 pub struct RetainNode {
@@ -1108,6 +1119,10 @@ pub struct DynamicHostNode {
     /// re-lays out its tree before its next flush — the caller-imposed rect a
     /// `RetainedSubview` flushes at never renegotiates itself.
     pub(super) layout_dirty: Cell<bool>,
+    /// The safe-area context this host last laid out under — the mid-pass
+    /// layout the flush runs for a pending child reuses it (the child
+    /// fills the host's frame, so the facts stay valid).
+    pub(super) safe_area: RefCell<Option<SafeAreaLayout>>,
 }
 
 impl DynamicHostNode {

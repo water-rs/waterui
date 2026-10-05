@@ -12,6 +12,7 @@ impl_widget_behavior!(
         crate::widgets::layout::list::measure_list_node(&state.config, proposal, hydro, env, theme)
     }
     ; a11y: crate::widgets::layout::list::emit_list_accessibility
+    ; surface: surface
 );
 impl_widget_behavior!(
     crate::widgets::layout::table::TableRenderState,
@@ -20,6 +21,7 @@ impl_widget_behavior!(
         crate::widgets::layout::table::measure_table_node(&state.config, proposal, hydro, env, theme)
     }
     ; a11y: crate::widgets::layout::table::emit_table_accessibility
+    ; surface: surface
 );
 impl_widget_behavior!(
     crate::widgets::nav::navigation::NavigationViewRenderState,
@@ -51,7 +53,6 @@ impl_widget_behavior!(
     crate::renderer::render_gradient_node,
     crate::renderer::measure_gradient_node
     ; a11y: crate::renderer::views::emit_graphics_leaf_accessibility
-    ; fill: true
 );
 impl_widget_behavior!(
     ResolvedShape,
@@ -207,11 +208,17 @@ impl RenderNode {
     /// already a resolved engine paint in unit space — and re-fill it every
     /// flush at the current bounds. The payload carries no signal, so nothing
     /// is watched; the gradient stretches to fill the proposal
-    /// (`StretchAxis::Both`, read from the payload).
+    /// (`StretchAxis::Both`, read from the payload). A gradient paints a
+    /// fill — `fill_leaf` marks it so a background slot can give it §7.1's
+    /// band extension.
     pub(super) fn build_gradient(gradient: waterui_graphics::Gradient, env: &Environment) -> Self {
         let stretch = waterui_core::NativeView::stretch_axis(&gradient);
         let gradient = Rc::new(RefCell::new(gradient));
-        Self::build_widget(gradient, stretch, env)
+        let mut node = Self::build_widget(gradient, stretch, env);
+        if let Self::Widget(widget) = &mut node {
+            widget.fill_leaf = true;
+        }
+        node
     }
 
     /// Build a persistent shape node: retain the resolved shape payload and re-fill

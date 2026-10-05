@@ -7,7 +7,9 @@
 use super::*;
 use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use crate::platform_view::PlatformView;
+use core::any::Any;
 use waterui_core::views::ViewSnapshot;
+use waterui_layout::BackgroundLayout;
 
 impl RenderNode {
     /// Build a node from a view, capturing live reactive inputs. Native leaves
@@ -24,6 +26,7 @@ impl RenderNode {
                 return Self::Color(ColorNode {
                     render_id: RenderId::next(),
                     color: (*color).into_inner().resolve(env),
+                    fill_extension: Cell::new(None),
                 });
             }
             Err(view) => view,
@@ -46,6 +49,14 @@ impl RenderNode {
         let view = match view.downcast::<Native<FixedContainer>>() {
             Ok(container) => {
                 let (layout, children) = (*container).into_inner().into_inner();
+                // The background slot holds the fill §7.1 extends to the
+                // window edge on every touched edge — marked after the
+                // children are built, so a declaration wrapping the slot
+                // (`.ignore_safe_area` on the fill itself) replaces the
+                // default rather than stacking with it.
+                let background_slot = (layout.as_ref() as &dyn Any)
+                    .is::<BackgroundLayout>()
+                    .then_some(0);
                 let layout_dirty = Rc::new(Cell::new(false));
                 let signals = renderer.signals.clone();
                 let guards = layout.watch_invalidation({
@@ -61,12 +72,15 @@ impl RenderNode {
                 let child_env = accessibility_child_env.as_ref().unwrap_or(env);
                 #[cfg(not(feature = "accessibility"))]
                 let child_env = env;
-                let children = children
+                let mut children: Vec<RenderNode> = children
                     .into_iter()
                     .map(|child| {
                         Self::build(normalize_layout_view(child, child_env), child_env, renderer)
                     })
                     .collect();
+                if let Some(slot) = background_slot {
+                    mark_background_fill(&mut children[slot]);
+                }
                 return Self::Container(Box::new(ContainerNode {
                     memo_gate: Cell::default(),
                     memo_slots: RefCell::default(),
@@ -520,13 +534,11 @@ impl RenderNode {
                     ..
                 } = (*scroll).into_inner().into_inner();
                 let content = normalize_layout_view(content, env);
-                // A scroll surface ends the keyboard region and the
-                // accumulated ignore declarations for its subtree: the
-                // surface insets and scrolls its own content instead
-                // (layout-spec.md §7.1).
-                let mut child_env = env.clone();
-                child_env.insert(crate::platform::InsideScrollSurface);
-                child_env.insert(crate::platform::AccumulatedSafeAreaIgnores(0));
+                // A scroll surface owns §7.1 for its subtree: the layout
+                // pass hands the surface its facts and the child lays out
+                // with no safe-area context — the surface insets and
+                // scrolls its own content instead.
+                let child_env = env.clone();
                 return Self::Scroll(Box::new(ScrollNode {
                     memo_gate: Cell::default(),
                     memo_slots: RefCell::default(),
@@ -541,9 +553,8 @@ impl RenderNode {
                     content_size: Size::zero(),
                     viewport: Size::zero(),
                     non_scrolling_minimum: Cell::new(None),
-                    last_keyboard_cover: Cell::new(0.0),
-                    focused_field_clear: Cell::new(true),
                     env: child_env,
+                    surface: ScrollSurfaceArea::default(),
                 }));
             }
             Err(view) => view,
@@ -777,26 +788,12 @@ impl RenderNode {
         } else {
             env.clone()
         };
-        // `.ignore_safe_area` unions its declaration into the subtree's
-        // accumulated ignore mask: descendants (fills, scroll surfaces, a
-        // deeper declaration) extend through the union, and a scroll
-        // surface resets it for its own subtree.
-        let env = if let WrapperEffect::IgnoreSafeArea(ignore) = &effect {
-            let mut scoped = env;
-            let accumulated = scoped
-                .get::<crate::platform::AccumulatedSafeAreaIgnores>()
-                .map_or(0, |accumulated| accumulated.0)
-                | super::window::declared_ignore_mask(*ignore);
-            scoped.insert(crate::platform::AccumulatedSafeAreaIgnores(accumulated));
-            scoped
-        } else {
-            env
-        };
         Self::Wrapper(Box::new(WrapperNode {
             accessibility_identity: Rc::new(()),
             render_id: RenderId::next(),
             effect,
             env,
+            released_offsets: Cell::default(),
             child,
         }))
     }
@@ -851,6 +848,7 @@ impl RenderNode {
             render_id: RenderId::next(),
             effect: WrapperEffect::LifeCycle(effect),
             env,
+            released_offsets: Cell::default(),
             child,
         }))
     }
@@ -1135,6 +1133,24 @@ impl RenderNode {
             env: env.clone(),
             child,
             layout_dirty: Cell::new(false),
+            safe_area: RefCell::new(None),
         }))
+    }
+}
+/// Marks the node that fills a [`BackgroundLayout`]'s background slot with
+/// §7.1's fill role: a `Color` or a fill-widget leaf (the gradient)
+/// records its slot and extends its paint to the window edge on every edge
+/// its laid-out frame touches; any other content is not a fill and
+/// extends only through its own `.ignore_safe_area` declaration. The mark
+/// is a slot (`Cell`) the layout pass recomputes — it survives the
+/// declaration a user puts *on* the fill, which builds a wrapper around
+/// this node and replaces the default extension with its own release.
+fn mark_background_fill(node: &mut RenderNode) {
+    match node {
+        RenderNode::Color(color) => color.fill_extension.set(Some(EdgeOffsets::default())),
+        RenderNode::Widget(widget) if widget.fill_leaf => {
+            widget.fill_extension.set(Some(EdgeOffsets::default()))
+        }
+        _ => {}
     }
 }

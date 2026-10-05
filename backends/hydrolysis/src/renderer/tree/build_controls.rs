@@ -98,6 +98,8 @@ impl RenderNode {
             render_id: RenderId::next(),
             behavior: state,
             stretch,
+            fill_leaf: false,
+            fill_extension: Cell::new(None),
             env: env.clone(),
         })
     }

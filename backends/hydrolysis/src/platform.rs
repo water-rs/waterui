@@ -869,24 +869,6 @@ pub struct WindowSafeArea(pub nami::Binding<waterui_layout::padding::EdgeInsets>
 #[derive(Debug, Clone)]
 pub struct WindowKeyboardArea(pub nami::Binding<waterui_layout::padding::EdgeInsets>);
 
-/// The `(region, edge)` pairs `.ignore_safe_area` ancestors release on this
-/// subtree — the accumulation an `IgnoreSafeArea` wrapper computes into its
-/// scoped environment, beside the declaration the wrapper itself resolves.
-///
-/// Bits 0–3 are the container region's top/leading/bottom/trailing edges,
-/// bits 4–7 the keyboard region's — the `EdgeSet` order the android and
-/// apple ports share. Bit 8 marks that a declaration exists at all: a fill
-/// leaf with no ignore anywhere still extends through every region, while a
-/// declaration naming nothing replaces that default with none.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct AccumulatedSafeAreaIgnores(pub u16);
-
-/// The environment marker a scroll surface inserts for its subtree: the
-/// keyboard region ends at the surface — its content inset and focused-field
-/// scrolling own the keyboard behaviour inside, so descendants see none.
-#[derive(Debug, Clone, Copy)]
-pub struct InsideScrollSurface;
-
 /// Asserts the app's `Window::frame` binding carries finite components on
 /// all four fields. The binding is a trust boundary — a NaN or infinite
 /// frame is a programming error, not something the runner silently repairs

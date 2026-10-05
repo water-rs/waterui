@@ -433,6 +433,7 @@ impl CollectionNode {
     pub(super) fn layout(
         &mut self,
         renderer: &mut HydrolysisRenderer,
+        safe_area: Option<SafeAreaLayout>,
         proposal: ProposalSize,
         size: Size,
     ) {
@@ -491,9 +492,21 @@ impl CollectionNode {
             }
         }
         for (entry, placement) in self.entries.iter_mut().zip(&placements) {
-            entry
-                .node
-                .layout(renderer, &env, placement.proposal, *placement.frame.size());
+            let child_area = safe_area.as_ref().map(|area| {
+                area.with_frame(kurbo::Rect::new(
+                    area.frame().x0 + f64::from(placement.frame.x()),
+                    area.frame().y0 + f64::from(placement.frame.y()),
+                    area.frame().x0 + f64::from(placement.frame.max_x()),
+                    area.frame().y0 + f64::from(placement.frame.max_y()),
+                ))
+            });
+            entry.node.layout(
+                renderer,
+                &env,
+                child_area,
+                placement.proposal,
+                *placement.frame.size(),
+            );
         }
         self.placed = placements
             .into_iter()

@@ -306,12 +306,6 @@ impl HydrolysisRenderer {
         self.hit_test.window_bounds = bounds;
     }
 
-    /// The window's bounds in hit-test (window logical) space — the rect the
-    /// safe-area band math measures a node's frame against.
-    pub(crate) const fn window_bounds(&self) -> kurbo::Rect {
-        self.window_bounds
-    }
-
     pub(crate) const fn state_and_scene_mut(&mut self) -> (&mut HydroState, &mut Recording) {
         (&mut self.core.state, &mut self.scene)
     }

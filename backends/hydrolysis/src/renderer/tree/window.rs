@@ -5,11 +5,8 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use crate::platform::{
-    AccumulatedSafeAreaIgnores, InsideScrollSurface, WindowKeyboardArea, WindowSafeArea,
-};
+use crate::platform::{WindowKeyboardArea, WindowSafeArea};
 use waterui_layout::padding::EdgeInsets;
-use waterui_layout::safe_area::IgnoreSafeArea;
 
 /// The window's container-region insets in logical units, read through the
 /// renderer so the frame subscribes to them — a host write on the
@@ -25,237 +22,63 @@ pub(super) fn window_container_insets(
         .unwrap_or_default()
 }
 
-/// The window's keyboard-region insets in logical units — zero inside a
-/// scroll surface's subtree, where the surface's content inset and
-/// focused-field scrolling own the keyboard behaviour instead.
+/// The window's keyboard-region insets in logical units — §7.1's keyboard
+/// region: the software keyboard's own cover of the window, tracked
+/// frame-by-frame as the host animates it, which never resizes the window
+/// or the rendering surface.
 pub(super) fn window_keyboard_insets(
     renderer: &mut HydrolysisRenderer,
     env: &Environment,
 ) -> EdgeInsets {
-    if env.get::<InsideScrollSurface>().is_some() {
-        return EdgeInsets::default();
-    }
     env.get::<WindowKeyboardArea>()
         .map(|area| renderer.read_signal(&area.0))
         .unwrap_or_default()
 }
 
-/// The insets a child of `env` avoids: the deeper of the two regions on each
-/// edge — the rule §7.1's "layout avoids" applies whether the bands stack or
-/// overlap.
-pub(super) fn window_safe_area_insets(
+/// `bounds` shrunk by the deeper of the two regions on each edge — §7.1's
+/// "a view is laid out clear of the regions it does not ignore", applied
+/// at the window root. Clamps per axis so insets larger than the window
+/// collapse to the origin rather than inverting the rect.
+fn window_content_rect(
+    bounds: kurbo::Rect,
+    container: &EdgeInsets,
+    keyboard: &EdgeInsets,
+) -> kurbo::Rect {
+    let x0 = bounds.x0 + f64::from(container.leading().max(keyboard.leading()));
+    let y0 = bounds.y0 + f64::from(container.top().max(keyboard.top()));
+    let x1 = (bounds.x1 - f64::from(container.trailing().max(keyboard.trailing()))).max(x0);
+    let y1 = (bounds.y1 - f64::from(container.bottom().max(keyboard.bottom()))).max(y0);
+    kurbo::Rect::new(x0, y0, x1, y1)
+}
+
+/// The root layout inputs for one window frame: the laid-out content rect
+/// (the window shrunk by the deeper region on each edge), its `Size`, and
+/// the §7.1 [`SafeAreaLayout`] context the tree's root node lays out
+/// against — computed once per frame so the root `RenderContext` and the
+/// context's frame agree exactly.
+fn window_root_layout(
     renderer: &mut HydrolysisRenderer,
     env: &Environment,
-) -> EdgeInsets {
+    bounds: kurbo::Rect,
+) -> (kurbo::Rect, Size, SafeAreaLayout) {
     let container = window_container_insets(renderer, env);
     let keyboard = window_keyboard_insets(renderer, env);
-    EdgeInsets::new(
-        container.top().max(keyboard.top()),
-        container.bottom().max(keyboard.bottom()),
-        container.leading().max(keyboard.leading()),
-        container.trailing().max(keyboard.trailing()),
-    )
-}
-
-/// Edge indices in mask/depth order: top, leading, bottom, trailing — the
-/// `EdgeSet` order `AccumulatedSafeAreaIgnores` packs.
-const EDGE_TOP: usize = 0;
-const EDGE_LEADING: usize = 1;
-const EDGE_BOTTOM: usize = 2;
-const EDGE_TRAILING: usize = 3;
-/// The mask bit marking that an `IgnoreSafeArea` declaration exists: the
-/// accumulated mask of an `ignore_safe_area(NONE)` differs from no
-/// declaration — it replaces a fill's default extension with none.
-const IGNORER_MARK: u16 = 0x100;
-
-/// The `AccumulatedSafeAreaIgnores` mask `ignore` declares: its regions'
-/// edges in the shared `(region, edge)` order, plus the declaration mark.
-pub(super) fn declared_ignore_mask(ignore: IgnoreSafeArea) -> u16 {
-    let mut mask = IGNORER_MARK;
-    for (region, base) in [
-        (ignore.regions.container, 0u16),
-        (ignore.regions.keyboard, 4u16),
-    ] {
-        if region {
-            mask |= u16::from(ignore.edges.top) << base
-                | u16::from(ignore.edges.leading) << (base + 1)
-                | u16::from(ignore.edges.bottom) << (base + 2)
-                | u16::from(ignore.edges.trailing) << (base + 3);
-        }
-    }
-    mask
-}
-
-/// The mask `env`'s accumulated ignores resolve to for a node flushed under
-/// it. `default` applies only when no declaration ever accumulated — the
-/// fill/scroll default that extends through every region; a scroll
-/// surface's reset (an accumulation carrying no declaration mark) restores
-/// the same state for its subtree.
-pub(super) fn accumulated_ignore_mask(env: &Environment, default: u16) -> u16 {
-    env.get::<AccumulatedSafeAreaIgnores>()
-        .map_or(default, |accumulated| {
-            if accumulated.0 & IGNORER_MARK == 0 {
-                default
-            } else {
-                accumulated.0 & 0xff
-            }
-        })
-}
-
-/// The depth the `edge` of a view with `mask` may reach through, given both
-/// regions' depths at its frame: the shallowest region the mask does not
-/// ignore — an extension never paints inside a zone it does not ignore —
-/// the avoided depth itself when no region on the edge is ignored (no
-/// extension), and zero when every region is ignored (the window edge).
-const fn edge_target(mask: u16, edge: usize, container: f64, keyboard: f64) -> f64 {
-    let marked = mask & (1 << edge) != 0 || mask & (1 << (edge + 4)) != 0;
-    if !marked {
-        return if container > keyboard {
-            container
-        } else {
-            keyboard
-        };
-    }
-    let unmarked_container = mask & (1 << edge) == 0;
-    let unmarked_keyboard = mask & (1 << (edge + 4)) == 0;
-    match (unmarked_container, unmarked_keyboard) {
-        (true, true) => unreachable!(),
-        (true, false) => container,
-        (false, true) => keyboard,
-        (false, false) => 0.0,
-    }
-}
-
-/// The inset each edge of an `.ignore_safe_area` view releases: how much of
-/// the avoided band the declared regions and edges give back — zero on
-/// unflagged edges, the avoided depth minus the reachable target on flagged
-/// ones. `container`/`keyboard` are the two regions' depths at the frame.
-pub(super) fn released_insets(
-    mask: u16,
-    container: &EdgeInsets,
-    keyboard: &EdgeInsets,
-) -> [f64; 4] {
-    let edge = |index: usize, c: f32, k: f32| {
-        let avoided = f64::from(c.max(k));
-        (avoided - edge_target(mask, index, f64::from(c), f64::from(k))).max(0.0)
-    };
-    [
-        edge(EDGE_TOP, container.top(), keyboard.top()),
-        edge(EDGE_LEADING, container.leading(), keyboard.leading()),
-        edge(EDGE_BOTTOM, container.bottom(), keyboard.bottom()),
-        edge(EDGE_TRAILING, container.trailing(), keyboard.trailing()),
-    ]
-}
-
-/// A window-space extension a leaf or scroll surface may take on each edge:
-/// where its frame sits on the avoided boundary, the edge reaches through
-/// the regions `mask` ignores and stops at the nearest unignored one.
-///
-/// Returns the extension's `[top, leading, bottom, trailing]` amounts in
-/// window logical units — also the content inset a scroll surface applies.
-/// `frame` is the node's bounds in window space, `window` the window rect,
-/// and the insets the two regions' depths at the window edge.
-pub(super) fn band_extension(
-    frame: kurbo::Rect,
-    window: kurbo::Rect,
-    mask: u16,
-    container: &EdgeInsets,
-    keyboard: &EdgeInsets,
-) -> [f64; 4] {
-    const TOUCH: f64 = 0.5;
-    let mut out = [0.0; 4];
-    let edges = [
-        (
-            EDGE_TOP,
-            f64::from(container.top()),
-            f64::from(keyboard.top()),
-            frame.y0 - window.y0,
-        ),
-        (
-            EDGE_LEADING,
-            f64::from(container.leading()),
-            f64::from(keyboard.leading()),
-            frame.x0 - window.x0,
-        ),
-        (
-            EDGE_BOTTOM,
-            f64::from(container.bottom()),
-            f64::from(keyboard.bottom()),
-            window.y1 - frame.y1,
-        ),
-        (
-            EDGE_TRAILING,
-            f64::from(container.trailing()),
-            f64::from(keyboard.trailing()),
-            window.x1 - frame.x1,
-        ),
-    ];
-    for (index, c, k, gap) in edges {
-        let avoided = c.max(k);
-        // The edge extends only where the frame already sits on the avoided
-        // boundary — a band the frame never touches releases nothing.
-        if (gap - avoided).abs() > TOUCH {
-            continue;
-        }
-        out[index] = (avoided - edge_target(mask, index, c, k)).max(0.0);
-    }
-    out
-}
-
-/// The bounds/transform `ctx` reports after extending `[top, leading,
-/// bottom, trailing]` window-space amounts: the transform carries the
-/// leading/top overhang so descendants place from the shifted origin.
-pub(super) fn extended_ctx(ctx: RenderContext, extension: [f64; 4]) -> RenderContext {
-    let [top, leading, bottom, trailing] = extension;
-    ctx.child(
-        kurbo::Affine::translate((-leading, -top)),
-        kurbo::Rect::new(
-            0.0,
-            0.0,
-            ctx.bounds.width() + leading + trailing,
-            ctx.bounds.height() + top + bottom,
-        ),
-    )
-}
-
-/// The local-space rect `ctx` grows to once each of its window-space edges
-/// reaches through the regions `mask` ignores — the band extension mapped
-/// back through `hit_transform`, so any affine lands the paint exactly.
-/// `None` when no edge touches an avoided band or the transform degenerates.
-pub(super) fn extended_local_rect(
-    ctx: RenderContext,
-    window: kurbo::Rect,
-    mask: u16,
-    container: &EdgeInsets,
-    keyboard: &EdgeInsets,
-) -> Option<kurbo::Rect> {
-    let frame = transformed_rect(ctx.hit_transform, ctx.bounds);
-    let extension = band_extension(frame, window, mask, container, keyboard);
-    if !extension.iter().any(|depth| *depth > 0.0) {
-        return None;
-    }
-    let [top, leading, bottom, trailing] = extension;
-    let win_rect = kurbo::Rect::new(
-        frame.x0 - leading,
-        frame.y0 - top,
-        frame.x1 + trailing,
-        frame.y1 + bottom,
+    let content = window_content_rect(bounds, &container, &keyboard);
+    let size = Size::new(
+        crate::num_cast::f64_as_f32(content.width()),
+        crate::num_cast::f64_as_f32(content.height()),
     );
-    if ctx.hit_transform.determinant().abs() < 1e-9 {
-        return None;
-    }
-    Some(transformed_rect(ctx.hit_transform.inverse(), win_rect))
-}
-
-/// `bounds` shrunk by the safe-area insets — the rect the window's root
-/// content lays out inside. Clamps per axis so insets larger than the window
-/// collapse to the origin rather than inverting the rect.
-fn window_content_rect(bounds: kurbo::Rect, insets: &EdgeInsets) -> kurbo::Rect {
-    let x0 = bounds.x0 + f64::from(insets.leading());
-    let y0 = bounds.y0 + f64::from(insets.top());
-    let x1 = (bounds.x1 - f64::from(insets.trailing())).max(x0);
-    let y1 = (bounds.y1 - f64::from(insets.bottom())).max(y0);
-    kurbo::Rect::new(x0, y0, x1, y1)
+    let frame = kurbo::Rect::new(
+        content.x0,
+        content.y0,
+        content.x0 + f64::from(size.width),
+        content.y0 + f64::from(size.height),
+    );
+    (
+        content,
+        size,
+        SafeAreaLayout::root(bounds, container, keyboard, frame),
+    )
 }
 
 /// The [`RenderContext`] the window tree flushes under: `bounds` inset to the
@@ -636,12 +459,7 @@ impl HydrolysisRenderer {
         hit_transform: kurbo::Affine,
     ) {
         let _flush_span = tracing::debug_span!("hydrolysis_capture_window_tree").entered();
-        let insets = window_safe_area_insets(self, env);
-        let content_rect = window_content_rect(bounds, &insets);
-        let size = Size::new(
-            crate::num_cast::f64_as_f32(content_rect.width()),
-            crate::num_cast::f64_as_f32(content_rect.height()),
-        );
+        let (content_rect, size, safe_area) = window_root_layout(self, env, bounds);
         let proposal = ProposalSize::new(Some(size.width), Some(size.height));
         // The viewport is recorded here rather than by each caller: every host
         // that builds a window tree — the runner, and a `HydrolysisGpuView`
@@ -666,7 +484,7 @@ impl HydrolysisRenderer {
             #[cfg(feature = "frame-profile")]
             let layout_started_at = Instant::now();
             tree.prepare_for_measure(self);
-            tree.layout(self, env, proposal, size);
+            tree.layout(self, env, Some(safe_area), proposal, size);
             #[cfg(feature = "frame-profile")]
             {
                 self.frame_stage_times.layout += layout_started_at.elapsed();
@@ -692,7 +510,7 @@ impl HydrolysisRenderer {
         #[cfg(feature = "frame-profile")]
         let layout_started_at = Instant::now();
         node.prepare_for_measure(self);
-        node.layout(self, env, proposal, size);
+        node.layout(self, env, Some(safe_area), proposal, size);
         #[cfg(feature = "frame-profile")]
         {
             self.frame_stage_times.layout += layout_started_at.elapsed();
@@ -756,16 +574,13 @@ impl HydrolysisRenderer {
         self.reset_scene();
         self.begin_redraw_frame();
         // Layout runs every frame: geometry can never go stale against the
-        // scene encoded right after it.
-        let insets = window_safe_area_insets(self, env);
-        let content_rect = window_content_rect(bounds, &insets);
-        let size = Size::new(
-            crate::num_cast::f64_as_f32(content_rect.width()),
-            crate::num_cast::f64_as_f32(content_rect.height()),
-        );
+        // scene encoded right after it. The keyboard region feeds the same
+        // pass: a host write on `WindowKeyboardArea` re-lays the window out
+        // with the new cover, frame by frame through the host's animation.
+        let (content_rect, size, safe_area) = window_root_layout(self, env, bounds);
         let proposal = ProposalSize::new(Some(size.width), Some(size.height));
         tree.prepare_for_measure(self);
-        tree.layout(self, env, proposal, size);
+        tree.layout(self, env, Some(safe_area), proposal, size);
         drop(layout_span);
         #[cfg(feature = "frame-profile")]
         {

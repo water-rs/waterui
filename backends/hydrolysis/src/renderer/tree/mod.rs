@@ -23,13 +23,11 @@
 //! re-dispatching the same screen from the `View` tree costs ~15ms.
 
 macro_rules! impl_widget_behavior {
-    ($state:ty, $render:path, $measure:expr $(, $priority:expr)? $(; prepare: $prepare:ident)? $(; a11y: $a11y:path)? $(; renders_nothing: $renders_nothing:literal)? $(; fill: $is_fill:literal)?) => {
+    ($state:ty, $render:path, $measure:expr $(, $priority:expr)? $(; prepare: $prepare:ident)? $(; a11y: $a11y:path)? $(; renders_nothing: $renders_nothing:literal)? $(; surface: $surface:ident)?) => {
         impl WidgetBehavior for RefCell<$state> {
             $(fn priority(&self) -> i32 { $priority })?
 
             $(fn renders_nothing(&self) -> bool { $renders_nothing })?
-
-            $(fn is_fill(&self) -> bool { $is_fill })?
 
             fn render(
                 self: Rc<Self>,
@@ -56,6 +54,12 @@ macro_rules! impl_widget_behavior {
             })?
 
             $(
+                fn update_scroll_surface(&self, facts: Option<ScrollSurfaceFacts>) {
+                    self.borrow().$surface.facts.set(facts);
+                }
+            )?
+
+            $(
                 #[cfg(feature = "accessibility")]
                 fn emit_accessibility(
                     self: Rc<Self>,
@@ -76,11 +80,13 @@ mod collection;
 mod flush;
 mod layout;
 mod nodes;
+mod safe_area;
 mod subview;
 mod window;
 
 pub use collection::*;
 pub use nodes::*;
+pub use safe_area::*;
 use subview::NodeSubView;
 
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
