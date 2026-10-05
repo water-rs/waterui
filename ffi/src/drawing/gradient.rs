@@ -1,5 +1,5 @@
 use waterui_graphics::Gradient;
-use waterui_graphics::cherenkov::Paint;
+use waterui_graphics::draw::Paint;
 
 use crate::{IntoFFI, WuiArray, color::WuiWorkingColor};
 
@@ -62,7 +62,7 @@ impl IntoFFI for Gradient {
 
     fn into_ffi(self) -> Self::FFI {
         let f = |v: f64| v as f32;
-        let stops = |stops: &[waterui_graphics::cherenkov::ColorStop]| {
+        let stops = |stops: &[waterui_graphics::draw::ColorStop]| {
             WuiArray::new(
                 stops
                     .iter()

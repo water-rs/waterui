@@ -478,8 +478,8 @@ mod picture {
     #[cfg(target_os = "ios")]
     use cocoa_ui::uikit::ImageView;
     use kurbo::Shape;
-    use waterui::graphics::cherenkov::Draw;
     use waterui::graphics::color::WorkingColor;
+    use waterui::graphics::draw::Draw;
     use waterui::graphics::picture::Picture;
     use waterui::reactive::constant;
     use waterui_core::layout::Size;

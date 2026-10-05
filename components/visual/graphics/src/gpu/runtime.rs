@@ -14,8 +14,8 @@ use wgpu::{Adapter, Device, Instance, Queue, TextureFormat};
 
 use super::external::{ExternalFrameStream, FrameReceiver};
 use super::{GpuContent, GpuContentView, RedrawHandle, Shared};
+use crate::draw::kurbo::Affine;
 use crate::offscreen::{OffscreenImage, OffscreenSize};
-use cherenkov::kurbo::Affine;
 use cherenkov::{Display, Engine, FrameTime, Layer, Next, Surface};
 use cherenkov_gpu::{
     Gpu, GpuConfig,

@@ -216,8 +216,8 @@ mod tests {
     use waterui_core::layout::Size;
     use waterui_core::{binding, constant};
     use waterui_graphics::PictureRecording;
-    use waterui_graphics::cherenkov::kurbo::Rect;
-    use waterui_graphics::cherenkov::{Draw, Paint, WorkingColor};
+    use waterui_graphics::draw::kurbo::Rect;
+    use waterui_graphics::draw::{Draw, Paint, WorkingColor};
 
     const BLACK: WorkingColor = WorkingColor::new([0.0, 0.0, 0.0, 1.0]);
     const WHITE: WorkingColor = WorkingColor::new([1.0, 1.0, 1.0, 1.0]);

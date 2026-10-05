@@ -17,12 +17,14 @@ use peniko::{BlendMode, Fill, FontData};
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
-use cherenkov::{
+use waterui_graphics::draw::{
     BlendSpace, ColorStop, Content, Draw, EvenOdd, Extend, Glyph as EngineGlyph, GlyphStyle, Group,
-    ImageColorSpace, ImageData, ImageId, ImagePattern, Interpolation, LayoutSize, LinearGradient,
-    Paint, RadialGradient, Recorder, Sampling, Shadow, ShapeData, SweepGradient, WorkingColor,
+    ImageId, ImagePattern, Interpolation, LayoutSize, LinearGradient, Paint, RadialGradient,
+    Recorder, Sampling, Shadow, ShapeData, SweepGradient, WorkingColor,
 };
-use waterui_graphics::{HeldResources, RecordingResources};
+use waterui_graphics::{
+    FontSource, HeldResources, ImageColorSpace, ImageData, RecordingResources, Rgba8,
+};
 
 /// One positioned glyph in a shaped run — the currency text shaping hands
 /// the recording.
@@ -136,7 +138,7 @@ enum Op {
     },
     Picture {
         transform: Affine,
-        picture: cherenkov::Picture,
+        picture: waterui_graphics::draw::Picture,
     },
     PopLayer,
 }
@@ -181,9 +183,11 @@ pub struct SceneResources {
     /// The `SceneContent::build_scene` resource table, shared with every scene
     /// view this engine draws.
     inner: waterui_graphics::SceneResources,
-    fonts: std::cell::RefCell<FxHashMap<FontKey, waterui_graphics::Registered<cherenkov::Font>>>,
+    fonts: std::cell::RefCell<
+        FxHashMap<FontKey, waterui_graphics::Registered<waterui_graphics::draw::FontId>>,
+    >,
     images: std::cell::RefCell<
-        FxHashMap<ImageKey, waterui_graphics::Registered<cherenkov::Image<cherenkov::Rgba8>>>,
+        FxHashMap<ImageKey, waterui_graphics::Registered<waterui_graphics::draw::ImageId>>,
     >,
     /// Fresh engine registrations since the last
     /// [`Self::take_registration_stats`] — the frame-work counters' evidence
@@ -218,9 +222,9 @@ impl fmt::Debug for SceneResources {
 
 impl SceneResources {
     /// Creates caches served by `engine`.
-    pub(crate) fn new(engine: std::rc::Rc<crate::engine::GpuEngine>) -> Self {
+    pub(crate) fn new(engine: &std::rc::Rc<crate::engine::GpuEngine>) -> Self {
         Self {
-            inner: waterui_graphics::SceneResources::new(engine),
+            inner: waterui_graphics::SceneResources::with_shaders(engine.clone(), engine.clone()),
             fonts: std::cell::RefCell::new(FxHashMap::default()),
             images: std::cell::RefCell::new(FxHashMap::default()),
             font_registrations: std::cell::Cell::new(0),
@@ -251,7 +255,7 @@ impl SceneResources {
         &self,
         names: &mut RecordingResources<'_>,
         font: &FontData,
-    ) -> cherenkov::FontId {
+    ) -> waterui_graphics::draw::FontId {
         let key = FontKey {
             blob: font.data.id(),
             index: font.index,
@@ -259,8 +263,7 @@ impl SceneResources {
         if let Some(registered) = self.fonts.borrow().get(&key) {
             return names.name(registered);
         }
-        let source = cherenkov::FontSource::bytes(Arc::<[u8]>::from(font.data.data()))
-            .with_index(font.index);
+        let source = FontSource::bytes(Arc::<[u8]>::from(font.data.data())).with_index(font.index);
         let registered = self
             .inner
             .font(source)
@@ -297,10 +300,9 @@ impl SceneResources {
         );
         assert_well_formed_image(image);
         let bytes = image.data.data();
-        let data =
-            ImageData::<cherenkov::Rgba8>::new(image.width, image.height, Arc::<[u8]>::from(bytes))
-                .expect("hydrolysis renderer: well-formed Rgba8 image rejected")
-                .color_space(ImageColorSpace::Srgb);
+        let data = ImageData::<Rgba8>::new(image.width, image.height, Arc::<[u8]>::from(bytes))
+            .expect("hydrolysis renderer: well-formed Rgba8 image rejected")
+            .color_space(ImageColorSpace::Srgb);
         let data = if image.alpha_type == peniko::ImageAlphaType::AlphaPremultiplied {
             data.premultiplied()
         } else {
@@ -454,7 +456,11 @@ impl Recording {
 
     /// Draws a recorded picture under `transform` — the content of a child
     /// view recorded against the same engine.
-    pub(crate) fn draw_picture(&mut self, transform: Affine, picture: cherenkov::Picture) {
+    pub(crate) fn draw_picture(
+        &mut self,
+        transform: Affine,
+        picture: waterui_graphics::draw::Picture,
+    ) {
         self.ops.push(Op::Picture { transform, picture });
     }
 
@@ -746,7 +752,7 @@ fn lower(
                     peniko::Style::Fill(_) => GlyphStyle::Fill,
                     peniko::Style::Stroke(stroke) => GlyphStyle::Stroke(stroke.clone()),
                 };
-                let run = cherenkov::GlyphRun {
+                let run = waterui_graphics::draw::GlyphRun {
                     font,
                     size: *font_size,
                     coords: coords.to_vec().into(),
@@ -810,7 +816,7 @@ fn lower(
                         // under the push site's ambient, restored inside the
                         // scope to keep it from compounding onto every op.
                         r.transform(transform.inverse(), |r| {
-                            if alpha >= 1.0 && blend == cherenkov::BlendMode::Normal {
+                            if alpha >= 1.0 && blend == waterui_graphics::draw::BlendMode::Normal {
                                 lower(ops, index, r, resources, names);
                             } else {
                                 let group = Group {
@@ -835,13 +841,19 @@ fn lower(
 fn shape_data<S: Shape + 'static>(rule: Fill, shape: &S) -> ShapeData {
     match rule {
         Fill::NonZero => ShapeData::of(shape),
-        Fill::EvenOdd => ShapeData::of(&EvenOdd(shape.to_path(cherenkov::PATH_TOLERANCE))),
+        Fill::EvenOdd => ShapeData::of(&EvenOdd(
+            shape.to_path(waterui_graphics::draw::PATH_TOLERANCE),
+        )),
     }
 }
 
 /// The working colour of a peniko sRGB colour.
 pub fn working_color(color: peniko::Color) -> WorkingColor {
-    WorkingColor::new(color.convert::<cherenkov::LinearDisplayP3>().components)
+    WorkingColor::new(
+        color
+            .convert::<waterui_graphics::draw::LinearDisplayP3>()
+            .components,
+    )
 }
 
 /// The engine paint of a peniko gradient.
@@ -887,8 +899,12 @@ fn gradient_paint(gradient: &peniko::Gradient) -> Paint {
 /// The working colour of a run-time colour space colour.
 fn dynamic_working_color(color: peniko::color::DynamicColor) -> WorkingColor {
     let linear = color.convert(peniko::color::ColorSpaceTag::LinearSrgb);
-    let alpha = linear.to_alpha_color::<cherenkov::LinearSrgb>();
-    WorkingColor::new(alpha.convert::<cherenkov::LinearDisplayP3>().components)
+    let alpha = linear.to_alpha_color::<waterui_graphics::draw::LinearSrgb>();
+    WorkingColor::new(
+        alpha
+            .convert::<waterui_graphics::draw::LinearDisplayP3>()
+            .components,
+    )
 }
 
 /// The gradient interpolation space the engine supports; any other space is
@@ -922,37 +938,37 @@ const fn sampling(quality: peniko::ImageQuality) -> Sampling {
 /// one combined mode; peniko's separable pair collapses where Porter-Duff and
 /// CSS compositing overlap, and the remaining combinations have no engine
 /// equivalent.
-fn blend_mode(mode: BlendMode) -> cherenkov::BlendMode {
+fn blend_mode(mode: BlendMode) -> waterui_graphics::draw::BlendMode {
     use peniko::{Compose, Mix};
     match (mode.mix, mode.compose) {
-        (Mix::Normal, Compose::SrcOver) => cherenkov::BlendMode::Normal,
-        (Mix::Multiply, Compose::SrcOver) => cherenkov::BlendMode::Multiply,
-        (Mix::Screen, Compose::SrcOver) => cherenkov::BlendMode::Screen,
-        (Mix::Overlay, Compose::SrcOver) => cherenkov::BlendMode::Overlay,
-        (Mix::Darken, Compose::SrcOver) => cherenkov::BlendMode::Darken,
-        (Mix::Lighten, Compose::SrcOver) => cherenkov::BlendMode::Lighten,
-        (Mix::ColorDodge, Compose::SrcOver) => cherenkov::BlendMode::ColorDodge,
-        (Mix::ColorBurn, Compose::SrcOver) => cherenkov::BlendMode::ColorBurn,
-        (Mix::HardLight, Compose::SrcOver) => cherenkov::BlendMode::HardLight,
-        (Mix::SoftLight, Compose::SrcOver) => cherenkov::BlendMode::SoftLight,
-        (Mix::Difference, Compose::SrcOver) => cherenkov::BlendMode::Difference,
-        (Mix::Exclusion, Compose::SrcOver) => cherenkov::BlendMode::Exclusion,
-        (Mix::Hue, Compose::SrcOver) => cherenkov::BlendMode::Hue,
-        (Mix::Saturation, Compose::SrcOver) => cherenkov::BlendMode::Saturation,
-        (Mix::Color, Compose::SrcOver) => cherenkov::BlendMode::Color,
-        (Mix::Luminosity, Compose::SrcOver) => cherenkov::BlendMode::Luminosity,
-        (Mix::Normal, Compose::Clear) => cherenkov::BlendMode::Clear,
-        (Mix::Normal, Compose::Copy) => cherenkov::BlendMode::Src,
-        (Mix::Normal, Compose::Dest) => cherenkov::BlendMode::Dst,
-        (Mix::Normal, Compose::DestOver) => cherenkov::BlendMode::DestOver,
-        (Mix::Normal, Compose::SrcIn) => cherenkov::BlendMode::SrcIn,
-        (Mix::Normal, Compose::DestIn) => cherenkov::BlendMode::DestIn,
-        (Mix::Normal, Compose::SrcOut) => cherenkov::BlendMode::SrcOut,
-        (Mix::Normal, Compose::DestOut) => cherenkov::BlendMode::DestOut,
-        (Mix::Normal, Compose::SrcAtop) => cherenkov::BlendMode::SrcAtop,
-        (Mix::Normal, Compose::DestAtop) => cherenkov::BlendMode::DestAtop,
-        (Mix::Normal, Compose::Xor) => cherenkov::BlendMode::Xor,
-        (Mix::Normal, Compose::PlusLighter) => cherenkov::BlendMode::PlusLighter,
+        (Mix::Normal, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Normal,
+        (Mix::Multiply, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Multiply,
+        (Mix::Screen, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Screen,
+        (Mix::Overlay, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Overlay,
+        (Mix::Darken, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Darken,
+        (Mix::Lighten, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Lighten,
+        (Mix::ColorDodge, Compose::SrcOver) => waterui_graphics::draw::BlendMode::ColorDodge,
+        (Mix::ColorBurn, Compose::SrcOver) => waterui_graphics::draw::BlendMode::ColorBurn,
+        (Mix::HardLight, Compose::SrcOver) => waterui_graphics::draw::BlendMode::HardLight,
+        (Mix::SoftLight, Compose::SrcOver) => waterui_graphics::draw::BlendMode::SoftLight,
+        (Mix::Difference, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Difference,
+        (Mix::Exclusion, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Exclusion,
+        (Mix::Hue, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Hue,
+        (Mix::Saturation, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Saturation,
+        (Mix::Color, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Color,
+        (Mix::Luminosity, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Luminosity,
+        (Mix::Normal, Compose::Clear) => waterui_graphics::draw::BlendMode::Clear,
+        (Mix::Normal, Compose::Copy) => waterui_graphics::draw::BlendMode::Src,
+        (Mix::Normal, Compose::Dest) => waterui_graphics::draw::BlendMode::Dst,
+        (Mix::Normal, Compose::DestOver) => waterui_graphics::draw::BlendMode::DestOver,
+        (Mix::Normal, Compose::SrcIn) => waterui_graphics::draw::BlendMode::SrcIn,
+        (Mix::Normal, Compose::DestIn) => waterui_graphics::draw::BlendMode::DestIn,
+        (Mix::Normal, Compose::SrcOut) => waterui_graphics::draw::BlendMode::SrcOut,
+        (Mix::Normal, Compose::DestOut) => waterui_graphics::draw::BlendMode::DestOut,
+        (Mix::Normal, Compose::SrcAtop) => waterui_graphics::draw::BlendMode::SrcAtop,
+        (Mix::Normal, Compose::DestAtop) => waterui_graphics::draw::BlendMode::DestAtop,
+        (Mix::Normal, Compose::Xor) => waterui_graphics::draw::BlendMode::Xor,
+        (Mix::Normal, Compose::PlusLighter) => waterui_graphics::draw::BlendMode::PlusLighter,
         (mix, compose) => panic!(
             "hydrolysis renderer: blend mode ({mix:?}, {compose:?}) has no engine equivalent"
         ),
@@ -992,7 +1008,7 @@ pub fn transform_paint(paint: Paint, transform: Option<Affine>) -> Paint {
             Paint::Sweep(gradient)
         }
         Paint::Mesh(mesh) => Paint::Mesh(
-            cherenkov::MeshGradient::new(
+            waterui_graphics::draw::MeshGradient::new(
                 mesh.columns(),
                 mesh.rows(),
                 mesh.points().iter().map(|p| transform * *p).collect(),
@@ -1040,8 +1056,8 @@ impl Recording {
 
 #[cfg(test)]
 mod tests {
-    use cherenkov::{MeshColorInterpolation, MeshGradient};
     use kurbo::Point;
+    use waterui_graphics::draw::{MeshColorInterpolation, MeshGradient};
 
     use super::*;
 

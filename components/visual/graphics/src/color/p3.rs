@@ -1,7 +1,7 @@
 use nami::{Signal, impl_constant};
 use waterui_core::{Environment, resolve::Resolvable};
 
-use cherenkov::{DisplayP3, WorkingColor};
+use crate::draw::{DisplayP3, WorkingColor};
 
 use super::{Srgb, linear_to_srgb, p3_to_linear_srgb, srgb_to_linear};
 
@@ -55,7 +55,7 @@ impl P3 {
     /// The working colour of this Display P3 colour, fully opaque.
     #[must_use]
     pub fn resolve(&self) -> WorkingColor {
-        cherenkov::Color::<DisplayP3>::new([self.red, self.green, self.blue, 1.0]).into()
+        crate::draw::Color::<DisplayP3>::new([self.red, self.green, self.blue, 1.0]).into()
     }
 }
 

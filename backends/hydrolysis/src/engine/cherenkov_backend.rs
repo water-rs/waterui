@@ -142,7 +142,7 @@ cfg_async_fn! {
         );
         let state = Rc::new(SharedEngineState {
             engine: Rc::clone(&engine),
-            resources: Rc::new(crate::renderer::recording::SceneResources::new(engine)),
+            resources: Rc::new(crate::renderer::recording::SceneResources::new(&engine)),
         });
         ENGINES.with(|pool| pool.borrow_mut().insert(context_id, Rc::downgrade(&state)));
         state

@@ -38,12 +38,13 @@ determinator tool on it, then writes `GITHUB_OUTPUT` keys:
 - `scene-assets` — `true` when a package whose `--all-targets` compile
   `include_bytes!`s a generated Cherenkov scene font is in scope, or the
   whole workspace is. That is a fixed owner set, not a dev-dependency
-  closure: only `cherenkov-oracle`'s glyph tests and `cherenkov-gpu`'s
-  bitmap/browser test targets embed `scenes/fonts/*`, and test-only code
-  never compiles for a dependent — so `SCENE_ASSET_OWNERS` names them
-  directly. Runtime readers (`cherenkov-cpu`'s tests, `cherenkov-bench`'s
-  corpus) are not in it: the gate never runs tests, and every `full` job
-  generates the tree unconditionally.
+  closure: `cherenkov-oracle`'s glyph tests, `cherenkov-gpu`'s
+  bitmap/browser test targets, and `cherenkov-cpu`'s bitmap unit tests
+  `include_bytes!` `scenes/fonts/*`. Test-only code never compiles for a
+  dependent, so `SCENE_ASSET_OWNERS` names them directly. `cherenkov-cpu`'s
+  integration tests and `cherenkov-bench` read the corpus at run time and
+  are not in the set: the gate never runs tests. Jobs that execute those
+  tests generate the corpus themselves.
 
 Usage:
 
@@ -82,7 +83,7 @@ DEPENDENCY_TABLES = (
 # `scenes/fonts/*` subsets). The gate's `scene-assets` output is this set
 # intersected with the scoped package names: test-only code never
 # compiles for a dependent, so no dev-dependency closure is involved.
-SCENE_ASSET_OWNERS = {"cherenkov-oracle", "cherenkov-gpu"}
+SCENE_ASSET_OWNERS = {"cherenkov-oracle", "cherenkov-gpu", "cherenkov-cpu"}
 
 
 def is_prose(path):

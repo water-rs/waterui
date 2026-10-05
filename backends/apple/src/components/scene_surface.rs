@@ -5,13 +5,12 @@ use std::rc::Rc;
 use std::sync::{Arc, mpsc};
 
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
-use waterui_graphics::cherenkov::{
-    Content, DEFAULT_REFRESH, Display, Draw, FrameTime, Next, Surface, kurbo,
-};
+use waterui_graphics::cherenkov::{DEFAULT_REFRESH, Display, FrameTime, Next, Surface};
 use waterui_graphics::cherenkov_gpu::{
     Gpu,
     interop::{OutputAlpha, OutputColor, Presenter, TextureOutput, TextureTarget, shader_delivery},
 };
+use waterui_graphics::draw::{Content, Draw, kurbo};
 use waterui_graphics::gpu::{GpuRuntime, RedrawHandle, SharedGpuContext};
 use waterui_graphics::input::SurfaceInputEvent;
 use waterui_graphics::offscreen::OffscreenSize;
@@ -248,7 +247,10 @@ impl ScenePart {
         Ok(Rc::new(Self {
             surface,
             installed: RefCell::new(HeldResources::empty()),
-            resources: SceneResources::new(generation.engine().clone()),
+            resources: SceneResources::with_shaders(
+                generation.engine().clone(),
+                generation.engine().clone(),
+            ),
             textures,
             source: RefCell::new(source),
             presenter: RefCell::new(presenter),
@@ -502,7 +504,7 @@ mod tests {
 
     use waterui::{Binding, SignalExt, binding};
     use waterui_core::{AnyView, Environment, View};
-    use waterui_graphics::cherenkov::{Command, Draw, Paint, Recorder, WorkingColor};
+    use waterui_graphics::draw::{Command, Draw, Paint, Recorder, WorkingColor};
     use waterui_graphics::resources::RecordingResources;
     use waterui_graphics::scene_view::{SceneContent, SceneViewMergeToParent};
     use waterui_graphics::{Picture, PictureRecording};

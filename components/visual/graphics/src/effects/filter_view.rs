@@ -33,7 +33,20 @@ use core::fmt;
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
 
-use cherenkov::{RenderTransfer, curve_value, settled, spring_step};
+use crate::draw::{curve_value, settled, spring_step};
+
+/// Values crossing the render-thread boundary, mirroring the engine's
+/// `RenderTransfer` marker so `effects` builds without it.
+#[cfg(not(target_arch = "wasm32"))]
+pub trait RenderTransfer: Send {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send + ?Sized> RenderTransfer for T {}
+
+/// Values retained by the local browser executor; they need not be `Send`.
+#[cfg(target_arch = "wasm32")]
+pub trait RenderTransfer {}
+#[cfg(target_arch = "wasm32")]
+impl<T: ?Sized> RenderTransfer for T {}
 pub use filtrate::filters::{BlendMode, TransitionDirection};
 use filtrate::{
     AnimatedCallback, AnimatedTarget, AuxData, AuxImage, Chain, ColorStage, Filter, FilterExt as _,
@@ -280,10 +293,10 @@ impl ParamGuards {
 /// Maps the public [`Animation`] onto the engine's execution type through
 /// its `curve()`/`duration()` contract — [`Animation::Default`] resolves
 /// through those accessors to the documented ease-in-out 250 ms.
-fn cherenkov_animation(animation: &Animation) -> cherenkov::Animation {
+fn cherenkov_animation(animation: &Animation) -> crate::draw::Animation {
     match animation.curve() {
         EasingCurve::CubicBezier(x1, y1, x2, y2) => {
-            cherenkov::Animation::Curve(cherenkov::Curve::bezier(
+            crate::draw::Animation::Curve(crate::draw::Curve::bezier(
                 animation.duration(),
                 f64::from(x1),
                 f64::from(y1),
@@ -291,14 +304,14 @@ fn cherenkov_animation(animation: &Animation) -> cherenkov::Animation {
                 f64::from(y2),
             ))
         }
-        EasingCurve::Spring { stiffness, damping } => cherenkov::Animation::Spring(
-            cherenkov::Spring::from_physics(f64::from(stiffness), f64::from(damping)),
+        EasingCurve::Spring { stiffness, damping } => crate::draw::Animation::Spring(
+            crate::draw::Spring::from_physics(f64::from(stiffness), f64::from(damping)),
         ),
     }
 }
 
 /// A Cherenkov animation driving a scalar filter parameter.
-struct AnimationInterpolator(cherenkov::Animation);
+struct AnimationInterpolator(crate::draw::Animation);
 
 const SPRING_STEP: f64 = 1.0 / 240.0;
 const SPRING_STEP_NANOS: u128 = 1_000_000_000 / 240;
@@ -306,7 +319,12 @@ const SPRING_LIMIT: Duration = Duration::from_secs(10);
 
 #[allow(clippy::cast_possible_truncation)]
 impl AnimationInterpolator {
-    fn spring_at(spring: &cherenkov::Spring, from: f32, to: f32, elapsed: Duration) -> (f64, bool) {
+    fn spring_at(
+        spring: &crate::draw::Spring,
+        from: f32,
+        to: f32,
+        elapsed: Duration,
+    ) -> (f64, bool) {
         let (mut pos, mut velocity) = ([f64::from(from)], [0.0]);
         let target = [f64::from(to)];
         let steps = (elapsed.min(SPRING_LIMIT).as_nanos() / SPRING_STEP_NANOS) + 1;
@@ -324,15 +342,15 @@ impl AnimationInterpolator {
 impl Interpolator for AnimationInterpolator {
     fn duration(&self) -> Duration {
         match &self.0 {
-            cherenkov::Animation::Curve(curve) => curve.duration,
-            cherenkov::Animation::Spring(_) => SPRING_LIMIT,
-            cherenkov::Animation::Decay(_) => Duration::ZERO,
+            crate::draw::Animation::Curve(curve) => curve.duration,
+            crate::draw::Animation::Spring(_) => SPRING_LIMIT,
+            crate::draw::Animation::Decay(_) => Duration::ZERO,
         }
     }
 
     fn interpolate(&self, from: f32, to: f32, elapsed: Duration) -> f32 {
         match &self.0 {
-            cherenkov::Animation::Curve(curve) => {
+            crate::draw::Animation::Curve(curve) => {
                 let t = if curve.duration.is_zero() {
                     1.0
                 } else {
@@ -341,16 +359,16 @@ impl Interpolator for AnimationInterpolator {
                 let k = curve_value(curve, t);
                 (f64::from(to) - f64::from(from)).mul_add(k, f64::from(from)) as f32
             }
-            cherenkov::Animation::Spring(spring) => {
+            crate::draw::Animation::Spring(spring) => {
                 Self::spring_at(spring, from, to, elapsed).0 as f32
             }
-            cherenkov::Animation::Decay(_) => to,
+            crate::draw::Animation::Decay(_) => to,
         }
     }
 
     fn is_complete(&self, elapsed: Duration) -> bool {
         match &self.0 {
-            cherenkov::Animation::Spring(spring) => {
+            crate::draw::Animation::Spring(spring) => {
                 elapsed >= SPRING_LIMIT || Self::spring_at(spring, 0.0, 1.0, elapsed).1
             }
             _ => elapsed >= self.duration(),

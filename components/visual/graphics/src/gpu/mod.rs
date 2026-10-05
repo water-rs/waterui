@@ -39,7 +39,7 @@ use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 use waterui_core::{Environment, Native, NativeView, View};
 use wgpu::{Adapter, Device, Queue, Texture, TextureFormat, TextureView};
 
-use cherenkov::kurbo;
+use crate::draw::kurbo;
 
 use crate::input::SurfaceInputEvent;
 

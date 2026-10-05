@@ -157,8 +157,8 @@ use waterui_form::picker::PickerConfig;
 use waterui_form::picker::color::ColorPickerConfig;
 use waterui_form::picker::date::DatePickerConfig;
 use waterui_form::secure::{Secure as FormSecure, SecureFieldConfig};
-use waterui_graphics::cherenkov::{Paint, WorkingColor};
 use waterui_graphics::color::Color;
+use waterui_graphics::draw::{Paint, WorkingColor};
 use waterui_graphics::gpu::RedrawHandle;
 use waterui_graphics::{ExternalFrameView, FilteredView, GpuContentView, Gradient, SceneView};
 

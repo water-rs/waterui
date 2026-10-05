@@ -19,7 +19,7 @@ use waterui_core::Environment;
 use waterui_core::id::SelfId;
 use waterui_core::layout::{StretchAxis, ViewDimensions};
 use waterui_core::views::ForEach;
-use waterui_graphics::cherenkov::Recorder;
+use waterui_graphics::draw::Recorder;
 use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
 use waterui_graphics::input::SurfaceInputEvent;
 use waterui_graphics::{

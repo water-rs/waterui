@@ -39,7 +39,7 @@ use nami::watcher::BoxWatcherGuard;
 use nami::{Computed, Signal, SignalExt as _};
 use waterui::theme::color;
 use waterui_core::resolve::Resolvable as _;
-use waterui_graphics::cherenkov::Draw as _;
+use waterui_graphics::draw::Draw as _;
 
 /// The stable per-row id used to key the retained content sub-view cache, matching
 /// the id `ListConfig::contents` (a `SharedAnyViews<ListItem>`) yields per index.
