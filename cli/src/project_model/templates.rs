@@ -1609,10 +1609,21 @@ mod tests {
                 name = "Demo"
                 bundle_identifier = "dev.waterui.demo"
                 embedded = true
+
+                [permissions.internet]
+                enable = true
+                description = "Fetch remote content"
+
+                [permissions.camera]
+                enable = true
+                description = "Scan codes"
             "#,
         )
         .expect("manifest parses");
 
+        // Permissions reach the context the way the Android backend passes
+        // them, through `manifest_permissions`, so the template sees the
+        // fully qualified names a real build hands it.
         let ctx = TemplateContext::for_project_manifest(
             &manifest,
             CrateName::try_from("demo").expect("crate name"),
@@ -1622,6 +1633,7 @@ mod tests {
         )
         .with_backend_project_path(PathBuf::from("/proj/android"))
         .with_project_root_path(PathBuf::from("/proj"))
+        .with_android_permissions(crate::android::backend::manifest_permissions(&manifest))
         .with_crate_version("1.2.3");
 
         let render = |relative: &str, ctx: &TemplateContext| {
@@ -1671,30 +1683,8 @@ mod tests {
         assert!(!settings.contains("includeBuild"), "{settings}");
 
         // Declared permissions render into the library's manifest so the AAR
-        // merges them into the host's. The entries come from the production
-        // path, `manifest_permissions`, so the template sees the fully
-        // qualified names it receives in a real build.
-        let permission_manifest: crate::project::Manifest = toml::from_str(
-            r#"
-                [package]
-                name = "Demo"
-                bundle_identifier = "dev.waterui.demo"
-                embedded = true
-
-                [permissions.internet]
-                enable = true
-                description = "Fetch remote content"
-
-                [permissions.camera]
-                enable = true
-                description = "Scan codes"
-            "#,
-        )
-        .expect("manifest parses");
-        let mut permission_ctx = ctx;
-        permission_ctx.android_permissions =
-            crate::android::backend::manifest_permissions(&permission_manifest);
-        let android_manifest = render("waterui/src/main/AndroidManifest.xml.tpl", &permission_ctx);
+        // merges them into the host's.
+        let android_manifest = render("waterui/src/main/AndroidManifest.xml.tpl", &ctx);
         let declared: Vec<&str> = android_manifest
             .lines()
             .map(str::trim)
