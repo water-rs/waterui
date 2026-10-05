@@ -100,9 +100,9 @@ pub use executor::Executor;
 pub use filtrate_core::{
     AnimatedCallback, AnimatedTarget, AnimationTrack, AuxData, AuxFormat, AuxImage, AuxSource,
     Chain, ColorFilter, ColorStage, CpuFilter, CpuFilterError, CpuImage, CpuKernel, Filter,
-    FilterExt, FilterParam, Footprint, ImageVisitor, Interpolator, OperatingSpace, ParamArray,
-    ParamSource, Placed, ShapeInput, SignalVisitor, SpatialFilter, SpatialStage, StageCollector,
-    WatchGuard, WorkingSpace, kind,
+    FilterExt, FilterLink, FilterParam, Footprint, ImageVisitor, Interpolator, LinkVisitor,
+    OperatingSpace, ParamArray, ParamSource, Placed, ShapeInput, SignalVisitor, SpatialFilter,
+    SpatialStage, StageCollector, WatchGuard, WorkingSpace, kind,
 };
 
 #[cfg(feature = "gpu")]

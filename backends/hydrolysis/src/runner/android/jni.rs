@@ -33,8 +33,10 @@ use super::host::{AndroidSession, MetricsSnapshot};
 /// the launch intent's `waterui.log.level` extra (the CLI's `--logs`
 /// level) and logging init moves out of the app cdylib's `JNI_OnLoad`; 7 =
 /// `nativeSetMetrics` carries the `ViewConfiguration` touch-scroll
-/// parameters (slop, min/max fling velocity, scroll friction).
-pub const JNI_SCHEMA: jint = 7;
+/// parameters (slop, min/max fling velocity, scroll friction); 8 =
+/// `nativeCreateSession` drops `sdkInt`. The API floor is 31, so
+/// `ANativeWindow_setFrameRate` is linked directly.
+pub const JNI_SCHEMA: jint = 8;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -168,7 +170,6 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
     mut env: JNIEnv,
     _class: JClass,
     host_view: JObject,
-    sdk_int: jint,
     context: JObject,
 ) -> jlong {
     guard_val(&mut env, 0, |env| {
@@ -201,7 +202,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
             max_fling_velocity_px: 0.0,
             scroll_friction: 0.0,
         };
-        let session = AndroidSession::create(vm, host_view, metrics, sdk_int)?;
+        let session = AndroidSession::create(vm, host_view, metrics)?;
         Ok(Box::into_raw(session) as jlong)
     })
 }

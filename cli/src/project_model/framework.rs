@@ -2354,7 +2354,7 @@ pub(crate) mod test_fixtures {
             minimum_cli_version: None,
             rust_version: None,
             metadata: toml::toml! {
-                android-min-api-level = 26
+                android-min-api-level = 31
                 apple-backend-path = "backends/apple"
                 hydrolysis-path = "backends/hydrolysis"
             },
@@ -2443,7 +2443,7 @@ pub(crate) mod test_fixtures {
             minimum_cli_version: None,
             rust_version: None,
             metadata: toml::toml! {
-                android-min-api-level = 26
+                android-min-api-level = 31
                 apple-backend-path = "backends/apple"
                 hydrolysis-path = "backends/hydrolysis"
             },
@@ -3747,7 +3747,7 @@ mod tests {
             minimum_cli_version: None,
             rust_version: None,
             metadata: toml::toml! {
-                android-min-api-level = 26
+                android-min-api-level = 31
                 apple-backend-path = "backends/apple"
                 hydrolysis-path = "backends/hydrolysis"
             },
@@ -3801,7 +3801,7 @@ mod tests {
 
     #[test]
     fn android_min_api_level_is_required_framework_metadata() {
-        assert_eq!(stable_framework().android_min_api_level().unwrap(), 26);
+        assert_eq!(stable_framework().android_min_api_level().unwrap(), 31);
 
         let mut missing = stable_framework();
         missing.metadata.remove("android-min-api-level");
@@ -3810,7 +3810,7 @@ mod tests {
         assert!(error.contains("v0.4.1"), "{error}");
 
         let mut invalid = stable_framework();
-        invalid.metadata["android-min-api-level"] = toml::Value::String("26".to_owned());
+        invalid.metadata["android-min-api-level"] = toml::Value::String("31".to_owned());
         let error = invalid.android_min_api_level().unwrap_err().to_string();
         assert!(error.contains("android-min-api-level"), "{error}");
     }
@@ -4097,7 +4097,7 @@ mod tests {
         let repository = framework_repository();
         let revision = "a".repeat(40);
         let lock_sha256 = "f".repeat(64);
-        let metadata = toml::toml! { android-min-api-level = 26 };
+        let metadata = toml::toml! { android-min-api-level = 31 };
         let mut scaffold = BTreeMap::from([
             ("waterui-version".to_owned(), "0.4.1".to_owned()),
             ("waterui-winui-version".to_owned(), "0.1.0".to_owned()),
@@ -4674,7 +4674,7 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
             scaffold: BTreeMap::new(),
             experimental_packages: BTreeMap::new(),
             metadata: toml::toml! {
-                android-min-api-level = 26
+                android-min-api-level = 31
                 apple-backend-path = "backends/apple"
                 hydrolysis-path = "backends/hydrolysis"
             },
@@ -4770,7 +4770,7 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
             },
             "metadata": {
                 "minimum-cli-version": "0.1.0",
-                "android-min-api-level": 26,
+                "android-min-api-level": 31,
             },
         });
         std::fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();

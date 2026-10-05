@@ -665,7 +665,6 @@ impl AndroidSession {
         vm: JavaVM,
         host_view: GlobalRef,
         metrics: MetricsSnapshot,
-        sdk_int: i32,
     ) -> Result<Box<Self>, JniError> {
         let inspector = init_main_thread_executors();
         let inspector_probe = inspector
@@ -725,7 +724,7 @@ impl AndroidSession {
         let mut platform = AndroidHostWindow {
             metrics,
             events: Vec::new(),
-            surface: AndroidSurface::new(gpu.clone(), sdk_int),
+            surface: AndroidSurface::new(gpu.clone()),
             bridge,
             redraw_pending: Cell::new(false),
             started: false,

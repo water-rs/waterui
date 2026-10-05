@@ -14,7 +14,7 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        minSdk = 28
+        minSdk = 31
         targetSdk = 37
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // The app under test is per-fixture flavored; this module's own
