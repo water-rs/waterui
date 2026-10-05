@@ -226,6 +226,7 @@ pub fn constrained_content() -> impl View {
 - **`LazyContainer`** - Efficient container for dynamic collections with `ForEach`
 - **`IgnoreSafeArea`** - Metadata to extend content into safe area regions
   - `EdgeSet` - Bitflags for specifying which edges ignore safe area
+  - `SafeAreaRegions` - The container and keyboard regions (`KEYBOARD.on(EdgeSet::BOTTOM)` lays a view under the keyboard but above the container inset)
 
 ### Alignment Types
 

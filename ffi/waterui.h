@@ -2108,6 +2108,17 @@ typedef struct EdgeSet EdgeSet;
 typedef struct ProposalSize ProposalSize;
 
 /**
+ * Specifies which safe-area regions a view ignores.
+ *
+ * The safe area has two regions on each edge: `container` — the system bars,
+ * display cutouts, the home indicator and window chrome — and `keyboard` —
+ * the software keyboard and other input-method surfaces. `IgnoreSafeArea`
+ * names the regions a view ignores together with the edges it ignores them
+ * on.
+ */
+typedef struct SafeAreaRegions SafeAreaRegions;
+
+/**
  * Normalized coordinates (0.0–1.0) for positioning and gradient endpoints.
  *
  * Used to specify both anchor points on views and target positions in parents.
@@ -2138,11 +2149,6 @@ typedef struct WuiAnyView WuiAnyView;
  *Opaque FFI handle owning a `AnyViews<AnyView>`.
  */
 typedef struct WuiAnyViews WuiAnyViews;
-
-/**
- *Opaque FFI handle owning a `AnyViewsSnapshot<AnyView>`.
- */
-typedef struct WuiViewSnapshot WuiViewSnapshot;
 
 /**
  * The [`AssetServer`] a native web view owns.
@@ -2277,6 +2283,11 @@ typedef struct WuiVideoController WuiVideoController;
  *Opaque FFI handle owning a `Rc<BoundVideoEventHandler>`.
  */
 typedef struct WuiVideoEventHandler WuiVideoEventHandler;
+
+/**
+ *Opaque FFI handle owning a `AnyViewsSnapshot<AnyView>`.
+ */
+typedef struct WuiViewSnapshot WuiViewSnapshot;
 
 /**
  *Opaque FFI handle owning a `BoxWatcherGuard`.
@@ -3728,11 +3739,29 @@ typedef struct WuiMetadata_WuiFocused {
 typedef struct WuiMetadata_WuiFocused WuiMetadataFocused;
 
 /**
+ * FFI-safe representation of safe-area regions for safe area.
+ */
+typedef struct WuiSafeAreaRegions {
+  /**
+   * Ignore the container region (system bars, cutouts, window chrome).
+   */
+  bool container;
+  /**
+   * Ignore the keyboard region (software keyboard, input-method surfaces).
+   */
+  bool keyboard;
+} WuiSafeAreaRegions;
+
+/**
  * FFI-safe representation of `IgnoreSafeArea`.
  */
 typedef struct WuiIgnoreSafeArea {
   /**
-   * Which edges should ignore safe area.
+   * Which safe-area regions are ignored.
+   */
+  struct WuiSafeAreaRegions regions;
+  /**
+   * Which edges ignore the named regions.
    */
   struct WuiEdgeSet edges;
 } WuiIgnoreSafeArea;
@@ -8102,6 +8131,12 @@ typedef struct WuiApp {
    */
   enum WuiLastWindowPolicy last_window_policy;
 } WuiApp;
+
+
+
+
+
+
 
 
 
