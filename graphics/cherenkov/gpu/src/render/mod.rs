@@ -774,10 +774,6 @@ pub struct GpuRenderer {
     /// The ready-candidate set `plane_only_frames` fills with the
     /// surface's current readiness — the filter the committed plan saw.
     ready: FxHashSet<LayerId>,
-    /// The reusable [`FrameRedraw`] `present_windows` and
-    /// `requested_redraw` fill per frame — reset in place, returned as
-    /// a cheap clone, so steady-state renders allocate no request map.
-    redraw: FrameRedraw,
     /// How the fixed modules reach this device (`shaders.rs`): SPIR-V,
     /// metallib, or WGSL — decided once at init by the adapter backend.
     shader_delivery: shaders::ShaderDelivery,
@@ -2215,7 +2211,6 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             candidate_frames: FxHashMap::default(),
             ready_sets: Vec::new(),
             ready: FxHashSet::default(),
-            redraw: FrameRedraw::default(),
             shader_delivery,
             shaders: paint::Registry::default(),
             backdrop_shaders: FxHashMap::default(),
@@ -2539,7 +2534,6 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         candidate_frames: FxHashMap::default(),
         ready_sets: Vec::new(),
         ready: FxHashSet::default(),
-        redraw: FrameRedraw::default(),
         shader_delivery,
         shaders: paint::Registry::default(),
         backdrop_shaders: FxHashMap::default(),
@@ -4025,8 +4019,7 @@ impl GpuRenderer {
         dirty.truncate(full);
         if dirty.is_empty() {
             diag::set_phase("present");
-            self.present_windows(frame)?;
-            return Ok(self.redraw.clone());
+            return self.present_windows(frame);
         }
         let timing = self.filter_timing(frame, origin);
         self.frame_pass_count = 0;
@@ -4128,8 +4121,9 @@ impl GpuRenderer {
         }
         result?;
         diag::set_phase("present");
-        self.present_windows(frame)?;
-        Ok(self.requested_redraw())
+        let mut redraw = self.present_windows(frame)?;
+        self.request_redraw(&mut redraw);
+        Ok(redraw)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -4180,8 +4174,7 @@ impl GpuRenderer {
         dirty.truncate(full);
         if dirty.is_empty() {
             diag::set_phase("present");
-            self.present_windows(frame)?;
-            return Ok(self.redraw.clone());
+            return self.present_windows(frame);
         }
         let timing = self.filter_timing(frame, origin);
         self.frame_pass_count = 0;
@@ -4280,8 +4273,9 @@ impl GpuRenderer {
         }
         result?;
         diag::set_phase("present");
-        self.present_windows(frame)?;
-        Ok(self.requested_redraw())
+        let mut redraw = self.present_windows(frame)?;
+        self.request_redraw(&mut redraw);
+        Ok(redraw)
     }
 
     fn filter_timing(&mut self, frame: &Frame<'_>, origin: Instant) -> filtrate::EffectFrameTiming {
@@ -4701,8 +4695,7 @@ impl GpuRenderer {
     /// its own entry: a filter, animated shader or producer source
     /// names exactly the surface it draws into — one animating surface
     /// never marks every other surface's deadline.
-    fn requested_redraw(&mut self) -> FrameRedraw {
-        let redraw = &mut self.redraw;
+    fn request_redraw(&self, redraw: &mut FrameRedraw) {
         for (id, surface) in &self.surfaces {
             if surface.visibility != Visibility::Visible {
                 continue;
@@ -4721,7 +4714,6 @@ impl GpuRenderer {
                 redraw.request(*id, surface.refresh.clone());
             }
         }
-        self.redraw.clone()
     }
 
     /// Opens a window target. Apple windows expose the view's layer: the
@@ -5275,19 +5267,18 @@ impl GpuRenderer {
         }
     }
 
-    fn present_windows(&mut self, frame: &Frame<'_>) -> Result<(), RenderError> {
-        // The retained scratch carries this frame's requests: reset in
-        // place and refilled, so steady-state renders reuse its storage.
-        self.redraw.clear();
+    /// Presents every window surface with a pending present, returning
+    /// the requests of the surfaces whose present must be retried.
+    fn present_windows(&mut self, frame: &Frame<'_>) -> Result<FrameRedraw, RenderError> {
+        let mut redraw = FrameRedraw::default();
         if self.presenter.is_none() {
-            return Ok(());
+            return Ok(redraw);
         }
         let currents: FxHashMap<ProducerId, &external::Slot> = self
             .producers
             .iter()
             .filter_map(|(id, producer)| producer.current().map(|slot| (*id, slot)))
             .collect();
-        let redraw = &mut self.redraw;
         for sf in frame.surfaces {
             let surface = self.surfaces.get_mut(&sf.id).expect("registered surface");
             // A headroom-only frame asks for a present without lowering
@@ -5373,7 +5364,7 @@ impl GpuRenderer {
                 planes::SystemPlanes::animate(system, sf.tree, &surface.plan);
             }
         }
-        Ok(())
+        Ok(redraw)
     }
 
     /// A display move or a scale change re-runs the window's output
