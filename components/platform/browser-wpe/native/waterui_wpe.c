@@ -191,8 +191,15 @@ static gboolean water_view_render_buffer(
     g_assert_cmpuint(n_planes, >, 0);
     g_assert_cmpuint(n_planes, <=, WATER_WPE_MAX_PLANES);
     g_assert_cmpuint(n_planes, ==, 1);
-    g_assert_true(
-        wpe_buffer_dma_buf_get_modifier(dma_buf) == DRM_FORMAT_MOD_LINEAR);
+    /* GBM reports DRM_FORMAT_MOD_INVALID for buffers whose allocator cannot
+     * express modifiers (dumb/kmsro buffers), but the format contract
+     * advertised to the WebProcess is LINEAR-only, so an unspecified
+     * modifier is linear storage. */
+    guint64 modifier = wpe_buffer_dma_buf_get_modifier(dma_buf);
+    g_assert_true(modifier == DRM_FORMAT_MOD_LINEAR ||
+                  modifier == DRM_FORMAT_MOD_INVALID);
+    if (modifier == DRM_FORMAT_MOD_INVALID)
+        modifier = DRM_FORMAT_MOD_LINEAR;
 
     WaterWpeFrameToken *token = g_new0(WaterWpeFrameToken, 1);
     token->context = g_main_context_ref(page->runtime->context);
@@ -205,7 +212,7 @@ static gboolean water_view_render_buffer(
         .width = (uint32_t)wpe_buffer_get_width(buffer),
         .height = (uint32_t)wpe_buffer_get_height(buffer),
         .format = wpe_buffer_dma_buf_get_format(dma_buf),
-        .modifier = wpe_buffer_dma_buf_get_modifier(dma_buf),
+        .modifier = modifier,
         .n_planes = n_planes,
         .fds = { -1, -1, -1, -1 },
         .rendering_fence_fd = wpe_buffer_take_rendering_fence(buffer),
