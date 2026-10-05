@@ -1,13 +1,17 @@
 // water-rs/waterui#1262 competitive benchmark contestant: WinUI 3.
-// Canonical workload spec (benchmarks/competitive/README.md): the same
+// Canonical workload spec (benchmarks/competitive/WORKLOADS.md): the same
 // constants the shared apps/* contestants render. BENCH_WORKLOAD env var
-// selects w1|w2|w3|w4; a missing or unrecognized value traps.
+// selects w1..w6; a missing or unrecognized value traps. Ladder workloads
+// (w5, w6) additionally require BENCH_STEP naming a ladder member.
 using System;
 using System.Collections.Generic;
+using System.Numerics;
 using Microsoft.UI;
+using Microsoft.UI.Composition;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Hosting;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
@@ -41,11 +45,34 @@ public sealed partial class MainWindow : Window
         {
             "w1" => BuildHello(),
             "w2" => BuildFeed(),
-            "w3" => BuildMotion(),
+            "w3" => BuildMotion(RectCount),
             "w4" => BuildText(),
+            "w5" => BuildMotion(LadderStep(workload)),
+            "w6" => BuildFeed(LadderStep(workload)),
             _ => throw new InvalidOperationException(
-                $"missing or unrecognized BENCH_WORKLOAD '{workload}'; expected w1..w4"),
+                $"missing or unrecognized BENCH_WORKLOAD '{workload}'; expected w1..w6"),
         });
+    }
+
+    // BENCH_STEP pins one ladder step per launch — a missing or
+    // out-of-ladder step is a hard failure, never a silent default.
+    private static readonly int[] W5Ladder = { 200, 400, 800, 1600, 3200, 6400, 12800, 25600 };
+    private static readonly int[] W6Ladder = { 1, 2, 4, 8, 16, 32, 64 };
+
+    private static int LadderStep(string workload)
+    {
+        var ladder = workload == "w6" ? W6Ladder : W5Ladder;
+        var s = Environment.GetEnvironmentVariable("BENCH_STEP");
+        if (string.IsNullOrEmpty(s))
+            throw new InvalidOperationException(
+                $"missing BENCH_STEP for {workload}; expected one of the declared ladder members");
+        if (!int.TryParse(s, out var n))
+            throw new InvalidOperationException(
+                $"malformed BENCH_STEP '{s}'; expected an integer");
+        if (Array.IndexOf(ladder, n) < 0)
+            throw new InvalidOperationException(
+                $"unrecognized BENCH_STEP {n}; expected one of the {workload} ladder");
+        return n;
     }
 
     private static string FeedTitle(int i) => $"Row title {i}";
@@ -89,21 +116,47 @@ public sealed partial class MainWindow : Window
         return stack;
     }
 
-    // W2 Feed: lazily built list of 10,000 rows (ListView UI-virtualizes).
+    // W2 Feed / W6 Feed capacity: lazily built list of 10,000 rows
+    // (ListView UI-virtualizes). W6's `complexity` adds that many sibling
+    // cells — a 14x14 rounded square (radius 4.2 ≈ ratio 0.3) over a
+    // "c{j}" caption — between the text column and the timestamp, cells
+    // separated by 4, the group keeping the row's standard 12 gap.
+    private sealed class CellDef
+    {
+        public required Brush Square { get; init; }
+        public required string Label { get; init; }
+    }
+
     private sealed class FeedRow
     {
         public required int Index { get; init; }
+        public int Complexity { get; init; }
         public string Title => FeedTitle(Index);
         public string Subtitle => FeedSubtitle(Index);
         public string Timestamp => FeedTimestamp(Index);
         public Brush AvatarBrush => new SolidColorBrush(FeedColor(Index));
+        public List<CellDef> Cells
+        {
+            get
+            {
+                var cells = new List<CellDef>(Complexity);
+                for (var j = 0; j < Complexity; j++)
+                    cells.Add(new CellDef
+                    {
+                        Square = new SolidColorBrush(
+                            Palette[(Index + j) % Palette.Length]),
+                        Label = $"c{j}",
+                    });
+                return cells;
+            }
+        }
     }
 
-    private UIElement BuildFeed()
+    private UIElement BuildFeed(int complexity = 0)
     {
         var rows = new List<FeedRow>(RowCount);
         for (var i = 0; i < RowCount; i++)
-            rows.Add(new FeedRow { Index = i });
+            rows.Add(new FeedRow { Index = i, Complexity = complexity });
 
         var itemTemplate = (DataTemplate)XamlReader.Load("""
             <DataTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
@@ -112,6 +165,7 @@ public sealed partial class MainWindow : Window
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
                     <Ellipse Width="40" Height="40" Fill="{Binding AvatarBrush}"
                              VerticalAlignment="Center"/>
@@ -119,7 +173,25 @@ public sealed partial class MainWindow : Window
                         <TextBlock Text="{Binding Title}" FontSize="16"/>
                         <TextBlock Text="{Binding Subtitle}" FontSize="13" Foreground="#666666"/>
                     </StackPanel>
-                    <TextBlock Grid.Column="2" Text="{Binding Timestamp}"
+                    <ItemsControl Grid.Column="2" ItemsSource="{Binding Cells}"
+                                  VerticalAlignment="Center" Margin="12,0,12,0">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <StackPanel Orientation="Horizontal" Spacing="4"/>
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel HorizontalAlignment="Center">
+                                    <Border Width="14" Height="14" CornerRadius="4.2"
+                                            Background="{Binding Square}"
+                                            HorizontalAlignment="Center"/>
+                                    <TextBlock Text="{Binding Label}" FontSize="12"/>
+                                </StackPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <TextBlock Grid.Column="3" Text="{Binding Timestamp}"
                                FontSize="13" Foreground="#888888" VerticalAlignment="Center"/>
                 </Grid>
             </DataTemplate>
@@ -150,38 +222,22 @@ public sealed partial class MainWindow : Window
     private sealed class Wanderer
     {
         public Border Wall = null!;
+        public Visual Visual = null!;
         public XorShift64 Rng = null!;
         public int DurMs;
-        public long TickMs;
-        public double Fx, Fy, Fr, Fo;
         public double Tx, Ty, Tr, To;
         public double Cx, Cy, Cr, Co;
     }
 
-    // Spec curve cubic-bezier(0.42, 0, 0.58, 1): solve t for x = f by
-    // bisection, then evaluate the y channel.
-    private static double EaseInOut(double f)
-    {
-        double lo = 0, hi = 1, t = f;
-        for (var i = 0; i < 24; i++)
-        {
-            var x = 3 * (1 - t) * (1 - t) * t * 0.42 +
-                    3 * (1 - t) * t * t * 0.58 + t * t * t;
-            if (Math.Abs(x - f) < 1e-7) break;
-            if (x < f) lo = t; else hi = t;
-            t = (lo + hi) / 2;
-        }
-        return 3 * (1 - t) * t * t + t * t * t;
-    }
-
-    private UIElement BuildMotion()
+    private UIElement BuildMotion(int count)
     {
         var canvas = new Canvas { Width = FieldW, Height = FieldH };
         canvas.HorizontalAlignment = HorizontalAlignment.Center;
         canvas.VerticalAlignment = VerticalAlignment.Center;
-        var ws = new Wanderer[RectCount];
-        var start = Environment.TickCount64;
-        for (var i = 0; i < RectCount; i++)
+        var compositor =
+            ElementCompositionPreview.GetElementVisual(canvas).Compositor;
+        var ws = new Wanderer[count];
+        for (var i = 0; i < count; i++)
         {
             var init = new XorShift64(
                 0xD1B54A32D192ED03UL ^ (ulong)i * 0x2545F4914F6CDD1DUL);
@@ -194,7 +250,6 @@ public sealed partial class MainWindow : Window
                 Rng = new XorShift64(
                     0x9E3779B97F4A7C15UL ^ (ulong)i * 0xBF58476D1CE4E5B9UL),
                 DurMs = 1200 + (i % 5) * 200,
-                TickMs = start,
             };
             w.Wall = new Border
             {
@@ -202,40 +257,61 @@ public sealed partial class MainWindow : Window
                 Height = Rect,
                 CornerRadius = new CornerRadius(10),
                 Background = new SolidColorBrush(Palette[i % Palette.Length]),
-                RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5),
-                RenderTransform = new CompositeTransform(),
             };
-            Retarget(w);
-            ((CompositeTransform)w.Wall.RenderTransform).TranslateX = w.Cx;
-            ((CompositeTransform)w.Wall.RenderTransform).TranslateY = w.Cy;
+            w.Visual = ElementCompositionPreview.GetElementVisual(w.Wall);
+            // rects render at their seeded pose before the first segment —
+            // never from the zero transform. CenterPoint puts rotation
+            // about the rect's centre; Offset places its centre.
+            w.Visual.CenterPoint = new Vector3((float)(Rect / 2.0),
+                                               (float)(Rect / 2.0), 0f);
+            w.Visual.Offset = new Vector3((float)(w.Cx + Rect / 2.0),
+                                          (float)(w.Cy + Rect / 2.0), 0f);
+            w.Visual.RotationAngleInDegrees = (float)w.Cr;
+            w.Visual.Opacity = (float)w.Co;
             canvas.Children.Add(w.Wall);
             ws[i] = w;
         }
-
-        CompositionTarget.Rendering += (_, _) =>
+        foreach (var w in ws)
         {
-            var now = Environment.TickCount64;
-            foreach (var w in ws)
-            {
-                if (now - w.TickMs >= w.DurMs)
-                {
-                    w.Fx = w.Cx; w.Fy = w.Cy; w.Fr = w.Cr; w.Fo = w.Co;
-                    Retarget(w);
-                }
-                var f = Math.Min(1.0, (now - w.TickMs) / (double)w.DurMs);
-                var e = EaseInOut(f);
-                w.Cx = w.Fx + (w.Tx - w.Fx) * e;
-                w.Cy = w.Fy + (w.Ty - w.Fy) * e;
-                w.Cr = w.Fr + (w.Tr - w.Fr) * e;
-                w.Co = w.Fo + (w.To - w.Fo) * e;
-                var xf = (CompositeTransform)w.Wall.RenderTransform;
-                xf.TranslateX = w.Cx;
-                xf.TranslateY = w.Cy;
-                xf.Rotation = w.Cr;
-                w.Wall.Opacity = w.Co;
-            }
-        };
+            Retarget(w);
+            StartSegment(compositor, w);
+        }
         return canvas;
+    }
+
+    // Each segment runs on the compositor as keyframe animations under
+    // the spec's cubic-bezier(0.42, 0, 0.58, 1) easing — offset, rotation
+    // and opacity. The scoped batch's Completed handler (UI thread)
+    // syncs the model to the landed pose and retargets the next segment,
+    // so motion never drives per-frame property writes from the UI
+    // thread (no CompositionTarget.Rendering).
+    private static void StartSegment(Compositor compositor, Wanderer w)
+    {
+        var easing = compositor.CreateCubicBezierEasingFunction(
+            new Vector2(0.42f, 0f), new Vector2(0.58f, 1f));
+        var dur = TimeSpan.FromMilliseconds(w.DurMs);
+        var offset = compositor.CreateVector3KeyFrameAnimation();
+        offset.InsertKeyFrame(1f,
+            new Vector3((float)(w.Tx + Rect / 2.0),
+                        (float)(w.Ty + Rect / 2.0), 0f), easing);
+        offset.Duration = dur;
+        var rot = compositor.CreateScalarKeyFrameAnimation();
+        rot.InsertKeyFrame(1f, (float)w.Tr, easing);
+        rot.Duration = dur;
+        var op = compositor.CreateScalarKeyFrameAnimation();
+        op.InsertKeyFrame(1f, (float)w.To, easing);
+        op.Duration = dur;
+        var batch = compositor.CreateScopedBatch(CompositionBatchTypes.Animation);
+        w.Visual.StartAnimation(nameof(w.Visual.Offset), offset);
+        w.Visual.StartAnimation(nameof(w.Visual.RotationAngleInDegrees), rot);
+        w.Visual.StartAnimation(nameof(w.Visual.Opacity), op);
+        batch.Completed += (_, _) =>
+        {
+            w.Cx = w.Tx; w.Cy = w.Ty; w.Cr = w.Tr; w.Co = w.To;
+            Retarget(w);
+            StartSegment(compositor, w);
+        };
+        batch.End();
     }
 
     private static void Retarget(Wanderer w)
@@ -244,7 +320,6 @@ public sealed partial class MainWindow : Window
         w.Ty = w.Rng.Next01() * (FieldH - Rect);
         w.Tr = w.Rng.Next01() * 360;
         w.To = 0.3 + w.Rng.Next01() * 0.7;
-        w.TickMs = Environment.TickCount64;
     }
 
     // W4 Text: scrolling screen of 50 paragraphs of mixed Latin/CJK/emoji.

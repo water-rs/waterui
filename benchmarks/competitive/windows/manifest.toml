@@ -16,7 +16,7 @@ windows_sdk = "10.0.26100"
 dotnet_sdk = "10.0.401"
 node = "22.20.0"
 flutter = "3.47.5"
-dxc = "1.8.2505.1"
+dxc = "1.8.2505.32"           # exact `dxc --version` string of the v1.8.2505.1 asset
 # The water CLI is compiled from THIS checkout (`cargo install --locked
 # --path cli` — cli/ is a workspace member). Framework, CLI and backend
 # identity is the checkout's HEAD sha, recorded by the runner.

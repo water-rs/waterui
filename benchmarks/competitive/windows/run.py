@@ -17,6 +17,15 @@ Every metric is the median of >= 5 runs with min/max and all samples kept.
 
 from __future__ import annotations
 
+import sys
+
+if sys.version_info < (3, 10):
+    raise SystemExit(
+        "benchmarks/competitive requires Python >= 3.10 "
+        f"(this interpreter is {sys.version.split()[0]}); every leg "
+        "declares its version in pyproject.toml + .python-version and "
+        "runs under the uv-managed interpreter (`uv run`)")
+
 import argparse
 import ctypes
 import csv
@@ -377,6 +386,35 @@ def pin_topmost(hwnd: int) -> None:
     user32.SetWindowPos(
         hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE_NOSIZE_SHOW
     )
+
+
+def bring_to_foreground(hwnd: int) -> None:
+    """Make the app window the visible, topmost foreground window so it
+    is never occluded (occluded/hidden apps stop compositing entirely —
+    Chromium's RAF throttling). Uniform for every contestant. A failure
+    leaves the app compositing at best unreliably — it fails the rep,
+    it is not swallowed."""
+    SW_RESTORE = 9
+    kernel32.SetLastError(0)
+    user32.ShowWindow(hwnd, SW_RESTORE)
+    show_err = kernel32.GetLastError()
+    if show_err:
+        raise RuntimeError(
+            f"ShowWindow({hwnd:#x}, SW_RESTORE) failed: "
+            f"winerror {show_err}")
+    for name, call in (("BringWindowToTop", user32.BringWindowToTop),
+                       ("SetForegroundWindow", user32.SetForegroundWindow)):
+        kernel32.SetLastError(0)
+        if not call(hwnd):
+            raise RuntimeError(
+                f"{name}({hwnd:#x}) failed: "
+                f"winerror {kernel32.GetLastError()}")
+    kernel32.SetLastError(0)
+    pin_topmost(hwnd)
+    if not user32.IsWindow(hwnd) or kernel32.GetLastError():
+        raise RuntimeError(
+            f"pin_topmost({hwnd:#x}) failed: "
+            f"winerror {kernel32.GetLastError()}")
 
 
 def window_for_pids(pids: set[int]):
@@ -1309,10 +1347,13 @@ def renderer_evidence(c_key: str, c: dict, owned_pids: set[int],
         f"{c_key}: no renderer-evidence mechanism configured")
 
 
-def wait_for_ready(app, budget_s: float, poll: float = 0.1) -> tuple:
+def wait_for_ready(app, budget_s: float) -> tuple:
     """Block until the owned process is input-idle AND owns a visible
-    window — real readiness events, not a fixed sleep. `budget_s`
-    bounds the total wait; raises when it expires without readiness."""
+    window. Both stages block on the events themselves: WaitForInputIdle
+    on the owned root handle, then an EVENT_OBJECT_SHOW WinEvent hook —
+    the window-manager notification that a window just became visible —
+    so no EnumWindows poll loop. `budget_s` bounds the total wait;
+    raises when it expires without readiness."""
     deadline = time.monotonic() + budget_s
     hproc = getattr(app, "hproc", None)
     if hproc is not None and win32event is not None:
@@ -1321,14 +1362,60 @@ def wait_for_ready(app, budget_s: float, poll: float = 0.1) -> tuple:
         rc = win32event.WaitForInputIdle(hproc, int(budget_s * 1000))
         if rc != 0:
             raise RuntimeError(f"WaitForInputIdle returned {rc}")
-    while True:
-        hwnd_info = window_for_pids(app.pids())
-        if hwnd_info:
-            return hwnd_info
-        if time.monotonic() >= deadline:
+    # may already be visible — one synchronous snapshot before hooking
+    hwnd_info = window_for_pids(app.pids())
+    if hwnd_info:
+        return hwnd_info
+
+    got = threading.Event()
+    hits: list[tuple[int, tuple]] = []
+    EVENT_OBJECT_SHOW = 0x8002
+    OBJID_WINDOW = 0
+    WINEVENT_OUTOFCONTEXT = 0
+
+    @WINFUNCTYPE(None, c_void_p, c_ulong, c_void_p,
+                 c_long, c_long, c_ulong, c_ulong)
+    def _on_show(_hook, event, hwnd, id_object, id_child, _tid, _t):
+        if event != EVENT_OBJECT_SHOW \
+                or id_object != OBJID_WINDOW or id_child != 0:
+            return
+        pid = c_ulong(0)
+        user32.GetWindowThreadProcessId(hwnd, byref(pid))
+        if pid.value not in app.pids() or not user32.IsWindowVisible(hwnd):
+            return
+        rect = (c_int * 4)()
+        user32.GetWindowRect(hwnd, rect)
+        area = max(0, rect[2] - rect[0]) * max(0, rect[3] - rect[1])
+        if area:
+            hits.append((hwnd, tuple(rect), area))
+            got.set()
+
+    # out-of-context hooks are delivered to the installing thread's
+    # message queue — the hook thread must pump messages
+    def _hook_loop() -> None:
+        hook = user32.SetWinEventHook(
+            EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW, None, _on_show,
+            0, 0, WINEVENT_OUTOFCONTEXT)
+        try:
+            msg = ctypes.wintypes.MSG()
+            while user32.GetMessageW(byref(msg), None, 0, 0) != 0:
+                user32.TranslateMessage(byref(msg))
+                user32.DispatchMessageW(byref(msg))
+        finally:
+            if hook:
+                user32.UnhookWinEvent(hook)
+
+    WM_QUIT = 0x0012
+    hook_thread = threading.Thread(target=_hook_loop, daemon=True)
+    hook_thread.start()
+    try:
+        if not got.wait(max(0.0, deadline - time.monotonic())):
             raise RuntimeError(
                 "no owned visible window before readiness deadline")
-        time.sleep(min(poll, max(0.0, deadline - time.monotonic())))
+    finally:
+        user32.PostThreadMessageW(hook_thread.native_id, WM_QUIT, 0, 0)
+    # a later SHOW can still land bigger — take the largest recorded
+    return max(hits, key=lambda r: r[2])[:2]
 
 
 def measure_run(c_key: str, workload: str, rep: int, cfg,
@@ -1406,10 +1493,15 @@ def measure_run(c_key: str, workload: str, rep: int, cfg,
         )
         capture_s = cfg["runner"][key]
         warmup_s = cfg["runner"]["warmup_seconds"]
+        if warmup_s <= 0:
+            raise RuntimeError(
+                "runner.warmup_seconds must be > 0 — the warmup is "
+                "declared in the manifest and is never zero (METHOD)")
 
-        # readiness is event-driven: WaitForInputIdle on the owned root
-        # handle plus an owned visible window — ready_timeout_seconds
-        # bounds the wait; it is not a fixed sleep
+        # readiness is event-driven: the WinEvent consumer blocks until
+        # an owned top-level window becomes visible —
+        # ready_timeout_seconds bounds the wait; it is not a fixed
+        # sleep
         hwnd_info = wait_for_ready(
             app, cfg["runner"]["ready_timeout_seconds"])
 
@@ -1420,18 +1512,7 @@ def measure_run(c_key: str, workload: str, rep: int, cfg,
         sampler.start()
 
         if hwnd_info:
-            # Uniform for every contestant: make the window the visible,
-            # topmost foreground window so it is never occluded
-            # (occluded/hidden apps stop compositing entirely, e.g.
-            # Chromium's RAF throttling).
-            try:
-                SW_RESTORE = 9
-                user32.ShowWindow(hwnd_info[0], SW_RESTORE)
-                user32.BringWindowToTop(hwnd_info[0])
-                user32.SetForegroundWindow(hwnd_info[0])
-                pin_topmost(hwnd_info[0])
-            except Exception:
-                pass
+            bring_to_foreground(hwnd_info[0])
         # The measurement window is [first owned present + warmup,
         # +capture] and the drive program starts at window start
         # (METHOD). An owned top-level window becoming visible IS the
@@ -1705,7 +1786,7 @@ def _self_test() -> None:
         "minimize_other_windows", "restore_windows", "start_trace",
         "stop_trace", "etl_to_csv", "parse_frames", "window_for_pids",
         "process_memory_snapshot", "adapter_from_log",
-        "renderer_evidence")}
+        "renderer_evidence", "bring_to_foreground")}
     try:
         globals()["minimize_other_windows"] = \
             lambda: events.append("minimize") or [42]
@@ -1717,6 +1798,8 @@ def _self_test() -> None:
             lambda n: events.append("trace_stop")
         globals()["window_for_pids"] = \
             lambda pids: (42, 10, 10, 800, 600)
+        globals()["bring_to_foreground"] = \
+            lambda hwnd: events.append("foreground")
         globals()["adapter_from_log"] = lambda p: None
         globals()["renderer_evidence"] = lambda *a, **kw: {
             "name": "Fixture RTX", "device_type": "Gpu",
@@ -2499,23 +2582,30 @@ while u.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
         finally:
             app.terminate()
         # console-subsystem expected failure: a process that never
-        # pumps a message loop must NOT report input-idle
+        # pumps a message loop must NOT report input-idle — pywin32
+        # raises error 1471 rather than returning WAIT_FAILED
         sleeping = OwnedApp(
             {"exe_dir": Path(sys.executable).parent,
              "exe": Path(sys.executable).name,
              "args": '-c "import time;time.sleep(20)"', "env": {}},
             "w1", td / "console.log")
         try:
-            rc2 = win32event.WaitForInputIdle(sleeping.hproc, 10000)
-            if rc2 != win32event.WAIT_FAILED:
+            try:
+                win32event.WaitForInputIdle(sleeping.hproc, 10000)
+            except Exception as e:
+                if getattr(e, "winerror", None) != 1471:
+                    raise AssertionError(
+                        "WaitForInputIdle on the console sleeper raised "
+                        f"an unexpected error: {e!r}") from e
+            else:
                 raise AssertionError(
                     "console-subsystem sleeper unexpectedly reported "
-                    f"input-idle (rc={rc2})")
+                    "input-idle")
         finally:
             sleeping.terminate()
         rec(3, "PASS",
             "WaitForInputIdle signalled on owned GUI test window; "
-            "console sleeper returned WAIT_FAILED as expected")
+            "console sleeper raised error 1471 as expected")
 
     # 4 — Electron renderer/GPU helpers inside the job + GPUINFO log
     def i4():

@@ -12,6 +12,15 @@ for each metric WaterUI loses.
 
 from __future__ import annotations
 
+import sys
+
+if sys.version_info < (3, 10):
+    raise SystemExit(
+        "benchmarks/competitive requires Python >= 3.10 "
+        f"(this interpreter is {sys.version.split()[0]}); every leg "
+        "declares its version in pyproject.toml + .python-version and "
+        "runs under the uv-managed interpreter (`uv run`)")
+
 import argparse
 import json
 import sys
