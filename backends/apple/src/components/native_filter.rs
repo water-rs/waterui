@@ -71,7 +71,7 @@ use objc2_quartz_core::{
 use waterui_backend_core::{AnyView, Environment};
 use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
 use waterui_graphics::filter_view::{AnyEffect, ParamGuards};
-use waterui_graphics::filtrate::{FilterLink, Interpolator, WatchGuard};
+use waterui_graphics::filtrate::{FilterLink, Interpolator, WatchGuard, WorkingSpace};
 
 use crate::contract::{Mounted, NativeLeaf, RenderContext};
 
@@ -80,43 +80,239 @@ type MetalDevice = ProtocolObject<dyn objc2_metal::MTLDevice>;
 type MetalQueue = ProtocolObject<dyn objc2_metal::MTLCommandQueue>;
 type MetalCommandBuffer = ProtocolObject<dyn objc2_metal::MTLCommandBuffer>;
 
+/// The primaries the compositor evaluates `CALayer.filters` in — the
+/// linearized gamut of the screen the layer renders on. Filtrate
+/// evaluates every stage in linear Display P3, so on an sRGB screen the
+/// native matrix is the conjugated `P3→sRGB·M·sRGB→P3` while on a P3
+/// screen it is `M` verbatim; `Bound`s carry both resolutions, so a
+/// window crossing displays resamples instead of re-planning.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Gamut {
+    /// sRGB primaries, linearized — conjugated coefficients.
+    Srgb = 0,
+    /// Display P3 primaries — filtrate's own working space.
+    DisplayP3 = 1,
+}
+
+impl Gamut {
+    /// The gamut the screen `view` renders on can represent —
+    /// `DisplayP3` when it covers P3, sRGB otherwise. No window means
+    /// no screen sample yet: sRGB — the layout pass corrects it on
+    /// attach.
+    fn of_view(view: &PlatformView) -> Self {
+        cocoa_ui::view::window(view)
+            .and_then(|window| window.screen())
+            .map_or(Self::Srgb, |screen| {
+                if screen.canRepresentDisplayGamut(cocoa_ui::objc2_app_kit::NSDisplayGamut::P3) {
+                    Self::DisplayP3
+                } else {
+                    Self::Srgb
+                }
+            })
+    }
+}
+
 /// How a raw flat parameter value becomes a `CIFilter` input value.
 #[derive(Clone, Copy)]
 enum Conv {
     /// The value is passed through.
     Direct,
-    /// Degrees to radians (`inputAngle`).
-    DegToRad,
-    /// `1 - v` (`Grayscale.intensity` → `inputSaturation`).
-    OneMinus,
-    /// `1 / max(v, 0.001)` — the portable gamma exponent is `1/gamma` and
-    /// `CIGammaAdjust.inputPower` applies `c^power`.
-    InverseGamma,
+    /// `mul·v + add` — a matrix coefficient affine in the parameter,
+    /// resolved per evaluation gamut (`gamut as usize`).
+    Affine { mul: [f32; 2], add: [f32; 2] },
 }
 
 impl Conv {
-    fn map(self, value: f32) -> f32 {
+    const fn map(self, value: f32, gamut: Gamut) -> f32 {
         match self {
             Self::Direct => value,
-            Self::DegToRad => value.to_radians(),
-            Self::OneMinus => 1.0 - value,
-            Self::InverseGamma => 1.0 / value.max(0.001),
+            Self::Affine { mul, add } => value.mul_add(mul[gamut as usize], add[gamut as usize]),
         }
     }
 }
 
-/// A `CIFilter` input bound to a flat parameter of the owning effect, or
-/// a constant.
-#[derive(Clone, Copy)]
+/// A 3×3 matrix over a linear RGB space, row-major.
+type Mat3 = [[f32; 3]; 3];
+
+/// Row-major matrix product `a·b`.
+fn mat3_mul(a: Mat3, b: Mat3) -> Mat3 {
+    std::array::from_fn(|i| {
+        std::array::from_fn(|j| {
+            a[i][2].mul_add(b[2][j], a[i][1].mul_add(b[1][j], a[i][0] * b[0][j]))
+        })
+    })
+}
+
+/// Row-major `m·v`.
+fn mat3_mul_vec(m: Mat3, v: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|i| m[i][2].mul_add(v[2], m[i][1].mul_add(v[1], m[i][0] * v[0])))
+}
+
+/// Component-wise `a - b`.
+fn mat3_sub(a: Mat3, b: Mat3) -> Mat3 {
+    std::array::from_fn(|i| std::array::from_fn(|j| a[i][j] - b[i][j]))
+}
+
+/// Component-wise `a + b`.
+fn mat3_add(a: Mat3, b: Mat3) -> Mat3 {
+    std::array::from_fn(|i| std::array::from_fn(|j| a[i][j] + b[i][j]))
+}
+
+/// Component-wise `k·m`.
+fn mat3_scale(m: Mat3, k: f32) -> Mat3 {
+    std::array::from_fn(|i| std::array::from_fn(|j| m[i][j] * k))
+}
+
+/// The linear sRGB → linear Display P3 transform (D65), row-major —
+/// `graphics/filtrate/src/shaders/space/from_srgb.wgsl`'s `SRGB_TO_P3`.
+const SRGB_TO_P3: Mat3 = [
+    [0.822_462, 0.177_538, 0.0],
+    [0.033_194_2, 0.966_805_8, 0.0],
+    [0.017_082_6, 0.072_397_4, 0.910_519_9],
+];
+
+/// The linear Display P3 → linear sRGB transform (D65), row-major —
+/// `graphics/filtrate/src/shaders/space/to_srgb.wgsl`'s `P3_TO_SRGB`.
+const P3_TO_SRGB: Mat3 = [
+    [1.224_940_2, -0.224_940_2, 0.0],
+    [-0.042_057, 1.042_057, 0.0],
+    [-0.019_637_6, -0.078_636, 1.098_273_6],
+];
+
+/// `P3→sRGB · m · sRGB→P3` — `m` evaluated in the sRGB gamut's linear
+/// space.
+fn conjugate(m: Mat3) -> Mat3 {
+    mat3_mul(P3_TO_SRGB, mat3_mul(m, SRGB_TO_P3))
+}
+
+const MAT_IDENTITY: Mat3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+const MAT_ZERO: Mat3 = [[0.0; 3]; 3];
+const ZERO3: [f32; 3] = [0.0; 3];
+const ONE3: [f32; 3] = [1.0; 3];
+
+/// The working space's luma row — `WorkingSpace::LINEAR_DISPLAY_P3.luma`.
+const LUMA_P3: [f32; 3] = WorkingSpace::LINEAR_DISPLAY_P3.luma;
+
+/// Every row the working-space luma — the replication matrix.
+const LUMA_MAT: Mat3 = [LUMA_P3; 3];
+
+/// Filtrate's sepia matrix `S` — `color/transform/sepia.wgsl`.
+const SEPIA_MAT: Mat3 = [
+    [0.393, 0.769, 0.189],
+    [0.349, 0.686, 0.168],
+    [0.272, 0.534, 0.131],
+];
+
+/// A `CIFilter` input bound to a flat parameter of the owning effect, a
+/// weighted sum of flat parameters, or a constant.
+#[derive(Clone)]
 enum Bound {
     /// Flat parameter index inside the owning effect's `params()`.
     Param(usize, Conv),
-    /// A constant — identity slots on shared `CIFilter`s.
-    Const(f32),
+    /// A constant per evaluation gamut — identity slots on shared
+    /// `CIFilter`s carry identical resolutions.
+    Const([f32; 2]),
+    /// `add` plus a weighted sum of flat parameters — a coefficient
+    /// mixing several parameters, as the conjugated user colour
+    /// matrix's are. Each referenced parameter keeps its own timeline;
+    /// a resample evaluates every term at one timestamp, the GPU path's
+    /// own semantics.
+    Combo(ComboBound),
+}
+
+/// The term list of a [`Bound::Combo`] per evaluation gamut.
+#[derive(Clone)]
+struct ComboBound {
+    /// The constant term per gamut.
+    add: [f32; 2],
+    /// `(flat index, weight)` under [`Gamut::Srgb`].
+    srgb: Box<[(usize, f32)]>,
+    /// `(flat index, weight)` under [`Gamut::DisplayP3`].
+    p3: Box<[(usize, f32)]>,
+}
+
+impl ComboBound {
+    fn terms(&self, gamut: Gamut) -> &[(usize, f32)] {
+        match gamut {
+            Gamut::Srgb => &self.srgb,
+            Gamut::DisplayP3 => &self.p3,
+        }
+    }
+
+    /// `add` plus the weighted sum over `param`.
+    fn value(&self, param: impl Fn(usize) -> f32, gamut: Gamut) -> f32 {
+        self.terms(gamut)
+            .iter()
+            .fold(self.add[gamut as usize], |sum, (index, weight)| {
+                sum + weight * param(*index)
+            })
+    }
+}
+
+impl Bound {
+    /// Whether the bound reads the flat parameter `index`.
+    fn binds(&self, index: usize) -> bool {
+        match self {
+            Self::Param(flat, _) => *flat == index,
+            Self::Const(_) => false,
+            Self::Combo(combo) => combo
+                .srgb
+                .iter()
+                .chain(combo.p3.iter())
+                .any(|(flat, _)| *flat == index),
+        }
+    }
+
+    /// The flat parameter indices the bound reads.
+    fn params(&self) -> impl Iterator<Item = usize> + '_ {
+        let (one, combo) = match self {
+            Self::Param(flat, _) => (Some(*flat), None),
+            Self::Const(_) => (None, None),
+            Self::Combo(combo) => (None, Some(combo)),
+        };
+        one.into_iter().chain(combo.into_iter().flat_map(|combo| {
+            combo
+                .srgb
+                .iter()
+                .chain(combo.p3.iter())
+                .map(|(flat, _)| *flat)
+        }))
+    }
+
+    /// The current value from `model`.
+    fn value(&self, model: &[f32], gamut: Gamut) -> f32 {
+        match self {
+            Self::Param(index, conv) => conv.map(model[*index], gamut),
+            Self::Const(value) => value[gamut as usize],
+            Self::Combo(combo) => combo.value(|index| model[index], gamut),
+        }
+    }
+
+    /// The bound's value at `now` — each parameter's pending timeline
+    /// evaluated when one exists, its model value otherwise.
+    fn value_at(
+        &self,
+        animations: &HashMap<AnimKey, ComponentAnim>,
+        effect: usize,
+        model: &[f32],
+        now: f64,
+        gamut: Gamut,
+    ) -> f32 {
+        let param_at = |index: usize| {
+            animations
+                .get(&(effect, index))
+                .map_or(model[index], |anim| anim.raw_at(now))
+        };
+        match self {
+            Self::Param(index, conv) => conv.map(param_at(*index), gamut),
+            Self::Const(value) => value[gamut as usize],
+            Self::Combo(combo) => combo.value(param_at, gamut),
+        }
+    }
 }
 
 /// A `CIFilter` input value.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum BoundValue {
     /// An `NSNumber` input.
     Scalar(Bound),
@@ -128,12 +324,22 @@ impl BoundValue {
     /// Whether this input reads the flat parameter `index`.
     fn binds(&self, index: usize) -> bool {
         match self {
-            Self::Scalar(Bound::Param(i, _)) => *i == index,
-            Self::Vec4(components) => components
-                .iter()
-                .any(|b| matches!(b, Bound::Param(i, _) if *i == index)),
-            Self::Scalar(Bound::Const(_)) => false,
+            Self::Scalar(bound) => bound.binds(index),
+            Self::Vec4(components) => components.iter().any(|bound| bound.binds(index)),
         }
+    }
+
+    /// The flat parameter indices this input reads.
+    fn params(&self) -> impl Iterator<Item = usize> + '_ {
+        let (one, components) = match self {
+            Self::Scalar(bound) => (Some(bound), None),
+            Self::Vec4(components) => (None, Some(components.as_slice())),
+        };
+        one.into_iter().flat_map(Bound::params).chain(
+            components
+                .into_iter()
+                .flat_map(|c| c.iter().flat_map(Bound::params)),
+        )
     }
 }
 
@@ -147,61 +353,200 @@ const fn param(index: usize, conv: Conv) -> BoundValue {
     BoundValue::Scalar(Bound::Param(index, conv))
 }
 
-const fn constant(value: f32) -> BoundValue {
-    BoundValue::Scalar(Bound::Const(value))
-}
+/// `CALayer.filters` evaluates `CIColorMatrix` on unpremultiplied
+/// pixels — `out = rows·(r,g,b,a) + bias`, then repremultiplies by the
+/// input alpha — so a filtrate premultiplied additive term `u·a` rides
+/// the bias vector (`bias·a = u·a`), not the alpha column, and the
+/// alpha column stays zero on every matrix stage.
+const ALPHA_IDENTITY: [Bound; 4] = [
+    Bound::Const([0.0; 2]),
+    Bound::Const([0.0; 2]),
+    Bound::Const([0.0; 2]),
+    Bound::Const([1.0; 2]),
+];
+const ZERO4: Bound = Bound::Const([0.0; 2]);
 
-/// A `CIColorControls` stage: `which` selects the controlled input, the
-/// other two hold their identities.
-fn color_controls(which: &'static str, bound: BoundValue) -> NativeStage {
-    let inputs = [
-        ("inputSaturation", constant(1.0)),
-        ("inputBrightness", constant(0.0)),
-        ("inputContrast", constant(1.0)),
-    ]
-    .into_iter()
-    .map(|(key, value)| {
-        if key == which {
-            (key, bound)
-        } else {
-            (key, value)
-        }
-    })
-    .collect();
+/// A `CIColorMatrix` stage from the three `R`/`G`/`B` row vectors plus
+/// the bias vector carrying filtrate's alpha-scaled additive term.
+fn matrix_stage(r: BoundValue, g: BoundValue, b: BoundValue, bias: BoundValue) -> NativeStage {
     NativeStage {
-        class: "CIColorControls",
-        inputs,
+        class: "CIColorMatrix",
+        inputs: vec![
+            ("inputRVector", r),
+            ("inputGVector", g),
+            ("inputBVector", b),
+            ("inputAVector", BoundValue::Vec4(ALPHA_IDENTITY)),
+            ("inputBiasVector", bias),
+        ],
     }
 }
 
-/// The approved per-type native realizations — the dispatch targets
-/// `FilterDescription::visit_links` resolves once #1762 lands. Each
-/// builder takes the concrete link's flat parameter offset inside the
-/// owning effect and emits the `CIFilter` class plus its input bindings.
-/// No stage-text identity matching survives: the concrete `FilterLink`
-/// type is the identity.
+/// `m0 + p·m1` on premultiplied RGB plus the additive `u0 + p·u1`
+/// through the bias vector — one `CIColorMatrix`. Every coefficient is
+/// affine in the parameter, so the key-path vectors interpolate the
+/// filtrate parameter timeline exactly.
+fn affine_matrix_stage(
+    param: usize,
+    m0: Mat3,
+    m1: Mat3,
+    u0: [f32; 3],
+    u1: [f32; 3],
+) -> NativeStage {
+    // `gamut as usize`: sRGB takes the conjugated matrix, P3 the
+    // verbatim working-space one.
+    let c0 = [conjugate(m0), m0];
+    let c1 = [conjugate(m1), m1];
+    let a0 = [mat3_mul_vec(P3_TO_SRGB, u0), u0];
+    let a1 = [mat3_mul_vec(P3_TO_SRGB, u1), u1];
+    let component = |i: usize, j: usize| {
+        Bound::Param(
+            param,
+            Conv::Affine {
+                mul: [c1[0][i][j], c1[1][i][j]],
+                add: [c0[0][i][j], c0[1][i][j]],
+            },
+        )
+    };
+    let row =
+        |i: usize| BoundValue::Vec4([component(i, 0), component(i, 1), component(i, 2), ZERO4]);
+    let bias = |i: usize| {
+        Bound::Param(
+            param,
+            Conv::Affine {
+                mul: [a1[0][i], a1[1][i]],
+                add: [a0[0][i], a0[1][i]],
+            },
+        )
+    };
+    matrix_stage(
+        row(0),
+        row(1),
+        row(2),
+        BoundValue::Vec4([bias(0), bias(1), bias(2), ZERO4]),
+    )
+}
+
+/// A constant `CIColorMatrix` — `m` on premultiplied RGB, `u` through
+/// the bias vector.
+fn const_matrix_stage(m: Mat3, u: [f32; 3]) -> NativeStage {
+    let c = conjugate(m);
+    let a = mat3_mul_vec(P3_TO_SRGB, u);
+    let row = |i: usize| {
+        BoundValue::Vec4([
+            Bound::Const([c[i][0], m[i][0]]),
+            Bound::Const([c[i][1], m[i][1]]),
+            Bound::Const([c[i][2], m[i][2]]),
+            ZERO4,
+        ])
+    };
+    let bias = |i: usize| Bound::Const([a[i], u[i]]);
+    matrix_stage(
+        row(0),
+        row(1),
+        row(2),
+        BoundValue::Vec4([bias(0), bias(1), bias(2), ZERO4]),
+    )
+}
+
+/// The approved per-type native realizations. Each builder takes the
+/// concrete link's flat parameter offset inside the owning effect and
+/// emits the `CIFilter` class plus its input bindings. No stage-text
+/// identity matching survives: the concrete `FilterLink` type is the
+/// identity.
 ///
-/// `Brightness` → `CIColorControls.inputBrightness`.
+/// `Brightness` — `rgb + amount·a`: identity RGB, `amount` through the
+/// bias vector.
 fn brightness(base: usize) -> NativeStage {
-    color_controls("inputBrightness", param(base, Conv::Direct))
+    affine_matrix_stage(base, MAT_IDENTITY, MAT_ZERO, ZERO3, ONE3)
 }
 
-/// `Contrast` → `CIColorControls.inputContrast`.
+/// `Contrast` — `(rgb − 0.5a)·k + 0.5a`: `k·I` plus `0.5(1−k)`
+/// through the bias vector.
 fn contrast(base: usize) -> NativeStage {
-    color_controls("inputContrast", param(base, Conv::Direct))
+    affine_matrix_stage(base, MAT_ZERO, MAT_IDENTITY, [0.5; 3], [-0.5; 3])
 }
 
-/// `Saturation` → `CIColorControls.inputSaturation`.
+/// `Saturation` — `s·rgb + (1−s)·luma·1` with the working-space luma.
 fn saturation(base: usize) -> NativeStage {
-    color_controls("inputSaturation", param(base, Conv::Direct))
+    affine_matrix_stage(
+        base,
+        LUMA_MAT,
+        mat3_sub(MAT_IDENTITY, LUMA_MAT),
+        ZERO3,
+        ZERO3,
+    )
 }
 
-/// `Grayscale.intensity` → `CIColorControls.inputSaturation = 1 - i`.
+/// `Grayscale` — `(1−i)·rgb + i·luma·1`.
 fn grayscale(base: usize) -> NativeStage {
-    color_controls("inputSaturation", param(base, Conv::OneMinus))
+    affine_matrix_stage(
+        base,
+        MAT_IDENTITY,
+        mat3_sub(LUMA_MAT, MAT_IDENTITY),
+        ZERO3,
+        ZERO3,
+    )
 }
 
-/// `Exposure` → `CIExposureAdjust.inputEV`.
+/// `Sepia` — `(1−i)·rgb + i·S·rgb`, `S` filtrate's sepia matrix.
+fn sepia(base: usize) -> NativeStage {
+    affine_matrix_stage(
+        base,
+        MAT_IDENTITY,
+        mat3_sub(SEPIA_MAT, MAT_IDENTITY),
+        ZERO3,
+        ZERO3,
+    )
+}
+
+/// `Invert` — `a − rgb`.
+fn invert() -> NativeStage {
+    const_matrix_stage([[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]], ONE3)
+}
+
+/// `ColorMatrix` — the user's 3×4 rows: the 3×3 block conjugates as a
+/// matrix; the fourth column multiplies alpha, and under the
+/// unpremultiplied evaluation that additive `m·a` term rides the bias
+/// vector, not the alpha column.
+fn color_matrix(base: usize) -> NativeStage {
+    let row = |i: usize| {
+        BoundValue::Vec4(std::array::from_fn(|j| {
+            if j < 3 {
+                let srgb = (0..3)
+                    .flat_map(|k| {
+                        (0..3).map(move |l| (base + k * 4 + l, P3_TO_SRGB[i][k] * SRGB_TO_P3[l][j]))
+                    })
+                    .collect();
+                Bound::Combo(ComboBound {
+                    add: [0.0; 2],
+                    srgb,
+                    p3: Box::new([(base + i * 4 + j, 1.0)]),
+                })
+            } else {
+                ZERO4
+            }
+        }))
+    };
+    let bias = |i: usize| {
+        let srgb = (0..3)
+            .map(|k| (base + k * 4 + 3, P3_TO_SRGB[i][k]))
+            .collect();
+        Bound::Combo(ComboBound {
+            add: [0.0; 2],
+            srgb,
+            p3: Box::new([(base + i * 4 + 3, 1.0)]),
+        })
+    };
+    matrix_stage(
+        row(0),
+        row(1),
+        row(2),
+        BoundValue::Vec4([bias(0), bias(1), bias(2), ZERO4]),
+    )
+}
+
+/// `Exposure` → `CIExposureAdjust.inputEV` — `rgb·2^ev` commutes with
+/// premultiplication.
 fn exposure(base: usize) -> NativeStage {
     NativeStage {
         class: "CIExposureAdjust",
@@ -209,112 +554,65 @@ fn exposure(base: usize) -> NativeStage {
     }
 }
 
-/// `Gamma` → `CIGammaAdjust.inputPower = 1/max(gamma,0.001)`.
-fn gamma(base: usize) -> NativeStage {
-    NativeStage {
-        class: "CIGammaAdjust",
-        inputs: vec![("inputPower", param(base, Conv::InverseGamma))],
-    }
+/// `PhotoEffectMono` — `luma·1` on the working-space luma, a constant
+/// replication matrix.
+fn photo_effect_mono() -> NativeStage {
+    const_matrix_stage(LUMA_MAT, ZERO3)
 }
 
-/// `HueRotation.angle` (deg) → `CIHueAdjust.inputAngle` (rad).
-fn hue_rotation(base: usize) -> NativeStage {
-    NativeStage {
-        class: "CIHueAdjust",
-        inputs: vec![("inputAngle", param(base, Conv::DegToRad))],
-    }
+/// `PhotoEffectNoir` — `clamp((luma−0.5)·1.6+0.5, 0, F16_MAX)·1` on
+/// straight-alpha colour: `1.6·L` rows with `−0.3` through the bias
+/// vector. Filtrate's own lower clamp binds only where the affine map
+/// leaves the display gamut; the compositor's own output saturation
+/// produces the same pixels.
+fn photo_effect_noir() -> NativeStage {
+    const_matrix_stage(mat3_scale(LUMA_MAT, 1.6), [-0.3; 3])
 }
 
-/// `Sepia` → `CISepiaTone.inputIntensity`.
-fn sepia(base: usize) -> NativeStage {
-    NativeStage {
-        class: "CISepiaTone",
-        inputs: vec![("inputIntensity", param(base, Conv::Direct))],
-    }
+/// `PhotoEffectChrome` — `D·(1.45·s − 0.45·luma)` on straight-alpha
+/// colour with `D = diag(1.05, 1.0, 0.95)`.
+fn photo_effect_chrome() -> NativeStage {
+    let boosted = mat3_sub(mat3_scale(MAT_IDENTITY, 1.45), mat3_scale(LUMA_MAT, 0.45));
+    const_matrix_stage(
+        mat3_mul(
+            [[1.05, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.95]],
+            boosted,
+        ),
+        ZERO3,
+    )
 }
 
-/// `Invert` → `CIColorInvert`.
-const fn invert() -> NativeStage {
-    NativeStage {
-        class: "CIColorInvert",
-        inputs: Vec::new(),
-    }
+/// `PhotoEffectInstant` — `0.3·luma(warmed)·1 + 0.7·warmed` with
+/// `warmed = D·s + b`, `D = diag(1.10, 1.02, 0.85)`, `b = (0.05, 0.04, 0)`
+/// on straight-alpha colour.
+fn photo_effect_instant() -> NativeStage {
+    let mix = mat3_add(mat3_scale(LUMA_MAT, 0.3), mat3_scale(MAT_IDENTITY, 0.7));
+    let warmed = [[1.10, 0.0, 0.0], [0.0, 1.02, 0.0], [0.0, 0.0, 0.85]];
+    const_matrix_stage(mat3_mul(mix, warmed), mat3_mul_vec(mix, [0.05, 0.04, 0.0]))
 }
 
-/// `ColorMatrix` → `CIColorMatrix` — 3x4 straight-alpha rows + bias
-/// column; alpha stays identity.
-fn color_matrix(base: usize) -> NativeStage {
-    let row = |offset: usize| {
-        [
-            Bound::Param(base + offset, Conv::Direct),
-            Bound::Param(base + offset + 1, Conv::Direct),
-            Bound::Param(base + offset + 2, Conv::Direct),
-            Bound::Const(0.0),
-        ]
-    };
-    NativeStage {
-        class: "CIColorMatrix",
-        inputs: vec![
-            ("inputRVector", BoundValue::Vec4(row(0))),
-            ("inputGVector", BoundValue::Vec4(row(4))),
-            ("inputBVector", BoundValue::Vec4(row(8))),
-            (
-                "inputAVector",
-                BoundValue::Vec4([
-                    Bound::Const(0.0),
-                    Bound::Const(0.0),
-                    Bound::Const(0.0),
-                    Bound::Const(1.0),
-                ]),
-            ),
-            (
-                "inputBiasVector",
-                BoundValue::Vec4([
-                    Bound::Param(base + 3, Conv::Direct),
-                    Bound::Param(base + 7, Conv::Direct),
-                    Bound::Param(base + 11, Conv::Direct),
-                    Bound::Const(0.0),
-                ]),
-            ),
-        ],
-    }
+/// `PhotoEffectFade` — `0.25·luma(lifted)·1 + 0.75·lifted` with
+/// `lifted = 0.85·s + 0.015·1` on straight-alpha colour.
+fn photo_effect_fade() -> NativeStage {
+    let mix = mat3_add(mat3_scale(LUMA_MAT, 0.25), mat3_scale(MAT_IDENTITY, 0.75));
+    const_matrix_stage(mat3_scale(mix, 0.85), [0.015; 3])
 }
 
-/// `PhotoEffect{Mono,Noir,Chrome,Instant,Fade,Process,Tonal,Transfer}` —
-/// the fixed presets, each its own zero-input `CIPhotoEffect*`.
-const fn photo_effect(class: &'static str) -> NativeStage {
-    NativeStage {
-        class,
-        inputs: Vec::new(),
-    }
+/// `PhotoEffectTonal` — `0.6·luma·1 + 0.4·rgb` on the premultiplied
+/// working space.
+fn photo_effect_tonal() -> NativeStage {
+    const_matrix_stage(
+        mat3_add(mat3_scale(LUMA_MAT, 0.6), mat3_scale(MAT_IDENTITY, 0.4)),
+        ZERO3,
+    )
 }
 
-/// `GaussianBlur` → `CIGaussianBlur.inputRadius` — the link's whole
-/// separable pair collapses to the isotropic primitive.
-fn gaussian_blur(base: usize) -> NativeStage {
-    NativeStage {
-        class: "CIGaussianBlur",
-        inputs: vec![("inputRadius", param(base, Conv::Direct))],
-    }
-}
-
-/// `Blur` → `CIBoxBlur.inputRadius` — same whole-pair rule.
-fn box_blur(base: usize) -> NativeStage {
-    NativeStage {
-        class: "CIBoxBlur",
-        inputs: vec![("inputRadius", param(base, Conv::Direct))],
-    }
-}
-
-/// `MotionBlur{radius, angle}` → `CIMotionBlur` — angle in radians.
-fn motion_blur(base: usize) -> NativeStage {
-    NativeStage {
-        class: "CIMotionBlur",
-        inputs: vec![
-            ("inputRadius", param(base, Conv::Direct)),
-            ("inputAngle", param(base + 1, Conv::DegToRad)),
-        ],
-    }
+/// `PhotoEffectTransfer` — `0.45·s + 0.55·(1.07, 0.95, 0.78)·luma` on
+/// straight-alpha colour — `0.45·I` plus `0.55·c⊗L`.
+fn photo_effect_transfer() -> NativeStage {
+    let warm: Mat3 =
+        std::array::from_fn(|i| std::array::from_fn(|j| 0.55 * [1.07, 0.95, 0.78][i] * LUMA_P3[j]));
+    const_matrix_stage(mat3_add(mat3_scale(MAT_IDENTITY, 0.45), warm), ZERO3)
 }
 
 /// The static native plan for one effect: the ordered `CIFilter`s plus
@@ -329,90 +627,97 @@ pub struct EffectPlan {
 
 /// Maps one concrete `FilterLink` — the link's own type IS the identity;
 /// `param_base` places its parameters in the owning effect's flattened
-/// array. Anything not in the approved set — `ZoomBlur`, `Vibrance`, the
-/// compound `Bloom`/`Gloom`/`UnsharpMask`, `TemperatureTint`,
-/// `WhitePoint`, `HighlightsShadows`, `Vignette`, `Pixellate`, `Median`,
-/// `Convolution*`, halftone variants, distortions and every custom
-/// `Filter` — is unmapped by design (proposals live in the report).
+/// array. The map covers every parameter type the public filter API
+/// accepts — the static `f32` instantiation and the reactive
+/// `filter_view` alias — and only filters whose filtrate function a
+/// `CIFilter` set computes identically: the affine colour ops through
+/// one `CIColorMatrix` each, plus `CIExposureAdjust`, whose scalar
+/// input is the parameter itself with identical math. The photo
+/// effects whose filtrate WGSL is affine — `Mono`, `Noir`, `Chrome`,
+/// `Instant`, `Fade`, `Tonal`, `Transfer` — realize through one
+/// `CIColorMatrix` each; `PhotoEffectProcess`'s `min()` is not affine.
+/// `Gamma` — filtrate unpremultiplies, `CIGammaAdjust` does not —
+/// `HueRotation` — `CIHueAdjust` is a different matrix, and the angle
+/// is not affine — the blur family —
+/// `CIGaussianBlur`/`CIBoxBlur`/`CIMotionBlur` use different kernels,
+/// radius conventions, and edge handling — Apple's `CIPhotoEffect*`
+/// presets — tone curves, not filtrate's functions — and everything
+/// else (`ZoomBlur`, `Vibrance`, the compound
+/// `Bloom`/`Gloom`/`UnsharpMask`, `TemperatureTint`, `WhitePoint`,
+/// `HighlightsShadows`, `Vignette`, `Pixellate`, `Median`,
+/// `Convolution*`, halftone variants, distortions, every custom
+/// `Filter`) realize through capture.
 fn map_link(link: &FilterLink<'_>) -> Option<NativeStage> {
     use waterui_graphics::filter_view as fv;
+    use waterui_graphics::filtrate::filters;
     let base = link.param_base;
-    if link.downcast_ref::<fv::Brightness>().is_some() {
+    if link.downcast_ref::<fv::Brightness>().is_some()
+        || link.downcast_ref::<filters::Brightness<f32>>().is_some()
+    {
         return Some(brightness(base));
     }
-    if link.downcast_ref::<fv::Contrast>().is_some() {
+    if link.downcast_ref::<fv::Contrast>().is_some()
+        || link.downcast_ref::<filters::Contrast<f32>>().is_some()
+    {
         return Some(contrast(base));
     }
-    if link.downcast_ref::<fv::Saturation>().is_some() {
+    if link.downcast_ref::<fv::Saturation>().is_some()
+        || link.downcast_ref::<filters::Saturation<f32>>().is_some()
+    {
         return Some(saturation(base));
     }
-    if link.downcast_ref::<fv::Grayscale>().is_some() {
+    if link.downcast_ref::<fv::Grayscale>().is_some()
+        || link.downcast_ref::<filters::Grayscale<f32>>().is_some()
+    {
         return Some(grayscale(base));
     }
-    if link.downcast_ref::<fv::Exposure>().is_some() {
+    if link.downcast_ref::<fv::Exposure>().is_some()
+        || link.downcast_ref::<filters::Exposure<f32>>().is_some()
+    {
         return Some(exposure(base));
     }
-    if link.downcast_ref::<fv::Gamma>().is_some() {
-        return Some(gamma(base));
-    }
-    if link.downcast_ref::<fv::HueRotation>().is_some() {
-        return Some(hue_rotation(base));
-    }
-    if link.downcast_ref::<fv::Sepia>().is_some() {
+    if link.downcast_ref::<fv::Sepia>().is_some()
+        || link.downcast_ref::<filters::Sepia<f32>>().is_some()
+    {
         return Some(sepia(base));
     }
     if link.downcast_ref::<fv::Invert>().is_some() {
         return Some(invert());
     }
-    if link.downcast_ref::<fv::ColorMatrix>().is_some() {
+    if link.downcast_ref::<fv::ColorMatrix>().is_some()
+        || link
+            .downcast_ref::<filters::ColorMatrix<fv::Reactive>>()
+            .is_some()
+    {
         return Some(color_matrix(base));
     }
-    if link.downcast_ref::<fv::GaussianBlur>().is_some() {
-        return Some(gaussian_blur(base));
+    // The photo effects below are filtrate's own affine WGSL — constant
+    // matrices, not Apple's `CIPhotoEffect*` presets.
+    if link.downcast_ref::<filters::PhotoEffectMono>().is_some() {
+        return Some(photo_effect_mono());
     }
-    if link.downcast_ref::<fv::Blur>().is_some() {
-        return Some(box_blur(base));
+    if link.downcast_ref::<filters::PhotoEffectNoir>().is_some() {
+        return Some(photo_effect_noir());
     }
-    if link.downcast_ref::<fv::MotionBlur>().is_some() {
-        return Some(motion_blur(base));
+    if link.downcast_ref::<filters::PhotoEffectChrome>().is_some() {
+        return Some(photo_effect_chrome());
     }
-    let photo = [
-        (
-            link.downcast_ref::<fv::PhotoEffectMono>().is_some(),
-            "CIPhotoEffectMono",
-        ),
-        (
-            link.downcast_ref::<fv::PhotoEffectNoir>().is_some(),
-            "CIPhotoEffectNoir",
-        ),
-        (
-            link.downcast_ref::<fv::PhotoEffectChrome>().is_some(),
-            "CIPhotoEffectChrome",
-        ),
-        (
-            link.downcast_ref::<fv::PhotoEffectInstant>().is_some(),
-            "CIPhotoEffectInstant",
-        ),
-        (
-            link.downcast_ref::<fv::PhotoEffectFade>().is_some(),
-            "CIPhotoEffectFade",
-        ),
-        (
-            link.downcast_ref::<fv::PhotoEffectProcess>().is_some(),
-            "CIPhotoEffectProcess",
-        ),
-        (
-            link.downcast_ref::<fv::PhotoEffectTonal>().is_some(),
-            "CIPhotoEffectTonal",
-        ),
-        (
-            link.downcast_ref::<fv::PhotoEffectTransfer>().is_some(),
-            "CIPhotoEffectTransfer",
-        ),
-    ]
-    .into_iter()
-    .find_map(|(matched, class)| matched.then_some(class));
-    photo.map(photo_effect)
+    if link.downcast_ref::<filters::PhotoEffectInstant>().is_some() {
+        return Some(photo_effect_instant());
+    }
+    if link.downcast_ref::<filters::PhotoEffectFade>().is_some() {
+        return Some(photo_effect_fade());
+    }
+    if link.downcast_ref::<filters::PhotoEffectTonal>().is_some() {
+        return Some(photo_effect_tonal());
+    }
+    if link
+        .downcast_ref::<filters::PhotoEffectTransfer>()
+        .is_some()
+    {
+        return Some(photo_effect_transfer());
+    }
+    None
 }
 
 /// Attempts the static native plan for the fused chain — all-or-nothing.
@@ -595,6 +900,10 @@ struct NativeFilterOwner {
     /// Per-component pending timelines — evaluated for capture and
     /// materialized to CA on attach; never a source of silent jumps.
     animations: RefCell<HashMap<AnimKey, ComponentAnim>>,
+    /// The evaluation gamut the screen bindings resolve under — the
+    /// display's; the capture seam always evaluates under `DisplayP3`
+    /// (its context is pinned to extended-linear-P3).
+    gamut: Cell<Gamut>,
     /// The issued-context-owned capture context — rebuilt when a
     /// different `SharedGpuContext` instance issues a frame.
     capture_gpu: RefCell<Option<CaptureGpu>>,
@@ -630,14 +939,6 @@ impl Drop for NativeFilterOwner {
         // by the leaf contract.
         unsafe { self.layer.setFilters(None) };
         self.capture.shutdown();
-    }
-}
-
-/// The current value of one bound input from `model`.
-fn bound_scalar(bound: &Bound, model: &[f32]) -> f32 {
-    match bound {
-        Bound::Param(index, conv) => conv.map(model[*index]),
-        Bound::Const(value) => *value,
     }
 }
 
@@ -705,14 +1006,17 @@ fn set_vec4(layer: &CALayer, key_path: &str, value: [f32; 4]) {
     });
 }
 
-/// Writes one bound input through the layer key path from `model`.
-fn set_input(layer: &CALayer, key_path: &str, value: &BoundValue, model: &[f32]) {
+/// Writes one bound input through the layer key path from `model`,
+/// resolved under `gamut`.
+fn set_input(layer: &CALayer, key_path: &str, value: &BoundValue, model: &[f32], gamut: Gamut) {
     match value {
-        BoundValue::Scalar(bound) => set_scalar(layer, key_path, bound_scalar(bound, model)),
+        BoundValue::Scalar(bound) => set_scalar(layer, key_path, bound.value(model, gamut)),
         BoundValue::Vec4(components) => set_vec4(
             layer,
             key_path,
-            components.map(|component| bound_scalar(&component, model)),
+            components
+                .each_ref()
+                .map(|component| component.value(model, gamut)),
         ),
     }
 }
@@ -757,28 +1061,12 @@ fn display_fps(view: &PlatformView) -> Option<f32> {
         })
 }
 
-/// A `Bound`'s value at `now` — its pending timeline's evaluation when
-/// one exists, otherwise its bound model value.
-fn bound_value_at(
-    bound: &Bound,
-    animations: &HashMap<AnimKey, ComponentAnim>,
-    effect: usize,
-    model: &[f32],
-    now: f64,
-) -> f32 {
-    match bound {
-        Bound::Param(index, conv) => animations.get(&(effect, *index)).map_or_else(
-            || bound_scalar(bound, model),
-            |anim| conv.map(anim.raw_at(now)),
-        ),
-        Bound::Const(value) => *value,
-    }
-}
-
 /// Writes one bound input through the layer key path with every
-/// component evaluated at `at` — the resting value CA presents where no
-/// submitted stream is running, and never a snap to the parameter's end
-/// model while a sibling component's own timeline is still moving.
+/// component evaluated at `at` under `gamut` — the resting value CA
+/// presents where no submitted stream is running, and never a snap to
+/// the parameter's end model while a sibling component's own timeline
+/// is still moving.
+#[allow(clippy::too_many_arguments)]
 fn write_bound_input_at(
     layer: &CALayer,
     key_path: &str,
@@ -787,38 +1075,22 @@ fn write_bound_input_at(
     effect: usize,
     model: &[f32],
     at: f64,
+    gamut: Gamut,
 ) {
     match bound {
         BoundValue::Scalar(bound) => set_scalar(
             layer,
             key_path,
-            bound_value_at(bound, animations, effect, model, at),
+            bound.value_at(animations, effect, model, at, gamut),
         ),
         BoundValue::Vec4(components) => set_vec4(
             layer,
             key_path,
-            components.map(|component| bound_value_at(&component, animations, effect, model, at)),
+            components
+                .each_ref()
+                .map(|component| component.value_at(animations, effect, model, at, gamut)),
         ),
     }
-}
-
-/// The flat parameter indices a bound input references — the scalar's
-/// `Param`, or each `Param` component of a Vec4.
-fn bound_params(bound: &BoundValue) -> impl Iterator<Item = usize> + '_ {
-    let scalar = match bound {
-        BoundValue::Scalar(Bound::Param(flat, _)) => Some(*flat),
-        _ => None,
-    };
-    let components = match bound {
-        BoundValue::Vec4(components) => components.as_slice(),
-        BoundValue::Scalar(_) => &[],
-    };
-    scalar
-        .into_iter()
-        .chain(components.iter().filter_map(|b| match b {
-            Bound::Param(flat, _) => Some(*flat),
-            Bound::Const(_) => None,
-        }))
 }
 
 /// Re-submits one bound input's CA stream so every bound parameter's own
@@ -850,10 +1122,11 @@ fn resample_bound_stream(
     model: &[f32],
     now: f64,
     force: bool,
+    gamut: Gamut,
 ) {
     let mut live = Vec::new();
     let mut expired = Vec::new();
-    for flat in bound_params(bound) {
+    for flat in bound.params() {
         match animations.get(&(effect, flat)) {
             Some(anim) if anim.is_settled(now) => expired.push(flat),
             Some(_) => live.push(flat),
@@ -873,6 +1146,7 @@ fn resample_bound_stream(
             effect,
             model,
             now,
+            gamut,
         );
         return;
     }
@@ -886,19 +1160,24 @@ fn resample_bound_stream(
         .unwrap_or_default();
     let submitted = match bound {
         BoundValue::Scalar(bound) => submit_animation(owner, key_path, stream, |elapsed| {
-            NSNumber::new_f32(bound_value_at(
-                bound,
+            NSNumber::new_f32(bound.value_at(
                 animations,
                 effect,
                 model,
                 now + elapsed.as_secs_f64(),
+                gamut,
             ))
         }),
         BoundValue::Vec4(components) => submit_animation(owner, key_path, stream, |elapsed| {
             let mut value = [0.0f32; 4];
             for (index, b) in components.iter().enumerate() {
-                value[index] =
-                    bound_value_at(b, animations, effect, model, now + elapsed.as_secs_f64());
+                value[index] = b.value_at(
+                    animations,
+                    effect,
+                    model,
+                    now + elapsed.as_secs_f64(),
+                    gamut,
+                );
             }
             ci_vec4(value)
         }),
@@ -917,6 +1196,7 @@ fn resample_bound_stream(
             effect,
             model,
             now + stream.as_secs_f64(),
+            gamut,
         );
     } else {
         write_bound_input_at(
@@ -927,6 +1207,7 @@ fn resample_bound_stream(
             effect,
             model,
             now,
+            gamut,
         );
     }
 }
@@ -1041,6 +1322,7 @@ fn apply_animated(
                     &model[filter.effect],
                     now,
                     true,
+                    owner.gamut.get(),
                 );
             }
         }
@@ -1059,6 +1341,13 @@ fn apply_animated(
 /// (capture samples them; an interrupt reads `from` there); settled ones
 /// are dropped and their end state written.
 fn materialize_animations(owner: &NativeFilterOwner) {
+    resample_all(owner, false);
+}
+
+/// Resamples every bound input's CA stream. `force` re-bakes the
+/// submitted values — the evaluation-gamut change requires it since the
+/// live streams carry the old resolution's samples.
+fn resample_all(owner: &NativeFilterOwner, force: bool) {
     let now = CACurrentMediaTime();
     let model = owner.model.borrow();
     let mut animations = owner.animations.borrow_mut();
@@ -1072,7 +1361,8 @@ fn materialize_animations(owner: &NativeFilterOwner) {
                 filter.effect,
                 &model[filter.effect],
                 now,
-                false,
+                force,
+                owner.gamut.get(),
             );
         }
     }
@@ -1096,15 +1386,19 @@ fn build_capture_filter(owner: &NativeFilterOwner, index: usize, now: f64) -> Re
         let name = NSString::from_str(key);
         match bound {
             BoundValue::Scalar(bound) => {
-                let fallback = bound_scalar(bound, &model[capture.effect]);
+                let fallback = bound.value(&model[capture.effect], Gamut::DisplayP3);
                 let value = match bound {
                     Bound::Param(index, conv) => {
                         animations.get(&(capture.effect, *index)).map_or_else(
                             || presentation_scalar(&owner.layer, &path, fallback),
-                            |anim| conv.map(anim.raw_at(now)),
+                            |anim| conv.map(anim.raw_at(now), Gamut::DisplayP3),
                         )
                     }
-                    Bound::Const(_) => presentation_scalar(&owner.layer, &path, fallback),
+                    // A scalar bound never holds a `Combo` — combos exist
+                    // only as matrix-vector components.
+                    Bound::Const(_) | Bound::Combo(_) => {
+                        presentation_scalar(&owner.layer, &path, fallback)
+                    }
                 };
                 let number = NSNumber::new_f32(value);
                 // SAFETY: `setValue:forKey:` on an unattached `CIFilter`
@@ -1121,12 +1415,12 @@ fn build_capture_filter(owner: &NativeFilterOwner, index: usize, now: f64) -> Re
             BoundValue::Vec4(components) => {
                 let mut value = [0.0f32; 4];
                 for (component, bound) in components.iter().enumerate() {
-                    value[component] = bound_value_at(
-                        bound,
+                    value[component] = bound.value_at(
                         &animations,
                         capture.effect,
                         &model[capture.effect],
                         now,
+                        Gamut::DisplayP3,
                     );
                 }
                 let vector = ci_vec4(value);
@@ -1702,6 +1996,7 @@ pub fn mount(
         capture,
         model: RefCell::new(model),
         animations: RefCell::new(HashMap::new()),
+        gamut: Cell::new(Gamut::of_view(&view)),
         capture_gpu: RefCell::new(None),
         external_prepared: RefCell::new(None),
         capture_suppression: Cell::new(0),
@@ -1720,6 +2015,7 @@ pub fn mount(
                 &key_path(filter, key),
                 bound,
                 &owner.model.borrow()[filter.effect],
+                owner.gamut.get(),
             );
         }
     }
@@ -1785,12 +2081,20 @@ pub fn mount(
                 cocoa_ui::view::set_frame(mounted.view(), bounds);
                 cocoa_ui::view::layout_immediately(mounted.view());
             }
-            if let Some(owner) = weak.upgrade()
-                && cocoa_ui::view::window(view).is_some()
-            {
-                // Newly attached — pending off-screen timelines
-                // materialize onto CA for their remaining duration.
-                materialize_animations(&owner);
+            if let Some(owner) = weak.upgrade() {
+                let gamut = Gamut::of_view(view);
+                if gamut != owner.gamut.get() {
+                    // The screen's gamut changed — every bound
+                    // re-evaluates under the new resolution; the forced
+                    // resample re-bakes the submitted streams.
+                    owner.gamut.set(gamut);
+                    resample_all(&owner, true);
+                }
+                if cocoa_ui::view::window(view).is_some() {
+                    // Newly attached — pending off-screen timelines
+                    // materialize onto CA for their remaining duration.
+                    materialize_animations(&owner);
+                }
             }
         });
     }
