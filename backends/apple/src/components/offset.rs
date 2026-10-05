@@ -158,8 +158,11 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // The content always fills the wrapper before the transform moves
         // it visually.
         host.set_layout_handler({
-            let state = Rc::clone(&state);
+            let state = Rc::downgrade(&state);
             move |host_view| {
+                let Some(state) = state.upgrade() else {
+                    return;
+                };
                 let state = state.borrow();
                 #[cfg(target_os = "ios")]
                 let bounds = view::bounds(host_view);

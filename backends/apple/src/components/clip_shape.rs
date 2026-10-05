@@ -263,9 +263,11 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // Each layout pass stretches the content over the bounds and
         // rebuilds the mask at the new size, as `WuiClipShape.updateMask`.
         host.set_layout_handler({
-            let state = Rc::clone(&state);
-            let host_view = Retained::from(host_view);
+            let state = Rc::downgrade(&state);
             move |host| {
+                let Some(state) = state.upgrade() else {
+                    return;
+                };
                 let bounds = view::bounds(host);
                 view::set_frame(state.child.view(), bounds);
                 if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
@@ -275,7 +277,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
                     let mut mask = state.mask.borrow_mut();
                     if mask.is_none() {
                         let layer = shape::shape_layer();
-                        shape::set_mask(&host_view, Some(&layer));
+                        shape::set_mask(host, Some(&layer));
                         *mask = Some(layer);
                     }
                     if let Some(mask) = mask.as_ref() {

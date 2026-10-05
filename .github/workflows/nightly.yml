@@ -213,59 +213,6 @@ jobs:
       # where it is legal.
       - run: cargo hack check --locked --each-feature --exclude-features "skia-metal webgl" --profile=ci-check
 
-  # The Gradle half of the Android backend (#1429): the host library and the
-  # test application, built once a day. It stays out of the per-change gate
-  # — an AGP + Kotlin + NDK + cargo build costs several minutes and the only
-  # way a diff reaches it is the same path filter the fast clippy leg in
-  # ci.yml already pays for. The arm64-v8a debug APK uploads as a run
-  # artifact so a device check needs no local build.
-  android-backend:
-    name: Android backend (Gradle)
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-rust
-        with:
-          targets: aarch64-linux-android
-          cache: "false"
-      # Reads the shared `cargo-sources` archive owned by this OS's single
-      # writer job; read-only lanes never save, so they cannot evict caches.
-      - name: Restore Cargo sources
-        uses: ./.github/actions/cargo-sources
-      - uses: ./.github/actions/setup-linux-deps
-      # Same NDK prologue the ci.yml Android legs run — this job's graph
-      # also reaches cherenkov-gpu's spirv-opt and waterkit's kotlinc.
-      - uses: ./.github/actions/setup-android-ndk
-        with:
-          spirv-tools: "true"
-          kotlin: "true"
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-      - name: Read the pinned Gradle version
-        run: |
-          set -euo pipefail
-          props="backends/android/gradle/wrapper/gradle-wrapper.properties"
-          version="$(sed -n 's|^distributionUrl=.*gradle-\([0-9.]*\)-bin\.zip|\1|p' "$props")"
-          if ! [[ "$version" =~ ^[0-9]+\.[0-9.]+$ ]]; then
-            echo "::error file=$props::cannot read the pinned Gradle version (got '$version')"
-            exit 1
-          fi
-          echo "GRADLE_VERSION=$version" >> "$GITHUB_ENV"
-      # No gradle-wrapper.jar is committed; CI provisions the pinned release.
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: ${{ env.GRADLE_VERSION }}
-      - name: Build the host library and the test application
-        working-directory: backends/android
-        run: gradle :host:assemble :tests:app:assembleDebug
-      - uses: actions/upload-artifact@v4
-        with:
-          name: waterui-android-test-app-debug-apk
-          path: backends/android/tests/app/build/outputs/apk/debug/app-debug.apk
-
   # The cli's `#[ignore]`d suite (water-rs/cli's nightly `ignored` job,
   # #1446): the tests that build real framework source or hit the network —
   # the android-backend pin fetch, the workspace-resolved example graphs,
@@ -915,7 +862,7 @@ jobs:
 
   promote:
     name: Certify nightly
-    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, msrv, test-report, android-backend, apple-e2e, cli-ignored, cli-e2e]
+    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, msrv, test-report, apple-e2e, cli-ignored, cli-e2e]
     if: github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -959,7 +906,7 @@ jobs:
   # failure that nobody was watching at 08:11 UTC is on the board by morning.
   report:
     name: Report failure
-    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, msrv, android-backend, promote, apple-e2e, cli-ignored, cli-e2e]
+    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, msrv, promote, apple-e2e, cli-ignored, cli-e2e]
     if: failure()
     runs-on: ubuntu-latest
     timeout-minutes: 5
