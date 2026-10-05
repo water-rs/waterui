@@ -192,9 +192,16 @@ def build_contestants(manifest: dict, only: set[str] | None) -> dict[str, str]:
     staged = {}
 
     # benchcomp compositor itself is built in-image so its deps (wlroots)
-    # always match the runtime.
+    # always match the runtime. Debian's wlroots headers include generated
+    # wayland protocol headers (xdg-shell-protocol.h & co) that the dev
+    # package does not ship — wayland-scanner generates them from
+    # /usr/share/wayland-protocols at build time.
     docker_run_bash(
-        "gcc -O2 -Wall -Wextra -DWLR_USE_UNSTABLE "
+        "mkdir -p /tmp/proto && "
+        "for xml in $(find /usr/share/wayland-protocols -name '*.xml'); "
+        "do wayland-scanner server-header \"$xml\" "
+        "/tmp/proto/$(basename \"${xml%.xml}\")-protocol.h; done && "
+        "gcc -O2 -Wall -Wextra -DWLR_USE_UNSTABLE -I/tmp/proto "
         "-o /bench/benchcomp/benchcomp /bench/benchcomp/benchcomp.c "
         "-Wl,--export-dynamic $(pkg-config --cflags --libs wlroots-0.18 "
         "wayland-server libdrm gbm xkbcommon pixman-1) -lrt -ldl")
