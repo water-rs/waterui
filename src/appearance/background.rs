@@ -100,6 +100,30 @@ impl IntoBackground for Glass {
     }
 }
 
+/// A material group metadata: the backdrop materials in the wrapped subtree
+/// form one group.
+///
+/// The members of one group share one capture of what lies behind the
+/// group, so a member does not see another member of its group. Where the
+/// realization's style supports it, members may also merge into one shape
+/// where they come close. Whether and how they merge, and the distance
+/// over which they do, belong to the style and its theme tokens, never to
+/// the view.
+///
+/// The nearest enclosing group wins: a group nested in another starts a
+/// group of its own, and its materials do not join the outer one. A
+/// material outside every group is a group of its own.
+///
+/// This is ignorable metadata, like [`MaterialBackground`]: a realization
+/// whose style does not group materials renders the content unchanged.
+///
+/// Use via [`material_group`](crate::ViewExt::material_group) rather than
+/// directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MaterialGroup;
+
+impl MetadataKey for MaterialGroup {}
+
 impl<V: View> IntoBackground for V {
     type Output<Content: View> = BackgroundView<Content, V>;
 
