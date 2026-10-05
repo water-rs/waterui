@@ -438,9 +438,9 @@ impl HeadlessRuntime {
         // Every window's renderer is seeded from this collection, and a
         // self-drawn component that typesets text itself reads it out of the
         // environment instead of enumerating the system's fonts for itself.
-        let fonts = FontCollection::new(native_resource_fonts(
+        let fonts = crate::text::fonts::native_collection(
             waterui_core::ResourceContext::from_environment(&env),
-        ));
+        );
         fonts.clone().install(&mut env);
 
         // Headless binaries (preview, tests) have no platform runner to install
@@ -1295,9 +1295,9 @@ mod generation_tests {
             if self.font.is_none() {
                 self.font = Some(
                     resources
-                        .font(FontSource::bytes(
-                            crate::renderer::tests::installed_font_bytes("Roboto"),
-                        ))
+                        .font(FontSource::bytes(crate::text::fonts::installed_font_bytes(
+                            "Roboto",
+                        )))
                         .expect("test font registers on the engine's resource table"),
                 );
             }

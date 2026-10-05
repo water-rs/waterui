@@ -8,6 +8,12 @@
 //! therefore carries its respelled spans, and no effective-input plumbing
 //! survives.
 
+#[cfg(target_os = "android")]
+mod android_fonts;
+pub mod fonts;
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+mod web_fonts;
+
 use core::num::NonZeroUsize;
 use core::ops::Range;
 use std::sync::{Arc, Mutex};

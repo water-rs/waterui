@@ -21,5 +21,7 @@ pub use engine::{TailMark, TextEngine, TextLayout, TextPosition, TextSelection};
 pub use input::{ResolvedTextLayoutInput, resolve_text_layout_input};
 pub use service::TextService;
 
+pub use parley_engine::fonts;
+
 pub type SessionTextEngine = parley_engine::ParleyEngine;
 pub type SessionTextLayout = <SessionTextEngine as TextEngine>::Layout;

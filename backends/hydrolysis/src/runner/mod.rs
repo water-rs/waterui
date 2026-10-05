@@ -46,7 +46,7 @@ pub mod android;
     any(target_os = "android", all(test, not(target_arch = "wasm32")))
 ))]
 pub mod android_accessibility;
-// Bare wasm has no window pump to drive these modules' diagnostics, fonts
+// Bare wasm has no window pump to drive these modules' diagnostics
 // and menu-bar plumbing.
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
 mod diagnostics;
@@ -55,8 +55,6 @@ mod diagnostics;
 #[cfg(any(target_os = "android", all(test, not(target_arch = "wasm32"))))]
 pub mod editing;
 mod executor;
-#[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
-mod fonts;
 #[cfg(not(target_arch = "wasm32"))]
 mod headless;
 pub mod ime;
@@ -84,7 +82,6 @@ use diagnostics::{RenderDiagnostics, RenderDiagnosticsConfig, RenderPhaseSample,
 #[cfg(not(target_arch = "wasm32"))]
 use executor::{DrainExecutorOnDrop, HeadlessMainThreadExecutor};
 #[cfg(not(target_arch = "wasm32"))]
-use fonts::native_resource_fonts;
 #[cfg(not(target_arch = "wasm32"))]
 pub use headless::{HeadlessPumpResult, HeadlessRuntime};
 pub use semantic::{SemanticPumpResult, SemanticRuntime};
@@ -300,9 +297,9 @@ pub fn run(app: App, style: impl crate::Style) {
     // seeded from this collection, and a self-drawn component that typesets
     // text itself reads it out of the environment instead of enumerating the
     // system's fonts for itself.
-    let fonts = FontCollection::new(native_resource_fonts(
+    let fonts = crate::text::fonts::native_collection(
         waterui_core::ResourceContext::from_environment(&env),
-    ));
+    );
     fonts.clone().install(&mut env);
     let shortcuts = env
         .get::<MenuShortcutRegistry>()

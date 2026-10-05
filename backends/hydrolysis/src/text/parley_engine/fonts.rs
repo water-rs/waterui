@@ -3,7 +3,8 @@
 //! `WaterUI` ships a known set of resource fonts (Roboto plus script-specific
 //! Noto Sans families). Classification and fallback installation are shared by the
 //! native loader (which scans `resources/fonts` directories) and the web
-//! loader in [`super::web_runner`] (which fetches fonts from a manifest).
+//! loader in [`super::web_fonts`] (which registers fonts fetched from a
+//! manifest).
 //!
 //! The result is built **once per application**, installed into the root
 //! environment as the shared `FontCollection`, and every window's text engine
@@ -12,9 +13,17 @@
 //! one, and a self-drawn component reading the environment would have had no
 //! single collection to read.
 
+#[cfg(any(not(target_arch = "wasm32"), feature = "web"))]
 use parley::fontique::{Collection, FallbackKey, FamilyId, FontInfo, GenericFamily, Script};
+use waterui_text::FontCollection;
+
+#[cfg(target_os = "android")]
+pub use super::android_fonts::android_collection;
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+pub use super::web_fonts::web_collection;
 
 /// Font-family buckets recognized from `WaterUI`'s bundled resource fonts.
+#[cfg(any(not(target_arch = "wasm32"), feature = "web"))]
 #[derive(Default)]
 pub(super) struct ResourceFontFamilies {
     generic: Vec<FamilyId>,
@@ -29,10 +38,12 @@ pub(super) struct ResourceFontFamilies {
     devanagari: Vec<FamilyId>,
 }
 
+#[cfg(any(not(target_arch = "wasm32"), feature = "web"))]
 fn extend_family_ids(target: &mut Vec<FamilyId>, families: &[(FamilyId, Vec<FontInfo>)]) {
     target.extend(families.iter().map(|(family_id, _)| *family_id));
 }
 
+#[cfg(any(not(target_arch = "wasm32"), feature = "web"))]
 fn set_fallbacks(collection: &mut Collection, key: impl Into<FallbackKey>, families: &[FamilyId]) {
     if families.is_empty() {
         return;
@@ -43,6 +54,7 @@ fn set_fallbacks(collection: &mut Collection, key: impl Into<FallbackKey>, famil
     );
 }
 
+#[cfg(any(not(target_arch = "wasm32"), feature = "web"))]
 impl ResourceFontFamilies {
     /// Classify registered font families into fallback buckets by font name.
     ///
@@ -123,9 +135,7 @@ impl ResourceFontFamilies {
 /// process's working directory or executable location, so an embedded host's
 /// fonts come from the roots it installed.
 #[cfg(not(target_arch = "wasm32"))]
-pub(super) fn native_resource_fonts(
-    resources: &waterui_core::ResourceContext,
-) -> parley::FontContext {
+pub fn native_collection(resources: &waterui_core::ResourceContext) -> FontCollection {
     use parley::fontique::Blob;
     use std::sync::Arc;
 
@@ -181,5 +191,37 @@ pub(super) fn native_resource_fonts(
         }
     }
     resource_fonts.install(&mut font_cx.collection);
-    font_cx
+    FontCollection::new(font_cx)
+}
+
+/// A collection carrying only the faces fontique discovers on the system —
+/// for a wasm32 window without a font manifest, where there is no resource
+/// directory to scan and no `web_collection` result to build on.
+#[cfg(target_arch = "wasm32")]
+pub fn system_collection() -> FontCollection {
+    FontCollection::new(parley::FontContext::new())
+}
+
+/// Raw data of the default face of an installed font `family`, resolved
+/// through system font discovery as a runtime resolves a named family. The
+/// repository commits no fonts: `backends/hydrolysis/test-fonts/install.py`
+/// installs the fixtures, and a family that is not installed fails naming it.
+#[cfg(test)]
+pub fn installed_font_bytes(family: &str) -> std::sync::Arc<[u8]> {
+    let mut collection =
+        parley::fontique::Collection::new(parley::fontique::CollectionOptions::default());
+    let info = collection.family_by_name(family).unwrap_or_else(|| {
+        panic!(
+            "font family `{family}` is not installed; install the test fonts with \
+             `uv run backends/hydrolysis/test-fonts/install.py`"
+        )
+    });
+    let face = info
+        .default_font()
+        .unwrap_or_else(|| panic!("the installed `{family}` family carries no face"));
+    std::sync::Arc::from(
+        face.load(None)
+            .unwrap_or_else(|| panic!("the installed `{family}` face failed to load"))
+            .as_ref(),
+    )
 }

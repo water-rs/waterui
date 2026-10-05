@@ -29,10 +29,8 @@ use ndk::looper::{FdEvent, ForeignLooper, ThreadLooper};
 use waterui::Environment;
 use waterui::cursor::CursorStyle;
 use waterui::window::WindowState;
-use waterui_text::FontCollection;
 
 use super::accessibility::AccessibilitySnapshot;
-use super::fonts::android_fonts;
 use super::gpu::{AndroidGpuContext, AndroidSurface};
 use super::ime::ImeBridge;
 use super::jni::JniError;
@@ -724,7 +722,7 @@ impl AndroidSession {
         env.insert(waterui_core::ViewRenderer::new(
             crate::view_renderer::HydrolysisViewRenderer::new(Rc::clone(&theme)),
         ));
-        let fonts = FontCollection::new(android_fonts());
+        let fonts = crate::text::fonts::android_collection();
         fonts.clone().install(&mut env);
         let shortcuts = env
             .get::<MenuShortcutRegistry>()
