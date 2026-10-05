@@ -11,6 +11,17 @@ use serde::{Deserialize, Serialize};
 /// clip. A member layer must have a clip ([`crate::Scene::load`] validates
 /// this) or the scene fails to load.
 ///
+/// The member's compositing canvas is the nearest enclosing level a
+/// capture cannot look through: a layer isolated for a
+/// [`crate::Layer::filter`] or a non-Normal [`crate::Layer::blend`], a
+/// projective layer's local image ([`crate::Layer::projection`]), else
+/// the surface. A capture looks through every other kind of level —
+/// pass-through and `opacity < 1` layers alike — compositing each one's
+/// partial contents at full opacity, so a member under a translucent
+/// ancestor samples what lies behind it. The looked-through levels'
+/// opacities still apply when the enclosing frame composites them, so a
+/// fading backdrop panel fades rather than disappearing.
+///
 /// The capture is taken at `scale` times device resolution: capture texel
 /// `(i, j)` holds the area-weighted mean of the canvas over the device rect
 /// `[i/s, (i+1)/s) × [j/s, (j+1)/s)` clipped to the canvas, `filters` run on

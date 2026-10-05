@@ -619,12 +619,7 @@ impl crate::GpuContent for Null {
         let _ = r.events.send(Event::AddProducer(id));
     }
 
-    fn add_frame_producer(
-        r: &mut NullRenderer,
-        id: crate::ProducerId,
-        _dirty: std::sync::Arc<std::sync::atomic::AtomicBool>,
-        _gate: std::sync::Arc<crate::WakeGate>,
-    ) {
+    fn add_frame_producer(r: &mut NullRenderer, id: crate::ProducerId) {
         if !r.pending_retire.remove(&id) {
             r.producers.insert(
                 id,
@@ -831,7 +826,7 @@ fn engine() -> Option<Engine<B>> {
 fn the_last_image_drop_frees_its_memory() {
                 let Some(engine) = $crate::__engine_wait!(engine()) else { return };
                 let _surface = $crate::__engine_wait!(engine
-                    .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))
+                    .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))
                     .expect("surface");
                 // A first render settles one-off allocations so the
                 // baseline is stable.
@@ -879,7 +874,7 @@ fn replace_redraws_the_recorded_image(width: u32, height: u32) {
                 const BLUE: [u8; 4] = [0, 0, 255, 255];
                 let Some(engine) = $crate::__engine_wait!(engine()) else { return };
                 let surface = $crate::__engine_wait!(engine
-                    .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))
+                    .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))
                     .expect("surface");
                 let t0 = Instant::now();
                 let image = engine.image(solid(16, 16, RED)).expect("image");
@@ -961,7 +956,7 @@ fn engine() -> Option<Engine<B>> {
             $crate::__engine_fn! {
 fn surface(engine: &Engine<B>) -> Surface<B> {
                 $crate::__engine_wait!(engine
-                    .surface(Offscreen::new((256, 64), OffscreenFormat::LinearF16)))
+                    .surface(Offscreen::new((256, 64), OffscreenFormat::LinearF16), || {}))
                     .expect("surface")
             }
             }
@@ -1597,7 +1592,7 @@ mod tests {
     fn rubber_band_with_a_zero_width_bounds_rect() {
         let (engine, rx) = engine();
         let surface = engine
-            .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16))
+            .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {})
             .expect("surface");
         let layer_handle = surface.layer();
         let bounds = kurbo::Rect::new(0.0, 0.0, 0.0, 300.0);
@@ -1626,7 +1621,7 @@ mod tests {
     fn decay_starts_at_committed_value_and_stays_where_it_stops() {
         let (engine, rx) = engine();
         let surface = engine
-            .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16))
+            .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {})
             .expect("surface");
         let layer_handle = surface.layer();
         surface.update(|tx| {
@@ -1658,7 +1653,7 @@ mod tests {
     fn resource_drop_reaches_the_renderer() {
         let (engine, rx) = engine();
         let _surface = engine
-            .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16))
+            .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {})
             .expect("surface");
         {
             let image = engine
@@ -1674,36 +1669,41 @@ mod tests {
         );
     }
 
-    /// Two surfaces — `drawing` draws `image`, `other` a fill — plus an
-    /// `unused` image nothing draws, already settled: the last two rendered
-    /// frames changed nothing and the event probe is drained.
+    /// Two surfaces — `drawing` draws `image`, `other` a fill — already
+    /// settled: the last two rendered frames changed nothing and the event
+    /// probe is drained.
     struct ImageScene {
         engine: Engine<Null>,
         rx: std::sync::mpsc::Receiver<Event>,
         drawing: Surface<Null>,
         other: Surface<Null>,
         image: Image<Rgba8>,
-        unused: Image<Rgba8>,
         image_layer: Layer,
         /// Held only for its lifetime: dropping the layer queues a remove
         /// on `other` and fires the waker.
         fill_layer: Layer,
+        /// The host wakes both surfaces share.
+        wakes: std::sync::Arc<std::sync::atomic::AtomicU32>,
     }
 
     fn image_replacement_scene() -> ImageScene {
         use crate::{Draw as _, Sampling, WorkingColor};
 
         let (engine, rx) = engine();
+        let wakes = std::sync::Arc::default();
         let drawing = engine
-            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16))
+            .surface(
+                Offscreen::new((8, 8), OffscreenFormat::LinearF16),
+                counting(&wakes),
+            )
             .expect("surface");
         let other = engine
-            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16))
+            .surface(
+                Offscreen::new((8, 8), OffscreenFormat::LinearF16),
+                counting(&wakes),
+            )
             .expect("surface");
         let image = engine
-            .image(ImageData::<Rgba8>::new(1, 1, vec![0u8; 4]).expect("image data"))
-            .expect("image");
-        let unused = engine
             .image(ImageData::<Rgba8>::new(1, 1, vec![0u8; 4]).expect("image data"))
             .expect("image");
         let image_layer = drawing.layer();
@@ -1738,21 +1738,20 @@ mod tests {
             drawing,
             other,
             image,
-            unused,
             image_layer,
             fill_layer,
+            wakes,
         }
     }
 
     /// `Image::replace` reaches the renderer with the new dimensions, marks
     /// changed only the surface whose content draws the image and wakes the
-    /// host once between two renders; replacing an image nothing draws
-    /// marks nothing. After the last drop the image is removed once the
-    /// content stops drawing it.
+    /// host once between two renders, however many replacements land.
+    /// After the last drop the image is removed once the content stops
+    /// drawing it.
     #[test]
     fn image_replacement_redraws_and_still_releases() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::atomic::Ordering;
 
         use crate::{Draw as _, WorkingColor};
 
@@ -1762,18 +1761,14 @@ mod tests {
             drawing,
             other,
             image,
-            unused,
             image_layer,
             fill_layer: _fill_layer,
+            wakes,
         } = image_replacement_scene();
 
-        let wakes = Arc::new(AtomicU32::new(0));
-        engine.set_waker({
-            let wakes = Arc::clone(&wakes);
-            move || {
-                wakes.fetch_add(1, Ordering::Relaxed);
-            }
-        });
+        // Count only the wakes from here on: the scene's own changes woke
+        // the host before it settled.
+        wakes.store(0, Ordering::Relaxed);
         image
             .replace(ImageData::<Rgba8>::new(2, 3, vec![0u8; 24]).expect("image data"))
             .expect("replace");
@@ -1785,8 +1780,8 @@ mod tests {
             1,
             "a replacement wakes the host"
         );
-        unused
-            .replace(ImageData::<Rgba8>::new(2, 2, vec![0u8; 16]).expect("image data"))
+        image
+            .replace(ImageData::<Rgba8>::new(2, 3, vec![0u8; 24]).expect("image data"))
             .expect("replace");
         let _ = engine.memory();
         assert_eq!(
@@ -1842,7 +1837,7 @@ mod tests {
     fn frame_only_commits_fill_plane_frames() {
         let (engine, rx) = engine();
         let surface = engine
-            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16))
+            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {})
             .expect("surface");
         let video = surface.layer();
         let above = surface.layer();
@@ -1902,7 +1897,7 @@ mod tests {
     fn update_animated_fills_the_default() {
         let (engine, rx) = engine();
         let surface = engine
-            .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16))
+            .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {})
             .expect("surface");
         let layer_handle = surface.layer();
         surface.update_animated(Spring::bouncy(), |tx| {
@@ -1914,16 +1909,14 @@ mod tests {
         let _ = frames(&rx);
     }
 
-    /// Installs a host wake callback that counts its calls.
-    fn counting_waker(engine: &Engine<Null>) -> std::sync::Arc<std::sync::atomic::AtomicU32> {
-        let wakes = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
-        engine.set_waker({
-            let wakes = std::sync::Arc::clone(&wakes);
-            move || {
-                wakes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
-        });
-        wakes
+    /// A host wake callback that counts its calls into `wakes`.
+    fn counting(
+        wakes: &std::sync::Arc<std::sync::atomic::AtomicU32>,
+    ) -> impl Fn() + Send + Sync + 'static {
+        let wakes = std::sync::Arc::clone(wakes);
+        move || {
+            wakes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     /// A window-like surface with a running transform animation, a bound
@@ -1948,11 +1941,12 @@ mod tests {
         use crate::{Curve, Draw as _, Sampling, WorkingColor};
 
         let (engine, rx) = engine();
+        let wakes = std::sync::Arc::default();
         let surface = engine
-            .surface(NullTarget::Window(Offscreen::new(
-                (16, 16),
-                OffscreenFormat::LinearF16,
-            )))
+            .surface(
+                NullTarget::Window(Offscreen::new((16, 16), OffscreenFormat::LinearF16)),
+                counting(&wakes),
+            )
             .expect("surface");
         let image = engine
             .image(ImageData::<Rgba8>::new(1, 1, vec![0u8; 4]).expect("image data"))
@@ -1989,7 +1983,9 @@ mod tests {
             "the animation runs: {next:?}"
         );
         let _ = frames(&rx);
-        let wakes = counting_waker(&engine);
+        // Count only the wakes from here on: building the scene woke the
+        // host before it settled.
+        wakes.store(0, std::sync::atomic::Ordering::Relaxed);
         HiddenScene {
             engine,
             rx,
@@ -2166,11 +2162,18 @@ mod tests {
         use crate::{Visibility, WorkingColor};
 
         let (engine, rx) = engine();
+        let wakes = std::sync::Arc::default();
         let hidden = engine
-            .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16))
+            .surface(
+                Offscreen::new((16, 16), OffscreenFormat::LinearF16),
+                counting(&wakes),
+            )
             .expect("surface");
         let visible = engine
-            .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16))
+            .surface(
+                Offscreen::new((16, 16), OffscreenFormat::LinearF16),
+                counting(&wakes),
+            )
             .expect("surface");
         let spinning = hidden.layer();
         hidden.update_animated(Spring::smooth(), |tx| {
@@ -2183,7 +2186,7 @@ mod tests {
         hidden.visibility(Visibility::Hidden).expect("hide");
         let _ = frames(&rx);
 
-        let wakes = counting_waker(&engine);
+        wakes.store(0, Ordering::Relaxed);
         hidden.clear_color(WorkingColor::BLACK);
         assert_eq!(wakes.load(Ordering::Relaxed), 0, "the hidden surface woke");
         visible.clear_color(WorkingColor::WHITE);
@@ -2235,7 +2238,7 @@ mod tests {
         };
         let (engine, rx) = engine();
         let surface = engine
-            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16))
+            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {})
             .expect("surface");
         let layer_handle = surface.layer();
         surface.update(|tx| {
@@ -2318,7 +2321,7 @@ mod tests {
     fn layer_drop_queues_remove() {
         let (engine, rx) = engine();
         let surface = engine
-            .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16))
+            .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {})
             .expect("surface");
         {
             let layer_handle = surface.layer();
@@ -2340,11 +2343,12 @@ mod tests {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicU32, Ordering};
         let (engine, _events) = engine();
+        let count = Arc::new(AtomicU32::new(0));
         let surface = engine
-            .surface(crate::Offscreen::new(
-                (8, 8),
-                crate::OffscreenFormat::LinearF16,
-            ))
+            .surface(
+                crate::Offscreen::new((8, 8), crate::OffscreenFormat::LinearF16),
+                counting(&count),
+            )
             .unwrap();
         let layer = surface.layer();
         let color = nami::binding(WorkingColor::WHITE);
@@ -2355,11 +2359,7 @@ mod tests {
             );
         });
         engine.render(FrameTime::now()).unwrap();
-        let count = Arc::new(AtomicU32::new(0));
-        let wakes = count.clone();
-        engine.set_waker(move || {
-            wakes.fetch_add(1, Ordering::Relaxed);
-        });
+        count.store(0, Ordering::Relaxed);
         color.set(WorkingColor::BLACK);
         color.set(WorkingColor::WHITE);
         assert_eq!(
@@ -2398,7 +2398,7 @@ mod tests {
             .shader(ShaderSource::wgsl("@fragment fn f() { }"))
             .expect("shader");
         let surface = engine
-            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16))
+            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {})
             .expect("surface");
         drop(font);
         drop(image);
@@ -2423,7 +2423,7 @@ mod tests {
             .expect("the shader is queued");
         assert!(
             engine
-                .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16))
+                .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {})
                 .is_err(),
             "surface"
         );
@@ -2454,7 +2454,7 @@ mod tests {
             .shader(ShaderSource::wgsl("@fragment fn f() { }"))
             .expect("the shader is queued");
         let surface = engine
-            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16))
+            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {})
             .expect("surface");
         let rect = kurbo::Rect::new(0., 0., 8., 8.);
         engine
@@ -2541,7 +2541,7 @@ mod tests {
 
         let (engine, rx) = engine();
         let surface = engine
-            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16))
+            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {})
             .expect("surface");
         let font = engine.font(FontSource::bytes(vec![0u8; 8])).expect("font");
         let image = engine
@@ -2645,10 +2645,10 @@ mod tests {
 
         let (engine, rx) = engine();
         let first = engine
-            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16))
+            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {})
             .expect("surface");
         let second = engine
-            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16))
+            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {})
             .expect("surface");
         let image = engine
             .image(ImageData::<Rgba8>::new(1, 1, vec![0u8; 4]).expect("image data"))
@@ -2697,7 +2697,7 @@ mod tests {
 
         let (engine, rx) = engine();
         let surface = engine
-            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16))
+            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {})
             .expect("surface");
         let image = engine
             .image(ImageData::<Rgba8>::new(1, 1, vec![0u8; 4]).expect("image data"))
@@ -2741,11 +2741,12 @@ mod tests {
         use std::sync::atomic::{AtomicU32, Ordering};
 
         let (engine, rx) = engine();
+        let count = Arc::new(AtomicU32::new(0));
         let surface = engine
-            .surface(crate::Offscreen::new(
-                (8, 8),
-                crate::OffscreenFormat::LinearF16,
-            ))
+            .surface(
+                crate::Offscreen::new((8, 8), crate::OffscreenFormat::LinearF16),
+                counting(&count),
+            )
             .unwrap();
         let layer = surface.layer();
         let color = nami::binding(WorkingColor::WHITE);
@@ -2757,11 +2758,7 @@ mod tests {
         engine.render(FrameTime::now()).unwrap();
         let _ = frames(&rx);
 
-        let count = Arc::new(AtomicU32::new(0));
-        let wakes = Arc::clone(&count);
-        engine.set_waker(move || {
-            wakes.fetch_add(1, Ordering::Relaxed);
-        });
+        count.store(0, Ordering::Relaxed);
         surface.update(|tx| {
             tx[&layer].record(|r| {
                 r.fill(kurbo::Rect::new(0., 0., 8., 8.), WorkingColor::BLACK);
@@ -2795,13 +2792,13 @@ mod tests {
 
         let (engine, rx) = engine();
         let offscreen = engine
-            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16))
+            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {})
             .expect("offscreen surface");
         let window = engine
-            .surface(NullTarget::Window(Offscreen::new(
-                (8, 8),
-                OffscreenFormat::LinearF16,
-            )))
+            .surface(
+                NullTarget::Window(Offscreen::new((8, 8), OffscreenFormat::LinearF16)),
+                || {},
+            )
             .expect("window-like surface");
         engine.render(FrameTime::now()).expect("render");
         let _ = frames(&rx);
@@ -2856,10 +2853,10 @@ mod tests {
 
         let (engine, rx) = engine();
         let surface = engine
-            .surface(NullTarget::Window(Offscreen::new(
-                (8, 8),
-                OffscreenFormat::LinearF16,
-            )))
+            .surface(
+                NullTarget::Window(Offscreen::new((8, 8), OffscreenFormat::LinearF16)),
+                || {},
+            )
             .expect("surface");
         let layer = surface.layer();
         let content =
@@ -2924,10 +2921,10 @@ mod tests {
 
         let (engine, rx) = engine();
         let surface = engine
-            .surface(NullTarget::Window(Offscreen::new(
-                (8, 8),
-                OffscreenFormat::LinearF16,
-            )))
+            .surface(
+                NullTarget::Window(Offscreen::new((8, 8), OffscreenFormat::LinearF16)),
+                || {},
+            )
             .expect("surface");
         engine.render(FrameTime::now()).expect("render");
         let _ = frames(&rx);
@@ -3090,7 +3087,7 @@ mod wasm_tests {
     )]
     async fn dropped_surface_creation_still_destroys_it() {
         let (engine, rx) = engine(HashSet::default()).await;
-        let create = || engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16));
+        let create = || engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {});
         drop_after_enqueue(&engine, create()).await;
         drop_after_commit(&engine, create()).await;
         drop_after_reply(&engine, create()).await;
@@ -3108,14 +3105,20 @@ mod wasm_tests {
         reason = "the browser engine is single-threaded and its futures run on the page's event loop"
     )]
     async fn hidden_surface_schedules_no_frames() {
-        use std::cell::Cell;
-        use std::rc::Rc;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
 
         use crate::{Next, Visibility};
 
         let (engine, rx) = engine(HashSet::default()).await;
+        let wakes = Arc::new(AtomicU32::new(0));
         let surface = engine
-            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16))
+            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), {
+                let wakes = Arc::clone(&wakes);
+                move || {
+                    wakes.fetch_add(1, Ordering::Relaxed);
+                }
+            })
             .await
             .expect("surface");
         let layer = surface.layer();
@@ -3125,17 +3128,17 @@ mod wasm_tests {
         engine.render(FrameTime::now()).await.expect("render");
         let _: Vec<Event> = rx.try_iter().collect();
 
-        let wakes = Rc::new(Cell::new(0u32));
-        engine.set_waker({
-            let wakes = Rc::clone(&wakes);
-            move || wakes.set(wakes.get() + 1)
-        });
+        wakes.store(0, Ordering::Relaxed);
         surface.visibility(Visibility::Hidden).expect("hide");
         surface.update(|tx| {
             tx[&layer].record(|c| c.fill(kurbo::Rect::new(0., 0., 8., 8.), WorkingColor::WHITE));
         });
         flush(&engine).await;
-        assert_eq!(wakes.get(), 0, "a hidden surface woke the host");
+        assert_eq!(
+            wakes.load(Ordering::Relaxed),
+            0,
+            "a hidden surface woke the host"
+        );
         assert!(
             matches!(
                 engine.render(FrameTime::now()).await,
@@ -3156,7 +3159,11 @@ mod wasm_tests {
         );
 
         surface.visibility(Visibility::Visible).expect("show");
-        assert_eq!(wakes.get(), 1, "showing the surface asks for one frame");
+        assert_eq!(
+            wakes.load(Ordering::Relaxed),
+            1,
+            "showing the surface asks for one frame"
+        );
         assert_eq!(
             engine.render(FrameTime::now()).await.expect("render"),
             Next::Idle
@@ -3214,7 +3221,7 @@ mod wasm_tests {
             .expect("the shader is queued");
         assert!(
             engine
-                .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16))
+                .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {})
                 .await
                 .is_err(),
             "surface"
@@ -3225,7 +3232,7 @@ mod wasm_tests {
         // no committed surface and reports nothing.
         drop_after_enqueue(
             &engine,
-            engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16)),
+            engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {}),
         )
         .await;
         flush(&engine).await;
@@ -3244,7 +3251,7 @@ mod wasm_tests {
         let reject = HashSet::from([NullReject::Image, NullReject::Shader]);
         let (engine, _rx) = engine(reject).await;
         let surface = engine
-            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16))
+            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {})
             .await
             .expect("surface");
         let rect = kurbo::Rect::new(0., 0., 8., 8.);
@@ -3295,7 +3302,7 @@ mod wasm_tests {
     async fn pending_releases_run_when_the_surface_drops() {
         let (engine, rx) = engine(HashSet::default()).await;
         let surface = engine
-            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16))
+            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {})
             .await
             .expect("surface");
         let image = engine
@@ -3350,11 +3357,11 @@ mod wasm_tests {
     async fn a_release_waits_for_installed_content() {
         let (engine, rx) = engine(HashSet::default()).await;
         let surface = engine
-            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16))
+            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {})
             .await
             .expect("surface");
         let other = engine
-            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16))
+            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {})
             .await
             .expect("surface");
         let rect = kurbo::Rect::new(0., 0., 8., 8.);

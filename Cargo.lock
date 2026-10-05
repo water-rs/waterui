@@ -4687,6 +4687,7 @@ dependencies = [
  "serde",
  "serde_json",
  "skrifa 0.44.0",
+ "thiserror 2.0.21",
  "tiny_http",
  "toml 1.1.6+spec-1.1.0",
  "tracing",
@@ -12742,6 +12743,7 @@ dependencies = [
  "objc2-quartz-core 0.3.2",
  "pollster 1.0.1",
  "serde_json",
+ "thiserror 2.0.21",
  "tracing",
  "tracing-panic",
  "tracing-subscriber",
@@ -13085,6 +13087,7 @@ dependencies = [
  "serde",
  "smallvec",
  "suiteki",
+ "thiserror 2.0.21",
  "waterui-macros",
 ]
 
@@ -13298,7 +13301,7 @@ dependencies = [
 [[package]]
 name = "waterui-image"
 version = "0.5.0"
-source = "git+https://github.com/water-rs/image?rev=8b1aa2ce3f03d81ca02164f5563f2cefc34fb566#8b1aa2ce3f03d81ca02164f5563f2cefc34fb566"
+source = "git+https://github.com/water-rs/image?rev=41bd909642a78c22aed55ba7c4ae362a439db4c6#41bd909642a78c22aed55ba7c4ae362a439db4c6"
 dependencies = [
  "half",
  "image",
@@ -13597,7 +13600,7 @@ dependencies = [
 [[package]]
 name = "waterui-particle"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/particle?rev=4364f1ece5373bf322ea99cde595d7b4ec6958dc#4364f1ece5373bf322ea99cde595d7b4ec6958dc"
+source = "git+https://github.com/water-rs/particle?rev=e0ea3655ad77c09ab1b149a7b8464748105a03d3#e0ea3655ad77c09ab1b149a7b8464748105a03d3"
 dependencies = [
  "bytemuck",
  "encase",

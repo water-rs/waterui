@@ -889,7 +889,7 @@ crate::engine::cfg_async_fn! {
         render: impl FnOnce(
             &mut HydrolysisRenderer,
             crate::renderer::FrameRenderTarget<'_>,
-        ) -> crate::renderer::EngineFrame,
+        ) -> Result<crate::renderer::EngineFrame, cherenkov::RenderError>,
     } {
         renderer: &mut HydrolysisRenderer,
         surface: &mut dyn crate::platform::SurfaceProvider,
@@ -899,11 +899,11 @@ crate::engine::cfg_async_fn! {
         render: impl AsyncFnOnce(
             &mut HydrolysisRenderer,
             crate::renderer::FrameRenderTarget<'_>,
-        ) -> crate::renderer::EngineFrame,
+        ) -> Result<crate::renderer::EngineFrame, cherenkov::RenderError>,
     } -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
     let (width, height) = surface.size();
     let format = surface.format();
-    let premultiply_alpha = surface.premultiply_alpha();
+    let output_alpha = surface.output_alpha();
     let context = surface.device_loss().gpu_context();
     // The engine renders into its own retained output before the swapchain
     // image is acquired: the render awaits the GPU device on wasm32, and a
@@ -928,7 +928,10 @@ crate::engine::cfg_async_fn! {
             height,
             base_color: crate::renderer::working_color(clear_color),
         },
-    ));
+    ))
+    .unwrap_or_else(|error| {
+        panic!("hydrolysis renderer: engine render failed: {error:#}")
+    });
     let engine_render = render_started_at.elapsed();
     let acquire_started_at = Instant::now();
     let frame = acquire_surface_frame(surface)?;
@@ -940,7 +943,7 @@ crate::engine::cfg_async_fn! {
         surface.queue(),
         frame.texture(),
         surface.output_color(),
-        premultiply_alpha,
+        output_alpha,
     );
     let render = engine_render + copy_started_at.elapsed();
     #[cfg(feature = "frame-profile")]
@@ -959,13 +962,13 @@ crate::engine::cfg_async_fn! {
             HeadlessSnapshot {
                 width,
                 height,
-                rgba8: readback_texture_rgba8(
-                    surface.device(),
-                    surface.queue(),
-                    frame.texture(),
-                    width,
-                    height,
-                ),
+                rgba8: readback_texture_rgba8(&*surface, frame.texture(), width, height)
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "hydrolysis headless snapshot readback failed: {:#}",
+                            waterui_core::Error::from(error)
+                        )
+                    }),
             }
         });
         #[cfg(feature = "frame-profile")]
@@ -1165,12 +1168,12 @@ crate::engine::cfg_async_fn! {
                 scale_factor,
                 capture_snapshot,
                 #[cfg(not(target_arch = "wasm32"))]
-                |renderer, target| {
-                    renderer.render_engine_frame(target, reader.rasterizes())
-                },
+                |renderer, target| renderer.render_engine_frame(target, reader.rasterizes()),
                 #[cfg(target_arch = "wasm32")]
                 async |renderer, target| {
-                    renderer.render_engine_frame(target, reader.rasterizes()).await
+                    renderer
+                        .render_engine_frame(target, reader.rasterizes())
+                        .await
                 },
             ))
         };
@@ -1185,12 +1188,12 @@ crate::engine::cfg_async_fn! {
                 scale_factor,
                 capture_snapshot,
                 #[cfg(not(target_arch = "wasm32"))]
-                |renderer, target| {
-                    renderer.render_engine_frame(target, reader.rasterizes())
-                },
+                |renderer, target| renderer.render_engine_frame(target, reader.rasterizes()),
                 #[cfg(target_arch = "wasm32")]
                 async |renderer, target| {
-                    renderer.render_engine_frame(target, reader.rasterizes()).await
+                    renderer
+                        .render_engine_frame(target, reader.rasterizes())
+                        .await
                 },
             ))
         };
@@ -1334,8 +1337,8 @@ crate::engine::cfg_async_fn! {
         runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
     }
     // The engine's own scheduling answer: an in-flight animation asks for its
-    // next frame through `Next::At` (its `RedrawCallback` already woke the
-    // host too — the request is idempotent).
+    // next frame through `Next::At` (the surface's wake may already have woken
+    // the host too — the request is idempotent).
     if matches!(
         runtime.renderer.take_engine_next(),
         Some(cherenkov::Next::At { .. })

@@ -61,7 +61,7 @@ fn steady_frames_allocate_no_device_memory() -> Result<(), Box<dyn std::error::E
         }),
         ..GpuConfig::default()
     }))?;
-    let surface = wait!(engine.surface(Offscreen::new((256, 256), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((256, 256), OffscreenFormat::LinearF16), || {}))?;
     let mut steady = None;
     for frame in 0..24 {
         surface.update(|tx| {

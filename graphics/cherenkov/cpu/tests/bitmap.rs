@@ -67,7 +67,10 @@ fn unregistered_image_error(bytes: &[u8], character: char) -> String {
         .expect("register font");
     let run = glyph_run(font.id(), glyph_id(bytes, character), 48.0);
     let surface = engine
-        .surface(Offscreen::new((160, 120), OffscreenFormat::LinearF32))
+        .surface(
+            Offscreen::new((160, 120), OffscreenFormat::LinearF32),
+            || {},
+        )
         .expect("surface");
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
@@ -181,10 +184,16 @@ fn equivalent(
     glyph_mut(&mut run).transform = glyph_transform;
     let placement = Affine::translate((24.0, 112.0)) * glyph_transform.unwrap_or(Affine::IDENTITY);
     let actual = engine
-        .surface(Offscreen::new((320, 220), OffscreenFormat::LinearF32))
+        .surface(
+            Offscreen::new((320, 220), OffscreenFormat::LinearF32),
+            || {},
+        )
         .expect("actual surface");
     let reference = engine
-        .surface(Offscreen::new((320, 220), OffscreenFormat::LinearF32))
+        .surface(
+            Offscreen::new((320, 220), OffscreenFormat::LinearF32),
+            || {},
+        )
         .expect("reference surface");
     actual.update(|tx| {
         tx[actual.root()].content(actual.record(|c| {
@@ -418,7 +427,10 @@ fn bitmap_cache_reuses_transformed_glyphs_and_uses_font_identity() {
     let first = nami::Binding::container(first_run);
     let second = nami::Binding::container(second_run);
     let surface = engine
-        .surface(Offscreen::new((240, 160), OffscreenFormat::LinearF32))
+        .surface(
+            Offscreen::new((240, 160), OffscreenFormat::LinearF32),
+            || {},
+        )
         .expect("surface");
     let content = surface.record(|c| {
         c.glyphs(first.clone(), WorkingColor::WHITE);
@@ -471,7 +483,10 @@ fn bitmap_cache_reuses_unchanged_glyphs_and_uses_font_identity() {
     let first = nami::Binding::container(glyph_run(first_font.id(), small, 48.0));
     let second = nami::Binding::container(glyph_run(second_font.id(), small, 48.0));
     let surface = engine
-        .surface(Offscreen::new((240, 160), OffscreenFormat::LinearF32))
+        .surface(
+            Offscreen::new((240, 160), OffscreenFormat::LinearF32),
+            || {},
+        )
         .expect("surface");
     let content = surface.record(|c| {
         c.glyphs(first.clone(), WorkingColor::WHITE);
@@ -518,7 +533,10 @@ fn missing_notdef_is_empty_and_bitmap_transforms_validate_and_strokes_are_unsupp
         .font(FontSource::bytes(bytes.clone()))
         .expect("register font");
     let surface = engine
-        .surface(Offscreen::new((160, 120), OffscreenFormat::LinearF32))
+        .surface(
+            Offscreen::new((160, 120), OffscreenFormat::LinearF32),
+            || {},
+        )
         .expect("surface");
     let mut missing = glyph_run(font.id(), 0, 48.0);
     surface.update(|tx| {
@@ -582,7 +600,7 @@ fn render_static_bitmap(
     transform: Affine,
 ) -> Vec<[f32; 4]> {
     let surface = engine
-        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     surface.clear_color(WorkingColor::BLACK);
     let layer = surface.layer();
@@ -621,7 +639,7 @@ fn an_animating_layer_places_bitmap_glyphs_on_the_quarter_pixel_grid() {
         .font(FontSource::bytes(bytes))
         .expect("register sbix font");
     let surface = engine
-        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     surface.clear_color(WorkingColor::BLACK);
     let layer = surface.layer();

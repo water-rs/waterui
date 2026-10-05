@@ -441,17 +441,15 @@ impl GpuContentView {
 
     /// Transfers this producer to a Cherenkov GPU layer.
     ///
-    /// `wake` schedules the host's display link or event loop when asynchronous
-    /// producer work finishes. The UI hooks and input handlers stay in this view.
+    /// Asynchronous producer work wakes the host through the wake of each
+    /// engine surface that draws the layer. The UI hooks and input handlers
+    /// stay in this view.
     ///
     /// # Panics
     /// Panics if the content has already been transferred.
     #[must_use]
-    pub fn take_engine_content(
-        &mut self,
-        wake: impl Fn() + Send + Sync + 'static,
-    ) -> cherenkov_gpu::interop::GpuContentBox {
-        cherenkov_gpu::interop::GpuContentBox::new(self.engine_content(), wake)
+    pub fn take_engine_content(&mut self) -> cherenkov_gpu::interop::GpuContentBox {
+        cherenkov_gpu::interop::GpuContentBox::new(self.engine_content())
     }
 
     /// A shareable handle to this view's content for the engine.

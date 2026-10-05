@@ -248,10 +248,11 @@ impl RenderNode {
 
     /// Consume the subtree's layout-invalidated marks: `true` when any
     /// `FixedContainer` in the subtree had a `Layout::watch_invalidation`
-    /// subscription fire since the last consume, meaning `place` must re-run
-    /// even where an outer `RetainedSubview` reports an unchanged rect and
-    /// proposal. Walks the same child-bearing variants as [`Self::patch`]. Every
-    /// visited mark is cleared, so a stale mark cannot force a second relayout.
+    /// subscription fire, or any text leaf's content or alignment changed, since
+    /// the last consume, meaning `place` must re-run even where an outer
+    /// `RetainedSubview` reports an unchanged rect and proposal. Walks the same
+    /// child-bearing variants as [`Self::patch`]. Every visited mark is
+    /// cleared, so a stale mark cannot force a second relayout.
     pub(super) fn take_layout_dirty(&mut self) -> bool {
         match self {
             Self::Container(node) => {
@@ -284,8 +285,8 @@ impl RenderNode {
                 .iter_mut()
                 .fold(false, |dirty, entry| entry.node.take_layout_dirty() | dirty),
             Self::LazyStack(node) => node.item_cache.borrow_mut().take_layout_dirty(),
+            Self::Text(node) => node.layout_dirty.replace(false),
             Self::Color(_)
-            | Self::Text(_)
             | Self::SceneView(_)
             | Self::GpuContent(_)
             | Self::ExternalFrame(_)

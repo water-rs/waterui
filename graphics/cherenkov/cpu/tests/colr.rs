@@ -42,7 +42,7 @@ fn colr_glyph_renders_and_run_paint_recaches_pixels() {
     let engine = Engine::<Raster>::new(RasterConfig::default()).expect("engine");
     let font = colr_font(&engine);
     let surface = engine
-        .surface(Offscreen::new((96, 72), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((96, 72), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     // gE300's disc centre lands near (40, 35) at size 64, pad (8, 64).
     let glyph = Glyph {
@@ -102,7 +102,7 @@ fn image_foreground_alpha_scales_group_opacity() {
         .image(ImageData::<Rgba8>::new(1, 1, vec![40, 80, 200, 255]).expect("data"))
         .expect("image");
     let surface = engine
-        .surface(Offscreen::new((96, 72), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((96, 72), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     let bg = WorkingColor::WHITE;
     // Render each glyph (alpha 1.0 and 0.4) with the image foreground.
@@ -165,7 +165,7 @@ fn per_glyph_transform_rotates_colr_glyph() {
     let engine = Engine::<Raster>::new(RasterConfig::default()).expect("engine");
     let font = colr_font(&engine);
     let surface = engine
-        .surface(Offscreen::new((96, 72), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((96, 72), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     let render = |transform| {
         let content = surface.record(|c| {

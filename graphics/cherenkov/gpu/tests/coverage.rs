@@ -10,7 +10,7 @@ split_test! {
 /// still composites in order. Extended P3 values must survive both phases.
 fn opaque_interiors_preserve_translucent_painter_order() -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
-    let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
             c.fill(Rect::new(0.0, 0.0, 32.0, 32.0), WorkingColor::new([1.5, 0.25, 0.0, 1.0]));
@@ -70,7 +70,7 @@ fn oblique_rim_pixels_get_their_exact_area() -> Result<(), Box<dyn std::error::E
     let Some(engine) = wait!(engine()) else {
         return Ok(());
     };
-    let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
             c.fill(
@@ -107,7 +107,7 @@ fn oblique_rim_pixels_get_their_exact_area() -> Result<(), Box<dyn std::error::E
 
     // A small circle (centre (8.5, 8.5), r = 3): curvature is large
     // enough that the tangent half-plane needs its κw³/24 correction.
-    let small = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16)))?;
+    let small = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {}))?;
     small.update(|tx| {
         tx[small.root()].content(small.record(|c| {
             c.fill(
@@ -145,7 +145,7 @@ fn axis_aligned_edges_keep_the_ramp() -> Result<(), Box<dyn std::error::Error>> 
     let Some(engine) = wait!(engine()) else {
         return Ok(());
     };
-    let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
             c.fill(Rect::new(4.25, 4.5, 31.75, 8.5), WorkingColor::WHITE);
@@ -222,7 +222,7 @@ fn elliptical_and_lame_rims_get_their_exact_area() -> Result<(), Box<dyn std::er
         return Ok(());
     };
     for (name, draw, inside) in cases {
-        let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16)))?;
+        let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
         surface.update(|tx| {
             tx[surface.root()].content(surface.record(|c| {
                 draw(c);
@@ -270,7 +270,7 @@ fn a_sharp_corner_inside_a_pixel_gets_its_exact_area() -> Result<(), Box<dyn std
         return Ok(());
     };
     let tol = 2.0 / 255.0;
-    let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
             c.fill(Rect::new(14.5, 14.5, 30.5, 30.5), WorkingColor::WHITE);
@@ -285,7 +285,7 @@ fn a_sharp_corner_inside_a_pixel_gets_its_exact_area() -> Result<(), Box<dyn std
         alpha(14, 14)
     );
 
-    let stroke = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16)))?;
+    let stroke = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
     stroke.update(|tx| {
         tx[stroke.root()].content(stroke.record(|c| {
             c.stroke(

@@ -71,6 +71,7 @@ pub use platform::{
     WindowSafeArea,
 };
 pub use platform_view::{PlatformView, PlatformViewPlacement, PlatformViewSink};
+pub use readback::{ReadbackError, readback_texture_rgba8};
 #[cfg(feature = "accessibility")]
 pub use renderer::accessibility::AccessibilityActivationPointError;
 pub use renderer::{

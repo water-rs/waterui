@@ -20,10 +20,10 @@ split_fn! {
 pub fn retained_and_padded<B: Backend>(config: B::Config) {
     let engine = wait!(Engine::<B>::new(config)).expect("backend");
     let actual = wait!(engine
-        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))
+        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))
         .expect("surface");
     let reference = wait!(engine
-        .surface(Offscreen::new((128, 128), OffscreenFormat::LinearF16)))
+        .surface(Offscreen::new((128, 128), OffscreenFormat::LinearF16), || {}))
         .expect("reference");
     let color = WorkingColor::new([0.2, 0.5, 1.0, 0.75]);
     let shadow = nami::Binding::container(Shadow::new(3.0, color));
@@ -98,7 +98,7 @@ pub fn invalid<B: Backend>(mut config: impl FnMut() -> B::Config) {
         ),
     ] {
         let surface = wait!(engine
-            .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16)))
+            .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {}))
             .expect("surface");
         surface.update(|tx| {
             tx[surface.root()].content(surface.record(|r| {

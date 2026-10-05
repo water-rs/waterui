@@ -757,7 +757,9 @@ async fn handle_render(
     await_local_quiescence(task_baseline).await;
 
     let render_start = Instant::now();
-    let result = renderer.render(view, render_size).await;
+    let result = renderer.render(view, render_size).await.map_err(|error| {
+        PreviewError::RenderFailed(format!("{:#}", waterui_core::Error::from(error)))
+    })?;
     let render_ms = elapsed_ms(render_start);
     tracing::info!(
         dylib_id = %id,

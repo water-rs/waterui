@@ -457,8 +457,7 @@ struct FrameInstall<'a> {
     metrics: &'a std::sync::Arc<crate::renderer::effects::AppliedFilterMetrics>,
     /// The engine's shared resource table — the `build_scene` argument.
     resources: &'a Rc<crate::renderer::recording::SceneResources>,
-    /// The host's display-link wake, installed on `GpuContent` producers and
-    /// external-frame streams.
+    /// The host's display-link wake, installed on external-frame streams.
     wake: Option<RedrawHandle>,
     /// The frame's device and queue, for starting external-frame sources —
     /// planes are imported on the device the window presents through.
@@ -581,14 +580,8 @@ impl FrameInstall<'_> {
                         let mut runtime = layer.runtime.borrow_mut();
                         let runtime = &mut *runtime;
                         let producer = runtime.producer.get_or_insert_with(|| {
-                            let wake = self.wake.clone();
-                            let content = runtime.view.take_engine_content(move || {
-                                if let Some(wake) = &wake {
-                                    wake.request_redraw();
-                                }
-                            });
                             self.installs += 1;
-                            self.engine.gpu_producer(content)
+                            self.engine.gpu_producer(runtime.view.take_engine_content())
                         });
                         // A binding belongs to one engine layer: a mount that
                         // was dropped and comes back (a navigation page that
@@ -775,28 +768,24 @@ impl HydrolysisRenderer {
         ///
         /// Async on wasm32, where the surface render inside awaits the browser
         /// device.
-        pub fn render_scene_to_texture(&mut self, target: HydrolysisRenderTarget<'_>) {
-            let texture = target.texture;
-            crate::engine::engine_await!(
-                self.render_scene_to_surface_with_alpha_mode(
-                    target.into_frame_target(), texture, false, true
-                )
-            );
-        }
-    }
-
-    crate::engine::cfg_async_fn! {
-        /// Renders the frame into `target`'s presentation surface.
         ///
-        /// Async on wasm32, where the surface render inside awaits the browser
-        /// device.
-        pub fn render_scene_to_surface(&mut self, target: HydrolysisRenderTarget<'_>) {
+        /// # Errors
+        ///
+        /// Returns the engine's [`cherenkov::RenderError`] when the frame
+        /// fails to render.
+        pub fn render_scene_to_texture(
+            &mut self,
+            target: HydrolysisRenderTarget<'_>,
+        ) -> Result<(), cherenkov::RenderError> {
             let texture = target.texture;
             crate::engine::engine_await!(
-                self.render_scene_to_surface_with_alpha_mode(
-                    target.into_frame_target(), texture, false, true
+                self.render_scene_to_texture_with_alpha(
+                    target.into_frame_target(),
+                    texture,
+                    cherenkov_gpu::interop::OutputAlpha::Straight,
+                    true,
                 )
-            );
+            )
         }
     }
 
@@ -851,7 +840,7 @@ impl HydrolysisRenderer {
         segment: &mut HybridRenderSegment,
         transient_scene: Option<Recording>,
         target: FrameRenderTarget<'_>,
-    ) -> EngineFrame {
+    ) -> Result<EngineFrame, cherenkov::RenderError> {
         assert!(
             self.compositor.render_layers.is_empty(),
             "Hydrolysis hybrid composition cannot render over retained layers"
@@ -907,35 +896,36 @@ impl HydrolysisRenderer {
     }
 
     crate::engine::cfg_async_fn! {
-        /// [`Self::render_scene_to_surface`] with the target's composite alpha
-        /// convention made explicit: `premultiply_alpha` selects the alpha
-        /// mode the presenter writes into `texture` — premultiplied for an OS
-        /// surface configured `CompositeAlphaMode::PreMultiplied`, straight
-        /// for offscreen/readback targets.
+        /// [`Self::render_scene_to_texture`] with the output's alpha
+        /// convention made explicit: `alpha` is the `OutputAlpha` the
+        /// presenter writes into `texture` — `surface_output_alpha`'s verdict
+        /// for an OS surface's `CompositeAlphaMode`, `OutputAlpha::Straight`
+        /// for an offscreen/readback target.
         ///
         /// `rasterize_scene_layers` is [`Self::render_engine_frame`]'s.
         ///
         /// Async on wasm32, where the engine calls inside await the browser
         /// device.
-        pub(crate) fn render_scene_to_surface_with_alpha_mode(
+        pub(crate) fn render_scene_to_texture_with_alpha(
             &mut self,
             target: FrameRenderTarget<'_>,
             texture: &wgpu::Texture,
-            premultiply_alpha: bool,
+            alpha: cherenkov_gpu::interop::OutputAlpha,
             rasterize_scene_layers: bool,
-        ) {
+        ) -> Result<(), cherenkov::RenderError> {
             let (device, queue) = (target.device, target.queue);
             let frame = crate::engine::engine_await!(
                 self.render_engine_frame(target, rasterize_scene_layers)
-            );
+            )?;
             self.present_engine_frame(
                 frame,
                 device,
                 queue,
                 texture,
                 crate::engine::format_output_color(texture.format()),
-                premultiply_alpha,
+                alpha,
             );
+            Ok(())
         }
     }
 
@@ -951,7 +941,7 @@ impl HydrolysisRenderer {
         queue: &wgpu::Queue,
         texture: &wgpu::Texture,
         color: cherenkov_gpu::interop::OutputColor,
-        premultiply_alpha: bool,
+        alpha: cherenkov_gpu::interop::OutputAlpha,
     ) {
         // The window map leaves `self` for the call, as in the render, so the
         // profiler mark may borrow the renderer.
@@ -963,14 +953,9 @@ impl HydrolysisRenderer {
                 "hydrolysis renderer: the engine frame's window left the renderer before its present",
             ),
         };
-        window.surface.present_into(
-            device,
-            queue,
-            texture,
-            color,
-            premultiply_alpha,
-            frame.headroom,
-        );
+        window
+            .surface
+            .present_into(device, queue, texture, color, alpha, frame.headroom);
 
         #[cfg(feature = "frame-profile")]
         self.gpu_profile_mark(window.gpu_profiler.as_ref(), device, queue, 2);
@@ -994,11 +979,14 @@ impl HydrolysisRenderer {
         ///
         /// Async on wasm32, where the engine calls inside await the browser
         /// device.
+        ///
+        /// A failed engine render leaves the renderer's layers and windows in
+        /// place for the next frame and returns the engine's error.
         pub(crate) fn render_engine_frame(
             &mut self,
             target: FrameRenderTarget<'_>,
             rasterize_scene_layers: bool,
-        ) -> EngineFrame {
+        ) -> Result<EngineFrame, cherenkov::RenderError> {
         assert!(
             matches!(
                 target.format.remove_srgb_suffix(),
@@ -1017,19 +1005,13 @@ impl HydrolysisRenderer {
         let render_layers = core::mem::take(&mut self.compositor.render_layers);
         let transient = self.transient_scene.take().filter(scene_has_content);
 
-        // The shared engine for this frame's device context; `wake` is the
-        // host's display-link wake the engine's redraw callback drives.
+        // The shared engine for this frame's device context; the host's
+        // display-link wake goes to the window surfaces built on it.
         let host_wake = self.host_redraw_handle.clone();
-        let engine_wake = host_wake.clone();
         let state = crate::engine::engine_await!(crate::engine::shared_engine_state(
             target.gpu_context_id,
             target.adapter,
             target.shared_device.clone(),
-            move || {
-                if let Some(handle) = &engine_wake {
-                    handle.request_redraw();
-                }
-            },
         ));
 
         // One window surface per GPU context this renderer presents through.
@@ -1056,6 +1038,7 @@ impl HydrolysisRenderer {
                         backend,
                         (target.width, target.height),
                         target.device_loss.clone(),
+                        host_wake.clone(),
                     )),
                 ),
             }
@@ -1066,8 +1049,13 @@ impl HydrolysisRenderer {
                 backend,
                 (target.width, target.height),
                 target.device_loss.clone(),
+                host_wake.clone(),
             )))
         };
+        // Everything this frame sets on the surface below is drawn by the
+        // render that ends it: only what lands after that render wakes the
+        // host for another frame.
+        let _frame = window.surface.begin_frame();
 
         // The first marker lands after context resolution because the
         // profiler is device-owned like the window it rides on: a replaced
@@ -1142,23 +1130,23 @@ impl HydrolysisRenderer {
         self.gpu_profile_mark(window.gpu_profiler.as_ref(), target.device, target.queue, 1);
 
         self.applied_filter_metrics.reset();
-        let next = crate::engine::engine_await!(window.surface.render());
+        let rendered = crate::engine::engine_await!(window.surface.render());
         (
             self.frame_applied_filter_count,
             self.frame_applied_filter_effect,
         ) = self.applied_filter_metrics.snapshot();
-        self.engine_next = Some(next);
-
         self.compositor.render_layers = render_layers;
         self.cherenkov_windows = windows;
+        self.engine_next = Some(rendered?);
+
         if needs_redraw {
             self.request_redraw();
         }
-        EngineFrame {
+        Ok(EngineFrame {
             context_id,
             headroom: target.headroom,
             transient: transient_window,
-        }
+        })
     }
     }
 }
@@ -1199,12 +1187,16 @@ pub struct CherenkovWindow {
 
 crate::engine::cfg_async_fn! {
     impl CherenkovWindow {
+        /// A window surface on `state`'s engine. `wake` is the host's
+        /// display-link wake, when the host has one: the surface calls it
+        /// when its content asks for a frame between the renderer's own.
         pub(crate) fn new(
             state: Rc<crate::engine::SharedEngineState>,
             device: &wgpu::Device,
             backend: wgpu::Backend,
             size: (u32, u32),
             device_loss: crate::platform::DeviceLoss,
+            wake: Option<RedrawHandle>,
         ) -> Self {
             Self {
                 surface: crate::engine::engine_await!(crate::engine::CherenkovSurface::new(
@@ -1212,6 +1204,11 @@ crate::engine::cfg_async_fn! {
                     device,
                     backend,
                     size,
+                    move || {
+                        if let Some(wake) = &wake {
+                            wake.request_redraw();
+                        }
+                    },
                 )),
                 mounts: crate::renderer::retained::Mounts::new(),
                 state,
