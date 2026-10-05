@@ -8,13 +8,21 @@ cleanup failures. No device, simulator, network, or build required —
 failures are injected through real control flow, not mocks shaped like
 the implementation.
 
-Run: python3 tests/test_bench.py
+Run: uv run tests/test_bench.py
 """
+import sys
+
+if sys.version_info < (3, 10):
+    raise SystemExit(
+        "benchmarks/competitive requires Python >= 3.10 "
+        f"(this interpreter is {sys.version.split()[0]}); every leg "
+        "declares its version in pyproject.toml + .python-version and "
+        "runs under the uv-managed interpreter (`uv run`)")
+
 import argparse
 import importlib.util
 import json
 import shutil
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -307,15 +315,15 @@ class TestHostGate(unittest.TestCase):
             state["pins"]["waterui_head"] = "f" * 40
             with self.assertRaises(SystemExit):
                 bench.check_source_fingerprint(state)
+            # predates provenance with runs present -> stale unknown
+            with self.assertRaises(SystemExit):
+                bench.check_source_fingerprint(
+                    {"pins": {}, "runs": [{"platform": "macos"}]})
+            # empty results pass both gates
+            bench.check_source_fingerprint({"pins": {}, "runs": []})
         finally:
             bench.toolchain.checkout_head = orig_head
             bench.cli_evidence = orig_ev
-        # predates provenance with runs present -> stale unknown
-        with self.assertRaises(SystemExit):
-            bench.check_source_fingerprint(
-                {"pins": {}, "runs": [{"platform": "macos"}]})
-        # empty results pass both gates
-        bench.check_source_fingerprint({"pins": {}, "runs": []})
 
     def test_mixed_host_refused(self):
         state = {"machine": {"fingerprint": dict(self.REAL,

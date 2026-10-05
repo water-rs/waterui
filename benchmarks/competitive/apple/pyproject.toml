@@ -1,0 +1,9 @@
+[project]
+name = "competitive-bench-apple"
+version = "0.1.0"
+description = "water-rs/waterui#1262 competitive benchmark: Apple runner"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.uv]
+package = false

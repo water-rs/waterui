@@ -60,13 +60,10 @@ enum Bench {
 /// Darwin-notification readiness handshake. AX queries cannot
 /// carry the signal: a workload can stall the app's accessibility
 /// server for tens of seconds while it materializes, and a timed-out
-/// query fails the test instead of driving it. The app posts
-/// `dev.bench.done` from its own workload logic after the declared
-/// settle+hold following the first frame — no native timer substitutes.
+/// query fails the test instead of driving it. Apps never signal
+/// completion: the host driver owns the end of every cell from the
+/// declared program and duration.
 enum BenchNotify {
-    /// Posts `dev.bench.done` — a capacity launch's measurement ends.
-    static func postDone() { notify_post("dev.bench.done") }
-
     /// Posts `dev.bench.ready.<bundle-id>.<w>` once the workload argument
     /// has resolved — the runner waits for this post to confirm the
     /// argument arrived, instead of a deep AX query (the 10k-row feed's
@@ -74,15 +71,6 @@ enum BenchNotify {
     static func postReady(_ workload: String) {
         let bid = Bundle.main.bundleIdentifier ?? "unknown"
         notify_post("dev.bench.ready.\(bid).\(workload)")
-    }
-
-    /// Capacity launches post `done` settle 1 s + hold 4 s after the
-    /// first frame (viewDidAppear is the first-frame boundary for a
-    /// pinned step launch — METHOD, WORKLOADS.md).
-    static func armDoneAfterHold() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
-            BenchNotify.postDone()
-        }
     }
 }
 
@@ -330,8 +318,7 @@ final class TextBenchViewController: UIViewController {
 // MARK: - W5 Motion capacity
 
 /// W3's scene at one pinned ladder step (200…25600) — one launch renders
-/// one step; `done` is posted from workload logic after the declared
-/// settle+hold following the first frame.
+/// one step; the host driver ends the cell on its own schedule.
 final class MotionCapacityViewController: UIViewController {
     private let fieldW: CGFloat = 720
     private let fieldH: CGFloat = 440
@@ -359,11 +346,6 @@ final class MotionCapacityViewController: UIViewController {
         setCount(Bench.step(steps))
     }
 
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        BenchNotify.armDoneAfterHold()
-    }
-
     private func setCount(_ n: Int) {
         while rects.count > n {
             let v = rects.removeLast()
@@ -385,7 +367,6 @@ final class MotionCapacityViewController: UIViewController {
             rects.append(v)
             animate(v, index: i)
         }
-        count = n
     }
 
     private func animate(_ v: UIView, index: Int) {
@@ -460,7 +441,7 @@ final class FeedCapacityCell: UITableViewCell {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    private var cells: [UIView] = []
+    private var cells: [UIStackView] = []
 
     func configure(_ i: Int, complexity: Int) {
         avatar.backgroundColor = rowColor(i)
@@ -494,8 +475,7 @@ final class FeedCapacityCell: UITableViewCell {
 }
 
 /// W2's rows at one pinned complexity (1…64) — one launch renders one
-/// step; `done` is posted from workload logic after the declared
-/// settle+hold following the first frame.
+/// step; the host driver ends the cell on its own schedule.
 final class FeedCapacityViewController: UITableViewController {
     private let steps = [1, 2, 4, 8, 16, 32, 64]
     private var complexity = 1
@@ -506,11 +486,6 @@ final class FeedCapacityViewController: UITableViewController {
         tableView.register(
             FeedCapacityCell.self,
             forCellReuseIdentifier: FeedCapacityCell.reuseID)
-    }
-
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        BenchNotify.armDoneAfterHold()
     }
 
     override func tableView(_ tv: UITableView, numberOfRowsInSection section: Int)

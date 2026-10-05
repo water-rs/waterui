@@ -1,4 +1,4 @@
-// Competitive benchmark — AppKit contestant (macOS), workloads W1–W4.
+// Competitive benchmark — AppKit contestant (macOS), workloads W1–W6.
 import AppKit
 
 struct XorShift {
@@ -26,24 +26,38 @@ func rowColor(_ i: Int) -> NSColor {
 func timestamp(_ i: Int) -> String { String(format: "%02d:%02d", (i / 60) % 24, i % 60) }
 
 enum Bench {
-    /// `-bench-workload w1|w2|w3|w4` — workload ids are exact lowercase
-    /// strings; any other value traps, never silently measure w1.
+    /// `-bench-workload w1|w2|w3|w4|w5|w6` — workload ids are exact
+    /// lowercase strings; any other value traps, never silently
+    /// measure w1.
     static let workload: String = {
         let raw = UserDefaults.standard.string(forKey: "bench-workload")
-        guard let raw, ["w1", "w2", "w3", "w4"].contains(raw) else {
+        guard let raw, ["w1", "w2", "w3", "w4", "w5", "w6"].contains(raw) else {
             fatalError(
                 "missing or unrecognized -bench-workload launch argument "
-                    + "(got \(raw ?? "nil")); expected w1|w2|w3|w4")
+                    + "(got \(raw ?? "nil")); expected w1..=w6")
         }
         BenchNotify.postReady(raw)
         return raw
     }()
+
+    /// `-bench-step <i>` selects one pinned ladder index for w5|w6 — one
+    /// launch renders one step; the host driver advances the ladder on
+    /// its own schedule.
+    static func step(_ steps: [Int]) -> Int {
+        let raw = UserDefaults.standard.string(forKey: "bench-step")
+        guard let raw, let i = Int(raw), i >= 0, i < steps.count else {
+            fatalError(
+                "capacity workload requires -bench-step "
+                    + "0..\(steps.count - 1) (got \(raw ?? "nil"))")
+        }
+        return steps[i]
+    }
 }
 
-/// Darwin-notification handshake kept for call-site symmetry with the
-/// other Apple contestants — AppKit runs W1–W4 only, none of which arm
-/// it. Scrolling is driven from outside the app by OS-level input (the
-/// host posts CGEvent scroll-wheel detents into the window).
+/// Darwin-notification handshake: the ready post proves the launch
+/// argument reached the app. Scrolling is driven from outside the app
+/// by OS-level input (the host posts CGEvent scroll-wheel detents into
+/// the window); the driver owns cell end — apps never post it.
 enum BenchNotify {
 
     /// Debug trail for the handshake: XCUITest's launch context once left a
@@ -61,8 +75,6 @@ enum BenchNotify {
             try? Data(line.utf8).write(to: url)
         }
     }
-
-    static func postDone() { notify_post("dev.bench.done") }
 
     /// Posts `dev.bench.ready.<bundle-id>.<W>` once the workload argument
     /// has resolved — the runner waits for this post to confirm the
@@ -93,6 +105,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case "w2": window.contentViewController = FeedViewController()
         case "w3": window.contentViewController = MotionViewController()
         case "w4": window.contentViewController = TextBenchViewController()
+        case "w5": window.contentViewController =
+            MotionViewController(count: Bench.step(
+                [200, 400, 800, 1600, 3200, 6400, 12800, 25600]))
+        case "w6": window.contentViewController =
+            FeedViewController(complexity: Bench.step(
+                [1, 2, 4, 8, 16, 32, 64]))
         default: window.contentViewController = HelloViewController()
         }
         BenchNotify.dbg("vc assigned viewLoaded=\(window.contentView != nil)")
@@ -150,6 +168,14 @@ final class HelloViewController: NSViewController {
 final class FeedViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     private let tableView = NSTableView()
     private let scrollView = NSScrollView()
+    private let complexity: Int
+
+    init(complexity: Int = 0) {
+        self.complexity = complexity
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
 
     override func loadView() {
         view = NSView(frame: NSRect(x: 0, y: 0, width: 1280, height: 800))
@@ -186,7 +212,7 @@ final class FeedViewController: NSViewController, NSTableViewDataSource, NSTable
                 c.identifier = id
                 return c
             }()
-        cell.configure(row)
+        cell.configure(row, complexity: complexity)
         return cell
     }
 
@@ -197,6 +223,10 @@ final class FeedCellView: NSTableCellView {
     private let title = NSTextField(labelWithString: "")
     private let subtitle = NSTextField(labelWithString: "")
     private let time = NSTextField(labelWithString: "")
+    private let cellStack = NSStackView()
+    // W6's per-row cell group — pooled on the recycled cell view so a
+    // rebound row repopulates the same views, never rebuilds them
+    private var cells: [NSStackView] = []
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -211,7 +241,9 @@ final class FeedCellView: NSTableCellView {
         lines.orientation = .vertical
         lines.alignment = .leading
         lines.spacing = 4
-        let row = NSStackView(views: [avatar, lines, NSView(), time])
+        cellStack.orientation = .horizontal
+        cellStack.spacing = 4  // cells are separated by 4 (spec)
+        let row = NSStackView(views: [avatar, lines, cellStack, NSView(), time])
         row.orientation = .horizontal
         row.spacing = 12
         row.distribution = .fill
@@ -232,11 +264,38 @@ final class FeedCellView: NSTableCellView {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    func configure(_ i: Int) {
+    func configure(_ i: Int, complexity: Int = 0) {
         avatar.layer?.backgroundColor = rowColor(i).cgColor
         title.stringValue = "Row title \(i)"
         subtitle.stringValue = "Second line of subtitle for item \(i)"
         time.stringValue = timestamp(i)
+        while cells.count < complexity {
+            let square = NSView()
+            square.wantsLayer = true
+            square.layer?.cornerRadius = 14 * 0.3  // radius ratio 0.3
+            square.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                square.widthAnchor.constraint(equalToConstant: 14),
+                square.heightAnchor.constraint(equalToConstant: 14),
+            ])
+            let cap = NSTextField(labelWithString: "")
+            cap.font = .systemFont(ofSize: 12)
+            let pair = NSStackView(views: [square, cap])
+            pair.orientation = .vertical
+            pair.alignment = .centerX
+            cells.append(pair)
+            cellStack.addArrangedSubview(pair)
+        }
+        while cells.count > complexity {
+            let extra = cells.removeLast()
+            cellStack.removeArrangedSubview(extra)
+            extra.removeFromSuperview()
+        }
+        for (j, pair) in cells.enumerated() {
+            (pair.arrangedSubviews[0]).layer?.backgroundColor =
+                rowColor(i + j).cgColor
+            (pair.arrangedSubviews[1] as? NSTextField)?.stringValue = "c\(j)"
+        }
     }
 }
 
@@ -246,6 +305,14 @@ final class MotionViewController: NSViewController {
     private let fieldW: CGFloat = 720
     private let fieldH: CGFloat = 440
     private var field: NSView!
+    private let count: Int
+
+    init(count: Int = 200) {
+        self.count = count
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
 
     override func loadView() {
         // The window is the spec's 1280×800; the 720×440 field is a
@@ -265,7 +332,7 @@ final class MotionViewController: NSViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        for i in 0..<200 {
+        for i in 0..<count {
             var rng = XorShift(seed: 0xD1B5_4A32_D192_ED03 ^ UInt64(i) &* 0x2545_F491_4F6C_DD1D)
             let v = NSView(
                 frame: NSRect(
@@ -280,37 +347,47 @@ final class MotionViewController: NSViewController {
             v.layer?.anchorPoint = CGPoint(x: 0.5, y: 0.5)
             v.layer?.position = CGPoint(
                 x: v.frame.midX, y: v.frame.midY)
+            let initRot = rng.next() * .pi * 2
             v.layer?.setAffineTransform(
-                CGAffineTransform(rotationAngle: rng.next() * .pi * 2))
+                CGAffineTransform(rotationAngle: initRot))
             v.alphaValue = 0.3 + rng.next() * 0.7
             field.addSubview(v)
-            animate(v, index: i)
+            animate(v, index: i, initialRot: initRot)
         }
     }
 
-    private func animate(_ v: NSView, index: Int) {
+    private func animate(_ v: NSView, index: Int, initialRot: Double) {
         let duration = 1.2 + Double(index % 5) * 0.2
         var rng = XorShift(seed: 0x9E37_79B9_7F4A_7C15 ^ UInt64(index) &* 0xBF58_476D_1CE4_E5B9)
+        // The rotation channel animates through the layer transform, and
+        // the model keeps pace with the animation: each segment's
+        // fromValue is where the last segment ended and the model
+        // transform is advanced to the target — no snapback between
+        // retargets. Drive order per retarget: x, y, rotation, opacity.
+        var currentRot = initialRot
         func step() {
+            let tx = rng.next() * (self.fieldW - 40)
+            let ty = rng.next() * (self.fieldH - 40)
+            let rot = rng.next() * .pi * 2
+            let alpha = 0.3 + rng.next() * 0.7
             NSAnimationContext.runAnimationGroup({ ctx in
                 ctx.duration = duration
                 ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
                 ctx.allowsImplicitAnimation = true
-                v.animator().frame.origin = NSPoint(
-                    x: rng.next() * (self.fieldW - 40), y: rng.next() * (self.fieldH - 40))
-                v.animator().alphaValue = 0.3 + rng.next() * 0.7
+                v.animator().frame.origin = NSPoint(x: tx, y: ty)
+                v.animator().alphaValue = alpha
             }, completionHandler: {
                 DispatchQueue.main.async { step() }
             })
-            // Rotation via layer transform — the anchor point is the
-            // layer centre, so the rect spins about its middle.
-            let rot = CABasicAnimation(keyPath: "transform.rotation.z")
-            rot.toValue = rng.next() * .pi * 2
-            rot.duration = duration
-            rot.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            rot.isRemovedOnCompletion = false
-            rot.fillMode = .forwards
-            v.layer?.add(rot, forKey: "spin")
+            let spin = CABasicAnimation(keyPath: "transform.rotation.z")
+            spin.fromValue = currentRot
+            spin.toValue = rot
+            spin.duration = duration
+            spin.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            v.layer?.setAffineTransform(
+                CGAffineTransform(rotationAngle: rot))
+            v.layer?.add(spin, forKey: "spin")
+            currentRot = rot
         }
         step()
     }

@@ -10,12 +10,16 @@
 //                      into the window — ios-sim/AppKit; the runner's own
 //                      process drives it, started by the `dev.bench.begin`
 //                      post inside the measure block and ended by its
-//                      `dev.bench.done`)
+//                      `dev.bench.end` — the driver's own name)
 //   BENCH_FLING      — JSON fling program from the manifest:
 //                      {"distance_fraction":0.6,"pause_s":0.35,
 //                       "hold_s":0.02,"flings_down":8,"flings_up":2}
 //   BENCH_DURATION   — measurement seconds for w3/w5 (required; a
 //                      missing or malformed value fails)
+//   BENCH_WARMUP_MS  — declared warmup between the contestant's
+//                      dev.bench.ready first-frame post and the start
+//                      of the measure window (required, > 0 — METHOD:
+//                      window = first owned present + warmup)
 //   BENCH_NO_HITCH   — "1" drops XCTHitchMetric (used when the platform
 //                      cannot record it; see bench.py)
 //
@@ -186,49 +190,51 @@ final class BenchTests: XCTestCase {
         app.descendants(matching: .any)[identifier].firstMatch
     }
 
+    private var readyFd: Int32 = -1
     private var readyToken: Int32 = 0
     private var readyRegistered = false
 
-    /// Registers `dev.bench.ready.<bundle-id>.<W>` BEFORE app.launch and
-    /// drains the latched flag: Darwin notify flags persist across app
-    /// launches, so registering after launch cannot distinguish this
-    /// launch's post from an identical earlier cell's stale latch — an
-    /// app whose delegate never runs (a nibless @main AppKit binary once
-    /// did exactly that) would still read "ready" and measure a dead app.
-    /// Draining post-registration, pre-launch leaves only a fresh post
-    /// able to satisfy the check.
+    /// Registers `dev.bench.ready.<bundle-id>.<W>` BEFORE app.launch as a
+    /// notify file descriptor: only posts after registration are
+    /// delivered, so a stale flag from an earlier cell's identical post
+    /// can never satisfy the wait — an app whose delegate never runs
+    /// reads "not ready", not a latched flag. The fd is also the wait
+    /// itself: assertWorkloadReady blocks on poll(2), never on
+    /// notify_check + sleep polling.
     private func registerWorkloadReady() {
         let name = "dev.bench.ready.\(bundleID).\(workload)"
-        guard notify_register_check(name, &readyToken)
+        guard notify_register_file_descriptor(name, &readyFd, 0,
+                                              &readyToken)
                 == UInt32(NOTIFY_STATUS_OK)
         else {
-            XCTFail("notify_register_check(\(name)) failed")
+            XCTFail("notify_register_file_descriptor(\(name)) failed")
             return
         }
         readyRegistered = true
-        var fired: Int32 = 0
-        notify_check(readyToken, &fired)  // consume a stale latched flag
-        if fired != 0 { dbg("drained stale ready flag") }
     }
 
     /// The app posts `dev.bench.ready.<bundle-id>.<W>` over Darwin notify
     /// once it has resolved its -bench-workload argument; absence of the
     /// post means the harness args never reached it and the run is invalid
-    /// rather than a W1 measurement.
+    /// rather than a W1 measurement. The wait blocks on the fd itself.
     private func assertWorkloadReady() {
         let name = "dev.bench.ready.\(bundleID).\(workload)"
         guard readyRegistered else { XCTFail("ready token unregistered"); return }
-        let deadline = Date().addingTimeInterval(60)
-        var fired: Int32 = 0
-        while Date() < deadline {
-            notify_check(readyToken, &fired)
-            if fired != 0 { break }
-            Thread.sleep(forTimeInterval: 0.2)
+        defer {
+            notify_cancel(readyToken)
+            close(readyFd)
+            readyRegistered = false
         }
-        notify_cancel(readyToken)
-        readyRegistered = false
+        var fired = false
+        var pfd = pollfd(fd: readyFd, events: Int16(POLLIN), revents: 0)
+        if poll(&pfd, 1, 60_000) > 0,
+           (pfd.revents & Int16(POLLIN)) != 0 {
+            var buf: UInt64 = 0
+            _ = read(readyFd, &buf, MemoryLayout<UInt64>.size)
+            fired = true
+        }
         XCTAssertTrue(
-            fired != 0,
+            fired,
             "app never posted '\(name)' — wrong or missing "
                 + "-bench-workload handling")
     }
@@ -255,6 +261,19 @@ final class BenchTests: XCTestCase {
         dbg("launched — awaiting ready post")
         assertWorkloadReady()
         dbg("ready ok")
+
+        guard let rawWarmup = ProcessInfo.processInfo
+            .environment["BENCH_WARMUP_MS"],
+            let warmupMs = Double(rawWarmup), warmupMs > 0
+        else {
+            XCTFail("missing or malformed BENCH_WARMUP_MS")
+            return
+        }
+        // METHOD: the measure window opens the declared warmup after
+        // the contestant's first-frame post — the drive program runs
+        // entirely inside the window, identically for every contestant
+        Thread.sleep(forTimeInterval: warmupMs / 1000.0)
+        dbg("warmup done")
 
         guard let rawDuration = ProcessInfo.processInfo
             .environment["BENCH_DURATION"],
@@ -301,32 +320,43 @@ final class BenchTests: XCTestCase {
     /// runner's tmp on ios-device (the host has no notify channel into a
     /// physical device — devicectl copy is the side channel).
     private func waitForRecorderGo() {
+        // Event sources, not polling: `dev.bench.recorder` on a notify
+        // file descriptor blocks in poll(2). On ios-device the host has
+        // NO notify channel into the device, so the bench-recorder-go
+        // sentinel (devicectl copy) is the only signalling path — the
+        // file check rides each poll wake for that path only.
+        var fd: Int32 = -1
         var tok: Int32 = 0
-        guard notify_register_check("dev.bench.recorder", &tok)
-                == UInt32(NOTIFY_STATUS_OK)
+        guard notify_register_file_descriptor("dev.bench.recorder",
+                    &fd, 0, &tok) == UInt32(NOTIFY_STATUS_OK)
         else {
-            XCTFail("notify_register_check(dev.bench.recorder) failed")
+            XCTFail("notify_register_file_descriptor(dev.bench.recorder) failed")
             return
         }
-        var fired: Int32 = 0
-        notify_check(tok, &fired)  // drain a stale latch
+        defer { notify_cancel(tok); close(fd) }
         let sentinel = FileManager.default.temporaryDirectory
             .appendingPathComponent("bench-recorder-go")
         try? FileManager.default.removeItem(at: sentinel)
         let deadline = Date().addingTimeInterval(300)
-        while Date() < deadline {
-            fired = 0
-            notify_check(tok, &fired)
-            if fired != 0 { break }
-            if FileManager.default.fileExists(atPath: sentinel.path) {
-                fired = 1
-                break
+        var fired = false
+        while !fired && Date() < deadline {
+            var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            // the wake interval only bounds the sentinel-check cadence —
+            // the notify fd still delivers its post the moment it lands
+            let rc = poll(&pfd, 1, Int32(max(0, min(2000,
+                deadline.timeIntervalSinceNow * 1000))))
+            if rc > 0, (pfd.revents & Int16(POLLIN)) != 0 {
+                var buf: UInt64 = 0
+                _ = read(fd, &buf, MemoryLayout<UInt64>.size)
+                fired = true
             }
-            Thread.sleep(forTimeInterval: 0.2)
+            if !fired {
+                fired = FileManager.default
+                    .fileExists(atPath: sentinel.path)
+            }
         }
-        notify_cancel(tok)
         dbg("recorder-go fired=\(fired)")
-        XCTAssertTrue(fired != 0,
+        XCTAssertTrue(fired,
                       "host never armed recorders (dev.bench.recorder)")
     }
 
@@ -338,39 +368,46 @@ final class BenchTests: XCTestCase {
     /// window (iOS Simulator and AppKit, where gesture synthesis either
     /// stalls on a timed-out AX query or has no swipeable hit target) —
     /// the test only opens the measure window with `dev.bench.begin` and
-    /// waits for the host driver's `dev.bench.done`. w6 uses the same
+    /// waits for the host driver's `dev.bench.end` — the driver owns
+    /// cell end; apps never post it. w6 uses the same
     /// drive kind as w2/w4 — one launch renders one pinned step.
     private func driveScroll(duration: Double) {
         if drive == "wheel" {
             // The host driver's program is the identical fling protocol;
-            // `begin` opens its window, `done` closes the wait. Posts are
-            // reposted until a done is seen — the driver may arm after
-            // the first post.
+            // `begin` opens its window, `end` closes the wait. The wait
+            // blocks on the notification's file descriptor — posts are
+            // reposted on each poll wake until an end is seen (the
+            // driver may arm after the first post).
+            var fd: Int32 = -1
             var doneToken: Int32 = 0
-            guard notify_register_check("dev.bench.done", &doneToken)
-                    == UInt32(NOTIFY_STATUS_OK)
+            guard notify_register_file_descriptor("dev.bench.end", &fd, 0,
+                        &doneToken) == UInt32(NOTIFY_STATUS_OK)
             else {
-                XCTFail("wheel drive: notify_register_check failed")
+                XCTFail("wheel drive: notify_register_file_descriptor failed")
                 return
             }
-            var fired: Int32 = 0
-            _ = notify_check(doneToken, &fired)  // flush stale latch
+            defer { notify_cancel(doneToken); close(fd) }
             let deadline = Date().addingTimeInterval(max(600, duration * 2))
+            var fired = false
             var lastPost = Date.distantPast
-            while Date() < deadline {
+            while !fired && Date() < deadline {
                 if Date().timeIntervalSince(lastPost) > 5 {
                     notify_post("dev.bench.begin")
                     lastPost = Date()
                 }
-                fired = 0
-                _ = notify_check(doneToken, &fired)
-                if fired != 0 { break }
-                Thread.sleep(forTimeInterval: 0.2)
+                var pfd = pollfd(fd: fd, events: Int16(POLLIN),
+                                 revents: 0)
+                let rc = poll(&pfd, 1, Int32(max(0, min(1000,
+                    deadline.timeIntervalSinceNow * 1000))))
+                if rc > 0, (pfd.revents & Int16(POLLIN)) != 0 {
+                    var buf: UInt64 = 0
+                    _ = read(fd, &buf, MemoryLayout<UInt64>.size)
+                    fired = true
+                }
             }
-            notify_cancel(doneToken)
             XCTAssertTrue(
-                fired != 0,
-                "wheel drive: host driver never posted 'dev.bench.done'")
+                fired,
+                "wheel drive: host driver never posted 'dev.bench.end'")
             return
         }
         // Coordinate drags, not element gestures: `swipeUp` resolves the app
@@ -392,7 +429,9 @@ final class BenchTests: XCTestCase {
         // Fling program comes from the manifest via BENCH_FLING — a
         // missing or malformed program fails the row, never defaults.
         struct Fling: Decodable {
-            var distance_fraction: Double
+            var start_fraction: Double
+            var end_fraction: Double
+            var duration_ms: Double
             var pause_s: Double
             var hold_s: Double
             var flings_down: Int
@@ -405,16 +444,25 @@ final class BenchTests: XCTestCase {
             XCTFail("missing or malformed BENCH_FLING program")
             return
         }
-        let dy0 = 0.5 + fling.distance_fraction / 2
-        let dy1 = 0.5 - fling.distance_fraction / 2
-        let dragStart = dragAnchor.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: dy0))
-        let dragEnd = dragAnchor.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: dy1))
+        // spec endpoints: 75% -> 15% of the scroll surface's height over
+        // 250 ms — declared absolutely in the manifest, never centred
+        // from a distance fraction
+        let dragStart = dragAnchor.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: fling.start_fraction))
+        let dragEnd = dragAnchor.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: fling.end_fraction))
+        let anchorH = dragAnchor.frame.height
+        guard anchorH > 0, fling.duration_ms > 0 else {
+            XCTFail("fling geometry degenerate: anchor height \(anchorH), duration \(fling.duration_ms)ms")
+            return
+        }
+        // withVelocity: takes points/second — the declared endpoints'
+        // pixel distance over the declared duration
+        let velocity = CGFloat(abs(fling.start_fraction - fling.end_fraction)) * anchorH / CGFloat(fling.duration_ms / 1000)
         for _ in 0..<fling.flings_down {
-            dragStart.press(forDuration: fling.hold_s, thenDragTo: dragEnd)
+            dragStart.press(forDuration: fling.hold_s, thenDragTo: dragEnd, withVelocity: velocity, thenHoldForDuration: 0)
             Thread.sleep(forTimeInterval: fling.pause_s)
         }
         for _ in 0..<fling.flings_up {
-            dragEnd.press(forDuration: fling.hold_s, thenDragTo: dragStart)
+            dragEnd.press(forDuration: fling.hold_s, thenDragTo: dragStart, withVelocity: velocity, thenHoldForDuration: 0)
             Thread.sleep(forTimeInterval: fling.pause_s)
         }
     }

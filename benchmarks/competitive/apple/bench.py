@@ -20,6 +20,15 @@ signposts) are collected externally. No per-contestant measurement shortcuts.
 """
 from __future__ import annotations
 
+import sys
+
+if sys.version_info < (3, 10):
+    raise SystemExit(
+        "benchmarks/competitive requires Python >= 3.10 "
+        f"(this interpreter is {sys.version.split()[0]}); every leg "
+        "declares its version in pyproject.toml + .python-version and "
+        "runs under the uv-managed interpreter (`uv run`)")
+
 import argparse
 import fcntl
 import glob
@@ -144,7 +153,19 @@ def host_evidence() -> dict:
                            text=True, timeout=30)
         return r.stdout.strip() if r.returncode == 0 else None
 
+    def _ioreg_uuid():
+        r = subprocess.run(
+            ["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
+            capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            return None
+        m = re.search(r'"IOPlatformUUID"\s*=\s*"([^"]+)"', r.stdout)
+        return m.group(1) if m else None
+
     ev = {"hw_model": _sysctl("hw.model"),
+          # hardware UUID — the machine fingerprint the manifest declares;
+          # a model name is never identity (any Mac mini matches)
+          "hw_uuid": _ioreg_uuid(),
           "cpu_brand": _sysctl("machdep.cpu.brand_string"),
           "hv_vmm_present": _sysctl("kern.hv_vmm_present") == "1",
           "gpus": []}
@@ -353,21 +374,7 @@ def cmd_bootstrap(args):
                     "toolchain.cocoapods in manifest.json does not start "
                     "with a version number")
             cmd = cmd.replace("{COCOAPODS}", cp_ver.group(0))
-        if "pod install" in cmd:
-            m = re.search(r"--project-directory=([\w./-]+)", cmd)
-            pods = Path(m.group(1)) / "Pods" if m else None
-            try:
-                sh(cmd)
-            except Exception:
-                # a crashed pod install leaves half-written Pods/
-                # (missing modulemap links poison later xcodebuilds) —
-                # wipe and retry exactly once, then propagate
-                if pods:
-                    shutil.rmtree(ROOT / ".." / "apps" / "react-native" / pods,
-                                  ignore_errors=True)
-                sh(cmd)
-        else:
-            sh(cmd)
+        sh(cmd)
     print(f"bootstrap complete for {args.platform}")
 
 
@@ -405,8 +412,7 @@ def flutter_bin():
     manifest's declared toolchain — module scope so every consumer
     (ensure_flutter_apple, build command substitution) shares it."""
     root = os.path.expandvars(
-        MANIFEST["toolchain"].get(
-            "flutter_root", "$HOME/toolchains/flutter"))
+        MANIFEST["toolchain"]["flutter_root"])
     b = Path(root) / "bin" / "flutter"
     toolchain.require_version(
         "flutter", [str(b), "--version"],
@@ -479,7 +485,9 @@ def cmd_build(args):
     try:
         cmd_bootstrap(args)
     except Exception as e:
-        failures["<bootstrap>"] = str(e)[-2000:]
+        # a failed bootstrap leaves every later build unproven — stop at
+        # the first bootstrap failure
+        raise SystemExit(f"bootstrap failed: {e}") from e
     for c in MANIFEST["contestants"]:
         if c["id"] == "flutter" and not c.get("build", {}).get(plat):
             continue
@@ -610,18 +618,28 @@ def write_xctestrun(template: Path, out: Path, target_key: str,
         # would bind to whichever test's app instance appeared first
         t["OnlyTestIdentifiers"] = [f"BenchTests/{only_test}"]
     env = t.setdefault("EnvironmentVariables", {})
+    warmup_ms = MANIFEST["harness"]["warmup_ms"]
+    if warmup_ms <= 0:
+        raise RuntimeError(
+            "harness.warmup_ms must be > 0 — the warmup is declared in "
+            "the manifest and is never zero (METHOD)")
     env.update({
         "BENCH_BUNDLE_ID": bundle_id,
         "BENCH_WORKLOAD": workload,
         "BENCH_DRIVE": drive,
         "BENCH_DURATION": str(duration),
+        "BENCH_WARMUP_MS": str(warmup_ms),
         # the fling program the XCTest's swipe branch executes — from the
         # manifest, never Swift literals
         "BENCH_FLING": json.dumps({
             "flings_down": int(MANIFEST["harness"]["fling"]["down"]),
             "flings_up": int(MANIFEST["harness"]["fling"]["up"]),
-            "distance_fraction":
-                float(MANIFEST["harness"]["fling"]["swipe_distance_fraction"]),
+            "start_fraction":
+                float(MANIFEST["harness"]["fling"]["swipe_start_fraction"]),
+            "end_fraction":
+                float(MANIFEST["harness"]["fling"]["swipe_end_fraction"]),
+            "duration_ms":
+                float(MANIFEST["harness"]["fling"]["swipe_duration_ms"]),
             "pause_s":
                 float(MANIFEST["harness"]["fling"]["swipe_pause_s"]),
             "hold_s":
@@ -1023,10 +1041,11 @@ def trace_frame_stats(trace: Path, window_ms, device_rec: dict):
 
     hitches-frame-lifetimes carries one row per presented surface; their
     `start` engineering timestamps are epoch-mapped and kept as the
-    owned-present series. window_ms = (w0, w1) measured relative to
-    run_one's t_start — the METHOD window is applied by the caller's
-    warmup+capture bounds; returns None when no frame rows exist
-    (xctrace unsupported on the target)."""
+    owned-present series. window_ms = (w0, w1) in EPOCH milliseconds —
+    the caller passes the runner log's measure-begin/measure-end pair
+    directly so the window bounds and the mapped presents live on the
+    same clock. Returns None when no frame rows exist (xctrace
+    unsupported on the target)."""
     frames, _err = _export_table(trace, "hitches-frame-lifetimes")
     if not frames:
         return None
@@ -1040,11 +1059,9 @@ def trace_frame_stats(trace: Path, window_ms, device_rec: dict):
     if fmap is None:
         return None
     sc, base = fmap
-    t0_epoch = time.time() - (window_ms[0] / 1000.0 if window_ms else 0)
-    presents = sorted(t * sc + base - t0_epoch for t in raw)  # s -> rel s
-    if not presents:
+    pres_ms = sorted((t * sc + base) * 1000.0 for t in raw)  # epoch ms
+    if not pres_ms:
         return None
-    pres_ms = [v * 1000.0 for v in presents]
     maxfps = 60.0
     if device_rec.get("maxFps"):
         try:
@@ -1183,7 +1200,7 @@ def collect_pins() -> dict:
     # manifest's declared requirements (which are enforced at build)
     probes = {}
     fl_root = os.path.expandvars(
-        MANIFEST["toolchain"].get("flutter_root", "$HOME/toolchains/flutter"))
+        MANIFEST["toolchain"]["flutter_root"])
     for name, cmd in {
         "xcodebuild": ["xcodebuild", "-version"],
         "flutter": [fl_root + "/bin/flutter", "--version"],
@@ -1434,14 +1451,19 @@ class WheelDriver:
     scroll-wheel detents DIRECTLY to the target process
     (`CGEventPostToPid`): no cursor warp, no HID-tap broadcast, so the
     drive cannot land under a stray cursor. It then posts
-    `dev.bench.done` into the same notify namespace the begin came from
-    (the simulator's for ios-sim, the host's for macos). The app never
-    scrolls itself.
+    `dev.bench.end` — a notification name only the driver uses — into
+    the same notify namespace the begin came from (the simulator's for
+    ios-sim, the host's for macos). The app never scrolls itself and
+    never signals completion: the driver owns the end of every cell
+    from the declared program and duration.
 
     The driver refuses to run anywhere but the declared measurement host
-    (`measurement_host.hw_model_contains` in the manifest — the Mac
-    mini): a wheel program that can post into any process is not a tool
-    to leave live on a development machine."""
+    (`measurement_host.hw_uuid` in the manifest — the Mac mini's
+    hardware UUID, printed by `bench.py fingerprint`): a wheel program
+    that can post into any process is not a tool to leave live on a
+    development machine, and a model name is not an identity — any Mac
+    mini contains "Macmini". A mismatch refuses before any cell starts
+    (cmd_run_local checks up front)."""
 
     def __init__(self, plat: str, udid: str | None,
                  pid_resolver, fling: dict):
@@ -1460,24 +1482,31 @@ class WheelDriver:
                     *args]
         return ["notifyutil", *args]
 
-    def _confinement_ok(self) -> str | None:
+    @staticmethod
+    def confinement_error() -> str | None:
+        """None when this host is the declared measurement host, else the
+        reason string. Identity is the hardware UUID the manifest
+        declares — exact equality, never a model-name substring."""
         mh = MANIFEST.get("measurement_host") or {}
-        want = mh.get("hw_model_contains")
+        want = mh.get("hw_uuid")
         ev = host_evidence()
         vm = host_is_virtualized(ev)
         if vm:
             return f"wheel driver: virtualized host ({vm})"
-        if not want or want not in (ev.get("hw_model") or ""):
+        if not want:
+            return ("wheel driver: manifest measurement_host.hw_uuid is "
+                    "unset — declare the measurement host's hardware "
+                    "UUID (see `bench.py fingerprint`)")
+        if ev.get("hw_uuid") != want:
             return ("wheel driver: host is not the declared measurement "
-                    f"host (hw_model={ev.get('hw_model')!r}, expected "
+                    f"host (hw_uuid={ev.get('hw_uuid')!r}, expected "
                     f"{want!r} — {mh.get('kind', 'the Mac mini')})")
         return None
 
     def start(self):
-        err = self._confinement_ok()
+        err = self.confinement_error()
         if err:
-            self.error = err
-            return
+            raise RuntimeError(err)
         # `notifyutil -1` prints one line per registration firing — it
         # is the same channel the contestant apps read begin on, so the
         # drive can only ever fire inside the measure block.
@@ -1505,20 +1534,21 @@ class WheelDriver:
                 if self._stop.is_set():
                     return
                 self._program()
-                subprocess.run(self._notify_cmd("-p", "dev.bench.done"),
+                subprocess.run(self._notify_cmd("-p", "dev.bench.end"),
                                capture_output=True)
         except Exception as e:  # never kill the runner from a thread
             self.error = f"wheel driver: {e}"
 
     def _program(self):
-        pid = None
-        deadline = time.time() + 30
-        while pid is None and time.time() < deadline:
-            pid = self.pid_resolver()
-            if pid is None:
-                time.sleep(0.5)
+        # The begin notification is the readiness event itself: it is
+        # posted from inside the measure block, so the launched process
+        # exists — resolve its pid once (no launch-pid poll loop).
+        pid = self.pid_resolver()
         if pid is None:
-            raise RuntimeError("wheel driver: target pid never appeared")
+            raise RuntimeError(
+                "wheel driver: launched process has no pid at measure "
+                "begin — the resolver covers the launched process, "
+                "never a name lookup")
         center = _window_center_for_pid(pid)
         if center is None:
             raise RuntimeError(
@@ -1528,6 +1558,7 @@ class WheelDriver:
         seq = [1] * int(f["down"]) + [-1] * int(f["up"])
         step_ms = float(f["duration_ms"]) / int(f["detents"])
         px = int(f["detent_px"])
+        point = Quartz.CGPointMake(center[0], center[1])
         # Quartz wheel semantics: a POSITIVE wheel1 delta scrolls content
         # toward the top (the "scroll up" direction); scrolling the feed
         # DOWN is a negative delta. The earlier +px "down" ran the program
@@ -1538,6 +1569,9 @@ class WheelDriver:
                 ev = Quartz.CGEventCreateScrollWheelEvent(
                     None, Quartz.kCGScrollEventUnitPixel, 1,
                     -px * direction)
+                # carry the target window's centre so the event lands in
+                # the contestant's window regardless of cursor position
+                Quartz.CGEventSetLocation(ev, point)
                 Quartz.CGEventPostToPid(pid, ev)
                 time.sleep(step_ms / 1000)
             time.sleep(float(f["pause_ms"]) / 1000)
@@ -1567,8 +1601,8 @@ def run_one(plat, contestant_id, app_path: Path, bundle_id, workload,
       the runner's recorder-go gate releases the launch, identical for
       every contestant.
     - capacity workloads (w5/w6) run one launch per ladder step: the
-      caller passes `step` and merges the per-step rows; the app posts
-      dev.bench.done from its own workload logic after settle+hold.
+      caller passes `step` and merges the per-step rows; the driver
+      ends every cell on its own schedule — apps never post done.
     """
     tag = f"{contestant_id}-{workload}"
     if step is not None:
@@ -1649,10 +1683,16 @@ def run_one(plat, contestant_id, app_path: Path, bundle_id, workload,
         wheel = None
         if drive == "wheel":
             exe_path = app_path / "Contents" / "MacOS" / exe
+            udid_sim = (device_udid
+                        or (sim_udid() if plat == "ios-sim" else ""))
             wheel = WheelDriver(
                 plat,
-                device_udid or (sim_udid() if plat == "ios-sim" else ""),
-                (lambda: _host_pid("Simulator"))
+                udid_sim,
+                # ios-sim: the launched app's own pid inside the
+                # simulator (simulated processes are host pids, so
+                # CGEventPostToPid reaches the app directly) — never a
+                # name lookup on Simulator.app.
+                (lambda: _sim_launchctl_pid(udid_sim, bundle_id))
                 if plat == "ios-sim"
                 else (lambda: _host_pid_path(str(exe_path))),
                 MANIFEST["harness"]["fling"])
@@ -1782,8 +1822,7 @@ def run_one(plat, contestant_id, app_path: Path, bundle_id, workload,
         if plat == "ios-device" and trace.exists():
             fstats = trace_frame_stats(
                 trace,
-                window_ms=((w0 - t_start) * 1000.0,
-                           (w1 - t_start) * 1000.0),
+                window_ms=(w0 * 1000.0, w1 * 1000.0),
                 device_rec=device_rec)
             if fstats is not None:
                 rec["frame_stats"] = fstats
@@ -1904,8 +1943,14 @@ def cmd_run_local(args):
 
     # the staged artifacts dir is canonical at run time; the manifest's dd
     # path is the build-time source of the same files
-    template = next(iter(sorted(staged.glob("*.xctestrun"))),
-                    ROOT / MANIFEST["harness"][template_key])
+    # the staged .xctestrun the build produced is the only template —
+    # a missing one fails, never a silent manifest-template fallback
+    template = next(iter(sorted(staged.glob("*.xctestrun"))), None)
+    if template is None:
+        raise SystemExit(
+            f"no staged .xctestrun in {staged} — run the build first; "
+            "a manifest-template fallback would run unverified "
+            "products")
 
     # harness products dir: copy every staged .app — contestants AND test
     # runners. `*-Runner.app` alone misses a contestant actually named
@@ -1979,6 +2024,15 @@ def cmd_run_local(args):
     if getattr(args, "workloads", None):
         wanted_w = set(args.workloads.split(","))
         workloads = [w for w in workloads if w in wanted_w]
+
+    # the wheel drive posts CGEvents into the launched process — it only
+    # ever runs on the declared measurement host (measurement_host
+    # .hw_uuid), and the refusal happens BEFORE any cell starts, not
+    # after a 600 s timeout per rep
+    if any((drive_override or drive_for(c, plat, w)) == "wheel"
+           for c in contestants for w in workloads):
+        if err := WheelDriver.confinement_error():
+            raise SystemExit(err)
 
     results_path = Path(args.out) if args.out else RESULTS_DEFAULT
     state = {"machine": stat_machine(), "platform": plat,
@@ -3111,6 +3165,13 @@ def main():
     rp.add_argument("--input", default=str(RESULTS_DEFAULT))
     rp.add_argument("--out", default=str(ROOT / "build" / "report.md"))
     rp.set_defaults(f=cmd_report)
+
+    fp = sub.add_parser(
+        "fingerprint",
+        help="print this host's measurement fingerprint — the value "
+             "manifest measurement_host.hw_uuid must declare")
+    fp.set_defaults(f=lambda a: print(json.dumps(
+        host_evidence(), indent=2, sort_keys=True)))
 
     args = ap.parse_args()
     args.f(args)

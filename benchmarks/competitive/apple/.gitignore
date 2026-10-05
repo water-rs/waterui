@@ -13,3 +13,7 @@ build/
 **/xcuserdata/
 apps/waterui-bench/backends/
 device-drop/
+
+# uv-managed interpreter (pyproject/.python-version)
+.venv/
+__pycache__/

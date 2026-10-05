@@ -5,8 +5,8 @@
 // NSUserDefaults' NSArgumentDomain. Missing or unrecognized values trap.
 // Scrolling is driven from outside the app by OS-level input — the app
 // never scrolls itself. Capacity workloads are paced one launch per step
-// (`-bench-step N`); each app posts `dev.bench.done` after its own
-// settle+hold completes.
+// (`-bench-step N`); the host driver ends every cell on its own
+// schedule — apps post readiness only, never completion.
 
 import SwiftUI
 
@@ -15,8 +15,6 @@ import SwiftUI
 /// seconds while it materializes (the 10k-row feed), and a timed-out
 /// query fails the test instead of driving it.
 enum BenchNotify {
-    static func postDone() { notify_post("dev.bench.done") }
-
     /// Posts `dev.bench.ready.<bundle-id>.<w>` once the workload argument
     /// has resolved — the runner waits for this post to confirm the
     /// argument arrived, instead of a deep AX query (the 10k-row feed's
@@ -81,14 +79,6 @@ func benchStep(_ ladder: [Int]) -> Int {
                 + "expected one of \(ladder)")
     }
     return raw
-}
-
-/// Capacity launches post `done` from their own workload logic: settle
-/// 1 s + hold 4 s after the view appears (METHOD, WORKLOADS.md).
-func postDoneAfterHold() {
-    DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
-        BenchNotify.postDone()
-    }
 }
 
 func timestamp(for index: Int) -> String {
@@ -215,7 +205,14 @@ struct MotionView: View {
             ForEach(0..<200, id: \.self) { MotionRect(index: $0) }
         }
         .frame(width: fieldW, height: fieldH)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // field placement: centred on desktop; on mobile layouts it is
+        // pinned to the top of the content area with a 16-point inset
+        #if os(macOS)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        #else
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .padding(.top, 16)
+        #endif
     }
 }
 
@@ -255,8 +252,7 @@ struct TextBenchView: View {
 // MARK: - W5 Motion capacity
 
 /// W3's scene at one pinned ladder step (200…25600) — one launch renders
-/// one step; `done` is posted from workload logic after the declared
-/// settle+hold following the first frame.
+/// one step; the host driver ends the cell on its own schedule.
 struct MotionCapacityView: View {
     private static let steps = [200, 400, 800, 1600, 3200, 6400, 12800, 25600]
     private let count = benchStep(Self.steps)
@@ -265,8 +261,12 @@ struct MotionCapacityView: View {
             ForEach(0..<count, id: \.self) { MotionRect(index: $0) }
         }
         .frame(width: fieldW, height: fieldH)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .onAppear { postDoneAfterHold() }
+        #if os(macOS)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        #else
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .padding(.top, 16)
+        #endif
     }
 }
 
@@ -287,12 +287,16 @@ struct FeedCapacityView: View {
                         .font(.system(size: 13)).foregroundStyle(.secondary)
                 }
                 Spacer()
-                ForEach(0..<complexity, id: \.self) { j in
-                    VStack {
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(rowColors[(i + j) % 6])
-                            .frame(width: 14, height: 14)
-                        Text("c\(j)").font(.system(size: 12))
+                // cells separated by 4 horizontally (the outer HStack's
+                // 12 is the column gap to the timestamp, not cell pitch)
+                HStack(spacing: 4) {
+                    ForEach(0..<complexity, id: \.self) { j in
+                        VStack {
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(rowColors[(i + j) % 6])
+                                .frame(width: 14, height: 14)
+                            Text("c\(j)").font(.system(size: 12))
+                        }
                     }
                 }
                 Text(timestamp(for: i))
@@ -301,6 +305,5 @@ struct FeedCapacityView: View {
             }
             .padding(.horizontal, 16).padding(.vertical, 10)
         }
-        .onAppear { postDoneAfterHold() }
     }
 }

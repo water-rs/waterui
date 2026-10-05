@@ -40,7 +40,7 @@
    "cd ../apps/react-native && LANG=en_US.UTF-8 pod _{COCOAPODS}_ install --project-directory=macos",
    "cd native-bench && xcodegen"
   ],
-  "note": "fresh-clone dependency install, pinned to committed lockfiles: npm ci installs exactly package-lock.json; bundle install honors Gemfile.lock; pod install runs as `pod _<version>_ install` with the toolchain.cocoapods pin (the generated RN Gemfile caps CocoaPods at 1.15.2 via xcodeproj < 1.26.0, so `bundle exec pod` can never reach the pinned 1.17.0); a crashed pod install wipes Pods/ and retries once — mid-generation residue (missing modulemap links) poisons later xcodebuilds; xcodegen regenerates NativeBench.xcodeproj from the committed project.yml so the checked-in project cannot drift. Per-contestant build failures are recorded and reported; the sweep continues for the remaining contestants. Run standalone with `bench.py bootstrap --platform <plat>`; `build` runs it first."
+  "note": "fresh-clone dependency install, pinned to committed lockfiles: npm ci installs exactly package-lock.json; bundle install honors Gemfile.lock; pod install runs as `pod _<version>_ install` with the toolchain.cocoapods pin (the generated RN Gemfile caps CocoaPods at 1.15.2 via xcodeproj < 1.26.0, so `bundle exec pod` can never reach the pinned 1.17.0); a failed pod install fails the build with its error — mid-generation residue (missing modulemap links) poisons later xcodebuilds, so there is no blind retry; xcodegen regenerates NativeBench.xcodeproj from the committed project.yml so the checked-in project cannot drift. Per-contestant build failures are recorded and reported; the sweep continues for the remaining contestants. Run standalone with `bench.py bootstrap --platform <plat>`; `build` runs it first."
  },
  "workloads": {
   "w1": {
@@ -295,6 +295,8 @@
   }
  ],
  "harness": {
+  "warmup_ms": 3000,
+  "warmup_note": "declared warmup, never 0 — the measure window opens harness.warmup_ms after the contestant's dev.bench.ready first-frame post; the drive program runs inside the window (METHOD in ../WORKLOADS.md)",
   "ios_sim_xctestrun": "apps/native-bench/build/dd-ios/Build/Products/BenchIOS_iphonesimulator26.5-arm64.xctestrun",
   "ios_device_xctestrun": "apps/native-bench/build/dd-device/Build/Products/BenchIOS_iphoneos26.5-arm64.xctestrun",
   "macos_xctestrun": "apps/native-bench/build/dd-mac/Build/Products/BenchMac_macosx26.5-arm64.xctestrun",
@@ -311,7 +313,9 @@
    "duration_ms": 250,
    "pause_ms": 350,
    "wheel": "each `down`/`up` fires `detents` CGEvent wheel detents of `detent_px` over `duration_ms`, then `pause_ms`",
-   "swipe_distance_fraction": 0.6,
+   "swipe_start_fraction": 0.75,
+   "swipe_end_fraction": 0.15,
+   "swipe_duration_ms": 250,
    "swipe_hold_s": 0.02,
    "swipe_pause_s": 0.35
   }
@@ -321,18 +325,18 @@
   "RnBench ios-device: TARGETED_DEVICE_FAMILY=1,2 added as a command-line build setting (project had none -> default [1], iPhone-only) so it runs natively on the iPad Pro 13 M4 device host like the other four universal apps. No project files or other build inputs changed.",
   "device mode is device-agnostic: --udid defaults to the single available device `xcrun devicectl list devices` reports (several attached = explicit --udid required); the signing identity is the keychain's 'Apple Development' cert selected by --identity (team derived from the identity or --team); destinations use platform=iOS,id=<resolved udid> with no model/screen-size assumptions; ios-sim destinations resolve the newest available iPhone simulator at run time ({SIM_UDID} token in manifest build commands, or --sim-udid); results JSON records the device model/os under 'device'; thermal and screen max fps come from the runner's device-record log lines.",
   "waterui ios-device is produced ONLY by `water package --platform ios --backend apple --release --unsigned` (the in-tree CLI): CODE_SIGNING_ALLOWED=NO with the static Rust in the main executable, UIDeviceFamily [1,2]; the device host re-signs inside-out before install.",
-  "harness v2 (fixes two defects found in the first device run): (a) launch args now use a single dash (-bench-workload/-bench-drive) — the previous --bench-workload became NSArgumentDomain key '-bench-workload', which Flutter/RN read as nil and silently fell back to W1; all contestants now trap on a missing/unrecognized workload and expose bench-workload-<id>, asserted by the runner post-launch. (b) the auto drive previously self-started at viewDidAppear and finished before the measure window; iOS (sim + device) now uses real swipe gestures inside measure(), and the surviving auto drive (AppKit macOS) is gated on a runner-tapped bench-begin control and a bench-done completion marker.",
+  "harness v2 (fixes two defects found in the first device run): (a) launch args now use a single dash (-bench-workload/-bench-drive) — the previous --bench-workload became NSArgumentDomain key '-bench-workload', which Flutter/RN read as nil and silently fell back to W1; all contestants now trap on a missing/unrecognized workload and expose bench-workload-<id>, asserted by the runner post-launch. (b) the auto drive previously self-started at viewDidAppear and finished before the measure window; iOS (sim + device) now uses real swipe gestures inside measure(), and the surviving auto drive (AppKit macOS) is gated on a runner-tapped bench-begin control and a driver-owned end-of-cell notification.",
   "harness v3 (second device run, iPad Pro M4): (a) W2 swipe gestures now use XCUICoordinate.press/drag raw HID events — the old app.swipeUp() resolved 'descendants matching type Window' + per-gesture quiescence, which stalls >117s on a scrolling 10k list (waterui W2 AND uikit W2 both hit it; it is a runner defect, not a framework one — WuiList virtualises via dequeueReusableCell at WuiList.swift:721 and carries no AX-container overrides). (b) XCTOSSignpostMetric.scrollingAndDecelerationMetric is now attached only for W2/W4/W6 (it emitted zero duration/ratio rows on W1/W3). (c) one discarded warm-up run per contestant absorbs the first-attach XCTFuture init failure seen on rep 0. (d) every cell now also records render-server CPU — ps -o time deltas on sim backboardd / macOS WindowServer, and an xctrace Time Profiler attach to device backboardd — so Core Animation work outside the app process is counted identically for every contestant; ios-device also attaches Animation Hitches to the app for presented-frame counts.",
   "contestant W2 idiom fixes: rn-bench W2 switched ScrollView -> Animated.FlatList (windowing + view recycling); electron-bench W2 switched innerHTML x10000 -> pooled windowed list (48px rows, +/-6 overscan) — the DOM analogue of cell reuse. UIKit was already dequeueReusableCell and SwiftUI/Flutter already List/ListView.builder (unchanged); the 1.07GB UIKit / 2.78GB RN RSS on device came from the AX-snapshot pathology above, not the widgets.",
   "BUILD IDENTITY: WaterUI contestant = Rust + objc2 apple backend at checkout HEAD, packaged by the in-tree cli/ built from this checkout — plain `water package`, no restoration/retry/pin workarounds.",
   "SCOPE: there is no iPad/device toolchain on the M1 host — the iPad device leg is skipped; iOS-simulator results are the mobile reference.",
-  "electron-bench iOS-sim + macOS W2/W4 are wheel-driven like every other contestant there: bench.py posts CGEvent scroll-wheel detents into the target window on each dev.bench.begin (posted inside the measure block by the XCTest runner), and the driver itself posts dev.bench.done when the program finishes. The in-app notify->IPC->renderer fling chain is gone — the app never scrolls itself.",
+  "electron-bench iOS-sim + macOS W2/W4 are wheel-driven like every other contestant there: bench.py posts CGEvent scroll-wheel detents into the target window on each dev.bench.begin (posted inside the measure block by the XCTest runner), and the driver itself ends the cell on its own schedule (dev.bench.end). The in-app notify->IPC->renderer fling chain is gone — the app never scrolls itself.",
   "sim frame source: xctrace 'Animation Hitches' is UNSUPPORTED on the iOS Simulator (verified by direct attach: 'Hitches is not supported on this platform'), and the sim presents into a host window with no vsync'd display pipeline — no other system-level presented-frame source exists there. ios-sim W5/W6 rows therefore carry per-step app + render-server CPU with frames=null; capacity-at-120Hz/60Hz is a device-only metric.",
   "flutter ios-sim is a --debug (JIT) build: Flutter ships no release mode for the iOS Simulator, so its sim numbers (incl. the five W6 timeouts) are not comparable to the release builds of every other contestant and are excluded from sim ranking/ratio rows. Flutter's comparable iOS numbers come from the device leg (not run: no device toolchain). macOS flutter is a release build and stays comparable. Sim rows carry build=debug-jit for flutter, build=release for the rest.",
   "objc2 migration note (historical, pre-restructure): earlier scaffolds tripped the Water.lock guard when a per-app lock existed; the shared workspace member resolves against the checkout's own Cargo.lock so no per-app lock exists to conflict.",
   "thermal gate: devicectl cannot report thermalState — the on-device runner waits bounded on ProcessInfo.thermalStateDidChangeNotification for nominal in setUp and fails the row past the budget; thermal + screen maxFps are recorded per row from the runner log (device-record), there is no spec-sheet fallback.",
   "environment gate: run-local refuses to measure on virtualized/paravirtual hosts (kern.hv_vmm_present, virtualized CPU/model identity, paravirtual GPU); every results file records a host fingerprint (hw.model + CPU brand + vmm + GPU names) and resume refuses to merge rows from a different host — no VM or software-GPU timings are admitted.",
-  "RnBench ios: only authored files are committed (AppDelegate.swift, BenchNotify.mm, bridging header, Info.plist, project.pbxproj, Podfile, Podfile.lock); every template file the pinned @react-native-community/cli init emits is materialized by toolchain.ensure_rn_template at bootstrap and sha256-locked. RnBench macos: react-native-macos has no pinned template generator, so its project tree is committed as authored; the pod xcworkspace and .xcode.env are regenerated at bootstrap, never committed."
+  "RnBench ios: only authored files are committed (AppDelegate.swift, bridging header, Info.plist, project.pbxproj, Podfile, Podfile.lock); every template file the pinned @react-native-community/cli init emits is materialized by toolchain.ensure_rn_template at bootstrap and sha256-locked. RnBench macos: react-native-macos has no pinned template generator, so its project tree is committed as authored; the pod xcworkspace and .xcode.env are regenerated at bootstrap, never committed."
  ],
  "drive_overrides": {
   "ios-sim": {
@@ -364,7 +368,7 @@
  "cli_model": "in-tree: bench.py provisions `water` from this checkout (lib/toolchain.provision_water_cli) and substitutes {WATER} in build commands; a dirty tracked checkout is refused so the HEAD sha stays the true source identity",
  "measurement_host": {
   "kind": "Apple Silicon Mac mini (physical measurement host)",
-  "hw_model_contains": "Macmini",
-  "note": "bench.py's WheelDriver and run-local refuse to measure unless host_evidence().hw_model contains this string AND the host is not virtualized — the host-side CGEvent drive only ever runs on the declared measurement host, never on a developer laptop."
+  "hw_uuid": "",
+  "note": "bench.py's WheelDriver and run-local refuse to measure unless host_evidence().hw_uuid EXACTLY equals this fingerprint AND the host is not virtualized — a model name is never identity (any Mac mini contains \"Macmini\"). Fill in the machine's IOPlatformUUID (printed by `uv run bench.py fingerprint` on the measurement host) before the first measurement; an empty value refuses, which is the correct failure until the host declares itself."
  }
 }

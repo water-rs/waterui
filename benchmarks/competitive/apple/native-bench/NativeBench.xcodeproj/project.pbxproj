@@ -56,7 +56,7 @@
 				56D86F60F1A11ABA049312CF /* xctest */,
 			);
 			name = apple;
-			path = ../..;
+			path = ..;
 			sourceTree = "<group>";
 		};
 		56D86F60F1A11ABA049312CF /* xctest */ = {
