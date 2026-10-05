@@ -11,6 +11,8 @@ pkg_check_modules(WPE REQUIRED IMPORTED_TARGET
 
 add_library(waterui_wpe SHARED waterui_wpe.c)
 target_compile_features(waterui_wpe PRIVATE c_std_11)
+# dladdr/Dl_info in <dlfcn.h> are exposed only under _GNU_SOURCE.
+target_compile_definitions(waterui_wpe PRIVATE _GNU_SOURCE)
 target_compile_options(waterui_wpe PRIVATE
     -Wall
     -Wextra
