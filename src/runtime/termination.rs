@@ -2,10 +2,11 @@
 //!
 //! One [`Termination`] rides inside [`AppParts`](crate::app::AppParts) to the
 //! runner that hosts the application. [`Termination::start`] wires it to the
-//! runner's answer channel — a [`TerminationHost`] — and hands back a
+//! runner's answer channel — a [`TerminationHost`] —, installs the [`Quit`]
+//! service into the runner's environment, and hands back a
 //! [`TerminationHandle`] every quit path reports through: a termination
 //! signal, the last window closing, a window-system shutdown query, a
-//! [`Quit`](crate::app::Quit) menu item.
+//! [`Quit`] request.
 //!
 //! The machine allows one termination in flight. A
 //! [`Cancellable`](TerminationKind::Cancellable) request asks the
@@ -19,17 +20,18 @@
 //! that executor exists.
 //!
 //! iOS, Android and web never call either hook — those platforms kill the
-//! process without notice, so their runners never start the machine.
+//! process without notice, so their runners never start the machine and no
+//! [`Quit`] is installed there.
 
 use alloc::boxed::Box;
-use alloc::rc::Rc;
+use alloc::rc::{Rc, Weak};
 use core::cell::RefCell;
 use core::fmt;
 use core::future::Future;
 use core::pin::Pin;
 
 use executor_core::AnyLocalExecutorTask;
-use waterui_core::Environment;
+use waterui_core::{Environment, impl_extractor};
 
 use crate::app::QuitReply;
 use crate::task::spawn_local;
@@ -62,8 +64,8 @@ pub trait TerminationHost: 'static {
 }
 
 /// The runner's end of the machine. Cloning shares it, so every quit path —
-/// a signal's event, a window subclass proc, a [`Quit`](crate::app::Quit)
-/// installed in the environment — reports into the same machine.
+/// a signal's event, a window subclass proc, the [`Quit`] installed in the
+/// environment — reports into the same machine.
 #[derive(Clone)]
 pub struct TerminationHandle {
     inner: Rc<RefCell<Shared>>,
@@ -87,36 +89,50 @@ impl TerminationHandle {
     /// request while a termination is already in flight, and a repeated
     /// cancellable request while the question is open, is dropped.
     pub fn request(&self, kind: TerminationKind) {
-        let step = {
-            let mut shared = self.inner.borrow_mut();
-            match shared.state {
-                State::Idle => {
-                    let ask =
-                        kind == TerminationKind::Cancellable && shared.on_quit_request.is_some();
-                    shared.state = if ask {
-                        State::Asking
-                    } else {
-                        State::Terminating
-                    };
-                    if ask { Step::Ask } else { Step::Finish }
-                }
-                State::Asking => match kind {
-                    TerminationKind::Required => {
-                        // Dropping the task cancels the question's future.
-                        shared.asking = None;
-                        shared.state = State::Terminating;
-                        Step::Finish
-                    }
-                    TerminationKind::Cancellable => Step::Ignore,
-                },
-                State::Terminating => Step::Ignore,
-            }
-        };
-        match step {
-            Step::Ask => self.ask(),
+        match self.step(kind) {
+            Step::Ask(question) => self.ask(question),
             Step::Finish => self.finish(),
             Step::Ignore => {}
         }
+    }
+
+    /// Moves the machine for one request and decides what follows. No
+    /// application code runs while the machine is borrowed: the question's
+    /// future is built from the hook after the borrow ends, and a superseded
+    /// question is cancelled after it ends too, so a hook — or a future's
+    /// drop — may report into this handle itself.
+    fn step(&self, kind: TerminationKind) -> Step {
+        let (mut hook, env) = {
+            let mut shared = self.inner.borrow_mut();
+            match (shared.state, kind) {
+                (State::Idle, TerminationKind::Cancellable) => {
+                    let Some(hook) = shared.on_quit_request.take() else {
+                        shared.state = State::Terminating;
+                        return Step::Finish;
+                    };
+                    shared.state = State::Asking;
+                    (hook, shared.env.clone())
+                }
+                (State::Idle, TerminationKind::Required) => {
+                    shared.state = State::Terminating;
+                    return Step::Finish;
+                }
+                (State::Asking, TerminationKind::Required) => {
+                    shared.state = State::Terminating;
+                    let superseded = shared.asking.take();
+                    drop(shared);
+                    // Dropping the task cancels the question's future.
+                    drop(superseded);
+                    return Step::Finish;
+                }
+                (State::Asking, TerminationKind::Cancellable) | (State::Terminating, _) => {
+                    return Step::Ignore;
+                }
+            }
+        };
+        let question = hook(&env);
+        self.inner.borrow_mut().on_quit_request = Some(hook);
+        Step::Ask(question)
     }
 
     /// Whether the application declared either termination hook.
@@ -132,16 +148,7 @@ impl TerminationHandle {
     /// Runs the open question: the answer reaches [`answer`](Self::answer)
     /// through a local-executor task, kept in `Shared::asking` so a
     /// superseding `Required` request can cancel it.
-    fn ask(&self) {
-        let question = {
-            let mut shared = self.inner.borrow_mut();
-            let env = shared.env.clone();
-            shared.on_quit_request.as_mut().map(|hook| hook(&env))
-        };
-        let Some(question) = question else {
-            // `request` only enters `Asking` when the hook exists.
-            return;
-        };
+    fn ask(&self, question: Question) {
         let inner = Rc::clone(&self.inner);
         let task = spawn_local(async move {
             let reply = question.await;
@@ -155,28 +162,32 @@ impl TerminationHandle {
     fn answer(&self, reply: QuitReply) {
         enum Next {
             Finish,
-            Refuse,
+            Refuse(Rc<dyn TerminationHost>),
             Nothing,
         }
-        let next = {
+        let (asking, next) = {
             let mut shared = self.inner.borrow_mut();
-            // The task running this answer no longer needs a handle kept.
-            shared.asking = None;
-            match (shared.state, reply) {
+            let asking = shared.asking.take();
+            let next = match (shared.state, reply) {
                 (State::Asking, QuitReply::Quit) => {
                     shared.state = State::Terminating;
                     Next::Finish
                 }
                 (State::Asking, QuitReply::Cancel) => {
                     shared.state = State::Idle;
-                    Next::Refuse
+                    Next::Refuse(Rc::clone(&shared.host))
                 }
                 _ => Next::Nothing,
-            }
+            };
+            (asking, next)
         };
+        // The handle is this running task's own: detached, it finishes.
+        if let Some(asking) = asking {
+            asking.detach();
+        }
         match next {
             Next::Finish => self.finish(),
-            Next::Refuse => self.inner.borrow().host.refuse(),
+            Next::Refuse(host) => host.refuse(),
             Next::Nothing => {}
         }
     }
@@ -219,16 +230,19 @@ enum State {
 
 /// What a single request decides to do next.
 enum Step {
-    /// Ask `on_quit_request`.
-    Ask,
+    /// Ask `on_quit_request`: the question its hook returned.
+    Ask(Question),
     /// Go straight to `on_terminate`/`host.terminate()`.
     Finish,
     /// The request was redundant.
     Ignore,
 }
 
+/// The future an `on_quit_request` hook returns: the open question.
+type Question = Pin<Box<dyn Future<Output = QuitReply>>>;
+
 /// A quit-request hook erased together with the future it returns.
-type QuitRequestHook = Box<dyn FnMut(&Environment) -> Pin<Box<dyn Future<Output = QuitReply>>>>;
+type QuitRequestHook = Box<dyn FnMut(&Environment) -> Question>;
 
 /// A termination hook erased together with the future it returns.
 type TerminateHook = Box<dyn FnOnce(&Environment) -> Pin<Box<dyn Future<Output = ()>>>>;
@@ -264,24 +278,28 @@ pub struct Termination {
 impl Termination {
     /// Hand the machine to a runner.
     ///
-    /// `env` is the composition-root environment the hooks' extractors read
-    /// — pass the fully assembled one — and `host` the runner's answer
-    /// channel. The returned handle is what every quit path reports
-    /// through. Requires the runner's local executor if a hook is set:
-    /// their futures spawn on it.
-    pub fn start(self, env: Environment, host: impl TerminationHost) -> TerminationHandle {
+    /// `env` is the runner's composition-root environment — pass it fully
+    /// assembled. `start` installs the [`Quit`] service into it, so the
+    /// windows and the menu bar the runner builds from `env` afterwards can
+    /// file quit requests, and the hooks' extractors read `env` as it stands
+    /// then. `host` is the runner's answer channel. The returned handle is
+    /// what every other quit path reports through. Requires the runner's
+    /// local executor if a hook is set: their futures spawn on it.
+    pub fn start(self, env: &mut Environment, host: impl TerminationHost) -> TerminationHandle {
         let has_hooks = self.on_quit_request.is_some() || self.on_terminate.is_some();
-        TerminationHandle {
-            inner: Rc::new(RefCell::new(Shared {
+        let inner = Rc::new_cyclic(|machine| {
+            env.insert(Quit(machine.clone()));
+            RefCell::new(Shared {
                 state: State::Idle,
                 has_hooks,
-                env,
+                env: env.clone(),
                 host: Rc::new(host),
                 on_quit_request: self.on_quit_request,
                 on_terminate: self.on_terminate,
                 asking: None,
-            })),
-        }
+            })
+        });
+        TerminationHandle { inner }
     }
 }
 
@@ -293,6 +311,50 @@ impl fmt::Debug for Termination {
             .finish()
     }
 }
+
+/// Requests that the application quit.
+///
+/// A runner that hosts a desktop application installs `Quit` into the
+/// application environment when it starts the termination machine, so
+/// anything that extracts from the environment — a handler's `Quit`
+/// parameter, a menu command's action — can file a quit:
+///
+/// ```ignore
+/// "Close Shop".action(|quit: Quit| quit.request())
+/// ```
+///
+/// The request is a [`Cancellable`](TerminationKind::Cancellable)
+/// termination: [`App::on_quit_request`](crate::app::App::on_quit_request)
+/// still gets its say before `on_terminate` runs. iOS, Android, web and the
+/// headless hosts never install `Quit` — those hosts end the process on
+/// their own terms — so extracting it there fails.
+#[derive(Clone)]
+pub struct Quit(Weak<RefCell<Shared>>);
+
+impl fmt::Debug for Quit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Quit").finish_non_exhaustive()
+    }
+}
+
+impl Quit {
+    /// Files a cancellable termination request with the runner.
+    ///
+    /// # Panics
+    ///
+    /// When the runner that installed this `Quit` has already dropped its
+    /// termination machine — the application is gone, and nothing is left
+    /// to quit.
+    pub fn request(&self) {
+        let inner = self
+            .0
+            .upgrade()
+            .expect("Quit::request called after the runner's termination machine ended");
+        TerminationHandle { inner }.request(TerminationKind::Cancellable);
+    }
+}
+
+impl_extractor!(Quit);
 
 #[cfg(test)]
 mod tests {
@@ -341,8 +403,8 @@ mod tests {
         let _ = executor_core::try_init_local_executor(ParkedExecutor);
     }
 
-    /// Runs every runnable parked so far; the answers they produce may park
-    /// follow-up work for the next call.
+    /// Runs every parked runnable, and every one those park in turn, until
+    /// the queue is empty.
     fn drain() {
         PARKED.with(|(_, receiver)| {
             while let Ok(runnable) = receiver.try_recv() {
@@ -373,11 +435,12 @@ mod tests {
     }
 
     /// The app's end of the test: a `Termination` built through the real
-    /// `App` hooks, started against `log`.
-    fn start(app: App, log: &Log) -> TerminationHandle {
-        app.into_parts()
-            .termination
-            .start(Environment::new(), log.clone())
+    /// `App` hooks, started against `log`, and the environment it installed
+    /// its `Quit` into.
+    fn start(app: App, log: &Log) -> (TerminationHandle, Environment) {
+        let mut env = Environment::new();
+        let handle = app.into_parts().termination.start(&mut env, log.clone());
+        (handle, env)
     }
 
     #[test]
@@ -386,14 +449,17 @@ mod tests {
         let log = Log::default();
         let app = App::new_with_windows(Vec::new(), Environment::new())
             .on_quit_request(|| async { QuitReply::Cancel });
-        let handle = start(app, &log);
+        let (handle, env) = start(app, &log);
 
         handle.request(TerminationKind::Cancellable);
         drain();
         assert_eq!(log.calls(), ["refuse"]);
 
-        // A refused quit leaves the machine idle: the next request asks again.
-        handle.request(TerminationKind::Cancellable);
+        // A refused quit leaves the machine idle: the next request asks
+        // again — here filed through the `Quit` the machine installed.
+        env.get::<Quit>()
+            .expect("start installs Quit into the runner's environment")
+            .request();
         drain();
         assert_eq!(log.calls(), ["refuse", "refuse"]);
     }
@@ -411,11 +477,10 @@ mod tests {
                     hook_log.calls.borrow_mut().push("shutdown".into());
                 }
             });
-        let handle = start(app, &log);
+        let (handle, _) = start(app, &log);
 
         handle.request(TerminationKind::Cancellable);
-        drain(); // the question answers
-        drain(); // `on_terminate` runs and reports to the host
+        drain();
         assert_eq!(log.calls(), ["shutdown", "terminate"]);
     }
 
@@ -436,7 +501,7 @@ mod tests {
                     shutdown.calls.borrow_mut().push("shutdown".into());
                 }
             });
-        let handle = start(app, &log);
+        let (handle, _) = start(app, &log);
 
         handle.request(TerminationKind::Required);
         drain();
@@ -461,7 +526,7 @@ mod tests {
                     shutdown.calls.borrow_mut().push("shutdown".into());
                 }
             });
-        let handle = start(app, &log);
+        let (handle, _) = start(app, &log);
 
         handle.request(TerminationKind::Cancellable);
         drain();
@@ -483,7 +548,7 @@ mod tests {
                 asked.calls.borrow_mut().push("asked".into());
                 core::future::pending::<QuitReply>()
             });
-        let handle = start(app, &log);
+        let (handle, _) = start(app, &log);
 
         handle.request(TerminationKind::Cancellable);
         handle.request(TerminationKind::Cancellable);
@@ -504,7 +569,7 @@ mod tests {
         install_executor();
         let log = Log::default();
         let app = App::new_with_windows(Vec::new(), Environment::new());
-        let handle = start(app, &log);
+        let (handle, _) = start(app, &log);
 
         handle.request(TerminationKind::Cancellable);
         // Synchronous — nothing was parked on the executor at all.

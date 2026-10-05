@@ -21,7 +21,7 @@ use executor_core::{
 };
 use nami::Signal;
 use waterui::app::{
-    App, AppParts, LastWindowPolicy, Quit, TerminationHandle, TerminationHost, TerminationKind,
+    App, AppParts, LastWindowPolicy, TerminationHandle, TerminationHost, TerminationKind,
 };
 use waterui::window::{Monitor, MonitorSelector, Window, WindowState};
 use waterui_core::Environment;
@@ -57,14 +57,16 @@ pub(super) enum RunnerEvent {
     /// `x11_state_watch`).
     #[cfg(hydrolysis_wayland_platform)]
     X11VisibilitySignal,
-    /// A termination request the machine in [`TerminationHandle`] decides.
+    /// Sent by the termination handler installed in [`run`]: the runner
+    /// files a [`Required`](TerminationKind::Required) request with its
+    /// [`TerminationHandle`].
     ///
     /// No windowing system turns a termination signal into a winit event, on
-    /// any desktop platform, so the runner listens for the signals itself and
-    /// reports a [`Required`](TerminationKind::Required) request. The other
-    /// senders — a [`Quit`] extracted from the environment, the
-    /// `WM_QUERYENDSESSION` subclass — report `Cancellable`.
-    Terminate(TerminationKind),
+    /// any desktop platform, so the runner listens for the signals itself. The
+    /// variant exists wherever that handler does — every target with signals or
+    /// Windows console control events.
+    #[cfg(any(unix, windows))]
+    Terminate,
     /// The termination machine finished its work — the runner's
     /// [`TerminationHost`] sent it — so teardown happens on the event loop,
     /// where runtime cleanup is safe.
@@ -128,7 +130,7 @@ fn install_termination_handler(event_proxy: &winit::event_loop::EventLoopProxy<R
         TerminationAction::RequestExit => {
             // `ctrlc` runs this on a thread of its own rather than inside a
             // signal handler, so waking the loop from here is an ordinary send.
-            let _ = event_proxy.send_event(RunnerEvent::Terminate(TerminationKind::Required));
+            let _ = event_proxy.send_event(RunnerEvent::Terminate);
         }
         TerminationAction::ForceExit => {
             tracing::warn!(
@@ -442,16 +444,6 @@ pub fn run(
     super::install_native_component_hooks(&mut env);
     #[cfg(any(unix, windows))]
     install_termination_handler(&event_proxy);
-    // `Quit` files a cancellable termination request through the same event
-    // the signal handler reports on. It is installed before the menu bar
-    // resolves so a declared `MenuItem::Quit` and `|quit: Quit|` command
-    // actions extract it.
-    env.insert(Quit::new({
-        let event_proxy = event_proxy.clone();
-        move || {
-            let _ = event_proxy.send_event(RunnerEvent::Terminate(TerminationKind::Cancellable));
-        }
-    }));
     env.insert(HydrolysisTextContextMenuMode::Overlay);
     env.insert(waterui::window::WindowManager::new({
         let pending_window_queue = Rc::clone(&pending_window_queue);
@@ -478,22 +470,6 @@ pub fn run(
     // the menu's chords to that window's dispatch, which must resolve them
     // while the menu is open (water-rs/hydrolysis#247).
     let _ = env.get_or_insert_with::<MenuShortcutRegistry, _>(MenuShortcutRegistry::default);
-    // The app's menu bar: its command chords arm on the shared registry,
-    // and the native menu-bar surface installs where the platform has
-    // one — see `menu_bar` for the per-platform contract (the two chord
-    // paths see disjoint keys, so dispatch stays exactly-once).
-    // Only the winit runner turns the resolved menus into a native
-    // surface: `NSApp.mainMenu` on macOS, an `HMENU` per application
-    // window on Windows. Every other runner just arms the chords. The
-    // event loop is the main thread, which is what the install's
-    // `MainThreadMarker` contract needs.
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    let native_menu_bar = crate::platform::native_menu_bar::NativeMenuBar::install(
-        &super::menu_bar::register_menu_bar(&menu_bar, &env),
-        &env,
-    );
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    super::menu_bar::register_menu_bar(&menu_bar, &env);
     crate::theme::install_theme_tokens(&mut env, Some(&style));
     let theme: Rc<dyn crate::engine::WidgetTheme> = Rc::new(style);
     env.insert(waterui_core::ViewRenderer::new(
@@ -509,19 +485,37 @@ pub fn run(
     fonts.clone().install(&mut env);
     let window_icon =
         load_staged_window_icon(waterui_core::ResourceContext::from_environment(&env));
-    // The machine hands its hooks the composition-root environment as it
-    // stands now — `Quit` included — and its futures run on the local
-    // executor the first `resumed` installs.
+    // The machine installs `Quit` into the composition-root environment and
+    // hands its hooks that environment as it stands now; their futures run
+    // on the local executor the first `resumed` installs.
     #[cfg(target_os = "windows")]
     let shutdown_block_reasons = Rc::new(RefCell::new(std::collections::HashSet::new()));
     let termination = termination.start(
-        env.clone(),
+        &mut env,
         WinitTerminationHost {
             event_proxy: event_proxy.clone(),
             #[cfg(target_os = "windows")]
             block_reasons: Rc::clone(&shutdown_block_reasons),
         },
     );
+    // The app's menu bar resolves after the machine installed `Quit`, so a
+    // declared `MenuItem::Quit` and `|quit: Quit|` command actions find it.
+    // Its command chords arm on the shared registry, and the native
+    // menu-bar surface installs where the platform has one — see `menu_bar`
+    // for the per-platform contract (the two chord paths see disjoint keys,
+    // so dispatch stays exactly-once).
+    // Only the winit runner turns the resolved menus into a native
+    // surface: `NSApp.mainMenu` on macOS, an `HMENU` per application
+    // window on Windows. Every other runner just arms the chords. The
+    // event loop is the main thread, which is what the install's
+    // `MainThreadMarker` contract needs.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    let native_menu_bar = crate::platform::native_menu_bar::NativeMenuBar::install(
+        &super::menu_bar::register_menu_bar(&menu_bar, &env),
+        &env,
+    );
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    super::menu_bar::register_menu_bar(&menu_bar, &env);
     let mut runner = WinitRunner {
         env,
         theme,
@@ -1324,8 +1318,9 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
                     AccessKitWindowEvent::AccessibilityDeactivated => {}
                 }
             }
-            RunnerEvent::Terminate(kind) => {
-                self.termination.request(kind);
+            #[cfg(any(unix, windows))]
+            RunnerEvent::Terminate => {
+                self.termination.request(TerminationKind::Required);
             }
             RunnerEvent::TerminationFinished => {
                 self.exit_after_runtime_cleanup(event_loop);

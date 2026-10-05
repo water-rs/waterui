@@ -1,7 +1,5 @@
 //! A `WaterUI` application representation.
 
-use alloc::rc::Rc;
-use core::fmt::{self, Debug};
 use core::future::Future;
 use core::pin::Pin;
 
@@ -10,7 +8,6 @@ use suiteki::Str;
 use waterui_core::{
     Environment,
     handler::{Handler, HandlerOnce, ViewBuilder, boxed_action, boxed_action_once},
-    impl_extractor,
 };
 
 use crate::{
@@ -19,7 +16,7 @@ use crate::{
 };
 
 pub use crate::runtime::termination::{
-    Termination, TerminationHandle, TerminationHost, TerminationKind,
+    Quit, Termination, TerminationHandle, TerminationHost, TerminationKind,
 };
 
 /// Represents a `WaterUI` application.
@@ -293,44 +290,6 @@ pub enum QuitReply {
     /// Veto termination: the application keeps running.
     Cancel,
 }
-
-/// Requests that the application quit.
-///
-/// The runner installs `Quit` into the application environment on desktop,
-/// so anything that can extract from the environment — a handler's `Quit`
-/// parameter, a menu command's action — can file a quit:
-///
-/// ```ignore
-/// Command::new("Close Shop").action(|quit: Quit| quit.request())
-/// ```
-///
-/// The request is a [`Cancellable`](TerminationKind::Cancellable)
-/// termination: [`App::on_quit_request`] still gets its say before
-/// `on_terminate` runs. iOS, Android and web never install `Quit` — those
-/// platforms kill the process without notice — so extracting it there
-/// fails.
-#[derive(Clone)]
-pub struct Quit(Rc<dyn Fn()>);
-
-impl Debug for Quit {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Quit").finish_non_exhaustive()
-    }
-}
-
-impl Quit {
-    /// Wraps the runner's termination-request entry point.
-    pub fn new(request: impl Fn() + 'static) -> Self {
-        Self(Rc::new(request))
-    }
-
-    /// Files a cancellable termination request with the runner.
-    pub fn request(&self) {
-        (self.0)();
-    }
-}
-
-impl_extractor!(Quit);
 
 #[cfg(test)]
 mod tests {
