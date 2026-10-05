@@ -141,27 +141,25 @@ define_class!(
         // SAFETY: see the module safety note.
         #[unsafe(method(isFlipped))]
         fn is_flipped_override(&self) -> bool {
-            guarded("SurfaceView isFlipped", || true)
+            true
         }
 
         // SAFETY: see the module safety note; the view is always layer-backed.
         #[unsafe(method(wantsLayer))]
         fn wants_layer_override(&self) -> bool {
-            guarded("SurfaceView wantsLayer", || true)
+            true
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(setWantsLayer:))]
         fn set_wants_layer_override(&self, wants_layer: bool) {
-            guarded("SurfaceView setWantsLayer:", || {
-                let _ = wants_layer;
-            });
+            let _ = wants_layer;
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(acceptsFirstResponder))]
         fn accepts_first_responder_override(&self) -> bool {
-            guarded("SurfaceView acceptsFirstResponder", || true)
+            true
         }
 
         // SAFETY: see the module safety note.
