@@ -1,0 +1,111 @@
+name: NativeBench
+options:
+  bundleIdPrefix: dev.bench
+  createIntermediateGroups: true
+configs:
+  Debug: debug
+  Release: release
+settings:
+  base:
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: YES
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: "5.0"
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: ""
+    PRODUCT_NAME: $(TARGET_NAME)
+targets:
+  # --- iOS apps ---
+  BenchSwiftUI:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources: [Sources/SwiftUI]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.bench.swiftui
+        SWIFT_OBJC_BRIDGING_HEADER: "$(SRCROOT)/Sources/NotifyBridge.h"
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+  BenchUIKit:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources: [Sources/UIKit]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.bench.native
+        SWIFT_OBJC_BRIDGING_HEADER: "$(SRCROOT)/Sources/NotifyBridge.h"
+        # Scene-based app: without this manifest the SceneDelegate never
+        # runs and the app has no window at all.
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+  # --- macOS apps ---
+  BenchSwiftUIMac:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources: [Sources/SwiftUI]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.bench.swiftui.mac
+        SWIFT_OBJC_BRIDGING_HEADER: "$(SRCROOT)/Sources/NotifyBridge.h"
+        CODE_SIGN_IDENTITY: "-"
+  BenchAppKit:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources: [Sources/AppKit]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.bench.native.mac
+        SWIFT_OBJC_BRIDGING_HEADER: "$(SRCROOT)/Sources/NotifyBridge.h"
+        CODE_SIGN_IDENTITY: "-"
+  # --- shared UI-test harness (drives any app by bundle id) ---
+  BenchRunner:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources: [../../xctest/Sources/Runner]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.bench.runner
+        SWIFT_OBJC_BRIDGING_HEADER: "$(SRCROOT)/Sources/NotifyBridge.h"
+        TEST_TARGET_NAME: BenchSwiftUI
+        GENERATE_INFOPLIST_FILE: YES
+  BenchRunnerMac:
+    type: bundle.ui-testing
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources: [../../xctest/Sources/Runner]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.bench.runner.mac
+        SWIFT_OBJC_BRIDGING_HEADER: "$(SRCROOT)/Sources/NotifyBridge.h"
+        TEST_TARGET_NAME: BenchSwiftUIMac
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_IDENTITY: "-"
+schemes:
+  BenchIOS:
+    build:
+      targets:
+        BenchSwiftUI: all
+        BenchUIKit: all
+        BenchRunner: [testing]
+    run:
+      targets: [BenchSwiftUI]
+    test:
+      config: Release
+      targets: [BenchRunner]
+  BenchMac:
+    build:
+      targets:
+        BenchSwiftUIMac: all
+        BenchAppKit: all
+        BenchRunnerMac: [testing]
+    run:
+      targets: [BenchSwiftUIMac]
+    test:
+      config: Release
+      targets: [BenchRunnerMac]
