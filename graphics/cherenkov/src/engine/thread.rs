@@ -350,7 +350,7 @@ pub fn run<B: Backend>(
     config: B::Config,
     rx: &Receiver<Message<B>>,
     retire_rx: &Receiver<crate::message::ResOp<B>>,
-    init_reply: &Sender<Result<B::Info, EngineError>>,
+    init_reply: &Sender<Result<(B::Info, crate::ImageLimits), EngineError>>,
 ) {
     let (mut renderer, info) = match B::init(config) {
         Ok(pair) => pair,
@@ -359,7 +359,7 @@ pub fn run<B: Backend>(
             return;
         }
     };
-    let _ = init_reply.send(Ok(info));
+    let _ = init_reply.send(Ok((info, renderer.image_limits())));
     let mut surfaces: FxHashMap<SurfaceId, SurfaceState> = FxHashMap::default();
     let mut resources = Resources::<B>::default();
     let mut next_frame = 0u64;
@@ -1000,6 +1000,7 @@ mod tests {
         let (mut renderer, ()) = <Null as Backend>::init(NullConfig {
             events,
             reject: std::collections::HashSet::new(),
+            image_limits: crate::ImageLimits::UNLIMITED,
         })
         .expect("null backend");
         let surface = SurfaceId::new(1);
@@ -1060,6 +1061,7 @@ mod tests {
         let engine = Engine::<Null>::new(NullConfig {
             events,
             reject: std::collections::HashSet::new(),
+            image_limits: crate::ImageLimits::UNLIMITED,
         })
         .expect("init");
         let surface = engine
@@ -1116,10 +1118,18 @@ mod tests {
 #[cfg(target_arch = "wasm32")]
 pub(super) async fn local<B: Backend>(
     config: B::Config,
-) -> Result<(crate::local::Sender<Message<B>>, B::Info), EngineError> {
+) -> Result<
+    (
+        crate::local::Sender<Message<B>>,
+        B::Info,
+        crate::ImageLimits,
+    ),
+    EngineError,
+> {
     use std::cell::RefCell;
     use std::rc::Rc;
     let (renderer, info) = B::init(config).await?;
+    let image_limits = renderer.image_limits();
     let state = Rc::new(RefCell::new(Some(LocalState::<B> {
         renderer,
         surfaces: FxHashMap::default(),
@@ -1135,7 +1145,7 @@ pub(super) async fn local<B: Backend>(
             live
         })
     });
-    Ok((tx, info))
+    Ok((tx, info, image_limits))
 }
 
 #[cfg(target_arch = "wasm32")]

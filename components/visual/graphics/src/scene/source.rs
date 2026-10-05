@@ -340,6 +340,19 @@ pub enum ResourceError {
     /// The image data is malformed or unsupported by the backend.
     #[error("image: {0}")]
     Image(String),
+    /// The image exceeds the target's [`ImageLimits`]. The check runs
+    /// where the registration or replacement was made, before anything
+    /// is queued: the content that made it sees this error, and a
+    /// rejected replacement keeps the image's previous pixels.
+    #[error("image {width}x{height} exceeds the image limits {limits}")]
+    TooLarge {
+        /// Requested width.
+        width: u32,
+        /// Requested height.
+        height: u32,
+        /// The target's limits.
+        limits: crate::draw::ImageLimits,
+    },
     /// The shader source is not in a language the target draws, or failed
     /// its validation.
     #[error("shader: {0}")]
@@ -362,6 +375,15 @@ impl From<cherenkov::ResourceError> for ResourceError {
         match error {
             cherenkov::ResourceError::Font(error) => Self::Font(error),
             cherenkov::ResourceError::Image(error) => Self::Image(error),
+            cherenkov::ResourceError::TooLarge {
+                width,
+                height,
+                limits,
+            } => Self::TooLarge {
+                width,
+                height,
+                limits,
+            },
             cherenkov::ResourceError::Shader(error) => Self::Shader(error),
             cherenkov::ResourceError::Unsupported(what) => Self::Unsupported(what),
             cherenkov::ResourceError::Io(error) => Self::Io(error),

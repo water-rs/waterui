@@ -41,6 +41,10 @@ cherenkov.workspace = true
 cherenkov-gpu.workspace = true
 kurbo.workspace = true
 peniko = "0.6"
+# `imageops::resize` fits a decoded image to the engine's image limits
+# before registration (water-rs/waterui#1806): the decode-quality resample
+# belongs to the ingest path, not the engine. Pixel ops only — no codecs.
+image = { version = "0.25", default-features = false }
 # `complex-scripts` ships the ICU4X segmentation dictionaries (CJ plus the
 # Southeast-Asian scripts) inside the one parley build: this runner owns the
 # `LayoutContext`, and without them its word segmenter logs `No segmentation
