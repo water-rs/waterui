@@ -978,12 +978,6 @@ mod front {
     use super::{Blobs, coord_bits};
     use crate::BenchError;
 
-    // ---------------------------------------------------------------------
-    // Scene → front-end recording ops, shared by the `cherenkov` (GPU) and
-    // `cherenkov-cpu` adapters. The adapters differ only in [`Front`]: the
-    // `BenchError` owner name, the fill-rule lowering (`core_rule` vs
-    // `front_rule`), and the interpolation `api` text.
-
     /// A scene backdrop group's capture scale at the engine's `f32`
     /// boundary. The scene's `f64` must narrow exactly, so the oracle and
     /// the engine run the same scale; a scale that does not is an error,
@@ -1010,6 +1004,12 @@ mod front {
         }
         Ok(scale)
     }
+
+    // ---------------------------------------------------------------------
+    // Scene → front-end recording ops, shared by the `cherenkov` (GPU) and
+    // `cherenkov-cpu` adapters. The adapters differ only in [`Front`]: the
+    // `BenchError` owner name, the fill-rule lowering (`core_rule` vs
+    // `front_rule`), and the interpolation `api` text.
 
     /// The adapter-specific constants the shared lowering needs.
     pub struct Front {

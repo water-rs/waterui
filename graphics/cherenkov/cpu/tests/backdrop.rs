@@ -544,8 +544,12 @@ fn reduced_capture_resolves_and_samples_bilinearly() {
                 WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
             );
             r.fill(
-                Rect::new(16.0, 0.0, 32.0, 32.0),
+                Rect::new(16.0, 0.0, 24.0, 32.0),
                 WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+            );
+            r.fill(
+                Rect::new(24.0, 0.0, 32.0, 32.0),
+                WorkingColor::new([0.0, 1.0, 0.0, 1.0]),
             );
         }));
         tx[surface.root()].push(&glass);
@@ -565,7 +569,10 @@ fn reduced_capture_resolves_and_samples_bilinearly() {
     // member — and texel 2 — red [8, 12).
     assert_pixel(pixel(&readback, 8, 16), [0.625, 0.375, 0.0, 1.0], 1e-5);
     assert_pixel(pixel(&readback, 11, 16), [1.0, 0.0, 0.0, 1.0], 1e-5);
-    assert_pixel(pixel(&readback, 23, 16), [0.0, 0.0, 1.0, 1.0], 1e-5);
+    // The opposite edge pixel 23 lands at 23.5 / 4 = 5.875, 0.375 past
+    // texel 5's centre: its taps are texel 5 — blue [20, 24) — and
+    // texel 6 — green [24, 28), outside the member.
+    assert_pixel(pixel(&readback, 23, 16), [0.0, 0.375, 0.625, 1.0], 1e-5);
 }
 
 #[test]
