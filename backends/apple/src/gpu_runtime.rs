@@ -347,7 +347,7 @@ pub fn scene_engine(env: &Environment) -> Rc<SceneEngine> {
 #[cfg(all(test, target_os = "macos", feature = "gpu_surface"))]
 mod tests {
     use super::*;
-    use waterui_graphics::cherenkov::{Instant, RenderError};
+    use waterui_graphics::cherenkov::{EngineError, Instant, RenderError};
 
     /// A mounted scene's contract reduced to observation: whether `prepare`
     /// ran and for which timestamp, whether it is owed a later frame, and
@@ -407,7 +407,7 @@ mod tests {
         let engines = SceneEngine::new();
         engines.install_failure_for_testing(
             context.generation(),
-            HostedLayerError::Render(RenderError::DeviceLost),
+            HostedLayerError::Engine(EngineError::Backend("no adapter".into())),
         );
         let first = engines
             .generation(&runtime, &context)
@@ -422,7 +422,7 @@ mod tests {
             "creation ran once: both mounts carry the same owned failure"
         );
         assert!(
-            matches!(*first, HostedLayerError::Render(RenderError::DeviceLost)),
+            matches!(*first, HostedLayerError::Engine(EngineError::Backend(_))),
             "the typed failure survives unchanged"
         );
     }

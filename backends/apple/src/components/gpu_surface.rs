@@ -547,7 +547,6 @@ impl SurfaceState {
         &self,
         context: &Arc<SharedGpuContext>,
         texture: &wgpu::Texture,
-        (width, height): (u32, u32),
         display: Display,
         target_time: FrameTime,
     ) -> Result<(bool, Option<Rc<EngineGeneration>>), HostedError> {
@@ -565,7 +564,7 @@ impl SurfaceState {
             *slot = None;
         }
         if slot.is_none() {
-            let size = OffscreenSize::try_from_pixels(width, height)
+            let size = OffscreenSize::try_from_pixels(texture.width(), texture.height())
                 .expect("a wgpu texture has a non-zero extent");
             *slot = Some(self.view.borrow_mut().renderer(
                 &self.runtime,
@@ -698,13 +697,8 @@ fn render_to_metal_texture(
     };
     // The completion marker submitted by the caller orders the frame's work
     // ahead of the callback that presents it.
-    let (needs_redraw, scene_generation) = state.render_into(
-        context,
-        &wgpu_texture,
-        (width, height),
-        display,
-        target_time,
-    )?;
+    let (needs_redraw, scene_generation) =
+        state.render_into(context, &wgpu_texture, display, target_time)?;
     Ok(FrameRender::Submitted {
         needs_redraw,
         scene_generation,
@@ -2252,7 +2246,6 @@ pub mod native_test {
                 .render_into(
                     &context,
                     &texture,
-                    (64, 64),
                     Display::default(),
                     FrameTime(std::time::Instant::now()),
                 )
