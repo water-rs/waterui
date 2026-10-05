@@ -95,8 +95,11 @@ fn render_node_container_lays_out_and_flushes_text() {
         _ => panic!("expected a container node"),
     }
 
-    let ctx = RenderContext::with_transforms(bounds, Affine::IDENTITY, Affine::IDENTITY);
-    node.flush(&mut renderer, ctx, &env);
+    let ctx = RenderContext {
+        local: Affine::IDENTITY,
+        bounds,
+    };
+    node.flush(&mut renderer, ctx, &env, kurbo::Affine::IDENTITY);
     // Check before `finish_rebuild_frame`, which moves the scene into the
     // compositor's layer stack (leaving `renderer.scene` reset).
     assert!(
@@ -148,11 +151,14 @@ fn geometry_static_flush_reuses_cached_placement() {
 
     // A geometry-static frame re-encodes without re-running layout; the cached
     // placement must survive untouched across flushes.
-    let ctx = RenderContext::with_transforms(bounds, Affine::IDENTITY, Affine::IDENTITY);
+    let ctx = RenderContext {
+        local: Affine::IDENTITY,
+        bounds,
+    };
     renderer.reset_scene();
-    node.flush(&mut renderer, ctx, &env);
+    node.flush(&mut renderer, ctx, &env, kurbo::Affine::IDENTITY);
     renderer.reset_scene();
-    node.flush(&mut renderer, ctx, &env);
+    node.flush(&mut renderer, ctx, &env, kurbo::Affine::IDENTITY);
     renderer.finish_rebuild_frame();
 
     match &node {
@@ -191,8 +197,11 @@ fn opacity_wrapper_builds_and_flushes_via_dsl() {
         ProposalSize::new(Some(window.width), Some(window.height)),
         window,
     );
-    let ctx = RenderContext::with_transforms(bounds, Affine::IDENTITY, Affine::IDENTITY);
-    node.flush(&mut renderer, ctx, &env);
+    let ctx = RenderContext {
+        local: Affine::IDENTITY,
+        bounds,
+    };
+    node.flush(&mut renderer, ctx, &env, kurbo::Affine::IDENTITY);
     assert!(
         !renderer.scene_is_empty(),
         "an opacity-wrapped text must still draw glyphs"

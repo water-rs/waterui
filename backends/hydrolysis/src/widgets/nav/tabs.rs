@@ -196,13 +196,10 @@ pub fn tabs_accessibility(
             target: *tag,
         });
         let tab_node_id = match ctx.zip(bar_rect) {
-            Some((ctx, bar_rect)) => renderer.register_accessibility_child_node_with_key(
+            Some((_ctx, bar_rect)) => renderer.register_accessibility_child_node_with_key(
                 key,
                 tab_node,
-                crate::renderer::transformed_rect(
-                    ctx.hit_transform,
-                    tabs_button_rect(bar_rect, labels.len(), index, style),
-                ),
+                tabs_button_rect(bar_rect, labels.len(), index, style),
                 env,
                 target,
             ),
@@ -215,13 +212,8 @@ pub fn tabs_accessibility(
         }
     }
     match ctx.zip(bar_rect) {
-        Some((ctx, bar_rect)) => {
-            let _ = renderer.register_accessibility_node(
-                tab_list,
-                crate::renderer::transformed_rect(ctx.hit_transform, bar_rect),
-                env,
-                None,
-            );
+        Some((_ctx, bar_rect)) => {
+            let _ = renderer.register_accessibility_node(tab_list, bar_rect, env, None);
         }
         None => {
             let _ = renderer.register_accessibility_node_semantic(tab_list, env, None);
@@ -426,12 +418,12 @@ pub fn render_tabs_parts(
         let (icon_rect, label_rect) =
             tabs_item_content_rects(button_rect, icon_size, label_size, &theme_metrics, layout);
         {
-            let hit_bounds = crate::renderer::transformed_rect(ctx.hit_transform, button_rect);
+            let hit_transform = ctx.renderer_mut().current_hit_transform();
+            let hit_bounds = button_rect;
             let (interaction, press_slot, _) =
                 ctx.renderer_mut()
                     .bind_interaction_target(interaction_key, hit_bounds, env);
-            let interaction =
-                crate::renderer::local_interaction_state(interaction, ctx.hit_transform);
+            let interaction = crate::renderer::local_interaction_state(interaction, hit_transform);
             let is_selected = index == selected_index;
             // A horizontal item's indicator and state layer hug the icon+label
             // content grown by the button inset, not the whole button share;

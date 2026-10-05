@@ -3,7 +3,7 @@ use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
     WidgetRenderContext, interaction_focus_ring, local_interaction_state, measure_label_intrinsic,
-    measure_view_intrinsic, popup_menu_nodes, transformed_rect,
+    measure_view_intrinsic, popup_menu_nodes,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -175,7 +175,7 @@ pub fn button_accessibility(
         };
         let node_id = match ctx {
             Some(ctx) => {
-                let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+                let bounds = ctx.bounds;
                 renderer.register_accessibility_node(node, bounds, env, action_target)
             }
             None => renderer.register_accessibility_node_semantic(node, env, action_target),
@@ -416,7 +416,7 @@ pub fn menu_accessibility(
         // origin through `activate_popup_menu_nodes` — the items land in the
         // merged accessibility tree exactly as the rendered popup's do.
         let request = ctx.as_ref().zip(theme).map(|(ctx, theme)| {
-            let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+            let bounds = ctx.bounds;
             (
                 LayoutPoint::new(
                     crate::num_cast::f64_as_f32(bounds.x0),
@@ -450,7 +450,7 @@ pub fn menu_accessibility(
         };
         let node_id = match ctx {
             Some(ctx) => {
-                let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+                let bounds = ctx.bounds;
                 renderer.register_accessibility_node(node, bounds, env, Some(activation))
             }
             None => renderer.register_accessibility_node_semantic(node, env, Some(activation)),
@@ -559,11 +559,10 @@ pub fn render_button_parts(
         floating_style.as_ref(),
     );
     let bounds = ctx.bounds;
-    let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
     let (interaction, press_slot, _) = ctx.renderer_mut().bind_control_interaction_target(
         interaction_key.clone(),
-        hit_bounds,
+        bounds,
         env,
         disabled,
     );
@@ -644,7 +643,8 @@ pub fn render_button_parts(
     {
         // Hover/focus/press state layers, drawn fresh each flush from the sampled
         // interaction state (the press/hover animations keep frames pumping).
-        let interaction = local_interaction_state(interaction, ctx.hit_transform);
+        let interaction =
+            local_interaction_state(interaction, ctx.renderer_mut().current_hit_transform());
         if let Some(interaction_style) = interaction_style {
             let color_signal = interaction_style.state_layer_color.resolve(env);
             let color = ctx.renderer_mut().read_signal(&color_signal);
@@ -708,7 +708,7 @@ pub fn render_button_parts(
     let state = Rc::clone(state);
     let action_env = env.clone();
     ctx.renderer_mut().register_interactive_pointer_target(
-        hit_bounds,
+        bounds,
         press_slot,
         move |_renderer, _point, _env| {
             (state.borrow_mut().config.action)(&action_env);
@@ -725,11 +725,10 @@ pub fn render_menu_parts(
     let theme = ctx.theme();
     let style = MENU_TRIGGER_STYLE;
     let bounds = ctx.bounds;
-    let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
     let (interaction, press_slot, _) =
         ctx.renderer_mut()
-            .bind_interaction_target(interaction_key, hit_bounds, env);
+            .bind_interaction_target(interaction_key, bounds, env);
     let icon_only = state.borrow().icon_only;
     {
         ctx.draw_context(|draw| {
@@ -787,7 +786,8 @@ pub fn render_menu_parts(
     }
     {
         // Hover/focus/press state layers over the menu trigger chrome.
-        let interaction = local_interaction_state(interaction, ctx.hit_transform);
+        let interaction =
+            local_interaction_state(interaction, ctx.renderer_mut().current_hit_transform());
         ctx.draw_context(|draw| {
             theme.draw_button_state_layer(&mut *draw, bounds, style, icon_only, interaction);
         });
@@ -802,6 +802,8 @@ pub fn render_menu_parts(
     // the registration with it.
     ctx.renderer_mut()
         .register_menu_shortcuts(Rc::downgrade(state), items.clone(), env.clone());
+    // The popup anchors in window space at the trigger's bottom edge.
+    let hit_bounds = ctx.renderer_mut().resolve_window_rect(bounds);
     let anchor = LayoutPoint::new(
         crate::num_cast::f64_as_f32(hit_bounds.x0),
         crate::num_cast::f64_as_f32(hit_bounds.y1),
@@ -812,7 +814,7 @@ pub fn render_menu_parts(
     // dispatch's (water-rs/hydrolysis#140).
     let menu_env = env.clone();
     ctx.renderer_mut().register_interactive_pointer_target(
-        hit_bounds,
+        bounds,
         press_slot,
         move |renderer, _point, env| {
             let env = menu_env.layered_on(env);

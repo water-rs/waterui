@@ -183,6 +183,8 @@ pub struct ActiveTextSelectionDrag {
 
 #[derive(Clone)]
 pub struct TextInputTarget {
+    /// The node cell that registered the target.
+    pub(crate) owner: std::rc::Weak<crate::renderer::NodeCell>,
     pub(crate) interaction_key: InteractionKey,
     pub(crate) modal: bool,
     pub(crate) bounds: kurbo::Rect,
@@ -1200,36 +1202,76 @@ impl SemanticCore {
     /// `None`. The target need not be emitted this frame; focus simply resolves
     /// to nothing until it is.
     /// Wires a `.focused(binding)` modifier to the single focusable target —
-    /// a text field or an input surface — registered inside the spans
-    /// (`text_start`, `embedded_start`): writes the binding onto that target,
-    /// then applies the binding's value to the focused-input key. Shared by
-    /// the rendered flush and the semantic accessibility walk.
+    /// a text field or an input surface — registered inside `scope`'s subtree:
+    /// writes the binding onto that target, then applies the binding's value
+    /// to the focused-input key. The retained equivalent of the flat lists'
+    /// `[start..]` span: entries owned by cells inside `scope`'s subtree,
+    /// hittable or not — a `.focused()` inside an unhittable subtree still saw
+    /// the target on dev (the outer truncation ran after the wiring), and the
+    /// post-flush validation releases whatever focus a dead chain took.
+    /// Shared by the rendered flush and the semantic accessibility walk.
     pub(crate) fn wire_focused_target(
         &mut self,
         value: &waterui::component::focus::Focused,
         should_focus: bool,
-        text_start: usize,
-        embedded_start: usize,
+        scope: &Rc<NodeCell>,
     ) {
-        let text_count = self.text_editing.text_input_targets.len() - text_start;
-        let embedded_count = self.hit_test.embedded_input_targets.len() - embedded_start;
-        let focus_target_count = text_count + embedded_count;
+        // Whether the entry's owning cell is `scope` or a descendant of it.
+        let in_scope = |owner: &std::rc::Weak<NodeCell>| -> bool {
+            let mut cell = owner.upgrade();
+            while let Some(current) = cell {
+                if Rc::ptr_eq(&current, scope) {
+                    return true;
+                }
+                cell = current.parent();
+            }
+            false
+        };
+        // The retained registries own entries per recording cell — the
+        // scan walks every live owner's bucket and keeps the cell it
+        // found, so the write-back lands in the same bucket.
+        let mut text_hit = None;
+        let mut embedded_hit = None;
+        let mut count = 0usize;
+        for cell in self.retained.owners() {
+            let slot = cell.registrations.borrow();
+            let Some(regs) = slot.as_ref() else {
+                continue;
+            };
+            for (index, entry) in regs.text_input_targets.iter().enumerate() {
+                if in_scope(&entry.owner) {
+                    count += 1;
+                    text_hit = Some((Rc::clone(&cell), index));
+                }
+            }
+            for (index, entry) in regs.embedded_input_targets.iter().enumerate() {
+                if in_scope(&entry.owner) {
+                    count += 1;
+                    embedded_hit = Some((Rc::clone(&cell), index));
+                }
+            }
+        }
         assert!(
-            focus_target_count == 1,
-            "hydrolysis .focused() requires exactly one TextField or SecureField or input surface in the wrapped subtree, found {focus_target_count}"
+            count == 1,
+            "hydrolysis .focused() requires exactly one TextField or SecureField or input surface in the wrapped subtree, found {count}"
         );
-        if embedded_count == 1 {
-            let target = self
-                .hit_test
-                .embedded_input_targets
-                .get_mut(embedded_start)
-                .expect("hydrolysis focused metadata missing registered surface input target");
-            assert!(
-                target.focus_binding.is_none(),
-                "hydrolysis does not allow multiple .focused() modifiers to target the same control"
-            );
-            target.focus_binding = Some(value.0.clone());
-            let target_key = target.interaction_key.clone();
+        if let Some((cell, index)) = embedded_hit {
+            // The bucket borrow ends before the focus setters run: they
+            // materialize the registries, which borrow the same `RefCell`.
+            let target_key = {
+                let mut slot = cell.registrations.borrow_mut();
+                let target = &mut slot
+                    .as_mut()
+                    .expect("hydrolysis focused metadata missing embedded input bucket")
+                    .embedded_input_targets[index]
+                    .payload;
+                assert!(
+                    target.focus_binding.is_none(),
+                    "hydrolysis does not allow multiple .focused() modifiers to target the same control"
+                );
+                target.focus_binding = Some(value.0.clone());
+                target.interaction_key.clone()
+            };
 
             if should_focus {
                 self.set_focused_embedded_key(Some(target_key));
@@ -1238,17 +1280,22 @@ impl SemanticCore {
             }
             return;
         }
-        let target = self
-            .text_editing
-            .text_input_targets
-            .get_mut(text_start)
-            .expect("hydrolysis focused metadata missing registered text input target");
-        assert!(
-            target.focus_binding.is_none(),
-            "hydrolysis does not allow multiple .focused() modifiers to target the same control"
-        );
-        target.focus_binding = Some(value.0.clone());
-        let target_key = target.interaction_key.clone();
+        let (cell, index) =
+            text_hit.expect("hydrolysis focused metadata missing registered text input target");
+        let target_key = {
+            let mut slot = cell.registrations.borrow_mut();
+            let target = &mut slot
+                .as_mut()
+                .expect("hydrolysis focused metadata missing text input bucket")
+                .text_input_targets[index]
+                .payload;
+            assert!(
+                target.focus_binding.is_none(),
+                "hydrolysis does not allow multiple .focused() modifiers to target the same control"
+            );
+            target.focus_binding = Some(value.0.clone());
+            target.interaction_key.clone()
+        };
 
         if should_focus {
             self.set_focused_text_input_key(Some(target_key));
@@ -1258,6 +1305,10 @@ impl SemanticCore {
     }
 
     pub(crate) fn set_focused_text_input_key(&mut self, focused: Option<InteractionKey>) -> bool {
+        // Mid-flush callers (`wire_focused_target`) run before this frame's
+        // materialization — resolve the key against what is registered so
+        // far, not last frame's staged lists.
+        self.registries();
         let previous = self.text_editing.focused_key();
         let mut changed = false;
         match focused.as_ref() {
@@ -1350,6 +1401,13 @@ impl SemanticCore {
             self.dismiss_active_text_context_menu();
             self.dismiss_active_popup_menu();
         }
+        if let Some(key) = self.text_editing.focused_key() {
+            self.mark_key_owner(&key, crate::renderer::mount::Dirty::LAYOUT);
+        }
+        // The transition itself is window bookkeeping — the caret deadline,
+        // the focus-binding writes and the traversal anchor live on the
+        // window's state, not on whichever node the key resolves to (a key
+        // with no target resolves to none, and the wake must still land).
         self.context_mark_layout();
         true
     }
@@ -1448,8 +1506,7 @@ impl HydrolysisRenderer {
                         metrics.vertical_padding,
                     );
                     let ctx = RenderContext {
-                        transform,
-                        hit_transform: kurbo::Affine::IDENTITY,
+                        local: transform,
                         bounds: overlay.bounds,
                     }
                     .child(

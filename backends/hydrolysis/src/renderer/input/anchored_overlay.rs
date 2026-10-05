@@ -204,11 +204,6 @@ impl HydrolysisRenderer {
                 entry.placed_edge.set(logical);
             }
 
-            // Hit regions clip to the open paint clip stack; the clipped
-            // frame feeds the pointer target, the flush and the recorded
-            // frame alike.
-            let frame = self.hit_test.clip_hit_bounds(frame);
-
             if !exiting {
                 // A press inside the overlay belongs to its own content, not
                 // the page below — the same occlusion the drawn context-menu
@@ -222,15 +217,13 @@ impl HydrolysisRenderer {
             // content started in response to the dismissal does not exist in
             // the controller until this frame's flush. So an exiting overlay
             // swaps the window scene for a scratch scene, flushes into it
-            // with hit testing suppressed, and only then decides: a scope
+            // under a dead placement scope, and only then decides: a scope
             // with a running slot commits the frame and keeps the overlay
             // presented; one with nothing left animating discards it — the
             // overlay draws no frame past its last animation.
             let scratch = exiting.then(|| {
-                let hit_test_opacity = self.hit_test.hit_test_opacity;
-                self.hit_test.hit_test_opacity = 0.0;
+                self.push_unhittable_scope();
                 (
-                    hit_test_opacity,
                     core::mem::take(&mut self.scene),
                     core::mem::take(&mut self.compositor.render_layers),
                     core::mem::take(&mut self.compositor.active_scene_layers),
@@ -242,9 +235,12 @@ impl HydrolysisRenderer {
             // content binds is attributed to it — that attribution is what
             // the exit lifecycle waits on.
             self.animation_controller.begin_animation_scope(scope);
-            content.flush_in_rect(
+            content.flush_in_rect_detached(
                 self,
-                RenderContext::with_transforms(window, transform, kurbo::Affine::IDENTITY),
+                RenderContext {
+                    local: transform,
+                    bounds: window,
+                },
                 &entry.env,
                 bounded_proposal(frame),
                 frame,
@@ -256,14 +252,13 @@ impl HydrolysisRenderer {
             self.animation_controller.end_animation_scope();
 
             if let Some((
-                hit_test_opacity,
                 parent_scene,
                 parent_render_layers,
                 parent_active_layers,
                 parent_transient_scene,
             )) = scratch
             {
-                self.hit_test.hit_test_opacity = hit_test_opacity;
+                self.pop_placement_scope();
                 let overlay_scene = core::mem::replace(&mut self.scene, parent_scene);
                 let overlay_render_layers =
                     core::mem::replace(&mut self.compositor.render_layers, parent_render_layers);

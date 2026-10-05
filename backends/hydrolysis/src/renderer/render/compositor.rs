@@ -735,13 +735,12 @@ impl FrameInstall<'_> {
                     if visible {
                         let surface = self.surface;
                         let display_scale = self.display_scale;
-                        self.mounts
-                            .set_backdrop(tx, owner_key, display_scale, || {
-                                surface.backdrop_group(
-                                    layer.runtime.chain(display_scale),
-                                    crate::renderer::material::capture_scale(),
-                                )
-                            });
+                        self.mounts.set_backdrop(tx, owner_key, display_scale, || {
+                            surface.backdrop_group(
+                                layer.runtime.chain(display_scale),
+                                crate::renderer::material::capture_scale(),
+                            )
+                        });
                     } else {
                         self.mounts.clear_backdrop(tx, owner_key);
                     }

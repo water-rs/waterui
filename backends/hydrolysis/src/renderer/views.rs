@@ -203,7 +203,7 @@ pub fn render_gradient_parts(
         crate::num_cast::f64_as_f32(bounds.height()),
     );
     let paint = transform_paint(gradient.borrow().paint().clone(), Some(unit));
-    let transform = ctx.transform;
+    let transform = ctx.local;
     ctx.renderer_mut()
         .scene
         .fill_paint(peniko::Fill::NonZero, transform, paint, &bounds);
@@ -251,7 +251,7 @@ pub fn render_shape_parts(
         )
     };
     let fill = waterui_graphics::draw::Paint::Solid(ctx.renderer_mut().read_signal(&fill_signal));
-    let transform = ctx.transform;
+    let transform = ctx.local;
     ctx.renderer_mut()
         .scene
         .fill_paint(peniko::Fill::NonZero, transform, fill, &path);
@@ -294,7 +294,7 @@ pub fn render_morph_shape_parts(
     _env: &Environment,
 ) {
     let bounds = ctx.bounds;
-    let transform = ctx.transform;
+    let transform = ctx.local;
     // Stable identity of this morph node: the retained shape `Rc`'s address keys the
     // time-based morph slot so it survives structural changes (no `render_depth`).
     let node_id = Rc::as_ptr(shape) as usize;

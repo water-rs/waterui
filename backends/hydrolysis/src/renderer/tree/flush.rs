@@ -13,12 +13,42 @@ impl RenderNode {
     // `_focus_node` is bound only for the accessibility surface-input path; on
     // builds without the feature the bindings stay dormant, which is why they keep
     // the underscore marker.
+    /// Records this node into the scene. `placement_delta` is the transform
+    /// from the enclosing placement's frame to this node's own — the value a
+    /// matching [`RenderContext::child`] composed into `ctx.local`. The node
+    /// links its [`crate::renderer::Placement`] to the current placement
+    /// (the innermost open scope, or the caller's own) and writes the delta
+    /// before recording.
     pub(crate) fn flush(
         &self,
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
         env: &Environment,
+        placement_delta: kurbo::Affine,
     ) {
+        renderer.link_placement(self.core(), placement_delta);
+        renderer.with_reader(self.core(), ReaderPhase::Record, |renderer| {
+            self.flush_inner(renderer, ctx, env);
+        });
+    }
+
+    /// [`flush`](Self::flush) anchored at an explicit placement instead of
+    /// the current one — the entry point for subtrees recorded outside the
+    /// walk they display in (context menus, anchored overlays, navigation
+    /// scene captures), whose hit space the caller supplies as the delta.
+    /// `index` is the position the grafted subtree claims among the
+    /// anchor's items — the caller's `anchor.take_item()` or an explicit
+    /// stack slot.
+    pub(crate) fn flush_anchored(
+        &self,
+        renderer: &mut HydrolysisRenderer,
+        ctx: RenderContext,
+        env: &Environment,
+        anchor: Option<std::rc::Rc<crate::renderer::Placement>>,
+        placement_delta: kurbo::Affine,
+        index: u32,
+    ) {
+        renderer.link_placement_to(self.core(), anchor, placement_delta, index);
         renderer.with_reader(self.core(), ReaderPhase::Record, |renderer| {
             self.flush_inner(renderer, ctx, env);
         });
@@ -41,7 +71,7 @@ impl RenderNode {
                 let color = waterui_graphics::draw::Paint::Solid(renderer.read_signal(&node.color));
                 renderer.scene_mut().fill_paint(
                     peniko::Fill::NonZero,
-                    ctx.transform,
+                    ctx.local,
                     color,
                     &ctx.bounds,
                 );
@@ -53,7 +83,8 @@ impl RenderNode {
                     .extension
                     .get()
                     .map_or(ctx, |extension| safe_area::fill_paint_ctx(ctx, extension));
-                node.child.flush(renderer, ctx, env);
+                node.child
+                    .flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
             }
             Self::Text(text) => {
                 renderer.state.counters.recorded_view_contents += 1;
@@ -85,23 +116,27 @@ impl RenderNode {
                 // container no longer carries semantics to claim.
                 #[cfg(feature = "accessibility")]
                 let container_scope = accessibility_container_child_environment(env).map(|_| {
-                    renderer.begin_accessibility_container(
-                        transformed_rect(ctx.hit_transform, ctx.bounds),
-                        Some(transformed_rect(
-                            ctx.hit_transform,
-                            kurbo_rect(container.resolved),
-                        )),
-                        env,
-                    )
+                    let (bounds, extent) = (
+                        ctx.bounds,
+                        renderer.resolve_window_rect(kurbo_rect(container.resolved)),
+                    );
+                    renderer.begin_accessibility_container(bounds, Some(extent), env)
                 });
                 #[cfg(feature = "accessibility")]
                 let child_env = container.accessibility_child_env.as_ref().unwrap_or(env);
                 #[cfg(not(feature = "accessibility"))]
                 let child_env = env;
                 renderer.pop_render_owner();
-                for (child, rect) in container.children.iter().zip(container.placed.iter()) {
+                for (index, (child, rect)) in container
+                    .children
+                    .iter()
+                    .zip(container.placed.iter())
+                    .enumerate()
+                {
+                    let delta =
+                        kurbo::Affine::translate((f64::from(rect.x()), f64::from(rect.y())));
                     let child_ctx = ctx.child(
-                        kurbo::Affine::translate((f64::from(rect.x()), f64::from(rect.y()))),
+                        delta,
                         kurbo::Rect::new(
                             0.0,
                             0.0,
@@ -109,7 +144,10 @@ impl RenderNode {
                             f64::from(rect.height()),
                         ),
                     );
-                    child.flush(renderer, child_ctx, child_env);
+                    let index = u32::try_from(index)
+                        .expect("hydrolysis container: child index exceeds placement order range");
+                    child.core().cell.placement().set_index(index);
+                    child.flush(renderer, child_ctx, child_env, delta);
                 }
                 #[cfg(feature = "accessibility")]
                 if let Some(container_scope) = container_scope {
@@ -123,15 +161,10 @@ impl RenderNode {
                     &node.value.value,
                     OPACITY_ANIMATION_KEY,
                 );
-                renderer.with_clip_rect_scope(
-                    alpha,
-                    LayerTransforms {
-                        paint: ctx.transform,
-                        hit: ctx.hit_transform,
-                    },
-                    ctx.bounds,
-                    |renderer| node.child.flush(renderer, ctx, env),
-                );
+                renderer.with_clip_rect_scope(alpha, ctx.local, ctx.bounds, |renderer| {
+                    node.child
+                        .flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
+                });
             }
             Self::Scale(node) => {
                 let center = anchor_point(ctx.bounds, node.value.anchor);
@@ -147,7 +180,7 @@ impl RenderNode {
                     * kurbo::Affine::scale_non_uniform(f64::from(scale_x), f64::from(scale_y))
                     * kurbo::Affine::translate((-center.x, -center.y));
                 node.child
-                    .flush(renderer, ctx.child(transform, ctx.bounds), env);
+                    .flush(renderer, ctx.child(transform, ctx.bounds), env, transform);
             }
             Self::Rotation(node) => {
                 let center = anchor_point(ctx.bounds, node.value.anchor);
@@ -160,7 +193,7 @@ impl RenderNode {
                     * kurbo::Affine::rotate(radians)
                     * kurbo::Affine::translate((-center.x, -center.y));
                 node.child
-                    .flush(renderer, ctx.child(transform, ctx.bounds), env);
+                    .flush(renderer, ctx.child(transform, ctx.bounds), env, transform);
             }
             Self::Offset(node) => {
                 let offset_x = renderer.resolve_animated_scalar_with_discriminator(
@@ -174,7 +207,7 @@ impl RenderNode {
                 let transform =
                     kurbo::Affine::translate((f64::from(offset_x), f64::from(offset_y)));
                 node.child
-                    .flush(renderer, ctx.child(transform, ctx.bounds), env);
+                    .flush(renderer, ctx.child(transform, ctx.bounds), env, transform);
             }
             Self::Dynamic(node) => {
                 if node.apply_pending_mid_pass(renderer) {
@@ -193,12 +226,17 @@ impl RenderNode {
                         .borrow_mut()
                         .layout(renderer, &node.env, safe_area, proposal, size);
                 }
-                node.child.borrow().flush(renderer, ctx, env);
+                node.child
+                    .borrow()
+                    .flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
             }
-            Self::Retain(node) => node.child.flush(renderer, ctx, env),
+            Self::Retain(node) => node
+                .child
+                .flush(renderer, ctx, env, kurbo::Affine::IDENTITY),
             Self::Env(node) => {
                 renderer.register_modal_scope(&node.env);
-                node.child.flush(renderer, ctx, &node.env);
+                node.child
+                    .flush(renderer, ctx, &node.env, kurbo::Affine::IDENTITY);
             }
             Self::Wrapper(node) => {
                 renderer.push_render_owner(&node.accessibility_identity);
@@ -230,17 +268,17 @@ impl RenderNode {
                     }
                     WrapperEffect::Clip(value) => {
                         HydrolysisRenderer::apply_clip_shape(renderer, ctx, value, |r| {
-                            node.child.flush(r, ctx, child_env);
+                            node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
                         });
                     }
                     WrapperEffect::Border(value) => {
                         HydrolysisRenderer::apply_border(renderer, ctx, child_env, value, |r| {
-                            node.child.flush(r, ctx, child_env);
+                            node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
                         });
                     }
                     WrapperEffect::Shadow(value) => {
                         HydrolysisRenderer::apply_shadow(renderer, ctx, child_env, value, |r| {
-                            node.child.flush(r, ctx, child_env);
+                            node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
                         });
                     }
                     WrapperEffect::Material(runtime) => {
@@ -254,15 +292,16 @@ impl RenderNode {
                             .push(RenderLayer::Material(MaterialLayer {
                                 owner: Rc::clone(&node.core.cell),
                                 runtime: Rc::clone(runtime),
-                                transform: ctx.transform,
+                                transform: ctx.local,
                                 bounds: ctx.bounds,
                                 active_layers: renderer.compositor.active_scene_layers.clone(),
                             }));
-                        node.child.flush(renderer, ctx, child_env);
+                        node.child
+                            .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
                     }
                     WrapperEffect::PopupMenuSurface => {
                         HydrolysisRenderer::apply_popup_menu_surface(renderer, ctx, |r| {
-                            node.child.flush(r, ctx, child_env);
+                            node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
                         });
                     }
                     WrapperEffect::AnchoredOverlay(value) => {
@@ -272,13 +311,14 @@ impl RenderNode {
                             child_env,
                             value,
                             |r| {
-                                node.child.flush(r, ctx, child_env);
+                                node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
                             },
                         );
                     }
                     WrapperEffect::LayoutPriority(_) => {
                         // Layout-only: nothing to apply while drawing.
-                        node.child.flush(renderer, ctx, child_env);
+                        node.child
+                            .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
                     }
                     WrapperEffect::IgnoreSafeArea(_) => {
                         // The mirror of the layout arm: the release layout
@@ -286,20 +326,22 @@ impl RenderNode {
                         // put it — the transform carries the leading/top
                         // overhang so descendants place from the shifted
                         // origin too.
+                        let released = node.released_offsets.get();
                         node.child.flush(
                             renderer,
-                            safe_area::released_ctx(ctx, node.released_offsets.get()),
+                            safe_area::released_ctx(ctx, released),
                             child_env,
+                            kurbo::Affine::translate((-released.leading, -released.top)),
                         );
                     }
                     WrapperEffect::Cursor(value) => {
                         HydrolysisRenderer::apply_cursor(renderer, ctx, value, |r| {
-                            node.child.flush(r, ctx, child_env);
+                            node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
                         });
                     }
                     WrapperEffect::Draggable(value) => {
                         HydrolysisRenderer::apply_draggable(renderer, ctx, value, |r| {
-                            node.child.flush(r, ctx, child_env);
+                            node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
                         });
                     }
                     WrapperEffect::DropDestination(handles) => {
@@ -309,7 +351,7 @@ impl RenderNode {
                             child_env,
                             handles,
                             |r| {
-                                node.child.flush(r, ctx, child_env);
+                                node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
                             },
                         );
                     }
@@ -320,13 +362,13 @@ impl RenderNode {
                             child_env,
                             value,
                             |r| {
-                                node.child.flush(r, ctx, child_env);
+                                node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
                             },
                         );
                     }
                     WrapperEffect::Hittable(value) => {
                         HydrolysisRenderer::apply_hittable(renderer, value, |r| {
-                            node.child.flush(r, ctx, child_env);
+                            node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
                         });
                     }
                     WrapperEffect::OnEvent(handler) => {
@@ -336,13 +378,14 @@ impl RenderNode {
                             child_env,
                             Rc::clone(handler),
                             |r| {
-                                node.child.flush(r, ctx, child_env);
+                                node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
                             },
                         );
                     }
                     WrapperEffect::OnKeyPress(handler) => {
                         renderer.push_key_handler_scope(child_env.clone(), Rc::clone(handler));
-                        node.child.flush(renderer, ctx, child_env);
+                        node.child
+                            .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
                         renderer.pop_key_handler_scope();
                     }
                     WrapperEffect::GestureObserver(effect) => {
@@ -352,13 +395,13 @@ impl RenderNode {
                             child_env,
                             effect,
                             |r, walk_env| {
-                                node.child.flush(r, ctx, walk_env);
+                                node.child.flush(r, ctx, walk_env, kurbo::Affine::IDENTITY);
                             },
                         );
                     }
                     WrapperEffect::Focused(value) => {
                         HydrolysisRenderer::apply_focused(renderer, value, |r| {
-                            node.child.flush(r, ctx, child_env);
+                            node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
                         });
                     }
                     WrapperEffect::LifeCycle(effect) => {
@@ -366,7 +409,8 @@ impl RenderNode {
                         // their initial values before an appear callback changes the
                         // target. Consuming the hook makes this a one-time event on
                         // the retained node; disappear still fires from `Drop`.
-                        node.child.flush(renderer, ctx, child_env);
+                        node.child
+                            .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
                         if let Some(hook) = effect.appear.take() {
                             hook.call();
                         }
@@ -412,7 +456,7 @@ impl RenderNode {
                         content: Rc::clone(&node.content),
                         invalidator: Rc::clone(&node.invalidator),
                         association: Rc::clone(&node.association),
-                        transform: ctx.transform,
+                        transform: ctx.local,
                         bounds: ctx.bounds,
                         active_layers: renderer.compositor.active_scene_layers.clone(),
                     }));
@@ -422,7 +466,6 @@ impl RenderNode {
                 if wants_input {
                     renderer.register_surface_input_target(
                         ctx.bounds,
-                        ctx.hit_transform,
                         Rc::clone(&node.content),
                         #[cfg(feature = "accessibility")]
                         _focus_node,
@@ -462,14 +505,13 @@ impl RenderNode {
                     .push(RenderLayer::GpuContent(GpuContentLayer {
                         owner: Rc::clone(&node.core.cell),
                         runtime: Rc::clone(&node.runtime),
-                        transform: ctx.transform,
+                        transform: ctx.local,
                         bounds: ctx.bounds,
                         active_layers: renderer.compositor.active_scene_layers.clone(),
                     }));
                 if wants_input {
                     renderer.register_surface_input_target(
                         ctx.bounds,
-                        ctx.hit_transform,
                         Rc::clone(&node.runtime),
                         #[cfg(feature = "accessibility")]
                         _focus_node,
@@ -506,7 +548,7 @@ impl RenderNode {
                     .push(RenderLayer::ExternalFrame(ExternalFrameLayer {
                         owner: Rc::clone(&node.core.cell),
                         runtime: Rc::clone(&node.runtime),
-                        transform: ctx.transform,
+                        transform: ctx.local,
                         bounds: ctx.bounds,
                         active_layers: renderer.compositor.active_scene_layers.clone(),
                     }));
@@ -524,7 +566,8 @@ impl RenderNode {
                     renderer.scene_mut().pop_scope();
                 }
                 let children_start = renderer.compositor.render_layers.len();
-                node.child.flush(renderer, ctx, &node.env);
+                node.child
+                    .flush(renderer, ctx, &node.env, kurbo::Affine::IDENTITY);
                 renderer.flush_scene_layer();
                 let children = renderer.compositor.render_layers.split_off(children_start);
                 for layer in &ancestry {
@@ -559,95 +602,82 @@ impl RenderNode {
                 // frame by frame, so this flush paints the field already
                 // clear — `begin_flush` first, metrics after (the order
                 // `List`/`Table` use).
-                let targets_start = node.surface.begin_flush(renderer, &handle);
+                node.surface.begin_flush(renderer, &handle);
                 let metrics = handle.metrics();
-                renderer.with_clip_rect_scope(
-                    1.0,
-                    LayerTransforms {
-                        paint: ctx.transform,
-                        hit: ctx.hit_transform,
-                    },
-                    viewport_rect,
-                    |renderer| {
-                        let scroll_offset =
-                            kurbo::Affine::translate((-metrics.offset_x, -metrics.offset_y));
-                        let content_bounds = kurbo::Rect::new(
-                            0.0,
-                            0.0,
-                            f64::from(node.content_size.width),
-                            f64::from(node.content_size.height),
-                        );
-                        let content_ctx = RenderContext::with_transforms(
-                            content_bounds,
-                            ctx.transform * scroll_offset,
-                            ctx.hit_transform * scroll_offset,
-                        );
-                        // Publish the visible window (in content coordinates) —
-                        // the viewport window grown by the same extension —
-                        // so a virtualized `LazyStack` child builds the rows
-                        // painted inside the extended clip, not just the ones
-                        // inside the laid-out frame.
-                        let horizontal =
-                            node.surface.visible_span(&metrics, ScrollAxis::Horizontal);
-                        let vertical = node.surface.visible_span(&metrics, ScrollAxis::Vertical);
-                        let lazy_viewport = kurbo::Rect::new(
-                            horizontal.start,
-                            vertical.start,
-                            horizontal.end,
-                            vertical.end,
-                        );
-                        // Registered before the content so the content can be parented
-                        // to it: a scroll region owns what it scrolls, and a label on
-                        // the scroll view must reach the node carrying the scroll
-                        // actions rather than a group beside it.
-                        #[cfg(feature = "accessibility")]
-                        let scroll_accessibility_node = {
-                            renderer.push_accessibility_owner(&node.accessibility_identity);
-                            let scroll_accessibility_node =
-                                crate::widgets::scroll::register_scroll_accessibility_node(
-                                    renderer,
-                                    &node.env,
-                                    Some(transformed_rect(ctx.hit_transform, viewport_rect)),
-                                    &handle,
-                                    metrics,
-                                    node.axis,
-                                );
-                            renderer.pop_accessibility_owner();
-                            if let Some(scroll_accessibility_node) = scroll_accessibility_node {
-                                renderer.push_accessibility_parent(scroll_accessibility_node);
-                            }
-                            scroll_accessibility_node
-                        };
-                        // The wheel/trackpad target registers before the content
-                        // flushes: dispatch walks the frame's targets newest-first, so
-                        // a scroll region nested inside this one — registered by the
-                        // child below — wins the delta until it hits its own edge.
-                        crate::widgets::scroll::register_scroll_wheel_target(
-                            renderer,
-                            ctx.hit_transform,
-                            viewport_rect,
-                            &handle,
-                        );
-                        renderer.push_lazy_viewport(crate::renderer::lifecycle::LazyViewport {
-                            bounds: lazy_viewport,
-                            transform: content_ctx.transform,
-                        });
-                        node.child.flush(renderer, content_ctx, env);
-                        renderer.pop_lazy_viewport("hydrolysis render tree ScrollNode");
-                        #[cfg(feature = "accessibility")]
-                        if scroll_accessibility_node.is_some() {
-                            renderer.pop_accessibility_parent();
+                renderer.with_clip_rect_scope(1.0, ctx.local, viewport_rect, |renderer| {
+                    let scroll_offset =
+                        kurbo::Affine::translate((-metrics.offset_x, -metrics.offset_y));
+                    let content_bounds = kurbo::Rect::new(
+                        0.0,
+                        0.0,
+                        f64::from(node.content_size.width),
+                        f64::from(node.content_size.height),
+                    );
+                    let content_ctx = RenderContext {
+                        local: ctx.local * scroll_offset,
+                        bounds: content_bounds,
+                    };
+                    // Publish the visible window (in content coordinates) —
+                    // the viewport window grown by the same extension —
+                    // so a virtualized `LazyStack` child builds the rows
+                    // painted inside the extended clip, not just the ones
+                    // inside the laid-out frame.
+                    let horizontal = node.surface.visible_span(&metrics, ScrollAxis::Horizontal);
+                    let vertical = node.surface.visible_span(&metrics, ScrollAxis::Vertical);
+                    let lazy_viewport = kurbo::Rect::new(
+                        horizontal.start,
+                        vertical.start,
+                        horizontal.end,
+                        vertical.end,
+                    );
+                    // Registered before the content so the content can be parented
+                    // to it: a scroll region owns what it scrolls, and a label on
+                    // the scroll view must reach the node carrying the scroll
+                    // actions rather than a group beside it.
+                    #[cfg(feature = "accessibility")]
+                    let scroll_accessibility_node = {
+                        renderer.push_accessibility_owner(&node.accessibility_identity);
+                        let scroll_accessibility_node =
+                            crate::widgets::scroll::register_scroll_accessibility_node(
+                                renderer,
+                                &node.env,
+                                Some(viewport_rect),
+                                &handle,
+                                metrics,
+                                node.axis,
+                            );
+                        renderer.pop_accessibility_owner();
+                        if let Some(scroll_accessibility_node) = scroll_accessibility_node {
+                            renderer.push_accessibility_parent(scroll_accessibility_node);
                         }
-                    },
-                );
+                        scroll_accessibility_node
+                    };
+                    // The wheel/trackpad target registers before the content
+                    // flushes: dispatch walks the frame's targets newest-first, so
+                    // a scroll region nested inside this one — registered by the
+                    // child below — wins the delta until it hits its own edge.
+                    crate::widgets::scroll::register_scroll_wheel_target(
+                        renderer,
+                        viewport_rect,
+                        &handle,
+                    );
+                    renderer.push_lazy_viewport(crate::renderer::lifecycle::LazyViewport {
+                        bounds: lazy_viewport,
+                        transform: content_ctx.local,
+                    });
+                    node.child.flush(renderer, content_ctx, env, scroll_offset);
+                    renderer.pop_lazy_viewport("hydrolysis render tree ScrollNode");
+                    #[cfg(feature = "accessibility")]
+                    if scroll_accessibility_node.is_some() {
+                        renderer.pop_accessibility_parent();
+                    }
+                });
                 // The focused-field clearance reads this frame's input
                 // targets — the child's flush above just emitted them.
-                node.surface.end_flush(renderer, &handle, targets_start);
+                node.surface.end_flush(renderer, &handle);
                 // The indicators ride the surface's own frame, not the
                 // extended clip: they stay visible at the avoided edge.
-                let scroll_ctx =
-                    RenderContext::with_transforms(ctx.bounds, ctx.transform, ctx.hit_transform);
-                let mut widget_ctx = WidgetRenderContext::new(renderer, scroll_ctx, None);
+                let mut widget_ctx = WidgetRenderContext::new(renderer, ctx, None);
                 crate::widgets::draw_scroll_indicators(
                     &mut widget_ctx,
                     &node.env,
@@ -839,7 +869,6 @@ impl RenderNode {
                     // `.focused`), not a hit rect.
                     renderer.register_surface_input_target(
                         kurbo::Rect::ZERO,
-                        kurbo::Affine::IDENTITY,
                         Rc::clone(&node.content),
                         focus_node,
                     );
@@ -867,7 +896,6 @@ impl RenderNode {
                 if wants_input {
                     renderer.register_surface_input_target(
                         kurbo::Rect::ZERO,
-                        kurbo::Affine::IDENTITY,
                         Rc::clone(&node.runtime),
                         focus_node,
                     );
@@ -970,14 +998,15 @@ fn flush_navigation_transition_element(
     id: RawId,
 ) {
     if !renderer.begin_navigation_element_capture() {
-        child.flush(renderer, ctx, env);
+        child.flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
         return;
     }
-    let layers = renderer.capture_layers(|renderer| child.flush(renderer, ctx, env));
+    let layers = renderer
+        .capture_layers(|renderer| child.flush(renderer, ctx, env, kurbo::Affine::IDENTITY));
     renderer.finish_navigation_element_capture(
         source,
         id,
-        transformed_rect(ctx.transform, ctx.bounds),
+        transformed_rect(ctx.local, ctx.bounds),
         layers,
     );
 }

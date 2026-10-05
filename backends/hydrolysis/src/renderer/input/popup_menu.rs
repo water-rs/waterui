@@ -70,6 +70,8 @@ pub fn window_in_opening_environment(mut window: Window, env: &Environment) -> W
 #[derive(Clone)]
 pub struct ContextMenuTarget {
     pub(crate) bounds: kurbo::Rect,
+    /// The node cell that registered the target.
+    pub(crate) owner: std::rc::Weak<crate::renderer::NodeCell>,
     pub(crate) depth: usize,
     pub(crate) order: usize,
     pub(crate) items: nami::Computed<Vec<ResolvedMenuItem>>,
@@ -1560,20 +1562,20 @@ impl SemanticCore {
         preview: Rc<RefCell<Option<RetainedSubview>>>,
         accessory: Rc<RefCell<Option<RetainedSubview>>>,
     ) {
-        if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
-            return;
-        }
-        let order = self.hit_test.next_hit_test_order();
-        let bounds = self.hit_test.clip_hit_bounds(bounds);
-        self.hit_test.context_menu_targets.push(ContextMenuTarget {
+        self.register_retained(
+            ContextMenuTarget {
+                owner: std::rc::Weak::new(),
+                bounds,
+                depth,
+                order: 0,
+                items,
+                env: env.clone(),
+                dismiss_requests,
+                preview,
+                accessory,
+            },
             bounds,
-            depth,
-            order,
-            items,
-            env: env.clone(),
-            dismiss_requests,
-            preview,
-            accessory,
-        });
+            |regs| &mut regs.context_menu_targets,
+        );
     }
 }

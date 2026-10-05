@@ -100,15 +100,20 @@ pub fn window_root_layout(
 /// The [`RenderContext`] the window tree flushes under: `bounds` inset to the
 /// safe area, with the content rect's origin folded into the transforms so
 /// placement, drawing and hit-testing all agree the window begins at (0, 0).
+/// Returns the [`RenderContext`] plus `hit_delta`, the root node's
+/// placement transform in hit space: `hit_transform * shift`, the hit-space
+/// composition of the content-rect origin the paint transform folds in.
 fn safe_area_context(
     content: kurbo::Rect,
     transform: kurbo::Affine,
     hit_transform: kurbo::Affine,
-) -> RenderContext {
+) -> (RenderContext, kurbo::Affine) {
     let shift = kurbo::Affine::translate((content.x0, content.y0));
-    RenderContext::with_transforms(
-        kurbo::Rect::new(0.0, 0.0, content.width(), content.height()),
-        transform * shift,
+    (
+        RenderContext {
+            local: transform * shift,
+            bounds: kurbo::Rect::new(0.0, 0.0, content.width(), content.height()),
+        },
         hit_transform * shift,
     )
 }
@@ -304,7 +309,6 @@ impl SemanticCore {
     /// pump runs this after the structural patch, so state the patch orphaned
     /// drops in the renderer's teardown order rather than ahead of it.
     fn reset_semantic_scene(&mut self) {
-        self.hit_test.reset_scene();
         self.gesture_engine.clear_targets();
         self.text_editing.text_input_targets.clear();
         self.state.measurement.reset_counters();
@@ -368,6 +372,7 @@ impl SemanticCore {
     /// Releasing in the renderer's order is what exposes same-manager watcher
     /// re-entrancy (water-rs/waterui#1213) to `#[waterui::test]`.
     fn finish_semantic_emit_frame(&mut self, tree: &RenderNode, structural_change: bool) {
+        self.registries();
         self.hit_test
             .finish_rebuild_frame(&self.text_editing.text_input_targets);
         self.navigation.finish_rebuild_frame();
@@ -419,7 +424,11 @@ impl SemanticCore {
         let _ = self.signals.take_patch_request();
         let live_dynamics = tree.collect_dynamic_identities();
         #[cfg(feature = "accessibility")]
-        tree.emit_accessibility(self, env);
+        {
+            self.begin_emit_pass();
+            tree.emit_accessibility(self, env);
+            self.finish_emit_pass();
+        }
         self.render_tree = Some(tree);
         self.finish_semantic_rebuild_frame(&live_dynamics);
         self.finish_rebuild();
@@ -458,7 +467,11 @@ impl SemanticCore {
         // measurement cache before the walk.
         self.state.measurement.begin_frame();
         #[cfg(feature = "accessibility")]
-        tree.emit_accessibility(self, _env);
+        {
+            self.begin_emit_pass();
+            tree.emit_accessibility(self, _env);
+            self.finish_emit_pass();
+        }
         self.finish_semantic_emit_frame(&tree, structural_change);
         self.render_tree = Some(tree);
         true
@@ -522,7 +535,7 @@ impl HydrolysisRenderer {
         #[cfg(feature = "frame-profile")]
         let update_started_at = Instant::now();
         self.set_window_viewport(bounds, transform);
-        let ctx = safe_area_context(content_rect, transform, hit_transform);
+        let (ctx, hit_delta) = safe_area_context(content_rect, transform, hit_transform);
         // The tree is built once and persists. A later "rebuild" request reuses
         // it — applying pending Dynamic patches, relaying out, and re-flushing —
         // rather than rebuilding (which would re-connect each `Dynamic`, and a
@@ -548,8 +561,18 @@ impl HydrolysisRenderer {
             }
             #[cfg(feature = "frame-profile")]
             let encode_started_at = Instant::now();
-            tree.flush(self, ctx, env);
-            self.render_anchored_overlays(transform, &safe_area);
+            self.core.begin_emit_pass();
+            // Window-level registrations — payloads emitted with no
+            // enclosing node — record under the root's own record.
+            let root = self.core.root_core.clone();
+            self.with_reader(&root, ReaderPhase::Record, |renderer| {
+                tree.flush(renderer, ctx, env, hit_delta);
+            });
+            let host = self.core.presentation_hosts.anchored.clone();
+            self.with_reader(&host, ReaderPhase::Record, |renderer| {
+                renderer.render_anchored_overlays(transform, &safe_area);
+            });
+            self.core.finish_emit_pass();
             #[cfg(feature = "frame-profile")]
             {
                 self.frame_stage_times.encode += encode_started_at.elapsed();
@@ -580,8 +603,16 @@ impl HydrolysisRenderer {
         }
         #[cfg(feature = "frame-profile")]
         let encode_started_at = Instant::now();
-        node.flush(self, ctx, env);
-        self.render_anchored_overlays(transform, &safe_area);
+        self.core.begin_emit_pass();
+        let root = self.core.root_core.clone();
+        self.with_reader(&root, ReaderPhase::Record, |renderer| {
+            node.flush(renderer, ctx, env, hit_delta);
+        });
+        let host = self.core.presentation_hosts.anchored.clone();
+        self.with_reader(&host, ReaderPhase::Record, |renderer| {
+            renderer.render_anchored_overlays(transform, &safe_area);
+        });
+        self.core.finish_emit_pass();
         #[cfg(feature = "frame-profile")]
         {
             self.frame_stage_times.encode += encode_started_at.elapsed();
@@ -659,26 +690,47 @@ impl HydrolysisRenderer {
         let encode_span = tracing::debug_span!("hydrolysis_scene_encode").entered();
         #[cfg(feature = "frame-profile")]
         let encode_started_at = Instant::now();
-        let ctx = safe_area_context(content_rect, transform, hit_transform);
-        tree.flush(self, ctx, env);
+        let (ctx, hit_delta) = safe_area_context(content_rect, transform, hit_transform);
+        self.core.begin_emit_pass();
+        // Window-level registrations — payloads emitted with no
+        // enclosing node — record under the root's own record.
+        let root = self.core.root_core.clone();
+        self.with_reader(&root, ReaderPhase::Record, |renderer| {
+            tree.flush(renderer, ctx, env, hit_delta);
+        });
         // The overlay-mode text context menu re-encodes with the frame it floats
         // over; drawing it only on the one-time build path would leave it visible
-        // for a single frame.
-        self.render_active_text_context_menu_overlay(env, transform);
+        // for a single frame. Each presentation records under its host cell, so
+        // its registrations retire when the host re-records or closes.
+        let host = self.core.presentation_hosts.text_overlay.clone();
+        self.with_reader(&host, ReaderPhase::Record, |renderer| {
+            renderer.render_active_text_context_menu_overlay(env, transform);
+        });
         // Same for an open `.context_menu` presentation: its dim backdrop,
         // lifted preview and anchored accessory re-encode per frame and the
         // pass is where dismiss_requests/menu-close is observed.
-        self.render_context_menu_presentation(transform, &safe_area);
+        let host = self.core.presentation_hosts.context_menu.clone();
+        self.with_reader(&host, ReaderPhase::Record, |renderer| {
+            renderer.render_context_menu_presentation(transform, &safe_area);
+        });
         // Anchored overlays (`.anchored_overlay`) draw above all content: the
         // flush registered each anchor's live bounds, so the placement
         // contract re-runs per frame and the overlay follows moves/resizes.
-        self.render_anchored_overlays(transform, &safe_area);
+        let host = self.core.presentation_hosts.anchored.clone();
+        self.with_reader(&host, ReaderPhase::Record, |renderer| {
+            renderer.render_anchored_overlays(transform, &safe_area);
+        });
+        self.core.finish_emit_pass();
         self.flush_scene_layer();
         drop(encode_span);
         #[cfg(feature = "frame-profile")]
         {
             self.frame_stage_times.encode += encode_started_at.elapsed();
         }
+        self.core.registries();
+        // The materialized platform-view placements write into their tables
+        // once, here at frame end — never mid-materialization.
+        self.core.record_platform_views();
         self.core
             .hit_test
             .finish_rebuild_frame(&self.core.text_editing.text_input_targets);

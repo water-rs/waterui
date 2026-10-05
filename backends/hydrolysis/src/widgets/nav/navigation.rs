@@ -9,7 +9,7 @@ use crate::renderer::{
     RetainedSubview, WidgetRenderContext, measure_navigation_view_intrinsic,
     measure_owned_navigation_view_with_proposal, measure_transient_view_with_proposal,
     navigation_back_button_rect, navigation_base_bar_height_for_display_mode,
-    normalize_layout_view, split_compact_threshold, transformed_rect,
+    normalize_layout_view, split_compact_threshold,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -290,7 +290,7 @@ pub fn navigation_view_accessibility(
                         title_y0 + title_height,
                     );
                     let title_bounds = (title_rect.width() > 0.0 && title_rect.height() > 0.0)
-                        .then(|| transformed_rect(ctx.hit_transform, title_rect));
+                        .then_some(title_rect);
                     // The subtitle sits under the title inside `title_rect`,
                     // positioned by the same split the suppressed flush draws at.
                     let subtitle_bounds = if state.subtitle_present {
@@ -303,15 +303,11 @@ pub fn navigation_view_accessibility(
                         let (_, subtitle_rect) =
                             title_and_subtitle_rects(title_rect, title_size, subtitle_size);
                         (subtitle_rect.width() > 0.0 && subtitle_rect.height() > 0.0)
-                            .then(|| transformed_rect(ctx.hit_transform, subtitle_rect))
+                            .then_some(subtitle_rect)
                     } else {
                         None
                     };
-                    (
-                        Some(transformed_rect(ctx.hit_transform, bar_rect)),
-                        title_bounds,
-                        subtitle_bounds,
-                    )
+                    (Some(bar_rect), title_bounds, subtitle_bounds)
                 });
         let mut bar_node =
             AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
@@ -1548,14 +1544,11 @@ fn render_compact_split(
                 theme.draw_navigation_back_button(&mut *draw, back_rect);
             });
         }
-        let hit_transform = ctx.hit_transform;
-        ctx.renderer_mut().register_pointer_target(
-            transformed_rect(hit_transform, back_rect),
-            move |_renderer, _point, _| {
+        ctx.renderer_mut()
+            .register_pointer_target(back_rect, move |_renderer, _point, _| {
                 selection.set(None);
                 true
-            },
-        );
+            });
     }
 }
 
@@ -1775,11 +1768,10 @@ fn render_navigation_page_scene(
         );
         renderer.present_layers(&page_layers, kurbo::Affine::IDENTITY);
         if identity != 0 {
-            let context = RenderContext::with_transforms(
+            let context = RenderContext {
+                local: kurbo::Affine::IDENTITY,
                 bounds,
-                kurbo::Affine::IDENTITY,
-                kurbo::Affine::IDENTITY,
-            );
+            };
             let theme = renderer.theme();
             renderer.draw_context(context, |draw| {
                 theme.draw_navigation_back_button(
@@ -1862,10 +1854,7 @@ pub fn navigation_stack_accessibility(
                 let metrics = theme
                     .expect("rendered navigation stack accessibility passes the theme")
                     .navigation_metrics();
-                let back_bounds = transformed_rect(
-                    ctx.hit_transform,
-                    navigation_back_button_rect(ctx.bounds, metrics),
-                );
+                let back_bounds = navigation_back_button_rect(ctx.bounds, metrics);
                 let _ = renderer.register_accessibility_node(
                     back_node,
                     back_bounds,
@@ -1990,13 +1979,13 @@ pub fn render_navigation_stack_parts(
 
     // Pages are recorded in their own local space and replayed at the stack's
     // transform; the hit targets and accessibility bounds a page registers
-    // while it records are live, so they take the stack's hit placement.
+    // while it records are live, so they anchor at the stack's placement —
+    // the inactive ones under their unhittable scope, which gates them out.
     let page_placement = CapturedScenePlacement {
         size: LayoutSize::new(
             crate::num_cast::f64_as_f32(ctx.bounds.width()),
             crate::num_cast::f64_as_f32(ctx.bounds.height()),
         ),
-        hit_transform: ctx.hit_transform,
     };
     // A captured page is chrome-hosted content: it inherits the stack's
     // boundaries, so a scroll surface inside a page extends to the window
@@ -2005,7 +1994,7 @@ pub fn render_navigation_stack_parts(
     let page_area = ctx.content_area_for(ctx.bounds);
     let background = state.borrow().background();
     let background = Paint::Solid(ctx.renderer_mut().read_signal(&background));
-    let transform = ctx.transform;
+    let transform = ctx.local;
     // §7.1 "Chrome": the stack's backdrop paints what the pages paint —
     // `chrome_paint_bounds`, the same reach the transition page clips
     // cover — so a bar surface extended to the window edge never lands on
@@ -2284,8 +2273,11 @@ pub fn render_navigation_stack_parts(
         (ctx.bounds.x0 + metrics.back_button_size).min(ctx.bounds.x1),
         ctx.bounds.y1,
     );
-    let edge_hit_rect = transformed_rect(ctx.hit_transform, edge_rect);
-    let inverse_hit_transform = ctx.hit_transform.inverse();
+    // The edge-gesture point lands in window space and `edge_rect` is
+    // node-local: resolve the inverse through the region's live placement
+    // at invoke time — a mid-transition re-record leaves the recorded
+    // transform stale.
+    let placement = ctx.renderer_mut().current_placement();
     let active_scene_for_gesture = active_scene;
     let previous_scene_for_gesture = previous_scene;
     let navigation_width = ctx.bounds.width();
@@ -2300,10 +2292,9 @@ pub fn render_navigation_stack_parts(
         .expect("Hydrolysis navigation slot missing")
         .controller
         .clone();
-    ctx.renderer_mut().register_pointer_drag_target(
-        edge_hit_rect,
-        move |renderer, point, pop_env| {
-            let point = inverse_hit_transform * point;
+    ctx.renderer_mut()
+        .register_pointer_drag_target(edge_rect, move |renderer, point, pop_env| {
+            let point = placement.resolved_transform(true).inverse() * point;
             let starting = renderer
                 .navigation
                 .slots
@@ -2340,10 +2331,10 @@ pub fn render_navigation_stack_parts(
                 .as_mut()
                 .expect("Hydrolysis interactive pop must exist while dragging")
                 .update(point.x)
-        },
-    );
+        });
     ctx.renderer_mut().register_back_target(
         crate::renderer::navigation_state::NavigationBackTarget {
+            owner: std::rc::Weak::new(),
             slot_key: slot_key.clone(),
             width: navigation_width,
             from_scene: back_from_scene,
@@ -2353,8 +2344,7 @@ pub fn render_navigation_stack_parts(
     );
 
     let back_button_rect = navigation_back_button_rect(ctx.bounds, metrics);
-    let hit_transform = ctx.hit_transform;
-    let back_hit_rect = transformed_rect(hit_transform, back_button_rect);
+    let back_hit_rect = back_button_rect;
     let back_interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
     let (_, back_press_slot, _) = ctx.renderer_mut().bind_control_interaction_target(
         back_interaction_key,

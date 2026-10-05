@@ -2,7 +2,7 @@
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
-    measure_date_picker_intrinsic, transformed_rect,
+    measure_date_picker_intrinsic,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -104,7 +104,7 @@ pub fn date_picker_accessibility(
             node.add_action(AccessibilityAction::SetValue);
         }
         let origin = ctx.map(|ctx| {
-            let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+            let bounds = ctx.bounds;
             waterui_core::layout::Point::new(
                 crate::num_cast::f64_as_f32(bounds.x0),
                 crate::num_cast::f64_as_f32(bounds.y1),
@@ -279,12 +279,13 @@ pub fn render_date_picker_parts(
             .clamp(*range.start(), *range.end()),
     );
 
-    let hit_bounds = transformed_rect(ctx.hit_transform, field_bounds);
+    let hit_bounds = field_bounds;
     let (interaction, press_slot, _) =
         ctx.renderer_mut()
             .bind_interaction_target(interaction_key, hit_bounds, env);
     {
-        let interaction = local_interaction_state(interaction, ctx.hit_transform);
+        let interaction =
+            local_interaction_state(interaction, ctx.renderer_mut().current_hit_transform());
         ctx.draw_context(|draw| {
             theme.draw_input_field(&mut *draw, field_bounds, interaction);
             theme.draw_picker_indicator(&mut *draw, field_bounds);

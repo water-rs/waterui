@@ -429,7 +429,6 @@ impl RenderNode {
         });
     }
 
-
     #[expect(
         clippy::too_many_lines,
         reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"

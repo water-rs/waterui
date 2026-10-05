@@ -75,6 +75,8 @@ pub trait EmbeddedInputSink {
 
 #[derive(Clone)]
 pub struct EmbeddedInputTarget {
+    /// The node cell that registered the target.
+    pub(crate) owner: std::rc::Weak<crate::renderer::NodeCell>,
     /// The surface owner's interaction identity — what keyboard focus and a
     /// `.focused(binding)` write address the surface by.
     pub(crate) interaction_key: InteractionKey,
@@ -299,10 +301,10 @@ impl<R: SurfaceInputReceiver> EmbeddedInputSink for SurfaceInputSink<R> {
 impl SemanticCore {
     /// Registers an embedded input target at a laid-out surface's bounds.
     ///
-    /// `transform` maps `local_bounds` into window hit-test space, which is
-    /// already logical: the projection back through its inverse is exactly the
-    /// logical surface-local position the sink is contracted to receive, with
-    /// no display-scale division anywhere on the path.
+    /// The retained record resolves `local_bounds` through the registering
+    /// node's placement chain: the projection back through its inverse is
+    /// exactly the logical surface-local position the sink is contracted to
+    /// receive, with no display-scale division anywhere on the path.
     ///
     /// `interaction_key` is the surface owner's interaction identity — what
     /// keyboard focus and a `.focused(binding)` write address the surface by.
@@ -311,43 +313,29 @@ impl SemanticCore {
     pub(crate) fn register_embedded_input_target(
         &mut self,
         local_bounds: kurbo::Rect,
-        transform: kurbo::Affine,
         sink: Rc<dyn EmbeddedInputSink>,
         interaction_key: InteractionKey,
         #[cfg(feature = "accessibility")] accessibility_node_id: Option<AccessibilityNodeId>,
     ) {
-        if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
-            return;
-        }
-        let determinant = transform.determinant();
-        assert!(
-            determinant.is_finite() && determinant.abs() > f64::EPSILON,
-            "embedded surface input transform must be finite and invertible"
-        );
-        let order = self.hit_test.next_hit_test_order();
-        tracing::trace!(
-            target: "waterui::hydrolysis::input",
-            bounds = ?local_bounds,
-            window_bounds = ?transform.transform_rect_bbox(local_bounds),
-            order,
-            "registered an embedded surface input target"
-        );
         let key_handlers = self.snapshot_key_handlers();
-        self.hit_test
-            .embedded_input_targets
-            .push(EmbeddedInputTarget {
+        self.register_retained(
+            EmbeddedInputTarget {
+                owner: std::rc::Weak::new(),
                 interaction_key,
                 local_bounds,
-                hit_clip: self.hit_test.hit_clip_stack.last().copied(),
-                inverse_transform: transform.inverse(),
+                hit_clip: None,
+                inverse_transform: kurbo::Affine::IDENTITY,
                 depth: self.render_depth,
-                order,
+                order: 0,
                 sink,
                 key_handlers,
                 focus_binding: None,
                 #[cfg(feature = "accessibility")]
                 accessibility_node_id,
-            });
+            },
+            local_bounds,
+            |regs| &mut regs.embedded_input_targets,
+        );
     }
 
     /// Registers a surface whose drawing asked for input: an embedded
@@ -359,14 +347,12 @@ impl SemanticCore {
     pub(crate) fn register_surface_input_target<R: SurfaceInputReceiver + 'static>(
         &mut self,
         local_bounds: kurbo::Rect,
-        transform: kurbo::Affine,
         receiver: Rc<RefCell<R>>,
         #[cfg(feature = "accessibility")] focus_node: Option<AccessibilityNodeId>,
     ) {
         let interaction_key = InteractionKey::for_rc(&receiver, 0);
         self.register_embedded_input_target(
             local_bounds,
-            transform,
             Rc::new(SurfaceInputSink::new(receiver)),
             interaction_key,
             #[cfg(feature = "accessibility")]
@@ -624,6 +610,9 @@ impl SemanticCore {
         reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
     )]
     pub(crate) fn set_focused_embedded_key(&mut self, focused: Option<InteractionKey>) -> bool {
+        // See `set_focused_text_input_key`: mid-flush focus moves resolve
+        // against registered machinery, not last frame's staged lists.
+        self.registries();
         let previous = self.hit_test.focused_embedded_key.clone();
         if previous == focused {
             return false;

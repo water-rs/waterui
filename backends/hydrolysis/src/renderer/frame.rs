@@ -7,15 +7,6 @@ use super::*;
 use kurbo::Shape as _;
 
 /// The two transforms a clip layer is pushed under: `paint` positions the
-/// scene layer's clip, `hit` positions the matching hit-test clip — they diverge
-/// where paint and hit spaces differ (e.g. a filter-atlas capture paints into
-/// slot space but keeps window hit space).
-#[derive(Clone, Copy)]
-pub struct LayerTransforms {
-    pub(crate) paint: kurbo::Affine,
-    pub hit: kurbo::Affine,
-}
-
 /// What one frame's window pass was made of.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RenderLayerStats {
@@ -170,9 +161,8 @@ impl SemanticCore {
     #[cfg(feature = "accessibility")]
     pub(crate) fn emitted_node_is_live(&self, node: AccessibilityNodeId) -> bool {
         self.accessibility
-            .nodes
-            .iter()
-            .any(|(id, emitted)| *id == node && !emitted.is_hidden() && !emitted.is_disabled())
+            .node(node)
+            .is_some_and(|emitted| !emitted.is_hidden() && !emitted.is_disabled())
     }
 
     pub fn request_redraw(&self) {
@@ -287,8 +277,11 @@ impl HydrolysisRenderer {
     }
 
     /// Drops the recorded scene and the hit-test state derived from it.
+    ///
+    /// The hit registries are retained: clearing them would lose what the
+    /// kept nodes own — materialization rebuilds the flat lists, so only
+    /// the gesture engine's per-frame target list drains here.
     pub fn reset_scene(&mut self) {
-        self.hit_test.reset_scene();
         self.gesture_engine.clear_targets();
         self.text_editing.text_input_targets.clear();
         self.scene.reset();
@@ -323,6 +316,12 @@ impl HydrolysisRenderer {
         self.compositor.active_scene_layers.clear();
         #[cfg(feature = "accessibility")]
         self.accessibility.begin_rebuild_frame();
+        // The frame's window-level record: registrations emitted with no
+        // enclosing node — test-side binds and transient passes alike —
+        // attribute to the root's own record, closed in
+        // `finish_rebuild_frame`.
+        let root = self.core.root_core.clone();
+        self.core.enter_reader(&root, ReaderPhase::Record, true);
     }
 
     pub(crate) fn begin_redraw_frame(&mut self) {
@@ -364,6 +363,16 @@ impl HydrolysisRenderer {
             .unwrap_or_default();
         self.prune_dynamic_measurements(&live_dynamics);
 
+        // The frame's window-level record closes before materialization:
+        // the leave retires every subtree the root record left unplaced,
+        // so the flat lists rebuild against the post-retire registries.
+        self.core.leave_reader(None);
+
+        self.core.registries();
+        // Same frame-end record `flush_window_tree` runs: the first-frame
+        // build ends here, not in the flush tail, and the placements it
+        // registered publish only through this drain.
+        self.core.record_platform_views();
         self.validate_focused_text_input_after_flush();
 
         self.core
@@ -390,13 +399,13 @@ impl HydrolysisRenderer {
         ctx: RenderContext,
         body: impl FnOnce(&mut waterui_graphics::draw::Recorder),
     ) {
-        self.scene.record_picture(ctx.transform, body);
+        self.scene.record_picture(ctx.local, body);
     }
 
     pub(crate) fn push_layer_rect(
         &mut self,
         alpha: f32,
-        transforms: LayerTransforms,
+        transform: kurbo::Affine,
         rect: kurbo::Rect,
     ) {
         self.record_clip_layer_push();
@@ -404,17 +413,21 @@ impl HydrolysisRenderer {
             peniko::Fill::NonZero,
             peniko::BlendMode::default(),
             alpha,
-            transforms.paint,
+            transform,
             &rect,
         );
-        // The same clip paint uses bounds the hit regions flushed inside the
-        // layer: a row straddling a scroll viewport keeps only the part of its
-        // hit bounds that is actually painted (water-rs/hydrolysis#252).
-        self.hit_test
-            .push_hit_clip(transformed_rect(transforms.hit, rect));
+        // The same clip paint bounds the hit regions flushed inside the
+        // layer: a row straddling a scroll viewport keeps only the part of
+        // its hit bounds that is actually painted (water-rs/hydrolysis#252).
+        // The placement scope carries it — resolve intersects the clip
+        // chain instead of a per-frame hit-clip stack — and `transform`
+        // (the space the children record into, here the recording's
+        // accumulated local) so the scope resolves where they draw; the
+        // layer's alpha gates their hit tests the way it fades their paint.
+        self.push_placement_scope(transform, Some(rect), alpha);
         self.compositor.active_scene_layers.push(ActiveSceneLayer {
             alpha,
-            transform: transforms.paint,
+            transform,
             shape: LayerShape::Rect(rect),
         });
     }
@@ -422,7 +435,7 @@ impl HydrolysisRenderer {
     pub(super) fn push_layer_path(
         &mut self,
         alpha: f32,
-        transforms: LayerTransforms,
+        transform: kurbo::Affine,
         path: kurbo::BezPath,
     ) {
         self.record_clip_layer_push();
@@ -430,14 +443,13 @@ impl HydrolysisRenderer {
             peniko::Fill::NonZero,
             peniko::BlendMode::default(),
             alpha,
-            transforms.paint,
+            transform,
             &path,
         );
-        self.hit_test
-            .push_hit_clip(transformed_rect(transforms.hit, path.bounding_box()));
+        self.push_placement_scope(transform, Some(path.bounding_box()), alpha);
         self.compositor.active_scene_layers.push(ActiveSceneLayer {
             alpha,
-            transform: transforms.paint,
+            transform,
             shape: LayerShape::Path(path),
         });
     }
@@ -445,7 +457,7 @@ impl HydrolysisRenderer {
     pub(super) fn push_layer_rounded_rect(
         &mut self,
         alpha: f32,
-        transforms: LayerTransforms,
+        transform: kurbo::Affine,
         path: kurbo::BezPath,
         rect: kurbo::Rect,
         corner_width: f64,
@@ -456,14 +468,13 @@ impl HydrolysisRenderer {
             peniko::Fill::NonZero,
             peniko::BlendMode::default(),
             alpha,
-            transforms.paint,
+            transform,
             &path,
         );
-        self.hit_test
-            .push_hit_clip(transformed_rect(transforms.hit, rect));
+        self.push_placement_scope(transform, Some(rect), alpha);
         self.compositor.active_scene_layers.push(ActiveSceneLayer {
             alpha,
-            transform: transforms.paint,
+            transform,
             shape: LayerShape::RoundedRect {
                 path,
                 rect,
@@ -479,7 +490,7 @@ impl HydrolysisRenderer {
             .active_scene_layers
             .pop()
             .expect("hydrolysis renderer: pop_layer underflow");
-        self.hit_test.pop_hit_clip();
+        self.pop_placement_scope();
     }
 
     /// Opens a rect clip/opacity scope on the recording, runs `f` inside it,
@@ -489,11 +500,11 @@ impl HydrolysisRenderer {
     pub(crate) fn with_clip_rect_scope(
         &mut self,
         alpha: f32,
-        transforms: LayerTransforms,
+        transform: kurbo::Affine,
         rect: kurbo::Rect,
         f: impl FnOnce(&mut Self),
     ) {
-        self.push_layer_rect(alpha, transforms, rect);
+        self.push_layer_rect(alpha, transform, rect);
         f(self);
         self.pop_layer();
     }
@@ -502,11 +513,11 @@ impl HydrolysisRenderer {
     pub(super) fn with_clip_path_scope(
         &mut self,
         alpha: f32,
-        transforms: LayerTransforms,
+        transform: kurbo::Affine,
         path: kurbo::BezPath,
         f: impl FnOnce(&mut Self),
     ) {
-        self.push_layer_path(alpha, transforms, path);
+        self.push_layer_path(alpha, transform, path);
         f(self);
         self.pop_layer();
     }
@@ -516,14 +527,14 @@ impl HydrolysisRenderer {
     pub(super) fn with_clip_rounded_rect_scope(
         &mut self,
         alpha: f32,
-        transforms: LayerTransforms,
+        transform: kurbo::Affine,
         path: kurbo::BezPath,
         rect: kurbo::Rect,
         corner_width: f64,
         corner_height: f64,
         f: impl FnOnce(&mut Self),
     ) {
-        self.push_layer_rounded_rect(alpha, transforms, path, rect, corner_width, corner_height);
+        self.push_layer_rounded_rect(alpha, transform, path, rect, corner_width, corner_height);
         f(self);
         self.pop_layer();
     }

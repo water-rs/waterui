@@ -31,7 +31,7 @@ mod interaction_layers;
 mod lifecycle;
 mod material;
 mod metadata;
-mod mount;
+pub mod mount;
 mod native_measure;
 mod navigation;
 pub mod recording;
@@ -235,6 +235,16 @@ pub struct Reader {
     pub(crate) store: Rc<RefCell<Vec<Retain>>>,
     /// The phase the read happens in.
     pub(crate) phase: ReaderPhase,
+    /// Whether this record drives the accessibility emit walk and so leaves
+    /// an emitted-node set the unit rule diffs. Probe records — build-time
+    /// validation and measure reads — run the same record mechanics but emit
+    /// no accessibility set of their own.
+    #[cfg(feature = "accessibility")]
+    pub(crate) emits_a11y: bool,
+    /// The record sequence this reader entered under (`0` for `Layout`
+    /// readers and probes) — `leave_reader` retires the reader's subviews
+    /// whose placement links predate it.
+    pub(crate) seq: u64,
 }
 
 /// An outside-reader subscription: the read was made with no node recording
@@ -294,6 +304,34 @@ impl ProducerWake {
             redraw.request_redraw();
         }
     }
+}
+
+/// §D's presentation hosts: one permanent cell per transient emit path,
+/// attached under the window anchor in the pump's emission order. Each
+/// host records its presentation content like a node — its registrations
+/// (occluders, targets, a11y) purge at the start of each of its records,
+/// so a closed or re-recorded presentation's entries retire in O(its
+/// entries), and its placement slot keeps all presentation content ranked
+/// above the window's own.
+pub struct PresentationHosts {
+    /// The overlay-mode text context menu's host.
+    pub(crate) text_overlay: NodeCore,
+    /// The `.context_menu` presentation's host.
+    pub(crate) context_menu: NodeCore,
+    /// `.anchored_overlay` presentations' host.
+    pub(crate) anchored: NodeCore,
+}
+
+/// One platform-view sink record resolved at materialization: the table
+/// the placement publishes into plus the window-space frame and clip its
+/// paint chain computed — staged so `record` calls run once per frame in
+/// one frame-end step.
+pub struct MaterializedPlatformView {
+    /// The sink table the view records into.
+    pub(crate) table: Rc<RefCell<crate::platform_view::PlatformViewTable>>,
+    /// The resolved placement (window-space frame, clip, paint-order
+    /// rank, visibility).
+    pub(crate) placement: crate::platform_view::PlatformViewPlacement,
 }
 
 /// The GPU-free dispatch core: everything the retained view tree's build,
@@ -374,6 +412,20 @@ pub struct SemanticCore {
     /// hosts attach to it. The pump reads `own|below` on it to see pending
     /// marks without walking the tree.
     root: Rc<NodeCell>,
+    /// A second [`NodeCore`] naming the root cell — the pump wraps the
+    /// window flush in its `Record` so registrations that arrive with no
+    /// enclosing node (window-level payloads) still have a recording owner.
+    root_core: NodeCore,
+    /// The presentation hosts — §D's host cells brought forward so each
+    /// transient emit path owns its registrations: they retire when the
+    /// host re-records or its presentation closes. Their placements sit
+    /// under `window_placement` above the content root, in pump order.
+    presentation_hosts: PresentationHosts,
+    /// Platform-view sink records staged at materialization — resolved
+    /// window-space placements in paint order, consumed once by
+    /// [`Self::record_platform_views`] at frame end rather than written
+    /// mid-walk.
+    materialized_platform_views: Vec<MaterializedPlatformView>,
     /// Epoch every placement in the window caches resolutions against;
     /// any placement write bumps it.
     placement_clock: Rc<PlacementClock>,
@@ -400,6 +452,13 @@ pub struct SemanticCore {
     /// the rebuild subsumes must not re-arm a frame — the generation gate the
     /// dirty-collection/dynamic flags already enforce on the flag side.
     rebuild_active: Rc<Cell<bool>>,
+    /// A whole-tree emit pass is in progress — the rendered flush, the
+    /// semantic emit walk, or a build-time capture: every a11y-emitting
+    /// record runs inside it, so a unit diff never needs to schedule
+    /// coverage the pass already provides. A standalone re-record outside a
+    /// pass (the dirty-guided descents of commit 4) leaves the flag clear —
+    /// the unit mark then wakes the ancestor the set diff escalates to.
+    emit_pass_active: Cell<bool>,
     /// Weak handles to every live cell in the window: `mark`'s early-exit is
     /// only sound while `below` bits clear on every cell, and the tree walk
     /// misses `RetainedSubview` subtrees (navigation pages, lazy items,
@@ -422,6 +481,27 @@ pub struct SemanticCore {
     /// Owner cell address to its producer key: an owner re-binds the same
     /// key across re-installs so the map does not grow per frame.
     producer_keys_by_owner: rustc_hash::FxHashMap<usize, ProducerKey>,
+    /// The retained registries every record emits into, owned per node
+    /// and resolved through placements; `hit_test`'s flat lists are the
+    /// materialized view consumers read.
+    retained: mount::RetainedRegistry,
+    /// The placement scopes the open `push_layer_rect` levels created —
+    /// child placements of the placement they were pushed under.
+    /// Registrations resolve through the top of the stack.
+    placement_scope_stack: Vec<Rc<Placement>>,
+    /// Saved `placement_scope_stack`s of enclosing records: a nested
+    /// record starts with an empty stack, restored on the way out.
+    saved_scope_stacks: Vec<Vec<Rc<Placement>>>,
+    /// `emit_owner` values saved across nested records, riding the same
+    /// stack discipline as `saved_scope_stacks`.
+    #[cfg(feature = "accessibility")]
+    saved_emit_owners: Vec<Weak<NodeCell>>,
+    /// The sequence the current record runs under — `enter_reader`
+    /// bumps it; a registration's [`mount::PaintOrder`] carries it.
+    record_seq: u64,
+    /// The placement epoch `hit_test`'s flat lists last materialized
+    /// against — they rebuild when it lags or `retained.stale` is set.
+    materialized_epoch: u64,
 }
 
 // The state members are engine internals (gesture/hit-test/executor state)
@@ -505,7 +585,7 @@ impl core::ops::DerefMut for HydrolysisRenderer {
     }
 }
 
-const HIT_TEST_ALPHA_THRESHOLD: f32 = 0.01;
+pub const HIT_TEST_ALPHA_THRESHOLD: f32 = 0.01;
 
 const TEXT_SELECTION_MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(500);
 const TEXT_SELECTION_MULTI_CLICK_DISTANCE: f64 = 6.0;
@@ -526,6 +606,7 @@ impl SemanticCore {
         env: Environment,
         handler: Rc<RefCell<OnKeyPress>>,
     ) {
+        self.record_scope(|scopes| scopes.push_key_handler(&handler));
         self.key_handler_stack = Some(Rc::new(KeyHandlerNode {
             scope: KeyHandlerScope { env, handler },
             parent: self.key_handler_stack.take(),
@@ -534,6 +615,7 @@ impl SemanticCore {
 
     /// Leaves the innermost `OnKeyPress` scope.
     pub(crate) fn pop_key_handler_scope(&mut self) {
+        self.record_scope(mount::RetainedScopes::pop_key_handler);
         self.key_handler_stack = self
             .key_handler_stack
             .take()
@@ -544,7 +626,43 @@ impl SemanticCore {
         let signals = FrameSignals::new(frame_instant);
         let placement_clock = PlacementClock::new();
         let root = NodeCell::new(signals.clone(), Placement::new(&placement_clock));
+        // The window anchor ranks every registered entry by placement
+        // path: the content root takes slot 0 and each presentation host
+        // the next slot in the pump's emission order, so a host's entries
+        // always sort above the window's own content, and a later-emitted
+        // host above an earlier one. Dynamic anchors draw positions from
+        // `take_item` starting past these fixed slots.
+        let window_placement = Placement::new(&placement_clock);
+        root.placement()
+            .set_parent(Some(Rc::clone(&window_placement)));
+        root.placement().set_index(window_placement.take_item());
+        let root_core = NodeCore::for_cell(&root);
         let cells = RefCell::new(vec![Rc::downgrade(&root)]);
+        // The window's item space is pinned, not cursor-dealt: slot 0 is
+        // the root content's, slots 1..=3 the three presentation hosts'
+        // (hosts rank above all content — their path compares greater),
+        // and the cursor advances past them so a window-anchored
+        // registration ranks above the fixed set as "registered last".
+        for _ in 0..4 {
+            let _ = window_placement.take_item();
+        }
+        let mut host_index = 1;
+        let mut host = || {
+            let core = NodeCore::new(signals.clone(), Placement::new(&placement_clock));
+            core.cell.set_parent(&root);
+            core.cell
+                .placement()
+                .set_parent(Some(Rc::clone(&window_placement)));
+            core.cell.placement().set_index(host_index);
+            host_index += 1;
+            cells.borrow_mut().push(Rc::downgrade(&core.cell));
+            core
+        };
+        let presentation_hosts = PresentationHosts {
+            text_overlay: host(),
+            context_menu: host(),
+            anchored: host(),
+        };
         Self {
             state: HydroState::new(family_resolution),
             hit_test: HitTestState::default(),
@@ -556,6 +674,9 @@ impl SemanticCore {
             window_id: WindowId::Orphan,
             render_depth: 0,
             owner_stack: Vec::new(),
+            root_core,
+            presentation_hosts,
+            materialized_platform_views: Vec::new(),
             signals,
             animation_controller: AnimationController::default(),
             frame_instant,
@@ -565,6 +686,7 @@ impl SemanticCore {
             accessibility: AccessibilityBuilder::default(),
             render_tree: None,
             rebuild_active: Rc::new(Cell::new(false)),
+            emit_pass_active: Cell::new(false),
             cells,
             subview_structural_change: false,
             key_handler_stack: None,
@@ -582,6 +704,13 @@ impl SemanticCore {
             next_producer_key: Cell::new(1),
             producer_owners: rustc_hash::FxHashMap::default(),
             producer_keys_by_owner: rustc_hash::FxHashMap::default(),
+            retained: mount::RetainedRegistry::new(),
+            placement_scope_stack: Vec::new(),
+            saved_scope_stacks: Vec::new(),
+            #[cfg(feature = "accessibility")]
+            saved_emit_owners: Vec::new(),
+            record_seq: 0,
+            materialized_epoch: 0,
         }
     }
 
@@ -635,6 +764,19 @@ impl SemanticCore {
         self.rebuild_active.set(false);
     }
 
+    /// Opens a whole-tree emit pass — [`SemanticCore::emit_pass_active`].
+    /// The whole-tree drivers (`flush_window_tree`, the semantic emit walk)
+    /// bracket their emit regions with this pair; a standalone re-record
+    /// outside a pass is what the unit rule's mark exists for.
+    pub(crate) fn begin_emit_pass(&self) {
+        self.emit_pass_active.set(true);
+    }
+
+    /// Closes the pass [`Self::begin_emit_pass`] opened.
+    pub(crate) fn finish_emit_pass(&self) {
+        self.emit_pass_active.set(false);
+    }
+
     /// Reports whether a patch request is pending, without consuming it —
     /// the flag [`NodeCell`](mount::NodeCell) marks raise through
     /// `request_refresh`.
@@ -681,45 +823,549 @@ impl SemanticCore {
     /// reads is cleared on entry — guards are replaced on each record and
     /// each layout.
     /// Installs `core` as the reader for `f`, restoring the displaced
-    /// reader after. The semantic emit path and build-time prebuilds run
-    /// here; the record and layout descents take the renderer-level
-    /// `with_reader`.
+    /// reader after — the accessibility emit walk's entry; the record and
+    /// layout descents take the renderer-level `with_reader`.
+    #[cfg(feature = "accessibility")]
     pub(crate) fn with_reader<R>(
         &mut self,
         core: &NodeCore,
         phase: ReaderPhase,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        let outer = self.enter_reader(core, phase);
+        self.with_reader_kind(core, phase, true, f)
+    }
+
+    /// A probe record: the same reader mechanics as a record —
+    /// subscription capture, scope-stack save, emit-owner swap — but the
+    /// record drives no accessibility emit walk, so it leaves no emitted
+    /// set for the unit rule. Build-time validation and measure prebuilds
+    /// run here.
+    pub(crate) fn with_probe_reader<R>(
+        &mut self,
+        core: &NodeCore,
+        phase: ReaderPhase,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        self.with_reader_kind(core, phase, false, f)
+    }
+
+    /// Shared enter/run/leave behind [`Self::with_probe_reader`] and the
+    /// renderer-level `with_reader`; `emits_a11y` rides on the reader so
+    /// `leave_reader` can gate the a11y unit-diff bookkeeping on it.
+    fn with_reader_kind<R>(
+        &mut self,
+        core: &NodeCore,
+        phase: ReaderPhase,
+        emits_a11y: bool,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        if phase == ReaderPhase::Record && self.record_is_current(core) {
+            return f(self);
+        }
+        let outer = self.enter_reader(core, phase, emits_a11y);
         let out = f(self);
-        self.reader = outer;
+        self.leave_reader(outer);
         out
+    }
+
+    /// Whether `core`'s own record is the one currently open — a record
+    /// nested inside the same cell's record is that record: re-entering
+    /// would wipe the subscriptions and registrations the outer record
+    /// already collected. The window flush nests a root record inside the
+    /// frame's own root record this way.
+    pub(crate) fn record_is_current(&self, core: &NodeCore) -> bool {
+        self.reader.as_ref().is_some_and(|reader| {
+            reader.phase == ReaderPhase::Record && Rc::ptr_eq(&reader.cell, &core.cell)
+        })
     }
 
     /// Installs `core` as the current reader in `phase`, returning the
     /// reader it displaced. The store the phase reads is cleared on entry —
-    /// guards are replaced on each record and each layout.
-    pub(crate) fn enter_reader(&mut self, core: &NodeCore, phase: ReaderPhase) -> Option<Reader> {
+    /// guards are replaced on each record and each layout. A record also
+    /// bumps the record sequence, purges the node's stale registrations
+    /// from the retained registries, and saves the open placement scopes
+    /// so the node starts on a clean scope stack.
+    pub(crate) fn enter_reader(
+        &mut self,
+        core: &NodeCore,
+        phase: ReaderPhase,
+        emits_a11y: bool,
+    ) -> Option<Reader> {
         let store = match phase {
             ReaderPhase::Record => Rc::clone(&core.subscriptions),
             ReaderPhase::Layout => Rc::clone(&core.layout_subscriptions),
         };
         store.borrow_mut().clear();
+        // Only a record that emits and places retires unplaced subviews at
+        // leave — the sequence is its yardstick. Probes (measure reads,
+        // build validation) run the record mechanics for their
+        // subscriptions but neither place nor emit: they enter with
+        // `seq == 0`, which retires nothing.
+        let seq = if phase == ReaderPhase::Record && emits_a11y {
+            self.record_seq = self
+                .record_seq
+                .checked_add(1)
+                .expect("hydrolysis renderer: record sequence overflow");
+            self.record_seq
+        } else {
+            0
+        };
+        if phase == ReaderPhase::Record {
+            core.cell.placement().reset_props();
+            self.purge_registrations(&core.cell);
+            self.saved_scope_stacks
+                .push(std::mem::take(&mut self.placement_scope_stack));
+            #[cfg(feature = "accessibility")]
+            {
+                self.saved_emit_owners
+                    .push(self.accessibility.emit_owner.clone());
+                self.accessibility.emit_owner = Rc::downgrade(&core.cell);
+                // The new record re-arms the cell's emission bookkeeping:
+                // `a11y_emitted` fills as it runs and the unit claim resets
+                // until a scope claim actually lands. A probe record touches
+                // none of it — the emitted set and unit flag belong to the
+                // enclosing real record.
+                if emits_a11y {
+                    core.cell.a11y_emitted.borrow_mut().clear();
+                    core.cell.a11y_unit.set(false);
+                    core.cell.a11y_recording.set(true);
+                }
+            }
+            // A nested record: the entering node's scope pushes are
+            // ancestor state for it — freeze the outgoing reader's open
+            // pushes, then reset the incoming node's scope list.
+            if let Some(outer) = &self.reader {
+                outer.cell.scopes.borrow_mut().freeze_for_descendant();
+            }
+            core.cell.scopes.borrow_mut().begin_record();
+        }
         self.reader.replace(Reader {
             cell: Rc::clone(&core.cell),
             store,
             phase,
+            #[cfg(feature = "accessibility")]
+            emits_a11y,
+            seq,
         })
     }
 
-    /// Restores the reader `enter_reader` displaced.
+    /// The current record's sequence — `link_placement` stamps it on
+    /// placed subviews, and the a11y emit walk stamps it on every subview
+    /// it descends into (a semantic frame has no placements to stamp
+    /// otherwise).
+    #[cfg(feature = "accessibility")]
+    pub(crate) const fn record_seq(&self) -> u64 {
+        self.record_seq
+    }
+
+    /// Restores the reader `enter_reader` displaced. The saved stacks —
+    /// placement scopes, emit owner — belong to `Record` readers: a
+    /// `Layout` reader nested inside a record restores nothing.
     pub(crate) fn leave_reader(&mut self, outer: Option<Reader>) {
-        self.reader = outer;
+        let leaving = std::mem::replace(&mut self.reader, outer);
+        if !leaving
+            .as_ref()
+            .is_some_and(|leaving| leaving.phase == ReaderPhase::Record)
+        {
+            return;
+        }
+        let leaving =
+            leaving.expect("hydrolysis renderer: record reader left with the stack empty");
+        let saved = self
+            .saved_scope_stacks
+            .pop()
+            .expect("hydrolysis renderer: saved scope stack underflow");
+        self.placement_scope_stack = saved;
+        // A subview this record attached but never placed is unplaced: its
+        // whole subtree's registrations and a11y nodes retire now (§D).
+        self.retire_unplaced_subviews(&leaving.cell, leaving.seq);
+        #[cfg(feature = "accessibility")]
+        {
+            if let Some(saved) = self.saved_emit_owners.pop() {
+                self.accessibility.emit_owner = saved;
+            }
+            if leaving.emits_a11y {
+                self.check_a11y_unit_diff(&leaving.cell);
+                leaving.cell.a11y_recording.set(false);
+            }
+        }
+        #[cfg(not(feature = "accessibility"))]
+        drop(leaving);
+    }
+
+    /// Retires the whole subtree under `cell`: every descendant cell's
+    /// retained registrations purge and its emitted a11y nodes leave the
+    /// shared accessibility state. Commit 3 extends this to drop the
+    /// subtree's layers too (decision 3). O(nodes under the subtree).
+    fn retire_subtree(&mut self, cell: &Rc<NodeCell>) {
+        let mut stack = vec![Rc::clone(cell)];
+        while let Some(cell) = stack.pop() {
+            self.purge_registrations(&cell);
+            #[cfg(feature = "accessibility")]
+            {
+                let ids = core::mem::take(&mut *cell.a11y_emitted.borrow_mut());
+                *cell.a11y_retired.borrow_mut() = None;
+                cell.a11y_unit.set(false);
+                if !ids.is_empty() {
+                    self.accessibility.retire_nodes(&ids);
+                }
+            }
+            cell.children(&mut stack);
+        }
+    }
+
+    /// §D's unplaced rule, run at `Record` leave: every `RetainedSubview`
+    /// the record owns that it did not place while it ran has its subtree
+    /// retired — its registrations and a11y nodes leave through
+    /// [`Self::retire_subtree`].
+    fn retire_unplaced_subviews(&mut self, cell: &Rc<NodeCell>, seq: u64) {
+        let mut unplaced: Vec<Rc<NodeCell>> = Vec::new();
+        cell.subviews.borrow_mut().retain(|weak| {
+            weak.upgrade().is_some_and(|subview| {
+                // A link stamped while this record ran — at its own
+                // sequence or any nested record's — counts as placed.
+                if subview.placed_seq() < seq {
+                    unplaced.push(subview);
+                }
+                true
+            })
+        });
+        for subview in unplaced {
+            self.retire_subtree(&subview);
+        }
+    }
+
+    /// The §B.4 unit rule: a node whose record emitted a11y nodes compares
+    /// them with the set its previous record left behind; any difference
+    /// repaints the nearest a11y-unit ancestor (the root when none) so the
+    /// collapse and claim decisions recompute over the whole unit.
+    #[cfg(feature = "accessibility")]
+    fn check_a11y_unit_diff(&self, cell: &Rc<NodeCell>) {
+        // The unit rule diffs the semantic payload (role, label, actions,
+        // children). Bounds resolve at publish — after both the mid-flush
+        // node and its stored baseline — so they strip out of the compare;
+        // a bounds-only change travels the layout marks instead.
+        fn semantic_payload(node: &AccessibilityNode) -> AccessibilityNode {
+            let mut node = node.clone();
+            node.clear_bounds();
+            node
+        }
+        // The emitted set lives on the cell: `a11y_emitted` collected the
+        // ids this record pushed, and `node` looks each up by id rather
+        // than scanning the node list.
+        let emitted: std::collections::BTreeMap<AccessibilityNodeId, AccessibilityNode> = cell
+            .a11y_emitted
+            .borrow()
+            .iter()
+            .filter_map(|id| {
+                self.accessibility
+                    .node(*id)
+                    .map(|node| (*id, semantic_payload(node)))
+            })
+            .collect();
+        // The retired set is the node *as the record left it* — bounds and
+        // claimed labels resolve after the record, so the baseline is
+        // stored at record end on the cell itself: it lives and dies with
+        // the node, never in a map keyed by a reusable address.
+        // The rule compares a *re-record* against the set its previous
+        // record left: a cell that never recorded has no baseline and
+        // nothing to mark (its first record is painting anyway). Order is
+        // not significant — `retired` rides the emit order of the previous
+        // record — so both sides compare through the id-keyed map.
+        let differ = cell.a11y_retired.borrow().as_ref().is_some_and(|retired| {
+            retired
+                .iter()
+                .map(|(id, node)| (*id, semantic_payload(node)))
+                .collect::<std::collections::BTreeMap<AccessibilityNodeId, AccessibilityNode>>()
+                != emitted
+        });
+        *cell.a11y_retired.borrow_mut() = Some(emitted.into_iter().collect());
+        if differ {
+            // The mark exists to wake a unit ancestor this re-record did
+            // not cover: while an emit pass (or the ancestor's own record)
+            // is in flight its emitted set is already refreshing, so an
+            // extra PAINT mark would only arm a redundant frame — and
+            // leave a false unapplied-work signal behind.
+            let unit = cell.nearest_a11y_unit_ancestor();
+            if !(unit.a11y_recording.get() || self.emit_pass_active.get()) {
+                unit.mark(Dirty::PAINT);
+            }
+        }
+    }
+
+    /// Records a scope push/pop against the active reader's
+    /// [`RetainedScopes`]; calls outside a record do nothing (the owner
+    /// stacks still move — the replay list simply has no record to file
+    /// under).
+    pub(crate) fn record_scope(&self, f: impl FnOnce(&mut crate::renderer::mount::RetainedScopes)) {
+        if let Some(reader) = &self.reader {
+            f(&mut reader.cell.scopes.borrow_mut());
+        }
+    }
+
+    /// §B.4: the active reader's record reached an accessibility unit
+    /// boundary — flag its cell so a descendant's emission diff escalates
+    /// here.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn mark_a11y_unit(&self) {
+        if let Some(reader) = &self.reader {
+            reader.cell.a11y_unit.set(true);
+        }
     }
 
     /// The current reader's cell, if a node is recording or measuring.
     pub(crate) fn reader_cell(&self) -> Option<Rc<NodeCell>> {
         self.reader.as_ref().map(|reader| Rc::clone(&reader.cell))
+    }
+
+    /// The cell a registration emitted right now belongs to — the
+    /// recording node. Every registration has a recording owner: the pump
+    /// wraps the window flush in the root cell's own record and each
+    /// transient emit path in its presentation host's, so a call reaching
+    /// here with no reader is a bug in the emit path, not a fallback case.
+    pub(crate) fn registration_owner(&self) -> Rc<NodeCell> {
+        self.reader_cell()
+            .expect("hydrolysis renderer: registration emitted with no recording owner")
+    }
+
+    /// The placement a registration emitted right now resolves through:
+    /// the topmost open clip/alpha scope, else the recording node's own
+    /// placement, else the window root's.
+    pub(crate) fn current_placement(&self) -> Rc<Placement> {
+        self.placement_scope_stack
+            .last()
+            .cloned()
+            .or_else(|| self.reader_cell().map(|cell| Rc::clone(cell.placement())))
+            .unwrap_or_else(|| Rc::clone(self.root.placement()))
+    }
+
+    /// Opens a clip/alpha scope as a child placement of the current one;
+    /// registrations inside resolve through it. `transform` is the space
+    /// the children record into — the value the recording's group push
+    /// carries — and the placement keeps only the delta against the parent
+    /// chain's resolved transform, so a scope pushed under a non-identity
+    /// local frame (collection entries mid-transition, clip layers)
+    /// resolves its registrations where the content actually draws. `clip`
+    /// is a rect in that child space; `alpha` folds into the hit gate.
+    pub(crate) fn push_placement_scope(
+        &mut self,
+        transform: kurbo::Affine,
+        clip: Option<kurbo::Rect>,
+        alpha: f32,
+    ) {
+        let parent = self.current_placement();
+        let scope = Placement::new(&self.placement_clock);
+        scope.set_transform(parent.resolved_transform(false).inverse() * transform);
+        scope.set_parent(Some(parent.clone()));
+        scope.set_index(parent.take_item());
+        scope.set_clip(clip);
+        scope.set_alpha(alpha);
+        self.placement_scope_stack.push(scope);
+    }
+
+    /// Opens an unhittable scope: registrations inside keep their paint
+    /// chain (the content still draws) but never materialize for input —
+    /// `Hittable(false)`, inactive navigation pages, exiting overlays and
+    /// suppressed context-menu previews.
+    pub(crate) fn push_unhittable_scope(&mut self) {
+        let parent = self.current_placement();
+        let scope = Placement::new(&self.placement_clock);
+        scope.set_parent(Some(parent.clone()));
+        scope.set_index(parent.take_item());
+        scope.set_hittable(false);
+        self.placement_scope_stack.push(scope);
+    }
+
+    /// Closes the scope `push_placement_scope` opened.
+    pub(crate) fn pop_placement_scope(&mut self) {
+        self.placement_scope_stack
+            .pop()
+            .expect("hydrolysis renderer: placement scope underflow");
+    }
+
+    /// Links `core`'s placement to the current placement — the innermost
+    /// open scope, or the recording node's own — and writes `delta`, the
+    /// transform from that frame to the node's own. The child claims the
+    /// parent's next item index, so it orders under its parent exactly at
+    /// its emission position. Called at the child boundary of the walk
+    /// before the node records. A node linking under itself (the window
+    /// root) keeps its existing parent and index; the window content tree
+    /// is the root cell's only item, so its link keeps the pinned slot
+    /// zero rather than a cursor the sentinel never resets.
+    pub(crate) fn link_placement(&self, core: &NodeCore, delta: kurbo::Affine) {
+        let placement = core.cell.placement();
+        let parent = self.current_placement();
+        if !Rc::ptr_eq(&parent, placement) {
+            let index = if Rc::ptr_eq(&parent, self.root.placement()) {
+                0
+            } else {
+                parent.take_item()
+            };
+            placement.set_parent(Some(parent));
+            placement.set_index(index);
+        }
+        placement.set_transform(delta);
+        core.cell.mark_placed(self.record_seq);
+    }
+
+    /// [`Self::link_placement`] anchored at an explicit placement — the
+    /// subtree-capture and overlay path, whose nodes record outside the
+    /// frame they display in. The caller supplies `index`, the position
+    /// the grafted subtree occupies among the anchor's items (a navigation
+    /// page takes its stack position; no `u32::MAX` shortcut — every
+    /// entry's rank is a real slot).
+    pub(crate) fn link_placement_to(
+        &self,
+        core: &NodeCore,
+        anchor: Option<Rc<Placement>>,
+        delta: kurbo::Affine,
+        index: u32,
+    ) {
+        let placement = core.cell.placement();
+        placement.set_parent(anchor);
+        placement.set_transform(delta);
+        placement.set_index(index);
+        core.cell.mark_placed(self.record_seq);
+    }
+
+    /// The IDENTITY anchor for payloads that are already in window space —
+    /// the parent of the root cell's own placement.
+    /// Test-only today: seeds stage entries through it.
+    #[cfg(test)]
+    pub(crate) fn window_placement(&self) -> Rc<Placement> {
+        self.root
+            .placement()
+            .parent()
+            .expect("hydrolysis renderer: root placement detached")
+    }
+
+    /// Resolves a node-local rect to window space through the current
+    /// placement chain — the retained replacement for the deleted
+    /// `ctx.hit_transform` wherever a registration still wants a window-space
+    /// answer immediately (accessibility bounds, overlay anchors). Like dev's
+    /// `transformed_rect(hit_transform, _)`: transform only — no clip fold,
+    /// since these consumers keep their own clip semantics.
+    pub(crate) fn resolve_window_rect(&self, local: kurbo::Rect) -> kurbo::Rect {
+        crate::renderer::transformed_rect(self.current_placement().resolved_transform(false), local)
+    }
+
+    /// The current placement's composed hit transform — the replacement for
+    /// the deleted `ctx.hit_transform` in code that maps coordinates both
+    /// ways (interaction wave origins).
+    pub(crate) fn current_hit_transform(&self) -> kurbo::Affine {
+        self.current_placement().resolved_transform(true)
+    }
+
+    /// The flat-list view of the retained registries, rebuilt when a
+    /// registry write or a placement write made it stale.
+    pub(crate) fn registries(&mut self) -> &HitTestState {
+        self.materialize_registries();
+        &self.hit_test
+    }
+
+    /// The focused text-input target's identity and window-space frame
+    /// when its retained registration lives in `scope`'s subtree — the
+    /// §7.1 clearance's "a field this subtree's own registrations
+    /// reported" test. Dev cut the frame's emission list at the count the
+    /// surface's content began with; per-owner buckets carry no such
+    /// boundary, so the subtree test walks the owner chain and the frame
+    /// resolves through the entry's own paint chain (unclipped, as dev's
+    /// `frame` was).
+    pub(crate) fn focused_field_frame_in_scope(
+        &mut self,
+        scope: &Rc<NodeCell>,
+    ) -> Option<(crate::renderer::input::InteractionKey, kurbo::Rect)> {
+        let key = self.text_editing.focused_key()?;
+        for cell in self.retained.owners() {
+            let mut ancestor = Some(Rc::clone(&cell));
+            let inside = loop {
+                let Some(current) = ancestor else {
+                    break false;
+                };
+                if Rc::ptr_eq(&current, scope) {
+                    break true;
+                }
+                ancestor = current.parent();
+            };
+            if !inside {
+                continue;
+            }
+            let slot = cell.registrations.borrow();
+            let Some(regs) = slot.as_ref() else {
+                continue;
+            };
+            for entry in &regs.text_input_targets {
+                if entry.payload.interaction_key == key {
+                    let (transform, _, _) = entry.region.placement.resolved_chain(false);
+                    return Some((
+                        key,
+                        crate::renderer::transformed_rect(transform, entry.region.local),
+                    ));
+                }
+            }
+        }
+        None
+    }
+
+    /// Registers `payload` under the current placement — one retained
+    /// entry in the recording owner's bucket, ordering exactly where its
+    /// emission ranks under that anchor. Registering with no recording
+    /// owner is a bug in the emit path and panics.
+    pub(crate) fn register_retained<T: mount::SetRegistrationOwner>(
+        &mut self,
+        payload: T,
+        local: kurbo::Rect,
+        pick: impl FnOnce(&mut mount::OwnerRegistrations) -> &mut Vec<mount::RetainedEntry<T>>,
+    ) {
+        let anchor = self.current_placement();
+        self.register_retained_at(payload, local, &anchor, pick);
+    }
+
+    /// [`Self::register_retained`] with the anchor supplied — payloads
+    /// already in window space (occluder frames) anchor at the placement
+    /// that resolves identity for them.
+    pub(crate) fn register_retained_at<T: mount::SetRegistrationOwner>(
+        &mut self,
+        payload: T,
+        local: kurbo::Rect,
+        anchor: &Rc<Placement>,
+        pick: impl FnOnce(&mut mount::OwnerRegistrations) -> &mut Vec<mount::RetainedEntry<T>>,
+    ) {
+        let owner = self.registration_owner();
+        self.retained.enlist(&owner);
+        let entry =
+            mount::RetainedEntry::at(payload, local, anchor, &owner, self.retained.next_seq());
+        {
+            let mut slot = owner.registrations.borrow_mut();
+            pick(slot.get_or_insert_with(|| Box::new(mount::OwnerRegistrations::default())))
+                .push(entry);
+        }
+        self.retained.stale.set(true);
+    }
+
+    /// The one frame-end platform-view record step: every view staged at
+    /// materialization writes its resolved placement into its table in
+    /// paint order. The staged list persists until the next materialization
+    /// rebuilds it, so the record runs on every presented frame — an idle
+    /// pump re-presenting retained layers included — and is idempotent
+    /// within a frame: each table's pending set is rewritten, not appended.
+    pub(crate) fn record_platform_views(&self) {
+        let mut per_table: Vec<(
+            Rc<RefCell<crate::platform_view::PlatformViewTable>>,
+            Vec<crate::platform_view::PlatformViewPlacement>,
+        )> = Vec::new();
+        for staged in &self.materialized_platform_views {
+            match per_table
+                .iter_mut()
+                .find(|(table, _)| Rc::ptr_eq(table, &staged.table))
+            {
+                Some((_, placements)) => placements.push(staged.placement.clone()),
+                None => per_table.push((Rc::clone(&staged.table), vec![staged.placement.clone()])),
+            }
+        }
+        for (table, placements) in per_table {
+            table.borrow_mut().record_frame(placements);
+        }
     }
 
     /// A layout-affecting change attributed to the node now reading (its
@@ -738,6 +1384,59 @@ impl SemanticCore {
             Some(reader) => reader.cell.mark(Dirty::PAINT),
             None => self.root.mark(Dirty::PAINT),
         }
+    }
+
+    /// A change attributed to the node that registered `owner` — the
+    /// target's cell. A dead owner has no registrations left (they retire
+    /// with its record), so there is nothing to wake.
+    pub(crate) fn mark_owner(owner: &Weak<NodeCell>, bits: Dirty) {
+        if let Some(cell) = owner.upgrade() {
+            cell.mark(bits);
+        }
+    }
+
+    /// A change attributed to the node that bound `key`'s interaction —
+    /// no-op when the key is unbound (its owner is gone with it). A key
+    /// that never bound interaction state — a text or embedded input —
+    /// resolves through the registered target's owner instead.
+    pub(crate) fn mark_key_owner(&self, key: &crate::renderer::input::InteractionKey, bits: Dirty) {
+        let live = |owner: &std::rc::Weak<NodeCell>| owner.strong_count() > 0;
+        let owner = self
+            .hit_test
+            .interaction
+            .owner_of(key)
+            .filter(|owner| live(owner))
+            .or_else(|| {
+                self.text_editing
+                    .text_input_targets
+                    .iter()
+                    .find(|target| &target.interaction_key == key)
+                    .map(|target| target.owner.clone())
+            })
+            .or_else(|| {
+                self.hit_test
+                    .embedded_input_targets
+                    .iter()
+                    .find(|target| &target.interaction_key == key)
+                    .map(|target| target.owner.clone())
+            })
+            .unwrap_or_default();
+        Self::mark_owner(&owner, bits);
+    }
+
+    /// A change driven by a `ScrollHandle` write (a scrollbar drag, a
+    /// fling tick, an accessibility scroll): the mark belongs to the
+    /// owner of the `ScrollTarget` that holds that handle — looked up
+    /// through the registry, never the root.
+    pub(crate) fn mark_scroll_owner(&self, handle: &crate::scroll::ScrollHandle, bits: Dirty) {
+        let owner = self
+            .hit_test
+            .scroll_targets
+            .iter()
+            .find(|target| target.handle.cache_key() == handle.cache_key())
+            .map(|target| target.owner.clone())
+            .unwrap_or_default();
+        Self::mark_owner(&owner, bits);
     }
 
     /// A [`ProducerWake`] for the producer owned by `cell`: the wake posts
@@ -859,19 +1558,90 @@ impl SemanticCore {
 }
 
 impl HydrolysisRenderer {
-    /// The renderer-level reader wrap: same contract as
-    /// [`SemanticCore::with_reader`] but the closure runs on the full
-    /// renderer — the record and layout descents take it.
+    /// A record on the full renderer — the same enter/run/leave mechanics
+    /// as [`SemanticCore::with_probe_reader`], but the record drives the
+    /// accessibility emit walk. The record and layout descents take it.
     pub(crate) fn with_reader<R>(
         &mut self,
         core: &NodeCore,
         phase: ReaderPhase,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        let outer = self.core.enter_reader(core, phase);
+        if phase == ReaderPhase::Record && self.core.record_is_current(core) {
+            return f(self);
+        }
+        let outer = self.core.enter_reader(core, phase, true);
         let out = f(self);
         self.core.leave_reader(outer);
         out
+    }
+
+    /// The flat-list view of the retained registries — see
+    /// [`SemanticCore::registries`].
+    pub(crate) fn registries(&mut self) -> &HitTestState {
+        self.core.registries()
+    }
+
+    /// [`SemanticCore::record_platform_views`].
+    pub(crate) fn record_platform_views(&self) {
+        self.core.record_platform_views();
+    }
+
+    /// [`SemanticCore::current_placement`].
+    pub(crate) fn current_placement(&self) -> Rc<Placement> {
+        self.core.current_placement()
+    }
+
+    /// [`SemanticCore::registration_owner`].
+    pub(crate) fn registration_owner(&self) -> Rc<NodeCell> {
+        self.core.registration_owner()
+    }
+
+    /// [`SemanticCore::push_placement_scope`].
+    pub(crate) fn push_placement_scope(
+        &mut self,
+        transform: kurbo::Affine,
+        clip: Option<kurbo::Rect>,
+        alpha: f32,
+    ) {
+        self.core.push_placement_scope(transform, clip, alpha);
+    }
+
+    /// [`SemanticCore::pop_placement_scope`].
+    pub(crate) fn pop_placement_scope(&mut self) {
+        self.core.pop_placement_scope();
+    }
+
+    /// [`SemanticCore::link_placement`].
+    pub(crate) fn link_placement(&self, core: &NodeCore, delta: kurbo::Affine) {
+        self.core.link_placement(core, delta);
+    }
+
+    /// [`SemanticCore::link_placement_to`].
+    pub(crate) fn link_placement_to(
+        &self,
+        core: &NodeCore,
+        anchor: Option<Rc<Placement>>,
+        delta: kurbo::Affine,
+        index: u32,
+    ) {
+        self.core.link_placement_to(core, anchor, delta, index);
+    }
+
+    /// [`SemanticCore::window_placement`].
+    #[cfg(test)]
+    pub(crate) fn window_placement(&self) -> Rc<Placement> {
+        self.core.window_placement()
+    }
+
+    /// [`SemanticCore::resolve_window_rect`].
+    pub(crate) fn resolve_window_rect(&self, local: kurbo::Rect) -> kurbo::Rect {
+        self.core.resolve_window_rect(local)
+    }
+
+    /// [`SemanticCore::current_hit_transform`].
+    pub(crate) fn current_hit_transform(&self) -> kurbo::Affine {
+        self.core.current_hit_transform()
     }
 
     /// A renderer drawing with `theme`. `family_resolution` decides whether a

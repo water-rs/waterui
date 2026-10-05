@@ -1265,11 +1265,8 @@ impl RenderNode {
             .into_iter()
             .enumerate()
             .map(|(index, child)| {
-                let node = Self::build_view(
-                    normalize_layout_view(child, child_env),
-                    child_env,
-                    renderer,
-                );
+                let node =
+                    Self::build_view(normalize_layout_view(child, child_env), child_env, renderer);
                 if Some(index) == background_slot && is_background_fill_leaf(&node) {
                     Self::Fill(Box::new(FillNode::new(node, renderer.new_core())))
                 } else {

@@ -534,7 +534,7 @@ impl HydrolysisRenderer {
         );
         scene.append(
             &fragment,
-            ctx.transform * kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0)),
+            ctx.local * kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0)),
         );
     }
 
@@ -579,7 +579,7 @@ impl HydrolysisRenderer {
                 );
             },
         );
-        scene.append(&fragment, ctx.transform * kurbo::Affine::translate((x, y)));
+        scene.append(&fragment, ctx.local * kurbo::Affine::translate((x, y)));
     }
 
     /// Encode `layout`'s glyph runs into `scene` at the local origin. The
@@ -1796,11 +1796,10 @@ mod background_tests {
         let env = test_environment();
         let mut state = HydroState::new(FontFamilyResolution::Strict);
         let mut scene = Recording::new();
-        let ctx = RenderContext::with_transforms(
-            kurbo::Rect::new(0.0, 0.0, width, 200.0),
-            kurbo::Affine::IDENTITY,
-            kurbo::Affine::IDENTITY,
-        );
+        let ctx = RenderContext {
+            local: kurbo::Affine::IDENTITY,
+            bounds: kurbo::Rect::new(0.0, 0.0, width, 200.0),
+        };
         HydrolysisRenderer::render_styled_text_limited(
             &mut state,
             &mut scene,

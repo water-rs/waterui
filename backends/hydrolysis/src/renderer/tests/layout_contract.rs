@@ -209,7 +209,10 @@ fn retained_scene_capture_preserves_proposal_and_viewport_boundaries() {
     }));
     let size = Size::new(160.0, 20.0);
     let rect = SceneRect::new(0.0, 0.0, 160.0, 20.0);
-    let ctx = RenderContext::with_transforms(rect, Affine::IDENTITY, Affine::IDENTITY);
+    let ctx = RenderContext {
+        local: Affine::IDENTITY,
+        bounds: rect,
+    };
     let ideal = ProposalSize::new(None, Some(20.0));
     retained.flush_in_rect(&mut renderer, ctx, &env, ideal, rect, None);
     let outer = LazyViewport {
@@ -220,10 +223,7 @@ fn retained_scene_capture_preserves_proposal_and_viewport_boundaries() {
     let _ = retained.render_built_scene(
         &mut renderer,
         &env,
-        crate::renderer::CapturedScenePlacement {
-            size,
-            hit_transform: Affine::IDENTITY,
-        },
+        crate::renderer::CapturedScenePlacement { size },
         None,
     );
     assert_eq!(renderer.lazy.lazy_viewport_stack.len(), 1);
@@ -261,7 +261,10 @@ fn retained_subview_relayouts_when_a_layout_signal_invalidates() {
         .max_width(constraint),
     ));
     let rect = SceneRect::new(0.0, 0.0, 800.0, 600.0);
-    let ctx = RenderContext::with_transforms(rect, Affine::IDENTITY, Affine::IDENTITY);
+    let ctx = RenderContext {
+        local: Affine::IDENTITY,
+        bounds: rect,
+    };
     let proposal = ProposalSize::new(Some(800.0), Some(600.0));
     retained.flush_in_rect(&mut renderer, ctx, &env, proposal, rect, None);
     assert_eq!(

@@ -6,13 +6,12 @@ use waterui::navigation::{
 use waterui_backend_core::widget::NavigationMotion;
 
 use super::{NavigationCapturedScene, NavigationMatchedElement};
-use crate::renderer::{CapturedLayers, HydrolysisRenderer, LayerTransforms};
+use crate::renderer::{CapturedLayers, HydrolysisRenderer};
 
 pub struct NavigationTransitionFrame<'a> {
     pub(crate) renderer: &'a mut HydrolysisRenderer,
-    /// The stack's paint and hit-test placement.
-    pub(crate) transforms: LayerTransforms,
-    /// The stack's bounds — the scale-centre reference.
+    /// The transform placing the stack's local space in the scene.
+    pub(crate) transform: kurbo::Affine,
     pub(crate) bounds: kurbo::Rect,
     /// `bounds` grown by the page area's touched-edge offsets: what the
     /// pages actually paint, since their bar surfaces reach the window edge
@@ -62,7 +61,7 @@ pub fn draw_navigation_transition(frame: NavigationTransitionFrame<'_>) {
     for (scene, layer) in layers {
         append_scene_layer(
             frame.renderer,
-            frame.transforms,
+            frame.transform,
             frame.bounds,
             frame.paint_bounds,
             scene,
@@ -153,7 +152,7 @@ fn draw_matched_navigation_transition(
     let to_page = frame.to_scene.composed_without(to_is_source, id);
     append_scene_with_opacity(
         frame.renderer,
-        frame.transforms,
+        frame.transform,
         frame.bounds,
         frame.paint_bounds,
         &from_page,
@@ -161,7 +160,7 @@ fn draw_matched_navigation_transition(
     );
     append_scene_with_opacity(
         frame.renderer,
-        frame.transforms,
+        frame.transform,
         frame.bounds,
         frame.paint_bounds,
         &to_page,
@@ -171,14 +170,14 @@ fn draw_matched_navigation_transition(
     let bounds = interpolate_rect(from_element.bounds, to_element.bounds, frame.progress);
     append_matched_element(
         frame.renderer,
-        frame.transforms,
+        frame.transform,
         from_element,
         bounds,
         1.0 - crate::num_cast::f64_as_f32(frame.progress),
     );
     append_matched_element(
         frame.renderer,
-        frame.transforms,
+        frame.transform,
         to_element,
         bounds,
         crate::num_cast::f64_as_f32(frame.progress),
@@ -197,7 +196,7 @@ fn interpolate_rect(from: kurbo::Rect, to: kurbo::Rect, progress: f64) -> kurbo:
 
 fn append_matched_element(
     renderer: &mut HydrolysisRenderer,
-    transforms: LayerTransforms,
+    transform: kurbo::Affine,
     element: &NavigationMatchedElement,
     target: kurbo::Rect,
     opacity: f32,
@@ -211,14 +210,14 @@ fn append_matched_element(
             target.height() / element.bounds.height(),
         )
         * kurbo::Affine::translate((-element.bounds.x0, -element.bounds.y0));
-    renderer.with_clip_rect_scope(opacity, transforms, target, |renderer| {
-        renderer.present_layers(&element.layers, transforms.paint * local);
+    renderer.with_clip_rect_scope(opacity, transform, target, |renderer| {
+        renderer.present_layers(&element.layers, transform * local);
     });
 }
 
 fn append_scene_with_opacity(
     renderer: &mut HydrolysisRenderer,
-    transforms: LayerTransforms,
+    transform: kurbo::Affine,
     bounds: kurbo::Rect,
     paint_bounds: kurbo::Rect,
     content: &CapturedLayers,
@@ -226,7 +225,7 @@ fn append_scene_with_opacity(
 ) {
     append_scene_layer(
         renderer,
-        transforms,
+        transform,
         bounds,
         paint_bounds,
         content,
@@ -239,7 +238,7 @@ fn append_scene_with_opacity(
 
 fn append_scene_layer(
     renderer: &mut HydrolysisRenderer,
-    transforms: LayerTransforms,
+    transform: kurbo::Affine,
     bounds: kurbo::Rect,
     paint_bounds: kurbo::Rect,
     content: &CapturedLayers,
@@ -269,8 +268,8 @@ fn append_scene_layer(
     // engine layer rather than as one flattened group, so translucent
     // content that overlaps across those layers blends slightly differently
     // mid-transition than it would flattened.
-    renderer.with_clip_rect_scope(layer.opacity, transforms, transformed_bounds, |renderer| {
-        renderer.present_layers(content, transforms.paint * local);
+    renderer.with_clip_rect_scope(layer.opacity, transform, transformed_bounds, |renderer| {
+        renderer.present_layers(content, transform * local);
     });
 }
 

@@ -156,11 +156,9 @@ pub(crate) fn render_webview_node(
 ) {
     super::register_web_surface_accessibility(ctx, env);
 
-    use crate::renderer::transformed_rect;
-
     let bounds = ctx.bounds;
     let transform = ctx.render_context().transform;
-    let hit_transform = ctx.hit_transform;
+
     let (native, occlusion) = {
         let state = state.borrow();
         (state.native.native_view(), Rc::clone(&state.occlusion))
@@ -169,10 +167,7 @@ pub(crate) fn render_webview_node(
     // WebKit hit-tests the `WKWebView` itself, so Hydrolysis has to tell the
     // view host where its own content sits on top; without this a snackbar
     // or dialog over the page was visible and inert.
-    renderer.register_native_view_occlusion(
-        transformed_rect(hit_transform, bounds),
-        Rc::clone(&occlusion),
-    );
+    renderer.register_native_view_occlusion(bounds, Rc::clone(&occlusion));
     renderer.record_native_view_layer(native, transform, bounds, occlusion);
 }
 

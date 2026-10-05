@@ -61,6 +61,8 @@ mod perf_scroll;
 mod popup_frame;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod popup_windows;
+#[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
+mod registrations;
 mod render_identity;
 mod retained_scene;
 mod scene_offer;
@@ -497,6 +499,7 @@ fn text_input_target(
 ) -> TextInputTarget {
     let interaction_key = InteractionKey::for_rc(&selection, 0);
     TextInputTarget {
+        owner: std::rc::Weak::new(),
         interaction_key,
         modal: false,
         bounds: Rect::ZERO,
@@ -2944,13 +2947,13 @@ fn ime_preedit_commit_and_disable_update_focused_text_target() {
         focus: 0,
         initialized: true,
     }));
-    renderer
-        .text_editing
-        .text_input_targets
-        .push(text_input_target(
+    seed_text_input_targets(
+        &mut renderer,
+        vec![text_input_target(
             text_field_model("", None),
             Rc::clone(&selection),
-        ));
+        )],
+    );
 
     assert!(renderer.set_focused_text_input(Some(0)));
     assert!(
@@ -3001,16 +3004,15 @@ fn text_input_focus_stays_on_its_field_when_a_row_is_inserted_above_it() {
     let focused = Rc::new(RefCell::new(TextSelectionSlot::default()));
     let emit = |renderer: &mut HydrolysisRenderer,
                 targets: &[(&str, &Rc<RefCell<TextSelectionSlot>>)]| {
-        renderer.text_editing.text_input_targets.clear();
-        for (value, selection) in targets {
-            renderer
-                .text_editing
-                .text_input_targets
-                .push(text_input_target(
-                    text_field_model(value, None),
-                    Rc::clone(selection),
-                ));
-        }
+        seed_text_input_targets(
+            renderer,
+            targets
+                .iter()
+                .map(|(value, selection)| {
+                    text_input_target(text_field_model(value, None), Rc::clone(selection))
+                })
+                .collect(),
+        );
     };
 
     emit(&mut renderer, &[("first", &first), ("focused", &focused)]);
@@ -3061,25 +3063,24 @@ fn text_input_focus_is_dropped_when_its_field_stops_being_emitted() {
     renderer.set_text_caret_motion(MinimalTestTheme::default().text_caret_motion());
     let survivor = Rc::new(RefCell::new(TextSelectionSlot::default()));
     let removed = Rc::new(RefCell::new(TextSelectionSlot::default()));
-    for (value, selection) in [("survivor", &survivor), ("removed", &removed)] {
-        renderer
-            .text_editing
-            .text_input_targets
-            .push(text_input_target(
-                text_field_model(value, None),
-                Rc::clone(selection),
-            ));
-    }
+    seed_text_input_targets(
+        &mut renderer,
+        [("survivor", &survivor), ("removed", &removed)]
+            .iter()
+            .map(|(value, selection)| {
+                text_input_target(text_field_model(value, None), Rc::clone(selection))
+            })
+            .collect(),
+    );
     assert!(renderer.set_focused_text_input(Some(1)));
 
-    renderer.text_editing.text_input_targets.clear();
-    renderer
-        .text_editing
-        .text_input_targets
-        .push(text_input_target(
+    seed_text_input_targets(
+        &mut renderer,
+        vec![text_input_target(
             text_field_model("survivor", None),
             Rc::clone(&survivor),
-        ));
+        )],
+    );
     renderer.validate_focused_text_input_after_flush();
 
     assert!(
@@ -3093,13 +3094,13 @@ fn text_input_focus_is_dropped_when_its_field_stops_being_emitted() {
 fn text_selection_pointer_update_uses_transient_redraw_path() {
     let mut renderer = test_renderer();
     let selection = Rc::new(RefCell::new(TextSelectionSlot::default()));
-    renderer
-        .text_editing
-        .text_input_targets
-        .push(text_input_target(
+    seed_text_input_targets(
+        &mut renderer,
+        vec![text_input_target(
             text_field_model("selection", None),
             Rc::clone(&selection),
-        ));
+        )],
+    );
 
     assert!(renderer.update_text_selection_from_pointer(0, Point::ZERO, false));
     assert_eq!(
@@ -3113,6 +3114,34 @@ fn text_selection_pointer_update_uses_transient_redraw_path() {
         crate::renderer::Dirty::NONE,
         "unchanged text selection must not mark structure"
     );
+}
+
+/// Seeds `targets` as the frame's emitted text inputs through the retained
+/// registry — the path a real emit takes, owner bucket and all — then
+/// materializes, so staged and retained readers both see them exactly like
+/// a flush's. The owner is the root cell, the owner a window-level
+/// registration carries.
+fn seed_text_input_targets(renderer: &mut HydrolysisRenderer, targets: Vec<TextInputTarget>) {
+    let anchor = renderer.window_placement();
+    let owner = Rc::clone(renderer.root_cell());
+    renderer.purge_registrations(&owner);
+    renderer.retained.enlist(&owner);
+    for target in targets {
+        let bounds = target.bounds;
+        let entry = crate::renderer::mount::RetainedEntry::at(
+            target,
+            bounds,
+            &anchor,
+            &owner,
+            renderer.retained.next_seq(),
+        );
+        let mut slot = owner.registrations.borrow_mut();
+        slot.get_or_insert_with(|| Box::new(crate::renderer::mount::OwnerRegistrations::default()))
+            .text_input_targets
+            .push(entry);
+    }
+    renderer.retained.stale.set(true);
+    renderer.registries();
 }
 
 /// A text-input target with real bounds and a real shaped layout, so click
@@ -3166,7 +3195,7 @@ fn double_click_word_selection_survives_pointer_release() {
     let selection = Rc::new(RefCell::new(TextSelectionSlot::default()));
     let target = shaped_text_input_target("hello world", &selection, &env);
     let point = caret_point_in_target(&target, 8);
-    renderer.text_editing.text_input_targets.push(target);
+    seed_text_input_targets(&mut renderer, vec![target]);
 
     renderer.handle_pointer_down(
         crate::num_cast::f64_as_f32(point.x),
@@ -3217,7 +3246,7 @@ fn double_click_drag_extends_selection_by_words() {
     let target = shaped_text_input_target("hello world", &selection, &env);
     let world_point = caret_point_in_target(&target, 8);
     let hello_point = caret_point_in_target(&target, 2);
-    renderer.text_editing.text_input_targets.push(target);
+    seed_text_input_targets(&mut renderer, vec![target]);
 
     renderer.handle_pointer_down(
         crate::num_cast::f64_as_f32(world_point.x),

@@ -4,7 +4,6 @@ use crate::renderer::Edge;
 use crate::renderer::EdgeOffsets;
 use crate::renderer::HydroState;
 use crate::renderer::SafeAreaLayout;
-use crate::renderer::frame::LayerTransforms;
 use crate::renderer::grow_rect;
 use crate::renderer::navigation::{
     NavigationCapturedScene, NavigationTransitionFrame, draw_navigation_transition,
@@ -16,13 +15,18 @@ use waterui_core::layout::HorizontalAlignment;
 use waterui_text::styled::StyledStr;
 
 /// Render context passed to handlers.
+///
+/// `local` places the widget's drawing space in the scene — ops recorded
+/// through it are node-local, and the transform maps them down. `bounds`
+/// is the widget's own rect in that space (`0,0,w,h` for a node). Hit
+/// tests no longer read a transform here: registrations carry the
+/// node-local rect plus the node's [`crate::renderer::Placement`], which
+/// resolves them in window space.
 #[derive(Debug, Clone, Copy)]
 pub struct RenderContext {
-    /// The transform placing the widget in the scene.
-    pub transform: kurbo::Affine,
-    /// The transform used to resolve hit tests inside the widget.
-    pub hit_transform: kurbo::Affine,
-    /// The widget's bounds in scene coordinates.
+    /// The transform placing the widget's local drawing space in the scene.
+    pub local: kurbo::Affine,
+    /// The widget's bounds in its local space.
     pub bounds: kurbo::Rect,
 }
 
@@ -40,8 +44,7 @@ pub enum HydrolysisTextContextMenuMode {
 
 pub struct WidgetRenderContext<'a> {
     renderer: &'a mut HydrolysisRenderer,
-    pub transform: kurbo::Affine,
-    pub hit_transform: kurbo::Affine,
+    pub local: kurbo::Affine,
     pub bounds: kurbo::Rect,
     /// The §7.1 context this widget was laid out against — `None` inside a
     /// scroll surface's context-free content. Retained sub-views the handler
@@ -60,24 +63,11 @@ pub fn bounded_proposal(bounds: kurbo::Rect) -> waterui_core::layout::ProposalSi
 }
 
 impl RenderContext {
-    pub(crate) const fn with_transforms(
-        bounds: kurbo::Rect,
-        transform: kurbo::Affine,
-        hit_transform: kurbo::Affine,
-    ) -> Self {
-        Self {
-            transform,
-            hit_transform,
-            bounds,
-        }
-    }
-
     #[must_use]
     /// The context for a child widget at `transform`/`bounds`, composed with this one.
     pub fn child(&self, transform: kurbo::Affine, bounds: kurbo::Rect) -> Self {
         Self {
-            transform: self.transform * transform,
-            hit_transform: self.hit_transform * transform,
+            local: self.local * transform,
             bounds,
         }
     }
@@ -91,8 +81,7 @@ impl<'a> WidgetRenderContext<'a> {
     ) -> Self {
         Self {
             renderer,
-            transform: ctx.transform,
-            hit_transform: ctx.hit_transform,
+            local: ctx.local,
             bounds: ctx.bounds,
             safe_area,
         }
@@ -187,7 +176,10 @@ impl<'a> WidgetRenderContext<'a> {
     }
 
     pub(crate) const fn render_context(&self) -> RenderContext {
-        RenderContext::with_transforms(self.bounds, self.transform, self.hit_transform)
+        RenderContext {
+            local: self.local,
+            bounds: self.bounds,
+        }
     }
 
     /// The renderer-owned widget theme, cloned out as an `Rc` so callers can
@@ -217,14 +209,7 @@ impl<'a> WidgetRenderContext<'a> {
     }
 
     pub(crate) fn push_layer_rect(&mut self, alpha: f32, clip: kurbo::Rect) {
-        self.renderer.push_layer_rect(
-            alpha,
-            LayerTransforms {
-                paint: self.transform,
-                hit: self.hit_transform,
-            },
-            clip,
-        );
+        self.renderer.push_layer_rect(alpha, self.local, clip);
     }
 
     pub(crate) fn pop_layer(&mut self) {
@@ -317,7 +302,7 @@ impl<'a> WidgetRenderContext<'a> {
 
     /// Presents captured layers at this context's transform.
     pub(crate) fn present_layers(&mut self, layers: &CapturedLayers) {
-        self.renderer.present_layers(layers, self.transform);
+        self.renderer.present_layers(layers, self.local);
     }
 
     pub(crate) fn draw_navigation_transition(
@@ -336,10 +321,7 @@ impl<'a> WidgetRenderContext<'a> {
         let paint_bounds = self.chrome_paint_bounds();
         draw_navigation_transition(NavigationTransitionFrame {
             renderer: self.renderer,
-            transforms: LayerTransforms {
-                paint: self.transform,
-                hit: self.hit_transform,
-            },
+            transform: self.local,
             bounds: self.bounds,
             paint_bounds,
             style,

@@ -2,7 +2,7 @@
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
     HydroNativeView, HydroState, RenderContext, WidgetRenderContext, local_interaction_state,
-    measure_label_intrinsic, transformed_rect,
+    measure_label_intrinsic,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -263,9 +263,9 @@ pub fn render_stepper_parts(
         controls_bounds.x1,
         controls_bounds.y1,
     );
-    let hit_transform = ctx.hit_transform;
-    let minus_hit_bounds = transformed_rect(hit_transform, minus_bounds);
-    let plus_hit_bounds = transformed_rect(hit_transform, plus_bounds);
+    let hit_transform = ctx.renderer_mut().current_hit_transform();
+    let minus_hit_bounds = minus_bounds;
+    let plus_hit_bounds = plus_bounds;
     let (minus_interaction, minus_press_slot, _) = ctx
         .renderer_mut()
         .bind_control_interaction_target(minus_interaction_key, minus_hit_bounds, env, disabled);

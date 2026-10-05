@@ -552,11 +552,10 @@ pub fn released_ctx(ctx: RenderContext, released: EdgeOffsets) -> RenderContext 
 /// laid-out frame touched — the transforms unchanged, so nothing else
 /// moves (§7.1: extension is a paint fact, not a layout fact).
 pub fn fill_paint_ctx(ctx: RenderContext, extension: EdgeOffsets) -> RenderContext {
-    RenderContext::with_transforms(
-        grow_rect(ctx.bounds, extension),
-        ctx.transform,
-        ctx.hit_transform,
-    )
+    RenderContext {
+        local: ctx.local,
+        bounds: grow_rect(ctx.bounds, extension),
+    }
 }
 
 /// The §7.1 bookkeeping one scroll surface carries: the facts layout
@@ -651,20 +650,16 @@ impl ScrollSurfaceArea {
     /// branch of §7.1's clearance. While the keyboard inset changes, the
     /// offset follows each frame directly — the host's own animation is
     /// the pacing, never an eased chase — using the previous frame's
-    /// stored field rect, so the content paints already clear. Returns the
-    /// text-input target count before the subtree's registrations to hand
-    /// to [`Self::end_flush`].
-    pub fn begin_flush(&self, renderer: &HydrolysisRenderer, handle: &ScrollHandle) -> usize {
-        let targets_start = renderer.text_editing.text_input_targets.len();
+    /// stored field rect, so the content paints already clear.
+    pub fn begin_flush(&self, renderer: &HydrolysisRenderer, handle: &ScrollHandle) {
         let Some(facts) = self.facts.get() else {
-            return targets_start;
+            return;
         };
         let moved = self.keyboard_top.replace(Some(facts.keyboard_top)) != Some(facts.keyboard_top);
         self.keyboard_moved.set(moved);
         if moved && let Some(field) = self.field_window_rect(handle.metrics().offset_y) {
             Self::scroll_field_clear(renderer, handle, facts, field, false);
         }
-        targets_start
     }
 
     /// Runs after the surface's content flushes: the focus-change branch —
@@ -674,29 +669,31 @@ impl ScrollSurfaceArea {
     /// The cleared field is refreshed for the next frame's early pass, and
     /// dropped when nothing in this subtree holds focus — so a user scroll
     /// afterwards is never fought.
-    pub fn end_flush(
-        &self,
-        renderer: &HydrolysisRenderer,
-        handle: &ScrollHandle,
-        targets_start: usize,
-    ) {
+    ///
+    /// "This subtree's own registrations" is the owner check the retained
+    /// model keeps: dev cut the frame's emission list at the count its
+    /// content began with, and per-owner buckets carry no such boundary —
+    /// [`HydrolysisRenderer::focused_field_frame_in_scope`] reads the
+    /// focused field out of the buckets the cells under this surface's own
+    /// record wrote, so it answers exactly dev's set.
+    pub fn end_flush(&self, renderer: &mut HydrolysisRenderer, handle: &ScrollHandle) {
         let Some(facts) = self.facts.get() else {
             self.cleared.replace(None);
             return;
         };
         let offset_y = handle.metrics().offset_y;
+        let scope = renderer
+            .reader_cell()
+            .expect("hydrolysis: a surface's end_flush runs under its own record");
         // Only an outermost surface holds facts (a surface's content lays
         // out without a safe-area context), so the field a surface finds
         // here is always one it alone covers — nested surfaces clear the
         // same field once through the outer surface.
         let field = renderer
-            .text_editing
-            .focused_index()
-            .filter(|index| *index >= targets_start)
-            .map(|index| renderer.text_editing.text_input_targets[index].clone())
-            .map(|target| ClearedField {
-                key: target.interaction_key,
-                rect: target.frame,
+            .focused_field_frame_in_scope(&scope)
+            .map(|(key, rect)| ClearedField {
+                key,
+                rect,
                 offset_y,
             });
         let newly_focused = field.as_ref().is_some_and(|field| {

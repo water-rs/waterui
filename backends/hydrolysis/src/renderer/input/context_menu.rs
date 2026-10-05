@@ -430,47 +430,13 @@ impl HydrolysisRenderer {
     /// accessory flushes unsuppressed — it is the interactive half of the
     /// presentation.
     fn with_preview_targets_suppressed(&mut self, f: impl FnOnce(&mut Self)) {
-        let pointer_start = self.hit_test.pointer_targets.len();
-        let gesture_start = self.gesture_engine.target_count();
-        let gesture_region_start = self.hit_test.gesture_regions.len();
-        let cursor_start = self.hit_test.cursor_targets.len();
-        let hover_start = self.hit_test.hover_targets.len();
-        let drop_start = self.hit_test.drop_targets.len();
-        let scroll_start = self.hit_test.scroll_targets.len();
-        let menu_start = self.hit_test.context_menu_targets.len();
-        let text_start = self.text_editing.text_input_targets.len();
-        let embedded_start = self.hit_test.embedded_input_targets.len();
-        let occlusion_start = self.hit_test.native_view_occlusions.len();
-
+        // The preview's registrations stay in the retained registries under
+        // an unhittable placement scope: nothing it emits ever materializes.
+        // A stale in-flight drag against the page beneath still clears —
+        // the signature check runs at materialization.
+        self.push_unhittable_scope();
         f(self);
-
-        self.hit_test.pointer_targets.truncate(pointer_start);
-        self.ensure_active_pointer_drag_target_is_live();
-        self.gesture_engine.truncate_targets(gesture_start);
-        self.hit_test.gesture_regions.truncate(gesture_region_start);
-        self.hit_test.cursor_targets.truncate(cursor_start);
-        let removed_hover: Vec<_> = self.hit_test.hover_targets[hover_start..]
-            .iter()
-            .map(|target| (target.slot.clone(), target.handles.clone()))
-            .collect();
-        let now = self.frame_instant();
-        for (slot, handles) in removed_hover {
-            self.hit_test.interaction.set_hovering(&slot, false);
-            if let Some(handles) = handles {
-                handles.set_hovering(false, now);
-            }
-        }
-        self.hit_test.hover_targets.truncate(hover_start);
-        self.hit_test.drop_targets.truncate(drop_start);
-        self.hit_test.scroll_targets.truncate(scroll_start);
-        self.hit_test.context_menu_targets.truncate(menu_start);
-        self.text_editing.text_input_targets.truncate(text_start);
-        self.hit_test
-            .embedded_input_targets
-            .truncate(embedded_start);
-        self.hit_test
-            .native_view_occlusions
-            .truncate(occlusion_start);
+        self.pop_placement_scope();
     }
 
     /// Encode the open `.context_menu` presentation into this window's scene —
@@ -635,9 +601,12 @@ impl HydrolysisRenderer {
             self.register_hit_test_occluder(frame);
         }
 
-        presentation.menu.flush_in_rect(
+        presentation.menu.flush_in_rect_detached(
             self,
-            RenderContext::with_transforms(window, transform, kurbo::Affine::IDENTITY),
+            RenderContext {
+                local: transform,
+                bounds: window,
+            },
             &presentation_env,
             bounded_proposal(presentation.menu_frame),
             presentation.menu_frame,
@@ -650,9 +619,12 @@ impl HydrolysisRenderer {
         if let Some(preview) = presentation.preview.as_mut() {
             self.with_suppressed_accessibility(|renderer| {
                 renderer.with_preview_targets_suppressed(|renderer| {
-                    preview.flush_in_rect(
+                    preview.flush_in_rect_detached(
                         renderer,
-                        RenderContext::with_transforms(window, transform, kurbo::Affine::IDENTITY),
+                        RenderContext {
+                            local: transform,
+                            bounds: window,
+                        },
                         &presentation_env,
                         bounded_proposal(layout.lift),
                         layout.lift,
@@ -665,9 +637,12 @@ impl HydrolysisRenderer {
         if let Some(accessory) = presentation.accessory.as_mut() {
             let frame = presentation.accessory_frame.unwrap_or(layout.lift);
             let content = inset_rect(frame, metrics.horizontal_padding, metrics.vertical_padding);
-            accessory.flush_in_rect(
+            accessory.flush_in_rect_detached(
                 self,
-                RenderContext::with_transforms(window, transform, kurbo::Affine::IDENTITY),
+                RenderContext {
+                    local: transform,
+                    bounds: window,
+                },
                 &presentation_env,
                 bounded_proposal(content),
                 content,

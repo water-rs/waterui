@@ -517,14 +517,11 @@ impl CollectionNode {
         #[cfg(feature = "accessibility")]
         let container_scope = self.accessibility_container_env.as_ref().map(|env| {
             renderer.push_accessibility_owner(&self.accessibility_identity);
-            let scope = renderer.begin_accessibility_container(
-                transformed_rect(ctx.hit_transform, ctx.bounds),
-                Some(transformed_rect(
-                    ctx.hit_transform,
-                    kurbo_rect(self.resolved),
-                )),
-                env,
+            let (bounds, extent) = (
+                ctx.bounds,
+                renderer.resolve_window_rect(kurbo_rect(self.resolved)),
             );
+            let scope = renderer.begin_accessibility_container(bounds, Some(extent), env);
             renderer.pop_accessibility_owner();
             scope
         });
@@ -534,16 +531,17 @@ impl CollectionNode {
             if factor <= f32::EPSILON {
                 continue;
             }
+            let delta = kurbo::Affine::translate((f64::from(rect.x()), f64::from(rect.y())));
             let child_ctx = ctx.child(
-                kurbo::Affine::translate((f64::from(rect.x()), f64::from(rect.y()))),
+                delta,
                 kurbo::Rect::new(0.0, 0.0, f64::from(rect.width()), f64::from(rect.height())),
             );
             if entry.phase.suppresses_accessibility() {
                 renderer.with_suppressed_accessibility(|renderer| {
-                    Self::flush_entry(renderer, entry, child_ctx, &self.env, factor, axis);
+                    Self::flush_entry(renderer, entry, child_ctx, &self.env, factor, axis, delta);
                 });
             } else {
-                Self::flush_entry(renderer, entry, child_ctx, &self.env, factor, axis);
+                Self::flush_entry(renderer, entry, child_ctx, &self.env, factor, axis, delta);
             }
         }
         #[cfg(feature = "accessibility")]
@@ -595,9 +593,10 @@ impl CollectionNode {
         env: &Environment,
         factor: f32,
         axis: Option<TransitionAxis>,
+        delta: kurbo::Affine,
     ) {
         if factor >= 1.0 {
-            entry.node.flush(renderer, child_ctx, env);
+            entry.node.flush(renderer, child_ctx, env, delta);
             return;
         }
         let bounds = child_ctx.bounds;
@@ -618,20 +617,12 @@ impl CollectionNode {
             ),
             None => bounds,
         };
-        renderer.with_clip_rect_scope(
-            factor,
-            LayerTransforms {
-                paint: child_ctx.transform,
-                hit: child_ctx.hit_transform,
-            },
-            clip,
-            |renderer| {
-                let previous_opacity = renderer.hit_test.hit_test_opacity;
-                renderer.hit_test.hit_test_opacity = previous_opacity * factor;
-                entry.node.flush(renderer, child_ctx, env);
-                renderer.hit_test.hit_test_opacity = previous_opacity;
-            },
-        );
+        // The outer scope carries `factor` as its hit-test alpha, so the
+        // entry's regions gate exactly the way its paint fades — no
+        // renderer-wide `hit_test_opacity`.
+        renderer.with_clip_rect_scope(factor, child_ctx.local, clip, |renderer| {
+            entry.node.flush(renderer, child_ctx, env, delta);
+        });
     }
 
     /// Apply a membership change: keep each surviving id's node (and its
@@ -1082,11 +1073,8 @@ impl LazyStackNode {
             // A lazy stack places its items at flush (offset-dependent), so no
             // resolved extent is cached for it — `None` keeps the surviving
             // child's own bounds on collapse.
-            let scope = renderer.begin_accessibility_container(
-                transformed_rect(ctx.hit_transform, ctx.bounds),
-                None,
-                env,
-            );
+            let bounds = ctx.bounds;
+            let scope = renderer.begin_accessibility_container(bounds, None, env);
             renderer.pop_accessibility_owner();
             scope
         });
@@ -1108,7 +1096,7 @@ impl LazyStackNode {
             .lazy_viewport_stack
             .last()
             .map_or(ctx.bounds, |viewport| {
-                (ctx.transform.inverse() * viewport.transform).transform_rect_bbox(viewport.bounds)
+                (ctx.local.inverse() * viewport.transform).transform_rect_bbox(viewport.bounds)
             });
         let (visible_start, visible_end) = match &self.axis {
             LazyStackAxisConfig::Vertical { .. } => {

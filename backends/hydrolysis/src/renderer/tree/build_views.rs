@@ -149,7 +149,7 @@ impl RenderNode {
         // See build_controls: the prebuild runs under this widget's
         // cell as the record reader, so its subviews attach to it.
         let core = renderer.new_core();
-        renderer.with_reader(&core, ReaderPhase::Record, |renderer| {
+        renderer.with_probe_reader(&core, ReaderPhase::Record, |renderer| {
             state.prebuild(renderer, env);
         });
         let state = Rc::new(RefCell::new(state));
@@ -173,7 +173,7 @@ impl RenderNode {
         // See build_controls: the prebuild runs under this widget's
         // cell as the record reader, so its subviews attach to it.
         let core = renderer.new_core();
-        renderer.with_reader(&core, ReaderPhase::Record, |renderer| {
+        renderer.with_probe_reader(&core, ReaderPhase::Record, |renderer| {
             state.prebuild(renderer, env);
         });
         let state = Rc::new(RefCell::new(state));
@@ -213,7 +213,7 @@ impl RenderNode {
         // See build_controls: the prebuild runs under this widget's
         // cell as the record reader, so its subviews attach to it.
         let core = renderer.new_core();
-        renderer.with_reader(&core, ReaderPhase::Record, |renderer| {
+        renderer.with_probe_reader(&core, ReaderPhase::Record, |renderer| {
             state.prebuild_labels(renderer, env);
         });
         let state = Rc::new(RefCell::new(state));
@@ -286,7 +286,7 @@ impl RenderNode {
         // See build_controls: the prebuild runs under this widget's
         // cell as the record reader, so its subviews attach to it.
         let core = renderer.new_core();
-        renderer.with_reader(&core, ReaderPhase::Record, |renderer| {
+        renderer.with_probe_reader(&core, ReaderPhase::Record, |renderer| {
             state.prebuild(renderer, env);
         });
         let state = Rc::new(RefCell::new(state));

@@ -155,15 +155,21 @@ impl RetainedSubview {
 
     /// Parents the built node's cell under `owner`: the mark the subtree
     /// raises reaches the owner's `below`, and the placement chain the
-    /// node resolves against reads the owner's. Called once, by
-    /// `ensure_built`, with the cell reading at build time — the widget's
-    /// cell while a record/measuring reader is installed, the window root
-    /// otherwise.
+    /// node resolves against reads the owner's. The cell is also listed
+    /// among `owner`'s subviews, so `retire_unplaced_subviews` at the end
+    /// of the owner's record retires the subtree the record left
+    /// unplaced. Called once, by `ensure_built`, with the cell reading at
+    /// build time — the widget's cell while a record/measuring reader is
+    /// installed, the window root otherwise.
     pub(crate) fn attach(&self, owner: &Rc<NodeCell>) {
         let RetainedSubviewState::Built(built) = &self.state else {
             return;
         };
         built.node.core().cell.set_parent(owner);
+        owner
+            .subviews
+            .borrow_mut()
+            .push(Rc::downgrade(&built.node.core().cell));
     }
 
     /// Eagerly build the sub-view's node now (the caller has the renderer),
@@ -359,7 +365,13 @@ impl RetainedSubview {
     #[cfg(feature = "accessibility")]
     pub(crate) fn emit_accessibility(&mut self, renderer: &mut SemanticCore, env: &Environment) {
         self.ensure_built(renderer, env);
-        let node = &mut self.expect_built_mut("emit_accessibility").node;
+        let built = self.expect_built_mut("emit_accessibility");
+        // The emit walk's placement: a sub-view the walk descends into is
+        // placed for the enclosing record — a semantic frame has no
+        // `link_placement` to stamp it, and the record's leave retires any
+        // subview it did not reach.
+        built.node.core().cell.mark_placed(renderer.record_seq());
+        let node = &mut built.node;
         let _ = Self::patch_built(node, renderer);
         node.emit_accessibility(renderer, env);
     }
@@ -437,8 +449,9 @@ impl RetainedSubview {
         let size = Size::new(rect.width() as f32, rect.height() as f32);
         built.needs_layout |= structural | built.node.take_layout_dirty();
         built.layout_if_needed(renderer, env, safe_area, proposal, size);
+        let delta = kurbo::Affine::translate((rect.x0, rect.y0));
         let child_ctx = ctx.child(
-            kurbo::Affine::translate((rect.x0, rect.y0)),
+            delta,
             kurbo::Rect::new(0.0, 0.0, rect.width(), rect.height()),
         );
         // Record the sub-view's root as the owner of whatever its flush
@@ -447,11 +460,52 @@ impl RetainedSubview {
         // inside the sub-view from one attached to the root itself.
         if let Some(identity) = built.node.accessibility_identity() {
             renderer.push_input_owner(&identity);
-            built.node.flush(renderer, child_ctx, env);
+            built.node.flush(renderer, child_ctx, env, delta);
             renderer.pop_input_owner();
         } else {
-            built.node.flush(renderer, child_ctx, env);
+            built.node.flush(renderer, child_ctx, env, delta);
         }
+    }
+
+    /// [`flush_in_rect`](Self::flush_in_rect) for a subtree displayed outside
+    /// the walk recording it (context menus, anchored overlays): the
+    /// sub-view's registrations resolve in window space through the IDENTITY
+    /// window anchor, the same answer the deleted
+    /// `hit_transform = kurbo::Affine::IDENTITY` entry points gave.
+    pub(crate) fn flush_in_rect_detached(
+        &mut self,
+        renderer: &mut HydrolysisRenderer,
+        ctx: RenderContext,
+        env: &Environment,
+        proposal: ProposalSize,
+        rect: kurbo::Rect,
+        safe_area: Option<safe_area::SafeAreaLayout>,
+    ) {
+        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            return;
+        }
+        self.ensure_built(renderer, env);
+        let built = self.expect_built_mut("flush_in_rect_detached");
+        let structural = Self::patch_built(&mut built.node, renderer);
+        built.node.prepare_for_measure(renderer);
+        #[allow(clippy::cast_possible_truncation)]
+        let size = Size::new(rect.width() as f32, rect.height() as f32);
+        built.needs_layout |= structural | built.node.take_layout_dirty();
+        built.layout_if_needed(renderer, env, safe_area, proposal, size);
+        let delta = kurbo::Affine::translate((rect.x0, rect.y0));
+        let child_ctx = ctx.child(
+            delta,
+            kurbo::Rect::new(0.0, 0.0, rect.width(), rect.height()),
+        );
+        // The subtree detaches at the current registration frame: an open
+        // scope (the exiting overlay's unhittable one, a suppressed preview)
+        // stays in the chain and gates its entries; with none open the
+        // current placement is the window root, the same anchor as before.
+        let anchor = renderer.current_placement();
+        let index = anchor.take_item();
+        built
+            .node
+            .flush_anchored(renderer, child_ctx, env, Some(anchor), delta, index);
     }
 
     /// The retained identity of the built sub-view's root node — the owner the
@@ -471,6 +525,10 @@ impl RetainedSubview {
     /// label's animated translate + scale). The caller composes the transform via
     /// [`RenderContext::child`] and passes the local layout `size` the node should
     /// lay out at; a zero-area size renders nothing.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "threads the full flush context; grouping into a struct would not improve clarity"
+    )]
     pub(crate) fn flush_in_ctx(
         &mut self,
         renderer: &mut HydrolysisRenderer,
@@ -479,6 +537,7 @@ impl RetainedSubview {
         proposal: ProposalSize,
         size: Size,
         safe_area: Option<safe_area::SafeAreaLayout>,
+        placement_delta: kurbo::Affine,
     ) {
         if size.width <= 0.0 || size.height <= 0.0 {
             return;
@@ -491,10 +550,10 @@ impl RetainedSubview {
         built.layout_if_needed(renderer, env, safe_area, proposal, size);
         if let Some(identity) = built.node.accessibility_identity() {
             renderer.push_input_owner(&identity);
-            built.node.flush(renderer, ctx, env);
+            built.node.flush(renderer, ctx, env, placement_delta);
             renderer.pop_input_owner();
         } else {
-            built.node.flush(renderer, ctx, env);
+            built.node.flush(renderer, ctx, env, placement_delta);
         }
     }
 
@@ -507,8 +566,9 @@ impl RetainedSubview {
     ///
     /// Only the drawing is local. Hit targets and accessibility bounds the
     /// flush registers are not replayed — they are live for this frame — so
-    /// they land in window hit-test space through `placement.hit_transform`,
-    /// the same space the captured layers are presented in.
+    /// they land in window hit-test space through the placement chain the
+    /// capture anchors at, the same space the captured layers are
+    /// presented in.
     pub(crate) fn render_built_scene(
         &mut self,
         renderer: &mut HydrolysisRenderer,
@@ -516,10 +576,7 @@ impl RetainedSubview {
         placement: CapturedScenePlacement,
         safe_area: Option<safe_area::SafeAreaLayout>,
     ) -> NavigationCapturedScene {
-        let CapturedScenePlacement {
-            size,
-            hit_transform,
-        } = placement;
+        let CapturedScenePlacement { size } = placement;
         self.ensure_built(renderer, env);
         let built = self.expect_built_mut("render_built_scene");
         let structural = Self::patch_built(&mut built.node, renderer);
@@ -527,17 +584,34 @@ impl RetainedSubview {
         built.needs_layout |= structural | built.node.take_layout_dirty();
         let proposal = ProposalSize::new(Some(size.width), Some(size.height));
         built.layout_if_needed(renderer, env, safe_area, proposal, size);
-        let local_ctx = RenderContext::with_transforms(
-            kurbo::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
-            kurbo::Affine::IDENTITY,
-            hit_transform,
-        );
+        let local_ctx = RenderContext {
+            local: kurbo::Affine::IDENTITY,
+            bounds: kurbo::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
+        };
         renderer.begin_navigation_scene_capture();
         renderer.push_lazy_viewport(LazyViewport {
             bounds: local_ctx.bounds,
-            transform: local_ctx.transform,
+            transform: local_ctx.local,
         });
-        let layers = renderer.capture_layers(|renderer| built.node.flush(renderer, local_ctx, env));
+        // The captured subtree roots at the current placement with an
+        // identity delta: the placement's resolved transform IS
+        // `hit_transform` (the caller computed it from this chain), but
+        // the chain keeps every ancestor scope — an inactive page's
+        // unhittable scope and its clips gate its registrations, which
+        // the window anchor bypassed. The page claims the anchor's next
+        // item slot — its stack position in the parent's record.
+        let anchor = renderer.current_placement();
+        let index = anchor.take_item();
+        let layers = renderer.capture_layers(|renderer| {
+            built.node.flush_anchored(
+                renderer,
+                local_ctx,
+                env,
+                Some(anchor),
+                kurbo::Affine::IDENTITY,
+                index,
+            );
+        });
         renderer.pop_lazy_viewport("retained scene capture");
         renderer.finish_navigation_scene_capture(layers)
     }
@@ -552,29 +626,27 @@ impl RetainedSubview {
         placement: CapturedScenePlacement,
         safe_area: Option<safe_area::SafeAreaLayout>,
     ) -> NavigationCapturedScene {
-        let previous_hit_test_opacity = renderer.hit_test.hit_test_opacity;
-        renderer.hit_test.hit_test_opacity = 0.0;
+        // An inactive page registers nothing hittable.
+        renderer.push_unhittable_scope();
         #[cfg(feature = "accessibility")]
         renderer.push_accessibility_suppression();
         let scene = self.render_built_scene(renderer, env, placement, safe_area);
         #[cfg(feature = "accessibility")]
         renderer.pop_accessibility_suppression();
-        renderer.hit_test.hit_test_opacity = previous_hit_test_opacity;
+        renderer.pop_placement_scope();
         scene
     }
 }
 
 /// Where a scene captured by [`RetainedSubview::render_built_scene`] is
-/// presented: the size its content lays out at, and the transform from its
-/// local space into window hit-test space. The drawing is recorded local and
-/// placed by whoever replays it; the hit targets and accessibility bounds are
-/// registered live and so must already carry the placement.
+/// presented: the size its content lays out at. The drawing is recorded
+/// local and placed by whoever replays it; the hit targets and
+/// accessibility bounds are registered live and resolve through the
+/// placement the capture anchored at — the recording point's own chain.
 #[derive(Clone, Copy, Debug)]
 pub struct CapturedScenePlacement {
     /// The size the captured content lays out at.
     pub size: Size,
-    /// Local space to window hit-test space.
-    pub hit_transform: kurbo::Affine,
 }
 
 /// A cache of retained node sub-views for a *virtualized* collection (a lazy
@@ -799,7 +871,7 @@ pub struct FillNode {
 }
 
 impl FillNode {
-    pub(crate) fn new(child: RenderNode, core: NodeCore) -> Self {
+    pub(crate) const fn new(child: RenderNode, core: NodeCore) -> Self {
         Self {
             child,
             core,

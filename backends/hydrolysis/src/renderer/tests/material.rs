@@ -94,7 +94,7 @@ fn ancestry_alphas(runtime: &HeadlessRuntime) -> Vec<f32> {
 /// backdrop group was built for, and the engine's backdrop capture bytes
 /// and format.
 fn installed(runtime: &HeadlessRuntime) -> (Option<f64>, u64, Option<&'static str>) {
-    let key = material_layer(runtime).key;
+    let key = std::rc::Rc::as_ptr(&material_layer(runtime).owner) as usize;
     let mut windows = runtime.renderer().cherenkov_windows.values();
     let window = windows.next().expect("the frame installed into a window");
     assert!(windows.next().is_none(), "the test renders one window");

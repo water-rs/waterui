@@ -57,6 +57,9 @@ pub struct TouchScrollPending {
 pub struct TouchScrollDrag {
     /// The claimed scroll view's offset handle.
     pub(crate) handle: crate::scroll::ScrollHandle,
+    /// The cell that registered the claimed scroll target — mark
+    /// attribution for the drag's offset writes.
+    pub(crate) owner: std::rc::Weak<crate::renderer::NodeCell>,
     /// The point the last applied delta ended at, in window hit-test space.
     pub(crate) last: kurbo::Point,
     /// The motion samples the release's fling is fit over.
@@ -184,6 +187,12 @@ impl TouchFling {
             .then(|| axis_fling(finger_velocity.y, metrics.offset_y, metrics.max_y))
             .flatten();
         (x.is_some() || y.is_some()).then_some(Self { handle, x, y })
+    }
+
+    /// The claimed scroll view's offset handle — the pump needs it to
+    /// attribute the tick's write to the `ScrollTarget` owner.
+    pub(crate) const fn handle(&self) -> &crate::scroll::ScrollHandle {
+        &self.handle
     }
 
     /// Advances the fling to `now` and applies its offset through the

@@ -9,13 +9,18 @@
 //! each frame touches only the marked nodes.
 
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
+
+#[cfg(feature = "accessibility")]
+use accesskit::{Node as AccessibilityNode, NodeId as AccessibilityNodeId};
 
 use waterui_core::Retain;
 
 use waterui_backend_core::frame_signals::FrameSignals;
 
 use super::placement::Placement;
+use super::registry::OwnerRegistrations;
+use super::scopes::RetainedScopes;
 
 /// The frame-work a cell is dirty for, one bit per cause.
 ///
@@ -31,24 +36,24 @@ pub struct Dirty(u8);
 
 impl Dirty {
     /// No work pending.
-    pub(crate) const NONE: Self = Self(0);
+    pub const NONE: Self = Self(0);
     /// The subtree shape changed: children must be rebuilt.
-    pub(crate) const STRUCTURE: Self = Self(1 << 0);
+    pub const STRUCTURE: Self = Self(1 << 0);
     /// Layout inputs changed: the node (and every ancestor's `own`) must
     /// re-measure.
-    pub(crate) const LAYOUT: Self = Self(1 << 1);
+    pub const LAYOUT: Self = Self(1 << 1);
     /// Recorded drawing changed: the node re-records its runs.
-    pub(crate) const PAINT: Self = Self(1 << 2);
+    pub const PAINT: Self = Self(1 << 2);
     /// A GPU/external-frame producer published work for the install layer.
-    pub(crate) const PRODUCER: Self = Self(1 << 4);
+    pub const PRODUCER: Self = Self(1 << 4);
 
     /// Whether every bit in `other` is set in `self`.
-    pub(crate) const fn contains(self, other: Self) -> bool {
+    pub const fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
     }
 
     /// Whether no bit is set.
-    pub(crate) const fn is_empty(self) -> bool {
+    pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
 }
@@ -95,24 +100,131 @@ pub struct NodeCell {
     /// The node's placement mirror (layer props for hit and paint
     /// resolution).
     placement: Rc<Placement>,
+    /// The scopes the node's last record pushed around its descendants
+    /// (§B.3) — a partial descent replays them so a re-recording child sees
+    /// the same ancestor state.
+    pub scopes: RefCell<RetainedScopes>,
+    /// The registrations the node's last record emitted — the retained
+    /// entries its materialization replays (`None` until the first record
+    /// registers, or after a purge). Purging the cell's bucket is the
+    /// per-owner retire: O(entries of that owner), no registry sweep.
+    pub(crate) registrations: RefCell<Option<Box<OwnerRegistrations>>>,
+    /// The cell is listed in the window's `retained.owners` enumeration —
+    /// set the first time it registers, so materialization visits each
+    /// owner once.
+    pub(crate) registered: Cell<bool>,
+    /// Cells this cell's records parented under it — filled by
+    /// `set_parent`, pruned of dead entries where it is walked.
+    children: RefCell<Vec<Weak<Self>>>,
+    /// The `RetainedSubview` roots this cell's records own — every subview
+    /// `attach`ed under it. At record end a subview the record did not
+    /// place has its subtree retired (§D's unplaced rule).
+    pub(crate) subviews: RefCell<Vec<Weak<Self>>>,
+    /// The record sequence this cell's placement was last linked under —
+    /// the "placed during that record" stamp `subviews` retires against.
+    placed_seq: Cell<u64>,
+    /// §B.4: the node is an accessibility unit — its record opened an
+    /// accessibility container or claimed a gesture scope, so a descendant's
+    /// emissions diff escalates here. Reset at each record; set only when
+    /// the record actually claims a scope.
+    #[cfg(feature = "accessibility")]
+    pub a11y_unit: Cell<bool>,
+    /// An accessibility-emitting record is open on this cell right now.
+    /// The unit rule skips its PAINT mark while the unit ancestor is
+    /// already mid-record — the mark exists to wake an ancestor a partial
+    /// re-record did not cover, not one whose record is in flight.
+    #[cfg(feature = "accessibility")]
+    pub a11y_recording: Cell<bool>,
+    /// The accessibility ids the cell's open (or last) record emitted —
+    /// the emitted set the unit rule diffs and `retire_subtree` sweeps
+    /// out of the shared maps.
+    #[cfg(feature = "accessibility")]
+    pub(crate) a11y_emitted: RefCell<Vec<AccessibilityNodeId>>,
+    /// The emitted set the cell's last record left behind — the baseline
+    /// the unit rule's next record diffs against, `None` until its first
+    /// record completes. Stored on the cell so it lives and dies with the
+    /// node.
+    #[cfg(feature = "accessibility")]
+    pub(crate) a11y_retired: RefCell<Option<Vec<(AccessibilityNodeId, AccessibilityNode)>>>,
 }
 
 impl NodeCell {
     /// A cell with no parent and no marks. The caller attaches it to its
     /// parent via [`set_parent`](Self::set_parent).
-    pub(crate) fn new(frames: FrameSignals, placement: Rc<Placement>) -> Rc<Self> {
+    pub fn new(frames: FrameSignals, placement: Rc<Placement>) -> Rc<Self> {
         Rc::new(Self {
             own: Cell::new(Dirty::NONE),
             below: Cell::new(Dirty::NONE),
             parent: RefCell::new(None),
             frames,
             placement,
+            scopes: RefCell::new(RetainedScopes::default()),
+            registrations: RefCell::new(None),
+            registered: Cell::new(false),
+            children: RefCell::new(Vec::new()),
+            subviews: RefCell::new(Vec::new()),
+            placed_seq: Cell::new(0),
+            #[cfg(feature = "accessibility")]
+            a11y_unit: Cell::new(false),
+            #[cfg(feature = "accessibility")]
+            a11y_recording: Cell::new(false),
+            #[cfg(feature = "accessibility")]
+            a11y_emitted: RefCell::new(Vec::new()),
+            #[cfg(feature = "accessibility")]
+            a11y_retired: RefCell::new(None),
         })
     }
 
     /// The node's placement mirror.
-    pub(crate) const fn placement(&self) -> &Rc<Placement> {
+    pub const fn placement(&self) -> &Rc<Placement> {
         &self.placement
+    }
+
+    /// The cell this node's parent attached it under — `None` at the root.
+    /// The `.focused()` scope walk and the a11y unit rule climb it.
+    pub fn parent(&self) -> Option<Rc<Self>> {
+        self.parent.borrow().clone()
+    }
+
+    /// Live child cells — pruned of dead entries as it is handed out, so
+    /// `retire_subtree` walks only what still exists.
+    pub(crate) fn children(&self, out: &mut Vec<Rc<Self>>) {
+        self.children.borrow_mut().retain(|weak| {
+            weak.upgrade().is_some_and(|child| {
+                out.push(child);
+                true
+            })
+        });
+    }
+
+    /// Stamps that this cell's placement was linked under record `seq` —
+    /// called by the placement links every flush of the node runs.
+    pub(crate) fn mark_placed(&self, seq: u64) {
+        self.placed_seq.set(seq);
+    }
+
+    /// The record sequence this cell's placement was last linked under.
+    pub(crate) const fn placed_seq(&self) -> u64 {
+        self.placed_seq.get()
+    }
+
+    /// §B.4's unit escalation: the nearest strict ancestor flagged
+    /// `a11y_unit`, else the root cell — the ultimate owner of collapse and
+    /// claim decisions.
+    #[cfg(feature = "accessibility")]
+    pub fn nearest_a11y_unit_ancestor(self: &Rc<Self>) -> Rc<Self> {
+        let mut cursor = self.parent();
+        while let Some(cell) = cursor {
+            if cell.a11y_unit.get() {
+                return cell;
+            }
+            cursor = cell.parent();
+        }
+        let mut top = Rc::clone(self);
+        while let Some(parent) = top.parent() {
+            top = parent;
+        }
+        top
     }
 
     /// Attaches the cell to `parent`. Called while the parent builds its
@@ -120,8 +232,9 @@ impl NodeCell {
     /// geometry) moves the node. The placement mirror follows the same
     /// link. Marks raised while the cell was detached propagate up the new
     /// chain, so a mark can never be stranded below the attach point.
-    pub(crate) fn set_parent(&self, parent: &Rc<Self>) {
+    pub fn set_parent(self: &Rc<Self>, parent: &Rc<Self>) {
         *self.parent.borrow_mut() = Some(Rc::clone(parent));
+        parent.children.borrow_mut().push(Rc::downgrade(self));
         self.placement
             .set_parent(Some(Rc::clone(parent.placement())));
         let raised = self.own.get() | self.below.get();
@@ -146,11 +259,10 @@ impl NodeCell {
         }
     }
 
-    /// Marks `dirty` on the node and propagates it as `below` up the
-    /// ancestor chain, stopping at the first ancestor that already carries
-    /// it. Wakes the host so the pump runs.
-    pub(crate) fn mark(&self, dirty: Dirty) {
-        self.own.set(self.own.get() | dirty);
+    /// Propagates `dirty` as `below` up the ancestor chain, stopping at
+    /// the first ancestor that already carries it — the loop [`Self::mark`]
+    /// and [`Self::mark_quiet`] share.
+    fn propagate_below(&self, dirty: Dirty) {
         let mut cursor = self.parent.borrow().clone();
         while let Some(ancestor) = cursor {
             let below = ancestor.below.get();
@@ -161,12 +273,30 @@ impl NodeCell {
             let next = ancestor.parent.borrow().clone();
             cursor = next;
         }
+    }
+
+    /// Marks `dirty` on the node and propagates it as `below` up the
+    /// ancestor chain, stopping at the first ancestor that already carries
+    /// it. Wakes the host so the pump runs.
+    pub fn mark(&self, dirty: Dirty) {
+        self.own.set(self.own.get() | dirty);
+        self.propagate_below(dirty);
         self.frames.request_refresh();
+    }
+
+    /// [`Self::mark`] without the frame request: the dirty bits land for the
+    /// descent to consume, but nothing is scheduled — used by marks raised
+    /// inside work the pump already schedules as continuation (`Animate`),
+    /// like the animation tick. Arming `request_refresh` there would read
+    /// every animation frame as an unapplied change.
+    pub fn mark_quiet(&self, dirty: Dirty) {
+        self.own.set(self.own.get() | dirty);
+        self.propagate_below(dirty);
     }
 
     /// Marks `LAYOUT` on the node and on every ancestor's `own` — a size or
     /// layout-input change invalidates the whole chain above it.
-    pub(crate) fn mark_layout(&self) {
+    pub fn mark_layout(&self) {
         self.own.set(self.own.get() | Dirty::LAYOUT);
         let mut cursor = self.parent.borrow().clone();
         while let Some(ancestor) = cursor {
@@ -182,18 +312,18 @@ impl NodeCell {
     }
 
     /// This node's own pending marks.
-    pub(crate) const fn own(&self) -> Dirty {
+    pub const fn own(&self) -> Dirty {
         self.own.get()
     }
 
     /// Marks pending anywhere below this node.
-    pub(crate) const fn below(&self) -> Dirty {
+    pub const fn below(&self) -> Dirty {
         self.below.get()
     }
 
     /// Clears this cell's marks; the frame's flush walk calls it on every
     /// node it visits so a handled mark never re-arms.
-    pub(crate) fn clear_marks(&self) {
+    pub fn clear_marks(&self) {
         self.own.set(Dirty::NONE);
         self.below.set(Dirty::NONE);
     }
@@ -216,20 +346,31 @@ impl NodeCell {
 #[derive(Clone)]
 pub struct NodeCore {
     /// The node's cell: identity, marks and placement mirror.
-    pub(crate) cell: Rc<NodeCell>,
+    pub cell: Rc<NodeCell>,
     /// Signal guards from the node's last record (paint phase). `Rc` so the
     /// live reader can point a store clone at it while the guard closures
     /// run.
-    pub(crate) subscriptions: Rc<RefCell<Vec<Retain>>>,
+    pub subscriptions: Rc<RefCell<Vec<Retain>>>,
     /// Signal guards from the node's last measure/layout (layout phase).
-    pub(crate) layout_subscriptions: Rc<RefCell<Vec<Retain>>>,
+    pub layout_subscriptions: Rc<RefCell<Vec<Retain>>>,
 }
 
 impl NodeCore {
     /// A fresh core with an unattached cell.
-    pub(crate) fn new(frames: FrameSignals, placement: Rc<Placement>) -> Self {
+    pub fn new(frames: FrameSignals, placement: Rc<Placement>) -> Self {
         Self {
             cell: NodeCell::new(frames, placement),
+            subscriptions: Rc::new(RefCell::new(Vec::new())),
+            layout_subscriptions: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    /// A second core naming `cell` — the presentation hosts and the
+    /// window root's own record read through it, each with their own
+    /// subscription stores.
+    pub(crate) fn for_cell(cell: &Rc<NodeCell>) -> Self {
+        Self {
+            cell: Rc::clone(cell),
             subscriptions: Rc::new(RefCell::new(Vec::new())),
             layout_subscriptions: Rc::new(RefCell::new(Vec::new())),
         }
@@ -239,7 +380,7 @@ impl NodeCore {
     /// frame signals and placement clock, no parent. Marks raised on it
     /// reach no window.
     #[cfg(test)]
-    pub(crate) fn detached() -> Self {
+    pub fn detached() -> Self {
         Self::new(
             FrameSignals::new(std::time::Instant::now()),
             Placement::new(&super::placement::PlacementClock::new()),

@@ -708,6 +708,13 @@ pub(super) fn pump_window_scene<P: GpuSurfaceWindow>(
             runtime.clear_frame_mode();
         }
     }
+    // Every presented frame reports its platform-view set — an Idle pump
+    // re-presenting the retained layers included: the host publishes once
+    // per encoded frame, and a frame whose `current` is empty reads as
+    // "no views". The record is idempotent, so the build and refresh arms
+    // running their own frame-end step cost nothing here.
+    runtime.renderer.registries();
+    runtime.renderer.record_platform_views();
     if runtime.renderer.has_structure_marks() {
         // A structural mark raised mid-flush — an effect needs another frame.
         runtime.request_refresh();

@@ -12,9 +12,18 @@
 
 pub mod cell;
 pub mod placement;
+pub mod registry;
+pub mod scopes;
 
 pub use cell::{Dirty, NodeCell, NodeCore};
 pub use placement::{Placement, PlacementClock};
+#[cfg(feature = "accessibility")]
+pub use registry::Region;
+pub use registry::{
+    OwnerRegistrations, PaintOrder, PlatformViewRegistration, RegisteredGesture, RetainedEntry,
+    RetainedRegistry, SetRegistrationOwner,
+};
+pub use scopes::RetainedScopes;
 
 /// Identity of a producer owner: a counter the renderer hands out through
 /// `producer_wake` — never a pointer, so a dropped cell's address cannot

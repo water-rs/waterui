@@ -219,6 +219,8 @@ pub enum NavigationInteractivePopOutcome {
 /// the frontmost stack.
 #[derive(Clone)]
 pub struct NavigationBackTarget {
+    /// The node cell that registered the target.
+    pub(crate) owner: std::rc::Weak<crate::renderer::NodeCell>,
     pub(crate) slot_key: NavigationKey,
     pub(crate) width: f64,
     pub(crate) from_scene: NavigationCapturedScene,
@@ -646,7 +648,7 @@ impl SemanticCore {
             SystemBackGesture::Active(key) => Some(key.clone()),
             SystemBackGesture::Idle | SystemBackGesture::Ignored => None,
         };
-        let mut changed = false;
+        let mut owners = Vec::new();
         for (key, slot) in &mut self.navigation.slots {
             if system_back_slot.as_ref() == Some(key) {
                 continue;
@@ -655,20 +657,22 @@ impl SemanticCore {
                 && matches!(interactive.phase, NavigationInteractivePopPhase::Dragging)
             {
                 interactive.finish(now, outcome);
-                changed = true;
+                owners.push(slot.target.borrow().clone());
             }
         }
-        if changed {
-            self.context_mark_layout();
+        let changed = !owners.is_empty();
+        for owner in owners {
+            Self::mark_owner(&owner, crate::renderer::mount::Dirty::LAYOUT);
         }
         changed
     }
 
-    /// Records one stack as a system-back target for the frame being built.
+    /// Records one stack as a system-back target.
     ///
-    /// The last target registered this frame is the frontmost one.
+    /// The last materialized entry is the frontmost one — the retained list
+    /// keeps paint order, the same sequence the per-frame pushes gave.
     pub(crate) fn register_back_target(&mut self, target: NavigationBackTarget) {
-        self.hit_test.back_targets.push(target);
+        self.register_retained(target, kurbo::Rect::ZERO, |regs| &mut regs.back_targets);
     }
 
     /// Whether the frame that just rendered registered any system-back target.
@@ -734,7 +738,7 @@ impl SemanticCore {
             target.to_scene,
         ));
         self.hit_test.system_back = SystemBackGesture::Active(target.slot_key);
-        self.context_mark_layout();
+        Self::mark_owner(&target.owner, crate::renderer::mount::Dirty::LAYOUT);
         true
     }
 
@@ -749,7 +753,13 @@ impl SemanticCore {
             .and_then(|slot| slot.interactive_pop.as_mut())
             .is_some_and(|pop| pop.set_progress(progress));
         if changed {
-            self.context_mark_layout();
+            let owner = self
+                .navigation
+                .slots
+                .get(&key)
+                .map(|slot| slot.target.borrow().clone())
+                .unwrap_or_default();
+            Self::mark_owner(&owner, crate::renderer::mount::Dirty::LAYOUT);
         }
         changed
     }
@@ -811,7 +821,8 @@ impl SemanticCore {
             return false;
         }
         interactive.finish(now, outcome);
-        self.context_mark_layout();
+        let owner = slot.target.borrow().clone();
+        Self::mark_owner(&owner, crate::renderer::mount::Dirty::LAYOUT);
         true
     }
 

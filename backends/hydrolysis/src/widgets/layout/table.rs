@@ -10,8 +10,6 @@ use crate::renderer::lazy::{
 };
 #[cfg(feature = "accessibility")]
 use crate::renderer::lazy::{VisibleColumnWindow, VisibleIndexWindow};
-#[cfg(feature = "accessibility")]
-use crate::renderer::transformed_rect;
 use crate::renderer::{
     HydroNativeView, HydroState, MeasuredTableMetrics, RenderContext, VisibleSubviewCache,
     WidgetRenderContext, measure_table_metrics, refresh_table_slot_baseline, table_data_cell_rect,
@@ -339,10 +337,10 @@ pub fn table_accessibility(
                 .and_then(i64::checked_neg)
                 .expect("hydrolysis table header accessibility identity overflow");
             let header_node_id = match ctx {
-                Some(ctx) => renderer.register_accessibility_child_node_with_key(
+                Some(_ctx) => renderer.register_accessibility_child_node_with_key(
                     header_key,
                     header_node,
-                    transformed_rect(ctx.hit_transform, header_cell),
+                    header_cell,
                     env,
                     None,
                 ),
@@ -391,12 +389,8 @@ pub fn table_accessibility(
                         .and_then(|pair| pair.checked_add(1))
                         .expect("hydrolysis table cell accessibility identity overflow");
                     let cell_node_id = match ctx {
-                        Some(ctx) => renderer.register_accessibility_child_node_with_key(
-                            cell_key,
-                            cell_node,
-                            transformed_rect(ctx.hit_transform, cell_rect),
-                            env,
-                            None,
+                        Some(_ctx) => renderer.register_accessibility_child_node_with_key(
+                            cell_key, cell_node, cell_rect, env, None,
                         ),
                         None => renderer.register_accessibility_child_node_with_key_semantic(
                             cell_key, cell_node, env, None,
@@ -510,7 +504,7 @@ pub fn render_table_parts(
     // The keyboard-moving clearance runs before the cells paint: while the
     // host's keyboard animation is in flight the offset follows it frame by
     // frame, so this flush paints the field already clear.
-    let targets_start = state
+    state
         .borrow()
         .surface
         .begin_flush(ctx.renderer_mut(), &handle);
@@ -573,10 +567,8 @@ pub fn render_table_parts(
     // Register before the cells flush: scroll-target dispatch walks the
     // frame's targets newest-first, so a scroll region inside a cell wins the
     // delta until it hits its own edge, where it falls through to the table.
-    let hit_transform = ctx.hit_transform;
     crate::widgets::scroll::register_scroll_wheel_target(
         ctx.renderer_mut(),
-        hit_transform,
         surface_viewport,
         &handle,
     );
@@ -689,7 +681,7 @@ pub fn render_table_parts(
     state
         .borrow()
         .surface
-        .end_flush(ctx.renderer_mut(), &handle, targets_start);
+        .end_flush(ctx.renderer_mut(), &handle);
 
     draw_scroll_indicators(
         ctx,

@@ -4,7 +4,7 @@ use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::slider_step_for_range;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
-    measure_slider_intrinsic, slider_value_epsilon, transformed_rect,
+    measure_slider_intrinsic, slider_value_epsilon,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -412,14 +412,11 @@ pub fn render_slider_parts(
         fill_right,
         track_center_y + metrics.track_height / 2.0,
     );
-    let hit_bounds = transformed_rect(
-        ctx.hit_transform,
-        kurbo::Rect::new(
-            track_left - metrics.handle_overhang(),
-            control_top,
-            track_right + metrics.handle_overhang(),
-            control_bottom,
-        ),
+    let hit_bounds = kurbo::Rect::new(
+        track_left - metrics.handle_overhang(),
+        control_top,
+        track_right + metrics.handle_overhang(),
+        control_bottom,
     );
     let (interaction, press_slot, _) = ctx.renderer_mut().bind_control_interaction_target(
         interaction_key,
@@ -428,7 +425,8 @@ pub fn render_slider_parts(
         disabled,
     );
     let thumb_center = kurbo::Point::new(fill_right, track_center_y);
-    let interaction = local_interaction_state(interaction, ctx.hit_transform);
+    let interaction =
+        local_interaction_state(interaction, ctx.renderer_mut().current_hit_transform());
     {
         ctx.draw_context(|draw| {
             theme.draw_slider_track(&mut *draw, track_rect, fill_rect, state.size, interaction);
@@ -501,8 +499,7 @@ pub fn render_slider_parts(
             bubble.y1,
         );
         let text_ctx = RenderContext {
-            transform: ctx.transform,
-            hit_transform: ctx.hit_transform,
+            local: ctx.local,
             bounds: text_rect,
         };
         let (hydro, scene) = ctx.renderer_mut().state_and_scene_mut();
@@ -526,7 +523,7 @@ pub fn render_slider_parts(
     if disabled {
         return;
     }
-    let inverse_transform = ctx.hit_transform.inverse();
+    let inverse_transform = ctx.renderer_mut().current_hit_transform().inverse();
     let value_epsilon = slider_value_epsilon(span, usable_track);
     let keyboard_value = value_binding.clone();
     let keyboard_step = span / 100.0;

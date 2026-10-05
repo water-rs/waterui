@@ -567,7 +567,10 @@ impl SemanticCore {
                 let Some(cell) = owner.cell.upgrade() else {
                     return false;
                 };
-                cell.mark(owner.dirty);
+                // The tick's own scheduling is the `Animate` arm — marking
+                // through `mark()` would read the animation's continuation
+                // as an unapplied change every frame.
+                cell.mark_quiet(owner.dirty);
                 active.contains(key)
             });
         }
