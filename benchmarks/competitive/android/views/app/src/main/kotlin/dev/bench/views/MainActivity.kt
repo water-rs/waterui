@@ -12,7 +12,7 @@ import android.os.Bundle
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.view.animation.AccelerateDecelerateInterpolator
+import android.view.animation.PathInterpolator
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -163,8 +163,13 @@ class MainActivity : Activity() {
             addView(extras, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { marginStart = 8.dp(); marginEnd = 12.dp() })
-            addView(ts)
+            ).apply { marginStart = 12.dp() })
+            // the 12 gap to the timestamp lives on ts so it holds in
+            // W2 (extras GONE) and W6 alike
+            addView(ts, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { marginStart = 12.dp() })
         }
     }
 
@@ -180,6 +185,9 @@ class MainActivity : Activity() {
         // W6 cells are reused on bind — the count is fixed for the
         // launch, so rebinds repaint each cell rather than rebuild it.
         val extras = row.findViewWithTag<LinearLayout>("extras")
+        // an empty cell group must not consume its margin — GONE drops
+        // it from the row's layout entirely, leaving the spec's 12 gap
+        extras.visibility = if (complexity > 0) View.VISIBLE else View.GONE
         while (extras.childCount < complexity) {
             val cell = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
@@ -192,7 +200,7 @@ class MainActivity : Activity() {
             extras.addView(cell, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { marginStart = 4.dp() })
+            ).apply { if (extras.childCount > 0) marginStart = 4.dp() })
         }
         while (extras.childCount > complexity) {
             extras.removeViewAt(extras.childCount - 1)
@@ -233,9 +241,12 @@ class MainActivity : Activity() {
     private fun w3(n: Int) {
         val stage = FrameLayout(this).apply { clipChildren = false }
         val root = FrameLayout(this)
+        // mobile placement: pinned to the top of the content area with a
+        // 16-point inset, horizontally centred (WORKLOADS.md)
         root.addView(stage, FrameLayout.LayoutParams(
-            FIELD_W.dp(), FIELD_H.dp(), Gravity.CENTER,
-        ))
+            FIELD_W.dp(), FIELD_H.dp(),
+            Gravity.CENTER_HORIZONTAL or Gravity.TOP,
+        ).apply { topMargin = 16.dp() })
 
         val d = resources.displayMetrics.density
         for (i in 0 until n) {
@@ -269,7 +280,9 @@ class MainActivity : Activity() {
                 val to = 0.3f + rng.next01() * 0.7f
                 ValueAnimator.ofFloat(0f, 1f).apply {
                     duration = durMs
-                    interpolator = AccelerateDecelerateInterpolator()
+                    // one easing curve for every contestant:
+                    // cubic-bezier(0.42, 0.0, 0.58, 1.0)
+                    interpolator = PathInterpolator(0.42f, 0f, 0.58f, 1f)
                     addUpdateListener {
                         val f = it.animatedValue as Float
                         v.translationX = (sx + (tx - sx) * f) * d

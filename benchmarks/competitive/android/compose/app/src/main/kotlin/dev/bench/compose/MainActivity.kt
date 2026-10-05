@@ -194,7 +194,12 @@ fun W2Feed() {
 // own xorshift64 sequence and period (1200 + (i%5)*200 ms, ease-in-out).
 @Composable
 fun W3Motion(count: Int) {
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+    // mobile placement: pinned to the top of the content area with a
+    // 16-point inset, horizontally centred (WORKLOADS.md)
+    Box(
+        modifier = Modifier.fillMaxSize().padding(top = 16.dp),
+        contentAlignment = Alignment.TopCenter,
+    ) {
         Box(modifier = Modifier.size(FIELD_W.dp, FIELD_H.dp)) {
             for (i in 0 until count) {
                 WanderRect(i)

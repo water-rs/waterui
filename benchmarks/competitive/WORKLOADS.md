@@ -132,9 +132,11 @@ and W6 on each platform (whatever OS-level injector that leg uses).
 
 All scrolling in W2, W4 and W6 is driven from **outside the app** by
 OS-level input on every platform: Android `input swipe` / UiAutomator,
-XCTest coordinate drags on Apple, the compositor's virtual pointer on
-Linux, `SendInput` on Windows. No contestant scrolls itself; there is no
-in-app drive.
+XCTest coordinate drags on iOS devices and CGEvent scroll-wheel detents
+posted by the host driver on macOS and the iOS Simulator (a synthesized
+swipe cannot reach a simulator window), the compositor's virtual
+pointer on Linux, `SendInput` on Windows. No contestant scrolls itself;
+there is no in-app drive.
 
 The protocol is identical for every contestant on a platform and is
 declared once in that platform's manifest:
@@ -155,7 +157,10 @@ Every leg reports frame statistics computed by
   processes, the measurement window, the display refresh period.
 - The measurement window is `[first owned present + declared warmup,
   + capture_s]` on every platform. Startup frames sit before the window
-  and never enter the data.
+  and never enter the data. The warmup is declared in each leg's
+  manifest and is never 0 (android `[pacing].warmup_ms`, linux
+  `[pacing].warmup_ms`, apple `harness.warmup_ms`, windows
+  `[runner].warmup_seconds`).
 - The drive program starts at window start.
 - `startup_ms` is computed from launch to the first owned present, never
   from windowed data.
@@ -165,6 +170,6 @@ Every leg reports frame statistics computed by
   longer than 1.5 refresh periods contributes
   `round(interval / period) − 1` missed vsyncs.
 
-A contestant's readiness/`done` signal is posted by the contestant's own
-workload logic on every framework — no native watchdog timers
-substitute for it.
+A contestant signals only readiness (its first frame). Apps never
+signal completion: the host driver owns the end of every cell from the
+declared program and duration, under its own notification names.

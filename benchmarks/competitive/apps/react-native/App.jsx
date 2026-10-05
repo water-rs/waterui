@@ -11,7 +11,6 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   Animated,
   Easing,
-  NativeModules,
   Platform,
   Pressable,
   StyleSheet,
@@ -115,27 +114,16 @@ function Feed() {
 // MARK: - W5/W6 Capacity ladders
 
 // One pacing model on every leg: one launch renders one step, pinned by
-// the `step` prop. After the first frame each launch holds the step for
-// the declared settle+hold (1 s + 4 s), then the app posts
-// `dev.bench.done` itself through BenchNotify — no native-side timer.
-function useStepHoldDone() {
-  useEffect(() => {
-    const t = setTimeout(
-      () => NativeModules.BenchNotify.postDone(),
-      5000,
-    );
-    return () => clearTimeout(t);
-  }, []);
-}
+// the `step` prop. The host driver ends every cell on its own
+// schedule — the app signals readiness only, never completion.
 
 // W5: W3's scene with the rect count pinned per launch (200…25600).
 const W5_STEPS = [200, 400, 800, 1600, 3200, 6400, 12800, 25600];
 
 function MotionCapacity({ step }) {
   const [count] = useState(step);
-  useStepHoldDone();
   return (
-    <View style={styles.center}>
+    <View style={styles.fieldWrap}>
       <View style={{ width: FIELD_W, height: FIELD_H }}>
         {Array.from({ length: count }, (_, i) => (
           <MotionRect key={i} index={i} />
@@ -151,7 +139,6 @@ const W6_STEPS = [1, 2, 4, 8, 16, 32, 64];
 
 function FeedCapacity({ step }) {
   const [complexity] = useState(step);
-  useStepHoldDone();
   return (
     <View style={styles.fill}>
       <Animated.FlatList
@@ -161,7 +148,9 @@ function FeedCapacity({ step }) {
         keyExtractor={i => String(i)}
         renderItem={({ item: i }) => (
           <FeedRow i={i} extra={Array.from({ length: complexity }, (_, j) => (
-            <View key={j} style={{ alignItems: 'center', marginLeft: 4 }}>
+            // cells separated by 4; the first carries the group's 12
+            // gap to the text column (spec)
+            <View key={j} style={{ alignItems: 'center', marginLeft: j === 0 ? 12 : 4 }}>
               <View
                 style={{
                   width: 14,
@@ -230,7 +219,9 @@ function MotionRect({ index }) {
       Animated.timing(anim, {
         toValue: 1,
         duration,
-        easing: Easing.inOut(Easing.ease),
+        // one easing curve for every contestant:
+        // cubic-bezier(0.42, 0.0, 0.58, 1.0)
+        easing: Easing.bezier(0.42, 0.0, 0.58, 1.0),
         useNativeDriver: true,
       }).start(({ finished }) => {
         if (finished && alive) step();
@@ -291,7 +282,7 @@ function MotionRect({ index }) {
 
 function Motion() {
   return (
-    <View style={styles.center}>
+    <View style={styles.fieldWrap}>
       <View style={{ width: FIELD_W, height: FIELD_H }}>
         {Array.from({ length: 200 }, (_, i) => (
           <MotionRect key={i} index={i} />
@@ -374,6 +365,12 @@ export default function App({ workload, step }) {
 const styles = StyleSheet.create({
   fill: { flex: 1 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  // field placement: pinned to the top of the content area with a
+  // 16-point inset on mobile, centred on desktop (WORKLOADS.md)
+  fieldWrap:
+    Platform.OS === 'ios' || Platform.OS === 'android'
+      ? { flex: 1, alignItems: 'center', paddingTop: 16 }
+      : { flex: 1, alignItems: 'center', justifyContent: 'center' },
   button: {
     backgroundColor: '#0A84FF',
     borderRadius: 8,

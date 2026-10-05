@@ -38,9 +38,6 @@ class MainFlutterWindow: NSWindow {
       binaryMessenger: flutterViewController.engine.binaryMessenger)
     channel.setMethodCallHandler { call, result in
       switch call.method {
-      case "postDone":
-        notify_post("dev.bench.done")
-        result(nil)
       default: result(UserDefaults.standard.string(forKey: "bench-\(call.method)"))
       }
     }

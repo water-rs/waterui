@@ -26,17 +26,14 @@ import UIKit
     // for minutes, so notify carries the assertion.
     notify_post("dev.bench.ready.\(Bundle.main.bundleIdentifier ?? "unknown").\(workload)")
 
-    // The runner asserts this accessibility identifier after launch;
-    // retry until the Flutter view exists.
-    for delay in [0.0, 0.5, 1.0, 2.0] {
-      DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-        for scene in UIApplication.shared.connectedScenes {
-          guard let ws = scene as? UIWindowScene else { continue }
-          for window in ws.windows {
-            window.rootViewController?.view.accessibilityIdentifier =
-              "bench-workload-\(workload)"
-          }
-        }
+    // The runner asserts this accessibility identifier after launch —
+    // set it once on the window's root view; a missed set surfaces as a
+    // failed launch check, never a blind retry.
+    for scene in UIApplication.shared.connectedScenes {
+      guard let ws = scene as? UIWindowScene else { continue }
+      for window in ws.windows {
+        window.rootViewController?.view.accessibilityIdentifier =
+          "bench-workload-\(workload)"
       }
     }
 
@@ -54,11 +51,6 @@ import UIKit
 
     channel.setMethodCallHandler { call, result in
       switch call.method {
-      case "postDone":
-        // The app's own workload logic ends its hold by calling this;
-        // there is no native-side timer.
-        notify_post("dev.bench.done")
-        result(nil)
       default: result(UserDefaults.standard.string(forKey: "bench-\(call.method)"))
       }
     }

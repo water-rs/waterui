@@ -4,9 +4,8 @@
 // read through NSUserDefaults' NSArgumentDomain via the bench/config
 // channel. One pacing model on every leg: one launch renders one ladder
 // step. Scrolling is driven from outside the app by OS-level input —
-// the app never scrolls itself. Each capacity launch posts
-// `dev.bench.done` from the app's own workload logic after the
-// declared hold ends.
+// the app never scrolls itself. The host driver ends every cell on
+// its own schedule — the app posts readiness only, never completion.
 
 import 'dart:async';
 import 'dart:io';
@@ -98,15 +97,6 @@ void _ready() {
   // BENCH_READY on stdout is the runner's launch-timing signal.
   // ignore: avoid_print
   SchedulerBinding.instance.addPostFrameCallback((_) => print('BENCH_READY'));
-}
-
-/// One capacity launch holds its pinned step for the declared
-/// settle+hold after the first frame (WORKLOADS.md: 1 s + 4 s), then the
-/// app posts `dev.bench.done` itself — no native-side timer.
-Future<void> _postDoneAfterHold() async {
-  await SchedulerBinding.instance.endOfFrame;
-  await Future.delayed(const Duration(milliseconds: 5000));
-  await _configChannel.invokeMethod('postDone');
 }
 
 // MARK: - Shared constants (identical across contestants)
@@ -262,14 +252,27 @@ const _fieldW = 720.0;
 const _fieldH = 440.0;
 const _rectSize = 40.0;
 
+// Field placement: pinned to the top of the content area with a
+// 16-point inset on mobile, centred on desktop (WORKLOADS.md).
+Widget _fieldPlacement(Widget field) {
+  final mobile = Platform.isAndroid || Platform.isIOS;
+  if (!mobile) {
+    return Center(child: field);
+  }
+  return Padding(
+    padding: const EdgeInsets.only(top: 16),
+    child: Align(alignment: Alignment.topCenter, child: field),
+  );
+}
+
 class MotionPage extends StatelessWidget {
   const MotionPage({super.key});
   @override
   Widget build(BuildContext context) {
     _ready();
     return Scaffold(
-      body: Center(
-        child: SizedBox(
+      body: _fieldPlacement(
+        SizedBox(
           width: _fieldW,
           height: _fieldH,
           child: Stack(
@@ -413,7 +416,7 @@ class _TextPageState extends State<TextPage> {
 // MARK: - W5 Motion capacity
 
 /// W3's scene with the rect count pinned per launch (200…25600); the
-/// app posts `dev.bench.done` when the step's hold ends.
+/// host driver ends the cell on its own schedule.
 class MotionCapacityPage extends StatefulWidget {
   const MotionCapacityPage({super.key, this.pinnedStep});
   final int? pinnedStep;
@@ -429,14 +432,13 @@ class _MotionCapacityPageState extends State<MotionCapacityPage> {
   void initState() {
     super.initState();
     _ready();
-    _postDoneAfterHold();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Center(
-        child: SizedBox(
+      body: _fieldPlacement(
+        SizedBox(
           width: _fieldW,
           height: _fieldH,
           child: Stack(
@@ -472,7 +474,6 @@ class _FeedCapacityPageState extends State<FeedCapacityPage> {
   void initState() {
     super.initState();
     _ready();
-    _postDoneAfterHold();
   }
 
   @override

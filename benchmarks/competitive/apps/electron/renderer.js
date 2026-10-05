@@ -279,14 +279,5 @@ switch (WORKLOAD) {
     throw new Error(`unreachable: workload validated as w1..w6`);
 }
 
-// One capacity launch holds its pinned step for the declared settle+hold
-// (1 s + 4 s, WORKLOADS.md) after the first frame, then the app's own
-// workload logic posts `dev.bench.done` through the main process.
-if (WORKLOAD === 'w5' || WORKLOAD === 'w6') {
-  const { ipcRenderer } = require('electron');
-  requestAnimationFrame(() =>
-    requestAnimationFrame(() =>
-      setTimeout(() => ipcRenderer.send('bench-done'), 5000),
-    ),
-  );
-}
+// The host driver ends every cell on its own schedule — the app posts
+// readiness only, never completion.

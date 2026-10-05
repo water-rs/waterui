@@ -4,9 +4,9 @@
 // BENCH_WORKLOAD in the environment (Linux, Windows). Missing or
 // unrecognized workload traps — never silently measure w1. Scrolling is
 // the runner's OS-level input; the app never scrolls itself. BENCH_READY
-// on stdout marks the first committed frame. Each capacity launch posts
-// `dev.bench.done` after its declared hold — sent by the renderer's own
-// workload logic, no native-side timer.
+// on stdout marks the first committed frame. The host driver ends
+// every cell on its own schedule — the app posts readiness only,
+// never completion.
 
 const { app, BrowserWindow } = require('electron');
 const { execFile, execFileSync } = require('child_process');
@@ -105,12 +105,6 @@ if (process.platform === 'darwin') {
   }
   notifyPost(`dev.bench.ready.${bundleID}.${workload}`);
 }
-
-// The renderer's own workload logic ends each capacity hold by sending
-// `bench-done`; the Darwin post lives here because only the main process
-// can spawn notifyutil.
-const { ipcMain } = require('electron');
-ipcMain.on('bench-done', () => notifyPost('dev.bench.done'));
 
 let win = null;
 

@@ -57,15 +57,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
       launchOptions: launchOptions
     )
 
-    // The runner asserts this identifier after launch; retry until the
-    // root view exists.
-    let mark = { [weak self] in
-      self?.window?.rootViewController?.view.accessibilityIdentifier =
-        "bench-workload-\(workload)"
-    }
-    for delay in [0.0, 0.5, 1.0, 2.0] {
-      DispatchQueue.main.asyncAfter(deadline: .now() + delay) { mark() }
-    }
+    // The runner asserts this identifier after launch — set it once on
+    // the window's root view; a missed set surfaces as a failed launch
+    // check, never a blind retry.
+    window?.rootViewController?.view.accessibilityIdentifier =
+      "bench-workload-\(workload)"
 
     // BENCH_READY on stdout marks the first rendered JS frame for
     // external launch timing (device mode has no XCTest).

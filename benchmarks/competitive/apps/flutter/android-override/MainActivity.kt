@@ -36,7 +36,7 @@ class MainActivity : FlutterActivity() {
                     // Darwin-notify handshake methods exist only on Apple
                     // targets; on Android the runner drives externally.
                     "beginObserved" -> result.success(false)
-                    "postDone", "logStep", "discardBegins" -> result.success(null)
+                    "logStep", "discardBegins" -> result.success(null)
                     else -> result.notImplemented()
                 }
             }
