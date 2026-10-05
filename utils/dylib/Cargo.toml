@@ -19,6 +19,14 @@ crate-type = ["dylib", "rlib"]
 
 [dependencies]
 waterui-internal.workspace = true
+# The layer chain: every family DLL resolves the crates embedded below it
+# through the layer DLLs instead of embedding a second copy (#1615).
+waterui-dylib-foundation = { path = "foundation" }
+waterui-dylib-graphics = { path = "graphics" }
+waterui-dylib-media = { path = "media", optional = true }
+waterui-dylib-webview = { path = "webview", optional = true }
+waterui-dylib-markdown = { path = "markdown", optional = true }
+waterui-dylib-components = { path = "components", optional = true }
 
 [features]
 default = [
@@ -30,34 +38,75 @@ default = [
     "locale-datetime",
     "locale-list",
 ]
-gpu = ["effects", "waterui-internal/gpu"]
+gpu = ["effects", "waterui-dylib-graphics/svg", "waterui-internal/gpu"]
 effects = ["waterui-internal/effects"]
 highlight = ["waterui-internal/highlight"]
 locale-datetime = ["waterui-internal/locale-datetime"]
 locale-list = ["waterui-internal/locale-list"]
 inspector = ["waterui-internal/inspector"]
 assets = ["waterui-internal/assets"]
-media = ["waterui-internal/media"]
-video = ["waterui-internal/video"]
+media = ["dep:waterui-dylib-media", "waterui-internal/media"]
+video = [
+    "dep:waterui-dylib-media",
+    "waterui-dylib-media?/video",
+    "waterui-internal/video",
+]
 remote = ["waterui-internal/remote"]
-video-gpu = ["waterui-internal/video-gpu"]
-webview = ["waterui-internal/webview"]
+video-gpu = [
+    "video",
+    "gpu",
+    "dep:waterui-dylib-media",
+    "waterui-dylib-media?/video-gpu",
+    "waterui-internal/video-gpu",
+]
+webview = ["dep:waterui-dylib-webview", "waterui-internal/webview"]
 ts = ["waterui-internal/ts"]
 navigation-restoration = ["waterui-internal/navigation-restoration"]
 snackbar = ["waterui-internal/snackbar"]
-flow-markdown = ["waterui-internal/flow-markdown"]
-markdown-math = ["waterui-internal/markdown-math"]
+flow-markdown = ["dep:waterui-dylib-markdown", "waterui-internal/flow-markdown"]
+markdown-math = [
+    "flow-markdown",
+    "waterui-dylib-markdown?/math",
+    "waterui-internal/markdown-math",
+]
 std = ["waterui-internal/std"]
-canvas = ["waterui-internal/canvas"]
-chart = ["waterui-internal/chart"]
-barcode = ["waterui-internal/barcode"]
-particle = ["waterui-internal/particle"]
+canvas = [
+    "dep:waterui-dylib-components",
+    "waterui-dylib-components?/canvas",
+    "waterui-internal/canvas",
+]
+chart = [
+    "dep:waterui-dylib-components",
+    "waterui-dylib-components?/chart",
+    "waterui-internal/chart",
+]
+barcode = [
+    "dep:waterui-dylib-components",
+    "waterui-dylib-components?/barcode",
+    "waterui-internal/barcode",
+]
+particle = [
+    "dep:waterui-dylib-components",
+    "waterui-dylib-components?/particle",
+    "waterui-internal/particle",
+]
 all = [
     "waterui-internal/all",
     "navigation-restoration",
     "highlight",
     "locale-datetime",
     "locale-list",
+    "media",
+    "video",
+    "video-gpu",
+    "webview",
+    "canvas",
+    "chart",
+    "barcode",
+    "particle",
+    "flow-markdown",
+    "markdown-math",
+    "remote",
 ]
 
 [lints]

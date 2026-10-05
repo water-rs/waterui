@@ -1,0 +1,39 @@
+[package]
+name = "waterui-dylib-foundation"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+description = "Foundation layer of the layered waterui dylib chain"
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+# The rlib is load-bearing, not redundant: Apple's host crate is built as a
+# `staticlib`, and rustc requires every Rust dependency of a staticlib to be
+# available in rlib form. Dropping it breaks `water preview` and `water run`
+# on Apple targets.
+crate-type = ["dylib", "rlib"]
+
+[dependencies]
+nami.workspace = true
+executor-core.workspace = true
+native-executor.workspace = true
+pastey.workspace = true
+waterui-core.workspace = true
+waterui-url.workspace = true
+waterui-locale.workspace = true
+waterui-watcher-set.workspace = true
+
+# A crate reached by two or more images that share a link is embedded here,
+# at or below their lowest common layer; everything above resolves it through
+# this DLL instead of embedding a second copy. The link of the top image
+# checks that this list is complete (a miss fails with "only shows up once").
+regex = "1"
+quick-xml = "0.42"
+lazy_static = "1"
+
+[lints]
+workspace = true

@@ -1,0 +1,34 @@
+[package]
+name = "waterui-dylib-markdown"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+description = "Markdown family layer of the layered waterui dylib chain"
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+# The rlib is load-bearing, not redundant: Apple's host crate is built as a
+# `staticlib`, and rustc requires every Rust dependency of a staticlib to be
+# available in rlib form. Dropping it breaks `water preview` and `water run`
+# on Apple targets.
+crate-type = ["dylib", "rlib"]
+
+[dependencies]
+waterui-dylib-graphics = { path = "../graphics" }
+pulldown-cmark = "0.13"
+waterui-math = { workspace = true, optional = true }
+
+# `tree-sitter`/`tree-sitter-md` stay out of this image deliberately: a Rust
+# `dylib` exports only Rust symbols, and `waterui-internal` calls the grammar's
+# C entry points (`tree_sitter_markdown`, `ts_parser_*`) directly, so those
+# crates must be embedded in the top image alongside their caller.
+
+[features]
+math = ["dep:waterui-math"]
+
+[lints]
+workspace = true

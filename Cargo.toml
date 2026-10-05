@@ -52,6 +52,15 @@ members = [
     "graphics/filtrate",
     "graphics/filtrate/core",
     "graphics/filtrate/derive",
+    # The layered dylib chain for the Windows export budget (#1615): the
+    # `waterui-dylib` facade sits on top of per-layer images so no single DLL
+    # exceeds the PE export limit of 65,535 symbols.
+    "utils/dylib/foundation",
+    "utils/dylib/graphics",
+    "utils/dylib/media",
+    "utils/dylib/webview",
+    "utils/dylib/markdown",
+    "utils/dylib/components",
     "tests/layout-twins/waterui",
     "components/icon/*",
 ]
