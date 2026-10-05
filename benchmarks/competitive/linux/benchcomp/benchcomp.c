@@ -122,7 +122,15 @@ struct benchcomp {
     struct wl_event_source *mem_timer;
 
     uint64_t duration_ms;
+    uint64_t warmup_ms;
     uint64_t start_t;
+    // measurement window anchor: CLOCK_MONOTONIC ns of the first committed
+    // present owned by the spawned app. The drive script and the capture
+    // end are scheduled relative to anchor + warmup, never to spawn.
+    uint64_t anchor_t;
+    bool anchored;
+    struct wl_event_source *present_timer;
+    int exit_code;
     bool done;
     bool nested;
 };
@@ -152,6 +160,11 @@ static void logf_ev(struct benchcomp *c, const char *ev, const char *fmt, ...) {
 // pass through. benchcomp is linked -rdynamic so libwlroots' PLT call
 // resolves here; the real libdrm symbol is reached via RTLD_NEXT.
 #define BENCH_FAKE_DRM_DEV ((dev_t)0xBE7C0000)
+// bound on the spawned app producing its first owned present; a
+// non-presenting app is a failed rep, not a hung measurement
+#define PRESENT_DEADLINE_MS 60000
+
+static void anchor(struct benchcomp *c);
 typedef int (*getdev_fn_t)(dev_t, uint32_t, drmDevicePtr *);
 int drmGetDeviceFromDevId(dev_t dev, uint32_t flags, drmDevicePtr *device) {
     static getdev_fn_t real_fn;
@@ -355,6 +368,8 @@ static void output_frame(struct wl_listener *listener, void *data) {
             logf_ev(c, "present", "\"surf\":%d,\"seq\":%llu,\"committed\":%d",
                     s->id, (unsigned long long)c->frame_seq,
                     s->committed ? 1 : 0);
+            if (s->committed && !c->anchored)
+                anchor(c);
             s->committed = false;
         }
     }
@@ -456,8 +471,11 @@ static void run_script_event(struct benchcomp *c, struct script_event *e) {
 
 static int script_tick(void *data) {
     struct benchcomp *c = data;
-    uint64_t now_ms = (now_ns() - c->start_t) / 1000000;
-    while (c->script_next && c->script_next->at_ms <= now_ms) {
+    // event times are relative to the measurement window start
+    // (first owned present + declared warmup), never to spawn
+    int64_t now_ms = (int64_t)((now_ns() - c->anchor_t) / 1000000)
+                     - (int64_t)c->warmup_ms;
+    while (c->script_next && (int64_t)c->script_next->at_ms <= now_ms) {
         struct script_event *e = c->script_next;
         struct script_event *next = NULL;
         if (e->link.next != &c->script)
@@ -498,12 +516,10 @@ static void load_script(struct benchcomp *c, const char *path) {
         wl_list_insert(c->script.prev, &e->link);
     }
     fclose(f);
-    if (!wl_list_empty(&c->script)) {
+    // the script is armed when the window anchors (first owned present),
+    // not at spawn — at_ms values are relative to window start
+    if (!wl_list_empty(&c->script))
         c->script_next = wl_container_of(c->script.next, c->script_next, link);
-        c->script_source = wl_event_loop_add_timer(c->loop, script_tick, c);
-        wl_event_source_timer_update(c->script_source,
-                                     (int)c->script_next->at_ms + 1);
-    }
 }
 
 // ---------------- spawn / shutdown ----------------
@@ -538,6 +554,7 @@ static int child_reap(void *data) {
 static void finish(struct benchcomp *c, int code) {
     if (c->done) return;
     c->done = true;
+    c->exit_code = code;
     if (c->spawn_pid > 0) {
         kill(c->spawn_pid, SIGTERM);
         for (int i = 0; i < 20; i++) {
@@ -555,6 +572,38 @@ static void finish(struct benchcomp *c, int code) {
 
 static int duration_timer(void *data) {
     finish(data, 0);
+    return 0;
+}
+
+// Called once on the first committed present owned by the spawned app:
+// opens the measurement window (anchor + warmup) and arms the drive
+// script and the capture-end timer against it.
+static void anchor(struct benchcomp *c) {
+    c->anchored = true;
+    c->anchor_t = now_ns();
+    logf_ev(c, "anchor", "\"warmup_ms\":%llu",
+            (unsigned long long)c->warmup_ms);
+    if (c->present_timer) {
+        wl_event_source_remove(c->present_timer);
+        c->present_timer = NULL;
+    }
+    if (c->script_next) {
+        c->script_source = wl_event_loop_add_timer(c->loop, script_tick, c);
+        wl_event_source_timer_update(
+            c->script_source,
+            (int)c->warmup_ms + (int)c->script_next->at_ms + 1);
+    }
+    if (c->duration_ms) {
+        c->dur_timer = wl_event_loop_add_timer(c->loop, duration_timer, c);
+        wl_event_source_timer_update(
+            c->dur_timer, (int)c->warmup_ms + (int)c->duration_ms);
+    }
+}
+
+static int present_deadline(void *data) {
+    // no owned present inside the bound: a failed rep, not a measurement
+    logf_ev(data, "no_present", NULL);
+    finish(data, 3);
     return 0;
 }
 
@@ -576,8 +625,8 @@ static void usage(const char *argv0) {
     (void)argv0;
     fprintf(stderr,
             "benchcomp --spawn CMD [--script FILE] [--duration MS]\n"
-            "          [--size WxH] [--refresh MHZ] [--out FILE] "
-            "[--cgroup NAME] [--nested]\n");
+            "          [--warmup MS] [--size WxH] [--refresh MHZ] "
+            "[--out FILE] [--cgroup NAME] [--nested]\n");
     exit(2);
 }
 
@@ -600,6 +649,8 @@ int main(int argc, char **argv) {
             script_path = argv[++i];
         else if (!strcmp(argv[i], "--duration") && i + 1 < argc)
             c.duration_ms = strtoul(argv[++i], NULL, 10);
+        else if (!strcmp(argv[i], "--warmup") && i + 1 < argc)
+            c.warmup_ms = strtoul(argv[++i], NULL, 10);
         else if (!strcmp(argv[i], "--size") && i + 1 < argc)
             sscanf(argv[++i], "%dx%d", &c.out_w, &c.out_h);
         else if (!strcmp(argv[i], "--refresh") && i + 1 < argc)
@@ -614,6 +665,11 @@ int main(int argc, char **argv) {
             usage(argv[0]);
     }
     if (!c.spawn_cmd) usage(argv[0]);
+    if (!c.warmup_ms) {
+        fprintf(stderr, "benchcomp: --warmup must be declared and nonzero "
+                "(METHOD: window = first owned present + warmup)\n");
+        return 2;
+    }
     if (out_path && !(c.log = fopen(out_path, "w"))) {
         fprintf(stderr, "benchcomp: cannot open %s\n", out_path);
         return 1;
@@ -710,7 +766,13 @@ int main(int argc, char **argv) {
     setenv("MOZ_ENABLE_WAYLAND", "1", 0);
 
     c.start_t = now_ns();
-    cgroup_setup(&c, cgroup_name);
+    if (!cgroup_setup(&c, cgroup_name)) {
+        // without the benchapp cgroup there is no memory measurement and
+        // no renderer-evidence scope — a failed run, not a degraded one
+        fprintf(stderr, "benchcomp: cgroup setup failed (%s)\n",
+                cgroup_name);
+        return 1;
+    }
 
     int period_ms = (int)(1000000 / c.refresh_mhz);
     if (period_ms < 1) period_ms = 1;
@@ -731,10 +793,11 @@ int main(int argc, char **argv) {
     c.child_timer = wl_event_loop_add_timer(c.loop, child_reap, &c);
     wl_event_source_timer_update(c.child_timer, 100);
 
-    if (c.duration_ms) {
-        c.dur_timer = wl_event_loop_add_timer(c.loop, duration_timer, &c);
-        wl_event_source_timer_update(c.dur_timer, (int)c.duration_ms);
-    }
+    // the window anchors on the app's first owned present; the bound
+    // keeps a non-presenting app from hanging the rep forever
+    c.present_timer = wl_event_loop_add_timer(c.loop, present_deadline, &c);
+    wl_event_source_timer_update(c.present_timer,
+                                 (int)PRESENT_DEADLINE_MS);
 
     logf_ev(&c, "start", "\"socket\":\"%s\"", sock);
     wl_display_run(c.display);
@@ -743,5 +806,5 @@ int main(int argc, char **argv) {
     wlr_scene_node_destroy(&c.scene->tree.node);
     wlr_backend_destroy(c.backend);
     wl_display_destroy(c.display);
-    return 0;
+    return c.exit_code;
 }

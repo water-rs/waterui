@@ -95,8 +95,8 @@ Filed upstream; this tree carries no patches or workarounds for them.
    flags legitimately-resolved sibling packages as Water.lock conflicts
    (`src/project_model/framework.rs`), and the scaffolded backend's
    `Cargo.lock.seed` pins an accesskit generation that no longer resolves.
-   Fixed upstream by cli#206; the run needs a CLI at or after that merge
-   (release 0.4.3 predates it).
+   Fixed upstream by cli#206 — the runner provisions the `water` CLI
+   from this checkout, which postdates that merge.
 2. **water-rs/hydrolysis#233 — `scroll()` ignored wheel input**: fixed by
    hydrolysis#234 (`ba6db6b`). Scrolling is now driven from outside the
    app by the compositor's virtual pointer (WORKLOADS.md fling program),

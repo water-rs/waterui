@@ -19,3 +19,7 @@ vendor/
 
 .cargo-cache/
 .water-cache/
+
+# uv-managed interpreter (pyproject/.python-version)
+.venv/
+__pycache__/

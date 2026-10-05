@@ -1,0 +1,9 @@
+[project]
+name = "competitive-bench-linux"
+version = "0.1.0"
+description = "water-rs/waterui#1262 competitive benchmark: Linux runner"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.uv]
+package = false

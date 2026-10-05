@@ -1,0 +1,8 @@
+version = 1
+revision = 3
+requires-python = ">=3.10"
+
+[[package]]
+name = "competitive-bench-linux"
+version = "0.1.0"
+source = { virtual = "." }

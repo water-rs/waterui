@@ -16,6 +16,15 @@ compositor: present timestamps, scripted input, cgroup memory sampling) for
 
 from __future__ import annotations
 
+import sys
+
+if sys.version_info < (3, 10):
+    raise SystemExit(
+        "benchmarks/competitive requires Python >= 3.10 "
+        f"(this interpreter is {sys.version.split()[0]}); every leg "
+        "declares its version in pyproject.toml + .python-version and "
+        "runs under the uv-managed interpreter (`uv run`)")
+
 import argparse
 import atexit
 import fcntl
@@ -110,9 +119,35 @@ def rust_channel() -> str:
     return ch
 
 
+def rust_toolchain_resolved() -> str:
+    """The exact toolchain the image installs: the channel from
+    rust-toolchain.toml resolved to a concrete version at image build
+    (stable/beta/nightly -> '1.90.0' / 'nightly-YYYY-MM-DD'), recorded in
+    results.versions. A floating channel name must never reach the
+    Dockerfile."""
+    ch = rust_channel()
+    if re.fullmatch(r"\d+\.\d+(\.\d+)?", ch) or "-20" in ch:
+        return ch  # already exact (1.90.0 or nightly-2025-…)
+    import urllib.request
+    url = ("https://static.rust-lang.org/dist/"
+           f"channel-rust-{ch}.toml")
+    doc = tomllib.loads(
+        urllib.request.urlopen(url, timeout=30).read().decode())
+    ver = doc["pkg"]["rust"]["version"]  # e.g. "1.90.0 (1159e78 2025-09-14)"
+    m = re.match(r"(\d+\.\d+\.\d+)(?:-(nightly|beta))?.*?"
+                 r"(\d{4}-\d{2}-\d{2})\)", ver)
+    if not m:
+        raise RuntimeError(
+            f"unparseable rust version in {url}: {ver!r}")
+    base, pre, date = m.group(1), m.group(2), m.group(3)
+    resolved = f"{pre}-{date}" if pre else base
+    print(f"resolved rust channel {ch} -> {resolved} ({url})", flush=True)
+    return resolved
+
+
 def build_image() -> None:
     docker("build", "-t", IMAGE, "-f", str(ROOT / "docker" / "Dockerfile"),
-           "--build-arg", f"RUST_CHANNEL={rust_channel()}",
+           "--build-arg", f"RUST_CHANNEL={rust_toolchain_resolved()}",
            str(ROOT))
 
 
@@ -134,12 +169,11 @@ def _docker_run_cmd(inner: str, *, name: str = "",
         "-e", "CARGO_HOME=/cargo-home",
     ]
     if host_user:
-        # Build AND measurement containers run as the host uid: files
-        # they write into the mounted checkout (target/, generated
-        # backends/, dist/, out/*.jsonl) come out host-owned, never
-        # root-owned. --privileged still gives the measurement container
-        # cgroup/device reach — a host-uid process inside it can create
-        # and populate the benchapp cgroup.
+        # Build containers run as the host uid: files they write into the
+        # mounted checkout (target/, generated backends/, dist/) come out
+        # host-owned, never root-owned. Measurement containers run as
+        # root instead (cgroup + /dev/dri need it) and chown their
+        # outputs back at the end — see run_workload.
         HOME_CACHE.mkdir(parents=True, exist_ok=True)
         cmd += [
             "-u", f"{os.getuid()}:{os.getgid()}",
@@ -247,8 +281,16 @@ cd /repo/benchmarks/competitive/apps/electron
 # verbatim and never rewrites tracked files
 npm ci --no-audit --no-fund
 # electron >= 43 ships the binary download as a bin entry, not a
-# postinstall — `npm ci` alone leaves node_modules/electron/dist absent
-node node_modules/electron/install.js
+# postinstall — `npm ci` alone leaves node_modules/electron/dist absent.
+# Same check-and-run as the macOS packager: pull dist/ only when it is
+# missing, then fail loudly if it is still absent.
+if [ ! -d node_modules/electron/dist ]; then
+  node node_modules/electron/install.js
+fi
+if [ ! -d node_modules/electron/dist ]; then
+  echo "electron dist/ still missing after install.js" >&2
+  exit 1
+fi
 mkdir -p /bench/dist/electron
 cp -a node_modules/electron/dist/. /bench/dist/electron/
 mkdir -p /bench/dist/electron/resources/app
@@ -402,11 +444,13 @@ def dri_nodes_in_use(cname: str) -> dict[str, str]:
 
 def fling_script(fling: dict, duration_ms: int) -> str:
     """The shared fling protocol (../WORKLOADS.md) as a benchcomp script:
-    pointer parked at the window centre after `warmup_ms`, then repeated
-    programs of `down` flings + `up` flings — `detents` 15 px wheel
-    detents spread over `duration_ms`, a `pause_ms` pause after each."""
-    lines = [f"{fling['warmup_ms']} motion 640 400"]
-    t = float(fling["warmup_ms"])
+    pointer parked at the window centre at t=0 (window start — benchcomp
+    anchors script time on the first owned present + warmup), then
+    repeated programs of `down` flings + `up` flings — `detents` 15 px
+    wheel detents spread over `duration_ms`, a `pause_ms` pause after
+    each."""
+    lines = ["0 motion 640 400"]
+    t = 0.0
     detent_ms = fling["duration_ms"] / fling["detents"]
     while t < duration_ms:
         for direction, count in ((1, fling["down"]), (-1, fling["up"])):
@@ -446,16 +490,25 @@ def run_workload(contestant_cmd: str, wl: str, duration_ms: int,
     script_arg = (f"--script /bench/{script.relative_to(ROOT)}"
                   if script else "")
     cname = _owned_container_name()
+    # Measurement containers run as root inside the container: cgroup v2
+    # setup needs CAP_SYS_ADMIN-adjacent ownership of /sys/fs/cgroup and
+    # /dev/dri nodes open without group juggling. Outputs are chowned to
+    # the host uid at the end (owner of the /bench mount).
     inner = (
         "export XDG_RUNTIME_DIR=/tmp/bench-xdg; "
         "mkdir -p $XDG_RUNTIME_DIR; "
         f"/bench/benchcomp/benchcomp --spawn {json.dumps(contestant_cmd)} "
-        f"--duration {duration_ms} --size 1280x800 --refresh 60000 "
+        f"--duration {duration_ms} --warmup {warmup_ms} "
+        "--size 1280x800 --refresh 60000 "
         f"--cgroup benchapp {script_arg} "
-        f"--out /bench/{out_jsonl.relative_to(ROOT)}"
+        f"--out /bench/{out_jsonl.relative_to(ROOT)}; "
+        "rc=$?; "
+        "chown -R $(stat -c %u:%g /bench) /bench/out "
+        "2>/dev/null || true; "
+        "exit $rc"
     )
     cmd = _docker_run_cmd(inner, name=cname, privileged=True, dri=dri,
-                          host_user=True)
+                          host_user=False)
     print("+", " ".join(cmd), flush=True)
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -474,9 +527,10 @@ def run_workload(contestant_cmd: str, wl: str, duration_ms: int,
         raise subprocess.CalledProcessError(
             proc.returncode, cmd, output=out, stderr=out)
     sys.stdout.write(out or "")
+    # capture is fixed from window start (first owned present +
+    # warmup), never from spawn — duration_ms IS the capture length
     return (metrics_from_events(
-                parse_events(out_jsonl), warmup_ms,
-                duration_ms - warmup_ms),
+                parse_events(out_jsonl), warmup_ms, duration_ms),
             out or "", opened)
 
 
@@ -492,8 +546,9 @@ def capacity_rep(contestant_cmd: str, spec: dict, dri,
         out_jsonl = out_dir / f"{tag}-step{n}-{RUN_ID}.jsonl"
         cmd = contestant_cmd.replace("BENCH_WORKLOAD",
                                      f"BENCH_STEP={n} BENCH_WORKLOAD", 1)
+        # settle_ms is the declared warmup, hold_ms the capture length
         s, run_log, opened = run_workload(
-            cmd, "w5", spec["settle_ms"] + spec["hold_ms"], None,
+            cmd, "w5", spec["hold_ms"], None,
             out_jsonl, dri=dri, warmup_ms=spec["settle_ms"])
         out["dri_nodes"] = sorted(set(out["dri_nodes"]) | set(opened))
         rec = {"step": n, "metrics": s}
@@ -1092,8 +1147,7 @@ def main() -> int:
                             manifest, wl, durations.get(wl, 15000)),
                         out_jsonl,
                         dri=dri_mounts,
-                        warmup_ms=(manifest["fling"]["warmup_ms"]
-                                   if wl in ("w2", "w4") else 0))
+                        warmup_ms=manifest["pacing"]["warmup_ms"])
                     s["run"] = rep
                     s["dri_nodes"] = sorted(opened)
                     s["dri_drivers"] = opened

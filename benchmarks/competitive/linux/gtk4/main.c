@@ -264,6 +264,7 @@ static void w3_field_snapshot(GtkWidget *w, GtkSnapshot *snapshot) {
         t = gsk_transform_translate(
             t, &GRAPHENE_POINT_INIT(-RECT_SIDE / 2.0, -RECT_SIDE / 2.0));
         gtk_snapshot_transform(snapshot, t);
+        gsk_transform_unref(t);
         gtk_snapshot_push_rounded_clip(snapshot, &clip);
         GdkRGBA color = w3_palette[i % 6];
         color.alpha *= (float)r->co;
@@ -362,6 +363,7 @@ static GtkWidget *w4_build(void) {
     GtkWidget *col = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     for (int i = 0; i < 50; i++) {
         GtkWidget *p = gtk_label_new(PARAGRAPHS[i % 10]);
+        gtk_widget_add_css_class(p, "w4-para");
         gtk_label_set_xalign(GTK_LABEL(p), 0);
         gtk_label_set_wrap(GTK_LABEL(p), TRUE);
         gtk_widget_set_margin_top(p, 10);
@@ -423,6 +425,7 @@ static void activate(GtkApplication *app, gpointer data) {
     gtk_css_provider_load_from_string(
         css,
         ".w1-count { font-size: 20px; }\n"
+        ".w4-para { font-size: 16px; }\n"
         ".row-title { font-size: 16px; }\n"
         ".row-subtitle { font-size: 13px; opacity: 0.7; }\n"
         ".cell-sq { border-radius: 4px; }\n"

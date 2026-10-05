@@ -15,7 +15,10 @@ wlroots_version = "0.18.2-3"           # resolved at image build
 display_server = "benchcomp (headless wlroots compositor, wayland-0, 1280x800@60Hz)"
 
 [toolchain]
-rustc = "1.98.1"          # rustup toolchain installed in the image
+rustc = "resolved-at-build" # channel from rust-toolchain.toml, resolved to
+                            # an exact version at image build (runner's
+                            # rust_toolchain_resolved) and recorded in
+                            # results.versions
 node = "20.19.2"          # debian:trixie nodejs (only drives `npm i electron`)
 python = "3.13"           # trixie python3 (report tooling)
 cc = "gcc 14 (trixie)"    # resolved at image build
@@ -58,8 +61,16 @@ workloads = ["w1", "w2", "w3", "w4"]
 repetitions = 5
 window = "1280x800"
 refresh_mhz = 60000
-# Durations include ~5s idle warmup before input starts.
+# Capture lengths measured from window start (first owned present +
+# warmup), never from spawn — the compositor anchors them.
 durations_ms = { w1 = 10000, w2 = 25000, w3 = 15000, w4 = 15000 }
+
+# The measurement window (../WORKLOADS.md METHOD): [first owned present +
+# warmup_ms, + duration_ms]. warmup_ms is never 0 — the drive program
+# starts at window start; the compositor's script clock opens at the
+# contestant's first committed present + warmup_ms.
+[pacing]
+warmup_ms = 5000
 
 # The shared fling protocol (../WORKLOADS.md), declared once for every
 # scrolling workload (w2, w4): benchcomp's virtual pointer sits at the
@@ -73,7 +84,6 @@ up = 2
 detents = 12
 duration_ms = 250
 pause_ms = 350
-warmup_ms = 5000
 
 # W5 capacity (canonical ladder) runs per-step launches when enabled via
 # --workload w5: BENCH_STEP env selects the rect count, settle then hold —

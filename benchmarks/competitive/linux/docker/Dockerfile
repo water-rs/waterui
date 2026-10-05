@@ -54,11 +54,13 @@ RUN echo 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/2
     && rm -rf /var/lib/apt/lists/*
 
 # rustup toolchain — installer sha256-verified against the immutable
-# archive URL (dist/ floats with each rustup release), channel taken
-# from the repository's rust-toolchain.toml via the RUST_CHANNEL
-# build-arg
+# archive URL (dist/ floats with each rustup release). RUST_CHANNEL is
+# the EXACT version the runner resolved from rust-toolchain.toml at
+# image build (e.g. 1.90.0 or nightly-2025-09-14) — never a floating
+# channel name; the installed `rustc --version` is recorded into
+# results.versions.
 ARG TARGETARCH
-ARG RUST_CHANNEL=stable
+ARG RUST_CHANNEL
 ARG RUSTUP_VERSION=1.29.1
 ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:/opt/flutter/bin:/usr/local/bin:$PATH
 RUN set -eu; \
