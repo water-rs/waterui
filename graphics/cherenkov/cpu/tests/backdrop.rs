@@ -30,7 +30,7 @@ fn unfiltered_member_samples_what_is_behind_it() {
     let surface = engine
         .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32))
         .expect("surface");
-    let group = surface.backdrop_group_unfiltered();
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     let glass = surface.layer();
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|r| {
@@ -72,7 +72,7 @@ fn capture_point_is_the_first_member_in_paint_order() {
     let surface = engine
         .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32))
         .expect("surface");
-    let group = surface.backdrop_group_unfiltered();
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     let first = surface.layer();
     let late = surface.layer();
     surface.update(|tx| {
@@ -112,8 +112,8 @@ fn nested_groups_capture_in_paint_order() {
     let surface = engine
         .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32))
         .expect("surface");
-    let outer = surface.backdrop_group_unfiltered();
-    let inner = surface.backdrop_group_unfiltered();
+    let outer = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
+    let inner = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     let m1 = surface.layer();
     let m2 = surface.layer();
     surface.update(|tx| {
@@ -159,7 +159,7 @@ fn member_inside_clip_only_isolation_sees_the_surface() {
     let surface = engine
         .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32))
         .expect("surface");
-    let group = surface.backdrop_group_unfiltered();
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     let p = surface.layer();
     let member = surface.layer();
     surface.update(|tx| {
@@ -203,7 +203,7 @@ fn member_sample_is_not_attenuated_by_layer_opacity() {
         let surface = engine
             .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32))
             .expect("surface");
-        let group = surface.backdrop_group_unfiltered();
+        let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
         let member = surface.layer();
         let child = surface.layer();
         surface.update(|tx| {
@@ -252,7 +252,10 @@ fn blurred_backdrop_matches_full_surface_blur_within_apron() {
     let surface = engine
         .surface(Offscreen::new(size, OffscreenFormat::LinearF32))
         .expect("surface");
-    let group = surface.backdrop_group(filtrate::filters::GaussianBlur(4.0f32));
+    let group = surface.backdrop_group(
+        filtrate::filters::GaussianBlur(4.0f32),
+        cherenkov::CaptureScale::FULL,
+    );
     let glass = surface.layer();
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|r| {
@@ -308,7 +311,10 @@ fn band_streamed_backdrop_matches_offscreen_byte_for_byte() {
         .surface(Offscreen::new(size, OffscreenFormat::LinearF32))
         .expect("offscreen surface");
     let build = |surface: &cherenkov::Surface<Raster>| {
-        let group = surface.backdrop_group(filtrate::filters::GaussianBlur(4.0f32));
+        let group = surface.backdrop_group(
+            filtrate::filters::GaussianBlur(4.0f32),
+            cherenkov::CaptureScale::FULL,
+        );
         let member = surface.layer();
         surface.update(|tx| {
             tx[surface.root()].content(surface.record(|r| {
@@ -364,7 +370,10 @@ fn multi_band_capture_has_no_band_seams() {
     let surface = engine
         .surface(Offscreen::new((32, 96), OffscreenFormat::LinearF32))
         .expect("surface");
-    let group = surface.backdrop_group(filtrate::filters::GaussianBlur(5.0f32));
+    let group = surface.backdrop_group(
+        filtrate::filters::GaussianBlur(5.0f32),
+        cherenkov::CaptureScale::FULL,
+    );
     let member = surface.layer();
     surface.update(|tx| {
         // A smooth vertical ramp under the member: each row differs
@@ -408,7 +417,10 @@ fn capture_memory_is_bounded_by_bands_not_capture_height() {
         let surface = engine
             .surface(Offscreen::new((32, height), OffscreenFormat::LinearF32))
             .expect("surface");
-        let group = surface.backdrop_group(filtrate::filters::GaussianBlur(4.0f32));
+        let group = surface.backdrop_group(
+            filtrate::filters::GaussianBlur(4.0f32),
+            cherenkov::CaptureScale::FULL,
+        );
         let member = surface.layer();
         surface.update(|tx| {
             tx[surface.root()].content(surface.record(|r| {
@@ -439,7 +451,7 @@ fn member_without_clip_is_unsupported() {
     let surface = engine
         .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32))
         .expect("surface");
-    let group = surface.backdrop_group_unfiltered();
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     let member = surface.layer();
     surface.update(|tx| {
         tx[surface.root()].push(&member);
@@ -463,7 +475,7 @@ fn dropped_group_fails_the_frame() {
         .expect("surface");
     let member = surface.layer();
     {
-        let group = surface.backdrop_group_unfiltered();
+        let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
         surface.update(|tx| {
             tx[surface.root()].push(&member);
             tx[&member]
@@ -484,7 +496,7 @@ fn two_members_share_one_capture() {
     let surface = engine
         .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32))
         .expect("surface");
-    let group = surface.backdrop_group_unfiltered();
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     let left = surface.layer();
     let right = surface.layer();
     surface.update(|tx| {
@@ -510,4 +522,229 @@ fn two_members_share_one_capture() {
     let memory = engine.memory();
     assert_eq!(memory.backdrop_capture_format, Some("linear-f32"));
     assert!(memory.backdrop_captures.0 > 0);
+}
+
+#[test]
+fn reduced_capture_resolves_and_samples_bilinearly() {
+    let engine = engine();
+    let surface = engine
+        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32))
+        .expect("surface");
+    let quarter = cherenkov::CaptureScale::new(0.25).expect("in range");
+    let group = surface.backdrop_group_unfiltered(quarter);
+    let glass = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 8.0, 32.0),
+                WorkingColor::new([0.0, 1.0, 0.0, 1.0]),
+            );
+            r.fill(
+                Rect::new(8.0, 0.0, 16.0, 32.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+            r.fill(
+                Rect::new(16.0, 0.0, 24.0, 32.0),
+                WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+            );
+            r.fill(
+                Rect::new(24.0, 0.0, 32.0, 32.0),
+                WorkingColor::new([0.0, 1.0, 0.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&glass);
+        tx[&glass]
+            .clip(Rect::new(8.0, 8.0, 24.0, 24.0))
+            .backdrop(group.sample());
+    });
+    engine.render(FrameTime::now()).expect("render");
+    let readback = surface.readback().expect("readback");
+    // Texel 3 covers device [12, 16) — red — and texel 4 [16, 20) — blue.
+    // Pixel 15's centre lands at 15.5 / 4 = 3.875, 0.375 past texel 3's
+    // centre; pixel 17's at 4.375, 0.875 past it.
+    assert_pixel(pixel(&readback, 15, 16), [0.625, 0.0, 0.375, 1.0], 1e-5);
+    assert_pixel(pixel(&readback, 17, 16), [0.125, 0.0, 0.875, 1.0], 1e-5);
+    // The member's edge pixel 8 lands at 8.5 / 4 = 2.125, 0.375 short of
+    // texel 2's centre: its taps are texel 1 — green [4, 8), outside the
+    // member — and texel 2 — red [8, 12).
+    assert_pixel(pixel(&readback, 8, 16), [0.625, 0.375, 0.0, 1.0], 1e-5);
+    assert_pixel(pixel(&readback, 11, 16), [1.0, 0.0, 0.0, 1.0], 1e-5);
+    // The opposite edge pixel 23 lands at 23.5 / 4 = 5.875, 0.375 past
+    // texel 5's centre: its taps are texel 5 — blue [20, 24) — and
+    // texel 6 — green [24, 28), outside the member.
+    assert_pixel(pixel(&readback, 23, 16), [0.0, 0.375, 0.625, 1.0], 1e-5);
+}
+
+#[test]
+fn reduced_capture_composes_clip_only_levels_before_resolving() {
+    let engine = engine();
+    let surface = engine
+        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32))
+        .expect("surface");
+    let half = cherenkov::CaptureScale::new(0.5).expect("in range");
+    let group = surface.backdrop_group_unfiltered(half);
+    let p = surface.layer();
+    let member = surface.layer();
+    surface.update(|tx| {
+        // P's body is a clip-only level the capture flattens over the
+        // surface at device resolution before the resolve.
+        tx[surface.root()]
+            .clip(RoundedRect::new(0.0, 0.0, 32.0, 32.0, 2.0))
+            .content(surface.record(|r| {
+                r.fill(
+                    Rect::new(0.0, 0.0, 32.0, 32.0),
+                    WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+                );
+            }));
+        tx[surface.root()].push(&p);
+        tx[&p]
+            .clip(RoundedRect::new(0.0, 0.0, 32.0, 32.0, 4.0))
+            .content(surface.record(|r| {
+                r.fill(
+                    Rect::new(8.0, 8.0, 12.0, 24.0),
+                    WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+                );
+            }));
+        tx[&p].push(&member);
+        tx[&member]
+            .clip(RoundedRect::new(8.0, 8.0, 24.0, 24.0, 3.0))
+            .backdrop(group.sample());
+    });
+    engine.render(FrameTime::now()).expect("render");
+    let readback = surface.readback().expect("readback");
+    // Texels 4 and 5 cover the blue [8, 12); texel 6 [12, 14) is red.
+    assert_pixel(pixel(&readback, 10, 16), [0.0, 0.0, 1.0, 1.0], 1e-5);
+    assert_pixel(pixel(&readback, 12, 16), [0.75, 0.0, 0.25, 1.0], 1e-5);
+    assert_pixel(pixel(&readback, 18, 16), [1.0, 0.0, 0.0, 1.0], 1e-5);
+}
+
+/// A reduced blurred member taller than several bands, over a ramp that
+/// differs on every row: each band resolves the device rows under its
+/// own texel window, and a band seam would show as a step.
+#[test]
+fn reduced_multi_band_capture_has_no_band_seams() {
+    let engine = engine();
+    let surface = engine
+        .surface(Offscreen::new((32, 96), OffscreenFormat::LinearF32))
+        .expect("surface");
+    let quarter = cherenkov::CaptureScale::new(0.25).expect("in range");
+    let group = surface.backdrop_group(filtrate::filters::GaussianBlur(1.5f32), quarter);
+    let member = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            for y in 0..96_u8 {
+                let v = f32::from(y) / 95.0;
+                let y = f64::from(y);
+                r.fill(
+                    Rect::new(0.0, y, 32.0, y + 1.0),
+                    WorkingColor::new([v, 0.5 * (1.0 - v), 0.3, 1.0]),
+                );
+            }
+        }));
+        tx[surface.root()].push(&member);
+        tx[&member]
+            .clip(Rect::new(4.0, 22.0, 28.0, 74.0))
+            .backdrop(group.sample());
+    });
+    engine.render(FrameTime::now()).expect("render");
+    let readback = surface.readback().expect("readback");
+    let column: Vec<f32> = (22..74).map(|y| pixel(&readback, 16, y)[0]).collect();
+    for (i, pair) in column.windows(2).enumerate() {
+        assert!(
+            pair[1] - pair[0] > -1.0e-5 && pair[1] - pair[0] < 0.05,
+            "seam at row {}: {:?} -> {:?}",
+            22 + i,
+            pair[0],
+            pair[1]
+        );
+    }
+    // A linear ramp survives the box resolve, the symmetric blur and the
+    // bilinear sample away from the region's clamped edges.
+    let mid = pixel(&readback, 16, 48)[0];
+    assert!((mid - 48.5 / 95.0 + 0.5 / 95.0).abs() < 0.01, "ramp {mid}");
+}
+
+#[test]
+fn reduced_refraction_samples_the_displaced_point_on_the_capture_grid() {
+    let engine = engine();
+    let surface = engine
+        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32))
+        .expect("surface");
+    let half = cherenkov::CaptureScale::new(0.5).expect("in range");
+    let group = surface.backdrop_group_unfiltered(half);
+    let member = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 52.0, 64.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+            r.fill(
+                Rect::new(52.0, 0.0, 64.0, 64.0),
+                WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&member);
+        tx[&member]
+            .clip(Rect::new(8.0, 8.0, 56.0, 56.0))
+            .backdrop(group.sample_with(cherenkov::Refraction {
+                depth: 8.0,
+                strength: 4.0,
+            }));
+    });
+    engine.render(FrameTime::now()).expect("render");
+    let readback = surface.readback().expect("readback");
+    // Pixel 54's centre is 1.5 inside the right edge: t = 1 − 1.5/8 =
+    // 0.8125, so q = 54.5 − 4·t² = 51.859375 device pixels, 25.9296875 on
+    // the grid — 0.4296875 past texel 25's centre, between texel 25 (red,
+    // device [50, 52)) and texel 26 (blue, [52, 54)). The undisplaced
+    // point would read only blue texels.
+    assert_pixel(
+        pixel(&readback, 54, 32),
+        [0.570_312_5, 0.0, 0.429_687_5, 1.0],
+        1e-5,
+    );
+    // The centre is past `depth` from every edge: q = p, at 16.25 on the
+    // grid, between two red texels.
+    assert_pixel(pixel(&readback, 32, 32), [1.0, 0.0, 0.0, 1.0], 1e-5);
+}
+
+#[test]
+fn reduced_rim_lights_the_bilinear_sample_on_the_capture_grid() {
+    let engine = engine();
+    let surface = engine
+        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32))
+        .expect("surface");
+    let half = cherenkov::CaptureScale::new(0.5).expect("in range");
+    let group = surface.backdrop_group_unfiltered(half);
+    let member = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 54.0, 64.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+            r.fill(
+                Rect::new(54.0, 0.0, 64.0, 64.0),
+                WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&member);
+        tx[&member]
+            .clip(Rect::new(8.0, 8.0, 56.0, 56.0))
+            .backdrop(group.sample_with(cherenkov::Rim {
+                width: 4.0,
+                color: [0.0, 1.0, 0.0, 1.0],
+                gain: 2.0,
+            }));
+    });
+    engine.render(FrameTime::now()).expect("render");
+    let readback = surface.readback().expect("readback");
+    // Pixel 54's centre lands at 27.25 on the grid, 0.75 past texel 26's
+    // centre: a quarter of texel 26 (red, device [52, 54)) and three
+    // quarters of texel 27 (blue, [54, 56)). It is 1.5 inside the right
+    // edge, so the rim adds 1 · 2 · (1 − 1.5/4)² = 0.78125 of green.
+    assert_pixel(pixel(&readback, 54, 32), [0.25, 0.781_25, 0.75, 1.0], 1e-5);
+    // Past the rim's width the sample is unlit.
+    assert_pixel(pixel(&readback, 32, 32), [1.0, 0.0, 0.0, 1.0], 1e-5);
 }

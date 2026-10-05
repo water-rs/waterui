@@ -11,6 +11,7 @@ const SHARED: &str = include_str!("../src/render/shared.wgsl");
 const BLEND: &str = include_str!("../src/render/blend.wgsl");
 const PROJECTIVE: &str = include_str!("../src/render/projective.wgsl");
 const MIP: &str = include_str!("../src/render/mip.wgsl");
+const RESOLVE: &str = include_str!("../src/render/resolve.wgsl");
 
 /// The oldest Metal language version wgpu selects on a supported macOS
 /// (10.13 → 2.0), which is where `instance_id` and friends became legal.
@@ -162,12 +163,14 @@ fn backdrop_effect_text_emits() {
 }
 
 split_test! {
-/// The projective composite and mip modules (#84) translate through every
-/// naga backend, composed as in build.rs.
-fn projective_modules_emit() {
+/// The projective composite and mip modules (#84) and the backdrop
+/// capture resolve module translate through every naga backend, composed
+/// as in build.rs.
+fn standalone_modules_emit() {
     for (name, source) in [
         ("projective", format!("{SHARED}\n{BLEND}\n{PROJECTIVE}")),
         ("mip", MIP.to_owned()),
+        ("resolve", RESOLVE.to_owned()),
     ] {
         let module = wgsl::parse_str(&source).unwrap_or_else(|e| panic!("{name}: {e}"));
         let info = Validator::new(ValidationFlags::all(), Capabilities::empty())

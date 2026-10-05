@@ -839,6 +839,7 @@ fn cherenkov_features() -> Vec<Feature> {
         Feature::BackdropBlur,
         Feature::BackdropColorMatrix,
         Feature::BackdropEffect,
+        Feature::BackdropScale,
         Feature::Projective,
         // `sRGB` maps to `SrgbEncoded`; `linear-p3` and `linear-srgb` are
         // both linear interpolation, which is the working space already.
@@ -1540,19 +1541,21 @@ fn backdrop_group(
         feature: Feature::Backdrop,
         api: Some("backdrop filter chain shape is not built"),
     };
+    let scale = convert::capture_scale(group)?;
     Ok(match group.filters.as_slice() {
-        [] => surface.backdrop_group_unfiltered(),
+        [] => surface.backdrop_group_unfiltered(scale),
         [BackdropFilter::GaussianBlur { sigma }] => {
-            surface.backdrop_group(GaussianBlur(*sigma as f32))
+            surface.backdrop_group(GaussianBlur(*sigma as f32), scale)
         }
         [BackdropFilter::ColorMatrix { matrix }] => {
-            surface.backdrop_group(ColorMatrix(matrix.map(|v| v as f32)))
+            surface.backdrop_group(ColorMatrix(matrix.map(|v| v as f32)), scale)
         }
         [
             BackdropFilter::GaussianBlur { sigma },
             BackdropFilter::ColorMatrix { matrix },
         ] => surface.backdrop_group(
             GaussianBlur(*sigma as f32).then(ColorMatrix(matrix.map(|v| v as f32))),
+            scale,
         ),
         _ => return Err(unsupported()),
     })

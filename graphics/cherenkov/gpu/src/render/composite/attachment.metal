@@ -46,11 +46,12 @@ VsOut tile_input(TileInput v, metal::float4 position, constant Globals& globals)
 
 #define TILE_SHADE \
     metal::float2 backdrop_origin = {}, backdrop_size = {}; \
+    float backdrop_scale = {}; \
     metal::float4 source_pixel = metal::float4(src); \
     metal::float4 destination_pixel = metal::float4(dst); \
     return { fs_full(tile_input(v, position, globals), globals, instances, stops, \
         atlas, mask_tex, source, image_tex, backdrop_origin, backdrop_size, \
-        source_pixel, destination_pixel) };
+        backdrop_scale, source_pixel, destination_pixel) };
 
 #define TILE_OUTPUT(D) \
     struct TileOutput##D { \

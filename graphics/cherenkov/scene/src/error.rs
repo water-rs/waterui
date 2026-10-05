@@ -20,6 +20,9 @@ pub enum SceneError {
     /// A layer samples a backdrop group the scene does not declare.
     #[error("layer samples unknown backdrop group {0}")]
     UnknownBackdropGroup(u32),
+    /// A backdrop group's capture scale is not finite or not in `(0, 1]`.
+    #[error("backdrop group {0} has a capture scale outside (0, 1]")]
+    InvalidBackdropScale(u32),
     /// A backdrop-group member layer has no clip.
     #[error("backdrop group {0} member layer has no clip")]
     BackdropMemberUnclipped(u32),

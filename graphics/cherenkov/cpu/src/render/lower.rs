@@ -182,12 +182,16 @@ pub struct ProjectItem {
 pub struct CaptureItem {
     /// The group's renderer key (`BackdropId::raw()`).
     pub group: u64,
-    /// The capture rect in device pixels (`union ⊕ apron`, clamped to
-    /// the surface).
+    /// The capture scale `s`: `region` lies on the capture grid, whose
+    /// texel `i` covers the device interval `[i/s, (i+1)/s)`.
+    pub scale: cherenkov::CaptureScale,
+    /// The capture rect in capture texels (`union ⊕ apron` on the grid,
+    /// clamped to the grid's extent).
     pub region: IRect,
     /// The members' union rows, clamped to the surface.
     pub union: IRect,
-    /// The apron rows the chain reads past the sampled rows.
+    /// The apron rows, in capture texels, the chain reads past the
+    /// sampled rows.
     pub apron: usize,
     /// Extra rows around each band the capture covers: the deepest
     /// enclosing filter-scope apron over the group's members.
@@ -314,10 +318,16 @@ struct BackdropPlan {
     union: Rect,
     /// The union's device rows, clamped to the surface.
     union_rows: (usize, usize),
-    /// The capture rect in device pixels.
+    /// The capture scale `s`.
+    scale: cherenkov::CaptureScale,
+    /// The capture rect in capture texels.
     region: IRect,
-    /// The chain's apron in rows around the sampled rows.
+    /// The chain's apron in texel rows around the sampled rows.
     apron: usize,
+    /// The device rows the capture's window reaches past the sampled
+    /// rows: `apron` for a 1:1 capture, the texel window mapped back to
+    /// device rows otherwise.
+    device_apron: usize,
     /// Extra rows around each band the capture must cover.
     reach: usize,
     /// The prepared chain, when the group is filtered.
@@ -326,6 +336,61 @@ struct BackdropPlan {
     members: FxHashMap<LayerId, Member>,
     /// The innermost filter scope the capture item lands in.
     scope: Option<LayerId>,
+}
+
+impl BackdropPlan {
+    /// Places the capture on a `width × h` surface: the union's rows, and
+    /// the union on the capture grid inflated by the chain `footprint`'s
+    /// apron in texels — plus one texel for the bilinear taps of a reduced
+    /// capture — clamped to the grid's extent and rounded out to whole
+    /// texels.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "footprints are non-negative and bounded by the surface height"
+    )]
+    fn place(&mut self, footprint: filtrate_core::Footprint, (width, h): (usize, usize)) {
+        let (uw, uh) = (self.union.width(), self.union.height());
+        let y0 = self.union.y0.floor().max(0.0) as usize;
+        let y1 = (self.union.y1.ceil().min(h as f64) as usize).max(y0);
+        self.union_rows = (y0, y1.min(h));
+        if uw.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater)
+            || uh.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater)
+        {
+            return;
+        }
+        // The footprint resolves against the capture's size in texels.
+        let s = f64::from(self.scale.get());
+        let a = (f64::from(footprint.extent).mul_add(uw.max(uh) * s, f64::from(footprint.pixels))
+            / 2.0f64.mul_add(-f64::from(footprint.extent), 1.0))
+        .ceil();
+        // A reduced capture is sampled bilinearly at `p · s`: an edge
+        // pixel's second tap lies one texel past the union on the grid, so
+        // the region covers that texel too.
+        let taps = if self.scale.is_full() { 0.0 } else { 1.0 };
+        // The capture grid's extent in texels: `⌈len · s⌉`.
+        let (gw, gh) = ((width as f64 * s).ceil(), (h as f64 * s).ceil());
+        let region = IRect {
+            x0: self.union.x0.mul_add(s, -a - taps).floor().max(0.0) as i32,
+            y0: self.union.y0.mul_add(s, -a - taps).floor().max(0.0) as i32,
+            x1: self.union.x1.mul_add(s, a + taps).ceil().min(gw) as i32,
+            y1: self.union.y1.mul_add(s, a + taps).ceil().min(gh) as i32,
+        };
+        self.apron = a.min(gh) as usize;
+        self.device_apron = if self.scale.is_full() {
+            self.apron
+        } else {
+            // The texel window reaches `apron` texels past the kept
+            // texels, which reach the sampled rows' bilinear taps plus a
+            // margin (see `raster::capture_rows`): within
+            // `(apron + margin + 2) / s` device rows of them.
+            (((self.apron + super::raster::SAMPLE_MARGIN + 2) as f64 / s).ceil() as usize).min(h)
+        };
+        if region.x0 < region.x1 && region.y0 < region.y1 {
+            self.region = region;
+        }
+    }
 }
 
 /// One backdrop member's plan entry.
@@ -798,10 +863,12 @@ impl<'a, 'b> Lowering<'a, 'b> {
             let member = clip_device_bounds(transform, clip);
             let (effect, reach) = member_effect(sample.effect(), clip, transform)?;
             let member = member.inflate(reach, reach);
+            let scale = prepared.scale;
             let plan = self.backdrops.entry(g).or_insert_with(|| BackdropPlan {
                 first: id,
                 union: member,
                 union_rows: (0, 0),
+                scale,
                 region: IRect {
                     x0: 0,
                     y0: 0,
@@ -809,6 +876,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
                     y1: 0,
                 },
                 apron: 0,
+                device_apron: 0,
                 reach: 0,
                 filter: prepared.filter.clone(),
                 members: FxHashMap::default(),
@@ -838,8 +906,9 @@ impl<'a, 'b> Lowering<'a, 'b> {
 
     /// Plans every backdrop group: a paint-order walk collecting each
     /// member's device-space clip bounds, then the capture region — the
-    /// union inflated by the chain footprint's apron, intersected with
-    /// the surface and rounded outward to integer pixels.
+    /// union on the capture grid inflated by the chain footprint's apron
+    /// in texels, intersected with the grid's extent and rounded outward
+    /// to whole texels.
     ///
     /// A member inside a filter scope samples rows within that scope's
     /// window (`band ± apron`); each group's `reach` is the deepest such
@@ -878,28 +947,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             if footprint.extent.partial_cmp(&0.5) != Some(std::cmp::Ordering::Less) {
                 return Err(RenderError::Unsupported(names::BACKDROP_FOOTPRINT));
             }
-            let (uw, uh) = (plan.union.width(), plan.union.height());
-            let y0 = plan.union.y0.floor().max(0.0) as usize;
-            let y1 = (plan.union.y1.ceil().min(h as f64) as usize).max(y0);
-            plan.union_rows = (y0, y1.min(h));
-            if uw.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater)
-                || uh.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater)
-            {
-                continue;
-            }
-            let a = (f64::from(footprint.extent).mul_add(uw.max(uh), f64::from(footprint.pixels))
-                / 2.0f64.mul_add(-f64::from(footprint.extent), 1.0))
-            .ceil();
-            let region = IRect {
-                x0: (plan.union.x0 - a).floor().max(0.0) as i32,
-                y0: (plan.union.y0 - a).floor().max(0.0) as i32,
-                x1: (plan.union.x1 + a).ceil().min(self.width as f64) as i32,
-                y1: (plan.union.y1 + a).ceil().min(h as f64) as i32,
-            };
-            plan.apron = a.min(h as f64) as usize;
-            if region.x0 < region.x1 && region.y0 < region.y1 {
-                plan.region = region;
-            }
+            plan.place(footprint, (self.width, h));
         }
         // The apron a scope needs around each band — its own filter's
         // footprint, or `capture apron + reach` for scopes a capture
@@ -943,7 +991,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             }
             for plan in self.backdrops.values() {
                 if let Some(scope) = plan.scope {
-                    let needed = (plan.apron + plan.reach).min(h);
+                    let needed = (plan.device_apron + plan.reach).min(h);
                     let apron = aprons.get_mut(&scope).expect("capture scope registered");
                     if *apron < needed {
                         *apron = needed;
@@ -972,11 +1020,13 @@ impl<'a, 'b> Lowering<'a, 'b> {
             return;
         };
         let (bounds, effect) = (entry.bounds, entry.effect.clone());
+        // The device rect the region's texels cover.
+        let s = f64::from(plan.scale.get());
         let region = Rect::new(
-            f64::from(plan.region.x0),
-            f64::from(plan.region.y0),
-            f64::from(plan.region.x1),
-            f64::from(plan.region.y1),
+            f64::from(plan.region.x0) / s,
+            f64::from(plan.region.y0) / s,
+            f64::from(plan.region.x1) / s,
+            f64::from(plan.region.y1) / s,
         );
         let bounds = bounds.intersect(region);
         if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
@@ -1287,10 +1337,12 @@ impl<'a, 'b> Lowering<'a, 'b> {
             let union_rows = plan.union_rows;
             let apron = plan.apron;
             let reach = plan.reach;
+            let scale = plan.scale;
             let filter = plan.filter.clone();
             let flatten = self.iso_kinds.iter().rev().take_while(|&&k| k).count();
             self.items.push(Item::Capture(Box::new(CaptureItem {
                 group: gid,
+                scale,
                 region,
                 union: IRect {
                     x0: 0,
