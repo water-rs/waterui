@@ -2006,7 +2006,7 @@ impl SemanticCore {
 
     /// The selection menu's rows as [`PopupMenuNode`]s: built-in editing
     /// commands become plain command rows, the field's custom
-    /// `selection_menu` items go through the same [`popup_menu_node`]
+    /// `selection_menu` items go through the same [`popup_menu_nodes`]
     /// conversion `.context_menu` items take — a nested `Menu` keeps its
     /// structure and opens as a submenu rather than flattening or panicking.
     pub(crate) fn build_text_context_menu_nodes(
@@ -2036,13 +2036,10 @@ impl SemanticCore {
             nodes.push(builtin("select_all", TextContextMenuAction::SelectAll));
         }
         if has_selection {
-            nodes.extend(
-                target
-                    .model
-                    .custom_selection_menu_items()
-                    .into_iter()
-                    .map(crate::renderer::views::popup_menu_node),
-            );
+            nodes.extend(crate::renderer::views::popup_menu_nodes(
+                &target.model.custom_selection_menu_items(),
+                env,
+            ));
         }
         nodes
     }

@@ -132,7 +132,7 @@ use waterui::widget::Divider;
 use waterui::window::{Window, WindowState, WindowStyle};
 use waterui_controls::button::{Button, ButtonConfig};
 use waterui_controls::label::Label as SemanticLabel;
-use waterui_controls::menu::{CommandRole, ResolvedMenu, ResolvedMenuItem};
+use waterui_controls::menu::{CommandRole, ResolvedCommand, ResolvedMenu, ResolvedMenuItem};
 use waterui_controls::slider::SliderConfig;
 use waterui_controls::stepper::StepperConfig;
 use waterui_controls::text_field::{ResolvedTextFieldConfig, TextField};

@@ -218,8 +218,12 @@ impl Command {
         }
     }
 
+    /// Resolves the command against `env` into the payload backends render
+    /// — what every declared command goes through, and how a backend builds
+    /// a command of its own (the platform's Quit) on the same path.
+    #[doc(hidden)]
     #[must_use]
-    fn resolve(self, env: &Environment) -> ResolvedCommand {
+    pub fn resolve(self, env: &Environment) -> ResolvedCommand {
         let label = self.label;
         let resolved_label = label.semantic_text().resolve(env);
         let icon = label.semantic_icon();
@@ -343,13 +347,18 @@ pub enum MenuItem {
     Menu(Menu),
     /// The application's own Quit item.
     ///
-    /// Declaring it is how an application relocates or retitles the standard
-    /// Quit — it renders once, with the platform's label and accelerator
-    /// (⌘Q on macOS, the platform equivalent elsewhere), and requests a
-    /// cancellable termination through `waterui::app::Quit`, so
-    /// `App::on_quit_request` still decides. On macOS it never appears in
-    /// the menu bar — the standard application menu already carries the
-    /// platform Quit — but it can appear in menus the window mounts.
+    /// Declaring it is how an application relocates the standard Quit — it
+    /// renders once, with the platform's label and accelerator (⌘Q on
+    /// macOS, Ctrl+Q elsewhere), and requests a cancellable termination
+    /// through `waterui::app::Quit`, so `App::on_quit_request` still
+    /// decides. On macOS it never appears in the menu bar — the standard
+    /// application menu already carries the platform Quit — but it can
+    /// appear in menus the window mounts.
+    ///
+    /// Platforms with no application quit — iOS, Android, the web, and
+    /// headless or embedded hosts, whose process the system or the host
+    /// ends — omit it from every menu and arm no chord for it, so a
+    /// portable menu may declare it unconditionally.
     ///
     /// Do not redeclare the platform's quit chord on a plain [`Command`]:
     /// the macOS menu bar rejects ⌘Q, ⌘H and ⌥⌘H on ordinary commands, and

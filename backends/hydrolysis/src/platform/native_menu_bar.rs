@@ -53,7 +53,7 @@ use waterui_core::handler::SharedAction;
 
 use crate::renderer::call_action_discarding_result;
 #[cfg(not(target_os = "macos"))]
-use crate::renderer::{quit_action, quit_item_label, quit_shortcut};
+use crate::renderer::quit_command;
 
 /// One built native menu bar: the muda `Menu` tree, the `MenuId → action`
 /// table the event pump dispatches through, and the live watches.
@@ -174,22 +174,6 @@ fn code_for(key: &str) -> Option<Code> {
     })
 }
 
-/// The Windows menu-bar Quit item: the platform's "Exit" label with a
-/// `&` mnemonic (matching `PredefinedMenuItem::quit`'s own text) and the
-/// Ctrl+Q accelerator text — the chord itself dispatches through the
-/// registry, since stock winit never calls `TranslateAcceleratorW`. The
-/// action files a cancellable termination request, not `PostQuitMessage`.
-#[cfg(not(target_os = "macos"))]
-fn build_quit_item(actions: &mut HashMap<MenuId, SharedAction<()>>) -> muda::MenuItem {
-    let item = muda::MenuItem::new(
-        format!("&{}", quit_item_label()),
-        true,
-        accelerator_for(&quit_shortcut()),
-    );
-    actions.insert(item.id().clone(), quit_action());
-    item
-}
-
 fn command_title(command: &ResolvedCommand) -> String {
     command.label.content.snapshot().to_plain().to_string()
 }
@@ -230,6 +214,7 @@ fn build_command(
 fn append_items(
     parent: &dyn Fn(&dyn muda::IsMenuItem),
     items: &[ResolvedMenuItem],
+    env: &Environment,
     actions: &mut HashMap<MenuId, SharedAction<()>>,
     state_watches: &mut Vec<BoxWatcherGuard>,
     slot: &Rc<RefCell<Option<Bar>>>,
@@ -245,10 +230,13 @@ fn append_items(
             ResolvedMenuItem::Quit => {
                 // macOS's standard application menu already carries the
                 // platform Quit (`build_app_menu`), so a declared one never
-                // repeats it there. On Windows the bar shows the platform's
-                // "Exit" item, and the chord also arms on the registry.
+                // repeats it there. On Windows the bar shows the quit
+                // command — "Exit", Ctrl+Q — whose chord also arms on the
+                // registry.
                 #[cfg(not(target_os = "macos"))]
-                parent(&build_quit_item(actions));
+                if let Some(command) = quit_command(env) {
+                    parent(&build_command(&command, actions, state_watches));
+                }
             }
             ResolvedMenuItem::Divider => {
                 parent(&PredefinedMenuItem::separator());
@@ -262,6 +250,7 @@ fn append_items(
                             .expect("appending a submenu item failed");
                     },
                     &nested.items.snapshot(),
+                    env,
                     actions,
                     state_watches,
                     slot,
@@ -270,8 +259,9 @@ fn append_items(
                 parent(&submenu);
                 let slot = Rc::clone(slot);
                 let top_items = top_items.clone();
+                let env = env.clone();
                 state_watches.push(nested.items.watch(move |_| {
-                    rebuild_bar(&slot, &top_items);
+                    rebuild_bar(&slot, &top_items, &env);
                 }));
             }
         }
@@ -325,6 +315,7 @@ fn menu_title(menu: &ResolvedNestedMenu) -> String {
 fn build_app_menu(
     product_name: &str,
     declared: Option<&ResolvedNestedMenu>,
+    env: &Environment,
     actions: &mut HashMap<MenuId, SharedAction<()>>,
     state_watches: &mut Vec<BoxWatcherGuard>,
     slot: &Rc<RefCell<Option<Bar>>>,
@@ -347,6 +338,7 @@ fn build_app_menu(
             append_items(
                 &append,
                 &declared_items,
+                env,
                 actions,
                 state_watches,
                 slot,
@@ -355,8 +347,9 @@ fn build_app_menu(
         }
         let slot = Rc::clone(slot);
         let top_items = top_items.clone();
+        let env = env.clone();
         state_watches.push(declared.items.watch(move |_| {
-            rebuild_bar(&slot, &top_items);
+            rebuild_bar(&slot, &top_items, &env);
         }));
         append(&PredefinedMenuItem::separator());
     } else {
@@ -389,6 +382,7 @@ fn declared_app_menu_index(items: &[ResolvedMenuItem], product_name: &str) -> Op
 
 fn build_bar(
     items: &[ResolvedMenuItem],
+    env: &Environment,
     slot: &Rc<RefCell<Option<Bar>>>,
     top_items: &Computed<Vec<ResolvedMenuItem>>,
 ) -> Bar {
@@ -412,6 +406,7 @@ fn build_bar(
         parent(&build_app_menu(
             &product_name,
             declared,
+            env,
             &mut actions,
             &mut state_watches,
             slot,
@@ -421,6 +416,7 @@ fn build_bar(
             append_items(
                 &parent,
                 &items[..index],
+                env,
                 &mut actions,
                 &mut state_watches,
                 slot,
@@ -429,6 +425,7 @@ fn build_bar(
             append_items(
                 &parent,
                 &items[index + 1..],
+                env,
                 &mut actions,
                 &mut state_watches,
                 slot,
@@ -438,6 +435,7 @@ fn build_bar(
             append_items(
                 &parent,
                 items,
+                env,
                 &mut actions,
                 &mut state_watches,
                 slot,
@@ -449,6 +447,7 @@ fn build_bar(
     append_items(
         &parent,
         items,
+        env,
         &mut actions,
         &mut state_watches,
         slot,
@@ -529,14 +528,18 @@ fn carried_hwnds(old: Option<Bar>) -> Vec<isize> {
 /// Rebuilds the whole native bar in `slot` from a fresh `top_items`
 /// snapshot: detach the old tree, build, re-install, store. Called by the
 /// top-level items watch and by each nested-items watch.
-fn rebuild_bar(slot: &Rc<RefCell<Option<Bar>>>, top_items: &Computed<Vec<ResolvedMenuItem>>) {
+fn rebuild_bar(
+    slot: &Rc<RefCell<Option<Bar>>>,
+    top_items: &Computed<Vec<ResolvedMenuItem>>,
+    env: &Environment,
+) {
     let mut guard = slot.borrow_mut();
     let old = guard.take();
     #[cfg(target_os = "windows")]
     if let Some(old) = &old {
         old.remove_native();
     }
-    let mut fresh = build_bar(&top_items.snapshot(), slot, top_items);
+    let mut fresh = build_bar(&top_items.snapshot(), env, slot, top_items);
     fresh.hwnds = carried_hwnds(old);
     fresh.install_native();
     *guard = Some(fresh);
@@ -558,11 +561,12 @@ impl NativeMenuBar {
         }
 
         let bar: Rc<RefCell<Option<Bar>>> = Rc::new(RefCell::new(None));
-        rebuild_bar(&bar, items);
+        rebuild_bar(&bar, items, env);
         let watch = {
             let bar = Rc::clone(&bar);
             let items_for_watch = items.clone();
-            items.watch(move |_| rebuild_bar(&bar, &items_for_watch))
+            let env = env.clone();
+            items.watch(move |_| rebuild_bar(&bar, &items_for_watch, &env))
         };
         Self {
             bar,
@@ -645,7 +649,7 @@ mod tests {
     fn a_detached_hwnd_is_not_carried_into_the_next_bar() {
         let slot: Rc<RefCell<Option<Bar>>> = Rc::new(RefCell::new(None));
         let items: Computed<Vec<ResolvedMenuItem>> = Computed::constant(Vec::new());
-        let mut bar = build_bar(&items.snapshot(), &slot, &items);
+        let mut bar = build_bar(&items.snapshot(), &Environment::new(), &slot, &items);
         bar.record_hwnd(1);
         bar.record_hwnd(2);
         bar.record_hwnd(3);
