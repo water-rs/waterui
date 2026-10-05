@@ -235,53 +235,53 @@ define_class!(
         // SAFETY: see the module safety note.
         #[unsafe(method(layoutSubviews))]
         fn layout_subviews_override(&self) {
-            guarded("SurfaceView layoutSubviews", || {
-                // SAFETY: see the module safety note.
-                let _: () = unsafe { msg_send![super(self), layoutSubviews] };
-                let handler = self.ivars().on_layout.borrow().clone();
-                if let Some(handler) = handler {
-                    handler();
-                }
-            });
+            self.forward(
+                "SurfaceView layoutSubviews",
+                || {
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), layoutSubviews] };
+                },
+                &self.ivars().on_layout,
+            );
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(didMoveToWindow))]
         fn did_move_to_window_override(&self) {
-            guarded("SurfaceView didMoveToWindow", || {
-                // SAFETY: see the module safety note.
-                let _: () = unsafe { msg_send![super(self), didMoveToWindow] };
-                let handler = self.ivars().on_window_changed.borrow().clone();
-                if let Some(handler) = handler {
-                    handler();
-                }
-            });
+            self.forward(
+                "SurfaceView didMoveToWindow",
+                || {
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), didMoveToWindow] };
+                },
+                &self.ivars().on_window_changed,
+            );
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(didMoveToSuperview))]
         fn did_move_to_superview_override(&self) {
-            guarded("SurfaceView didMoveToSuperview", || {
-                // SAFETY: see the module safety note.
-                let _: () = unsafe { msg_send![super(self), didMoveToSuperview] };
-                let handler = self.ivars().on_visibility_changed.borrow().clone();
-                if let Some(handler) = handler {
-                    handler();
-                }
-            });
+            self.forward(
+                "SurfaceView didMoveToSuperview",
+                || {
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), didMoveToSuperview] };
+                },
+                &self.ivars().on_visibility_changed,
+            );
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(traitCollectionDidChange:))]
         fn trait_collection_did_change(&self, previous: Option<&UITraitCollection>) {
-            guarded("SurfaceView traitCollectionDidChange:", || {
-                // SAFETY: see the module safety note.
-                let _: () = unsafe { msg_send![super(self), traitCollectionDidChange: previous] };
-                let handler = self.ivars().on_backing_changed.borrow().clone();
-                if let Some(handler) = handler {
-                    handler();
-                }
-            });
+            self.forward(
+                "SurfaceView traitCollectionDidChange:",
+                || {
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), traitCollectionDidChange: previous] };
+                },
+                &self.ivars().on_backing_changed,
+            );
         }
 
         // SAFETY: see the module safety note.
@@ -513,6 +513,23 @@ impl SurfaceView {
             })));
         }
         self.ivars().on_interaction.replace(Some(handler));
+    }
+
+    /// Runs `super_call`, then the slot's handler when one is set — the
+    /// whole callback inside one `guarded` boundary under `site`.
+    fn forward(
+        &self,
+        site: &'static str,
+        super_call: impl FnOnce(),
+        slot: &RefCell<Option<LifecycleHandler>>,
+    ) {
+        guarded(site, || {
+            super_call();
+            let handler = slot.borrow().clone();
+            if let Some(handler) = handler {
+                handler();
+            }
+        });
     }
 
     fn emit(&self, interaction: PointerInteraction) {

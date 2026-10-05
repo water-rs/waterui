@@ -165,64 +165,67 @@ define_class!(
         // SAFETY: see the module safety note.
         #[unsafe(method(layout))]
         fn layout_override(&self) {
-            guarded("SurfaceView layout", || {
-                // SAFETY: `super(layout)` forwards to `NSView`.
-                // SAFETY: see the module safety note.
-                let _: () = unsafe { msg_send![super(self), layout] };
-                self.emit_layout();
-            });
+            self.forward(
+                "SurfaceView layout",
+                || {
+                    // SAFETY: `super(layout)` forwards to `NSView`.
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), layout] };
+                },
+                &self.ivars().on_layout,
+            );
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(viewDidMoveToWindow))]
         fn view_did_move_to_window(&self) {
-            guarded("SurfaceView viewDidMoveToWindow", || {
-                // SAFETY: see the module safety note.
-                let _: () = unsafe { msg_send![super(self), viewDidMoveToWindow] };
-                let handler = self.ivars().on_window_changed.borrow().clone();
-                if let Some(handler) = handler {
-                    handler();
-                }
-            });
+            self.forward(
+                "SurfaceView viewDidMoveToWindow",
+                || {
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), viewDidMoveToWindow] };
+                },
+                &self.ivars().on_window_changed,
+            );
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(viewDidChangeBackingProperties))]
         fn view_did_change_backing_properties(&self) {
-            guarded("SurfaceView viewDidChangeBackingProperties", || {
-                // SAFETY: see the module safety note.
-                let _: () = unsafe { msg_send![super(self), viewDidChangeBackingProperties] };
-                let handler = self.ivars().on_backing_changed.borrow().clone();
-                if let Some(handler) = handler {
-                    handler();
-                }
-            });
+            self.forward(
+                "SurfaceView viewDidChangeBackingProperties",
+                || {
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), viewDidChangeBackingProperties] };
+                },
+                &self.ivars().on_backing_changed,
+            );
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(viewDidHide))]
         fn view_did_hide(&self) {
-            guarded("SurfaceView viewDidHide", || {
-                // SAFETY: see the module safety note.
-                let _: () = unsafe { msg_send![super(self), viewDidHide] };
-                let handler = self.ivars().on_visibility_changed.borrow().clone();
-                if let Some(handler) = handler {
-                    handler();
-                }
-            });
+            self.forward(
+                "SurfaceView viewDidHide",
+                || {
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), viewDidHide] };
+                },
+                &self.ivars().on_visibility_changed,
+            );
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(viewDidUnhide))]
         fn view_did_unhide(&self) {
-            guarded("SurfaceView viewDidUnhide", || {
-                // SAFETY: see the module safety note.
-                let _: () = unsafe { msg_send![super(self), viewDidUnhide] };
-                let handler = self.ivars().on_visibility_changed.borrow().clone();
-                if let Some(handler) = handler {
-                    handler();
-                }
-            });
+            self.forward(
+                "SurfaceView viewDidUnhide",
+                || {
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), viewDidUnhide] };
+                },
+                &self.ivars().on_visibility_changed,
+            );
         }
 
         // SAFETY: see the module safety note.
@@ -496,6 +499,23 @@ impl SurfaceView {
         self.ivars().on_interaction.replace(Some(handler));
     }
 
+    /// Runs `super_call`, then the slot's handler when one is set — the
+    /// whole callback inside one `guarded` boundary under `site`.
+    fn forward(
+        &self,
+        site: &'static str,
+        super_call: impl FnOnce(),
+        slot: &RefCell<Option<LifecycleHandler>>,
+    ) {
+        guarded(site, || {
+            super_call();
+            let handler = slot.borrow().clone();
+            if let Some(handler) = handler {
+                handler();
+            }
+        });
+    }
+
     fn emit(&self, interaction: PointerInteraction) {
         guarded("SurfaceView pointer interaction", || {
             let handler = self.ivars().on_interaction.borrow().clone();
@@ -503,13 +523,6 @@ impl SurfaceView {
                 handler(interaction);
             }
         });
-    }
-
-    fn emit_layout(&self) {
-        let handler = self.ivars().on_layout.borrow().clone();
-        if let Some(handler) = handler {
-            handler();
-        }
     }
 
     /// The event position in logical, surface-local points with y growing
