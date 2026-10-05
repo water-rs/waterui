@@ -161,13 +161,6 @@ impl Level {
     /// `transform * translate(-scroll)`: the space of the level's content
     /// and children.
     #[must_use]
-    #[cfg_attr(
-        not(any(test, target_os = "android")),
-        expect(
-            dead_code,
-            reason = "a flattened placement, for realizations without nested layers"
-        )
-    )]
     pub fn content_transform(&self) -> Affine {
         self.transform * Affine::translate(-self.scroll)
     }
