@@ -4687,6 +4687,7 @@ dependencies = [
  "serde",
  "serde_json",
  "skrifa 0.44.0",
+ "thiserror 2.0.21",
  "tiny_http",
  "toml 1.1.6+spec-1.1.0",
  "tracing",
@@ -12742,6 +12743,7 @@ dependencies = [
  "objc2-quartz-core 0.3.2",
  "pollster 1.0.1",
  "serde_json",
+ "thiserror 2.0.21",
  "tracing",
  "tracing-panic",
  "tracing-subscriber",
@@ -13085,6 +13087,7 @@ dependencies = [
  "serde",
  "smallvec",
  "suiteki",
+ "thiserror 2.0.21",
  "waterui-macros",
 ]
 

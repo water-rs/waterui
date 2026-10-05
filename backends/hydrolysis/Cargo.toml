@@ -13,6 +13,7 @@ categories = ["gui", "graphics"]
 
 [dependencies]
 waterui-core.workspace = true
+thiserror.workspace = true
 waterui-assets.workspace = true
 # Decodes the CLI-staged window icon (always written as 8-bit RGBA PNG).
 png = "0.18"

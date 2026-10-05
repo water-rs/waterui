@@ -1980,7 +1980,7 @@ impl OffscreenSceneSurface {
     ///
     /// # Panics
     /// Panics when the offscreen surface fails to hand back a frame or the
-    /// readback copy cannot be mapped.
+    /// readback fails.
     #[must_use]
     pub fn readback_rgba8(&mut self) -> Vec<u8> {
         let (width, height) = self.target.size();
@@ -1997,13 +1997,13 @@ impl OffscreenSceneSurface {
             cherenkov_gpu::interop::OutputAlpha::Premultiplied,
             1.0,
         );
-        crate::readback::readback_texture_rgba8(
-            self.target.device(),
-            self.target.queue(),
-            &texture,
-            width,
-            height,
-        )
+        crate::readback::readback_texture_rgba8(&self.target, &texture, width, height)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "hydrolysis offscreen scene surface: readback failed: {:#}",
+                    waterui_core::Error::from(error)
+                )
+            })
     }
 }
 
