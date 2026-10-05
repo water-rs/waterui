@@ -67,7 +67,7 @@ pub use platform::{
     BackEdge, BackNavigation, GpuSurfaceWindow, InputEvent, KeyCode, KeyState, Modifiers,
     OffscreenGpuContext, OffscreenSceneSurface, OffscreenSurface, OffscreenWindow, PlatformWindow,
     PointerButton, PointerKind, SurfaceError, SurfaceFrame, SurfaceProvider, TextInputPurpose,
-    TextInputState, TouchPhase, WindowSafeArea,
+    TextInputState, TouchPhase, WindowKeyboardArea, WindowSafeArea,
 };
 pub use platform_view::{PlatformView, PlatformViewPlacement, PlatformViewSink};
 #[cfg(feature = "accessibility")]

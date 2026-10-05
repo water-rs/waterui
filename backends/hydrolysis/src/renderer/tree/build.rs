@@ -266,7 +266,7 @@ impl RenderNode {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
                 return Self::build_wrapper(
-                    WrapperEffect::IgnoreSafeArea(value.edges),
+                    WrapperEffect::IgnoreSafeArea(value),
                     content,
                     env,
                     renderer,
@@ -520,13 +520,20 @@ impl RenderNode {
                     ..
                 } = (*scroll).into_inner().into_inner();
                 let content = normalize_layout_view(content, env);
+                // A scroll surface ends the keyboard region and the
+                // accumulated ignore declarations for its subtree: the
+                // surface insets and scrolls its own content instead
+                // (layout-spec.md §7.1).
+                let mut child_env = env.clone();
+                child_env.insert(crate::platform::InsideScrollSurface);
+                child_env.insert(crate::platform::AccumulatedSafeAreaIgnores(0));
                 return Self::Scroll(Box::new(ScrollNode {
                     memo_gate: Cell::default(),
                     memo_slots: RefCell::default(),
                     accessibility_identity: Rc::new(()),
                     render_id: RenderId::next(),
                     axis,
-                    child: Self::build(content, env, renderer),
+                    child: Self::build(content, &child_env, renderer),
                     controller,
                     offset,
                     applied_scroll_generation: Cell::new(0),
@@ -534,7 +541,9 @@ impl RenderNode {
                     content_size: Size::zero(),
                     viewport: Size::zero(),
                     non_scrolling_minimum: Cell::new(None),
-                    env: env.clone(),
+                    last_keyboard_cover: Cell::new(0.0),
+                    focused_field_clear: Cell::new(true),
+                    env: child_env,
                 }));
             }
             Err(view) => view,
@@ -767,6 +776,21 @@ impl RenderNode {
             Self::resolved_handler_env(&child, env).clone()
         } else {
             env.clone()
+        };
+        // `.ignore_safe_area` unions its declaration into the subtree's
+        // accumulated ignore mask: descendants (fills, scroll surfaces, a
+        // deeper declaration) extend through the union, and a scroll
+        // surface resets it for its own subtree.
+        let env = if let WrapperEffect::IgnoreSafeArea(ignore) = &effect {
+            let mut scoped = env;
+            let accumulated = scoped
+                .get::<crate::platform::AccumulatedSafeAreaIgnores>()
+                .map_or(0, |accumulated| accumulated.0)
+                | super::window::declared_ignore_mask(*ignore);
+            scoped.insert(crate::platform::AccumulatedSafeAreaIgnores(accumulated));
+            scoped
+        } else {
+            env
         };
         Self::Wrapper(Box::new(WrapperNode {
             accessibility_identity: Rc::new(()),

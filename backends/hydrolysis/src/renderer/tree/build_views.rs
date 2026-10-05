@@ -51,6 +51,7 @@ impl_widget_behavior!(
     crate::renderer::render_gradient_node,
     crate::renderer::measure_gradient_node
     ; a11y: crate::renderer::views::emit_graphics_leaf_accessibility
+    ; fill: true
 );
 impl_widget_behavior!(
     ResolvedShape,
