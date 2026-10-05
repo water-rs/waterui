@@ -3628,10 +3628,15 @@ mod winit_impl {
                 return None;
             };
             let mut point = POINT { x: 0, y: 0 };
-            if unsafe { GetCursorPos(&mut point) } == 0 {
+            // SAFETY: `point` is a valid, writable `POINT` for the duration
+            // of the call, which is all `lpPoint` requires.
+            if unsafe { GetCursorPos(&raw mut point) } == 0 {
                 return None;
             }
-            if unsafe { ScreenToClient(win32.hwnd.get(), &mut point) } == 0 {
+            // SAFETY: `hwnd` is the window's live Win32 handle for as long
+            // as the `NativeWindow` lives, and `point` is a valid, writable
+            // `POINT` the call rewrites in client coordinates.
+            if unsafe { ScreenToClient(win32.hwnd.get(), &raw mut point) } == 0 {
                 return None;
             }
             let position = PhysicalPosition::new(f64::from(point.x), f64::from(point.y))
@@ -4041,7 +4046,7 @@ mod winit_impl {
                 win32.hwnd.get() as HWND,
                 DWMWA_CLOAKED as u32,
                 (&raw mut cloaked).cast(),
-                size_of::<i32>() as u32,
+                u32::try_from(size_of::<i32>()).expect("an i32's size fits u32"),
             ) == 0
                 && cloaked != 0
         }

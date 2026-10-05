@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-pub use cherenkov_record::ResourceError;
+pub use cherenkov_record::{ResourceError, admit};
 
 use crate::frame::OffscreenFormat;
 use cherenkov_record::ResourceId;

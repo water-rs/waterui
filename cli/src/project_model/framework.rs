@@ -135,6 +135,11 @@ pub struct ResolvedFramework {
     packages: BTreeMap<String, DependencyDetail>,
     #[serde(default, skip_serializing_if = "PatchSet::is_empty")]
     patches: PatchSet,
+    /// Every version the framework's own lock records for a package name —
+    /// the versions a patched name resolves to through the channel's
+    /// `[patch]` tables. Derived at resolution time and never persisted.
+    #[serde(skip)]
+    locked_versions: BTreeMap<String, Vec<String>>,
 }
 
 /// The selection in one line, as `water create` reports it: the channel and
@@ -418,6 +423,7 @@ impl ResolvedFramework {
             experimental_packages: BTreeMap::new(),
             packages: BTreeMap::new(),
             patches: PatchSet::default(),
+            locked_versions: locked_package_versions(&lock),
         }
         .validated()
     }
@@ -713,14 +719,18 @@ impl ResolvedFramework {
                 .and_then(toml_edit::Item::as_str)
                 .unwrap_or(&name)
                 .to_owned();
-            // The `*-path` members are workspace members, not registry
-            // packages: a scaffolded project's dependency on one is pinned
-            // by `member_source`, never rewritten to a version requirement.
-            if FRAMEWORK_MEMBERS
-                .iter()
-                .any(|member| member.package == package)
-                || !self.scaffold.contains_key(&format!("{package}-version"))
-            {
+            let scaffolded = self.scaffold.contains_key(&format!("{package}-version"));
+            // A package the selection provides through its patch table —
+            // every `*-path` member and each name the channel pins there —
+            // is written as the registry requirement the patch redirects:
+            // whatever source the entry declared, a `version` requirement is
+            // the one source form `[patch.crates-io]` can take over.
+            let patched = if scaffolded {
+                None
+            } else {
+                self.patched_version(&package)?
+            };
+            if !(scaffolded || patched.is_some()) {
                 continue;
             }
             if dependency.is_str() {
@@ -753,14 +763,75 @@ impl ResolvedFramework {
             ] {
                 table.remove(key);
             }
-            let source = toml_edit::ser::to_document(&self.dependency(&package))?;
-            for key in ["version", "git", "rev"] {
-                if let Some(value) = source.get(key) {
-                    table.insert(key, value.clone());
+            if scaffolded {
+                let source = toml_edit::ser::to_document(&self.dependency(&package))?;
+                for key in ["version", "git", "rev"] {
+                    if let Some(value) = source.get(key) {
+                        table.insert(key, value.clone());
+                    }
                 }
+            } else {
+                table.insert(
+                    "version",
+                    toml_edit::value(patched.expect("a provided name passed the check")),
+                );
             }
         }
         Ok(())
+    }
+
+    /// The registry requirement the selection's `[patch]` tables redirect a
+    /// provided name to: the version the framework's own lock records for
+    /// the package — the patch table pins the framework's own packages —
+    /// or, only for a name the framework lock does not record at all, the
+    /// requirement the patch entry itself declares. `Ok(None)` names a
+    /// package the selection does not provide; `Err` names one the lock
+    /// records ambiguously, or one nothing records a version for.
+    ///
+    /// A member whose crates.io name the table patches, or a third-party
+    /// crate the channel pins there, resolves identically through the
+    /// requirement: the patch substitutes the package the version names.
+    fn patched_version(&self, package: &str) -> Result<Option<String>> {
+        let Some(entry) = self
+            .patches
+            .values()
+            .find_map(|dependencies| dependencies.get(package))
+        else {
+            return Ok(None);
+        };
+        let channel = self
+            .channel()
+            .map_or_else(|| "local".to_owned(), |channel| channel.to_string());
+        match self
+            .locked_versions
+            .get(package)
+            .map_or(&[][..], Vec::as_slice)
+        {
+            [version] => return Ok(Some(version.clone())),
+            [] => {}
+            versions => {
+                bail!(
+                    "the {channel} channel's lock records {} versions of `{package}` \
+                     ({}); a dependency on it cannot be written as the registry \
+                     requirement the patch redirects",
+                    versions.len(),
+                    versions.join(", ")
+                )
+            }
+        }
+        let version = match entry {
+            cargo_toml::Dependency::Simple(version) => Some(version.to_string()),
+            cargo_toml::Dependency::Detailed(detail) => {
+                detail.version.as_ref().map(ToString::to_string)
+            }
+            cargo_toml::Dependency::Inherited(_) => None,
+        };
+        version.map(Some).ok_or_else(|| {
+            eyre!(
+                "the {channel} channel pins `{package}` through its patch table but \
+                 records no version for it"
+            )
+        })
     }
 
     pub(crate) fn validate_dependencies(
@@ -1366,6 +1437,7 @@ impl ResolvedFramework {
         };
         complete_scaffold(&mut scaffold, &lock)?;
 
+        let locked_versions = locked_package_versions(&lock);
         let (packages, patches, lockfile) = match channel {
             // A stable project resolves its graph from the registry; nothing is
             // pinned to the framework repository, so there is no package detail
@@ -1405,6 +1477,7 @@ impl ResolvedFramework {
                 experimental_packages,
                 packages,
                 patches,
+                locked_versions,
             }
             .validated()?,
             lockfile,
@@ -1427,6 +1500,20 @@ async fn managed_crate_metadata(
             .exec()
     })
     .await
+}
+
+/// Every version the framework's own lock records for a package name —
+/// the only record that pins a `[patch]` name, kept as a list so several
+/// entries stay a reported ambiguity instead of an arbitrary pick.
+fn locked_package_versions(lock: &Lockfile) -> BTreeMap<String, Vec<String>> {
+    let mut versions: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for package in &lock.packages {
+        versions
+            .entry(package.name.to_string())
+            .or_default()
+            .push(package.version.to_string());
+    }
+    versions
 }
 
 /// The framework lock only covers its own workspace; an extracted backend
@@ -2353,7 +2440,22 @@ pub(crate) mod test_fixtures {
             experimental_packages: experimental_scaffold_packages(),
             packages: BTreeMap::new(),
             patches: PatchSet::default(),
+            locked_versions: fixture_locked_versions(),
         }
+    }
+
+    /// The version map a resolution derives from the fixture lock —
+    /// `test_lock`'s packages plus the `*-path` members the checkout fixture
+    /// carries in-tree.
+    fn fixture_locked_versions() -> BTreeMap<String, Vec<String>> {
+        FRAMEWORK_PACKAGES
+            .iter()
+            .map(|name| ((*name).to_owned(), vec!["0.4.1".to_owned()]))
+            .chain([
+                ("hydrolysis".to_owned(), vec!["0.2.1".to_owned()]),
+                ("waterui-apple".to_owned(), vec!["0.4.1".to_owned()]),
+            ])
+            .collect()
     }
 
     /// The git-pinned scaffold packages the checkout fixture's
@@ -2442,6 +2544,7 @@ pub(crate) mod test_fixtures {
             experimental_packages,
             packages: BTreeMap::new(),
             patches: PatchSet::default(),
+            locked_versions: fixture_locked_versions(),
         }
     }
 
@@ -3908,6 +4011,7 @@ mod tests {
             scaffold,
             experimental_packages: BTreeMap::new(),
             patches: PatchSet::default(),
+            locked_versions: locked_package_versions(lock),
         };
         (framework, bytes)
     }
@@ -4479,6 +4583,118 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
             document["dependencies"]["waterui"]["version"].as_str(),
             Some(scaffolded("waterui-version").as_str())
         );
+    }
+
+    /// The stale source an earlier selection wrote — the `hydrolysis` git pin
+    /// from before the backend moved into the monorepo — names a package the
+    /// new selection provides through `[patch.crates-io]`, so the update
+    /// rewrites it to the registry requirement the patch redirects (#1849).
+    #[test]
+    fn channel_update_rewrites_patch_provided_dependencies_to_the_patched_version() {
+        let mut framework = dev_framework();
+        let pin = |git: &str| {
+            toml::from_str::<toml::Value>(&format!(
+                "git = \"{git}\"\nrev = \"{}\"",
+                'a'.to_string().repeat(40)
+            ))
+            .unwrap()
+            .try_into::<Dependency>()
+            .unwrap()
+        };
+        framework
+            .patches
+            .entry("crates-io".into())
+            .or_default()
+            .extend([
+                (
+                    "hydrolysis".into(),
+                    pin("https://github.com/water-rs/waterui"),
+                ),
+                ("nami".into(), pin("https://github.com/water-rs/nami")),
+            ]);
+        framework
+            .locked_versions
+            .insert("nami".into(), vec!["0.3.4".to_owned()]);
+
+        let manifest = toml::toml! {
+            [dependencies]
+            hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "01172c0b1c2ec7ad99dba3e6e0e12c0a57a72e4a", default-features = false, features = ["winit"], optional = true }
+            vendored = { git = "https://github.com/example/vendored", rev = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }
+            [target."cfg(unix)".dependencies]
+            nami = { git = "https://github.com/water-rs/nami", rev = "cccccccccccccccccccccccccccccccccccccccc" }
+        };
+        let mut document = toml_edit::ser::to_document(&manifest).unwrap();
+        framework
+            .update_manifest(&mut document, &PatchSet::default())
+            .unwrap();
+
+        // The patched member becomes the registry requirement its patch
+        // redirects — the version the channel's lock records — while the
+        // entry's feature selection is kept.
+        let hydrolysis = &document["dependencies"]["hydrolysis"];
+        assert_eq!(hydrolysis["version"].as_str(), Some("0.2.1"));
+        assert_eq!(hydrolysis["features"][0].as_str(), Some("winit"));
+        assert_eq!(hydrolysis["default-features"].as_bool(), Some(false));
+        assert_eq!(hydrolysis["optional"].as_bool(), Some(true));
+        for key in ["git", "rev", "path", "branch", "tag"] {
+            assert!(
+                hydrolysis.get(key).is_none(),
+                "{key} must be stripped: {hydrolysis}"
+            );
+        }
+
+        // The same rewrite lands inside a target table.
+        let nami = &document["target"]["cfg(unix)"]["dependencies"]["nami"];
+        assert_eq!(nami["version"].as_str(), Some("0.3.4"));
+        for key in ["git", "rev"] {
+            assert!(nami.get(key).is_none(), "{key} must be stripped: {nami}");
+        }
+
+        // A dependency the selection provides nothing for keeps its source.
+        let vendored = &document["dependencies"]["vendored"];
+        assert_eq!(
+            vendored["git"].as_str(),
+            Some("https://github.com/example/vendored")
+        );
+        assert_eq!(
+            vendored["rev"].as_str(),
+            Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+        );
+        assert!(vendored.get("version").is_none());
+    }
+
+    /// Two lock entries under one patch-pinned name leave the registry
+    /// requirement unresolvable — the update refuses and names the package
+    /// and the versions rather than picking one.
+    #[test]
+    fn channel_update_rejects_an_ambiguously_locked_patch_package() {
+        let mut framework = dev_framework();
+        let hydrolysis: Dependency =
+            toml::from_str::<toml::Value>("git = \"https://github.com/water-rs/waterui\"")
+                .unwrap()
+                .try_into()
+                .unwrap();
+        framework
+            .patches
+            .entry("crates-io".into())
+            .or_default()
+            .insert("hydrolysis".into(), hydrolysis);
+        framework.locked_versions.insert(
+            "hydrolysis".into(),
+            vec!["0.2.1".to_owned(), "0.3.0".to_owned()],
+        );
+
+        let mut document: toml_edit::DocumentMut =
+            "[dependencies]\nhydrolysis = { git = \"https://github.com/water-rs/hydrolysis\" }\n"
+                .parse()
+                .unwrap();
+        let error = framework
+            .update_manifest(&mut document, &PatchSet::default())
+            .expect_err("two lock entries for one patch-pinned name is an error");
+        let text = format!("{error:#}");
+        for expected in ["hydrolysis", "0.2.1", "0.3.0"] {
+            assert!(text.contains(expected), "{text}");
+        }
     }
 
     #[test]

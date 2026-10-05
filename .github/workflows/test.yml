@@ -408,8 +408,9 @@ jobs:
       # `compile_error` off wasm32, so the all-features pass is the only
       # way the WebGL executor gets linted anywhere. cherenkov-gpu's
       # browser test target compiles the WebGPU surface code nothing on
-      # the host can see, and cherenkov-cpu is the whole CPU backend's
-      # wasm shape.
+      # the host can see, cherenkov-cpu is the whole CPU backend's wasm
+      # shape, and cherenkov's own pass lints the engine crate's wasm
+      # test targets.
       - name: Clippy (Cherenkov wasm32 legs)
         run: |
           cargo clippy --locked --profile ci-check --target wasm32-unknown-unknown \
@@ -420,6 +421,9 @@ jobs:
             -- -D warnings
           cargo clippy --locked --profile ci-check --target wasm32-unknown-unknown \
             -p cherenkov-cpu --all-targets \
+            -- -D warnings
+          cargo clippy --locked --profile ci-check --target wasm32-unknown-unknown \
+            -p cherenkov --all-targets \
             -- -D warnings
 
   # The workspace test run, per platform, also carrying the doctests that
@@ -867,6 +871,41 @@ jobs:
         uses: ./.github/actions/setup-linux-deps
       - run: cargo clippy --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --features accessibility,inspector-signals,testing,web,winit -- -D warnings
       - run: cargo clippy --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --no-default-features -- -D warnings
+
+  # Hydrolysis's Windows leg, beside the Android one for the same reason:
+  # `cfg(target_os = "windows")` code — the winit platform's cursor,
+  # monitor and extended-style calls — is compiled nowhere else. The
+  # nightly's `windows.yml` lints the workspace natively with default
+  # features, and `winit` is not one of them, so cross-checking the target
+  # on ubuntu is the only coverage this code gets — none until now, which
+  # is how it accumulated 16 warnings (#1886). Linting needs no Windows
+  # SDK: every dependency it reaches is a type check, not a link.
+  #
+  # The nightly sweeps it under `full`; the fast gate also runs it when the
+  # affected scope can reach the crate, like the Android leg above.
+  hydrolysis-windows:
+    name: x86_64-pc-windows-msvc
+    if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: clippy
+          cache: "false"
+      # Reads the shared `cargo-sources` archive owned by this OS's single
+      # writer job; read-only lanes never save, so they cannot evict caches.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
+      # Build scripts still run on the host; cherenkov-gpu's optimizes its
+      # precompiled SPIR-V with spirv-opt on every non-Apple native target.
+      - name: Install native dependencies
+        uses: ./.github/actions/setup-linux-deps
+      - run: cargo clippy --locked --profile ci-check -p hydrolysis --features winit --target x86_64-pc-windows-msvc -- -D warnings
 
   # ── Cherenkov engine legs (#1449) ──────────────────────────────────────
   # The checks water-rs/cherenkov's `ci.yml` ran on every pull request,

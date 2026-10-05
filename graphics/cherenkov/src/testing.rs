@@ -144,6 +144,10 @@ pub struct NullConfig {
     /// Registration kinds the backend refuses: the matching `add_*` or
     /// `create_surface` call returns its error without committing.
     pub reject: HashSet<NullReject>,
+    /// The limits the backend reports and [`Engine::image_limits`] reads:
+    /// registrations they do not admit fail on the calling thread with
+    /// [`ResourceError::TooLarge`].
+    pub image_limits: crate::ImageLimits,
 }
 
 /// A registration [`Null`] refuses, for failure-path tests.
@@ -170,6 +174,7 @@ pub type NullInfo = ();
 pub struct NullRenderer {
     events: Sender<Event>,
     reject: HashSet<NullReject>,
+    image_limits: crate::ImageLimits,
     surfaces: HashSet<SurfaceId>,
     /// The surfaces the host announced hidden.
     hidden: HashSet<SurfaceId>,
@@ -215,6 +220,7 @@ impl NullRenderer {
         Self {
             events: config.events,
             reject: config.reject,
+            image_limits: config.image_limits,
             surfaces: HashSet::new(),
             hidden: HashSet::new(),
             fonts: HashSet::new(),
@@ -355,6 +361,10 @@ impl Renderer for NullRenderer {
         );
         self.removed.insert(ResourceId::Font(id));
         let _ = self.events.send(Event::RemoveFont(id));
+    }
+
+    fn image_limits(&self) -> crate::ImageLimits {
+        self.image_limits
     }
 
     fn add_image(&mut self, id: ImageId, _image: ImageUpload) -> Result<(), ResourceError> {
@@ -1500,8 +1510,75 @@ mod tests {
         reject: HashSet<NullReject>,
     ) -> (Engine<Null>, std::sync::mpsc::Receiver<Event>) {
         let (tx, rx) = std::sync::mpsc::channel();
-        let engine = Engine::<Null>::new(NullConfig { events: tx, reject }).expect("init");
+        let engine = Engine::<Null>::new(NullConfig {
+            events: tx,
+            reject,
+            image_limits: crate::ImageLimits::UNLIMITED,
+        })
+        .expect("init");
         (engine, rx)
+    }
+
+    /// An image the backend's [`ImageLimits`] does not admit is rejected
+    /// on the calling thread: `Engine::image` returns `TooLarge` naming
+    /// the limits and queues nothing, and an oversized `Image::replace`
+    /// keeps the previous pixels.
+    #[test]
+    fn an_image_beyond_the_limits_fails_at_registration() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let limits = crate::ImageLimits {
+            max_dimension: 4,
+            max_texels: 16,
+        };
+        let engine = Engine::<Null>::new(NullConfig {
+            events: tx,
+            reject: HashSet::new(),
+            image_limits: limits,
+        })
+        .expect("init");
+        assert_eq!(engine.image_limits(), limits);
+
+        // The dimension binds.
+        match engine.image(ImageData::<Rgba8>::new(5, 1, vec![0u8; 20]).expect("image data")) {
+            Err(ResourceError::TooLarge {
+                width,
+                height,
+                limits: rejected,
+            }) => {
+                assert_eq!((width, height, rejected), (5, 1, limits));
+            }
+            other => panic!("an oversized image registered: {other:?}"),
+        }
+        // And the texel count does too.
+        assert!(matches!(
+            engine.image(ImageData::<Rgba8>::new(4, 5, vec![0u8; 80]).expect("image data")),
+            Err(ResourceError::TooLarge { .. })
+        ));
+
+        let image = engine
+            .image(ImageData::<Rgba8>::new(4, 1, vec![0u8; 16]).expect("image data"))
+            .expect("image");
+        // A replacement over the limits fails on the calling thread; an
+        // admitted one still applies.
+        match image.replace(ImageData::<Rgba8>::new(4, 5, vec![0u8; 80]).expect("image data")) {
+            Err(ResourceError::TooLarge { .. }) => {}
+            other => panic!("an oversized replacement applied: {other:?}"),
+        }
+        image
+            .replace(ImageData::<Rgba8>::new(4, 1, vec![9u8; 16]).expect("image data"))
+            .expect("replace");
+
+        // `memory` round-trips the render thread, flushing the queue:
+        // only the admitted registration and replacement reached it.
+        let _ = engine.memory();
+        let events: Vec<Event> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(
+            matches!(
+                events.as_slice(),
+                [Event::AddImage(_), Event::ReplaceImage(_, (4, 1))]
+            ),
+            "{events:?}"
+        );
     }
 
     fn frames(rx: &std::sync::mpsc::Receiver<Event>) -> Vec<FrameRecord> {
@@ -2930,11 +3007,19 @@ mod wasm_tests {
         Sampling, ShaderPaint, ShaderSource, WorkingColor,
     };
 
+    #[expect(
+        clippy::future_not_send,
+        reason = "the engine is main-thread on wasm, so its futures are !Send by design"
+    )]
     async fn engine(reject: HashSet<NullReject>) -> (Engine<Null>, Receiver<Event>) {
         let (tx, rx) = std::sync::mpsc::channel();
-        let engine = Engine::<Null>::new(NullConfig { events: tx, reject })
-            .await
-            .expect("init");
+        let engine = Engine::<Null>::new(NullConfig {
+            events: tx,
+            reject,
+            image_limits: crate::ImageLimits::UNLIMITED,
+        })
+        .await
+        .expect("init");
         (engine, rx)
     }
 

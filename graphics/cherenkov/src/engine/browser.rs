@@ -18,7 +18,7 @@ use crate::config::{MemoryUsage, Pressure};
 use crate::error::{EngineError, RenderError, ResourceError, SurfaceError};
 use crate::frame::{FrameStats, FrameTime, FrameTiming, Next};
 use crate::glyph::FontId;
-use crate::image::{Format, ImageData};
+use crate::image::{Format, ImageData, ImageUpload};
 use cherenkov_record::{ChangeSet, SurfaceId};
 
 use crate::message::{FontData, Message, ProducerId, RegisterOp, RenderReply};
@@ -44,6 +44,8 @@ use crate::surface::Surface;
 pub struct Engine<B: Backend> {
     tx: Sender<Message<B>>,
     info: B::Info,
+    /// The largest image the backend admits, read once after init.
+    image_limits: crate::ImageLimits,
     stats: RefCell<FrameStats>,
     commits: RefCell<Vec<(SurfaceId, ChangeSet<B>)>>,
     /// The deadline map `finish_frame` fills: its buffer travels with
@@ -112,14 +114,15 @@ impl<B: Backend> Engine<B> {
     /// [`EngineError`] when the backend fails to initialize or the render
     /// thread cannot start.
     pub async fn new(config: B::Config) -> Result<Self, EngineError> {
-        let (tx, info) = thread::local::<B>(config).await?;
+        let (tx, info, image_limits) = thread::local::<B>(config).await?;
         let post_tx = tx.clone();
         let waker = Rc::new(Waker::new());
         let replace_image = {
             let tx = tx.clone();
             // The executor wakes the host through every visible surface
             // that draws the image, once it knows which surfaces do.
-            Rc::new(move |id, image| {
+            Rc::new(move |id: ImageId, image: ImageUpload| {
+                crate::error::admit(image_limits, image.width, image.height)?;
                 tx.send(Message::ReplaceImage { id, image })
                     .map_err(|_| ResourceError::Lost)
             }) as ReplaceImage
@@ -127,6 +130,7 @@ impl<B: Backend> Engine<B> {
         Ok(Self {
             tx,
             info,
+            image_limits,
             stats: RefCell::new(FrameStats::default()),
             commits: RefCell::new(Vec::new()),
             next_scratch: RefCell::new(rustc_hash::FxHashMap::default()),
@@ -151,6 +155,20 @@ impl<B: Backend> Engine<B> {
     #[must_use]
     pub const fn info(&self) -> &B::Info {
         &self.info
+    }
+
+    /// The largest image the backend admits, in each dimension and in
+    /// total texels: the device's texture limit, or the per-image share
+    /// of the backend's memory budget. Read once off the live device and
+    /// budget when the engine is created; it never changes.
+    ///
+    /// [`Engine::image`] and [`Image::replace`] check it on the calling
+    /// thread before anything is queued, so an image the device cannot
+    /// hold fails at registration with [`ResourceError::TooLarge`]
+    /// instead of failing every render that draws it.
+    #[must_use]
+    pub const fn image_limits(&self) -> crate::ImageLimits {
+        self.image_limits
     }
 
     /// Statistics of the last [`Engine::render`]. GPU timings are kept by
@@ -262,18 +280,24 @@ impl<B: Backend> Engine<B> {
     /// Registers an image. [`Image::replace`] later swaps its pixels
     /// behind the same id.
     ///
-    /// `image` is validated by [`ImageData::new`] before it is passed here.
-    /// The upload is queued in order with every render and does not wait
-    /// for the backend. A rejection only the backend can detect (a device
-    /// limit) fails every render that draws the image with
-    /// [`RenderError::Rejected`].
+    /// `image` is validated by [`ImageData::new`] before it is passed here,
+    /// and its size is checked against [`Engine::image_limits`] on the
+    /// calling thread: an image the device cannot hold fails at
+    /// registration instead of failing every render that draws it. The
+    /// upload is queued in order with every render and does not wait for
+    /// the backend. A rejection only the backend can detect (a residency
+    /// budget across every registered image) fails every render that
+    /// draws the image with [`RenderError::Rejected`].
     ///
     /// # Errors
-    /// [`ResourceError::Lost`] when the executor is gone.
+    /// [`ResourceError::TooLarge`] when the image exceeds
+    /// [`Engine::image_limits`], [`ResourceError::Lost`] when the executor
+    /// is gone.
     pub fn image<F: Format>(&self, image: ImageData<F>) -> Result<Image<F>, ResourceError>
     where
         B: Uploads<F>,
     {
+        crate::error::admit(self.image_limits, image.width(), image.height())?;
         let id = ImageId::new(Self::alloc(&self.next_image));
         let upload = image.into_upload();
         let resource = ResourceId::Image(id);
