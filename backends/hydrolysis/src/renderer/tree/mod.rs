@@ -201,12 +201,6 @@ pub enum RenderNode {
     Widget(WidgetNode),
 }
 
-impl core::fmt::Debug for RenderNode {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("RenderNode").finish_non_exhaustive()
-    }
-}
-
 impl RenderNode {
     /// The render identity of this visual node itself — never looked through
     /// to a child's. Even a layout-transparent transform/opacity wrapper owns a

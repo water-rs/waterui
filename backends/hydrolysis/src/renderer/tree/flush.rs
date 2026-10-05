@@ -177,13 +177,10 @@ impl RenderNode {
                     #[allow(clippy::cast_possible_truncation)]
                     let size = Size::new(ctx.bounds.width() as f32, ctx.bounds.height() as f32);
                     let proposal = ProposalSize::new(Some(size.width), Some(size.height));
-                    node.child.borrow_mut().layout(
-                        renderer,
-                        &node.env,
-                        node.safe_area.borrow().as_deref().cloned(),
-                        proposal,
-                        size,
-                    );
+                    let safe_area = renderer.state.recorded_safe_area(node.render_id).cloned();
+                    node.child
+                        .borrow_mut()
+                        .layout(renderer, &node.env, safe_area, proposal, size);
                 }
                 node.child.borrow().flush(renderer, ctx, env);
             }
@@ -664,12 +661,8 @@ impl RenderNode {
                     merged = node.env.layered_on(env);
                     &merged
                 };
-                Rc::clone(&node.behavior).render(
-                    renderer,
-                    ctx,
-                    env,
-                    node.safe_area.borrow().as_deref().cloned(),
-                );
+                let safe_area = renderer.state.recorded_safe_area(node.render_id).cloned();
+                Rc::clone(&node.behavior).render(renderer, ctx, env, safe_area);
                 renderer.pop_render_owner();
             }
         }

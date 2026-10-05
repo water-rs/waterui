@@ -64,6 +64,46 @@ struct BuiltSubview {
     default_a11y_label: Option<String>,
 }
 
+/// Writes the new context over the existing `Box` when there is one, so a
+/// per-frame re-layout reuses the allocation instead of freeing it.
+fn store_laid_out_area(
+    slot: &mut Option<Box<safe_area::SafeAreaLayout>>,
+    safe_area: Option<safe_area::SafeAreaLayout>,
+) {
+    if let (Some(stored), Some(area)) = (slot.as_deref_mut(), safe_area.as_ref()) {
+        stored.clone_from(area);
+    } else {
+        *slot = safe_area.map(Box::new);
+    }
+}
+
+impl BuiltSubview {
+    /// Lays the node out when the structure, the size, the proposal or the
+    /// §7.1 context moved since the last layout — recording what it laid out
+    /// against so an unchanged re-flush skips the pass.
+    fn layout_if_needed(
+        &mut self,
+        renderer: &mut HydrolysisRenderer,
+        env: &Environment,
+        safe_area: Option<safe_area::SafeAreaLayout>,
+        proposal: ProposalSize,
+        size: Size,
+    ) {
+        if self.needs_layout
+            || size != self.laid_out
+            || self.laid_out_proposal != Some(proposal)
+            || self.laid_out_area.as_deref() != safe_area.as_ref()
+        {
+            self.node
+                .layout(renderer, env, safe_area.clone(), proposal, size);
+            self.laid_out = size;
+            self.laid_out_proposal = Some(proposal);
+            store_laid_out_area(&mut self.laid_out_area, safe_area);
+            self.needs_layout = false;
+        }
+    }
+}
+
 impl RetainedSubview {
     pub(crate) fn new(source: AnyView) -> Self {
         Self {
@@ -312,8 +352,9 @@ impl RetainedSubview {
     /// zero-area rect renders nothing, matching the dispatch path's empty-rect
     /// guard. `safe_area` is the context the sub-view lays out against — the
     /// ambient context of where it is placed for an ordinary sub-view, the
-    /// consumed-band content context for chrome content (`NavigationView`,
-    /// `Tabs`), `None` for a scroll surface's context-free content.
+    /// host's context inherited with `Covered` edges where its chrome sits for
+    /// chrome content (`NavigationView`, `Tabs`), `None` for a scroll
+    /// surface's context-free content.
     pub(crate) fn flush_in_rect(
         &mut self,
         renderer: &mut HydrolysisRenderer,
@@ -333,17 +374,7 @@ impl RetainedSubview {
         #[allow(clippy::cast_possible_truncation)]
         let size = Size::new(rect.width() as f32, rect.height() as f32);
         built.needs_layout |= structural | built.node.take_layout_dirty();
-        if built.needs_layout
-            || size != built.laid_out
-            || built.laid_out_proposal != Some(proposal)
-            || built.laid_out_area.as_deref() != safe_area.as_ref()
-        {
-            built.node.layout(renderer, env, safe_area.clone(), proposal, size);
-            built.laid_out = size;
-            built.laid_out_proposal = Some(proposal);
-            built.laid_out_area = safe_area.map(Box::new);
-            built.needs_layout = false;
-        }
+        built.layout_if_needed(renderer, env, safe_area, proposal, size);
         let child_ctx = ctx.child(
             kurbo::Affine::translate((rect.x0, rect.y0)),
             kurbo::Rect::new(0.0, 0.0, rect.width(), rect.height()),
@@ -395,17 +426,7 @@ impl RetainedSubview {
         let structural = Self::patch_built(&mut built.node, renderer);
         built.node.prepare_for_measure(renderer);
         built.needs_layout |= structural | built.node.take_layout_dirty();
-        if built.needs_layout
-            || size != built.laid_out
-            || built.laid_out_proposal != Some(proposal)
-            || built.laid_out_area.as_deref() != safe_area.as_ref()
-        {
-            built.node.layout(renderer, env, safe_area.clone(), proposal, size);
-            built.laid_out = size;
-            built.laid_out_proposal = Some(proposal);
-            built.laid_out_area = safe_area.map(Box::new);
-            built.needs_layout = false;
-        }
+        built.layout_if_needed(renderer, env, safe_area, proposal, size);
         if let Some(identity) = built.node.accessibility_identity() {
             renderer.push_input_owner(&identity);
             built.node.flush(renderer, ctx, env);
@@ -443,17 +464,7 @@ impl RetainedSubview {
         built.node.prepare_for_measure(renderer);
         built.needs_layout |= structural | built.node.take_layout_dirty();
         let proposal = ProposalSize::new(Some(size.width), Some(size.height));
-        if built.needs_layout
-            || size != built.laid_out
-            || built.laid_out_proposal != Some(proposal)
-            || built.laid_out_area.as_deref() != safe_area.as_ref()
-        {
-            built.node.layout(renderer, env, safe_area.clone(), proposal, size);
-            built.laid_out = size;
-            built.laid_out_proposal = Some(proposal);
-            built.laid_out_area = safe_area.map(Box::new);
-            built.needs_layout = false;
-        }
+        built.layout_if_needed(renderer, env, safe_area, proposal, size);
         let local_ctx = RenderContext::with_transforms(
             kurbo::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
             kurbo::Affine::IDENTITY,
@@ -632,12 +643,6 @@ pub struct WrapperNode {
     pub(super) child: RenderNode,
 }
 
-impl core::fmt::Debug for WrapperNode {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("WrapperNode").finish_non_exhaustive()
-    }
-}
-
 /// The type-erased behavior of one retained native widget state allocation.
 pub trait WidgetBehavior {
     /// The default layout priority of this native leaf.
@@ -706,8 +711,8 @@ pub trait WidgetBehavior {
 /// current bounds. No bake, no capture-once freeze.
 pub struct WidgetNode {
     pub(super) accessibility_identity: Rc<()>,
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
+    /// The widget's render identity — the key flush reads its recorded §7.1
+    /// context under (`HydroState::safe_area_records`).
     pub(crate) render_id: RenderId,
     pub(super) behavior: Rc<dyn WidgetBehavior>,
     pub(super) stretch: StretchAxis,
@@ -716,17 +721,7 @@ pub struct WidgetNode {
     /// by [`RenderNode::build_gradient`]; a `Color` leaf is a fill by its
     /// own variant instead.
     pub(super) fill_leaf: bool,
-    /// The §7.1 context this widget was last laid out against, recorded
-    /// every layout so the retained sub-views it flushes (chrome content,
-    /// labels, popovers) derive their own context from it.
-    pub(super) safe_area: RefCell<Option<Box<safe_area::SafeAreaLayout>>>,
     pub(super) env: Environment,
-}
-
-impl core::fmt::Debug for WidgetNode {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("WidgetNode").finish_non_exhaustive()
-    }
 }
 
 /// The background-slot fill (§7.1): wraps the node `build_fixed_container`
@@ -737,17 +732,13 @@ impl core::fmt::Debug for WidgetNode {
 /// grows the paint rect by exactly that, under unchanged transforms.
 pub struct FillNode {
     pub(super) child: RenderNode,
-    /// Consumed by the retained-update mount path in H3.
+    /// The fill's own render identity, surfaced through
+    /// [`RenderNode::render_id`]. The wrapped leaf's id is still collected
+    /// separately (`collect_render_ids` recurses past this node).
     pub(crate) render_id: RenderId,
     /// The paint extension [`safe_area::SafeAreaLayout::touched_edge_offsets`]
     /// computed for the wrapped frame — `None` until the first layout.
     pub(super) extension: Cell<Option<safe_area::EdgeOffsets>>,
-}
-
-impl core::fmt::Debug for FillNode {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("FillNode").finish_non_exhaustive()
-    }
 }
 
 impl FillNode {
@@ -941,12 +932,6 @@ pub struct ColorNode {
     pub(crate) color: Computed<waterui_graphics::draw::WorkingColor>,
 }
 
-impl core::fmt::Debug for ColorNode {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("ColorNode").finish_non_exhaustive()
-    }
-}
-
 pub struct TextNode {
     /// Per-frame measure memo gate: records whether this node's body was
     /// re-probed within a frame, gating `memo_slots` so a node measured
@@ -964,12 +949,6 @@ pub struct TextNode {
     pub(crate) alignment: Computed<HorizontalAlignment>,
     /// Maximum laid-out lines, from `TextConfig::line_limit`.
     pub(crate) line_limit: Option<usize>,
-}
-
-impl core::fmt::Debug for TextNode {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("TextNode").finish_non_exhaustive()
-    }
 }
 
 pub struct ContainerNode {
@@ -1009,12 +988,6 @@ pub struct ContainerNode {
     pub(crate) _guards: Vec<BoxWatcherGuard>,
 }
 
-impl core::fmt::Debug for ContainerNode {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("ContainerNode").finish_non_exhaustive()
-    }
-}
-
 /// An animated-opacity wrapper: re-samples its alpha each flush and pushes a
 /// layer around the child. Layout-transparent (the child measures/places as if
 /// the wrapper were absent), matching the SwiftUI/WaterUI transform model.
@@ -1026,24 +999,12 @@ pub struct OpacityNode {
     pub(crate) child: RenderNode,
 }
 
-impl core::fmt::Debug for OpacityNode {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("OpacityNode").finish_non_exhaustive()
-    }
-}
-
 pub struct ScaleNode {
     /// Consumed by the retained-update mount path in H3.
     #[allow(dead_code)]
     pub(crate) render_id: RenderId,
     pub(crate) value: Scale,
     pub(crate) child: RenderNode,
-}
-
-impl core::fmt::Debug for ScaleNode {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("ScaleNode").finish_non_exhaustive()
-    }
 }
 
 pub struct RotationNode {
@@ -1054,24 +1015,12 @@ pub struct RotationNode {
     pub(crate) child: RenderNode,
 }
 
-impl core::fmt::Debug for RotationNode {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("RotationNode").finish_non_exhaustive()
-    }
-}
-
 pub struct OffsetNode {
     /// Consumed by the retained-update mount path in H3.
     #[allow(dead_code)]
     pub(crate) render_id: RenderId,
     pub(crate) value: Offset,
     pub(crate) child: RenderNode,
-}
-
-impl core::fmt::Debug for OffsetNode {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("OffsetNode").finish_non_exhaustive()
-    }
 }
 
 pub struct ScrollNode {
@@ -1119,24 +1068,12 @@ pub struct ScrollNode {
     pub(super) surface: safe_area::ScrollSurfaceArea,
 }
 
-impl core::fmt::Debug for ScrollNode {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("ScrollNode").finish_non_exhaustive()
-    }
-}
-
 pub struct RetainNode {
     /// Consumed by the retained-update mount path in H3.
     #[allow(dead_code)]
     pub render_id: RenderId,
     pub(super) _retain: Retain,
     pub(super) child: RenderNode,
-}
-
-impl core::fmt::Debug for RetainNode {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("RetainNode").finish_non_exhaustive()
-    }
 }
 
 pub struct EnvNode {
@@ -1147,12 +1084,6 @@ pub struct EnvNode {
     /// inherited environment at every measure/layout/flush.
     pub(super) env: Environment,
     pub(super) child: RenderNode,
-}
-
-impl core::fmt::Debug for EnvNode {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("EnvNode").finish_non_exhaustive()
-    }
 }
 
 pub struct SceneViewNode {
@@ -1176,12 +1107,6 @@ pub struct SceneViewNode {
         Rc<RefCell<Option<std::rc::Weak<crate::renderer::recording::SceneResources>>>>,
 }
 
-impl core::fmt::Debug for SceneViewNode {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("SceneViewNode").finish_non_exhaustive()
-    }
-}
-
 /// A `GpuContentView` leaf that OWNS its [`GpuContentRuntime`] — the node
 /// analogue of [`SceneViewNode`], for a `Native<GpuContentView>` reached
 /// through the retained tree. Identity is structural: a reactive swap builds
@@ -1197,12 +1122,6 @@ pub struct GpuContentNode {
     pub(super) runtime: Rc<RefCell<crate::gpu_view::GpuContentRuntime>>,
 }
 
-impl core::fmt::Debug for GpuContentNode {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("GpuContentNode").finish_non_exhaustive()
-    }
-}
-
 /// An `ExternalFrameView` leaf that OWNS its [`crate::gpu_view::ExternalFrameRuntime`]
 /// — the node analogue of [`GpuContentNode`], for a `Native<ExternalFrameView>`
 /// reached through the retained tree. The compositor mounts it as its own
@@ -1214,12 +1133,6 @@ pub struct ExternalFrameNode {
     #[allow(dead_code)]
     pub(crate) render_id: RenderId,
     pub(super) runtime: Rc<RefCell<crate::gpu_view::ExternalFrameRuntime>>,
-}
-
-impl core::fmt::Debug for ExternalFrameNode {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("ExternalFrameNode").finish_non_exhaustive()
-    }
 }
 
 /// A `FilteredView` wrapper that OWNS its [`FilteredRuntime`]
@@ -1238,15 +1151,9 @@ pub struct FilteredNode {
     pub(super) env: Environment,
 }
 
-impl core::fmt::Debug for FilteredNode {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("FilteredNode").finish_non_exhaustive()
-    }
-}
-
 pub struct DynamicHostNode {
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
+    /// The host's render identity — the key its recorded §7.1 context is
+    /// side-stored under (`HydroState::safe_area_records`).
     pub render_id: RenderId,
     /// The source `Dynamic`, kept alive so its identity cannot be reused while
     /// this node lives — otherwise a freed identity could be reallocated to a
@@ -1272,16 +1179,6 @@ pub struct DynamicHostNode {
     /// re-lays out its tree before its next flush — the caller-imposed rect a
     /// `RetainedSubview` flushes at never renegotiates itself.
     pub(super) layout_dirty: Cell<bool>,
-    /// The safe-area context this host last laid out under — the mid-pass
-    /// layout the flush runs for a pending child reuses it (the child
-    /// fills the host's frame, so the facts stay valid).
-    pub(super) safe_area: RefCell<Option<Box<safe_area::SafeAreaLayout>>>,
-}
-
-impl core::fmt::Debug for DynamicHostNode {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("DynamicHostNode").finish_non_exhaustive()
-    }
 }
 
 impl DynamicHostNode {

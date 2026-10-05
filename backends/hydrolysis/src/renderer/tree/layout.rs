@@ -509,7 +509,9 @@ impl RenderNode {
             Self::Dynamic(node) => {
                 // The context stays on the host: the flush's mid-pass layout
                 // for a child that applied its pending then reuses it.
-                *node.safe_area.borrow_mut() = safe_area.clone().map(Box::new);
+                renderer
+                    .state
+                    .record_safe_area(node.render_id, safe_area.clone());
                 node.child
                     .borrow_mut()
                     .layout(renderer, env, safe_area, proposal, size);
@@ -624,13 +626,13 @@ impl RenderNode {
                 );
                 // The context the widget's retained sub-views read through
                 // `safe_area_for`/`content_area_for` at flush.
-                *node.safe_area.borrow_mut() = safe_area.map(Box::new);
+                renderer.state.record_safe_area(node.render_id, safe_area);
             }
             // The context a lazy stack's flush-time item placements read —
             // its items inherit the context it laid out against, like a
             // collection's placed children do.
             Self::LazyStack(node) => {
-                *node.safe_area.borrow_mut() = safe_area.map(Box::new);
+                renderer.state.record_safe_area(node.render_id, safe_area);
             }
             // Text, color and GPU leaves render at flush from `ctx.bounds`.
             Self::Color(_)
