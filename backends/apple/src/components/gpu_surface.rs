@@ -2192,12 +2192,9 @@ pub mod native_test {
         )]
         pub async fn mount(mtm: MainThreadMarker) -> Result<Self, String> {
             // `startup::initialize` installs process-global state (the
-            // tracing dispatcher, executors) — each trial mounts its own
-            // surface, so only the first performs it.
-            static STARTUP: std::sync::Once = std::sync::Once::new();
-            STARTUP.call_once(|| {
-                let _ = crate::startup::initialize();
-            });
+            // tracing dispatcher, executors); the native-test harness
+            // performs it once on this same main thread before any
+            // trial runs — the mount relies on that explicit setup.
             let runtime = GpuRuntime::new().await.map_err(|error| error.to_string())?;
             let mut env = Environment::new();
             env.insert(runtime.clone());

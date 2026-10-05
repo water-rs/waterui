@@ -196,4 +196,12 @@ pub fn bind_root_window_wires_a_live_window(mtm: MainThreadMarker) {
 #[cfg(all(target_os = "macos", feature = "gpu_surface"))]
 pub mod gpu_surface {
     pub use crate::components::gpu_surface::native_test::{MountedSceneSurface, WakeProbe};
+
+    /// Performs the once-per-process `startup::initialize` — called
+    /// once from the `Tests/native.rs` harness's true main thread
+    /// before any trial runs; fixture mounts rely on that explicit
+    /// harness setup.
+    pub fn initialize_process() {
+        let _ = crate::startup::initialize();
+    }
 }

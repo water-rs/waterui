@@ -32,6 +32,11 @@ fn main() {
     // `AppKit`/`UIKit` objects may only be built on the real main thread;
     // `run` executes sequentially in the calling thread at one thread.
     args.test_threads = Some(1);
+    // Process-global startup (executors, tracing dispatcher) installs
+    // once here on the same true main thread the trials run on — the
+    // gpu-surface fixture mounts through it.
+    #[cfg(all(target_os = "macos", feature = "native-test", feature = "gpu_surface"))]
+    waterui_apple::native_test_support::gpu_surface::initialize_process();
     libtest_mimic::run(&args, trials()).exit();
 }
 
