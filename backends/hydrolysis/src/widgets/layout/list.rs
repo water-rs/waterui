@@ -583,10 +583,6 @@ impl ListRenderState {
         }
     }
 
-    #[expect(
-        clippy::option_if_let_else,
-        reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
-    )]
     /// §7.1's scroll-surface rule, applied at the one place the handle is
     /// bound: the viewport and the content grow by the extension layout
     /// computed, so the scrollable range keeps the resting edges on the
@@ -600,6 +596,10 @@ impl ListRenderState {
             })
     }
 
+    #[expect(
+        clippy::option_if_let_else,
+        reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
+    )]
     fn bind_scroll(
         &self,
         viewport_width: f64,
@@ -894,10 +894,6 @@ pub fn list_accessibility(
     }
     let is_rendered = ctx.is_some();
     let viewport = ctx.map_or(kurbo::Rect::ZERO, |ctx| ctx.bounds);
-    // The surface's §7.1 extension — the bounds rows may paint into —
-    // while `viewport` stays the laid-out frame the row math is anchored
-    // on.
-    let surface_viewport = crate::renderer::grow_rect(viewport, state.surface_extension());
     // The rendered scroll domain is the measured extent; the semantic one is
     // the row count — with a zero viewport every row is scrollable to.
     let content_height = state
@@ -948,6 +944,10 @@ pub fn list_accessibility(
             // evicts the ones no row touched this pass.
             state.item_cache.borrow_mut().begin_frame();
         }
+        // The surface's §7.1 extension — the bounds rows may paint into —
+        // while `viewport` stays the laid-out frame the row math is anchored
+        // on.
+        let surface_viewport = crate::renderer::grow_rect(viewport, state.surface_extension());
         let mut y = viewport.y0 - metrics.offset_y + leading_offset;
         for index in emit_range {
             let row_env = env.clone();

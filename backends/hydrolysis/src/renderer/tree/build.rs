@@ -72,7 +72,7 @@ impl RenderNode {
                 let child_env = accessibility_child_env.as_ref().unwrap_or(env);
                 #[cfg(not(feature = "accessibility"))]
                 let child_env = env;
-                let mut children: Vec<RenderNode> = children
+                let mut children: Vec<Self> = children
                     .into_iter()
                     .map(|child| {
                         Self::build(normalize_layout_view(child, child_env), child_env, renderer)
@@ -1149,7 +1149,7 @@ fn mark_background_fill(node: &mut RenderNode) {
     match node {
         RenderNode::Color(color) => color.fill_extension.set(Some(EdgeOffsets::default())),
         RenderNode::Widget(widget) if widget.fill_leaf => {
-            widget.fill_extension.set(Some(EdgeOffsets::default()))
+            widget.fill_extension.set(Some(EdgeOffsets::default()));
         }
         _ => {}
     }

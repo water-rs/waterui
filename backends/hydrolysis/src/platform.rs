@@ -346,8 +346,9 @@ pub struct TouchScrollConfig {
     pub fling: FlingDeceleration,
 }
 
-/// The fling's deceleration model: Android `OverScroller`'s spline, whose
-/// math the renderer ports
+/// The fling's deceleration model: Android `OverScroller`'s spline.
+///
+/// The renderer ports its math
 /// (`frameworks/base/core/java/android/widget/OverScroller.java`,
 /// `SplineScroller`). The platform computes the coefficients for its own
 /// display and feel.

@@ -47,7 +47,7 @@ impl Edge {
     }
 
     /// This edge's depth inside `insets`.
-    fn depth_in(self, insets: &EdgeInsets) -> f32 {
+    const fn depth_in(self, insets: &EdgeInsets) -> f32 {
         match self {
             Self::Top => insets.top(),
             Self::Leading => insets.leading(),
@@ -67,7 +67,7 @@ impl Edge {
     }
 
     /// Moves `rect`'s frame edge on this edge to `position`.
-    fn set_frame_edge(self, rect: &mut kurbo::Rect, position: f64) {
+    const fn set_frame_edge(self, rect: &mut kurbo::Rect, position: f64) {
         match self {
             Self::Top => rect.y0 = position,
             Self::Leading => rect.x0 = position,
@@ -112,7 +112,7 @@ struct ReleasedRegions {
 
 impl ReleasedRegions {
     /// The regions `regions` adds to this set.
-    fn union(self, regions: SafeAreaRegions) -> Self {
+    const fn union(self, regions: SafeAreaRegions) -> Self {
         Self {
             container: self.container | regions.container(),
             keyboard: self.keyboard | regions.keyboard(),
@@ -221,7 +221,7 @@ impl SafeAreaLayout {
         }
     }
 
-    fn boundary(&self, edge: Edge) -> EdgeBoundary {
+    const fn boundary(&self, edge: Edge) -> EdgeBoundary {
         match edge {
             Edge::Top => self.top,
             Edge::Leading => self.leading,
@@ -230,7 +230,7 @@ impl SafeAreaLayout {
         }
     }
 
-    fn set_boundary(&mut self, edge: Edge, boundary: EdgeBoundary) {
+    const fn set_boundary(&mut self, edge: Edge, boundary: EdgeBoundary) {
         match edge {
             Edge::Top => self.top = boundary,
             Edge::Leading => self.leading = boundary,
@@ -264,6 +264,10 @@ impl SafeAreaLayout {
     /// accumulate, an inner declaration can never shrink a boundary an
     /// outer one already moved (§7.1: nested declarations cannot
     /// double-release).
+    #[expect(
+        clippy::float_cmp,
+        reason = "§7.1's touch is the laid-out frame ending exactly on the boundary"
+    )]
     pub(crate) fn release(&self, ignore: IgnoreSafeArea) -> (kurbo::Rect, Self, EdgeOffsets) {
         let mut frame = self.frame;
         let mut next = self.clone();
@@ -299,6 +303,10 @@ impl SafeAreaLayout {
     /// subtree's boundary (§7.1's "touches"). A fill's default paint
     /// extension and a scroll surface's extension are this same answer:
     /// both reach the window edge through every region on a touched edge.
+    #[expect(
+        clippy::float_cmp,
+        reason = "§7.1's touch is the laid-out frame ending exactly on the boundary"
+    )]
     pub fn touched_edge_offsets(&self) -> EdgeOffsets {
         let mut offsets = EdgeOffsets::default();
         for edge in EDGES {
@@ -428,7 +436,7 @@ impl ScrollSurfaceArea {
     /// stored field rect, so the content paints already clear. Returns the
     /// text-input target count before the subtree's registrations to hand
     /// to [`Self::end_flush`].
-    pub fn begin_flush(&self, renderer: &mut HydrolysisRenderer, handle: &ScrollHandle) -> usize {
+    pub fn begin_flush(&self, renderer: &HydrolysisRenderer, handle: &ScrollHandle) -> usize {
         let targets_start = renderer.text_editing.text_input_targets.len();
         let Some(facts) = self.facts.get() else {
             return targets_start;
@@ -436,7 +444,7 @@ impl ScrollSurfaceArea {
         let moved = self.keyboard_top.replace(Some(facts.keyboard_top)) != Some(facts.keyboard_top);
         self.keyboard_moved.set(moved);
         if moved && let Some(field) = self.field_window_rect(handle.metrics().offset_y) {
-            self.scroll_field_clear(renderer, handle, facts, field, false);
+            Self::scroll_field_clear(renderer, handle, facts, field, false);
         }
         targets_start
     }
@@ -450,7 +458,7 @@ impl ScrollSurfaceArea {
     /// afterwards is never fought.
     pub fn end_flush(
         &self,
-        renderer: &mut HydrolysisRenderer,
+        renderer: &HydrolysisRenderer,
         handle: &ScrollHandle,
         targets_start: usize,
     ) {
@@ -478,7 +486,7 @@ impl ScrollSurfaceArea {
                 .is_none_or(|previous| previous.key != field.key)
         });
         if newly_focused && let Some(field) = &field {
-            self.scroll_field_clear(
+            Self::scroll_field_clear(
                 renderer,
                 handle,
                 facts,
@@ -505,8 +513,7 @@ impl ScrollSurfaceArea {
     /// surface clamps the distance so its top stays inside the surface's
     /// frame.
     fn scroll_field_clear(
-        &self,
-        renderer: &mut HydrolysisRenderer,
+        renderer: &HydrolysisRenderer,
         handle: &ScrollHandle,
         facts: ScrollSurfaceFacts,
         field: kurbo::Rect,
@@ -538,7 +545,7 @@ impl ScrollSurfaceArea {
 
 /// `size` grown by the released amounts on each axis — the laid-out size
 /// an `.ignore_safe_area` child is placed at.
-pub(crate) fn released_size(size: Size, released: EdgeOffsets) -> Size {
+pub fn released_size(size: Size, released: EdgeOffsets) -> Size {
     #[expect(
         clippy::cast_possible_truncation,
         reason = "released depths are window insets — within display scale"
