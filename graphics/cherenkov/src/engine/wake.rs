@@ -226,8 +226,10 @@ impl SurfaceWaker {
 ///   or returned early — wakes the host once if a frame is owed and the
 ///   surface is visible, and re-arms the wake otherwise.
 ///
-/// A wake is therefore deferred, never lost. A surface has at most one
-/// open scope: opening a second panics.
+/// A wake that lands inside the scope is therefore deferred, never lost.
+/// A wake delivered before the scope opened counts as answered by this
+/// frame; if the frame fails without rendering, retrying it is the host's
+/// job. A surface has at most one open scope: opening a second panics.
 #[derive(Debug)]
 #[must_use = "dropping the scope ends the frame; keep it until the frame's render"]
 pub struct FrameScope(Arc<SurfaceWaker>);
