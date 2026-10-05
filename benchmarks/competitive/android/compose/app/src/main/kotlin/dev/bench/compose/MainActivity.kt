@@ -46,6 +46,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.ui.unit.sp
 
 // Canonical palette — identical in every contestant.
@@ -219,19 +221,11 @@ fun WanderRect(i: Int) {
             val to = 0.3f + rng.next01() * 0.7f
             // All four channels move on the same tick like the other
             // contestants; coroutines let each Animatable run in parallel.
-            kotlinx.coroutines.coroutineScope {
-                kotlinx.coroutines.launch {
-                    x.animateTo(tx, tween(durMs, easing = EaseInOut))
-                }
-                kotlinx.coroutines.launch {
-                    y.animateTo(ty, tween(durMs, easing = EaseInOut))
-                }
-                kotlinx.coroutines.launch {
-                    rot.animateTo(tr, tween(durMs, easing = EaseInOut))
-                }
-                kotlinx.coroutines.launch {
-                    opa.animateTo(to, tween(durMs, easing = EaseInOut))
-                }
+            coroutineScope {
+                launch { x.animateTo(tx, tween(durMs, easing = EaseInOut)) }
+                launch { y.animateTo(ty, tween(durMs, easing = EaseInOut)) }
+                launch { rot.animateTo(tr, tween(durMs, easing = EaseInOut)) }
+                launch { opa.animateTo(to, tween(durMs, easing = EaseInOut)) }
             }
         }
     }
