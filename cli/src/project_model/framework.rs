@@ -1437,6 +1437,16 @@ async fn managed_crate_metadata(
 /// gates the backend graphs a generated project actually resolves
 /// (water-rs/cli#197). The `Source`'s recorded lock hash follows the merged
 /// bytes.
+///
+/// The channel lock is one resolution, not a union of locks — the same rule
+/// `seed_packages` applies to the project lock. A foreign package drops out
+/// only when the framework lock records its name in the same caret family:
+/// the framework's entry then wins, and a reference inside a kept package
+/// that named the dropped version resolves to the framework's highest
+/// entry in that family. A family the framework does not record stays as
+/// its own entry beside the framework's others — Cargo holds two majors of
+/// one name — and an edge onto it keeps resolving there, so no edge points
+/// at a package the merged lock does not carry (#1865).
 fn merge_foreign_lock(
     lock: &Lockfile,
     lock_bytes: Vec<u8>,
@@ -1446,8 +1456,37 @@ fn merge_foreign_lock(
     if foreign.is_empty() {
         return lock_bytes;
     }
+    let mut framework: BTreeMap<&str, Vec<&cargo_lock::Package>> = BTreeMap::new();
+    for package in &lock.packages {
+        framework
+            .entry(package.name.as_str())
+            .or_default()
+            .push(package);
+    }
     let mut merged = lock.clone();
-    merged.packages.extend(foreign);
+    for mut package in foreign {
+        let dropped = framework.get(package.name.as_str()).is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|entry| same_caret_family(&entry.version, &package.version))
+        });
+        if dropped {
+            continue;
+        }
+        for dependency in package
+            .dependencies
+            .iter_mut()
+            .chain(package.replace.iter_mut())
+        {
+            if let Some(entry) = framework
+                .get(dependency.name.as_str())
+                .and_then(|entries| framework_entry(dependency, entries))
+            {
+                *dependency = LockedDependency::from(entry);
+            }
+        }
+        merged.packages.push(package);
+    }
     merged.packages.sort_by(|left, right| {
         left.name
             .as_str()
@@ -1459,6 +1498,43 @@ fn merge_foreign_lock(
         *lock_sha256 = hex::encode(Sha256::digest(&merged_bytes));
     }
     merged_bytes
+}
+
+/// The framework entry a foreign dependency edge resolves to once the
+/// channel owns the name's caret family: the entry the edge already names
+/// when it resolves to the framework's identity, otherwise the highest
+/// entry in the edge's caret family — the only entries the foreign
+/// manifest's requirement can still satisfy. `None` when the framework
+/// records no entry of the family: the edge's target is a foreign package
+/// the merge keeps, not a version the channel displaced.
+fn framework_entry<'a>(
+    dependency: &LockedDependency,
+    entries: &'a [&'a cargo_lock::Package],
+) -> Option<&'a cargo_lock::Package> {
+    entries
+        .iter()
+        .copied()
+        .find(|entry| LockedDependency::from(*entry) == *dependency)
+        .or_else(|| {
+            entries
+                .iter()
+                .copied()
+                .filter(|entry| same_caret_family(&dependency.version, &entry.version))
+                .max_by(|left, right| left.version.cmp(&right.version))
+        })
+}
+
+/// Whether `candidate` sits in the caret family `base` resolved into — the
+/// versions a `^base` requirement ranges over: the same major when nonzero,
+/// the same minor for `0.x`, and the exact version for `0.0.x`.
+const fn same_caret_family(base: &semver::Version, candidate: &semver::Version) -> bool {
+    if base.major != candidate.major {
+        return false;
+    }
+    if base.major > 0 {
+        return true;
+    }
+    base.minor == candidate.minor && (base.minor > 0 || base.patch == candidate.patch)
 }
 
 /// The packages the generated crate's `Cargo.lock` seed carries.
@@ -3678,6 +3754,126 @@ mod tests {
         // Names only the previous generated lock knew stay seeded.
         assert_eq!(versions("aither"), ["0.12.0"]);
         assert_eq!(versions("app"), ["0.1.0"]);
+    }
+
+    /// A pinned repository's lock folds into the channel lock under the same
+    /// rule the seed applies to the project lock: one resolution, the
+    /// framework's entry winning every name it records in the same caret
+    /// family. The union merge let a foreign `wasm-bindgen 0.2.128` stand
+    /// beside the framework's 0.2.129 — the lockstep split #177 reserved for
+    /// the seed — so the merged lock keeps the foreign-only package, drops
+    /// the displaced copy, and resolves the foreign dependent's edge to the
+    /// framework's entry. A caret family the framework does not record is
+    /// no collision: the foreign `rand 0.7.3` stays beside the framework's
+    /// `rand 0.8.5`, as Cargo keeps two majors of one name, and the edge
+    /// onto it stays put (#1865).
+    #[test]
+    fn the_merged_lock_resolves_every_foreign_edge_to_a_carried_package() {
+        let registry = Some("registry+https://github.com/rust-lang/crates.io-index");
+        let lock = |packages| Lockfile {
+            packages,
+            version: cargo_lock::ResolveVersion::V4,
+            root: None,
+            metadata: BTreeMap::default(),
+            patch: cargo_lock::Patch::default(),
+        };
+        let mut framework_dependent = package("waterui", "0.6.0", None);
+        framework_dependent.dependencies = vec![LockedDependency::from(&package(
+            "wasm-bindgen",
+            "0.2.129",
+            registry,
+        ))];
+        let framework = lock(vec![
+            package("wasm-bindgen", "0.2.129", registry),
+            package("rand", "0.8.5", registry),
+            framework_dependent,
+        ]);
+        let mut foreign_dependent = package(
+            "foreign-dependent",
+            "1.0.0",
+            Some(&format!(
+                "git+https://github.com/water-rs/kit?rev={0}#{0}",
+                'b'.to_string().repeat(40)
+            )),
+        );
+        foreign_dependent.dependencies = vec![
+            LockedDependency::from(&package("wasm-bindgen", "0.2.128", registry)),
+            LockedDependency::from(&package("rand", "0.7.3", registry)),
+        ];
+        let foreign = vec![
+            package("wasm-bindgen", "0.2.128", registry),
+            package("rand", "0.7.3", registry),
+            foreign_dependent,
+            package("foreign-only", "2.0.0", registry),
+        ];
+        let mut source = Source::Dev {
+            repository: framework_repository().to_owned(),
+            revision: 'a'.to_string().repeat(40),
+            lock_sha256: String::new(),
+        };
+
+        let merged_bytes = merge_foreign_lock(
+            &framework,
+            framework.to_string().into_bytes(),
+            foreign,
+            &mut source,
+        );
+        let text = String::from_utf8(merged_bytes).unwrap();
+        let merged: Lockfile = text
+            .parse()
+            .expect("the written lock parses as a Cargo.lock");
+
+        // The channel owns the name: exactly one `wasm-bindgen` entry, the
+        // framework's — cargo spells the edge bare once it is unambiguous.
+        let versions = |name: &str| {
+            merged
+                .packages
+                .iter()
+                .filter(|package| package.name.as_str() == name)
+                .map(|package| package.version.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(versions("wasm-bindgen"), ["0.2.129"]);
+        assert!(!text.contains("0.2.128"), "{text}");
+        assert!(text.contains(" \"wasm-bindgen\","), "{text}");
+        // A family the framework does not record is no collision: the
+        // foreign `rand` stands beside the framework's, and the foreign-only
+        // package enters.
+        assert_eq!(versions("rand"), ["0.7.3", "0.8.5"]);
+        assert_eq!(versions("foreign-only"), ["2.0.0"]);
+        let dependent = merged
+            .packages
+            .iter()
+            .find(|package| package.name.as_str() == "foreign-dependent")
+            .expect("the foreign-only dependent entered the merged lock");
+        // The displaced edge resolves to the framework's entry; the edge on
+        // the unrecorded family stays on the foreign package the merge
+        // keeps.
+        assert_eq!(
+            dependent.dependencies,
+            [
+                LockedDependency::from(&package("wasm-bindgen", "0.2.129", registry)),
+                LockedDependency::from(&package("rand", "0.7.3", registry)),
+            ]
+        );
+        // `cargo metadata --locked` consistency: every edge the merged lock
+        // carries resolves to a package it holds.
+        for package in &merged.packages {
+            for dependency in &package.dependencies {
+                assert!(
+                    merged
+                        .packages
+                        .iter()
+                        .any(|entry| LockedDependency::from(entry) == *dependency),
+                    "{dependency} resolves to no package the merged lock carries"
+                );
+            }
+        }
+        // The recorded lock hash follows the merged bytes.
+        let Source::Dev { lock_sha256, .. } = source else {
+            panic!("the dev source persists its lock hash");
+        };
+        assert_eq!(lock_sha256, hex::encode(Sha256::digest(text.as_bytes())));
     }
 
     fn snapshot(lock: &Lockfile) -> (ResolvedFramework, Vec<u8>) {
