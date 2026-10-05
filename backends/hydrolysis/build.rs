@@ -15,6 +15,17 @@ fn main() {
         // this library may. Every winit-scoped item gates on this alias, so
         // `--features winit` compiles on Android and simply means nothing.
         hydrolysis_winit: { all(feature = "winit", not(android_platform)) },
+        // Where `hydrolysis::run` exists: every target but Android, whose
+        // entry point is the Kotlin host, and bare wasm32, which reaches no
+        // windowing model until the browser runner is compiled in. The
+        // examples that need the runner gate on it too, so they and the
+        // export never disagree.
+        hydrolysis_run: {
+            any(
+                all(not(target_arch = "wasm32"), not(android_platform)),
+                all(target_arch = "wasm32", feature = "web")
+            )
+        },
         hydrolysis_wayland_platform: { all(feature = "winit", free_unix, not(target_os = "redox")) },
         // The macOS `WKWebView` bridge needs a real window: it is composed into
         // the winit window's AppKit view as a native subview, so a headless

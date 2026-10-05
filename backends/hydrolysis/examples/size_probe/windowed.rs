@@ -1,5 +1,4 @@
-//! Interactive probe: reports the window's live size as it changes, for
-//! checking the platform runner's resize plumbing by hand.
+//! The example program, compiled where `hydrolysis::run` exists.
 
 use std::thread;
 use std::time::Duration;
@@ -30,7 +29,7 @@ fn main_view() -> impl View {
     .foreground(Color::srgb_hex("#0F172A"))
 }
 
-fn main() {
+pub fn main() {
     let lifetime = std::env::var("HYDROLYSIS_WAYLAND_SECONDS").map_or_else(
         |_| Duration::from_secs(3600),
         |value| {
