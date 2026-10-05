@@ -218,7 +218,7 @@ fn valid_attributes_for_marked_text_returns_attribute_names() {
 /// The negative half is not testable in-process: constructing a
 /// `MetalPresenter` on a `CAMetalLayer` hosted by a window outside every
 /// screen throws an uncatchable Objective-C exception at
-/// `setMaximumDrawableCount` on this runner (AppleParavirt), aborting the
+/// `setMaximumDrawableCount` on this runner (`AppleParavirt`), aborting the
 /// whole suite — the same call is safe on a bare layer, so the trap is the
 /// screenless hosting, not the setter. That screenless-window construction
 /// risk stays unresolved on this runner and needs a device-verified answer.

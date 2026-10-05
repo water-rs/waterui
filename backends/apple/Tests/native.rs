@@ -44,9 +44,9 @@ fn main() {
         let app = Application::shared(mtm());
         let _policy_accepted = app.set_activation_policy(ActivationPolicy::Regular);
         app.run(ApplicationHandlers::new().did_finish_launching(move |mtm| {
-            // Run after launch returns to AppKit's event loop. Foundation
-            // run-loop pumping alone does not dispatch the application events
-            // that establish the window's native occlusion visibility.
+            // Run within the AppKit application lifecycle. Trials dispatch
+            // native application events; a GCD block around the whole suite
+            // would prevent reentrant main-queue completion delivery.
             let _ = mtm;
             libtest_mimic::run(&args, trials()).exit();
         }));
