@@ -46,56 +46,36 @@ impl RenderNode {
             }
             Err(view) => view,
         };
-        let view = match view.downcast::<Native<FixedContainer>>() {
+        // A plain `FixedContainer` has not run `body()` yet: its layout
+        // object is still the one the modifier built — the only moment
+        // `BackgroundLayout` is identifiable, before `body` wraps it in
+        // `DirectionalLayout`. `FixedContainer::body` is what produces the
+        // `Native<FixedContainer>` the next arm rebuilds.
+        let view = match view.downcast::<FixedContainer>() {
             Ok(container) => {
-                let (layout, children) = (*container).into_inner().into_inner();
-                // The background slot holds the fill §7.1 extends to the
-                // window edge on every touched edge — marked after the
-                // children are built, so a declaration wrapping the slot
-                // (`.ignore_safe_area` on the fill itself) replaces the
-                // default rather than stacking with it.
-                let background_slot = (layout.as_ref() as &dyn Any)
+                let background_slot = (container.as_parts().0 as &dyn Any)
                     .is::<BackgroundLayout>()
                     .then_some(0);
-                let layout_dirty = Rc::new(Cell::new(false));
-                let signals = renderer.signals.clone();
-                let guards = layout.watch_invalidation({
-                    let layout_dirty = Rc::clone(&layout_dirty);
-                    Rc::new(move || {
-                        layout_dirty.set(true);
-                        signals.request_refresh();
-                    })
-                });
-                #[cfg(feature = "accessibility")]
-                let accessibility_child_env = accessibility_container_child_environment(env);
-                #[cfg(feature = "accessibility")]
-                let child_env = accessibility_child_env.as_ref().unwrap_or(env);
-                #[cfg(not(feature = "accessibility"))]
-                let child_env = env;
-                let mut children: Vec<Self> = children
-                    .into_iter()
-                    .map(|child| {
-                        Self::build(normalize_layout_view(child, child_env), child_env, renderer)
-                    })
-                    .collect();
-                if let Some(slot) = background_slot {
-                    mark_background_fill(&mut children[slot]);
-                }
-                return Self::Container(Box::new(ContainerNode {
-                    memo_gate: Cell::default(),
-                    memo_slots: RefCell::default(),
-                    accessibility_identity: Rc::new(()),
-                    render_id: RenderId::next(),
-                    layout,
-                    children,
-                    #[cfg(feature = "accessibility")]
-                    accessibility_child_env,
-                    placed: Vec::new(),
-                    #[cfg(feature = "accessibility")]
-                    resolved: Rect::from_size(Size::zero()),
-                    layout_dirty,
-                    _guards: guards,
-                }));
+                let container = *AnyView::new(container.body(env))
+                    .downcast::<Native<FixedContainer>>()
+                    .expect("FixedContainer::body produces Native<FixedContainer>");
+                return Self::build_fixed_container(container, env, renderer, background_slot);
+            }
+            Err(view) => view,
+        };
+        let view = match view.downcast::<IgnorableMetadata<BackgroundContainerMark>>() {
+            Ok(meta) => {
+                let container = *meta
+                    .content
+                    .downcast::<Native<FixedContainer>>()
+                    .expect("BackgroundContainerMark wraps Native<FixedContainer>");
+                return Self::build_fixed_container(container, env, renderer, Some(0));
+            }
+            Err(view) => view,
+        };
+        let view = match view.downcast::<Native<FixedContainer>>() {
+            Ok(container) => {
+                return Self::build_fixed_container(*container, env, renderer, None);
             }
             Err(view) => view,
         };
@@ -1137,6 +1117,60 @@ impl RenderNode {
         }))
     }
 }
+impl RenderNode {
+    /// Builds the [`RenderNode::Container`] for a `Native<FixedContainer>`
+    /// whose background slot was already identified — `Some(slot)` marks the
+    /// fill §7.1 extends to the window edge on every touched edge. The mark
+    /// lands after the children are built, so a declaration wrapping the
+    /// slot (`.ignore_safe_area` on the fill itself) replaces the default
+    /// rather than stacking with it.
+    fn build_fixed_container(
+        container: Native<FixedContainer>,
+        env: &Environment,
+        renderer: &mut SemanticCore,
+        background_slot: Option<usize>,
+    ) -> Self {
+        let (layout, children) = container.into_inner().into_inner();
+        let layout_dirty = Rc::new(Cell::new(false));
+        let signals = renderer.signals.clone();
+        let guards = layout.watch_invalidation({
+            let layout_dirty = Rc::clone(&layout_dirty);
+            Rc::new(move || {
+                layout_dirty.set(true);
+                signals.request_refresh();
+            })
+        });
+        #[cfg(feature = "accessibility")]
+        let accessibility_child_env = accessibility_container_child_environment(env);
+        #[cfg(feature = "accessibility")]
+        let child_env = accessibility_child_env.as_ref().unwrap_or(env);
+        #[cfg(not(feature = "accessibility"))]
+        let child_env = env;
+        let mut children: Vec<Self> = children
+            .into_iter()
+            .map(|child| Self::build(normalize_layout_view(child, child_env), child_env, renderer))
+            .collect();
+        if let Some(slot) = background_slot {
+            mark_background_fill(&mut children[slot]);
+        }
+        Self::Container(Box::new(ContainerNode {
+            memo_gate: Cell::default(),
+            memo_slots: RefCell::default(),
+            accessibility_identity: Rc::new(()),
+            render_id: RenderId::next(),
+            layout,
+            children,
+            #[cfg(feature = "accessibility")]
+            accessibility_child_env,
+            placed: Vec::new(),
+            #[cfg(feature = "accessibility")]
+            resolved: Rect::from_size(Size::zero()),
+            layout_dirty,
+            _guards: guards,
+        }))
+    }
+}
+
 /// Marks the node that fills a [`BackgroundLayout`]'s background slot with
 /// §7.1's fill role: a `Color` or a fill-widget leaf (the gradient)
 /// records its slot and extends its paint to the window edge on every edge
@@ -1150,6 +1184,15 @@ fn mark_background_fill(node: &mut RenderNode) {
         RenderNode::Color(color) => color.fill_extension.set(Some(EdgeOffsets::default())),
         RenderNode::Widget(widget) if widget.fill_leaf => {
             widget.fill_extension.set(Some(EdgeOffsets::default()));
+        }
+        // `.ignore_safe_area` on the fill itself wraps the leaf: it still
+        // fills the slot, so mark it — the release the wrapper's layout
+        // computes is what limits the extension (§7.1: a declaration on
+        // the fill replaces the default).
+        RenderNode::Wrapper(wrapper)
+            if matches!(wrapper.effect, WrapperEffect::IgnoreSafeArea(_)) =>
+        {
+            mark_background_fill(&mut wrapper.child);
         }
         _ => {}
     }
