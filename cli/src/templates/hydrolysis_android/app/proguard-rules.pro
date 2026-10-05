@@ -11,4 +11,5 @@
     void onNativeAccessibilityTreeChanged();
     void onNativeFatalError(java.lang.String);
     void onNativeCloseRequested();
+    void onNativeBackAvailable(boolean);
 }

@@ -1791,6 +1791,20 @@ where
                 let changed = runtime.renderer.handle_file_hover_cancelled(&event_env);
                 schedule_redraw_or_refresh(runtime, changed);
             }
+            InputEvent::BackNavigation(navigation) => {
+                let event_env = input_env(runtime, env);
+                let changed = runtime
+                    .renderer
+                    .handle_back_navigation(navigation, &event_env);
+                tracing::trace!(
+                    target: "waterui::hydrolysis::input",
+                    event = "back_navigation",
+                    ?navigation,
+                    changed,
+                    "runner dispatched input event"
+                );
+                schedule_redraw_or_refresh(runtime, changed);
+            }
         }
     }
     {

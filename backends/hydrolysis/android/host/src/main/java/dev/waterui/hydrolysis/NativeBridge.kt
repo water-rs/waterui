@@ -26,9 +26,23 @@ object NativeBridge {
      * `JNI_OnLoad`; 7 = `nativeSetMetrics` carries the `ViewConfiguration`
      * touch-scroll parameters (slop, min/max fling velocity, scroll
      * friction); 8 = [nativeCreateSession] drops `sdkInt`. The API floor is
-     * 31, so `ANativeWindow_setFrameRate` is linked directly.
+     * 31, so `ANativeWindow_setFrameRate` is linked directly; 9 =
+     * [nativeBackEvent] and `onNativeBackAvailable` carry system back into
+     * the navigation stack and report whether a back target is registered.
      */
-    private const val SCHEMA: Int = 8
+    private const val SCHEMA: Int = 9
+
+    /** [nativeBackEvent] phase: a predictive gesture began. */
+    const val BACK_STARTED: Int = 0
+
+    /** [nativeBackEvent] phase: the gesture's progress, in `0..1`. */
+    const val BACK_PROGRESSED: Int = 1
+
+    /** [nativeBackEvent] phase: the platform cancelled the gesture. */
+    const val BACK_CANCELLED: Int = 2
+
+    /** [nativeBackEvent] phase: the gesture committed, or a back button was pressed. */
+    const val BACK_INVOKED: Int = 3
 
     private var initialized = false
 
@@ -117,6 +131,14 @@ object NativeBridge {
     @JvmStatic external fun nativeSetVisible(sessionPtr: Long, visible: Boolean)
 
     @JvmStatic external fun nativeSetHighRefresh(sessionPtr: Long, fps: Float)
+
+    /**
+     * One system-back phase. `phase` is a `BACK_*` constant. `edge` is
+     * [androidx.activity.BackEventCompat.EDGE_LEFT] or `EDGE_RIGHT` and is
+     * read only for [BACK_STARTED]. `progress` is the platform's `0..1` report.
+     */
+    @JvmStatic
+    external fun nativeBackEvent(sessionPtr: Long, phase: Int, edge: Int, progress: Double)
 
     @JvmStatic
     external fun nativePointerEvent(

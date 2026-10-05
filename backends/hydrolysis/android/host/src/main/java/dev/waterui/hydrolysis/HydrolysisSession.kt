@@ -60,6 +60,23 @@ class HydrolysisSession internal constructor(context: Context) {
         NativeBridge.nativeDestroySession(nativePtr)
     }
 
+    /**
+     * The latest "a navigation stack can accept back" answer. The activity
+     * applies it when it attaches a callback, including after a configuration
+     * change that retained this session: the native side reports only changes,
+     * so a new activity cannot wait for another callback.
+     */
+    internal var backAvailable: Boolean = false
+        private set
+
+    /** The activity's back callback, or none between bindings. */
+    internal var onBackAvailable: ((Boolean) -> Unit)? = null
+
+    /** Forwards one system-back phase to the native session. */
+    internal fun dispatchBack(phase: Int, edge: Int, progress: Double) {
+        NativeBridge.nativeBackEvent(nativePtr, phase, edge, progress)
+    }
+
     // ---- native → host callbacks (names are the JNI contract) ----
 
     @Suppress("unused") // called from native
@@ -108,5 +125,16 @@ class HydrolysisSession internal constructor(context: Context) {
     @Suppress("unused") // called from native
     fun onNativeCursorAnchorInfo(json: String) {
         hostView?.applyCursorAnchorInfo(json)
+    }
+
+    /**
+     * The rendered frame's back-target answer changed. The activity enables
+     * its back callback from this; a disabled callback leaves back to the
+     * system, which finishes the activity.
+     */
+    @Suppress("unused") // called from native
+    fun onNativeBackAvailable(available: Boolean) {
+        backAvailable = available
+        onBackAvailable?.invoke(available)
     }
 }
