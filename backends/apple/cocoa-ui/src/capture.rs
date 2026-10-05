@@ -40,7 +40,7 @@ use dispatch2::{DispatchQoS, DispatchQueue, GlobalQueueIdentifier, MainThreadBou
 use objc2::Message;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use objc2_core_foundation::CFRetained;
+use objc2_core_foundation::{CFRetained, CGAffineTransform, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::{
     CGBitmapContextCreate, CGContext, CGImageAlphaInfo, CGImageByteOrderInfo, CGImageComponentInfo,
 };
@@ -54,11 +54,11 @@ use objc2_metal::{
     MTLSamplerDescriptor, MTLSamplerMinMagFilter, MTLSamplerState, MTLScissorRect, MTLSize,
     MTLStorageMode, MTLStoreAction, MTLTexture, MTLTextureDescriptor, MTLTextureUsage, MTLViewport,
 };
-use objc2_quartz_core::{CALayer, CATransaction};
+use objc2_quartz_core::{CACornerMask, CALayer, CATransaction, CATransform3D};
 
 use crate::PlatformView;
 use crate::core_animation::flush_transaction;
-use crate::geometry::Rect;
+use crate::geometry::{Rect, Size};
 use crate::main_queue::enqueue;
 
 /// The MSL the composition pipeline is compiled from — `CaptureComposite`
@@ -86,6 +86,12 @@ impl<T> QueueSend<T> {
     /// Reads the value.
     const fn get(&self) -> &T {
         &self.0
+    }
+
+    /// Consumes the wrapper, yielding the value — unlike `.0`, a method
+    /// call captures the whole `QueueSend` into a `move` closure.
+    fn into_inner(self) -> T {
+        self.0
     }
 }
 
@@ -122,70 +128,861 @@ impl CaptureGeometry {
     }
 }
 
-/// Where a GPU surface's own texture lands inside a capture.
+/// The private texture a GPU surface's full content renders into.
 #[derive(Clone, Copy, Debug)]
 pub struct SurfaceSpec {
     /// The capture's identity for the surface — the surface view's address.
     pub surface_id: usize,
-    /// Pixel-space origin inside the destination texture.
-    pub origin: MTLOrigin,
-    /// Pixel-space size inside the destination texture.
+    /// The surface's full-content pixel size — its placement is the
+    /// paint-order plan's business, not the spec's.
     pub size: MTLSize,
     /// The format the surface renders at.
     pub pixel_format: MTLPixelFormat,
 }
 
-/// The rect `bounds` (already in the capture's content space) maps to in a
-/// `width` × `height` pixel destination: floored origin, ceiled size,
-/// clamped to the target. `None` when it lands entirely outside.
+/// The pixel size `content_size` (in points) maps to at `geometry`'s
+/// scale: the texture covering the surface's whole content. `None` when
+/// it is empty.
 #[must_use]
 pub fn surface_spec(
     surface_id: usize,
-    bounds: Rect,
+    content_size: Size,
     geometry: CaptureGeometry,
     pixel_format: MTLPixelFormat,
-    target_width: usize,
-    target_height: usize,
 ) -> Option<SurfaceSpec> {
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        reason = "captured rects are small, finite, and clamped to the target"
+        reason = "captured rects are small and finite"
     )]
-    let origin_x = (bounds.origin.x * geometry.scale_x).floor().max(0.0) as usize;
+    let width = (content_size.width * geometry.scale_x).ceil() as usize;
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        reason = "captured rects are small, finite, and clamped to the target"
+        reason = "captured rects are small and finite"
     )]
-    let origin_y = (bounds.origin.y * geometry.scale_y).floor().max(0.0) as usize;
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "captured rects are small, finite, and clamped to the target"
-    )]
-    let width = (bounds.size.width * geometry.scale_x).ceil() as usize;
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "captured rects are small, finite, and clamped to the target"
-    )]
-    let height = (bounds.size.height * geometry.scale_y).ceil() as usize;
-    let width = width.min(target_width.saturating_sub(origin_x.min(target_width)));
-    let height = height.min(target_height.saturating_sub(origin_y.min(target_height)));
+    let height = (content_size.height * geometry.scale_y).ceil() as usize;
     (width > 0 && height > 0).then_some(SurfaceSpec {
         surface_id,
-        origin: MTLOrigin {
-            x: origin_x,
-            y: origin_y,
-            z: 0,
-        },
         size: MTLSize {
             width,
             height,
             depth: 1,
         },
         pixel_format,
+    })
+}
+
+// =====================================================================
+// Paint-order capture plan
+// =====================================================================
+//
+// The composite can't draw the resolved surfaces under one full-frame
+// native raster: an opaque ancestor background would paint over every
+// GPU child, and the reverse order would lift them over native content
+// that must cover them. Instead the capture walks the model layer tree
+// in Core Animation paint order — `sublayers` sorted stably by
+// `zPosition` — and emits `CaptureNode`s the compositor draws front to
+// back on one command buffer:
+//
+// * A subtree without GPU descendants collapses into one `Native` node —
+//   `renderInContext` reproduces its transforms, group opacities, masks,
+//   and clips wholesale, so a native-only capture stays a single raster.
+// * A layer with GPU descendants splits into `Native` own-content
+//   (rastered with its direct sublayers hidden, inside the capture
+//   transaction — `renderInContext` reads the model tree, so the render
+//   server never sees it) followed by its children in paint order.
+// * An ancestor needing offscreen compositing — `mask`,
+//   `shouldRasterize`, or `opacity < 1` under `allowsGroupOpacity` —
+//   becomes a `Group` whose children render into a transient texture
+//   the node's own draw then composites at the accumulated opacity.
+// * A resolved surface draws as a `Surface` node: the producer's
+//   full-size texture composited as a transformed, clipped quad where
+//   its host layer paints.
+
+/// `CATransform3DIdentity` spelled out — the extern static isn't const.
+const IDENTITY_3D: CATransform3D = CATransform3D {
+    m11: 1.0,
+    m12: 0.0,
+    m13: 0.0,
+    m14: 0.0,
+    m21: 0.0,
+    m22: 1.0,
+    m23: 0.0,
+    m24: 0.0,
+    m31: 0.0,
+    m32: 0.0,
+    m33: 1.0,
+    m34: 0.0,
+    m41: 0.0,
+    m42: 0.0,
+    m43: 0.0,
+    m44: 1.0,
+};
+
+/// How many rounded-rect clip shapes one draw's parameter block carries.
+/// Deeper chains lose their outermost clips — an approximation, not a
+/// visual break: inner clips dominate in practice.
+const MAX_CLIP_SHAPES: usize = 8;
+
+/// A layer's identity in the plan — its address.
+fn layer_key(layer: &CALayer) -> usize {
+    core::ptr::from_ref::<CALayer>(layer) as usize
+}
+
+/// The layer's sublayers in paint order: `zPosition` ascending, ties in
+/// array order — a stable sort reproduces both.
+fn ordered_sublayers(layer: &CALayer) -> Vec<Retained<CALayer>> {
+    // SAFETY: the layer outlives the returned array.
+    let Some(sublayers) = (unsafe { layer.sublayers() }) else {
+        return Vec::new();
+    };
+    let mut sublayers: Vec<Retained<CALayer>> = sublayers.iter().collect();
+    sublayers.sort_by(|a, b| a.zPosition().total_cmp(&b.zPosition()));
+    sublayers
+}
+
+/// The `layer` → `parent` boundary transform, exactly as Core Animation
+/// composes it — derived against `convertPoint`/`convertRect` on a live
+/// layer tree. Application order:
+/// 1. `geometryFlipped` mirrors Y about the bounds midline, in the
+///    layer's own local space (`F_L`);
+/// 2. the anchor point translates to the layer's origin;
+/// 3. `transform` rotates/scales about that anchor;
+/// 4. `position`/`zPosition` translate into the parent;
+/// 5. the parent's `sublayerTransform` applies about the parent's
+///    anchor point — but only for real sublayers: pass `None` for the
+///    mask layer, which isn't one.
+fn boundary_transform(layer: &CALayer, parent: Option<&CALayer>) -> CATransform3D {
+    let bounds = layer.bounds();
+    let anchor = layer.anchorPoint();
+    let anchor_x = anchor.x.mul_add(bounds.size.width, bounds.origin.x);
+    let anchor_y = anchor.y.mul_add(bounds.size.height, bounds.origin.y);
+    let mut transform = if layer.isGeometryFlipped() {
+        CATransform3D::new_scale(1.0, -1.0, 1.0).concat(CATransform3D::new_translation(
+            0.0,
+            2.0_f64.mul_add(bounds.origin.y, bounds.size.height),
+            0.0,
+        ))
+    } else {
+        IDENTITY_3D
+    };
+    transform = transform.concat(CATransform3D::new_translation(
+        -anchor_x,
+        -anchor_y,
+        -layer.anchorPointZ(),
+    ));
+    transform = transform.concat(layer.transform());
+    let position = layer.position();
+    transform = transform.concat(CATransform3D::new_translation(
+        position.x,
+        position.y,
+        layer.zPosition(),
+    ));
+    if let Some(parent) = parent {
+        let sublayer_transform = parent.sublayerTransform();
+        if !sublayer_transform.is_identity() {
+            let parent_bounds = parent.bounds();
+            let parent_anchor = parent.anchorPoint();
+            let px = parent_anchor
+                .x
+                .mul_add(parent_bounds.size.width, parent_bounds.origin.x);
+            let py = parent_anchor
+                .y
+                .mul_add(parent_bounds.size.height, parent_bounds.origin.y);
+            let pz = parent.anchorPointZ();
+            transform = transform.concat(
+                CATransform3D::new_translation(-px, -py, -pz)
+                    .concat(sublayer_transform)
+                    .concat(CATransform3D::new_translation(px, py, pz)),
+            );
+        }
+    }
+    transform
+}
+
+/// A point under a `CATransform3D`, perspective-divided.
+fn project_point(point: CGPoint, transform: &CATransform3D) -> Option<CGPoint> {
+    let w = transform
+        .m14
+        .mul_add(point.x, transform.m24.mul_add(point.y, transform.m44));
+    if w.abs() < 1e-9 {
+        return None;
+    }
+    Some(CGPoint::new(
+        transform
+            .m11
+            .mul_add(point.x, transform.m21.mul_add(point.y, transform.m41))
+            / w,
+        transform
+            .m12
+            .mul_add(point.x, transform.m22.mul_add(point.y, transform.m42))
+            / w,
+    ))
+}
+
+/// The axis-aligned box the rect covers under `transform`. When a corner
+/// projects through the horizon the box is unbounded — report the
+/// extent collapsed to `None` as "covers everything" upstream.
+fn project_rect(rect: CGRect, transform: &CATransform3D) -> CGRect {
+    let (min, max) = (rect.min(), rect.max());
+    let mut lo = CGPoint::new(f64::INFINITY, f64::INFINITY);
+    let mut hi = CGPoint::new(f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for (x, y) in [
+        (min.x, min.y),
+        (max.x, min.y),
+        (min.x, max.y),
+        (max.x, max.y),
+    ] {
+        if let Some(point) = project_point(CGPoint::new(x, y), transform) {
+            lo.x = lo.x.min(point.x);
+            lo.y = lo.y.min(point.y);
+            hi.x = hi.x.max(point.x);
+            hi.y = hi.y.max(point.y);
+        }
+    }
+    if lo.x.is_finite() {
+        CGRect::new(lo, CGSize::new(hi.x - lo.x, hi.y - lo.y))
+    } else {
+        // Every corner behind the projection plane: the quad's geometry
+        // is degenerate — an empty box culls it downstream.
+        CGRect::ZERO
+    }
+}
+
+/// The intersection of two rects; empty when they don't overlap.
+fn rect_intersect(a: CGRect, b: CGRect) -> CGRect {
+    let min_x = a.origin.x.max(b.origin.x);
+    let min_y = a.origin.y.max(b.origin.y);
+    let max_x = (a.origin.x + a.size.width).min(b.origin.x + b.size.width);
+    let max_y = (a.origin.y + a.size.height).min(b.origin.y + b.size.height);
+    CGRect::new(
+        CGPoint::new(min_x, min_y),
+        CGSize::new((max_x - min_x).max(0.0), (max_y - min_y).max(0.0)),
+    )
+}
+
+/// The smallest rect covering both inputs.
+fn rect_union(a: CGRect, b: CGRect) -> CGRect {
+    let min_x = a.origin.x.min(b.origin.x);
+    let min_y = a.origin.y.min(b.origin.y);
+    let max_x = (a.origin.x + a.size.width).max(b.origin.x + b.size.width);
+    let max_y = (a.origin.y + a.size.height).max(b.origin.y + b.size.height);
+    CGRect::new(
+        CGPoint::new(min_x, min_y),
+        CGSize::new(max_x - min_x, max_y - min_y),
+    )
+}
+
+/// The `cornerRadius` fanned out per corner per `maskedCorners` —
+/// `MinXMinY` first, the order the shader's quadrant select expects.
+fn clip_radii(layer: &CALayer) -> [f32; 4] {
+    #[expect(clippy::cast_possible_truncation, reason = "corner radii fit in f32")]
+    let radius = layer.cornerRadius() as f32;
+    let masked = layer.maskedCorners();
+    [
+        if masked.contains(CACornerMask::LayerMinXMinYCorner) {
+            radius
+        } else {
+            0.0
+        },
+        if masked.contains(CACornerMask::LayerMaxXMinYCorner) {
+            radius
+        } else {
+            0.0
+        },
+        if masked.contains(CACornerMask::LayerMinXMaxYCorner) {
+            radius
+        } else {
+            0.0
+        },
+        if masked.contains(CACornerMask::LayerMaxXMaxYCorner) {
+            radius
+        } else {
+            0.0
+        },
+    ]
+}
+
+/// A rounded-rect clip an ancestor applies to everything under it,
+/// evaluated in the shader in the clipping layer's local space.
+#[derive(Clone, Debug)]
+struct ClipShape {
+    /// Root-space → the clipping layer's local space.
+    inverse: CATransform3D,
+    /// The clip rect — the layer's bounds — in its local space.
+    bounds: CGRect,
+    /// Per-corner radius honoring `maskedCorners`, in local units.
+    radii: [f32; 4],
+}
+
+/// The accumulated clip list shared down the walk.
+type Clip = Rc<Vec<ClipShape>>;
+
+/// One `renderInContext` raster the plan asks the main thread to
+/// produce — the CPU half of a `Native` node or a group's alpha mask.
+#[derive(Debug)]
+struct RasterSegment {
+    /// The layer whose subtree (or own content) is rastered.
+    layer: Retained<CALayer>,
+    /// Affine applied to the layer's space before the platform mapping —
+    /// `None` rasters the layer in its own local space, for a non-affine
+    /// node transform or a mask (whose transform the owner's own
+    /// boundary carries instead).
+    space_transform: Option<CGAffineTransform>,
+    /// The rect the raster covers in the space `space_transform`
+    /// outputs — destination space for a standard node, the layer's own
+    /// space for a non-affine one.
+    extent: CGRect,
+    /// Hide the layer's direct sublayers for the draw.
+    own_content_only: bool,
+    /// Draw at full opacity — the group composite applies the layer's
+    /// own opacity itself.
+    suppress_opacity: bool,
+}
+
+impl RasterSegment {
+    /// The raster's pixel size at `scale` points-per-pixel.
+    fn pixel_size(&self, scale: CGSize) -> (usize, usize) {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "raster extents are small and finite"
+        )]
+        let width = (self.extent.size.width * scale.width).ceil() as usize;
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "raster extents are small and finite"
+        )]
+        let height = (self.extent.size.height * scale.height).ceil() as usize;
+        (width, height)
+    }
+}
+
+/// One draw in the composite pass, in Core Animation paint order.
+#[derive(Debug)]
+enum CaptureNode {
+    /// A raster segment composited as a quad.
+    Native {
+        /// Index into `CapturePlan::segments` / the raster lease list.
+        raster: usize,
+        /// Source space → root space for the quad's `source_rect`.
+        transform: CATransform3D,
+        /// The quad's rect in the raster's source space.
+        source_rect: CGRect,
+        /// Ancestor rounded-rect clips.
+        clip: Clip,
+        /// Accumulated ancestor opacity — the layer's own is inside the
+        /// raster, which `renderInContext` applies itself.
+        opacity: f32,
+    },
+    /// A resolved GPU surface composited as a quad.
+    Surface {
+        /// The surface's prepared texture spec.
+        spec: SurfaceSpec,
+        /// Host-layer space → root space.
+        transform: CATransform3D,
+        /// The quad's rect in host-layer space — the host's bounds.
+        source_rect: CGRect,
+        /// Sample the producer texture V-flipped — a flipped host layer.
+        source_flip: bool,
+        clip: Clip,
+        /// Accumulated opacity, including the host layer's own.
+        opacity: f32,
+    },
+    /// An offscreen group: `children` render into a transient texture
+    /// the node composites at `opacity` through an optional mask.
+    Group(GroupDraw),
+}
+
+/// The payload of a `CaptureNode::Group`: children render into a
+/// transient texture covering `extent` in root space; the draw
+/// composites it through the accumulated opacity, the ancestors'
+/// clips, and the optional alpha mask.
+#[derive(Debug)]
+struct GroupDraw {
+    /// Root-space extent the group texture covers — also the draw's
+    /// quad rect.
+    extent: CGRect,
+    /// Accumulated opacity × the group layer's own.
+    opacity: f32,
+    /// Ancestor clips — applied to the group's composite draw.
+    clip: Clip,
+    /// Index into `CapturePlan::mask_segments` / the mask rasters.
+    mask: Option<usize>,
+    /// The extent the mask texture covers, in the masked layer's local
+    /// space.
+    mask_extent: CGRect,
+    /// Root space → the masked layer's local space.
+    mask_inverse: CATransform3D,
+    /// The group's content, painted into its transient texture.
+    children: Vec<CaptureNode>,
+}
+
+/// What the plan needs of one resolved surface: the layer whose paint
+/// slot its quad occupies — the resolved view's backing layer — and the
+/// spec its texture was prepared with.
+#[derive(Clone, Debug)]
+struct PlanSurface {
+    /// The resolved view's backing layer.
+    layer: Retained<CALayer>,
+    /// The prepared texture's spec.
+    spec: SurfaceSpec,
+}
+
+/// The plan: paint-ordered nodes plus the rasters the main thread must
+/// produce before the GPU composite.
+#[derive(Debug)]
+struct CapturePlan {
+    /// Draws in paint order.
+    nodes: Vec<CaptureNode>,
+    /// `Native` rasters, in node `raster` index order.
+    segments: Vec<RasterSegment>,
+    /// Group mask rasters, in node `mask` index order.
+    mask_segments: Vec<RasterSegment>,
+    /// The destination's rect in root-layer space — the captured view's
+    /// bounds — and the top pass's extent.
+    extent: CGRect,
+    /// Points-to-pixels scale of the destination.
+    scale: CGSize,
+}
+
+/// Walks the model layer tree accumulating transforms, clips, and
+/// opacity, emitting `CaptureNode`s.
+struct PlanBuilder {
+    /// Resolved surfaces keyed by host-layer pointer.
+    surfaces: HashMap<usize, PlanSurface>,
+    /// `has_gpu` memo keyed by layer pointer.
+    has_gpu_memo: HashMap<usize, bool>,
+    /// Emitted native segments.
+    segments: Vec<RasterSegment>,
+    /// Emitted mask segments.
+    mask_segments: Vec<RasterSegment>,
+}
+
+impl PlanBuilder {
+    /// Whether `layer`'s subtree resolves any surface — memoized; hidden
+    /// or fully-transparent subtrees draw nothing and don't count.
+    fn has_gpu(&mut self, layer: &CALayer) -> bool {
+        let key = layer_key(layer);
+        if let Some(has) = self.has_gpu_memo.get(&key) {
+            return *has;
+        }
+        if layer.isHidden() || layer.opacity() <= 0.0 {
+            return false;
+        }
+        let children = ordered_sublayers(layer);
+        let has =
+            self.surfaces.contains_key(&key) || children.iter().any(|child| self.has_gpu(child));
+        self.has_gpu_memo.insert(key, has);
+        has
+    }
+
+    /// Emits a `Native` node for `layer` and queues its raster. An
+    /// affine transform rides the raster's CTM — the quad is the pass
+    /// extent; a non-affine one rasters the layer in its own space and
+    /// lets the quad carry the full 4×4.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the paint walk threads its accumulated context through each emit"
+    )]
+    fn native_node(
+        &mut self,
+        out: &mut Vec<CaptureNode>,
+        layer: &Retained<CALayer>,
+        transform: CATransform3D,
+        clip: &Clip,
+        opacity: f32,
+        pass_extent: CGRect,
+        own_content_only: bool,
+        suppress_opacity: bool,
+    ) {
+        let raster = self.segments.len();
+        if transform.is_affine() {
+            self.segments.push(RasterSegment {
+                layer: layer.clone(),
+                space_transform: Some(transform.affine_transform()),
+                extent: pass_extent,
+                own_content_only,
+                suppress_opacity,
+            });
+            out.push(CaptureNode::Native {
+                raster,
+                transform: IDENTITY_3D,
+                source_rect: pass_extent,
+                clip: clip.clone(),
+                opacity,
+            });
+        } else {
+            // The layer's own space covers its bounds plus whatever
+            // content spills outside them (borders stroke inside, but
+            // shadows extend out); a whole subtree uses its union.
+            let extent = if own_content_only {
+                let mut extent = layer.bounds();
+                if layer.shadowOpacity() > 0.0 {
+                    let offset = layer.shadowOffset();
+                    let outset = layer.shadowRadius() * 2.0;
+                    let grow = |side: f64, away: f64| 2.0_f64.mul_add(outset + away.abs(), side);
+                    extent = CGRect::new(
+                        CGPoint::new(
+                            extent.origin.x - outset - offset.width.abs(),
+                            extent.origin.y - outset - offset.height.abs(),
+                        ),
+                        CGSize::new(
+                            grow(extent.size.width, offset.width),
+                            grow(extent.size.height, offset.height),
+                        ),
+                    );
+                }
+                extent
+            } else {
+                let Some(extent) = subtree_extent(layer) else {
+                    return;
+                };
+                extent
+            };
+            if extent.is_empty() {
+                return;
+            }
+            self.segments.push(RasterSegment {
+                layer: layer.clone(),
+                space_transform: None,
+                extent,
+                own_content_only,
+                suppress_opacity,
+            });
+            out.push(CaptureNode::Native {
+                raster,
+                transform,
+                source_rect: extent,
+                clip: clip.clone(),
+                opacity,
+            });
+        }
+    }
+
+    /// Emits `layer`'s nodes in paint order. `transform` maps the
+    /// layer's local space into root space; `clip` and
+    /// `ancestor_opacity` accumulate down the walk; `pass_extent` is the
+    /// destination's root-space rect.
+    fn emit(
+        &mut self,
+        out: &mut Vec<CaptureNode>,
+        layer: &Retained<CALayer>,
+        transform: CATransform3D,
+        clip: &Clip,
+        ancestor_opacity: f32,
+        pass_extent: CGRect,
+    ) {
+        if layer.isHidden() {
+            return;
+        }
+        let own_opacity = layer.opacity();
+        if own_opacity <= 0.0 || ancestor_opacity <= 0.0 {
+            return;
+        }
+        let bounds = layer.bounds();
+        if bounds.is_empty() {
+            return;
+        }
+
+        if !self.has_gpu(layer) {
+            // Collapsed native subtree.
+            let visible = subtree_extent(layer).is_some_and(|extent| {
+                !rect_intersect(project_rect(extent, &transform), pass_extent).is_empty()
+            });
+            if !visible {
+                return;
+            }
+            self.native_node(
+                out,
+                layer,
+                transform,
+                clip,
+                ancestor_opacity,
+                pass_extent,
+                false,
+                false,
+            );
+            return;
+        }
+
+        // The layer's own masksToBounds clip, for descendants and a
+        // hosted surface — own content carries it inside its raster.
+        let own_shape = layer.masksToBounds().then(|| ClipShape {
+            inverse: transform.invert(),
+            bounds,
+            radii: clip_radii(layer),
+        });
+        let child_clip: Clip = match (&own_shape, clip.len() < MAX_CLIP_SHAPES) {
+            (Some(shape), true) => {
+                let mut shapes = clip.as_ref().clone();
+                shapes.push(shape.clone());
+                Rc::new(shapes)
+            }
+            _ => clip.clone(),
+        };
+
+        let is_host = self.surfaces.get(&layer_key(layer)).cloned();
+        let needs_group = layer.mask().is_some()
+            || layer.shouldRasterize()
+            || (own_opacity < 1.0 && layer.allowsGroupOpacity());
+
+        if needs_group {
+            self.emit_group(
+                out,
+                layer,
+                transform,
+                clip,
+                ancestor_opacity,
+                own_opacity,
+                pass_extent,
+                own_shape,
+                is_host,
+            );
+        } else {
+            self.emit_split(
+                out,
+                layer,
+                transform,
+                clip,
+                &child_clip,
+                ancestor_opacity,
+                own_opacity,
+                pass_extent,
+                is_host,
+            );
+        }
+    }
+
+    /// A `Group` node for a layer whose subtree must composite
+    /// offscreen — `mask`, `shouldRasterize`, or translucent group
+    /// opacity. Children render into the group's transient texture with
+    /// a clean opacity accumulator; the group's draw applies the
+    /// accumulated opacity and the ancestors' clips once.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the paint walk threads its accumulated context through each emit"
+    )]
+    fn emit_group(
+        &mut self,
+        out: &mut Vec<CaptureNode>,
+        layer: &Retained<CALayer>,
+        transform: CATransform3D,
+        clip: &Clip,
+        ancestor_opacity: f32,
+        own_opacity: f32,
+        pass_extent: CGRect,
+        own_shape: Option<ClipShape>,
+        is_host: Option<PlanSurface>,
+    ) {
+        let Some(extent) = subtree_extent(layer)
+            .map(|local| rect_intersect(project_rect(local, &transform), pass_extent))
+            .filter(|extent| !extent.is_empty())
+        else {
+            return;
+        };
+        let inside_clip: Clip = Rc::new(own_shape.map_or_else(Vec::new, |shape| vec![shape]));
+        let mut children = Vec::new();
+        // `renderInContext` applies the layer's own opacity itself;
+        // exactly 1.0 is its identity — any other value must be
+        // suppressed in the raster so the group draw supplies it.
+        #[expect(clippy::float_cmp, reason = "1.0 is renderInContext's identity")]
+        let suppress_own = own_opacity != 1.0;
+        self.native_node(
+            &mut children,
+            layer,
+            transform,
+            &inside_clip,
+            1.0,
+            extent,
+            true,
+            suppress_own,
+        );
+        for child in ordered_sublayers(layer) {
+            let child_transform = boundary_transform(&child, Some(layer)).concat(transform);
+            self.emit(
+                &mut children,
+                &child,
+                child_transform,
+                &inside_clip,
+                1.0,
+                extent,
+            );
+        }
+        if let Some(host) = is_host
+            && let Some(node) = surface_node(&host, layer, transform, &inside_clip, 1.0, extent)
+        {
+            children.push(node);
+        }
+        let (mask, mask_extent, mask_inverse) = layer.mask().map_or_else(
+            || (None, CGRect::ZERO, IDENTITY_3D),
+            |mask_layer| {
+                let mask_inverse = transform.invert();
+                let mask_extent = project_rect(extent, &mask_inverse);
+                let index = self.mask_segments.len();
+                self.mask_segments.push(RasterSegment {
+                    layer: mask_layer.clone(),
+                    space_transform: Some(boundary_transform(&mask_layer, None).affine_transform()),
+                    extent: mask_extent,
+                    own_content_only: false,
+                    suppress_opacity: false,
+                });
+                (Some(index), mask_extent, mask_inverse)
+            },
+        );
+        out.push(CaptureNode::Group(GroupDraw {
+            extent,
+            opacity: ancestor_opacity * own_opacity,
+            clip: clip.clone(),
+            mask,
+            mask_extent,
+            mask_inverse,
+            children,
+        }));
+    }
+
+    /// The ordinary split: own content, then the children in paint
+    /// order, then a hosted surface last — its presentation sits
+    /// topmost in the host layer.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the paint walk threads its accumulated context through each emit"
+    )]
+    fn emit_split(
+        &mut self,
+        out: &mut Vec<CaptureNode>,
+        layer: &Retained<CALayer>,
+        transform: CATransform3D,
+        clip: &Clip,
+        child_clip: &Clip,
+        ancestor_opacity: f32,
+        own_opacity: f32,
+        pass_extent: CGRect,
+        is_host: Option<PlanSurface>,
+    ) {
+        self.native_node(
+            out,
+            layer,
+            transform,
+            clip,
+            ancestor_opacity,
+            pass_extent,
+            true,
+            false,
+        );
+        let child_opacity = ancestor_opacity * own_opacity;
+        for child in ordered_sublayers(layer) {
+            let child_transform = boundary_transform(&child, Some(layer)).concat(transform);
+            self.emit(
+                out,
+                &child,
+                child_transform,
+                child_clip,
+                child_opacity,
+                pass_extent,
+            );
+        }
+        if let Some(host) = is_host
+            && let Some(node) = surface_node(
+                &host,
+                layer,
+                transform,
+                child_clip,
+                child_opacity,
+                pass_extent,
+            )
+        {
+            out.push(node);
+        }
+    }
+}
+
+impl CapturePlan {
+    /// Walks `root`'s model layer tree and emits the paint-order plan.
+    /// `surfaces` keys each resolved surface by its host layer;
+    /// `extent` is the destination's rect in root space; `scale` the
+    /// points-to-pixels scale.
+    fn build(
+        root: &Retained<CALayer>,
+        surfaces: Vec<PlanSurface>,
+        extent: CGRect,
+        scale: CGSize,
+    ) -> Self {
+        let mut builder = PlanBuilder {
+            surfaces: surfaces
+                .into_iter()
+                .map(|surface| (layer_key(&surface.layer), surface))
+                .collect(),
+            has_gpu_memo: HashMap::new(),
+            segments: Vec::new(),
+            mask_segments: Vec::new(),
+        };
+        let mut nodes = Vec::new();
+        builder.emit(
+            &mut nodes,
+            root,
+            IDENTITY_3D,
+            &Rc::new(Vec::new()),
+            1.0,
+            extent,
+        );
+        Self {
+            nodes,
+            segments: builder.segments,
+            mask_segments: builder.mask_segments,
+            extent,
+            scale,
+        }
+    }
+}
+
+/// The subtree's extent in `layer`'s own local space — `None` when it
+/// draws nothing. Own bounds plus every visible child's extent
+/// projected across the child→layer boundary.
+fn subtree_extent(layer: &CALayer) -> Option<CGRect> {
+    if layer.isHidden() || layer.opacity() <= 0.0 {
+        return None;
+    }
+    let bounds = layer.bounds();
+    if bounds.is_empty() {
+        return None;
+    }
+    let mut extent = bounds;
+    for child in ordered_sublayers(layer) {
+        if let Some(child_extent) = subtree_extent(&child) {
+            let projected = project_rect(child_extent, &boundary_transform(&child, Some(layer)));
+            if !projected.is_empty() {
+                extent = rect_union(extent, projected);
+            }
+        }
+    }
+    Some(extent)
+}
+
+/// The `Surface` node a resolved host layer contributes: the producer
+/// texture composited as a quad over the host's bounds — `None` when
+/// the quad is entirely outside `pass_extent`.
+fn surface_node(
+    host: &PlanSurface,
+    layer: &CALayer,
+    transform: CATransform3D,
+    clip: &Clip,
+    opacity: f32,
+    pass_extent: CGRect,
+) -> Option<CaptureNode> {
+    let source_rect = layer.bounds();
+    if rect_intersect(project_rect(source_rect, &transform), pass_extent).is_empty() {
+        return None;
+    }
+    Some(CaptureNode::Surface {
+        spec: host.spec,
+        transform,
+        source_rect,
+        source_flip: layer.isGeometryFlipped(),
+        clip: clip.clone(),
+        opacity,
     })
 }
 
@@ -350,6 +1147,9 @@ struct DeviceResources {
     device: Retained<ProtocolObject<dyn MTLDevice>>,
     command_queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
     surface_textures: HashMap<usize, Retained<ProtocolObject<dyn MTLTexture>>>,
+    /// Pooled transient textures group nodes render into — returned by
+    /// the settle once the composite buffer completes.
+    transients: Vec<Retained<ProtocolObject<dyn MTLTexture>>>,
     pipeline: Option<Retained<ProtocolObject<dyn MTLRenderPipelineState>>>,
     pipeline_format: Option<MTLPixelFormat>,
     sampler: Option<Retained<ProtocolObject<dyn MTLSamplerState>>>,
@@ -368,10 +1168,53 @@ impl DeviceResources {
                 .newCommandQueue()
                 .expect("failed to create the Metal capture composition command queue"),
             surface_textures: HashMap::new(),
+            transients: Vec::new(),
             pipeline: None,
             pipeline_format: None,
             sampler: None,
         }
+    }
+
+    /// A transient texture of `format` × `width` × `height` for a
+    /// group's inner pass — the most recently returned match, else a
+    /// fresh private texture.
+    ///
+    /// # Panics
+    ///
+    /// When the device cannot allocate a texture.
+    fn transient(
+        &mut self,
+        format: MTLPixelFormat,
+        width: usize,
+        height: usize,
+    ) -> Retained<ProtocolObject<dyn MTLTexture>> {
+        if let Some(index) = self.transients.iter().rposition(|texture| {
+            texture.pixelFormat() == format
+                && texture.width() == width
+                && texture.height() == height
+        }) {
+            return self.transients.remove(index);
+        }
+        // SAFETY: a 2D texture descriptor is always valid to construct.
+        let descriptor = unsafe {
+            MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+                format, width, height, false,
+            )
+        };
+        descriptor.setUsage(MTLTextureUsage::ShaderRead | MTLTextureUsage::RenderTarget);
+        descriptor.setStorageMode(MTLStorageMode::Private);
+        self.device
+            .newTextureWithDescriptor(&descriptor)
+            .expect("failed to create a group transient texture")
+    }
+
+    /// Takes issued transients back for reuse — the pool stays small:
+    /// group passes are transient-sized and transient-lived.
+    fn return_transients(&mut self, transients: Vec<Retained<ProtocolObject<dyn MTLTexture>>>) {
+        const CAPACITY: usize = 8;
+        self.transients.extend(transients);
+        let over = self.transients.len().saturating_sub(CAPACITY);
+        self.transients.drain(..over);
     }
 
     /// The private texture for `spec` — reused when id, size and format
@@ -640,91 +1483,499 @@ impl CompositorGuard<'_> {
             .collect()
     }
 
-    /// Encodes the composite pass: each surface's texture at its viewport and
-    /// scissor, then the overlay full-screen, into `target`.
+    /// Encodes the plan's composite: the nodes draw into `target` in
+    /// paint order, each `Native`/`Surface` a transformed, clipped,
+    /// opacity-scaled quad and each `Group` a pooled transient texture
+    /// its children render into before its own draw composites it.
+    /// Returns the transient textures issued, for the settle to pool
+    /// back.
     ///
-    /// Premultiplied-over blending (`.one` / `.oneMinusSourceAlpha`), a
-    /// linear clamp-to-edge sampler, a fullscreen triangle per region — the
-    /// `CaptureComposite` shader.
+    /// Every raster's blit must already be encoded on `command_buffer`.
+    /// Premultiplied-over blending (`.one` / `.oneMinusSourceAlpha`) and
+    /// a linear clamp-to-edge sampler — the `CaptureComposite` shader.
     ///
     /// # Panics
     ///
-    /// When the pipeline or encoder cannot be created.
-    pub fn encode_composition(
+    /// When the pipeline, a transient texture, or an encoder cannot be
+    /// created.
+    fn encode_composition(
         &mut self,
-        surfaces: &[RenderedSurface],
-        overlay: Option<&ProtocolObject<dyn MTLTexture>>,
-        target: &ProtocolObject<dyn MTLTexture>,
+        preparation: &Preparation,
+        rendered: &[RenderedSurface],
         command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
-        device: &ProtocolObject<dyn MTLDevice>,
-    ) {
-        let resources = self.state.device_resources(device);
-        let descriptor = MTLRenderPassDescriptor::new();
-        // SAFETY: index 0 is the single color attachment.
-        let attachment = unsafe { descriptor.colorAttachments().objectAtIndexedSubscript(0) };
-        attachment.setTexture(Some(target));
-        attachment.setLoadAction(MTLLoadAction::Clear);
-        attachment.setStoreAction(MTLStoreAction::Store);
-        attachment.setClearColor(MTLClearColor {
-            red: 0.0,
-            green: 0.0,
-            blue: 0.0,
-            alpha: 0.0,
-        });
-        let encoder = command_buffer
-            .renderCommandEncoderWithDescriptor(&descriptor)
-            .expect("failed to create the Metal capture composition encoder");
-        encoder.setRenderPipelineState(&resources.render_pipeline(target.pixelFormat()));
+    ) -> Vec<Retained<ProtocolObject<dyn MTLTexture>>> {
+        let plan = &preparation.plan;
+        let target = &preparation.target;
+        let resources = self.state.device_resources(&preparation.device);
+        let pipeline = resources.render_pipeline(target.pixelFormat());
         let sampler = resources.composite_sampler();
-        // SAFETY: `encoder` is a live render encoder and index 0 is the
+        let mut ctx = CompositeCtx {
+            pipeline,
+            sampler,
+            resources,
+            command_buffer,
+            surfaces: rendered
+                .iter()
+                .map(|surface| (surface.spec.surface_id, surface.texture.clone()))
+                .collect(),
+            raster_textures: preparation
+                .rasters
+                .iter()
+                .map(|lease| lease.texture().clone())
+                .collect(),
+            mask_textures: preparation
+                .mask_rasters
+                .iter()
+                .map(|lease| lease.texture().clone())
+                .collect(),
+            transients: Vec::new(),
+        };
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "a capture target is at most a few thousand pixels on a side"
+        )]
+        let dst = PassSpace {
+            extent: plan.extent,
+            pixels: CGSize::new(target.width() as f64, target.height() as f64),
+            scale: plan.scale,
+        };
+        encode_nodes(&mut ctx, &plan.nodes, target, &dst);
+        ctx.transients
+    }
+
+    /// Returns issued transient textures to the pool — the settle path
+    /// calls it once the composite buffer completed.
+    fn return_transients(&mut self, transients: Vec<Retained<ProtocolObject<dyn MTLTexture>>>) {
+        if let Some(resources) = &mut self.state.resources {
+            resources.return_transients(transients);
+        }
+    }
+}
+
+/// The shared state one composite pass wires through the encoder —
+/// the device bundle, the resolved texture maps, and the transient
+/// textures group passes have issued.
+struct CompositeCtx<'a> {
+    /// The device bundle — pipelines, the sampler, the transient pool.
+    resources: &'a mut DeviceResources,
+    /// The command buffer passes open on.
+    command_buffer: &'a ProtocolObject<dyn MTLCommandBuffer>,
+    /// The composite pipeline.
+    pipeline: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
+    /// The linear-clamp sampler every texture reads through.
+    sampler: Retained<ProtocolObject<dyn MTLSamplerState>>,
+    /// Surface id → prepared texture.
+    surfaces: HashMap<usize, Retained<ProtocolObject<dyn MTLTexture>>>,
+    /// `Native` raster textures, in node `raster` index order.
+    raster_textures: Vec<Retained<ProtocolObject<dyn MTLTexture>>>,
+    /// Mask raster textures, in node `mask` index order.
+    mask_textures: Vec<Retained<ProtocolObject<dyn MTLTexture>>>,
+    /// Transient textures issued by group passes — returned to the
+    /// caller for pooling once the buffer completes.
+    transients: Vec<Retained<ProtocolObject<dyn MTLTexture>>>,
+}
+
+/// The destination space one pass renders in — the rect the target
+/// covers in root-layer points, its pixel size, and the points→pixels
+/// scale.
+struct PassSpace {
+    extent: CGRect,
+    pixels: CGSize,
+    scale: CGSize,
+}
+
+/// The per-draw parameter block — mirrored field-for-field by
+/// `NodeParams` in `capture_composite.metal`.
+#[repr(C)]
+struct NodeParams {
+    /// Node source space → root space.
+    transform: [f32; 16],
+    /// Root space → mask-owner local space (only when `has_mask`).
+    mask_inverse: [f32; 16],
+    /// Root space → each clip layer's local space.
+    clip_inverses: [[f32; 16]; MAX_CLIP_SHAPES],
+    /// Each clip's bounds in its layer's local space.
+    clip_rects: [[f32; 4]; MAX_CLIP_SHAPES],
+    /// Per-corner radii for each clip.
+    clip_radii: [[f32; 4]; MAX_CLIP_SHAPES],
+    /// The quad's rect in node source space.
+    source_rect: [f32; 4],
+    /// The mask texture's coverage in owner-local space.
+    mask_extent: [f32; 4],
+    /// The pass extent's origin in root space.
+    dst_origin: [f32; 2],
+    /// Points → pixels.
+    dst_scale: [f32; 2],
+    /// The destination's pixel size.
+    dst_pixels: [f32; 2],
+    /// Accumulated draw opacity.
+    opacity: f32,
+    /// Nonzero samples the source texture V-flipped.
+    source_v_flip: f32,
+    /// Nonzero samples the mask texture V-flipped.
+    mask_v_flip: f32,
+    /// The platform's destination convention: +1 maps the root space's
+    /// max-Y edge to texel row 0 (macOS), −1 the min-Y edge (iOS).
+    dst_v_flip: f32,
+    /// How many clip shapes apply.
+    clip_count: u32,
+    /// Nonzero binds and applies the mask texture.
+    has_mask: u32,
+}
+
+/// A `CATransform3D` as a Metal `float4x4` — the struct's field order IS
+/// the shader's column-major layout (column i is `mi1`..`mi4`).
+fn matrix_f32(transform: &CATransform3D) -> [f32; 16] {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "capture transforms fit f32"
+    )]
+    let m = |value: f64| value as f32;
+    [
+        m(transform.m11),
+        m(transform.m12),
+        m(transform.m13),
+        m(transform.m14),
+        m(transform.m21),
+        m(transform.m22),
+        m(transform.m23),
+        m(transform.m24),
+        m(transform.m31),
+        m(transform.m32),
+        m(transform.m33),
+        m(transform.m34),
+        m(transform.m41),
+        m(transform.m42),
+        m(transform.m43),
+        m(transform.m44),
+    ]
+}
+
+/// The destination texel convention's V sign: +1 on macOS, −1 on iOS.
+const DST_V_FLIP: f32 = if cfg!(target_os = "ios") { -1.0 } else { 1.0 };
+
+/// The source sampling convention for pass-space textures (rasters,
+/// group and mask transient): +1 inverts V (macOS), 0 passes it (iOS).
+const PASS_V_FLIP: f32 = if cfg!(target_os = "ios") { 0.0 } else { 1.0 };
+
+/// The pixel box `source_rect` covers under `transform`, clipped to the
+/// pass — `None` when it misses the destination entirely.
+fn draw_scissor(
+    source_rect: CGRect,
+    transform: &CATransform3D,
+    dst: &PassSpace,
+) -> Option<MTLScissorRect> {
+    let hit = rect_intersect(project_rect(source_rect, transform), dst.extent);
+    if hit.is_empty() {
+        return None;
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clipped pixel boxes are small and nonnegative"
+    )]
+    let to_px = |value: f64| value.max(0.0) as usize;
+    let x0 = to_px((hit.min().x - dst.extent.origin.x) * dst.scale.width);
+    let x1 = to_px(
+        ((hit.max().x - dst.extent.origin.x) * dst.scale.width)
+            .ceil()
+            .min(dst.pixels.width),
+    );
+    let (lo, hi) = (
+        (hit.min().y - dst.extent.origin.y) * dst.scale.height,
+        (hit.max().y - dst.extent.origin.y) * dst.scale.height,
+    );
+    // Texture rows run opposite the root space's Y on macOS.
+    let (y0, y1) = if cfg!(target_os = "ios") {
+        (to_px(lo.floor()), to_px(hi.ceil().min(dst.pixels.height)))
+    } else {
+        (
+            to_px((dst.pixels.height - hi).floor()),
+            to_px((dst.pixels.height - lo).ceil().min(dst.pixels.height)),
+        )
+    };
+    (x1 > x0 && y1 > y0).then_some(MTLScissorRect {
+        x: x0,
+        y: y0,
+        width: x1 - x0,
+        height: y1 - y0,
+    })
+}
+
+/// The draw's scissor-free parameter block, assembled per node.
+fn node_params(
+    transform: &CATransform3D,
+    source_rect: CGRect,
+    clip: &Clip,
+    opacity: f32,
+    source_v_flip: f32,
+    dst: &PassSpace,
+) -> NodeParams {
+    #[expect(clippy::cast_possible_truncation, reason = "clip extents fit f32")]
+    let mut params = NodeParams {
+        transform: matrix_f32(transform),
+        mask_inverse: [0.0; 16],
+        clip_inverses: [[0.0; 16]; MAX_CLIP_SHAPES],
+        clip_rects: [[0.0; 4]; MAX_CLIP_SHAPES],
+        clip_radii: [[0.0; 4]; MAX_CLIP_SHAPES],
+        source_rect: [
+            source_rect.origin.x as f32,
+            source_rect.origin.y as f32,
+            source_rect.size.width as f32,
+            source_rect.size.height as f32,
+        ],
+        mask_extent: [0.0; 4],
+        dst_origin: [dst.extent.origin.x as f32, dst.extent.origin.y as f32],
+        dst_scale: [dst.scale.width as f32, dst.scale.height as f32],
+        dst_pixels: [dst.pixels.width as f32, dst.pixels.height as f32],
+        opacity,
+        source_v_flip,
+        mask_v_flip: PASS_V_FLIP,
+        dst_v_flip: DST_V_FLIP,
+        clip_count: 0,
+        has_mask: 0,
+    };
+    for (index, shape) in clip.iter().take(MAX_CLIP_SHAPES).enumerate() {
+        params.clip_inverses[index] = matrix_f32(&shape.inverse);
+        #[expect(clippy::cast_possible_truncation, reason = "clip bounds fit f32")]
+        let rect = [
+            shape.bounds.origin.x as f32,
+            shape.bounds.origin.y as f32,
+            shape.bounds.size.width as f32,
+            shape.bounds.size.height as f32,
+        ];
+        params.clip_rects[index] = rect;
+        params.clip_radii[index] = shape.radii;
+    }
+    params.clip_count = u32::try_from(clip.len().min(MAX_CLIP_SHAPES)).unwrap_or_default();
+    params
+}
+
+/// One textured-quad draw: the node's params to both stages, the source
+/// texture at slot 0, the mask (or the source again — never sampled) at
+/// slot 1, then six vertices.
+fn encode_draw(
+    encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>,
+    texture: &ProtocolObject<dyn MTLTexture>,
+    mask: Option<&ProtocolObject<dyn MTLTexture>>,
+    mut params: NodeParams,
+    source_rect: CGRect,
+    transform: &CATransform3D,
+    dst: &PassSpace,
+) {
+    let Some(scissor) = draw_scissor(source_rect, transform, dst) else {
+        return;
+    };
+    params.has_mask = u32::from(mask.is_some());
+    // SAFETY: `encoder` is a live render encoder, `params` outlives the
+    // call — Metal copies bytes — and 0/1 are the slots the shader binds.
+    unsafe {
+        encoder.setVertexBytes_length_atIndex(
+            core::ptr::NonNull::from(&params).cast(),
+            core::mem::size_of::<NodeParams>(),
+            0,
+        );
+        encoder.setFragmentBytes_length_atIndex(
+            core::ptr::NonNull::from(&params).cast(),
+            core::mem::size_of::<NodeParams>(),
+            0,
+        );
+        encoder.setFragmentTexture_atIndex(Some(texture), 0);
+        encoder.setFragmentTexture_atIndex(mask.or(Some(texture)), 1);
+        encoder.setScissorRect(scissor);
+        encoder.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::Triangle, 0, 6);
+    }
+}
+
+/// Opens a pass on `target`, `Clear` on first use and `Load` when a
+/// group returns to its parent's pass.
+fn begin_pass(
+    command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
+    target: &ProtocolObject<dyn MTLTexture>,
+    load: MTLLoadAction,
+) -> Retained<ProtocolObject<dyn MTLRenderCommandEncoder>> {
+    let descriptor = MTLRenderPassDescriptor::new();
+    // SAFETY: index 0 is the single color attachment.
+    let attachment = unsafe { descriptor.colorAttachments().objectAtIndexedSubscript(0) };
+    attachment.setTexture(Some(target));
+    attachment.setLoadAction(load);
+    attachment.setStoreAction(MTLStoreAction::Store);
+    attachment.setClearColor(MTLClearColor {
+        red: 0.0,
+        green: 0.0,
+        blue: 0.0,
+        alpha: 0.0,
+    });
+    command_buffer
+        .renderCommandEncoderWithDescriptor(&descriptor)
+        .expect("failed to create the Metal capture composition encoder")
+}
+
+/// A `Group` draw: children into a pooled transient, then the group's
+/// quad composited back through the re-opened parent pass. `pass`
+/// holds the caller's live encoder — closed here and replaced.
+fn encode_group(
+    ctx: &mut CompositeCtx<'_>,
+    group: &GroupDraw,
+    target: &ProtocolObject<dyn MTLTexture>,
+    dst: &PassSpace,
+    pass: &mut Option<Retained<ProtocolObject<dyn MTLRenderCommandEncoder>>>,
+) {
+    if let Some(encoder) = pass.take() {
+        encoder.endEncoding();
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "group extents are small and finite"
+    )]
+    let (width, height) = (
+        (group.extent.size.width * dst.scale.width).ceil().max(1.0) as usize,
+        (group.extent.size.height * dst.scale.height)
+            .ceil()
+            .max(1.0) as usize,
+    );
+    let group_texture = ctx.resources.transient(target.pixelFormat(), width, height);
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a group texture is at most a few thousand pixels on a side"
+    )]
+    let inner_dst = PassSpace {
+        extent: group.extent,
+        pixels: CGSize::new(width as f64, height as f64),
+        scale: dst.scale,
+    };
+    encode_nodes(ctx, &group.children, &group_texture, &inner_dst);
+    ctx.transients.push(group_texture.clone());
+    let mut params = node_params(
+        &IDENTITY_3D,
+        group.extent,
+        &group.clip,
+        group.opacity,
+        PASS_V_FLIP,
+        dst,
+    );
+    if group.mask.is_some() {
+        params.mask_inverse = matrix_f32(&group.mask_inverse);
+        #[expect(clippy::cast_possible_truncation, reason = "mask extents fit f32")]
+        {
+            params.mask_extent = [
+                group.mask_extent.origin.x as f32,
+                group.mask_extent.origin.y as f32,
+                group.mask_extent.size.width as f32,
+                group.mask_extent.size.height as f32,
+            ];
+        }
+    }
+    let encoder = begin_pass(ctx.command_buffer, target, MTLLoadAction::Load);
+    encoder.setRenderPipelineState(&ctx.pipeline);
+    encoder.setViewport(MTLViewport {
+        originX: 0.0,
+        originY: 0.0,
+        width: dst.pixels.width,
+        height: dst.pixels.height,
+        znear: 0.0,
+        zfar: 1.0,
+    });
+    // SAFETY: `encoder` is a live render encoder and 0 is the sampler
+    // slot the shader binds.
+    unsafe {
+        encoder.setFragmentSamplerState_atIndex(Some(&*ctx.sampler), 0);
+    }
+    encode_draw(
+        &encoder,
+        &group_texture,
+        group.mask.map(|index| &*ctx.mask_textures[index]),
+        params,
+        group.extent,
+        &IDENTITY_3D,
+        dst,
+    );
+    *pass = Some(encoder);
+}
+
+/// Encodes `nodes` front to back into `target` — one pass per
+/// contiguous run, reopening after each group's inner pass.
+fn encode_nodes(
+    ctx: &mut CompositeCtx<'_>,
+    nodes: &[CaptureNode],
+    target: &ProtocolObject<dyn MTLTexture>,
+    dst: &PassSpace,
+) {
+    if nodes.is_empty() {
+        return;
+    }
+    let mut pass = Some(begin_pass(ctx.command_buffer, target, MTLLoadAction::Clear));
+    if let Some(encoder) = &pass {
+        encoder.setRenderPipelineState(&ctx.pipeline);
+        encoder.setViewport(MTLViewport {
+            originX: 0.0,
+            originY: 0.0,
+            width: dst.pixels.width,
+            height: dst.pixels.height,
+            znear: 0.0,
+            zfar: 1.0,
+        });
+        // SAFETY: `encoder` is a live render encoder and 0 is the
         // sampler slot the shader binds.
         unsafe {
-            encoder.setFragmentSamplerState_atIndex(Some(&sampler), 0);
+            encoder.setFragmentSamplerState_atIndex(Some(&*ctx.sampler), 0);
         }
-        for surface in surfaces {
-            let spec = surface.spec;
-            encoder.setViewport(MTLViewport {
-                originX: f64::from(u32::try_from(spec.origin.x).unwrap_or(u32::MAX)),
-                originY: f64::from(u32::try_from(spec.origin.y).unwrap_or(u32::MAX)),
-                width: f64::from(u32::try_from(spec.size.width).unwrap_or(u32::MAX)),
-                height: f64::from(u32::try_from(spec.size.height).unwrap_or(u32::MAX)),
-                znear: 0.0,
-                zfar: 1.0,
-            });
-            encoder.setScissorRect(MTLScissorRect {
-                x: spec.origin.x,
-                y: spec.origin.y,
-                width: spec.size.width,
-                height: spec.size.height,
-            });
-            // SAFETY: `encoder` is a live render encoder and index 0 is the
-            // texture slot the shader binds.
-            unsafe {
-                encoder.setFragmentTexture_atIndex(Some(&surface.texture), 0);
-                encoder.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::Triangle, 0, 3);
+    }
+    for node in nodes {
+        match node {
+            CaptureNode::Native {
+                raster,
+                transform,
+                source_rect,
+                clip,
+                opacity,
+            } => {
+                let params = node_params(transform, *source_rect, clip, *opacity, PASS_V_FLIP, dst);
+                if let Some(encoder) = &pass {
+                    encode_draw(
+                        encoder,
+                        &ctx.raster_textures[*raster],
+                        None,
+                        params,
+                        *source_rect,
+                        transform,
+                        dst,
+                    );
+                }
+            }
+            CaptureNode::Surface {
+                spec,
+                transform,
+                source_rect,
+                source_flip,
+                clip,
+                opacity,
+            } => {
+                let Some(texture) = ctx.surfaces.get(&spec.surface_id) else {
+                    continue;
+                };
+                // The producer texture's row 0 is the surface's visual
+                // top — the bounds.min.y edge when the host's local
+                // space is flipped, bounds.max.y when it isn't.
+                let params = node_params(
+                    transform,
+                    *source_rect,
+                    clip,
+                    *opacity,
+                    if *source_flip { 0.0 } else { 1.0 },
+                    dst,
+                );
+                if let Some(encoder) = &pass {
+                    encode_draw(encoder, texture, None, params, *source_rect, transform, dst);
+                }
+            }
+            CaptureNode::Group(group) => {
+                encode_group(ctx, group, target, dst, &mut pass);
             }
         }
-        if let Some(overlay) = overlay {
-            encoder.setViewport(MTLViewport {
-                originX: 0.0,
-                originY: 0.0,
-                width: f64::from(u32::try_from(target.width()).unwrap_or(u32::MAX)),
-                height: f64::from(u32::try_from(target.height()).unwrap_or(u32::MAX)),
-                znear: 0.0,
-                zfar: 1.0,
-            });
-            encoder.setScissorRect(MTLScissorRect {
-                x: 0,
-                y: 0,
-                width: target.width(),
-                height: target.height(),
-            });
-            // SAFETY: same encoder/slot contract as above.
-            unsafe {
-                encoder.setFragmentTexture_atIndex(Some(overlay), 0);
-                encoder.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::Triangle, 0, 3);
-            }
-        }
+    }
+    if let Some(encoder) = pass.take() {
         encoder.endEncoding();
     }
 }
@@ -920,41 +2171,149 @@ impl NativeRasterFrame {
         encoder.endEncoding();
     }
 
-    /// Rasterizes `layer`'s tree into the shared buffer at `geometry`'s
-    /// scale — a synchronous CPU draw, completed when it returns.
+    /// Rasterizes `segment`'s layer into the shared buffer — a
+    /// synchronous CPU draw, completed when it returns.
     ///
     /// Geometry is expressed through the context's CTM alone: the live
-    /// layer tree is never transformed or reparented. The CTM is applied
-    /// after clearing and restored before returning, so a reused context
-    /// carries no state across frames. The output obeys the composite
-    /// pass's contract — texel row 0 is the view's top edge: a bitmap
-    /// context is bottom-left-origin like `AppKit`'s layer space, so on
-    /// macOS a plain scale lands each layer row on its matching texel
-    /// row (the kit's flipped views already compensate the y-up draw,
-    /// and mirroring again would count the flip twice); `UIKit`'s layer
-    /// space is top-left-origin, so the iOS CTM translates then flips to
-    /// put the view's top on row 0.
-    fn draw(&self, layer: &CALayer, geometry: CaptureGeometry) {
+    /// layer tree is never transformed or reparented. The CTM places
+    /// `segment.extent` on the buffer, then `space_transform` (when the
+    /// node's transform is affine) maps the layer's local space into
+    /// that rect; a non-affine node rasters the layer in its own space
+    /// and lets the composite quad carry the full transform. Both
+    /// mutations the plan asks for — hiding direct sublayers for
+    /// `own_content_only`, pinning opacity for `suppress_opacity` — are
+    /// temporary model edits inside the capture's disabled-actions
+    /// transaction, restored before it commits: `renderInContext` reads
+    /// the model tree, so the render server never sees them.
+    ///
+    /// The output obeys the composite pass's contract — texel row 0 is
+    /// the drawn space's top edge: a bitmap context is bottom-left-
+    /// origin like `AppKit`'s layer space, so on macOS a plain affine
+    /// lands each row on its matching texel row; `UIKit`'s layer space
+    /// is top-left-origin, so the iOS mapping flips the texel Y.
+    fn draw(&self, segment: &RasterSegment) {
         let context: &CGContext = &self.context;
-        // SAFETY: the casts stay representable — a capture destination is
-        // at most a few thousand pixels on a side.
         #[expect(
             clippy::cast_precision_loss,
             reason = "a capture texture is at most a few thousand pixels on a side"
         )]
         let (width, height) = (self.pixel_width as f64, self.pixel_height as f64);
-        CGContext::clear_rect(Some(context), Rect::new(0.0, 0.0, width, height).into());
+        CGContext::clear_rect(
+            Some(context),
+            CGRect::new(CGPoint::ZERO, CGSize::new(width, height)),
+        );
         CGContext::save_g_state(Some(context));
-        #[cfg(target_os = "ios")]
-        {
-            CGContext::translate_ctm(Some(context), 0.0, height);
-            CGContext::scale_ctm(Some(context), geometry.scale_x, -geometry.scale_y);
+        // The platform affine maps `extent` onto the buffer; the
+        // concatenated space transform applies first, so a layer-local
+        // point lands where the node projects it.
+        CGContext::concat_ctm(
+            Some(context),
+            platform_affine(segment.extent, self.pixel_width, self.pixel_height),
+        );
+        if let Some(space_transform) = segment.space_transform {
+            CGContext::concat_ctm(Some(context), space_transform);
         }
-        #[cfg(target_os = "macos")]
-        CGContext::scale_ctm(Some(context), geometry.scale_x, geometry.scale_y);
-        layer.renderInContext(context);
+        let _hide = segment
+            .own_content_only
+            .then(|| SublayerHidden::hide_all(&segment.layer));
+        let _opacity = segment
+            .suppress_opacity
+            .then(|| LayerOpacity::full(&segment.layer));
+        segment.layer.renderInContext(context);
         CGContext::restore_g_state(Some(context));
         CGContext::flush(Some(context));
+    }
+}
+
+/// The affine CTM placing `extent` onto `pixel_width` × `pixel_height`
+/// — the same platform convention the identity draw uses: macOS maps a
+/// bottom-origin buffer space straight on, iOS flips Y so the space's
+/// top edge lands on texel row 0.
+fn platform_affine(extent: CGRect, pixel_width: usize, pixel_height: usize) -> CGAffineTransform {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a capture texture is at most a few thousand pixels on a side"
+    )]
+    let (width, height) = (pixel_width as f64, pixel_height as f64);
+    let sx = width / extent.size.width;
+    let sy = height / extent.size.height;
+    if cfg!(target_os = "ios") {
+        CGAffineTransform {
+            a: sx,
+            b: 0.0,
+            c: 0.0,
+            d: -sy,
+            tx: -extent.origin.x * sx,
+            ty: extent.origin.y.mul_add(sy, height),
+        }
+    } else {
+        CGAffineTransform {
+            a: sx,
+            b: 0.0,
+            c: 0.0,
+            d: sy,
+            tx: -extent.origin.x * sx,
+            ty: -extent.origin.y * sy,
+        }
+    }
+}
+
+/// Hides a layer's direct sublayers for one `renderInContext` and
+/// restores each one's `hidden` on drop — the model-tree-only
+/// `own_content_only` mechanism. Never reparents.
+struct SublayerHidden {
+    saved: Vec<(Retained<CALayer>, bool)>,
+}
+
+impl SublayerHidden {
+    /// Sets `hidden` on every direct sublayer, remembering each flag.
+    fn hide_all(layer: &CALayer) -> Self {
+        // SAFETY: the layer outlives the returned array.
+        let saved = unsafe { layer.sublayers() }.map_or_else(Vec::new, |sublayers| {
+            sublayers
+                .iter()
+                .map(|sublayer| {
+                    let was = sublayer.isHidden();
+                    sublayer.setHidden(true);
+                    (sublayer, was)
+                })
+                .collect()
+        });
+        Self { saved }
+    }
+}
+
+impl Drop for SublayerHidden {
+    fn drop(&mut self) {
+        for (sublayer, was) in self.saved.drain(..) {
+            sublayer.setHidden(was);
+        }
+    }
+}
+
+/// Pins a layer's `opacity` to 1 for one raster and restores it on
+/// drop — group-internal own content must draw at full strength because
+/// the group's composite applies the layer's own opacity itself.
+struct LayerOpacity {
+    layer: Retained<CALayer>,
+    was: f32,
+}
+
+impl LayerOpacity {
+    /// Forces `layer`'s opacity to full, remembering the original.
+    fn full(layer: &Retained<CALayer>) -> Self {
+        let was = layer.opacity();
+        layer.setOpacity(1.0);
+        Self {
+            layer: layer.clone(),
+            was,
+        }
+    }
+}
+
+impl Drop for LayerOpacity {
+    fn drop(&mut self) {
+        self.layer.setOpacity(self.was);
     }
 }
 
@@ -986,13 +2345,13 @@ impl RasterLease {
             .encode_transfer(command_buffer);
     }
 
-    /// Rasterizes `layer`'s tree into the leased destination — the draw
-    /// half of a capture, infallible once the frame exists.
-    fn draw(&self, layer: &CALayer, geometry: CaptureGeometry) {
+    /// Rasterizes `segment`'s layer into the leased destination — the
+    /// draw half of a capture, infallible once the frame exists.
+    fn draw(&self, segment: &RasterSegment) {
         self.frame
             .as_ref()
             .expect("a lease owns its frame")
-            .draw(layer, geometry);
+            .draw(segment);
     }
 
     /// Hands the frame back — only the settle path may call this.
@@ -1001,18 +2360,15 @@ impl RasterLease {
     }
 }
 
-/// The full key a raster frame is pooled under: the caller's generation
-/// token plus the destination's device, pixel format and pixel size. Any
-/// key change retires the whole pool — a `NativeRenderer` represents one
-/// current capture destination, not a cache of every geometry it has
-/// ever seen.
+/// The key a raster pool generation runs under: the caller's generation
+/// token plus the destination's device and pixel format. Any change
+/// retires the whole pool; within one key frames are bucketed by pixel
+/// size so a plan with segments of several sizes shares the pool.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct RasterKey {
     generation: u64,
     device: *const std::ffi::c_void,
     pixel_format: MTLPixelFormat,
-    pixel_width: usize,
-    pixel_height: usize,
 }
 
 impl fmt::Debug for RasterKey {
@@ -1021,8 +2377,6 @@ impl fmt::Debug for RasterKey {
             .field("generation", &self.generation)
             .field("device", &self.device)
             .field("pixel_format", &self.pixel_format)
-            .field("pixel_width", &self.pixel_width)
-            .field("pixel_height", &self.pixel_height)
             .finish()
     }
 }
@@ -1034,17 +2388,19 @@ impl fmt::Debug for RasterKey {
 struct NativeRenderer {
     /// The key the pool currently issues for. Any mismatch drains
     /// `available`: storage from another key — an old generation, a
-    /// replaced device, a different size or format — can never answer
-    /// this key's capture.
+    /// replaced device, a different format — can never answer this
+    /// key's capture.
     key: Option<RasterKey>,
-    /// Settled frames under `key`, ready to reissue.
-    available: Vec<NativeRasterFrame>,
+    /// Settled frames under `key` bucketed by `(width, height)` — a
+    /// paint-order plan issues one segment per native node, at as many
+    /// sizes.
+    available: HashMap<(usize, usize), Vec<NativeRasterFrame>>,
 }
 
 impl NativeRenderer {
-    /// Issues a frame for the full (`generation`, `device`, `format`,
-    /// `width` × `height`) key and returns the lease owning it through
-    /// consumption.
+    /// Issues a `width` × `height` frame under the pool's key — reusing
+    /// a same-size settled frame — and returns the lease owning it
+    /// through consumption.
     ///
     /// # Panics
     ///
@@ -1061,8 +2417,6 @@ impl NativeRenderer {
             generation,
             device: core::ptr::from_ref(device).cast(),
             pixel_format: format,
-            pixel_width: width,
-            pixel_height: height,
         };
         if self.key != Some(key) {
             self.key = Some(key);
@@ -1070,14 +2424,15 @@ impl NativeRenderer {
         }
         let frame = self
             .available
-            .pop()
+            .get_mut(&(width, height))
+            .and_then(Vec::pop)
             .unwrap_or_else(|| NativeRasterFrame::new(device, format, width, height, generation));
         RasterLease { frame: Some(frame) }
     }
 
     /// Takes a settled frame back — main thread only, called from the
     /// compositor's completion path once the GPU stopped sampling it. A
-    /// frame whose full key no longer matches the pool's current key is
+    /// frame whose key no longer matches the pool's current key is
     /// dropped instead: outstanding old-key storage never joins the new
     /// pool. A frame settling after the pool was reset (shutdown) is
     /// dropped without re-arming the pool — an outstanding capture must
@@ -1087,20 +2442,24 @@ impl NativeRenderer {
             return;
         };
         if frame.generation == key.generation
-            && frame.pixel_width == key.pixel_width
-            && frame.pixel_height == key.pixel_height
             && frame.pixel_format == key.pixel_format
             && Retained::as_ptr(&frame.texture.device()) == key.device.cast()
         {
-            self.available.push(frame);
+            self.available
+                .entry((frame.pixel_width, frame.pixel_height))
+                .or_default()
+                .push(frame);
         }
     }
 }
 
-/// A snapshot's two halves: the platform spec and the surface it came from.
+/// A snapshot's three halves: the platform spec, the surface it came
+/// from, and the resolved view's backing layer the paint-order plan
+/// keys it by.
 struct CapturedSnapshot {
     spec: SurfaceSpec,
     surface: Rc<dyn CapturableSurface>,
+    layer: Retained<CALayer>,
 }
 
 /// One live external-render registration: a surface whose
@@ -1120,13 +2479,16 @@ impl Drop for SurfaceRegistration {
 }
 
 /// Everything [`ViewCapture::capture`] decided on the main thread that the
-/// compositor's queue needs. `raster` is the leased native output and
+/// compositor's queue needs. `rasters` are the leased native output —
+/// one per `Native` segment the plan emitted, in plan order — and
 /// `surfaces` the registrations this capture's immutable snapshot owns:
 /// both must outlive the last GPU read, so the preparation only releases
 /// them through the composite buffer's completion.
 struct Preparation {
     target: Retained<ProtocolObject<dyn MTLTexture>>,
-    raster: RasterLease,
+    rasters: Vec<RasterLease>,
+    mask_rasters: Vec<RasterLease>,
+    plan: CapturePlan,
     device: Retained<ProtocolObject<dyn MTLDevice>>,
     /// The registrations this capture's snapshot owns — kept alive past
     /// any membership change in `active` until the frame settles.
@@ -1223,6 +2585,11 @@ impl Drop for SuppressionGuard<'_> {
 /// completion. One pre-existing `Mutex` slot, nothing else.
 struct Settle {
     preparation: QueueSend<Preparation>,
+    /// Transient textures the composite issued — pooled back when the
+    /// buffer completes.
+    transients: QueueSend<Vec<Retained<ProtocolObject<dyn MTLTexture>>>>,
+    /// The compositor the transients return to.
+    compositor: Compositor,
     return_to: MainThreadBound<Weak<ViewCapture>>,
     completion: Box<dyn Fn(bool) + Send>,
 }
@@ -1293,10 +2660,10 @@ impl ViewCapture {
         let mtm = objc2::MainThreadMarker::new().expect("capture runs on the main thread");
         let (preparation, specs) = self.prepare(target, generation);
 
-        // The raster pass lands its pixels in the leased frame's shared
-        // buffer, not `target` — and it is synchronous: no GPU fence
+        // The raster pass lands its pixels in the leased frames' shared
+        // buffers, not `target` — and it is synchronous: no GPU fence
         // stands in for it. Every capture still runs the composition
-        // pass to draw the overlay over `target`, external surfaces or
+        // pass drawing the plan over `target`, external surfaces or
         // not.
         //
         // Everything leaving the main thread is `Send`: the specs are
@@ -1401,7 +2768,7 @@ impl ViewCapture {
                 target.width(),
                 target.height(),
             );
-            let snapshots = self.collect_snapshots(target, geometry);
+            let snapshots = self.collect_snapshots(geometry);
             self.update_external_surfaces(&snapshots);
             // The registrations this capture owns — the immutable
             // snapshot of who must stay external until its frame
@@ -1421,23 +2788,54 @@ impl ViewCapture {
                     })
                     .collect()
             };
-            // Fallible allocation still precedes suppression: an
-            // allocation panic leaves suppression untouched and the
-            // guards still restore what they opened.
-            let raster = self.renderer.borrow_mut().issue(
-                &target.device(),
-                target.pixelFormat(),
-                target.width(),
-                target.height(),
-                generation,
-            );
             let mut suppression = SuppressionGuard::new(&snapshots);
             suppression.begin();
-            raster.draw(&layer, geometry);
+            // The paint-order plan reads the post-suppression model
+            // tree: a surface's hidden presentation sublayers emit no
+            // nodes and draw nothing.
+            let plan = CapturePlan::build(
+                &layer,
+                snapshots
+                    .iter()
+                    .map(|snapshot| PlanSurface {
+                        layer: snapshot.layer.clone(),
+                        spec: snapshot.spec,
+                    })
+                    .collect(),
+                layer.bounds(),
+                CGSize::new(geometry.scale_x, geometry.scale_y),
+            );
+            let (device, format) = (target.device(), target.pixelFormat());
+            let (rasters, mask_rasters) = {
+                let mut renderer = self.renderer.borrow_mut();
+                let rasters = plan
+                    .segments
+                    .iter()
+                    .map(|segment| {
+                        let (width, height) = segment.pixel_size(plan.scale);
+                        let lease = renderer.issue(&device, format, width, height, generation);
+                        lease.draw(segment);
+                        lease
+                    })
+                    .collect::<Vec<_>>();
+                let mask_rasters = plan
+                    .mask_segments
+                    .iter()
+                    .map(|segment| {
+                        let (width, height) = segment.pixel_size(plan.scale);
+                        let lease = renderer.issue(&device, format, width, height, generation);
+                        lease.draw(segment);
+                        lease
+                    })
+                    .collect::<Vec<_>>();
+                (rasters, mask_rasters)
+            };
             suppression.end();
             let specs: Vec<SurfaceSpec> = snapshots.iter().map(|s| s.spec).collect();
             let preparation = Preparation {
-                raster,
+                rasters,
+                mask_rasters,
+                plan,
                 target: target.retain(),
                 device: target.device(),
                 surfaces,
@@ -1464,19 +2862,9 @@ impl ViewCapture {
     }
 
     /// The surface snapshot list for one capture.
-    fn collect_snapshots(
-        &self,
-        target: &ProtocolObject<dyn MTLTexture>,
-        geometry: CaptureGeometry,
-    ) -> Vec<CapturedSnapshot> {
+    fn collect_snapshots(&self, geometry: CaptureGeometry) -> Vec<CapturedSnapshot> {
         let mut snapshots = Vec::new();
-        self.collect_into(
-            &self.content,
-            &mut snapshots,
-            geometry,
-            target.width(),
-            target.height(),
-        );
+        self.collect_into(&self.content, &mut snapshots, geometry);
         snapshots
     }
 
@@ -1487,25 +2875,29 @@ impl ViewCapture {
         view: &PlatformView,
         snapshots: &mut Vec<CapturedSnapshot>,
         geometry: CaptureGeometry,
-        target_width: usize,
-        target_height: usize,
     ) {
         if let Some(surface) = (self.resolve)(view) {
-            let bounds = surface.content_bounds(&self.content);
-            if let Some(spec) = surface_spec(
-                view_key(view),
-                bounds,
-                geometry,
-                surface.capture_pixel_format(),
-                target_width,
-                target_height,
-            ) {
-                snapshots.push(CapturedSnapshot { spec, surface });
+            // The spec covers the surface's whole content — the host
+            // layer's bounds — and the plan places it; a
+            // non-layer-backed resolved view cannot be captured.
+            if let Some(layer) = crate::view::layer(view)
+                && let Some(spec) = surface_spec(
+                    view_key(view),
+                    Size::new(layer.bounds().size.width, layer.bounds().size.height),
+                    geometry,
+                    surface.capture_pixel_format(),
+                )
+            {
+                snapshots.push(CapturedSnapshot {
+                    spec,
+                    surface,
+                    layer,
+                });
             }
             return;
         }
         for subview in crate::view::subviews(view) {
-            self.collect_into(&subview, snapshots, geometry, target_width, target_height);
+            self.collect_into(&subview, snapshots, geometry);
         }
     }
 
@@ -1631,19 +3023,20 @@ impl ViewCapture {
         completion: Box<dyn Fn(bool) + Send>,
         return_to: MainThreadBound<Weak<Self>>,
     ) {
+        let settle_compositor = compositor.clone();
         compositor.perform(move |guard| {
             let command_buffer = guard.make_command_buffer(&preparation.get().device);
-            // The CPU-drawn raster reaches the compositor's private
-            // texture through a blit on this same command buffer — the
-            // encoder is ended before the render pass samples it.
-            preparation.get().raster.encode_transfer(&command_buffer);
-            guard.encode_composition(
-                rendered.get(),
-                Some(preparation.get().raster.texture()),
-                &preparation.get().target,
-                &command_buffer,
-                &preparation.get().device,
-            );
+            // Every CPU-drawn raster reaches its private texture
+            // through a blit on this same command buffer — each encoder
+            // is ended before the render pass samples it.
+            for raster in &preparation.get().rasters {
+                raster.encode_transfer(&command_buffer);
+            }
+            for raster in &preparation.get().mask_rasters {
+                raster.encode_transfer(&command_buffer);
+            }
+            let transients =
+                guard.encode_composition(preparation.get(), rendered.get(), &command_buffer);
             // The lease is held until this command buffer completes:
             // only then has the GPU stopped sampling the private texture
             // the blit filled from the shared buffer.
@@ -1655,6 +3048,8 @@ impl ViewCapture {
             // CG/Metal-owned drops on the completion queue.
             let settle = Mutex::new(Some(Settle {
                 preparation,
+                transients: QueueSend(transients),
+                compositor: settle_compositor,
                 return_to,
                 completion,
             }));
@@ -1686,15 +3081,28 @@ impl ViewCapture {
                         enqueue(move |mtm| {
                             let Settle {
                                 preparation,
+                                transients,
+                                compositor,
                                 return_to,
                                 completion,
                             } = settle;
                             let preparation = preparation.0;
-                            if completed && let Some(capture) = return_to.get(mtm).upgrade() {
-                                capture
-                                    .renderer
-                                    .borrow_mut()
-                                    .return_frame(preparation.raster.into_frame());
+                            if completed {
+                                // The composite buffer finished: pooled
+                                // group transients return on the
+                                // compositor's own queue.
+                                compositor.perform(move |guard| {
+                                    guard.return_transients(transients.into_inner());
+                                });
+                                if let Some(capture) = return_to.get(mtm).upgrade() {
+                                    let mut pool = capture.renderer.borrow_mut();
+                                    for lease in preparation.rasters {
+                                        pool.return_frame(lease.into_frame());
+                                    }
+                                    for lease in preparation.mask_rasters {
+                                        pool.return_frame(lease.into_frame());
+                                    }
+                                }
                             } else if let Some(error) = error {
                                 tracing::error!(
                                     error = %error,
@@ -1738,12 +3146,17 @@ impl Drop for HiddenRestore<'_> {
 #[cfg(test)]
 mod tests {
     use objc2::rc::Retained;
+    use objc2_core_foundation::{CGPoint, CGRect, CGSize};
     use objc2_metal::{
-        MTLCopyAllDevices, MTLCreateSystemDefaultDevice, MTLOrigin, MTLPixelFormat, MTLResource,
-        MTLSize, MTLTexture,
+        MTLCopyAllDevices, MTLCreateSystemDefaultDevice, MTLPixelFormat, MTLResource, MTLSize,
+        MTLTexture,
     };
+    use objc2_quartz_core::{CACornerMask, CALayer, CATransform3D};
 
-    use super::{CaptureDeferred, CompositorState, FenceBatch, NativeRenderer, SurfaceSpec};
+    use super::{
+        CaptureDeferred, CaptureNode, CapturePlan, CompositorState, FenceBatch, NativeRenderer,
+        PlanSurface, RasterSegment, SurfaceSpec, layer_key, project_point,
+    };
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -1786,23 +3199,33 @@ mod tests {
             renderer.available.is_empty(),
             "a superseded generation's frame must never rejoin the pool"
         );
-        // A different destination key drains the pool the same way:
-        // frames issued under one geometry never answer another, and
-        // stale-key returns drop rather than re-populate.
+        // Same-generation frames of different sizes coexist — each
+        // returns to its own bucket, so a segmented plan keeps every
+        // segment size pooled at once.
         let wide_a = renderer.issue(&device, MTLPixelFormat::BGRA8Unorm, 128, 96, 1);
         let wide_b = renderer.issue(&device, MTLPixelFormat::BGRA8Unorm, 128, 96, 1);
         let narrow = renderer.issue(&device, MTLPixelFormat::BGRA8Unorm, 64, 48, 1);
         renderer.return_frame(wide_a.into_frame());
         renderer.return_frame(wide_b.into_frame());
+        assert_eq!(
+            renderer.available.values().map(Vec::len).sum::<usize>(),
+            2,
+            "same-generation frames return to their own size bucket"
+        );
+        // A generation bump retires every bucket at once: the
+        // still-outstanding `narrow` must never rejoin.
+        let _next = renderer.issue(&device, MTLPixelFormat::BGRA8Unorm, 64, 48, 2);
+        renderer.return_frame(narrow.into_frame());
         assert!(
             renderer.available.is_empty(),
-            "frames from a superseded key must never rejoin the pool"
+            "a superseded generation's frame must never rejoin the pool"
         );
         // And a pool the owner ended (shutdown) drops a still-outstanding
         // frame instead of re-arming — a post-teardown settle is
         // reachable, so it must be quiet, not a panic.
+        let last = renderer.issue(&device, MTLPixelFormat::BGRA8Unorm, 64, 48, 2);
         renderer = NativeRenderer::default();
-        renderer.return_frame(narrow.into_frame());
+        renderer.return_frame(last.into_frame());
         assert!(
             renderer.available.is_empty(),
             "a frame settling after shutdown is dropped, not re-pooled"
@@ -1869,7 +3292,6 @@ mod tests {
         };
         let spec = SurfaceSpec {
             surface_id: 1,
-            origin: MTLOrigin { x: 0, y: 0, z: 0 },
             size: MTLSize {
                 width: 8,
                 height: 8,
@@ -1953,5 +3375,366 @@ mod tests {
             );
             assert_eq!(texture.width(), spec.size.width);
         }
+    }
+
+    /// A `CALayer` at `position` with `size` bounds and the default
+    /// centered anchor.
+    fn layer(x: f64, y: f64, w: f64, h: f64) -> Retained<CALayer> {
+        let layer = CALayer::layer();
+        layer.setBounds(CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(w, h)));
+        layer.setPosition(CGPoint::new(x, y));
+        layer
+    }
+
+    /// The `PlanSurface` `layer` resolves — its spec points at a
+    /// synthetic 4×4 producer texture.
+    fn surface_for(layer: &Retained<CALayer>) -> PlanSurface {
+        PlanSurface {
+            layer: layer.clone(),
+            spec: SurfaceSpec {
+                surface_id: layer_key(layer),
+                size: MTLSize {
+                    width: 4,
+                    height: 4,
+                    depth: 1,
+                },
+                pixel_format: MTLPixelFormat::BGRA8Unorm,
+            },
+        }
+    }
+
+    /// Builds the plan for `root` at unit scale over its own bounds.
+    fn plan(root: &Retained<CALayer>, surfaces: Vec<PlanSurface>) -> CapturePlan {
+        CapturePlan::build(root, surfaces, root.bounds(), CGSize::new(1.0, 1.0))
+    }
+
+    /// The `RasterSegment` `index` refers to — the layer it rasters.
+    fn segment_layer(plan: &CapturePlan, index: usize) -> Retained<CALayer> {
+        plan.segments[index].layer.clone()
+    }
+
+    /// A tree without resolved surfaces stays one raster, as before —
+    /// nested native content needs no segmentation.
+    #[test]
+    fn a_native_only_subtree_collapses_to_one_raster() {
+        let root = layer(0.0, 0.0, 100.0, 100.0);
+        let child = layer(10.0, 10.0, 40.0, 40.0);
+        root.addSublayer(&child);
+        child.addSublayer(&layer(5.0, 5.0, 10.0, 10.0));
+        let plan = plan(&root, Vec::new());
+        assert_eq!(plan.nodes.len(), 1);
+        assert_eq!(plan.segments.len(), 1);
+        let [CaptureNode::Native { raster, .. }] = plan.nodes.as_slice() else {
+            panic!("a native-only tree must emit exactly one Native node");
+        };
+        assert_eq!(*raster, 0);
+        assert!(
+            !plan.segments[0].own_content_only,
+            "the collapsed raster draws the whole subtree"
+        );
+        assert_eq!(layer_key(&segment_layer(&plan, 0)), layer_key(&root));
+    }
+
+    /// The defect's core case: the opaque root's own content paints
+    /// under the GPU child, the native foreground over it — every
+    /// native ancestor with GPU descendants splits into own content
+    /// plus children in paint order.
+    #[test]
+    fn an_opaque_root_paints_between_and_around_a_gpu_child() {
+        let root = layer(0.0, 0.0, 100.0, 100.0);
+        let host = layer(10.0, 10.0, 40.0, 40.0);
+        let front = layer(50.0, 50.0, 20.0, 20.0);
+        root.addSublayer(&host);
+        root.addSublayer(&front);
+        let plan = plan(&root, vec![surface_for(&host)]);
+
+        // [root own content, host own content, surface, foreground].
+        assert_eq!(plan.nodes.len(), 4);
+        let [
+            CaptureNode::Native { raster: r0, .. },
+            CaptureNode::Native { raster: r1, .. },
+            CaptureNode::Surface { spec, .. },
+            CaptureNode::Native { raster: r3, .. },
+        ] = plan.nodes.as_slice()
+        else {
+            panic!(
+                "expected [root own content, host own content, surface, foreground], \
+                 got {:?}",
+                plan.nodes
+            );
+        };
+        assert!(plan.segments[*r0].own_content_only);
+        assert!(plan.segments[*r1].own_content_only);
+        assert!(!plan.segments[*r3].own_content_only);
+        assert_eq!(layer_key(&segment_layer(&plan, *r0)), layer_key(&root));
+        assert_eq!(layer_key(&segment_layer(&plan, *r1)), layer_key(&host));
+        assert_eq!(layer_key(&segment_layer(&plan, *r3)), layer_key(&front));
+        assert_eq!(spec.surface_id, layer_key(&host));
+        // The surface's quad covers the host's bounds projected to
+        // root space: position (10,10) anchored at the center.
+        let CaptureNode::Surface {
+            transform,
+            source_rect,
+            ..
+        } = &plan.nodes[2]
+        else {
+            unreachable!();
+        };
+        assert_eq!(*source_rect, host.bounds());
+        let projected = project_point(CGPoint::new(0.0, 0.0), transform)
+            .expect("an affine host projects every corner");
+        let expected = host.convertPoint_toLayer(CGPoint::new(0.0, 0.0), Some(&root));
+        assert!(
+            (projected.x - expected.x).abs() < 1e-6 && (projected.y - expected.y).abs() < 1e-6,
+            "the surface quad must land where the host layer paints"
+        );
+    }
+
+    /// Group opacity wraps the GPU subtree in an offscreen group: its
+    /// children see a clean opacity accumulator and the group's own
+    /// draw applies the ancestor's opacity once.
+    #[test]
+    fn group_opacity_wraps_a_gpu_subtree() {
+        let root = layer(0.0, 0.0, 100.0, 100.0);
+        let mid = layer(20.0, 20.0, 60.0, 60.0);
+        mid.setOpacity(0.5);
+        let host = layer(10.0, 10.0, 20.0, 20.0);
+        mid.addSublayer(&host);
+        root.addSublayer(&mid);
+        let plan = plan(&root, vec![surface_for(&host)]);
+
+        // [root own content, Group{[mid own content, host own content,
+        // surface]}] — the group's children carry no ancestor opacity.
+        assert_eq!(plan.nodes.len(), 2);
+        let CaptureNode::Group(group) = &plan.nodes[1] else {
+            panic!("a translucent group-opacity ancestor must emit a Group");
+        };
+        assert!(
+            (group.opacity - 0.5).abs() < 1e-6,
+            "the group draw applies the ancestor's opacity once"
+        );
+        assert_eq!(group.children.len(), 3);
+        let CaptureNode::Surface { opacity, .. } = &group.children[2] else {
+            panic!("the group's last child must be the surface");
+        };
+        assert!(
+            (*opacity - 1.0).abs() < 1e-6,
+            "children of a group see a clean opacity accumulator"
+        );
+        // The group layer's own-content raster suppresses its opacity —
+        // the group draw supplies it.
+        let CaptureNode::Native { raster, .. } = &group.children[0] else {
+            panic!("the group's first child must be its own content");
+        };
+        assert!(
+            plan.segments[*raster].suppress_opacity,
+            "the own-content raster must not double-apply the group opacity"
+        );
+    }
+
+    /// `zPosition` decides sibling paint order, ties keeping the array
+    /// order — the plan emits nodes in that order.
+    #[test]
+    fn sublayers_paint_in_z_order() {
+        let root = layer(0.0, 0.0, 100.0, 100.0);
+        let back = layer(5.0, 5.0, 30.0, 30.0);
+        back.setZPosition(10.0);
+        let front = layer(60.0, 60.0, 20.0, 20.0);
+        front.setZPosition(-5.0);
+        let host = layer(30.0, 30.0, 20.0, 20.0); // z = 0, default
+        root.addSublayer(&back);
+        root.addSublayer(&front);
+        root.addSublayer(&host);
+        let plan = plan(&root, vec![surface_for(&host)]);
+
+        // Paint order front(-5) < host(0) < back(10):
+        // [root own, front, host own, surface, back].
+        assert_eq!(plan.nodes.len(), 5);
+        let CaptureNode::Native { raster: first, .. } = &plan.nodes[1] else {
+            panic!("the z-lowest sibling must paint first");
+        };
+        assert_eq!(layer_key(&segment_layer(&plan, *first)), layer_key(&front));
+        let CaptureNode::Native { raster: last, .. } = &plan.nodes[4] else {
+            panic!("the z-highest sibling must paint last");
+        };
+        assert_eq!(layer_key(&segment_layer(&plan, *last)), layer_key(&back));
+        assert!(matches!(plan.nodes[3], CaptureNode::Surface { .. }));
+    }
+
+    /// A `masksToBounds` ancestor hands its rounded rect to descendants
+    /// — the GPU child's quad gets the clip shape with the per-corner
+    /// radii `maskedCorners` selects.
+    #[test]
+    fn a_masks_to_bounds_ancestor_clips_the_gpu_child() {
+        let root = layer(0.0, 0.0, 100.0, 100.0);
+        let clipper = layer(20.0, 20.0, 50.0, 50.0);
+        clipper.setMasksToBounds(true);
+        clipper.setCornerRadius(12.0);
+        clipper.setMaskedCorners(CACornerMask::LayerMinXMinYCorner);
+        let host = layer(5.0, 5.0, 20.0, 20.0);
+        clipper.addSublayer(&host);
+        root.addSublayer(&clipper);
+        let plan = plan(&root, vec![surface_for(&host)]);
+
+        let clip = plan
+            .nodes
+            .iter()
+            .find_map(|node| match node {
+                CaptureNode::Surface { clip, .. } => Some(clip),
+                _ => None,
+            })
+            .expect("the host must emit a Surface node");
+        assert_eq!(clip.len(), 1);
+        let shape = &clip[0];
+        assert_eq!(shape.bounds, clipper.bounds());
+        assert!(
+            (shape.radii[0] - 12.0).abs() < 1e-6 && shape.radii[1..] == [0.0; 3],
+            "only the masked corner must carry the radius: {:?}",
+            shape.radii
+        );
+        // The clip's inverse maps root space back into the clipper's
+        // local space — the bounds' origin sits at (-5,-5) in root
+        // space (position 20 less the centered anchor's 25) and must
+        // project back to (0,0).
+        let local = project_point(CGPoint::new(-5.0, -5.0), &shape.inverse)
+            .expect("an affine clip inverse projects");
+        assert!(local.x.abs() < 1e-6 && local.y.abs() < 1e-6);
+    }
+
+    /// The walk's accumulated transform is exactly what `convertPoint`
+    /// computes — position, anchor, `transform`, and `sublayerTransform`
+    /// composed in Core Animation's order.
+    #[test]
+    fn the_walk_transform_matches_convert_point() {
+        let root = layer(0.0, 0.0, 200.0, 200.0);
+        let mid = layer(40.0, 50.0, 100.0, 100.0);
+        mid.setAnchorPoint(CGPoint::new(0.25, 0.5));
+        mid.setSublayerTransform(CATransform3D::new_scale(1.5, 1.5, 1.0));
+        let host = layer(10.0, 10.0, 30.0, 30.0);
+        host.setTransform(CATransform3D::new_rotation(0.4, 0.0, 0.0, 1.0));
+        mid.addSublayer(&host);
+        root.addSublayer(&mid);
+        let plan = plan(&root, vec![surface_for(&host)]);
+
+        let transform = plan
+            .nodes
+            .iter()
+            .find_map(|node| match node {
+                CaptureNode::Surface { transform, .. } => Some(*transform),
+                _ => None,
+            })
+            .expect("the host must emit a Surface node");
+        for point in [
+            CGPoint::new(0.0, 0.0),
+            CGPoint::new(15.0, 7.0),
+            CGPoint::new(30.0, 30.0),
+        ] {
+            let expected = host.convertPoint_toLayer(point, Some(&root));
+            let got = project_point(point, &transform).expect("the point projects");
+            assert!(
+                (got.x - expected.x).abs() < 1e-6 && (got.y - expected.y).abs() < 1e-6,
+                "walk transform {point:?}: got {got:?}, convertPoint says {expected:?}"
+            );
+        }
+    }
+
+    /// A masked ancestor becomes a `Group` whose draw samples a
+    /// rasterized alpha mask — the mask segment rasters the mask layer
+    /// through its own boundary transform.
+    #[test]
+    fn a_masked_ancestor_becomes_a_group_with_a_mask_raster() {
+        let root = layer(0.0, 0.0, 100.0, 100.0);
+        let mid = layer(20.0, 20.0, 60.0, 60.0);
+        let mask = layer(0.0, 0.0, 60.0, 60.0);
+        // SAFETY: both layers are freshly-created model layers this test
+        // owns; `setMask` takes an optional layer reference.
+        unsafe { mid.setMask(Some(&mask)) };
+        let host = layer(10.0, 10.0, 20.0, 20.0);
+        mid.addSublayer(&host);
+        root.addSublayer(&mid);
+        let plan = plan(&root, vec![surface_for(&host)]);
+
+        let group = plan
+            .nodes
+            .iter()
+            .find_map(|node| match node {
+                CaptureNode::Group(group) => Some(group),
+                _ => None,
+            })
+            .expect("a masked ancestor must emit a Group");
+        assert_eq!(group.mask, Some(0));
+        assert_eq!(plan.mask_segments.len(), 1);
+        let RasterSegment {
+            layer: mask_layer,
+            space_transform,
+            own_content_only,
+            ..
+        } = &plan.mask_segments[0];
+        assert_eq!(layer_key(mask_layer), layer_key(&mask));
+        assert!(space_transform.is_some());
+        assert!(!*own_content_only);
+    }
+
+    /// Hidden and fully transparent subtrees emit nothing — a hidden
+    /// host's surface never reaches the plan.
+    #[test]
+    fn hidden_and_transparent_subtrees_emit_nothing() {
+        let root = layer(0.0, 0.0, 100.0, 100.0);
+        let hidden_host = layer(10.0, 10.0, 20.0, 20.0);
+        hidden_host.setHidden(true);
+        let faint_host = layer(50.0, 50.0, 20.0, 20.0);
+        faint_host.setOpacity(0.0);
+        root.addSublayer(&hidden_host);
+        root.addSublayer(&faint_host);
+        let plan = plan(
+            &root,
+            vec![surface_for(&hidden_host), surface_for(&faint_host)],
+        );
+        assert_eq!(plan.nodes.len(), 1);
+        assert!(matches!(plan.nodes[0], CaptureNode::Native { .. }));
+    }
+
+    /// A subtree entirely outside the pass extent emits no raster — the
+    /// offscreen native child never reaches the plan.
+    #[test]
+    fn offscreen_subtrees_are_pruned() {
+        let root = layer(0.0, 0.0, 100.0, 100.0);
+        let host = layer(10.0, 10.0, 30.0, 30.0);
+        let offscreen = layer(500.0, 500.0, 50.0, 50.0);
+        root.addSublayer(&host);
+        root.addSublayer(&offscreen);
+        let plan = plan(&root, vec![surface_for(&host)]);
+        assert!(
+            !plan
+                .segments
+                .iter()
+                .any(|segment| { layer_key(&segment.layer) == layer_key(&offscreen) }),
+            "a subtree outside the pass extent must emit no raster"
+        );
+        assert!(
+            plan.nodes
+                .iter()
+                .any(|node| { matches!(node, CaptureNode::Surface { .. }) })
+        );
+    }
+
+    /// A flipped host marks its surface `source_flip` — the producer
+    /// texture's top edge is the host's `bounds.min.y`, not `max.y`.
+    #[test]
+    fn a_flipped_host_marks_its_surface_source_flip() {
+        let root = layer(0.0, 0.0, 100.0, 100.0);
+        let host = layer(10.0, 10.0, 30.0, 30.0);
+        host.setGeometryFlipped(true);
+        root.addSublayer(&host);
+        let plan = plan(&root, vec![surface_for(&host)]);
+        let flipped = plan
+            .nodes
+            .iter()
+            .find_map(|node| match node {
+                CaptureNode::Surface { source_flip, .. } => Some(*source_flip),
+                _ => None,
+            })
+            .expect("the host must emit a Surface node");
+        assert!(flipped);
     }
 }
