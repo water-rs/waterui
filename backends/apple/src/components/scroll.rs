@@ -381,8 +381,17 @@ fn render(config: ScrollView, ctx: &RenderContext<'_>) -> NativeLeaf {
     });
 
     scroll.set_layout_handler({
-        let content = Rc::clone(&content);
+        // The scroll view owns this handler, and `ScrollContent` reaches
+        // the scroll view again through `child`'s mounted subtree and the
+        // `UIKit` scroll-observation token — a strong capture closes a
+        // retain cycle (water-rs/waterui#1575). The leaf and
+        // `ScrollSubView` keep the content strong for live updates, so a
+        // dead upgrade means the owner ended legitimately.
+        let content = Rc::downgrade(&content);
         move |scroll| {
+            let Some(content) = content.upgrade() else {
+                return;
+            };
             content.laid_out_viewport.set(layout_viewport(scroll));
             place_child(&content, scroll);
         }
@@ -392,8 +401,14 @@ fn render(config: ScrollView, ctx: &RenderContext<'_>) -> NativeLeaf {
     // the content has not been laid out against asks for another pass.
     #[cfg(target_os = "macos")]
     scroll.set_tile_handler({
-        let content = Rc::clone(&content);
+        // Same owner edge as the layout handler: the `AppKit` clip
+        // observation retains the clip side, so a strong content capture
+        // still pins the subtree through the observed path (water-rs/waterui#1575).
+        let content = Rc::downgrade(&content);
         move |scroll| {
+            let Some(content) = content.upgrade() else {
+                return;
+            };
             if layout_viewport(scroll) != content.laid_out_viewport.get() {
                 scroll.set_needs_layout();
                 crate::measure_memo::invalidate();
