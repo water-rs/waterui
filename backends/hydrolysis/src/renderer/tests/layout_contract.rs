@@ -177,6 +177,7 @@ fn equal_bounds_keep_the_selected_proposal_after_other_probes() {
             fixture.node.layout(
                 &mut renderer,
                 &env,
+                None,
                 proposal,
                 axis_size(vertical, 160.0, 20.0),
             );
@@ -305,6 +306,7 @@ fn scroll_preserves_its_unconstrained_content_axis() {
         fixture.node.layout(
             &mut renderer,
             &env,
+            None,
             ProposalSize::new(Some(size.width), Some(size.height)),
             size,
         );
@@ -327,9 +329,13 @@ fn transparent_metadata_preserves_the_selected_proposal() {
         &env,
     );
     let proposal = axis_proposal(false, None, Some(20.0));
-    fixture
-        .node
-        .layout(&mut renderer, &env, proposal, axis_size(false, 160.0, 20.0));
+    fixture.node.layout(
+        &mut renderer,
+        &env,
+        None,
+        proposal,
+        axis_size(false, 160.0, 20.0),
+    );
     fixture.assert_placement(false, proposal, [40.0, 120.0]);
 }
 
@@ -380,6 +386,7 @@ fn spacer_default_priority_survives_wrappers_and_explicit_overrides() {
         node.layout(
             &mut renderer,
             &env,
+            None,
             ProposalSize::new(Some(160.0), Some(20.0)),
             Size::new(160.0, 20.0),
         );
@@ -419,7 +426,7 @@ fn spacer_min_length_is_the_stack_compression_floor() {
     // colors split what is left over.
     let proposal = ProposalSize::new(Some(20.0), Some(50.0));
     let measured = node.measure(&mut renderer.state, &env, &theme, proposal);
-    node.layout(&mut renderer, &env, proposal, measured.size);
+    node.layout(&mut renderer, &env, None, proposal, measured.size);
     let heights: Vec<f32> = node
         .transparent_container()
         .expect("a vstack must build a container node")
@@ -468,7 +475,7 @@ fn view_effect_relayouts_equal_bounds_with_a_new_proposal() {
         let proposal = axis_proposal(false, main, Some(20.0));
         fixture
             .node
-            .layout(&mut renderer, &env, proposal, Size::new(160.0, 20.0));
+            .layout(&mut renderer, &env, None, proposal, Size::new(160.0, 20.0));
         fixture.assert_placement(
             false,
             proposal,

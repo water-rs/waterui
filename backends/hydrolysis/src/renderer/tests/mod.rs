@@ -498,6 +498,7 @@ fn text_input_target(
         interaction_key,
         modal: false,
         bounds: Rect::ZERO,
+        frame: Rect::ZERO,
         cursor_area: Rect::ZERO,
         text_bounds: Rect::ZERO,
         text_clip_bounds: Rect::ZERO,
@@ -3109,6 +3110,7 @@ fn shaped_text_input_target(
     );
     let mut target = text_input_target(text_field_model(value, None), Rc::clone(selection));
     target.bounds = Rect::new(0.0, 0.0, 200.0, 60.0);
+    target.frame = target.bounds;
     target.text_bounds = Rect::new(0.0, 0.0, 200.0, 60.0);
     target.text_clip_bounds = target.text_bounds;
     target.cursor_area = target.text_bounds;

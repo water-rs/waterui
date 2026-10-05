@@ -3,10 +3,6 @@
 
 #[cfg(feature = "accessibility")]
 use super::layout::kurbo_rect;
-use super::window::{
-    accumulated_ignore_mask, declared_ignore_mask, extended_ctx, extended_local_rect,
-    released_insets, window_container_insets, window_keyboard_insets,
-};
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
@@ -29,27 +25,21 @@ impl RenderNode {
         env: &Environment,
     ) {
         match self {
-            Self::Color(color) => {
+            Self::Color(node) => {
                 renderer.state.counters.recorded_view_contents += 1;
-                let color =
-                    waterui_graphics::draw::Paint::Solid(renderer.read_signal(&color.color));
-                // §7.1's fill rule: the color reaches past its frame into the
-                // safe-area bands on every edge it touches, unless a
-                // declaration narrowed the regions and edges.
-                let mask = accumulated_ignore_mask(env, 0xff);
-                let bounds = extended_local_rect(
-                    ctx,
-                    renderer.window_bounds(),
-                    mask,
-                    &window_container_insets(renderer, env),
-                    &window_keyboard_insets(renderer, env),
-                )
-                .unwrap_or(ctx.bounds);
+                let color = waterui_graphics::draw::Paint::Solid(renderer.read_signal(&node.color));
+                // §7.1's fill rule: a fill marked in a background slot
+                // paints through the bands its laid-out frame touched —
+                // the extension layout computed, nothing else moves.
+                let ctx = node
+                    .fill_extension
+                    .get()
+                    .map_or(ctx, |extension| fill_paint_ctx(ctx, extension));
                 renderer.scene_mut().fill_paint(
                     peniko::Fill::NonZero,
                     ctx.transform,
                     color,
-                    &bounds,
+                    &ctx.bounds,
                 );
             }
             Self::Text(text) => {
@@ -185,9 +175,13 @@ impl RenderNode {
                     #[allow(clippy::cast_possible_truncation)]
                     let size = Size::new(ctx.bounds.width() as f32, ctx.bounds.height() as f32);
                     let proposal = ProposalSize::new(Some(size.width), Some(size.height));
-                    node.child
-                        .borrow_mut()
-                        .layout(renderer, &node.env, proposal, size);
+                    node.child.borrow_mut().layout(
+                        renderer,
+                        &node.env,
+                        node.safe_area.borrow().clone(),
+                        proposal,
+                        size,
+                    );
                 }
                 node.child.borrow().flush(renderer, ctx, env);
             }
@@ -259,19 +253,17 @@ impl RenderNode {
                         // Layout-only: nothing to apply while drawing.
                         node.child.flush(renderer, ctx, child_env);
                     }
-                    WrapperEffect::IgnoreSafeArea(ignore) => {
-                        // The mirror of the layout arm: each flagged edge
-                        // releases the safe-area depth of the regions and
-                        // edges the declaration names, stopping at the
-                        // nearest unignored region — the transform carries
-                        // the leading/top overhang so descendants place from
-                        // the shifted origin too.
-                        let container = window_container_insets(renderer, env);
-                        let keyboard = window_keyboard_insets(renderer, env);
-                        let release =
-                            released_insets(declared_ignore_mask(*ignore), &container, &keyboard);
-                        node.child
-                            .flush(renderer, extended_ctx(ctx, release), child_env);
+                    WrapperEffect::IgnoreSafeArea(_) => {
+                        // The mirror of the layout arm: the release layout
+                        // computed lands the child where the grown frame
+                        // put it — the transform carries the leading/top
+                        // overhang so descendants place from the shifted
+                        // origin too.
+                        node.child.flush(
+                            renderer,
+                            released_ctx(ctx, node.released_offsets.get()),
+                            child_env,
+                        );
                     }
                     WrapperEffect::Cursor(value) => {
                         HydrolysisRenderer::apply_cursor(renderer, ctx, value, |r| {
@@ -538,37 +530,25 @@ impl RenderNode {
                     }));
             }
             Self::Scroll(node) => {
-                // §7.1's scroll surface: the surface reaches under every
-                // safe-area band its frame touches and insets its content by
-                // the same amounts, and the keyboard region and the
-                // accumulated ignore declarations end at it — descendants
-                // lay out against `node.env`, which carries the reset.
-                let container = window_container_insets(renderer, env);
-                let keyboard = window_keyboard_insets(renderer, env);
-                let window = renderer.window_bounds();
-                let mask = accumulated_ignore_mask(env, 0xff);
-                let viewport_rect = extended_local_rect(ctx, window, mask, &container, &keyboard)
-                    .unwrap_or(ctx.bounds);
-                // The surface's frame grown by the touched edges' release —
-                // the same amounts become the content inset, so the
-                // scrollable range keeps the resting edges on the avoided
-                // boundary while scrolling paints through the band.
-                let content_width =
-                    f64::from(node.content_size.width) + viewport_rect.width() - ctx.bounds.width();
-                let content_height = f64::from(node.content_size.height) + viewport_rect.height()
-                    - ctx.bounds.height();
-                let Some(handle) = node.handle.borrow_mut().as_mut().map(|handle| {
-                    handle.rebind(
-                        node.axis,
-                        viewport_rect.width(),
-                        viewport_rect.height(),
-                        content_width,
-                        content_height,
-                    )
-                }) else {
+                // §7.1's scroll surface: the viewport is the laid-out frame
+                // grown by the extension layout computed — the surface
+                // paints through the bands its frame touched, clips its
+                // content there, and its own subtree owns the inset.
+                let extension = node
+                    .surface
+                    .facts
+                    .get()
+                    .map_or_else(EdgeOffsets::default, |facts| facts.extension);
+                let viewport_rect = grow_rect(ctx.bounds, extension);
+                let Some(handle) = node.handle.borrow().clone() else {
                     return;
                 };
                 let metrics = handle.metrics();
+                // The keyboard-moving clearance runs before the content
+                // paints: while the host's keyboard animation is in flight
+                // the offset follows it frame by frame, so this flush
+                // paints the field already clear.
+                let targets_start = node.surface.begin_flush(renderer, &handle);
                 renderer.with_clip_rect_scope(
                     1.0,
                     LayerTransforms {
@@ -590,13 +570,16 @@ impl RenderNode {
                             ctx.transform * scroll_offset,
                             ctx.hit_transform * scroll_offset,
                         );
-                        // Publish the visible window (in content coordinates) so a
-                        // virtualized `LazyStack` child only builds the rows on screen.
+                        // Publish the visible window (in content coordinates) —
+                        // the viewport window grown by the same extension —
+                        // so a virtualized `LazyStack` child builds the rows
+                        // painted inside the extended clip, not just the ones
+                        // inside the laid-out frame.
                         let lazy_viewport = kurbo::Rect::new(
-                            metrics.offset_x,
-                            metrics.offset_y,
-                            metrics.offset_x + f64::from(node.viewport.width),
-                            metrics.offset_y + f64::from(node.viewport.height),
+                            metrics.offset_x - extension.leading,
+                            metrics.offset_y - extension.top,
+                            metrics.offset_x - extension.leading + metrics.viewport_width,
+                            metrics.offset_y - extension.top + metrics.viewport_height,
                         );
                         // Registered before the content so the content can be parented
                         // to it: a scroll region owns what it scrolls, and a label on
@@ -644,48 +627,7 @@ impl RenderNode {
                 );
                 // The focused-field clearance reads this frame's input
                 // targets — the child's flush above just emitted them.
-                let keyboard_top = window.y1 - f64::from(keyboard.bottom());
-                // The keyboard covers the surface when it reaches the
-                // surface's *painted* bottom — the frame grown by the
-                // release it took — so a surface whose paint runs under the
-                // band counts even when its layout frame ends above it.
-                let painted = transformed_rect(ctx.hit_transform, viewport_rect);
-                let cover = (painted.y1 - keyboard_top).max(0.0);
-                if cover > 0.0
-                    && let Some(field) = renderer
-                        .text_editing
-                        .focused_target()
-                        .map(|target| target.bounds)
-                        .filter(|field| field.intersect(painted).area() > 0.0)
-                {
-                    let deficit = field.y1 - keyboard_top;
-                    if deficit > 0.0 {
-                        // The minimum distance that brings the field's frame
-                        // clear of the keyboard: a growing cover means the
-                        // host's keyboard animation is still running, so the
-                        // offset follows it directly; a static cover means
-                        // the field was just focused, so the jump eases.
-                        let target_y = (metrics.offset_y + deficit).min(metrics.max_y);
-                        if target_y > metrics.offset_y {
-                            let scrolled = if cover > node.last_keyboard_cover.get() {
-                                handle.scroll_to(metrics.offset_x, target_y)
-                            } else if node.focused_field_clear.get() {
-                                handle.scroll_to_animated(metrics.offset_x, target_y)
-                            } else {
-                                false
-                            };
-                            // The offset lands outside the reactive graph —
-                            // schedule the frame that applies it.
-                            if scrolled {
-                                renderer.request_refresh();
-                            }
-                        }
-                        node.focused_field_clear.set(false);
-                    } else {
-                        node.focused_field_clear.set(true);
-                    }
-                }
-                node.last_keyboard_cover.set(cover);
+                node.surface.end_flush(renderer, &handle, targets_start);
                 // The indicators ride the surface's own frame, not the
                 // extended clip: they stay visible at the avoided edge.
                 let scroll_ctx =
@@ -719,23 +661,13 @@ impl RenderNode {
                     merged = node.env.layered_on(env);
                     &merged
                 };
-                // A fill leaf (the gradient — the color leaf is the `Color`
-                // arm) takes §7.1's same band extension past its frame.
-                let ctx = if node.behavior.is_fill() {
-                    let mask = accumulated_ignore_mask(env, 0xff);
-                    extended_local_rect(
-                        ctx,
-                        renderer.window_bounds(),
-                        mask,
-                        &window_container_insets(renderer, env),
-                        &window_keyboard_insets(renderer, env),
-                    )
-                    .map_or(ctx, |bounds| {
-                        RenderContext::with_transforms(bounds, ctx.transform, ctx.hit_transform)
-                    })
-                } else {
-                    ctx
-                };
+                // A fill leaf marked in a background slot (the gradient —
+                // the color leaf is the `Color` arm) paints through the
+                // bands its laid-out frame touched.
+                let ctx = node
+                    .fill_extension
+                    .get()
+                    .map_or(ctx, |extension| fill_paint_ctx(ctx, extension));
                 Rc::clone(&node.behavior).render(renderer, ctx, env);
                 renderer.pop_render_owner();
             }

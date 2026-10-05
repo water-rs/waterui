@@ -186,6 +186,13 @@ pub struct TextInputTarget {
     pub(crate) interaction_key: InteractionKey,
     pub(crate) modal: bool,
     pub(crate) bounds: kurbo::Rect,
+    /// The field's laid-out frame in the same window coordinates, before
+    /// the hit clip [`Self::bounds`] went through. A field covered by a
+    /// scroll surface's clip keeps a real rectangle here — the §7.1
+    /// focused-field clearance measures "the field's frame" against it,
+    /// which the hit bounds cannot answer once they degenerate to the
+    /// clip's edge.
+    pub(crate) frame: kurbo::Rect,
     pub(crate) cursor_area: kurbo::Rect,
     pub(crate) text_bounds: kurbo::Rect,
     pub(crate) text_clip_bounds: kurbo::Rect,

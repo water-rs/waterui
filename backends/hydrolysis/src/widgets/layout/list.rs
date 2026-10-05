@@ -316,6 +316,11 @@ pub struct ListRenderState {
     /// read this one membership — never the live collection while an older
     /// event is still being reconciled.
     rows_snapshot: Rc<RefCell<AnyViewsSnapshot<ListItem>>>,
+    /// §7.1's scroll-surface bookkeeping: the extension and clearance
+    /// bounds layout computed once (the scroll handle is rebound with
+    /// them inside [`Self::bind_scroll`]), plus the focused-field state
+    /// the flush drives.
+    pub(crate) surface: crate::renderer::ScrollSurfaceArea,
     /// Collection membership watcher.
     _guard: BoxWatcherGuard,
 }
@@ -419,6 +424,7 @@ impl ListRenderState {
             sections: RefCell::new(Vec::new()),
             sections_resolved_for: Cell::new(None),
             rows_snapshot,
+            surface: crate::renderer::ScrollSurfaceArea::default(),
             _guard: guard,
         }
     }
@@ -581,19 +587,37 @@ impl ListRenderState {
         clippy::option_if_let_else,
         reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
     )]
+    /// §7.1's scroll-surface rule, applied at the one place the handle is
+    /// bound: the viewport and the content grow by the extension layout
+    /// computed, so the scrollable range keeps the resting edges on the
+    /// avoided boundary while scrolling paints through the band.
+    fn surface_extension(&self) -> crate::renderer::EdgeOffsets {
+        self.surface
+            .facts
+            .get()
+            .map_or_else(crate::renderer::EdgeOffsets::default, |facts| {
+                facts.extension
+            })
+    }
+
     fn bind_scroll(
         &self,
         viewport_width: f64,
         viewport_height: f64,
         content_height: f64,
     ) -> ScrollHandle {
+        let extension = self.surface_extension();
+        let viewport_width = viewport_width + extension.horizontal();
+        let viewport_height = viewport_height + extension.vertical();
+        let content_height = content_height + extension.vertical();
+        let content_width = viewport_width;
         let mut scroll = self.scroll.borrow_mut();
         if let Some(handle) = scroll.as_mut() {
             handle.rebind(
                 ScrollAxis::Vertical,
                 viewport_width,
                 viewport_height,
-                viewport_width,
+                content_width,
                 content_height,
             )
         } else {
@@ -601,7 +625,7 @@ impl ListRenderState {
                 ScrollAxis::Vertical,
                 viewport_width,
                 viewport_height,
-                viewport_width,
+                content_width,
                 content_height,
                 None,
             );
@@ -870,6 +894,10 @@ pub fn list_accessibility(
     }
     let is_rendered = ctx.is_some();
     let viewport = ctx.map_or(kurbo::Rect::ZERO, |ctx| ctx.bounds);
+    // The surface's §7.1 extension — the bounds rows may paint into —
+    // while `viewport` stays the laid-out frame the row math is anchored
+    // on.
+    let surface_viewport = crate::renderer::grow_rect(viewport, state.surface_extension());
     // The rendered scroll domain is the measured extent; the semantic one is
     // the row count — with a zero viewport every row is scrollable to.
     let content_height = state
@@ -884,10 +912,11 @@ pub fn list_accessibility(
     {
         let metrics = handle.metrics();
         let (emit_range, leading_offset) = if is_rendered {
-            let window = state
-                .extent_index
-                .borrow()
-                .visible_window(metrics.offset_y, metrics.offset_y + viewport.height());
+            let extension = state.surface_extension();
+            let window = state.extent_index.borrow().visible_window(
+                metrics.offset_y - extension.top,
+                metrics.offset_y - extension.top + metrics.viewport_height,
+            );
             (window.start..window.end, window.leading_offset)
         } else {
             (0..row_count, 0.0)
@@ -955,7 +984,9 @@ pub fn list_accessibility(
             };
             let slot_rect = kurbo::Rect::new(viewport.x0, y, viewport.x1, y + slot_height);
             y += slot_height;
-            if is_rendered && (slot_rect.y1 <= viewport.y0 || slot_rect.y0 >= viewport.y1) {
+            if is_rendered
+                && (slot_rect.y1 <= surface_viewport.y0 || slot_rect.y0 >= surface_viewport.y1)
+            {
                 continue;
             }
             let header_height = list_metrics.map_or(0.0, |m| chrome.header_height(&m));
@@ -1393,6 +1424,11 @@ pub fn render_list_parts(
     }
 
     let viewport = ctx.bounds;
+    // §7.1's scroll surface: the clip, the wheel target and the visible
+    // window all run on the frame grown by the extension layout computed —
+    // the surface paints through the bands it touched. The row math stays
+    // anchored on the laid-out frame.
+    let surface_viewport = crate::renderer::grow_rect(viewport, state.borrow().surface_extension());
     let content_height = state
         .borrow()
         .extent_index
@@ -1406,6 +1442,13 @@ pub fn render_list_parts(
     state
         .borrow()
         .apply_scroll_request(ctx.renderer_mut(), &handle, row_count, true);
+    // The keyboard-moving clearance runs before the rows paint: while the
+    // host's keyboard animation is in flight the offset follows it frame by
+    // frame, so this flush paints the field already clear.
+    let targets_start = state
+        .borrow()
+        .surface
+        .begin_flush(ctx.renderer_mut(), &handle);
     let mut metrics = handle.metrics();
     let needs_viewport_clip = metrics.max_y > 0.0;
     // Register before the rows flush: scroll-target dispatch walks the frame's
@@ -1415,18 +1458,18 @@ pub fn render_list_parts(
     crate::widgets::scroll::register_scroll_wheel_target(
         ctx.renderer_mut(),
         hit_transform,
-        viewport,
+        surface_viewport,
         &handle,
     );
     if needs_viewport_clip {
-        ctx.push_layer_rect(1.0, viewport);
+        ctx.push_layer_rect(1.0, surface_viewport);
     }
 
-    let window = state
-        .borrow()
-        .extent_index
-        .borrow()
-        .visible_window(metrics.offset_y, metrics.offset_y + viewport.height());
+    let extension = state.borrow().surface_extension();
+    let window = state.borrow().extent_index.borrow().visible_window(
+        metrics.offset_y - extension.top,
+        metrics.offset_y - extension.top + metrics.viewport_height,
+    );
     // The delete/move handlers (`Option<Box<dyn Fn>>`) stay owned by the retained
     // config; per-row tap targets invoke them through the shared cell so they are
     // reused every flush instead of being consumed.
@@ -1504,7 +1547,10 @@ pub fn render_list_parts(
             .borrow()
             .extent_index
             .borrow()
-            .visible_window(metrics.offset_y, metrics.offset_y + viewport.height())
+            .visible_window(
+                metrics.offset_y - extension.top,
+                metrics.offset_y - extension.top + metrics.viewport_height,
+            )
             .end;
         if refreshed_end <= end {
             break;
@@ -1601,7 +1647,7 @@ pub fn render_list_parts(
             viewport.x1,
             resting_y + reorder_dy + row_height,
         );
-        if slot_rect.y1 <= viewport.y0 || slot_rect.y0 >= viewport.y1 {
+        if slot_rect.y1 <= surface_viewport.y0 || slot_rect.y0 >= surface_viewport.y1 {
             continue;
         }
         let header_height = chrome.header_height(&list_metrics);
@@ -1996,6 +2042,13 @@ pub fn render_list_parts(
     if needs_viewport_clip {
         ctx.pop_layer();
     }
+
+    // The focused-field clearance reads this frame's input targets — the
+    // rows' flush above just emitted them (§7.1).
+    state
+        .borrow()
+        .surface
+        .end_flush(ctx.renderer_mut(), &handle, targets_start);
 
     draw_scroll_indicators(ctx, env, viewport, metrics, ScrollAxis::Vertical, &handle);
 }

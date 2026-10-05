@@ -433,7 +433,7 @@ fn gpu_surface_panes_take_their_offered_share() {
     let theme = renderer.theme();
     let proposal = ProposalSize::new(Some(WINDOW_WIDTH), Some(WINDOW_HEIGHT));
     let measured = node.measure(&mut renderer.state, &env, &theme, proposal);
-    node.layout(&mut renderer, &env, proposal, measured.size);
+    node.layout(&mut renderer, &env, None, proposal, measured.size);
     let widths: Vec<f32> = node
         .transparent_container()
         .expect("an hstack must build a container node")
@@ -458,7 +458,7 @@ fn scene_view_panes_take_their_offered_share() {
     let theme = renderer.theme();
     let proposal = ProposalSize::new(Some(WINDOW_WIDTH), Some(WINDOW_HEIGHT));
     let measured = node.measure(&mut renderer.state, &env, &theme, proposal);
-    node.layout(&mut renderer, &env, proposal, measured.size);
+    node.layout(&mut renderer, &env, None, proposal, measured.size);
     let widths: Vec<f32> = node
         .transparent_container()
         .expect("an hstack must build a container node")
