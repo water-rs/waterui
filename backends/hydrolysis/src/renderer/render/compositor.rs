@@ -721,13 +721,21 @@ impl HydrolysisRenderer {
         ///
         /// Async on wasm32, where the surface render inside awaits the browser
         /// device.
-        pub fn render_scene_to_texture(&mut self, target: HydrolysisRenderTarget<'_>) {
+        ///
+        /// # Errors
+        ///
+        /// Returns the engine's [`cherenkov::RenderError`] when the frame
+        /// fails to render.
+        pub fn render_scene_to_texture(
+            &mut self,
+            target: HydrolysisRenderTarget<'_>,
+        ) -> Result<(), cherenkov::RenderError> {
             let texture = target.texture;
             crate::engine::engine_await!(
                 self.render_scene_to_surface_with_alpha_mode(
                     target.into_frame_target(), texture, false, true
                 )
-            );
+            )
         }
     }
 
@@ -736,13 +744,21 @@ impl HydrolysisRenderer {
         ///
         /// Async on wasm32, where the surface render inside awaits the browser
         /// device.
-        pub fn render_scene_to_surface(&mut self, target: HydrolysisRenderTarget<'_>) {
+        ///
+        /// # Errors
+        ///
+        /// Returns the engine's [`cherenkov::RenderError`] when the frame
+        /// fails to render.
+        pub fn render_scene_to_surface(
+            &mut self,
+            target: HydrolysisRenderTarget<'_>,
+        ) -> Result<(), cherenkov::RenderError> {
             let texture = target.texture;
             crate::engine::engine_await!(
                 self.render_scene_to_surface_with_alpha_mode(
                     target.into_frame_target(), texture, false, true
                 )
-            );
+            )
         }
     }
 
@@ -797,7 +813,7 @@ impl HydrolysisRenderer {
         segment: &mut HybridRenderSegment,
         transient_scene: Option<Recording>,
         target: FrameRenderTarget<'_>,
-    ) -> EngineFrame {
+    ) -> Result<EngineFrame, cherenkov::RenderError> {
         assert!(
             self.compositor.render_layers.is_empty(),
             "Hydrolysis hybrid composition cannot render over retained layers"
@@ -869,11 +885,11 @@ impl HydrolysisRenderer {
             texture: &wgpu::Texture,
             premultiply_alpha: bool,
             rasterize_scene_layers: bool,
-        ) {
+        ) -> Result<(), cherenkov::RenderError> {
             let (device, queue) = (target.device, target.queue);
             let frame = crate::engine::engine_await!(
                 self.render_engine_frame(target, rasterize_scene_layers)
-            );
+            )?;
             self.present_engine_frame(
                 frame,
                 device,
@@ -882,6 +898,7 @@ impl HydrolysisRenderer {
                 crate::engine::format_output_color(texture.format()),
                 premultiply_alpha,
             );
+            Ok(())
         }
     }
 
@@ -940,11 +957,14 @@ impl HydrolysisRenderer {
         ///
         /// Async on wasm32, where the engine calls inside await the browser
         /// device.
+        ///
+        /// A failed engine render leaves the renderer's layers and windows in
+        /// place for the next frame and returns the engine's error.
         pub(crate) fn render_engine_frame(
             &mut self,
             target: FrameRenderTarget<'_>,
             rasterize_scene_layers: bool,
-        ) -> EngineFrame {
+        ) -> Result<EngineFrame, cherenkov::RenderError> {
         assert!(
             matches!(
                 target.format.remove_srgb_suffix(),
@@ -1088,23 +1108,23 @@ impl HydrolysisRenderer {
         self.gpu_profile_mark(window.gpu_profiler.as_ref(), target.device, target.queue, 1);
 
         self.applied_filter_metrics.reset();
-        let next = crate::engine::engine_await!(window.surface.render());
+        let rendered = crate::engine::engine_await!(window.surface.render());
         (
             self.frame_applied_filter_count,
             self.frame_applied_filter_effect,
         ) = self.applied_filter_metrics.snapshot();
-        self.engine_next = Some(next);
-
         self.compositor.render_layers = render_layers;
         self.cherenkov_windows = windows;
+        self.engine_next = Some(rendered?);
+
         if needs_redraw {
             self.request_redraw();
         }
-        EngineFrame {
+        Ok(EngineFrame {
             context_id,
             headroom: target.headroom,
             transient: transient_window,
-        }
+        })
     }
     }
 }

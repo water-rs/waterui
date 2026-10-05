@@ -890,13 +890,13 @@ crate::engine::cfg_async_fn! {
             HeadlessSnapshot {
                 width,
                 height,
-                rgba8: readback_texture_rgba8(
-                    surface.device(),
-                    surface.queue(),
-                    frame.texture(),
-                    width,
-                    height,
-                ),
+                rgba8: readback_texture_rgba8(&*surface, frame.texture(), width, height)
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "hydrolysis headless snapshot readback failed: {:#}",
+                            waterui_core::Error::from(error)
+                        )
+                    }),
             }
         });
         #[cfg(feature = "frame-profile")]
@@ -1064,7 +1064,9 @@ crate::engine::cfg_async_fn! {
                     scale_factor,
                     false,
                     |renderer, target| {
-                        renderer.render_hybrid_segment(segment, transient_scene, target)
+                        renderer
+                            .render_hybrid_segment(segment, transient_scene, target)
+                            .expect("hydrolysis renderer: engine render failed")
                     },
                 ) {
                     Ok(rendered) => {
@@ -1095,11 +1097,16 @@ crate::engine::cfg_async_fn! {
                 capture_snapshot,
                 #[cfg(not(target_arch = "wasm32"))]
                 |renderer, target| {
-                    renderer.render_engine_frame(target, reader.rasterizes())
+                    renderer
+                        .render_engine_frame(target, reader.rasterizes())
+                        .expect("hydrolysis renderer: engine render failed")
                 },
                 #[cfg(target_arch = "wasm32")]
                 async |renderer, target| {
-                    renderer.render_engine_frame(target, reader.rasterizes()).await
+                    renderer
+                        .render_engine_frame(target, reader.rasterizes())
+                        .await
+                        .expect("hydrolysis renderer: engine render failed")
                 },
             ))
         };
@@ -1115,11 +1122,16 @@ crate::engine::cfg_async_fn! {
                 capture_snapshot,
                 #[cfg(not(target_arch = "wasm32"))]
                 |renderer, target| {
-                    renderer.render_engine_frame(target, reader.rasterizes())
+                    renderer
+                        .render_engine_frame(target, reader.rasterizes())
+                        .expect("hydrolysis renderer: engine render failed")
                 },
                 #[cfg(target_arch = "wasm32")]
                 async |renderer, target| {
-                    renderer.render_engine_frame(target, reader.rasterizes()).await
+                    renderer
+                        .render_engine_frame(target, reader.rasterizes())
+                        .await
+                        .expect("hydrolysis renderer: engine render failed")
                 },
             ))
         };

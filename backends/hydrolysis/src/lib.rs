@@ -85,6 +85,7 @@ pub use runner::run;
 pub use runner::{FrameCounters, FramePhases, FrameProfile, SemanticPumpResult, SemanticRuntime};
 #[cfg(not(target_arch = "wasm32"))]
 pub use runner::{HeadlessPumpResult, HeadlessRuntime, HeadlessSnapshot};
+pub use readback::{ReadbackError, readback_texture_rgba8};
 pub use view_renderer::HydrolysisViewRenderer;
 #[cfg(hydrolysis_macos_system_webview)]
 pub use widgets::platform::webview::MacSystemWebViewController;

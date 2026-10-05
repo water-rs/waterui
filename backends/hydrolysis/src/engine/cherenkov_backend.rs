@@ -304,13 +304,15 @@ impl CherenkovSurface {
     /// samples it through [`Self::present_into`].
     ///
     /// Async on wasm32, where `Engine::render` awaits the browser device.
+    ///
+    /// # Errors
+    ///
+    /// Returns the engine's [`cherenkov::RenderError`] when the frame fails
+    /// to render.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn render(&mut self) -> cherenkov::Next {
-        self.render_inner(
-            self.engine
-                .render(cherenkov::FrameTime::now())
-                .expect("hydrolysis renderer: engine render failed"),
-        )
+    pub fn render(&mut self) -> Result<cherenkov::Next, cherenkov::RenderError> {
+        let next = self.engine.render(cherenkov::FrameTime::now())?;
+        Ok(self.render_inner(next))
     }
 
     /// [`Self::render`], async on wasm32 where `Engine::render` awaits the
@@ -320,13 +322,9 @@ impl CherenkovSurface {
         clippy::future_not_send,
         reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread"
     )]
-    pub async fn render(&mut self) -> cherenkov::Next {
-        let next = self
-            .engine
-            .render(cherenkov::FrameTime::now())
-            .await
-            .expect("hydrolysis renderer: engine render failed");
-        self.render_inner(next)
+    pub async fn render(&mut self) -> Result<cherenkov::Next, cherenkov::RenderError> {
+        let next = self.engine.render(cherenkov::FrameTime::now()).await?;
+        Ok(self.render_inner(next))
     }
 
     /// The texture-notification drain and `Next` plumbing the two
