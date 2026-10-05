@@ -2110,11 +2110,12 @@ typedef struct ProposalSize ProposalSize;
 /**
  * Specifies which safe-area regions a view ignores.
  *
- * The safe area has two regions on each edge: `container` — the system bars,
- * display cutouts, the home indicator and window chrome — and `keyboard` —
- * the software keyboard and other input-method surfaces. `IgnoreSafeArea`
- * names the regions a view ignores together with the edges it ignores them
- * on.
+ * The safe area has two regions on each edge: *container* — the system bars,
+ * display cutouts, the home indicator and window chrome — and *keyboard* —
+ * the software keyboard and other input-method surfaces. A region set always
+ * names at least one region; [`ALL`](Self::ALL), [`CONTAINER`](Self::CONTAINER)
+ * and [`KEYBOARD`](Self::KEYBOARD) are its only values, and
+ * [`on`](Self::on) pairs one with the edges it is ignored on.
  */
 typedef struct SafeAreaRegions SafeAreaRegions;
 
@@ -3739,7 +3740,8 @@ typedef struct WuiMetadata_WuiFocused {
 typedef struct WuiMetadata_WuiFocused WuiMetadataFocused;
 
 /**
- * FFI-safe representation of safe-area regions for safe area.
+ * FFI-safe representation of `SafeAreaRegions`: the regions an
+ * `IgnoreSafeArea` ignores.
  */
 typedef struct WuiSafeAreaRegions {
   /**
