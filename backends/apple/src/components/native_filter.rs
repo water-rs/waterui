@@ -811,7 +811,7 @@ fn bound_params(bound: &BoundValue) -> impl Iterator<Item = usize> + '_ {
     };
     let components = match bound {
         BoundValue::Vec4(components) => components.as_slice(),
-        _ => &[],
+        BoundValue::Scalar(_) => &[],
     };
     scalar
         .into_iter()
