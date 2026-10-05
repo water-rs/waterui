@@ -13,7 +13,6 @@ use std::cell::{Cell, RefCell};
 use std::marker::PhantomData;
 use std::ops::{Index, IndexMut};
 use std::rc::{Rc, Weak};
-use std::sync::Arc;
 
 use kurbo::{Affine, Size, Vec2};
 use nami_core::watcher::Context;
@@ -22,7 +21,7 @@ use rustc_hash::FxHashMap;
 use crate::animation::Animation;
 use crate::backend::{Backend, Display, SurfaceInfo, Visibility};
 use crate::capability::{Backdrop, BackdropChain, BackdropRuns, ProjectiveLayers};
-use crate::engine::SurfaceWaker;
+use crate::engine::{SharedWaker, SurfaceWaker};
 use crate::error::{RenderError, SurfaceError};
 use crate::frame::Readback;
 use crate::message::{
@@ -89,7 +88,7 @@ pub struct Shared<B: Backend> {
     bindings: FxHashMap<(u64, PropKind), Binding>,
     /// The surface's host wake-up, fired when an op is queued outside a
     /// frame; silent while the surface is hidden.
-    pub(crate) waker: Arc<SurfaceWaker>,
+    pub(crate) waker: SharedWaker<SurfaceWaker>,
     /// The render loop, which a hidden surface's changes are sent to as
     /// they are made.
     tx: Sender<Message<B>>,
@@ -123,7 +122,7 @@ impl<B: Backend> std::fmt::Debug for Shared<B> {
 }
 
 impl<B: Backend> Shared<B> {
-    fn new(id: SurfaceId, waker: Arc<SurfaceWaker>, tx: Sender<Message<B>>) -> Self {
+    fn new(id: SurfaceId, waker: SharedWaker<SurfaceWaker>, tx: Sender<Message<B>>) -> Self {
         Self {
             id,
             pending: Vec::new(),
@@ -949,7 +948,7 @@ pub struct Surface<B: Backend> {
     root: Layer,
     /// The surface's host wake-up — held here too so dropping the handle
     /// retires it without borrowing the shared state.
-    waker: Arc<SurfaceWaker>,
+    waker: SharedWaker<SurfaceWaker>,
     tx: Sender<Message<B>>,
 }
 
@@ -969,11 +968,11 @@ impl<B: Backend> Surface<B> {
         id: SurfaceId,
         info: SurfaceInfo,
         tx: Sender<Message<B>>,
-        waker: Arc<SurfaceWaker>,
+        waker: SharedWaker<SurfaceWaker>,
     ) -> Self {
         let shared = Rc::new(RefCell::new(Shared::new(
             id,
-            Arc::clone(&waker),
+            SharedWaker::clone(&waker),
             tx.clone(),
         )));
         let owner: Rc<dyn LayerOwner> = Rc::clone(&shared) as Rc<dyn LayerOwner>;
@@ -1104,7 +1103,7 @@ impl<B: Backend> Surface<B> {
     /// presentation loop.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn set_waker(&self, f: impl Fn() + Send + Sync + 'static) {
-        self.waker.set_callback(Arc::new(f));
+        self.waker.set_callback(SharedWaker::new(f));
         self.wake_pending();
     }
 
@@ -1123,7 +1122,7 @@ impl<B: Backend> Surface<B> {
     /// presentation loop.
     #[cfg(target_arch = "wasm32")]
     pub fn set_waker(&self, f: impl Fn() + 'static) {
-        self.waker.set_callback(Arc::new(f));
+        self.waker.set_callback(SharedWaker::new(f));
         self.wake_pending();
     }
 
@@ -1182,7 +1181,7 @@ impl<B: Backend> Surface<B> {
     /// # Errors
     /// [`SurfaceError::Lost`] when the render thread is gone.
     pub fn visibility(&self, visibility: Visibility) -> Result<(), SurfaceError> {
-        let waker = Arc::clone(&self.shared.borrow().waker);
+        let waker = SharedWaker::clone(&self.shared.borrow().waker);
         if waker.visibility() == visibility {
             return Ok(());
         }

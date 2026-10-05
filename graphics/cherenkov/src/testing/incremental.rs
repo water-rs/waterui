@@ -680,16 +680,9 @@ async fn assert_patch_counts<R: Renderer>(
 
 /// A surface wake-up with no host behind it: the harness drives the
 /// renderer directly and renders on its own schedule.
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(
-        clippy::arc_with_non_send_sync,
-        reason = "the browser engine's waker is single-threaded; `Arc` matches the native type"
-    )
-)]
 fn unhosted_waker() -> crate::CompletionWaker {
-    let engine = std::sync::Arc::new(crate::engine::Waker::new());
-    crate::CompletionWaker::new(&std::sync::Arc::new(crate::engine::SurfaceWaker::new(
-        engine,
-    )))
+    let engine = crate::engine::SharedWaker::new(crate::engine::Waker::new());
+    crate::CompletionWaker::new(&crate::engine::SharedWaker::new(
+        crate::engine::SurfaceWaker::new(engine),
+    ))
 }

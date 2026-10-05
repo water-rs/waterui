@@ -216,12 +216,12 @@ pub struct EngineGeneration {
 #[cfg(feature = "gpu_surface")]
 impl EngineGeneration {
     /// The shared engine this generation renders through.
-    pub fn engine(&self) -> &Rc<Engine<Gpu>> {
+    pub const fn engine(&self) -> &Rc<Engine<Gpu>> {
         &self.engine
     }
 
     /// The exact context generation this engine is bound to.
-    pub fn context(&self) -> &Arc<SharedGpuContext> {
+    pub const fn context(&self) -> &Arc<SharedGpuContext> {
         &self.context
     }
 
@@ -310,14 +310,19 @@ pub struct SceneEngine {
     /// produced — keyed by the exact generation number. `None` until the
     /// first mount asks; a new context generation replaces the entry,
     /// everything else reuses it without rerunning creation.
-    current: RefCell<Option<(u64, Result<Rc<EngineGeneration>, Rc<SceneError>>)>>,
+    current: RefCell<Option<(u64, GenerationOutcome)>>,
 }
+
+/// What one context generation settled to — the shared engine generation,
+/// or the `Rc`'d creation failure every mount on it receives unchanged.
+#[cfg(feature = "gpu_surface")]
+type GenerationOutcome = Result<Rc<EngineGeneration>, Rc<SceneError>>;
 
 #[cfg(feature = "gpu_surface")]
 impl SceneEngine {
     /// An owner with no generation yet — the first mount creates it.
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             current: RefCell::new(None),
         }
@@ -342,10 +347,10 @@ impl SceneEngine {
         context: &Arc<SharedGpuContext>,
     ) -> Result<Rc<EngineGeneration>, Rc<SceneError>> {
         let key = context.generation();
-        if let Some((cached_key, outcome)) = self.current.borrow().as_ref() {
-            if *cached_key == key {
-                return outcome.clone();
-            }
+        if let Some((cached_key, outcome)) = self.current.borrow().as_ref()
+            && *cached_key == key
+        {
+            return outcome.clone();
         }
         let outcome = runtime
             .engine_on(context)
@@ -489,12 +494,10 @@ mod tests {
 
         let first = generation
             .produce(time)
-            .err()
-            .expect("a settled generation never retries");
+            .expect_err("a settled generation never retries");
         let second = generation
             .produce(time)
-            .err()
-            .expect("the second requester gets the same failure");
+            .expect_err("the second requester gets the same failure");
         assert!(Rc::ptr_eq(&first, &second));
         assert!(Rc::ptr_eq(&first, &routed));
         assert_eq!(

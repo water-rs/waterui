@@ -131,6 +131,16 @@ trait HostedRenderer {
         display: Display,
         target_time: FrameTime,
     ) -> Result<Next, HostedError>;
+
+    /// Drains a failure routed to this renderer without producing a
+    /// frame: a shared engine generation distributes a batch failure to
+    /// every mounted participant, and the owner's next wake consumes it
+    /// here — before any visibility, external, in-flight or render gate —
+    /// so an idle or hidden owner's readiness still settles exactly once.
+    /// Renderers that own no routed failure return `None`.
+    fn take_failure(&mut self) -> Option<HostedError> {
+        None
+    }
 }
 
 /// What building or presenting a hosted renderer's frame can fail with —
@@ -636,6 +646,10 @@ enum FrameRender {
 /// submits; reports whether the frame submitted or the context is dead — the
 /// `waterui_gpu_content_render_to_metal_texture` half of the ffi entry
 /// point.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the ffi render entry takes the whole frame contract directly"
+)]
 fn render_to_metal_texture(
     state: &Rc<SurfaceState>,
     view: &Retained<SurfaceView>,
@@ -1026,7 +1040,7 @@ fn render_frame(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>, force: b
     ) {
         Ok(outcome) => outcome,
         Err(error) => {
-            settle_failed(state, view, error);
+            settle_failed(state, view, context.generation(), &error);
             return;
         }
     };
@@ -1064,6 +1078,14 @@ fn render_frame(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>, force: b
                     return;
                 };
                 state.frame_in_flight.set(false);
+                if state.failed.get() {
+                    // Another mounted participant sealed this engine
+                    // generation while the frame was in flight: the
+                    // completion settles the owned frame normally — the
+                    // slot drops — but a dead generation's pixels never
+                    // present and never declare productive readiness.
+                    return;
+                }
                 if submitted_context.device_lost_reason().is_some() {
                     // The submitted generation died in flight — the slot
                     // holds no ready pixels; park until publication replays
@@ -1100,20 +1122,55 @@ fn render_frame(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>, force: b
 /// every later tick, on-demand render and redraw wake. There is no
 /// automatic retry and no fallback presentation; the only legitimate
 /// recovery is a new context generation, which `arm_context_watch`'s
-/// publication wake rebinds against.
-fn settle_failed(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>, error: HostedError) {
+/// publication wake rebinds against — `settle_failed` arms that
+/// subscription itself so a failure on an otherwise healthy context
+/// still reaches the recovery path.
+fn settle_failed(
+    state: &Rc<SurfaceState>,
+    view: &Retained<SurfaceView>,
+    generation: u64,
+    error: &HostedError,
+) {
     tracing::error!(
         "native rendering failed; the surface stops scheduling until a new context generation rebinds it: {error}"
     );
     state.failed.set(true);
     state.keep_redrawing.set(false);
+    // The failed frame's pixels never landed — the work stays owed until
+    // the publication wake replays it on a genuinely new generation.
+    state.frame_owed.set(true);
     complete_ready(state, false);
     update_display_link_state(state, view);
+    // Retain the exact generation the failure happened under and
+    // subscribe for a strictly newer publication through the existing
+    // cancellable watch: `context_after` never resolves on this
+    // generation, so the failed one is never retried and a later —
+    // including already-published — rebuild rebinds the surface.
+    // Replacing or dropping the stored task cancels the wait.
+    arm_context_watch(state, view, generation);
 }
 
 /// `handleRedrawRequest`: the redraw waker's main-queue body — republishes
 /// accessibility, re-measures against the last proposal, then renders.
 fn handle_redraw_request(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
+    // A failure routed to this surface's renderer settles before every
+    // gate — idle, hidden, in-flight or externally rendered owners all
+    // land here on the same wake, and each settles its readiness exactly
+    // once through `settle_failed` without re-producing the failed
+    // generation. The renderer's own generation is the failed one, so
+    // the recovery watch keys on it exactly.
+    let routed = {
+        let mut slot = state.renderer.borrow_mut();
+        slot.as_mut().and_then(|renderer| {
+            renderer
+                .take_failure()
+                .map(|error| (renderer.generation(), error))
+        })
+    };
+    if let Some((generation, error)) = routed {
+        settle_failed(state, view, generation, &error);
+        return;
+    }
     state.dirty.set(true);
     state.needs_a11y_refresh.set(true);
     if take_measurement_invalidation(state) {
@@ -1429,7 +1486,7 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
                 // failure, and the capture gets its deferred answer — the
                 // completion contract has no richer error channel.
                 tracing::error!("native rendering failed during external capture: {error}");
-                settle_failed(&self.state, &self.view, error);
+                settle_failed(&self.state, &self.view, context.generation(), &error);
                 completion(Err(cocoa_ui::capture::CaptureDeferred));
                 return;
             }
@@ -1475,6 +1532,13 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
                         return;
                     }
                     if let Some(state) = weak.get().upgrade() {
+                        if state.failed.get() {
+                            // Sealed while in flight: the deferred
+                            // capture settles normally, but a failed
+                            // generation never declares readiness.
+                            completion(Err(cocoa_ui::capture::CaptureDeferred));
+                            return;
+                        }
                         complete_ready(&state, true);
                     }
                     // A composited capture is a presented frame for the

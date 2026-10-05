@@ -15,7 +15,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::backend::{
     Backend, Display, Frame, FrameRedraw, Renderer, SurfaceFrame, SurfaceInfo, Visibility,
 };
-use crate::engine::{CompletionWaker, SurfaceWaker};
+use crate::engine::{CompletionWaker, SharedWaker, SurfaceWaker};
 use crate::error::{EngineError, RenderError, ResourceError, SurfaceError};
 use crate::frame::{FrameId, FrameStats, Next, RefreshRange};
 use crate::image::ImageUpload;
@@ -90,7 +90,7 @@ struct SurfaceState {
     /// and its per-frame state waits for the frame that shows it.
     visibility: Visibility,
     /// The surface's host wake-up, shared with its UI-thread handle.
-    waker: Arc<SurfaceWaker>,
+    waker: SharedWaker<SurfaceWaker>,
 }
 
 impl SurfaceState {
@@ -512,7 +512,7 @@ fn create_surface<B: Backend>(
     surfaces: &mut FxHashMap<SurfaceId, SurfaceState>,
     id: SurfaceId,
     target: B::Target,
-    waker: Arc<SurfaceWaker>,
+    waker: SharedWaker<SurfaceWaker>,
 ) -> Result<SurfaceInfo, SurfaceError> {
     let info = renderer.create_surface(id, target, CompletionWaker::new(&waker))?;
     surfaces.insert(

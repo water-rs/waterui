@@ -327,7 +327,7 @@ pub enum Message<B: Backend> {
         /// What it renders into.
         target: B::Target,
         /// The surface's host wake-up, shared with its UI-thread handle.
-        waker: Arc<crate::engine::SurfaceWaker>,
+        waker: crate::engine::SharedWaker<crate::engine::SurfaceWaker>,
         /// Result of the creation.
         reply: Sender<Result<SurfaceInfo, SurfaceError>>,
     },

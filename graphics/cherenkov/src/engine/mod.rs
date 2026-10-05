@@ -9,6 +9,7 @@ mod visibility;
 pub use browser::Engine;
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::Engine;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 pub use visibility::{SurfaceVisibility, WakeGate};
@@ -16,6 +17,10 @@ pub use visibility::{SurfaceVisibility, WakeGate};
 use std::cell::RefCell;
 use std::rc::Weak;
 
+#[cfg(target_arch = "wasm32")]
+use std::rc::Rc;
+
+#[cfg(not(target_arch = "wasm32"))]
 use arc_swap::ArcSwapOption;
 
 use crate::backend::{Backend, Visibility};
@@ -90,8 +95,20 @@ type Wake = dyn Fn() + Send + Sync;
 #[cfg(target_arch = "wasm32")]
 type Wake = dyn Fn();
 
+/// The shared owner every waker and callback is handed around in: `Arc`
+/// on native targets, where a backend completion can wake the host from
+/// any thread; `Rc` on wasm32, where the browser engine and every
+/// callback are confined to the owning JS thread. A non-`Send` browser
+/// callback is never an atomic, thread-owned entity.
+#[cfg(not(target_arch = "wasm32"))]
+pub type SharedWaker<T> = Arc<T>;
+/// wasm32: local ownership — see the native arm above.
+#[cfg(target_arch = "wasm32")]
+pub type SharedWaker<T> = Rc<T>;
+
 /// A sized holder for the unsized callback — arc-swap's `RefCnt` needs
 /// a sized `Arc` payload.
+#[cfg(not(target_arch = "wasm32"))]
 struct WakeBox(Arc<Wake>);
 
 /// The host wake-up, coalesced between engine renders.
@@ -99,7 +116,13 @@ struct WakeBox(Arc<Wake>);
 /// atomically, so installing or replacing a callback never waits on a
 /// wake in flight.
 pub struct Waker {
+    /// The callback slot: atomically swapped on native, a local cell on
+    /// wasm32 — a browser callback is `Fn()`, so it lives in no atomic
+    /// container there.
+    #[cfg(not(target_arch = "wasm32"))]
     callback: ArcSwapOption<WakeBox>,
+    #[cfg(target_arch = "wasm32")]
+    callback: RefCell<Option<Rc<Wake>>>,
     armed: AtomicBool,
 }
 
@@ -115,9 +138,18 @@ impl std::fmt::Debug for Waker {
 }
 
 impl Waker {
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn new() -> Self {
         Self {
             callback: ArcSwapOption::empty(),
+            armed: AtomicBool::new(true),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(super) fn new() -> Self {
+        Self {
+            callback: RefCell::new(None),
             armed: AtomicBool::new(true),
         }
     }
@@ -138,24 +170,50 @@ impl Waker {
         self.call();
     }
 
+    /// Loaded or cloned out of the slot first — the callback may itself
+    /// touch the engine, so a reentrant `set_waker` replaces an
+    /// unborrowed slot and the call in flight stays valid.
+    #[cfg(not(target_arch = "wasm32"))]
     fn call(&self) {
-        // Loaded atomically, called after: the callback may itself touch
-        // the engine — a `set_waker` it makes replaces the slot — and a
-        // panicking callback must not lose the installed one.
         let Some(callback) = self.callback.load_full() else {
             return;
         };
         (callback.0)();
     }
 
+    /// wasm32: clones the callback out of its local cell before
+    /// invoking — same reentrancy contract as the native arm.
+    #[cfg(target_arch = "wasm32")]
+    fn call(&self) {
+        let callback = self.callback.borrow().clone();
+        let Some(callback) = callback else {
+            return;
+        };
+        (callback)();
+    }
+
     /// Installs or replaces the callback.
-    fn set(&self, f: Arc<Wake>) {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn set(&self, f: SharedWaker<Wake>) {
         self.callback.store(Some(Arc::new(WakeBox(f))));
     }
 
+    /// wasm32: writes the callback into its local cell — see `call`.
+    #[cfg(target_arch = "wasm32")]
+    fn set(&self, f: SharedWaker<Wake>) {
+        *self.callback.borrow_mut() = Some(f);
+    }
+
     /// Whether a callback is installed.
+    #[cfg(not(target_arch = "wasm32"))]
     fn has_callback(&self) -> bool {
         self.callback.load().is_some()
+    }
+
+    /// wasm32: reads the local cell — see `call`.
+    #[cfg(target_arch = "wasm32")]
+    fn has_callback(&self) -> bool {
+        self.callback.borrow().is_some()
     }
 
     pub(super) fn arm(&self) {
@@ -178,7 +236,7 @@ pub struct SurfaceWaker {
     /// The engine's aggregate wake — the target every wake takes until
     /// the surface installs its own callback through
     /// [`Surface::set_waker`](crate::Surface::set_waker).
-    engine: Arc<Waker>,
+    engine: SharedWaker<Waker>,
     /// The surface's own wake, coalesced and re-armed independently of
     /// the engine's: a change on this surface wakes only this surface's
     /// host.
@@ -194,7 +252,7 @@ pub struct SurfaceWaker {
 
 impl SurfaceWaker {
     /// A visible surface's wake-up through `engine`.
-    pub(crate) fn new(engine: Arc<Waker>) -> Self {
+    pub(crate) fn new(engine: SharedWaker<Waker>) -> Self {
         Self {
             engine,
             own: Waker::new(),
@@ -216,7 +274,7 @@ impl SurfaceWaker {
 
     /// Installs the surface's own wake-up. Queued changes, backend
     /// completions and reveals route through it instead of the engine's.
-    pub(crate) fn set_callback(&self, f: Arc<Wake>) {
+    pub(crate) fn set_callback(&self, f: SharedWaker<Wake>) {
         self.own.set(f);
     }
 
@@ -276,13 +334,13 @@ impl SurfaceWaker {
 /// retains the engine's single-threaded callback contract. It wakes nothing
 /// while the surface is hidden.
 #[derive(Debug, Clone)]
-pub struct CompletionWaker(Arc<SurfaceWaker>);
+pub struct CompletionWaker(SharedWaker<SurfaceWaker>);
 
 impl CompletionWaker {
     /// Wraps a surface's waker. Called on the render loop when the surface
     /// is created.
-    pub(crate) fn new(waker: &Arc<SurfaceWaker>) -> Self {
-        Self(Arc::clone(waker))
+    pub(crate) fn new(waker: &SharedWaker<SurfaceWaker>) -> Self {
+        Self(SharedWaker::clone(waker))
     }
 
     /// Fires the host's wake callback if armed and the surface is visible.
