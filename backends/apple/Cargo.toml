@@ -81,7 +81,7 @@ default = [
 ]
 anchored_overlay = []
 accessibility_identifier = []
-applied_filter = ["gpu_surface"]
+applied_filter = ["gpu_surface", "dep:objc2-core-image"]
 accessibility_metadata = []
 badge = []
 border = []
@@ -233,6 +233,20 @@ objc2-quartz-core = { version = "0.3", default-features = false, features = [
     "objc2-core-foundation",
     "objc2-core-graphics",
 ] }
+
+# Core Image bindings for the AppKit-native filter realization (#1748) —
+# macOS-only, gated by `applied_filter` so no-filter artifacts link none
+# of it.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-image = { version = "0.3", default-features = false, features = [
+    "CIContext",
+    "CIFilter",
+    "CIImage",
+    "CIVector",
+    "objc2-core-foundation",
+    "objc2-core-graphics",
+    "objc2-metal",
+], optional = true }
 
 [dev-dependencies]
 criterion = "0.8.2"

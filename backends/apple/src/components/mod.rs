@@ -76,6 +76,10 @@ pub mod menu;
 mod menu_items;
 #[cfg(feature = "multi_date_picker")]
 pub mod multi_date_picker;
+/// The AppKit-native `CIFilter` realization of portable chains — the
+/// filtered leaf's macOS fast path (#1748).
+#[cfg(all(target_os = "macos", feature = "applied_filter"))]
+pub mod native_filter;
 #[cfg(feature = "navigation")]
 pub mod navigation;
 #[cfg(feature = "offset")]
