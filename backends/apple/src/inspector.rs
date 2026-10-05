@@ -132,11 +132,10 @@ fn install_interaction(root: &HostView, inspection: &Rc<Inspection>) {
         menu::{Command, MenuTreeNode},
     };
     use objc2::MainThreadOnly;
-    let weak = Rc::downgrade(inspection);
+    // The inspection holds the root only weakly, so the root's handler
+    // owning it forms no cycle.
+    let inspection = Rc::clone(inspection);
     root.set_right_mouse_handler(move |host, event| {
-        let Some(inspection) = weak.upgrade() else {
-            return;
-        };
         let point = event.locationInWindow();
         let action = Rc::downgrade(&inspection);
         let menu = ContextMenu::new(

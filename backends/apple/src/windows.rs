@@ -46,11 +46,20 @@ mod imp {
 
     /// What an open window owns: the platform object, its host view, and
     /// every subscription and child leaf the window keeps alive. Dropping a
-    /// host closes the window and stops the watchers.
+    /// host clears the root host's handlers, closes the window and stops
+    /// the watchers.
     pub struct WindowHost {
         _window: Rc<cocoa_ui::appkit::Window>,
-        _host: Retained<HostView>,
+        host: Retained<HostView>,
         _keepalive: KeepAlive,
+    }
+
+    impl Drop for WindowHost {
+        fn drop(&mut self) {
+            // The content view outlives this host inside `AppKit`; clearing
+            // its handlers first releases what they own with the keepalive.
+            self.host.clear_handlers();
+        }
     }
 
     thread_local! {
@@ -290,7 +299,7 @@ mod imp {
 
         WindowHost {
             _window: window,
-            _host: host,
+            host,
             _keepalive: keepalive,
         }
     }
@@ -776,10 +785,20 @@ mod imp {
 
     /// What a connected scene owns: its root controller and every
     /// subscription and leaf the window keeps alive. The platform window
-    /// itself is retained by the kit's scene delegate.
+    /// itself is retained by the kit's scene delegate. Dropping a host
+    /// clears the root host's handlers before the watchers stop.
     pub struct WindowHost {
-        _controller: Retained<ViewController>,
+        controller: Retained<ViewController>,
         _keepalive: KeepAlive,
+    }
+
+    impl Drop for WindowHost {
+        fn drop(&mut self) {
+            // The controller's host view outlives this host inside `UIKit`;
+            // clearing its handlers first releases what they own with the
+            // keepalive.
+            self.controller.host_view().clear_handlers();
+        }
     }
 
     /// A scene connected before its declaration landed: `UIKit` asks for a
@@ -1065,7 +1084,7 @@ mod imp {
         keepalive.keep(env.clone());
 
         WindowHost {
-            _controller: pending.controller,
+            controller: pending.controller,
             _keepalive: keepalive,
         }
     }
