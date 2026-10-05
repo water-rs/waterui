@@ -14,7 +14,9 @@ use jni::objects::{JClass, JObject, JString};
 use jni::sys::{jboolean, jdouble, jfloat, jint, jlong, jstring};
 use jni::{JNIEnv, JavaVM};
 
-use crate::platform::{InputEvent, Modifiers, PointerButton, PointerKind};
+use crate::platform::{
+    BackEdge, BackNavigation, InputEvent, Modifiers, PointerButton, PointerKind,
+};
 
 use super::host::{AndroidSession, MetricsSnapshot};
 
@@ -35,8 +37,10 @@ use super::host::{AndroidSession, MetricsSnapshot};
 /// `nativeSetMetrics` carries the `ViewConfiguration` touch-scroll
 /// parameters (slop, min/max fling velocity, scroll friction); 8 =
 /// `nativeCreateSession` drops `sdkInt`. The API floor is 31, so
-/// `ANativeWindow_setFrameRate` is linked directly.
-pub const JNI_SCHEMA: jint = 8;
+/// `ANativeWindow_setFrameRate` is linked directly; 9 = `nativeBackEvent`
+/// and `onNativeBackAvailable` carry system back into the navigation stack
+/// and report whether a back target is registered.
+pub const JNI_SCHEMA: jint = 9;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -452,6 +456,44 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativePointerEve
             _ => InputEvent::PointerCancel { id, kind },
         };
         session(session_ptr).runtime.platform.push_event(event);
+        Ok(())
+    });
+}
+
+/// One system-back phase. `phase` is 0 Started, 1 Progressed, 2 Cancelled,
+/// 3 Invoked. `edge` is the platform swipe edge and is read only for Started:
+/// `BackEvent.EDGE_LEFT` (0), `EDGE_RIGHT` (1), or `EDGE_NONE` (2) — the value
+/// a back button's predictive animation carries. `progress` is the platform's
+/// `0..=1` report.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeBackEvent(
+    mut env: JNIEnv,
+    _class: JClass,
+    session_ptr: jlong,
+    phase: jint,
+    edge: jint,
+    progress: jdouble,
+) {
+    guard(&mut env, |_env| {
+        let event = match phase {
+            0 => {
+                let edge = match edge {
+                    0 => BackEdge::Left,
+                    1 => BackEdge::Right,
+                    2 => BackEdge::None,
+                    other => panic!("hydrolysis android: unknown back edge {other}"),
+                };
+                BackNavigation::Started { edge }
+            }
+            1 => BackNavigation::Progressed { progress },
+            2 => BackNavigation::Cancelled,
+            3 => BackNavigation::Invoked,
+            other => panic!("hydrolysis android: unknown back phase {other}"),
+        };
+        session(session_ptr)
+            .runtime
+            .platform
+            .push_event(InputEvent::BackNavigation(event));
         Ok(())
     });
 }

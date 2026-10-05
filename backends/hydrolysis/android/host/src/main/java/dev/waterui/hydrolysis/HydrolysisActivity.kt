@@ -2,7 +2,9 @@ package dev.waterui.hydrolysis
 
 import android.os.Bundle
 import android.view.View
+import androidx.activity.BackEventCompat
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 
 /**
  * The minimal host activity: creates the [HydrolysisSession] once, mounts a
@@ -33,6 +35,34 @@ abstract class HydrolysisActivity : ComponentActivity() {
         val retained = lastCustomNonConfigurationInstance as? HydrolysisSession
         val session = retained ?: HydrolysisSession(this)
         this.session = session
+        val backCallback = object : OnBackPressedCallback(false) {
+            override fun handleOnBackStarted(backEvent: BackEventCompat) {
+                session.dispatchBack(
+                    NativeBridge.BACK_STARTED,
+                    backEvent.swipeEdge,
+                    backEvent.progress.toDouble(),
+                )
+            }
+
+            override fun handleOnBackProgressed(backEvent: BackEventCompat) {
+                session.dispatchBack(
+                    NativeBridge.BACK_PROGRESSED,
+                    backEvent.swipeEdge,
+                    backEvent.progress.toDouble(),
+                )
+            }
+
+            override fun handleOnBackCancelled() {
+                session.dispatchBack(NativeBridge.BACK_CANCELLED, 0, 0.0)
+            }
+
+            override fun handleOnBackPressed() {
+                session.dispatchBack(NativeBridge.BACK_INVOKED, 0, 0.0)
+            }
+        }
+        onBackPressedDispatcher.addCallback(this, backCallback)
+        session.onBackAvailable = { available -> backCallback.isEnabled = available }
+        backCallback.isEnabled = session.backAvailable
         setContentView(createContentView(session))
     }
 
@@ -52,6 +82,9 @@ abstract class HydrolysisActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        // Drop the callback before the session field goes: a retained session
+        // must not keep writing `isEnabled` on the activity that is leaving.
+        session?.onBackAvailable = null
         // The session dies only with the activity — a configuration change
         // retains it, and the new host view binds to the same native state.
         if (isFinishing && !isChangingConfigurations) {

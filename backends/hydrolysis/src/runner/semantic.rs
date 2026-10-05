@@ -585,6 +585,10 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
             InputEvent::FileHovered { .. }
             | InputEvent::FileDropped { .. }
             | InputEvent::FileHoverCancelled => false,
+            InputEvent::BackNavigation(navigation) => {
+                let event_env = env.extending(semantic_window_origin(window));
+                window.core.handle_back_navigation(navigation, &event_env)
+            }
             geometric => {
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",

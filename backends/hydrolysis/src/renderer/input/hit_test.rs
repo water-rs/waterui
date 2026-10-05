@@ -319,6 +319,13 @@ pub struct HitTestState {
     pub(crate) modal_interaction: Option<ModalInteraction>,
     pub(crate) active_pointer_drag_target: Option<PointerAction>,
     pub(crate) active_pointer_drag_signature: Option<(usize, usize)>,
+    /// System-back targets registered this frame, in paint order. The last
+    /// entry is the frontmost stack. Cleared with the other per-frame target
+    /// lists.
+    pub(crate) back_targets: Vec<NavigationBackTarget>,
+    /// The system-back gesture in flight. Survives `reset_scene`, the same
+    /// way `active_pointer_drag_target` does.
+    pub(crate) system_back: SystemBackGesture,
     /// The in-flight scrollbar-thumb drag, if any.
     pub(crate) active_scrollbar_drag: Option<ScrollbarDrag>,
     pub(crate) cursor_targets: Vec<CursorTarget>,
@@ -422,6 +429,7 @@ impl HitTestState {
         self.embedded_input_targets.clear();
         self.native_view_occlusions.clear();
         self.pointer_targets.clear();
+        self.back_targets.clear();
         self.gesture_regions.clear();
         self.gesture_occluders.clear();
         self.cursor_targets.clear();
@@ -1615,7 +1623,8 @@ impl HydrolysisRenderer {
             self.request_refresh();
         }
         changed |= drop_changed;
-        changed |= self.finish_interactive_navigation_pop(false);
+        changed |=
+            self.finish_interactive_navigation_pop(NavigationInteractivePopOutcome::ByProgress);
         self.text_editing.active_text_selection_drag = None;
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_signature = None;
@@ -2884,7 +2893,8 @@ impl HydrolysisRenderer {
             return false;
         }
         let at = self.frame_instant();
-        let mut refresh_requested = self.finish_interactive_navigation_pop(true);
+        let mut refresh_requested =
+            self.finish_interactive_navigation_pop(NavigationInteractivePopOutcome::Cancel);
         self.text_editing.active_text_selection_drag = None;
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_signature = None;
