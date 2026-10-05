@@ -1486,8 +1486,10 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
             }
             RunnerEvent::RedrawWindow(window_id) => {
                 // The window may have closed while the wake was in flight.
+                // The wake asks winit for a frame only: GPU content's
+                // cadence does not hold the window's ProMotion demand.
                 if let Some(runtime) = self.windows.get(&window_id) {
-                    runtime.request_redraw();
+                    runtime.platform.native_window().request_redraw();
                 }
             }
 

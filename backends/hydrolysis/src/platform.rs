@@ -3379,11 +3379,11 @@ mod winit_impl {
         /// the caller can hand it to the next surface.
         ///
         /// `wake` asks the host's event loop to redraw this window. GPU
-        /// content and the engine call it from their own threads, and the
-        /// engine's render thread may hold the last clone of it, so it must
-        /// not own or touch the winit window: on macOS a winit window used
-        /// or dropped off the main thread hops synchronously onto the main
-        /// thread, which deadlocks while the main thread waits on the
+        /// content and the engine's render thread call it from their own
+        /// threads, and the render thread may hold its last clone, so it
+        /// must not own or touch the winit window: on macOS a winit window
+        /// used or dropped off the main thread hops synchronously onto the
+        /// main thread, which deadlocks while the main thread waits on the
         /// calling thread — as it does when it shuts the engine down after
         /// the last window closes. Post the request to the event loop and
         /// redraw the window there.
