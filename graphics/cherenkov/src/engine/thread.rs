@@ -864,8 +864,16 @@ fn finish_frame<B: Backend>(
     let mut rate = None;
     // Keyed by surface: one entry per visible surface, so publication
     // stays linear in the surface count instead of rescanning a Vec. The
-    // map is the engine's scratch — cleared, never reallocated per frame.
-    surface_next.clear();
+    // map is the engine's scratch — retained across frames: an entry
+    // survives only while its surface is still present and visible, and
+    // the loop below writes every current deadline in place (inserting
+    // new surfaces), so no stale deadline survives and the steady frame
+    // pays no bulk re-init.
+    surface_next.retain(|id, _| {
+        surfaces
+            .get(id)
+            .is_some_and(|state| state.visibility == Visibility::Visible)
+    });
     for (id, state) in surfaces
         .iter_mut()
         .filter(|(_, state)| state.visibility == Visibility::Visible)
