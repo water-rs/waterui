@@ -13,8 +13,7 @@ workloads W1–W4.
 | `docker/Dockerfile` | the single build+run image (debian:trixie, Mesa 25 llvmpipe+lavapipe, wlroots 0.18, GTK 4.18, Flutter 3.47.5, Electron runtime deps, rustc 1.98.1) |
 | `benchcomp/benchcomp.c` | headless wlroots compositor: per-surface present timestamps (presentation-time feedback), scripted pointer input, cgroup v2 memory sampling, spawn→first-frame timing, JSONL event log |
 | `gtk4/` | the GTK 4 native contestant (W1–W5 selected by `BENCH_WORKLOAD`); the shared cross-platform contestants live under `../apps/` |
-| `scripts/*.scr` | benchcomp drive scripts per workload (wheel-axis scroll for W2/W4) |
-| `runner/runner.py` | single entry point (`uv run`) — builds, stages, runs, aggregates into one JSON |
+| `runner/runner.py` | single entry point (`uv run`) — builds, stages, generates per-workload drive scripts from the manifest's `[fling]` declaration (wheel-axis scroll for W2/W4), runs, aggregates into one JSON |
 | `runner/gpu_probe.py` | in-container adapter probe — parses `vulkaninfo --summary` (pinned image's vulkan-tools) and joins adapters to /dev/dri render nodes by sysfs vendor/device id; `--self-test` parses committed fixtures |
 | `runner/report.py` | renders the JSON into markdown tables |
 
@@ -101,7 +100,7 @@ Filed upstream; this tree carries no patches or workarounds for them.
 2. **water-rs/hydrolysis#233 — `scroll()` ignored wheel input**: fixed by
    hydrolysis#234 (`ba6db6b`); verified working once the channel pin advanced
    to `06003fd` (waterui#1279). W4 now scrolls and is measured normally.
-3. **Harness fix (r3)** — `benchcomp` passed the wheel detent count as
+2. **Harness fix (r3)** — `benchcomp` passed the wheel detent count as
    `wlr_seat_pointer_notify_axis`'s `value_discrete`, but wlroots reads that
    argument in value120 units (`WLR_POINTER_AXIS_DISCRETE_STEP` = 120,
    `types/seat/wlr_seat_pointer.c` ~L351): for clients whose `wl_seat` is

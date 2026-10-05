@@ -44,6 +44,7 @@ IMAGE = "waterui-bench-linux"
 CARGO_CACHE = ROOT / ".cache" / "cargo"
 WATER_CACHE = ROOT / ".cache" / "water"
 NPM_CACHE = ROOT / ".cache" / "npm"
+HOME_CACHE = ROOT / ".cache" / "container-home"
 OUT_DIR = ROOT / "results"
 VSYNC_MS = 1000.0 / 60.0
 # Run-scoped namespace: every scratch file and container this invocation
@@ -104,7 +105,8 @@ def build_image() -> None:
 def _docker_run_cmd(inner: str, *, name: str = "",
                     privileged: bool = False,
                     extra_vol: list[str] | None = None,
-                    dri: list[str] | bool = False) -> list[str]:
+                    dri: list[str] | bool = False,
+                    host_user: bool = True) -> list[str]:
     cmd = [
         "docker", "run", "--rm",
         "-v", f"{ROOT}:/bench",
@@ -113,13 +115,30 @@ def _docker_run_cmd(inner: str, *, name: str = "",
         # app) resolve inside the container
         "-v", f"{REPO}:/repo",
         "-v", f"{CARGO_CACHE}:/cargo-home",
-        "-v", f"{WATER_CACHE}:/root/.water",
-        "-v", f"{NPM_CACHE}:/root/.npm",
-        "-e", "HOME=/root",
         # Rust toolchain binaries stay at /opt/cargo/bin in the image; the
         # mounted home only carries registry/git/target caches.
         "-e", "CARGO_HOME=/cargo-home",
     ]
+    if host_user and not privileged:
+        # Builds run as the host uid: files they write into the mounted
+        # checkout (target/, generated backends/, dist/) come out
+        # host-owned, never root-owned. Privileged measurement runs keep
+        # root — they need it for cgroup/device setup and write nothing
+        # into /repo.
+        HOME_CACHE.mkdir(parents=True, exist_ok=True)
+        cmd += [
+            "-u", f"{os.getuid()}:{os.getgid()}",
+            "-v", f"{HOME_CACHE}:/home/bench",
+            "-v", f"{WATER_CACHE}:/home/bench/.water",
+            "-v", f"{NPM_CACHE}:/home/bench/.npm",
+            "-e", "HOME=/home/bench",
+        ]
+    else:
+        cmd += [
+            "-v", f"{WATER_CACHE}:/root/.water",
+            "-v", f"{NPM_CACHE}:/root/.npm",
+            "-e", "HOME=/root",
+        ]
     if privileged:
         cmd += ["--privileged", "--cgroupns=private"]
     if dri is True and Path("/dev/dri").is_dir():
@@ -141,10 +160,12 @@ def _docker_run_cmd(inner: str, *, name: str = "",
 def docker_run_bash(inner: str, *, name: str = "", privileged: bool = False,
                     extra_vol: list[str] | None = None,
                     dri: list[str] | bool = False,
-                    quiet: bool = False) -> subprocess.CompletedProcess:
+                    quiet: bool = False,
+                    host_user: bool = True) -> subprocess.CompletedProcess:
     """Run `bash -c inner` in the image with the bench tree mounted at /bench."""
     cmd = _docker_run_cmd(inner, name=name, privileged=privileged,
-                          extra_vol=extra_vol, dri=dri)
+                          extra_vol=extra_vol, dri=dri,
+                          host_user=host_user)
     if quiet:
         print("+", " ".join(cmd), flush=True)
         return subprocess.run(cmd, capture_output=True, text=True, check=True)
@@ -179,9 +200,9 @@ D=/bench/dist/waterui-hydrolysis
 rm -rf "$D"
 mkdir -p "$D"
 cp -a backends/hydrolysis/dist/linux/release/. "$D/"
-# the shipped binary sits beside resources/ under the product name
-BIN=$(find "$D" -maxdepth 1 -type f -executable ! -name "*.so*" | head -1)
-[ -n "$BIN" ] || { echo "hydrolysis binary not found in $D"; ls -la "$D"; exit 1; }
+# the shipped binary sits beside resources/ under the crate name
+BIN="$D/waterui-bench"
+[ -f "$BIN" ] || { echo "hydrolysis binary not found at $BIN"; ls -la "$D"; exit 1; }
 mv "$BIN" "$D/app"
 ls -la "$D"
 '''
@@ -203,7 +224,9 @@ cp gtk-bench /bench/dist/gtk4/app
         inner = r'''
 set -e
 cd /repo/benchmarks/competitive/apps/electron
-npm install --save-dev --no-audit --no-fund electron@44.4.5
+# the committed package-lock is the version pin — `npm ci` installs it
+# verbatim and never rewrites tracked files
+npm ci --no-audit --no-fund
 mkdir -p /bench/dist/electron
 cp -a node_modules/electron/dist/. /bench/dist/electron/
 mkdir -p /bench/dist/electron/resources/app
@@ -220,11 +243,16 @@ cp index.html main.js renderer.js package.json /bench/dist/electron/resources/ap
 set -e
 git config --global --add safe.directory /opt/flutter
 APP=/repo/benchmarks/competitive/apps/flutter
-if [ ! -d "$APP/linux" ]; then
+TAG="flutter create --platforms linux --project-name bench_flutter --org dev.bench --template app | flutter_ver=''' \
+        + manifest["toolchain"]["flutter_version"] + r'''"
+STAMP="$APP/linux/.bench-generator"
+if [ ! -d "$APP/linux" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$TAG" ]; then
+    rm -rf "$APP/linux"
     T=$(mktemp -d)
     flutter create --platforms linux --project-name bench_flutter \
         --org dev.bench --template app "$T/app"
     cp -a "$T/app/linux" "$APP/linux"
+    echo "$TAG" > "$STAMP"
 fi
 cd "$APP"
 flutter build linux --release
@@ -330,6 +358,39 @@ def dri_nodes_in_use(cname: str) -> set[str]:
     return {Path(n).name for n in q.stdout.split()}
 
 
+def fling_script(fling: dict, duration_ms: int) -> str:
+    """The shared fling protocol (../WORKLOADS.md) as a benchcomp script:
+    pointer parked at the window centre after `warmup_ms`, then repeated
+    programs of `down` flings + `up` flings — `detents` 15 px wheel
+    detents spread over `duration_ms`, a `pause_ms` pause after each."""
+    lines = [f"{fling['warmup_ms']} motion 640 400"]
+    t = float(fling["warmup_ms"])
+    detent_ms = fling["duration_ms"] / fling["detents"]
+    while t < duration_ms:
+        for direction, count in ((1, fling["down"]), (-1, fling["up"])):
+            for _ in range(count):
+                for _ in range(fling["detents"]):
+                    lines.append(f"{int(t)} axis {direction}")
+                    t += detent_ms
+                t += fling["pause_ms"]
+    return "\n".join(lines) + "\n"
+
+
+SCRIPT_DIR = ROOT / ".cache" / "scripts"
+
+
+def workload_script(manifest: dict, wl: str, duration_ms: int) -> Path | None:
+    """The generated drive script for a scrolling workload — emitted from
+    the manifest's [fling] declaration so the committed tree carries no
+    hand-written drive programs."""
+    if wl not in ("w2", "w4"):
+        return None
+    SCRIPT_DIR.mkdir(parents=True, exist_ok=True)
+    path = SCRIPT_DIR / f"{wl}.scr"
+    path.write_text(fling_script(manifest["fling"], duration_ms))
+    return path
+
+
 def run_workload(contestant_cmd: str, wl: str, duration_ms: int,
                  script: Path | None, out_jsonl: Path,
                  dri: list[str] | bool = True) -> tuple[dict, str, set[str]]:
@@ -338,7 +399,8 @@ def run_workload(contestant_cmd: str, wl: str, duration_ms: int,
     removed even when the run fails. Returns (metrics, log, dri_nodes)
     where dri_nodes is the set of device-node basenames the contestant's
     own cgroup actually held open during the run."""
-    script_arg = f"--script /bench/scripts/{wl}.scr" if script else ""
+    script_arg = (f"--script /bench/{script.relative_to(ROOT)}"
+                  if script else "")
     cname = _owned_container_name()
     inner = (
         "export XDG_RUNTIME_DIR=/tmp/bench-xdg; "
@@ -348,7 +410,8 @@ def run_workload(contestant_cmd: str, wl: str, duration_ms: int,
         f"--cgroup benchapp {script_arg} "
         f"--out /bench/{out_jsonl.relative_to(ROOT)}"
     )
-    cmd = _docker_run_cmd(inner, name=cname, privileged=True, dri=dri)
+    cmd = _docker_run_cmd(inner, name=cname, privileged=True, dri=dri,
+                          host_user=False)
     print("+", " ".join(cmd), flush=True)
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -873,13 +936,11 @@ def main() -> int:
         staged = {c: f"dist/{c}" for c in CONTESTANT_CMDS
                   if not only or c in only}
 
-    # The fallback env forces hydrolysis onto llvmpipe so the contestant
-    # still runs on GPU-less hosts; it must never be set when a hardware
-    # GPU is available or the waterui numbers stop being comparable.
-    # RUST_LOG makes hydrolysis log the adapter it actually selected — the
-    # runner verifies the used renderer, not just the available one.
-    wenv = ("RUST_LOG=hydrolysis::gpu=info "
-            + ("WATER_HYDROLYSIS_FORCE_FALLBACK_ADAPTER=1 " if sw else ""))
+    # No adapter-forcing env ever exports — which GPU hydrolysis picks is
+    # what the evidence must record, not what the runner dictates.
+    # RUST_LOG always exports: the adapter line IS the per-rep renderer
+    # evidence.
+    wenv = "RUST_LOG=hydrolysis::gpu=info "
 
     results: dict = {
         "benchmark": "competitive-linux",
@@ -914,9 +975,14 @@ def main() -> int:
             if isinstance(dri_mounts, list) else set())
         for wl in workloads:
             if wl in (manifest.get("capacity") or {}):
+                spec = manifest["capacity"][wl]
+                if name not in spec.get(
+                        "contestants", list(CONTESTANT_CMDS)):
+                    # the contestant implements no cell for this workload
+                    # (e.g. electron has no W5) — no row, not a failure
+                    continue
                 # canonical capacity ladder (W5): one launch per step with
                 # BENCH_STEP; per-rep ladders aggregate to a median capacity
-                spec = manifest["capacity"][wl]
                 cmd = CONTESTANT_CMDS[name].format(
                     wl=wl, wenv=wenv, selenv=selenv)
                 ladders = []
@@ -965,7 +1031,10 @@ def main() -> int:
                     s, run_log, opened = run_workload(
                         CONTESTANT_CMDS[name].format(
                             wl=wl, wenv=wenv, selenv=selenv), wl,
-                        durations.get(wl, 15000), True, out_jsonl,
+                        durations.get(wl, 15000),
+                        workload_script(
+                            manifest, wl, durations.get(wl, 15000)),
+                        out_jsonl,
                         dri=dri_mounts)
                     s["run"] = rep
                     s["dri_nodes"] = sorted(opened)

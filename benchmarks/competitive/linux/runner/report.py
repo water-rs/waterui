@@ -117,8 +117,10 @@ def render(results: dict, baseline: dict | None = None) -> str:
     L.append(f"**Frame source:** {results.get('frame_source','')}\n")
     wc = results.get("water_cli")
     if wc:
-        L.append(f"**water CLI:** {wc.get('repo','?')}@{wc.get('rev','?')[:12]} "
-                 f"(water {wc.get('version','?')})\n")
+        from pathlib import Path as _P
+        L.append(f"**water CLI:** in-tree cli/ @ checkout "
+                 f"{wc.get('checkout_head','?')[:12]} "
+                 f"(bin {_P(wc.get('provisioned','?')).name})\n")
 
     # successful/attempted reps per cell — failures are listed, not hidden
     rep_rows = {}

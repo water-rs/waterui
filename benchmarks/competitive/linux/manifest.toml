@@ -30,11 +30,9 @@ kind = "water"
 project = "../apps/waterui"
 backend = "hydrolysis"
 profile = "release"
-# Forces hydrolysis onto the llvmpipe fallback adapter so the contestant
-# still runs on GPU-less hosts. The runner only exports this for
-# --development runs on a software adapter; a hardware-GPU run must never
-# force the fallback (numbers would stop being comparable evidence).
-env = { WATER_HYDROLYSIS_FORCE_FALLBACK_ADAPTER = "1" }
+# No adapter-forcing env: the runner never overrides which GPU hydrolysis
+# picks — the contestant's own adapter log + the DRI nodes its processes
+# opened are the per-rep renderer evidence, whatever it selected.
 
 [contestants.gtk4]
 kind = "gtk"
@@ -44,7 +42,7 @@ gtk_version = "4.18.6"     # libgtk-4-dev from debian:trixie
 [contestants.electron]
 kind = "electron"
 project = "../apps/electron"
-electron_version = "44.4.5"
+electron_version = "44.4.3"
 node_version = "20.19.2"
 # In-container (no sandbox kernel support, wayland-only).
 flags = ["--no-sandbox", "--ozone-platform=wayland"]
@@ -60,14 +58,31 @@ workloads = ["w1", "w2", "w3", "w4"]
 repetitions = 5
 window = "1280x800"
 refresh_mhz = 60000
-# Per-workload drive scripts live in scripts/<workload>.scr; durations below
-# include ~5s idle warmup before input starts.
+# Durations include ~5s idle warmup before input starts.
 durations_ms = { w1 = 10000, w2 = 25000, w3 = 15000, w4 = 15000 }
+
+# The shared fling protocol (../WORKLOADS.md), declared once for every
+# scrolling workload (w2, w4): benchcomp's virtual pointer sits at the
+# window centre and emits wheel detents — `detents` 15 px detents over
+# `duration_ms`, then a `pause_ms` pause — `down` flings down then `up`
+# back, repeated for the duration window. OS-level input, identical for
+# every contestant; the runner generates the per-workload .scr files.
+[fling]
+down = 8
+up = 2
+detents = 12
+duration_ms = 250
+pause_ms = 350
+warmup_ms = 5000
 
 # W5 capacity (canonical ladder) runs per-step launches when enabled via
 # --workload w5: BENCH_STEP env selects the rect count, settle then hold —
-# same protocol as the other legs.
+# same protocol as the other legs. Only contestants that implement W5 are
+# listed — the electron contestant has no W5 cell.
 [capacity.w5]
+# contestants without a W5 cell (electron implements W1–W4 only) are
+# skipped here — no row, not a failure
+contestants = ["waterui-hydrolysis", "gtk4", "flutter"]
 steps = [200, 400, 800, 1600, 3200, 6400, 12800, 25600]
 settle_ms = 1000
 hold_ms = 4000

@@ -26,16 +26,16 @@ static const char *PALETTE[6] = {
 // Canonical W4 text — benchmarks/competitive/lib/paragraphs.txt, embedded
 // (an app cannot read the suite's file at runtime).
 static const char *PARAGRAPHS[10] = {
-    "The quick brown fox jumps over the lazy dog. 。🦊🐶 Packing my box with five dozen liquor jugs.",
-    "WaterUI renders native widgets from a single Rust view tree. 。🌊 Fine-grained reactivity updates only the widgets that read the value.",
-    "Almost all programming can be viewed as state management. ，。📚 Signals flow through the graph and wake the views that observe them.",
-    "Sphinx of black quartz, judge my vow. のテキストもぜます。🗻 Typography is the visual component of the written word.",
-    "How vexingly quick daft zebras jump! ，。🦓 The first principle is that you must not fool yourself.",
-    "Bright vixens jump; dozy fowl quack. ，。🐦 Rendering pipelines measure progress in milliseconds per frame.",
-    "。Benchmarks that are honest make optimisation honest. 📏",
-    "Two driven jocks help fax my big quiz. ，。🌲 Lazily built lists keep memory flat while content grows without bound.",
-    "The five boxing wizards jump quickly. ，。🧙 Every frame has a budget of 8.33 milliseconds at 120 Hz.",
-    "Jackdaws love my big sphinx of quartz. ，。🐦‍⬛ Measure, then optimise; never optimise on faith alone.",
+    "The quick brown fox jumps over the lazy dog. 敏捷的棕色狐狸跳過懶惰的狗。🦊🐶 Packing my box with five dozen liquor jugs.",
+    "WaterUI renders native widgets from a single Rust view tree. 水のインターフェースはネイティブウィジェットを描画する。🌊",
+    "Almost all programming can be viewed as state management. 几乎所有的编程都可以视为状态管理。📚 Signals flow through the graph.",
+    "Sphinx of black quartz, judge my vow. 黒い水晶のスフィンクス、私の誓いを裁け。🗻 Typography is the visual component of the written word.",
+    "How vexingly quick daft zebras jump! 빠른 얼룩말이 얼마나 성가시게 뛰는가! 🦓 The first principle is that you must not fool yourself.",
+    "Bright vixens jump; dozy fowl quack. 밝은 여우가 뛰고 졸린 새가 꽥꽥 운다. 🐦 Rendering pipelines measure progress in milliseconds per frame.",
+    "ベンチマークが正直であれば最適化も正直になる。Benchmarks that are honest make optimisation honest. 📏",
+    "Two driven jocks help fax my big quiz. 두 명의 조키가 내 큰 퀴즈를 팩스로 보내는 것을 돕는다. 🌲 Lazily built lists keep memory flat.",
+    "The five boxing wizards jump quickly. 五個拳擊巫師跳得很快。🧙 Every frame has a budget of 8.33 milliseconds at 120 Hz.",
+    "Jackdaws love my big sphinx of quartz. 寒鸦喜欢我巨大的石英斯芬克斯。🐦‍⬛ Measure, then optimise; never optimise on faith alone.",
 };
 
 static void set_rgba(cairo_t *cr, uint32_t i, double alpha) {
@@ -307,13 +307,29 @@ static GtkWidget *w4_build(void) {
 
 // ---------------------------------------------------------------------------
 
+// BENCH_STEP pins one ladder step per launch — a missing or out-of-ladder
+// step is a hard failure, never a silent default (M9/WORKLOADS.md).
+static const int W5_LADDER[8] = {200, 400, 800, 1600, 3200, 6400, 12800,
+                                 25600};
 static int w5_step(void) {
     const char *s = getenv("BENCH_STEP");
-    if (s && *s) {
-        int n = atoi(s);
-        if (n > 0 && n < MAX_RECTS) return n;
+    if (!s || !*s) {
+        g_critical("missing BENCH_STEP for w5; expected one of "
+                   "200..25600 ladder members");
+        g_assert_not_reached();
     }
-    return 200;
+    char *end = NULL;
+    long n = strtol(s, &end, 10);
+    if (!end || *end != '\0') {
+        g_critical("malformed BENCH_STEP '%s'; expected an integer", s);
+        g_assert_not_reached();
+    }
+    for (size_t k = 0; k < sizeof(W5_LADDER) / sizeof(W5_LADDER[0]); k++)
+        if (W5_LADDER[k] == n)
+            return (int)n;
+    g_critical("unrecognized BENCH_STEP %ld; expected one of the W5 ladder",
+               n);
+    g_assert_not_reached();
 }
 
 static void activate(GtkApplication *app, gpointer data) {
