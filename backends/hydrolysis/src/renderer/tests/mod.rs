@@ -50,6 +50,7 @@ mod list_visibility;
 mod menu_shortcuts;
 mod mid_flush_subview;
 mod navigation_back;
+mod navigation_layers;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod nested_menu_dispatch;
 mod perf_full_rebuild;

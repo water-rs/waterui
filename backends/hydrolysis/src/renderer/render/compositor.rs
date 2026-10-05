@@ -59,6 +59,7 @@ pub struct ActiveSceneLayer {
 /// A `SceneView` leaf presenting this frame: the retained content is
 /// re-recorded onto its keyed layer every frame inside
 /// [`waterui_graphics::SceneContent::build_scene`].
+#[derive(Clone)]
 pub struct SceneContentLayer {
     /// The mount identity: which visual node presents this content.
     pub(crate) key: crate::renderer::retained::RenderKey,
@@ -83,6 +84,7 @@ pub struct SceneContentLayer {
 
 /// A `GpuContentView` leaf presenting this frame: install-once engine content
 /// sized per frame on a keyed layer.
+#[derive(Clone)]
 pub struct GpuContentLayer {
     /// The mount identity: which visual node presents this content.
     pub(crate) key: crate::renderer::retained::RenderKey,
@@ -100,6 +102,7 @@ pub struct GpuContentLayer {
 /// An `ExternalFrameView` leaf presenting this frame: a keyed layer that
 /// drains the stream's mailbox each pass and hands the newest published
 /// frame to the engine as its layer content.
+#[derive(Clone)]
 pub struct ExternalFrameLayer {
     /// The mount identity: which visual node presents this content.
     pub(crate) key: crate::renderer::retained::RenderKey,
@@ -116,6 +119,7 @@ pub struct ExternalFrameLayer {
 
 /// A `FilteredView` wrapper presenting this frame: a keyed layer carrying the
 /// registered `Filter`, whose children mount under it as group layers.
+#[derive(Clone)]
 pub struct FilteredLayer {
     /// The mount identity: which visual node owns this filter.
     pub(crate) key: crate::renderer::retained::RenderKey,
@@ -144,6 +148,7 @@ pub(crate) struct NativeViewLayer {
     pub(crate) occlusion: Rc<RefCell<Vec<kurbo::Rect>>>,
 }
 
+#[derive(Clone)]
 pub enum RenderLayer {
     /// Positional recorded content: a contiguous run of scene ops drained by
     /// `flush_scene_layer` shows on the segment layer at that stack position.
@@ -264,10 +269,95 @@ impl<'a> HydrolysisRenderTarget<'a> {
     }
 }
 
+/// A subtree's contribution to the frame, recorded in the subtree's own local
+/// space: the scene segments it drew and the keyed layers (scene content, GPU
+/// content, external frames, filtered groups, native views) between them, in
+/// bottom-to-top order, each carrying only the clip/opacity scopes opened
+/// inside the subtree.
+///
+/// A navigation page or a matched-transition element is recorded this way and
+/// presented later, at a transform the recording does not know, possibly more
+/// than once and under transition scopes:
+/// [`HydrolysisRenderer::present_layers`] places every layer, not only the
+/// drawing, so content on its own layer moves with the subtree.
+#[derive(Clone, Default)]
+pub struct CapturedLayers(pub(crate) Vec<RenderLayer>);
+
+impl CapturedLayers {
+    /// Appends `other`'s layers above these.
+    pub(crate) fn extend(&mut self, other: &Self) {
+        self.0.extend(other.0.iter().cloned());
+    }
+}
+
+impl RenderLayer {
+    /// This layer, recorded in a captured subtree's local space, placed by
+    /// `transform` under the presenting frame's open `ancestry`. A scene
+    /// segment is re-recorded through `transform`; a keyed layer's placement
+    /// and its own scopes are mapped and the ancestry is prepended to them.
+    pub(crate) fn placed(&self, transform: kurbo::Affine, ancestry: &[ActiveSceneLayer]) -> Self {
+        let scopes = |own: &[ActiveSceneLayer]| -> Vec<ActiveSceneLayer> {
+            ancestry
+                .iter()
+                .cloned()
+                .chain(own.iter().map(|scope| scope.placed(transform)))
+                .collect()
+        };
+        match self {
+            Self::Scene(recording) => {
+                let mut placed = Recording::new();
+                placed.append(recording, transform);
+                Self::Scene(placed)
+            }
+            Self::SceneContent(layer) => Self::SceneContent(SceneContentLayer {
+                transform: transform * layer.transform,
+                active_layers: scopes(&layer.active_layers),
+                ..layer.clone()
+            }),
+            Self::GpuContent(layer) => Self::GpuContent(GpuContentLayer {
+                transform: transform * layer.transform,
+                active_layers: scopes(&layer.active_layers),
+                ..layer.clone()
+            }),
+            Self::ExternalFrame(layer) => Self::ExternalFrame(ExternalFrameLayer {
+                transform: transform * layer.transform,
+                active_layers: scopes(&layer.active_layers),
+                ..layer.clone()
+            }),
+            // A filtered group's children carry only the scopes inside the
+            // group, so they take the transform but no outer ancestry.
+            Self::Filtered(layer) => Self::Filtered(FilteredLayer {
+                children: layer
+                    .children
+                    .iter()
+                    .map(|child| child.placed(transform, &[]))
+                    .collect(),
+                active_layers: scopes(&layer.active_layers),
+                ..layer.clone()
+            }),
+            #[cfg(hydrolysis_macos_system_webview)]
+            Self::NativeView(layer) => Self::NativeView(NativeViewLayer {
+                transform: transform * layer.transform,
+                active_layers: scopes(&layer.active_layers),
+                ..layer.clone()
+            }),
+        }
+    }
+}
+
 /// One layer fully prepared for the final composite pass: its content and mask
 /// views (pooled textures ride along so they return to the pool afterwards)
 /// plus the 80-byte compositor uniform.
 impl ActiveSceneLayer {
+    /// This scope, recorded in a captured subtree's local space, placed by
+    /// `transform`.
+    pub(crate) fn placed(&self, transform: kurbo::Affine) -> Self {
+        Self {
+            transform: transform * self.transform,
+            ..self.clone()
+        }
+    }
+
     pub(crate) fn push_to_scene(&self, scene: &mut Recording) {
         match &self.shape {
             LayerShape::Rect(rect) => {
