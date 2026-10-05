@@ -16,8 +16,8 @@ use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 
-use jni::objects::{Global, JClass, JIntArray, JObject, JObjectArray, JString, JValue};
-use jni::signature::MethodSignature;
+use jni::objects::{Global, JClass, JIntArray, JMethodID, JObject, JObjectArray, JString, JValue};
+use jni::signature::{MethodSignature, Primitive, ReturnType};
 use jni::strings::JNIStr;
 use jni::sys::{jint, jintArray, jlong, jobject, jobjectArray};
 use jni::{Env, EnvUnowned, jni_sig, jni_str};
@@ -33,6 +33,11 @@ const WATCHER_STRUCT_CLASS: &JNIStr = jni_str!("dev/waterui/android/runtime/Watc
 const WATCHER_STRUCT_CTOR: &MethodSignature<'static, 'static> = &jni_sig!("(JJJ)V");
 const WATCHER_METADATA_CLASS: &JNIStr = jni_str!("dev/waterui/android/reactive/WuiWatcherMetadata");
 const WATCHER_METADATA_CTOR: &MethodSignature<'static, 'static> = &jni_sig!("(J)V");
+const WATCHER_REGISTER_SIG: &MethodSignature<'static, 'static> =
+    &jni_sig!("(Ldev/waterui/android/reactive/WatcherCallback;)J");
+const WATCHER_UNREGISTER_SIG: &MethodSignature<'static, 'static> = &jni_sig!("(J)V");
+const WATCHER_DISPATCH_SIG: &MethodSignature<'static, 'static> =
+    &jni_sig!("(JLjava/lang/Object;Ldev/waterui/android/reactive/WuiWatcherMetadata;)V");
 const WORKING_COLOR_CLASS: &JNIStr = jni_str!("dev/waterui/android/runtime/WorkingColorStruct");
 const WORKING_COLOR_CTOR: &MethodSignature<'static, 'static> = &jni_sig!("(FFFF)V");
 const BITMAP_CLASS: &JNIStr = jni_str!("dev/waterui/android/runtime/BitmapStruct");
@@ -940,12 +945,19 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropWatcherGuard<'loc
 // 5. callPtr converts value to Java and invokes callback.onChanged(value, metadata)
 
 use jni::JavaVM;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 struct JavaConstructor {
     class: Global<JClass<'static>>,
     method: jni::sys::jmethodID,
 }
+
+// SAFETY: the raw method id is only ever passed back to JNI for the class it
+// was resolved on, and the `Global` keeps that class loaded for the
+// constructor's lifetime; method ids are valid across threads.
+unsafe impl Send for JavaConstructor {}
+// SAFETY: `new_object` takes `&self` and uses the id read-only.
+unsafe impl Sync for JavaConstructor {}
 
 impl JavaConstructor {
     fn load(
@@ -990,28 +1002,229 @@ impl JavaConstructor {
     }
 }
 
-/// Watcher-owned JNI capabilities and the Java callback reference.
-struct WatcherData {
-    callback: jni::objects::Global<JObject<'static>>,
-    jvm: Arc<JavaVM>,
+/// Per-runtime JNI state the watcher path needs.
+///
+/// Watchers used to retain a global reference per callback and per class, so
+/// a few thousand live watchers overflowed ART's 51,200-entry global
+/// reference table. Now each `WuiEnvironment` creates one of these through
+/// `initWatcherContext` — the same Kotlin object that owns the environment's
+/// native pointer creates this context and its `WatcherRegistry` instance —
+/// and keeps the handle alive until the environment is released. The only
+/// global reference the whole watcher path holds is the one to that registry
+/// instance; constructors and method ids are cached here per class, once per
+/// runtime. Kotlin passes the handle to every `create*Watcher` call, so each
+/// watcher holds an `Arc` of it — no statics, no global state.
+pub(crate) struct JniWatcherContext {
+    jvm: JavaVM,
+    /// The environment's `WatcherRegistry` instance.
+    registry: Global<JObject<'static>>,
+    /// `WatcherRegistry` instance methods, resolved once here.
+    register_method: JMethodID,
+    unregister_method: JMethodID,
+    dispatch_method: JMethodID,
+    /// `WuiWatcherMetadata(long)` constructor — every dispatch wraps the
+    /// signal's metadata pointer in one of these.
     metadata_constructor: JavaConstructor,
-    value_constructors: Vec<(&'static JNIStr, JavaConstructor)>,
+    /// Value-class constructors memoized per class as watchers need them.
+    value_constructors: Mutex<Vec<(&'static JNIStr, Arc<JavaConstructor>)>>,
+}
+
+// SAFETY: the JavaVM handle, the global reference and the cached ids are all
+// process-wide JNI resources only used for the calls they were resolved for;
+// the constructor memo is the only mutable member and it is `Mutex`-guarded.
+unsafe impl Send for JniWatcherContext {}
+// SAFETY: same reasoning — `&self` methods only invoke JNI calls.
+unsafe impl Sync for JniWatcherContext {}
+
+impl JniWatcherContext {
+    fn new(env: &mut Env, registry: &JObject) -> Self {
+        let jvm = env.get_java_vm().expect("Failed to get JavaVM");
+        let registry = env
+            .new_global_ref(registry)
+            .expect("failed to retain watcher registry");
+        let registry_class = env
+            .get_object_class(&registry)
+            .expect("WatcherRegistry class not found");
+        let mut method =
+            |name: &'static JNIStr, signature: &'static MethodSignature<'static, 'static>| {
+                env.get_method_id(&registry_class, name, signature)
+                    .unwrap_or_else(|_| {
+                        panic!(
+                            "WatcherRegistry method not found: {name}{}",
+                            signature.sig()
+                        )
+                    })
+            };
+        Self {
+            jvm,
+            registry,
+            register_method: method(jni_str!("register"), WATCHER_REGISTER_SIG),
+            unregister_method: method(jni_str!("unregister"), WATCHER_UNREGISTER_SIG),
+            dispatch_method: method(jni_str!("dispatch"), WATCHER_DISPATCH_SIG),
+            metadata_constructor: JavaConstructor::load(
+                env,
+                WATCHER_METADATA_CLASS,
+                WATCHER_METADATA_CTOR,
+            ),
+            value_constructors: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Retains `callback` in the environment's registry and returns the id
+    /// native code dispatches through.
+    fn register(&self, env: &mut Env, callback: &JObject) -> jlong {
+        let args = [JValue::Object(callback).as_jni()];
+        // SAFETY: `register_method` was resolved on `registry`'s class in `new`
+        // with this exact signature.
+        unsafe {
+            env.call_method_unchecked(
+                &self.registry,
+                self.register_method,
+                ReturnType::Primitive(Primitive::Long),
+                &args,
+            )
+        }
+        .expect("Failed to register watcher callback")
+        .j()
+        .expect("WatcherRegistry.register must return a long")
+    }
+
+    /// Forwards a value change to the callback registered under `id`.
+    fn dispatch(&self, env: &mut Env, id: jlong, value: &JObject, metadata: &JObject) {
+        let args = [
+            JValue::Long(id).as_jni(),
+            JValue::Object(value).as_jni(),
+            JValue::Object(metadata).as_jni(),
+        ];
+        // SAFETY: `dispatch_method` was resolved on `registry`'s class in `new`
+        // with this exact signature.
+        unsafe {
+            env.call_method_unchecked(
+                &self.registry,
+                self.dispatch_method,
+                ReturnType::Primitive(Primitive::Void),
+                &args,
+            )
+        }
+        .expect("Failed to dispatch watcher callback");
+    }
+
+    /// Releases the callback `id` was registered under.
+    fn unregister(&self, env: &mut Env, id: jlong) {
+        let args = [JValue::Long(id).as_jni()];
+        // SAFETY: `unregister_method` was resolved on `registry`'s class in
+        // `new` with this exact signature.
+        unsafe {
+            env.call_method_unchecked(
+                &self.registry,
+                self.unregister_method,
+                ReturnType::Primitive(Primitive::Void),
+                &args,
+            )
+        }
+        .expect("Failed to unregister watcher callback");
+    }
+
+    /// The constructor for `class_name`, loaded once per context.
+    fn constructor(
+        &self,
+        env: &mut Env,
+        class_name: &'static JNIStr,
+        descriptor: &'static MethodSignature<'static, 'static>,
+    ) -> Arc<JavaConstructor> {
+        let mut cache = self
+            .value_constructors
+            .lock()
+            .expect("constructor cache poisoned");
+        if let Some((_, constructor)) = cache.iter().find(|(name, _)| *name == class_name) {
+            return Arc::clone(constructor);
+        }
+        let constructor = Arc::new(JavaConstructor::load(env, class_name, descriptor));
+        cache.push((class_name, Arc::clone(&constructor)));
+        constructor
+    }
+}
+
+/// The boxed `Arc` Kotlin holds as the native context handle.
+type WatcherContextHandle = Arc<JniWatcherContext>;
+
+/// Clones the context `ptr` names for a watcher being created.
+fn watcher_context(ptr: jlong) -> WatcherContextHandle {
+    // SAFETY: `ptr` is the handle `initWatcherContext` returned, kept alive by
+    // the owning `WuiEnvironment`; `dropWatcherContext` is its only releaser,
+    // and Kotlin cannot call create*Watcher after releasing the environment.
+    unsafe { (*(ptr as *const WatcherContextHandle)).clone() }
+}
+
+/// Creates the JNI context `create*Watcher` calls take as their first
+/// argument. `WuiEnvironment` calls this in its constructor — the same place
+/// its environment pointer is created — passing its `WatcherRegistry`
+/// instance; `dropWatcherContext` frees the handle when it is released.
+#[unsafe(no_mangle)]
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_initWatcherContext<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    registry: JObject<'local>,
+) -> jlong {
+    super::with_env(&mut env, |env| {
+        Box::into_raw(Box::new(WatcherContextHandle::new(JniWatcherContext::new(
+            env, &registry,
+        )))) as jlong
+    })
+}
+
+/// Frees the context handle `initWatcherContext` returned.
+///
+/// Watchers each hold an `Arc` clone of the context, so the registry global
+/// reference it carries is released only once every watcher under it has
+/// dropped as well.
+#[unsafe(no_mangle)]
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropWatcherContext<'local>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    context_ptr: jlong,
+) {
+    // SAFETY: `context_ptr` is the live handle `initWatcherContext` returned,
+    // freed exactly once by the releasing `WuiEnvironment`.
+    unsafe { drop(Box::from_raw(context_ptr as *mut WatcherContextHandle)) };
+}
+
+/// Watcher-owned JNI capabilities and the callback's registry id.
+struct WatcherData {
+    /// Id under which the environment's `WatcherRegistry` retains this
+    /// watcher's Java callback; the registry resolves it on each dispatch, so
+    /// no global reference is held per watcher.
+    callback_id: jlong,
+    /// Shared per-runtime JNI state; `watcher_drop` keeps an `Arc` of it so
+    /// the registry reference outlives the last watcher that used it.
+    ctx: Arc<JniWatcherContext>,
+    /// This watcher type's value-class constructors, resolved through the
+    /// context's per-runtime memo.
+    value_constructors: Vec<(&'static JNIStr, Arc<JavaConstructor>)>,
 }
 
 impl WatcherData {
     fn constructor(&self, class_name: &'static JNIStr) -> &JavaConstructor {
         self.value_constructors
             .iter()
-            .find_map(|(name, constructor)| (*name == class_name).then_some(constructor))
+            .find_map(|(name, constructor)| (*name == class_name).then_some(&**constructor))
             .unwrap_or_else(|| panic!("watcher does not own constructor for {class_name}"))
     }
 }
 
-/// Drop function for watcher data - releases the `Global<JObject<'static>>`.
+/// Drop function for watcher data - unregisters the callback and frees the box.
 unsafe extern "C" fn watcher_drop(data: *mut ()) {
     // SAFETY: `data` is the boxed `Rc<WatcherData>` that `create_watcher_struct_with_call`
     // registered with this drop entry point, and the signal invokes it once.
-    let _: Box<Rc<WatcherData>> = unsafe { Box::from_raw(data.cast::<Rc<WatcherData>>()) };
+    let watcher_data = unsafe { Box::from_raw(data.cast::<Rc<WatcherData>>()) };
+    // A failed attach must not silently skip the unregister: the callback
+    // would stay retained in the registry forever. Attach failure is
+    // unrecoverable here, so it fails loudly like every other watcher JNI
+    // entry point.
+    super::with_attached_env(&watcher_data.ctx.jvm, |env| {
+        watcher_data.ctx.unregister(env, watcher_data.callback_id);
+    })
+    .expect("Failed to attach watcher JVM thread for unregister");
 }
 
 /// Clones the watcher's own handle to its JNI capabilities.
@@ -1032,7 +1245,7 @@ fn with_watcher_env<R>(
     // SAFETY: every call entry point below is reached only through the watcher the
     // payload was registered with, which the signal keeps alive until `watcher_drop`.
     let watcher_data = unsafe { retain_watcher_data(data) };
-    super::with_attached_env(&watcher_data.jvm, |env| operation(env, &watcher_data))
+    super::with_attached_env(&watcher_data.ctx.jvm, |env| operation(env, &watcher_data))
         .expect("Failed to attach watcher JVM thread")
 }
 
@@ -1060,28 +1273,13 @@ fn create_metadata_object<'local>(
     // the Java object built from it is in use.
     let owned = unsafe { Box::from_raw(metadata_ptr) };
     let object = watcher_data
+        .ctx
         .metadata_constructor
         .new_object(env, &[JValue::Long((&raw const *owned) as jlong).as_jni()]);
     JavaWatcherMetadata {
         object,
         _owned: owned,
     }
-}
-
-/// Invoke the callback's onChanged method with value and metadata.
-fn invoke_callback<'local>(
-    env: &mut Env<'local>,
-    callback: &jni::objects::Global<JObject<'static>>,
-    value: &JObject<'local>,
-    metadata: &JObject<'local>,
-) {
-    env.call_method(
-        callback.as_obj(),
-        jni_str!("onChanged"),
-        jni_sig!("(Ljava/lang/Object;Ldev/waterui/android/reactive/WuiWatcherMetadata;)V"),
-        &[JValue::Object(value), JValue::Object(metadata)],
-    )
-    .expect("Failed to call onChanged");
 }
 
 // ============================================================================
@@ -1110,7 +1308,9 @@ unsafe extern "C" fn watcher_call_bool(
             .expect("Expected object");
 
         let metadata = create_metadata_object(env, watcher_data, metadata_ptr);
-        invoke_callback(env, &watcher_data.callback, &java_value, &metadata);
+        watcher_data
+            .ctx
+            .dispatch(env, watcher_data.callback_id, &java_value, &metadata);
     });
 }
 
@@ -1136,7 +1336,9 @@ unsafe extern "C" fn watcher_call_int(
             .expect("Expected object");
 
         let metadata = create_metadata_object(env, watcher_data, metadata_ptr);
-        invoke_callback(env, &watcher_data.callback, &java_value, &metadata);
+        watcher_data
+            .ctx
+            .dispatch(env, watcher_data.callback_id, &java_value, &metadata);
     });
 }
 
@@ -1162,7 +1364,9 @@ unsafe extern "C" fn watcher_call_double(
             .expect("Expected object");
 
         let metadata = create_metadata_object(env, watcher_data, metadata_ptr);
-        invoke_callback(env, &watcher_data.callback, &java_value, &metadata);
+        watcher_data
+            .ctx
+            .dispatch(env, watcher_data.callback_id, &java_value, &metadata);
     });
 }
 
@@ -1188,7 +1392,9 @@ unsafe extern "C" fn watcher_call_float(
             .expect("Expected object");
 
         let metadata = create_metadata_object(env, watcher_data, metadata_ptr);
-        invoke_callback(env, &watcher_data.callback, &java_value, &metadata);
+        watcher_data
+            .ctx
+            .dispatch(env, watcher_data.callback_id, &java_value, &metadata);
     });
 }
 
@@ -1206,7 +1412,9 @@ unsafe extern "C" fn watcher_call_string(
             .expect("Failed to create Java string");
 
         let metadata = create_metadata_object(env, watcher_data, metadata_ptr);
-        invoke_callback(env, &watcher_data.callback, &java_string, &metadata);
+        watcher_data
+            .ctx
+            .dispatch(env, watcher_data.callback_id, &java_string, &metadata);
     });
 }
 
@@ -1231,7 +1439,9 @@ fn invoke_owned_pointer_callback(
             .expect("Expected object");
 
         let metadata = create_metadata_object(env, watcher_data, metadata_ptr);
-        invoke_callback(env, &watcher_data.callback, &java_value, &metadata);
+        watcher_data
+            .ctx
+            .dispatch(env, watcher_data.callback_id, &java_value, &metadata);
     });
 }
 
@@ -1272,7 +1482,9 @@ unsafe extern "C" fn watcher_call_bitmap(
         );
 
         let metadata = create_metadata_object(env, watcher_data, metadata_ptr);
-        invoke_callback(env, &watcher_data.callback, &java_value, &metadata);
+        watcher_data
+            .ctx
+            .dispatch(env, watcher_data.callback_id, &java_value, &metadata);
     });
 }
 
@@ -1293,7 +1505,9 @@ unsafe extern "C" fn watcher_call_working_color(
         );
 
         let metadata = create_metadata_object(env, watcher_data, metadata_ptr);
-        invoke_callback(env, &watcher_data.callback, &java_value, &metadata);
+        watcher_data
+            .ctx
+            .dispatch(env, watcher_data.callback_id, &java_value, &metadata);
     });
 }
 
@@ -1327,7 +1541,9 @@ unsafe extern "C" fn watcher_call_resolved_font(
         );
 
         let metadata = create_metadata_object(env, watcher_data, metadata_ptr);
-        invoke_callback(env, &watcher_data.callback, &java_value, &metadata);
+        watcher_data
+            .ctx
+            .dispatch(env, watcher_data.callback_id, &java_value, &metadata);
     });
 }
 
@@ -1340,7 +1556,9 @@ unsafe extern "C" fn watcher_call_styled_str(
     with_watcher_env(data, |env, watcher_data| {
         let java_value = wui_styled_str_to_java(env, watcher_data, value);
         let metadata = create_metadata_object(env, watcher_data, metadata_ptr);
-        invoke_callback(env, &watcher_data.callback, &java_value, &metadata);
+        watcher_data
+            .ctx
+            .dispatch(env, watcher_data.callback_id, &java_value, &metadata);
     });
 }
 
@@ -1357,7 +1575,9 @@ unsafe extern "C" fn watcher_call_styled_str_plain(
             .new_string(value.to_plain().as_str())
             .expect("Failed to create plain styled-string value");
         let metadata = create_metadata_object(env, watcher_data, metadata_ptr);
-        invoke_callback(env, &watcher_data.callback, &java_value, &metadata);
+        watcher_data
+            .ctx
+            .dispatch(env, watcher_data.callback_id, &java_value, &metadata);
     });
 }
 
@@ -1457,7 +1677,9 @@ unsafe extern "C" fn watcher_call_date_vec(
         value.consume();
 
         let metadata = create_metadata_object(env, watcher_data, metadata_ptr);
-        invoke_callback(env, &watcher_data.callback, &array, &metadata);
+        watcher_data
+            .ctx
+            .dispatch(env, watcher_data.callback_id, &array, &metadata);
     });
 }
 
@@ -1481,7 +1703,9 @@ unsafe extern "C" fn watcher_call_date_time(
         );
 
         let metadata = create_metadata_object(env, watcher_data, metadata_ptr);
-        invoke_callback(env, &watcher_data.callback, &java_value, &metadata);
+        watcher_data
+            .ctx
+            .dispatch(env, watcher_data.callback_id, &java_value, &metadata);
     });
 }
 
@@ -1522,7 +1746,9 @@ unsafe extern "C" fn watcher_call_id_vec(
             .expect("watcher_call_id_vec: failed to write callback ids");
         let array = JObject::from(array);
         let metadata = create_metadata_object(env, watcher_data, metadata_ptr);
-        invoke_callback(env, &watcher_data.callback, &array, &metadata);
+        watcher_data
+            .ctx
+            .dispatch(env, watcher_data.callback_id, &array, &metadata);
     });
 }
 
@@ -1561,8 +1787,13 @@ unsafe extern "C" fn watcher_call_horizontal_alignment(
 // ============================================================================
 
 /// Generic watcher creation with type-specific call function.
+///
+/// `context_ptr` is the `JniWatcherContext` handle the calling
+/// `WuiEnvironment` owns; the callback registers under the environment's
+/// `WatcherRegistry` instance through it.
 fn create_watcher_struct_with_call<'local, F>(
     env: &mut Env<'local>,
+    context_ptr: jlong,
     callback: &JObject<'local>,
     call_fn: F,
     constructors: &[(&'static JNIStr, &'static MethodSignature<'static, 'static>)],
@@ -1570,27 +1801,19 @@ fn create_watcher_struct_with_call<'local, F>(
 where
     F: Fn() -> *const (),
 {
-    let jvm = Arc::new(env.get_java_vm().expect("Failed to get JavaVM"));
+    let ctx = watcher_context(context_ptr);
 
-    let global_callback = env
-        .new_global_ref(callback)
-        .expect("Failed to create global ref for callback");
-    let metadata_constructor =
-        JavaConstructor::load(env, WATCHER_METADATA_CLASS, WATCHER_METADATA_CTOR);
+    // The environment's registry retains the callback; this side keeps only
+    // the id, so a live watcher consumes no global references.
+    let callback_id = ctx.register(env, callback);
     let value_constructors = constructors
         .iter()
-        .map(|&(class_name, descriptor)| {
-            (
-                class_name,
-                JavaConstructor::load(env, class_name, descriptor),
-            )
-        })
+        .map(|&(class_name, descriptor)| (class_name, ctx.constructor(env, class_name, descriptor)))
         .collect();
 
     let watcher_data = Box::new(Rc::new(WatcherData {
-        callback: global_callback,
-        jvm,
-        metadata_constructor,
+        callback_id,
+        ctx,
         value_constructors,
     }));
     let data_ptr = Box::into_raw(watcher_data) as jlong;
@@ -1618,11 +1841,13 @@ macro_rules! jni_create_watcher_typed {
             extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_create $name Watcher>]<'local>(
                 mut env: EnvUnowned<'local>,
                 _class: JClass<'local>,
+                context_ptr: jlong,
                 callback: JObject<'local>,
             ) -> jobject {
                 super::with_env(&mut env, |env| {
                     create_watcher_struct_with_call(
                         env,
+                        context_ptr,
                         &callback,
                         || $call_fn as *const (),
                         $constructors,
