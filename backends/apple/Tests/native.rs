@@ -287,6 +287,11 @@ mod leaf {
             ]
         };
         window.addSubview(content);
+        // Size the content to the window's bounds the way
+        // `set_content_view` does on macOS — `addSubview` alone leaves it
+        // at its zero frame, so surfaces that read their viewport (lazy
+        // containers especially) would see an empty window.
+        cocoa_ui::view::set_frame(content, cocoa_ui::view::bounds(&window));
         window
     }
 }
