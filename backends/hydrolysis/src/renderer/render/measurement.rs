@@ -980,8 +980,9 @@ pub fn measure_tabs_layout(
 
 /// The proposal the rendered content rect hands a tab's content: the pane
 /// minus the tab bar — a bottom strip for `Automatic`/`TabBar`, a leading
-/// strip for `Sidebar` (see [`tabs_bar_and_content_rect`]). Bounded axes echo
-/// the offer; an axis the container left open stays open.
+/// strip for `Sidebar` (the docked band §7.1's chrome split carves out at
+/// render time). Bounded axes echo the offer; an axis the container left
+/// open stays open.
 pub fn tabs_content_proposal(
     proposal: ProposalSize,
     style: NativeTabStyle,
@@ -1000,39 +1001,6 @@ pub fn tabs_content_proposal(
                 .map(|width| crate::num_cast::f64_as_f32((f64::from(width) - bar_extent).max(0.0))),
             proposal.height,
         ),
-    }
-}
-
-pub fn tabs_bar_and_content_rect(
-    bounds: kurbo::Rect,
-    style: NativeTabStyle,
-    bar_extent: f64,
-) -> (kurbo::Rect, kurbo::Rect) {
-    match style {
-        NativeTabStyle::Automatic | NativeTabStyle::TabBar => {
-            let bar_height = bar_extent.min(bounds.height());
-            (
-                kurbo::Rect::new(
-                    bounds.x0,
-                    (bounds.y1 - bar_height).max(bounds.y0),
-                    bounds.x1,
-                    bounds.y1,
-                ),
-                kurbo::Rect::new(
-                    bounds.x0,
-                    bounds.y0,
-                    bounds.x1,
-                    (bounds.y1 - bar_height).max(bounds.y0),
-                ),
-            )
-        }
-        NativeTabStyle::Sidebar => {
-            let bar_width = bar_extent.min(bounds.width());
-            (
-                kurbo::Rect::new(bounds.x0, bounds.y0, bounds.x0 + bar_width, bounds.y1),
-                kurbo::Rect::new(bounds.x0 + bar_width, bounds.y0, bounds.x1, bounds.y1),
-            )
-        }
     }
 }
 

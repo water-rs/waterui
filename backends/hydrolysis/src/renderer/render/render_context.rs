@@ -186,6 +186,42 @@ impl<'a> WidgetRenderContext<'a> {
         )
     }
 
+    /// §7.1's chrome split on `edge` for this widget's
+    /// [`bounds`](Self::bounds): the band `extent` thick that a bar docked
+    /// to `edge` occupies and the remainder the hosted content keeps — see
+    /// [`SafeAreaLayout::docked_bar_split`]. A widget with no safe-area
+    /// context keeps `bounds`' own edge, the placement every context-free
+    /// chrome container gets.
+    pub(crate) fn chrome_bar_and_content(
+        &self,
+        edge: crate::renderer::Edge,
+        extent: f64,
+    ) -> (kurbo::Rect, kurbo::Rect) {
+        self.safe_area.as_ref().map_or_else(
+            || edge.split_band(self.bounds, edge.frame_edge(self.bounds), extent),
+            |area| area.docked_bar_split(self.bounds, edge, extent),
+        )
+    }
+
+    /// The §7.1 context for a retained view the widget places inside a
+    /// chrome *bar* docked to `edge` — a tab item, a toolbar item, the
+    /// bar's title and search field. §7.1 lays a bar docked to its edge
+    /// out clear of the container region only, so the keyboard covers it
+    /// instead of lifting it: [`SafeAreaLayout::releasing_keyboard`]
+    /// moves that edge's boundary to the container region's depth, while
+    /// the bar's fills and extensions still reach the window edge through
+    /// both regions. [`Self::safe_area_for`] on the same rect returns the
+    /// ambient context. `None` where there is no safe-area context.
+    pub(crate) fn bar_area_for(
+        &self,
+        rect: kurbo::Rect,
+        edge: crate::renderer::Edge,
+    ) -> Option<SafeAreaLayout> {
+        self.safe_area.as_ref().map(|area| {
+            area.releasing_keyboard(edge)
+                .with_frame(self.hosted_frame(area, rect))
+        })
+    }
     pub(crate) const fn render_context(&self) -> RenderContext {
         RenderContext::with_transforms(self.bounds, self.transform, self.hit_transform)
     }
