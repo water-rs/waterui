@@ -343,19 +343,29 @@ impl RetainedSubview {
         }
     }
 
-    /// Build (once), lay out at `size`, and flush the sub-view into a fresh,
-    /// standalone [`Recording`] in identity (local) coordinates — the retained
-    /// analogue of [`HydrolysisRenderer::render_subtree_scene`] for a node that
-    /// must survive across flushes (the navigation-stack root). The renderer's
-    /// scene is swapped out, the node flushes into the temporary scene, then the
-    /// scene is swapped back, so the returned scene can be replayed by the
-    /// navigation transition (cross-fade `from`/`to`) without re-dispatch.
+    /// Build (once), lay out at `placement.size`, and flush the sub-view into a
+    /// fresh, standalone [`Recording`] in identity (local) coordinates — the
+    /// retained analogue of [`HydrolysisRenderer::render_subtree_scene`] for a
+    /// node that must survive across flushes (the navigation-stack root). The
+    /// renderer's scene is swapped out, the node flushes into the temporary
+    /// scene, then the scene is swapped back, so the returned scene can be
+    /// replayed by the navigation transition (cross-fade `from`/`to`) without
+    /// re-dispatch.
+    ///
+    /// Only the drawing is local. Hit targets and accessibility bounds the
+    /// flush registers are not replayed — they are live for this frame — so
+    /// they land in window hit-test space through `placement.hit_transform`,
+    /// the same space the replayed scene is presented in.
     pub(crate) fn render_built_scene(
         &mut self,
         renderer: &mut HydrolysisRenderer,
         env: &Environment,
-        size: Size,
+        placement: CapturedScenePlacement,
     ) -> NavigationCapturedScene {
+        let CapturedScenePlacement {
+            size,
+            hit_transform,
+        } = placement;
         self.ensure_built(renderer, env);
         let mut scene = Recording::new();
         let Some(node) = &mut self.node else {
@@ -374,7 +384,7 @@ impl RetainedSubview {
         let local_ctx = RenderContext::with_transforms(
             kurbo::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
             kurbo::Affine::IDENTITY,
-            kurbo::Affine::IDENTITY,
+            hit_transform,
         );
         renderer.begin_navigation_scene_capture();
         renderer.push_lazy_viewport(LazyViewport {
@@ -395,18 +405,29 @@ impl RetainedSubview {
         &mut self,
         renderer: &mut HydrolysisRenderer,
         env: &Environment,
-        size: Size,
+        placement: CapturedScenePlacement,
     ) -> NavigationCapturedScene {
         let previous_hit_test_opacity = renderer.hit_test.hit_test_opacity;
         renderer.hit_test.hit_test_opacity = 0.0;
         #[cfg(feature = "accessibility")]
         renderer.push_accessibility_suppression();
-        let scene = self.render_built_scene(renderer, env, size);
+        let scene = self.render_built_scene(renderer, env, placement);
         #[cfg(feature = "accessibility")]
         renderer.pop_accessibility_suppression();
         renderer.hit_test.hit_test_opacity = previous_hit_test_opacity;
         scene
     }
+}
+
+/// Where a scene captured by [`RetainedSubview::render_built_scene`] is
+/// presented: the size its content lays out at, and the transform from its
+/// local space into window hit-test space. The drawing is recorded local and
+/// placed by whoever replays it; the hit targets and accessibility bounds are
+/// registered live and so must already carry the placement.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CapturedScenePlacement {
+    pub(crate) size: Size,
+    pub(crate) hit_transform: kurbo::Affine,
 }
 
 /// A cache of retained node sub-views for a *virtualized* collection (a lazy
