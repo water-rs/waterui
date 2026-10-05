@@ -548,6 +548,12 @@ impl HostView {
         self.ivars().measure.replace(Some(Rc::new(handler)));
     }
 
+    /// Drops the installed measure handler — the leaf's detach boundary,
+    /// after which measurements fall back to `UIView`'s own intrinsic size.
+    pub fn clear_measure_handler(&self) {
+        self.ivars().measure.replace(None);
+    }
+
     /// Whether the intrinsic content size reports the height the current
     /// Auto Layout width produces.
     ///

@@ -22,16 +22,6 @@ concurrency:
   group: browser-runtime-wpe-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  CARGO_TERM_COLOR: always
-  # cargo/rustup retry network failures three times by default; ten
-  # matches the budget install-action sets for its own downloads.
-  CARGO_NET_RETRY: "10"
-  RUSTUP_MAX_RETRIES: "10"
-  # rust-cache and the install-tool binary caches are the only cache
-  # layers (see the note in ci.yml).
-  CARGO_INCREMENTAL: 0
-
 jobs:
   runtime:
     name: Build WPE runtime ${{ matrix.architecture }}
@@ -58,23 +48,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      # The smoke run at the end of `build-runtime.sh` renders the staged
-      # runtime through wgpu, so this leg needs the software Vulkan stack too.
       - uses: ./.github/actions/setup-linux-deps
         with:
-          gpu: "true"
           gcc-version: "12"
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: browser-runtime-${{ matrix.architecture }}
-          cache-on-failure: true
-
-      # Compiles WebKit and the bridge, packages the runtime zip with its
-      # .artifact.json metadata, and finishes by running run-smoke.py against
-      # the staged tree — the same validation a downloaded artifact gets.
+      # Compiles WebKit and the bridge, then packages the runtime zip with
+      # its .artifact.json metadata. The runtime smoke does not run here: it
+      # needs a dma-buf-capable GPU no hosted runner has, so it stays a manual
+      # check via run-smoke.py (#1794).
       - name: Build self-contained WPE runtime
         run: components/platform/browser-wpe/runtime/build-runtime.sh runtime-artifacts
 
@@ -86,15 +67,6 @@ jobs:
           path: |
             runtime-artifacts/*.zip
             runtime-artifacts/*.artifact.json
-
-      - name: Upload WPE validation
-        uses: actions/upload-artifact@v4
-        with:
-          name: browser-validation-wpe-${{ matrix.architecture }}
-          if-no-files-found: error
-          path: |
-            runtime-artifacts/wpe-smoke-*.json
-            runtime-artifacts/wpe-smoke-*.png
 
   # Two matrix legs feed one release, so publishing waits on both rather than
   # letting each attach half a manifest — the same reason the deleted

@@ -189,3 +189,21 @@ pub fn bind_root_window_wires_a_live_window(mtm: MainThreadMarker) {
     // owned-ABI replacement for a free function over a raw handle.
     drop(binding);
 }
+
+/// GPU-surface mounted-scene reach.
+///
+/// The `native_test` module inside `components::gpu_surface` builds a real
+/// `SceneView` mount and drives the production failure drain and completion
+/// settlement paths on it.
+#[cfg(all(target_os = "macos", feature = "gpu_surface"))]
+pub mod gpu_surface {
+    pub use crate::components::gpu_surface::native_test::{MountedSceneSurface, WakeProbe};
+
+    /// Performs the once-per-process `startup::initialize` — called
+    /// once from the `Tests/native.rs` harness's true main thread
+    /// before any trial runs; fixture mounts rely on that explicit
+    /// harness setup.
+    pub fn initialize_process() {
+        let _ = crate::startup::initialize();
+    }
+}

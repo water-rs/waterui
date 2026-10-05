@@ -68,9 +68,3 @@ graphics/cherenkov/scenes/perf/
 graphics/cherenkov/scenes/fonts/_full/
 graphics/cherenkov/scenes/fonts/*.ttf
 graphics/cherenkov/scenes/fonts/OFL.txt
-
-# Android backend build outputs (Gradle) and the local SDK pointer Android
-# Studio writes.
-backends/android/.gradle/
-backends/android/**/build/
-backends/android/local.properties

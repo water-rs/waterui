@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::sync::{Arc, mpsc};
 
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
-use waterui_graphics::cherenkov::{Display, Engine, FrameTime, Next, Surface};
+use waterui_graphics::cherenkov::{DEFAULT_REFRESH, Display, FrameTime, Next, Surface};
 use waterui_graphics::cherenkov_gpu::{
     Gpu,
     interop::{OutputAlpha, OutputColor, Presenter, TextureOutput, TextureTarget, shader_delivery},
@@ -20,7 +20,8 @@ use waterui_graphics::scene_view::{
 };
 use waterui_graphics::wgpu;
 
-use super::{HostedRenderer, HostedView};
+use super::{HostedError, HostedRenderer, HostedView};
+use crate::gpu_runtime::{EngineGeneration, SceneEngine, SceneError, SceneParticipant};
 
 /// Content and its structural invalidation survive ordinary frame submissions.
 pub struct Scene {
@@ -148,63 +149,90 @@ impl HostedView for Scene {
         &mut self,
         runtime: &GpuRuntime,
         context: &Arc<SharedGpuContext>,
+        engines: &Rc<SceneEngine>,
         redraw: &RedrawHandle,
         size: OffscreenSize,
-    ) -> Box<dyn HostedRenderer> {
-        Box::new(SceneRenderer::new(runtime, context, redraw, size, self))
+    ) -> Result<Box<dyn HostedRenderer>, HostedError> {
+        let generation = engines.generation(runtime, context)?;
+        let part = ScenePart::new(&generation, redraw, size, self)?;
+        let participant: Rc<dyn SceneParticipant> = part.clone();
+        generation.mount(&participant);
+        Ok(Box::new(SceneRenderer { generation, part }))
     }
 }
 
-/// One engine generation owns the recording and every resource that it names.
-struct SceneRenderer {
+/// This scene's own share of the generation: its surface, texture target,
+/// held registrations, scene resources and native presenter — everything
+/// except the shared engine. The generation reaches it weakly through
+/// [`SceneParticipant`]; `prepare` runs for it before each batch.
+struct ScenePart {
     surface: Surface<Gpu>,
-    installed: HeldResources,
+    installed: RefCell<HeldResources>,
     resources: SceneResources,
-    engine: Rc<Engine<Gpu>>,
-    context: Arc<SharedGpuContext>,
     textures: mpsc::Receiver<wgpu::Texture>,
-    source: wgpu::Texture,
-    presenter: Presenter,
+    source: RefCell<wgpu::Texture>,
+    presenter: RefCell<Presenter>,
     view: Rc<RefCell<SceneView>>,
     dirty: Rc<Cell<bool>>,
     redraw: RedrawHandle,
+    /// The refresh range this scene's texture target declared.
+    refresh: waterui_graphics::cherenkov::RefreshRange,
     /// The geometry the installed recording was made for: the logical size
     /// handed to `build_scene` and the display scale its root transform
     /// carries. A pixel resize that keeps the logical box but changes the
     /// scale rewrites the recording's transform, so the key is points and
     /// scale together; a headroom-only display update shares the key and
     /// re-records nothing.
-    recorded_geometry: Option<(f32, f32, f64)>,
+    recorded_geometry: Cell<Option<(f32, f32, f64)>>,
+    /// The frame contract `present` last staged — pixel extent plus the
+    /// display update — applied on this surface inside the next batch.
+    staged: Cell<(u32, u32, Display)>,
+    /// Staged state `prepare` has not applied yet.
+    pending: Cell<bool>,
+    /// The production timestamp this scene last prepared into.
+    prepared: Cell<Option<FrameTime>>,
+    /// The failure this scene must report — its own prepare error, or a
+    /// batch failure the generation routed to it.
+    failure: RefCell<Option<Rc<SceneError>>>,
 }
 
-impl SceneRenderer {
+/// The mounted `SceneView`'s handle into an [`EngineGeneration`]: the
+/// shared generation plus this scene's own participant state.
+struct SceneRenderer {
+    generation: Rc<EngineGeneration>,
+    part: Rc<ScenePart>,
+}
+
+impl ScenePart {
     fn new(
-        runtime: &GpuRuntime,
-        context: &Arc<SharedGpuContext>,
+        generation: &Rc<EngineGeneration>,
         redraw: &RedrawHandle,
         size: OffscreenSize,
         scene: &Scene,
-    ) -> Self {
-        let engine = Rc::new(
-            runtime
-                .engine_on(context)
-                .expect("scene engine creation failed"),
-        );
-        let wake = redraw.clone();
-        // Bound recorder operands wake the engine without rebuilding the scene.
-        engine.set_waker(move || wake.request_redraw());
-        let resources = SceneResources::with_shaders(engine.clone(), engine.clone());
+    ) -> Result<Rc<Self>, SceneError> {
+        let context = generation.context().clone();
         let (target, textures) = TextureTarget::new((size.width(), size.height()));
-        let surface = engine
+        // `TextureTarget::new` always opens on the engine's default range;
+        // a `.rate(...)` builder would replace it at construction.
+        let refresh = DEFAULT_REFRESH;
+        let surface = generation
+            .engine()
             .surface(target)
-            .expect("scene surface creation failed");
+            .map_err(SceneError::Surface)?;
+        // Per-surface wake routing: this scene's queued work, completions
+        // and reveal requests wake only its own host, coalesced until the
+        // surface next participates in a frame.
+        {
+            let wake = redraw.clone();
+            surface.set_waker(move || wake.request_redraw());
+        }
         let source = textures
             .try_recv()
-            .expect("scene surface publishes its texture");
+            .map_err(|_| SceneError::MissingTexture)?;
         let presenter = Presenter::new(
             context.device(),
             shader_delivery(context.adapter().get_info().backend, context.device())
-                .expect("scene presentation shaders failed"),
+                .map_err(SceneError::Shaders)?,
         );
         // `rebuild_for_engine` clears the content's engine-bound state,
         // including the watchers its invalidator feeds — so the mounted
@@ -216,54 +244,81 @@ impl SceneRenderer {
             .content_mut()
             .set_invalidator(scene.invalidator.clone());
         scene.dirty.set(true);
-        Self {
+        Ok(Rc::new(Self {
             surface,
-            installed: HeldResources::empty(),
-            resources,
-            engine,
-            context: context.clone(),
+            installed: RefCell::new(HeldResources::empty()),
+            resources: SceneResources::with_shaders(
+                generation.engine().clone(),
+                generation.engine().clone(),
+            ),
             textures,
-            source,
-            presenter,
+            source: RefCell::new(source),
+            presenter: RefCell::new(presenter),
             view: scene.view.clone(),
             dirty: scene.dirty.clone(),
             redraw: redraw.clone(),
-            recorded_geometry: None,
+            refresh,
+            recorded_geometry: Cell::new(None),
+            staged: Cell::new((
+                size.width(),
+                size.height(),
+                Display {
+                    scale: 1.0,
+                    headroom: 1.0,
+                },
+            )),
+            pending: Cell::new(true),
+            prepared: Cell::new(None),
+            failure: RefCell::new(None),
+        }))
+    }
+
+    /// Stages the frame contract `present` was called with; `prepare`
+    /// applies it inside the batch.
+    fn stage(&self, pixels: (u32, u32), display: Display) {
+        if self.staged.get() != (pixels.0, pixels.1, display) {
+            self.staged.set((pixels.0, pixels.1, display));
+            self.pending.set(true);
         }
     }
 
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "native texture extents and backing scales become f32 layout points"
-    )]
-    fn record_if_needed(&mut self, target: &wgpu::Texture, display: Display) {
-        let pixels = (target.width(), target.height());
+    /// Applies the staged contract and any pending content onto this
+    /// scene's own surface — `SceneParticipant::prepare`'s body, kept
+    /// separate so tests can drive it without a batch.
+    fn apply_staged(&self) -> Result<(), SceneError> {
+        let (width, height, display) = self.staged.get();
+        let pixels = (width, height);
         if self.surface.size() != pixels {
-            self.surface
-                .resize(pixels)
-                .expect("scene surface resize failed");
+            self.surface.resize(pixels)?;
         }
+        self.surface.display(display)?;
         let size = (
             f64::from(pixels.0) / display.scale,
             f64::from(pixels.1) / display.scale,
         );
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "native texture extents and backing scales become f32 layout points"
+        )]
         let size = (size.0 as f32, size.1 as f32);
         let dirty = self.dirty.replace(false);
         let geometry = (size.0, size.1, display.scale);
-        if !dirty && self.recorded_geometry == Some(geometry) {
-            return;
+        if dirty || self.recorded_geometry.get() != Some(geometry) {
+            let (recording, held, again) = self.record_content(size.0, size.1, display.scale);
+            self.surface.update(|tx| {
+                tx[self.surface.root()].content(recording);
+            });
+            // Replacing the installed layer precedes releasing the old
+            // registrations.
+            *self.installed.borrow_mut() = held;
+            self.recorded_geometry.set(Some(geometry));
+            if again {
+                self.dirty.set(true);
+                self.redraw.request_redraw();
+            }
         }
-        let (recording, held, again) = self.record_content(size.0, size.1, display.scale);
-        self.surface.update(|tx| {
-            tx[self.surface.root()].content(recording);
-        });
-        // Replacing the installed layer precedes releasing the old registrations.
-        self.installed = held;
-        self.recorded_geometry = Some(geometry);
-        if again {
-            self.dirty.set(true);
-            self.redraw.request_redraw();
-        }
+        self.pending.set(false);
+        Ok(())
     }
 
     /// Records the content's scene at `width` x `height` logical points
@@ -300,26 +355,115 @@ impl SceneRenderer {
     }
 }
 
-impl HostedRenderer for SceneRenderer {
-    fn generation(&self) -> u64 {
-        self.context.generation()
+impl SceneParticipant for ScenePart {
+    fn prepare(&self, time: FrameTime) {
+        match self.apply_staged() {
+            Ok(()) => self.prepared.set(Some(time)),
+            Err(error) => {
+                // A failure already routed stays until its owner settles
+                // it — a later shared preparation never overwrites it.
+                self.failure
+                    .borrow_mut()
+                    .get_or_insert_with(|| Rc::new(error));
+                // Same contract as `note_failure`: this scene's host has
+                // to come back to settle the typed failure.
+                self.redraw.request_redraw();
+            }
+        }
     }
 
-    fn present(&mut self, target: &wgpu::Texture, display: Display, time: FrameTime) -> Next {
-        self.record_if_needed(target, display);
-        self.surface
-            .display(display)
-            .expect("scene display configuration failed");
-        let next = self.engine.render(time).expect("scene rendering failed");
-        for texture in self.textures.try_iter() {
-            self.source = texture;
+    fn produced_at(&self, time: FrameTime) -> bool {
+        self.prepared.get() == Some(time) && !self.pending.get() && !self.dirty.get()
+    }
+
+    fn note_failure(&self, failure: Rc<SceneError>) {
+        // An unsettled earlier failure is never overwritten — the owner
+        // settles the first typed failure it was woken for.
+        self.failure.borrow_mut().get_or_insert(failure);
+        // Wake this scene's own host once through the owned redraw
+        // mechanism: an idle or hidden participant's readiness owner
+        // still has to come back to consume `take_failure` and settle —
+        // the failed generation is never re-produced for it.
+        self.redraw.request_redraw();
+    }
+
+    fn take_failure(&self) -> Option<Rc<SceneError>> {
+        self.failure.borrow_mut().take()
+    }
+}
+
+impl SceneRenderer {
+    #[cfg(all(test, target_os = "macos"))]
+    fn new(
+        runtime: &GpuRuntime,
+        context: &Arc<SharedGpuContext>,
+        engines: &Rc<SceneEngine>,
+        redraw: &RedrawHandle,
+        size: OffscreenSize,
+        scene: &Scene,
+    ) -> Result<Self, Rc<SceneError>> {
+        let generation = engines.generation(runtime, context)?;
+        let part = ScenePart::new(&generation, redraw, size, scene)?;
+        let participant: Rc<dyn SceneParticipant> = part.clone();
+        generation.mount(&participant);
+        Ok(Self { generation, part })
+    }
+
+    /// The context generation this renderer's generation is bound to.
+    #[cfg(all(test, target_os = "macos"))]
+    fn context(&self) -> &Arc<SharedGpuContext> {
+        self.generation.context()
+    }
+
+    /// Applies the staged frame contract now — the test driver for what
+    /// `produce` does inside a batch.
+    #[cfg(all(test, target_os = "macos"))]
+    fn record_if_needed(&self, target: &wgpu::Texture, display: Display) -> Result<(), SceneError> {
+        self.part.stage((target.width(), target.height()), display);
+        self.part.apply_staged()
+    }
+}
+
+impl HostedRenderer for SceneRenderer {
+    fn generation(&self) -> u64 {
+        self.generation.context().generation()
+    }
+
+    fn present(
+        &mut self,
+        target: &wgpu::Texture,
+        display: Display,
+        target_time: FrameTime,
+    ) -> Result<Next, HostedError> {
+        self.part.stage((target.width(), target.height()), display);
+        // The first requesting surface at this target timestamp runs the
+        // batch: every mounted participant's pending content, geometry and
+        // display changes, then one shared engine.render.
+        self.generation.produce(target_time)?;
+        if let Some(failure) = self.part.take_failure() {
+            return Err(HostedError::Scene(failure));
+        }
+        if !self.part.produced_at(target_time) {
+            // Mounted or invalidated after the batch — explicitly owed a
+            // later frame, never compositing a stale texture into this
+            // timestamp and never reporting Idle.
+            return Ok(Next::At {
+                time: target_time.0,
+                rate: self.part.refresh.clone(),
+            });
+        }
+        for texture in self.part.textures.try_iter() {
+            *self.part.source.borrow_mut() = texture;
         }
         let source = self
+            .part
             .source
+            .borrow()
             .create_view(&wgpu::TextureViewDescriptor::default());
-        self.presenter.texture(
-            self.context.device(),
-            self.context.queue(),
+        let context = self.generation.context();
+        self.part.presenter.borrow_mut().texture(
+            context.device(),
+            context.queue(),
             &source,
             TextureOutput {
                 texture: target,
@@ -332,7 +476,24 @@ impl HostedRenderer for SceneRenderer {
                 headroom: display.headroom,
             },
         );
-        next
+        // This surface's own deadline — animation/backend demand that woke
+        // it stays routed to it, not to every mounted scene.
+        Ok(self.part.surface.next_frame())
+    }
+
+    /// Drains a failure the shared generation routed to this scene —
+    /// the owner's next wake settles it before any frame gate, without
+    /// re-producing the failed generation.
+    fn take_failure(&mut self) -> Option<HostedError> {
+        self.part.take_failure().map(HostedError::Scene)
+    }
+
+    /// The scene's submission evidence is its production generation
+    /// itself — retained by the in-flight submission so a late
+    /// completion checks that generation's immutable sealed outcome,
+    /// never the owner's mutable flag.
+    fn submission_evidence(&self) -> Option<Rc<EngineGeneration>> {
+        Some(Rc::clone(&self.generation))
     }
 }
 
@@ -379,18 +540,20 @@ mod tests {
         let runtime = pollster::block_on(GpuRuntime::new())
             .expect("a GPU adapter is required on test hardware");
         let context = runtime.context();
+        let engines = Rc::new(SceneEngine::new());
         let redraw = RedrawHandle::new(|| {});
         let scene = Scene::new(SceneView::new(CountingContent {
             draws: draws.clone(),
         }));
         let size = OffscreenSize::try_from_pixels(512, 512).expect("nonzero size");
-        let renderer = SceneRenderer::new(&runtime, &context, &redraw, size, &scene);
+        let renderer = SceneRenderer::new(&runtime, &context, &engines, &redraw, size, &scene)
+            .expect("scene generation settles");
         (renderer, draws)
     }
 
     fn target(renderer: &SceneRenderer, pixels: u32) -> wgpu::Texture {
         renderer
-            .context
+            .context()
             .device()
             .create_texture(&wgpu::TextureDescriptor {
                 label: None,
@@ -488,7 +651,7 @@ mod tests {
     fn scene_recording_wraps_logical_content_in_the_display_scale() {
         let (renderer, _) = renderer();
         for scale in [1.0f64, 2.0, 3.0] {
-            let (mut content, _held, _again) = renderer.record_content(512.0, 512.0, scale);
+            let (mut content, _held, _again) = renderer.part.record_content(512.0, 512.0, scale);
             let commands = content.snapshot().commands();
             let transforms = commands
                 .iter()
@@ -523,7 +686,9 @@ mod tests {
         let (mut renderer, draws) = renderer();
         let record = |renderer: &mut SceneRenderer, pixels: u32, scale: f64, headroom: f32| {
             let target = target(renderer, pixels);
-            renderer.record_if_needed(&target, Display { scale, headroom });
+            renderer
+                .record_if_needed(&target, Display { scale, headroom })
+                .expect("staged record applies");
         };
 
         record(&mut renderer, 512, 1.0, 1.0);
@@ -563,7 +728,7 @@ mod tests {
     /// picture's own display list — the observable output a reactive
     /// `Picture` changes when its recording signal lands.
     fn recorded_color(renderer: &SceneRenderer) -> WorkingColor {
-        let (mut content, _held, _again) = renderer.record_content(10.0, 10.0, 1.0);
+        let (mut content, _held, _again) = renderer.part.record_content(10.0, 10.0, 1.0);
         let picture_command = content
             .snapshot()
             .commands()
@@ -592,6 +757,10 @@ mod tests {
     /// renderer created on a fresh generation must put it back — on the first
     /// creation and on every replacement — or fine-grained invalidation dies
     /// with the old engine. An unmounted scene gains no subscription.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the mount, rebuild, rebind and unmount lifecycle is one narrative contract"
+    )]
     #[test]
     fn engine_recreation_preserves_the_mounted_invalidator() {
         const RED: WorkingColor = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
@@ -601,6 +770,7 @@ mod tests {
         let runtime = pollster::block_on(GpuRuntime::new())
             .expect("a GPU adapter is required on test hardware");
         let context = runtime.context();
+        let engines = Rc::new(SceneEngine::new());
         let redraws = Arc::new(AtomicU32::new(0));
         let redraws_probe = Arc::clone(&redraws);
         let redraw = RedrawHandle::new(move || {
@@ -615,15 +785,24 @@ mod tests {
         // update on it never dirties or wakes.
         let quiet_color = binding(RED);
         let scene_unmounted = picture_scene(&quiet_color);
-        let mut unmounted_renderer =
-            SceneRenderer::new(&runtime, &context, &redraw, size, &scene_unmounted);
-        unmounted_renderer.record_if_needed(
-            &target(&unmounted_renderer, 20),
-            Display {
-                scale: 1.0,
-                headroom: 1.0,
-            },
-        );
+        let unmounted_renderer = SceneRenderer::new(
+            &runtime,
+            &context,
+            &engines,
+            &redraw,
+            size,
+            &scene_unmounted,
+        )
+        .expect("scene generation settles");
+        unmounted_renderer
+            .record_if_needed(
+                &target(&unmounted_renderer, 20),
+                Display {
+                    scale: 1.0,
+                    headroom: 1.0,
+                },
+            )
+            .expect("staged record applies");
         let wakes = redraws.load(Ordering::Relaxed);
         quiet_color.set(GREEN);
         assert!(
@@ -637,18 +816,21 @@ mod tests {
         );
 
         scene.mount(&redraw);
-        let mut renderer = SceneRenderer::new(&runtime, &context, &redraw, size, &scene);
+        let renderer = SceneRenderer::new(&runtime, &context, &engines, &redraw, size, &scene)
+            .expect("scene generation settles");
 
         // The first record clears the seeded dirty bit. A fresh install on an
         // idle engine may itself ask for a frame through `set_waker`; the
         // invalidator's contribution is the delta each `set` adds.
-        renderer.record_if_needed(
-            &target(&renderer, 20),
-            Display {
-                scale: 1.0,
-                headroom: 1.0,
-            },
-        );
+        renderer
+            .record_if_needed(
+                &target(&renderer, 20),
+                Display {
+                    scale: 1.0,
+                    headroom: 1.0,
+                },
+            )
+            .expect("staged record applies");
         assert!(!scene.dirty.get(), "an ordinary record clears dirty");
         assert_eq!(recorded_color(&renderer), RED);
 
@@ -666,13 +848,15 @@ mod tests {
             wakes + 1,
             "the reinstalled watcher requests a redraw"
         );
-        renderer.record_if_needed(
-            &target(&renderer, 20),
-            Display {
-                scale: 1.0,
-                headroom: 1.0,
-            },
-        );
+        renderer
+            .record_if_needed(
+                &target(&renderer, 20),
+                Display {
+                    scale: 1.0,
+                    headroom: 1.0,
+                },
+            )
+            .expect("staged record applies");
         assert_eq!(recorded_color(&renderer), BLUE);
 
         // A real context replacement keeps the semantic state — the picture,
@@ -680,15 +864,18 @@ mod tests {
         context.mark_device_lost_for_testing("test device loss");
         let fresh = pollster::block_on(runtime.context_after(context.generation()));
         assert!(fresh.generation() > context.generation());
-        let mut renderer = SceneRenderer::new(&runtime, &fresh, &redraw, size, &scene);
+        let renderer = SceneRenderer::new(&runtime, &fresh, &engines, &redraw, size, &scene)
+            .expect("the new context generation settles");
         assert_eq!(recorded_color(&renderer), BLUE);
-        renderer.record_if_needed(
-            &target(&renderer, 20),
-            Display {
-                scale: 1.0,
-                headroom: 1.0,
-            },
-        );
+        renderer
+            .record_if_needed(
+                &target(&renderer, 20),
+                Display {
+                    scale: 1.0,
+                    headroom: 1.0,
+                },
+            )
+            .expect("staged record applies");
         assert!(!scene.dirty.get());
         let wakes = redraws.load(Ordering::Relaxed);
         color.set(GREEN);
@@ -697,13 +884,15 @@ mod tests {
             "invalidation survives the generation change"
         );
         assert_eq!(redraws.load(Ordering::Relaxed), wakes + 1);
-        renderer.record_if_needed(
-            &target(&renderer, 20),
-            Display {
-                scale: 1.0,
-                headroom: 1.0,
-            },
-        );
+        renderer
+            .record_if_needed(
+                &target(&renderer, 20),
+                Display {
+                    scale: 1.0,
+                    headroom: 1.0,
+                },
+            )
+            .expect("staged record applies");
         assert_eq!(recorded_color(&renderer), GREEN);
 
         // Unmount cancels the watcher: a later model update neither dirties
@@ -713,5 +902,100 @@ mod tests {
         color.set(RED);
         assert!(!scene.dirty.get());
         assert_eq!(redraws.load(Ordering::Relaxed), wakes);
+    }
+
+    /// A failed shared batch reaches every mounted scene's owner through
+    /// its own redraw handle: `note_failure` wakes an idle participant
+    /// exactly once, and the woken owner's next `present` consumes the
+    /// routed failure through `take_failure` as the typed scene error.
+    /// The failed generation itself is never re-produced for any of them.
+    ///
+    /// What this test does not cover: the host's `handle_redraw_request`
+    /// drain, `complete_ready` and `arm_context_watch` — those live on
+    /// `SurfaceState`/`SurfaceView` and need a real view; they are
+    /// covered by integration/physical runs only.
+    #[test]
+    fn a_failed_batch_wakes_each_mounted_owner_with_the_typed_failure() {
+        let runtime = pollster::block_on(GpuRuntime::new())
+            .expect("a GPU adapter is required on test hardware");
+        let context = runtime.context();
+        let engines = Rc::new(SceneEngine::new());
+        let size = OffscreenSize::try_from_pixels(20, 20).expect("nonzero size");
+
+        let wakes_a = Arc::new(AtomicU32::new(0));
+        let wakes_b = Arc::new(AtomicU32::new(0));
+        let probe_a = Arc::clone(&wakes_a);
+        let probe_b = Arc::clone(&wakes_b);
+        let redraw_a = RedrawHandle::new(move || {
+            probe_a.fetch_add(1, Ordering::Relaxed);
+        });
+        let redraw_b = RedrawHandle::new(move || {
+            probe_b.fetch_add(1, Ordering::Relaxed);
+        });
+        let scene_a = Scene::new(SceneView::new(CountingContent {
+            draws: Rc::new(Cell::new(0)),
+        }));
+        let scene_b = Scene::new(SceneView::new(CountingContent {
+            draws: Rc::new(Cell::new(0)),
+        }));
+        let mut renderer_a =
+            SceneRenderer::new(&runtime, &context, &engines, &redraw_a, size, &scene_a)
+                .expect("scene generation settles");
+        let mut renderer_b =
+            SceneRenderer::new(&runtime, &context, &engines, &redraw_b, size, &scene_b)
+                .expect("scene generation settles");
+        let base_a = wakes_a.load(Ordering::Relaxed);
+        let base_b = wakes_b.load(Ordering::Relaxed);
+
+        // The batch fails on the shared generation: the real settle path
+        // retains the failure and routes it to every live participant.
+        let generation = engines
+            .generation(&runtime, &context)
+            .expect("the shared generation");
+        generation.fail_for_testing(SceneError::MissingTexture);
+
+        // Each affected owner was summoned through its own redraw handle.
+        assert_eq!(
+            wakes_a.load(Ordering::Relaxed),
+            base_a + 1,
+            "the failure wakes owner A exactly once"
+        );
+        assert_eq!(
+            wakes_b.load(Ordering::Relaxed),
+            base_b + 1,
+            "the failure wakes owner B exactly once"
+        );
+
+        // The woken owner's own present consumes the routed failure — no
+        // produce, no retry, no stale composite.
+        let display = Display {
+            scale: 1.0,
+            headroom: 1.0,
+        };
+        let failure_a = renderer_a
+            .present(
+                &target(&renderer_a, 20),
+                display,
+                FrameTime(std::time::Instant::now()),
+            )
+            .expect_err("owner A reads the routed failure");
+        assert!(matches!(failure_a, HostedError::Scene(_)));
+        let failure_b = renderer_b
+            .present(
+                &target(&renderer_b, 20),
+                display,
+                FrameTime(std::time::Instant::now()),
+            )
+            .expect_err("owner B reads the routed failure");
+        assert!(matches!(failure_b, HostedError::Scene(_)));
+
+        // The retained generation stays failed — neither owner's present
+        // re-produced it.
+        assert!(
+            generation
+                .produce(FrameTime(std::time::Instant::now()))
+                .is_err_and(|error| matches!(*error, SceneError::MissingTexture)),
+            "the retained failed generation never retries"
+        );
     }
 }

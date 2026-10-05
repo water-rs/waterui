@@ -23,7 +23,7 @@ pub use external::{
 };
 pub use runtime::{
     DeviceLoss, ExternalFrameRenderer, GpuContentRenderer, GpuRuntime, GpuRuntimeError,
-    SharedGpuContext, preferred_surface_format,
+    HostedLayerError, SharedGpuContext, preferred_surface_format,
 };
 
 use alloc::boxed::Box;

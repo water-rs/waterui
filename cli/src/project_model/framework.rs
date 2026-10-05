@@ -404,20 +404,7 @@ impl ResolvedFramework {
                 )
             })?
             .parse()?;
-        let mut submodules = BTreeMap::new();
-        // A checkout from before a backend's revision was declared in the
-        // manifest still carries its gitlink; a manifest declaring
-        // `{name}-backend-revision` has none to read.
-        for path in BACKEND_SUBMODULES {
-            if declares_backend_revision(&scaffold, path) {
-                continue;
-            }
-            submodules.insert(
-                (*path).to_owned(),
-                local_submodule_revision(root, path).await?,
-            );
-        }
-        complete_scaffold(&mut scaffold, &submodules, &lock)?;
+        complete_scaffold(&mut scaffold, &lock)?;
         Self {
             source: Source::Local {
                 root: root.to_path_buf(),
@@ -1347,10 +1334,10 @@ impl ResolvedFramework {
                     revision: revision.to_owned(),
                     lock_sha256,
                 },
-                dev_submodules(slug, revision, &scaffold, &submodule_repositories).await?,
+                dev_submodules(slug, revision, &submodule_repositories).await?,
             )
         };
-        complete_scaffold(&mut scaffold, &submodules, &lock)?;
+        complete_scaffold(&mut scaffold, &lock)?;
 
         let (packages, patches, lockfile) = match channel {
             // A stable project resolves its graph from the registry; nothing is
@@ -1494,27 +1481,15 @@ pub(crate) fn seed_packages(
 async fn dev_submodules(
     slug: &str,
     revision: &str,
-    scaffold: &BTreeMap<String, String>,
     submodule_repositories: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, String>> {
     let mut submodules = BTreeMap::new();
-    for path in BACKEND_SUBMODULES {
-        if declares_backend_revision(scaffold, path) {
-            continue;
-        }
-        submodules.insert(
-            (*path).to_owned(),
-            submodule_revision(slug, revision, path).await?,
-        );
-    }
-    // The remaining `.gitmodules` entries (`kit`, `utils/nami`, …) pin no
-    // scaffold fact, but a `[patch]` path under one rebases onto the
-    // submodule's repository at the gitlink's commit — the same record the
+    // The `.gitmodules` entries (`kit`, `utils/nami`, …) pin no scaffold
+    // fact, but a `[patch]` path under one rebases onto the submodule's
+    // repository at the gitlink's commit — the same record the
     // certification supplies for `nightly`.
     for path in submodule_repositories.keys() {
-        if !submodules.contains_key(path)
-            && let Some(commit) = submodule_pin(slug, revision, path).await?
-        {
+        if let Some(commit) = submodule_pin(slug, revision, path).await? {
             submodules.insert(path.clone(), commit);
         }
     }
@@ -1605,23 +1580,6 @@ fn certified_source(
     })
 }
 
-/// The submodule each native backend repository used to be pinned through;
-/// the directory's basename keys the scaffold's `{name}-backend-revision`
-/// entry. A framework that declares `{name}-backend-revision` in
-/// `[package.metadata.waterui]` (Android, since water-rs/waterui#940) carries
-/// no gitlink, and the gitlink is read only for a revision from before that
-/// declaration.
-const BACKEND_SUBMODULES: &[&str] = &["backends/android"];
-
-/// Whether the scaffold already names `submodule_path`'s backend pin — a
-/// declared `{name}-backend-revision` — so no gitlink has to be read for it.
-fn declares_backend_revision(scaffold: &BTreeMap<String, String>, submodule_path: &str) -> bool {
-    scaffold.contains_key(&format!(
-        "{}-backend-revision",
-        backend_name(submodule_path)
-    ))
-}
-
 /// The workspace crates a scaffolded project pins; each `{name}-version`
 /// scaffold entry comes from the framework's own lockfile at the selected
 /// revision.
@@ -1673,13 +1631,6 @@ const FRAMEWORK_PACKAGES: &[&str] = &[
     "waterui-preview-protocol",
     "waterui-mcp",
 ];
-
-fn backend_name(submodule_path: &str) -> &str {
-    submodule_path
-        .rsplit('/')
-        .next()
-        .expect("a submodule path has a basename")
-}
 
 /// The repository the CLI's pinned `waterui-*` dependencies resolve from —
 /// where certified manifests, releases, and `dev` revisions live. `build.rs`
@@ -2084,31 +2035,9 @@ struct SubmoduleEntry {
     kind: String,
 }
 
-/// Fill in what the framework manifest cannot carry itself: each backend's
-/// pinned revision — `submodules` maps submodule path to the commit the
-/// certification or the checkout records — and every framework package's
-/// version from the framework's own lock.
-fn complete_scaffold(
-    scaffold: &mut BTreeMap<String, String>,
-    submodules: &BTreeMap<String, String>,
-    lock: &Lockfile,
-) -> Result<()> {
-    // A declared `{name}-backend-revision` is already in the scaffold
-    // (`framework_scaffold` copied and validated it); the gitlink is the pin
-    // record only for a framework from before the declaration.
-    for &submodule in BACKEND_SUBMODULES {
-        if declares_backend_revision(scaffold, submodule) {
-            continue;
-        }
-        let commit = submodules
-            .get(submodule)
-            .ok_or_else(|| eyre!("framework records no {submodule} submodule pin"))?;
-        validate_revision(commit)?;
-        scaffold.insert(
-            format!("{}-backend-revision", backend_name(submodule)),
-            commit.clone(),
-        );
-    }
+/// Fill in what the framework manifest cannot carry itself: every framework
+/// package's version from the framework's own lock.
+fn complete_scaffold(scaffold: &mut BTreeMap<String, String>, lock: &Lockfile) -> Result<()> {
     for &name in FRAMEWORK_PACKAGES {
         let candidates: Vec<_> = lock
             .packages
@@ -2123,47 +2052,6 @@ fn complete_scaffold(
         scaffold.insert(format!("{name}-version"), version);
     }
     Ok(())
-}
-
-/// The commit a submodule of a local checkout records at `HEAD` — the same
-/// fact `submodule_revision` reads from the repository tree for a remote
-/// revision.
-async fn local_submodule_revision(root: &Path, path: &str) -> Result<String> {
-    let treeish = format!("HEAD:{path}");
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", treeish.as_str()])
-        .output()
-        .await?;
-    if !output.status.success() {
-        bail!(
-            "the WaterUI checkout at {} records no {path} submodule pin: {}",
-            root.display(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    let revision = std::str::from_utf8(&output.stdout)?.trim().to_owned();
-    validate_revision(&revision)?;
-    Ok(revision)
-}
-
-/// The commit a submodule of the framework repository records at `revision`,
-/// read from the repository tree — the only record that pairs the revision
-/// with the backends it was built and tested against.
-async fn submodule_revision(slug: &str, revision: &str, path: &str) -> Result<String> {
-    let bytes = fetch(&format!(
-        "https://api.github.com/repos/{slug}/contents/{path}?ref={revision}"
-    ))
-    .await?;
-    let entry: SubmoduleEntry = serde_json::from_slice(&bytes)?;
-    if entry.kind != "submodule" {
-        bail!(
-            "{path} at {slug}@{revision} is a {}, not a submodule",
-            entry.kind
-        );
-    }
-    Ok(entry.sha)
 }
 
 /// The commit `path`'s gitlink records at `revision`, or `None` when `path`
@@ -4532,9 +4420,9 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
     #[test]
     fn parse_gitmodules_reads_submodule_paths_and_urls() {
         let submodules = parse_gitmodules(
-            "[submodule \"backends/android\"]\n\
-             \tpath = backends/android\n\
-             \turl = https://github.com/water-rs/android-backend.git\n\
+            "[submodule \"utils/nami\"]\n\
+             \tpath = utils/nami\n\
+             \turl = https://github.com/water-rs/nami.git\n\
              \tbranch = dev\n\
              [submodule \"kit\"]\n\
              \tpath = kit\n\
@@ -4544,8 +4432,8 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
             submodules,
             BTreeMap::from([
                 (
-                    "backends/android".to_string(),
-                    "https://github.com/water-rs/android-backend.git".to_string(),
+                    "utils/nami".to_string(),
+                    "https://github.com/water-rs/nami.git".to_string(),
                 ),
                 (
                     "kit".to_string(),
@@ -4758,7 +4646,7 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
             "tag": "v0.4.1",
             "lockfiles": {"Cargo.lock": "f".repeat(64)},
             "submodules": {
-                "backends/android": "c".repeat(40),
+                "kit": "c".repeat(40),
             },
             "scaffold": {
                 "hydrolysis-path": "backends/hydrolysis",
@@ -5146,12 +5034,13 @@ hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "d887
     }
 
     /// A checkout from before the backends left the tree: its manifest
-    /// declares no `android-backend-revision`, so the gitlink supplies the
-    /// pin. The `backends/apple` gitlink a pre-extraction tree carries pins
-    /// nothing — the in-tree member needs no revision, and a checkout that
+    /// declares no `android-backend-revision`, and the retired `backends/android`
+    /// gitlink supplies nothing — the pin comes only from the declared scaffold
+    /// fact. The `backends/apple` gitlink a pre-extraction tree carries pins
+    /// nothing either — the in-tree member needs no revision, and a checkout that
     /// does not declare `apple-backend-path` has no native Apple backend.
     #[test]
-    fn local_checkout_predating_the_gitlink_removals_uses_its_pins() {
+    fn local_checkout_predating_the_revision_declaration_reads_no_gitlink() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("waterui");
         write_pre_decoupling_checkout(&root);
@@ -5159,10 +5048,7 @@ hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "d887
         let framework = smol::block_on(ResolvedFramework::for_local_checkout(&root)).unwrap();
         assert!(framework.member_path(APPLE_BACKEND).is_none());
         assert!(!framework.scaffold.contains_key("apple-backend-revision"));
-        assert_eq!(
-            framework.scaffold_value("android-backend-revision"),
-            "c".repeat(40)
-        );
+        assert!(!framework.scaffold.contains_key("android-backend-revision"));
     }
 
     #[test]

@@ -1,5 +1,6 @@
 //! Native tests for the Rust `AppKit`/`UIKit` backend — real platform
-//! objects, no visible windows, no application run loop.
+//! objects on their actual main thread. Metal presentation trials use a real
+//! `AppKit` application event loop and window on the test machine.
 //!
 //! These cases create `NSView`/`NSWindow`/`UIView` objects, which
 //! `MainThreadMarker`-protected APIs only allow on the process's actual
@@ -32,6 +33,25 @@ fn main() {
     // `AppKit`/`UIKit` objects may only be built on the real main thread;
     // `run` executes sequentially in the calling thread at one thread.
     args.test_threads = Some(1);
+    // Process-global startup (executors, tracing dispatcher) installs
+    // once here on the same true main thread the trials run on — the
+    // gpu-surface fixture mounts through it.
+    #[cfg(all(target_os = "macos", feature = "native-test", feature = "gpu_surface"))]
+    waterui_apple::native_test_support::gpu_surface::initialize_process();
+    #[cfg(all(target_os = "macos", feature = "native-test", feature = "gpu_surface"))]
+    if !args.list {
+        use cocoa_ui::appkit::{ActivationPolicy, Application, ApplicationHandlers};
+        let app = Application::shared(mtm());
+        let _policy_accepted = app.set_activation_policy(ActivationPolicy::Regular);
+        app.run(ApplicationHandlers::new().did_finish_launching(move |mtm| {
+            // Run after launch returns to AppKit's event loop. Foundation
+            // run-loop pumping alone does not dispatch the application events
+            // that establish the window's native occlusion visibility.
+            let _ = mtm;
+            libtest_mimic::run(&args, trials()).exit();
+        }));
+        unreachable!("the native trial runner exits the process");
+    }
     libtest_mimic::run(&args, trials()).exit();
 }
 
@@ -99,6 +119,13 @@ fn trials() -> Vec<Trial> {
                 Ok(())
             },
         ),
+        Trial::test(
+            "owner_lifetimes::a_dropped_mounted_hierarchy_releases_views_and_remounts",
+            || {
+                owner_lifetimes::a_dropped_mounted_hierarchy_releases_views_and_remounts();
+                Ok(())
+            },
+        ),
     ];
     #[cfg(all(target_os = "macos", feature = "native-test"))]
     let tests = {
@@ -113,6 +140,8 @@ fn trials() -> Vec<Trial> {
                 Ok(())
             }),
         ]);
+        #[cfg(feature = "gpu_surface")]
+        tests.extend(gpu_surface::trials());
         tests
     };
     #[cfg(target_os = "ios")]
@@ -280,6 +309,11 @@ mod leaf {
             ]
         };
         window.addSubview(content);
+        // Size the content to the window's bounds the way
+        // `set_content_view` does on macOS — `addSubview` alone leaves it
+        // at its zero frame, so surfaces that read their viewport (lazy
+        // containers especially) would see an empty window.
+        cocoa_ui::view::set_frame(content, cocoa_ui::view::bounds(&window));
         window
     }
 }
@@ -1152,6 +1186,175 @@ mod window {
     };
 }
 
+/// GPU-surface ownership regression coverage (#1725): a real mounted
+/// `SceneView` — production `build_surface`, `SurfaceState`,
+/// `SceneRenderer`/`SceneEngine` — driven through the failure drain and
+/// the completion settlement seam. The ordering the GPU's own timing
+/// cannot pin down is delivered by a direct call of the actual
+/// `settle_frame_completion` body — reported as a deterministic seam
+/// call, not a physical cadence or real GPU submission claim.
+#[cfg(all(target_os = "macos", feature = "native-test", feature = "gpu_surface"))]
+mod gpu_surface {
+    use libtest_mimic::Trial;
+    use waterui_apple::native_test_support::gpu_surface::MountedSceneSurface;
+
+    use super::mtm;
+
+    /// The registered trials — the completion/failure seam coverage for
+    /// the mounted-surface ownership contract.
+    pub fn trials() -> Vec<Trial> {
+        vec![
+            Trial::test(
+                "gpu_surface::routed_failure_drains_idle_owner_once",
+                routed_failure_drains_idle_owner_once,
+            ),
+            Trial::test(
+                "gpu_surface::stale_completion_releases_only_its_lease",
+                stale_completion_releases_only_its_lease,
+            ),
+        ]
+    }
+
+    /// Pumps the main run loop in small turns until `until` answers or
+    /// `seconds` elapse — how a synchronous case awaits the main-queue
+    /// work `request_redraw` enqueues. Bounded; a dead queue fails the
+    /// case instead of hanging it.
+    fn pump_main_until(seconds: f64, until: impl Fn() -> bool) -> bool {
+        use cocoa_ui::objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSRunLoop};
+        let deadline = NSDate::dateWithTimeIntervalSinceNow(seconds);
+        while !until() && deadline.timeIntervalSinceNow() > 0.0 {
+            // SAFETY: `NSDefaultRunLoopMode` is a system-owned run-loop mode.
+            NSRunLoop::currentRunLoop().runMode_beforeDate(
+                unsafe { NSDefaultRunLoopMode },
+                &NSDate::dateWithTimeIntervalSinceNow(0.02),
+            );
+        }
+        until()
+    }
+
+    /// A routed shared-generation failure reaches an owner that is idle
+    /// — never attached, never presented, with a readiness waiter
+    /// registered — through the production path: `ScenePart::note_failure`
+    /// stores it and `RedrawHandle::request_redraw` enqueues
+    /// `handle_redraw_request`, which drains it before the visibility,
+    /// in-flight and external gates and settles through `settle_failed`:
+    /// the owner is marked failed, the readiness waiter fires exactly
+    /// once, the frame is owed, and the recovery watch on the failed
+    /// generation arms. Re-producing the sealed generation answers the
+    /// retained failure unchanged.
+    pub fn routed_failure_drains_idle_owner_once() -> Result<(), libtest_mimic::Failed> {
+        let mtm = mtm();
+        let mounted = pollster::block_on(MountedSceneSurface::mount(mtm))
+            .map_err(|error| format!("a mounted SceneView surface: {error}"))?;
+        mounted
+            .install_scene_renderer()
+            .map_err(|error| format!("the production renderer install: {error}"))?;
+        let probe = mounted.readiness_probe();
+        assert!(!mounted.owner_failed());
+        assert!(
+            mounted.frame_owed(),
+            "registration requests the pending first paint"
+        );
+
+        // Route the failure: the generation seals, the participant's
+        // owner wake lands on the main queue — the callback itself.
+        mounted.fail_scene_generation();
+        assert!(mounted.scene_generation_sealed());
+        assert!(
+            !mounted.owner_failed(),
+            "the routed failure sits queued until the owner drains it"
+        );
+
+        assert!(
+            pump_main_until(2.0, || mounted.owner_failed()),
+            "the enqueued handle_redraw_request never drained the routed failure"
+        );
+        assert!(mounted.frame_owed(), "the failed frame stays owed");
+        assert_eq!(
+            probe.wakes(),
+            1,
+            "the registered readiness waiter settles exactly once"
+        );
+        assert!(
+            mounted.context_watch_armed(),
+            "the recovery watch arms on the failed generation"
+        );
+        assert!(
+            mounted.sealed_produce_is_cached_error(),
+            "the sealed generation never re-produces"
+        );
+        Ok(())
+    }
+
+    /// A stale completion after a genuinely newer publication: the
+    /// retained old-generation submission releases only its own lease —
+    /// `frame_owed`, `frame_in_flight` — and neither presents nor touches
+    /// the newer epoch's readiness, failure flag or watch. The current
+    /// generation still settles a completion normally.
+    ///
+    /// The seam is called directly for deterministic ordering — the real
+    /// `settle_frame_completion` body, not a simulated path; no physical
+    /// GPU submission/cadence is claimed.
+    pub fn stale_completion_releases_only_its_lease() -> Result<(), libtest_mimic::Failed> {
+        let mtm = mtm();
+        let mounted = pollster::block_on(MountedSceneSurface::mount(mtm))
+            .map_err(|error| format!("a mounted SceneView surface: {error}"))?;
+        mounted
+            .install_scene_renderer()
+            .map_err(|error| format!("the production renderer install: {error}"))?;
+        let probe = mounted.readiness_probe();
+        assert!(
+            mounted.begin_in_flight_frame(),
+            "the presenter yields a real link-issued DrawableFrame"
+        );
+
+        assert!(
+            pollster::block_on(mounted.publish_newer_context()),
+            "the runtime must publish a genuinely newer context generation"
+        );
+
+        // The stale submission's completion runs the real seam: obsolete
+        // first — it releases its lease and owes the work, nothing more.
+        mounted.settle_submitted_completion();
+        assert!(
+            !mounted.frame_in_flight(),
+            "the stale completion released its DrawableFrame lease"
+        );
+        assert!(mounted.frame_owed(), "the work is owed on the live epoch");
+        assert!(
+            !mounted.owner_failed(),
+            "a stale completion never marks the newer epoch failed"
+        );
+        assert_eq!(
+            probe.wakes(),
+            0,
+            "a stale completion never settles the newer epoch's readiness"
+        );
+        assert!(
+            !mounted.context_watch_armed(),
+            "a stale completion never installs a watch"
+        );
+        assert!(
+            !mounted.frame_presented(),
+            "a stale completion never presents"
+        );
+
+        // The current epoch still completes through the same seam.
+        assert!(
+            mounted.begin_in_flight_frame(),
+            "the presenter yields a fresh frame for the live epoch"
+        );
+        mounted.settle_current_completion();
+        assert!(
+            mounted.frame_presented(),
+            "the live epoch presents and reports readiness"
+        );
+        assert_eq!(probe.wakes(), 1, "readiness resolves once");
+        assert!(!mounted.owner_failed());
+        Ok(())
+    }
+}
+
 /// `ViewController` boundary semantics (#1689): under real `UIKit`
 /// containment — a `UIViewController` parent, `addChild`/`didMove`, a
 /// native container smaller than the window — an embedded controller's
@@ -1308,5 +1511,294 @@ mod controller_bounds {
             "window_root host must fill its window"
         );
         teardown(&window, &[]);
+    }
+}
+
+/// Mounted-owner lifetimes (#1575): a real dispatcher-mounted hierarchy —
+/// `.size`/`padding`/`hstack`/`zstack` containers plus a lazy `ForEach`
+/// membership — must release its owners, child guards and host views when
+/// the mounted tree drops. Weak handles into the tree's views die after
+/// queued work drains, post-owner writes cease naturally, and a remount
+/// of the same view still measures, binds and recycles membership.
+mod owner_lifetimes {
+    use waterui::Identifiable;
+    use waterui::component::lazy::Lazy;
+    use waterui::prelude::*;
+    use waterui::reactive::binding;
+    use waterui::reactive::collection::List as ReactiveList;
+    use waterui::views::ForEach;
+    use waterui_core::layout::ProposalSize;
+
+    use cocoa_ui::objc2_foundation::{NSDate, NSRunLoop};
+
+    use super::{HostView, Label, MainThreadMarker, PlatformView, Retained, leaf, mtm, resolve};
+
+    /// A stable-id row for the `ForEach` membership.
+    #[derive(Clone, Copy, Identifiable)]
+    struct Row {
+        #[id]
+        id: u64,
+    }
+
+    /// Drains queued main-queue work — binding flushes and enqueued drops
+    /// alike land at a real run-loop boundary.
+    fn pump() {
+        NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.2));
+    }
+
+    /// Every `Label` payload in the subtree, depth-first — the observable
+    /// end of the binding path on both kits.
+    fn label_texts(view: &PlatformView, out: &mut Vec<String>) {
+        for sub in cocoa_ui::view::subviews(view) {
+            if let Some(label) = sub.downcast_ref::<Label>()
+                && let Some(attributed) = label.source_text()
+            {
+                out.push(attributed.string().to_string());
+            }
+            label_texts(&sub, out);
+        }
+    }
+
+    /// A weak handle for every view in the mounted subtree. `load`
+    /// answering `None` is the observable proof the owner that retained
+    /// the view is gone.
+    fn weak_views(view: &PlatformView, out: &mut Vec<objc2::rc::Weak<PlatformView>>) {
+        out.push(objc2::rc::Weak::new(&cocoa_ui::view::retain_base(view)));
+        for sub in cocoa_ui::view::subviews(view) {
+            weak_views(&sub, out);
+        }
+    }
+
+    /// The hierarchy the repairs cover: `.size`/`padding` wrappers around
+    /// `hstack`/`zstack` containers plus a lazy `ForEach` membership — one
+    /// tree holding every repaired owner class.
+    fn hierarchy(
+        track: &waterui::reactive::Binding<String>,
+        items: &ReactiveList<Row>,
+    ) -> impl View {
+        let track = track.clone();
+        let items = items.clone();
+        zstack((
+            hstack((text!("{track}"), spacer()))
+                .padding()
+                .size(320.0, 60.0),
+            Lazy::vstack(ForEach::new(items, |row: Row| {
+                text(format!("row {}", row.id))
+            })),
+        ))
+    }
+
+    #[cfg(target_os = "macos")]
+    use cocoa_ui::objc2_app_kit::{NSColor as PlatformColor, NSForegroundColorAttributeName};
+    use cocoa_ui::objc2_core_graphics::CGColor;
+    use cocoa_ui::objc2_foundation::NSAttributedString;
+    #[cfg(target_os = "ios")]
+    use cocoa_ui::objc2_ui_kit::{NSForegroundColorAttributeName, UIColor as PlatformColor};
+    use waterui::graphics::color::WorkingColor;
+
+    /// The attributed text's native foreground attribute read as its
+    /// four extended-linear-P3 channels — the semantic value the
+    /// default-foreground watcher writes, compared against the working
+    /// color it was given rather than a rebuild pointer.
+    fn assert_foreground(attributed: &NSAttributedString, expected: WorkingColor) {
+        // SAFETY: a null effective-range pointer is permitted.
+        let value = unsafe {
+            attributed.attribute_atIndex_effectiveRange(
+                NSForegroundColorAttributeName,
+                0,
+                std::ptr::null_mut(),
+            )
+        }
+        .expect("the track chunk carries a foreground attribute");
+        let color = value
+            .downcast::<PlatformColor>()
+            .expect("the foreground attribute is a platform color");
+        #[cfg(target_os = "macos")]
+        let cg = color.CGColor();
+        #[cfg(target_os = "ios")]
+        // SAFETY: the retained UIKit color is read on the actual main thread.
+        let cg = unsafe { color.CGColor() };
+        assert_eq!(CGColor::number_of_components(Some(&cg)), 4);
+        // SAFETY: the color owns the four components asserted above.
+        let actual = unsafe { std::slice::from_raw_parts(CGColor::components(Some(&cg)), 4) };
+        for (actual, expected) in actual.iter().zip(expected.components) {
+            assert!(
+                (actual - f64::from(expected)).abs() < 1e-4,
+                "native foreground channel {actual} differs from working channel {expected}"
+            );
+        }
+    }
+
+    /// The first `Label` inside the subtree — the observable end of the
+    /// per-chunk signal path this fix touches.
+    fn first_label(view: &PlatformView) -> Option<Retained<Label>> {
+        for sub in cocoa_ui::view::subviews(view) {
+            if let Some(label) = sub.downcast_ref::<Label>() {
+                return Some(label.into());
+            }
+            if let Some(label) = first_label(&sub) {
+                return Some(label);
+            }
+        }
+        None
+    }
+
+    /// The class names of every subtree view that still lives — the
+    /// observable list of real retainers a drop failed to release.
+    fn surviving_classes(weaks: &[objc2::rc::Weak<PlatformView>]) -> Vec<String> {
+        weaks
+            .iter()
+            .filter_map(|weak| {
+                weak.load()
+                    .map(|view| view.class().name().to_string_lossy().into_owned())
+            })
+            .collect()
+    }
+
+    /// Mounts `leaf` on a fresh host whose layout handler frames it —
+    /// the handler borrows the child weakly so it never keeps a dead
+    /// owner alive, the same edge the production handlers now take.
+    fn mount_hosted(
+        mtm: MainThreadMarker,
+        leaf_inst: waterui_apple::contract::NativeLeaf,
+    ) -> (Retained<HostView>, waterui_apple::contract::Mounted) {
+        let parent = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+        let mounted = leaf_inst.mount(&parent);
+        let child_view: objc2::rc::Weak<PlatformView> =
+            objc2::rc::Weak::new(&cocoa_ui::view::retain_base(mounted.view()));
+        parent.set_layout_handler(move |host| {
+            let host_view: &PlatformView = host;
+            if let Some(child) = child_view.load() {
+                cocoa_ui::view::set_frame(&child, cocoa_ui::view::bounds(host_view));
+            }
+        });
+        (parent, mounted)
+    }
+
+    /// One consolidated regression for #1575: mount the repaired owner
+    /// classes in a single tree against ONE explicit environment, prove
+    /// live updates still land, prove the drop releases the whole
+    /// subtree, then prove a remount on the same env keeps working. The
+    /// mount, the submitted work, the drop and the queued drain all live
+    /// inside bounded `autoreleasepool`s — only `Weak` handles escape
+    /// them, so a surviving read outside proves a real retainer, never a
+    /// pooled temporary (mirrors the ownership fixture's idiom).
+    pub fn a_dropped_mounted_hierarchy_releases_views_and_remounts() {
+        let mtm = mtm();
+        // The environment, binding, membership and per-chunk signal all
+        // live outside the pools — a weak read that still answers `Some`
+        // afterwards names a real retainer, not a pooled autorelease.
+        let mut env = resolve::env();
+        let track = binding(String::from("first"));
+        let items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }]);
+        // The theme `Foreground` slot backs every unstyled chunk — the
+        // `label_leaf` default watcher this fix touches. Reinstall it
+        // from a binding the test keeps, so a live update is reachable.
+        let foreground = binding(waterui::graphics::color::WorkingColor::BLACK);
+        waterui::theme::install_color_signal::<waterui::theme::color::Foreground>(
+            &mut env,
+            foreground.computed(),
+        );
+
+        let weaks = objc2::rc::autoreleasepool(|_| {
+            let leaf_inst = waterui_apple::dispatch::render(
+                waterui_backend_core::AnyView::new(hierarchy(&track, &items)),
+                &env,
+            );
+            let (parent, mounted) = mount_hosted(mtm, leaf_inst);
+            let _window = leaf::attach(mtm, &parent);
+            parent.set_needs_layout();
+            parent.layout_if_needed();
+            pump();
+            parent.layout_if_needed();
+
+            let mut weaks = Vec::new();
+            weak_views(mounted.view(), &mut weaks);
+            assert!(weaks.len() > 3, "the fixture must mount a real hierarchy");
+            assert!(weaks.iter().all(|w| w.load().is_some()));
+
+            // Submitted work while alive: the binding write lands on the
+            // mounted text and the pushed member mounts through membership.
+            track.set(String::from("second"));
+            items.push(Row { id: 3 });
+            parent.layout_if_needed();
+            pump();
+            parent.layout_if_needed();
+            let mut texts = Vec::new();
+            label_texts(mounted.view(), &mut texts);
+            assert!(texts.iter().any(|t| t.contains("second")));
+            assert!(texts.iter().any(|t| t.contains("row 3")));
+
+            // The default-foreground signal path still updates while
+            // live: a new theme foreground lands in the label's
+            // attributed text as the native foreground attribute — the
+            // `Weak`-borrowing watcher answers instead of being frozen.
+            let label = first_label(mounted.view()).expect("the track label mounted");
+            let before = label.source_text().expect("attributed text");
+            assert_foreground(&before, WorkingColor::BLACK);
+            foreground.set(WorkingColor::WHITE);
+            pump();
+            let after = label.source_text().expect("attributed text");
+            assert_foreground(&after, WorkingColor::WHITE);
+
+            drop(mounted);
+            pump();
+            weaks
+        });
+
+        let survivors = surviving_classes(&weaks);
+        assert!(
+            survivors.is_empty(),
+            "mounted child views survived the owner drop: {survivors:?}"
+        );
+
+        // Post-owner callbacks cease naturally: a later write reaches no
+        // dead owner and cannot panic through a cleared weak edge.
+        objc2::rc::autoreleasepool(|_| {
+            track.set(String::from("third"));
+            foreground.set(waterui::graphics::color::WorkingColor::BLACK);
+            pump();
+        });
+
+        // Remount on the same env: measurement, binding and membership
+        // all still work, and the remounted tree releases too.
+        let weaks = objc2::rc::autoreleasepool(|_| {
+            let leaf_inst = waterui_apple::dispatch::render(
+                waterui_backend_core::AnyView::new(hierarchy(&track, &items)),
+                &env,
+            );
+            assert!(
+                leaf_inst
+                    .layout()
+                    .measure(ProposalSize::new(Some(400.0), Some(200.0)))
+                    .size
+                    .width
+                    > 0.0,
+                "the remounted hierarchy still answers measure"
+            );
+            let (parent, mounted) = mount_hosted(mtm, leaf_inst);
+            let _window = leaf::attach(mtm, &parent);
+            parent.set_needs_layout();
+            parent.layout_if_needed();
+            track.set(String::from("fourth"));
+            items.push(Row { id: 4 });
+            pump();
+            parent.layout_if_needed();
+            pump();
+            let mut texts = Vec::new();
+            label_texts(mounted.view(), &mut texts);
+            assert!(texts.iter().any(|t| t.contains("fourth")));
+            assert!(texts.iter().any(|t| t.contains("row 4")));
+            let mut weaks = Vec::new();
+            weak_views(mounted.view(), &mut weaks);
+            drop(mounted);
+            pump();
+            weaks
+        });
+        let survivors = surviving_classes(&weaks);
+        assert!(
+            survivors.is_empty(),
+            "the remounted hierarchy must release the same way: {survivors:?}"
+        );
     }
 }

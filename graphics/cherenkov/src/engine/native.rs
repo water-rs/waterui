@@ -59,6 +59,10 @@ pub struct Engine<B: Backend> {
     memory_reply: RefCell<Option<SyncSender<MemoryReply>>>,
     memory_reply_rx: Receiver<MemoryReply>,
     commits: RefCell<Vec<(SurfaceId, ChangeSet<B>)>>,
+    /// The deadline map `finish_frame` fills: its buffer travels with
+    /// `Message::Render` and returns in the reply, so the per-surface
+    /// deadlines reuse one allocation across frames.
+    next_scratch: RefCell<rustc_hash::FxHashMap<SurfaceId, Next>>,
     /// The live surfaces' shared queues, drained into one `Render` message
     /// per frame.
     surfaces: RefCell<Vec<std::rc::Weak<RefCell<Shared<B>>>>>,
@@ -127,6 +131,7 @@ impl<B: Backend> Engine<B> {
             memory_reply: RefCell::new(Some(memory_reply)),
             memory_reply_rx,
             commits: RefCell::new(Vec::new()),
+            next_scratch: RefCell::new(rustc_hash::FxHashMap::default()),
             surfaces: RefCell::new(Vec::new()),
             next_surface: Cell::new(0),
             next_font: Cell::new(1),
@@ -219,11 +224,13 @@ impl<B: Backend> Engine<B> {
     /// completion the render thread queued fires it, so it must be
     /// [`Send`] and [`Sync`].
     ///
-    /// # Panics
-    /// When the callback slot is poisoned by a panic inside a previous
-    /// `f` running under the lock.
+    /// This is the aggregate-host model: one callback behind every
+    /// visible surface's wake. A surface whose host keeps its own
+    /// presentation loop installs
+    /// [`Surface::set_waker`](crate::Surface::set_waker) instead; its
+    /// changes, completions and reveals then reach that callback alone.
     pub fn set_waker(&self, f: impl Fn() + Send + Sync + 'static) {
-        *self.waker.callback.lock().expect("waker poisoned") = Some(Arc::new(f));
+        self.waker.set(Arc::new(f));
     }
 
     fn alloc(cell: &Cell<u64>) -> u64 {
@@ -343,13 +350,22 @@ impl<B: Backend> Engine<B> {
         super::drain_visible(&mut self.surfaces.borrow_mut(), time, &mut commits);
         // Completions may arrive while render is in flight, before its reply.
         self.waker.arm();
+        let next_scratch = std::mem::take(&mut *self.next_scratch.borrow_mut());
         if let Err(error) = self.tx.send(Message::Render {
             time,
             commits,
+            next_scratch,
             reply: reply_sender,
         }) {
-            if let Message::Render { commits, reply, .. } = error.0 {
+            if let Message::Render {
+                commits,
+                next_scratch,
+                reply,
+                ..
+            } = error.0
+            {
                 *self.commits.borrow_mut() = commits;
+                *self.next_scratch.borrow_mut() = next_scratch;
                 *self.render_reply.borrow_mut() = Some(reply);
             }
             return Err(RenderError::Thread);
@@ -362,7 +378,9 @@ impl<B: Backend> Engine<B> {
         self.recycle_commits(&mut reply.commits);
         reply.commits.clear();
         *self.commits.borrow_mut() = reply.commits;
-        let (next, stats) = reply.result?;
+        let (next, surface_next, stats) = reply.result?;
+        super::publish_next(&self.surfaces.borrow(), &surface_next);
+        *self.next_scratch.borrow_mut() = surface_next;
         *self.stats.borrow_mut() = stats;
         Ok(next)
     }
@@ -723,7 +741,11 @@ mod tests {
             waker.wake();
             reply
                 .send(RenderReply {
-                    result: Ok((Next::Idle, FrameStats::default())),
+                    result: Ok((
+                        Next::Idle,
+                        rustc_hash::FxHashMap::default(),
+                        FrameStats::default(),
+                    )),
                     commits,
                     sender: reply.clone(),
                 })
@@ -732,5 +754,106 @@ mod tests {
         }));
         assert_eq!(engine.render(FrameTime::now()).unwrap(), Next::Idle);
         assert_eq!(wake_count.load(Ordering::Relaxed), 2);
+    }
+
+    /// `Surface::next_frame` publishes each surface's own deadline and
+    /// only its own: a hidden surface drops to `Idle` instead of
+    /// retaining or borrowing demand, a finished animation overwrites
+    /// its old `At` with a real idle frame, and removal clears a live
+    /// deadline — all while the surviving peer's `At` stays untouched.
+    #[test]
+    fn hide_idle_and_remove_publish_idle_while_peer_keeps_demand() {
+        let (events, _rx) = std::sync::mpsc::channel();
+        let engine = Engine::<Null>::new(NullConfig {
+            events,
+            reject: std::collections::HashSet::default(),
+        })
+        .unwrap();
+        let surface = engine
+            .surface(crate::Offscreen::new(
+                (16, 16),
+                crate::OffscreenFormat::LinearF16,
+            ))
+            .unwrap();
+        let peer = engine
+            .surface(crate::Offscreen::new(
+                (16, 16),
+                crate::OffscreenFormat::LinearF16,
+            ))
+            .unwrap();
+        // Property animations give each surface real frame demand while
+        // they run; the peer's long curve outlives the short one, so an
+        // idle frame can be observed on `surface` alone. The `Layer`
+        // handles stay bound for the animation's life: a dropped layer
+        // removes itself from the tree.
+        let layer = surface.layer();
+        surface.update_animated(
+            crate::Curve::linear(std::time::Duration::from_secs(60)),
+            |tx| {
+                tx[surface.root()].push(&layer);
+                tx[&layer].opacity(0.5f32);
+            },
+        );
+        let peer_layer = peer.layer();
+        peer.update_animated(
+            crate::Curve::linear(std::time::Duration::from_secs(3600)),
+            |tx| {
+                tx[peer.root()].push(&peer_layer);
+                tx[&peer_layer].opacity(0.5f32);
+            },
+        );
+
+        let _ = engine.render(FrameTime::now()).unwrap();
+        assert!(matches!(surface.next_frame(), Next::At { .. }));
+        assert!(matches!(peer.next_frame(), Next::At { .. }));
+
+        // Hidden: the surface reads Idle — never the peer's deadline.
+        surface.visibility(crate::Visibility::Hidden).unwrap();
+        let _ = engine.render(FrameTime::now()).unwrap();
+        assert_eq!(surface.next_frame(), Next::Idle);
+        assert!(matches!(peer.next_frame(), Next::At { .. }));
+
+        // Revealed again: its own demand republishes a live deadline.
+        surface.visibility(crate::Visibility::Visible).unwrap();
+        let _ = engine.render(FrameTime::now()).unwrap();
+        assert!(matches!(surface.next_frame(), Next::At { .. }));
+        assert!(matches!(peer.next_frame(), Next::At { .. }));
+
+        // Visible with its animation finished: a real idle frame
+        // overwrites the stale `At`; the still-running peer is
+        // unaffected.
+        let _ = engine
+            .render(FrameTime::at(
+                crate::Instant::now() + std::time::Duration::from_secs(120),
+            ))
+            .unwrap();
+        assert_eq!(surface.next_frame(), Next::Idle);
+        assert!(matches!(peer.next_frame(), Next::At { .. }));
+
+        // Re-arming the still-owned layer with a different animation
+        // republishes its deadline: removing it next genuinely clears a
+        // live `At`, not an already-idle slot.
+        surface.update_animated(
+            crate::Curve::linear(std::time::Duration::from_secs(600)),
+            |tx| {
+                tx[&layer].opacity(0.25f32);
+            },
+        );
+        let _ = engine.render(FrameTime::now()).unwrap();
+        assert!(matches!(surface.next_frame(), Next::At { .. }));
+        assert!(matches!(peer.next_frame(), Next::At { .. }));
+
+        // Removed: the layer's own drop sends the remove op, so its
+        // animation and deadline go with it — only the peer's stays.
+        drop(layer);
+        let _ = engine.render(FrameTime::now()).unwrap();
+        assert_eq!(surface.next_frame(), Next::Idle);
+        assert!(matches!(peer.next_frame(), Next::At { .. }));
+
+        // The surface itself going away likewise leaves the peer's
+        // deadline untouched.
+        drop(surface);
+        let _ = engine.render(FrameTime::now()).unwrap();
+        assert!(matches!(peer.next_frame(), Next::At { .. }));
     }
 }

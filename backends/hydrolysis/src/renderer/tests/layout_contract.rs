@@ -216,7 +216,14 @@ fn retained_scene_capture_preserves_proposal_and_viewport_boundaries() {
         transform: Affine::translate((0.0, -800.0)),
     };
     renderer.push_lazy_viewport(outer);
-    let _ = retained.render_built_scene(&mut renderer, &env, size);
+    let _ = retained.render_built_scene(
+        &mut renderer,
+        &env,
+        crate::renderer::CapturedScenePlacement {
+            size,
+            hit_transform: Affine::IDENTITY,
+        },
+    );
     assert_eq!(renderer.lazy.lazy_viewport_stack.len(), 1);
     assert_eq!(renderer.lazy.lazy_viewport_stack[0].bounds, outer.bounds);
     trace.borrow_mut().clear();

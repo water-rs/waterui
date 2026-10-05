@@ -130,12 +130,15 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // content's own measurement under the delivered proposal is the
         // frame both the effect and the content get, centered in bounds.
         host.set_layout_handler({
-            let state = Rc::clone(&state);
+            let state = Rc::downgrade(&state);
             #[expect(
                 clippy::cast_possible_truncation,
                 reason = "AppKit measures in `CGFloat`; the leaf speaks `f32`"
             )]
             move |host| {
+                let Some(state) = state.upgrade() else {
+                    return;
+                };
                 let bounds = view::bounds(host);
                 let last = state.last_proposal.get();
                 let size = state

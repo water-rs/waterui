@@ -13,7 +13,7 @@ use alloc::rc::Rc;
 
 use cocoa_ui::dynamic_range::{self, DynamicRange};
 use cocoa_ui::view;
-use cocoa_ui::{PlatformView, Rect, Retained};
+use cocoa_ui::{PlatformView, Rect};
 use waterui::metadata::secure::{HighDynamicRange, StandardDynamicRange};
 use waterui_core::Metadata;
 use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
@@ -94,12 +94,14 @@ fn dynamic_range_leaf(
     // Each layout pass stretches the content over the bounds and re-applies
     // the mode so newly attached sublayers inherit the override.
     host.set_layout_handler({
-        let state = Rc::clone(&state);
-        let host_view = Retained::from(host_view);
+        let state = Rc::downgrade(&state);
         move |host| {
+            let Some(state) = state.upgrade() else {
+                return;
+            };
             let bounds = view::bounds(host);
             view::set_frame(state.child.view(), bounds);
-            dynamic_range::apply_to_view(mode, &host_view);
+            dynamic_range::apply_to_view(mode, host);
         }
     });
 
