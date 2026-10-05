@@ -6,8 +6,9 @@
 //!   top edge while staying inside the container (home indicator) region;
 //! - the composer's fill paints through the translucent keyboard — a fill
 //!   background extends into the safe-area bands its frame touches;
-//! - the scroll surface grows its content inset by the keyboard inset and
-//!   scrolls the focused field the minimum distance that keeps it clear.
+//! - the conversation's scroll surface extends under the keyboard band,
+//!   so its content stays visible through a translucent keyboard instead
+//!   of being clipped at the keyboard's top edge.
 //!
 //! `docs/layout-spec.md` §7.1 defines the two-region model; the example
 //! uses only default behaviour — no per-view safe-area workarounds.
@@ -47,14 +48,14 @@ fn peer_bubble(message: &'static str) -> impl View {
 fn conversation() -> impl View {
     scroll(
         vstack((
-            peer_bubble("Did the keyboard-safe-area change land?"),
-            self_bubble("Just pushed — the composer now tracks the IME."),
-            peer_bubble("Show me."),
-            self_bubble("Focus the field below: the keyboard region is its own safe area."),
-            peer_bubble("The panel rides the keyboard top — nice."),
-            self_bubble("And the panel fill runs underneath it, so a translucent keyboard shows it through."),
-            peer_bubble("Scroll a longer thread and focus again — the field stays clear."),
-            self_bubble("It scrolls the minimum distance to clear the field's frame."),
+            peer_bubble("Are we still on for Saturday?"),
+            self_bubble("Yes — trailhead at nine, right?"),
+            peer_bubble("Nine works. The weather is supposed to be clear."),
+            self_bubble("I'll bring coffee and the topo map."),
+            peer_bubble("Can you grab me an extra water bottle?"),
+            self_bubble("Done. Two litres in the side pocket."),
+            peer_bubble("Perfect. See you there."),
+            self_bubble("See you. Don't forget the permits this time."),
         ))
         .padding_with(12.0),
     )
@@ -64,13 +65,9 @@ fn conversation() -> impl View {
 /// clear of whichever band — container or keyboard — is deepest on its edge.
 /// Its fill background is what reaches under the band instead.
 fn composer(draft: Binding<Str>) -> impl View {
-    let draft_for_field = draft.clone();
-    let draft_for_send = draft;
     hstack((
-        field("Message", &draft_for_field),
-        button("Send").action(move || {
-            draft_for_send.set(Str::from(""));
-        }),
+        field("Message", &draft),
+        button("Send").action(move || draft.set(Str::from(""))),
     ))
     .padding_with(12.0)
     .background(COMPOSER_FILL)
