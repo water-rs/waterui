@@ -25,6 +25,15 @@ Device mode (Mac host, no toolchains):
 
 from __future__ import annotations
 
+import sys
+
+if sys.version_info < (3, 10):
+    raise SystemExit(
+        "benchmarks/competitive requires Python >= 3.10 "
+        f"(this interpreter is {sys.version.split()[0]}); every leg "
+        "declares its version in pyproject.toml + .python-version and "
+        "runs under the uv-managed interpreter (`uv run`)")
+
 import argparse
 import fcntl
 import hashlib
@@ -784,6 +793,33 @@ def launch(serial: str, pkg: str, activity: str, workload: str,
     return total
 
 
+def mem_sampler(serial: str, pkg: str, seconds: float,
+                interval_s: float = 0.5):
+    """Peak-PSS sampling inside a capture window as ONE on-device loop — a
+    single `adb shell` invocation, like the drive program: no host-side adb
+    polling perturbs the workload being measured."""
+    pid = adb_shell(serial, f"pidof {pkg}").split()[0]
+    n = max(1, int(seconds / interval_s + 0.5))
+    return subprocess.Popen(
+        [_ADB_OVERRIDE or _adb_bin(), "-s", serial, "shell",
+         f"for i in $(seq {n}); do "
+         f"grep '^Pss:' /proc/{pid}/smaps_rollup 2>/dev/null; "
+         f"sleep {interval_s}; done"],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+
+
+def mem_sampler_finish(proc, timeout: float = 60.0) -> int | None:
+    """Collect the sampler's Pss snapshots; returns the peak in kB."""
+    try:
+        out, _ = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        out, _ = proc.communicate()
+    vals = [int(m.group(1)) for m in
+            re.finditer(r"Pss:\s*(\d+)\s*kB", out)]
+    return max(vals) if vals else None
+
+
 def proc_mem(serial: str, pkg: str) -> dict:
     """Pss/Rss from /proc/<pid>/smaps_rollup — the sample source inside a
     capture window. `dumpsys meminfo` walks every VMA through a binder
@@ -798,22 +834,6 @@ def proc_mem(serial: str, pkg: str) -> dict:
         m = re.search(rf"^{key}:\s*(\d+) kB", out, re.M)
         vals[key.lower() + "_kb"] = int(m.group(1)) if m else None
     return vals
-
-
-def meminfo(serial: str, pkg: str) -> dict:
-    out = adb_shell(serial, f"dumpsys meminfo {pkg}")
-    pss = rss = None
-    m = re.search(r"TOTAL PSS:\s*([\d,]+)", out)
-    if m:
-        pss = int(m.group(1).replace(",", ""))
-    m = re.search(r"TOTAL RSS:\s*([\d,]+)", out)
-    if m:
-        rss = int(m.group(1).replace(",", ""))
-    if pss is None:
-        m = re.search(r"^\s*TOTAL\s+([\d,]+)", out, re.M)
-        if m:
-            pss = int(m.group(1).replace(",", ""))
-    return {"pss_kb": pss, "rss_kb": rss}
 
 
 PERFETTO_CFG = """\
@@ -940,11 +960,16 @@ def assert_trace_populated(serial: str, path: Path,
         f"traced log:\n{log[-4000:]}")
 
 
-def perfetto_capture(serial: str, ms: int, drive, pkg: str,
-                     refresh: float | None) -> dict:
-    """Record FrameTimeline on-device while `drive()` runs, then analyze."""
-    local = _record_trace(serial, PERFETTO_CFG % (ms + 30000), ms, drive)
-    return analyze_trace(local, pkg, ms, refresh)
+def perfetto_capture(serial: str, warmup_ms: int, cap_ms: int, drive,
+                     pkg: str, refresh: float | None) -> dict:
+    """Record FrameTimeline on-device while `drive()` runs, then analyze.
+
+    `drive()` covers launch + warmup + the drive program, so the contestant's
+    first owned present is inside the trace and anchors the window."""
+    total = warmup_ms + cap_ms
+    local = _record_trace(serial, PERFETTO_CFG % (total + 120000),
+                          total, drive)
+    return analyze_trace(local, pkg, warmup_ms, cap_ms, refresh)
 
 
 def _pctl(xs, p):
@@ -981,52 +1006,6 @@ class NoFramesError(RuntimeError):
     dead app or missing surfaces it stays an abort."""
 
 
-# --- tier 2: SurfaceFlinger per-layer latency -------------------------------
-# `dumpsys SurfaceFlinger --latency <layer>` returns a 128-slot ring of
-# (desired, actual-present, ready) ns timestamps per presented frame for one
-# layer. Emulator SurfaceFlinger keeps it populated for every producer —
-# including Flutter's SurfaceView pipeline that never posts ViewRootImpl
-# frame markers. We poll the app's layers during the drive window and take
-# the layer that produced the most frames.
-
-
-def sf_latency_detail(serial: str, layer: str) -> tuple[list[int], int]:
-    """(valid present timestamps, populated ring rows) for one layer.
-
-    The ring's first line carries the vsync period, then 128 slot rows of
-    (desired, actual-present, ready) ns. Rows are detected by content, not
-    position — Android versions differ in column count and separators —
-    and a token is a timestamp only when it parses as a number, so a drifted
-    format or a cleared slot can never masquerade as an empty ring. Empty
-    slots hold 0, cleared slots LONG_MAX: neither is a present."""
-    out = adb_shell(
-        serial, f"dumpsys SurfaceFlinger --latency '{layer}'")
-    ts: list[int] = []
-    rows = 0
-    for line in out.splitlines():
-        nums = [x for x in re.split(r"[\s,;|]+", line)
-                if re.fullmatch(r"-?\d+(?:\.\d+)?", x or "")]
-        if len(nums) < 2:
-            continue  # period header, comments, empty ring rows
-        # some builds prefix each slot with a small row index; real
-        # columns are ns timestamps (>= 1e6). Drop a leading index so the
-        # present column stays at position 1 either way.
-        if len(nums) >= 4 and float(nums[0]) < 1e6:
-            nums = nums[1:]
-        rows += 1
-        try:
-            t = int(float(nums[1]))  # actual present time, ns
-        except ValueError:
-            continue
-        if 0 < t < 2**62:
-            ts.append(t)
-    return ts, rows
-
-
-def sf_latency(serial: str, layer: str) -> list[int]:
-    return sf_latency_detail(serial, layer)[0]
-
-
 def sf_layers(serial: str, pkg: str) -> list[str]:
     out = adb_shell(serial, "dumpsys SurfaceFlinger --list")
     names = []
@@ -1044,82 +1023,6 @@ def sf_layers(serial: str, pkg: str) -> list[str]:
         if pkg in name and name not in names:
             names.append(name)
     return names
-
-
-# Layer names that are NOT the app's own content: window-manager transition
-# leashes, splash screens, input sinks. They present frames while the app
-# itself may still be starting, so the first-frame gate must ignore them.
-_NONCONTENT_LAYER = re.compile(
-    r"leash|ActivityRecordInputSink|Bounds for|Splash|splash|Snapshot")
-
-
-def content_layers(serial: str, pkg: str) -> list[str]:
-    return [l for l in sf_layers(serial, pkg)
-            if not _NONCONTENT_LAYER.search(l)]
-
-
-def gfxinfo_frames(serial: str, pkg: str) -> int | None:
-    """dumpsys gfxinfo 'Total frames rendered' — a process-level present
-    counter independent of SurfaceFlinger layer names, so it still sees
-    SurfaceView/BLAST pipelines whose ring does not track presents."""
-    try:
-        out = adb_shell(serial, f"dumpsys gfxinfo {pkg}")
-    except Exception:
-        return None
-    m = re.search(r"Total frames rendered:\s*(\d+)", out)
-    return int(m.group(1)) if m else None
-
-
-def wait_first_frame(serial: str, pkg: str, timeout_ms: int = 20000) -> None:
-    """Block until the app has presented at least once since this launch.
-
-    launch() force-stops the package first: the process and its
-    SurfaceFlinger layers are fresh, so ANY populated content-layer ring —
-    and any nonzero gfxinfo frame count — is a present produced by this
-    launch. That is the gate condition, launch-relative rather than
-    gate-relative: an app that draws before the gate's own baseline (every
-    launch path already waits via `am start -W`, so on a healthy device the
-    first frame has long presented when the gate runs) returns immediately,
-    while an app that genuinely never draws burns the timeout. Engine
-    startup latency varies wildly per contestant (Flutter's SurfaceView/
-    BLAST pipeline can take seconds on a slow target); without this gate
-    the capture window can close before the first present and a startup
-    stall is misread as collapsed pacing."""
-    t0 = time.time()
-    while time.time() - t0 < timeout_ms / 1000:
-        for l in content_layers(serial, pkg):
-            try:
-                if sf_latency(serial, l):
-                    return  # ring populated since this launch = presented
-            except Exception:
-                continue
-        gfx = gfxinfo_frames(serial, pkg)
-        if gfx:
-            return  # process-fresh counter >0 = presented since launch
-        time.sleep(0.2)
-    # no present within the timeout is an abort — a fall-through used to
-    # let the capture close silently before a late app ever drew
-    inv = {}
-    for l in sf_layers(serial, pkg):
-        try:
-            ts, rows = sf_latency_detail(serial, l)
-        except Exception as ex:
-            inv[l[:60]] = f"error:{ex}"
-            continue
-        inv[l[:60]] = f"{len(ts)} valid / {rows} rows"
-        if rows and not ts:
-            # populated ring, zero presents: surface the first raw slot so
-            # an unrecognized column format is diagnosable from the log
-            raw = adb_shell(
-                serial, f"dumpsys SurfaceFlinger --latency '{l}'"
-            ).splitlines()
-            first = next(
-                (x for x in raw[1:]
-                 if len(re.split(r"[\s,;|]+", x.strip())) >= 2), "")
-            inv[l[:60]] += f" raw[{first.strip()[:50]}]"
-    raise RuntimeError(
-        f"{pkg}: no present within {timeout_ms} ms of launch "
-        f"(layers: {inv})")
 
 
 def process_alive(serial: str, pkg: str) -> bool:
@@ -1439,14 +1342,15 @@ def assert_foreground(serial: str, pkg: str) -> None:
             + "\nevents log:\n" + events)
 
 
-def frame_capture(serial: str, ms: int, drive, pkg: str,
-                  refresh: float | None) -> dict:
+def frame_capture(serial: str, warmup_ms: int, cap_ms: int, drive,
+                  pkg: str, refresh: float | None) -> dict:
     """One frame source for every contestant: Perfetto FrameTimeline while
-    the drive program runs; a capture error aborts the run."""
+    `drive()` (launch + warmup + the drive program) runs; a capture error
+    aborts the run. First-frame readiness is the `am start -W` block inside
+    the drive — the window itself anchors on the trace's first owned
+    present."""
     assert_capture_ready(serial)
-    wait_first_frame(serial, pkg)
-    assert_foreground(serial, pkg)
-    st = perfetto_capture(serial, ms, drive, pkg, refresh)
+    st = perfetto_capture(serial, warmup_ms, cap_ms, drive, pkg, refresh)
     assert_foreground(serial, pkg)
     return st
 
@@ -1513,7 +1417,7 @@ def _frame_rows(path: Path, pkg: str):
     return rows
 
 
-def analyze_trace(path: Path, pkg: str, cap_ms: int,
+def analyze_trace(path: Path, pkg: str, warmup_ms: int, cap_ms: int,
                   refresh: float | None) -> dict:
     """FrameTimeline slices for the app's layers: present interval
     percentiles and the jank share from the frame-timeline tables.
@@ -1532,11 +1436,13 @@ def analyze_trace(path: Path, pkg: str, cap_ms: int,
             f"(frame_source=perfetto)")
     # 1-3 rows is a real result (a collapsed step presents barely anything);
     # measure_capacity folds frames<4 into collapsed_at
-    # present timestamp = slice end; the window is the capture itself (the
-    # drive program runs inside it; warmup happened before recording)
+    # present timestamp = slice end; the window is [first owned present +
+    # warmup_ms, +cap_ms] — launch and warmup were recorded in the same
+    # trace, so the window is anchored on the process's own first present
+    # (METHOD in ../WORKLOADS.md), never on the capture's start
     pts = [r[0] + (r[1] or 0) for r in presented]
     stats = lib_frames.frame_statistics(
-        [(t - pts[0]) / 1e6 for t in pts], 0.0, cap_ms,
+        [t / 1e6 for t in pts], pts[0] / 1e6 + warmup_ms, cap_ms,
         1000.0 / (refresh or 60.0))
     # jank_type != None is perfetto's own drop classification — kept as
     # evidence beside the unified interval rule
@@ -1614,16 +1520,18 @@ def within_budget(ivals: list[float], budget_ms: float) -> float | None:
     return round(sum(1 for x in xs if x <= 1.5 * budget_ms) / len(xs), 4)
 
 
-def capacity_capture(serial: str, ms: int, drive, pkg: str,
-                     refresh: float | None) -> dict:
+def capacity_capture(serial: str, warmup_ms: int, cap_ms: int, drive,
+                     pkg: str, refresh: float | None) -> dict:
     """Frame capture for one capacity step, Perfetto FrameTimeline like
-    every other capture; adds CPU ms/frame from sched_slice."""
+    every other capture; adds CPU ms/frame from sched_slice. `drive()`
+    covers launch + warmup + the drive program so the window anchors on the
+    step's first owned present."""
     assert_capture_ready(serial)
-    assert_foreground(serial, pkg)
     try:
+        total = warmup_ms + cap_ms
         local = _record_trace(
-            serial, PERFETTO_CAP_CFG % (ms + 30000), ms, drive)
-        st = analyze_trace(local, pkg, ms, refresh)
+            serial, PERFETTO_CAP_CFG % (total + 120000), total, drive)
+        st = analyze_trace(local, pkg, warmup_ms, cap_ms, refresh)
         st.update(cpu_ms_per_frame(local, pkg, st.get("frames")))
         assert_foreground(serial, pkg)
         return st
@@ -1657,8 +1565,8 @@ def measure_capacity(man, name: str, c: dict, serial: str, wl: str,
     within two 60 Hz budgets). A launch or capture error aborts the run.
     """
     spec = man["workloads"][wl]
-    settle = spec["settle_ms"] / 1000.0
-    hold = spec["hold_ms"]
+    settle_ms = spec["settle_ms"]
+    hold_ms = spec["hold_ms"]
     collapse_frac = spec.get("collapse_frac", 0.5)
     pkg, activity, kind = c["package"], c["activity"], c["kind"]
     out: dict = {"steps": [], "collapsed_at": None, "crashed": None,
@@ -1666,15 +1574,20 @@ def measure_capacity(man, name: str, c: dict, serial: str, wl: str,
     for n in spec["steps"]:
         print(f"    {wl} step {n}", flush=True)
         try:
-            launch(serial, pkg, activity, wl, kind, step=n)
-            time.sleep(settle)
-            if wl == "w6":
-                def drive():  # noqa: B023 — dims bound at call time
+            # the step's launch and settle run inside the trace so the
+            # window anchors on THIS step's first owned present
+            # (settle_ms is the declared warmup, never 0); the drive
+            # program starts at window start
+            def drive():  # noqa: B023 — n/dims bound at call time
+                launch(serial, pkg, activity, wl, kind, step=n)
+                time.sleep(settle_ms / 1000.0)
+                assert_foreground(serial, pkg)
+                if wl == "w6":
                     drive_workload(serial, man["fling"], dims)
-            else:
-                def drive():
-                    time.sleep(hold / 1000.0)
-            st = capacity_capture(serial, hold, drive, pkg, refresh)
+                else:
+                    time.sleep(hold_ms / 1000.0)
+            st = capacity_capture(serial, settle_ms, hold_ms, drive, pkg,
+                                  refresh)
         except AppNotRespondingError:
             # the step blocked the main thread past the ANR timeout: the
             # ladder's limit. Stopping the app dismisses the dialog before
@@ -1758,6 +1671,8 @@ def measure_rep(man, name: str, c: dict, serial: str,
     pkg, activity, kind = c["package"], c["activity"], c["kind"]
     dims = screen_dims(serial)
 
+    pacing = man["pacing"]
+    warmup_ms = pacing["warmup_ms"]
     rep = {"refresh_hz": refresh_hz(serial),
            "thermal_state": thermal_status(serial)}
     for w in workloads:
@@ -1767,40 +1682,40 @@ def measure_rep(man, name: str, c: dict, serial: str,
                 man, name, c, serial, w, dims, rep["refresh_hz"])}
             continue
         wr = {}
-        wr["startup_ms"] = launch(serial, pkg, activity, w, kind)
-        # steady-state memory: idle after launch
-        time.sleep(4)
-        wr["memory_steady"] = meminfo(serial, pkg)
-        # peak memory sampled while the workload is driven
-        samples = []
+        mem: dict = {}
+        if w == "w1":
+            # startup + memory only — no frame window. `am start -W` is the
+            # first-present event; steady memory is sampled after the same
+            # declared warmup as the measured workloads
+            wr["startup_ms"] = launch(serial, pkg, activity, w, kind)
+            time.sleep(warmup_ms / 1000.0)
+            wr["memory_steady"] = proc_mem(serial, pkg)
+            wr["memory_peak_kb"] = wr["memory_steady"]["pss_kb"]
+            rep[w] = wr
+            continue
+        ms = pacing["capture_ms"][w]
 
-        def sample_loop(stop):
-            while not stop[0]:
-                s = proc_mem(serial, pkg)
-                if s["pss_kb"]:
-                    samples.append(s["pss_kb"])
-                time.sleep(0.5)
-
-        import threading
-        stop = [False]
-        t = threading.Thread(target=sample_loop, args=(stop,), daemon=True)
-        t.start()
-        if w in ("w2", "w3", "w4"):
-            ms = 12000 if w in ("w2", "w4") else 15000
-            if w in ("w2", "w4"):
-                def drive():  # noqa: B023 — dims bound at call time
+        # launch + warmup run inside the trace so the window anchors on the
+        # contestant's first owned present (METHOD); the drive program
+        # starts at window start — warmup end
+        def drive():  # noqa: B023 — w/dims/ms bound at call time
+            wr["startup_ms"] = launch(serial, pkg, activity, w, kind)
+            time.sleep(warmup_ms / 1000.0)
+            assert_foreground(serial, pkg)
+            wr["memory_steady"] = proc_mem(serial, pkg)
+            sampler = mem_sampler(serial, pkg, ms / 1000.0)
+            try:
+                if w in ("w2", "w4"):
                     drive_workload(serial, man["fling"], dims)
-            else:
-                # W3 animates by itself: the window is the hold
-                def drive():  # noqa: B023 — ms bound at call time
+                else:
+                    # W3 animates by itself: the window is the hold
                     time.sleep(ms / 1000.0)
-            wr["frames"] = frame_capture(
-                serial, ms, drive, pkg, rep["refresh_hz"])
-        else:
-            time.sleep(5)
-        stop[0] = True
-        t.join(timeout=2)
-        wr["memory_peak_kb"] = max(samples) if samples else None
+            finally:
+                mem["peak"] = mem_sampler_finish(sampler)
+
+        wr["frames"] = frame_capture(
+            serial, warmup_ms, ms, drive, pkg, rep["refresh_hz"])
+        wr["memory_peak_kb"] = mem.get("peak")
         rep[w] = wr
     adb_shell(serial, f"am force-stop {pkg}")
     return rep

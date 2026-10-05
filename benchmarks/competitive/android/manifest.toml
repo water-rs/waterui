@@ -142,6 +142,15 @@ gradle_project = "."
 # drawing slower than ~30 fps — or the capture errors.
 # ---------------------------------------------------------------------------
 
+# The measurement window (../WORKLOADS.md METHOD): [first owned present +
+# warmup_ms, + capture_ms]. warmup_ms is never 0 — launch and warmup happen
+# inside the trace so the first present anchors the window; the drive
+# program starts at window start and capture is fixed from window start.
+[pacing]
+warmup_ms = 4000
+# per-workload capture length; w1 measures startup + memory only, no window
+capture_ms = { w2 = 12000, w3 = 15000, w4 = 12000 }
+
 [workloads.w1]
 name = "Hello"
 

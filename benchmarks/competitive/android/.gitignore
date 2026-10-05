@@ -33,3 +33,7 @@ build/
 # runner-owned caches: provisioned water CLI, verified gradle dists, bundletool
 .cache/
 traces/
+
+# uv-managed interpreter (pyproject/.python-version)
+.venv/
+__pycache__/
