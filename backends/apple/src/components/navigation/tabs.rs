@@ -125,12 +125,12 @@ mod platform {
     /// owns the mount, and its watchers die with it.
     ///
     /// The host's handlers hold the mount strongly; clearing them leaves
-    /// this struct the mount's only owner, so `_mounted` — declared last —
-    /// detaches the child once the host can no longer reach it.
+    /// this struct the mount's only owner, so `_mounted` — declared before
+    /// `host` — detaches the child while the host is still retained.
     struct BottomAccessory {
         tabs: Retained<TabsController>,
-        host: Retained<HostView>,
         _mounted: Rc<crate::contract::Mounted>,
+        host: Retained<HostView>,
     }
 
     impl Drop for BottomAccessory {
@@ -295,8 +295,8 @@ mod platform {
             keep.keep(accessory);
             keep.keep(BottomAccessory {
                 tabs: tabs.clone(),
-                host: accessory_host,
                 _mounted: mounted,
+                host: accessory_host,
             });
         }
 
