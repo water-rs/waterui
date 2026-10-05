@@ -346,36 +346,9 @@ impl ResourceHandle for cherenkov::Shader {
 }
 
 #[cfg(any(feature = "cherenkov", test))]
-const fn engine_color_space(color_space: ImageColorSpace) -> cherenkov::ImageColorSpace {
-    match color_space {
-        ImageColorSpace::Srgb => cherenkov::ImageColorSpace::Srgb,
-        ImageColorSpace::DisplayP3 => cherenkov::ImageColorSpace::DisplayP3,
-        ImageColorSpace::LinearSrgb => cherenkov::ImageColorSpace::LinearSrgb,
-        ImageColorSpace::LinearP3 => cherenkov::ImageColorSpace::LinearP3,
-    }
-}
-
-/// `ImageData` rebuilt as the engine's typed upload: same texels, same
-/// colour space and alpha convention, its own format marker.
-#[cfg(any(feature = "cherenkov", test))]
-fn engine_image<F: Format, E: cherenkov::Format>(data: &ImageData<F>) -> cherenkov::ImageData<E> {
-    let upload =
-        cherenkov::ImageData::<E>::new(data.width(), data.height(), Arc::clone(data.data()))
-            .expect("a validated ImageData stays valid")
-            .color_space(engine_color_space(data.color_space));
-    if data.premultiplied {
-        upload.premultiplied()
-    } else {
-        upload
-    }
-}
-
-#[cfg(any(feature = "cherenkov", test))]
 impl<B> SceneBackend for cherenkov::Engine<B>
 where
-    B: cherenkov::Backend
-        + cherenkov::Uploads<cherenkov::Rgba8>
-        + cherenkov::Uploads<cherenkov::Rgba16F>,
+    B: cherenkov::Backend + cherenkov::Uploads<Rgba8> + cherenkov::Uploads<Rgba16F>,
 {
     fn register_font(&self, source: FontSource) -> Result<Handle<FontId>, ResourceError> {
         match source {
@@ -390,12 +363,12 @@ where
     }
 
     fn register_rgba8(&self, data: ImageData<Rgba8>) -> Result<Handle<ImageId>, ResourceError> {
-        let image = Self::image(self, engine_image::<Rgba8, cherenkov::Rgba8>(&data))?;
+        let image = Self::image(self, data)?;
         Ok(Handle::new(image))
     }
 
     fn register_rgba16f(&self, data: ImageData<Rgba16F>) -> Result<Handle<ImageId>, ResourceError> {
-        let image = Self::image(self, engine_image::<Rgba16F, cherenkov::Rgba16F>(&data))?;
+        let image = Self::image(self, data)?;
         Ok(Handle::new(image))
     }
 }

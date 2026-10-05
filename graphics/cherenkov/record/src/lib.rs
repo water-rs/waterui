@@ -21,7 +21,9 @@
 pub mod animation;
 pub mod color;
 pub mod display_list;
+pub mod error;
 pub mod glyph;
+pub mod image;
 pub mod paint;
 pub mod record;
 pub mod resource;
@@ -45,7 +47,12 @@ pub use crate::display_list::{
     Command, Dirty, DisplayList, DisplayListView, Operand, OperandKind, OperandRef, Operands,
     Picture, ScopeError, Slot, SlotUpdate,
 };
+pub use crate::error::ResourceError;
 pub use crate::glyph::{FontId, Glyph, GlyphRun, GlyphStyle};
+pub use crate::image::{
+    Astc4x4, Bc7, Etc2Rgba, Format, ImageColorSpace, ImageData, ImageFormat, ImageUpload, Rgba8,
+    Rgba16F,
+};
 pub use crate::paint::{
     ColorStop, Extend, ImageId, ImagePattern, Interpolation, LinearGradient,
     MeshColorInterpolation, MeshGradient, MeshGradientError, Paint, RadialGradient, Sampling,
