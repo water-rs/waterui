@@ -9,6 +9,28 @@ use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use crate::platform_view::PlatformView;
 use waterui_core::views::ViewSnapshot;
 
+/// A retained node's layout-dirty mark and the callback its input
+/// subscriptions fire: the callback sets the mark, which an enclosing
+/// `RetainedSubview` consumes through [`RenderNode::take_layout_dirty`], and
+/// schedules the refresh that lets it.
+fn layout_invalidation(
+    signals: &crate::renderer::FrameSignals,
+) -> (
+    Rc<Cell<bool>>,
+    waterui_core::layout::LayoutInvalidationCallback,
+) {
+    let layout_dirty = Rc::new(Cell::new(false));
+    let invalidate = {
+        let layout_dirty = Rc::clone(&layout_dirty);
+        let signals = signals.clone();
+        Rc::new(move || {
+            layout_dirty.set(true);
+            signals.request_refresh();
+        })
+    };
+    (layout_dirty, invalidate)
+}
+
 impl RenderNode {
     /// Build a node from a view, capturing live reactive inputs. Native leaves
     /// and layout containers map to concrete nodes; composite views expand via
@@ -31,16 +53,8 @@ impl RenderNode {
         let view = match view.downcast::<Native<TextConfig>>() {
             Ok(text) => {
                 let config = (*text).into_inner();
-                let layout_dirty = Rc::new(Cell::new(false));
-                let invalidate = {
-                    let layout_dirty = Rc::clone(&layout_dirty);
-                    let signals = renderer.signals.clone();
-                    Rc::new(move || {
-                        layout_dirty.set(true);
-                        signals.request_refresh();
-                    })
-                };
-                let guards = vec![
+                let (layout_dirty, invalidate) = layout_invalidation(&renderer.signals);
+                let guards = [
                     config.content.watch({
                         let invalidate = Rc::clone(&invalidate);
                         move |_| invalidate()
@@ -64,15 +78,8 @@ impl RenderNode {
         let view = match view.downcast::<Native<FixedContainer>>() {
             Ok(container) => {
                 let (layout, children) = (*container).into_inner().into_inner();
-                let layout_dirty = Rc::new(Cell::new(false));
-                let signals = renderer.signals.clone();
-                let guards = layout.watch_invalidation({
-                    let layout_dirty = Rc::clone(&layout_dirty);
-                    Rc::new(move || {
-                        layout_dirty.set(true);
-                        signals.request_refresh();
-                    })
-                });
+                let (layout_dirty, invalidate) = layout_invalidation(&renderer.signals);
+                let guards = layout.watch_invalidation(invalidate);
                 #[cfg(feature = "accessibility")]
                 let accessibility_child_env = accessibility_container_child_environment(env);
                 #[cfg(feature = "accessibility")]

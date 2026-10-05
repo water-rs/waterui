@@ -239,12 +239,19 @@ impl RetainedSubview {
     }
 
     /// Consume the subtree's layout-invalidated mark (`false` for an unbuilt
-    /// view). The flush sites fold this into `needs_layout` so a layout-signal
-    /// change re-places the subtree at its unchanged rect.
+    /// view), keeping it in `needs_layout` as well as reporting it. The flush
+    /// sites fold it into `needs_layout` so a layout input change re-places the
+    /// subtree at its unchanged rect. An enclosing sub-view walking through this
+    /// one (a lazy row inside a navigation page) consumes the mark before this
+    /// sub-view flushes, and the enclosing layout does not place it — the row is
+    /// placed by its own flush — so the mark must survive here for that flush.
     pub(crate) fn take_layout_dirty(&mut self) -> bool {
-        self.node
+        let dirty = self
+            .node
             .as_mut()
-            .is_some_and(RenderNode::take_layout_dirty)
+            .is_some_and(RenderNode::take_layout_dirty);
+        self.needs_layout |= dirty;
+        dirty
     }
 
     /// Build (once), patch, lay out (when the rect size or the structure
@@ -818,8 +825,9 @@ pub struct TextNode {
     /// and re-places its tree: otherwise the leaf keeps the box it measured at
     /// mount while the flush paints the new string wrapped inside it.
     pub(crate) layout_dirty: Rc<Cell<bool>>,
-    /// The subscriptions that arm `layout_dirty`, owned by this retained leaf.
-    pub(crate) _guards: Vec<BoxWatcherGuard>,
+    /// The `content` and `alignment` subscriptions that arm `layout_dirty`,
+    /// owned by this retained leaf.
+    pub(crate) _guards: [BoxWatcherGuard; 2],
 }
 
 pub struct ContainerNode {
