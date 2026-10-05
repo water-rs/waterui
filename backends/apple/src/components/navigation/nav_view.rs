@@ -555,12 +555,10 @@ mod platform {
             let host_weak = host.clone();
             let toolbar = toolbar.clone();
             let search_field = field_for_toolbar;
-            // The outer jobs is re-read only by `gpu_surface`'s refresh
-            // arm; without it the publish closure takes the value itself.
+            // `gpu_surface`'s refresh arm reads `icons` after this closure;
+            // without it the closure takes the outer value.
             #[cfg(feature = "gpu_surface")]
             let icons = icons.clone();
-            #[cfg(not(feature = "gpu_surface"))]
-            let icons = icons;
             move |host: &HostView| {
                 let Some(window) = view::window(host) else {
                     return;
