@@ -27,7 +27,7 @@ pub fn guarded<R>(site: &'static str, callback: impl FnOnce() -> R) -> R {
 
 /// Runs `super_call`, then the slot's handler when one is set — the
 /// whole callback inside one [`guarded`] boundary under `site`.
-pub(crate) fn forward(
+pub fn forward(
     site: &'static str,
     super_call: impl FnOnce(),
     slot: &RefCell<Option<Rc<dyn Fn()>>>,
@@ -46,7 +46,7 @@ pub(crate) fn forward(
 /// Opens no boundary of its own: dispatch always happens inside the
 /// calling entry point's `guarded`, so each callback crosses exactly
 /// one guard.
-pub(crate) fn emit<T>(slot: &RefCell<Option<Rc<dyn Fn(T)>>>, event: T) {
+pub fn emit<T>(slot: &RefCell<Option<Rc<dyn Fn(T)>>>, event: T) {
     let handler = slot.borrow().clone();
     if let Some(handler) = handler {
         handler(event);
