@@ -11,7 +11,7 @@ use crate::glyph::GlyphRun;
 use crate::paint::{ImageId, Paint, Sampling};
 use crate::resource::ResourceId;
 use crate::shape::ShapeData;
-use crate::style::{Group, Shadow};
+use crate::style::{BlendMode, Group, Shadow};
 
 /// One recorded command.
 ///
@@ -807,6 +807,64 @@ impl Picture {
     pub fn apply(&mut self, updates: impl IntoIterator<Item = SlotUpdate>) -> Dirty {
         self.list_mut().apply(updates)
     }
+}
+
+/// Whether recorded content can produce partial coverage.
+///
+/// Even an opaque paint has fractional alpha at antialiased geometry and
+/// clip edges; paint alpha alone never proves an overlaid part safe for
+/// promotion. Nested pictures count: their contents are walked the same
+/// way.
+#[must_use]
+pub fn translucent_within(list: &DisplayList, range: Range<usize>) -> bool {
+    for command in &list.commands()[range] {
+        match command {
+            Command::Fill { .. }
+            | Command::Stroke { .. }
+            | Command::Glyphs { .. }
+            | Command::Image { .. }
+            | Command::Shadow { .. } => {
+                return true;
+            }
+            Command::BeginGroup { group, .. } => {
+                if group.opacity < 1.0 || group.filter.is_some() {
+                    return true;
+                }
+            }
+            Command::Picture { picture, .. }
+                if translucent_within(picture.display_list(), 0..picture.display_list().len()) =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Whether any command in `range` opens a group with a non-`Normal` blend.
+///
+/// Nested pictures count: their contents are walked the same way. Glyphs
+/// need no scan — a colour glyph's expansion is itself wrapped in the
+/// outer `SrcOver` group this rule isolates.
+#[must_use]
+pub fn blends_within(list: &DisplayList, range: Range<usize>) -> bool {
+    for command in &list.commands()[range] {
+        match command {
+            Command::BeginGroup { group, .. } => {
+                if group.blend != BlendMode::Normal {
+                    return true;
+                }
+            }
+            Command::Picture { picture, .. }
+                if blends_within(picture.display_list(), 0..picture.display_list().len()) =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 #[cfg(test)]

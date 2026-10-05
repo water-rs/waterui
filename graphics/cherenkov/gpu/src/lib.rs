@@ -424,6 +424,11 @@ impl From<Offscreen> for GpuTarget {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Gpu;
 
+impl cherenkov::Target for Gpu {
+    type Queue = cherenkov::EngineQueue<Self>;
+    type Install = cherenkov::InstallOp<Self>;
+}
+
 impl Backend for Gpu {
     type Config = GpuConfig;
     type Info = GpuInfo;
@@ -457,6 +462,10 @@ impl cherenkov::HdrOutput for Gpu {}
 // are promoted to Core Animation layers — see `render::planes`.
 #[cfg(target_vendor = "apple")]
 impl cherenkov::Planes for Gpu {}
+
+impl cherenkov::BackdropSampling for Gpu {}
+
+impl cherenkov::GpuInstalls for Gpu {}
 
 impl cherenkov::ProjectiveLayers for Gpu {}
 

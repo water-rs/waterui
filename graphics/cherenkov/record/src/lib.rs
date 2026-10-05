@@ -19,23 +19,33 @@
 //!   apply: first the whole [`Picture`], then the changed slots.
 
 pub mod animation;
+pub mod backdrop;
 pub mod color;
 pub mod display_list;
+pub mod frame;
 pub mod glyph;
+pub mod ops;
 pub mod paint;
+pub mod projective;
 pub mod record;
 pub mod resource;
 pub mod shape;
 pub mod size;
 pub mod style;
+pub mod surface;
+pub mod target;
+pub mod tree;
 
 pub use kurbo;
 /// Monotonic presentation clock: std on native, browser performance clock on wasm.
 pub use web_time::Instant;
 
 pub use crate::animation::{
-    Animatable, Animation, Curve, Decay, Lanes, Spring, curve_value, decay_step, settled,
-    spring_step,
+    Animatable, Animation, AnimationTrack, Curve, Decay, Lanes, Spring, curve_value, decay_step,
+    settled, spring_step,
+};
+pub use crate::backdrop::{
+    BackdropEffect, BackdropSample, BackdropShaderEffect, ColorMatrix, Refraction, Rim,
 };
 pub use crate::color::{
     Color, ColorSpace, DisplayP3, DynColor, LinearDisplayP3, LinearSrgb, Rec2020, Srgb,
@@ -43,14 +53,19 @@ pub use crate::color::{
 };
 pub use crate::display_list::{
     Command, Dirty, DisplayList, DisplayListView, Operand, OperandKind, OperandRef, Operands,
-    Picture, ScopeError, Slot, SlotUpdate,
+    Picture, ScopeError, Slot, SlotUpdate, blends_within, translucent_within,
 };
+pub use crate::frame::RefreshRange;
 pub use crate::glyph::{FontId, Glyph, GlyphRun, GlyphStyle};
+pub use crate::ops::{
+    BackdropId, ChangeSet, ContentOp, Install, LayerId, LayerOp, Op, Prop, SurfaceId,
+};
 pub use crate::paint::{
     ColorStop, Extend, ImageId, ImagePattern, Interpolation, LinearGradient,
     MeshColorInterpolation, MeshGradient, MeshGradientError, Paint, RadialGradient, Sampling,
     ShaderId, ShaderPaint, SweepGradient, TransformedPaint,
 };
+pub use crate::projective::{Projective, ProjectiveError};
 pub use crate::record::{
     Animating, Binding, Content, ContentChange, ContentSpare, Draw, Fixed, Live, LiveOwner,
     Recorder, SampleFlag, StaticRecorder,
@@ -61,4 +76,7 @@ pub use crate::shape::{
 };
 pub use crate::size::LayoutSize;
 pub use crate::style::{BlendMode, BlendSpace, FilterId, Group, Shadow};
+pub use crate::surface::{Layer, LayerContent, LayerEdit, LayerOwner, Shared, Transaction};
+pub use crate::target::{BackdropSampling, GpuInstalls, ProjectiveLayers, Queue, Target};
+pub use crate::tree::{LayerAnimations, LayerNode, Realize, SurfaceTree, snap_animating};
 pub use kurbo::Stroke;

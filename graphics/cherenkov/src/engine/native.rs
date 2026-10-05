@@ -1,7 +1,7 @@
 //! The engine: owns the render thread and every resource's identity.
 //! `!Send`, lives on the UI thread.
 
-use super::{SurfaceWaker, Waker, thread};
+use super::{SharedWaker, SurfaceWaker, Waker, thread};
 
 use std::cell::{Cell, RefCell};
 use std::marker::PhantomData;
@@ -19,16 +19,17 @@ use crate::error::{EngineError, RenderError, ResourceError, SurfaceError};
 use crate::frame::{FrameStats, FrameTime, FrameTiming, Next};
 use crate::glyph::FontId;
 use crate::image::{Format, ImageData};
-use crate::message::{
-    ChangeSet, FontData, MemoryReply, Message, ProducerId, RegisterOp, RenderReply, ResOp,
-    SurfaceId,
-};
+use cherenkov_record::{ChangeSet, SurfaceId};
+
+use crate::message::{FontData, MemoryReply, Message, ProducerId, RegisterOp, RenderReply, ResOp};
 use crate::paint::ImageId;
+use cherenkov_record::ResourceId;
+
 use crate::resource::{
-    Filter, Font, FontSource, FrameSink, GpuProducer, Image, ReplaceImage, ResourceId, Shader,
+    Filter, Font, FontSource, FrameSink, GpuProducer, Image, ReplaceImage, Shader,
 };
 use crate::style::FilterId;
-use crate::surface::{Shared, Surface};
+use crate::surface::Surface;
 
 /// The engine: owns the device and the render thread. `!Send`, lives on
 /// the UI thread.
@@ -65,7 +66,7 @@ pub struct Engine<B: Backend> {
     next_scratch: RefCell<rustc_hash::FxHashMap<SurfaceId, Next>>,
     /// The live surfaces' shared queues, drained into one `Render` message
     /// per frame.
-    surfaces: RefCell<Vec<std::rc::Weak<RefCell<Shared<B>>>>>,
+    surfaces: RefCell<super::Surfaces<B>>,
     next_surface: Cell<u64>,
     next_font: Cell<u64>,
     next_image: Cell<u64>,
@@ -315,9 +316,11 @@ impl<B: Backend> Engine<B> {
             .map_err(|_| SurfaceError::Lost)?;
         let info = rx.recv().map_err(|_| SurfaceError::Lost)??;
         let surface = Surface::new(id, info, self.tx.clone(), waker);
-        self.surfaces
-            .borrow_mut()
-            .push(Rc::downgrade(&surface.shared));
+        self.surfaces.borrow_mut().push(super::SurfaceEntry {
+            shared: Rc::downgrade(&surface.shared),
+            waker: SharedWaker::clone(&surface.waker),
+            next_frame: Rc::downgrade(&surface.next_frame),
+        });
         Ok(surface)
     }
 
@@ -325,7 +328,7 @@ impl<B: Backend> Engine<B> {
     #[doc(hidden)]
     pub fn live_surfaces(&self) -> usize {
         let mut surfaces = self.surfaces.borrow_mut();
-        surfaces.retain(|weak| weak.strong_count() > 0);
+        surfaces.retain(|entry| entry.shared.strong_count() > 0);
         surfaces.len()
     }
 
@@ -390,7 +393,7 @@ impl<B: Backend> Engine<B> {
         for (id, changes) in commits {
             let Some(shared) = surfaces
                 .iter()
-                .filter_map(std::rc::Weak::upgrade)
+                .filter_map(|entry| entry.shared.upgrade())
                 .find(|shared| shared.borrow().id == *id)
             else {
                 continue;
