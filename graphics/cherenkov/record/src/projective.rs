@@ -124,9 +124,12 @@ impl TryFrom<Affine> for Projective {
 }
 
 /// The components a projective layer's pose is composed from, in the
-/// order documented in `docs/api.md`.
+/// order documented in `docs/api.md`. `pub(crate)`: a consumer reads the
+/// composed [`Projective`] through [`SurfaceTree::projective_pose`].
+///
+/// [`SurfaceTree::projective_pose`]: crate::SurfaceTree::projective_pose
 #[derive(Clone, Copy, Debug)]
-pub struct Pose {
+pub(crate) struct Pose {
     /// The layer's affine base (`transform`).
     pub base: Affine,
     /// The component translation.

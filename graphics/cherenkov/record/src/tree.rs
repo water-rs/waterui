@@ -19,10 +19,11 @@ use crate::animation::{
 use crate::backdrop::BackdropSample;
 use crate::display_list::{Operand, SlotUpdate, blends_within, translucent_within};
 use crate::frame::RefreshRange;
-use crate::ops::{ContentOp, LayerId, LayerOp, Prop};
+use crate::ops::{ContentOp, Install, LayerId, LayerOp, Op, Prop};
 use crate::projective::{Projective, ProjectiveError};
 use crate::shape::ShapeData;
 use crate::style::{BlendMode, FilterId};
+use crate::target::Target;
 
 /// The fast rate class: springs, curves and fast decays run here.
 pub const RATE_FAST: RefreshRange = 60..=120;
@@ -39,7 +40,7 @@ pub struct LayerAnimations {
     pub opacity: Option<AnimationTrack<f32>>,
 }
 
-/// A surface's layer tree on the render thread.
+/// A surface's layer tree as its consumer holds it.
 #[derive(Debug)]
 pub struct SurfaceTree {
     nodes: FxHashMap<u64, LayerNode>,
@@ -48,6 +49,42 @@ pub struct SurfaceTree {
     projective: FxHashMap<u64, projective::State>,
     /// The last change stamp handed out; stamps only grow.
     clock: u64,
+}
+
+/// What applying one [`Op`] asks the consumer to realise — the return of
+/// [`SurfaceTree::apply_op`]. The tree side of the op is already applied;
+/// these are the parts only the consumer can do.
+pub enum Realize<T: Target> {
+    /// `layer` left the tree: drop the consumer's caches keyed on it.
+    Remove(LayerId),
+    /// `layer`'s content changed: hand `content` to the consumer's content
+    /// slot — `None` clears it.
+    Content(LayerId, Option<ContentOp>),
+    /// A sealed install payload for `layer`: the consumer runs it and
+    /// notes the alpha it reports back through
+    /// [`SurfaceTree::note_installed`].
+    Install(LayerId, Install<T>),
+    /// A tree mutation the consumer does not mirror.
+    Applied,
+}
+
+impl<T: Target> std::fmt::Debug for Realize<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Remove(layer) => f.debug_tuple("Remove").field(layer).finish(),
+            Self::Content(layer, content) => f
+                .debug_tuple("Content")
+                .field(layer)
+                .field(content)
+                .finish(),
+            Self::Install(layer, install) => f
+                .debug_tuple("Install")
+                .field(layer)
+                .field(install)
+                .finish(),
+            Self::Applied => f.write_str("Applied"),
+        }
+    }
 }
 
 /// One layer's sampled state for the current frame.
@@ -696,14 +733,40 @@ impl SurfaceTree {
             | LayerOp::Insert { parent, .. }
             | LayerOp::Detach { parent, .. } => Some((*parent, true)),
         };
-        self.apply_op(op);
+        self.apply_layer_op(op);
         if let Some((id, inner)) = touched {
             self.stamp(id, inner);
             self.refresh_projective(id);
         }
     }
 
-    fn apply_op(&mut self, op: LayerOp) {
+    /// Applies one op from a drained [`ChangeSet`] and returns what it
+    /// asks the consumer to realise. Removes route through
+    /// [`remove`](Self::remove) — [`apply`](Self::apply) panics on them —
+    /// and a content op notes its picture slots on the layer before it
+    /// is handed over, so a consumer mirrors a commit with this one
+    /// call, then notes an install's reported alpha back through
+    /// [`note_installed`](Self::note_installed).
+    pub fn apply_op<T: Target>(&mut self, op: Op<T>) -> Realize<T> {
+        match op {
+            Op::Layer(LayerOp::Remove(layer)) => {
+                self.remove(layer);
+                Realize::Remove(layer)
+            }
+            Op::Layer(LayerOp::Content(layer, content)) => {
+                self.apply(LayerOp::Content(layer, None));
+                self.note_content(layer, content.as_ref());
+                Realize::Content(layer, content)
+            }
+            Op::Layer(op) => {
+                self.apply(op);
+                Realize::Applied
+            }
+            Op::Install(layer, install) => Realize::Install(layer, install),
+        }
+    }
+
+    fn apply_layer_op(&mut self, op: LayerOp) {
         match op {
             LayerOp::Create(id) => {
                 assert!(

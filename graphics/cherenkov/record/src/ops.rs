@@ -157,6 +157,40 @@ pub enum LayerOp {
     },
 }
 
+/// A target's render-side install payload, sealed: only a [`GpuInstalls`]
+/// target can wrap one, through [`LayerContent::install`]. The consumer
+/// unwraps it with [`into_inner`](Install::into_inner) and applies it.
+///
+/// [`GpuInstalls`]: crate::GpuInstalls
+/// [`LayerContent::install`]: crate::LayerContent::install
+pub struct Install<T: Target> {
+    inner: T::Install,
+}
+
+impl<T: Target> Install<T> {
+    /// Wraps `inner`. `pub(crate)`: [`LayerContent::install`], gated on
+    /// [`GpuInstalls`], is the only call site.
+    ///
+    /// [`GpuInstalls`]: crate::GpuInstalls
+    /// [`LayerContent::install`]: crate::LayerContent::install
+    pub(crate) const fn new(inner: T::Install) -> Self {
+        Self { inner }
+    }
+
+    /// The payload to realise.
+    #[must_use]
+    pub fn into_inner(self) -> T::Install {
+        self.inner
+    }
+}
+
+impl<T: Target> std::fmt::Debug for Install<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The payload is the target's opaque render-side value.
+        f.write_str("Install(..)")
+    }
+}
+
 /// One committed op: a layer mutation, or an opaque render-side install a
 /// capability method wrapped (GPU producers) travelling in order with the
 /// layer ops.
@@ -166,7 +200,7 @@ pub enum Op<T: Target> {
     /// A render-side install on `layer`, applied in order: the reported
     /// declared alpha is noted on the layer — `None`, no frame landed
     /// yet, notes it not known opaque.
-    Install(LayerId, T::Install),
+    Install(LayerId, Install<T>),
 }
 
 impl<T: Target> std::fmt::Debug for Op<T> {

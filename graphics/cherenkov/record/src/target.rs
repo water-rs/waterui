@@ -12,20 +12,27 @@ use crate::ops::ChangeSet;
 
 /// A layer tree's render target.
 ///
-/// The record-side types — [`Shared`](crate::Shared), [`Layer`],
+/// The queueing side — [`Shared`](crate::Shared), [`LayerContent`],
 /// [`LayerEdit`](crate::LayerEdit), [`Transaction`](crate::Transaction) and
-/// [`SurfaceTree`](crate::SurfaceTree) — are generic over `T`, so a target
-/// chooses its own queue endpoint and install payload.
+/// the [`Op`](crate::ops::Op)s and [`ChangeSet`] they produce — is generic
+/// over `T`, so a target chooses its own queue endpoint and install
+/// payload. [`Layer`] and [`SurfaceTree`](crate::SurfaceTree) are
+/// target-neutral.
 ///
 /// [`Layer`]: crate::Layer
+/// [`LayerContent`]: crate::LayerContent
 pub trait Target: Sized + 'static {
     /// The queue endpoint [`Shared`](crate::Shared) notifies when changes
     /// arrive: static dispatch, no boxing.
     type Queue: Queue<Self>;
-    /// The payload [`LayerContent::Install`](crate::LayerContent::Install)
-    /// and [`Op::Install`](crate::ops::Op::Install) carry. A target with no
-    /// engine-side install path uses a payload it cannot produce, so the
-    /// variant stays uninhabited.
+    /// The payload [`LayerContent::install`] seals in [`Install`] for the
+    /// change set's [`Op::Install`](crate::ops::Op::Install) — an engine
+    /// backend's install closure. The sealing is what keeps a target
+    /// without [`GpuInstalls`] from producing one.
+    ///
+    /// [`LayerContent::install`]: crate::LayerContent::install
+    /// [`Install`]: crate::Install
+    /// [`GpuInstalls`]: crate::GpuInstalls
     type Install;
 }
 

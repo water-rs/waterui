@@ -771,22 +771,23 @@ fn singular(j: [f64; 4]) -> (f64, f64, [f64; 2]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cherenkov_record::LayerOp;
     use kurbo::Vec2;
 
     fn tilted(tilt: Vec2, distance: f64, pivot: Vec2) -> Homography {
-        let pose = crate::projective::Pose {
-            base: Affine::IDENTITY,
-            translation: Vec2::ZERO,
-            pivot,
-            rotation: 0.0,
-            skew: Vec2::ZERO,
-            scale: Vec2::new(1.0, 1.0),
-            projection: Projective::perspective(distance).unwrap(),
-            tilt,
-            depth: 0.0,
-        }
-        .matrix()
-        .unwrap();
+        let mut tree = crate::SurfaceTree::new();
+        let root = tree.root();
+        let prop = |target| crate::Prop {
+            target,
+            animation: None,
+        };
+        tree.apply(LayerOp::Pivot(root, prop(pivot)));
+        tree.apply(LayerOp::Projection(
+            root,
+            Projective::perspective(distance).unwrap(),
+        ));
+        tree.apply(LayerOp::Tilt(root, prop(tilt)));
+        let pose = tree.projective_pose(root).unwrap().unwrap();
         Homography::plane(&pose)
     }
 

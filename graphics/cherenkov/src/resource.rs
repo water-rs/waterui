@@ -445,20 +445,17 @@ impl<B: crate::GpuContent> GpuProducer<B> {
 
     /// Binds the producer to a layer at `size` pixels — the pixel size
     /// that layer needs. Returns the layer content
-    /// [`LayerEdit::content`](crate::LayerEdit::content) installs; binding
-    /// the layer again is a new binding.
+    /// [`LayerEdit::content`](crate::LayerEdit::content) installs, the
+    /// sealed [`LayerContent::install`] payload naming this producer at
+    /// `size`; the `GpuInstalls` bound `GpuContent` carries is what keeps
+    /// a target without GPU installs — the engine-free consumer — from
+    /// ever requesting one. Binding the layer again is a new binding.
     ///
     /// # Panics
     /// At apply time, when the producer is bound on an engine other than
     /// the one that made it.
-    /// [`LayerContent::install`] names this producer at `size`; the
-    /// `GpuInstalls` bound is what keeps a target without GPU installs —
-    /// `Null` or the engine-free consumer — from ever requesting one.
     #[must_use]
-    pub fn at(&self, size: (u32, u32)) -> crate::surface::LayerContent<B>
-    where
-        B: crate::GpuInstalls,
-    {
+    pub fn at(&self, size: (u32, u32)) -> crate::surface::LayerContent<B> {
         let producer = self.clone();
         let install: crate::message::InstallOp<B> = Box::new(move |r, surface, layer| {
             B::bind_gpu_producer(r, surface, layer, &producer, size)

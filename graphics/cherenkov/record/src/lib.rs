@@ -57,7 +57,9 @@ pub use crate::display_list::{
 };
 pub use crate::frame::RefreshRange;
 pub use crate::glyph::{FontId, Glyph, GlyphRun, GlyphStyle};
-pub use crate::ops::{BackdropId, ChangeSet, ContentOp, LayerId, LayerOp, Op, Prop, SurfaceId};
+pub use crate::ops::{
+    BackdropId, ChangeSet, ContentOp, Install, LayerId, LayerOp, Op, Prop, SurfaceId,
+};
 pub use crate::paint::{
     ColorStop, Extend, ImageId, ImagePattern, Interpolation, LinearGradient,
     MeshColorInterpolation, MeshGradient, MeshGradientError, Paint, RadialGradient, Sampling,
@@ -76,5 +78,5 @@ pub use crate::size::LayoutSize;
 pub use crate::style::{BlendMode, BlendSpace, FilterId, Group, Shadow};
 pub use crate::surface::{Layer, LayerContent, LayerEdit, LayerOwner, Shared, Transaction};
 pub use crate::target::{BackdropSampling, GpuInstalls, ProjectiveLayers, Queue, Target};
-pub use crate::tree::{LayerAnimations, LayerNode, SurfaceTree, snap_animating};
+pub use crate::tree::{LayerAnimations, LayerNode, Realize, SurfaceTree, snap_animating};
 pub use kurbo::Stroke;

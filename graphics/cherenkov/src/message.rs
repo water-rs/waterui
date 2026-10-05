@@ -17,9 +17,7 @@ pub type FrameReplySender<T> = Sender<T>;
 #[cfg(not(target_arch = "wasm32"))]
 pub type FrameReplySender<T> = SyncSender<T>;
 
-pub use cherenkov_record::ops::{
-    BackdropId, ChangeSet, ContentOp, LayerId, LayerOp, Op, Prop, SurfaceId,
-};
+pub use cherenkov_record::ops::{BackdropId, ChangeSet, ContentOp, LayerId, Prop, SurfaceId};
 
 use crate::backend::{Backend, Display, SurfaceInfo};
 use crate::config::{MemoryUsage, Pressure};

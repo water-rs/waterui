@@ -12,6 +12,8 @@ use crossbeam_channel::Receiver;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use cherenkov_record::Realize;
+
 use crate::backend::{
     Backend, Display, Frame, FrameRedraw, Renderer, SurfaceFrame, SurfaceInfo, Visibility,
 };
@@ -19,9 +21,7 @@ use crate::engine::{CompletionWaker, SharedWaker, SurfaceWaker};
 use crate::error::{EngineError, RenderError, ResourceError, SurfaceError};
 use crate::frame::{FrameId, FrameStats, Next, RefreshRange};
 use crate::image::ImageUpload;
-use crate::message::{
-    BackdropShaderId, ChangeSet, LayerId, LayerOp, Message, Op, ResOp, SurfaceId,
-};
+use crate::message::{BackdropShaderId, ChangeSet, LayerId, Message, ResOp, SurfaceId};
 use crate::paint::ImageId;
 use crate::resource::ResourceId;
 use crate::tree::SurfaceTree;
@@ -706,35 +706,25 @@ fn commit<B: Backend>(
     }
     state.content_animating = *animating;
     for op in ops.drain(..) {
-        match op {
-            Op::Layer(LayerOp::Remove(layer)) => {
-                state.commits = Commits::Other;
-                state.tree.remove(layer);
-                renderer.remove_layer(surface, layer);
-            }
-            Op::Layer(LayerOp::Content(layer, content)) => {
-                state.commits = Commits::Other;
-                state.tree.apply(LayerOp::Content(layer, None));
-                state.tree.note_content(layer, content.as_ref());
+        state.commits = Commits::Other;
+        match state.tree.apply_op(op) {
+            Realize::Remove(layer) => renderer.remove_layer(surface, layer),
+            Realize::Content(layer, content) => {
                 if let Some(mut old) = renderer.set_content(surface, layer, content)
                     && old.try_recycle()
                 {
                     recycled.push((layer, old));
                 }
             }
-            Op::Layer(op) => {
-                state.commits = Commits::Other;
-                state.tree.apply(op);
-            }
-            Op::Install(layer, install) => {
-                state.commits = Commits::Other;
+            Realize::Install(layer, install) => {
                 // The install reports its content's declared alpha —
                 // `None` before its first frame — noted on the layer.
                 state.tree.note_installed(
                     layer,
-                    install(&mut *renderer, surface, layer).unwrap_or(false),
+                    install.into_inner()(&mut *renderer, surface, layer).unwrap_or(false),
                 );
             }
+            Realize::Applied => {}
         }
     }
 }

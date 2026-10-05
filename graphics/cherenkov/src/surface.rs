@@ -17,8 +17,8 @@ use crossbeam_channel::Sender;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use cherenkov_record::{ChangeSet, LayerId, Queue, SurfaceId};
-pub use cherenkov_record::{Layer, LayerContent, LayerOwner, Shared, Transaction};
+use cherenkov_record::{ChangeSet, Queue, SurfaceId};
+pub use cherenkov_record::{Layer, LayerContent, Shared, Transaction};
 
 use crate::WorkingColor;
 use crate::animation::Animation;
@@ -129,14 +129,14 @@ impl<B: Backend> Surface<B> {
     ) -> Self {
         let queue = EngineQueue::new(id, SharedWaker::clone(&waker), tx.clone());
         let shared = Rc::new(RefCell::new(Shared::new(id, queue)));
-        let owner: Rc<dyn LayerOwner> = Rc::clone(&shared) as Rc<dyn LayerOwner>;
+        let root = Shared::root(&shared);
         Self {
             shared,
             id,
             size: Cell::new(info.size),
             readable: info.readable,
             max_dimension: info.max_dimension,
-            root: Layer::new(LayerId::new(0), owner, false),
+            root,
             next_frame: Rc::new(RefCell::new(crate::frame::Next::Idle)),
             waker,
             tx,
@@ -158,8 +158,7 @@ impl<B: Backend> Surface<B> {
     /// A new detached layer.
     #[must_use]
     pub fn layer(&self) -> Layer {
-        let owner: Rc<dyn LayerOwner> = Rc::clone(&self.shared) as Rc<dyn LayerOwner>;
-        Layer::new(owner.allocate(), owner, true)
+        Shared::layer(&self.shared)
     }
 
     /// The surface size in pixels.
@@ -339,7 +338,7 @@ impl<B: Backend> Surface<B> {
                 // What was queued for the next frame is applied now, like
                 // every later change: hiding switched the queue to its
                 // inline drain, which applies the backlog at once.
-                self.shared.borrow_mut().notify_queued();
+                self.shared.borrow_mut().flush();
             }
             Visibility::Visible => {
                 // The render loop learns first, so the frame the wake asks

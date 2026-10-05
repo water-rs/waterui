@@ -82,7 +82,11 @@ pub trait Effects: Filters {
 /// a rendered producer draws into a buffer from the renderer-owned frame
 /// ring and a [`FrameSink`](crate::FrameSink)'s producer takes the frame
 /// its owner submits.
-pub trait GpuContent: Backend {
+///
+/// `GpuInstalls` — the marker that lets the backend's target seal an
+/// install payload — comes with `GpuContent`: a backend that runs GPU
+/// producers is always a target that can install them.
+pub trait GpuContent: Backend + GpuInstalls {
     /// The rendered producer's content payload type.
     type Content: crate::RenderTransfer + 'static;
     /// The frame payload a [`FrameSink`](crate::FrameSink) submits

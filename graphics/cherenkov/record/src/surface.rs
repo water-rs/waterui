@@ -18,7 +18,9 @@ use nami_core::watcher::Context;
 use rustc_hash::FxHashMap;
 
 use crate::animation::Animation;
-use crate::ops::{BackdropId, ChangeSet, ContentOp, LayerId, LayerOp, Op, Prop, SurfaceId};
+use crate::ops::{
+    BackdropId, ChangeSet, ContentOp, Install, LayerId, LayerOp, Op, Prop, SurfaceId,
+};
 use crate::projective::Projective;
 use crate::record::{Binding, Content, ContentSpare, Live, LiveOwner, SampleFlag};
 use crate::shape::{Shape, ShapeData};
@@ -130,6 +132,22 @@ impl<T: Target> Shared<T> {
         }
     }
 
+    /// The root layer `this` surface owns: layer id 0, the layer whose
+    /// handle dropping queues no `Remove`.
+    #[must_use]
+    pub fn root(this: &Rc<RefCell<Self>>) -> Layer {
+        let owner = Rc::clone(this) as Rc<dyn LayerOwner>;
+        Layer::new(LayerId::new(0), owner, false)
+    }
+
+    /// A layer `this` surface owns: allocated now — its `Create` is
+    /// queued — and removed when the handle drops.
+    #[must_use]
+    pub fn layer(this: &Rc<RefCell<Self>>) -> Layer {
+        let owner = Rc::clone(this) as Rc<dyn LayerOwner>;
+        Layer::new(owner.allocate(), owner, true)
+    }
+
     /// `layer`'s layout size: the entry is created on first read so a
     /// recording can bind it.
     pub fn layout_size(&mut self, layer: LayerId) -> LayoutSize {
@@ -139,7 +157,7 @@ impl<T: Target> Shared<T> {
     /// Queues the clear colour into the pending change set.
     pub fn set_clear(&mut self, color: WorkingColor) {
         self.clear = Some(color);
-        self.notify_queued();
+        self.flush();
     }
 
     /// Allocates a backdrop group id.
@@ -153,7 +171,7 @@ impl<T: Target> Shared<T> {
     fn push(&mut self, op: Op<T>) {
         self.pending.push(op);
         self.queue.pending(true);
-        self.notify_queued();
+        self.flush();
     }
 
     /// Something was queued. A queue that drains inline gets the drained
@@ -161,10 +179,10 @@ impl<T: Target> Shared<T> {
     /// drain through [`Queue::wake`]. The drain runs before the hook, so
     /// the hook never needs to borrow `self`.
     ///
-    /// The owner of a `Shared` calls this to flush whatever is queued
-    /// through the queue's current mode — for an engine's surface, when
-    /// hiding applies the backlog at once.
-    pub fn notify_queued(&mut self) {
+    /// The owner of a `Shared` calls this to drain through the current
+    /// mode whatever is queued — for an engine's surface, when hiding
+    /// applies the backlog at once.
+    pub fn flush(&mut self) {
         if self.queue.drains_inline() {
             if let Some(changes) = self.drain(None) {
                 self.queue.apply(changes);
@@ -380,7 +398,7 @@ impl<T: Target> Shared<T> {
         }
         shared.edit_buffer = tx.edits;
         shared.edit_ops = tx.edit_ops;
-        shared.notify_queued();
+        shared.flush();
     }
 
     /// Binds `live` so its later changes queue `op(layer, value, animation)`
@@ -441,7 +459,7 @@ struct Owner<T: Target>(Weak<RefCell<Shared<T>>>);
 impl<T: Target> LiveOwner for Owner<T> {
     fn changed(&self) {
         if let Some(shared) = self.0.upgrade() {
-            shared.borrow_mut().notify_queued();
+            shared.borrow_mut().flush();
         }
     }
 }
@@ -488,9 +506,12 @@ impl std::fmt::Debug for Layer {
 impl Layer {
     /// A layer handle owned by `owner`. With `remove_on_drop` the drop
     /// queues the layer's `Remove`; without it the layer survives the
-    /// handle (a tree's root is so owned by its surface).
+    /// handle (a tree's root is so owned by its surface). `pub(crate)`:
+    /// handles come from [`Shared::root`] and [`Shared::layer`] — a public
+    /// constructor could forge one, including a root that drops a
+    /// `Remove`.
     #[must_use]
-    pub const fn new(id: LayerId, owner: Rc<dyn LayerOwner>, remove_on_drop: bool) -> Self {
+    pub(crate) const fn new(id: LayerId, owner: Rc<dyn LayerOwner>, remove_on_drop: bool) -> Self {
         Self {
             id,
             owner,
@@ -524,8 +545,9 @@ pub enum LayerContent<T: Target> {
     /// the surface and layer it is installed on when the edit is applied,
     /// and reports the installed content's declared alpha — `None` before
     /// the producer's first frame — which the layer's alpha contract
-    /// notes.
-    Install(T::Install),
+    /// notes. [`Install`] is sealed: only [`install`](Self::install),
+    /// gated on [`GpuInstalls`], wraps one.
+    Install(Install<T>),
     /// Nothing.
     None,
 }
@@ -533,11 +555,11 @@ pub enum LayerContent<T: Target> {
 impl<T: GpuInstalls> LayerContent<T> {
     /// An opaque render-side install, carried as `Install` in the change
     /// set. The payload is the target's own — an engine backend's install
-    /// closure — and only a target implementing [`GpuInstalls`] can
-    /// produce one.
+    /// closure — sealed in [`Install`], and only a target implementing
+    /// [`GpuInstalls`] can produce one.
     #[must_use]
     pub const fn install(install: T::Install) -> Self {
-        Self::Install(install)
+        Self::Install(Install::new(install))
     }
 }
 

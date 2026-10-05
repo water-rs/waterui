@@ -641,20 +641,7 @@ mod tests {
         let producer = engine.gpu_producer(());
         surface.update(|tx| {
             tx[surface.root()].push(&layer);
-            tx[&layer].content({
-                let producer = producer.clone();
-                let install: crate::message::InstallOp<crate::testing::Null> =
-                    Box::new(move |r, surface, layer| {
-                        <crate::testing::Null as crate::GpuContent>::bind_gpu_producer(
-                            r,
-                            surface,
-                            layer,
-                            &producer,
-                            (8, 8),
-                        )
-                    });
-                crate::surface::LayerContent::Install(install)
-            });
+            tx[&layer].content(producer.at((8, 8)));
         });
         // A hidden surface's ops go straight out as `Message::Apply`;
         // BindProducer names the binding once it is installed on the
