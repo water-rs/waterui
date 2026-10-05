@@ -173,7 +173,7 @@ impl Producer {
     /// A frame producer's frames wake the surfaces they land on instead.
     pub fn set_wakes(&self, surfaces: &[CompletionWaker]) {
         if let Some(content) = &self.content {
-            content.redraw.wakes.set(surfaces);
+            content.redraw.wakes.set(surfaces, &content.redraw.dirty);
         }
     }
 

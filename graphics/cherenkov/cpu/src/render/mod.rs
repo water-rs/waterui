@@ -629,8 +629,8 @@ impl RasterRenderer {
         }
         let (used, used_groups) = self.filter_uses();
         self.evict_projective();
-        self.update_filter_wakes();
         self.filters.finish_frame(&used, &used_groups);
+        self.update_filter_wakes();
         // Every visible surface whose filter or backdrop group still
         // runs asks for the next frame on its own entry — the animated
         // backdrop names the surface it draws into.

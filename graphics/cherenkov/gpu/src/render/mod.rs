@@ -3972,7 +3972,6 @@ impl GpuRenderer {
             "frame lowered"
         );
         if result.is_ok() {
-            self.update_filter_activity();
             self.update_producer_wakes();
             for sf in &dirty {
                 self.render_shaders(
@@ -3999,6 +3998,9 @@ impl GpuRenderer {
                     || self.exports.contains_key(&sf.id);
             }
             self.evict_projective();
+            // Set once the encode has consumed the filters' redraw
+            // requests (`SurfaceWakes::set`).
+            self.update_filter_activity();
             stats.phases.encode_seconds = t.elapsed().as_secs_f64();
             stats.frame = Some(frame.id);
             if self.timestamps && self.frame_pass_count > 0 {
@@ -4125,7 +4127,6 @@ impl GpuRenderer {
             "frame lowered"
         );
         if result.is_ok() {
-            self.update_filter_activity();
             self.update_producer_wakes();
             for sf in &dirty {
                 self.render_shaders(
@@ -4151,6 +4152,9 @@ impl GpuRenderer {
                     || self.exports.contains_key(&sf.id);
             }
             self.evict_projective();
+            // Set once the encode has consumed the filters' redraw
+            // requests (`SurfaceWakes::set`).
+            self.update_filter_activity();
             stats.phases.encode_seconds = t.elapsed().as_secs_f64();
             stats.frame = Some(frame.id);
             if self.timestamps && self.frame_pass_count > 0 {

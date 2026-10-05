@@ -303,23 +303,41 @@ impl Default for SurfaceWakes {
 impl SurfaceWakes {
     /// Wakes the host of every surface the source draws into, each through
     /// its own wake.
+    ///
+    /// A source requesting a redraw marks its `dirty` flag with an `AcqRel`
+    /// read-modify-write before it calls this (see [`Self::set`]).
     pub fn wake(&self) {
-        for waker in self.0.load().iter() {
+        for waker in self.0.load_full().iter() {
             waker.wake();
         }
     }
 
-    /// Replaces the surfaces the source draws into. Setting the surfaces it
-    /// already has allocates nothing.
-    pub fn set(&self, surfaces: &[CompletionWaker]) {
-        if self.0.load().as_slice() != surfaces {
-            self.0.store(Arc::new(surfaces.to_vec()));
+    /// Replaces the surfaces the source draws into, after the frame
+    /// consumed the source's `dirty` flag. Setting the surfaces it already
+    /// has allocates nothing.
+    ///
+    /// A surface the list gains is woken when `dirty` is set: the request
+    /// that set it after the frame consumed it woke only the surfaces the
+    /// list held then. The flag is read with an `AcqRel` read-modify-write
+    /// after the list is replaced, so a request that marks it after that
+    /// read acquires the new list and wakes the gained surfaces itself.
+    pub fn set(&self, surfaces: &[CompletionWaker], dirty: &AtomicBool) {
+        if self.0.load().as_slice() == surfaces {
+            return;
+        }
+        let previous = self.0.swap(Arc::new(surfaces.to_vec()));
+        if dirty.fetch_or(false, Ordering::AcqRel) {
+            for waker in surfaces.iter().filter(|waker| !previous.contains(waker)) {
+                waker.wake();
+            }
         }
     }
 
     /// The source draws into no surface: it wakes nothing until a frame
     /// draws it again.
     pub fn clear(&self) {
-        self.set(&[]);
+        if !self.0.load().is_empty() {
+            self.0.store(Arc::new(Vec::new()));
+        }
     }
 }

@@ -131,7 +131,7 @@ impl SignalVisitor for WatcherInstaller<'_> {
                 if events.send((index, target)).is_err() {
                     return;
                 }
-                dirty.store(true, Ordering::Release);
+                dirty.swap(true, Ordering::AcqRel);
                 wakes.wake();
             })));
     }
@@ -324,9 +324,10 @@ impl Registry {
         groups: &FxHashMap<(u64, u64), CompletionWaker>,
     ) {
         for (id, entry) in &self.entries {
-            entry
-                .wakes
-                .set(uses.get(id).map(Vec::as_slice).unwrap_or_default());
+            entry.wakes.set(
+                uses.get(id).map(Vec::as_slice).unwrap_or_default(),
+                &entry.dirty,
+            );
         }
         for (key, group) in &self.backdrops {
             if let Some(entry) = group {
@@ -335,6 +336,7 @@ impl Registry {
                         .get(key)
                         .map(std::slice::from_ref)
                         .unwrap_or_default(),
+                    &entry.dirty,
                 );
             }
         }
