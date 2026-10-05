@@ -121,8 +121,9 @@ use window::pump_window_semantics;
 // unconditional import so non-test builds report no unused names.
 #[cfg(all(test, any(not(target_arch = "wasm32"), feature = "web")))]
 use window::{
-    FrameMode, acquire_surface_frame, clamp_window_size, reports_ui_idle,
-    schedule_animation_update, schedule_redraw_or_refresh, surface_error_requires_reconfigure,
+    FrameMode, acquire_surface_frame, axes_whose_limits_changed, clamp_window_size,
+    reports_ui_idle, schedule_animation_update, schedule_redraw_or_refresh,
+    surface_error_requires_reconfigure,
 };
 // Frame and tree profiles are published to the inspector endpoint, which exists
 // only where `waterui::inspector` does.

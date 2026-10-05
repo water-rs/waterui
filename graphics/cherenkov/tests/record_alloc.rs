@@ -137,6 +137,7 @@ fn recording_and_rendering_reuse_ui_thread_allocations() {
     let engine = Engine::<Null>::new(NullConfig {
         events,
         reject: HashSet::new(),
+        image_limits: cherenkov::ImageLimits::UNLIMITED,
     })
     .expect("init");
     let surface = engine

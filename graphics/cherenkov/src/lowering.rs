@@ -261,7 +261,7 @@ fn walk<C: Compiler>(
                 let isolate = group.blend == BlendMode::Normal
                     && group.opacity >= 1.0
                     && group.filter.is_none()
-                    && blends_within(list, i + 1..*end as usize);
+                    && crate::display_list::blends_within(list, i + 1..*end as usize);
                 Some((*end as usize, ambient, compiler.group(group, isolate)?))
             }
             Command::Picture { picture, transform } => {
@@ -303,58 +303,6 @@ fn walk<C: Compiler>(
         }
     }
     Ok(())
-}
-
-/// Whether recorded content can produce partial coverage. Even an opaque
-/// paint has fractional alpha at antialiased geometry and clip edges; paint
-/// alpha alone never proves an overlaid engine part safe for promotion.
-pub(crate) fn translucent_within(list: &DisplayList, range: Range<usize>) -> bool {
-    for command in &list.commands()[range] {
-        match command {
-            Command::Fill { .. }
-            | Command::Stroke { .. }
-            | Command::Glyphs { .. }
-            | Command::Image { .. }
-            | Command::Shadow { .. } => {
-                return true;
-            }
-            Command::BeginGroup { group, .. } => {
-                if group.opacity < 1.0 || group.filter.is_some() {
-                    return true;
-                }
-            }
-            Command::Picture { picture, .. }
-                if translucent_within(picture.display_list(), 0..picture.display_list().len()) =>
-            {
-                return true;
-            }
-            _ => {}
-        }
-    }
-    false
-}
-
-/// Whether any command in `range` opens a group with a non-`Normal` blend.
-/// Nested pictures count: their contents are walked the same way. Glyphs
-/// need no scan — a colour glyph's expansion is itself wrapped in the
-/// outer `SrcOver` group this rule isolates.
-pub(crate) fn blends_within(list: &DisplayList, range: Range<usize>) -> bool {
-    for command in &list.commands()[range] {
-        match command {
-            Command::BeginGroup { group, .. } => {
-                if group.blend != BlendMode::Normal {
-                    return true;
-                }
-            }
-            Command::Picture { picture, .. }
-                if blends_within(picture.display_list(), 0..picture.display_list().len()) =>
-            {
-                return true;
-            }
-            _ => {}
-        }
-    }
-    false
 }
 
 /// A retained device realization. Invalidation keeps the storage available for

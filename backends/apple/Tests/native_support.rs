@@ -11,6 +11,51 @@ use cocoa_ui::MainThreadMarker;
 use waterui::window::WindowManager;
 use waterui_backend_core::Environment;
 
+/// Pumps the main run loop until `until` answers or `seconds` elapse.
+///
+/// A synchronous case awaits work enqueued on the main queue — a deferred
+/// emission apply, an enqueued drop — in small turns rather than one
+/// fixed wait. Answers whether `until` was reached; callers assert with
+/// the condition's name so a dead queue fails the case instead of
+/// hanging it.
+pub fn pump_main_until(seconds: f64, until: impl Fn() -> bool) -> bool {
+    use cocoa_ui::objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSRunLoop};
+    let deadline = NSDate::dateWithTimeIntervalSinceNow(seconds);
+    while !until() && deadline.timeIntervalSinceNow() > 0.0 {
+        // SAFETY: `NSDefaultRunLoopMode` is a system-owned run-loop mode.
+        NSRunLoop::currentRunLoop().runMode_beforeDate(
+            unsafe { NSDefaultRunLoopMode },
+            &NSDate::dateWithTimeIntervalSinceNow(0.02),
+        );
+    }
+    until()
+}
+
+/// The bound a case gives deferred main-queue work before it fails.
+///
+/// Reached only when the awaited work never arrives; a healthy queue
+/// answers within a few run-loop turns.
+pub const MAIN_QUEUE_DEADLINE: f64 = 5.0;
+
+/// Pumps the main run loop until every block already on the main queue has run.
+///
+/// The backend applies a list emission as a block on the main dispatch
+/// queue, so a case asserting that the newest state is never overwritten
+/// cannot stop the moment that state first appears: an older emission
+/// still queued would land in a later turn. This enqueues a sentinel
+/// block and pumps until it runs; the main queue is FIFO, so every block
+/// enqueued before it has run too. Answers whether the sentinel ran
+/// within [`MAIN_QUEUE_DEADLINE`].
+#[must_use = "a queue that never drains must fail the case"]
+pub fn drain_main_queue(mtm: MainThreadMarker) -> bool {
+    let drained = alloc::rc::Rc::new(core::cell::Cell::new(false));
+    cocoa_ui::main_queue::enqueue_local(mtm, {
+        let drained = alloc::rc::Rc::clone(&drained);
+        move |_mtm| drained.set(true)
+    });
+    pump_main_until(MAIN_QUEUE_DEADLINE, || drained.get())
+}
+
 /// A real controller/window lifetime around the production mounting path.
 #[cfg(target_os = "ios")]
 #[derive(Debug)]
@@ -190,9 +235,11 @@ pub fn bind_root_window_wires_a_live_window(mtm: MainThreadMarker) {
     drop(binding);
 }
 
-/// GPU-surface mounted-scene reach — the `native_test` module inside
-/// `components::gpu_surface` builds a real `SceneView` mount and drives
-/// the production failure drain and completion settlement paths on it.
+/// Re-exports the GPU-surface mounted-scene fixtures.
+///
+/// The `native_test` module inside `components::gpu_surface` builds a real
+/// `SceneView` mount and drives the production failure drain and
+/// completion settlement paths on it.
 #[cfg(all(target_os = "macos", feature = "gpu_surface"))]
 pub mod gpu_surface {
     pub use crate::components::gpu_surface::native_test::{MountedSceneSurface, WakeProbe};

@@ -5,11 +5,7 @@ use waterui::cursor::CursorStyle;
 use waterui::window::{Window as WuiWindow, WindowState};
 use waterui_graphics::gpu::RedrawHandle;
 
-#[cfg(any(
-    hydrolysis_winit,
-    all(target_arch = "wasm32", feature = "web"),
-    target_os = "android"
-))]
+#[cfg(any(hydrolysis_winit, target_os = "android"))]
 use waterui_graphics::gpu::preferred_surface_format;
 
 /// Releases the resources whose destruction `device` deferred.
@@ -723,11 +719,7 @@ impl SurfaceFrame {
     }
 }
 
-#[cfg(any(
-    hydrolysis_winit,
-    all(target_arch = "wasm32", feature = "web"),
-    target_os = "android"
-))]
+#[cfg(any(hydrolysis_winit, target_os = "android"))]
 pub fn select_hydrolysis_surface_format(caps: &wgpu::SurfaceCapabilities) -> wgpu::TextureFormat {
     let preferred = preferred_surface_format(caps, true);
     if supports_hydrolysis_surface_format(preferred) {
@@ -749,11 +741,7 @@ pub fn select_hydrolysis_surface_format(caps: &wgpu::SurfaceCapabilities) -> wgp
     );
 }
 
-#[cfg(any(
-    hydrolysis_winit,
-    all(target_arch = "wasm32", feature = "web"),
-    target_os = "android"
-))]
+#[cfg(any(hydrolysis_winit, target_os = "android"))]
 fn supports_hydrolysis_surface_format(format: wgpu::TextureFormat) -> bool {
     matches!(
         format.remove_srgb_suffix(),
@@ -764,11 +752,7 @@ fn supports_hydrolysis_surface_format(format: wgpu::TextureFormat) -> bool {
     )
 }
 
-#[cfg(any(
-    hydrolysis_winit,
-    all(target_arch = "wasm32", feature = "web"),
-    target_os = "android"
-))]
+#[cfg(any(hydrolysis_winit, target_os = "android"))]
 fn normalize_surface_format(
     caps: &wgpu::SurfaceCapabilities,
     format: wgpu::TextureFormat,
@@ -845,6 +829,13 @@ pub trait SurfaceProvider {
     /// the default is 1.0; an HDR presentation surface overrides it.
     fn display_headroom(&self) -> f32 {
         1.0
+    }
+    /// The colour encoding the present pass writes into this surface's
+    /// textures. A surface configured with `SurfaceColorSpace::Auto` derives
+    /// it from its format; one that negotiated its colour space reports that
+    /// space's encoding.
+    fn output_color(&self) -> cherenkov_gpu::interop::OutputColor {
+        crate::engine::format_output_color(self.format())
     }
 }
 
@@ -1962,6 +1953,7 @@ impl OffscreenSceneSurface {
             self.target.device(),
             self.target.queue(),
             &texture,
+            crate::engine::format_output_color(texture.format()),
             true,
             1.0,
         );
@@ -3636,10 +3628,15 @@ mod winit_impl {
                 return None;
             };
             let mut point = POINT { x: 0, y: 0 };
-            if unsafe { GetCursorPos(&mut point) } == 0 {
+            // SAFETY: `point` is a valid, writable `POINT` for the duration
+            // of the call, which is all `lpPoint` requires.
+            if unsafe { GetCursorPos(&raw mut point) } == 0 {
                 return None;
             }
-            if unsafe { ScreenToClient(win32.hwnd.get(), &mut point) } == 0 {
+            // SAFETY: `hwnd` is the window's live Win32 handle for as long
+            // as the `NativeWindow` lives, and `point` is a valid, writable
+            // `POINT` the call rewrites in client coordinates.
+            if unsafe { ScreenToClient(win32.hwnd.get(), &raw mut point) } == 0 {
                 return None;
             }
             let position = PhysicalPosition::new(f64::from(point.x), f64::from(point.y))
@@ -4049,7 +4046,7 @@ mod winit_impl {
                 win32.hwnd.get() as HWND,
                 DWMWA_CLOAKED as u32,
                 (&raw mut cloaked).cast(),
-                size_of::<i32>() as u32,
+                u32::try_from(size_of::<i32>()).expect("an i32's size fits u32"),
             ) == 0
                 && cloaked != 0
         }

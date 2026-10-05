@@ -14,12 +14,13 @@ pub const ROOT_NAVIGATION_IDENTITY: u64 = 0;
 #[derive(Clone)]
 pub struct NavigationMatchedElement {
     pub(crate) bounds: kurbo::Rect,
-    pub scene: Recording,
+    pub layers: CapturedLayers,
 }
 
 #[derive(Clone, Default)]
 pub struct NavigationCapturedScene {
-    pub(crate) scene: Recording,
+    /// The page, recorded in its own space with every layer it presents.
+    pub(crate) layers: CapturedLayers,
     pub(crate) sources: BTreeMap<Id, NavigationMatchedElement>,
     pub(crate) destinations: BTreeMap<Id, NavigationMatchedElement>,
     /// The leading bar reserve the page was recorded under. A scene captured
@@ -29,27 +30,27 @@ pub struct NavigationCapturedScene {
 }
 
 impl NavigationCapturedScene {
-    pub(crate) fn composed(&self) -> Recording {
-        let mut scene = self.scene.clone();
+    pub(crate) fn composed(&self) -> CapturedLayers {
+        let mut layers = self.layers.clone();
         for element in self.sources.values().chain(self.destinations.values()) {
-            scene.append(&element.scene, kurbo::Affine::IDENTITY);
+            layers.extend(&element.layers);
         }
-        scene
+        layers
     }
 
-    pub(crate) fn composed_without(&self, source: bool, id: Id) -> Recording {
-        let mut scene = self.scene.clone();
+    pub(crate) fn composed_without(&self, source: bool, id: Id) -> CapturedLayers {
+        let mut layers = self.layers.clone();
         for (element_id, element) in &self.sources {
             if !source || *element_id != id {
-                scene.append(&element.scene, kurbo::Affine::IDENTITY);
+                layers.extend(&element.layers);
             }
         }
         for (element_id, element) in &self.destinations {
             if source || *element_id != id {
-                scene.append(&element.scene, kurbo::Affine::IDENTITY);
+                layers.extend(&element.layers);
             }
         }
-        scene
+        layers
     }
 }
 
@@ -981,7 +982,7 @@ impl HydrolysisRenderer {
 
     pub(crate) fn finish_navigation_scene_capture(
         &mut self,
-        scene: Recording,
+        layers: CapturedLayers,
     ) -> NavigationCapturedScene {
         let capture = self
             .navigation_captures
@@ -992,7 +993,7 @@ impl HydrolysisRenderer {
             "navigation element capture must finish before its page capture"
         );
         NavigationCapturedScene {
-            scene,
+            layers,
             sources: capture.sources,
             destinations: capture.destinations,
             leading_reserve: 0.0,
@@ -1016,7 +1017,7 @@ impl HydrolysisRenderer {
         source: bool,
         id: Id,
         bounds: kurbo::Rect,
-        scene: Recording,
+        layers: CapturedLayers,
     ) {
         let capture = self
             .navigation_captures
@@ -1032,7 +1033,7 @@ impl HydrolysisRenderer {
         } else {
             &mut capture.destinations
         };
-        let previous = elements.insert(id, NavigationMatchedElement { bounds, scene });
+        let previous = elements.insert(id, NavigationMatchedElement { bounds, layers });
         assert!(
             previous.is_none(),
             "navigation transition id {id:?} was declared more than once in one page"

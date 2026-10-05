@@ -31,7 +31,7 @@ use objc2_foundation::NSRect;
 use objc2_quartz_core::CALayer;
 
 use crate::PlatformView;
-use crate::callback::guarded;
+use crate::callback::{emit, forward, guarded};
 use crate::input::{EventPhase, GesturePhase, PointerInteraction};
 
 /// Receives lifecycle events of the view — layout, attachment, visibility.
@@ -165,54 +165,67 @@ define_class!(
         // SAFETY: see the module safety note.
         #[unsafe(method(layout))]
         fn layout_override(&self) {
-            // SAFETY: `super(layout)` forwards to `NSView`.
-            // SAFETY: see the module safety note.
-            let _: () = unsafe { msg_send![super(self), layout] };
-            self.emit_layout();
+            forward(
+                "SurfaceView layout",
+                || {
+                    // SAFETY: `super(layout)` forwards to `NSView`.
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), layout] };
+                },
+                &self.ivars().on_layout,
+            );
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(viewDidMoveToWindow))]
         fn view_did_move_to_window(&self) {
-            // SAFETY: see the module safety note.
-            let _: () = unsafe { msg_send![super(self), viewDidMoveToWindow] };
-            let handler = self.ivars().on_window_changed.borrow().clone();
-            if let Some(handler) = handler {
-                handler();
-            }
+            forward(
+                "SurfaceView viewDidMoveToWindow",
+                || {
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), viewDidMoveToWindow] };
+                },
+                &self.ivars().on_window_changed,
+            );
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(viewDidChangeBackingProperties))]
         fn view_did_change_backing_properties(&self) {
-            // SAFETY: see the module safety note.
-            let _: () = unsafe { msg_send![super(self), viewDidChangeBackingProperties] };
-            let handler = self.ivars().on_backing_changed.borrow().clone();
-            if let Some(handler) = handler {
-                handler();
-            }
+            forward(
+                "SurfaceView viewDidChangeBackingProperties",
+                || {
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), viewDidChangeBackingProperties] };
+                },
+                &self.ivars().on_backing_changed,
+            );
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(viewDidHide))]
         fn view_did_hide(&self) {
-            // SAFETY: see the module safety note.
-            let _: () = unsafe { msg_send![super(self), viewDidHide] };
-            let handler = self.ivars().on_visibility_changed.borrow().clone();
-            if let Some(handler) = handler {
-                handler();
-            }
+            forward(
+                "SurfaceView viewDidHide",
+                || {
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), viewDidHide] };
+                },
+                &self.ivars().on_visibility_changed,
+            );
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(viewDidUnhide))]
         fn view_did_unhide(&self) {
-            // SAFETY: see the module safety note.
-            let _: () = unsafe { msg_send![super(self), viewDidUnhide] };
-            let handler = self.ivars().on_visibility_changed.borrow().clone();
-            if let Some(handler) = handler {
-                handler();
-            }
+            forward(
+                "SurfaceView viewDidUnhide",
+                || {
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), viewDidUnhide] };
+                },
+                &self.ivars().on_visibility_changed,
+            );
         }
 
         // SAFETY: see the module safety note.
@@ -253,87 +266,113 @@ define_class!(
         // SAFETY: see the module safety note.
         #[unsafe(method(mouseEntered:))]
         fn mouse_entered(&self, event: &NSEvent) {
-            // SAFETY: see the module safety note.
-            let _: () = unsafe { msg_send![super(self), mouseEntered: event] };
-            self.send_moved(event, true);
+            guarded("SurfaceView mouseEntered:", || {
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), mouseEntered: event] };
+                self.send_moved(event, true);
+            });
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(mouseMoved:))]
         fn mouse_moved(&self, event: &NSEvent) {
-            // SAFETY: see the module safety note.
-            let _: () = unsafe { msg_send![super(self), mouseMoved: event] };
-            self.send_moved(event, true);
+            guarded("SurfaceView mouseMoved:", || {
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), mouseMoved: event] };
+                self.send_moved(event, true);
+            });
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(mouseExited:))]
         fn mouse_exited(&self, event: &NSEvent) {
-            // SAFETY: see the module safety note.
-            let _: () = unsafe { msg_send![super(self), mouseExited: event] };
-            self.emit(PointerInteraction::Moved(None));
+            guarded("SurfaceView mouseExited:", || {
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), mouseExited: event] };
+                emit(&self.ivars().on_interaction, PointerInteraction::Moved(None));
+            });
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(mouseDragged:))]
         fn mouse_dragged(&self, event: &NSEvent) {
-            // SAFETY: see the module safety note.
-            let _: () = unsafe { msg_send![super(self), mouseDragged: event] };
-            self.send_moved(event, true);
+            guarded("SurfaceView mouseDragged:", || {
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), mouseDragged: event] };
+                self.send_moved(event, true);
+            });
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
-            if let Some(window) = self.window() {
-                let this: &NSResponder = self;
-                window.makeFirstResponder(Some(this));
-            }
-            // SAFETY: see the module safety note.
-            let _: () = unsafe { msg_send![super(self), mouseDown: event] };
-            let position = self.local_point(event);
-            self.emit(PointerInteraction::PrimaryDown {
-                position,
-                click_count: event.clickCount() as i64,
+            guarded("SurfaceView mouseDown:", || {
+                if let Some(window) = self.window() {
+                    let this: &NSResponder = self;
+                    window.makeFirstResponder(Some(this));
+                }
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), mouseDown: event] };
+                let position = self.local_point(event);
+                emit(
+                    &self.ivars().on_interaction,
+                    PointerInteraction::PrimaryDown {
+                        position,
+                        click_count: event.clickCount() as i64,
+                    },
+                );
+                if event.clickCount() == 2 {
+                    emit(
+                        &self.ivars().on_interaction,
+                        PointerInteraction::DoubleTap,
+                    );
+                }
             });
-            if event.clickCount() == 2 {
-                self.emit(PointerInteraction::DoubleTap);
-            }
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(mouseUp:))]
         fn mouse_up(&self, event: &NSEvent) {
-            // SAFETY: see the module safety note.
-            let _: () = unsafe { msg_send![super(self), mouseUp: event] };
-            self.emit(PointerInteraction::PrimaryUp);
+            guarded("SurfaceView mouseUp:", || {
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), mouseUp: event] };
+                emit(
+                    &self.ivars().on_interaction,
+                    PointerInteraction::PrimaryUp,
+                );
+            });
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(scrollWheel:))]
         fn scroll_wheel(&self, event: &NSEvent) {
-            // Inside an `NSScrollView` the wheel keeps scrolling natively;
-            // Option routes it to the surface's gesture channel instead.
-            let explicit_surface_pan = event
-                .modifierFlags()
-                .contains(objc2_app_kit::NSEventModifierFlags::Option);
-            if self.enclosingScrollView().is_some() && !explicit_surface_pan {
-                // SAFETY: see the module safety note.
-                let _: () = unsafe { msg_send![super(self), scrollWheel: event] };
-                return;
-            }
-            let delta_x = event.scrollingDeltaX();
-            let delta_y = event.scrollingDeltaY();
-            let phase = match event.phase() {
-                NSEventPhase::Began => EventPhase::Began,
-                NSEventPhase::Changed => EventPhase::Changed,
-                NSEventPhase::Ended | NSEventPhase::Cancelled => EventPhase::Ended,
-                _ => EventPhase::None,
-            };
-            self.emit(PointerInteraction::Pan {
-                phase,
-                offset_x: delta_x,
-                offset_y: delta_y,
+            guarded("SurfaceView scrollWheel:", || {
+                // Inside an `NSScrollView` the wheel keeps scrolling natively;
+                // Option routes it to the surface's gesture channel instead.
+                let explicit_surface_pan = event
+                    .modifierFlags()
+                    .contains(objc2_app_kit::NSEventModifierFlags::Option);
+                if self.enclosingScrollView().is_some() && !explicit_surface_pan {
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), scrollWheel: event] };
+                    return;
+                }
+                let delta_x = event.scrollingDeltaX();
+                let delta_y = event.scrollingDeltaY();
+                let phase = match event.phase() {
+                    NSEventPhase::Began => EventPhase::Began,
+                    NSEventPhase::Changed => EventPhase::Changed,
+                    NSEventPhase::Ended | NSEventPhase::Cancelled => EventPhase::Ended,
+                    _ => EventPhase::None,
+                };
+                emit(
+                    &self.ivars().on_interaction,
+                    PointerInteraction::Pan {
+                        phase,
+                        offset_x: delta_x,
+                        offset_y: delta_y,
+                    },
+                );
             });
         }
     }
@@ -486,20 +525,6 @@ impl SurfaceView {
         self.ivars().on_interaction.replace(Some(handler));
     }
 
-    fn emit(&self, interaction: PointerInteraction) {
-        let handler = self.ivars().on_interaction.borrow().clone();
-        if let Some(handler) = handler {
-            handler(interaction);
-        }
-    }
-
-    fn emit_layout(&self) {
-        let handler = self.ivars().on_layout.borrow().clone();
-        if let Some(handler) = handler {
-            handler();
-        }
-    }
-
     /// The event position in logical, surface-local points with y growing
     /// down.
     fn local_point(&self, event: &NSEvent) -> kurbo::Point {
@@ -509,6 +534,9 @@ impl SurfaceView {
 
     fn send_moved(&self, event: &NSEvent, inside: bool) {
         let _ = inside;
-        self.emit(PointerInteraction::Moved(Some(self.local_point(event))));
+        emit(
+            &self.ivars().on_interaction,
+            PointerInteraction::Moved(Some(self.local_point(event))),
+        );
     }
 }

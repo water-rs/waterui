@@ -4,7 +4,7 @@
 
 /// The committed layer op a [`SurfaceTree`](crate::SurfaceTree) applies, for
 /// tests that build a sampled tree without an engine.
-pub use crate::message::LayerOp;
+pub use cherenkov_record::LayerOp;
 use std::collections::HashSet;
 use std::sync::mpsc::Sender;
 
@@ -19,9 +19,10 @@ use crate::error::{EngineError, RenderError, ResourceError, SurfaceError};
 use crate::frame::Readback;
 use crate::glyph::FontId;
 use crate::image::{ImageUpload, Rgba8, Rgba16F};
-use crate::message::{ContentOp, FontData, LayerId, SurfaceId};
+use cherenkov_record::{ContentOp, LayerId, ResourceId, SurfaceId};
+
+use crate::message::FontData;
 use crate::paint::{ImageId, ShaderId};
-use crate::resource::ResourceId;
 use crate::{Offscreen, Picture, Pressure, Uploads};
 
 /// A render-thread event [`Null`] reports.
@@ -48,8 +49,9 @@ pub enum Event {
     AddShader(ShaderId),
     /// `remove_shader` ran.
     RemoveShader(ShaderId),
-    /// `set_content` ran.
-    SetContent(SurfaceId, LayerId),
+    /// `set_content` ran, with the stored picture's address — `0` for
+    /// an update or a clear, which store no new picture.
+    SetContent(SurfaceId, LayerId, usize),
     /// `set_external_frame`-equivalent: a submitted frame landed on a
     /// bound layer.
     ProducerFrame(SurfaceId, LayerId),
@@ -142,6 +144,10 @@ pub struct NullConfig {
     /// Registration kinds the backend refuses: the matching `add_*` or
     /// `create_surface` call returns its error without committing.
     pub reject: HashSet<NullReject>,
+    /// The limits the backend reports and [`Engine::image_limits`] reads:
+    /// registrations they do not admit fail on the calling thread with
+    /// [`ResourceError::TooLarge`].
+    pub image_limits: crate::ImageLimits,
 }
 
 /// A registration [`Null`] refuses, for failure-path tests.
@@ -168,6 +174,7 @@ pub type NullInfo = ();
 pub struct NullRenderer {
     events: Sender<Event>,
     reject: HashSet<NullReject>,
+    image_limits: crate::ImageLimits,
     surfaces: HashSet<SurfaceId>,
     /// The surfaces the host announced hidden.
     hidden: HashSet<SurfaceId>,
@@ -213,6 +220,7 @@ impl NullRenderer {
         Self {
             events: config.events,
             reject: config.reject,
+            image_limits: config.image_limits,
             surfaces: HashSet::new(),
             hidden: HashSet::new(),
             fonts: HashSet::new(),
@@ -246,6 +254,13 @@ impl NullRenderer {
         }
     }
 }
+
+impl cherenkov_record::Target for Null {
+    type Queue = crate::EngineQueue<Self>;
+    type Install = crate::InstallOp<Self>;
+}
+
+impl cherenkov_record::GpuInstalls for Null {}
 
 impl Backend for Null {
     type Config = NullConfig;
@@ -348,6 +363,10 @@ impl Renderer for NullRenderer {
         let _ = self.events.send(Event::RemoveFont(id));
     }
 
+    fn image_limits(&self) -> crate::ImageLimits {
+        self.image_limits
+    }
+
     fn add_image(&mut self, id: ImageId, _image: ImageUpload) -> Result<(), ResourceError> {
         if self.reject.contains(&NullReject::Image) {
             return Err(ResourceError::Image("injected rejection".into()));
@@ -391,6 +410,12 @@ impl Renderer for NullRenderer {
         layer: LayerId,
         content: Option<ContentOp>,
     ) -> Option<Picture> {
+        let token = match &content {
+            Some(ContentOp::Replace(picture) | ContentOp::Picture(picture)) => {
+                std::ptr::from_ref(picture.display_list()) as usize
+            }
+            _ => 0,
+        };
         let previous = match content {
             Some(ContentOp::Replace(picture) | ContentOp::Picture(picture)) => {
                 self.pictures.insert((surface, layer), picture)
@@ -406,7 +431,7 @@ impl Renderer for NullRenderer {
             None => self.pictures.remove(&(surface, layer)),
         };
         self.unbind(surface, layer);
-        let _ = self.events.send(Event::SetContent(surface, layer));
+        let _ = self.events.send(Event::SetContent(surface, layer, token));
         previous
     }
 
@@ -1471,7 +1496,7 @@ mod tests {
 
     use super::*;
     use crate::image::ImageData;
-    use crate::resource::FontSource;
+    use crate::resource::{FontSource, GpuProducer};
     use crate::{
         Decay, Engine, FrameTime, Image, Layer, Next, OffscreenFormat, ShaderSource, Spring,
         Surface,
@@ -1485,8 +1510,75 @@ mod tests {
         reject: HashSet<NullReject>,
     ) -> (Engine<Null>, std::sync::mpsc::Receiver<Event>) {
         let (tx, rx) = std::sync::mpsc::channel();
-        let engine = Engine::<Null>::new(NullConfig { events: tx, reject }).expect("init");
+        let engine = Engine::<Null>::new(NullConfig {
+            events: tx,
+            reject,
+            image_limits: crate::ImageLimits::UNLIMITED,
+        })
+        .expect("init");
         (engine, rx)
+    }
+
+    /// An image the backend's [`ImageLimits`] does not admit is rejected
+    /// on the calling thread: `Engine::image` returns `TooLarge` naming
+    /// the limits and queues nothing, and an oversized `Image::replace`
+    /// keeps the previous pixels.
+    #[test]
+    fn an_image_beyond_the_limits_fails_at_registration() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let limits = crate::ImageLimits {
+            max_dimension: 4,
+            max_texels: 16,
+        };
+        let engine = Engine::<Null>::new(NullConfig {
+            events: tx,
+            reject: HashSet::new(),
+            image_limits: limits,
+        })
+        .expect("init");
+        assert_eq!(engine.image_limits(), limits);
+
+        // The dimension binds.
+        match engine.image(ImageData::<Rgba8>::new(5, 1, vec![0u8; 20]).expect("image data")) {
+            Err(ResourceError::TooLarge {
+                width,
+                height,
+                limits: rejected,
+            }) => {
+                assert_eq!((width, height, rejected), (5, 1, limits));
+            }
+            other => panic!("an oversized image registered: {other:?}"),
+        }
+        // And the texel count does too.
+        assert!(matches!(
+            engine.image(ImageData::<Rgba8>::new(4, 5, vec![0u8; 80]).expect("image data")),
+            Err(ResourceError::TooLarge { .. })
+        ));
+
+        let image = engine
+            .image(ImageData::<Rgba8>::new(4, 1, vec![0u8; 16]).expect("image data"))
+            .expect("image");
+        // A replacement over the limits fails on the calling thread; an
+        // admitted one still applies.
+        match image.replace(ImageData::<Rgba8>::new(4, 5, vec![0u8; 80]).expect("image data")) {
+            Err(ResourceError::TooLarge { .. }) => {}
+            other => panic!("an oversized replacement applied: {other:?}"),
+        }
+        image
+            .replace(ImageData::<Rgba8>::new(4, 1, vec![9u8; 16]).expect("image data"))
+            .expect("replace");
+
+        // `memory` round-trips the render thread, flushing the queue:
+        // only the admitted registration and replacement reached it.
+        let _ = engine.memory();
+        let events: Vec<Event> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(
+            matches!(
+                events.as_slice(),
+                [Event::AddImage(_), Event::ReplaceImage(_, (4, 1))]
+            ),
+            "{events:?}"
+        );
     }
 
     fn frames(rx: &std::sync::mpsc::Receiver<Event>) -> Vec<FrameRecord> {
@@ -1764,12 +1856,13 @@ mod tests {
         let video = surface.layer();
         let above = surface.layer();
         let (producer, sink) = engine.frame_producer();
+        let content = |producer: &GpuProducer<Null>| producer.at((8, 8));
         // Creating and pushing the layers is an ordinary change, so the
         // frame that also binds the producer is not plane-only.
         surface.update(|tx| {
             tx[surface.root()].push(&video);
             tx[surface.root()].push(&above);
-            tx[&video].content(producer.at((8, 8)));
+            tx[&video].content(content(&producer));
         });
         engine.render(FrameTime::now()).expect("render");
         let record = frames(&rx).pop().expect("a frame record");
@@ -1788,7 +1881,7 @@ mod tests {
 
         // Two bindings' new frames commute to one set.
         surface.update(|tx| {
-            tx[&above].content(producer.at((8, 8)));
+            tx[&above].content(content(&producer));
         });
         engine.render(FrameTime::now()).expect("render");
         sink.submit(());
@@ -1991,8 +2084,8 @@ mod tests {
                 events.as_slice(),
                 [
                     Event::Visibility(id, Visibility::Hidden),
-                    Event::SetContent(operand, drawn),
-                    Event::SetContent(transaction, installed),
+                    Event::SetContent(operand, drawn, ..),
+                    Event::SetContent(transaction, installed, ..),
                     Event::ReplaceImage(replaced, (2, 2)),
                 ] if *id == surface.id()
                     && *operand == surface.id()
@@ -2141,7 +2234,7 @@ mod tests {
 
         let installed = |events: &[Event], surface: SurfaceId, layer: LayerId| {
             events.iter().any(
-                |event| matches!(event, Event::SetContent(s, l) if *s == surface && *l == layer),
+                |event| matches!(event, Event::SetContent(s, l, _) if *s == surface && *l == layer),
             )
         };
         let removed = |events: &[Event], image: ImageId| {
@@ -2914,11 +3007,19 @@ mod wasm_tests {
         Sampling, ShaderPaint, ShaderSource, WorkingColor,
     };
 
+    #[expect(
+        clippy::future_not_send,
+        reason = "the engine is main-thread on wasm, so its futures are !Send by design"
+    )]
     async fn engine(reject: HashSet<NullReject>) -> (Engine<Null>, Receiver<Event>) {
         let (tx, rx) = std::sync::mpsc::channel();
-        let engine = Engine::<Null>::new(NullConfig { events: tx, reject })
-            .await
-            .expect("init");
+        let engine = Engine::<Null>::new(NullConfig {
+            events: tx,
+            reject,
+            image_limits: crate::ImageLimits::UNLIMITED,
+        })
+        .await
+        .expect("init");
         (engine, rx)
     }
 
@@ -3057,7 +3158,7 @@ mod wasm_tests {
                 events.as_slice(),
                 [
                     Event::Visibility(id, Visibility::Hidden),
-                    Event::SetContent(set, layer_id),
+                    Event::SetContent(set, layer_id, ..),
                 ] if *id == surface.id() && *set == surface.id() && *layer_id == layer.id()
             ),
             "the hidden surface's transaction is applied as it is made, undrawn: {events:?}"
