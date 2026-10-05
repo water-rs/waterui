@@ -691,20 +691,23 @@ impl ResolvedFramework {
                 .get_mut(section)
                 .and_then(toml_edit::Item::as_table_like_mut)
             {
-                self.update_dependencies(dependencies)?;
+                self.update_dependencies(section, dependencies)?;
             }
         }
         if let Some(targets) = document
             .get_mut("target")
             .and_then(toml_edit::Item::as_table_like_mut)
         {
-            for (_, target) in targets.iter_mut() {
+            for (cfg, target) in targets.iter_mut() {
                 for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
                     if let Some(dependencies) = target
                         .get_mut(section)
                         .and_then(toml_edit::Item::as_table_like_mut)
                     {
-                        self.update_dependencies(dependencies)?;
+                        self.update_dependencies(
+                            &format!("target.\"{cfg}\".{section}"),
+                            dependencies,
+                        )?;
                     }
                 }
             }
@@ -712,13 +715,24 @@ impl ResolvedFramework {
         rewrite_patch_tables(document, previous_patches, &self.patches)
     }
 
-    fn update_dependencies(&self, dependencies: &mut dyn toml_edit::TableLike) -> Result<()> {
+    fn update_dependencies(
+        &self,
+        table: &str,
+        dependencies: &mut dyn toml_edit::TableLike,
+    ) -> Result<()> {
         for (name, dependency) in dependencies.iter_mut() {
             let package = dependency
                 .get("package")
                 .and_then(toml_edit::Item::as_str)
                 .unwrap_or(&name)
                 .to_owned();
+            // The version requirement the entry itself declares — the string
+            // form (`wgpu = "30"`) or a `version` key — selects one of the
+            // versions the lock records for a patch-provided name.
+            let requirement = dependency
+                .as_str()
+                .or_else(|| dependency.get("version").and_then(toml_edit::Item::as_str))
+                .map(str::to_owned);
             let scaffolded = self.scaffold.contains_key(&format!("{package}-version"));
             // A package the selection provides through its patch table —
             // every `*-path` member and each name the channel pins there —
@@ -728,7 +742,7 @@ impl ResolvedFramework {
             let patched = if scaffolded {
                 None
             } else {
-                self.patched_version(&package)?
+                self.patched_version(&package, requirement.as_deref(), &format!("{table}.{name}"))?
             };
             if !(scaffolded || patched.is_some()) {
                 continue;
@@ -791,8 +805,19 @@ impl ResolvedFramework {
     /// A member whose crates.io name the table patches, or a third-party
     /// crate the channel pins there, resolves identically through the
     /// requirement: the patch substitutes the package the version names.
-    fn patched_version(&self, package: &str) -> Result<Option<String>> {
-        let Some(entry) = self
+    /// When the lock records several versions of the package — several
+    /// semver-incompatible entries of one crate are a normal lock — the
+    /// dependency's own `requirement` (its string form or `version` key)
+    /// selects the highest recorded version it matches; a requirement the
+    /// lock cannot satisfy, and a missing requirement on several recorded
+    /// versions, are both errors naming the entry.
+    fn patched_version(
+        &self,
+        package: &str,
+        requirement: Option<&str>,
+        entry: &str,
+    ) -> Result<Option<String>> {
+        let Some(patch_entry) = self
             .patches
             .values()
             .find_map(|dependencies| dependencies.get(package))
@@ -802,24 +827,62 @@ impl ResolvedFramework {
         let channel = self
             .channel()
             .map_or_else(|| "local".to_owned(), |channel| channel.to_string());
-        match self
+        let recorded = self
             .locked_versions
             .get(package)
-            .map_or(&[][..], Vec::as_slice)
-        {
-            [version] => return Ok(Some(version.clone())),
-            [] => {}
-            versions => {
-                bail!(
-                    "the {channel} channel's lock records {} versions of `{package}` \
-                     ({}); a dependency on it cannot be written as the registry \
-                     requirement the patch redirects",
-                    versions.len(),
-                    versions.join(", ")
+            .map_or(&[][..], Vec::as_slice);
+        if recorded.is_empty() {
+            // A patched name the framework lock does not record at all falls
+            // back to the patch entry's own declared version, resolved below.
+        } else if let Some(requirement) = requirement {
+            let req = semver::VersionReq::parse(requirement).wrap_err_with(|| {
+                format!(
+                    "`{entry}` requires `{package} = \"{requirement}\"`, which is not a \
+                     version requirement; the {channel} channel's lock records \
+                     {} for it",
+                    recorded.join(", ")
                 )
+            })?;
+            let Some(version) = recorded
+                .iter()
+                .filter_map(|version| version.parse::<semver::Version>().ok())
+                .filter(|version| req.matches(version))
+                .max()
+            else {
+                bail!(
+                    "`{entry}` requires `{package} = \"{requirement}\"`; the {channel} \
+                     channel's lock records {} for it — no recorded version \
+                     satisfies the requirement",
+                    recorded.join(", ")
+                )
+            };
+            return Ok(Some(version.to_string()));
+        } else {
+            match recorded {
+                [version] => return Ok(Some(version.clone())),
+                versions => {
+                    let highest = versions
+                        .iter()
+                        .map(|version| {
+                            version
+                                .parse::<semver::Version>()
+                                .expect("the framework lock records parseable versions")
+                        })
+                        .max()
+                        .expect("a non-empty list has a maximum");
+                    bail!(
+                        "the {channel} channel's lock records {} versions of \
+                         `{package}` ({}); `{entry}` declares no version \
+                         requirement — declare `version = \"{highest}\"` (or \
+                         another recorded version's requirement) so the \
+                         channel's patch can redirect it",
+                        versions.len(),
+                        versions.join(", ")
+                    )
+                }
             }
         }
-        let version = match entry {
+        let version = match patch_entry {
             cargo_toml::Dependency::Simple(version) => Some(version.to_string()),
             cargo_toml::Dependency::Detailed(detail) => {
                 detail.version.as_ref().map(ToString::to_string)
@@ -4693,6 +4756,104 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
             .expect_err("two lock entries for one patch-pinned name is an error");
         let text = format!("{error:#}");
         for expected in ["hydrolysis", "0.2.1", "0.3.0"] {
+            assert!(text.contains(expected), "{text}");
+        }
+    }
+
+    /// Several lock entries under one patch-pinned name resolve through the
+    /// dependency's own requirement — `wgpu = "30"` names the 30 series of
+    /// the two `wgpu` versions the dev channel's lock records (#1903).
+    #[test]
+    fn channel_update_selects_the_recorded_version_the_requirement_matches() {
+        let mut framework = dev_framework();
+        let wgpu: Dependency =
+            toml::from_str::<toml::Value>("git = \"https://github.com/water-rs/waterui\"")
+                .unwrap()
+                .try_into()
+                .unwrap();
+        framework
+            .patches
+            .entry("crates-io".into())
+            .or_default()
+            .insert("wgpu".into(), wgpu);
+        framework.locked_versions.insert(
+            "wgpu".into(),
+            vec!["29.0.4".to_owned(), "30.0.1".to_owned()],
+        );
+
+        let manifest = toml::toml! {
+            [dependencies]
+            wgpu = "30"
+            [build-dependencies]
+            wgpu-29 = { package = "wgpu", version = "29", features = ["spirv"] }
+            [target."cfg(unix)".dependencies]
+            wgpu = { version = "29.0.4" }
+        };
+        let mut document = toml_edit::ser::to_document(&manifest).unwrap();
+        framework
+            .update_manifest(&mut document, &PatchSet::default())
+            .unwrap();
+
+        // The string form and the `version` key both select the highest
+        // recorded version the requirement matches.
+        let wgpu = &document["dependencies"]["wgpu"];
+        assert_eq!(wgpu["version"].as_str(), Some("30.0.1"));
+        let wgpu_29 = &document["target"]["cfg(unix)"]["dependencies"]["wgpu"];
+        assert_eq!(wgpu_29["version"].as_str(), Some("29.0.4"));
+
+        // A renamed entry resolves on its `package` name and keeps the
+        // rename and its features.
+        let renamed = &document["build-dependencies"]["wgpu-29"];
+        assert_eq!(renamed["package"].as_str(), Some("wgpu"));
+        assert_eq!(renamed["version"].as_str(), Some("29.0.4"));
+        assert_eq!(renamed["features"][0].as_str(), Some("spirv"));
+    }
+
+    /// Only a dependency the lock cannot place is an error: a stale `git`
+    /// entry with no requirement while several versions are recorded, or a
+    /// requirement no recorded version satisfies (#1903).
+    #[test]
+    fn channel_update_rejects_a_patch_dependency_the_lock_cannot_place() {
+        let mut framework = dev_framework();
+        let wgpu: Dependency =
+            toml::from_str::<toml::Value>("git = \"https://github.com/water-rs/waterui\"")
+                .unwrap()
+                .try_into()
+                .unwrap();
+        framework
+            .patches
+            .entry("crates-io".into())
+            .or_default()
+            .insert("wgpu".into(), wgpu);
+        framework.locked_versions.insert(
+            "wgpu".into(),
+            vec!["29.0.4".to_owned(), "30.0.1".to_owned()],
+        );
+
+        let mut document: toml_edit::DocumentMut =
+            "[dependencies]\nwgpu = { git = \"https://github.com/gfx-rs/wgpu\" }\n"
+                .parse()
+                .unwrap();
+        let error = framework
+            .update_manifest(&mut document, &PatchSet::default())
+            .expect_err("a git entry on several recorded versions is an error");
+        let text = format!("{error:#}");
+        for expected in [
+            "dependencies.wgpu",
+            "29.0.4",
+            "30.0.1",
+            "version = \"30.0.1\"",
+        ] {
+            assert!(text.contains(expected), "{text}");
+        }
+
+        let mut document: toml_edit::DocumentMut =
+            "[dependencies]\nwgpu = \"31\"\n".parse().unwrap();
+        let error = framework
+            .update_manifest(&mut document, &PatchSet::default())
+            .expect_err("a requirement the lock cannot satisfy is an error");
+        let text = format!("{error:#}");
+        for expected in ["dependencies.wgpu", "31", "29.0.4", "30.0.1"] {
             assert!(text.contains(expected), "{text}");
         }
     }
