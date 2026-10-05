@@ -647,6 +647,7 @@ def cmd_build(man):
                 build_gradle(c, ddir, e, rn=True)
             else:
                 builders[c["kind"]](c, ddir, e)
+            (ddir / "BUILD_ERROR.txt").unlink(missing_ok=True)
             print(f"   ok -> {ddir}", flush=True)
         except RuntimeError as ex:
             (ddir / "BUILD_ERROR.txt").write_text(str(ex))
