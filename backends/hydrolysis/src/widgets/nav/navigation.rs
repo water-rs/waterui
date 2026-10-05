@@ -1941,9 +1941,11 @@ pub fn render_navigation_stack_parts(
     // Pages are recorded in their own local space and replayed at the stack's
     // transform; the hit targets and accessibility bounds a page registers
     // while it records are live, so they take the stack's hit placement.
-    #[allow(clippy::cast_possible_truncation)]
     let page_placement = CapturedScenePlacement {
-        size: LayoutSize::new(ctx.bounds.width() as f32, ctx.bounds.height() as f32),
+        size: LayoutSize::new(
+            crate::num_cast::f64_as_f32(ctx.bounds.width()),
+            crate::num_cast::f64_as_f32(ctx.bounds.height()),
+        ),
         hit_transform: ctx.hit_transform,
     };
     let background = state.borrow().background();

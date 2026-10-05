@@ -344,9 +344,8 @@ impl RetainedSubview {
     }
 
     /// Build (once), lay out at `placement.size`, and flush the sub-view into a
-    /// fresh, standalone [`Recording`] in identity (local) coordinates — the
-    /// retained analogue of [`HydrolysisRenderer::render_subtree_scene`] for a
-    /// node that must survive across flushes (the navigation-stack root). The
+    /// fresh, standalone [`Recording`] in identity (local) coordinates, for a
+    /// node that must survive across flushes (a navigation-stack page). The
     /// renderer's scene is swapped out, the node flushes into the temporary
     /// scene, then the scene is swapped back, so the returned scene can be
     /// replayed by the navigation transition (cross-fade `from`/`to`) without
