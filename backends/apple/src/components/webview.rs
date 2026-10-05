@@ -765,7 +765,7 @@ fn asset_scheme(server: &assets::AssetServer) -> web_kit::SchemeHandler {
 /// `installWebViewController` performed, so an application bundling its own
 /// engine keeps the controller it installed during `app(env)`.
 ///
-pub(crate) fn install_service(env: &mut Environment) {
+pub fn install_service(env: &mut Environment) {
     if env.get::<waterui_webview::WebViewController>().is_none() {
         env.insert(waterui_webview::WebViewController::new(
             AppleWebViewController,

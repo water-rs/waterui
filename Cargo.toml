@@ -30,8 +30,6 @@ members = [
     "backends/apple/Examples/liquid_glass",
     "backends/apple/Tests/IOSTestHost",
     "backends/core",
-    "backends/android",
-    "backends/android/tests",
     "backends/hydrolysis",
     # The Android debug app's Rust half is a package nested inside the
     # backend's directory, so it joins the workspace explicitly.

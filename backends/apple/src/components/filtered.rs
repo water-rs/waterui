@@ -943,12 +943,15 @@ fn spawn_setup(state: &Rc<FilteredState>) {
 
 /// The callback every effect fires when external state becomes dirty —
 /// `installRedrawCallback`'s target. The callback runs on arbitrary
-/// effect-owned threads, so the weak travels in a `MainThreadBound`: its
-/// clone and upgrade happen only inside the main-queue work item.
+/// effect-owned threads and its last drop can land there too, so the
+/// weak travels in a `MainQueueOwned`: its clone and upgrade happen
+/// only inside the main-queue work item, and an off-main release
+/// enqueues the payload's drop rather than blocking on `exec_sync`
+/// (#1776).
 fn redraw_callback_for(state: &Rc<FilteredState>) -> impl Fn() + Send + Sync + 'static {
     let mtm = cocoa_ui::MainThreadMarker::new()
         .expect("FilteredView callbacks install on the main thread");
-    let weak = Arc::new(dispatch2::MainThreadBound::new(Rc::downgrade(state), mtm));
+    let weak = crate::main_queue_owned::shared(Rc::downgrade(state), mtm);
     move || {
         let weak = Arc::clone(&weak);
         cocoa_ui::main_queue::enqueue(move |mtm| {
