@@ -128,74 +128,58 @@ impl Edge {
     /// `bounds`: the geometry a chrome container's docked bar and its
     /// hosted content share (§7.1). The band may sit past `bounds`' own
     /// edge — a docked bar under a raised keyboard does; the remainder
-    /// never does.
+    /// never does. The band's thickness clamps to the span `position`
+    /// leaves to `bounds`' far edge, so a band docked outside `bounds`
+    /// keeps `extent` instead of squashing against it.
     pub(crate) fn split_band(
         self,
         bounds: kurbo::Rect,
         position: f64,
         extent: f64,
     ) -> (kurbo::Rect, kurbo::Rect) {
+        let span = match self {
+            Self::Top => bounds.y1 - position,
+            Self::Bottom => position - bounds.y0,
+            Self::Leading => bounds.x1 - position,
+            Self::Trailing => position - bounds.x0,
+        };
+        let depth = extent.min(span.max(0.0));
+        let inner = match self {
+            Self::Top | Self::Leading => position + depth,
+            Self::Bottom | Self::Trailing => position - depth,
+        };
+        let (low, high, across) = if self.is_vertical() {
+            (bounds.y0, bounds.y1, (bounds.x0, bounds.x1))
+        } else {
+            (bounds.x0, bounds.x1, (bounds.y0, bounds.y1))
+        };
+        let on_axis = |start: f64, end: f64| {
+            if self.is_vertical() {
+                kurbo::Rect::new(across.0, start, across.1, end)
+            } else {
+                kurbo::Rect::new(start, across.0, end, across.1)
+            }
+        };
         match self {
-            Self::Top => {
-                let band = kurbo::Rect::new(
-                    bounds.x0,
-                    position,
-                    bounds.x1,
-                    position + extent.min(bounds.height()),
-                );
-                let rest = kurbo::Rect::new(
-                    bounds.x0,
-                    band.y1.clamp(bounds.y0, bounds.y1),
-                    bounds.x1,
-                    bounds.y1,
-                );
-                (band, rest)
-            }
-            Self::Bottom => {
-                let band = kurbo::Rect::new(
-                    bounds.x0,
-                    position - extent.min(bounds.height()),
-                    bounds.x1,
-                    position,
-                );
-                let rest = kurbo::Rect::new(
-                    bounds.x0,
-                    bounds.y0,
-                    bounds.x1,
-                    band.y0.clamp(bounds.y0, bounds.y1),
-                );
-                (band, rest)
-            }
-            Self::Leading => {
-                let band = kurbo::Rect::new(
-                    position,
-                    bounds.y0,
-                    position + extent.min(bounds.width()),
-                    bounds.y1,
-                );
-                let rest = kurbo::Rect::new(
-                    band.x1.clamp(bounds.x0, bounds.x1),
-                    bounds.y0,
-                    bounds.x1,
-                    bounds.y1,
-                );
-                (band, rest)
-            }
-            Self::Trailing => {
-                let band = kurbo::Rect::new(
-                    position - extent.min(bounds.width()),
-                    bounds.y0,
-                    position,
-                    bounds.y1,
-                );
-                let rest = kurbo::Rect::new(
-                    bounds.x0,
-                    bounds.y0,
-                    band.x0.clamp(bounds.x0, bounds.x1),
-                    bounds.y1,
-                );
-                (band, rest)
-            }
+            Self::Top | Self::Leading => (
+                on_axis(position, inner),
+                on_axis(inner.clamp(low, high), high),
+            ),
+            Self::Bottom | Self::Trailing => (
+                on_axis(inner, position),
+                on_axis(low, inner.clamp(low, high)),
+            ),
+        }
+    }
+
+    /// The band edge facing the hosted content — the counterpart of
+    /// [`Self::frame_edge`] on the other side of a docked band.
+    pub(crate) const fn inner_edge(self, band: kurbo::Rect) -> f64 {
+        match self {
+            Self::Top => band.y1,
+            Self::Leading => band.x1,
+            Self::Bottom => band.y0,
+            Self::Trailing => band.x0,
         }
     }
 }
@@ -251,6 +235,13 @@ pub enum EdgeBoundary {
         position: f64,
         released: ReleasedRegions,
     },
+    /// Covered by a bar the host docks on this edge — the subtree touches
+    /// nothing and releases and extends nowhere through it (§7.1: "its
+    /// content touches no edge where a bar sits"). `inner` is the bar's
+    /// inner edge in window space: the dock position a bar a nested chrome
+    /// container lays out on the same edge lands on, so nested chrome
+    /// stacks on the outer bar instead of floating free of it.
+    Docked { inner: f64 },
     /// No boundary: a hosted subtree's edge that does not touch the host's
     /// boundary is covered — nothing inside can touch, release or extend
     /// past it (§7.1: hosted content inherits, never reseeds).
@@ -258,14 +249,24 @@ pub enum EdgeBoundary {
 }
 
 impl EdgeBoundary {
-    /// The regions released past the boundary — none while covered.
+    /// The regions released past the boundary — none while covered, and
+    /// none through a bar's band.
     const fn released(&self) -> ReleasedRegions {
         match self {
             Self::Reachable { released, .. } => *released,
-            Self::Covered => ReleasedRegions {
+            Self::Docked { .. } | Self::Covered => ReleasedRegions {
                 container: false,
                 keyboard: false,
             },
+        }
+    }
+
+    /// The window-space position a `Reachable` boundary records — `None`
+    /// for edges a bar's band or a host's coverage owns.
+    const fn position(&self) -> Option<f64> {
+        match self {
+            Self::Reachable { position, .. } => Some(*position),
+            Self::Docked { .. } | Self::Covered => None,
         }
     }
 }
@@ -434,30 +435,63 @@ impl SafeAreaLayout {
         next
     }
 
-    /// §7.1's chrome split on `edge`: the band `extent` thick that a bar
-    /// the container docks to `edge` occupies, and the remainder of
-    /// `bounds` the hosted content keeps — both in `bounds` space.
+    /// §7.1's chrome split on `edge`, produced in one derivation so no
+    /// caller can pair a bar with a context the split did not derive: the
+    /// band `extent` thick the docked bar occupies, the context the bar's
+    /// subtree lays out against, the remainder of `bounds` the hosted
+    /// content keeps, and the content's context — all in `bounds` space
+    /// (the contexts record window space).
     ///
     /// On an edge whose boundary this context's frame touches, the band's
     /// outer edge lands on the *container* region's boundary: a bar
     /// docked to its edge is laid out clear of the container region only,
     /// so the keyboard region covers it instead of lifting it — under a
     /// raised keyboard the band sits wholly past `bounds`' own edge. On
-    /// an edge the frame does not touch, the band keeps `bounds`' edge.
-    /// The remainder is `bounds` minus the band: the content stays inside
-    /// the laid-out frame — clear of both regions — and touches no edge
-    /// the bar sits on.
+    /// an edge the frame does not touch, the band keeps `bounds`' edge;
+    /// on a `Docked` edge the band stacks on the outer bar's inner edge.
+    /// The bar's context is this context with the keyboard region
+    /// released on `edge`, so the bar's fills and extensions still reach
+    /// the window edge through both regions. The content's context is
+    /// [`Self::hosted`] on the remainder's frame with the bar's edge
+    /// `Docked` on the band's inner edge — nothing inside touches,
+    /// releases or extends through it, and a bar a nested chrome
+    /// container docks on the same edge stacks on this bar's inner edge.
     #[must_use]
-    pub fn docked_bar_split(
-        &self,
-        bounds: kurbo::Rect,
-        edge: Edge,
-        extent: f64,
-    ) -> (kurbo::Rect, kurbo::Rect) {
+    pub fn chrome_split(&self, bounds: kurbo::Rect, edge: Edge, extent: f64) -> ChromeSplit {
+        let bar_area = self.releasing_keyboard(edge);
         let position = self
-            .docked_bar_position(bounds, edge)
+            .docked_bar_position(&bar_area, bounds, edge)
             .unwrap_or_else(|| edge.frame_edge(bounds));
-        edge.split_band(bounds, position, extent)
+        let (band, content) = edge.split_band(bounds, position, extent);
+        let inner = edge.inner_edge(self.hosted_frame(bounds, band));
+        let content_area = if extent > 0.0 {
+            self.chrome_content_area(self.hosted_frame(bounds, content), &[(edge, inner)])
+        } else {
+            self.hosted(self.hosted_frame(bounds, content))
+        };
+        ChromeSplit {
+            bounds,
+            edge,
+            band,
+            content,
+            bar_area,
+            content_area,
+            inner: (extent > 0.0).then_some(inner),
+        }
+    }
+
+    /// The context for hosted content laid out at `frame` with a bar
+    /// docked on each of `docks`' edges — [`Self::hosted`] plus a `Docked`
+    /// boundary carrying the bar's inner edge in window space, so the
+    /// content touches no edge a bar sits on and a nested bar on the same
+    /// edge stacks on it (§7.1).
+    #[must_use]
+    pub fn chrome_content_area(&self, frame: kurbo::Rect, docks: &[(Edge, f64)]) -> Self {
+        let mut area = self.hosted(frame);
+        for &(edge, inner) in docks {
+            area.set_boundary(edge, EdgeBoundary::Docked { inner });
+        }
+        area
     }
 
     /// This context with the keyboard region released on `edge` — the
@@ -465,33 +499,53 @@ impl SafeAreaLayout {
     /// bar docked to its edge out clear of the container region only, so
     /// the keyboard covers it instead of lifting it — while the bar's
     /// fills and extensions still reach the window edge through both
-    /// regions.
+    /// regions. When releasing the keyboard would leave the boundary
+    /// where it stands — the keyboard is down, already released, or the
+    /// edge carries no keyboard depth — the context keeps its recorded
+    /// boundary rather than rebuilding it from f64 inset depths (the
+    /// module seeds boundaries from f32 frames on purpose).
     #[must_use]
     pub fn releasing_keyboard(&self, edge: Edge) -> Self {
         let mut next = self.clone();
         let EdgeBoundary::Reachable { released, .. } = self.boundary(edge) else {
             return next;
         };
-        let released = released.union(SafeAreaRegions::KEYBOARD);
-        let position = edge.boundary_at(self.window, self.unreleased_depth(edge, released));
-        next.set_boundary(edge, EdgeBoundary::Reachable { position, released });
+        let released_with_keyboard = released.union(SafeAreaRegions::KEYBOARD);
+        // Releasing the keyboard changes nothing when the keyboard is
+        // already released or has no depth on this edge — keyboard down,
+        // or a bottom-only keyboard on the top edge: keep the recorded
+        // boundary rather than rebuilding the same position from f64 inset
+        // depths (the module seeds boundaries from f32 frames on purpose).
+        if released_with_keyboard == released || f64::from(edge.depth_in(&self.keyboard)) <= 0.0 {
+            return next;
+        }
+        let unreleased = self.unreleased_depth(edge, released_with_keyboard);
+        let position = edge.boundary_at(self.window, unreleased);
+        next.set_boundary(
+            edge,
+            EdgeBoundary::Reachable {
+                position,
+                released: released_with_keyboard,
+            },
+        );
         next
     }
 
-    /// The bounds-space position a bar docked to `edge` reaches: `edge`'s
-    /// boundary with the keyboard region released — §7.1's docked bar
-    /// clears the container region only — mapped into `bounds` space
-    /// through [`Self::hosted_frame`]'s offset. `None` on an edge this
-    /// context's frame does not touch: the band keeps `bounds`' edge.
-    fn docked_bar_position(&self, bounds: kurbo::Rect, edge: Edge) -> Option<f64> {
-        if !self.touches(edge) {
-            return None;
-        }
-        let released = self
-            .boundary(edge)
-            .released()
-            .union(SafeAreaRegions::KEYBOARD);
-        let position = edge.boundary_at(self.window, self.unreleased_depth(edge, released));
+    /// The bounds-space position a bar docked to `edge` reaches: a `Docked`
+    /// boundary's recorded dock — the outer bar's inner edge — or, on an
+    /// edge the frame touches, the boundary the keyboard-released context
+    /// `bar_area` records (§7.1's docked bar clears the container region
+    /// only). Mapped into `bounds` space through [`Self::hosted_frame`]'s
+    /// offset. `None` on an edge this context's frame does not touch and
+    /// no bar docks on: the band keeps `bounds`' edge.
+    fn docked_bar_position(&self, bar_area: &Self, bounds: kurbo::Rect, edge: Edge) -> Option<f64> {
+        let position = match self.boundary(edge) {
+            EdgeBoundary::Docked { inner } => Some(inner),
+            EdgeBoundary::Reachable { .. } if self.touches(edge) => {
+                bar_area.boundary(edge).position()
+            }
+            EdgeBoundary::Reachable { .. } | EdgeBoundary::Covered => None,
+        }?;
         Some(match edge {
             Edge::Top | Edge::Bottom => position - self.frame.y0 + bounds.y0,
             Edge::Leading | Edge::Trailing => position - self.frame.x0 + bounds.x0,
@@ -659,6 +713,58 @@ pub struct ScrollSurfaceFacts {
     /// The keyboard region's top edge in window space — the clearance
     /// bound's upper term.
     pub keyboard_top: f64,
+}
+
+/// The answers [`SafeAreaLayout::chrome_split`] derives together for one
+/// edge of one `bounds` (§7.1): the docked bar's band, the context the
+/// bar's subtree lays out against, the hosted content's rect, and the
+/// content's context. A chrome container that draws bars on several edges
+/// runs the split per edge and composes the content's context from the
+/// edges' [`Self::dock`]s — the only channel for the dock positions
+/// between the splits.
+pub struct ChromeSplit {
+    /// The `bounds` the split ran on — the space `band`, `content` and
+    /// [`Self::bar_area_for`]'s `rect` live in.
+    bounds: kurbo::Rect,
+    /// The edge the split ran on.
+    edge: Edge,
+    /// The band the bar occupies, in `bounds` space — it may sit wholly
+    /// past `bounds`' own edge once the keyboard covers it.
+    pub band: kurbo::Rect,
+    /// The remainder of `bounds` the hosted content lays out in — always
+    /// inside `bounds`, clear of both regions.
+    pub content: kurbo::Rect,
+    /// The context for views placed inside the band — the keyboard
+    /// region released on the bar's edge so the bar's fills and
+    /// extensions still reach the window edge. Its frame is the chrome
+    /// container's own; re-frame it per placed rect with
+    /// [`Self::bar_area_for`].
+    pub bar_area: SafeAreaLayout,
+    /// The hosted content's context: [`SafeAreaLayout::hosted`] on
+    /// `content`'s frame plus a `Docked` boundary on the bar's edge
+    /// carrying the band's inner edge — nothing inside the content
+    /// touches, releases or extends through the edge the bar sits on.
+    pub content_area: SafeAreaLayout,
+    /// The band's inner edge in window space — the dock position a nested
+    /// bar on `edge` lands on. `Some` only when a bar exists (`extent > 0`).
+    inner: Option<f64>,
+}
+
+impl ChromeSplit {
+    /// The `(edge, inner-edge-in-window-space)` pair a composed
+    /// [`SafeAreaLayout::chrome_content_area`] call takes — the dock this
+    /// split's bar establishes, `None` when the split ran for no bar.
+    pub fn dock(&self) -> Option<(Edge, f64)> {
+        self.inner.map(|inner| (self.edge, inner))
+    }
+
+    /// The context for a view placed at `rect` inside the band — the
+    /// bar's context re-framed the way [`SafeAreaLayout::hosted_frame`]
+    /// maps `rect` inside `bounds`.
+    pub fn bar_area_for(&self, rect: kurbo::Rect) -> SafeAreaLayout {
+        self.bar_area
+            .with_frame(self.bar_area.hosted_frame(self.bounds, rect))
+    }
 }
 
 /// `rect` grown by `offsets` on each edge, in the same space.

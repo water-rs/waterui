@@ -978,11 +978,13 @@ pub fn measure_tabs_layout(
     )
 }
 
-/// The proposal the rendered content rect hands a tab's content: the pane
-/// minus the tab bar — a bottom strip for `Automatic`/`TabBar`, a leading
-/// strip for `Sidebar` (the docked band §7.1's chrome split carves out at
-/// render time). Bounded axes echo the offer; an axis the container left
-/// open stays open.
+/// The proposal a tab's content measures at: the pane minus the tab bar — a
+/// bottom strip for `Automatic`/`TabBar`, a leading strip for `Sidebar`.
+/// This is a *measurement* proposal, not the rendered content rect: the §7.1
+/// chrome split at render time carves the band out of the laid-out frame,
+/// and under a keyboard covering the docked band the rendered content rect
+/// keeps the whole frame. Bounded axes echo the offer; an axis the container
+/// left open stays open.
 pub fn tabs_content_proposal(
     proposal: ProposalSize,
     style: NativeTabStyle,

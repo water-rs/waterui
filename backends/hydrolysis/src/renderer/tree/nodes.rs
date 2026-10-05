@@ -407,9 +407,11 @@ impl RetainedSubview {
     /// zero-area rect renders nothing, matching the dispatch path's empty-rect
     /// guard. `safe_area` is the context the sub-view lays out against — the
     /// ambient context of where it is placed for an ordinary sub-view, the
-    /// host's context inherited with `Covered` edges where its chrome sits for
-    /// chrome content (`NavigationView`, `Tabs`), `None` for a scroll
-    /// surface's context-free content.
+    /// host's context inherited with `Covered` edges where its chrome sits —
+    /// `Docked` when the chrome's bar can move under the keyboard, so the
+    /// edge stays untouchable while carrying the bar's inner edge as the dock
+    /// a nested bar on it lands on — for chrome content (`NavigationView`,
+    /// `Tabs`), `None` for a scroll surface's context-free content.
     pub(crate) fn flush_in_rect(
         &mut self,
         renderer: &mut HydrolysisRenderer,

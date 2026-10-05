@@ -564,8 +564,11 @@ pub fn render_navigation_view_parts(
         };
         base + search_extra
     };
+    // The span clamp in `Edge::split_band` covers a band that outgrows
+    // bounds — the extent is not clamped to `bounds.height()` here (a bar
+    // the keyboard covers past `bounds` still keeps its height).
     let bottom_bar_height = if has_bottom {
-        metrics.inline_bar_height.min(ctx.bounds.height())
+        metrics.inline_bar_height
     } else {
         0.0
     };
@@ -574,8 +577,10 @@ pub fn render_navigation_view_parts(
     // container region only, so the keyboard covers it instead of lifting
     // it, while the hosted content keeps the laid-out frame minus both
     // bands — clear of both regions.
-    let (bar_rect, below_top) = ctx.chrome_bar_and_content(Edge::Top, top_bar_height);
-    let (bottom_rect, _) = ctx.chrome_bar_and_content(Edge::Bottom, bottom_bar_height);
+    let top = ctx.chrome_split(Edge::Top, top_bar_height);
+    let bottom = ctx.chrome_split(Edge::Bottom, bottom_bar_height);
+    let (bar_rect, below_top) = (top.bar, top.content);
+    let bottom_rect = bottom.bar;
 
     if top_bar_height > 0.0 {
         let base_bar_height = navigation_base_bar_height_for_display_mode(display_mode, &theme);
@@ -637,7 +642,7 @@ pub fn render_navigation_view_parts(
                 env,
                 leading_rect,
                 ToolbarAlignment::Leading,
-                Edge::Top,
+                top.split.as_ref(),
             );
             flush_toolbar_group(
                 ctx,
@@ -645,7 +650,7 @@ pub fn render_navigation_view_parts(
                 env,
                 trailing_rect,
                 ToolbarAlignment::Trailing,
-                Edge::Top,
+                top.split.as_ref(),
             );
         }
 
@@ -687,7 +692,7 @@ pub fn render_navigation_view_parts(
                 // (buttons, menus) emit like the other toolbar groups.
                 #[cfg(feature = "accessibility")]
                 ctx.renderer_mut().push_accessibility_suppression();
-                flush_title_and_subtitle(ctx, &mut state, env, title_rect);
+                flush_title_and_subtitle(ctx, &mut state, env, title_rect, top.split.as_ref());
                 #[cfg(feature = "accessibility")]
                 ctx.renderer_mut().pop_accessibility_suppression();
             } else {
@@ -697,7 +702,7 @@ pub fn render_navigation_view_parts(
                     env,
                     title_rect,
                     ToolbarAlignment::Center,
-                    Edge::Top,
+                    top.split.as_ref(),
                 );
             }
         }
@@ -715,7 +720,10 @@ pub fn render_navigation_view_parts(
             );
             if search_rect.width() > 0.0 && search_rect.height() > 0.0 {
                 let render_ctx = ctx.render_context();
-                let field_area = ctx.bar_area_for(search_rect, Edge::Top);
+                let field_area = top
+                    .split
+                    .as_ref()
+                    .map(|split| split.bar_area_for(search_rect));
                 if let Some(field) = state.borrow_mut().search_field.as_mut() {
                     field.flush_in_rect(
                         ctx.renderer_mut(),
@@ -741,8 +749,11 @@ pub fn render_navigation_view_parts(
         // §7.1: navigation content is chrome-hosted — it inherits the
         // widget's boundaries, so a scroll surface inside still extends
         // and clears on the edges the bars leave reachable, and an
-        // `.ignore_safe_area` inside still releases there.
-        let content_area = ctx.content_area_for(content_rect);
+        // `.ignore_safe_area` inside still releases there; each bar's
+        // edge docks on its band's inner edge.
+        let docks: Vec<(crate::renderer::Edge, f64)> =
+            [top.dock(), bottom.dock()].into_iter().flatten().collect();
+        let content_area = ctx.chrome_content_area(content_rect, &docks);
         state.borrow_mut().content.flush_in_rect(
             ctx.renderer_mut(),
             render_ctx,
@@ -771,7 +782,7 @@ pub fn render_navigation_view_parts(
             env,
             bottom_rect,
             ToolbarAlignment::Center,
-            Edge::Bottom,
+            bottom.split.as_ref(),
         );
     }
 }
@@ -812,7 +823,7 @@ fn flush_toolbar_group(
     env: &Environment,
     bounds: kurbo::Rect,
     alignment: ToolbarAlignment,
-    edge: Edge,
+    bar: Option<&crate::renderer::ChromeSplit>,
 ) {
     if group.is_empty() || bounds.width() <= 0.0 || bounds.height() <= 0.0 {
         return;
@@ -839,7 +850,7 @@ fn flush_toolbar_group(
         let rect = kurbo::Rect::new(x, y, x + width, y + height);
         if rect.width() > 0.0 && rect.height() > 0.0 {
             let render_ctx = ctx.render_context();
-            let item_area = ctx.bar_area_for(rect, edge);
+            let item_area = bar.map(|split| split.bar_area_for(rect));
             item.flush_in_rect(
                 ctx.renderer_mut(),
                 render_ctx,
@@ -877,6 +888,7 @@ fn flush_title_and_subtitle(
     state: &mut NavigationViewRenderState,
     env: &Environment,
     bounds: kurbo::Rect,
+    bar: Option<&crate::renderer::ChromeSplit>,
 ) {
     let title_size = state.title.measure_intrinsic(ctx.renderer_mut(), env);
     let subtitle_size = if state.subtitle_present {
@@ -887,7 +899,7 @@ fn flush_title_and_subtitle(
     let (title_rect, subtitle_rect) = title_and_subtitle_rects(bounds, title_size, subtitle_size);
     if title_rect.height() > 0.0 {
         let render_ctx = ctx.render_context();
-        let title_area = ctx.bar_area_for(title_rect, Edge::Top);
+        let title_area = bar.map(|split| split.bar_area_for(title_rect));
         state.title.flush_in_rect(
             ctx.renderer_mut(),
             render_ctx,
@@ -899,7 +911,7 @@ fn flush_title_and_subtitle(
     }
     if state.subtitle_present && subtitle_rect.height() > 0.0 {
         let render_ctx = ctx.render_context();
-        let subtitle_area = ctx.bar_area_for(subtitle_rect, Edge::Top);
+        let subtitle_area = bar.map(|split| split.bar_area_for(subtitle_rect));
         state.subtitle.flush_in_rect(
             ctx.renderer_mut(),
             render_ctx,
