@@ -501,9 +501,24 @@ def ensure_rn_android(d: Path, e: dict) -> None:
     # harness-authored template change: the manifest's per-ABI APK matrix
     # needs splits on, which the stock template leaves off
     app_gradle = d / "android" / "app" / "build.gradle"
-    app_gradle.write_text(app_gradle.read_text().replace(
-        "enableSeparateBuildPerCPUArchitecture = false",
-        "enableSeparateBuildPerCPUArchitecture = true"))
+    text = app_gradle.read_text()
+    if "enableSeparateBuildPerCPUArchitecture" in text:
+        text = text.replace(
+            "enableSeparateBuildPerCPUArchitecture = false",
+            "enableSeparateBuildPerCPUArchitecture = true")
+    else:
+        text += (
+            "\nandroid {\n"
+            "    splits {\n"
+            "        abi {\n"
+            "            enable true\n"
+            "            reset()\n"
+            "            include \"arm64-v8a\", \"x86_64\"\n"
+            "            universalApk false\n"
+            "        }\n"
+            "    }\n"
+            "}\n")
+    app_gradle.write_text(text)
     stamp.write_text(tag + "\n")
     checked(["npm", "ci"], cwd=d, env=e)
 
@@ -598,8 +613,20 @@ def stop_maven_proxy():
 
 def stage(man, outputs: Path, dist_dir: Path):
     for abi, name in man["abi_apks"].items():
-        shutil.copy(outputs / "apk/release" / name, dist_dir / name)
-    shutil.copy(outputs / "bundle/release" / man["aab"], dist_dir / man["aab"])
+        src = outputs / "apk/release" / name
+        if not src.exists():
+            got = sorted(p.name for p in (outputs / "apk/release").glob("*")
+                         if p.is_file())
+            raise RuntimeError(
+                f"expected APK {name} missing; apk/release contains {got}")
+        shutil.copy(src, dist_dir / name)
+    aab = outputs / "bundle/release" / man["aab"]
+    if not aab.exists():
+        got = sorted(p.name for p in (outputs / "bundle/release").glob("*")
+                     if p.is_file())
+        raise RuntimeError(
+            f"expected AAB {man['aab']} missing; bundle/release contains {got}")
+    shutil.copy(aab, dist_dir / man["aab"])
 
 
 def cmd_build(man):
