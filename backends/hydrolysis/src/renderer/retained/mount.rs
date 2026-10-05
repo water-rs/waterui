@@ -305,11 +305,12 @@ impl Mounts {
     /// builds for a surface at `display_scale` device pixels per point.
     ///
     /// The group is built on the mount's first call and rebuilt when the
-    /// display scale changes; it lives as long as the mount, on the surface
-    /// the mount belongs to. A replaced group is released here, before the
-    /// commit that moves the member to its successor is applied — the
-    /// engine applies a frame's commits before it renders, so no frame
-    /// samples the released group.
+    /// display scale changes; it lives until the mount drops or
+    /// [`Self::clear_backdrop`] releases it, on the surface the mount
+    /// belongs to. A replaced group is released here, before the commit
+    /// that moves the member to its successor is applied — the engine
+    /// applies a frame's commits before it renders, so no frame samples
+    /// the released group.
     pub(crate) fn set_backdrop(
         &mut self,
         tx: &mut cherenkov::Transaction<'_, cherenkov_gpu::Gpu>,
@@ -335,6 +336,23 @@ impl Mounts {
             _group: group,
             display_scale,
         });
+    }
+
+    /// Releases `key`'s backdrop group, if it holds one, and clears its
+    /// content layer's membership, so the engine neither captures nor
+    /// filters for it until [`Self::set_backdrop`] builds a new one.
+    pub(crate) fn clear_backdrop(
+        &mut self,
+        tx: &mut cherenkov::Transaction<'_, cherenkov_gpu::Gpu>,
+        key: RenderKey,
+    ) {
+        let mount = self
+            .keyed
+            .get_mut(&key)
+            .expect("hydrolysis mounts: backdrop for an uncreated mount");
+        if mount.backdrop.take().is_some() {
+            tx[&mount.content].clear_backdrop();
+        }
     }
 
     /// The segment layer `key`'s group orders group child `index` under,

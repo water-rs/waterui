@@ -695,14 +695,23 @@ impl FrameInstall<'_> {
                     let scopes = ancestry_scopes(&layer.active_layers);
                     self.mounts
                         .set_ancestry(self.surface, tx, layer.key, &scopes);
-                    let surface = self.surface;
-                    let display_scale = self.display_scale;
-                    self.mounts.set_backdrop(tx, layer.key, display_scale, || {
-                        surface.backdrop_group(
-                            layer.runtime.chain(display_scale),
-                            crate::renderer::material::capture_scale(),
-                        )
-                    });
+                    // A fully transparent ancestry discards every pixel the
+                    // member would composite: the mount holds no backdrop
+                    // group until it can become visible, so a hidden
+                    // material costs no capture or blur.
+                    let visible = scopes.iter().all(|scope| scope.opacity != 0.0);
+                    if visible {
+                        let surface = self.surface;
+                        let display_scale = self.display_scale;
+                        self.mounts.set_backdrop(tx, layer.key, display_scale, || {
+                            surface.backdrop_group(
+                                layer.runtime.chain(display_scale),
+                                crate::renderer::material::capture_scale(),
+                            )
+                        });
+                    } else {
+                        self.mounts.clear_backdrop(tx, layer.key);
+                    }
                     let target = slot_layer(self.mounts, self.surface, scope, slot);
                     tx[target]
                         .transform(layer.transform)
