@@ -727,8 +727,8 @@ fn key_path(filter: &BoundFilter, key: &str) -> String {
 /// a stale submitted stream.
 fn remove_animation(layer: &CALayer, key_path: &str) {
     let path = NSString::from_str(key_path);
-    // SAFETY: `removeAnimationForKey:` accepts an absent key.
-    unsafe { layer.removeAnimationForKey(&path) };
+    // `removeAnimationForKey:` accepts an absent key.
+    layer.removeAnimationForKey(&path);
 }
 
 /// The scalar `filters.<name>.<key>` currently presents — the
@@ -964,10 +964,14 @@ fn submit_animation<T: Message>(
     animation.setDuration(duration.as_secs_f64());
     // Explicit linear calculation and pacing — `values` already carry
     // the interpolator's curve, so CA must not pace them a second time.
-    animation.setCalculationMode(kCAAnimationLinear);
-    animation.setTimingFunction(Some(&CAMediaTimingFunction::functionWithName(
-        kCAMediaTimingFunctionLinear,
-    )));
+    // SAFETY: the `kCA…` externs are immutable well-known constant
+    // objects owned by Core Animation.
+    unsafe {
+        animation.setCalculationMode(kCAAnimationLinear);
+        animation.setTimingFunction(Some(&CAMediaTimingFunction::functionWithName(
+            kCAMediaTimingFunctionLinear,
+        )));
+    }
     animation.setRemovedOnCompletion(false);
     owner.layer.addAnimation_forKey(&animation, Some(&path));
     true
