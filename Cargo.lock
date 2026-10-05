@@ -2175,7 +2175,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.2.2",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]
@@ -2534,7 +2534,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
- "windows 0.62.2",
+ "windows 0.61.3",
 ]
 
 [[package]]
@@ -4371,7 +4371,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.21",
- "windows 0.62.2",
+ "windows 0.61.3",
 ]
 
 [[package]]
@@ -4744,9 +4744,8 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?rev=cc8be840d96be39dc6f23aeace7310801d7a5f35#cc8be840d96be39dc6f23aeace7310801d7a5f35"
+source = "git+https://github.com/water-rs/hydrolysis-m3?rev=bc412a1a7e796cedc30d2c62d33fe293634574a8#bc412a1a7e796cedc30d2c62d33fe293634574a8"
 dependencies = [
- "cherenkov",
  "hydrolysis",
  "material-color-utils",
  "num-traits",
@@ -4873,7 +4872,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.61.2",
 ]
 
 [[package]]
@@ -9318,7 +9317,7 @@ dependencies = [
  "cfg-if 1.0.5",
  "libc",
  "rustix 1.1.5",
- "windows 0.62.2",
+ "windows 0.61.3",
 ]
 
 [[package]]
@@ -12825,7 +12824,7 @@ dependencies = [
 [[package]]
 name = "waterui-barcode"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/barcode?rev=491ada1c7db31bdab657135338a5bd670adbe61f#491ada1c7db31bdab657135338a5bd670adbe61f"
+source = "git+https://github.com/water-rs/barcode?rev=d3c61e9b17dbe8d5b3eb7261876d6cdf5fdf5249#d3c61e9b17dbe8d5b3eb7261876d6cdf5fdf5249"
 dependencies = [
  "barcoders",
  "fast_qr",
@@ -13590,7 +13589,7 @@ dependencies = [
 [[package]]
 name = "waterui-particle"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/particle?rev=ae7bcb7f5260b22723dcb5892fb28f5d776c03eb#ae7bcb7f5260b22723dcb5892fb28f5d776c03eb"
+source = "git+https://github.com/water-rs/particle?rev=4364f1ece5373bf322ea99cde595d7b4ec6958dc#4364f1ece5373bf322ea99cde595d7b4ec6958dc"
 dependencies = [
  "bytemuck",
  "encase",
@@ -13600,7 +13599,6 @@ dependencies = [
  "shaderloom",
  "waterui-core",
  "waterui-graphics",
- "wgpu 30.0.1",
 ]
 
 [[package]]
@@ -13657,9 +13655,8 @@ dependencies = [
 [[package]]
 name = "waterui-svg"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/svg?rev=50a87217658e9cf40024bf50619c4d7555a6415b#50a87217658e9cf40024bf50619c4d7555a6415b"
+source = "git+https://github.com/water-rs/svg?rev=16f99e021f735d0b1b31c95552b074e953d56418#16f99e021f735d0b1b31c95552b074e953d56418"
 dependencies = [
- "cherenkov",
  "suiteki",
  "tracing",
  "usvg",
@@ -13794,7 +13791,7 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?rev=4f95775bcef3022e6d5a52c2aa09aee02afb628f#4f95775bcef3022e6d5a52c2aa09aee02afb628f"
+source = "git+https://github.com/water-rs/video-gpu?rev=c9ef2400c644e166c4fa65618adb88fa8c6610bd#c9ef2400c644e166c4fa65618adb88fa8c6610bd"
 dependencies = [
  "async-channel",
  "executor-core",
@@ -13816,7 +13813,6 @@ dependencies = [
  "waterui-layout",
  "waterui-text",
  "waterui-video",
- "wgpu 30.0.1",
 ]
 
 [[package]]
