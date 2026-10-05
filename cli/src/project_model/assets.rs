@@ -26,9 +26,14 @@ use zenwave::{Client as _, Method};
 use crate::project::Project;
 use crate::project_model::project_types::PermissionKey;
 
+mod android_manifest;
 pub mod icon;
 mod unified;
 mod web;
+
+pub use android_manifest::ManifestComponents;
+#[cfg(test)]
+pub use android_manifest::assert_component_markers_inside_application;
 
 /// A font the CLI can fetch when a crate names it and nothing else.
 #[derive(Debug, Clone, Deserialize)]
@@ -160,18 +165,39 @@ struct WaterUIMetadata {
 /// A crate whose Rust side resolves helper classes through the application
 /// class loader declares the `.kt` files that must be compiled into the app
 /// dex and the Maven coordinates the helpers need. The generated Gradle
-/// module performs the compile — the crate's build script does not.
+/// module performs the compile — the crate's build script does not. A crate
+/// whose platform code needs an entry inside the manifest's `<application>`
+/// declares it as a `[[provider]]`, `[[service]]`, `[[receiver]]` or
+/// `[[meta-data]]` table (see [`android_manifest`]).
+///
+/// Every key is the CLI's, so an unknown one — a misspelling, or a key a
+/// newer CLI understands — is an error rather than a declaration silently
+/// left out of the app.
 #[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
 struct AndroidMetadata {
     /// Crate-relative `.kt` files to stage into the generated module.
-    #[serde(default, rename = "kotlin-sources")]
+    #[serde(default)]
     kotlin_sources: Vec<PathBuf>,
     /// Maven `group:artifact:version` coordinates the helpers compile and
     /// run against.
     #[serde(default)]
     maven: Vec<String>,
-    /// Only required when this cargo feature is enabled on the declaring crate.
-    #[serde(default, rename = "required-feature")]
+    /// `<provider>` entries for the generated manifest.
+    #[serde(default)]
+    provider: Vec<android_manifest::Provider>,
+    /// `<service>` entries for the generated manifest.
+    #[serde(default)]
+    service: Vec<android_manifest::Service>,
+    /// `<receiver>` entries for the generated manifest.
+    #[serde(default)]
+    receiver: Vec<android_manifest::Receiver>,
+    /// Application-level `<meta-data>` entries for the generated manifest.
+    #[serde(default)]
+    meta_data: Vec<android_manifest::MetaData>,
+    /// Only required when this cargo feature is enabled on the declaring
+    /// crate; gates every key of the table.
+    #[serde(default)]
     required_feature: Option<String>,
 }
 
@@ -503,6 +529,17 @@ async fn scan_crate_font_declarations(
     Ok(fonts)
 }
 
+/// Everything the dependency graph's `[package.metadata.waterui.android]`
+/// tables contribute to a generated Gradle module, after `required-feature`
+/// gating.
+#[derive(Debug, Default)]
+pub struct AndroidDeclarations {
+    /// Kotlin sources and Maven coordinates for the module's classpath.
+    pub classpath: AndroidClasspath,
+    /// Components for the `<application>` element of the module's manifest.
+    pub manifest: ManifestComponents,
+}
+
 /// Kotlin sources and Maven coordinates the dependency graph asks to place on
 /// the Android application classpath, after `required-feature` gating.
 #[derive(Debug, Default)]
@@ -540,12 +577,13 @@ impl AndroidDependencyScope {
 /// the same channel the font and permission scans read.
 ///
 /// A declared source that cannot be read is an error: it is a class the app
-/// would miss in its dex and fail to resolve at runtime.
-pub async fn scan_android_sources(
+/// would miss in its dex and fail to resolve at runtime. Conflicting manifest
+/// components are an error too: the manifest can ship only one of them.
+pub async fn scan_android_declarations(
     project: &Project,
     build_manifest: &Path,
     features: &[String],
-) -> eyre::Result<AndroidClasspath> {
+) -> eyre::Result<AndroidDeclarations> {
     seed_managed_crate_lock(project, build_manifest).await?;
     let metadata = crate_metadata(build_manifest, features)
         .await
@@ -555,7 +593,14 @@ pub async fn scan_android_sources(
                 build_manifest.display()
             )
         })?;
+    collect_android_declarations(&metadata)
+}
 
+/// The graph walk of [`scan_android_declarations`], split from the
+/// `cargo metadata` call so collection runs against any resolved graph.
+fn collect_android_declarations(
+    metadata: &cargo_metadata::Metadata,
+) -> eyre::Result<AndroidDeclarations> {
     let enabled_features: HashMap<&PackageId, HashSet<&str>> = metadata
         .resolve
         .as_ref()
@@ -568,7 +613,7 @@ pub async fn scan_android_sources(
         })
         .unwrap_or_default();
 
-    let mut classpath = AndroidClasspath::default();
+    let mut declarations = AndroidDeclarations::default();
     for package in &metadata.packages {
         let Some(waterui) = package.metadata.get("waterui") else {
             continue;
@@ -580,7 +625,13 @@ pub async fn scan_android_sources(
             )
         })?;
         let android = parsed.android;
-        if android.kotlin_sources.is_empty() && android.maven.is_empty() {
+        let components = android_manifest::DeclaredComponents {
+            providers: android.provider,
+            services: android.service,
+            receivers: android.receiver,
+            meta_data: android.meta_data,
+        };
+        if android.kotlin_sources.is_empty() && android.maven.is_empty() && components.is_empty() {
             continue;
         }
         if let Some(gate) = &android.required_feature
@@ -589,7 +640,7 @@ pub async fn scan_android_sources(
                 .is_some_and(|features| features.contains(gate.as_str()))
         {
             debug!(
-                "Skipping android classpath of {}: feature `{gate}` is not enabled",
+                "Skipping android declarations of {}: feature `{gate}` is not enabled",
                 package.name
             );
             continue;
@@ -610,7 +661,7 @@ pub async fn scan_android_sources(
                     path.display()
                 );
             }
-            classpath.kotlin_sources.push(path);
+            declarations.classpath.kotlin_sources.push(path);
         }
         for coordinate in android.maven {
             let parts: Vec<&str> = coordinate.split(':').collect();
@@ -619,20 +670,24 @@ pub async fn scan_android_sources(
                 "{} declares Maven coordinate `{coordinate}`: expected `group:artifact:version`",
                 package.name
             );
-            classpath.maven.insert(coordinate);
+            declarations.classpath.maven.insert(coordinate);
         }
+        declarations
+            .manifest
+            .merge(package.name.as_str(), components)?;
     }
-    Ok(classpath)
+    Ok(declarations)
 }
 
-/// Markers bracketing the R8 keep block [`stage_android_classpath`] maintains
+/// Markers bracketing the R8 keep block [`stage_android_declarations`] maintains
 /// in a module's `proguard-rules.pro`. The block is rewritten wholesale on
 /// every stage so keeps track the dependency graph exactly.
 const ANDROID_KEEPS_BEGIN: &str = "# --- begin waterui android classpath keeps ---";
 const ANDROID_KEEPS_END: &str = "# --- end waterui android classpath keeps ---";
 
-/// Stages a dependency graph's Android classpath declarations into a Gradle
-/// module: `.kt` files under `src/main/java/waterui/` — a directory the
+/// Stages a dependency graph's Android declarations into a Gradle module: the
+/// manifest components into the managed block inside `<application>` of the
+/// module's `AndroidManifest.xml`, `.kt` files under `src/main/java/waterui/` — a directory the
 /// module's Kotlin compile picks up — and the Maven coordinates the helpers
 /// compile and run against, emitted into the module's managed dependencies
 /// block as `implementation(...)` for application modules or `api(...)` for
@@ -648,18 +703,19 @@ const ANDROID_KEEPS_END: &str = "# --- end waterui android classpath keeps ---";
 /// a managed keep block in the module's `proguard-rules.pro`, one rule per
 /// package a staged source carries. Maven artifacts stay untouched: their
 /// classes are referenced statically from the helpers, which R8 sees.
-pub async fn stage_android_classpath(
+pub async fn stage_android_declarations(
     project: &Project,
     build_manifest: &Path,
     module_dir: &Path,
     scope: AndroidDependencyScope,
     features: &[String],
 ) -> eyre::Result<()> {
-    let classpath = scan_android_sources(project, build_manifest, features).await?;
-    stage_classpath_files(&classpath, module_dir, scope).await
+    let declarations = scan_android_declarations(project, build_manifest, features).await?;
+    stage_classpath_files(&declarations.classpath, module_dir, scope).await?;
+    android_manifest::write_manifest_components(module_dir, &declarations.manifest).await
 }
 
-/// The file half of [`stage_android_classpath`], split from the cargo-metadata
+/// The classpath half of [`stage_android_declarations`], split from the cargo-metadata
 /// scan so the staging itself is exercised without a project.
 async fn stage_classpath_files(
     classpath: &AndroidClasspath,
@@ -717,7 +773,7 @@ async fn stage_classpath_files(
     Ok(())
 }
 
-/// Markers bracketing the dependency block [`stage_android_classpath`]
+/// Markers bracketing the dependency block [`stage_android_declarations`]
 /// maintains inside a module's `build.gradle.kts` `dependencies` block.
 /// The templates emit the marker pair empty; the stage fills it.
 const ANDROID_DEPS_BEGIN: &str = "    // --- begin waterui android classpath dependencies ---";
@@ -3039,6 +3095,97 @@ mod permission_audit_tests {
             None
         ));
         assert!(crate::winui::backend::WinUiBackend::in_scope(None));
+    }
+
+    /// Manifest components are collected across the resolved graph the way
+    /// Kotlin sources are: a table behind a disabled `required-feature`
+    /// contributes nothing, the same table with the feature on contributes
+    /// its components, and two crates declaring one component differently
+    /// fail the collection naming both.
+    #[test]
+    fn manifest_components_are_collected_across_the_graph() {
+        let project = tempdir().expect("temp project");
+        let provider = "[[package.metadata.waterui.android.provider]]\n\
+                        name = \"waterkit.clipboard.ClipboardFileProvider\"\n\
+                        authorities = [\"${applicationId}.waterkit.clipboard\"]\n\
+                        exported = false\n\
+                        grant-uri-permissions = true\n";
+        write_crate(
+            &project.path().join("clipboard"),
+            "clipboard",
+            &format!(
+                "[features]\nfiles = []\n\n\
+                 [package.metadata.waterui.android]\nrequired-feature = \"files\"\n\n{provider}"
+            ),
+        );
+        let gated = write_crate(
+            &project.path().join("gated"),
+            "app-gated",
+            "[dependencies]\nclipboard = { path = \"../clipboard\" }\n",
+        );
+        let enabled = write_crate(
+            &project.path().join("enabled"),
+            "app-enabled",
+            "[dependencies]\nclipboard = { path = \"../clipboard\", features = [\"files\"] }\n",
+        );
+
+        let collect = |manifest: &Path| {
+            let metadata =
+                smol::block_on(crate_metadata(manifest, &[])).expect("resolve the fixture graph");
+            collect_android_declarations(&metadata)
+        };
+        let block = |declarations: AndroidDeclarations| {
+            declarations
+                .manifest
+                .render_block()
+                .expect("render the collected components")
+        };
+
+        let gated = block(collect(&gated).expect("collect the gated graph"));
+        assert!(!gated.contains("<provider"), "{gated}");
+        let enabled = block(collect(&enabled).expect("collect the enabled graph"));
+        assert!(
+            enabled.contains("android:name=\"waterkit.clipboard.ClipboardFileProvider\""),
+            "{enabled}"
+        );
+
+        // A second crate exporting the same provider differently.
+        write_crate(
+            &project.path().join("other"),
+            "other-clipboard",
+            &format!(
+                "[package.metadata.waterui.android]\n\n{}",
+                provider.replace("exported = false", "exported = true")
+            ),
+        );
+        let conflicting = write_crate(
+            &project.path().join("conflicting"),
+            "app-conflicting",
+            "[dependencies]\n\
+             clipboard = { path = \"../clipboard\", features = [\"files\"] }\n\
+             other-clipboard = { path = \"../other\" }\n",
+        );
+        let error = collect(&conflicting).expect_err("conflicting providers must fail");
+        let message = error.to_string();
+        assert!(message.contains("`clipboard`"), "{message}");
+        assert!(message.contains("`other-clipboard`"), "{message}");
+    }
+
+    /// Every key of `[package.metadata.waterui.android]` is the CLI's: a
+    /// misspelt one fails the collection instead of silently dropping a
+    /// declaration from the app.
+    #[test]
+    fn an_unknown_android_metadata_key_fails() {
+        let project = tempdir().expect("temp project");
+        let manifest = write_crate(
+            project.path(),
+            "typo",
+            "[[package.metadata.waterui.android.providers]]\nname = \"a.B\"\n",
+        );
+        let metadata =
+            smol::block_on(crate_metadata(&manifest, &[])).expect("resolve the fixture graph");
+        let error = collect_android_declarations(&metadata).expect_err("unknown key must fail");
+        assert!(error.to_string().contains("providers"), "{error}");
     }
 
     /// The Gradle `dependencies` block markers a generated module ships.
