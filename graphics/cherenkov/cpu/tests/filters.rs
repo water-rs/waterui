@@ -38,7 +38,7 @@ fn colour_chains_run_on_layers_and_recorded_groups() {
     layer_surface.update(|tx| {
         tx[layer_surface.root()].push(&layer);
         tx[&layer]
-            .filter(&filter)
+            .filter(filter.id())
             .content(layer_surface.record(|r| {
                 r.fill(Rect::new(0.0, 0.0, 8.0, 8.0), color);
             }));
@@ -212,8 +212,8 @@ fn nested_spatial_filters_match_full_surface_application_at_band_edges() {
     let inner = filtered.layer();
     filtered.update(|tx| {
         tx[filtered.root()].push(&outer);
-        tx[&outer].push(&inner).filter(&gaussian);
-        tx[&inner].filter(&box_blur).content(content(&filtered));
+        tx[&outer].push(&inner).filter(gaussian.id());
+        tx[&inner].filter(box_blur.id()).content(content(&filtered));
     });
     engine.render(FrameTime::now()).expect("render");
 
@@ -319,7 +319,7 @@ fn rgba8_filter_images_blend_on_the_cpu() {
         .expect("surface");
     surface.update(|tx| {
         tx[surface.root()]
-            .filter(&filter)
+            .filter(filter.id())
             .content(surface.record(|r| {
                 r.fill(
                     Rect::new(0.0, 0.0, 4.0, 4.0),
@@ -418,7 +418,7 @@ fn animated_parameters_rerender_and_request_frames() {
     for filtered_surface in [&surface, &other_surface] {
         filtered_surface.update(|tx| {
             tx[filtered_surface.root()]
-                .filter(&filter)
+                .filter(filter.id())
                 .content(filtered_surface.record(|r| {
                     r.fill(
                         Rect::new(0.0, 0.0, 4.0, 4.0),
@@ -532,7 +532,7 @@ fn hidden_surface_filters_wake_nothing_and_ask_no_frame() {
     };
     hidden.update(|tx| {
         tx[hidden.root()]
-            .filter(&filter)
+            .filter(filter.id())
             .content(hidden.record(fill));
     });
     visible.update(|tx| {
@@ -682,7 +682,7 @@ fn gpu_only_auxiliary_images_return_an_explicit_unsupported_error() {
         .expect("surface");
     surface.update(|tx| {
         tx[surface.root()]
-            .filter(&filter)
+            .filter(filter.id())
             .content(surface.record(|r| {
                 r.fill(Rect::new(0.0, 0.0, 4.0, 4.0), WorkingColor::WHITE);
             }));
@@ -703,7 +703,7 @@ fn removing_a_registered_filter_does_not_silently_fallback() {
     let layer = surface.layer();
     surface.update(|tx| {
         tx[surface.root()].push(&layer);
-        tx[&layer].filter(&filter).content(surface.record(|r| {
+        tx[&layer].filter(filter.id()).content(surface.record(|r| {
             r.fill(Rect::new(0.0, 0.0, 4.0, 4.0), WorkingColor::WHITE);
         }));
     });

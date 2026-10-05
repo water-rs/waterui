@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use crate::ImageLimits;
 use crate::frame::OffscreenFormat;
-use crate::resource::ResourceId;
+use cherenkov_record::ResourceId;
 
 /// Engine initialization or engine-wide failure.
 #[derive(Debug, thiserror::Error)]

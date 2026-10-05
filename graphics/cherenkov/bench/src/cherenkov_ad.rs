@@ -1442,7 +1442,7 @@ fn build_layer(
         edit.opacity(prep.opacity as f32);
         edit.blend(prep.blend);
         if let Some(filter) = &prep.filter {
-            edit.filter(filter);
+            edit.filter(filter.id());
         }
         if let Some(clip) = &prep.clip {
             clip_shape(edit, clip);
