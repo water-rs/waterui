@@ -243,9 +243,6 @@ pub enum Message<B: Backend> {
         time: FrameTime,
         /// The surfaces' queued change sets, one entry per dirty surface.
         commits: Vec<(SurfaceId, ChangeSet<B>)>,
-        /// The deadline map the frame fills — the last frame's storage,
-        /// handed back instead of allocating a fresh map every render.
-        next_scratch: rustc_hash::FxHashMap<SurfaceId, Next>,
         /// The render result and the buffers returned to the UI thread.
         reply: FrameReplySender<RenderReply<B>>,
     },

@@ -197,7 +197,7 @@ mod tests {
                 animation: Some(Spring::bouncy().into()),
             },
         ));
-        tree.sample(start, Display::default());
+        tree.sample(start, Display::default().scale);
         let description = motion(&tree, root).expect("translation is expressible");
         let [x, y] = description.position.expect("position lanes");
         assert_eq!([x.target, y.target], [40., -70.]);
@@ -209,7 +209,7 @@ mod tests {
                 animation: Some(Curve::linear(Duration::from_secs(1)).into()),
             },
         ));
-        tree.sample(start, Display::default());
+        tree.sample(start, Display::default().scale);
         assert!(motion(&tree, root).is_none());
     }
 
@@ -255,7 +255,7 @@ mod tests {
                 animation: Some(Curve::linear(Duration::from_secs(1)).into()),
             },
         ));
-        tree.sample(Instant::now(), Display::default());
+        tree.sample(Instant::now(), Display::default().scale);
         assert_eq!(tree.layer(moving).opacity, 1.0);
         assert!(!safe_path(&tree, moving, [below, moving].into_iter()));
     }
