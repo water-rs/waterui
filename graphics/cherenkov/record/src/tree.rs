@@ -775,7 +775,7 @@ impl SurfaceTree {
                     id.raw()
                 );
             }
-            LayerOp::Remove(_) => unreachable!("Remove is handled by the render loop"),
+            LayerOp::Remove(_) => unreachable!("Remove goes through `apply_op` or `remove`"),
             LayerOp::Transform(id, prop) => {
                 let node = self.node_mut(id);
                 if let Some(components) = &mut node.components {
