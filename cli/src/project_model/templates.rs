@@ -1512,11 +1512,10 @@ mod tests {
     }
 
     /// A local checkout always builds Android against the runtime
-    /// `android-backend-revision` pins — including a checkout that carries
-    /// the `waterui-android` Rust crate at `backends/android`
-    /// (water-rs/waterui#1429), which is not a runtime source slot.
+    /// `android-backend-revision` pins — the Kotlin runtime is the only
+    /// Android runtime source.
     #[test]
-    fn android_checkout_crate_builds_against_the_pinned_runtime() {
+    fn android_checkout_builds_against_the_pinned_runtime() {
         let workspace = tempdir().expect("tempdir");
         let waterui = workspace.path().join("waterui");
         let project = workspace.path().join("app");
@@ -1536,13 +1535,6 @@ mod tests {
                 "the coordinate names the declared android-backend-revision"
             );
         };
-        pinned(&context());
-
-        // `backends/android` holding the tracked `waterui-android` crate
-        // changes nothing: the project stays on the pinned runtime.
-        let rust_backend = waterui.join("backends/android");
-        std::fs::create_dir_all(&rust_backend).expect("rust backend dir");
-        std::fs::write(rust_backend.join("Cargo.toml"), "").expect("rust manifest");
         pinned(&context());
     }
 

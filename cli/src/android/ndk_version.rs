@@ -5,7 +5,7 @@
 /// Mirrors the Android runtime's Gradle `ndkVersion`, embedded as a literal so
 /// an installed CLI never has to locate any source checkout to answer it. The
 /// runtime lives in `water-rs/android-backend`, pinned as the
-/// `backends/android` gitlink of the `water-rs/waterui` revision this crate's
+/// `android-backend-revision` of the `water-rs/waterui` revision this crate's
 /// manifest builds against;
 /// `embedded_ndk_version_matches_the_pinned_android_backend` asserts the two
 /// stay in lockstep.
