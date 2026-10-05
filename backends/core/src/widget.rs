@@ -14,7 +14,7 @@ use waterui_core::{Binding, Computed, Signal};
 use waterui_form::picker::PickerStyle;
 use waterui_graphics::WorkingColor;
 use waterui_graphics::color::Color;
-use waterui_graphics::draw::{Paint, Recorder};
+use waterui_graphics::draw::{MaterialRegistry, Paint, Recorder};
 use waterui_text::font::Font;
 
 /// Button layout metrics.
@@ -1139,6 +1139,25 @@ pub trait WidgetTheme {
     fn text_caret_motion(&self) -> TextCaretMotion;
     /// Return motion policy for navigation transitions.
     fn navigation_motion(&self) -> NavigationMotion;
+
+    /// Declare the theme's backdrop materials in `registry`: both the
+    /// backdrop shaders ([`MaterialShader`] keys, each with its
+    /// [`BackdropShaderSource`]) and the capture classes ([`CaptureClass`]
+    /// keys, each with its [`MaterialCapture`] group parameters) that the
+    /// theme's chrome names when it records a backdrop material with
+    /// [`Recorder::backdrop_material`].
+    ///
+    /// [`MaterialShader`]: waterui_graphics::draw::MaterialShader
+    /// [`BackdropShaderSource`]: waterui_graphics::draw::BackdropShaderSource
+    /// [`CaptureClass`]: waterui_graphics::draw::CaptureClass
+    /// [`MaterialCapture`]: waterui_graphics::draw::MaterialCapture
+    ///
+    /// The backend calls it once, before any chrome is drawn, and keeps
+    /// the registry: it registers every shader with each engine it
+    /// attaches and creates material groups from the capture classes. The
+    /// theme holds no engine handles. The default registers nothing, which
+    /// is right for a theme that records no backdrop material.
+    fn register_backdrop_shaders(&self, _registry: &mut MaterialRegistry) {}
 
     /// Return metrics for a button style.
     fn button_metrics(&self, style: ButtonStyle, size: ControlSize) -> ButtonMetrics;
