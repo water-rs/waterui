@@ -130,7 +130,7 @@ impl TestHost {
             device: surface.device(),
             queue: surface.queue(),
             device_loss: surface.device_loss().clone(),
-            texture: Some(frame.texture()),
+            texture: frame.texture(),
             format: surface.format(),
             width: self.width.max(1),
             height: self.height.max(1),
