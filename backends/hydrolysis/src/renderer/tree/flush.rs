@@ -177,7 +177,7 @@ impl RenderNode {
                     #[allow(clippy::cast_possible_truncation)]
                     let size = Size::new(ctx.bounds.width() as f32, ctx.bounds.height() as f32);
                     let proposal = ProposalSize::new(Some(size.width), Some(size.height));
-                    let safe_area = read_safe_area(&node.safe_area);
+                    let safe_area = node.safe_area.as_deref().cloned();
                     node.child
                         .borrow_mut()
                         .layout(renderer, &node.env, safe_area, proposal, size);
@@ -661,7 +661,7 @@ impl RenderNode {
                     merged = node.env.layered_on(env);
                     &merged
                 };
-                let safe_area = read_safe_area(&node.safe_area);
+                let safe_area = node.safe_area.as_deref().cloned();
                 Rc::clone(&node.behavior).render(renderer, ctx, env, safe_area);
                 renderer.pop_render_owner();
             }

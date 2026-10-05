@@ -267,7 +267,7 @@ pub struct LazyStackNode {
     /// The §7.1 context the stack was last laid out against — node-lifetime
     /// storage, so a stack inside an unchanged retained sub-view still hands
     /// each materialized item its context at flush.
-    pub(super) safe_area: Cell<Option<Box<safe_area::SafeAreaLayout>>>,
+    pub(super) safe_area: Option<Box<safe_area::SafeAreaLayout>>,
     /// The unshielded environment when this stack carries accessibility naming
     /// metadata: `Some` means it emits the node naming itself.
     #[cfg(feature = "accessibility")]
@@ -1128,6 +1128,9 @@ impl LazyStackNode {
             .visible_window(visible_start, visible_end);
         *self.visible_range.borrow_mut() = window.start..window.end;
         let mut cursor = window.leading_offset;
+        // The context the stack laid out against: one borrow for the whole
+        // visible window — every item derives its hosted frame from it.
+        let stack_area = self.safe_area.as_deref();
         for index in window.start..window.end {
             let id = snapshot
                 .get_id(index)
@@ -1167,7 +1170,7 @@ impl LazyStackNode {
                 // same layout-fact mapping `WidgetRenderContext` and the
                 // collection layout loop share through
                 // `SafeAreaLayout::hosted_frame`.
-                let item_area = read_safe_area(&self.safe_area)
+                let item_area = stack_area
                     .map(|area| area.with_frame(area.hosted_frame(ctx.bounds, child_rect)));
                 subview.flush_in_rect(renderer, ctx, env, proposal, child_rect, item_area);
             }
