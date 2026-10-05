@@ -348,7 +348,12 @@ static void water_display_init(WaterDisplay *display)
 static char *water_wpe_runtime_root(void)
 {
     Dl_info info;
-    g_assert(dladdr((const void *)&water_wpe_abi_version, &info) != 0);
+    /* ISO C has no function-to-object pointer conversion, so the function's
+     * address is copied through a pointer variable for `dladdr`. */
+    uint32_t (*abi_version)(void) = water_wpe_abi_version;
+    void *self;
+    memcpy(&self, &abi_version, sizeof self);
+    g_assert(dladdr(self, &info) != 0);
     g_assert(info.dli_fname != NULL);
     char *library = g_canonicalize_filename(info.dli_fname, NULL);
     char *lib = g_path_get_dirname(library);
@@ -736,10 +741,10 @@ WaterWpePage *water_wpe_page_new(
         "user-content-manager",
         page->content_manager,
         NULL));
-    WebKitSettings *settings = webkit_web_view_get_settings(page->web_view);
-    webkit_settings_set_hardware_acceleration_policy(
-        settings,
-        WEBKIT_HARDWARE_ACCELERATION_POLICY_ALWAYS);
+    /* WPE 2.52 has no hardware-acceleration setting: the
+     * `WebKitHardwareAccelerationPolicy` API is `#if PLATFORM(GTK)` in
+     * `WebKitSettings.h`, and the WPE platform renders through `WPEView`'s
+     * buffer pipeline, which is always accelerated. */
     page->view = webkit_web_view_get_wpe_view(page->web_view);
     g_assert(WATER_IS_VIEW(page->view));
     ((WaterView *)page->view)->page = page;
@@ -1131,10 +1136,14 @@ void water_wpe_page_set_cookie(WaterWpePage *page, const char *cookie)
 {
     const char *uri = webkit_web_view_get_uri(page->web_view);
     g_assert(uri != NULL);
-    SoupCookie *parsed = soup_cookie_parse(cookie, uri);
+    /* libsoup 3 takes the origin as a `GUri`, not a string. */
+    GUri *origin = g_uri_parse(uri, G_URI_FLAGS_NONE, NULL);
+    g_assert(origin != NULL);
+    SoupCookie *parsed = soup_cookie_parse(cookie, origin);
+    g_uri_unref(origin);
     g_assert(parsed != NULL);
-    WebKitCookieManager *manager = webkit_website_data_manager_get_cookie_manager(
-        webkit_web_view_get_website_data_manager(page->web_view));
+    WebKitCookieManager *manager = webkit_network_session_get_cookie_manager(
+        webkit_web_view_get_network_session(page->web_view));
     webkit_cookie_manager_add_cookie(
         manager,
         parsed,
@@ -1231,8 +1240,8 @@ void water_wpe_page_get_cookies(
 {
     const char *uri = webkit_web_view_get_uri(page->web_view);
     g_assert(uri != NULL);
-    WebKitCookieManager *manager = webkit_website_data_manager_get_cookie_manager(
-        webkit_web_view_get_website_data_manager(page->web_view));
+    WebKitCookieManager *manager = webkit_network_session_get_cookie_manager(
+        webkit_web_view_get_network_session(page->web_view));
     WaterWpeAsyncResult *async = g_new0(WaterWpeAsyncResult, 1);
     async->callback = callback;
     async->user_data = user_data;
