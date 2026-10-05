@@ -190,9 +190,11 @@ pub fn bind_root_window_wires_a_live_window(mtm: MainThreadMarker) {
     drop(binding);
 }
 
-/// GPU-surface mounted-scene reach — the `native_test` module inside
-/// `components::gpu_surface` builds a real `SceneView` mount and drives
-/// the production failure drain and completion settlement paths on it.
+/// GPU-surface mounted-scene reach.
+///
+/// The `native_test` module inside `components::gpu_surface` builds a real
+/// `SceneView` mount and drives the production failure drain and completion
+/// settlement paths on it.
 #[cfg(all(target_os = "macos", feature = "gpu_surface"))]
 pub mod gpu_surface {
     pub use crate::components::gpu_surface::native_test::{MountedSceneSurface, WakeProbe};

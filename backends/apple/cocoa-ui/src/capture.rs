@@ -1952,6 +1952,24 @@ mod tests {
             (spec.clip.x, spec.clip.y, spec.clip.width, spec.clip.height)
         }
 
+        /// The UV window as a whole value so a single `assert_eq!` asserts
+        /// the mapping — every expected component is exact by construction
+        /// (integer pixel ratios through floor/ceil endpoints), and
+        /// comparing the derived `PartialEq` value needs no
+        /// float-comparison lint exception.
+        #[derive(Debug, PartialEq)]
+        struct UvWindow {
+            origin: [f32; 2],
+            scale: [f32; 2],
+        }
+
+        fn uv(spec: &SurfaceSpec) -> UvWindow {
+            UvWindow {
+                origin: spec.uv_origin,
+                scale: spec.uv_scale,
+            }
+        }
+
         #[test]
         fn a_top_down_source_maps_straight_through() {
             let spec = spec_for(
@@ -1960,8 +1978,13 @@ mod tests {
             );
             assert_eq!(clip(&spec), (80, 40, 200, 200));
             assert_eq!((spec.full_size.width, spec.full_size.height), (200, 200));
-            assert_eq!(spec.uv_origin, [0.0, 0.0]);
-            assert_eq!(spec.uv_scale, [1.0, 1.0]);
+            assert_eq!(
+                uv(&spec),
+                UvWindow {
+                    origin: [0.0, 0.0],
+                    scale: [1.0, 1.0],
+                }
+            );
         }
 
         #[test]
@@ -1972,8 +1995,13 @@ mod tests {
             );
             assert_eq!(clip(&spec), (80, 160, 200, 200));
             assert_eq!((spec.full_size.width, spec.full_size.height), (200, 200));
-            assert_eq!(spec.uv_origin, [0.0, 0.0]);
-            assert_eq!(spec.uv_scale, [1.0, 1.0]);
+            assert_eq!(
+                uv(&spec),
+                UvWindow {
+                    origin: [0.0, 0.0],
+                    scale: [1.0, 1.0],
+                }
+            );
         }
 
         #[test]
@@ -2000,8 +2028,13 @@ mod tests {
             // destination scissor and the sampled UV window shrink.
             assert_eq!((spec.full_size.width, spec.full_size.height), (200, 200));
             assert_eq!(clip(&spec), (0, 0, 120, 160));
-            assert_eq!(spec.uv_origin, [0.4, 0.2]);
-            assert_eq!(spec.uv_scale, [0.6, 0.8]);
+            assert_eq!(
+                uv(&spec),
+                UvWindow {
+                    origin: [0.4, 0.2],
+                    scale: [0.6, 0.8],
+                }
+            );
         }
 
         #[test]
