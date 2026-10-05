@@ -140,75 +140,32 @@ measured rep.
 - `XCTHitchMetric` produces no samples for any contestant on the iOS
   Simulator (no GPU frame telemetry); hitch/fps data belongs to the
   physical-device leg on the M1 host.
-- On macOS the swipe driver could not gesture-scroll the AppKit app:
-  `swipeUp` on the app window fails with an element-matching error in
-  every rep, while the same drive works on the other five macOS
-  contestants. W2/W4 for AppKit were re-run with the same uniform
-  `--drive auto` fallback; the swipe error rows are kept verbatim in the
-  results JSON and the report's error table.
+- On macOS and the iOS Simulator the scroll drive is the host-side
+  wheel driver (`wheel`): bench.py posts CGEvent scroll-wheel detents
+  into the contestant's window on each `dev.bench.begin` — the XCTest
+  `swipe` path only exists on ios-device, where real gestures can be
+  synthesized.
 - `water package --platform ios --backend apple --release --unsigned`
-  (cli dev @ `12a5ed6`, which carries feat/212) produces the unsigned
+  (the in-tree CLI built from this checkout) produces the unsigned
   production device artifact (`CODE_SIGNING_ALLOWED=NO`, static Rust in
-  the main executable, UIDeviceFamily [1,2]); the M1 host re-signs
+  the main executable, UIDeviceFamily [1,2]); the device host re-signs
   inside-out before install.
 - This VM has no signing identity, so App Store `.ipa` thinning is not
   possible here; package size is the arm64 `.app` bundle, and device
   thinning data belongs to the M1 host pass.
 
-## Upstream bugs hit while building (pre-#281, historical)
+## Upstream bugs hit while building
 
-The following were defects of the pre-migration Swift apple-backend and
-the cli revision that packaged it (cli `cbe43f2`/`d17d0dd`, waterui
-`1b80ef53`, apple-backend `c7908d7e`/`702019b`). All are obsolete under
-the Rust + objc2 host — the current waterui-bench builds with plain
-`water package`, and none of the workarounds below exist on this branch.
-They are retained only as provenance for the pre-#281 measurement rows
-(held outside git as session attachments).
-
-1. **apple-backend** `Sources/WaterUI/Components/Metadata/Interaction/
-   WuiContextMenu.swift` — `WuiContextMenuAccessoryWindow` (UIWindow
-   subclass added upstream in 3a958f5) lacks `required init?(coder:)`,
-   an iOS compile error under Xcode 26/Swift 6. Patched locally in the
-   SPM checkout; `scripts/fix-waterui-backend.sh` re-applies the
-   `@available(*, unavailable) required init?(coder:)` after
-   regeneration so the manifest stays reproducible.
-2. **waterui ↔ apple-backend ABI drift** — waterui dev `384ea059`
-   (in `f8d4d954`+, still in `25569538`) adds `is_empty: bool` to
-   `WuiSubView` (`ffi/src/components/layouting/layout.rs:350-362`,
-   growing the stride 32→40 B). apple-backend tag 0.3.0 (`8f2fd7b`)
-   predates it; a scaffold pinned at the tag crashes on first layout
-   (`EXC_BAD_ACCESS` inside `waterui_layout_place_subviews`). The fix
-   (`WuiSubView.is_empty` reader) exists only on apple-backend dev —
-   carried by pinning `revision = 702019b6…`. cli#206 (lock-seed) now
-   emits `kind = revision` at backend dev HEAD natively, so current
-   scaffolds are safe; pre-fix scaffolds and locks must not be reused.
-3. **water CLI** (water-rs/cli) — the "required Apple linker flags"
-   update writes *per-platform* `OTHER_LDFLAGS` into the generated
-   `project.pbxproj` cumulatively: after an ios-simulator package, a
-   macOS package links against `UIKit`/iphonesimulator rpaths and fails
-   (`ld: framework 'UIKit' not found`). Workaround encoded in
-   manifest.json: restore the pristine scaffold `project.pbxproj`
-   (`scripts/pristine/`) before each platform's package.
-4. **water CLI** — `package --platform ios` hard-requires a signing
-   team (`src/apple/platform.rs` → `toolchain.rs`), which prevents
-   producing an unsigned or ad-hoc device artifact from CI on unmodified
-   dev. Fixed on branch `feat/212-package-unsigned` @ `d17d0dd`
-   (`--unsigned` = `DeviceSigning::Unsigned` → `CODE_SIGNING_ALLOWED=NO`
-   on the device build; `--unsigned` is rejected for ios-simulator and
-   combined with `--distribution`; `--release`/`--debug` live in a
-   flattened `ProfileArgs` group, bare `water package` builds release).
-   The device drop ships waterui-bench.app built with that cli; the M1
-   host re-signs it inside-out like the other contestants.
-5. **fmt** (react-native pods, fmtlib/fmt#4740) — fmt 11.0.2 (iOS) /
+1. **fmt** (react-native pods, fmtlib/fmt#4740) — fmt 11.0.2 (iOS) /
    12.1.0 (macOS) consteval guards break on Apple clang 21; patched in
    `Pods/fmt/include/fmt/base.h` via `post_install` hooks in both
    Podfiles.
-6. **water CLI** Water.lock guard (`src/project_model/framework.rs`)
+2. **water CLI** Water.lock guard (`src/project_model/framework.rs`)
    treats crates.io drift on capability-graph transitive deps as a
    locked-dependency change; the shared `../apps/waterui` workspace
    member resolves against the checkout's own `Cargo.lock`, so no
    per-app lock or pins exist.
-7. **water CLI** shared build cache: after `target/package` was removed
+3. **water CLI** shared build cache: after `target/package` was removed
    between platform builds, the ios-device xcodebuild's "Build Rust
    Library" step failed with "Cargo still reports a shared dylib unit
    as fresh … `deps/waterui_dylib.d` names no source under this unit's

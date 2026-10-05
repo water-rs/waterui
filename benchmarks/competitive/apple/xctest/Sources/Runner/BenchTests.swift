@@ -3,11 +3,15 @@
 // environment variables injected into the .xctestrun EnvironmentVariables:
 //   BENCH_BUNDLE_ID  — bundle identifier of the app under test
 //   BENCH_WORKLOAD   — W1 | W2 | W3 | W4 | W5 | W6
-//   BENCH_DRIVE      — "swipe" (real gestures on the window) or "auto"
-//                      (the app runs its identical scroll program, started
-//                      by the runner posting the `dev.bench.begin` Darwin
-//                      notification inside the measure block; the app
-//                      posts `dev.bench.done` when it finishes)
+//   BENCH_DRIVE      — "swipe" (coordinate drags on the window, iOS
+//                      device/macOS), "wheel" (host-side CGEvent scroll
+//                      into the window — ios-sim/AppKit; the runner's own
+//                      process drives it, started by the `dev.bench.begin`
+//                      post inside the measure block and ended by its
+//                      `dev.bench.done`), or "auto" (capacity-ladder
+//                      pacing only: W5/W6 — the app walks its step list on
+//                      begin/step/done; scrolling itself is never driven
+//                      in-app)
 //   BENCH_DURATION   — measurement seconds for W3 (default 12)
 //   BENCH_NO_HITCH   — "1" drops XCTHitchMetric (used when the platform
 //                      cannot record it; see bench.py)
@@ -21,7 +25,7 @@
 // devicectl cannot report them) into the runner log.
 //
 // Launch arguments follow one convention on every contestant:
-//   -bench-workload <W1|W2|W3|W4> -bench-drive <swipe|auto>
+//   -bench-workload <W1|W2|W3|W4|W5|W6>
 // which lands in NSUserDefaults' NSArgumentDomain (and argv). Apps trap
 // when the workload is missing or unrecognized, and expose their selected
 // workload as the accessibility identifier `bench-workload-<id>`. The runner
@@ -72,7 +76,6 @@ final class BenchTests: XCTestCase {
         app = XCUIApplication(bundleIdentifier: bundleID)
         app.launchArguments = [
             "-bench-workload", workload,
-            "-bench-drive", drive,
         ]
         // Thermal gate, measured by the runner itself: devicectl has no
         // thermalState channel, so the check lives on-device. Cool-down
@@ -300,11 +303,48 @@ final class BenchTests: XCTestCase {
 
     // MARK: - Driving
 
-    /// Same fling sequence for every contestant: 8 fast downward flings,
-    /// then 2 flings back to the top. `auto` mode signals the app to run
-    /// its own identical scroll program — the signal is delivered inside
-    /// this measure block so the program never runs before measurement.
+    /// Same fling sequence for every contestant (../WORKLOADS.md): 8
+    /// flings down then 2 back up. `swipe` = coordinate drags; `wheel` =
+    /// the host's own process posts CGEvent scroll-wheel detents into the
+    /// window (iOS Simulator and AppKit, where gesture synthesis either
+    /// stalls on a timed-out AX query or has no swipeable hit target) —
+    /// the test only opens the measure window with `dev.bench.begin` and
+    /// waits for the host driver's `dev.bench.done`; `auto` paces the
+    /// W5/W6 capacity ladder inside the app — on W6 it also performs the
+    /// same coordinate drags during each hold.
     private func driveScroll(duration: Double) {
+        if drive == "wheel" {
+            // The host driver's program is the identical fling protocol;
+            // `begin` opens its window, `done` closes the wait. Posts are
+            // reposted until a done is seen — the driver may arm after
+            // the first post.
+            var doneToken: Int32 = 0
+            guard notify_register_check("dev.bench.done", &doneToken)
+                    == UInt32(NOTIFY_STATUS_OK)
+            else {
+                XCTFail("wheel drive: notify_register_check failed")
+                return
+            }
+            var fired: Int32 = 0
+            _ = notify_check(doneToken, &fired)  // flush stale latch
+            let deadline = Date().addingTimeInterval(max(600, duration * 2))
+            var lastPost = Date.distantPast
+            while Date() < deadline {
+                if Date().timeIntervalSince(lastPost) > 5 {
+                    notify_post("dev.bench.begin")
+                    lastPost = Date()
+                }
+                fired = 0
+                _ = notify_check(doneToken, &fired)
+                if fired != 0 { break }
+                Thread.sleep(forTimeInterval: 0.2)
+            }
+            notify_cancel(doneToken)
+            XCTAssertTrue(
+                fired != 0,
+                "wheel drive: host driver never posted 'dev.bench.done'")
+            return
+        }
         if drive == "auto" {
             // A workload can stall the app's accessibility server for tens
             // of seconds while it materializes (the 10k-row feed), and any
@@ -364,7 +404,31 @@ final class BenchTests: XCTestCase {
             var sawAck = false
             var ticks = 0
             var stepCount = 0
+            // W6 is a scrolling cell: the shared fling protocol runs from
+            // here — coordinate drags interleaved with the handshake wait,
+            // 8 down then 2 up, repeated for the ladder's duration.
+            var flingIndex = 0
+            #if os(macOS)
+            let w6Anchor: XCUIElement = app.windows.firstMatch
+            #else
+            let w6Anchor: XCUIElement = app
+            #endif
+            let w6Down0 = w6Anchor.coordinate(
+                withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75))
+            let w6Down1 = w6Anchor.coordinate(
+                withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15))
             while Date() < deadline {
+                if workload == "W6" {
+                    if flingIndex < 8 {
+                        w6Down0.press(forDuration: 0.02,
+                                      thenDragTo: w6Down1)
+                    } else {
+                        w6Down1.press(forDuration: 0.02,
+                                      thenDragTo: w6Down0)
+                    }
+                    flingIndex = (flingIndex + 1) % 10
+                    Thread.sleep(forTimeInterval: 0.35)
+                }
                 fired = 0
                 st = notify_check(doneToken, &fired)
                 if fired != 0 { break }
@@ -415,7 +479,7 @@ final class BenchTests: XCTestCase {
         let dragAnchor: XCUIElement = app
         #endif
         let dragStart = dragAnchor.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75))
-        let dragEnd = dragAnchor.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.1))
+        let dragEnd = dragAnchor.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15))
         let pause: TimeInterval = 0.35
         for _ in 0..<8 {
             dragStart.press(forDuration: 0.02, thenDragTo: dragEnd)

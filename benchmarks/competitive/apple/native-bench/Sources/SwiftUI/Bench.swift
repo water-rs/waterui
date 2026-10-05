@@ -1,19 +1,20 @@
 // Competitive benchmark app — SwiftUI contestant (iOS + macOS).
-// Workloads W1–W4 per water-rs/waterui#1262; workload selected with the
-// launch argument `-bench-workload W1|W2|W3|W4|W5|W6`, read through
+// Workloads W1–W6 per water-rs/waterui#1262 (canonical spec:
+// benchmarks/competitive/WORKLOADS.md); workload selected with the launch
+// argument `-bench-workload W1|W2|W3|W4|W5|W6`, read through
 // NSUserDefaults' NSArgumentDomain. Missing or unrecognized values trap.
-// `-bench-drive auto` makes scroll workloads run the shared fling program
-// themselves, but only once the runner posts the `dev.bench.begin` Darwin
-// notification inside its measure block.
+// Scrolling is driven from outside the app by OS-level input — the app
+// never scrolls itself. The `dev.bench.begin/ack/step/done` handshake is
+// capacity-ladder pacing only (W5/W6).
 
 import SwiftUI
 
-/// Darwin-notification handshake for the `auto` drive. AX queries cannot
-/// carry it: a workload can stall the app's accessibility server for tens
-/// of seconds while it materializes (the 10k-row feed), and a timed-out
-/// query fails the test instead of driving it. The runner posts
-/// `dev.bench.begin` inside its `measure` block and waits for the app to
-/// post `dev.bench.done` when the program finishes.
+/// Darwin-notification handshake for capacity-ladder pacing (W5/W6). AX
+/// queries cannot carry it: a workload can stall the app's accessibility
+/// server for tens of seconds while it materializes (the 10k-row feed),
+/// and a timed-out query fails the test instead of driving it. The
+/// runner posts `dev.bench.begin` inside its `measure` block and waits
+/// for the app to post `dev.bench.done` when the ladder finishes.
 enum BenchNotify {
     private static var token: Int32 = 0
     private static var armed = false
@@ -99,14 +100,6 @@ enum Workload: String {
         return w
     }
 
-    static var autoDrive: Bool {
-        let raw = UserDefaults.standard.string(forKey: "bench-drive") ?? "swipe"
-        guard raw == "swipe" || raw == "auto" else {
-            fatalError(
-                "unrecognized -bench-drive value \(raw); expected swipe|auto")
-        }
-        return raw == "auto"
-    }
 }
 
 /// Deterministic PRNG so every contestant animates the same sequence.
@@ -177,7 +170,7 @@ struct HelloView: View {
     @State private var count = 0
     var body: some View {
         VStack(spacing: 16) {
-            Text("Count: \(count)").font(.title)
+            Text("Count: \(count)").font(.system(size: 20))
             Button("Increment") { count += 1 }
                 .accessibilityIdentifier("increment-button")
         }
@@ -188,43 +181,20 @@ struct HelloView: View {
 // MARK: - W2 Feed
 
 struct FeedView: View {
-    @State private var scrolledID: Int? = 0
     var body: some View {
         List(0..<10_000, id: \.self) { i in
             HStack(spacing: 12) {
                 Circle().fill(rowColors[i % 6]).frame(width: 40, height: 40)
                 VStack(alignment: .leading) {
-                    Text("Row title \(i)")
+                    Text("Row title \(i)").font(.system(size: 16))
                     Text("Second line of subtitle for item \(i)")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.system(size: 13)).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Text(timestamp(for: i)).font(.caption).foregroundStyle(.secondary)
+                Text(timestamp(for: i))
+                    .font(.system(size: 13)).foregroundStyle(.secondary)
             }
-            .padding(.vertical, 4)
-        }
-        .scrollPosition(id: $scrolledID)
-        .task {
-            guard Workload.autoDrive else { return }
-            while true {
-                await BenchNotify.awaitBegin()
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                // Fling program: 8 bursts to the bottom, 2 back to the top.
-                for step in 1...8 {
-                    withAnimation(.easeOut(duration: 0.9)) {
-                        scrolledID = min(step * 1250, 9_999)
-                    }
-                    try? await Task.sleep(nanoseconds: 1_150_000_000)
-                }
-                for step in stride(from: 8, through: 0, by: -4) {
-                    withAnimation(.easeOut(duration: 0.9)) {
-                        scrolledID = max(step * 1250, 0)
-                    }
-                    try? await Task.sleep(nanoseconds: 1_150_000_000)
-                }
-                BenchNotify.postDone()
-                BenchNotify.discardLatchedBegin()
-            }
+            .padding(.horizontal, 16).padding(.vertical, 10)
         }
     }
 }
@@ -245,10 +215,9 @@ struct MotionRect: View {
 
     init(index: Int) {
         self.index = index
-        var s = XorShift(seed: 0xD1B54A32D192ED03 ^ UInt64(index) &* 0x2545F4914F6CDD1D)
-        let seed = s.state
-        _ = s.next()
-        var initRng = XorShift(seed: seed)
+        // Init stream: x, y, rotation, opacity draws in order — no
+        // discarded draws (WORKLOADS.md).
+        var initRng = XorShift(seed: 0xD1B54A32D192ED03 ^ UInt64(index) &* 0x2545F4914F6CDD1D)
         _x = State(initialValue: initRng.next() * (fieldW - 40))
         _y = State(initialValue: initRng.next() * (fieldH - 40))
         _rot = State(initialValue: initRng.next() * 360)
@@ -266,15 +235,17 @@ struct MotionRect: View {
             .position(x: x + 20, y: y + 20)
             .task {
                 var rng = XorShift(seed: rngSeed)
+                // First retarget at t=0 — targets animate for `duration`,
+                // then the next draw arrives on the same cadence.
                 while !Task.isCancelled {
                     let d = duration
-                    try? await Task.sleep(nanoseconds: UInt64(d * 1_000_000_000))
                     withAnimation(.easeInOut(duration: d)) {
                         x = rng.next() * (fieldW - 40)
                         y = rng.next() * (fieldH - 40)
                         rot = rng.next() * 360
                         op = 0.3 + rng.next() * 0.7
                     }
+                    try? await Task.sleep(nanoseconds: UInt64(d * 1_000_000_000))
                 }
             }
     }
@@ -292,52 +263,32 @@ struct MotionView: View {
 
 // MARK: - W4 Text
 
+// Canonical W4 text — benchmarks/competitive/lib/paragraphs.txt, embedded
+// (an app cannot read the suite's file at runtime).
 let paragraphs: [String] = [
-    "The quick brown fox jumps over the lazy dog. 。🦊🐶 Packing my box with five dozen liquor jugs.",
-    "WaterUI renders native widgets from a single Rust view tree. 。🌊 Fine-grained reactivity updates only the widgets that read the value.",
-    "Almost all programming can be viewed as state management. ，。📚 Signals flow through the graph and wake the views that observe them.",
-    "Sphinx of black quartz, judge my vow. のテキストもぜます。🗻 Typography is the visual component of the written word.",
-    "How vexingly quick daft zebras jump! ，。🦓 The first principle is that you must not fool yourself.",
-    "Bright vixens jump; dozy fowl quack. ，。🐦 Rendering pipelines measure progress in milliseconds per frame.",
-    "。Benchmarks that are honest make optimisation honest. 📏",
-    "Two driven jocks help fax my big quiz. ，。🌲 Lazily built lists keep memory flat while content grows without bound.",
-    "The five boxing wizards jump quickly. ，。🧙 Every frame has a budget of 8.33 milliseconds at 120 Hz.",
-    "Jackdaws love my big sphinx of quartz. ，。🐦‍⬛ Measure, then optimise; never optimise on faith alone.",
+    "The quick brown fox jumps over the lazy dog. 敏捷的棕色狐狸跳過懶惰的狗。🦊🐶 Packing my box with five dozen liquor jugs.",
+    "WaterUI renders native widgets from a single Rust view tree. 水のインターフェースはネイティブウィジェットを描画する。🌊",
+    "Almost all programming can be viewed as state management. 几乎所有的编程都可以视为状态管理。📚 Signals flow through the graph.",
+    "Sphinx of black quartz, judge my vow. 黒い水晶のスフィンクス、私の誓いを裁け。🗻 Typography is the visual component of the written word.",
+    "How vexingly quick daft zebras jump! 빠른 얼룩말이 얼마나 성가시게 뛰는가! 🦓 The first principle is that you must not fool yourself.",
+    "Bright vixens jump; dozy fowl quack. 밝은 여우가 뛰고 졸린 새가 꽥꽥 운다. 🐦 Rendering pipelines measure progress in milliseconds per frame.",
+    "ベンチマークが正直であれば最適化も正直になる。Benchmarks that are honest make optimisation honest. 📏",
+    "Two driven jocks help fax my big quiz. 두 명의 조키가 내 큰 퀴즈를 팩스로 보내는 것을 돕는다. 🌲 Lazily built lists keep memory flat.",
+    "The five boxing wizards jump quickly. 五個拳擊巫師跳得很快。🧙 Every frame has a budget of 8.33 milliseconds at 120 Hz.",
+    "Jackdaws love my big sphinx of quartz. 寒鸦喜欢我巨大的石英斯芬克斯。🐦‍⬛ Measure, then optimise; never optimise on faith alone.",
 ]
 
+/// All 50 paragraphs are laid out eagerly inside one ScrollView — layout
+/// cost is part of the measurement, so nothing may be lazy.
 struct TextBenchView: View {
-    @State private var scrolledID: Int? = 0
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 6) {
                 ForEach(0..<50, id: \.self) { i in
                     Text(paragraphs[i % paragraphs.count])
-                        .padding(.horizontal, 16).padding(.vertical, 6)
-                        .id(i)
+                        .font(.system(size: 16))
+                        .padding(.horizontal, 16).padding(.vertical, 10)
                 }
-            }
-        }
-        .scrollPosition(id: $scrolledID)
-        .task {
-            guard Workload.autoDrive else { return }
-            while true {
-                await BenchNotify.awaitBegin()
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                // Same fling program as W2, over 50 rows: 8 bursts down, 2 back up.
-                for step in 1...8 {
-                    withAnimation(.easeOut(duration: 0.9)) {
-                        scrolledID = min(step * 6, 49)
-                    }
-                    try? await Task.sleep(nanoseconds: 1_150_000_000)
-                }
-                for step in stride(from: 8, through: 0, by: -4) {
-                    withAnimation(.easeOut(duration: 0.9)) {
-                        scrolledID = max(step * 6, 0)
-                    }
-                    try? await Task.sleep(nanoseconds: 1_150_000_000)
-                }
-                BenchNotify.postDone()
-                BenchNotify.discardLatchedBegin()
             }
         }
     }
@@ -359,7 +310,6 @@ struct MotionCapacityView: View {
         .frame(width: fieldW, height: fieldH)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task {
-            guard Workload.autoDrive else { return }
             while true {
                 await BenchNotify.awaitBegin()
                 for (i, n) in Self.steps.enumerated() {
@@ -381,15 +331,14 @@ struct MotionCapacityView: View {
 struct FeedCapacityView: View {
     private static let steps = [1, 2, 4, 8, 16, 32, 64]
     @State private var complexity = 1
-    @State private var scrolledID: Int? = 0
     var body: some View {
         List(0..<10_000, id: \.self) { i in
             HStack(spacing: 12) {
                 Circle().fill(rowColors[i % 6]).frame(width: 40, height: 40)
                 VStack(alignment: .leading) {
-                    Text("Row title \(i)")
+                    Text("Row title \(i)").font(.system(size: 16))
                     Text("Second line of subtitle for item \(i)")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.system(size: 13)).foregroundStyle(.secondary)
                 }
                 Spacer()
                 ForEach(0..<complexity, id: \.self) { j in
@@ -397,28 +346,22 @@ struct FeedCapacityView: View {
                         RoundedRectangle(cornerRadius: 4)
                             .fill(rowColors[(i + j) % 6])
                             .frame(width: 14, height: 14)
-                        Text("c\(j)").font(.caption2)
+                        Text("c\(j)").font(.system(size: 12))
                     }
                 }
                 Text(timestamp(for: i)).font(.caption).foregroundStyle(.secondary)
             }
-            .padding(.vertical, 4)
+            .padding(.horizontal, 16).padding(.vertical, 10)
         }
-        .scrollPosition(id: $scrolledID)
         .task {
-            guard Workload.autoDrive else { return }
+            // Ladder pacing only: step the complexity, hold 5 s while the
+            // runner drives the fling protocol from outside the app.
             while true {
                 await BenchNotify.awaitBegin()
                 for (i, k) in Self.steps.enumerated() {
                     complexity = k
                     logBenchStep(i, param: k)
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                    for _ in 0..<2 {
-                        withAnimation(.easeOut(duration: 0.9)) { scrolledID = 9_999 }
-                        try? await Task.sleep(nanoseconds: 1_000_000_000)
-                        withAnimation(.easeOut(duration: 0.9)) { scrolledID = 0 }
-                        try? await Task.sleep(nanoseconds: 1_000_000_000)
-                    }
+                    try? await Task.sleep(nanoseconds: 5_000_000_000)
                 }
                 BenchNotify.postDone()
                 BenchNotify.discardLatchedBegin()

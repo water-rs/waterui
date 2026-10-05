@@ -173,20 +173,18 @@ def host_is_virtualized(ev: dict) -> str | None:
     return None
 
 
-def water_bin(binary: str | None = None) -> str:
+def water_bin() -> str:
     """The `water` CLI built from THIS checkout (cli/ is a workspace
     member) — `cargo install --locked --path cli` into the suite-shared
     cache under a file lock, once per host. Refuses a dirty tracked
     checkout so the recorded HEAD sha is the real identity."""
-    if binary:
-        return binary
     return str(toolchain.provision_water_cli())
 
 
-def cli_evidence(binary: str | None = None) -> dict:
+def cli_evidence() -> dict:
     """Identity of the `water` binary actually invoked: path, sha256,
     --version output, plus the checkout HEAD it was built from."""
-    path = water_bin(binary)
+    path = water_bin()
     ev = {"binary": path}
     p = Path(path)
     if not p.exists():
@@ -334,6 +332,15 @@ def cmd_bootstrap(args):
     committed lockfiles — npm ci (package-lock.json), bundle install +
     pod install (Gemfile.lock / Podfile.lock), xcodegen regen of the
     native project. Any failure aborts; there is no silent retry."""
+    # RN root template files are generated, not committed — materialize
+    # them from the pinned init before `npm ci`/`bundle` reads the dir.
+    rn = next((c for c in MANIFEST["contestants"] if c["id"] == "rn"), None)
+    if rn:
+        t = MANIFEST["toolchain"]
+        toolchain.ensure_rn_template(
+            ROOT / rn["dir"], t["react_native_cli"],
+            t["react_native"], t["react_native_template_sha256"],
+            env=os.environ.copy())
     for cmd in (MANIFEST.get("bootstrap") or {}).get(args.platform, []):
         if "{SIM_UDID}" in cmd:
             cmd = cmd.replace("{SIM_UDID}",
@@ -359,6 +366,49 @@ def dir_sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def ensure_flutter_apple(d: Path, platforms: list[str], env: dict):
+    """The flutter app's ios/ + macos/ directories are generated, not
+    committed: produced by the pinned Flutter SDK's `flutter create` in a
+    scratch dir, the authored override files then replace the template
+    sources, and the iOS bundle id is rewritten to the manifest's
+    dev.bench.flutter (the generator can only emit dev.bench.<project>).
+    Reuses a stale generated dir only if .bench-generator records the same
+    Flutter version — otherwise it is regenerated."""
+    fb = flutter_bin()
+    ver = subprocess.run([fb, "--version", "--machine"],
+                         capture_output=True, text=True)
+    tag = ""
+    try:
+        tag = json.loads(ver.stdout)["frameworkVersion"]
+    except Exception:
+        raise RuntimeError(
+            f"flutter --version --machine unreadable: "
+            f"{(ver.stdout or ver.stderr)[:200]}")
+    for plat in platforms:
+        dst = d / plat
+        stamp = dst / ".bench-generator"
+        if dst.is_dir() and stamp.exists()                 and stamp.read_text().strip() == tag:
+            continue
+        shutil.rmtree(dst, ignore_errors=True)
+        with tempfile.TemporaryDirectory() as td:
+            sh(f"'{fb}' create --platforms={plat} "
+               f"--project-name bench_flutter --org dev.bench "
+               f"--template app '{td}/app'", cwd=td)
+            shutil.copytree(Path(td) / "app" / plat, dst)
+        ovr = d / f"{plat}-override"
+        if ovr.is_dir():
+            for f in ovr.rglob("*"):
+                if f.is_file():
+                    rel = f.relative_to(ovr)
+                    (dst / rel).parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy(f, dst / rel)
+        if plat == "ios":
+            pbx = dst / "Runner.xcodeproj" / "project.pbxproj"
+            pbx.write_text(pbx.read_text().replace(
+                "dev.bench.bench_flutter", "dev.bench.flutter"))
+        stamp.write_text(tag + "\n")
+
+
 def cmd_build(args):
     plat = args.platform
     staged = ROOT / "build" / "artifacts" / plat
@@ -374,7 +424,7 @@ def cmd_build(args):
 
     def wb():
         if not _wb:
-            _wb["b"] = water_bin(getattr(args, "water_bin", None))
+            _wb["b"] = water_bin()
         return _wb["b"]
 
     def flutter_bin():
@@ -393,6 +443,12 @@ def cmd_build(args):
     except Exception as e:
         failures["<bootstrap>"] = str(e)[-2000:]
     for c in MANIFEST["contestants"]:
+        if c["id"] == "flutter" and not c.get("build", {}).get(plat):
+            continue
+        if c["id"] == "flutter":
+            ensure_flutter_apple(ROOT / c["dir"],
+                                 ["macos" if plat == "macos" else "ios"],
+                                 os.environ.copy())
         cmds = c.get("build", {}).get(plat)
         if cmds:
             for cmd in cmds:
@@ -1405,6 +1461,113 @@ def _xctest_spawn(xr: Path, res: Path, dest: str, results_dir: Path,
     _ACTIVE_PROCS.append(xb)
     return xb, xbf, xblog
 
+def _window_center(owner_names: set[str]):
+    """Centre of the largest on-screen window owned by any named process,
+    from the Quartz window list (host view). For ios-sim the owner is the
+    Simulator process; for macos the contestant's own executable name."""
+    import Quartz
+    wl = Quartz.CGWindowListCopyWindowInfo(
+        Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID)
+    best = None
+    for w in wl:
+        if w.get("kCGWindowOwnerName") not in owner_names:
+            continue
+        b = w.get("kCGWindowBounds", {})
+        area = (b.get("Width", 0) or 0) * (b.get("Height", 0) or 0)
+        if best is None or area > best[0]:
+            best = (area,
+                    (b.get("X", 0) or 0) + (b.get("Width", 0) or 0) / 2,
+                    (b.get("Y", 0) or 0) + (b.get("Height", 0) or 0) / 2)
+    if best is None:
+        return None
+    return (best[1], best[2])
+
+
+class WheelDriver:
+    """Host-side OS-level scroll drive for the `wheel` drive mode.
+
+    The XCTest opens each measure window with a `dev.bench.begin` Darwin
+    notification; this driver — running in the bench.py process — parks
+    the pointer over the target window's centre and posts the shared
+    fling protocol (manifest `fling` block) as CGEvent scroll-wheel
+    detents, the same OS-level path a trackpad or mouse wheel takes.
+    It then posts `dev.bench.done` into the same notify namespace the
+    begin came from (the simulator's for ios-sim, the host's for macos).
+    The app never scrolls itself.
+    """
+
+    def __init__(self, plat: str, udid: str | None,
+                 owner_names: set[str], fling: dict):
+        self.plat = plat
+        self.udid = udid
+        self.owner_names = owner_names
+        self.fling = fling
+        self.error = None
+        self._listener = None
+        self._thread = None
+        self._stop = threading.Event()
+
+    def _notify_cmd(self, *args):
+        if self.plat == "ios-sim":
+            return ["xcrun", "simctl", "spawn", self.udid, "notifyutil",
+                    *args]
+        return ["notifyutil", *args]
+
+    def start(self):
+        # `notifyutil -1` prints one line per registration firing — it
+        # is the same channel the contestant apps read begin on, so the
+        # drive can only ever fire inside the measure block.
+        self._listener = subprocess.Popen(
+            self._notify_cmd("-1", "dev.bench.begin"),
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True)
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        if self._listener is not None:
+            try:
+                self._listener.kill()
+            except Exception:
+                pass
+            self._listener = None
+        if self._thread is not None:
+            self._thread.join(timeout=10)
+
+    def _run(self):
+        try:
+            for _ in self._listener.stdout:
+                if self._stop.is_set():
+                    return
+                self._program()
+                subprocess.run(self._notify_cmd("-p", "dev.bench.done"),
+                               capture_output=True)
+        except Exception as e:  # never kill the runner from a thread
+            self.error = f"wheel driver: {e}"
+
+    def _program(self):
+        center = _window_center(self.owner_names)
+        if center is None:
+            raise RuntimeError(
+                "no on-screen window for "
+                + ", ".join(sorted(self.owner_names)))
+        import Quartz
+        cx, cy = center
+        Quartz.CGWarpMouseCursorPosition((cx, cy))
+        f = self.fling
+        seq = [1] * int(f["down"]) + [-1] * int(f["up"])
+        step_ms = float(f["duration_ms"]) / int(f["detents"])
+        px = int(f["detent_px"])
+        for direction in seq:
+            for _ in range(int(f["detents"])):
+                ev = Quartz.CGEventCreateScrollWheelEvent(
+                    None, Quartz.kCGScrollEventUnitPixel, 1,
+                    px * direction)
+                Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev)
+                time.sleep(step_ms / 1000)
+            time.sleep(float(f["pause_ms"]) / 1000)
+
 
 def run_one(plat, contestant_id, app_path: Path, bundle_id, workload,
             drive, duration, rep, dest, products_dir: Path, subdir: str,
@@ -1503,6 +1666,14 @@ def run_one(plat, contestant_id, app_path: Path, bundle_id, workload,
                                       else None), bundle_id, exe),
                 interval=0.5)
             sampler.start()
+        wheel = None
+        if drive == "wheel":
+            owners = ({"Simulator"} if plat == "ios-sim" else {exe})
+            wheel = WheelDriver(
+                plat,
+                device_udid or (sim_udid() if plat == "ios-sim" else ""),
+                owners, MANIFEST["harness"]["fling"])
+            wheel.start()
         xb, xbf, xblog = _xctest_spawn(xr_work, res_work, dest,
                                      results_dir, tag + "-work")
         try:
@@ -1551,6 +1722,10 @@ def run_one(plat, contestant_id, app_path: Path, bundle_id, workload,
                     wm = wrec.get("metrics") or {}
                     rec["metrics"] = {**(rec.get("metrics") or {}), **wm}
         finally:
+            if wheel is not None:
+                wheel.stop()
+                if wheel.error and "error" not in rec:
+                    rec["error"] = wheel.error
             for p in (trace_proc, bb_proc, fp_proc):
                 _stop_trace_proc(p)
             if sampler is not None:
@@ -2825,10 +3000,6 @@ def main():
     b.add_argument("--sim-udid", default=None,
                    help="iOS Simulator UDID for ios-sim destinations "
                         "(default: newest available iPhone simulator)")
-    b.add_argument("--water-bin", default=None,
-                   help="water CLI binary path override (default: the "
-                        "in-tree CLI provisioned from this checkout via "
-                        "lib/toolchain.provision_water_cli)")
     b.set_defaults(f=cmd_build)
 
     bs = sub.add_parser("bootstrap")
@@ -2840,11 +3011,11 @@ def main():
     r = sub.add_parser("run-local")
     r.add_argument("--platform", choices=["ios-sim", "macos"], required=True)
     r.add_argument("--repeats", type=int, default=5)
-    r.add_argument("--drive", default=None, choices=["swipe", "auto"],
+    r.add_argument("--drive", default=None, choices=["swipe", "wheel", "auto"],
                    help="override the manifest's per-contestant drive for "
                         "every contestant (default: manifest decision — "
-                        "swipe everywhere, auto only where a contestant "
-                        "declares one for the platform)")
+                        "swipe on iOS devices, wheel on macOS/simulator, "
+                        "auto only pacing the W5/W6 capacity ladder)")
     r.add_argument("--only", default=None,
                    help="comma-separated contestant ids (default: all); "
                         "re-runs append to the existing results file")

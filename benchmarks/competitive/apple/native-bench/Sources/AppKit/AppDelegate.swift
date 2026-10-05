@@ -39,24 +39,12 @@ enum Bench {
         BenchNotify.postReady(raw)
         return raw
     }()
-    /// `-bench-drive swipe|auto` (default swipe); `auto` programs start
-    /// only when the runner posts the `dev.bench.begin` Darwin
-    /// notification inside its measure block — never at appear.
-    static let autoDrive: Bool = {
-        let raw = UserDefaults.standard.string(forKey: "bench-drive") ?? "swipe"
-        guard raw == "swipe" || raw == "auto" else {
-            fatalError("unrecognized -bench-drive value \(raw); expected swipe|auto")
-        }
-        return raw == "auto"
-    }()
 }
 
-/// Darwin-notification handshake for the `auto` drive. The runner posts
-/// `dev.bench.begin` inside its `measure` block; the app posts
-/// `dev.bench.done` when the fling program finishes. AX queries cannot
-/// carry the signal on the workloads that need `auto` — the content
-/// window has no swipeable hit target — and Darwin notifications are the
-/// same mechanism every contestant uses on every platform.
+/// Darwin-notification handshake kept for call-site symmetry with the
+/// other Apple contestants — AppKit runs W1–W4 only, none of which arm
+/// it. Scrolling is driven from outside the app by OS-level input (the
+/// host posts CGEvent scroll-wheel detents into the window).
 enum BenchNotify {
     private static var token: Int32 = 0
     private static var armed = false
@@ -171,7 +159,7 @@ final class HelloViewController: NSViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        label.font = .systemFont(ofSize: NSFont.systemFontSize * 2)
+        label.font = .systemFont(ofSize: 20)
         let button = NSButton(title: "Increment", target: self, action: #selector(bump))
         button.identifier = NSUserInterfaceItemIdentifier("increment-button")
         button.setAccessibilityIdentifier("increment-button")
@@ -197,7 +185,6 @@ final class HelloViewController: NSViewController {
 final class FeedViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     private let tableView = NSTableView()
     private let scrollView = NSScrollView()
-    private var driving = false
 
     override func loadView() {
         view = NSView(frame: NSRect(x: 0, y: 0, width: 960, height: 640))
@@ -221,9 +208,6 @@ final class FeedViewController: NSViewController, NSTableViewDataSource, NSTable
             scrollView.topAnchor.constraint(equalTo: view.topAnchor),
             scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
-        if Bench.autoDrive {
-            BenchNotify.onBegin { [weak self] in self?.drive() }
-        }
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { 10_000 }
@@ -241,47 +225,6 @@ final class FeedViewController: NSViewController, NSTableViewDataSource, NSTable
         return cell
     }
 
-    /// Same fling program as every contestant: 8 bursts down, 2 back up.
-    private func drive() {
-        // A stray begin backlog must not stack a second program on top.
-        guard !driving else { return }
-        driving = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [self] in
-            tableView.layoutSubtreeIfNeeded()
-            let clip = scrollView.contentView
-            let docH = tableView.bounds.height
-            let maxY = max(docH - clip.bounds.height, 0)
-            let step = maxY / 8
-            var delay: TimeInterval = 0
-            for i in 1...8 {
-                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                    NSAnimationContext.runAnimationGroup { ctx in
-                        ctx.duration = 0.9
-                        ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                        clip.animator().setBoundsOrigin(
-                            NSPoint(x: 0, y: min(CGFloat(i) * step, maxY)))
-                    }
-                }
-                delay += 1.15
-            }
-            for i in stride(from: 8, through: 0, by: -4) {
-                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                    NSAnimationContext.runAnimationGroup { ctx in
-                        ctx.duration = 0.9
-                        ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                        clip.animator().setBoundsOrigin(
-                            NSPoint(x: 0, y: max(CGFloat(i) * step, 0)))
-                    }
-                }
-                delay += 1.15
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                self.driving = false
-                BenchNotify.discardLatchedBegin()
-                BenchNotify.postDone()
-            }
-        }
-    }
 }
 
 final class FeedCellView: NSTableCellView {
@@ -294,10 +237,10 @@ final class FeedCellView: NSTableCellView {
         super.init(frame: frame)
         avatar.wantsLayer = true
         avatar.layer?.cornerRadius = 20
-        title.font = .systemFont(ofSize: NSFont.systemFontSize)
-        subtitle.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        title.font = .systemFont(ofSize: 16)
+        subtitle.font = .systemFont(ofSize: 13)
         subtitle.textColor = .secondaryLabelColor
-        time.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        time.font = .systemFont(ofSize: 13)
         time.textColor = .secondaryLabelColor
         let lines = NSStackView(views: [title, subtitle])
         lines.orientation = .vertical
@@ -353,6 +296,8 @@ final class MotionViewController: NSViewController {
             v.wantsLayer = true
             v.layer?.backgroundColor = rowColor(i).cgColor
             v.layer?.cornerRadius = 10
+            v.layer?.setAffineTransform(
+                CGAffineTransform(rotationAngle: rng.next() * .pi * 2))
             v.alphaValue = 0.3 + rng.next() * 0.7
             view.addSubview(v)
             animate(v, index: i)
@@ -369,7 +314,6 @@ final class MotionViewController: NSViewController {
                 ctx.allowsImplicitAnimation = true
                 v.animator().frame.origin = NSPoint(
                     x: rng.next() * (self.fieldW - 40), y: rng.next() * (self.fieldH - 40))
-                v.animator().alphaValue = 0.3 + rng.next() * 0.7
             }, completionHandler: {
                 DispatchQueue.main.async { step() }
             })
@@ -381,6 +325,7 @@ final class MotionViewController: NSViewController {
             rot.isRemovedOnCompletion = false
             rot.fillMode = .forwards
             v.layer?.add(rot, forKey: "spin")
+            v.animator().alphaValue = 0.3 + rng.next() * 0.7
         }
         step()
     }
@@ -389,21 +334,21 @@ final class MotionViewController: NSViewController {
 // MARK: - W4
 
 final class TextBenchViewController: NSViewController {
+    // Canonical W4 text — benchmarks/competitive/lib/paragraphs.txt.
     private let paragraphs: [String] = [
-        "The quick brown fox jumps over the lazy dog. 。🦊🐶 Packing my box with five dozen liquor jugs.",
-        "WaterUI renders native widgets from a single Rust view tree. 。🌊 Fine-grained reactivity updates only the widgets that read the value.",
-        "Almost all programming can be viewed as state management. ，。📚 Signals flow through the graph and wake the views that observe them.",
-        "Sphinx of black quartz, judge my vow. のテキストもぜます。🗻 Typography is the visual component of the written word.",
-        "How vexingly quick daft zebras jump! ，。🦓 The first principle is that you must not fool yourself.",
-        "Bright vixens jump; dozy fowl quack. ，。🐦 Rendering pipelines measure progress in milliseconds per frame.",
-        "。Benchmarks that are honest make optimisation honest. 📏",
-        "Two driven jocks help fax my big quiz. ，。🌲 Lazily built lists keep memory flat while content grows without bound.",
-        "The five boxing wizards jump quickly. ，。🧙 Every frame has a budget of 8.33 milliseconds at 120 Hz.",
-        "Jackdaws love my big sphinx of quartz. ，。🐦‍⬛ Measure, then optimise; never optimise on faith alone.",
+        "The quick brown fox jumps over the lazy dog. 敏捷的棕色狐狸跳過懶惰的狗。🦊🐶 Packing my box with five dozen liquor jugs.",
+        "WaterUI renders native widgets from a single Rust view tree. 水のインターフェースはネイティブウィジェットを描画する。🌊",
+        "Almost all programming can be viewed as state management. 几乎所有的编程都可以视为状态管理。📚 Signals flow through the graph.",
+        "Sphinx of black quartz, judge my vow. 黒い水晶のスフィンクス、私の誓いを裁け。🗻 Typography is the visual component of the written word.",
+        "How vexingly quick daft zebras jump! 빠른 얼룩말이 얼마나 성가시게 뛰는가! 🦓 The first principle is that you must not fool yourself.",
+        "Bright vixens jump; dozy fowl quack. 밝은 여우가 뛰고 졸린 새가 꽥꽥 운다. 🐦 Rendering pipelines measure progress in milliseconds per frame.",
+        "ベンチマークが正直であれば最適化も正直になる。Benchmarks that are honest make optimisation honest. 📏",
+        "Two driven jocks help fax my big quiz. 두 명의 조키가 내 큰 퀴즈를 팩스로 보내는 것을 돕는다. 🌲 Lazily built lists keep memory flat.",
+        "The five boxing wizards jump quickly. 五個拳擊巫師跳得很快。🧙 Every frame has a budget of 8.33 milliseconds at 120 Hz.",
+        "Jackdaws love my big sphinx of quartz. 寒鸦喜欢我巨大的石英斯芬克斯。🐦‍⬛ Measure, then optimise; never optimise on faith alone.",
     ]
 
     private let scrollView = NSScrollView()
-    private var driving = false
 
     override func loadView() {
         view = NSView(frame: NSRect(x: 0, y: 0, width: 960, height: 640))
@@ -414,15 +359,18 @@ final class TextBenchViewController: NSViewController {
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 0
+        // All 50 paragraphs laid out eagerly — layout cost is measured.
+        stack.spacing = 6
         stack.translatesAutoresizingMaskIntoConstraints = false
         for i in 0..<50 {
             let l = NSTextField(wrappingLabelWithString: paragraphs[i % paragraphs.count])
             l.maximumNumberOfLines = 0
+            l.font = .systemFont(ofSize: 16)
             stack.addArrangedSubview(l)
             l.leadingAnchor.constraint(equalTo: stack.leadingAnchor, constant: 16)
                 .isActive = true
-            stack.setCustomSpacing(12, after: l)
+            l.trailingAnchor.constraint(equalTo: stack.trailingAnchor, constant: -16)
+                .isActive = true
         }
         let doc = NSView()
         doc.addSubview(stack)
@@ -443,38 +391,4 @@ final class TextBenchViewController: NSViewController {
             scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             doc.widthAnchor.constraint(equalTo: scrollView.widthAnchor),
         ])
-        if Bench.autoDrive {
-            BenchNotify.onBegin { [weak self] in self?.drive() }
-        }
-    }
-
-    private func drive() {
-        guard !driving else { return }
-        driving = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [self] in
-            view.layoutSubtreeIfNeeded()
-            let clip = scrollView.contentView
-            let docH = scrollView.documentView?.frame.height ?? 0
-            // AppKit is flipped via the document; scroll origin counts up.
-            let maxY = max(docH - clip.bounds.height, 0)
-            let step = maxY / 8
-            var delay: TimeInterval = 0
-            for i in 1...8 {
-                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                    NSAnimationContext.runAnimationGroup { ctx in
-                        ctx.duration = 0.9
-                        ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                        clip.animator().setBoundsOrigin(
-                            NSPoint(x: 0, y: max(maxY - CGFloat(i) * step, 0)))
-                    }
-                }
-                delay += 1.15
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                self.driving = false
-                BenchNotify.discardLatchedBegin()
-                BenchNotify.postDone()
-            }
-        }
-    }
 }

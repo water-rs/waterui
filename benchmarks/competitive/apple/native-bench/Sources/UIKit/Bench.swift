@@ -39,24 +39,15 @@ enum Bench {
         BenchNotify.postReady(raw)
         return raw
     }()
-    /// `-bench-drive swipe|auto` (default swipe); `auto` programs start
-    /// only when the runner posts the `dev.bench.begin` Darwin
-    /// notification inside its measure block.
-    static let autoDrive: Bool = {
-        let raw = UserDefaults.standard.string(forKey: "bench-drive") ?? "swipe"
-        guard raw == "swipe" || raw == "auto" else {
-            fatalError("unrecognized -bench-drive value \(raw); expected swipe|auto")
-        }
-        return raw == "auto"
-    }()
 }
 
-/// Darwin-notification handshake for the `auto` drive. AX queries cannot
-/// carry the signal: a workload can stall the app's accessibility server
-/// for tens of seconds while it materializes, and a timed-out query fails
-/// the test instead of driving it. The runner posts `dev.bench.begin`
-/// inside its `measure` block; the app posts `dev.bench.done` when the
-/// fling program finishes.
+/// Darwin-notification handshake for capacity-ladder pacing (W5/W6). AX
+/// queries cannot carry the signal: a workload can stall the app's
+/// accessibility server for tens of seconds while it materializes, and a
+/// timed-out query fails the test instead of driving it. The runner
+/// posts `dev.bench.begin` inside its `measure` block; the app posts
+/// `dev.bench.done` when the ladder finishes. Scrolling is driven from
+/// outside the app by OS-level input — the app never scrolls itself.
 enum BenchNotify {
     private static var token: Int32 = 0
     private static var armed = false
@@ -178,7 +169,7 @@ final class HelloViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         label.text = "Count: 0"
-        label.font = .preferredFont(forTextStyle: .title1)
+        label.font = .systemFont(ofSize: 20)
         let button = UIButton(type: .system, primaryAction: UIAction { [weak self] _ in
             guard let self else { return }
             self.count += 1
@@ -212,10 +203,10 @@ final class FeedCell: UITableViewCell {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
         avatar.layer.cornerRadius = 20
         avatar.clipsToBounds = true
-        title.font = .preferredFont(forTextStyle: .subheadline)
-        subtitle.font = .preferredFont(forTextStyle: .caption1)
+        title.font = .systemFont(ofSize: 16)
+        subtitle.font = .systemFont(ofSize: 13)
         subtitle.textColor = .secondaryLabel
-        time.font = .preferredFont(forTextStyle: .caption1)
+        time.font = .systemFont(ofSize: 13)
         time.textColor = .secondaryLabel
         let lines = UIStackView(arrangedSubviews: [title, subtitle])
         lines.axis = .vertical
@@ -252,14 +243,6 @@ final class FeedViewController: UITableViewController {
         super.viewDidLoad()
         tableView.register(FeedCell.self, forCellReuseIdentifier: FeedCell.reuseID)
     }
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        guard Bench.autoDrive else { return }
-        // The program starts only on the runner's `dev.bench.begin` post —
-        // inside its measure block, never at appear.
-        BenchNotify.onBegin { [weak self] in self?.drive() }
-    }
-    private var driving = false
     override func tableView(_ tv: UITableView, numberOfRowsInSection section: Int) -> Int {
         10_000
     }
@@ -268,42 +251,6 @@ final class FeedViewController: UITableViewController {
             withIdentifier: FeedCell.reuseID, for: indexPath) as! FeedCell
         cell.configure(indexPath.row)
         return cell
-    }
-    /// Fling program shared with every contestant: 8 bursts down, 2 back up.
-    private func drive() {
-        // A stray begin backlog must not stack a second program on top.
-        guard !driving else { return }
-        driving = true
-        let step = tableView.contentSize.height / 8
-        var delay: TimeInterval = 1.0
-        for i in 1...8 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [tableView] in
-                UIView.animate(withDuration: 0.9, delay: 0, options: .curveEaseOut) {
-                    tableView.setContentOffset(
-                        CGPoint(x: 0, y: min(CGFloat(i) * step, self.tableViewMaxY())),
-                        animated: false)
-                }
-            }
-            delay += 1.15
-        }
-        for i in stride(from: 8, through: 0, by: -4) {
-            let d = delay
-            DispatchQueue.main.asyncAfter(deadline: .now() + d) { [tableView] in
-                UIView.animate(withDuration: 0.9, delay: 0, options: .curveEaseOut) {
-                    tableView.setContentOffset(
-                        CGPoint(x: 0, y: max(CGFloat(i) * step, 0)), animated: false)
-                }
-            }
-            delay += 1.15
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            self?.driving = false
-            BenchNotify.discardLatchedBegin()
-            BenchNotify.postDone()
-        }
-    }
-    private func tableViewMaxY() -> CGFloat {
-        max(tableView.contentSize.height - tableView.bounds.height, 0)
     }
 }
 
@@ -323,8 +270,8 @@ final class MotionViewController: UIViewController {
                     width: 40, height: 40))
             v.backgroundColor = rowColor(i)
             v.layer.cornerRadius = 10
-            v.alpha = 0.3 + rng.next() * 0.7
             v.transform = CGAffineTransform(rotationAngle: rng.next() * .pi * 2)
+            v.alpha = 0.3 + rng.next() * 0.7
             view.addSubview(v)
             animate(v, index: i)
         }
@@ -339,8 +286,8 @@ final class MotionViewController: UIViewController {
             ) {
                 v.frame.origin = CGPoint(
                     x: rng.next() * (self.fieldW - 40), y: rng.next() * (self.fieldH - 40))
-                v.alpha = 0.3 + rng.next() * 0.7
                 v.transform = CGAffineTransform(rotationAngle: rng.next() * .pi * 2)
+                v.alpha = 0.3 + rng.next() * 0.7
             } completion: { _ in step() }
         }
         step()
@@ -350,40 +297,42 @@ final class MotionViewController: UIViewController {
 // MARK: - W4
 
 final class TextBenchViewController: UIViewController {
+    // Canonical W4 text — benchmarks/competitive/lib/paragraphs.txt.
     private let paragraphs: [String] = [
-        "The quick brown fox jumps over the lazy dog. 。🦊🐶 Packing my box with five dozen liquor jugs.",
-        "WaterUI renders native widgets from a single Rust view tree. 。🌊 Fine-grained reactivity updates only the widgets that read the value.",
-        "Almost all programming can be viewed as state management. ，。📚 Signals flow through the graph and wake the views that observe them.",
-        "Sphinx of black quartz, judge my vow. のテキストもぜます。🗻 Typography is the visual component of the written word.",
-        "How vexingly quick daft zebras jump! ，。🦓 The first principle is that you must not fool yourself.",
-        "Bright vixens jump; dozy fowl quack. ，。🐦 Rendering pipelines measure progress in milliseconds per frame.",
-        "。Benchmarks that are honest make optimisation honest. 📏",
-        "Two driven jocks help fax my big quiz. ，。🌲 Lazily built lists keep memory flat while content grows without bound.",
-        "The five boxing wizards jump quickly. ，。🧙 Every frame has a budget of 8.33 milliseconds at 120 Hz.",
-        "Jackdaws love my big sphinx of quartz. ，。🐦‍⬛ Measure, then optimise; never optimise on faith alone.",
+        "The quick brown fox jumps over the lazy dog. 敏捷的棕色狐狸跳過懶惰的狗。🦊🐶 Packing my box with five dozen liquor jugs.",
+        "WaterUI renders native widgets from a single Rust view tree. 水のインターフェースはネイティブウィジェットを描画する。🌊",
+        "Almost all programming can be viewed as state management. 几乎所有的编程都可以视为状态管理。📚 Signals flow through the graph.",
+        "Sphinx of black quartz, judge my vow. 黒い水晶のスフィンクス、私の誓いを裁け。🗻 Typography is the visual component of the written word.",
+        "How vexingly quick daft zebras jump! 빠른 얼룩말이 얼마나 성가시게 뛰는가! 🦓 The first principle is that you must not fool yourself.",
+        "Bright vixens jump; dozy fowl quack. 밝은 여우가 뛰고 졸린 새가 꽥꽥 운다. 🐦 Rendering pipelines measure progress in milliseconds per frame.",
+        "ベンチマークが正直であれば最適化も正直になる。Benchmarks that are honest make optimisation honest. 📏",
+        "Two driven jocks help fax my big quiz. 두 명의 조키가 내 큰 퀴즈를 팩스로 보내는 것을 돕는다. 🌲 Lazily built lists keep memory flat.",
+        "The five boxing wizards jump quickly. 五個拳擊巫師跳得很快。🧙 Every frame has a budget of 8.33 milliseconds at 120 Hz.",
+        "Jackdaws love my big sphinx of quartz. 寒鸦喜欢我巨大的石英斯芬克斯。🐦‍⬛ Measure, then optimise; never optimise on faith alone.",
     ]
 
     override func viewDidLoad() {
         super.viewDidLoad()
         let sv = UIScrollView()
         let stack = UIStackView()
+        // All 50 paragraphs laid out eagerly — layout cost is part of the
+        // measurement, so nothing may be lazy.
         stack.axis = .vertical
         stack.alignment = .leading
-        stack.spacing = 0
+        stack.spacing = 6
         for i in 0..<50 {
             let l = UILabel()
             l.numberOfLines = 0
             l.text = paragraphs[i % paragraphs.count]
+            l.font = .systemFont(ofSize: 16)
             l.translatesAutoresizingMaskIntoConstraints = false
             let wrap = UIView()
             wrap.addSubview(l)
-            l.layoutMarginsGuide
             NSLayoutConstraint.activate([
                 l.leadingAnchor.constraint(equalTo: wrap.leadingAnchor, constant: 16),
                 l.trailingAnchor.constraint(equalTo: wrap.trailingAnchor, constant: -16),
-                l.topAnchor.constraint(equalTo: wrap.topAnchor, constant: 6),
-                l.bottomAnchor.constraint(equalTo: wrap.bottomAnchor, constant: -6),
-                l.widthAnchor.constraint(lessThanOrEqualToConstant: 720),
+                l.topAnchor.constraint(equalTo: wrap.topAnchor, constant: 10),
+                l.bottomAnchor.constraint(equalTo: wrap.bottomAnchor, constant: -10),
             ])
             stack.addArrangedSubview(wrap)
         }
@@ -404,34 +353,6 @@ final class TextBenchViewController: UIViewController {
         ])
     }
 
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        guard Bench.autoDrive else { return }
-        BenchNotify.onBegin { [weak self] in self?.drive() }
-    }
-
-    private var driving = false
-    private func drive() {
-        guard !driving,
-              let sv = view.subviews.first as? UIScrollView else { return }
-        driving = true
-        let maxY = max(sv.contentSize.height - sv.bounds.height, 0)
-        let step = maxY / 8
-        var delay: TimeInterval = 1.0
-        for i in 1...8 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                UIView.animate(withDuration: 0.9, delay: 0, options: .curveEaseOut) {
-                    sv.setContentOffset(CGPoint(x: 0, y: min(CGFloat(i) * step, maxY)), animated: false)
-                }
-            }
-            delay += 1.15
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            self?.driving = false
-            BenchNotify.discardLatchedBegin()
-            BenchNotify.postDone()
-        }
-    }
 }
 
 // MARK: - W5 Motion capacity
@@ -453,7 +374,6 @@ final class MotionCapacityViewController: UIViewController {
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        guard Bench.autoDrive else { return }
         BenchNotify.onBegin { [weak self] in self?.drive() }
     }
 
@@ -472,8 +392,8 @@ final class MotionCapacityViewController: UIViewController {
                 width: 40, height: 40))
             v.backgroundColor = rowColor(i)
             v.layer.cornerRadius = 10
-            v.alpha = 0.3 + rng.next() * 0.7
             v.transform = CGAffineTransform(rotationAngle: rng.next() * .pi * 2)
+            v.alpha = 0.3 + rng.next() * 0.7
             view.addSubview(v)
             rects.append(v)
             animate(v, index: i)
@@ -493,8 +413,8 @@ final class MotionCapacityViewController: UIViewController {
                 v.frame.origin = CGPoint(
                     x: rng.next() * (self.fieldW - 40),
                     y: rng.next() * (self.fieldH - 40))
-                v.alpha = 0.3 + rng.next() * 0.7
                 v.transform = CGAffineTransform(rotationAngle: rng.next() * .pi * 2)
+                v.alpha = 0.3 + rng.next() * 0.7
             } completion: { [weak v] _ in
                 guard v != nil else { return }
                 step()
@@ -538,10 +458,10 @@ final class FeedCapacityCell: UITableViewCell {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
         avatar.layer.cornerRadius = 20
         avatar.clipsToBounds = true
-        title.font = .preferredFont(forTextStyle: .subheadline)
-        subtitle.font = .preferredFont(forTextStyle: .caption1)
+        title.font = .systemFont(ofSize: 16)
+        subtitle.font = .systemFont(ofSize: 13)
         subtitle.textColor = .secondaryLabel
-        time.font = .preferredFont(forTextStyle: .caption1)
+        time.font = .systemFont(ofSize: 13)
         time.textColor = .secondaryLabel
         extras.axis = .horizontal
         extras.spacing = 4
@@ -585,7 +505,7 @@ final class FeedCapacityCell: UITableViewCell {
             shape.heightAnchor.constraint(equalToConstant: 14).isActive = true
             let cap = UILabel()
             cap.text = "c\(j)"
-            cap.font = .preferredFont(forTextStyle: .caption2)
+            cap.font = .systemFont(ofSize: 12)
             let pair = UIStackView(arrangedSubviews: [shape, cap])
             pair.axis = .vertical
             pair.alignment = .center
@@ -594,8 +514,8 @@ final class FeedCapacityCell: UITableViewCell {
     }
 }
 
-/// W2's fling program over rows of doubling complexity (1…64); two full
-/// sweeps per step inside the 5 s hold.
+/// W2's rows of doubling complexity (1…64); the ladder self-paces on the
+/// begin/done handshake while the runner drives flings during each hold.
 final class FeedCapacityViewController: UITableViewController {
     private let steps = [1, 2, 4, 8, 16, 32, 64]
     private var complexity = 1
@@ -610,7 +530,6 @@ final class FeedCapacityViewController: UITableViewController {
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        guard Bench.autoDrive else { return }
         BenchNotify.onBegin { [weak self] in self?.drive() }
     }
 
@@ -638,27 +557,8 @@ final class FeedCapacityViewController: UITableViewController {
                 logBenchStep(i, param: k)
                 self.tableView.reloadData()
             }
-            delay += 1.0
-            // Two full sweeps within the hold.
-            for _ in 0..<2 {
-                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                    [weak self] in
-                    guard let self else { return }
-                    UIView.animate(withDuration: 0.9, delay: 0, options: .curveEaseOut) {
-                        self.tableView.setContentOffset(
-                            CGPoint(x: 0, y: self.maxY()), animated: false)
-                    }
-                }
-                delay += 1.0
-                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                    [weak self] in
-                    guard let self else { return }
-                    UIView.animate(withDuration: 0.9, delay: 0, options: .curveEaseOut) {
-                        self.tableView.setContentOffset(.zero, animated: false)
-                    }
-                }
-                delay += 1.0
-            }
+            // 5 s hold: the runner drives the fling protocol from outside.
+            delay += 5.0
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             self?.driving = false
@@ -667,7 +567,4 @@ final class FeedCapacityViewController: UITableViewController {
         }
     }
 
-    private func maxY() -> CGFloat {
-        max(tableView.contentSize.height - tableView.bounds.height, 0)
-    }
 }

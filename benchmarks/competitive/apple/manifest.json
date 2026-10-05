@@ -1,6 +1,6 @@
 {
  "schema": 1,
- "benchmark": "water-rs/waterui#1262 competitive benchmark \u2014 Apple targets",
+ "benchmark": "water-rs/waterui#1262 competitive benchmark — Apple targets",
  "toolchain": {
   "build_machine": "macOS build VM, macOS 26.5.2 arm64 (Apple Silicon)",
   "xcode": "26.6 (17F113), DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer",
@@ -15,7 +15,9 @@
   "cocoapods": "1.17.0 (requires LANG=en_US.UTF-8)",
   "xcodegen": "2.46.0",
   "uv": ">=0.8",
-  "flutter_root": "$HOME/toolchains/flutter"
+  "flutter_root": "$HOME/toolchains/flutter",
+  "react_native_cli": "20.0.0",
+  "react_native_template_sha256": "29b1ccee1d2054aabfff8792cd35782a65753a026c38d25d9ab8199d2a10c10f"
  },
  "bootstrap": {
   "ios-sim": [
@@ -37,7 +39,7 @@
    "cd ../apps/react-native && LANG=en_US.UTF-8 bundle exec pod install --project-directory=macos",
    "cd native-bench && xcodegen"
   ],
-  "note": "fresh-clone dependency install, pinned to committed lockfiles: npm ci installs exactly package-lock.json (the lock is npm-generated, so npm is the declared toolchain); bundle install honors Gemfile.lock, pod install honors Podfile.lock; xcodegen regenerates NativeBench.xcodeproj from the committed project.yml so the checked-in project cannot drift. Any failure aborts the build \u2014 no silent retry. Run standalone with `bench.py bootstrap --platform <plat>`; `build` runs it first."
+  "note": "fresh-clone dependency install, pinned to committed lockfiles: npm ci installs exactly package-lock.json (the lock is npm-generated, so npm is the declared toolchain); bundle install honors Gemfile.lock, pod install honors Podfile.lock; xcodegen regenerates NativeBench.xcodeproj from the committed project.yml so the checked-in project cannot drift. Any failure aborts the build — no silent retry. Run standalone with `bench.py bootstrap --platform <plat>`; `build` runs it first."
  },
  "workloads": {
   "W1": {
@@ -61,9 +63,9 @@
    "drive": "same fling program as W2"
   },
   "W5": {
-   "name": "Motion capacity: W3 scene, rects 200\u219225600 doubling",
+   "name": "Motion capacity: W3 scene, rects 200→25600 doubling",
    "duration_s": 50,
-   "drive": "auto ladder \u2014 8 steps \u00d7 (settle 1s + hold 4s); step boundaries in tmp/bench-steps.log + dev.bench.step posts; xctrace slices frames per step",
+   "drive": "auto ladder — 8 steps × (settle 1s + hold 4s); step boundaries in tmp/bench-steps.log + dev.bench.step posts; xctrace slices frames per step",
    "platforms": [
     "ios-sim",
     "ios-device"
@@ -77,9 +79,9 @@
    ]
   },
   "W6": {
-   "name": "Feed capacity: W2 fling over rows \u00d71\u219264 nested children",
+   "name": "Feed capacity: W2 fling over rows ×1→64 nested children",
    "duration_s": 45,
-   "drive": "auto ladder \u2014 7 steps \u00d7 (settle 1s + two-sweep hold)",
+   "drive": "auto ladder — 7 steps × (settle 1s + two-sweep hold)",
    "platforms": [
     "ios-sim",
     "ios-device"
@@ -97,12 +99,12 @@
   "method": "shared XCUITest runner (dev.bench.runner / dev.bench.runner.mac) + XCTest metrics: XCTApplicationLaunchMetric, XCTMemoryMetric, XCTCPUMetric, XCTHitchMetric, XCTOSSignpostMetric.scrollingAndDecelerationMetric",
   "repeats": 5,
   "order": "contestants interleaved across repeats",
-  "launch_arg": "-bench-workload W1|W2|W3|W4 -bench-drive swipe|auto (single dash; NSArgumentDomain/UserDefaults on Apple platforms, argv elsewhere). Missing or unrecognized workload traps naming the argument; the app surfaces bench-workload-<id> as an accessibility identifier which the runner asserts after launch \u2014 a wrong page fails instead of silently measuring W1.",
-  "drive_contract": "one drive per contestant per platform per workload, recorded per row: swipe = real XCUITest gestures inside the measure block (iOS device, macOS, and any contestant whose manifest override doesn't say otherwise); auto = the runner taps the app's bench-begin control inside the measure block, the app runs the identical fling program, then exposes bench-done (iOS simulator W2/W4 for every contestant \u2014 gestures cannot be synthesized there within the AX query timeout \u2014 and AppKit on macOS, whose content window has no swipeable hit target). `auto` never self-starts at appear.",
+  "launch_arg": "-bench-workload W1|W2|W3|W4|W5|W6 -bench-step N (W5/W6 on pinned legs) -bench-drive swipe|wheel|auto (single dash; NSArgumentDomain/UserDefaults on Apple platforms, argv elsewhere). Missing or unrecognized workload traps naming the argument; the app surfaces bench-workload-<id> as an accessibility identifier which the runner asserts after launch — a wrong page fails instead of silently measuring W1.",
+  "drive_contract": "one drive per contestant per platform per workload, recorded per row, always from outside the app: swipe = real XCUITest gestures inside the measure block (iOS device); wheel = host-side CGEvent scroll-wheel detents posted by bench.py into the target window (macOS, and iOS simulator W2/W4 for every contestant — gesture synthesis needs an AX query and a timed-out query fails the test there); auto = the dev.bench.begin/done Darwin-notification pair pacing the W5/W6 capacity ladder only. The app never scrolls itself; `auto` never self-starts at appear.",
   "hitch_metric": "XCTHitchMetric attached on every platform; if it emits no measurements at all on a physical device run (evidence: zero hitch identifiers in the xcresult), the runner sets BENCH_NO_HITCH and drops it rather than reporting zeros.",
-  "package_size": "app bundle bytes on disk (arm64); .ipa thinning needs signing not present on this VM \u2014 recorded as limitation",
+  "package_size": "app bundle bytes on disk (arm64); .ipa thinning needs signing not present on this VM — recorded as limitation",
   "known_limitations": [
-   "iOS Simulator has no true vsync pacing \u2014 hitch/signpost numbers are directional",
+   "iOS Simulator has no true vsync pacing — hitch/signpost numbers are directional",
    "no signing identity on this VM: .ipa thinning and physical-device runs happen in device mode on the M1 host"
   ],
   "required_platforms": [
@@ -114,8 +116,8 @@
  "contestants": [
   {
    "id": "waterui",
-   "label": "WaterUI \u2014 Rust/objc2 backend (apple-backend#281)",
-   "framework_version": "waterui @ checkout HEAD \u2014 framework, cli, apple backend and hydrolysis are all workspace members of this checkout",
+   "label": "WaterUI — Rust/objc2 backend (apple-backend#281)",
+   "framework_version": "waterui @ checkout HEAD — framework, cli, apple backend and hydrolysis are all workspace members of this checkout",
    "dir": "../apps/waterui",
    "bundle_id": {
     "ios": "dev.waterui.bench",
@@ -222,7 +224,7 @@
     "macos": "../apps/flutter/build/macos/Build/Products/Release/bench_flutter.app"
    },
    "platform_label": {
-    "ios-sim": "Flutter \u2014 debug JIT (no simulator release mode) \u2014 not comparable"
+    "ios-sim": "Flutter — debug JIT (no simulator release mode) — not comparable"
    },
    "comparable": {
     "ios-sim": false
@@ -279,39 +281,55 @@
   "test_target_key": {
    "ios": "BenchRunner",
    "macos": "BenchRunnerMac"
+  },
+  "launch_arg": "-bench-workload W1|W2|W3|W4|W5|W6 (single dash; NSArgumentDomain/UserDefaults on Apple platforms, argv elsewhere). Missing or unrecognized workload traps naming the argument; the app surfaces bench-workload-<id> as an accessibility identifier which the runner asserts after launch — a wrong page fails instead of silently measuring W1. There is no -bench-drive argument: scroll is always driven from outside the app.",
+  "drive_contract": "one drive per contestant per platform per workload, recorded per row: swipe = real XCUITest gestures inside the measure block (iOS device); wheel = host-side CGEvent scroll-wheel detents posted by bench.py into the target window (macOS, and iOS simulator W2/W4 for every contestant — gesture synthesis needs an AX query and a timed-out query fails the test there); auto = the dev.bench.begin/done Darwin-notification pair pacing the W5/W6 capacity ladder only. The app never scrolls itself; `auto` never self-starts at appear.",
+  "fling": {
+   "down": 8,
+   "up": 2,
+   "detents": 12,
+   "detent_px": 15,
+   "duration_ms": 250,
+   "pause_ms": 350,
+   "wheel": "each `down`/`up` fires `detents` CGEvent wheel detents of `detent_px` over `duration_ms`, then `pause_ms`"
   }
  },
  "notes": [
-  "waterui-bench re-scaffolded with `water create --channel dev` on water-rs/cli dev @ 12a5ed6: framework resolved to waterui dev @ ea98d036, apple-backend @ 84b13b3e9c60cab1ade9fa5b6e01d18bcde99f55 (Rust + objc2 host, apple-backend#281). Plain `water package` \u2014 the Swift-host pbxproj restore, fix-waterui-backend.sh and the Water.lock dependency pins are gone with the pre-migration tree.",
+  "waterui-bench is the shared workspace-member app at ../apps/waterui (Cargo.toml, Water.toml, src/, assets/ only — no Water.lock, backends/, or per-app Cargo.lock), packaged by the in-tree water CLI built from this checkout; framework+CLI+backend identity = checkout HEAD sha.",
   "RnBench ios-device: TARGETED_DEVICE_FAMILY=1,2 added as a command-line build setting (project had none -> default [1], iPhone-only) so it runs natively on the iPad Pro 13 M4 device host like the other four universal apps. No project files or other build inputs changed.",
   "device mode is device-agnostic: --udid defaults to the single available device `xcrun devicectl list devices` reports (several attached = explicit --udid required); the signing identity is the keychain's 'Apple Development' cert selected by --identity (team derived from the identity or --team); destinations use platform=iOS,id=<resolved udid> with no model/screen-size assumptions; ios-sim destinations resolve the newest available iPhone simulator at run time ({SIM_UDID} token in manifest build commands, or --sim-udid); results JSON records the device model/os under 'device'; thermal and screen max fps come from the runner's device-record log lines.",
-  "waterui ios-device is produced ONLY by `water package --platform ios --backend apple --release --unsigned` (water-rs/cli dev @ 12a5ed6, which carries feat/212 merged): CODE_SIGNING_ALLOWED=NO with the same static linkage + release profile; the M1 host re-signs inside-out before install.",
-  "harness v2 (fixes two defects found in the first device run): (a) launch args now use a single dash (-bench-workload/-bench-drive) \u2014 the previous --bench-workload became NSArgumentDomain key '-bench-workload', which Flutter/RN read as nil and silently fell back to W1; all contestants now trap on a missing/unrecognized workload and expose bench-workload-<id>, asserted by the runner post-launch. (b) the auto drive previously self-started at viewDidAppear and finished before the measure window; iOS (sim + device) now uses real swipe gestures inside measure(), and the surviving auto drive (AppKit macOS) is gated on a runner-tapped bench-begin control and a bench-done completion marker.",
-  "harness v3 (second device run, iPad Pro M4): (a) W2 swipe gestures now use XCUICoordinate.press/drag raw HID events \u2014 the old app.swipeUp() resolved 'descendants matching type Window' + per-gesture quiescence, which stalls >117s on a scrolling 10k list (waterui W2 AND uikit W2 both hit it; it is a runner defect, not a framework one \u2014 WuiList virtualises via dequeueReusableCell at WuiList.swift:721 and carries no AX-container overrides). (b) XCTOSSignpostMetric.scrollingAndDecelerationMetric is now attached only for W2/W4/W6 (it emitted zero duration/ratio rows on W1/W3). (c) one discarded warm-up run per contestant absorbs the first-attach XCTFuture init failure seen on rep 0. (d) every cell now also records render-server CPU \u2014 ps -o time deltas on sim backboardd / macOS WindowServer, and an xctrace Time Profiler attach to device backboardd \u2014 so Core Animation work outside the app process is counted identically for every contestant; ios-device also attaches Animation Hitches to the app for presented-frame counts.",
-  "contestant W2 idiom fixes: rn-bench W2 switched ScrollView -> Animated.FlatList (windowing + view recycling); electron-bench W2 switched innerHTML x10000 -> pooled windowed list (48px rows, +/-6 overscan) \u2014 the DOM analogue of cell reuse. UIKit was already dequeueReusableCell and SwiftUI/Flutter already List/ListView.builder (unchanged); the 1.07GB UIKit / 2.78GB RN RSS on device came from the AX-snapshot pathology above, not the widgets.",
-  "BUILD IDENTITY (current): WaterUI contestant = Rust + objc2 apple backend @ 84b13b3e on waterui dev @ ea98d036, packaged by cli dev @ 12a5ed6 \u2014 plain `water package`, no restoration/retry/pin workarounds. The previous pre-migration run (waterui @ 1b80ef53 + apple-backend c7908d7e, Swift backend, cli d17d0dd) is historical development-only VM measurement \u2014 retained outside git as attachments, NOT current hardware evidence; the WaterUI column is re-measured on the physical host.",
-  "SCOPE: there is no iPad/device toolchain on the M1 host \u2014 the iPad device leg is skipped; iOS-simulator results are the mobile reference.",
-  "electron-bench macOS W2/W4 run drive=auto (AX queries stall on the 10k-row feed). The auto handshake: app spawns `notifyutil -1 dev.bench.begin`, forwards each post over IPC while armed, renderer runs the fling and acks/dones via notifyutil -p. Every begin is forwarded (no once-latch): XCTest runs the measure block twice per cell (warm-up + measured pass) and each pass needs its own begin->ack->done cycle; the renderer's `running` flag dedupes in-flight posts. Root cause of the silent-arm failure chain: `root.id` was reassigned to `bench-workload-<W>`, which unmatched the `#root{height:100%}` CSS rule, collapsed the scroller to content height (scrollHeight == clientHeight -> fling max=0 -> instant done) and let cell-2's fresh notify check tokens miss the already-posted done.",
-  "sim frame source: xctrace 'Animation Hitches' is UNSUPPORTED on the iOS Simulator (verified by direct attach: 'Hitches is not supported on this platform'), and the sim presents into a host window with no vsync'd display pipeline \u2014 no other system-level presented-frame source exists there. ios-sim W5/W6 rows therefore carry per-step app + render-server CPU with frames=null; capacity-at-120Hz/60Hz is a device-only metric.",
+  "waterui ios-device is produced ONLY by `water package --platform ios --backend apple --release --unsigned` (the in-tree CLI): CODE_SIGNING_ALLOWED=NO with the static Rust in the main executable, UIDeviceFamily [1,2]; the device host re-signs inside-out before install.",
+  "harness v2 (fixes two defects found in the first device run): (a) launch args now use a single dash (-bench-workload/-bench-drive) — the previous --bench-workload became NSArgumentDomain key '-bench-workload', which Flutter/RN read as nil and silently fell back to W1; all contestants now trap on a missing/unrecognized workload and expose bench-workload-<id>, asserted by the runner post-launch. (b) the auto drive previously self-started at viewDidAppear and finished before the measure window; iOS (sim + device) now uses real swipe gestures inside measure(), and the surviving auto drive (AppKit macOS) is gated on a runner-tapped bench-begin control and a bench-done completion marker.",
+  "harness v3 (second device run, iPad Pro M4): (a) W2 swipe gestures now use XCUICoordinate.press/drag raw HID events — the old app.swipeUp() resolved 'descendants matching type Window' + per-gesture quiescence, which stalls >117s on a scrolling 10k list (waterui W2 AND uikit W2 both hit it; it is a runner defect, not a framework one — WuiList virtualises via dequeueReusableCell at WuiList.swift:721 and carries no AX-container overrides). (b) XCTOSSignpostMetric.scrollingAndDecelerationMetric is now attached only for W2/W4/W6 (it emitted zero duration/ratio rows on W1/W3). (c) one discarded warm-up run per contestant absorbs the first-attach XCTFuture init failure seen on rep 0. (d) every cell now also records render-server CPU — ps -o time deltas on sim backboardd / macOS WindowServer, and an xctrace Time Profiler attach to device backboardd — so Core Animation work outside the app process is counted identically for every contestant; ios-device also attaches Animation Hitches to the app for presented-frame counts.",
+  "contestant W2 idiom fixes: rn-bench W2 switched ScrollView -> Animated.FlatList (windowing + view recycling); electron-bench W2 switched innerHTML x10000 -> pooled windowed list (48px rows, +/-6 overscan) — the DOM analogue of cell reuse. UIKit was already dequeueReusableCell and SwiftUI/Flutter already List/ListView.builder (unchanged); the 1.07GB UIKit / 2.78GB RN RSS on device came from the AX-snapshot pathology above, not the widgets.",
+  "BUILD IDENTITY: WaterUI contestant = Rust + objc2 apple backend at checkout HEAD, packaged by the in-tree cli/ built from this checkout — plain `water package`, no restoration/retry/pin workarounds.",
+  "SCOPE: there is no iPad/device toolchain on the M1 host — the iPad device leg is skipped; iOS-simulator results are the mobile reference.",
+  "electron-bench iOS-sim + macOS W2/W4 are wheel-driven like every other contestant there: bench.py posts CGEvent scroll-wheel detents into the target window on each dev.bench.begin (posted inside the measure block by the XCTest runner), and the driver itself posts dev.bench.done when the program finishes. The in-app notify->IPC->renderer fling chain is gone — the app never scrolls itself.",
+  "sim frame source: xctrace 'Animation Hitches' is UNSUPPORTED on the iOS Simulator (verified by direct attach: 'Hitches is not supported on this platform'), and the sim presents into a host window with no vsync'd display pipeline — no other system-level presented-frame source exists there. ios-sim W5/W6 rows therefore carry per-step app + render-server CPU with frames=null; capacity-at-120Hz/60Hz is a device-only metric.",
   "flutter ios-sim is a --debug (JIT) build: Flutter ships no release mode for the iOS Simulator, so its sim numbers (incl. the five W6 timeouts) are not comparable to the release builds of every other contestant and are excluded from sim ranking/ratio rows. Flutter's comparable iOS numbers come from the device leg (not run: no device toolchain). macOS flutter is a release build and stays comparable. Sim rows carry build=debug-jit for flutter, build=release for the rest.",
-  "KNOWN INCOMPATIBILITY (objc2 migration, current dev): `water package --platform macos --backend apple --release` fails the Water.lock guard: `framework dependencies conflict with Water.lock: waterui 0.5.2, waterui-core 0.5.1, waterui-locale 0.5.1`. Resolved apple-backend 84b13b3e declares its waterui* deps as git edges at rev ccf9bae7 (the framework dev commit it was built against), so the ffi companion resolves two waterui identities; consumer-side [patch.crates-io] cannot cover git edges. Owning-boundary fix proposed upstream: apple-backend declares waterui* deps in version form and keeps its tested rev solely in its own workspace-root [patch.crates-io] (already present there). RESOLVED UPSTREAM by apple-backend#300 = 6eb1fff0ff779cf1ba676667627cd13a8c6168fa (waterui* edges \u2192 version requirements, tested rev kept in the backend's own root [patch.crates-io]); consumption still needs the coordinator to bump waterui dev's apple-backend-revision \u2014 until then the recorded pin 84b13b3e and this note stand. Newer graphics compatibility is tracked separately in water-rs/waterui#299.",
-  "thermal gate: devicectl cannot report thermalState \u2014 the on-device runner waits bounded on ProcessInfo.thermalStateDidChangeNotification for nominal in setUp and fails the row past the budget; thermal + screen maxFps are recorded per row from the runner log (device-record), there is no spec-sheet fallback.",
-  "environment gate: run-local refuses to measure on virtualized/paravirtual hosts (kern.hv_vmm_present, virtualized CPU/model identity, paravirtual GPU); every results file records a host fingerprint (hw.model + CPU brand + vmm + GPU names) and resume refuses to merge rows from a different host \u2014 no VM or software-GPU timings are admitted."
+  "objc2 migration note (historical, pre-restructure): earlier scaffolds tripped the Water.lock guard when a per-app lock existed; the shared workspace member resolves against the checkout's own Cargo.lock so no per-app lock exists to conflict.",
+  "thermal gate: devicectl cannot report thermalState — the on-device runner waits bounded on ProcessInfo.thermalStateDidChangeNotification for nominal in setUp and fails the row past the budget; thermal + screen maxFps are recorded per row from the runner log (device-record), there is no spec-sheet fallback.",
+  "environment gate: run-local refuses to measure on virtualized/paravirtual hosts (kern.hv_vmm_present, virtualized CPU/model identity, paravirtual GPU); every results file records a host fingerprint (hw.model + CPU brand + vmm + GPU names) and resume refuses to merge rows from a different host — no VM or software-GPU timings are admitted."
  ],
  "drive_overrides": {
   "ios-sim": {
-   "W2": "auto",
-   "W4": "auto",
+   "W2": "wheel",
+   "W4": "wheel",
    "W5": "auto",
-   "W6": "auto"
+   "W6": "auto",
+   "note": "uniform per contestant: on the iOS Simulator a W2/W4 swipe gesture cannot be synthesized — the gesture's wait-for-idle/query resolution exceeds the ~31 s XCUITest cap on every contestant measured (10k-row feed keeps the app non-idle). bench.py's wheel driver posts CGEvent scroll-wheel detents into the Simulator window on each dev.bench.begin; W5/W6 keep `auto` as capacity-ladder pacing. Physical devices (ios-device) drive real swipes for W2/W4."
   },
-  "note": "uniform per contestant: on the iOS Simulator a W2/W4 swipe gesture cannot be synthesized \u2014 the gesture's wait-for-idle/query resolution exceeds the ~31 s XCUITest cap on every contestant measured (10k-row feed keeps the app non-idle; observed 'Timed out while evaluating UI query' on waterui). Physical devices (ios-device) and macOS drive real swipes; AppKit gets auto because its content window has no swipeable hit target. The auto handshake is a Darwin notification pair (dev.bench.begin/dev.bench.done) posted by the runner inside measure \u2014 AX queries cannot carry it since a stalled AX server is exactly why swipe fails.",
+  "macos": {
+   "W2": "wheel",
+   "W4": "wheel",
+   "note": "uniform per contestant: bench.py posts CGEvent scroll-wheel detents into the contestant's window — AppKit's content window has no swipeable hit target, and one mechanism keeps every contestant identical."
+  },
   "ios-device": {
    "W5": "auto",
    "W6": "auto",
-   "note": "capacity ladders self-pace inside the measure window \u2014 there is no per-step gesture to synthesize"
+   "note": "capacity ladders self-pace inside the measure window — there is no per-step gesture to synthesize; the XCTest performs the coordinate drags during W6 holds"
   }
  },
- "drive_contract": "one drive per contestant per platform per workload, recorded per row: swipe = real XCUITest gestures inside the measure block (iOS device, macOS, and any contestant whose manifest override doesn't say otherwise); auto = the runner posts the dev.bench.begin Darwin notification inside the measure block, the app runs the identical fling program, then posts dev.bench.done (iOS simulator W2/W4 for every contestant \u2014 gesture synthesis needs an AX query and a timed-out query fails the test there \u2014 and AppKit on macOS, whose content window has no swipeable hit target). `auto` never self-starts at appear; the signal is delivered only inside measure.",
+ "drive_contract": "one drive per contestant per platform per workload, recorded per row: swipe = real XCUITest gestures inside the measure block (iOS device); wheel = host-side CGEvent scroll-wheel detents posted by bench.py into the target window (macOS, and iOS simulator W2/W4 for every contestant — gesture synthesis needs an AX query and a timed-out query fails the test there); auto = the dev.bench.begin/done Darwin-notification pair pacing the W5/W6 capacity ladder only. The app never scrolls itself; `auto` never self-starts at appear.",
  "cli_model": "in-tree: bench.py provisions `water` from this checkout (lib/toolchain.provision_water_cli) and substitutes {WATER} in build commands; a dirty tracked checkout is refused so the HEAD sha stays the true source identity"
 }
