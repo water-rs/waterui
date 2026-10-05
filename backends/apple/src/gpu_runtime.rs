@@ -295,8 +295,14 @@ impl EngineGeneration {
 
     /// Settles the failed state exactly as a failed shared render does —
     /// retained, routed to every live participant, returned to every later
-    /// `produce`. Test-only entry into the same path.
-    #[cfg(all(test, target_os = "macos", feature = "gpu_surface"))]
+    /// `produce`. Test-only entry into the same path — `native-test` is
+    /// the `Tests/native.rs` harness, whose mounted-surface trials route a
+    /// real failure through it.
+    #[cfg(all(
+        any(test, feature = "native-test"),
+        target_os = "macos",
+        feature = "gpu_surface"
+    ))]
     pub fn fail_for_testing(&self, error: SceneError) -> Rc<SceneError> {
         self.settle_failed(error)
     }
