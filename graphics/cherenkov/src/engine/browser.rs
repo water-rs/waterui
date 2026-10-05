@@ -48,10 +48,6 @@ pub struct Engine<B: Backend> {
     image_limits: crate::ImageLimits,
     stats: RefCell<FrameStats>,
     commits: RefCell<Vec<(SurfaceId, ChangeSet<B>)>>,
-    /// The deadline map `finish_frame` fills: its buffer travels with
-    /// `Message::Render` and returns in the reply, so the per-surface
-    /// deadlines reuse one allocation across frames.
-    next_scratch: RefCell<rustc_hash::FxHashMap<SurfaceId, Next>>,
     /// The live surfaces' shared queues, drained into one `Render` message
     /// per frame.
     surfaces: RefCell<super::Surfaces<B>>,
@@ -134,7 +130,6 @@ impl<B: Backend> Engine<B> {
             image_limits,
             stats: RefCell::new(FrameStats::default()),
             commits: RefCell::new(Vec::new()),
-            next_scratch: RefCell::new(rustc_hash::FxHashMap::default()),
             surfaces: RefCell::new(Vec::new()),
             next_surface: Cell::new(0),
             next_font: Cell::new(1),
@@ -402,7 +397,6 @@ impl<B: Backend> Engine<B> {
             .send(Message::Render {
                 time,
                 commits,
-                next_scratch: std::mem::take(&mut *self.next_scratch.borrow_mut()),
                 reply,
             })
             .map_err(|_| RenderError::Thread)?;
@@ -412,7 +406,6 @@ impl<B: Backend> Engine<B> {
         *self.commits.borrow_mut() = reply.commits;
         let (next, surface_next, stats) = reply.result?;
         super::publish_next(&self.surfaces.borrow(), &surface_next);
-        *self.next_scratch.borrow_mut() = surface_next;
         *self.stats.borrow_mut() = stats;
         Ok(next)
     }
