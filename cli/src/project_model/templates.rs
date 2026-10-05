@@ -19,7 +19,7 @@ use crate::project::ResolvedWebViewBackend;
 use include_dir::{Dir, include_dir};
 use smol::fs;
 
-use crate::project_types::{BundleIdentifier, CrateName, RustIdent};
+use crate::project_types::{AndroidPermissionName, BundleIdentifier, CrateName, RustIdent};
 
 /// Normalize a path to use forward slashes for config files (Cargo.toml, package manifests, etc.)
 /// This is necessary because Windows uses backslashes but these config files expect forward slashes.
@@ -107,11 +107,6 @@ pub mod embedded {
     pub static TUI: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/tui");
     pub static WINUI: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/winui");
     pub static ROOT: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates");
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AndroidPermissionTemplateEntry {
-    pub name: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -359,8 +354,9 @@ pub struct TemplateContext {
     pub backend_project_path: Option<PathBuf>,
     /// Absolute path to the user project root when scaffolding generated backend projects.
     pub project_root_path: Option<PathBuf>,
-    /// Android permissions to include in the manifest (e.g., "internet", "camera")
-    pub android_permissions: Vec<AndroidPermissionTemplateEntry>,
+    /// Fully qualified Android permissions the manifest declares, rendered
+    /// into `<uses-permission android:name>` as is.
+    pub android_permissions: Vec<AndroidPermissionName>,
     /// iOS permissions to include in Info.plist (e.g., "microphone", "camera")
     pub ios_permissions: Vec<IosPermissionTemplateEntry>,
     /// Whether to build as an accessory (headless) app on macOS.
@@ -624,10 +620,7 @@ impl TemplateContext {
 
     /// Set Android permissions for template rendering.
     #[must_use]
-    pub fn with_android_permissions(
-        mut self,
-        permissions: Vec<AndroidPermissionTemplateEntry>,
-    ) -> Self {
+    pub fn with_android_permissions(mut self, permissions: Vec<AndroidPermissionName>) -> Self {
         self.android_permissions = permissions;
         self
     }
@@ -1372,11 +1365,10 @@ define_scaffold_templates! {
 #[cfg(test)]
 mod tests {
     use super::{
-        AndroidPermissionTemplateEntry, BrowserTemplateContext, Esp32TemplateEntry,
-        LaunchTemplateEntry, LocalBackendSources, ResolvedFramework, ResolvedWebViewBackend,
-        SupportAppIdentity, TemplateContext, TemplateNamespace, embedded, gtk4,
-        jitpack_dependency_coordinate, local_backend_sources, normalize_path_for_config,
-        preview_ffi, render_scaffold_template,
+        BrowserTemplateContext, Esp32TemplateEntry, LaunchTemplateEntry, LocalBackendSources,
+        ResolvedFramework, ResolvedWebViewBackend, SupportAppIdentity, TemplateContext,
+        TemplateNamespace, embedded, gtk4, jitpack_dependency_coordinate, local_backend_sources,
+        normalize_path_for_config, preview_ffi, render_scaffold_template,
     };
     use crate::framework::{
         framework_repository,
@@ -1679,19 +1671,41 @@ mod tests {
         assert!(!settings.contains("includeBuild"), "{settings}");
 
         // Declared permissions render into the library's manifest so the AAR
-        // merges them into the host's.
+        // merges them into the host's. The entries come from the production
+        // path, `manifest_permissions`, so the template sees the fully
+        // qualified names it receives in a real build.
+        let permission_manifest: crate::project::Manifest = toml::from_str(
+            r#"
+                [package]
+                name = "Demo"
+                bundle_identifier = "dev.waterui.demo"
+                embedded = true
+
+                [permissions.internet]
+                enable = true
+                description = "Fetch remote content"
+
+                [permissions.camera]
+                enable = true
+                description = "Scan codes"
+            "#,
+        )
+        .expect("manifest parses");
         let mut permission_ctx = ctx;
-        permission_ctx.android_permissions = vec![
-            AndroidPermissionTemplateEntry { name: "INTERNET" },
-            AndroidPermissionTemplateEntry { name: "CAMERA" },
-        ];
+        permission_ctx.android_permissions =
+            crate::android::backend::manifest_permissions(&permission_manifest);
         let android_manifest = render("waterui/src/main/AndroidManifest.xml.tpl", &permission_ctx);
-        assert!(
-            android_manifest.contains("android:name=\"android.permission.INTERNET\""),
-            "{android_manifest}"
-        );
-        assert!(
-            android_manifest.contains("android:name=\"android.permission.CAMERA\""),
+        let declared: Vec<&str> = android_manifest
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with("<uses-permission"))
+            .collect();
+        assert_eq!(
+            declared,
+            [
+                "<uses-permission android:name=\"android.permission.INTERNET\" />",
+                "<uses-permission android:name=\"android.permission.CAMERA\" />",
+            ],
             "{android_manifest}"
         );
         // The library manifest carries the managed components block too: the
