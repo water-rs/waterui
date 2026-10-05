@@ -22,8 +22,10 @@ pub mod animation;
 pub mod backdrop;
 pub mod color;
 pub mod display_list;
+pub mod error;
 pub mod frame;
 pub mod glyph;
+pub mod image;
 pub mod ops;
 pub mod paint;
 pub mod projective;
@@ -55,8 +57,13 @@ pub use crate::display_list::{
     Command, Dirty, DisplayList, DisplayListView, Operand, OperandKind, OperandRef, Operands,
     Picture, ScopeError, Slot, SlotUpdate, blends_within, translucent_within,
 };
+pub use crate::error::ResourceError;
 pub use crate::frame::RefreshRange;
 pub use crate::glyph::{FontId, Glyph, GlyphRun, GlyphStyle};
+pub use crate::image::{
+    Astc4x4, Bc7, Etc2Rgba, Format, ImageColorSpace, ImageData, ImageFormat, ImageUpload, Rgba8,
+    Rgba16F,
+};
 pub use crate::ops::{
     BackdropId, ChangeSet, ContentOp, Install, LayerId, LayerOp, Op, Prop, SurfaceId,
 };

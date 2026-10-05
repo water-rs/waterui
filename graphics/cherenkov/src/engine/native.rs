@@ -120,7 +120,7 @@ impl<B: Backend> Engine<B> {
             // The render loop wakes the host through every visible surface
             // that draws the image, once it knows which surfaces do.
             Rc::new(move |id: ImageId, image: ImageUpload| {
-                crate::error::admit(image_limits, image.width, image.height)?;
+                image_limits.check(image.width, image.height)?;
                 tx.send(Message::ReplaceImage { id, image })
                     .map_err(|_| ResourceError::Lost)
             }) as ReplaceImage
@@ -305,7 +305,7 @@ impl<B: Backend> Engine<B> {
     where
         B: Uploads<F>,
     {
-        crate::error::admit(self.image_limits, image.width(), image.height())?;
+        self.image_limits.check(image.width(), image.height())?;
         let id = ImageId::new(Self::alloc(&self.next_image));
         let upload = image.into_upload();
         let resource = ResourceId::Image(id);

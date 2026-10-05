@@ -2,6 +2,7 @@
 //! name for fonts, images, shaders and backdrop shaders. A render target
 //! assigns them; the recording layer only carries them.
 
+use crate::error::ResourceError;
 use crate::glyph::FontId;
 use crate::paint::{ImageId, ShaderId};
 
@@ -64,6 +65,27 @@ impl ImageLimits {
             && width <= self.max_dimension
             && height <= self.max_dimension
             && u64::from(width) * u64::from(height) <= self.max_texels
+    }
+
+    /// Checks a `width` × `height` image against the limits: `Ok` when
+    /// it is admitted, [`ResourceError::TooLarge`] naming these limits
+    /// when it is not. Runs wherever a registration or replacement is
+    /// made.
+    ///
+    /// # Errors
+    ///
+    /// [`ResourceError::TooLarge`] with the requested size and these
+    /// limits, when `width` × `height` is not admitted.
+    pub fn check(&self, width: u32, height: u32) -> Result<(), ResourceError> {
+        if self.admits(width, height) {
+            Ok(())
+        } else {
+            Err(ResourceError::TooLarge {
+                width,
+                height,
+                limits: *self,
+            })
+        }
     }
 
     /// The largest admitted size at `width`:`height`'s aspect ratio, to
