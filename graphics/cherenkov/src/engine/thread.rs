@@ -709,9 +709,8 @@ fn commit<B: Backend>(
         match op {
             Op::Layer(LayerOp::Remove(layer)) => {
                 state.commits = Commits::Other;
-                for removed in state.tree.remove(layer) {
-                    renderer.remove_layer(surface, removed);
-                }
+                state.tree.remove(layer);
+                renderer.remove_layer(surface, layer);
             }
             Op::Layer(LayerOp::Content(layer, content)) => {
                 state.commits = Commits::Other;

@@ -23,10 +23,10 @@
 //! layer rather than the surface root — so the same `RenderKey` identity
 //! works at any depth.
 //!
-//! Wrapper layers are never destroyed while their mount lives: dropping a
-//! [`cherenkov::Layer`] removes its whole subtree at the next commit, so a
+//! Wrapper layers are never destroyed while their mount lives: a
 //! shrinking ancestry detaches its excess wrappers and parks them for
-//! reuse instead. A shrunken chain's handles stay alive under the mount.
+//! reuse instead of dropping them. A shrunken chain's handles stay alive
+//! under the mount.
 //!
 //! One persistent overlay layer sits above every other child for the
 //! frame's transient scene (popups, menus and capture/transition content).
@@ -81,9 +81,8 @@ struct KeyedMount {
     /// Attached ancestry wrappers, outermost first — `wrappers.len()` is
     /// the committed scope count.
     wrappers: Vec<cherenkov::Layer>,
-    /// Detached wrappers kept alive for reuse. Destroying a layer removes
-    /// its subtree at the next commit, so a shrinking ancestry parks its
-    /// excess instead.
+    /// Detached wrappers kept alive for reuse: a shrinking ancestry parks
+    /// its excess wrappers instead of destroying layers it may need again.
     parked: Vec<cherenkov::Layer>,
     /// The content layer: the frame's produced texture, drawing or filter
     /// attaches here, innermost under the wrapper chain. A filtered mount's
@@ -107,9 +106,9 @@ impl KeyedMount {
 
 /// The persistent engine layers a window presents through.
 ///
-/// Handles are `Layer`s: dropping one removes it and its descendants at the
-/// next commit, so pruning an absent keyed mount is a map removal and
-/// nothing else.
+/// Handles are `Layer`s: dropping one removes only it — its children stay
+/// in the tree, detached — at the next commit, so pruning an absent keyed
+/// mount is a map removal and nothing else.
 pub struct Mounts {
     /// Positional segment layers, grown to the frame's segment count and
     /// shrunk — truncated — when it falls. Segment layers never carry
@@ -255,8 +254,8 @@ impl Mounts {
             }
             if mount.wrappers.len() > scopes.len() {
                 // Detach the top excess wrapper, then park the chain below
-                // it: destroying the handles would take the content layer's
-                // subtree with them at the next commit.
+                // it: the parked handles keep their layers alive and
+                // reusable for the next growth.
                 let parent = mount
                     .wrappers
                     .get(scopes.len().wrapping_sub(1))
