@@ -1,7 +1,7 @@
 //! The engine: owns the render thread and every resource's identity.
 //! `!Send`, lives on the UI thread.
 
-use super::{SharedWaker, SurfaceWaker, Wakes, thread};
+use super::{SurfaceWaker, thread};
 
 use crate::local::Sender;
 use std::cell::{Cell, RefCell};
@@ -63,9 +63,6 @@ pub struct Engine<B: Backend> {
     post: Rc<dyn Fn(Message<B>)>,
     /// The `Message::ReplaceImage` sender every image handle shares.
     replace_image: ReplaceImage,
-    /// Every live surface's wake, for the engine-scoped wakes of frame
-    /// producers.
-    wakes: Rc<Wakes>,
     // `!Send`: the engine lives on the UI thread.
     _not_send: PhantomData<Rc<()>>,
 }
@@ -142,7 +139,6 @@ impl<B: Backend> Engine<B> {
                 let _ = post_tx.send(message);
             }),
             replace_image,
-            wakes: Rc::new(Wakes::new()),
             _not_send: PhantomData,
         })
     }
@@ -301,12 +297,18 @@ impl<B: Backend> Engine<B> {
     /// needed: the engine calls `wake` at most once between two
     /// [`Engine::render`]s the surface participates in — the first time
     /// something is queued on it, a backend completion lands for it, an
-    /// image it draws is replaced, or a frame producer submits — and once
-    /// when the surface becomes visible (see [`Surface::visibility`]). A
-    /// hidden surface never calls it.
+    /// image or a producer frame it draws lands, or a producer or filter
+    /// it draws asks for a redraw — and once when the surface becomes
+    /// visible (see [`Surface::visibility`]). A hidden surface never calls
+    /// it. A producer or filter parameter may ask for a redraw from a
+    /// handle that is [`Send`] and [`Sync`] on every target, and its wake
+    /// reaches `wake` through the surface, so `wake` is too.
     ///
     /// A host that keeps one presentation loop behind several surfaces
-    /// passes each of them the same request-redraw callback.
+    /// passes each of them the same request-redraw callback. A host that
+    /// drives its own frames announces each with
+    /// [`Surface::begin_frame`], so the edits it makes for that frame do
+    /// not ask for another.
     ///
     /// # Errors
     /// [`SurfaceError`] when the backend cannot draw the target, or
@@ -318,10 +320,10 @@ impl<B: Backend> Engine<B> {
     pub async fn surface(
         &self,
         target: impl Into<B::Target>,
-        wake: impl Fn() + 'static,
+        wake: impl Fn() + Send + Sync + 'static,
     ) -> Result<Surface<B>, SurfaceError> {
         let id = SurfaceId::new(Self::alloc(&self.next_surface));
-        let waker = Rc::new(SurfaceWaker::new(Box::new(wake)));
+        let waker = Arc::new(SurfaceWaker::new(wake));
         let (reply, rx) = crate::local::channel();
         // The guard owns the surface id from the enqueue on: dropping the
         // future still destroys what `create_surface` committed (#150).
@@ -335,7 +337,7 @@ impl<B: Backend> Engine<B> {
             .send(Message::CreateSurface {
                 id,
                 target: target.into(),
-                waker: Rc::clone(&waker),
+                waker: Arc::clone(&waker),
                 reply,
             })
             .map_err(|_| SurfaceError::Lost)?;
@@ -343,13 +345,11 @@ impl<B: Backend> Engine<B> {
             Ok(Ok(info)) => {
                 registration.disarm();
                 let surface = Surface::new(id, info, self.tx.clone(), waker);
-                let mut surfaces = self.surfaces.borrow_mut();
-                surfaces.push(super::SurfaceEntry {
+                self.surfaces.borrow_mut().push(super::SurfaceEntry {
                     shared: Rc::downgrade(&surface.shared),
-                    waker: SharedWaker::clone(&surface.waker),
+                    waker: Arc::clone(&surface.waker),
                     next_frame: Rc::downgrade(&surface.next_frame),
                 });
-                self.wakes.publish(&surfaces);
                 Ok(surface)
             }
             Ok(Err(error)) => {
@@ -578,25 +578,12 @@ impl<B: GpuContent> Engine<B> {
     #[must_use]
     pub fn frame_producer(&self) -> (GpuProducer<B>, FrameSink<B>) {
         let id = ProducerId::new(Self::alloc(&self.next_producer));
-        let dirty = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let gate = Arc::new(crate::WakeGate::default());
-        (self.post)(Message::Resource(Box::new({
-            let dirty = Arc::clone(&dirty);
-            let gate = Arc::clone(&gate);
-            move |r: &mut B::Renderer| {
-                B::add_frame_producer(r, id, dirty, gate);
-            }
+        (self.post)(Message::Resource(Box::new(move |r: &mut B::Renderer| {
+            B::add_frame_producer(r, id);
         })));
-        let wakes = Rc::clone(&self.wakes);
         (
             GpuProducer::new(id, self.tx.clone()),
-            FrameSink::new(
-                id,
-                self.tx.clone(),
-                dirty,
-                gate,
-                Rc::new(move || wakes.wake()),
-            ),
+            FrameSink::new(id, self.tx.clone()),
         )
     }
 

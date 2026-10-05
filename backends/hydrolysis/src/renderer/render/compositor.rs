@@ -433,8 +433,7 @@ struct FrameInstall<'a> {
     metrics: &'a std::sync::Arc<crate::renderer::effects::AppliedFilterMetrics>,
     /// The engine's shared resource table — the `build_scene` argument.
     resources: &'a Rc<crate::renderer::recording::SceneResources>,
-    /// The host's display-link wake, installed on `GpuContent` producers and
-    /// external-frame streams.
+    /// The host's display-link wake, installed on external-frame streams.
     wake: Option<RedrawHandle>,
     /// The frame's device and queue, for starting external-frame sources —
     /// planes are imported on the device the window presents through.
@@ -557,14 +556,8 @@ impl FrameInstall<'_> {
                         let mut runtime = layer.runtime.borrow_mut();
                         let runtime = &mut *runtime;
                         let producer = runtime.producer.get_or_insert_with(|| {
-                            let wake = self.wake.clone();
-                            let content = runtime.view.take_engine_content(move || {
-                                if let Some(wake) = &wake {
-                                    wake.request_redraw();
-                                }
-                            });
                             self.installs += 1;
-                            self.engine.gpu_producer(content)
+                            self.engine.gpu_producer(runtime.view.take_engine_content())
                         });
                         // A binding belongs to one engine layer: a mount that
                         // was dropped and comes back (a navigation page that
@@ -963,19 +956,13 @@ impl HydrolysisRenderer {
         let render_layers = core::mem::take(&mut self.compositor.render_layers);
         let transient = self.transient_scene.take().filter(scene_has_content);
 
-        // The shared engine for this frame's device context; `wake` is the
-        // host's display-link wake the engine's redraw callback drives.
+        // The shared engine for this frame's device context; the host's
+        // display-link wake goes to the window surfaces built on it.
         let host_wake = self.host_redraw_handle.clone();
-        let engine_wake = host_wake.clone();
         let state = crate::engine::engine_await!(crate::engine::shared_engine_state(
             target.gpu_context_id,
             target.adapter,
             target.shared_device.clone(),
-            move || {
-                if let Some(handle) = &engine_wake {
-                    handle.request_redraw();
-                }
-            },
         ));
 
         // One window surface per GPU context this renderer presents through.
@@ -1002,6 +989,7 @@ impl HydrolysisRenderer {
                         backend,
                         (target.width, target.height),
                         target.device_loss.clone(),
+                        host_wake.clone(),
                     )),
                 ),
             }
@@ -1012,8 +1000,13 @@ impl HydrolysisRenderer {
                 backend,
                 (target.width, target.height),
                 target.device_loss.clone(),
+                host_wake.clone(),
             )))
         };
+        // Everything this frame sets on the surface below is drawn by the
+        // render that ends it: only what lands after that render wakes the
+        // host for another frame.
+        window.surface.begin_frame();
 
         // The first marker lands after context resolution because the
         // profiler is device-owned like the window it rides on: a replaced
@@ -1145,12 +1138,16 @@ pub struct CherenkovWindow {
 
 crate::engine::cfg_async_fn! {
     impl CherenkovWindow {
+        /// A window surface on `state`'s engine. `wake` is the host's
+        /// display-link wake, when the host has one: the surface calls it
+        /// when its content asks for a frame between the renderer's own.
         pub(crate) fn new(
             state: Rc<crate::engine::SharedEngineState>,
             device: &wgpu::Device,
             backend: wgpu::Backend,
             size: (u32, u32),
             device_loss: crate::platform::DeviceLoss,
+            wake: Option<RedrawHandle>,
         ) -> Self {
             Self {
                 surface: crate::engine::engine_await!(crate::engine::CherenkovSurface::new(
@@ -1158,6 +1155,11 @@ crate::engine::cfg_async_fn! {
                     device,
                     backend,
                     size,
+                    move || {
+                        if let Some(wake) = &wake {
+                            wake.request_redraw();
+                        }
+                    },
                 )),
                 mounts: crate::renderer::retained::Mounts::new(),
                 state,

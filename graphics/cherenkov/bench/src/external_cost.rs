@@ -1058,7 +1058,7 @@ pub(crate) fn run(args: &ExternalCostArgs) -> Result<(), BenchError> {
         }
         ExternalPath::Copy => {
             let copy = CopyPath::new(&shared, &spec, query_count)?;
-            let producer = engine.gpu_producer(GpuContentBox::new(copy.converter(), || {}));
+            let producer = engine.gpu_producer(GpuContentBox::new(copy.converter()));
             surface.update(|tx| {
                 tx[surface.root()].push(&layer);
                 tx[&layer].content(producer.at((spec.width, spec.height)));
@@ -1324,7 +1324,7 @@ pub fn composite_frame(
         }
         ExternalPath::Copy => {
             let copy = CopyPath::new(&shared, &spec, 3)?;
-            let gpu = engine.gpu_producer(GpuContentBox::new(copy.converter(), || {}));
+            let gpu = engine.gpu_producer(GpuContentBox::new(copy.converter()));
             surface.update(|tx| {
                 tx[surface.root()].push(&layer);
                 tx[&layer].content(gpu.at((spec.width, spec.height)));

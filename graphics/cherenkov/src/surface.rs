@@ -16,6 +16,7 @@ use crate::local::Sender;
 use crossbeam_channel::Sender;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use cherenkov_record::{ChangeSet, Layer, Queue, Shared, SurfaceId, Transaction};
 
@@ -23,7 +24,7 @@ use crate::WorkingColor;
 use crate::animation::Animation;
 use crate::backend::{Backend, Display, SurfaceInfo, Visibility};
 use crate::capability::{Backdrop, BackdropChain, BackdropRuns};
-use crate::engine::{SharedWaker, SurfaceWaker};
+use crate::engine::SurfaceWaker;
 use crate::error::{RenderError, SurfaceError};
 use crate::frame::Readback;
 use crate::message::Message;
@@ -39,7 +40,7 @@ pub struct EngineQueue<B: Backend> {
     /// The surface's identifier on the render thread.
     id: SurfaceId,
     /// The surface's host wake-up.
-    waker: SharedWaker<SurfaceWaker>,
+    waker: Arc<SurfaceWaker>,
     /// The render loop, which a hidden surface's changes are sent to as
     /// they are made.
     tx: Sender<Message<B>>,
@@ -58,7 +59,7 @@ impl<B: Backend> EngineQueue<B> {
     /// and `tx` the render loop's channel.
     pub(crate) const fn new(
         id: SurfaceId,
-        waker: SharedWaker<SurfaceWaker>,
+        waker: Arc<SurfaceWaker>,
         tx: Sender<Message<B>>,
     ) -> Self {
         Self { id, waker, tx }
@@ -100,7 +101,7 @@ pub struct Surface<B: Backend> {
     pub(crate) next_frame: Rc<RefCell<crate::frame::Next>>,
     /// The surface's host wake-up — held here too so dropping the handle
     /// retires it without borrowing the shared state.
-    pub(crate) waker: SharedWaker<SurfaceWaker>,
+    pub(crate) waker: Arc<SurfaceWaker>,
     tx: Sender<Message<B>>,
 }
 
@@ -120,9 +121,9 @@ impl<B: Backend> Surface<B> {
         id: SurfaceId,
         info: SurfaceInfo,
         tx: Sender<Message<B>>,
-        waker: SharedWaker<SurfaceWaker>,
+        waker: Arc<SurfaceWaker>,
     ) -> Self {
-        let queue = EngineQueue::new(id, SharedWaker::clone(&waker), tx.clone());
+        let queue = EngineQueue::new(id, Arc::clone(&waker), tx.clone());
         let shared = Rc::new(RefCell::new(Shared::new(id, queue)));
         let root = Shared::root(&shared);
         Self {
@@ -259,10 +260,10 @@ impl<B: Backend> Surface<B> {
     /// hidden starts on that frame, like any other.
     ///
     /// Every wake on the surface's behalf stops the moment this returns,
-    /// whichever thread it starts on: the surface's own, and those of the
-    /// backend's producers and filters, which read the announced
-    /// visibility when they fire rather than waiting for the render thread
-    /// to apply the change.
+    /// whichever thread it starts on — the backend's producers and filters
+    /// included, which wake through the surface's own wake and read the
+    /// announced visibility when they fire rather than waiting for the
+    /// render thread to apply the change.
     ///
     /// # Errors
     /// [`SurfaceError::Lost`] when the render thread is gone.
@@ -291,6 +292,21 @@ impl<B: Backend> Surface<B> {
             }
         }
         Ok(())
+    }
+
+    /// Announces that the host is building a frame that ends in
+    /// [`Engine::render`](crate::Engine::render): until that render, nothing
+    /// on the surface's behalf wakes the host, because the render drains it.
+    ///
+    /// A host that drives its own frames and edits the surface inside its
+    /// frame callback calls this when the frame begins, so the edits it
+    /// makes for the frame it is rendering do not ask for another one.
+    /// Every wake from then on — the host's own edits, a bound signal, a
+    /// producer, filter or backend completion on any thread — is answered
+    /// by that render; the render re-arms the wake for whatever comes
+    /// after it.
+    pub fn begin_frame(&self) {
+        self.waker.disarm();
     }
 
     /// The clear colour, queued into the pending change set. Defaults to

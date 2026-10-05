@@ -17,6 +17,8 @@ use cherenkov_gpu::{
 };
 use std::cell::Cell;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use wasm_bindgen::JsCast;
 use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
 
@@ -95,13 +97,13 @@ async fn local_producers_share_device_and_preserve_wakes_during_await() {
     })
     .await
     .expect("engine");
-    let wakes = Rc::new(Cell::new(0));
+    let wakes = Arc::new(AtomicU32::new(0));
     let counter = wakes.clone();
     let surface = engine
         .surface(
             Offscreen::new((16, 16), OffscreenFormat::LinearF16),
             move || {
-                counter.set(counter.get() + 1);
+                counter.fetch_add(1, Ordering::Relaxed);
             },
         )
         .await
@@ -114,22 +116,19 @@ async fn local_producers_share_device_and_preserve_wakes_during_await() {
     engine.render(FrameTime::now()).await.expect("first frame");
     // Count only the wakes from here on: the first frame's content woke
     // the host.
-    wakes.set(0);
+    wakes.store(0, Ordering::Relaxed);
     let setups = Rc::new(Cell::new(0));
     let frames = Rc::new(Cell::new(0));
     let drops = Rc::new(Cell::new(0));
-    let producer = GpuContentBox::new(
-        LocalProducer {
-            setups: setups.clone(),
-            frames: frames.clone(),
-            drops: drops.clone(),
-            device,
-            during_setup: Some(Box::new(move || {
-                color.set(WorkingColor::new([0., 1., 0., 1.]));
-            })),
-        },
-        || {},
-    );
+    let producer = GpuContentBox::new(LocalProducer {
+        setups: setups.clone(),
+        frames: frames.clone(),
+        drops: drops.clone(),
+        device,
+        during_setup: Some(Box::new(move || {
+            color.set(WorkingColor::new([0., 1., 0., 1.]));
+        })),
+    });
     let layer = surface.layer();
     surface.update(|tx| {
         tx[surface.root()].push(&layer);
@@ -137,13 +136,13 @@ async fn local_producers_share_device_and_preserve_wakes_during_await() {
             .transform(cherenkov::kurbo::Affine::translate((8., 0.)))
             .content(engine.gpu_producer(producer).at((8, 16)));
     });
-    let before = wakes.get();
+    let before = wakes.load(Ordering::Relaxed);
     engine
         .render(FrameTime::now())
         .await
         .expect("producer setup");
     assert_eq!(
-        wakes.get(),
+        wakes.load(Ordering::Relaxed),
         before + 1,
         "signal during setup requests next frame"
     );
@@ -1251,13 +1250,13 @@ async fn web_import_copies_no_pixels() {
 async fn web_frame_idle_and_coalesced_wake() {
     let (device, queue, engine) = shared_engine().await;
     let releases = Rc::new(Cell::new(0));
-    let wakes = Rc::new(Cell::new(0));
+    let wakes = Arc::new(AtomicU32::new(0));
     let counter = wakes.clone();
     let surface = engine
         .surface(
             Offscreen::new((16, 16), OffscreenFormat::LinearF16),
             move || {
-                counter.set(counter.get() + 1);
+                counter.fetch_add(1, Ordering::Relaxed);
             },
         )
         .await
@@ -1299,7 +1298,11 @@ async fn web_frame_idle_and_coalesced_wake() {
         RgbAlpha::Opaque,
         FrameColor::SRGB,
     );
-    assert_eq!(wakes.get(), 1, "queued installs coalesce to one wake");
+    assert_eq!(
+        wakes.load(Ordering::Relaxed),
+        1,
+        "queued installs coalesce to one wake"
+    );
     assert_eq!(
         engine.render(FrameTime::now()).await.expect("render"),
         Next::Idle
@@ -1309,7 +1312,11 @@ async fn web_frame_idle_and_coalesced_wake() {
         engine.render(FrameTime::now()).await.expect("steady"),
         Next::Idle
     );
-    assert_eq!(wakes.get(), 1, "no wake without a new frame");
+    assert_eq!(
+        wakes.load(Ordering::Relaxed),
+        1,
+        "no wake without a new frame"
+    );
     assert_eq!(engine.stats().commands_lowered, 0, "nothing re-lowered");
     replace_frame(
         &surface,
@@ -1319,7 +1326,11 @@ async fn web_frame_idle_and_coalesced_wake() {
         RgbAlpha::Opaque,
         FrameColor::SRGB,
     );
-    assert_eq!(wakes.get(), 2, "a new frame wakes once more");
+    assert_eq!(
+        wakes.load(Ordering::Relaxed),
+        2,
+        "a new frame wakes once more"
+    );
     assert_eq!(
         engine.render(FrameTime::now()).await.expect("render"),
         Next::Idle

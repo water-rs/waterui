@@ -25,7 +25,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use cherenkov::{
     BackdropId, ContentOp, EngineError, FontData, FontId, Frame, FrameRedraw, FrameStats, ImageId,
     ImageUpload, LayerId, MemoryUsage, Pressure, Readback, RenderError, Renderer, ResourceError,
-    ResourceId, SurfaceError, SurfaceId, SurfaceInfo, SurfaceVisibility, Visibility,
+    ResourceId, SurfaceError, SurfaceId, SurfaceInfo, Visibility,
 };
 use lower::{ContentData, Item, Lowering};
 
@@ -73,10 +73,10 @@ struct SurfaceState {
     /// The host's announced visibility as the render loop applied it. A
     /// hidden surface is in no frame, and its filters ask for no redraw.
     visibility: Visibility,
-    /// The host's announced visibility as it flips on the UI thread: the
-    /// wake gates of the surface's filters read it, so they stop waking the
-    /// moment the host hides the surface.
-    announced: SurfaceVisibility,
+    /// The surface's host wake-up: the filters its frames run wake the
+    /// host through it, so they stop waking the moment the host hides the
+    /// surface.
+    waker: cherenkov::CompletionWaker,
 }
 
 impl SurfaceState {
@@ -137,7 +137,7 @@ impl std::fmt::Debug for RasterRenderer {
 ///
 /// # Errors
 /// [`EngineError::Backend`] when the pool cannot be built.
-pub fn init(config: RasterConfig) -> Result<(RasterRenderer, RasterInfo), EngineError> {
+pub fn init(config: &RasterConfig) -> Result<(RasterRenderer, RasterInfo), EngineError> {
     let builder = rayon::ThreadPoolBuilder::new()
         .num_threads(config.threads.unwrap_or(0))
         .thread_name(|i| format!("cherenkov-raster-{i}"));
@@ -153,7 +153,7 @@ pub fn init(config: RasterConfig) -> Result<(RasterRenderer, RasterInfo), Engine
                 RasterRenderer {
                     pool,
                     surfaces: FxHashMap::default(),
-                    filters: filter::Registry::new(config.redraw),
+                    filters: filter::Registry::default(),
                     fonts: FxHashMap::default(),
                     bitmap_fonts: FxHashMap::default(),
                     images: FxHashMap::default(),
@@ -243,7 +243,7 @@ impl Renderer for RasterRenderer {
                 backdrop_capture_peak: 0,
                 projective: FxHashMap::default(),
                 visibility: Visibility::Visible,
-                announced: waker.visibility(),
+                waker,
             },
         );
         Ok(SurfaceInfo {
@@ -281,8 +281,8 @@ impl Renderer for RasterRenderer {
 
     fn set_visibility(&mut self, id: SurfaceId, visibility: Visibility) {
         // The filters' wakes already follow the announced visibility
-        // through their gates; this decides what counts in `FrameRedraw`
-        // and what each frame housekeeps.
+        // through the surface's waker; this decides what counts in
+        // `FrameRedraw` and what each frame housekeeps.
         self.surfaces
             .get_mut(&id)
             .expect("visibility of a created surface")
@@ -629,7 +629,7 @@ impl RasterRenderer {
         }
         let (used, used_groups) = self.filter_uses();
         self.evict_projective();
-        self.gate_filters();
+        self.update_filter_wakes();
         self.filters.finish_frame(&used, &used_groups);
         // Every visible surface whose filter or backdrop group still
         // runs asks for the next frame on its own entry — the animated
@@ -654,21 +654,21 @@ impl RasterRenderer {
         Ok(redraw)
     }
 
-    /// Gates every filter's and backdrop chain's wakes on the surfaces whose
-    /// last frames ran it.
-    fn gate_filters(&self) {
-        let mut uses: FxHashMap<u64, Vec<SurfaceVisibility>> = FxHashMap::default();
+    /// Points every filter's and backdrop chain's wakes at the surfaces
+    /// whose last frames ran it.
+    fn update_filter_wakes(&self) {
+        let mut uses: FxHashMap<u64, Vec<cherenkov::CompletionWaker>> = FxHashMap::default();
         let mut groups = FxHashMap::default();
         for (surface, state) in &self.surfaces {
             for filter in &state.filters {
                 let surfaces = uses.entry(*filter).or_default();
                 // Listed surface by surface: one entry per surface.
-                if surfaces.last() != Some(&state.announced) {
-                    surfaces.push(state.announced.clone());
+                if surfaces.last() != Some(&state.waker) {
+                    surfaces.push(state.waker.clone());
                 }
             }
             for group in &state.groups {
-                groups.insert((surface.raw(), *group), state.announced.clone());
+                groups.insert((surface.raw(), *group), state.waker.clone());
             }
         }
         self.filters.set_surfaces(&uses, &groups);

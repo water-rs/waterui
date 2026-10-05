@@ -1481,15 +1481,14 @@ mod macos {
     /// declared linear-P3 decode being the identity.
     fn a_rendered_producer_promotes_and_matches_composited() {
         let fixture = Fixture::new();
-        let video = fixture.engine.gpu_producer(GpuContentBox::new(
-            Clearing(wgpu::Color {
+        let video = fixture
+            .engine
+            .gpu_producer(GpuContentBox::new(Clearing(wgpu::Color {
                 r: 0.25,
                 g: 0.5,
                 b: 0.2,
                 a: 1.0,
-            }),
-            || {},
-        ));
+            })));
         // The window is opaque, so its bottom engine part shows black
         // where nothing is drawn while the offscreen stays transparent; an
         // opaque backdrop gives both the same pixels outside the video.

@@ -850,45 +850,6 @@ fn stacked_icon_buttons_above_gesture_surface_receive_clicks() {
 }
 
 #[test]
-fn gpu_content_box_starts_dirty_and_coalesces_requests() {
-    // The redraw coalescing the retired `take_gpu_surface_redraw_request`
-    // owned now lives in `cherenkov_gpu::GpuContentBox`: a freshly installed
-    // producer is dirty (so its first frame draws without a request), and a
-    // request on an already-dirty producer does not re-wake the host. The
-    // consumption side — a render clearing `dirty` — is pinned by the
-    // gpu_surface_idle end-to-end render counts on Metal.
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicU32, Ordering};
-    use waterui_graphics::{GpuContent, GpuContentView};
-
-    struct Probe;
-    impl GpuContent for Probe {
-        fn setup(&mut self, _gpu: &waterui_graphics::gpu::Context<'_>) {}
-        fn render(&mut self, _frame: &mut waterui_graphics::gpu::Frame<'_>) {}
-    }
-
-    let wakes = Arc::new(AtomicU32::new(0));
-    let wake_counter = wakes.clone();
-    let mut view = GpuContentView::new(Probe);
-    let content = view.take_engine_content(move || {
-        wake_counter.fetch_add(1, Ordering::Relaxed);
-    });
-
-    let handle = content.redraw_handle();
-    assert!(
-        handle.is_dirty(),
-        "freshly installed content draws on the next engine frame"
-    );
-    handle.request_redraw();
-    assert_eq!(
-        wakes.load(Ordering::Relaxed),
-        0,
-        "a request on an already-dirty producer must not re-wake the host"
-    );
-    assert!(handle.is_dirty(), "the coalesced request stays outstanding");
-}
-
-#[test]
 fn draggable_metadata_delivers_typed_payload_to_drop_destination() {
     use std::{cell::RefCell, rc::Rc};
     use waterui::Str;

@@ -619,12 +619,7 @@ impl crate::GpuContent for Null {
         let _ = r.events.send(Event::AddProducer(id));
     }
 
-    fn add_frame_producer(
-        r: &mut NullRenderer,
-        id: crate::ProducerId,
-        _dirty: std::sync::Arc<std::sync::atomic::AtomicBool>,
-        _gate: std::sync::Arc<crate::WakeGate>,
-    ) {
+    fn add_frame_producer(r: &mut NullRenderer, id: crate::ProducerId) {
         if !r.pending_retire.remove(&id) {
             r.producers.insert(
                 id,
@@ -1674,16 +1669,15 @@ mod tests {
         );
     }
 
-    /// Two surfaces — `drawing` draws `image`, `other` a fill — plus an
-    /// `unused` image nothing draws, already settled: the last two rendered
-    /// frames changed nothing and the event probe is drained.
+    /// Two surfaces — `drawing` draws `image`, `other` a fill — already
+    /// settled: the last two rendered frames changed nothing and the event
+    /// probe is drained.
     struct ImageScene {
         engine: Engine<Null>,
         rx: std::sync::mpsc::Receiver<Event>,
         drawing: Surface<Null>,
         other: Surface<Null>,
         image: Image<Rgba8>,
-        unused: Image<Rgba8>,
         image_layer: Layer,
         /// Held only for its lifetime: dropping the layer queues a remove
         /// on `other` and fires the waker.
@@ -1710,9 +1704,6 @@ mod tests {
             )
             .expect("surface");
         let image = engine
-            .image(ImageData::<Rgba8>::new(1, 1, vec![0u8; 4]).expect("image data"))
-            .expect("image");
-        let unused = engine
             .image(ImageData::<Rgba8>::new(1, 1, vec![0u8; 4]).expect("image data"))
             .expect("image");
         let image_layer = drawing.layer();
@@ -1747,7 +1738,6 @@ mod tests {
             drawing,
             other,
             image,
-            unused,
             image_layer,
             fill_layer,
             wakes,
@@ -1756,9 +1746,9 @@ mod tests {
 
     /// `Image::replace` reaches the renderer with the new dimensions, marks
     /// changed only the surface whose content draws the image and wakes the
-    /// host once between two renders; replacing an image nothing draws
-    /// marks nothing. After the last drop the image is removed once the
-    /// content stops drawing it.
+    /// host once between two renders, however many replacements land.
+    /// After the last drop the image is removed once the content stops
+    /// drawing it.
     #[test]
     fn image_replacement_redraws_and_still_releases() {
         use std::sync::atomic::Ordering;
@@ -1771,7 +1761,6 @@ mod tests {
             drawing,
             other,
             image,
-            unused,
             image_layer,
             fill_layer: _fill_layer,
             wakes,
@@ -1791,8 +1780,8 @@ mod tests {
             1,
             "a replacement wakes the host"
         );
-        unused
-            .replace(ImageData::<Rgba8>::new(2, 2, vec![0u8; 16]).expect("image data"))
+        image
+            .replace(ImageData::<Rgba8>::new(2, 3, vec![0u8; 24]).expect("image data"))
             .expect("replace");
         let _ = engine.memory();
         assert_eq!(
@@ -3116,17 +3105,19 @@ mod wasm_tests {
         reason = "the browser engine is single-threaded and its futures run on the page's event loop"
     )]
     async fn hidden_surface_schedules_no_frames() {
-        use std::cell::Cell;
-        use std::rc::Rc;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
 
         use crate::{Next, Visibility};
 
         let (engine, rx) = engine(HashSet::default()).await;
-        let wakes = Rc::new(Cell::new(0u32));
+        let wakes = Arc::new(AtomicU32::new(0));
         let surface = engine
             .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), {
-                let wakes = Rc::clone(&wakes);
-                move || wakes.set(wakes.get() + 1)
+                let wakes = Arc::clone(&wakes);
+                move || {
+                    wakes.fetch_add(1, Ordering::Relaxed);
+                }
             })
             .await
             .expect("surface");
@@ -3137,13 +3128,17 @@ mod wasm_tests {
         engine.render(FrameTime::now()).await.expect("render");
         let _: Vec<Event> = rx.try_iter().collect();
 
-        wakes.set(0);
+        wakes.store(0, Ordering::Relaxed);
         surface.visibility(Visibility::Hidden).expect("hide");
         surface.update(|tx| {
             tx[&layer].record(|c| c.fill(kurbo::Rect::new(0., 0., 8., 8.), WorkingColor::WHITE));
         });
         flush(&engine).await;
-        assert_eq!(wakes.get(), 0, "a hidden surface woke the host");
+        assert_eq!(
+            wakes.load(Ordering::Relaxed),
+            0,
+            "a hidden surface woke the host"
+        );
         assert!(
             matches!(
                 engine.render(FrameTime::now()).await,
@@ -3164,7 +3159,11 @@ mod wasm_tests {
         );
 
         surface.visibility(Visibility::Visible).expect("show");
-        assert_eq!(wakes.get(), 1, "showing the surface asks for one frame");
+        assert_eq!(
+            wakes.load(Ordering::Relaxed),
+            1,
+            "showing the surface asks for one frame"
+        );
         assert_eq!(
             engine.render(FrameTime::now()).await.expect("render"),
             Next::Idle

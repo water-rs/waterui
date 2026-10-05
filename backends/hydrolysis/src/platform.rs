@@ -1901,13 +1901,15 @@ impl OffscreenSceneSurface {
                 target.gpu_context_id(),
                 target.adapter(),
                 target.shared_device(),
-                || {},
             ));
+            // The caller drives `engine.render` itself: no host loop exists
+            // for the surface to wake.
             let cherenkov = crate::engine::engine_await!(crate::engine::CherenkovSurface::new(
                 std::rc::Rc::clone(&state.engine),
                 target.device(),
                 target.adapter().get_info().backend,
                 (width.max(1), height.max(1)),
+                || {},
             ));
             Self {
                 target,

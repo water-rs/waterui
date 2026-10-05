@@ -7,7 +7,7 @@ use std::sync::{
 
 use rustc_hash::FxHashMap;
 
-use cherenkov::{RenderError, SurfaceVisibility, WakeGate};
+use cherenkov::{CompletionWaker, RenderError, SurfaceWakes};
 use filtrate::{
     Effect, EffectContext, EffectFrameTiming, EffectInput, EffectOutput, ShapeTextures,
 };
@@ -178,8 +178,8 @@ impl<E: Effect> Runnable for E {
 struct Entry {
     effect: Box<dyn Runnable>,
     dirty: Arc<AtomicBool>,
-    /// Open while a visible surface's frame runs the filter.
-    gate: Arc<WakeGate>,
+    /// The wakes of the surfaces whose frames run the filter.
+    wakes: Arc<SurfaceWakes>,
     again: bool,
     sequence: Option<u64>,
     setup: Option<Result<(), String>>,
@@ -318,30 +318,23 @@ impl Entry {
     }
 }
 
+#[derive(Default)]
 pub struct Registry {
     entries: FxHashMap<FilterKey, Entry>,
-    host: Option<crate::interop::RedrawCallback>,
 }
 
 impl Registry {
-    pub fn new(host: Option<crate::interop::RedrawCallback>) -> Self {
-        Self {
-            entries: FxHashMap::default(),
-            host,
-        }
-    }
-
+    /// Registers a filter. Its redraw request — a parameter change on any
+    /// thread — marks it stale and, once per request until a frame runs
+    /// it, wakes the host of each surface whose frame runs it.
     pub fn add(&mut self, id: FilterKey, source: Box<dyn Source>) {
         let mut effect = source.build();
         let dirty = Arc::new(AtomicBool::new(false));
-        let gate = Arc::new(WakeGate::default());
-        let (request, open, host) = (Arc::clone(&dirty), Arc::clone(&gate), self.host.clone());
+        let wakes = Arc::new(SurfaceWakes::default());
+        let (request, surfaces) = (Arc::clone(&dirty), Arc::clone(&wakes));
         effect.set_redraw(Arc::new(move || {
-            if !request.swap(true, Ordering::AcqRel)
-                && open.is_open()
-                && let Some(host) = &host
-            {
-                host.wake();
+            if !request.swap(true, Ordering::AcqRel) {
+                surfaces.wake();
             }
         }));
         self.entries.insert(
@@ -349,7 +342,7 @@ impl Registry {
             Entry {
                 effect,
                 dirty,
-                gate,
+                wakes,
                 again: false,
                 sequence: None,
                 setup: None,
@@ -366,7 +359,7 @@ impl Registry {
         let Some(entry) = self.entries.remove(&id) else {
             return 0;
         };
-        entry.gate.close();
+        entry.wakes.clear();
         entry
             .io
             .iter()
@@ -379,12 +372,12 @@ impl Registry {
             .sum()
     }
 
-    /// Sets each filter's wake gate to the surfaces whose frames run it;
-    /// a filter no frame runs wakes nothing.
-    pub fn set_surfaces(&self, uses: &FxHashMap<FilterKey, Vec<SurfaceVisibility>>) {
+    /// Sets each filter's wakes to the surfaces whose frames run it; a
+    /// filter no frame runs wakes nothing.
+    pub fn set_surfaces(&self, uses: &FxHashMap<FilterKey, Vec<CompletionWaker>>) {
         for (id, entry) in &self.entries {
             entry
-                .gate
+                .wakes
                 .set(uses.get(id).map(Vec::as_slice).unwrap_or_default());
         }
     }
@@ -529,7 +522,7 @@ impl Registry {
 impl Drop for Registry {
     fn drop(&mut self) {
         for entry in self.entries.values() {
-            entry.gate.close();
+            entry.wakes.clear();
         }
     }
 }
@@ -591,7 +584,7 @@ mod tests {
         Entry {
             effect: Box::new(filtrate::Executor::new(GaussianBlur(2.0_f32))),
             dirty: Arc::new(AtomicBool::new(false)),
-            gate: Arc::new(WakeGate::default()),
+            wakes: Arc::new(SurfaceWakes::default()),
             again: false,
             sequence: None,
             setup: None,

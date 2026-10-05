@@ -106,15 +106,9 @@ pub trait GpuContent: Backend + GpuInstalls {
     fn add_gpu_producer(r: &mut Self::Renderer, producer: ProducerId, content: Self::Content);
     /// Registers `producer` as a submitted-frame producer — the kind whose
     /// frames come from [`FrameSink::submit`](crate::FrameSink::submit).
-    /// `dirty` and `gate` are the sink's shared wake state: the sink marks
-    /// the producer dirty on each submit and the render loop drives the
-    /// gate with the visibility of the surfaces drawing its bindings.
-    fn add_frame_producer(
-        r: &mut Self::Renderer,
-        producer: ProducerId,
-        dirty: std::sync::Arc<std::sync::atomic::AtomicBool>,
-        gate: std::sync::Arc<crate::WakeGate>,
-    );
+    /// It has no wake state: each submitted frame wakes the surfaces
+    /// [`submit_frame`](Self::submit_frame) reports it bound on.
+    fn add_frame_producer(r: &mut Self::Renderer, producer: ProducerId);
     /// Binds `producer` to `layer` of `surface` at `size` pixels — the
     /// binding samples `ImageSource::Content(producer)`, the producer's
     /// current frame, and becomes a `Source::Frame` candidate for the

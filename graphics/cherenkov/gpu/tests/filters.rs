@@ -256,13 +256,13 @@ fn filter_wakes_coalesce_and_stop_after_detach() -> Result<(), Box<dyn std::erro
     };
     let wakes = Arc::new(AtomicUsize::new(0));
     let wake = Arc::clone(&wakes);
-    let engine = wait!(Engine::<Gpu>::new(GpuConfig {
-        redraw: Some(cherenkov_gpu::interop::RedrawCallback::new(move || {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(
+        Offscreen::new((8, 8), OffscreenFormat::LinearF16),
+        move || {
             wake.fetch_add(1, Ordering::Relaxed);
-        })),
-        ..GpuConfig::default()
-    }))?;
-    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {}))?;
+        }
+    ))?;
     let (callbacks, receive) = mpsc::channel();
     let (timings, frames) = mpsc::channel();
     let effect = engine.effect(EffectBox::from(ObservedEffect {
@@ -307,6 +307,7 @@ fn filter_wakes_coalesce_and_stop_after_detach() -> Result<(), Box<dyn std::erro
     wait!(engine.render(FrameTime::now()))?;
     drop(surface);
     assert_eq!(wait!(engine.render(FrameTime::now()))?, Next::Idle);
+    let before = wakes.load(Ordering::Relaxed);
     callback();
     assert_eq!(
         wakes.load(Ordering::Relaxed),

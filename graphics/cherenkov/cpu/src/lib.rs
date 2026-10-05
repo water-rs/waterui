@@ -44,30 +44,6 @@ mod names;
 mod render;
 
 use cherenkov::{Backend, EngineError, Offscreen, OffscreenFormat};
-use std::sync::Arc;
-
-/// Wakes the host to schedule a frame.
-#[derive(Clone)]
-pub struct RedrawCallback(Arc<dyn Fn() + Send + Sync>);
-
-impl RedrawCallback {
-    /// Creates a callback that wakes the host.
-    #[must_use]
-    pub fn new(callback: impl Fn() + Send + Sync + 'static) -> Self {
-        Self(Arc::new(callback))
-    }
-
-    /// Wakes an idle host for asynchronous filter parameter changes.
-    pub fn wake(&self) {
-        (self.0)();
-    }
-}
-
-impl std::fmt::Debug for RedrawCallback {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RedrawCallback").finish_non_exhaustive()
-    }
-}
 
 /// CPU worker information for provenance.
 #[derive(Clone, Debug)]
@@ -86,8 +62,6 @@ pub struct RasterConfig {
     /// Worker thread count for the banded rasterizer. `None` uses the
     /// rayon default (one thread per logical core).
     pub threads: Option<usize>,
-    /// Wakes an idle host for asynchronous filter parameter changes.
-    pub redraw: Option<RedrawCallback>,
     /// Memory budgets; only `budget.cpu` is used for resident images and cached glyph masks.
     /// Surface framebuffers and in-flight frame data are not evictable caches.
     pub budget: cherenkov::Budget,
@@ -256,7 +230,7 @@ impl Backend for Raster {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn init(config: RasterConfig) -> Result<(Self::Renderer, Self::Info), EngineError> {
-        render::init(config)
+        render::init(&config)
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -266,7 +240,7 @@ impl Backend for Raster {
         let mut config = Some(config);
         core::future::poll_fn(move |_| {
             core::task::Poll::Ready(render::init(
-                config.take().expect("init future is only polled once"),
+                &config.take().expect("init future is only polled once"),
             ))
         })
     }
