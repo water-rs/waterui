@@ -28,7 +28,7 @@ use waterui_layout::safe_area::{EdgeSet, IgnoreSafeArea, SafeAreaRegions};
 use waterui_layout::scroll::Axis as ScrollAxis;
 
 /// One of the four edges §7.1's regions sit on.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub enum Edge {
     Top,
     Leading,
@@ -116,7 +116,7 @@ impl Edge {
 /// edge: the subtree boundary sits at the deepest region not named, so an
 /// inner declaration can only move it outward — never re-cover a region an
 /// outer declaration already released.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct ReleasedRegions {
     container: bool,
     keyboard: bool,
@@ -154,7 +154,7 @@ impl ReleasedRegions {
 }
 
 /// One edge's safe-area boundary.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum EdgeBoundary {
     /// The window-space position the subtree's laid-out area ends at, and
     /// the regions released past it. A frame edge touching this position
@@ -185,7 +185,7 @@ impl EdgeBoundary {
 /// Per-edge distances in window logical units, named by the edge they sit
 /// on — a fill's paint extension, an `.ignore_safe_area` release, and a
 /// scroll surface's content inset all express themselves in this shape.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Default, PartialEq)]
 pub struct EdgeOffsets {
     pub top: f64,
     pub leading: f64,
@@ -227,7 +227,7 @@ impl EdgeOffsets {
 /// content (the surface insets and clears its own subtree, so nothing
 /// inside touches an edge) and inside the retained sub-views widgets lay
 /// out themselves (list rows and table cells).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct SafeAreaLayout {
     /// This node's laid-out frame in window space.
     frame: kurbo::Rect,
@@ -281,11 +281,6 @@ impl SafeAreaLayout {
             bottom: boundary(frame.y1),
             trailing: boundary(frame.x1),
         }
-    }
-
-    /// This node's laid-out frame in window space.
-    pub const fn frame(&self) -> kurbo::Rect {
-        self.frame
     }
 
     /// The context for a child whose laid-out frame is `frame` — the same
@@ -491,7 +486,7 @@ impl SafeAreaLayout {
 /// surface facts measured in window space — the distances hold in the
 /// surface's local space too, because layout space carries no visual
 /// transforms.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Default)]
 pub struct ScrollSurfaceFacts {
     /// Per-edge distance from the surface's laid-out frame to the window
     /// edge — non-zero only on edges the frame touched the boundary on.
@@ -564,12 +559,6 @@ pub struct ScrollSurfaceArea {
     /// Whether the keyboard top moved in this flush's early pass — selects
     /// the direct (not eased) scroll for a focus landing now.
     keyboard_moved: Cell<bool>,
-}
-
-impl core::fmt::Debug for ScrollSurfaceArea {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("ScrollSurfaceArea").finish_non_exhaustive()
-    }
 }
 
 /// One cleared field's identity and last observed geometry.

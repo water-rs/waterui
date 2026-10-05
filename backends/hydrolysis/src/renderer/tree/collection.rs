@@ -237,12 +237,6 @@ pub struct CollectionNode {
     pub(super) _layout_guards: Vec<BoxWatcherGuard>,
 }
 
-impl core::fmt::Debug for CollectionNode {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("CollectionNode").finish_non_exhaustive()
-    }
-}
-
 pub struct LazyStackNode {
     /// Per-frame measure memo gate: records whether this node's body was
     /// re-probed within a frame, gating `memo_slots` so a node measured
@@ -266,9 +260,8 @@ pub struct LazyStackNode {
     /// Stable identity owning this stack's own accessibility node id, so the id
     /// survives the visible window shifting the sibling ordinals.
     pub(super) accessibility_identity: Rc<()>,
-    /// The stack's own render identity.
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
+    /// The stack's own render identity — the key flush reads its recorded
+    /// §7.1 context under (`HydroState::safe_area_records`).
     pub(crate) render_id: RenderId,
     /// The unshielded environment when this stack carries accessibility naming
     /// metadata: `Some` means it emits the node naming itself.
@@ -285,10 +278,6 @@ pub struct LazyStackNode {
     /// the only rows that need exact pre-layout remeasurement on a reactive
     /// height change; all other rows keep their virtual estimate.
     pub(super) visible_range: RefCell<Range<usize>>,
-    /// The §7.1 context this stack was laid out against — `None` inside a
-    /// scroll surface's context-free content — which lazily materialized
-    /// items read at their flush.
-    pub(super) safe_area: RefCell<Option<Box<safe_area::SafeAreaLayout>>>,
     /// The main-axis span (in this stack's coordinates) the previous flush
     /// resolved as visible. `patch_visible` reuses it to materialize the
     /// window's items — including ids a membership change slid into it — while
@@ -325,12 +314,6 @@ pub struct LazyStackNode {
     /// `spacing` signal change schedules the refresh that re-derives the
     /// extent index and item rects.
     pub(super) _layout_guards: Vec<BoxWatcherGuard>,
-}
-
-impl core::fmt::Debug for LazyStackNode {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("LazyStackNode").finish_non_exhaustive()
-    }
 }
 
 impl CollectionNode {
@@ -1179,10 +1162,9 @@ impl LazyStackNode {
                 // same layout-fact mapping `WidgetRenderContext` and the
                 // collection layout loop share through
                 // `SafeAreaLayout::hosted_frame`.
-                let item_area = self
-                    .safe_area
-                    .borrow()
-                    .as_deref()
+                let item_area = renderer
+                    .state
+                    .recorded_safe_area(self.render_id)
                     .map(|area| area.with_frame(area.hosted_frame(ctx.bounds, child_rect)));
                 subview.flush_in_rect(renderer, ctx, env, proposal, child_rect, item_area);
             }

@@ -99,7 +99,6 @@ impl RenderNode {
             behavior: state,
             stretch,
             fill_leaf: false,
-            safe_area: RefCell::new(None),
             env: env.clone(),
         })
     }

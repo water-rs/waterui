@@ -616,7 +616,7 @@ fn build_window_scene<P: PlatformWindow>(
     phases.build_content += build_content_started_at.elapsed();
     let _ = drain_local_tasks();
     let scene_dispatch_started_at = Instant::now();
-    let safe_area = runtime.renderer.capture_window_tree(
+    let safe_area = runtime.renderer.capture_window_tree_with_root(
         content,
         env,
         bounds,

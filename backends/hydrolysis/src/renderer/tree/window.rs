@@ -38,7 +38,8 @@ pub(super) fn window_keyboard_insets(
 /// `bounds` shrunk by the deeper of the two regions on each edge — §7.1's
 /// "a view is laid out clear of the regions it does not ignore", applied
 /// at the window root. Clamps per axis so insets larger than the window
-/// collapse to the origin rather than inverting the rect. `safe_area::unreleased_depth`
+/// collapse to the origin rather than inverting the rect.
+/// [`ReleasedRegions::unreleased_depth`](safe_area::ReleasedRegions::unreleased_depth)
 /// owns the `max(container, keyboard)` resolution — the one place it lives.
 pub fn window_content_rect(
     bounds: kurbo::Rect,
@@ -68,6 +69,9 @@ pub fn window_root_layout(
     bounds: kurbo::Rect,
     transform: kurbo::Affine,
 ) -> (kurbo::Rect, Size, safe_area::SafeAreaLayout) {
+    // A whole-tree layout pass begins: every live node re-records its
+    // context below, so records keyed by dropped nodes go with the pass.
+    renderer.state.safe_area_records.clear();
     let container = window_container_insets(renderer, env);
     let keyboard = window_keyboard_insets(renderer, env);
     let content = window_content_rect(bounds, &container, &keyboard);
@@ -119,7 +123,7 @@ impl RenderNode {
     /// when so, which lets a size-changing swap reflow its ancestors without
     /// resetting the scene and re-dispatching, which is visible as a flash.
     /// Walks the whole tree.
-    pub fn patch(&mut self, renderer: &mut SemanticCore) -> bool {
+    pub(crate) fn patch(&mut self, renderer: &mut SemanticCore) -> bool {
         // No environment is threaded through: a rebuild uses the node's own captured
         // environment (`Dynamic`/`Collection`/`Env` carry it), so the walk only needs
         // the renderer.
@@ -200,7 +204,7 @@ impl RenderNode {
     /// `Dynamic`s still present in the tree. Walks the same child-bearing variants
     /// as [`RenderNode::patch`]. A set, not a list: the prune tests every cached
     /// identity against it, which is quadratic over a linear scan.
-    pub fn collect_dynamic_identities(&self) -> FxHashSet<usize> {
+    pub(crate) fn collect_dynamic_identities(&self) -> FxHashSet<usize> {
         let mut out = FxHashSet::default();
         self.collect_dynamic_identities_into(&mut out);
         out
@@ -393,7 +397,7 @@ impl SemanticCore {
     ///
     /// Like the rendered path, a call made with a tree already built applies
     /// the pending patch and re-emits instead of re-dispatching.
-    pub fn capture_window_semantics(&mut self, content: AnyView, env: &Environment) {
+    pub(crate) fn capture_window_semantics(&mut self, content: AnyView, env: &Environment) {
         if self.render_tree.is_some() {
             assert!(
                 self.flush_window_semantics(env),
@@ -428,7 +432,7 @@ impl SemanticCore {
     // `_env` is consumed only by the accessibility emit path; the signature must
     // match `capture_window_semantics` regardless of feature selection.
     #[allow(clippy::used_underscore_binding)]
-    pub fn flush_window_semantics(&mut self, _env: &Environment) -> bool {
+    pub(crate) fn flush_window_semantics(&mut self, _env: &Environment) -> bool {
         let Some(mut tree) = self.render_tree.take() else {
             return false;
         };
@@ -452,12 +456,8 @@ impl SemanticCore {
 impl HydrolysisRenderer {
     /// Build the retained tree before its first sized frame, so statically
     /// reachable nodes exist before the first render target is presented.
-    ///
-    /// # Panics
-    ///
-    /// Panics when a window tree is already present.
     #[cfg(test)]
-    pub fn prepare_window_tree(&mut self, content: AnyView, env: &Environment) {
+    pub(crate) fn prepare_window_tree(&mut self, content: AnyView, env: &Environment) {
         assert!(
             self.render_tree.is_none(),
             "hydrolysis renderer: window tree prepared more than once"
@@ -474,6 +474,20 @@ impl HydrolysisRenderer {
     /// `HydrolysisRenderer::capture_window_scene`. The built tree is retained in
     /// `render_tree` for subsequent per-frame flushes.
     pub fn capture_window_tree(
+        &mut self,
+        content: AnyView,
+        env: &Environment,
+        bounds: kurbo::Rect,
+        transform: kurbo::Affine,
+        hit_transform: kurbo::Affine,
+    ) {
+        self.capture_window_tree_with_root(content, env, bounds, transform, hit_transform);
+    }
+
+    /// `capture_window_tree` returning the frame's root §7.1 context — the
+    /// runner needs it to present context menus against the window's released
+    /// regions, but `SafeAreaLayout` itself is not public surface.
+    pub(crate) fn capture_window_tree_with_root(
         &mut self,
         content: AnyView,
         env: &Environment,
@@ -668,7 +682,7 @@ impl HydrolysisRenderer {
     /// The window contributes no maximum: content that does not stretch on an
     /// axis is laid out inside a larger offer per the layout spec, so an app
     /// pins a maximum only through `Window::max_size`.
-    pub fn measure_content_minimum(&mut self, env: &Environment) -> Option<Size> {
+    pub(crate) fn measure_content_minimum(&mut self, env: &Environment) -> Option<Size> {
         let tree = self.render_tree.take()?;
         let theme = self.theme();
         // Both axes are probed together, not independently: what a view
@@ -688,7 +702,7 @@ impl HydrolysisRenderer {
 
     /// The retained window tree's root, for render-identity probes.
     #[cfg(test)]
-    pub fn render_tree_root(&self) -> Option<&RenderNode> {
+    pub(crate) fn render_tree_root(&self) -> Option<&RenderNode> {
         self.render_tree.as_ref()
     }
 }

@@ -12,6 +12,13 @@ pub struct HydroState {
     /// Per-frame work counters for the fine-grained frame model; see
     /// [`crate::renderer::FrameWorkCounters`].
     pub(crate) counters: FrameWorkCounters,
+    /// The §7.1 context each node was last laid out against, keyed by its
+    /// `RenderId`. Side-stored here rather than on the node so node payloads
+    /// keep their previous size: `insert` overwrites the existing slot in
+    /// place, so a per-frame re-layout pays no new allocation. Cleared as
+    /// each whole-tree layout pass begins (`window_root_layout`), so dropped
+    /// nodes leave nothing behind.
+    pub(crate) safe_area_records: rustc_hash::FxHashMap<RenderId, SafeAreaLayout>,
 }
 
 impl HydroState {
@@ -20,7 +27,31 @@ impl HydroState {
             text: Arc::new(TextMeasureService::new(family_resolution)),
             measurement: MeasurementCaches::default(),
             counters: FrameWorkCounters::default(),
+            safe_area_records: rustc_hash::FxHashMap::default(),
         }
+    }
+    /// Records the §7.1 context a node laid out against (`None` clears it, so
+    /// a node moved into a scroll surface's context-free content keeps no
+    /// stale record). A `Some` reuses the occupied slot's storage — no new
+    /// allocation per re-layout.
+    pub(crate) fn record_safe_area(
+        &mut self,
+        render_id: RenderId,
+        safe_area: Option<SafeAreaLayout>,
+    ) {
+        match safe_area {
+            Some(area) => {
+                self.safe_area_records.insert(render_id, area);
+            }
+            None => {
+                self.safe_area_records.remove(&render_id);
+            }
+        }
+    }
+
+    /// The §7.1 context this node was last laid out against, if any.
+    pub(crate) fn recorded_safe_area(&self, render_id: RenderId) -> Option<&SafeAreaLayout> {
+        self.safe_area_records.get(&render_id)
     }
 }
 
