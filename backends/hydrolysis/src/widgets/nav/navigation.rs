@@ -2,7 +2,6 @@
 use crate::renderer::AccessibilityActionTarget;
 #[cfg(feature = "accessibility")]
 use crate::renderer::ROOT_NAVIGATION_IDENTITY;
-use crate::renderer::Recording;
 use crate::renderer::bounded_proposal;
 use crate::renderer::{
     CapturedScenePlacement, HydroNativeView, HydroState, HydrolysisRenderer, RenderContext,
@@ -1711,23 +1710,25 @@ fn render_navigation_page_scene(
             entry.content.render_built_scene(renderer, env, placement)
         }
     };
-    let mut scene = Recording::new();
     let bounds = kurbo::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height));
-    scene.fill_paint(
-        peniko::Fill::NonZero,
-        kurbo::Affine::IDENTITY,
-        Paint::Solid(renderer.read_signal(&background)),
-        &bounds,
-    );
-    scene.append(&captured.scene, kurbo::Affine::IDENTITY);
-    if identity != 0 {
-        core::mem::swap(renderer.scene_mut(), &mut scene);
-        let context = RenderContext::with_transforms(
-            bounds,
+    let background = Paint::Solid(renderer.read_signal(&background));
+    let page_layers = core::mem::take(&mut captured.layers);
+    // The page as the stack presents it: its background, the page's own
+    // layers above it, and the back chevron on top of a pushed page.
+    captured.layers = renderer.capture_layers(|renderer| {
+        renderer.scene_mut().fill_paint(
+            peniko::Fill::NonZero,
             kurbo::Affine::IDENTITY,
-            kurbo::Affine::IDENTITY,
+            background,
+            &bounds,
         );
-        {
+        renderer.present_layers(&page_layers, kurbo::Affine::IDENTITY);
+        if identity != 0 {
+            let context = RenderContext::with_transforms(
+                bounds,
+                kurbo::Affine::IDENTITY,
+                kurbo::Affine::IDENTITY,
+            );
             let theme = renderer.theme();
             renderer.draw_context(context, |draw| {
                 theme.draw_navigation_back_button(
@@ -1736,9 +1737,7 @@ fn render_navigation_page_scene(
                 );
             });
         }
-        core::mem::swap(renderer.scene_mut(), &mut scene);
-    }
-    captured.scene = scene;
+    });
     captured.leading_reserve = navigation_leading_reserve(env);
     captured
 }
@@ -2169,7 +2168,7 @@ pub fn render_navigation_stack_parts(
             &to_scene,
         );
     } else {
-        ctx.append_scene(&active_scene.composed());
+        ctx.present_layers(&active_scene.composed());
     }
 
     if depth == 0 {

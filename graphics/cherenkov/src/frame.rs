@@ -3,8 +3,9 @@
 //!
 //! [`Engine::render`]: crate::Engine::render
 
+use cherenkov_record::RefreshRange;
+
 use crate::Instant;
-use std::ops::RangeInclusive;
 
 /// The presentation timestamp handed to [`Engine::render`](crate::Engine::render).
 ///
@@ -27,9 +28,6 @@ impl FrameTime {
         Self(Instant::now())
     }
 }
-
-/// An inclusive refresh-rate range in hertz.
-pub type RefreshRange = RangeInclusive<u32>;
 
 /// The refresh range a surface requests when its host does not set one: up
 /// to 120 Hz, the performance target on current high-refresh displays.

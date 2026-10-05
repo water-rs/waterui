@@ -8,40 +8,37 @@
 //! the producer moves to the engine.
 //!
 //! The producer installs exactly once: [`GpuContentView::take_engine_content`]
-//! moves it into an engine `GpuContentHandle`, which one layer consumes at
-//! install. A mount that drops its layer cannot be repopulated — the content
-//! is gone — so a keyed mount presenting `GpuContent` is allowed to live for
-//! the frame's whole key set, and transient (capture) windows never install
-//! it at all: a capture cannot consume the one install the producer gets.
+//! moves it into an engine `GpuContentHandle`, registered as a
+//! `GpuProducer`. The producer outlives any one layer: a keyed mount that is
+//! dropped (a navigation page that is covered) and comes back binds the same
+//! producer to its new layer. Transient (capture) windows never install it at
+//! all: a capture cannot consume the one install the producer gets.
 
 use waterui_graphics::gpu::{ExternalFrameView, FrameReceiver, GpuContentView};
 
 /// The `GpuContentView` a [`crate::renderer::tree::GpuContentNode`] owns, and
-/// whether its producer has been installed on an engine layer yet.
+/// its engine producer once installed.
 ///
-/// `installed` flips when the first `GpuContentLayer` carrying this runtime
+/// `producer` is set when the first `GpuContentLayer` carrying this runtime
 /// reaches a persistent window's install pass — never on a transient target,
 /// which would spend the view's single install on a surface that dies with
 /// the call.
 pub struct GpuContentRuntime {
     pub(crate) view: GpuContentView,
-    /// `true` once `take_engine_content` has run; the producer is on the
-    /// engine from then on and only re-bind/transform edits apply.
-    pub(crate) installed: bool,
-    /// The engine producer the content was registered as, retained so its
-    /// binding can be re-issued and the producer retired on drop.
+    /// The engine producer the content was registered as: `Some` once
+    /// `take_engine_content` has run, retained so it can be bound again and
+    /// retired on drop.
     pub(crate) producer: Option<cherenkov::GpuProducer<cherenkov_gpu::Gpu>>,
-    /// The pixel size the producer is currently bound at.
-    pub(crate) bound_size: Option<(u32, u32)>,
+    /// The engine layer and pixel size the producer is currently bound at.
+    pub(crate) binding: Option<(cherenkov::LayerId, (u32, u32))>,
 }
 
 impl GpuContentRuntime {
     pub(crate) const fn new(view: GpuContentView) -> Self {
         Self {
             view,
-            installed: false,
             producer: None,
-            bound_size: None,
+            binding: None,
         }
     }
 }
@@ -66,8 +63,8 @@ pub struct ExternalFrameRuntime {
     pub(crate) sink: Option<cherenkov::FrameSink<cherenkov_gpu::Gpu>>,
     /// The plane size of the last presented frame, for the stretch transform.
     pub(crate) frame_pixels: Option<(u32, u32)>,
-    /// The pixel size the producer is currently bound at.
-    pub(crate) bound_size: Option<(u32, u32)>,
+    /// The engine layer and plane size the producer is currently bound at.
+    pub(crate) binding: Option<(cherenkov::LayerId, (u32, u32))>,
 }
 
 impl ExternalFrameRuntime {
@@ -78,7 +75,7 @@ impl ExternalFrameRuntime {
             producer: None,
             sink: None,
             frame_pixels: None,
-            bound_size: None,
+            binding: None,
         }
     }
 }

@@ -6,11 +6,12 @@ use waterui::navigation::{
 use waterui_backend_core::widget::NavigationMotion;
 
 use super::{NavigationCapturedScene, NavigationMatchedElement};
-use crate::renderer::Recording;
+use crate::renderer::{CapturedLayers, HydrolysisRenderer, LayerTransforms};
 
 pub struct NavigationTransitionFrame<'a> {
-    pub(crate) scene: &'a mut Recording,
-    pub(crate) transform: kurbo::Affine,
+    pub(crate) renderer: &'a mut HydrolysisRenderer,
+    /// The stack's paint and hit-test placement.
+    pub(crate) transforms: LayerTransforms,
     pub(crate) bounds: kurbo::Rect,
     pub(crate) style: AnyNavigationTransition,
     pub(crate) motion: NavigationMotion,
@@ -51,7 +52,7 @@ pub fn draw_navigation_transition(frame: NavigationTransitionFrame<'_>) {
         NavigationTransitionDirection::Pop => [incoming, outgoing],
     };
     for (scene, layer) in layers {
-        append_scene_layer(frame.scene, frame.transform, frame.bounds, scene, layer);
+        append_scene_layer(frame.renderer, frame.transforms, frame.bounds, scene, layer);
     }
 }
 
@@ -136,15 +137,15 @@ fn draw_matched_navigation_transition(
     let from_page = frame.from_scene.composed_without(from_is_source, id);
     let to_page = frame.to_scene.composed_without(to_is_source, id);
     append_scene_with_opacity(
-        frame.scene,
-        frame.transform,
+        frame.renderer,
+        frame.transforms,
         frame.bounds,
         &from_page,
         1.0 - crate::num_cast::f64_as_f32(frame.progress),
     );
     append_scene_with_opacity(
-        frame.scene,
-        frame.transform,
+        frame.renderer,
+        frame.transforms,
         frame.bounds,
         &to_page,
         crate::num_cast::f64_as_f32(frame.progress),
@@ -152,15 +153,15 @@ fn draw_matched_navigation_transition(
 
     let bounds = interpolate_rect(from_element.bounds, to_element.bounds, frame.progress);
     append_matched_element(
-        frame.scene,
-        frame.transform,
+        frame.renderer,
+        frame.transforms,
         from_element,
         bounds,
         1.0 - crate::num_cast::f64_as_f32(frame.progress),
     );
     append_matched_element(
-        frame.scene,
-        frame.transform,
+        frame.renderer,
+        frame.transforms,
         to_element,
         bounds,
         crate::num_cast::f64_as_f32(frame.progress),
@@ -178,8 +179,8 @@ fn interpolate_rect(from: kurbo::Rect, to: kurbo::Rect, progress: f64) -> kurbo:
 }
 
 fn append_matched_element(
-    scene: &mut Recording,
-    transform: kurbo::Affine,
+    renderer: &mut HydrolysisRenderer,
+    transforms: LayerTransforms,
     element: &NavigationMatchedElement,
     target: kurbo::Rect,
     opacity: f32,
@@ -193,26 +194,21 @@ fn append_matched_element(
             target.height() / element.bounds.height(),
         )
         * kurbo::Affine::translate((-element.bounds.x0, -element.bounds.y0));
-    scene.with_group(
-        peniko::Fill::NonZero,
-        peniko::BlendMode::default(),
-        opacity,
-        transform,
-        &target,
-        |scene| scene.append(&element.scene, transform * local),
-    );
+    renderer.with_clip_rect_scope(opacity, transforms, target, |renderer| {
+        renderer.present_layers(&element.layers, transforms.paint * local);
+    });
 }
 
 fn append_scene_with_opacity(
-    scene: &mut Recording,
-    transform: kurbo::Affine,
+    renderer: &mut HydrolysisRenderer,
+    transforms: LayerTransforms,
     clip_bounds: kurbo::Rect,
-    content: &Recording,
+    content: &CapturedLayers,
     opacity: f32,
 ) {
     append_scene_layer(
-        scene,
-        transform,
+        renderer,
+        transforms,
         clip_bounds,
         content,
         NavigationTransitionLayer {
@@ -223,10 +219,10 @@ fn append_scene_with_opacity(
 }
 
 fn append_scene_layer(
-    scene: &mut Recording,
-    transform: kurbo::Affine,
+    renderer: &mut HydrolysisRenderer,
+    transforms: LayerTransforms,
     clip_bounds: kurbo::Rect,
-    content: &Recording,
+    content: &CapturedLayers,
     layer: NavigationTransitionLayer,
 ) {
     if layer.opacity <= 0.0 {
@@ -240,14 +236,14 @@ fn append_scene_layer(
         * kurbo::Affine::scale(f64::from(layer.scale))
         * kurbo::Affine::translate((-center.x, -center.y));
     let transformed_bounds = local.transform_rect_bbox(clip_bounds);
-    scene.with_group(
-        peniko::Fill::NonZero,
-        peniko::BlendMode::default(),
-        layer.opacity,
-        transform,
-        &transformed_bounds,
-        |scene| scene.append(content, transform * local),
-    );
+    // The scope's opacity reaches every layer the page presents, but each
+    // keyed layer and each run of drawing between them is faded on its own
+    // engine layer rather than as one flattened group, so translucent
+    // content that overlaps across those layers blends slightly differently
+    // mid-transition than it would flattened.
+    renderer.with_clip_rect_scope(layer.opacity, transforms, transformed_bounds, |renderer| {
+        renderer.present_layers(content, transforms.paint * local);
+    });
 }
 
 #[cfg(test)]

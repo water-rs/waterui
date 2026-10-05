@@ -28,14 +28,25 @@ use crate::error::{EngineError, RenderError, ResourceError, SurfaceError};
 use crate::frame::{FrameId, FrameStats, FrameTime, FrameTiming, Readback};
 use crate::glyph::FontId;
 use crate::image::ImageUpload;
-use crate::message::{ContentOp, FontData, LayerId, SurfaceId};
+use crate::message::FontData;
 use crate::paint::ImageId;
-use crate::resource::ResourceId;
-use crate::tree::SurfaceTree;
+use cherenkov_record::{ContentOp, LayerId, SurfaceId};
+use cherenkov_record::{ResourceId, SurfaceTree};
 
-/// The render-thread contract. Implemented by a zero-sized marker type
-/// (`Gpu`, `Vello`, `Raster`).
-pub trait Backend: Sized + 'static {
+/// The render-thread contract, a zero-sized marker type (`Gpu`, `Raster`).
+///
+/// The [`cherenkov_record::Target`] the layer tree is generic over: an
+/// engine backend's queue is the engine's
+/// [`EngineQueue`](crate::EngineQueue) and its install payload the
+/// render-side [`InstallOp`](crate::message::InstallOp), which is
+/// render-thread transferable like every other render op.
+pub trait Backend:
+    Sized
+    + cherenkov_record::Target<
+        Queue = crate::surface::EngineQueue<Self>,
+        Install = crate::message::InstallOp<Self>,
+    > + 'static
+{
     /// The backend's configuration type.
     type Config: RenderTransfer + 'static;
     /// Provenance for reports.
@@ -123,6 +134,16 @@ pub trait Renderer: 'static {
 
     /// Unregisters a font no installed content draws any more.
     fn remove_font(&mut self, id: FontId);
+
+    /// The largest image this renderer admits, in each dimension and in
+    /// total texels: the device's texture limit, or the per-image share
+    /// of the backend's memory budget. The engine reads it once, right
+    /// after [`Backend::init`] returns the renderer, and it must not
+    /// change afterwards: [`Engine::image`](crate::Engine::image) and
+    /// [`Image::replace`](crate::Image::replace) check it on the calling
+    /// thread and reject what it does not admit before anything is
+    /// queued.
+    fn image_limits(&self) -> crate::ImageLimits;
 
     /// Registers an image. A rejection fails every later render that
     /// draws the image with [`RenderError::Rejected`].

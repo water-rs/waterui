@@ -1,4 +1,4 @@
-use super::{HydrolysisRenderer, Recording, TailMark};
+use super::{CapturedLayers, HydrolysisRenderer, TailMark};
 
 use crate::renderer::HydroState;
 use crate::renderer::frame::LayerTransforms;
@@ -213,8 +213,9 @@ impl<'a> WidgetRenderContext<'a> {
         );
     }
 
-    pub(crate) fn append_scene(&mut self, scene: &Recording) {
-        self.renderer.scene_mut().append(scene, self.transform);
+    /// Presents captured layers at this context's transform.
+    pub(crate) fn present_layers(&mut self, layers: &CapturedLayers) {
+        self.renderer.present_layers(layers, self.transform);
     }
 
     pub(crate) fn draw_navigation_transition(
@@ -227,8 +228,11 @@ impl<'a> WidgetRenderContext<'a> {
         to_scene: &NavigationCapturedScene,
     ) {
         draw_navigation_transition(NavigationTransitionFrame {
-            scene: self.renderer.scene_mut(),
-            transform: self.transform,
+            renderer: self.renderer,
+            transforms: LayerTransforms {
+                paint: self.transform,
+                hit: self.hit_transform,
+            },
             bounds: self.bounds,
             style,
             motion,
