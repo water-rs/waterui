@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 
+# Manual smoke check for a staged WPE runtime; needs dma-buf-capable GPU
+# hardware, so it is not part of the release workflow.
+
 import argparse
 import json
 import pathlib
