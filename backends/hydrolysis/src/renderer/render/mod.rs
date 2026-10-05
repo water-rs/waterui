@@ -15,8 +15,8 @@ pub use compositor::HydrolysisRenderTarget;
 #[cfg(hydrolysis_macos_system_webview)]
 pub(crate) use compositor::NativeViewLayer;
 pub use compositor::{
-    ActiveSceneLayer, CapturedLayers, CherenkovWindow, Compositor, ExternalFrameLayer, FilteredLayer,
-    FrameRenderTarget, GpuContentLayer, LayerShape, RenderLayer, SceneContentLayer,
+    ActiveSceneLayer, CapturedLayers, CherenkovWindow, Compositor, EngineFrame, ExternalFrameLayer,
+    FilteredLayer, FrameRenderTarget, GpuContentLayer, LayerShape, RenderLayer, SceneContentLayer,
 };
 pub use measurement::*;
 pub use measurement_cache::{MeasurementCaches, MemoGate, NodeMeasureEntry};

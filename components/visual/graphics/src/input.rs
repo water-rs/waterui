@@ -8,7 +8,7 @@
 //! feature), whose engine-hosted GPU content gets them through its
 //! `on_input` handler, and a
 //! [`SceneContent`](crate::scene_view::SceneContent), which records into a
-//! `cherenkov::Recorder` and lets the backend decide how the scene reaches
+//! `waterui_graphics::draw::Recorder` and lets the backend decide how the scene reaches
 //! the screen.
 //! Every backend used to invent its own adapter for this, so an engine had to
 //! be ported once per backend. This module is the single vocabulary they all

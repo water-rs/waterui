@@ -18,7 +18,7 @@
 //! Reactive parameters are [`Reactive`] slots: a nami signal on the UI side
 //! feeds a `Send` value slot the render side samples, and a change carrying
 //! a public [`Animation`] in its metadata hands an interpolator to every
-//! watcher. The engine consumes its own `cherenkov::Animation`, so the
+//! watcher. The engine consumes its own `crate::draw::Animation`, so the
 //! metadata type is mapped through the public `curve()`/`duration()`
 //! contract at the watcher boundary.
 

@@ -11,7 +11,7 @@ mod linux {
     use waterui_browser_wpe::{
         DmaBufFrameSource, DmaBufGpuView, WPE_WEBKIT_VERSION, WpePage, WpeRuntime, WpeRuntimePaths,
     };
-    use waterui_graphics::cherenkov::Display;
+    use waterui_graphics::cherenkov::{Display, FrameTime};
     use waterui_graphics::gpu::{GpuContentRenderer, GpuRuntime};
     use waterui_graphics::{OffscreenImage, OffscreenSize};
     use waterui_webview::{BackendEvent, WebViewEvent};
@@ -128,7 +128,8 @@ mod linux {
         let engine_content = view.take_engine_content(|| {});
         let context = gpu_runtime.context();
         let mut renderer =
-            GpuContentRenderer::new(gpu_runtime, context.clone(), engine_content, size);
+            GpuContentRenderer::new(gpu_runtime, context.clone(), engine_content, size)
+                .expect("the smoke renderer's engine layer installs");
         // The UI hook feeds the content's mailbox; run it before presenting so
         // the smoke frame is queued for the render.
         view.frame();
@@ -147,13 +148,16 @@ mod linux {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        renderer.present(
-            &target,
-            Display {
-                scale: 1.0,
-                headroom: 1.0,
-            },
-        );
+        renderer
+            .present(
+                &target,
+                Display {
+                    scale: 1.0,
+                    headroom: 1.0,
+                },
+                FrameTime(Instant::now()),
+            )
+            .expect("the smoke frame presents");
         let bytes_per_row = WIDTH * 4;
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("wpe_smoke_readback"),

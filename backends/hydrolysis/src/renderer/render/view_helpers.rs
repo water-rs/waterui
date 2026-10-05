@@ -636,7 +636,7 @@ pub fn interaction_focus_ring(
 ) -> Option<(
     kurbo::Rect,
     kurbo::RoundedRectRadii,
-    cherenkov::WorkingColor,
+    waterui_graphics::draw::WorkingColor,
     f64,
 )> {
     let ring = style.focus_ring.as_ref()?;
@@ -938,7 +938,7 @@ pub fn anchor_point(bounds: kurbo::Rect, anchor: waterui::style::Anchor) -> kurb
 
 /// The sRGB8 encoding of a resolved working colour — the form parley's text
 /// layout takes for its brush.
-pub fn working_color_to_rgba8(color: cherenkov::WorkingColor) -> [u8; 4] {
+pub fn working_color_to_rgba8(color: waterui_graphics::draw::WorkingColor) -> [u8; 4] {
     let srgb = waterui_graphics::color::working::to_srgb(color);
     [
         crate::num_cast::f32_as_u8((srgb.red.clamp(0.0, 1.0) * 255.0).round()),

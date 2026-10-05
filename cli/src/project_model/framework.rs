@@ -901,6 +901,32 @@ impl ResolvedFramework {
         )
     }
 
+    /// The error a `Water.lock` whose contents no longer hash to the
+    /// checksum the selection records hits — a hand edit, or a merge that
+    /// took `Water.toml` from one side and `Water.lock` from the other.
+    /// Name the channel and the selected revision, the recorded and the
+    /// found checksums, and the `water channel` command that writes the
+    /// pair again — the same shape `unresolved_revision_error` takes.
+    fn lock_mismatch_error(&self, revision: &str, expected: &str, found: &str) -> eyre::Report {
+        let channel = self
+            .channel()
+            .expect("stable and local selections return early");
+        // `--rev` pins a commit of the dev channel only; the certified
+        // channels re-resolve their own exact revision.
+        let reconcile = match channel {
+            FrameworkChannel::Dev => format!("water channel {channel} --rev {revision}"),
+            FrameworkChannel::Nightly | FrameworkChannel::Stable => {
+                format!("water channel {channel}")
+            }
+        };
+        eyre!(
+            "Water.lock does not match the selected framework revision {revision} \
+             on the {channel} channel; Water.toml records the lock checksum \
+             {expected} and the file on disk hashes to {found}; run `{reconcile}` \
+             to rewrite Water.lock for the selected revision"
+        )
+    }
+
     pub(crate) async fn prepare_build(
         &self,
         project: &Project,
@@ -1067,8 +1093,9 @@ impl ResolvedFramework {
                 ..
             } => (repository, revision, lock_sha256),
         };
-        if hex::encode(Sha256::digest(contents)) != *expected {
-            bail!("Water.lock does not match the selected framework revision");
+        let found = hex::encode(Sha256::digest(contents));
+        if found != *expected {
+            return Err(self.lock_mismatch_error(revision, expected, &found));
         }
         let mut lock: Lockfile = std::str::from_utf8(contents)?.parse()?;
         annotate_workspace_lock(&mut lock, repository, revision)?;
@@ -3372,6 +3399,48 @@ mod tests {
         assert!(message.contains(&selected), "{message}");
         assert!(message.contains("no framework revision"), "{message}");
         assert!(message.contains("water channel dev"), "{message}");
+    }
+
+    /// A `Water.lock` that no longer hashes to the checksum the selection
+    /// records fails naming the channel and the selected revision, the
+    /// recorded and the found checksums, and the `water channel` command
+    /// that writes the pair again — `dev --rev` re-pinning the recorded
+    /// revision on dev, a `nightly` re-resolution on nightly (#1814).
+    #[test]
+    fn a_mismatched_water_lock_names_the_checksums_and_the_command() {
+        let contents = test_lock().to_string();
+        let found = hex::encode(Sha256::digest(contents.as_bytes()));
+        for framework in [dev_framework(), nightly_framework()] {
+            let (revision, recorded, command) = match &framework.source {
+                Source::Dev {
+                    revision,
+                    lock_sha256,
+                    ..
+                } => (
+                    revision.clone(),
+                    lock_sha256.clone(),
+                    format!("water channel dev --rev {revision}"),
+                ),
+                Source::Nightly {
+                    revision,
+                    lock_sha256,
+                    ..
+                } => (
+                    revision.clone(),
+                    lock_sha256.clone(),
+                    "water channel nightly".to_owned(),
+                ),
+                _ => unreachable!("dev and nightly selections only"),
+            };
+            let message = framework
+                .cargo_lock(contents.as_bytes())
+                .unwrap_err()
+                .to_string();
+            assert!(message.contains(&revision), "{message}");
+            assert!(message.contains(&recorded), "{message}");
+            assert!(message.contains(&found), "{message}");
+            assert!(message.contains(&command), "{message}");
+        }
     }
 
     /// `water create` seeds the generated crate's lock the way the build

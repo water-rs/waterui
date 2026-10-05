@@ -98,9 +98,9 @@ pub trait Renderer: 'static {
     /// it changes.
     ///
     /// While a surface is hidden the render loop leaves it out of every
-    /// [`Frame`], and [`Redraw`] counts only visible surfaces: custom GPU
-    /// content and filters on a hidden surface want no redraw. Their host
-    /// wakes stop earlier, through their [`WakeGate`](crate::WakeGate),
+    /// [`Frame`], and [`FrameRedraw`] counts only visible surfaces: custom
+    /// GPU content and filters on a hidden surface want no redraw. Their
+    /// host wakes stop earlier, through their [`WakeGate`](crate::WakeGate),
     /// the moment the host hides the surface. Content ops, installs and
     /// resource changes still arrive while it is hidden. When it becomes
     /// visible again the next frame lists it, and a producer or filter
@@ -171,13 +171,18 @@ pub trait Renderer: 'static {
     fn remove_layer(&mut self, surface: SurfaceId, layer: LayerId);
 
     /// Renders every surface in `frame` whose tree or content changed;
-    /// returns whether a backend-side source (custom GPU content, an
-    /// animated shader) wants another frame.
+    /// returns the surfaces a backend-side source (custom GPU content, an
+    /// animated shader, a pending presentation) wants the next frame for,
+    /// each with its refresh class.
     ///
     /// # Errors
     /// [`RenderError`] fails the whole `render` call.
     #[cfg(not(target_arch = "wasm32"))]
-    fn render(&mut self, frame: &Frame<'_>, stats: &mut FrameStats) -> Result<Redraw, RenderError>;
+    fn render(
+        &mut self,
+        frame: &Frame<'_>,
+        stats: &mut FrameStats,
+    ) -> Result<FrameRedraw, RenderError>;
 
     /// Executes on the owning JS thread, yielding for browser operations.
     ///
@@ -188,7 +193,7 @@ pub trait Renderer: 'static {
         &mut self,
         frame: &Frame<'_>,
         stats: &mut FrameStats,
-    ) -> impl core::future::Future<Output = Result<Redraw, RenderError>>;
+    ) -> impl core::future::Future<Output = Result<FrameRedraw, RenderError>>;
 
     /// Returns all GPU timings accumulated since the previous call,
     /// oldest first. Timings stay on the renderer rather than being
@@ -279,17 +284,102 @@ pub struct SurfaceInfo {
     pub presents: bool,
 }
 
-/// Whether a backend wants another frame after the current one.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Redraw {
-    /// Nothing backend-side is animated.
-    None,
-    /// A backend source (custom GPU content, an animated shader paint)
-    /// wants the next frame.
-    Wanted {
-        /// Inclusive display refresh range in hertz.
-        rate: crate::RefreshRange,
-    },
+/// The request map's copy-on-write storage, per the target's ownership
+/// model: `Arc` natively, where a returned result crosses the render
+/// thread's reply channel; `Rc` in the browser's single-threaded engine.
+#[cfg(not(target_arch = "wasm32"))]
+type SharedRequests = std::sync::Arc<rustc_hash::FxHashMap<SurfaceId, crate::RefreshRange>>;
+#[cfg(target_arch = "wasm32")]
+type SharedRequests = std::rc::Rc<rustc_hash::FxHashMap<SurfaceId, crate::RefreshRange>>;
+
+/// The per-surface refresh requests a backend reported for a frame.
+///
+/// A backend-side source — a custom GPU content, an animated shader
+/// paint, a filter, a pending native presentation — wants the next frame
+/// for the surface it draws into, never for the frame at large: the
+/// requests keep that identity so the engine can publish each surface's
+/// own deadline through [`Surface::next_frame`](crate::Surface::next_frame).
+/// Surfaces carrying no request do not appear in the collection.
+///
+/// Backed by a keyed map: recording, combining and reading back a
+/// surface's request all stay O(1), so per-frame bookkeeping is linear in
+/// the surface count — linear scans would make the 200-surface path this
+/// scheduling fix exists for quadratic.
+#[derive(Clone, Debug, Default)]
+pub struct FrameRedraw {
+    /// The unioned request per surface that asked for the next frame —
+    /// copy-on-write shared storage: a renderer retains this map as its
+    /// per-render scratch and hands out [`Clone`]s of the result, so the
+    /// steady state mutates uniquely owned storage — reset and request
+    /// need no fresh allocation — while a consumer that legitimately
+    /// retains or clones a result keeps that snapshot exactly. `None`
+    /// carries the empty collection without any allocation.
+    requests: Option<SharedRequests>,
+}
+
+impl PartialEq for FrameRedraw {
+    /// Logical collection equality — keyed map contents only, never
+    /// storage allocation state or iteration order: a default (`None`)
+    /// and a cleared previously-nonempty collection (`Some` empty map)
+    /// both represent exactly no requests and compare equal.
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.requests, &other.requests) {
+            (None, None) => true,
+            (Some(a), Some(b)) => **a == **b,
+            (Some(map), None) | (None, Some(map)) => map.is_empty(),
+        }
+    }
+}
+
+impl Eq for FrameRedraw {}
+
+impl FrameRedraw {
+    /// Records that `surface` wants the next frame at `rate`, unioning
+    /// repeated requests for the same surface into one entry.
+    pub fn request(&mut self, surface: SurfaceId, rate: crate::RefreshRange) {
+        let requests = self.requests.get_or_insert_with(SharedRequests::default);
+        // Mutating through make_mut is copy-on-write: a snapshot another
+        // owner still holds is never written into.
+        SharedRequests::make_mut(requests)
+            .entry(surface)
+            .and_modify(|kept| *kept = union_rate(kept.clone(), rate.clone()))
+            .or_insert(rate);
+    }
+
+    /// Empties the collection for the next render while keeping the
+    /// map's storage — the renderer-owned scratch this result clones
+    /// out of resets in place in the steady state.
+    pub fn clear(&mut self) {
+        if let Some(requests) = self.requests.as_mut() {
+            SharedRequests::make_mut(requests).clear();
+        }
+    }
+
+    /// The request `surface` made, when it asked for the next frame.
+    #[must_use]
+    pub fn for_surface(&self, surface: SurfaceId) -> Option<&crate::RefreshRange> {
+        self.requests.as_ref()?.get(&surface)
+    }
+
+    /// The requests, one per surface — unordered.
+    pub fn iter(&self) -> impl Iterator<Item = (&SurfaceId, &crate::RefreshRange)> {
+        self.requests.iter().flat_map(|requests| requests.iter())
+    }
+
+    /// The union of every request's refresh range — the frame's aggregate
+    /// backend demand.
+    #[must_use]
+    pub fn rate(&self) -> Option<crate::RefreshRange> {
+        self.requests.as_ref()?.values().fold(None, |rate, next| {
+            Some(rate.map_or_else(|| next.clone(), |rate| union_rate(rate, next.clone())))
+        })
+    }
+}
+
+/// The union of two refresh ranges: the slowest floor, the fastest
+/// ceiling — a frame serving both rates ticks at the covered range.
+pub fn union_rate(a: crate::RefreshRange, b: crate::RefreshRange) -> crate::RefreshRange {
+    (*a.start()).min(*b.start())..=(*a.end()).max(*b.end())
 }
 
 /// One frame's render input: every live surface with its sampled tree.

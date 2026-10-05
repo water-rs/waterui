@@ -651,11 +651,13 @@ impl SurfaceTree {
             .map(|(id, node)| (LayerId::new(*id), node))
     }
 
-    /// Removes `id` and its descendants. Returns every removed id.
+    /// Removes `id` — only `id`. Its children stay in the tree, detached
+    /// and undrawn, until their own `Remove` or re-attachment: a `Layer`
+    /// handle owns exactly its own layer.
     ///
     /// # Panics
     /// Panics when `id` is not in the tree or is the root.
-    pub fn remove(&mut self, id: LayerId) -> Vec<LayerId> {
+    pub fn remove(&mut self, id: LayerId) {
         assert!(
             self.nodes.contains_key(&id.raw()),
             "removing unknown layer {}",
@@ -663,17 +665,11 @@ impl SurfaceTree {
         );
         assert_ne!(id, self.root, "the root layer cannot be removed");
         self.detach(id);
-        let mut removed = Vec::new();
-        let mut stack = vec![id];
-        while let Some(current) = stack.pop() {
-            let Some(node) = self.nodes.remove(&current.raw()) else {
-                continue;
-            };
-            stack.extend(node.children.iter().copied());
-            self.projective.remove(&current.raw());
-            removed.push(current);
+        let node = self.nodes.remove(&id.raw()).expect("checked above");
+        for child in node.children {
+            self.node_mut(child).parent = None;
         }
-        removed
+        self.projective.remove(&id.raw());
     }
 
     /// Applies one committed layer op.
@@ -1189,11 +1185,13 @@ mod hierarchy_tests {
         });
         assert_eq!(tree.layer(tree.root()).children, [LayerId::new(3)]);
         assert_eq!(tree.layer(LayerId::new(1)).parent, Some(LayerId::new(3)));
-        assert_eq!(
-            tree.remove(LayerId::new(1)),
-            [LayerId::new(1), LayerId::new(2)]
-        );
+        // Removing a layer removes only it: its children stay in the
+        // tree, detached, until their own `Remove` or re-attachment.
+        tree.remove(LayerId::new(1));
+        assert!(tree.layers().all(|(id, _)| id != LayerId::new(1)));
         assert_eq!(tree.layer(LayerId::new(3)).children, []);
+        assert!(tree.layer(LayerId::new(2)).parent.is_none());
+        tree.remove(LayerId::new(2));
     }
 
     #[test]
