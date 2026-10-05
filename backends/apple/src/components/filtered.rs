@@ -1372,16 +1372,6 @@ pub fn install(dispatcher: &mut Dispatcher) {
                 }
             });
         }
-        {
-            let weak = Rc::downgrade(&state);
-            view.set_superview_handler(move |_| {
-                if let Some(state) = weak.upgrade() {
-                    refresh_visibility_watches(&state);
-                    initialize_gpu(&state);
-                    schedule_frame_if_needed(&state);
-                }
-            });
-        }
         #[cfg(target_os = "macos")]
         {
             let weak = Rc::downgrade(&state);
