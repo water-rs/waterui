@@ -38,7 +38,7 @@ use waterui_graphics::wgpu;
 
 use crate::contract::NativeLeaf;
 use crate::dispatch::Dispatcher;
-use crate::gpu_runtime::{EngineGeneration, SceneEngine, SceneError};
+use crate::gpu_runtime::{EngineGeneration, SceneEngine};
 use crate::presentation_time::PresentationTime;
 
 #[cfg(target_os = "macos")]
@@ -100,9 +100,7 @@ trait HostedView {
     ///
     /// # Errors
     ///
-    /// [`HostedError`] when the layer or its engine cannot be created —
-    /// callers run inside frame callbacks where a panic is a process
-    /// abort, so creation failure is a typed result.
+    /// [`HostedError`] when the layer or its engine cannot be created.
     fn renderer(
         &mut self,
         runtime: &GpuRuntime,
@@ -123,9 +121,7 @@ trait HostedRenderer {
     ///
     /// # Errors
     ///
-    /// [`HostedError`] when preparation or the frame fails — the frame
-    /// path cannot unwind across an Objective-C callback, so every failure
-    /// is a typed result.
+    /// [`HostedError`] when preparation or the frame fails.
     fn present(
         &mut self,
         target: &wgpu::Texture,
@@ -163,7 +159,7 @@ enum HostedError {
     /// The shared scene engine generation failed — the generation
     /// owner's owned carrier, so every affected participant and later
     /// mount sees the same typed failure without rerunning it.
-    Scene(Rc<SceneError>),
+    Scene(Rc<HostedLayerError>),
     /// The hosted cherenkov layer failed.
     Layer(HostedLayerError),
 }
@@ -177,14 +173,8 @@ impl fmt::Display for HostedError {
     }
 }
 
-impl From<SceneError> for HostedError {
-    fn from(error: SceneError) -> Self {
-        Self::Scene(Rc::new(error))
-    }
-}
-
-impl From<Rc<SceneError>> for HostedError {
-    fn from(error: Rc<SceneError>) -> Self {
+impl From<Rc<HostedLayerError>> for HostedError {
+    fn from(error: Rc<HostedLayerError>) -> Self {
         Self::Scene(error)
     }
 }
@@ -552,8 +542,7 @@ impl SurfaceState {
     /// # Errors
     ///
     /// [`HostedError`] when creating the renderer or presenting the frame
-    /// fails — the display-link callback cannot unwind, so every failure
-    /// arrives as a typed result for the caller to settle.
+    /// fails.
     fn render_into(
         &self,
         context: &Arc<SharedGpuContext>,
@@ -576,9 +565,8 @@ impl SurfaceState {
             *slot = None;
         }
         if slot.is_none() {
-            let Some(size) = OffscreenSize::try_from_pixels(width, height) else {
-                return Err(HostedLayerError::EmptyTarget.into());
-            };
+            let size = OffscreenSize::try_from_pixels(width, height)
+                .expect("a wgpu texture has a non-zero extent");
             *slot = Some(self.view.borrow_mut().renderer(
                 &self.runtime,
                 context,
@@ -587,9 +575,7 @@ impl SurfaceState {
                 size,
             )?);
         }
-        let Some(renderer) = slot.as_mut() else {
-            return Err(HostedLayerError::MissingTexture.into());
-        };
+        let renderer = slot.as_mut().expect("the renderer slot was filled above");
         let submitted = renderer.present(texture, display, target_time)?;
         // The submission retains the generation evidence its completion
         // checks: on the scene path the production generation itself —
@@ -2083,14 +2069,14 @@ pub mod native_test {
     use std::task::{Wake, Waker};
 
     use waterui_backend_core::Environment;
-    use waterui_graphics::cherenkov::{Display, Draw, Recorder, WorkingColor};
+    use waterui_graphics::cherenkov::{Display, Draw, Recorder, RenderError, WorkingColor};
     use waterui_graphics::resources::RecordingResources;
     use waterui_graphics::scene_view::{SceneContent, SceneView};
 
     use super::{
-        Capturable, Cell, Dispatcher, EngineGeneration, FrameTime, GpuRuntime, MTLPixelFormat,
-        MainThreadMarker, NativeLeaf, PresentationTime, Rc, RefCell, Retained, SceneEngine,
-        SceneError, Sendable, SharedGpuContext, SurfaceState, SurfaceView, build_surface,
+        Capturable, Cell, Dispatcher, EngineGeneration, FrameTime, GpuRuntime, HostedLayerError,
+        MTLPixelFormat, MainThreadMarker, NativeLeaf, PresentationTime, Rc, RefCell, Retained,
+        SceneEngine, Sendable, SharedGpuContext, SurfaceState, SurfaceView, build_surface,
         collect_unpresented, fmt, kurbo, scene, settle_frame_completion, wgpu,
     };
     use crate::contract::RenderContext;
@@ -2357,7 +2343,7 @@ pub mod native_test {
                 .borrow()
                 .clone()
                 .expect("install_scene_renderer must run before a scene failure can route");
-            generation.fail_for_testing(SceneError::MissingTexture);
+            generation.fail_for_testing(HostedLayerError::Render(RenderError::DeviceLost));
         }
 
         /// Acquires a real `PendingFrame` from the surface's own ring and
