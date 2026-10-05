@@ -1392,6 +1392,47 @@ mod owner_lifetimes {
         ))
     }
 
+    #[cfg(target_os = "macos")]
+    use cocoa_ui::objc2_app_kit::{NSColor as PlatformColor, NSForegroundColorAttributeName};
+    use cocoa_ui::objc2_core_graphics::CGColor;
+    use cocoa_ui::objc2_foundation::NSAttributedString;
+    #[cfg(target_os = "ios")]
+    use cocoa_ui::objc2_ui_kit::{NSForegroundColorAttributeName, UIColor as PlatformColor};
+    use waterui::graphics::color::WorkingColor;
+
+    /// The attributed text's native foreground attribute read as its
+    /// four extended-linear-P3 channels — the semantic value the
+    /// default-foreground watcher writes, compared against the working
+    /// color it was given rather than a rebuild pointer.
+    fn assert_foreground(attributed: &NSAttributedString, expected: WorkingColor) {
+        // SAFETY: a null effective-range pointer is permitted.
+        let value = unsafe {
+            attributed.attribute_atIndex_effectiveRange(
+                NSForegroundColorAttributeName,
+                0,
+                std::ptr::null_mut(),
+            )
+        }
+        .expect("the track chunk carries a foreground attribute");
+        let color = value
+            .downcast::<PlatformColor>()
+            .expect("the foreground attribute is a platform color");
+        #[cfg(target_os = "macos")]
+        let cg = color.CGColor();
+        #[cfg(target_os = "ios")]
+        // SAFETY: the retained UIKit color is read on the actual main thread.
+        let cg = unsafe { color.CGColor() };
+        assert_eq!(CGColor::number_of_components(Some(&cg)), 4);
+        // SAFETY: the color owns the four components asserted above.
+        let actual = unsafe { std::slice::from_raw_parts(CGColor::components(Some(&cg)), 4) };
+        for (actual, expected) in actual.iter().zip(expected.components) {
+            assert!(
+                (actual - f64::from(expected)).abs() < 1e-4,
+                "native foreground channel {actual} differs from working channel {expected}"
+            );
+        }
+    }
+
     /// The first `Label` inside the subtree — the observable end of the
     /// per-chunk signal path this fix touches.
     fn first_label(view: &PlatformView) -> Option<Retained<Label>> {
@@ -1493,15 +1534,16 @@ mod owner_lifetimes {
             assert!(texts.iter().any(|t| t.contains("row 3")));
 
             // The default-foreground signal path still updates while
-            // live: a new theme foreground rebuilds the label's
-            // attributed text — the `Weak`-borrowing watcher answers
-            // instead of being frozen.
+            // live: a new theme foreground lands in the label's
+            // attributed text as the native foreground attribute — the
+            // `Weak`-borrowing watcher answers instead of being frozen.
             let label = first_label(mounted.view()).expect("the track label mounted");
-            let before = Retained::as_ptr(&label.source_text().expect("attributed text"));
-            foreground.set(waterui::graphics::color::WorkingColor::WHITE);
+            let before = label.source_text().expect("attributed text");
+            assert_foreground(&before, WorkingColor::BLACK);
+            foreground.set(WorkingColor::WHITE);
             pump();
-            let after = Retained::as_ptr(&label.source_text().expect("attributed text"));
-            assert_ne!(before, after, "the chunk-signal update must rebuild");
+            let after = label.source_text().expect("attributed text");
+            assert_foreground(&after, WorkingColor::WHITE);
 
             drop(mounted);
             pump();
