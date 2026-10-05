@@ -909,13 +909,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // The scroll-surface search descends through this container's
         // children, in stacking order.
         host.set_scroll_surface_handler({
-            // Optional query callback: weak state, natural empty answer
-            // once the leaf's owner is gone (WaterUI #1575).
-            let state = Rc::downgrade(&state);
+            let state = Rc::clone(&state);
             move |_host| {
-                let Some(state) = state.upgrade() else {
-                    return Vec::new();
-                };
                 let state = state.borrow();
                 state
                     .order
@@ -926,14 +921,9 @@ pub fn install(dispatcher: &mut Dispatcher) {
         });
         let pending = Rc::new(RefCell::new(PendingChildren::default()));
         host.set_measure_handler({
-            // Weak state — the handler must not own the leaf (#1575). A
-            // live mounted leaf always owns it, so the upgrade is explicit.
-            let state = Rc::downgrade(&state);
+            let state = Rc::clone(&state);
             let pending = Rc::clone(&pending);
             move |_host, proposal| {
-                let state = state
-                    .upgrade()
-                    .expect("container measure outlived its leaf");
                 let measured = measure(&state, &pending, to_proposal(proposal));
                 cocoa_ui::Size::new(
                     f64::from(measured.size.width),
@@ -942,27 +932,19 @@ pub fn install(dispatcher: &mut Dispatcher) {
             }
         });
         host.set_layout_handler({
-            // Lifecycle callback — the platform view may legitimately
-            // outlive its leaf through a native retain or a queued layout
-            // pass, so a dead owner no-ops (WaterUI #1575).
-            let state = Rc::downgrade(&state);
+            let state = Rc::clone(&state);
             let pending = Rc::clone(&pending);
             move |_host| {
-                if let Some(state) = state.upgrade() {
-                    perform_layout(&state, &pending);
-                }
+                perform_layout(&state, &pending);
             }
         });
         // Moving superviews can change the enclosing scroll view.
         host.set_superview_handler({
-            // Lifecycle callback: no-op once the owner is gone.
-            let state = Rc::downgrade(&state);
+            let state = Rc::clone(&state);
             move |_host| {
-                if let Some(state) = state.upgrade() {
-                    let mut borrowed = state.borrow_mut();
-                    teardown_scroll_observation(&mut borrowed);
-                    install_scroll_observation(&mut borrowed);
-                }
+                let mut borrowed = state.borrow_mut();
+                teardown_scroll_observation(&mut borrowed);
+                install_scroll_observation(&mut borrowed);
             }
         });
 

@@ -550,10 +550,39 @@ impl HostView {
         self.ivars().measure.replace(Some(Rc::new(handler)));
     }
 
-    /// Drops the installed measure handler — the leaf's detach boundary,
-    /// after which measurements fall back to `UIView`'s own intrinsic size.
+    /// Drops the installed measure handler, after which measurements fall
+    /// back to `UIView`'s own intrinsic size.
     pub fn clear_measure_handler(&self) {
         self.ivars().measure.replace(None);
+    }
+
+    /// Drops every installed handler — the release boundary of the
+    /// view's owner.
+    ///
+    /// Each `set_*_handler` slot answers `None` afterwards, so a callback
+    /// `UIKit` delivers to this view does nothing by construction rather
+    /// than reaching state the owner released, and the handlers no longer
+    /// keep that state alive: layout, resize, hit-test, window, superview,
+    /// measure, primary content, scroll surface, pointer and key. The
+    /// hover recognizer is removed as well, since it exists only to serve
+    /// the pointer handler.
+    pub fn clear_handlers(&self) {
+        let ivars = self.ivars();
+        ivars.layout.replace(None);
+        ivars.resize.replace(None);
+        ivars.hit_test.replace(None);
+        ivars.window.replace(None);
+        ivars.superview.replace(None);
+        ivars.measure.replace(None);
+        ivars.primary_content.replace(None);
+        ivars.scroll_surface_candidates.replace(None);
+        ivars.pointer.replace(None);
+        ivars.pointer_events.set(PointerEvents::NONE);
+        ivars.pointer_inside.set(false);
+        if let Some(recognizer) = ivars.hover_recognizer.replace(None) {
+            self.removeGestureRecognizer(&recognizer);
+        }
+        ivars.key.replace(None);
     }
 
     /// Whether the intrinsic content size reports the height the current

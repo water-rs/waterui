@@ -1,10 +1,11 @@
 //! `cherenkov-gpu`: the wgpu backend for the Cherenkov 2D rendering
 //! engine.
 //!
-//! The shared front end lives in the [`cherenkov`] crate: [`Engine`],
-//! [`Surface`], [`Layer`], the layer tree and the render thread's loop are
-//! all generic over [`Backend`]. This crate supplies the render side only —
-//! [`Gpu`]'s [`Backend`] implementation drives the wgpu device on the
+//! The shared front end lives in the [`cherenkov`] crate:
+//! [`Engine`](cherenkov::Engine), [`Surface`](cherenkov::Surface),
+//! [`Layer`](cherenkov::Layer), the layer tree and the render thread's loop
+//! are all generic over [`Backend`]. This crate supplies the render side
+//! only — [`Gpu`]'s [`Backend`] implementation drives the wgpu device on the
 //! render thread.
 //!
 //! ```no_run
@@ -192,10 +193,10 @@ pub struct GpuConfig {
     /// Window of a native GPU wait, and the deadline of a browser one.
     /// A native wait opens a new window every time the queue retires any
     /// submission — a slow adapter keeps draining — and fails with
-    /// [`RenderError::Timeout`] only when a whole window passes with
-    /// nothing retired: a deadline on progress, not on duration. On
-    /// wasm32, where a wait resolves on the page's event loop, it is a
-    /// hard timeout.
+    /// [`RenderError::Timeout`](cherenkov::RenderError::Timeout) only when
+    /// a whole window passes with nothing retired: a deadline on progress,
+    /// not on duration. On wasm32, where a wait resolves on the page's event
+    /// loop, it is a hard timeout.
     pub wait_timeout: std::time::Duration,
     /// Memory budgets.
     pub budget: cherenkov::Budget,

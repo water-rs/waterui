@@ -218,8 +218,12 @@ impl Command {
         }
     }
 
+    /// Resolves the command against `env` into the payload backends render
+    /// — what every declared command goes through, and how a backend builds
+    /// a command of its own (the platform's Quit) on the same path.
+    #[doc(hidden)]
     #[must_use]
-    fn resolve(self, env: &Environment) -> ResolvedCommand {
+    pub fn resolve(self, env: &Environment) -> ResolvedCommand {
         let label = self.label;
         let resolved_label = label.semantic_text().resolve(env);
         let icon = label.semantic_icon();
@@ -341,6 +345,25 @@ pub enum MenuItem {
     Divider,
     /// A nested menu.
     Menu(Menu),
+    /// The application's own Quit item.
+    ///
+    /// Declaring it is how an application relocates the standard Quit — it
+    /// renders once, with the platform's label and accelerator (⌘Q on
+    /// macOS, Ctrl+Q elsewhere), and requests a cancellable termination
+    /// through `waterui::app::Quit`, so `App::on_quit_request` still
+    /// decides. On macOS it never appears in the menu bar — the standard
+    /// application menu already carries the platform Quit — but it can
+    /// appear in menus the window mounts.
+    ///
+    /// Platforms with no application quit — iOS, Android, the web, and
+    /// headless or embedded hosts, whose process the system or the host
+    /// ends — omit it from every menu and arm no chord for it, so a
+    /// portable menu may declare it unconditionally.
+    ///
+    /// Do not redeclare the platform's quit chord on a plain [`Command`]:
+    /// the macOS menu bar rejects ⌘Q, ⌘H and ⌥⌘H on ordinary commands, and
+    /// a homemade Quit bypasses the termination hooks.
+    Quit,
 }
 
 impl_constant!(MenuItem);
@@ -352,6 +375,7 @@ impl MenuItem {
             Self::Command(command) => ResolvedMenuItem::Command(command.resolve(env)),
             Self::Divider => ResolvedMenuItem::Divider,
             Self::Menu(menu) => ResolvedMenuItem::Menu(menu.resolve(env)),
+            Self::Quit => ResolvedMenuItem::Quit,
         }
     }
 }
@@ -689,6 +713,47 @@ impl ResolvedCommand {
     pub fn semantic_id(&self) -> usize {
         Rc::as_ptr(&self.identity) as usize
     }
+
+    /// Rejects a command the macOS menu bar may not carry.
+    ///
+    /// ⌘Q, ⌘H and ⌥⌘H belong to the standard application-menu items — Quit,
+    /// Hide, Hide Others. A plain command redeclaring one would shadow the
+    /// item the system expects to find, and a homemade Quit bypasses the
+    /// termination hooks. Every backend that builds a macOS menu bar calls
+    /// this for each declared command, so the rule holds whichever backend
+    /// renders the bar.
+    ///
+    /// # Panics
+    ///
+    /// When the command's shortcut is one of the reserved chords; the
+    /// message names `MenuItem::Quit` and `App::on_terminate` as the APIs to
+    /// use instead.
+    #[doc(hidden)]
+    pub fn assert_allowed_in_macos_menu_bar(&self) {
+        let Some(shortcut) = &self.shortcut else {
+            return;
+        };
+        let reserved = [
+            (Shortcut::new("q").command(), "⌘Q", "Quit"),
+            (Shortcut::new("h").command(), "⌘H", "Hide"),
+            (Shortcut::new("h").command().option(), "⌥⌘H", "Hide Others"),
+        ];
+        for (chord, chord_text, item) in reserved {
+            if chord.modifiers == shortcut.modifiers
+                && chord
+                    .key
+                    .as_str()
+                    .eq_ignore_ascii_case(shortcut.key.as_str())
+            {
+                panic!(
+                    "a menu command in the macOS menu bar may not use the {chord_text} chord — it \
+                     belongs to the standard {item} item; declare `MenuItem::Quit` for Quit \
+                     behavior and `App::on_terminate` for shutdown work instead of redeclaring \
+                     the chord"
+                );
+            }
+        }
+    }
 }
 
 /// Raw resolved nested menu payload consumed by native backends.
@@ -727,6 +792,8 @@ pub enum ResolvedMenuItem {
     Divider,
     /// A resolved nested menu.
     Menu(ResolvedNestedMenu),
+    /// The application's declared Quit item — see [`MenuItem::Quit`].
+    Quit,
 }
 
 impl_constant!(ResolvedMenuItem);
