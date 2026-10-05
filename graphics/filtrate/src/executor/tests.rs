@@ -2072,9 +2072,13 @@ fn premultiplied_input(size: (usize, usize)) -> Vec<[f32; 4]> {
 /// to `max(|value|, 1)`: a few f16 ulps, `2^-11` just below one.
 const F16_TOLERANCE: f32 = 2.0e-3;
 
-/// [`F16_TOLERANCE`] for a stage in encoded sRGB. The executor stores
-/// encoded values in f16 between its conversion passes, each store up to
-/// an ulp off, and decoding multiplies that error by up to 2.3 at white.
+/// [`F16_TOLERANCE`] for a stage in encoded sRGB. The GPU these tests were
+/// measured on rounds toward zero when it writes `Rgba16Float`, so the
+/// sRGB path's five f16 intermediates (against two for a blur in the
+/// working space) drift downward cumulatively rather than averaging out,
+/// and decoding near white amplifies that drift by about 2.3: the worst
+/// measured error is 3.31e-3, on the black|white edge, and a flat white
+/// comes back as 0.99756.
 const F16_SRGB_TOLERANCE: f32 = 5.0e-3;
 
 /// Runs `filter` on the wgpu executor over f16 textures and on the CPU,
