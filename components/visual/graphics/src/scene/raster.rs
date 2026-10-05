@@ -10,10 +10,10 @@ use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::fmt;
 
-use cherenkov::kurbo::Affine;
+use crate::draw::Recorder;
+use crate::draw::kurbo::Affine;
 use cherenkov::{
-    Engine, FrameTime, LayerContent, Offscreen, OffscreenFormat, Recorder, RenderError, Surface,
-    SurfaceError,
+    Engine, FrameTime, LayerContent, Offscreen, OffscreenFormat, RenderError, Surface, SurfaceError,
 };
 use cherenkov_cpu::{Raster, RasterConfig, present_srgb8};
 
@@ -145,7 +145,7 @@ impl Rasterizer {
         let surface =
             engine.surface(Offscreen::new((width, height), OffscreenFormat::LinearF16))?;
         Ok(Self {
-            resources: SceneResources::new(Rc::clone(&engine)),
+            resources: SceneResources::new(engine.clone()),
             engine,
             surface,
             installed: HeldResources::empty(),
@@ -173,7 +173,7 @@ impl Rasterizer {
             .surface(Offscreen::new((width, height), OffscreenFormat::LinearF16))
             .await?;
         Ok(Self {
-            resources: SceneResources::new(Rc::clone(&engine)),
+            resources: SceneResources::new(engine.clone()),
             engine,
             surface,
             installed: HeldResources::empty(),
@@ -422,8 +422,8 @@ pub async fn rasterize_picture(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cherenkov::kurbo::{Rect, Shape};
-    use cherenkov::{Color, Draw, Srgb, StaticRecorder, WorkingColor};
+    use crate::draw::kurbo::{Rect, Shape};
+    use crate::draw::{Color, Draw, Srgb, StaticRecorder, WorkingColor};
 
     use crate::picture::Picture;
 

@@ -30,8 +30,8 @@ use waterui_controls::text_field::TextField;
 use waterui_core::id::Id;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::{AnyView, Environment, Metadata, Native};
-use waterui_graphics::cherenkov::{Paint, WorkingColor};
 use waterui_graphics::color::Color;
+use waterui_graphics::draw::{Paint, WorkingColor};
 
 #[derive(Clone, Copy)]
 struct NavigationLeadingReserve(f64);

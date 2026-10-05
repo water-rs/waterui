@@ -369,7 +369,7 @@ fn retained_label_color_resolves_hovered() {
     .expect("the style overrides the label color");
     let resolved = color.resolve(&env);
     let channel8 = |v: f32| crate::num_cast::f32_as_u8((v * 255.0).round());
-    let rgb = |color: cherenkov::WorkingColor| {
+    let rgb = |color: waterui_graphics::draw::WorkingColor| {
         let srgb = waterui_graphics::color::working::to_srgb(color);
         (
             channel8(srgb.red),

@@ -774,7 +774,7 @@ pub struct ColorNode {
     /// Consumed by the retained-update mount path in H3.
     #[allow(dead_code)]
     pub(crate) render_id: RenderId,
-    pub(crate) color: Computed<cherenkov::WorkingColor>,
+    pub(crate) color: Computed<waterui_graphics::draw::WorkingColor>,
 }
 
 pub struct TextNode {

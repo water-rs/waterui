@@ -48,7 +48,8 @@ use {
 
 use waterui_core::Str;
 use waterui_core::layout::{ProposalSize, Size, ViewDimensions};
-use waterui_graphics::cherenkov::{Display, Next, kurbo};
+use waterui_graphics::cherenkov::{Display, Next};
+use waterui_graphics::draw::kurbo;
 use waterui_graphics::gpu::{
     ExternalFrameRenderer, ExternalFrameStream, ExternalFrameView, GpuContentRenderer,
     GpuContentView, GpuRuntime, RedrawHandle, SharedGpuContext,

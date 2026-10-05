@@ -9,8 +9,8 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use cherenkov::kurbo::{Affine, Point};
-use cherenkov::{
+use crate::draw::kurbo::{Affine, Point};
+use crate::draw::{
     ColorStop, LinearGradient, MeshColorInterpolation, MeshGradient, Paint, RadialGradient,
     SweepGradient, WorkingColor,
 };

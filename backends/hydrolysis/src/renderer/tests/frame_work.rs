@@ -44,7 +44,7 @@ use waterui_controls::button::button;
 use waterui_controls::menu::CommandExt as _;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
-use waterui_graphics::cherenkov::{Draw, Recorder};
+use waterui_graphics::draw::{Draw, Recorder};
 use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
 use waterui_graphics::{GpuContent, GpuContentView, RecordingResources, SceneContent};
 use waterui_layout::frame::Frame;
@@ -190,7 +190,7 @@ fn nested_clip_blend_opacity_counts() {
 /// alive on the pane: releasing it unregisters the image under a recording
 /// that still names it.
 struct ImagePane {
-    image: Option<waterui_graphics::Registered<cherenkov::Image<cherenkov::Rgba8>>>,
+    image: Option<waterui_graphics::Registered<waterui_graphics::draw::ImageId>>,
 }
 
 impl SceneContent for ImagePane {
@@ -201,8 +201,8 @@ impl SceneContent for ImagePane {
         _width: f32,
         _height: f32,
     ) -> bool {
-        use cherenkov::{Extend, ImagePattern, Paint, Sampling};
         use kurbo::Affine;
+        use waterui_graphics::draw::{Extend, ImagePattern, Paint, Sampling};
 
         if self.image.is_none() {
             self.image = Some(
@@ -249,13 +249,13 @@ impl SceneContent for ImagePane {
 
 /// An opaque red image — semitransparent fixtures read back white over the
 /// window's white clear, so the probe must be opaque to be detectable.
-fn solid_image() -> cherenkov::ImageData<cherenkov::Rgba8> {
+fn solid_image() -> waterui_graphics::ImageData<waterui_graphics::Rgba8> {
     let mut data = vec![0xFFu8; 16 * 16 * 4];
     for px in data.as_chunks_mut::<4>().0 {
         px[1] = 0x00;
         px[2] = 0x00;
     }
-    cherenkov::ImageData::new(16, 16, std::sync::Arc::<[u8]>::from(data))
+    waterui_graphics::ImageData::new(16, 16, std::sync::Arc::<[u8]>::from(data))
         .expect("a well-formed Rgba8 image")
         .premultiplied()
 }

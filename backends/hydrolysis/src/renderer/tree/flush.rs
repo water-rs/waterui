@@ -28,7 +28,8 @@ impl RenderNode {
         match self {
             Self::Color(color) => {
                 renderer.state.counters.recorded_view_contents += 1;
-                let color = cherenkov::Paint::Solid(renderer.read_signal(&color.color));
+                let color =
+                    waterui_graphics::draw::Paint::Solid(renderer.read_signal(&color.color));
                 renderer.scene_mut().fill_paint(
                     peniko::Fill::NonZero,
                     ctx.transform,

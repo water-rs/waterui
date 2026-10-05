@@ -4,7 +4,7 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use cherenkov::Draw as _;
+use waterui_graphics::draw::Draw as _;
 
 impl HydrolysisRenderer {
     /// Apply a clip-shape layer around the given content render. Shared by the

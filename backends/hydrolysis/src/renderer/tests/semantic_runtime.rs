@@ -33,7 +33,7 @@ use waterui_form::picker::date::DatePicker;
 use waterui_form::picker::{PickerStyle, picker};
 use waterui_form::secure::secure;
 use waterui_graphics::Color;
-use waterui_graphics::cherenkov::Recorder;
+use waterui_graphics::draw::Recorder;
 use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
 use waterui_graphics::{GpuContent, GpuContentView, RecordingResources, SceneContent, SceneView};
 use waterui_layout::spacer::spacer;

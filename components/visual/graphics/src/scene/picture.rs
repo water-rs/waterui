@@ -3,8 +3,8 @@
 use alloc::rc::Rc;
 use core::fmt;
 
-use cherenkov::kurbo::Affine;
-use cherenkov::{Draw, Fixed, Recorder, StaticRecorder};
+use crate::draw::kurbo::Affine;
+use crate::draw::{Draw, Fixed, Recorder, StaticRecorder};
 use nami::watcher::BoxWatcherGuard;
 use nami::{Computed, Signal};
 use waterui_core::Str;
@@ -52,7 +52,7 @@ type ResourcePictureSource = dyn PictureSource;
 
 #[derive(Clone)]
 pub struct PictureRecording {
-    picture: cherenkov::Picture,
+    picture: crate::draw::Picture,
     held: HeldResources,
     source: Option<Rc<ResourcePictureSource>>,
     source_identity: Rc<()>,
@@ -71,7 +71,7 @@ impl fmt::Debug for PictureRecording {
 
 impl PictureRecording {
     /// The display list, for a drawer that holds [`Self::held`] beside it.
-    pub(crate) const fn picture(&self) -> &cherenkov::Picture {
+    pub(crate) const fn picture(&self) -> &crate::draw::Picture {
         &self.picture
     }
 
@@ -100,7 +100,7 @@ impl PictureRecording {
             };
         };
         let mut names = resources.recording();
-        let picture = cherenkov::Picture::record(|recorder| source.record(recorder, &mut names));
+        let picture = crate::draw::Picture::record(|recorder| source.record(recorder, &mut names));
         Self {
             picture,
             held: names.finish(),
@@ -212,7 +212,7 @@ impl Picture {
     #[must_use]
     pub fn record(draw: impl FnOnce(&mut StaticRecorder)) -> PictureRecording {
         PictureRecording {
-            picture: cherenkov::Picture::record(draw),
+            picture: crate::draw::Picture::record(draw),
             held: HeldResources::empty(),
             source: None,
             source_identity: Rc::new(()),
@@ -232,7 +232,7 @@ impl Picture {
     pub fn record_with(resources: &SceneResources, source: impl PictureSource) -> PictureRecording {
         let source: Rc<ResourcePictureSource> = Rc::new(source);
         let mut names = resources.recording();
-        let picture = cherenkov::Picture::record(|recorder| source.record(recorder, &mut names));
+        let picture = crate::draw::Picture::record(|recorder| source.record(recorder, &mut names));
         PictureRecording {
             picture,
             held: names.finish(),
@@ -384,11 +384,10 @@ impl SceneContent for RecordedScene {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cherenkov::kurbo::{Rect, Shape};
+    use crate::draw::kurbo::{Rect, Shape};
+    use crate::draw::{Command, ImageId, LayoutSize, Paint, Sampling, WorkingColor};
+    use crate::scene::source::{ImageData, Rgba8};
     use cherenkov::testing::Event;
-    use cherenkov::{
-        Command, ImageData, ImageId, LayoutSize, Paint, Rgba8, Sampling, WorkingColor,
-    };
     use core::cell::Cell;
     use nami::{SignalExt, binding, constant};
     use waterui_core::layout::StretchAxis;
@@ -401,12 +400,8 @@ mod tests {
         fn record(&self, recorder: &mut StaticRecorder, resources: &mut RecordingResources<'_>) {
             let image = resources
                 .image(
-                    cherenkov::ImageData::<cherenkov::Rgba8>::new(
-                        1,
-                        1,
-                        alloc::sync::Arc::clone(&self.bytes),
-                    )
-                    .expect("image source"),
+                    ImageData::<Rgba8>::new(1, 1, alloc::sync::Arc::clone(&self.bytes))
+                        .expect("image source"),
                 )
                 .expect("image registration");
             recorder.image(
@@ -672,7 +667,7 @@ mod tests {
         );
 
         let mut resources = mount_b.resources.recording();
-        let mut recording = cherenkov::Content::record(&LayoutSize::new(), |recorder| {
+        let mut recording = crate::draw::Content::record(&LayoutSize::new(), |recorder| {
             content.build_scene(recorder, &mut resources, 10.0, 10.0);
         });
         // A scene drawing a picture emits one `Command::Picture`; the
@@ -702,12 +697,12 @@ mod tests {
             current: None,
             rebuild_recording: false,
         };
-        let first = cherenkov::Content::record(&LayoutSize::new(), |recorder| {
+        let first = crate::draw::Content::record(&LayoutSize::new(), |recorder| {
             content.build_scene(recorder, &mut resources.recording(), 20.0, 20.0);
         });
         assert_eq!(first.len(), 1);
         tint.set(WorkingColor::WHITE);
-        let second = cherenkov::Content::record(&LayoutSize::new(), |recorder| {
+        let second = crate::draw::Content::record(&LayoutSize::new(), |recorder| {
             content.build_scene(recorder, &mut resources.recording(), 20.0, 20.0);
         });
         assert_eq!(second.len(), 1);

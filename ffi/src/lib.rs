@@ -1987,7 +1987,7 @@ pub unsafe extern "C" fn waterui_drop_retain(retain: WuiRetain) {
 // Used to clip views to shapes
 
 use waterui::shape::ClipShape;
-use waterui_graphics::cherenkov::kurbo::{BezPath, PathEl, Shape as _};
+use waterui_graphics::draw::kurbo::{BezPath, PathEl, Shape as _};
 
 /// FFI-safe representation of a path element.
 /// All coordinates are normalized (0.0-1.0) and scale with view bounds.
@@ -2086,7 +2086,7 @@ pub(crate) fn path_commands(path: &BezPath) -> WuiArray<WuiPathCommand> {
 /// set covers every command.
 pub(crate) fn shape_path(commands: &[waterui::shape::PathCommand]) -> BezPath {
     use waterui::shape::PathCommand as C;
-    use waterui_graphics::cherenkov::kurbo::{Arc, Point, Vec2};
+    use waterui_graphics::draw::kurbo::{Arc, Point, Vec2};
     let mut path = BezPath::new();
     let point = |x: f32, y: f32| Point::new(f64::from(x), f64::from(y));
     for command in commands {

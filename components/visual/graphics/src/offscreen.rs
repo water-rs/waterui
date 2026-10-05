@@ -12,10 +12,11 @@ use core::fmt;
 use core::num::NonZeroU32;
 use std::path::Path;
 
-use cherenkov::kurbo::Affine;
+use crate::draw::kurbo::Affine;
+use crate::draw::{Content, Draw as _, Recorder};
 use cherenkov::{
-    Backend, Content, Draw as _, Engine, EngineError, FrameTime, Offscreen, OffscreenFormat,
-    Readback, Recorder, RenderError, Rgba8, Rgba16F, Surface, SurfaceError, Uploads,
+    Backend, Engine, EngineError, FrameTime, Offscreen, OffscreenFormat, Readback, RenderError,
+    Rgba8, Rgba16F, Surface, SurfaceError, Uploads,
 };
 #[cfg(feature = "cpu")]
 use cherenkov_cpu::{Raster, RasterConfig};
@@ -262,7 +263,7 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
     pub fn with_config(config: B::Config) -> Result<Self, OffscreenError> {
         let engine = Rc::new(Engine::<B>::new(config)?);
         Ok(Self {
-            resources: SceneResources::new(Rc::clone(&engine)),
+            resources: B::resources(engine.clone()),
             engine,
         })
     }
@@ -275,7 +276,7 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
     pub async fn with_config(config: B::Config) -> Result<Self, OffscreenError> {
         let engine = Rc::new(Engine::<B>::new(config).await?);
         Ok(Self {
-            resources: SceneResources::new(Rc::clone(&engine)),
+            resources: B::resources(engine.clone()),
             engine,
         })
     }
@@ -524,10 +525,9 @@ mod tests {
     mod cpu {
         use alloc::sync::Arc;
 
-        use cherenkov::kurbo::{Affine, Rect};
-        use cherenkov::{
-            Draw, ImageColorSpace, ImageData, Rgba8, Sampling, StaticRecorder, WorkingColor,
-        };
+        use crate::draw::kurbo::{Affine, Rect};
+        use crate::draw::{Draw, Sampling, StaticRecorder, WorkingColor};
+        use crate::scene::source::{ImageColorSpace, ImageData, Rgba8};
         use cherenkov_cpu::Raster;
 
         use crate::offscreen::{OffscreenImage, OffscreenRenderer, OffscreenSize};
