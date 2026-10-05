@@ -511,7 +511,7 @@ impl RenderNode {
             Self::Dynamic(node) => {
                 // The context stays on the host: the flush's mid-pass layout
                 // for a child that applied its pending then reuses it.
-                *node.safe_area.borrow_mut() = safe_area.clone();
+                (*node.safe_area.borrow_mut()).clone_from(&safe_area);
                 node.child
                     .borrow_mut()
                     .layout(renderer, env, safe_area, proposal, size);
@@ -591,7 +591,7 @@ impl RenderNode {
                 node.child
                     .layout(renderer, &node.env, None, child_proposal, content_size);
             }
-            Self::Collection(node) => node.layout(renderer, safe_area, proposal, size),
+            Self::Collection(node) => node.layout(renderer, safe_area.as_ref(), proposal, size),
             Self::Filtered(node) => {
                 let node_env = node.env.clone();
                 node.child
