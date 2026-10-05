@@ -9,15 +9,14 @@
 //! # Orientation and scale contract
 //!
 //! The destination texture is top-down and sized in device pixels.
-//! `CARenderer` draws the layer tree in its own frame convention — a
-//! flipped (`isFlipped`) source's tree rasterizes top-down, an unflipped
-//! source's rasterizes bottom-up — and takes its destination rect in
-//! pixels. [`with_capture_transform`] therefore scales the layer tree for
-//! the duration of the frame and — for a bottom-up raster, i.e. when the
-//! source view's `CaptureGeometry.y_down` is false — mirrors the scaled
-//! output about the destination's midline inside the same composed
-//! transform, so native content and GPU surfaces land in the same top-down
-//! destination.
+//! `CARenderer` takes its destination rect in pixels and rasterizes an
+//! unflipped (`isFlipped` false) source's tree bottom-up.
+//! [`with_capture_transform`] scales the layer tree for the duration of
+//! the frame and, when the source view's `CaptureGeometry.y_down` is false,
+//! mirrors the scaled output about the destination's midline inside the
+//! same composed transform, so native content lands in the same top-down
+//! destination as the GPU surfaces. A flipped source's tree is scaled only;
+//! its raster keeps the orientation `CARenderer` gives it.
 //!
 //! [`SurfaceSpec`] keeps the producer texture's full pixel size separate
 //! from the visible destination scissor: when a surface lands partially
@@ -44,6 +43,7 @@ use dispatch2::{DispatchQoS, DispatchQueue, GlobalQueueIdentifier, MainThreadBou
 use objc2::Message;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
+use objc2_core_foundation::CGPoint;
 use objc2_foundation::NSString;
 use objc2_metal::{
     MTLBlendFactor, MTLBlendOperation, MTLClearColor, MTLCommandBuffer, MTLCommandBufferStatus,
@@ -150,24 +150,7 @@ pub fn with_capture_transform<T>(
 
     CATransaction::begin();
     CATransaction::setDisableActions(true);
-    let mut capture_transform = CATransform3D::new_scale(geometry.scale_x, geometry.scale_y, 1.0)
-        .concat(CATransform3D::new_translation(
-            saved_position.x * (geometry.scale_x - 1.0),
-            saved_position.y * (geometry.scale_y - 1.0),
-            0.0,
-        ));
-    // `CARenderer` rasterizes the layer tree in its own convention: an
-    // unflipped source (`y_down` false) comes out bottom-up and is mirrored
-    // about the destination's midline inside the same composed transform —
-    // scale(1,-1) then translate(+height) maps layer-local y to
-    // `height − y` — so native content and GPU surfaces land in the same
-    // destination space. A flipped source already rasterizes top-down.
-    if !geometry.y_down {
-        let height = geometry.source.size.height * geometry.scale_y;
-        capture_transform = capture_transform
-            .concat(CATransform3D::new_scale(1.0, -1.0, 1.0))
-            .concat(CATransform3D::new_translation(0.0, height, 0.0));
-    }
+    let capture_transform = capture_transform(saved_position, geometry);
     layer.setTransform(saved_transform.concat(capture_transform));
     CATransaction::commit();
     flush_transaction();
@@ -179,6 +162,42 @@ pub fn with_capture_transform<T>(
     let result = body();
     drop(restore);
     result
+}
+
+/// The transform that, applied to a layer at `position` in a superlayer
+/// whose content starts at the origin, lands the layer's content on the
+/// top-down pixel destination `geometry` describes.
+///
+/// A layer transform acts on coordinates relative to the layer's anchor
+/// point, which sits at `position` in the superlayer. A content point at
+/// `position + v` must render at `scale · (position + v)`, so the
+/// transform is `v ↦ scale · v + (scale − 1) · position`. `CARenderer`
+/// rasterizes an unflipped source (`y_down` false) bottom-up, so its
+/// vertical axis is also mirrored about the destination's midline:
+/// `y ↦ height − scale_y · (position.y + v.y)`, which as a transform of
+/// `v` is a `−scale_y` scale followed by a translation of
+/// `height − (scale_y + 1) · position.y`.
+fn capture_transform(position: CGPoint, geometry: CaptureGeometry) -> CATransform3D {
+    let translate_x = position.x * (geometry.scale_x - 1.0);
+    if geometry.y_down {
+        CATransform3D::new_scale(geometry.scale_x, geometry.scale_y, 1.0).concat(
+            CATransform3D::new_translation(translate_x, position.y * (geometry.scale_y - 1.0), 0.0),
+        )
+    } else {
+        let height = geometry.source.size.height * geometry.scale_y;
+        CATransform3D::new_scale(geometry.scale_x, -geometry.scale_y, 1.0).concat(
+            CATransform3D::new_translation(
+                translate_x,
+                (geometry.scale_y + 1.0).mul_add(-position.y, height),
+                0.0,
+            ),
+        )
+    }
+}
+
+/// A pixel extent as the `f64` Metal viewports and bounds take.
+fn pixel_extent(value: usize) -> f64 {
+    f64::from(u32::try_from(value).expect("a pixel extent fits in u32"))
 }
 
 /// Restores a layer's transform when the capture frame ends.
@@ -873,17 +892,13 @@ impl CompositorGuard<'_> {
         unsafe {
             encoder.setFragmentSamplerState_atIndex(Some(&sampler), 0);
         }
-        // Clip extents are pixel counts inside the target by construction.
-        let pixels = |value: usize| {
-            f64::from(u32::try_from(value).expect("a clip extent fits the capture target"))
-        };
         for surface in surfaces {
             let spec = surface.spec;
             encoder.setViewport(MTLViewport {
-                originX: pixels(spec.clip.x),
-                originY: pixels(spec.clip.y),
-                width: pixels(spec.clip.width),
-                height: pixels(spec.clip.height),
+                originX: pixel_extent(spec.clip.x),
+                originY: pixel_extent(spec.clip.y),
+                width: pixel_extent(spec.clip.width),
+                height: pixel_extent(spec.clip.height),
                 znear: 0.0,
                 zfar: 1.0,
             });
@@ -909,8 +924,8 @@ impl CompositorGuard<'_> {
             encoder.setViewport(MTLViewport {
                 originX: 0.0,
                 originY: 0.0,
-                width: f64::from(u32::try_from(target.width()).unwrap_or(u32::MAX)),
-                height: f64::from(u32::try_from(target.height()).unwrap_or(u32::MAX)),
+                width: pixel_extent(target.width()),
+                height: pixel_extent(target.height()),
                 znear: 0.0,
                 zfar: 1.0,
             });
@@ -1060,8 +1075,8 @@ impl NativeRenderer {
             Rect::new(
                 0.0,
                 0.0,
-                f64::from(u32::try_from(texture.width()).unwrap_or(u32::MAX)),
-                f64::from(u32::try_from(texture.height()).unwrap_or(u32::MAX)),
+                pixel_extent(texture.width()),
+                pixel_extent(texture.height()),
             )
             .into(),
         );
@@ -1955,6 +1970,8 @@ mod tests {
     /// of the producer. These are geometry checks — they say nothing
     /// about native acquisition under a non-zero source origin.
     mod coordinates {
+        use objc2_core_foundation::CGPoint;
+
         use super::*;
 
         /// The `y_down` 200×200-point source captured at 2× into 400×400.
@@ -2101,7 +2118,7 @@ mod tests {
 
         #[test]
         fn a_bottom_up_source_crops_through_the_same_uv_window() {
-            // Bottom-up source, child hanging off the top-left: the full
+            // Bottom-up source, child hanging off the bottom-left: the full
             // producer is preserved while clip and UV window describe the
             // visible corner — mirroring against the source height lands
             // the rect on the target's lower rows.
@@ -2118,6 +2135,38 @@ mod tests {
                     scale: [0.6, 0.8],
                 }
             );
+        }
+
+        /// Where `capture_transform` renders the anchor-relative point `v`
+        /// of a layer at `position`: `position + T(v)`.
+        fn rendered(position: CGPoint, geometry: CaptureGeometry, v: (f64, f64)) -> (f64, f64) {
+            let t = super::super::capture_transform(position, geometry);
+            (
+                position.x + t.m21.mul_add(v.1, t.m11.mul_add(v.0, t.m41)),
+                position.y + t.m22.mul_add(v.1, t.m12.mul_add(v.0, t.m42)),
+            )
+        }
+
+        #[test]
+        fn the_capture_transform_scales_about_the_superlayer_origin() {
+            let geometry = down(Rect::new(0.0, 0.0, 200.0, 200.0));
+            // A 200×200 content layer anchored at its centre: the content
+            // point (40, 20) is v = (−60, −80) from the anchor.
+            let position = CGPoint::new(100.0, 100.0);
+            assert_eq!(rendered(position, geometry, (-60.0, -80.0)), (80.0, 40.0));
+        }
+
+        #[test]
+        fn the_capture_transform_mirrors_a_bottom_up_source_about_the_destination() {
+            let geometry = up(Rect::new(0.0, 0.0, 200.0, 200.0));
+            // Content y 20 in a bottom-up source lands on row 400 − 2·20,
+            // whatever anchor the layer uses.
+            for (position, v) in [
+                (CGPoint::new(0.0, 0.0), (40.0, 20.0)),
+                (CGPoint::new(100.0, 100.0), (-60.0, -80.0)),
+            ] {
+                assert_eq!(rendered(position, geometry, v), (80.0, 360.0));
+            }
         }
 
         #[test]
