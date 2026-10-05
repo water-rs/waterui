@@ -217,7 +217,9 @@ scroll_both(content)
 Programmatic scrolling goes through a `ScrollController`, which is explicit and
 repeatable. `List` addresses item indices; `ScrollView` addresses content coordinates.
 A request carries an optional animation: `scroll_to` jumps, `animate_to` moves
-along the animation's curve.
+along the animation's curve. An `animate_to` on a `List` further than 100 rows
+away jumps to within 100 rows of the target first and animates only the final
+stretch — it never flies the viewport through the rows between.
 
 ```rust
 let rows = ScrollController::<usize>::new(0);

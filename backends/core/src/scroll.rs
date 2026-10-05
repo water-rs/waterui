@@ -7,7 +7,6 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Duration;
 
 use nami::Binding;
 use waterui_core::animation::Animation;
@@ -61,19 +60,50 @@ pub struct ScrollMetrics {
     pub content_height: f64,
 }
 
+/// Identifies one programmatic scroll animation armed on a [`ScrollHandle`].
+///
+/// [`ScrollHandle::scroll_to_animated`] hands it to the caller that armed
+/// the run; [`ScrollHandle::scroll_run_outcome`] answers how it ended and
+/// [`ScrollHandle::retarget_animated_scroll`] steers only that run, so a
+/// requester can never take over a different owner's animation on the same
+/// scroll surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScrollRun(u64);
+
+/// How a [`ScrollRun`] ended — or whether it still drives the offset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScrollRunOutcome {
+    /// The run is still animating.
+    Running,
+    /// The run completed and landed on its target.
+    Landed,
+    /// The run ended early: user input claimed the offset (pixel deltas,
+    /// line deltas, touch drags, scrollbar jumps), a jump landed, or a
+    /// newer programmatic request replaced it. Also reported for a token
+    /// the handle never issued, for a stale handle, and for a run whose
+    /// outcome slot a later run already took — a run that cannot be found
+    /// is certainly not running.
+    Interrupted,
+}
+
 /// One in-flight programmatic scroll animation.
 ///
-/// Arming records the current offset, the clamped target and the request's
-/// [`Animation`]; [`ScrollState::advance_programmatic_scroll`] samples
+/// Arming records the current offset, the clamped target, the request's
+/// [`Animation`] and the frame instant it was armed at;
+/// [`ScrollState::advance_programmatic_scroll`] samples
 /// [`Animation::progress`] for the elapsed time each tick and lands exactly on
 /// the target when the animation completes. It is exclusive with the wheel
-/// glide: whichever is armed last clears the other.
+/// glide: whichever is armed last clears the other. This is a local tween
+/// rather than core's `AnimationTrack` because a track cannot retarget a live
+/// run without restarting its clock.
 #[derive(Debug)]
 struct ScrollAnimation {
+    /// The token [`ScrollHandle::scroll_to_animated`] handed the armer.
+    token: u64,
     animation: Animation,
-    /// Captured on the first tick — the caller arms the animation without
-    /// knowing `now`, the same rule as `smooth_last_tick`.
-    started: Option<Instant>,
+    /// The frame instant the request was armed at, so motion begins on the
+    /// very next tick instead of spending a frame starting the clock.
+    started: Instant,
     from_x: f64,
     from_y: f64,
     target_x: f64,
@@ -104,6 +134,17 @@ struct ScrollState {
     /// by [`ScrollState::scroll_to_animated`] and cancelled by a jump, user
     /// deltas/drags, or a wheel glide.
     programmatic: Option<ScrollAnimation>,
+    /// The token the next armed programmatic run is issued.
+    next_run_token: u64,
+    /// The token and landing of the most recently ended programmatic run,
+    /// remembered until another run ends so the armer can ask
+    /// [`ScrollHandle::scroll_run_outcome`] about it after it is gone.
+    last_run_outcome: Option<(u64, bool)>,
+    /// Bumped by every write path that is not the fling's own — requests,
+    /// jumps, user deltas. A touch fling captures it at start through
+    /// [`ScrollHandle::offset_epoch`] and ends itself once it differs:
+    /// something else claimed the offset.
+    offset_epoch: u64,
     /// Binding a `ScrollView::report_offset` connected to this scroll view.
     /// Written — never read — whenever the content offset changes, every
     /// frame of a smooth glide included; `reported_offset` keeps the writes
@@ -283,38 +324,88 @@ impl ScrollHandle {
     }
 
     /// Starts a programmatic scroll toward an absolute content offset along
-    /// `animation`'s curve and duration, and returns whether animation frames
-    /// are needed. The run is advanced by [`Self::tick_smooth_scroll`] — the
-    /// same pump that drives the wheel glide — and lands exactly on the
-    /// target. A jump ([`Self::scroll_to`]), a user pixel delta or drag, or a
-    /// wheel glide cancels it; a second call restarts from the current
-    /// offset. Stale handles are inert.
+    /// `animation`'s curve and duration, and returns the token identifying
+    /// the run — `None` only for a stale handle, which is inert. `now` is the
+    /// frame instant the request is applied at: the run's clock starts here,
+    /// so the next tick already shows motion. The run is advanced by
+    /// [`Self::tick_smooth_scroll`] — the same pump that drives the wheel
+    /// glide — and lands exactly on the target. A jump ([`Self::scroll_to`]),
+    /// a user pixel delta or drag, or a wheel glide cancels it; a second call
+    /// restarts from the current offset. [`Self::scroll_run_outcome`] reports
+    /// how the run ended.
     #[must_use]
-    pub fn scroll_to_animated(&self, x: f64, y: f64, animation: Animation) -> bool {
+    pub fn scroll_to_animated(
+        &self,
+        x: f64,
+        y: f64,
+        animation: Animation,
+        now: Instant,
+    ) -> Option<ScrollRun> {
+        let token = {
+            let mut state = self.state.borrow_mut();
+            if state.generation != self.generation {
+                return None;
+            }
+            state.scroll_to_animated(x, y, animation, now)
+        };
+        self.flush_offset_report();
+        Some(ScrollRun(token))
+    }
+
+    /// How the run `run` identifies ended — or whether it still drives the
+    /// offset. A stale handle and a token the handle never issued report
+    /// [`ScrollRunOutcome::Interrupted`].
+    #[must_use]
+    pub fn scroll_run_outcome(&self, run: ScrollRun) -> ScrollRunOutcome {
+        let state = self.state.borrow();
+        if state.generation != self.generation {
+            return ScrollRunOutcome::Interrupted;
+        }
+        state.scroll_run_outcome(run)
+    }
+
+    /// Refines the destination of the run `run` identifies without restarting
+    /// its clock: a virtualized list re-issues its row target every frame as
+    /// extents are measured, and the run keeps converging on the refined
+    /// destination instead of re-arming. Refuses — returns `false` — when
+    /// `run` is not the live run, so a requester cannot steer another owner's
+    /// animation on the same surface. Stale handles are inert.
+    #[must_use]
+    pub fn retarget_animated_scroll(&self, run: ScrollRun, x: f64, y: f64) -> bool {
+        let mut state = self.state.borrow_mut();
+        if state.generation != self.generation {
+            return false;
+        }
+        state.retarget_animated_scroll(run, x, y)
+    }
+
+    /// The epoch at which the offset was last claimed — bumped by every write
+    /// path that is not the fling's own ([`Self::scroll_to`],
+    /// [`Self::scroll_to_animated`], [`Self::apply_scroll_delta`]). A touch
+    /// fling captures it when it starts and feeds it back to
+    /// [`Self::apply_fling_offset`]; once it differs, a request or user input
+    /// has claimed the offset and the fling ends.
+    #[must_use]
+    pub fn offset_epoch(&self) -> u64 {
+        self.state.borrow().offset_epoch
+    }
+
+    /// Applies a running touch fling's offset for this tick while the fling
+    /// still owns the offset — the epoch captured at fling start must still
+    /// be [`Self::offset_epoch`]. Refuses (returns `false`) once a
+    /// programmatic request or user input has claimed the offset since, so
+    /// the fling ends instead of writing over its successor.
+    #[must_use]
+    pub fn apply_fling_offset(&self, epoch: u64, x: f64, y: f64) -> bool {
         let changed = {
             let mut state = self.state.borrow_mut();
             if state.generation != self.generation {
                 return false;
             }
-            state.scroll_to_animated(x, y, animation)
+            state.apply_fling_offset(epoch, x, y)
         };
         self.flush_offset_report();
         changed
-    }
-
-    /// Refines the destination of a programmatic scroll animation already in
-    /// flight without restarting its clock: a virtualized list re-issues its
-    /// row target every frame as extents are measured, and the run keeps
-    /// converging on the refined destination instead of re-arming. Does
-    /// nothing while no programmatic animation is running. Stale handles are
-    /// inert.
-    #[must_use]
-    pub fn retarget_animated_scroll(&self, x: f64, y: f64) -> bool {
-        let mut state = self.state.borrow_mut();
-        if state.generation != self.generation {
-            return false;
-        }
-        state.retarget_animated_scroll(x, y)
     }
 }
 
@@ -339,6 +430,9 @@ impl ScrollState {
             smooth_target_y: None,
             smooth_last_tick: None,
             programmatic: None,
+            next_run_token: 1,
+            last_run_outcome: None,
+            offset_epoch: 0,
             offset_report: None,
             reported_offset: None,
             pending_report: None,
@@ -405,6 +499,11 @@ impl ScrollState {
         reason = "`old_x`/`old_y` and `scaled_dx`/`scaled_dy` are conventional 2D scroll-delta names"
     )]
     fn apply_scroll_delta(&mut self, dx: f64, dy: f64, is_line_delta: bool) -> bool {
+        // User input claims the offset — a fling comparing epochs ends itself.
+        self.offset_epoch = self
+            .offset_epoch
+            .checked_add(1)
+            .expect("scroll offset epoch overflow");
         let changed = if is_line_delta {
             self.retarget_smooth_scroll(dx * SCROLL_LINE_STEP, dy * SCROLL_LINE_STEP)
         } else {
@@ -413,7 +512,7 @@ impl ScrollState {
             // target or programmatic animation.
             self.smooth_target_x = None;
             self.smooth_target_y = None;
-            self.programmatic = None;
+            self.end_programmatic(false);
             let metrics = self.metrics();
             let old_x = self.offset_x;
             let old_y = self.offset_y;
@@ -440,13 +539,17 @@ impl ScrollState {
     }
 
     fn scroll_to(&mut self, x: f64, y: f64) -> bool {
+        self.offset_epoch = self
+            .offset_epoch
+            .checked_add(1)
+            .expect("scroll offset epoch overflow");
         let metrics = self.metrics();
         let old_x = self.offset_x;
         let old_y = self.offset_y;
         self.smooth_target_x = None;
         self.smooth_target_y = None;
         self.smooth_last_tick = None;
-        self.programmatic = None;
+        self.end_programmatic(false);
         match self.axis {
             Axis::Horizontal => {
                 self.offset_x = clamp_scroll_offset(x, metrics.max_x);
@@ -466,15 +569,28 @@ impl ScrollState {
     }
 
     /// Arms a programmatic scroll animation toward an absolute content offset
-    /// and reports whether frames are needed to reach it. The run starts from
-    /// the offset current right now — a second request while one is in flight
-    /// restarts from wherever the first had reached — and replaces any wheel
-    /// glide.
-    fn scroll_to_animated(&mut self, x: f64, y: f64, animation: Animation) -> bool {
-        let metrics = self.metrics();
+    /// and returns the token identifying the run. The run starts from the
+    /// offset current right now — a second request while one is in flight
+    /// restarts from wherever the first had reached, and its token reports
+    /// `Interrupted` — and replaces any wheel glide. `now` is the frame
+    /// instant the request is applied at, so the run's clock is already
+    /// running when the next tick advances it. A request that needs no travel
+    /// lands in place and its token reports `Landed` at once.
+    fn scroll_to_animated(&mut self, x: f64, y: f64, animation: Animation, now: Instant) -> u64 {
+        self.offset_epoch = self
+            .offset_epoch
+            .checked_add(1)
+            .expect("scroll offset epoch overflow");
         self.smooth_target_x = None;
         self.smooth_target_y = None;
         self.smooth_last_tick = None;
+        self.end_programmatic(false);
+        let token = self.next_run_token;
+        self.next_run_token = self
+            .next_run_token
+            .checked_add(1)
+            .expect("scroll run token overflow");
+        let metrics = self.metrics();
         let (target_x, target_y) = match self.axis {
             Axis::Horizontal => (clamp_scroll_offset(x, metrics.max_x), self.offset_y),
             Axis::Vertical => (self.offset_x, clamp_scroll_offset(y, metrics.max_y)),
@@ -486,37 +602,103 @@ impl ScrollState {
         };
         if !value_changed(self.offset_x, target_x) && !value_changed(self.offset_y, target_y) {
             // Nothing to travel: land exactly rather than pump a duration's
-            // worth of no-op frames.
+            // worth of no-op frames — the token reports `Landed` at once.
             self.offset_x = target_x;
             self.offset_y = target_y;
-            self.programmatic = None;
+            self.last_run_outcome = Some((token, true));
             self.report_offset();
-            return false;
+            return token;
         }
         self.programmatic = Some(ScrollAnimation {
+            token,
             animation,
-            started: None,
+            started: now,
             from_x: self.offset_x,
             from_y: self.offset_y,
             target_x,
             target_y,
         });
-        true
+        token
+    }
+
+    /// Ends the programmatic run in flight, if there is one, recording its
+    /// token and whether it landed so the armer can still ask
+    /// [`ScrollState::scroll_run_outcome`] about it.
+    const fn end_programmatic(&mut self, landed: bool) {
+        if let Some(run) = self.programmatic.take() {
+            self.last_run_outcome = Some((run.token, landed));
+        }
+    }
+
+    /// How the run `run` identifies ended — or whether it still drives the
+    /// offset. A token this state never issued reports `Interrupted`: its
+    /// run is certainly not live.
+    fn scroll_run_outcome(&self, run: ScrollRun) -> ScrollRunOutcome {
+        if self
+            .programmatic
+            .as_ref()
+            .is_some_and(|live| live.token == run.0)
+        {
+            return ScrollRunOutcome::Running;
+        }
+        match self.last_run_outcome {
+            Some((token, landed)) if token == run.0 => {
+                if landed {
+                    ScrollRunOutcome::Landed
+                } else {
+                    ScrollRunOutcome::Interrupted
+                }
+            }
+            _ => ScrollRunOutcome::Interrupted,
+        }
+    }
+
+    /// Writes the fling's sampled offset while the fling still owns the
+    /// offset: any claim newer than `epoch` — a request, a jump, user input —
+    /// owns it instead, and the refusal ends the fling rather than writing
+    /// over its successor.
+    fn apply_fling_offset(&mut self, epoch: u64, x: f64, y: f64) -> bool {
+        if self.offset_epoch != epoch {
+            return false;
+        }
+        let metrics = self.metrics();
+        let old_x = self.offset_x;
+        let old_y = self.offset_y;
+        match self.axis {
+            Axis::Horizontal => {
+                self.offset_x = clamp_scroll_offset(x, metrics.max_x);
+            }
+            Axis::Vertical => {
+                self.offset_y = clamp_scroll_offset(y, metrics.max_y);
+            }
+            Axis::All => {
+                self.offset_x = clamp_scroll_offset(x, metrics.max_x);
+                self.offset_y = clamp_scroll_offset(y, metrics.max_y);
+            }
+            _ => panic!("scroll axis variant is not supported by hydrolysis"),
+        }
+        let changed = value_changed(old_x, self.offset_x) || value_changed(old_y, self.offset_y);
+        self.report_offset();
+        changed
     }
 
     /// Moves the destination of the in-flight programmatic animation without
-    /// touching its clock; reports whether a run exists to refine.
-    fn retarget_animated_scroll(&mut self, x: f64, y: f64) -> bool {
+    /// touching its clock; reports whether `run` names the live run — the
+    /// only one a requester may steer.
+    fn retarget_animated_scroll(&mut self, run: ScrollRun, x: f64, y: f64) -> bool {
         let metrics = self.metrics();
-        let Some(run) = &mut self.programmatic else {
+        let Some(live) = &mut self.programmatic else {
             return false;
         };
+        if live.token != run.0 {
+            return false;
+        }
         match self.axis {
-            Axis::Horizontal => run.target_x = clamp_scroll_offset(x, metrics.max_x),
-            Axis::Vertical => run.target_y = clamp_scroll_offset(y, metrics.max_y),
+            Axis::Horizontal => live.target_x = clamp_scroll_offset(x, metrics.max_x),
+            Axis::Vertical => live.target_y = clamp_scroll_offset(y, metrics.max_y),
             Axis::All => {
-                run.target_x = clamp_scroll_offset(x, metrics.max_x);
-                run.target_y = clamp_scroll_offset(y, metrics.max_y);
+                live.target_x = clamp_scroll_offset(x, metrics.max_x);
+                live.target_y = clamp_scroll_offset(y, metrics.max_y);
             }
             _ => panic!("scroll axis variant is not supported by hydrolysis"),
         }
@@ -534,7 +716,7 @@ impl ScrollState {
     fn retarget_smooth_scroll(&mut self, scaled_dx: f64, scaled_dy: f64) -> bool {
         let metrics = self.metrics();
         // A wheel glide replaces a programmatic animation in flight.
-        self.programmatic = None;
+        self.end_programmatic(false);
         match self.axis {
             Axis::Horizontal => {
                 let target = self.smooth_target_x.unwrap_or(self.offset_x);
@@ -572,21 +754,17 @@ impl ScrollState {
     }
 
     /// Advances the programmatic scroll animation along its curve and returns
-    /// whether it still needs more frames. The first tick only starts the
-    /// clock; each later tick samples [`Animation::progress`] for the elapsed
-    /// time — a spring can overshoot or pull back — and clamps the applied
-    /// offset to the extents live at that frame, since content can change
-    /// mid-flight. On completion the offset lands exactly on the target.
+    /// whether it still needs more frames. Each tick samples
+    /// [`Animation::progress`] for the elapsed time — a spring can overshoot
+    /// or pull back — and clamps the applied offset to the extents live at
+    /// that frame, since content can change mid-flight. On completion the
+    /// offset lands exactly on the target and the run's token reports
+    /// `Landed`.
     fn advance_programmatic_scroll(&mut self, now: Instant) -> bool {
         let Some(run) = &mut self.programmatic else {
             return false;
         };
-        let elapsed = if let Some(started) = run.started {
-            now.saturating_duration_since(started)
-        } else {
-            run.started = Some(now);
-            Duration::ZERO
-        };
+        let elapsed = now.saturating_duration_since(run.started);
         let complete = run.animation.is_complete(elapsed);
         let progress = f64::from(run.animation.progress(elapsed));
         let (from_x, from_y, target_x, target_y) =
@@ -613,7 +791,7 @@ impl ScrollState {
             _ => panic!("scroll axis variant is not supported by hydrolysis"),
         }
         if complete {
-            self.programmatic = None;
+            self.end_programmatic(true);
         }
         !complete
     }
@@ -780,10 +958,15 @@ mod tests {
 
         // Arming the animation must not move the offset: that is the whole
         // difference from `scroll_to`, which lands on the target immediately.
-        assert!(handle.scroll_to_animated(0.0, 200.0, Animation::default()));
+        assert!(
+            handle
+                .scroll_to_animated(0.0, 200.0, Animation::default(), start)
+                .is_some()
+        );
         assert_eq!(handle.metrics().offset_y, 0.0);
 
-        // The first tick only starts the clock.
+        // The run's clock starts at the arm instant, so a tick at that same
+        // instant still shows zero elapsed.
         assert!(handle.tick_smooth_scroll(start));
         assert_eq!(handle.metrics().offset_y, 0.0);
 
@@ -811,13 +994,106 @@ mod tests {
     }
 
     #[test]
+    fn the_first_tick_after_arming_already_shows_motion() {
+        let handle = vertical_handle();
+        let armed = Instant::now();
+        // The clock starts at the arm instant, not the first tick: one frame
+        // later the offset has already moved — there is no dead frame.
+        assert!(
+            handle
+                .scroll_to_animated(0.0, 200.0, Animation::default(), armed)
+                .is_some()
+        );
+        assert!(handle.tick_smooth_scroll(armed + Duration::from_millis(16)));
+        assert!(
+            handle.metrics().offset_y > 0.0,
+            "one frame after arming the offset must already be moving"
+        );
+    }
+
+    #[test]
+    fn scroll_run_outcome_reports_running_landed_and_interrupted() {
+        let handle = vertical_handle();
+        let start = Instant::now();
+        let run = handle
+            .scroll_to_animated(
+                0.0,
+                200.0,
+                Animation::linear(Duration::from_millis(100)),
+                start,
+            )
+            .expect("the run must arm");
+        assert_eq!(handle.scroll_run_outcome(run), ScrollRunOutcome::Running);
+        assert!(!handle.tick_smooth_scroll(start + Duration::from_millis(100)));
+        assert_eq!(handle.scroll_run_outcome(run), ScrollRunOutcome::Landed);
+
+        // A run cancelled by user input reports Interrupted.
+        let cancelled = handle
+            .scroll_to_animated(0.0, 0.0, Animation::default(), start)
+            .expect("the run must arm");
+        let _ = handle.apply_scroll_delta(0.0, -10.0, false);
+        assert_eq!(
+            handle.scroll_run_outcome(cancelled),
+            ScrollRunOutcome::Interrupted
+        );
+
+        // A run replaced by a newer request reports Interrupted too.
+        let replaced = handle
+            .scroll_to_animated(0.0, 150.0, Animation::default(), start)
+            .expect("the run must arm");
+        assert!(
+            handle
+                .scroll_to_animated(0.0, 100.0, Animation::default(), start)
+                .is_some()
+        );
+        assert_eq!(
+            handle.scroll_run_outcome(replaced),
+            ScrollRunOutcome::Interrupted
+        );
+    }
+
+    #[test]
+    fn a_fling_write_is_refused_once_the_offset_changes_hands() {
+        let handle = vertical_handle();
+        let epoch = handle.offset_epoch();
+        // While nothing else claimed the offset, the fling's write applies.
+        assert!(handle.apply_fling_offset(epoch, 0.0, 50.0));
+        assert_eq!(handle.metrics().offset_y, 50.0);
+
+        // A programmatic request claims the offset: the fling's next write is
+        // refused instead of writing over its successor.
+        let _ = handle.scroll_to(0.0, 100.0);
+        assert!(!handle.apply_fling_offset(epoch, 0.0, 80.0));
+        assert_eq!(handle.metrics().offset_y, 100.0);
+
+        // Same for user input and for an animated request.
+        let epoch = handle.offset_epoch();
+        assert!(handle.apply_fling_offset(epoch, 0.0, 60.0));
+        let _ = handle.apply_scroll_delta(0.0, -10.0, false);
+        assert!(!handle.apply_fling_offset(epoch, 0.0, 40.0));
+        assert_eq!(handle.metrics().offset_y, 70.0);
+
+        let epoch = handle.offset_epoch();
+        assert!(
+            handle
+                .scroll_to_animated(0.0, 200.0, Animation::default(), Instant::now())
+                .is_some()
+        );
+        assert!(!handle.apply_fling_offset(epoch, 0.0, 30.0));
+    }
+
+    #[test]
     fn spring_scroll_settles_on_the_target() {
         let handle = vertical_handle();
         let start = Instant::now();
         // An underdamped spring overshoots mid-flight; the applied offset must
         // stay clamped to the scrollable extent and the run must still land
         // exactly on the target when its duration ends.
-        assert!(handle.scroll_to_animated(0.0, 200.0, Animation::spring(100.0, 10.0)));
+        assert!(
+            handle
+                .scroll_to_animated(0.0, 200.0, Animation::spring(100.0, 10.0), start)
+                .is_some()
+        );
         let mut now = start;
         let mut active = true;
         let mut frames = 0usize;
@@ -839,7 +1115,11 @@ mod tests {
     fn pixel_delta_cancels_an_in_flight_programmatic_animation() {
         let handle = vertical_handle();
         let start = Instant::now();
-        assert!(handle.scroll_to_animated(0.0, 200.0, Animation::default()));
+        assert!(
+            handle
+                .scroll_to_animated(0.0, 200.0, Animation::default(), start)
+                .is_some()
+        );
         assert!(handle.tick_smooth_scroll(start));
         let _ = handle.tick_smooth_scroll(start + Duration::from_millis(60));
         let mid = handle.metrics().offset_y;
@@ -859,7 +1139,11 @@ mod tests {
     fn wheel_glide_replaces_an_in_flight_programmatic_animation() {
         let handle = vertical_handle();
         let start = Instant::now();
-        assert!(handle.scroll_to_animated(0.0, 200.0, Animation::default()));
+        assert!(
+            handle
+                .scroll_to_animated(0.0, 200.0, Animation::default(), start)
+                .is_some()
+        );
         assert!(handle.tick_smooth_scroll(start));
 
         // A wheel tick cancels the programmatic run and arms its own glide.
@@ -880,25 +1164,24 @@ mod tests {
     }
 
     #[test]
-    fn retarget_animated_scroll_refines_without_restarting() {
+    fn retarget_animated_scroll_refines_only_the_run_it_names() {
         let handle = vertical_handle();
         let start = Instant::now();
-        // No run in flight: retargeting is a no-op.
-        assert!(!handle.retarget_animated_scroll(0.0, 50.0));
-
-        assert!(handle.scroll_to_animated(
-            0.0,
-            200.0,
-            Animation::linear(Duration::from_millis(100))
-        ));
-        assert!(handle.tick_smooth_scroll(start));
+        let run = handle
+            .scroll_to_animated(
+                0.0,
+                200.0,
+                Animation::linear(Duration::from_millis(100)),
+                start,
+            )
+            .expect("the run must arm");
         assert!(handle.tick_smooth_scroll(start + Duration::from_millis(50)));
         assert_eq!(handle.metrics().offset_y, 100.0);
 
         // Refining the destination keeps the run's clock: at 60ms the offset
         // is 60% of the way to the refined target — a restart would sit at
         // the 100.0 it had already reached.
-        assert!(handle.retarget_animated_scroll(0.0, 150.0));
+        assert!(handle.retarget_animated_scroll(run, 0.0, 150.0));
         assert!(handle.tick_smooth_scroll(start + Duration::from_millis(60)));
         let offset = handle.metrics().offset_y;
         assert!(
@@ -909,25 +1192,47 @@ mod tests {
         // Completion lands exactly on the refined target.
         assert!(!handle.tick_smooth_scroll(start + Duration::from_millis(100)));
         assert_eq!(handle.metrics().offset_y, 150.0);
+
+        // A token whose run already ended — or names a different live run —
+        // cannot steer anything: a second owner's animation stays untouched.
+        assert!(!handle.retarget_animated_scroll(run, 0.0, 75.0));
+        let other = handle
+            .scroll_to_animated(0.0, 100.0, Animation::default(), start)
+            .expect("the second run must arm");
+        assert!(!handle.retarget_animated_scroll(run, 0.0, 75.0));
+        assert_eq!(handle.scroll_run_outcome(other), ScrollRunOutcome::Running);
     }
 
     #[test]
     fn new_animated_scroll_restarts_from_the_current_offset() {
         let handle = vertical_handle();
         let start = Instant::now();
-        assert!(handle.scroll_to_animated(
-            0.0,
-            200.0,
-            Animation::linear(Duration::from_millis(100))
-        ));
-        assert!(handle.tick_smooth_scroll(start));
+        assert!(
+            handle
+                .scroll_to_animated(
+                    0.0,
+                    200.0,
+                    Animation::linear(Duration::from_millis(100)),
+                    start,
+                )
+                .is_some()
+        );
         assert!(handle.tick_smooth_scroll(start + Duration::from_millis(50)));
         assert_eq!(handle.metrics().offset_y, 100.0);
 
         // A second request restarts: it re-arms from the in-flight offset and
-        // starts a fresh clock on its next tick.
-        assert!(handle.scroll_to_animated(0.0, 0.0, Animation::linear(Duration::from_millis(100))));
+        // its clock starts at the new arm instant.
         let restart = start + Duration::from_millis(60);
+        assert!(
+            handle
+                .scroll_to_animated(
+                    0.0,
+                    0.0,
+                    Animation::linear(Duration::from_millis(100)),
+                    restart,
+                )
+                .is_some()
+        );
         assert!(handle.tick_smooth_scroll(restart));
         assert_eq!(handle.metrics().offset_y, 100.0);
         assert!(handle.tick_smooth_scroll(restart + Duration::from_millis(50)));
@@ -940,7 +1245,11 @@ mod tests {
     fn immediate_scroll_to_cancels_an_in_flight_animation() {
         let handle = vertical_handle();
         let start = Instant::now();
-        assert!(handle.scroll_to_animated(0.0, 200.0, Animation::default()));
+        assert!(
+            handle
+                .scroll_to_animated(0.0, 200.0, Animation::default(), start)
+                .is_some()
+        );
         assert!(handle.tick_smooth_scroll(start));
         assert!(handle.is_smooth_scrolling());
 

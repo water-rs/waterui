@@ -4,6 +4,7 @@
 //! regular stack: lazy row realization, indexed jumps, deletion, and moving.
 
 use waterui::Identifiable;
+use waterui::animation::Animation;
 use waterui::app::App;
 use waterui::component::list::{List, ListDelete, ListItem, ListMove};
 use waterui::prelude::theme_color::Foreground;
@@ -71,19 +72,22 @@ fn move_record(ListMove(movement): ListMove, state: DemoState) {
 }
 
 fn jump_top(state: DemoState) {
-    state.scroll.scroll_to(0);
+    state.scroll.animate_to(0, Animation::default());
 }
 
 fn jump_middle(state: DemoState) {
-    state
-        .scroll
-        .scroll_to((state.remaining.snapshot() as usize) / 2);
+    state.scroll.animate_to(
+        (state.remaining.snapshot() as usize) / 2,
+        Animation::default(),
+    );
 }
 
 fn jump_last(state: DemoState) {
     let remaining = state.remaining.snapshot();
     if remaining > 0 {
-        state.scroll.scroll_to(remaining as usize - 1);
+        state
+            .scroll
+            .animate_to(remaining as usize - 1, Animation::default());
     }
 }
 
@@ -118,7 +122,7 @@ fn content(state: DemoState) -> impl View {
             ))
             .spacing(8.0),
             text(
-                "Programmatic scrolls and the draggable scrollbar keep only viewport rows materialized.",
+                "Animated jumps and the draggable scrollbar keep only viewport rows materialized.",
             )
             .caption()
             .muted(),

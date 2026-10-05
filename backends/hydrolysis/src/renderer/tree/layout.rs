@@ -592,6 +592,7 @@ impl RenderNode {
                                 f64::from(request.target.x),
                                 f64::from(request.target.y),
                                 animation,
+                                renderer.frame_instant(),
                             );
                         } else {
                             let _ = handle.scroll_to(

@@ -981,8 +981,8 @@ impl IntoFFI for ScrollView {
                 )
             },
             |controller| {
-                // The FFI carries the request's target only; an animation on
-                // the request is the consuming backend's own concern.
+                // The FFI carries the request's target only: it drops the
+                // animation, so the external runtime jumps to the target.
                 let request = controller.request();
                 (
                     request

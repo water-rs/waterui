@@ -23,7 +23,7 @@ use std::rc::Rc;
 use hydrolysis_m3::Material3;
 use nami::collection::List as ReactiveList;
 use waterui::component::list::{List, ListDelete, ListItem, ListMove};
-use waterui::component::{hstack, spacer, text};
+use waterui::component::{hstack, spacer, text, vstack};
 use waterui::id::SelfId;
 use waterui::layout::scroll::ScrollController;
 use waterui::{Binding, View, ViewExt};
@@ -179,6 +179,143 @@ fn animate_to_a_row_glides_and_lands_where_the_jump_would_offscreen() {
     );
     app.query().label("row 8").assert_exists();
     app.query().label("row 0").assert_not_exists();
+}
+
+/// A membership change mid-flight must not kill an animated scroll: a chat
+/// that calls `animate_to(last)` while messages keep arriving re-anchors the
+/// viewport for the insertion, and that correction must not cancel the run —
+/// the request still lands on its row (water-rs/waterui#1901).
+#[test]
+fn animate_to_survives_rows_inserted_during_the_flight_offscreen() {
+    let items = ReactiveList::<SelfId<usize>>::new();
+    let _ = items.replace((0..30).map(SelfId::new).collect());
+    let controller = ScrollController::new(0);
+    let mut app = ui()
+        .viewport(320, 320)
+        .theme(Material3::defaults())
+        .mount_offscreen({
+            let items = items.clone();
+            let controller = controller.clone();
+            move || pending_scroll_list(items.clone(), controller.clone())
+        });
+    app.settle();
+
+    controller.animate_to(29, waterui::animation::Animation::default());
+    app.pump_for(std::time::Duration::from_millis(100));
+
+    // Messages arriving while the scroll is in flight: the membership event
+    // re-anchors the viewport, which must not read as the user scrolling.
+    let _ = items.replace((0..34).map(SelfId::new).collect());
+    app.settle();
+
+    let scroll_y = app
+        .query()
+        .role(Role::LIST)
+        .label("messages")
+        .single()
+        .node()
+        .scroll_y()
+        .expect("the list reports a scroll offset");
+    // The request targets row 29 at 29·ROW_HEIGHT, but the appended rows
+    // push it past the scrollable end: the run lands on the clamp — 34 rows
+    // minus the 320pt viewport — with row 29 (and the true last row) in view.
+    let expected = 34.0f64.mul_add(ROW_HEIGHT, -320.0);
+    assert!(
+        (scroll_y - expected).abs() < 1.0,
+        "the animated request must land on the clamped end despite the insertion: expected scroll_y≈{expected}, got {scroll_y}"
+    );
+    app.query().label("row 29").assert_exists();
+    app.query().label("row 33").assert_exists();
+}
+
+/// A row inside the last screenful has an `offset_of` past `max_y`: the run
+/// lands on the clamp, the row is already in view, and the request consumes.
+#[test]
+fn animate_to_a_row_in_the_last_screenful_lands_on_the_clamp_offscreen() {
+    let items = ReactiveList::<SelfId<usize>>::new();
+    let _ = items.replace((0..10).map(SelfId::new).collect());
+    let controller = ScrollController::new(0);
+    let mut app = ui()
+        .viewport(320, 320)
+        .theme(Material3::defaults())
+        .mount_offscreen({
+            let controller = controller.clone();
+            move || pending_scroll_list(items.clone(), controller.clone())
+        });
+    app.settle();
+
+    controller.animate_to(9, waterui::animation::Animation::default());
+    app.settle();
+
+    let scroll_y = app
+        .query()
+        .role(Role::LIST)
+        .label("messages")
+        .single()
+        .node()
+        .scroll_y()
+        .expect("the list reports a scroll offset");
+    // Row 9 sits at 9·ROW_HEIGHT, but 10 rows of content against a 320pt
+    // viewport clamps the offset to max_y — exactly where a jump lands.
+    let expected = 10.0f64.mul_add(ROW_HEIGHT, -320.0);
+    assert!(
+        (scroll_y - expected).abs() < 1.0,
+        "a last-screenful target must land on the clamp: expected scroll_y≈{expected}, got {scroll_y}"
+    );
+    app.query().label("row 9").assert_exists();
+}
+
+/// Rows taller than the Fenwick estimate: a tween that is too short for the
+/// flight lands on whatever clamp the partially-measured extents allow — the
+/// request stays armed past the landing and settles the offset with jumps as
+/// materialization re-measures the rows ahead, not a second full-duration run
+/// (the motion is over; settling the final position is a correction).
+#[test]
+fn animate_to_lands_then_corrects_as_rows_remeasure_offscreen() {
+    let items = ReactiveList::<SelfId<usize>>::new();
+    let _ = items.replace((0..20).map(SelfId::new).collect());
+    let controller = ScrollController::new(0);
+    let mut app = ui()
+        .viewport(320, 320)
+        .theme(Material3::defaults())
+        .mount_offscreen({
+            let controller = controller.clone();
+            move || {
+                List::for_each(items.clone(), |item| {
+                    ListItem::new(vstack((text(format!("row {}", *item)),)).size(300.0, 112.0))
+                })
+                .scroll_controller(&controller)
+                .a11y_label("messages")
+            }
+        });
+    let scroll_y = |app: &mut waterui_testing::OffscreenApp| {
+        app.query()
+            .role(Role::LIST)
+            .label("messages")
+            .single()
+            .node()
+            .scroll_y()
+            .expect("the list reports a scroll offset")
+    };
+    app.settle();
+    // Row 15's measured top is 15 x 132 = 1980 while the estimate puts it at
+    // 1296: the 48ms tween runs out about three frames in, landing on the
+    // early clamp around 1256 — short of the row. The landed run then keeps
+    // correcting the offset by jumps until row 15's measured range reaches
+    // the viewport, which must happen within a few frames — a re-armed
+    // full-duration run would still be easing somewhere below.
+    controller.animate_to(
+        15,
+        waterui::animation::Animation::linear(std::time::Duration::from_millis(48)),
+    );
+    app.pump_for(std::time::Duration::from_millis(160));
+    app.query().label("row 15").assert_exists();
+    let settled = scroll_y(&mut app);
+    assert!(
+        settled > 1400.0 && settled <= 1980.5,
+        "the request stops where row 15 becomes visible — below its measured \
+         start at 1980 and at least a viewport back (got scroll_y {settled})"
+    );
 }
 
 /// The semantic runtime has no pump to advance an animation, so an animated

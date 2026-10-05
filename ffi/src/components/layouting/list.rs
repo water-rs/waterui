@@ -266,8 +266,8 @@ impl IntoFFI for ListConfig {
         let (target_index, scroll_generation) = self.scroll_controller.map_or_else(
             || (core::ptr::null_mut(), core::ptr::null_mut()),
             |controller| {
-                // The FFI carries the request's target only; an animation on
-                // the request is the consuming backend's own concern.
+                // The FFI carries the request's target only: it drops the
+                // animation, so the external runtime jumps to the target.
                 (
                     controller
                         .request()

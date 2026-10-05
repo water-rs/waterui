@@ -13,7 +13,7 @@ use crate::renderer::{
     list_row_height_for_content, local_interaction_state, materialize_list_item,
     measure_list_intrinsic, measure_transient_view_intrinsic, transformed_rect,
 };
-use crate::scroll::ScrollHandle;
+use crate::scroll::{ScrollHandle, ScrollRun, ScrollRunOutcome};
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, NodeId as AccessibilityNodeId,
@@ -54,20 +54,28 @@ struct ListViewportAnchor {
 }
 
 /// A pending programmatic scroll to a row: the request's generation, row
-/// index and animation, the offset last issued to the scroll handle, and
-/// whether the animated run has been armed. The first apply arms the
-/// animation; later applies only refine its target, so a re-issue refines
-/// the destination instead of restarting the clock.
+/// index and animation, and how far applying it has progressed. The first
+/// apply arms the animation; later applies only refine its target, so a
+/// re-issue refines the destination instead of restarting the clock.
 #[derive(Clone)]
 struct PendingScroll {
     generation: i32,
     index: usize,
     animation: Option<Animation>,
-    armed: bool,
-    /// The offset most recently issued as the run's target. When the run
-    /// ends here it landed — an offset anywhere else means the user
-    /// scrolled.
-    issued_offset: f64,
+    state: PendingScrollState,
+}
+
+/// How far a [`PendingScroll`] has progressed against the scroll handle.
+#[derive(Clone)]
+enum PendingScrollState {
+    /// No run has been armed for this request yet.
+    Unarmed,
+    /// The request armed `run`; [`ScrollHandle::scroll_run_outcome`] answers
+    /// whether it still drives the offset, landed, or was interrupted —
+    /// asking the handle instead of guessing from the offset is what keeps
+    /// a membership re-anchor or a clamped landing from looking like the
+    /// user scrolled.
+    Armed { run: ScrollRun },
 }
 
 /// Fraction of the row's width a swipe must cross to dismiss on release.
@@ -669,8 +677,7 @@ impl ListRenderState {
                 generation,
                 index: request.target,
                 animation: request.animation,
-                armed: false,
-                issued_offset: f64::NAN,
+                state: PendingScrollState::Unarmed,
             });
         }
         let Some(pending) = self.pending_scroll.borrow().clone() else {
@@ -690,34 +697,33 @@ impl ListRenderState {
         // lands.
         let offset = self.extent_index.borrow().offset_of(pending.index);
         match pending.animation.clone() {
-            Some(animation) if animate => {
-                let metrics = handle.metrics();
-                if pending.armed {
-                    if handle.is_smooth_scrolling() {
+            Some(animation) if animate => match pending.state {
+                PendingScrollState::Armed { run } => match handle.scroll_run_outcome(run) {
+                    ScrollRunOutcome::Running => {
                         // Already gliding: refine the destination without
-                        // restarting the run's clock. A wheel glide that
-                        // replaced the run ignores the stale target.
-                        let _ = handle.retarget_animated_scroll(0.0, offset);
-                    } else if (metrics.offset_y - pending.issued_offset).abs() < 0.5 {
-                        // The run landed on its issued target. Rows that
-                        // were unmeasured when it armed keep refining
-                        // `offset_of(index)`, so a destination that moved
-                        // since glides the remaining distance instead of
-                        // stalling just short of the row.
-                        let _ = handle.scroll_to_animated(0.0, offset, animation);
-                    } else {
-                        // The run is gone and the offset is not the
-                        // request's: the user scrolled. The request is
-                        // spent — consuming its generation keeps the
-                        // supersede rule uniform.
+                        // restarting the run's clock. Only the run this
+                        // request armed answers — a different owner's
+                        // animation on the same surface is never steered.
+                        let _ = handle.retarget_animated_scroll(run, 0.0, offset);
+                    }
+                    ScrollRunOutcome::Landed => {
+                        // The motion is over; settling the final position
+                        // as rows re-measure is a correction, so it jumps
+                        // rather than arming a second full-duration run.
+                        let _ = handle.scroll_to(0.0, offset);
+                    }
+                    ScrollRunOutcome::Interrupted => {
+                        // Something else claimed the offset — user input,
+                        // a jump, or another owner's run (keyboard
+                        // clearance). The request is spent; consuming its
+                        // generation keeps the supersede rule uniform.
                         self.applied_scroll_generation.set(pending.generation);
                         self.pending_scroll.take();
                         return;
                     }
-                    if let Some(stored) = self.pending_scroll.borrow_mut().as_mut() {
-                        stored.issued_offset = offset;
-                    }
-                } else {
+                },
+                PendingScrollState::Unarmed => {
+                    let metrics = handle.metrics();
                     let current = self
                         .extent_index
                         .borrow()
@@ -741,17 +747,17 @@ impl ListRenderState {
                         let approach = self.extent_index.borrow().offset_of(approach_index);
                         let _ = handle.scroll_to(0.0, approach);
                     }
-                    // The pump ticks smooth scrolls before rendering and the
-                    // present already wakes the loop, so arming here is enough
-                    // — the next tick advances the animation and keeps
-                    // requesting frames until it lands.
-                    let _ = handle.scroll_to_animated(0.0, offset, animation);
-                    if let Some(stored) = self.pending_scroll.borrow_mut().as_mut() {
-                        stored.armed = true;
-                        stored.issued_offset = offset;
+                    // Arming starts the run's clock at the frame instant —
+                    // the very next tick already shows motion, and keeps
+                    // requesting frames until the run lands.
+                    if let Some(run) =
+                        handle.scroll_to_animated(0.0, offset, animation, renderer.frame_instant())
+                        && let Some(stored) = self.pending_scroll.borrow_mut().as_mut()
+                    {
+                        stored.state = PendingScrollState::Armed { run };
                     }
                 }
-            }
+            },
             _ => {
                 // `None` (a jump) or the semantic runtime, whose pump never
                 // registers the list's handle in its scroll targets — either
@@ -780,6 +786,15 @@ impl ListRenderState {
     }
 
     fn apply_membership_anchor(&self, handle: &ScrollHandle) {
+        if self.pending_scroll.borrow().is_some() {
+            // A pending scroll request re-issues `offset_of(index)` under
+            // the new membership anyway; re-anchoring now would cancel its
+            // run. The anchor is dropped rather than deferred — replaying a
+            // stale anchor after the request lands would yank the viewport
+            // back to where it no longer belongs.
+            let _ = self.pending_membership_offset.take();
+            return;
+        }
         if let Some(offset) = self.pending_membership_offset.take() {
             // Re-anchoring after a delete or move keeps the viewport where the
             // user left it; that is a correction, not a journey, so it lands

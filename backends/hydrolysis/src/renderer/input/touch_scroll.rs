@@ -139,6 +139,11 @@ impl VelocityTracker {
 #[derive(Debug)]
 pub struct TouchFling {
     handle: crate::scroll::ScrollHandle,
+    /// The offset epoch captured when the fling started: the fling keeps
+    /// writing while it still owns the offset, and its first refused write
+    /// — a request, a jump, user input — ends it rather than overwriting
+    /// its successor.
+    epoch: u64,
     x: Option<SplineFling>,
     y: Option<SplineFling>,
 }
@@ -183,7 +188,13 @@ impl TouchFling {
         let y = matches!(handle.axis(), Axis::Vertical | Axis::All)
             .then(|| axis_fling(finger_velocity.y, metrics.offset_y, metrics.max_y))
             .flatten();
-        (x.is_some() || y.is_some()).then_some(Self { handle, x, y })
+        let epoch = handle.offset_epoch();
+        (x.is_some() || y.is_some()).then_some(Self {
+            handle,
+            epoch,
+            x,
+            y,
+        })
     }
 
     /// Advances the fling to `now` and applies its offset through the
@@ -198,11 +209,16 @@ impl TouchFling {
             .y
             .as_ref()
             .map_or((metrics.offset_y, false), |fling| fling.position(now));
-        let changed = self.handle.scroll_to(offset_x, offset_y);
+        // A programmatic request — jump or animated — or any user input
+        // claims the offset and bumps the epoch: the refused write ends
+        // the fling instead of writing over whatever replaced it.
+        let changed = self
+            .handle
+            .apply_fling_offset(self.epoch, offset_x, offset_y);
         TouchFlingTick {
             changed,
-            // A write the handle refuses — a stale generation, or the
-            // offset already there — ends the fling on the spot.
+            // A refused write — a newer claim on the offset — ends the
+            // fling on the spot.
             running: changed && (active_x || active_y),
         }
     }
