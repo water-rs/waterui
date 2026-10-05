@@ -947,14 +947,11 @@ fn flush_navigation_transition_element(
         child.flush(renderer, ctx, env);
         return;
     }
-    let mut scene = Recording::new();
-    core::mem::swap(renderer.scene_mut(), &mut scene);
-    child.flush(renderer, ctx, env);
-    core::mem::swap(renderer.scene_mut(), &mut scene);
+    let layers = renderer.capture_layers(|renderer| child.flush(renderer, ctx, env));
     renderer.finish_navigation_element_capture(
         source,
         id,
         transformed_rect(ctx.transform, ctx.bounds),
-        scene,
+        layers,
     );
 }

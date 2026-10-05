@@ -341,7 +341,7 @@ async fn filters_keep_redraw_requests_made_during_async_setup() {
         .expect("surface");
     surface.update(|tx| {
         tx[surface.root()]
-            .filter(&filter)
+            .filter(filter.id())
             .content(surface.record(|r| r.fill(Rect::new(0., 0., 8., 8.), WorkingColor::WHITE)));
     });
     assert!(matches!(

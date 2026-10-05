@@ -326,6 +326,10 @@ pub struct HydrolysisRenderer {
     engine_next: Option<cherenkov::Next>,
     frame_clip_layers: u32,
     frame_max_clip_depth: u32,
+    /// The clip/opacity scopes the captures in progress set aside: content a
+    /// capture records is presented under them, so they count toward its
+    /// clip depth.
+    captured_clip_depth: usize,
     frame_filtered_count: u32,
     /// Per-frame applied-filter telemetry the render thread's `EngineEffect`
     /// calls accumulate into; reset before each `Engine::render` and read back
@@ -487,6 +491,7 @@ impl HydrolysisRenderer {
             engine_next: None,
             frame_clip_layers: 0,
             frame_max_clip_depth: 0,
+            captured_clip_depth: 0,
             frame_filtered_count: 0,
             applied_filter_metrics: Arc::default(),
             frame_applied_filter_count: 0,
