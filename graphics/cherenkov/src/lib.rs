@@ -21,7 +21,6 @@
 // code is unchanged.
 use cherenkov_record::{animation, color, display_list, glyph, paint, record, shape, size, style};
 
-mod backdrop;
 mod backend;
 mod capability;
 mod config;
@@ -52,7 +51,6 @@ pub use crate::animation::{
     Animatable, Animation, AnimationTrack, Curve, Decay, Lanes, Spring, curve_value, decay_step,
     settled, spring_step,
 };
-pub use crate::backdrop::{BackdropShaderSource, CaptureScale, CaptureScaleError};
 pub use crate::backend::{
     Backend, Display, Frame, FrameRedraw, Renderer, SurfaceFrame, SurfaceInfo, Visibility,
 };
@@ -106,9 +104,10 @@ pub use crate::text::{TextLayout, draw_text};
 // rest of `cherenkov-record`.
 pub use cherenkov_record::{
     BackdropEffect, BackdropId, BackdropSample, BackdropSampling, BackdropShaderEffect,
-    BackdropShaderId, ColorMatrix, ContentOp, GpuInstalls, ImageLimits, Install, Layer,
-    LayerAnimations, LayerContent, LayerEdit, LayerId, LayerNode, LayerOwner, Projective,
-    ProjectiveError, ProjectiveLayers, Prop, Queue, Realize, Refraction, RefreshRange, ResourceId,
-    Rim, Shared, SurfaceId, SurfaceTree, Target, Transaction, snap_animating,
+    BackdropShaderId, BackdropShaderSource, CaptureScale, CaptureScaleError, ColorMatrix,
+    ContentOp, GpuInstalls, ImageLimits, Install, Layer, LayerAnimations, LayerContent, LayerEdit,
+    LayerId, LayerNode, LayerOwner, Projective, ProjectiveError, ProjectiveLayers, Prop, Queue,
+    Realize, Refraction, RefreshRange, ResourceId, Rim, Shared, SurfaceId, SurfaceTree, Target,
+    Transaction, snap_animating,
 };
 pub use kurbo::Stroke;

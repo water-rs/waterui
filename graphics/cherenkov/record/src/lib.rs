@@ -17,6 +17,9 @@
 //!   operand instead.
 //! - A target drains [`Content::take_change`] for the [`ContentChange`] to
 //!   apply: first the whole [`Picture`], then the changed slots.
+//! - [`Content::record_layered`] opens a recording that may declare
+//!   backdrop materials ([`material`]), which never enter a display list:
+//!   the recording comes back split at each one for its host to realize.
 
 pub mod animation;
 pub mod backdrop;
@@ -26,6 +29,7 @@ pub mod error;
 pub mod frame;
 pub mod glyph;
 pub mod image;
+pub mod material;
 pub mod ops;
 pub mod paint;
 pub mod projective;
@@ -47,7 +51,8 @@ pub use crate::animation::{
     settled, spring_step,
 };
 pub use crate::backdrop::{
-    BackdropEffect, BackdropSample, BackdropShaderEffect, ColorMatrix, Refraction, Rim,
+    BackdropEffect, BackdropSample, BackdropShaderEffect, BackdropShaderSource, CaptureScale,
+    CaptureScaleError, ColorMatrix, Refraction, Rim,
 };
 pub use crate::color::{
     Color, ColorSpace, DisplayP3, DynColor, LinearDisplayP3, LinearSrgb, Rec2020, Srgb,
@@ -63,6 +68,10 @@ pub use crate::glyph::{FontId, Glyph, GlyphRun, GlyphStyle};
 pub use crate::image::{
     Astc4x4, Bc7, Etc2Rgba, Format, ImageColorSpace, ImageData, ImageFormat, ImageUpload, Rgba8,
     Rgba16F,
+};
+pub use crate::material::{
+    BackdropMaterial, CaptureClass, LayeredContent, MaterialCapture, MaterialEffect,
+    MaterialGrouping, MaterialRegistry, MaterialRun, MaterialScope, MaterialShader,
 };
 pub use crate::ops::{
     BackdropId, ChangeSet, ContentOp, Install, LayerId, LayerOp, Op, Prop, SurfaceId,

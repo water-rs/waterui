@@ -16,6 +16,10 @@ use crate::display_list::{
     Command, DisplayList, DisplayListView, Operand, Picture, Slot, SlotUpdate,
 };
 use crate::glyph::GlyphRun;
+use crate::material::{
+    BackdropMaterial, CaptureClass, LayeredContent, MaterialEffect, MaterialRun, MaterialScope,
+    MaterialShader,
+};
 use crate::paint::{ImageId, Paint, Sampling};
 use crate::resource::ResourceId;
 use crate::shape::Shape;
@@ -401,6 +405,45 @@ impl<T> Live<T> {
             .map(|guard| Binding { _guard: guard });
         (value, guard)
     }
+
+    /// A `Live` of `f` applied to this one's value: `f` maps the value the
+    /// binding starts from now and every later change when the result is
+    /// bound. A change keeps its `Context` metadata, so an [`Animation`] it
+    /// was made under still reaches the binding.
+    pub fn map<U: 'static>(self, f: impl Fn(T) -> U + 'static) -> Live<U>
+    where
+        T: 'static,
+    {
+        let Self {
+            value,
+            subscription,
+        } = self;
+        let value = f(value);
+        Live {
+            value,
+            subscription: Subscribe(subscription.0.map(|inner| {
+                Box::new(MappedSubscription { inner, f }) as Box<dyn Subscription<U>>
+            })),
+        }
+    }
+}
+
+/// A subscription whose changes pass through a map before they reach the
+/// watch: what [`Live::map`] leaves.
+struct MappedSubscription<T, F> {
+    inner: Box<dyn Subscription<T>>,
+    f: F,
+}
+
+impl<T: 'static, U: 'static, F: Fn(T) -> U + 'static> Subscription<U> for MappedSubscription<T, F> {
+    fn start(self: Box<Self>, watch: Watch<U>) -> Option<Box<dyn Any>> {
+        let Self { inner, f } = *self;
+        inner.start(Watch::binding(
+            move |context: nami_core::watcher::Context<T>| {
+                watch.notify(context.map(&f));
+            },
+        ))
+    }
 }
 
 /// State shared between a [`Content`] and the watchers of its signals.
@@ -621,6 +664,17 @@ pub struct Recorder {
     live: Rc<LiveState>,
     picture: Option<Picture>,
     size: LayoutSize,
+    /// The clip, transform and group scopes open around the current call.
+    depth: u32,
+    /// The material scope of a recording opened with
+    /// [`Content::record_layered`]; `None` for a plain recording, which
+    /// takes no material.
+    scope: Option<MaterialScope>,
+    /// A layered recording's finished parts: the content recorded before
+    /// each material so far.
+    parts: Vec<Content>,
+    /// A layered recording's materials so far, in recording order.
+    materials: Vec<BackdropMaterial>,
 }
 
 impl std::fmt::Debug for Recorder {
@@ -632,6 +686,91 @@ impl std::fmt::Debug for Recorder {
 }
 
 impl Recorder {
+    /// A plain recording into `list`, recording `live` operands.
+    const fn new(
+        list: DisplayList,
+        live: Rc<LiveState>,
+        picture: Option<Picture>,
+        size: LayoutSize,
+    ) -> Self {
+        Self {
+            list,
+            live,
+            picture,
+            size,
+            depth: 0,
+            scope: None,
+            parts: Vec::new(),
+            materials: Vec::new(),
+        }
+    }
+
+    /// Declares a backdrop material at this point of the recording: a
+    /// chrome surface that samples what lies behind it.
+    ///
+    /// What was recorded before the call draws below the material and is
+    /// part of its backdrop; what is recorded after it draws above it.
+    /// `shape` is the member's clip and `effect` its per-member
+    /// parameters for the registered `shader`; the member's group takes
+    /// the parameters of the registered `capture` class. Both `shape` and
+    /// `effect` are [`Live`]: their signals are not bound to any slot of
+    /// the recording but reach the realized member, so a change updates
+    /// it with no re-recording. See [`crate::material`].
+    ///
+    /// # Panics
+    /// - in a recording not opened with [`Content::record_layered`];
+    /// - inside a [`clip`](Draw::clip), [`transform`](Draw::transform) or
+    ///   [`group`](Draw::group) scope: a material is allowed only at the
+    ///   top level of a layered recording;
+    /// - when the effect carries more than
+    ///   [`MaterialEffect::MAX_UNIFORMS`] uniforms or a non-finite one.
+    ///   A later change of the effect is checked the same way when it is
+    ///   delivered.
+    pub fn backdrop_material<S: Shape>(
+        &mut self,
+        shape: impl Into<Live<S>>,
+        shader: MaterialShader,
+        capture: CaptureClass,
+        effect: impl Into<Live<MaterialEffect>>,
+    ) {
+        let Some(scope) = self.scope else {
+            panic!(
+                "a backdrop material can only be recorded into a recording opened with \
+                 `Content::record_layered`"
+            );
+        };
+        assert!(
+            self.depth == 0,
+            "a backdrop material can only be recorded at the top level of a layered recording, \
+             outside every clip, transform and group scope"
+        );
+        let shape = shape.into().map(Shape::into_data);
+        let effect = effect.into().map(MaterialEffect::validate);
+        let part = self.take_part();
+        self.parts.push(part);
+        self.materials
+            .push(BackdropMaterial::new(shape, shader, capture, effect, scope));
+    }
+
+    /// Runs a clip, transform or group scope's `body` one scope deeper.
+    fn scoped(&mut self, body: impl FnOnce(&mut Self)) {
+        self.depth += 1;
+        body(self);
+        self.depth -= 1;
+    }
+
+    /// Finishes what has been recorded since the last material into a
+    /// content of its own, leaving the recorder empty for the next part.
+    fn take_part(&mut self) -> Content {
+        let mut list = std::mem::take(&mut self.list);
+        list.trim_spare();
+        Content {
+            picture: Picture::from_list(list),
+            live: std::mem::take(&mut self.live),
+            sent: false,
+        }
+    }
+
     /// The size the host lays the recorded layer out at, as a signal:
     /// geometry derived from it (`c.layout_size().map(…)`) updates when the
     /// host resizes the layer, without re-recording. See [`LayoutSize`].
@@ -795,7 +934,7 @@ impl Draw for Recorder {
         self.subscribe(shape.subscription, begin, |shape: S| {
             Operand::Shape(shape.into_data())
         });
-        body(self);
+        self.scoped(body);
         self.list.end(begin);
     }
 
@@ -806,7 +945,7 @@ impl Draw for Recorder {
             end: 0,
         });
         self.subscribe(transform.subscription, begin, Operand::Transform);
-        body(self);
+        self.scoped(body);
         self.list.end(begin);
     }
 
@@ -817,7 +956,7 @@ impl Draw for Recorder {
             end: 0,
         });
         self.subscribe(group.subscription, begin, Operand::Group);
-        body(self);
+        self.scoped(body);
         self.list.end(begin);
     }
 }
@@ -936,6 +1075,39 @@ impl Content {
         Self::record_with_capacity(0, size, body)
     }
 
+    /// Records content that may declare backdrop materials
+    /// ([`Recorder::backdrop_material`]), split at each material.
+    ///
+    /// `size` is the layer's [`LayoutSize`], as for
+    /// [`record`](Self::record). `scope` is the material scope the host
+    /// records under: the nearest enclosing view subtree that groups its
+    /// materials, or [`MaterialScope::SOLO`]. Every material recorded
+    /// carries it.
+    ///
+    /// The recording comes back as [`LayeredContent`]: the content below
+    /// the first material, then each material with the content recorded
+    /// after it. A signal used by commands of one part becomes a slot of
+    /// that part only. A recording with no material is all `below`.
+    pub fn record_layered(
+        size: &LayoutSize,
+        scope: MaterialScope,
+        body: impl FnOnce(&mut Recorder),
+    ) -> LayeredContent {
+        let mut recorder = Recorder::new(DisplayList::default(), Rc::default(), None, size.clone());
+        recorder.scope = Some(scope);
+        body(&mut recorder);
+        // Each material's part is the content recorded before it; the
+        // content after the last one is the last run's.
+        let mut above = recorder.take_part();
+        let mut runs = Vec::with_capacity(recorder.materials.len());
+        for (material, before) in recorder.materials.into_iter().zip(recorder.parts).rev() {
+            runs.push(MaterialRun { material, above });
+            above = before;
+        }
+        runs.reverse();
+        LayeredContent { below: above, runs }
+    }
+
     /// Records into the `spare` a retired content handed back, reusing its
     /// picture storage and live state; a fresh recording when `spare` is
     /// empty.
@@ -962,12 +1134,7 @@ impl Content {
         } else {
             Rc::new(LiveState::default())
         };
-        let mut recorder = Recorder {
-            list,
-            live,
-            picture,
-            size: size.clone(),
-        };
+        let mut recorder = Recorder::new(list, live, picture, size.clone());
         body(&mut recorder);
         recorder.finish()
     }
@@ -1005,12 +1172,12 @@ impl Content {
         size: &LayoutSize,
         body: impl FnOnce(&mut Recorder),
     ) -> Self {
-        let mut recorder = Recorder {
-            list: DisplayList::with_capacity(capacity),
-            live: Rc::default(),
-            picture: None,
-            size: size.clone(),
-        };
+        let mut recorder = Recorder::new(
+            DisplayList::with_capacity(capacity),
+            Rc::default(),
+            None,
+            size.clone(),
+        );
         body(&mut recorder);
         recorder.list.trim_spare();
         Self {
@@ -1156,12 +1323,12 @@ mod tests {
     #[test]
     fn explicit_recording_keeps_live_operands_until_frozen() {
         let radius = binding::<f64>(1.0);
-        let mut recorder = Recorder {
-            list: DisplayList::default(),
-            live: Rc::default(),
-            picture: None,
-            size: LayoutSize::new(),
-        };
+        let mut recorder = Recorder::new(
+            DisplayList::default(),
+            Rc::default(),
+            None,
+            LayoutSize::new(),
+        );
         recorder.fill(radius.map(|r| Circle::new((0.0, 0.0), r)), red());
         let mut content = recorder.finish();
         let Some(ContentChange::Replace(original)) = content.take_change() else {
@@ -1197,12 +1364,12 @@ mod tests {
             elements,
             rule: crate::FillRule::EvenOdd,
         };
-        let mut recorder = Recorder {
-            list: DisplayList::default(),
-            live: Rc::default(),
-            picture: None,
-            size: LayoutSize::new(),
-        };
+        let mut recorder = Recorder::new(
+            DisplayList::default(),
+            Rc::default(),
+            None,
+            LayoutSize::new(),
+        );
         recorder.fill(Fixed(shape), red());
         let picture = recorder.finish().into_picture();
         let Command::Fill {
@@ -1517,6 +1684,40 @@ mod tests {
             !content.sample(Instant::now()).is_animating(),
             "a snapped change starts no track"
         );
+    }
+
+    #[test]
+    fn a_mapped_live_maps_every_value_and_keeps_the_animation() {
+        let animation = Animation::from(Curve::linear(std::time::Duration::from_millis(300)));
+        let x = binding::<f64>(1.0);
+        let live: Live<f64> = x.with(animation).into();
+        let mapped = live.map(|x| Circle::new((0., 0.), x * 2.));
+        assert_eq!(*mapped.value(), Circle::new((0., 0.), 2.));
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let (start, guard) = mapped.watch({
+            let seen = Rc::clone(&seen);
+            move |context| {
+                let animation = context.metadata().try_get::<Animation>();
+                seen.borrow_mut().push((context.into_value(), animation));
+            }
+        });
+        assert_eq!(start, Circle::new((0., 0.), 2.));
+        x.set(3.0);
+        assert_eq!(
+            *seen.borrow(),
+            [(Circle::new((0., 0.), 6.), Some(animation))],
+            "the change is mapped and keeps its animation"
+        );
+        drop(guard);
+        x.set(4.0);
+        assert_eq!(seen.borrow().len(), 1, "dropping the guard unsubscribes");
+
+        // A mapped constant maps its value and never subscribes.
+        let (value, guard) = Live::from(Fixed(5.0_f64))
+            .map(|x| x + 1.)
+            .watch(|_| unreachable!("a constant never changes"));
+        assert!((value - 6.).abs() < f64::EPSILON);
+        assert!(guard.is_none());
     }
 
     #[test]

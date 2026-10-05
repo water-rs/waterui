@@ -8,7 +8,7 @@ use kurbo::{Affine, Vec2};
 use crate::Target;
 use crate::WorkingColor;
 use crate::animation::Animation;
-use crate::backdrop::BackdropSample;
+use crate::backdrop::{BackdropEffect, BackdropSample};
 use crate::display_list::{Picture, SlotUpdate};
 use crate::projective::Projective;
 use crate::shape::ShapeData;
@@ -130,6 +130,11 @@ pub enum LayerOp {
     /// Set or clear the backdrop sample (group and optional per-member
     /// effect).
     Backdrop(LayerId, Option<BackdropSample>),
+    /// Replace only the per-member effect of the layer's backdrop sample,
+    /// keeping its group. A bound sample's change that keeps the group and
+    /// the effect's sampling reach arrives as this op: the group's capture
+    /// region stays as it is and only the member's composite changes.
+    BackdropEffect(LayerId, Option<BackdropEffect>),
     /// Set the layer content, or clear it.
     Content(LayerId, Option<ContentOp>),
     /// Append a child.

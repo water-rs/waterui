@@ -45,6 +45,7 @@ enum PropKind {
     Opacity,
     ScrollOffset,
     Clip,
+    Backdrop,
     LayoutSize,
 }
 
@@ -611,11 +612,11 @@ enum EditOp<T: Target> {
 /// One layer's pending edits, collected inside a [`Transaction`]. Each
 /// method records an op and returns `&mut Self` for chaining.
 ///
-/// `transform`, `opacity`, `scroll_offset` and `clip` accept a constant or
-/// a nami signal (`impl Into<Live<T>>`): a bound signal keeps updating the
-/// layer with no further transactions, and a change whose nami `Context`
-/// metadata carries an [`Animation`] interpolates while the consumer
-/// samples it.
+/// `transform`, `opacity`, `scroll_offset`, `clip` and `backdrop` accept a
+/// constant or a nami signal (`impl Into<Live<T>>`): a bound signal keeps
+/// updating the layer with no further transactions, and a change of an
+/// animatable property whose nami `Context` metadata carries an
+/// [`Animation`] interpolates while the consumer samples it.
 pub struct LayerEdit<T: Target> {
     ops: Vec<EditOp<T>>,
     layer: LayerId,
@@ -719,13 +720,40 @@ impl<T: BackdropSampling> LayerEdit<T> {
     /// group's capture as the bottom-most draw inside its clip. A sample
     /// made with [`BackdropSample::with_effect`] carries a per-member
     /// effect evaluated in the member's composite.
-    pub fn backdrop(&mut self, sample: BackdropSample) -> &mut Self {
-        self.ops.push(EditOp::Backdrop(Some(sample)));
+    ///
+    /// The sample is a constant or a signal. A bound signal keeps updating
+    /// the membership with no further transactions: a change that keeps
+    /// the group and the effect's sampling reach
+    /// ([`BackdropEffect::reach`](crate::BackdropEffect::reach)) updates
+    /// only the member's effect
+    /// ([`LayerOp::BackdropEffect`](crate::LayerOp::BackdropEffect)), and
+    /// any other change replaces the sample whole. The property is not
+    /// animatable: a change's `Animation` metadata is ignored.
+    pub fn backdrop(&mut self, sample: impl Into<Live<BackdropSample>>) -> &mut Self {
+        let live = sample.into();
+        let region = Cell::new(live.value().region_key());
+        let target = Shared::bind(
+            &self.shared,
+            self.layer,
+            PropKind::Backdrop,
+            live,
+            move |layer, sample: BackdropSample, _| {
+                let key = sample.region_key();
+                if region.replace(key) == key {
+                    LayerOp::BackdropEffect(layer, sample.into_effect())
+                } else {
+                    LayerOp::Backdrop(layer, Some(sample))
+                }
+            },
+        );
+        self.ops.push(EditOp::Backdrop(Some(target)));
         self
     }
 
-    /// Clears the layer's backdrop group membership.
+    /// Clears the layer's backdrop group membership, and the subscription
+    /// of a bound sample.
     pub fn clear_backdrop(&mut self) -> &mut Self {
+        Shared::unbind(&self.shared, self.layer, PropKind::Backdrop);
         self.ops.push(EditOp::Backdrop(None));
         self
     }
@@ -1331,5 +1359,123 @@ mod tests {
             content_rects(&shared, root.id(), start + Duration::from_millis(400)),
             [(false, Rect::new(0.0, 0.0, 30.0, 10.0))]
         );
+    }
+
+    impl BackdropSampling for TestTarget {}
+
+    /// The layer ops of the change set the next drain takes, applied to
+    /// `tree` as a consumer applies them.
+    fn drain_layer_ops(
+        shared: &Rc<RefCell<Shared<TestTarget>>>,
+        tree: &mut crate::SurfaceTree,
+    ) -> Vec<LayerOp> {
+        let Some(changes) = shared.borrow_mut().take_changes(crate::Instant::now()) else {
+            return Vec::new();
+        };
+        changes
+            .ops
+            .into_iter()
+            .map(|op| match op {
+                Op::Layer(op) => {
+                    tree.apply(op.clone());
+                    op
+                }
+                Op::Install(..) => panic!("the test target installs nothing"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_bound_backdrop_change_keeping_group_and_reach_updates_only_the_effect() {
+        use crate::{BackdropEffect, BackdropSample, Refraction, Rim};
+
+        let rim = |gain| Rim {
+            width: 4.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+            gain,
+        };
+        let refraction = |depth| Refraction {
+            depth,
+            strength: 8.0,
+        };
+        let shared = shared();
+        let mut tree = crate::SurfaceTree::new();
+        let layer = layer(&shared);
+        let (group, other) = (BackdropId::new(1), BackdropId::new(2));
+        let sample = binding(BackdropSample::with_effect(group, rim(1.0)));
+        Shared::run_transaction(&shared, None, |tx| {
+            tx[&layer].backdrop(sample.clone());
+        });
+        let ops = drain_layer_ops(&shared, &mut tree);
+        assert!(
+            matches!(
+                ops.as_slice(),
+                [LayerOp::Create(_), LayerOp::Backdrop(id, Some(s))]
+                    if *id == layer.id() && *s == BackdropSample::with_effect(group, rim(1.0))
+            ),
+            "the bound sample starts whole: {ops:?}"
+        );
+
+        // Same group, same (zero) reach: the effect alone moves.
+        sample.set(BackdropSample::with_effect(group, rim(2.0)));
+        let ops = drain_layer_ops(&shared, &mut tree);
+        assert!(
+            matches!(
+                ops.as_slice(),
+                [LayerOp::BackdropEffect(id, Some(BackdropEffect::Rim(r)))]
+                    if *id == layer.id() && *r == rim(2.0)
+            ),
+            "an effect change is effect-only: {ops:?}"
+        );
+        assert_eq!(
+            tree.layer(layer.id()).backdrop,
+            Some(BackdropSample::with_effect(group, rim(2.0))),
+            "the tree keeps the group and takes the effect"
+        );
+
+        // A new reach reshapes the capture region: the sample is replaced.
+        sample.set(BackdropSample::with_effect(group, refraction(4.0)));
+        let ops = drain_layer_ops(&shared, &mut tree);
+        assert!(
+            matches!(ops.as_slice(), [LayerOp::Backdrop(_, Some(_))]),
+            "a reach change replaces the sample: {ops:?}"
+        );
+
+        // A different effect of the same reach is effect-only again.
+        sample.set(BackdropSample::with_effect(group, refraction(2.0)));
+        let ops = drain_layer_ops(&shared, &mut tree);
+        assert!(
+            matches!(ops.as_slice(), [LayerOp::BackdropEffect(_, Some(_))]),
+            "a same-reach change is effect-only: {ops:?}"
+        );
+
+        // A new group is a new membership.
+        sample.set(BackdropSample::with_effect(other, refraction(2.0)));
+        let ops = drain_layer_ops(&shared, &mut tree);
+        assert!(
+            matches!(ops.as_slice(), [LayerOp::Backdrop(_, Some(s))] if s.group() == other),
+            "a group change replaces the sample: {ops:?}"
+        );
+        assert_eq!(
+            tree.layer(layer.id()).backdrop,
+            Some(BackdropSample::with_effect(other, refraction(2.0)))
+        );
+
+        // Clearing the membership drops the subscription.
+        Shared::run_transaction(&shared, None, |tx| {
+            tx[&layer].clear_backdrop();
+        });
+        let ops = drain_layer_ops(&shared, &mut tree);
+        assert!(matches!(ops.as_slice(), [LayerOp::Backdrop(_, None)]));
+        sample.set(BackdropSample::with_effect(other, refraction(3.0)));
+        assert!(drain_layer_ops(&shared, &mut tree).is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "which samples no group")]
+    fn an_effect_only_update_on_a_layer_without_a_group_panics() {
+        let mut tree = crate::SurfaceTree::new();
+        tree.apply(LayerOp::Create(LayerId::new(1)));
+        tree.apply(LayerOp::BackdropEffect(LayerId::new(1), None));
     }
 }
