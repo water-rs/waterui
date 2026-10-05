@@ -23,11 +23,13 @@
 //! re-dispatching the same screen from the `View` tree costs ~15ms.
 
 macro_rules! impl_widget_behavior {
-    ($state:ty, $render:path, $measure:expr $(, $priority:expr)? $(; prepare: $prepare:ident)? $(; a11y: $a11y:path)? $(; renders_nothing: $renders_nothing:literal)?) => {
+    ($state:ty, $render:path, $measure:expr $(, $priority:expr)? $(; prepare: $prepare:ident)? $(; a11y: $a11y:path)? $(; renders_nothing: $renders_nothing:literal)? $(; fill: $is_fill:literal)?) => {
         impl WidgetBehavior for RefCell<$state> {
             $(fn priority(&self) -> i32 { $priority })?
 
             $(fn renders_nothing(&self) -> bool { $renders_nothing })?
+
+            $(fn is_fill(&self) -> bool { $is_fill })?
 
             fn render(
                 self: Rc<Self>,

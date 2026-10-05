@@ -6,7 +6,7 @@ use super::layout::{SignatureHasher, hash_size};
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use waterui_layout::safe_area::EdgeSet;
+use waterui_layout::safe_area::IgnoreSafeArea;
 
 /// A retained sub-view a native widget owns and re-renders every flush — the
 /// solution for a widget's move-only `AnyView` label sub-views (slider min/max
@@ -540,6 +540,13 @@ pub trait WidgetBehavior {
         0
     }
 
+    /// Whether the leaf is a §7.1 *fill* — its paint extends past its frame
+    /// into the safe-area bands on every edge its frame touches. The color
+    /// node and the gradient answer `true`; every other leaf does not.
+    fn is_fill(&self) -> bool {
+        false
+    }
+
     /// Whether this leaf draws nothing — `WaterUI`'s empty view `()`.
     ///
     /// This is a semantic answer, not a measured size: a `Spacer` squeezed to
@@ -604,12 +611,13 @@ pub(super) enum WrapperEffect {
     /// Purely a layout hint: it changes which child a stack compresses first and
     /// draws nothing, so the flush path renders straight through it.
     LayoutPriority(LayoutPriority),
-    /// `.ignore_safe_area(edges)` — the window's `WindowSafeArea` insets are
-    /// released on the flagged edges: layout offers the child the window bounds
-    /// expanded by those edges' insets, and flush shifts its frame back the
-    /// same amount, so the subtree reaches the window edge where it meets the
-    /// safe-area boundary.
-    IgnoreSafeArea(EdgeSet),
+    /// `.ignore_safe_area(regions.on(edges))` — the window's safe-area
+    /// insets are released through the regions and edges the declaration
+    /// names: layout offers the child the window bounds expanded by the
+    /// released depths, and flush shifts its frame back the same amount, so
+    /// the subtree reaches through the ignored zones and stops at the
+    /// nearest unignored one (layout-spec.md §7.1).
+    IgnoreSafeArea(IgnoreSafeArea),
     NavigationTransitionSource(RawId),
     NavigationTransitionDestination(RawId),
     Clip(ClipShape),
@@ -904,8 +912,19 @@ pub struct ScrollNode {
     /// measure would count as re-measurement; `patch` and
     /// `take_layout_dirty` reset it when the subtree changes underneath.
     pub(super) non_scrolling_minimum: Cell<Option<f32>>,
-    /// Environment captured at build, for scroll-target accessibility.
+    /// Environment captured at build — carrying the scroll surface's
+    /// safe-area reset for its subtree — for scroll-target accessibility and
+    /// the child layout/flush environment.
     pub(super) env: Environment,
+    /// The keyboard band's depth into this surface's frame as last flushed:
+    /// a growing value means the keyboard is animating in, so the
+    /// focused-field clearance follows the host's frames with a direct
+    /// scroll instead of an animated jump.
+    pub(super) last_keyboard_cover: Cell<f64>,
+    /// Whether the focused field last computed clear of the keyboard: the
+    /// animated clearance scroll fires only on the clear→covered edge, so a
+    /// user scroll that re-covers the field is not fought frame by frame.
+    pub(super) focused_field_clear: Cell<bool>,
 }
 
 pub struct RetainNode {

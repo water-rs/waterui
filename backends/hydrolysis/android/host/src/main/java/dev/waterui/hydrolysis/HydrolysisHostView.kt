@@ -17,6 +17,7 @@ import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
 import androidx.core.graphics.Insets
 import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsAnimationCompat
 import androidx.core.view.WindowInsetsCompat
 
 /**
@@ -60,6 +61,7 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     private var lastFontScale = Float.NaN
     private var lastRefreshHz = Float.NaN
     private var lastInsets = intArrayOf(0, 0, 0, 0)
+    private var lastKeyboardInsets = intArrayOf(0, 0, 0, 0)
     private var lastTouchSlop = Float.NaN
     private var lastMinFlingVelocity = Float.NaN
     private var lastMaxFlingVelocity = Float.NaN
@@ -88,6 +90,7 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_YES
         importantForAutofill = IMPORTANT_FOR_AUTOFILL_YES
         addView(platformViewRegistry.container)
+        ViewCompat.setWindowInsetsAnimationCallback(this, insetsAnimationCallback)
         session?.bind(this)
     }
 
@@ -118,29 +121,52 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         return super.onApplyWindowInsets(insets)
     }
 
+    /**
+     * §7.1's keyboard-motion rule: the IME inset the session avoids by
+     * follows the platform's keyboard animation frame by frame, so every
+     * `onProgress` lands as its own metrics push instead of a single jump
+     * when the animation settles.
+     */
+    private val insetsAnimationCallback =
+        object : WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_CONTINUE_ON_SUBTREE) {
+            override fun onProgress(
+                insets: WindowInsetsCompat,
+                runningAnimations: MutableList<WindowInsetsAnimationCompat>,
+            ): WindowInsetsCompat {
+                lastRootInsets = insets
+                pushMetrics()
+                return insets
+            }
+        }
+
     private fun pushMetrics() {
         val session = session ?: return
         val metrics = resources.displayMetrics
         val configuration = resources.configuration
         val rootInsets = lastRootInsets ?: ViewCompat.getRootWindowInsets(this)
-        val edges =
-            if (rootInsets != null) {
-                val bars =
-                    rootInsets.getInsets(
-                        WindowInsetsCompat.Type.systemBars() or
-                            WindowInsetsCompat.Type.displayCutout()
-                    )
-                val ime =
-                    if (rootInsets.isVisible(WindowInsetsCompat.Type.ime())) {
-                        rootInsets.getInsets(WindowInsetsCompat.Type.ime())
-                    } else {
-                        Insets.NONE
-                    }
-                val combined = Insets.max(bars, ime)
-                intArrayOf(combined.left, combined.top, combined.right, combined.bottom)
-            } else {
-                intArrayOf(0, 0, 0, 0)
-            }
+        val containerEdges: IntArray
+        val keyboardEdges: IntArray
+        if (rootInsets != null) {
+            val bars =
+                rootInsets.getInsets(
+                    WindowInsetsCompat.Type.systemBars() or
+                        WindowInsetsCompat.Type.displayCutout()
+                )
+            val ime =
+                if (rootInsets.isVisible(WindowInsetsCompat.Type.ime())) {
+                    rootInsets.getInsets(WindowInsetsCompat.Type.ime())
+                } else {
+                    Insets.NONE
+                }
+            // §7.1's two regions travel apart: the container band is the
+            // bars/cutout insets only, the keyboard band the IME insets
+            // only — no region ever absorbs the other.
+            containerEdges = intArrayOf(bars.left, bars.top, bars.right, bars.bottom)
+            keyboardEdges = intArrayOf(ime.left, ime.top, ime.right, ime.bottom)
+        } else {
+            containerEdges = intArrayOf(0, 0, 0, 0)
+            keyboardEdges = intArrayOf(0, 0, 0, 0)
+        }
         val refreshHz = display?.refreshRate ?: 0f
         val viewConfiguration = ViewConfiguration.get(context)
         val touchSlop = viewConfiguration.scaledTouchSlop.toFloat()
@@ -152,7 +178,8 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
             metrics.density == lastDensity &&
             configuration.fontScale == lastFontScale &&
             refreshHz == lastRefreshHz &&
-            edges.contentEquals(lastInsets) &&
+            containerEdges.contentEquals(lastInsets) &&
+            keyboardEdges.contentEquals(lastKeyboardInsets) &&
             touchSlop == lastTouchSlop &&
             minFlingVelocity == lastMinFlingVelocity &&
             maxFlingVelocity == lastMaxFlingVelocity &&
@@ -165,7 +192,8 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         lastDensity = metrics.density
         lastFontScale = configuration.fontScale
         lastRefreshHz = refreshHz
-        lastInsets = edges
+        lastInsets = containerEdges
+        lastKeyboardInsets = keyboardEdges
         lastTouchSlop = touchSlop
         lastMinFlingVelocity = minFlingVelocity
         lastMaxFlingVelocity = maxFlingVelocity
@@ -177,10 +205,14 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
             metrics.density,
             configuration.fontScale,
             refreshHz,
-            edges[0],
-            edges[1],
-            edges[2],
-            edges[3],
+            containerEdges[0],
+            containerEdges[1],
+            containerEdges[2],
+            containerEdges[3],
+            keyboardEdges[0],
+            keyboardEdges[1],
+            keyboardEdges[2],
+            keyboardEdges[3],
             touchSlop,
             minFlingVelocity,
             maxFlingVelocity,

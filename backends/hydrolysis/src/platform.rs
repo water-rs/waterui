@@ -807,18 +807,53 @@ pub trait SurfaceProvider {
     }
 }
 
-/// The window's platform safe area, in logical units — the insets the host
-/// reports for regions obscured by system chrome (status bar, navigation bar,
-/// display cutout) and the IME.
+/// The window's platform safe area in logical units.
 ///
-/// The host owns the binding: it writes the combined insets on every change,
-/// and the windowed pipeline lays the root content out inside them while
-/// `waterui_layout::safe_area::IgnoreSafeArea` content reaches the window
-/// edge on its flagged edges. The binding lives in the session environment so
-/// an update re-lays out through the ordinary input path; hosts with no
-/// unsafe regions simply never install one.
+/// This is the *container* region of the safe-area contract (layout-spec.md
+/// §7.1): the insets the host reports for system chrome (status bar,
+/// navigation bar, display cutout, window chrome), never the keyboard.
+///
+/// The host owns the binding: it writes the container insets on every
+/// change, and the windowed pipeline lays the root content out inside the
+/// union of the two regions while `waterui_layout::safe_area::IgnoreSafeArea`
+/// content reaches through the regions and edges it names. The binding lives
+/// in the session environment so an update re-lays out through the ordinary
+/// input path; hosts with no unsafe regions simply never install one.
 #[derive(Debug, Clone)]
 pub struct WindowSafeArea(pub nami::Binding<waterui_layout::padding::EdgeInsets>);
+
+/// The window's *keyboard* region in logical units.
+///
+/// This is the inset the host reports for the software keyboard and other
+/// input-method surfaces, a separate safe-area region from [`WindowSafeArea`]
+/// (layout-spec.md §7.1).
+///
+/// The binding rides the same subscription path as `WindowSafeArea`: a host
+/// write on it re-lays the window out per frame, which is how a keyboard
+/// animating with the platform's own animation reaches the layout — a host
+/// that reports every animation frame animates the layout too. Scroll
+/// surfaces read it themselves: inside a scroll surface the region is not
+/// visible (the surface owns its content inset instead).
+#[derive(Debug, Clone)]
+pub struct WindowKeyboardArea(pub nami::Binding<waterui_layout::padding::EdgeInsets>);
+
+/// The `(region, edge)` pairs `.ignore_safe_area` ancestors release on this
+/// subtree — the accumulation an `IgnoreSafeArea` wrapper computes into its
+/// scoped environment, beside the declaration the wrapper itself resolves.
+///
+/// Bits 0–3 are the container region's top/leading/bottom/trailing edges,
+/// bits 4–7 the keyboard region's — the `EdgeSet` order the android and
+/// apple ports share. Bit 8 marks that a declaration exists at all: a fill
+/// leaf with no ignore anywhere still extends through every region, while a
+/// declaration naming nothing replaces that default with none.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AccumulatedSafeAreaIgnores(pub u16);
+
+/// The environment marker a scroll surface inserts for its subtree: the
+/// keyboard region ends at the surface — its content inset and focused-field
+/// scrolling own the keyboard behaviour inside, so descendants see none.
+#[derive(Debug, Clone, Copy)]
+pub struct InsideScrollSurface;
 
 /// Asserts the app's `Window::frame` binding carries finite components on
 /// all four fields. The binding is a trust boundary — a NaN or infinite

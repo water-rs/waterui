@@ -25,9 +25,12 @@ object NativeBridge {
      * `--logs` level) and logging init moves out of the app cdylib's
      * `JNI_OnLoad`; 7 = `nativeSetMetrics` carries the `ViewConfiguration`
      * touch-scroll parameters (slop, min/max fling velocity, scroll
-     * friction).
+     * friction); 8 = `nativeSetMetrics` splits the window insets into the
+     * container and keyboard regions of layout-spec.md §7.1 — the host's
+     * `WindowInsetsAnimationCompat` progress pushes each IME animation
+     * frame.
      */
-    private const val SCHEMA: Int = 7
+    private const val SCHEMA: Int = 8
 
     private var initialized = false
 
@@ -76,6 +79,10 @@ object NativeBridge {
         insetTop: Int,
         insetRight: Int,
         insetBottom: Int,
+        imeLeft: Int,
+        imeTop: Int,
+        imeRight: Int,
+        imeBottom: Int,
         touchSlopPx: Float,
         minFlingVelocityPx: Float,
         maxFlingVelocityPx: Float,

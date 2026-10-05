@@ -33,8 +33,11 @@ use super::host::{AndroidSession, MetricsSnapshot};
 /// the launch intent's `waterui.log.level` extra (the CLI's `--logs`
 /// level) and logging init moves out of the app cdylib's `JNI_OnLoad`; 7 =
 /// `nativeSetMetrics` carries the `ViewConfiguration` touch-scroll
-/// parameters (slop, min/max fling velocity, scroll friction).
-pub const JNI_SCHEMA: jint = 7;
+/// parameters (slop, min/max fling velocity, scroll friction); 8 =
+/// `nativeSetMetrics` splits the window insets into the container and
+/// keyboard regions of layout-spec.md §7.1 — the host's
+/// `WindowInsetsAnimationCompat` progress pushes each IME animation frame.
+pub const JNI_SCHEMA: jint = 8;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -195,7 +198,8 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
             density: 1.0,
             font_scale: 1.0,
             refresh_hz: None,
-            insets_px: [0; 4],
+            container_insets_px: [0; 4],
+            keyboard_insets_px: [0; 4],
             touch_slop_px: 0.0,
             min_fling_velocity_px: 0.0,
             max_fling_velocity_px: 0.0,
@@ -236,6 +240,10 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetMetrics
     inset_t: jint,
     inset_r: jint,
     inset_b: jint,
+    ime_l: jint,
+    ime_t: jint,
+    ime_r: jint,
+    ime_b: jint,
     touch_slop: jfloat,
     min_fling_velocity: jfloat,
     max_fling_velocity: jfloat,
@@ -248,7 +256,8 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetMetrics
             density: f64::from(density).max(f64::EPSILON),
             font_scale: f64::from(font_scale).max(f64::EPSILON),
             refresh_hz: (refresh_hz > 0.0).then_some(f64::from(refresh_hz)),
-            insets_px: [inset_l, inset_t, inset_r, inset_b],
+            container_insets_px: [inset_l, inset_t, inset_r, inset_b],
+            keyboard_insets_px: [ime_l, ime_t, ime_r, ime_b],
             touch_slop_px: touch_slop,
             min_fling_velocity_px: min_fling_velocity,
             max_fling_velocity_px: max_fling_velocity,

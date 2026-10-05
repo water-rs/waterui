@@ -3,7 +3,10 @@
 
 #[cfg(feature = "accessibility")]
 use super::layout::kurbo_rect;
-use super::window::window_safe_area_insets;
+use super::window::{
+    accumulated_ignore_mask, declared_ignore_mask, extended_ctx, extended_local_rect,
+    released_insets, window_container_insets, window_keyboard_insets,
+};
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
@@ -29,11 +32,23 @@ impl RenderNode {
             Self::Color(color) => {
                 renderer.state.counters.recorded_view_contents += 1;
                 let color = cherenkov::Paint::Solid(renderer.read_signal(&color.color));
+                // §7.1's fill rule: the color reaches past its frame into the
+                // safe-area bands on every edge it touches, unless a
+                // declaration narrowed the regions and edges.
+                let mask = accumulated_ignore_mask(env, 0xff);
+                let bounds = extended_local_rect(
+                    ctx,
+                    renderer.window_bounds(),
+                    mask,
+                    &window_container_insets(renderer, env),
+                    &window_keyboard_insets(renderer, env),
+                )
+                .unwrap_or(ctx.bounds);
                 renderer.scene_mut().fill_paint(
                     peniko::Fill::NonZero,
                     ctx.transform,
                     color,
-                    &ctx.bounds,
+                    &bounds,
                 );
             }
             Self::Text(text) => {
@@ -243,43 +258,19 @@ impl RenderNode {
                         // Layout-only: nothing to apply while drawing.
                         node.child.flush(renderer, ctx, child_env);
                     }
-                    WrapperEffect::IgnoreSafeArea(edges) => {
-                        // The mirror of the layout arm: on each flagged edge
-                        // the child's frame reaches the window edge — the
-                        // transform carries the leading/top overhang so
-                        // descendants place from the shifted origin too.
-                        let insets = window_safe_area_insets(renderer, env);
-                        let leading = if edges.leading {
-                            f64::from(insets.leading())
-                        } else {
-                            0.0
-                        };
-                        let top = if edges.top {
-                            f64::from(insets.top())
-                        } else {
-                            0.0
-                        };
-                        let trailing = if edges.trailing {
-                            f64::from(insets.trailing())
-                        } else {
-                            0.0
-                        };
-                        let bottom = if edges.bottom {
-                            f64::from(insets.bottom())
-                        } else {
-                            0.0
-                        };
-                        let bounds = kurbo::Rect::new(
-                            0.0,
-                            0.0,
-                            ctx.bounds.width() + leading + trailing,
-                            ctx.bounds.height() + top + bottom,
-                        );
-                        node.child.flush(
-                            renderer,
-                            ctx.child(kurbo::Affine::translate((-leading, -top)), bounds),
-                            child_env,
-                        );
+                    WrapperEffect::IgnoreSafeArea(ignore) => {
+                        // The mirror of the layout arm: each flagged edge
+                        // releases the safe-area depth of the regions and
+                        // edges the declaration names, stopping at the
+                        // nearest unignored region — the transform carries
+                        // the leading/top overhang so descendants place from
+                        // the shifted origin too.
+                        let container = window_container_insets(renderer, env);
+                        let keyboard = window_keyboard_insets(renderer, env);
+                        let release =
+                            released_insets(declared_ignore_mask(*ignore), &container, &keyboard);
+                        node.child
+                            .flush(renderer, extended_ctx(ctx, release), child_env);
                     }
                     WrapperEffect::Cursor(value) => {
                         HydrolysisRenderer::apply_cursor(renderer, ctx, value, |r| {
@@ -546,16 +537,37 @@ impl RenderNode {
                     }));
             }
             Self::Scroll(node) => {
-                let Some(handle) = node.handle.borrow().clone() else {
+                // §7.1's scroll surface: the surface reaches under every
+                // safe-area band its frame touches and insets its content by
+                // the same amounts, and the keyboard region and the
+                // accumulated ignore declarations end at it — descendants
+                // lay out against `node.env`, which carries the reset.
+                let container = window_container_insets(renderer, env);
+                let keyboard = window_keyboard_insets(renderer, env);
+                let window = renderer.window_bounds();
+                let mask = accumulated_ignore_mask(env, 0xff);
+                let viewport_rect = extended_local_rect(ctx, window, mask, &container, &keyboard)
+                    .unwrap_or(ctx.bounds);
+                // The surface's frame grown by the touched edges' release —
+                // the same amounts become the content inset, so the
+                // scrollable range keeps the resting edges on the avoided
+                // boundary while scrolling paints through the band.
+                let content_width =
+                    f64::from(node.content_size.width) + viewport_rect.width() - ctx.bounds.width();
+                let content_height = f64::from(node.content_size.height) + viewport_rect.height()
+                    - ctx.bounds.height();
+                let Some(handle) = node.handle.borrow_mut().as_mut().map(|handle| {
+                    handle.rebind(
+                        node.axis,
+                        viewport_rect.width(),
+                        viewport_rect.height(),
+                        content_width,
+                        content_height,
+                    )
+                }) else {
                     return;
                 };
                 let metrics = handle.metrics();
-                let viewport_rect = kurbo::Rect::new(
-                    0.0,
-                    0.0,
-                    f64::from(node.viewport.width),
-                    f64::from(node.viewport.height),
-                );
                 renderer.with_clip_rect_scope(
                     1.0,
                     LayerTransforms {
@@ -621,7 +633,7 @@ impl RenderNode {
                             bounds: lazy_viewport,
                             transform: content_ctx.transform,
                         });
-                        node.child.flush(renderer, content_ctx, env);
+                        node.child.flush(renderer, content_ctx, &node.env);
                         renderer.pop_lazy_viewport("hydrolysis render tree ScrollNode");
                         #[cfg(feature = "accessibility")]
                         if scroll_accessibility_node.is_some() {
@@ -629,13 +641,59 @@ impl RenderNode {
                         }
                     },
                 );
+                // The focused-field clearance reads this frame's input
+                // targets — the child's flush above just emitted them.
+                let keyboard_top = window.y1 - f64::from(keyboard.bottom());
+                // The keyboard covers the surface when it reaches the
+                // surface's *painted* bottom — the frame grown by the
+                // release it took — so a surface whose paint runs under the
+                // band counts even when its layout frame ends above it.
+                let painted = transformed_rect(ctx.hit_transform, viewport_rect);
+                let cover = (painted.y1 - keyboard_top).max(0.0);
+                if cover > 0.0
+                    && let Some(field) = renderer
+                        .text_editing
+                        .focused_target()
+                        .map(|target| target.bounds)
+                        .filter(|field| field.intersect(painted).area() > 0.0)
+                {
+                    let deficit = field.y1 - keyboard_top;
+                    if deficit > 0.0 {
+                        // The minimum distance that brings the field's frame
+                        // clear of the keyboard: a growing cover means the
+                        // host's keyboard animation is still running, so the
+                        // offset follows it directly; a static cover means
+                        // the field was just focused, so the jump eases.
+                        let target_y = (metrics.offset_y + deficit).min(metrics.max_y);
+                        if target_y > metrics.offset_y {
+                            let scrolled = if cover > node.last_keyboard_cover.get() {
+                                handle.scroll_to(metrics.offset_x, target_y)
+                            } else if node.focused_field_clear.get() {
+                                handle.scroll_to_animated(metrics.offset_x, target_y)
+                            } else {
+                                false
+                            };
+                            // The offset lands outside the reactive graph —
+                            // schedule the frame that applies it.
+                            if scrolled {
+                                renderer.request_refresh();
+                            }
+                        }
+                        node.focused_field_clear.set(false);
+                    } else {
+                        node.focused_field_clear.set(true);
+                    }
+                }
+                node.last_keyboard_cover.set(cover);
+                // The indicators ride the surface's own frame, not the
+                // extended clip: they stay visible at the avoided edge.
                 let scroll_ctx =
-                    RenderContext::with_transforms(viewport_rect, ctx.transform, ctx.hit_transform);
+                    RenderContext::with_transforms(ctx.bounds, ctx.transform, ctx.hit_transform);
                 let mut widget_ctx = WidgetRenderContext::new(renderer, scroll_ctx);
                 crate::widgets::draw_scroll_indicators(
                     &mut widget_ctx,
                     &node.env,
-                    viewport_rect,
+                    ctx.bounds,
                     metrics,
                     node.axis,
                     &handle,
@@ -659,6 +717,23 @@ impl RenderNode {
                 } else {
                     merged = node.env.layered_on(env);
                     &merged
+                };
+                // A fill leaf (the gradient — the color leaf is the `Color`
+                // arm) takes §7.1's same band extension past its frame.
+                let ctx = if node.behavior.is_fill() {
+                    let mask = accumulated_ignore_mask(env, 0xff);
+                    extended_local_rect(
+                        ctx,
+                        renderer.window_bounds(),
+                        mask,
+                        &window_container_insets(renderer, env),
+                        &window_keyboard_insets(renderer, env),
+                    )
+                    .map_or(ctx, |bounds| {
+                        RenderContext::with_transforms(bounds, ctx.transform, ctx.hit_transform)
+                    })
+                } else {
+                    ctx
                 };
                 Rc::clone(&node.behavior).render(renderer, ctx, env);
                 renderer.pop_render_owner();
