@@ -27,6 +27,7 @@ use waterui::window::{Monitor, MonitorSelector, Window, WindowState};
 use waterui_core::Environment;
 #[cfg(hydrolysis_wayland_platform)]
 use waterui_core::Str;
+use waterui_graphics::gpu::RedrawHandle;
 use waterui_text::FontCollection;
 
 use winit::application::ApplicationHandler;
@@ -51,6 +52,11 @@ use crate::runner::{
 pub(super) enum RunnerEvent {
     PollLocalTasks,
     MountPendingWindows,
+    /// A window's wake, posted by the [`RedrawHandle`] its [`WinitWindow`]
+    /// hands GPU content and the engine: the window is redrawn here, on the
+    /// event loop, because the handle runs on — and its last clone can be
+    /// dropped on — threads that must never touch the winit window.
+    RedrawWindow(WindowId),
     AccessKit(AccessKitEvent),
     /// The X11 state watch saw `_NET_WM_STATE`/`WM_STATE` change or the
     /// window (un)map — the minimize/restore transition winit drops (see
@@ -1017,6 +1023,39 @@ impl WinitRunner {
         }
         runtime_window_origin(runtime)
     }
+
+    /// Realizes `native_window` as the platform window of `window` on the
+    /// runner's shared GPU context, creating that context with the first
+    /// window.
+    ///
+    /// The window's wake — what GPU content and the engine call for another
+    /// frame — posts [`RunnerEvent::RedrawWindow`] to this loop. It owns no
+    /// part of the winit window, so it may run and drop on any thread.
+    fn create_platform_window(
+        &mut self,
+        native_window: Arc<NativeWindow>,
+        window: &Window,
+    ) -> WinitWindow {
+        let wake = {
+            let event_proxy = self.event_proxy.clone();
+            let window_id = native_window.id();
+            RedrawHandle::new(move || {
+                // A loop that already exited has no window left to redraw.
+                let _ = event_proxy.send_event(RunnerEvent::RedrawWindow(window_id));
+            })
+        };
+        let (platform, gpu_context) = pollster::block_on(WinitWindow::new_with_shared_gpu(
+            native_window,
+            wake,
+            self.gpu_context.as_ref(),
+            super::window_requires_transparency(window, &self.env),
+        ));
+        if self.gpu_context.is_none() {
+            self.gpu_context = Some(gpu_context);
+        }
+        platform
+    }
+
     fn create_runtime_window(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -1079,14 +1118,7 @@ impl WinitRunner {
                 );
             }
         }
-        let (mut platform, gpu_context) = pollster::block_on(WinitWindow::new_with_shared_gpu(
-            native_window,
-            self.gpu_context.as_ref(),
-            super::window_requires_transparency(&window, &self.env),
-        ));
-        if self.gpu_context.is_none() {
-            self.gpu_context = Some(gpu_context);
-        }
+        let mut platform = self.create_platform_window(native_window, &window);
         platform.apply_properties(&window);
         let mut renderer =
             HydrolysisRenderer::new(Rc::clone(&self.theme), FontFamilyResolution::Lenient);
@@ -1451,6 +1483,12 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
             }
             RunnerEvent::MountPendingWindows => {
                 self.mount_pending_windows(event_loop);
+            }
+            RunnerEvent::RedrawWindow(window_id) => {
+                // The window may have closed while the wake was in flight.
+                if let Some(runtime) = self.windows.get(&window_id) {
+                    runtime.request_redraw();
+                }
             }
 
             RunnerEvent::AccessKit(event) => {

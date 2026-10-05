@@ -3288,6 +3288,9 @@ mod winit_impl {
     )]
     pub struct WinitWindow {
         window: Arc<NativeWindow>,
+        /// The host's wake for this window, behind every
+        /// [`gpu_surface_redraw_handle`](GpuSurfaceWindow::gpu_surface_redraw_handle).
+        wake: RedrawHandle,
         surface: WinitSurface,
         pending_surface_size: Option<PhysicalSize<u32>>,
         pending_events: Vec<InputEvent>,
@@ -3357,9 +3360,16 @@ mod winit_impl {
     }
 
     impl WinitWindow {
-        /// Creates an offscreen surface synchronously.
-        pub async fn new(window: Arc<NativeWindow>, requires_transparency: bool) -> Self {
-            Self::new_with_shared_gpu(window, None, requires_transparency)
+        /// Creates the surface for `window` on a GPU context of its own.
+        ///
+        /// `wake` is the host's request for another frame of this window;
+        /// see [`Self::new_with_shared_gpu`] for its contract.
+        pub async fn new(
+            window: Arc<NativeWindow>,
+            wake: RedrawHandle,
+            requires_transparency: bool,
+        ) -> Self {
+            Self::new_with_shared_gpu(window, wake, None, requires_transparency)
                 .await
                 .0
         }
@@ -3368,10 +3378,21 @@ mod winit_impl {
         /// chain when given and returning the [`WinitGpuContext`] in use so
         /// the caller can hand it to the next surface.
         ///
+        /// `wake` asks the host's event loop to redraw this window. GPU
+        /// content and the engine call it from their own threads, and the
+        /// engine's render thread may hold the last clone of it, so it must
+        /// not own or touch the winit window: on macOS a winit window used
+        /// or dropped off the main thread hops synchronously onto the main
+        /// thread, which deadlocks while the main thread waits on the
+        /// calling thread — as it does when it shuts the engine down after
+        /// the last window closes. Post the request to the event loop and
+        /// redraw the window there.
+        ///
         /// # Panics
         /// Propagates panics from surface and device creation.
         pub async fn new_with_shared_gpu(
             window: Arc<NativeWindow>,
+            wake: RedrawHandle,
             shared_gpu: Option<&WinitGpuContext>,
             requires_transparency: bool,
         ) -> (Self, WinitGpuContext) {
@@ -3393,6 +3414,7 @@ mod winit_impl {
                     #[cfg(hydrolysis_macos_system_webview)]
                     hybrid_compositor: MacHybridCompositor::new(gpu.clone()),
                     window,
+                    wake,
                     surface,
                     occluded: false,
                     zero_sized,
@@ -4387,14 +4409,14 @@ mod winit_impl {
         }
 
         fn gpu_surface_redraw_handle(&self) -> Option<RedrawHandle> {
-            let window = Arc::clone(&self.window);
+            let wake = self.wake.clone();
             let occluded = Arc::clone(&self.occlusion_signal);
             Some(RedrawHandle::new(move || {
                 // GPU content cannot see the window's pump state, so the
                 // occlusion report is shared as a flag: a frame produced
                 // while the window is hidden posts no wake.
                 if !occluded.load(Ordering::Relaxed) {
-                    window.request_redraw();
+                    wake.request_redraw();
                 }
             }))
         }
