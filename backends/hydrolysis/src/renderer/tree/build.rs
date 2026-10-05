@@ -887,7 +887,7 @@ impl RenderNode {
                 )
             })
             .collect();
-        let transition = collection_transition_runtime(env, layout.as_ref());
+        let transition = collection_transition_runtime(env, layout.as_ref(), &mut renderer.state);
         Self::Collection(Box::new(CollectionNode {
             memo_gate: Cell::default(),
             memo_slots: RefCell::default(),

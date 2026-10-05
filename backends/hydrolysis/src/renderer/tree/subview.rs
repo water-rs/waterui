@@ -56,20 +56,28 @@ struct ResolvedNodeTextMeasure {
 fn try_resolve_node_text_leaf(
     node: &RenderNode,
     env: &Environment,
+    state: &RefCell<&mut HydroState>,
 ) -> Option<(ResolvedTextLayoutInput, Option<usize>)> {
     match node {
-        RenderNode::Text(text) => Some((
-            resolve_text_layout_input(&text.content.snapshot(), text.alignment.snapshot(), env),
-            text.line_limit,
-        )),
-        RenderNode::Opacity(node) => try_resolve_node_text_leaf(&node.child, env),
-        RenderNode::Scale(node) => try_resolve_node_text_leaf(&node.child, env),
-        RenderNode::Rotation(node) => try_resolve_node_text_leaf(&node.child, env),
-        RenderNode::Offset(node) => try_resolve_node_text_leaf(&node.child, env),
-        RenderNode::Retain(node) => try_resolve_node_text_leaf(&node.child, env),
-        RenderNode::Dynamic(node) => try_resolve_node_text_leaf(&node.child.borrow(), env),
-        RenderNode::Env(node) => try_resolve_node_text_leaf(&node.child, &node.env),
-        RenderNode::Wrapper(node) => try_resolve_node_text_leaf(&node.child, &node.env),
+        RenderNode::Text(text) => {
+            let mut state = state.borrow_mut();
+            Some((
+                resolve_text_layout_input(
+                    &state.measure_signal(&text.content),
+                    state.measure_signal(&text.alignment),
+                    env,
+                ),
+                text.line_limit,
+            ))
+        }
+        RenderNode::Opacity(node) => try_resolve_node_text_leaf(&node.child, env, state),
+        RenderNode::Scale(node) => try_resolve_node_text_leaf(&node.child, env, state),
+        RenderNode::Rotation(node) => try_resolve_node_text_leaf(&node.child, env, state),
+        RenderNode::Offset(node) => try_resolve_node_text_leaf(&node.child, env, state),
+        RenderNode::Retain(node) => try_resolve_node_text_leaf(&node.child, env, state),
+        RenderNode::Dynamic(node) => try_resolve_node_text_leaf(&node.child.borrow(), env, state),
+        RenderNode::Env(node) => try_resolve_node_text_leaf(&node.child, &node.env, state),
+        RenderNode::Wrapper(node) => try_resolve_node_text_leaf(&node.child, &node.env, state),
         _ => None,
     }
 }
@@ -81,13 +89,14 @@ impl<'a> NodeSubView<'a> {
         env: &'a Environment,
         theme: &'a Rc<dyn WidgetTheme>,
     ) -> Self {
-        let resolved_text = try_resolve_node_text_leaf(node, env).map(|(input, max_lines)| {
-            ResolvedNodeTextMeasure {
-                input,
-                service: std::sync::Arc::clone(&state.borrow().text),
-                max_lines,
-            }
-        });
+        let resolved_text =
+            try_resolve_node_text_leaf(node, env, state).map(|(input, max_lines)| {
+                ResolvedNodeTextMeasure {
+                    input,
+                    service: std::sync::Arc::clone(&state.borrow().text),
+                    max_lines,
+                }
+            });
         Self {
             stretch: node.stretch(),
             priority: node.priority(),
