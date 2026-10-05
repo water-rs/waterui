@@ -310,7 +310,8 @@ impl<B: Backend> Shared<B> {
 pub trait LayerOwner {
     /// Allocates a layer id and queues its `Create`.
     fn allocate(&self) -> LayerId;
-    /// Queues a `Remove` and drops the layer's bindings and contents.
+    /// Queues a `Remove` for `id` — only `id` — and drops the layer's
+    /// bindings and contents.
     fn remove(&self, id: LayerId);
 }
 
@@ -345,8 +346,12 @@ impl<B: Backend> LayerOwner for RefCell<Shared<B>> {
     }
 }
 
-/// A layer handle. Layers are `!Send` and not `Clone`; dropping one removes
-/// it from its surface at the next commit.
+/// A layer handle.
+///
+/// Layers are `!Send` and not `Clone`; dropping one removes it — only it —
+/// from its surface at the next commit. Its children stay in the tree,
+/// detached and undrawn, until their own handles drop or they are
+/// re-attached.
 pub struct Layer {
     id: LayerId,
     owner: Rc<dyn LayerOwner>,

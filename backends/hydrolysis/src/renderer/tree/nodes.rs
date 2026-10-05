@@ -343,18 +343,17 @@ impl RetainedSubview {
         }
     }
 
-    /// Build (once), lay out at `placement.size`, and flush the sub-view into a
-    /// fresh, standalone [`Recording`] in identity (local) coordinates, for a
-    /// node that must survive across flushes (a navigation-stack page). The
-    /// renderer's scene is swapped out, the node flushes into the temporary
-    /// scene, then the scene is swapped back, so the returned scene can be
-    /// replayed by the navigation transition (cross-fade `from`/`to`) without
-    /// re-dispatch.
+    /// Build (once), lay out at `placement.size`, and capture the sub-view's
+    /// flush as [`CapturedLayers`] in identity (local) coordinates, for a node
+    /// that must survive across flushes (a navigation-stack page). The capture
+    /// holds every layer the page presents, so it can be presented at the
+    /// stack's place and replayed by the navigation transition (cross-fade
+    /// `from`/`to`) without re-dispatch.
     ///
     /// Only the drawing is local. Hit targets and accessibility bounds the
     /// flush registers are not replayed — they are live for this frame — so
     /// they land in window hit-test space through `placement.hit_transform`,
-    /// the same space the replayed scene is presented in.
+    /// the same space the captured layers are presented in.
     pub(crate) fn render_built_scene(
         &mut self,
         renderer: &mut HydrolysisRenderer,
@@ -366,7 +365,6 @@ impl RetainedSubview {
             hit_transform,
         } = placement;
         self.ensure_built(renderer, env);
-        let mut scene = Recording::new();
         let Some(node) = &mut self.node else {
             return NavigationCapturedScene::default();
         };
@@ -390,11 +388,9 @@ impl RetainedSubview {
             bounds: local_ctx.bounds,
             transform: local_ctx.transform,
         });
-        core::mem::swap(renderer.scene_mut(), &mut scene);
-        node.flush(renderer, local_ctx, env);
-        core::mem::swap(renderer.scene_mut(), &mut scene);
+        let layers = renderer.capture_layers(|renderer| node.flush(renderer, local_ctx, env));
         renderer.pop_lazy_viewport("retained scene capture");
-        renderer.finish_navigation_scene_capture(scene)
+        renderer.finish_navigation_scene_capture(layers)
     }
 
     /// Renders a retained navigation page that is not currently interactive.
