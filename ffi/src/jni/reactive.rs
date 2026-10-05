@@ -945,7 +945,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropWatcherGuard<'loc
 // 5. callPtr converts value to Java and invokes callback.onChanged(value, metadata)
 
 use jni::JavaVM;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, OnceLock};
 
 struct JavaConstructor {
     class: Global<JClass<'static>>,
@@ -990,18 +990,21 @@ impl JavaConstructor {
     }
 }
 
-/// Per-runtime JNI state the watcher path needs.
+/// Per-`WuiEnvironment` JNI state the watcher path needs.
 ///
 /// Watchers used to retain a global reference per callback and per class, so
 /// a few thousand live watchers overflowed ART's 51,200-entry global
-/// reference table. Now each `WuiEnvironment` creates one of these through
-/// `initWatcherContext` — the same Kotlin object that owns the environment's
-/// native pointer creates this context and its `WatcherRegistry` instance —
-/// and keeps the handle alive until the environment is released. The only
-/// global reference the whole watcher path holds is the one to that registry
-/// instance; constructors and method ids are cached here per class, once per
-/// runtime. Kotlin passes the handle to every `create*Watcher` call, so each
-/// watcher holds an `Arc` of it — no statics, no global state.
+/// reference table. Now Kotlin creates one of these per `WuiEnvironment` —
+/// including every `Metadata<Environment>` node and every `clone()` — through
+/// `initWatcherContext`, and keeps the handle alive until that environment is
+/// released. The cost per context is one global reference to the
+/// environment's `WatcherRegistry` instance plus the class references each
+/// lazily-resolved constructor loads, and those resolve on first use rather
+/// than eagerly: a class that does not exist yet on the running backend (for
+/// example `WorkingColorStruct` until water-rs/android-backend#237 lands)
+/// fails only a watcher type that actually needs it. Kotlin passes the
+/// handle to every `create*Watcher` call, so each watcher holds an `Arc` of
+/// it — no statics, no global state.
 pub(crate) struct JniWatcherContext {
     jvm: JavaVM,
     /// The environment's `WatcherRegistry` instance.
@@ -1013,9 +1016,20 @@ pub(crate) struct JniWatcherContext {
     /// `WuiWatcherMetadata(long)` constructor — every dispatch wraps the
     /// signal's metadata pointer in one of these.
     metadata_constructor: JavaConstructor,
-    /// Value-class constructors memoized per class as watchers need them.
-    value_constructors: Mutex<Vec<(&'static JNIStr, Arc<JavaConstructor>)>>,
+    /// Value-class constructors, one lazily-resolved slot per class the
+    /// watchers can emit.
+    bitmap_ctor: OnceLock<JavaConstructor>,
+    working_color_ctor: OnceLock<JavaConstructor>,
+    resolved_font_ctor: OnceLock<JavaConstructor>,
+    text_style_ctor: OnceLock<JavaConstructor>,
+    styled_chunk_ctor: OnceLock<JavaConstructor>,
+    styled_str_ctor: OnceLock<JavaConstructor>,
+    date_ctor: OnceLock<JavaConstructor>,
+    date_time_ctor: OnceLock<JavaConstructor>,
 }
+
+/// Resolves one value-class constructor slot on the context.
+type CtorSlot = for<'a, 'b, 'c> fn(&'a JniWatcherContext, &'b mut Env<'c>) -> &'a JavaConstructor;
 
 impl JniWatcherContext {
     fn new(env: &mut Env, registry: &JObject) -> Self {
@@ -1047,8 +1061,63 @@ impl JniWatcherContext {
                 WATCHER_METADATA_CLASS,
                 WATCHER_METADATA_CTOR,
             ),
-            value_constructors: Mutex::new(Vec::new()),
+            bitmap_ctor: OnceLock::new(),
+            working_color_ctor: OnceLock::new(),
+            resolved_font_ctor: OnceLock::new(),
+            text_style_ctor: OnceLock::new(),
+            styled_chunk_ctor: OnceLock::new(),
+            styled_str_ctor: OnceLock::new(),
+            date_ctor: OnceLock::new(),
+            date_time_ctor: OnceLock::new(),
         }
+    }
+
+    /// The `BitmapStruct` constructor, resolved on first use.
+    fn bitmap_ctor(&self, env: &mut Env) -> &JavaConstructor {
+        self.bitmap_ctor
+            .get_or_init(|| JavaConstructor::load(env, BITMAP_CLASS, BITMAP_CTOR))
+    }
+
+    /// The `WorkingColorStruct` constructor, resolved on first use.
+    fn working_color_ctor(&self, env: &mut Env) -> &JavaConstructor {
+        self.working_color_ctor
+            .get_or_init(|| JavaConstructor::load(env, WORKING_COLOR_CLASS, WORKING_COLOR_CTOR))
+    }
+
+    /// The `ResolvedFontStruct` constructor, resolved on first use.
+    fn resolved_font_ctor(&self, env: &mut Env) -> &JavaConstructor {
+        self.resolved_font_ctor
+            .get_or_init(|| JavaConstructor::load(env, RESOLVED_FONT_CLASS, RESOLVED_FONT_CTOR))
+    }
+
+    /// The `TextStyleStruct` constructor, resolved on first use.
+    fn text_style_ctor(&self, env: &mut Env) -> &JavaConstructor {
+        self.text_style_ctor
+            .get_or_init(|| JavaConstructor::load(env, TEXT_STYLE_CLASS, TEXT_STYLE_CTOR))
+    }
+
+    /// The `StyledChunkStruct` constructor, resolved on first use.
+    fn styled_chunk_ctor(&self, env: &mut Env) -> &JavaConstructor {
+        self.styled_chunk_ctor
+            .get_or_init(|| JavaConstructor::load(env, STYLED_CHUNK_CLASS, STYLED_CHUNK_CTOR))
+    }
+
+    /// The `StyledStrStruct` constructor, resolved on first use.
+    fn styled_str_ctor(&self, env: &mut Env) -> &JavaConstructor {
+        self.styled_str_ctor
+            .get_or_init(|| JavaConstructor::load(env, STYLED_STR_CLASS, STYLED_STR_CTOR))
+    }
+
+    /// The `DateStruct` constructor, resolved on first use.
+    fn date_ctor(&self, env: &mut Env) -> &JavaConstructor {
+        self.date_ctor
+            .get_or_init(|| JavaConstructor::load(env, DATE_CLASS, DATE_CTOR))
+    }
+
+    /// The `DateTimeStruct` constructor, resolved on first use.
+    fn date_time_ctor(&self, env: &mut Env) -> &JavaConstructor {
+        self.date_time_ctor
+            .get_or_init(|| JavaConstructor::load(env, DATE_TIME_CLASS, DATE_TIME_CTOR))
     }
 
     /// Retains `callback` in the environment's registry and returns the id
@@ -1105,25 +1174,6 @@ impl JniWatcherContext {
         }
         .expect("Failed to unregister watcher callback");
     }
-
-    /// The constructor for `class_name`, loaded once per context.
-    fn constructor(
-        &self,
-        env: &mut Env,
-        class_name: &'static JNIStr,
-        descriptor: &'static MethodSignature<'static, 'static>,
-    ) -> Arc<JavaConstructor> {
-        let mut cache = self
-            .value_constructors
-            .lock()
-            .expect("constructor cache poisoned");
-        if let Some((_, constructor)) = cache.iter().find(|(name, _)| *name == class_name) {
-            return Arc::clone(constructor);
-        }
-        let constructor = Arc::new(JavaConstructor::load(env, class_name, descriptor));
-        cache.push((class_name, Arc::clone(&constructor)));
-        constructor
-    }
 }
 
 /// The boxed `Arc` Kotlin holds as the native context handle.
@@ -1176,21 +1226,10 @@ struct WatcherData {
     /// watcher's Java callback; the registry resolves it on each dispatch, so
     /// no global reference is held per watcher.
     callback_id: jlong,
-    /// Shared per-runtime JNI state; `watcher_drop` keeps an `Arc` of it so
-    /// the registry reference outlives the last watcher that used it.
+    /// The owning environment's shared JNI state; `watcher_drop` keeps an
+    /// `Arc` of it so the registry reference outlives the last watcher that
+    /// used it.
     ctx: Arc<JniWatcherContext>,
-    /// This watcher type's value-class constructors, resolved through the
-    /// context's per-runtime memo.
-    value_constructors: Vec<(&'static JNIStr, Arc<JavaConstructor>)>,
-}
-
-impl WatcherData {
-    fn constructor(&self, class_name: &'static JNIStr) -> &JavaConstructor {
-        self.value_constructors
-            .iter()
-            .find_map(|(name, constructor)| (*name == class_name).then_some(&**constructor))
-            .unwrap_or_else(|| panic!("watcher does not own constructor for {class_name}"))
-    }
 }
 
 /// Drop function for watcher data - unregisters the callback and frees the box.
@@ -1452,7 +1491,7 @@ unsafe extern "C" fn watcher_call_bitmap(
 ) {
     with_watcher_env(data, |env, watcher_data| {
         let (width, height, buffer, handle) = bitmap_struct_args(env, value);
-        let java_value = watcher_data.constructor(BITMAP_CLASS).new_object(
+        let java_value = watcher_data.ctx.bitmap_ctor(env).new_object(
             env,
             &[
                 JValue::Int(width).as_jni(),
@@ -1475,7 +1514,7 @@ unsafe extern "C" fn watcher_call_working_color(
     metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
 ) {
     with_watcher_env(data, |env, watcher_data| {
-        let java_value = watcher_data.constructor(WORKING_COLOR_CLASS).new_object(
+        let java_value = watcher_data.ctx.working_color_ctor(env).new_object(
             env,
             &[
                 JValue::Float(value.red).as_jni(),
@@ -1509,7 +1548,7 @@ unsafe extern "C" fn watcher_call_resolved_font(
                 .expect("Failed to create font family string")
                 .into()
         };
-        let java_value = watcher_data.constructor(RESOLVED_FONT_CLASS).new_object(
+        let java_value = watcher_data.ctx.resolved_font_ctor(env).new_object(
             env,
             &[
                 JValue::Float(value.size).as_jni(),
@@ -1571,9 +1610,9 @@ fn wui_styled_str_to_java<'local>(
 ) -> JObject<'local> {
     use crate::IntoRust;
 
-    let text_style_constructor = watcher_data.constructor(TEXT_STYLE_CLASS);
-    let styled_chunk_constructor = watcher_data.constructor(STYLED_CHUNK_CLASS);
-    let styled_str_constructor = watcher_data.constructor(STYLED_STR_CLASS);
+    let text_style_constructor = watcher_data.ctx.text_style_ctor(env);
+    let styled_chunk_constructor = watcher_data.ctx.styled_chunk_ctor(env);
+    let styled_str_constructor = watcher_data.ctx.styled_str_ctor(env);
     let chunks = ffi.chunks.as_mut_slice();
     let chunk_count = chunks.len();
     let chunk_ptr = chunks.as_mut_ptr();
@@ -1632,7 +1671,7 @@ unsafe extern "C" fn watcher_call_date_vec(
     metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
 ) {
     with_watcher_env(data, |env, watcher_data| {
-        let date_constructor = watcher_data.constructor(DATE_CLASS);
+        let date_constructor = watcher_data.ctx.date_ctor(env);
         let dates_slice = value.as_slice();
         let array = env
             .new_object_array(
@@ -1671,7 +1710,7 @@ unsafe extern "C" fn watcher_call_date_time(
     metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
 ) {
     with_watcher_env(data, |env, watcher_data| {
-        let java_value = watcher_data.constructor(DATE_TIME_CLASS).new_object(
+        let java_value = watcher_data.ctx.date_time_ctor(env).new_object(
             env,
             &[
                 JValue::Int(value.year).as_jni(),
@@ -1777,26 +1816,25 @@ fn create_watcher_struct_with_call<'local, F>(
     context_ptr: jlong,
     callback: &JObject<'local>,
     call_fn: F,
-    constructors: &[(&'static JNIStr, &'static MethodSignature<'static, 'static>)],
+    ctor_slots: &[CtorSlot],
 ) -> JObject<'local>
 where
     F: Fn() -> *const (),
 {
     let ctx = watcher_context(context_ptr);
 
+    // Every constructor this watcher type can emit is resolved up front —
+    // `register` is the last step that can fail, so a resolution failure
+    // cannot leave a callback id behind in the registry.
+    for slot in ctor_slots {
+        slot(&ctx, env);
+    }
+
     // The environment's registry retains the callback; this side keeps only
     // the id, so a live watcher consumes no global references.
     let callback_id = ctx.register(env, callback);
-    let value_constructors = constructors
-        .iter()
-        .map(|&(class_name, descriptor)| (class_name, ctx.constructor(env, class_name, descriptor)))
-        .collect();
 
-    let watcher_data = Box::new(Rc::new(WatcherData {
-        callback_id,
-        ctx,
-        value_constructors,
-    }));
+    let watcher_data = Box::new(Rc::new(WatcherData { callback_id, ctx }));
     let data_ptr = Box::into_raw(watcher_data) as jlong;
 
     let call_ptr = call_fn() as jlong;
@@ -1856,30 +1894,38 @@ jni_create_watcher_typed!(
     StyledStr,
     watcher_call_styled_str,
     &[
-        (TEXT_STYLE_CLASS, TEXT_STYLE_CTOR),
-        (STYLED_CHUNK_CLASS, STYLED_CHUNK_CTOR),
-        (STYLED_STR_CLASS, STYLED_STR_CTOR),
+        JniWatcherContext::text_style_ctor,
+        JniWatcherContext::styled_chunk_ctor,
+        JniWatcherContext::styled_str_ctor,
     ]
 );
 jni_create_watcher_typed!(
     WorkingColor,
     watcher_call_working_color,
-    &[(WORKING_COLOR_CLASS, WORKING_COLOR_CTOR)]
+    &[JniWatcherContext::working_color_ctor]
 );
-jni_create_watcher_typed!(Bitmap, watcher_call_bitmap, &[(BITMAP_CLASS, BITMAP_CTOR)]);
+jni_create_watcher_typed!(
+    Bitmap,
+    watcher_call_bitmap,
+    &[JniWatcherContext::bitmap_ctor]
+);
 jni_create_watcher_typed!(
     ResolvedFont,
     watcher_call_resolved_font,
-    &[(RESOLVED_FONT_CLASS, RESOLVED_FONT_CTOR)]
+    &[JniWatcherContext::resolved_font_ctor]
 );
 jni_create_watcher_typed!(ColorScheme, watcher_call_color_scheme, &[]);
 jni_create_watcher_typed!(CursorStyle, watcher_call_cursor_style, &[]);
 jni_create_watcher_typed!(HorizontalAlignment, watcher_call_horizontal_alignment, &[]);
-jni_create_watcher_typed!(DateVec, watcher_call_date_vec, &[(DATE_CLASS, DATE_CTOR)]);
+jni_create_watcher_typed!(
+    DateVec,
+    watcher_call_date_vec,
+    &[JniWatcherContext::date_ctor]
+);
 jni_create_watcher_typed!(
     DateTime,
     watcher_call_date_time,
-    &[(DATE_TIME_CLASS, DATE_TIME_CTOR)]
+    &[JniWatcherContext::date_time_ctor]
 );
 
 // ============================================================================
