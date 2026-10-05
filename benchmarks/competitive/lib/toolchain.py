@@ -39,8 +39,16 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import zipfile
 from pathlib import Path
+
+if sys.version_info < (3, 10):
+    raise SystemExit(
+        "benchmarks/competitive requires Python >= 3.10 "
+        f"(this interpreter is {sys.version.split()[0]}); every leg "
+        "declares its version in pyproject.toml + .python-version and "
+        "runs under the uv-managed interpreter (`uv run`)")
 
 
 # One toolchain cache for the whole suite — a CLI at checkout sha H for
@@ -243,22 +251,6 @@ def checkout_head(root: Path | None = None, run=None) -> str:
     return out.stdout.strip()
 
 
-_GENERATED_CHURN = (
-    # CocoaPods rewrites these on every `pod install` (lockfile checksum
-    # normalization, project.pbxproj file-reference re-sort). They are
-    # committed for reproducibility but that generated churn does not
-    # change the source identity the checkout gate protects, so it does
-    # not count as an uncommitted change. Regenerate and commit them on
-    # macOS whenever the Podfile changes.
-    "benchmarks/competitive/apps/react-native/ios/Podfile.lock",
-    "benchmarks/competitive/apps/react-native/ios/RnBench.xcodeproj/"
-    "project.pbxproj",
-    "benchmarks/competitive/apps/react-native/macos/Podfile.lock",
-    "benchmarks/competitive/apps/react-native/macos/RnBench.xcodeproj/"
-    "project.pbxproj",
-)
-
-
 def require_clean_checkout(root: Path | None = None, run=None) -> Path:
     """Refuse to build the contestant/toolchain from a checkout with
     uncommitted tracked changes — HEAD sha would then mislabel the actual
@@ -272,8 +264,7 @@ def require_clean_checkout(root: Path | None = None, run=None) -> Path:
         raise RuntimeError(
             f"cannot check checkout cleanliness at {root}: "
             f"{(out.stderr or '').strip()[:200]}")
-    dirty = [ln for ln in out.stdout.splitlines()
-             if ln.strip() and ln[3:] not in _GENERATED_CHURN]
+    dirty = [ln for ln in out.stdout.splitlines() if ln.strip()]
     if dirty:
         shown = "\n  ".join(dirty[:20])
         raise RuntimeError(
@@ -312,12 +303,14 @@ def _build_lock(cache_dir: Path):
     try:
         if sys.platform.startswith("win"):
             import msvcrt
-            # LK_LOCK gives up after ~10 s, far shorter than a CLI build;
-            # poll the non-blocking form on a build-sized deadline instead.
+            # LK_LOCK blocks in the OS wait (it retries internally for
+            # ~10 s before raising) — block on the lock itself rather
+            # than sleeping between non-blocking probes. Bounded by a
+            # build-sized deadline.
             deadline = time.monotonic() + 900
             while True:
                 try:
-                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                    msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
                     locked = True
                     break
                 except OSError:
@@ -325,7 +318,6 @@ def _build_lock(cache_dir: Path):
                         raise TimeoutError(
                             f"water-cli build lock still held after 900 s: "
                             f"{cache_dir}") from None
-                    time.sleep(0.5)
         else:
             import fcntl
             fcntl.flock(fd, fcntl.LOCK_EX)

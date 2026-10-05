@@ -15,6 +15,16 @@ One definition for all legs:
   round(interval / period) - 1 missed vsyncs.
 """
 
+import sys as _sys
+
+if _sys.version_info < (3, 10):
+    raise SystemExit(
+        "benchmarks/competitive requires Python >= 3.10 "
+        f"(this interpreter is {_sys.version.split()[0]}); every leg "
+        "declares its version in pyproject.toml + .python-version and "
+        "runs under the uv-managed interpreter (`uv run`)")
+
+
 GAP_MS = 100.0
 MISS_FACTOR = 1.5
 
