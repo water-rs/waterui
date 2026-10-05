@@ -25,6 +25,14 @@ mod gpu_runtime;
 mod inspector;
 mod invalidation;
 pub(crate) mod locale;
+#[cfg(any(
+    feature = "gpu_surface",
+    feature = "applied_filter",
+    feature = "view_effect",
+    feature = "video",
+    feature = "video_player"
+))]
+pub(crate) mod main_queue_owned;
 pub(crate) mod measure_memo;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub(crate) mod menus;

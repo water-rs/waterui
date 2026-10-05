@@ -185,6 +185,48 @@ pub enum NavigationInteractivePopPhase {
     },
 }
 
+/// How an interactive pop leaves the dragging phase.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NavigationInteractivePopOutcome {
+    /// Commit when progress is at least one half; otherwise cancel.
+    ByProgress,
+    /// Commit whatever the current progress.
+    Commit,
+    /// Cancel whatever the current progress.
+    Cancel,
+}
+
+/// One navigation stack that can receive system back for this frame.
+///
+/// Registered while the stack renders at depth greater than zero, in the
+/// same place as the edge-drag target. The last registration of the frame is
+/// the frontmost stack.
+#[derive(Clone)]
+pub struct NavigationBackTarget {
+    pub(crate) slot_key: NavigationKey,
+    pub(crate) width: f64,
+    pub(crate) from_scene: NavigationCapturedScene,
+    pub(crate) to_scene: NavigationCapturedScene,
+    pub(crate) controller: NavigationController,
+}
+
+/// The system-back gesture currently in flight.
+///
+/// Kept across frames, like the active pointer drag: the per-frame back-target
+/// list is rebuilt, but a gesture that started against the previous frame's
+/// frontmost target continues until that gesture ends.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum SystemBackGesture {
+    /// No system-back gesture is in flight.
+    #[default]
+    Idle,
+    /// The gesture's `Started` was refused. Later phases of this gesture do
+    /// nothing until the next `Started`.
+    Ignored,
+    /// A predictive pop is in flight on this stack.
+    Active(NavigationKey),
+}
+
 pub struct NavigationInteractivePop {
     pub(crate) start_x: f64,
     pub width: f64,
@@ -273,8 +315,34 @@ impl NavigationInteractivePop {
         true
     }
 
-    pub(crate) fn finish(&mut self, now: Instant, cancelled: bool) {
-        self.phase = if cancelled || self.progress < 0.5 {
+    /// Sets the dragging progress directly, as a platform back gesture reports it.
+    ///
+    /// `progress` is clamped into `0..=1`. A non-finite value is a contract
+    /// breach. Returns whether the stored progress changed. A pop that has
+    /// already left the dragging phase ignores the report.
+    pub(crate) fn set_progress(&mut self, progress: f64) -> bool {
+        assert!(
+            progress.is_finite(),
+            "interactive navigation progress must be finite"
+        );
+        if !matches!(self.phase, NavigationInteractivePopPhase::Dragging) {
+            return false;
+        }
+        let progress = progress.clamp(0.0, 1.0);
+        if (progress - self.progress).abs() <= f64::EPSILON {
+            return false;
+        }
+        self.progress = progress;
+        true
+    }
+
+    pub(crate) fn finish(&mut self, now: Instant, outcome: NavigationInteractivePopOutcome) {
+        let cancel = match outcome {
+            NavigationInteractivePopOutcome::Cancel => true,
+            NavigationInteractivePopOutcome::Commit => false,
+            NavigationInteractivePopOutcome::ByProgress => self.progress < 0.5,
+        };
+        self.phase = if cancel {
             NavigationInteractivePopPhase::Cancelling {
                 started_at: now,
                 initial_progress: self.progress,
@@ -543,14 +611,27 @@ impl SemanticCore {
         Rc::clone(&slot.entries)
     }
 
-    pub(crate) fn finish_interactive_navigation_pop(&mut self, cancelled: bool) -> bool {
+    pub(crate) fn finish_interactive_navigation_pop(
+        &mut self,
+        outcome: NavigationInteractivePopOutcome,
+    ) -> bool {
         let now = self.frame_instant();
+        // A system-back gesture owns its stack's pop until the platform says
+        // the gesture ended. A pointer release must not apply the drag
+        // threshold to that pop.
+        let system_back_slot = match &self.hit_test.system_back {
+            SystemBackGesture::Active(key) => Some(key.clone()),
+            SystemBackGesture::Idle | SystemBackGesture::Ignored => None,
+        };
         let mut changed = false;
-        for slot in self.navigation.slots.values_mut() {
+        for (key, slot) in &mut self.navigation.slots {
+            if system_back_slot.as_ref() == Some(key) {
+                continue;
+            }
             if let Some(interactive) = slot.interactive_pop.as_mut()
                 && matches!(interactive.phase, NavigationInteractivePopPhase::Dragging)
             {
-                interactive.finish(now, cancelled);
+                interactive.finish(now, outcome);
                 changed = true;
             }
         }
@@ -558,6 +639,157 @@ impl SemanticCore {
             self.signals.request_refresh();
         }
         changed
+    }
+
+    /// Records one stack as a system-back target for the frame being built.
+    ///
+    /// The last target registered this frame is the frontmost one.
+    pub(crate) fn register_back_target(&mut self, target: NavigationBackTarget) {
+        self.hit_test.back_targets.push(target);
+    }
+
+    /// Whether the frame that just rendered registered any system-back target.
+    #[cfg_attr(
+        not(any(target_os = "android", test)),
+        expect(
+            dead_code,
+            reason = "the Android runner reports this after each frame, and the navigation-back tests read it"
+        )
+    )]
+    #[must_use]
+    pub(crate) const fn has_back_navigation_target(&self) -> bool {
+        !self.hit_test.back_targets.is_empty()
+    }
+
+    /// Drives one system-back phase against the frontmost target.
+    ///
+    /// `Started` runs the pop-attempt policy. A refusal ignores the rest of
+    /// that gesture. An allowed gesture begins an interactive pop the same
+    /// way an edge drag does. `Invoked` with no preceding `Started` runs the
+    /// policy and, when it allows the pop, requests the ordinary animated pop.
+    pub(crate) fn handle_back_navigation(
+        &mut self,
+        event: crate::BackNavigation,
+        env: &Environment,
+    ) -> bool {
+        match event {
+            crate::BackNavigation::Started { .. } => self.begin_system_back(env),
+            crate::BackNavigation::Progressed { progress } => self.progress_system_back(progress),
+            crate::BackNavigation::Cancelled => {
+                self.end_system_back(NavigationInteractivePopOutcome::Cancel)
+            }
+            crate::BackNavigation::Invoked => self.invoke_system_back(env),
+        }
+    }
+
+    fn begin_system_back(&mut self, env: &Environment) -> bool {
+        // A new gesture replaces one that was still running.
+        if let SystemBackGesture::Active(key) = self.hit_test.system_back.clone() {
+            if let Some(slot) = self.navigation.slots.get_mut(&key) {
+                slot.interactive_pop = None;
+            }
+            self.hit_test.system_back = SystemBackGesture::Idle;
+        }
+        let Some(target) = self.hit_test.back_targets.last().cloned() else {
+            self.hit_test.system_back = SystemBackGesture::Ignored;
+            return false;
+        };
+        if !self.attempt_navigation_pop(&target.slot_key, env) {
+            self.hit_test.system_back = SystemBackGesture::Ignored;
+            return false;
+        }
+        let slot = self
+            .navigation
+            .slots
+            .get_mut(&target.slot_key)
+            .expect("Hydrolysis navigation slot missing");
+        slot.transition = None;
+        slot.interactive_pop = Some(NavigationInteractivePop::new(
+            0.0,
+            target.width,
+            target.from_scene,
+            target.to_scene,
+        ));
+        self.hit_test.system_back = SystemBackGesture::Active(target.slot_key);
+        self.signals.request_refresh();
+        true
+    }
+
+    fn progress_system_back(&mut self, progress: f64) -> bool {
+        let SystemBackGesture::Active(key) = self.hit_test.system_back.clone() else {
+            return false;
+        };
+        let changed = self
+            .navigation
+            .slots
+            .get_mut(&key)
+            .and_then(|slot| slot.interactive_pop.as_mut())
+            .is_some_and(|pop| pop.set_progress(progress));
+        if changed {
+            self.signals.request_refresh();
+        }
+        changed
+    }
+
+    fn end_system_back(&mut self, outcome: NavigationInteractivePopOutcome) -> bool {
+        match self.hit_test.system_back.clone() {
+            SystemBackGesture::Idle => false,
+            SystemBackGesture::Ignored => {
+                self.hit_test.system_back = SystemBackGesture::Idle;
+                false
+            }
+            SystemBackGesture::Active(key) => {
+                self.hit_test.system_back = SystemBackGesture::Idle;
+                self.finish_system_back_slot(&key, outcome)
+            }
+        }
+    }
+
+    fn invoke_system_back(&mut self, env: &Environment) -> bool {
+        match self.hit_test.system_back.clone() {
+            SystemBackGesture::Active(key) => {
+                self.hit_test.system_back = SystemBackGesture::Idle;
+                self.finish_system_back_slot(&key, NavigationInteractivePopOutcome::Commit)
+            }
+            SystemBackGesture::Ignored => {
+                self.hit_test.system_back = SystemBackGesture::Idle;
+                false
+            }
+            SystemBackGesture::Idle => self.invoke_back_without_gesture(env),
+        }
+    }
+
+    fn invoke_back_without_gesture(&mut self, env: &Environment) -> bool {
+        let Some(target) = self.hit_test.back_targets.last().cloned() else {
+            return false;
+        };
+        if !self.attempt_navigation_pop(&target.slot_key, env) {
+            return false;
+        }
+        target.controller.request_pop(1);
+        true
+    }
+
+    fn finish_system_back_slot(
+        &mut self,
+        key: &NavigationKey,
+        outcome: NavigationInteractivePopOutcome,
+    ) -> bool {
+        let now = self.frame_instant();
+        let slot = self
+            .navigation
+            .slots
+            .get_mut(key)
+            .expect("Hydrolysis navigation slot missing");
+        let Some(interactive) = slot.interactive_pop.as_mut() else {
+            return false;
+        };
+        if !matches!(interactive.phase, NavigationInteractivePopPhase::Dragging) {
+            return false;
+        }
+        interactive.finish(now, outcome);
+        self.signals.request_refresh();
+        true
     }
 
     pub(crate) fn attempt_navigation_pop(
@@ -810,7 +1042,10 @@ impl HydrolysisRenderer {
 
 #[cfg(test)]
 mod tests {
-    use super::{NavigationCapturedScene, NavigationInteractivePop};
+    use super::{
+        NavigationCapturedScene, NavigationInteractivePop, NavigationInteractivePopOutcome,
+        NavigationInteractivePopPhase,
+    };
     use std::time::{Duration, Instant};
     use waterui_backend_core::widget::NavigationMotion;
     use waterui_core::EasingCurve;
@@ -834,7 +1069,7 @@ mod tests {
             NavigationCapturedScene::default(),
         );
         assert!(pop.update(60.0));
-        pop.finish(started_at, false);
+        pop.finish(started_at, NavigationInteractivePopOutcome::ByProgress);
 
         let (progress, completed, cancelled) = pop.sample(
             started_at + Duration::from_millis(90),
@@ -859,7 +1094,7 @@ mod tests {
             NavigationCapturedScene::default(),
         );
         assert!(pop.update(40.0));
-        pop.finish(started_at, false);
+        pop.finish(started_at, NavigationInteractivePopOutcome::ByProgress);
 
         let (progress, completed, cancelled) = pop.sample(
             started_at + Duration::from_millis(90),
@@ -872,5 +1107,39 @@ mod tests {
         );
         assert!(!completed);
         assert!(!cancelled);
+    }
+
+    #[test]
+    fn explicit_commit_completes_below_the_drag_threshold() {
+        let started_at = Instant::now();
+        let mut pop = NavigationInteractivePop::new(
+            0.0,
+            100.0,
+            NavigationCapturedScene::default(),
+            NavigationCapturedScene::default(),
+        );
+        assert!(pop.set_progress(0.2));
+        pop.finish(started_at, NavigationInteractivePopOutcome::Commit);
+        assert!(matches!(
+            pop.phase,
+            NavigationInteractivePopPhase::Completing { .. }
+        ));
+    }
+
+    #[test]
+    fn explicit_cancel_retreats_above_the_drag_threshold() {
+        let started_at = Instant::now();
+        let mut pop = NavigationInteractivePop::new(
+            0.0,
+            100.0,
+            NavigationCapturedScene::default(),
+            NavigationCapturedScene::default(),
+        );
+        assert!(pop.set_progress(0.8));
+        pop.finish(started_at, NavigationInteractivePopOutcome::Cancel);
+        assert!(matches!(
+            pop.phase,
+            NavigationInteractivePopPhase::Cancelling { .. }
+        ));
     }
 }

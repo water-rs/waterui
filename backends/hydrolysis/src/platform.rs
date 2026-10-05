@@ -583,6 +583,47 @@ pub enum InputEvent {
         /// Path of the dragged or dropped file.
         path: PathBuf,
     },
+    /// A system back gesture, or a discrete back invocation such as the
+    /// platform back button.
+    BackNavigation(BackNavigation),
+}
+
+/// Which screen edge a system back gesture started from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackEdge {
+    /// The gesture started at the leading edge.
+    Left,
+    /// The gesture started at the trailing edge.
+    Right,
+    /// The gesture has no swipe edge.
+    ///
+    /// A back button that still drives the predictive-back animation reports
+    /// this. The pop does not depend on an edge.
+    None,
+}
+
+/// One phase of a system back gesture or a discrete back invocation.
+///
+/// A predictive gesture is `Started`, zero or more `Progressed` reports, then
+/// either `Cancelled` or `Invoked`. A back button may begin that gesture with
+/// [`BackEdge::None`], or, on a platform that has no progress to report,
+/// deliver `Invoked` alone.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BackNavigation {
+    /// The platform began a predictive back gesture from `edge`.
+    Started {
+        /// The edge the gesture started from.
+        edge: BackEdge,
+    },
+    /// The gesture's progress, in `0..=1`, as the platform reports it.
+    Progressed {
+        /// Progress from the gesture's start (`0`) toward a commit (`1`).
+        progress: f64,
+    },
+    /// The platform cancelled the gesture.
+    Cancelled,
+    /// The platform committed the gesture, or a back button was pressed.
+    Invoked,
 }
 
 /// Errors raised by surface acquisition/presentation.
