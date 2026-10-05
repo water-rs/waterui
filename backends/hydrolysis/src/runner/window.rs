@@ -834,7 +834,7 @@ crate::engine::cfg_async_fn! {
     } -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
     let (width, height) = surface.size();
     let format = surface.format();
-    let premultiply_alpha = surface.premultiply_alpha();
+    let output_alpha = surface.output_alpha();
     let context = surface.device_loss().gpu_context();
     // The engine renders into its own retained output before the swapchain
     // image is acquired: the render awaits the GPU device on wasm32, and a
@@ -874,7 +874,7 @@ crate::engine::cfg_async_fn! {
         surface.queue(),
         frame.texture(),
         surface.output_color(),
-        premultiply_alpha,
+        output_alpha,
     );
     let render = engine_render + copy_started_at.elapsed();
     #[cfg(feature = "frame-profile")]

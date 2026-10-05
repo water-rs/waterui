@@ -42,8 +42,17 @@ pub(super) struct PreparedBackdrop {
     /// group.
     pub filter: Option<super::lower::FrameFilter>,
     /// The chain's footprint bound over the frame's animation magnitudes
-    /// ([`Footprint::ZERO`] unfiltered).
+    /// ([`Footprint::ZERO`] unfiltered), in capture texels.
     pub footprint: Footprint,
+    /// The group's capture scale.
+    pub scale: cherenkov::CaptureScale,
+}
+
+/// A registered backdrop group: its capture scale and its chain, `None`
+/// for an unfiltered group.
+struct Group {
+    scale: cherenkov::CaptureScale,
+    chain: Option<Entry>,
 }
 
 impl<F> Erased for F
@@ -148,9 +157,8 @@ impl SignalVisitor for WatcherInstaller<'_> {
 #[derive(Default)]
 pub struct Registry {
     entries: FxHashMap<u64, Entry>,
-    /// Backdrop groups by `(surface, group)`; `None` is an unfiltered
-    /// group's registration marker.
-    backdrops: FxHashMap<(u64, u64), Option<Entry>>,
+    /// Backdrop groups by `(surface, group)`.
+    backdrops: FxHashMap<(u64, u64), Group>,
     redraw: Option<RedrawCallback>,
     last_frame: Option<(FrameId, cherenkov::Instant)>,
     delta: Duration,
@@ -214,27 +222,37 @@ impl Registry {
         self.entries.insert(id.raw(), entry);
     }
 
-    /// Registers an unfiltered backdrop group.
-    pub fn add_backdrop_group(&mut self, surface: SurfaceId, id: BackdropId) {
-        if let Some(entry) = self
-            .backdrops
-            .insert((surface.raw(), id.raw()), None)
-            .flatten()
-        {
-            entry.gate.close();
-        }
+    /// Registers an unfiltered backdrop group capturing at `scale`.
+    pub fn add_backdrop_group(
+        &mut self,
+        surface: SurfaceId,
+        id: BackdropId,
+        scale: cherenkov::CaptureScale,
+    ) {
+        self.insert_group(surface, id, Group { scale, chain: None });
     }
 
-    /// Registers a backdrop group whose capture runs `filter`.
-    pub fn add_filtered_backdrop_group<F>(&mut self, surface: SurfaceId, id: BackdropId, filter: F)
-    where
+    /// Registers a backdrop group capturing at `scale` whose capture runs
+    /// `filter`.
+    pub fn add_filtered_backdrop_group<F>(
+        &mut self,
+        surface: SurfaceId,
+        id: BackdropId,
+        filter: F,
+        scale: cherenkov::CaptureScale,
+    ) where
         F: CpuFilter + cherenkov::RenderTransfer + Send + Sync,
     {
-        let entry = self.entry(filter);
+        let chain = Some(self.entry(filter));
+        self.insert_group(surface, id, Group { scale, chain });
+    }
+
+    /// Registers `group`, closing the chain of a group it replaces.
+    fn insert_group(&mut self, surface: SurfaceId, id: BackdropId, group: Group) {
         if let Some(old) = self
             .backdrops
-            .insert((surface.raw(), id.raw()), Some(entry))
-            .flatten()
+            .insert((surface.raw(), id.raw()), group)
+            .and_then(|old| old.chain)
         {
             old.gate.close();
         }
@@ -242,7 +260,11 @@ impl Registry {
 
     /// Unregisters a backdrop group.
     pub fn remove_backdrop_group(&mut self, surface: SurfaceId, id: BackdropId) {
-        if let Some(entry) = self.backdrops.remove(&(surface.raw(), id.raw())).flatten() {
+        if let Some(entry) = self
+            .backdrops
+            .remove(&(surface.raw(), id.raw()))
+            .and_then(|group| group.chain)
+        {
             entry.gate.close();
         }
     }
@@ -311,16 +333,19 @@ impl Registry {
                 id.raw()
             )));
         };
-        let Some(entry) = group else {
+        let scale = group.scale;
+        let Some(entry) = &mut group.chain else {
             return Ok(PreparedBackdrop {
                 filter: None,
                 footprint: Footprint::ZERO,
+                scale,
             });
         };
         entry.prepare(sequence, self.delta);
         Ok(PreparedBackdrop {
             filter: Some((Arc::clone(&entry.filter), Arc::clone(&entry.params))),
             footprint: Self::footprint_bound(entry),
+            scale,
         })
     }
 
@@ -328,7 +353,7 @@ impl Registry {
     pub(super) fn wants_redraw_group(&self, surface: SurfaceId, id: BackdropId) -> bool {
         self.backdrops
             .get(&(surface.raw(), id.raw()))
-            .is_some_and(|group| group.as_ref().is_some_and(Entry::wants_redraw))
+            .is_some_and(|group| group.chain.as_ref().is_some_and(Entry::wants_redraw))
     }
 
     /// Sets each filter's and backdrop chain's wake gate to the surfaces
@@ -344,7 +369,7 @@ impl Registry {
                 .set(uses.get(id).map(Vec::as_slice).unwrap_or_default());
         }
         for (key, group) in &self.backdrops {
-            if let Some(entry) = group {
+            if let Some(entry) = &group.chain {
                 entry.gate.set(
                     groups
                         .get(key)
@@ -379,7 +404,11 @@ impl Registry {
             }
         }
         for key in used_groups {
-            if let Some(Some(entry)) = self.backdrops.get_mut(key) {
+            if let Some(entry) = self
+                .backdrops
+                .get_mut(key)
+                .and_then(|group| group.chain.as_mut())
+            {
                 Self::finish_entry(entry);
             }
         }
@@ -388,11 +417,11 @@ impl Registry {
 
 impl Drop for Registry {
     fn drop(&mut self) {
-        for entry in self
-            .entries
-            .values()
-            .chain(self.backdrops.values().flatten())
-        {
+        for entry in self.entries.values().chain(
+            self.backdrops
+                .values()
+                .filter_map(|group| group.chain.as_ref()),
+        ) {
             entry.gate.close();
         }
     }

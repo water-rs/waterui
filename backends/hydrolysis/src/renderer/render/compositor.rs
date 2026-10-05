@@ -133,6 +133,23 @@ pub struct FilteredLayer {
     pub(crate) active_layers: Vec<ActiveSceneLayer>,
 }
 
+/// A `Material` background presenting this frame: a keyed member mount that
+/// samples the material's backdrop group inside the view's bounds. The
+/// content the view wraps draws in the layers after it.
+#[derive(Clone)]
+pub struct MaterialLayer {
+    /// The mount identity: which wrapper node presents this material.
+    pub(crate) key: crate::renderer::retained::RenderKey,
+    /// The node-owned colour stage and blur radius the backdrop group runs.
+    pub(crate) runtime: Rc<crate::renderer::material::MaterialRuntime>,
+    /// Placement transform mapping `bounds` into scene space.
+    pub(crate) transform: kurbo::Affine,
+    /// The view's rect in its own space: the member's clip.
+    pub(crate) bounds: kurbo::Rect,
+    /// The clip/opacity ancestry the material is shown under.
+    pub(crate) active_layers: Vec<ActiveSceneLayer>,
+}
+
 #[cfg(hydrolysis_macos_system_webview)]
 #[derive(Clone)]
 pub(crate) struct NativeViewLayer {
@@ -163,6 +180,8 @@ pub enum RenderLayer {
     /// A `FilteredView` wrapper: a keyed layer carrying a `Filter`, with its
     /// child layers mounted underneath.
     Filtered(FilteredLayer),
+    /// A `Material` background: a keyed layer sampling its backdrop group.
+    Material(MaterialLayer),
     #[cfg(hydrolysis_macos_system_webview)]
     NativeView(NativeViewLayer),
 }
@@ -334,6 +353,11 @@ impl RenderLayer {
                         ..
                     })
                     | Self::ExternalFrame(ExternalFrameLayer {
+                        transform: layer_transform,
+                        active_layers,
+                        ..
+                    })
+                    | Self::Material(MaterialLayer {
                         transform: layer_transform,
                         active_layers,
                         ..
@@ -663,6 +687,36 @@ impl FrameInstall<'_> {
                         self.install_scope(tx, &layer.children, InstallScope::Group(layer.key));
                     self.mounts.sync_group_order(tx, layer.key, &group_order);
                 }
+                RenderLayer::Material(layer) => {
+                    let slot = MountSlot::Keyed(layer.key);
+                    order.push(slot);
+                    self.live_keys.insert(layer.key);
+                    self.mounts.layer(self.surface, slot);
+                    let scopes = ancestry_scopes(&layer.active_layers);
+                    self.mounts
+                        .set_ancestry(self.surface, tx, layer.key, &scopes);
+                    // A fully transparent ancestry discards every pixel the
+                    // member would composite: the mount holds no backdrop
+                    // group until it can become visible, so a hidden
+                    // material costs no capture or blur.
+                    let visible = scopes.iter().all(|scope| scope.opacity != 0.0);
+                    if visible {
+                        let surface = self.surface;
+                        let display_scale = self.display_scale;
+                        self.mounts.set_backdrop(tx, layer.key, display_scale, || {
+                            surface.backdrop_group(
+                                layer.runtime.chain(display_scale),
+                                crate::renderer::material::capture_scale(),
+                            )
+                        });
+                    } else {
+                        self.mounts.clear_backdrop(tx, layer.key);
+                    }
+                    let target = slot_layer(self.mounts, self.surface, scope, slot);
+                    tx[target]
+                        .transform(layer.transform)
+                        .clip(waterui_graphics::draw::ShapeData::of(&layer.bounds));
+                }
                 #[cfg(hydrolysis_macos_system_webview)]
                 RenderLayer::NativeView(_) => {
                     panic!(
@@ -732,31 +786,11 @@ impl HydrolysisRenderer {
         ) -> Result<(), cherenkov::RenderError> {
             let texture = target.texture;
             crate::engine::engine_await!(
-                self.render_scene_to_surface_with_alpha_mode(
-                    target.into_frame_target(), texture, false, true
-                )
-            )
-        }
-    }
-
-    crate::engine::cfg_async_fn! {
-        /// Renders the frame into `target`'s presentation surface.
-        ///
-        /// Async on wasm32, where the surface render inside awaits the browser
-        /// device.
-        ///
-        /// # Errors
-        ///
-        /// Returns the engine's [`cherenkov::RenderError`] when the frame
-        /// fails to render.
-        pub fn render_scene_to_surface(
-            &mut self,
-            target: HydrolysisRenderTarget<'_>,
-        ) -> Result<(), cherenkov::RenderError> {
-            let texture = target.texture;
-            crate::engine::engine_await!(
-                self.render_scene_to_surface_with_alpha_mode(
-                    target.into_frame_target(), texture, false, true
+                self.render_scene_to_texture_with_alpha(
+                    target.into_frame_target(),
+                    texture,
+                    cherenkov_gpu::interop::OutputAlpha::Straight,
+                    true,
                 )
             )
         }
@@ -869,21 +903,21 @@ impl HydrolysisRenderer {
     }
 
     crate::engine::cfg_async_fn! {
-        /// [`Self::render_scene_to_surface`] with the target's composite alpha
-        /// convention made explicit: `premultiply_alpha` selects the alpha
-        /// mode the presenter writes into `texture` — premultiplied for an OS
-        /// surface configured `CompositeAlphaMode::PreMultiplied`, straight
-        /// for offscreen/readback targets.
+        /// [`Self::render_scene_to_texture`] with the output's alpha
+        /// convention made explicit: `alpha` is the `OutputAlpha` the
+        /// presenter writes into `texture` — `surface_output_alpha`'s verdict
+        /// for an OS surface's `CompositeAlphaMode`, `OutputAlpha::Straight`
+        /// for an offscreen/readback target.
         ///
         /// `rasterize_scene_layers` is [`Self::render_engine_frame`]'s.
         ///
         /// Async on wasm32, where the engine calls inside await the browser
         /// device.
-        pub(crate) fn render_scene_to_surface_with_alpha_mode(
+        pub(crate) fn render_scene_to_texture_with_alpha(
             &mut self,
             target: FrameRenderTarget<'_>,
             texture: &wgpu::Texture,
-            premultiply_alpha: bool,
+            alpha: cherenkov_gpu::interop::OutputAlpha,
             rasterize_scene_layers: bool,
         ) -> Result<(), cherenkov::RenderError> {
             let (device, queue) = (target.device, target.queue);
@@ -896,7 +930,7 @@ impl HydrolysisRenderer {
                 queue,
                 texture,
                 crate::engine::format_output_color(texture.format()),
-                premultiply_alpha,
+                alpha,
             );
             Ok(())
         }
@@ -914,7 +948,7 @@ impl HydrolysisRenderer {
         queue: &wgpu::Queue,
         texture: &wgpu::Texture,
         color: cherenkov_gpu::interop::OutputColor,
-        premultiply_alpha: bool,
+        alpha: cherenkov_gpu::interop::OutputAlpha,
     ) {
         // The window map leaves `self` for the call, as in the render, so the
         // profiler mark may borrow the renderer.
@@ -926,14 +960,9 @@ impl HydrolysisRenderer {
                 "hydrolysis renderer: the engine frame's window left the renderer before its present",
             ),
         };
-        window.surface.present_into(
-            device,
-            queue,
-            texture,
-            color,
-            premultiply_alpha,
-            frame.headroom,
-        );
+        window
+            .surface
+            .present_into(device, queue, texture, color, alpha, frame.headroom);
 
         #[cfg(feature = "frame-profile")]
         self.gpu_profile_mark(window.gpu_profiler.as_ref(), device, queue, 2);

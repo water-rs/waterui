@@ -333,7 +333,7 @@ fn backdrop_effect_specs_roundtrip() {
         assert_eq!(*spec, back);
 
         let mut b = Scene::builder(64, 64);
-        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 4.0 }]);
+        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 4.0 }], 1.0);
         b.root().layer(|m| {
             m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
             m.backdrop(1);
@@ -349,7 +349,7 @@ fn backdrop_effect_specs_roundtrip() {
 
     // A member without an effect keeps `backdrop_effect` out of the JSON.
     let mut b = Scene::builder(64, 64);
-    b.backdrop_group(1, Vec::new());
+    b.backdrop_group(1, Vec::new(), 1.0);
     b.root().layer(|m| {
         m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
         m.backdrop(1);
@@ -401,7 +401,7 @@ fn backdrop_effect_specs_roundtrip() {
         },
     ] {
         let mut b = Scene::builder(64, 64);
-        b.backdrop_group(1, Vec::new());
+        b.backdrop_group(1, Vec::new(), 1.0);
         b.root().layer(|m| {
             m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
             m.backdrop(1);
@@ -413,6 +413,40 @@ fn backdrop_effect_specs_roundtrip() {
         assert!(
             matches!(result, Err(SceneError::InvalidBackdropEffect(_))),
             "{bad:?} must be rejected, got {result:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn backdrop_scale_loads_inside_its_range_only() {
+    use cherenkov_scene::{BackdropFilter, SceneError};
+    let dir = std::env::temp_dir().join(format!("cherenkov-scene-scale-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let scene = |scale| {
+        let mut b = Scene::builder(64, 64);
+        b.backdrop_group(7, vec![BackdropFilter::GaussianBlur { sigma: 2.0 }], scale);
+        b.root().layer(|m| {
+            m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
+            m.backdrop(7);
+        });
+        b.build()
+    };
+
+    let quarter = scene(0.25);
+    assert!(quarter.features.contains(&Feature::BackdropScale));
+    quarter.save(&dir.join("quarter")).unwrap();
+    assert_eq!(Scene::load(&dir.join("quarter")).unwrap(), quarter);
+
+    // Non-finite scales cannot be expressed in JSON (serde emits `null`),
+    // so these exercise the range.
+    for (i, bad) in [0.0, -0.25, 1.5].into_iter().enumerate() {
+        let scene_dir = dir.join(format!("bad-{i}"));
+        scene(bad).save(&scene_dir).unwrap();
+        let result = Scene::load(&scene_dir);
+        assert!(
+            matches!(result, Err(SceneError::InvalidBackdropScale(7))),
+            "scale {bad} must be rejected, got {result:?}"
         );
     }
     let _ = std::fs::remove_dir_all(&dir);

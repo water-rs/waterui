@@ -11,6 +11,28 @@ use core::any::Any;
 use waterui_core::views::ViewSnapshot;
 use waterui_layout::BackgroundLayout;
 
+/// A retained node's layout-dirty mark and the callback its input
+/// subscriptions fire: the callback sets the mark, which an enclosing
+/// `RetainedSubview` consumes through [`RenderNode::take_layout_dirty`], and
+/// schedules the refresh that lets it.
+fn layout_invalidation(
+    signals: &crate::renderer::FrameSignals,
+) -> (
+    Rc<Cell<bool>>,
+    waterui_core::layout::LayoutInvalidationCallback,
+) {
+    let layout_dirty = Rc::new(Cell::new(false));
+    let invalidate = {
+        let layout_dirty = Rc::clone(&layout_dirty);
+        let signals = signals.clone();
+        Rc::new(move || {
+            layout_dirty.set(true);
+            signals.request_refresh();
+        })
+    };
+    (layout_dirty, invalidate)
+}
+
 impl RenderNode {
     /// Build a node from a view, capturing live reactive inputs. Native leaves
     /// and layout containers map to concrete nodes; composite views expand via
@@ -33,6 +55,14 @@ impl RenderNode {
         let view = match view.downcast::<Native<TextConfig>>() {
             Ok(text) => {
                 let config = (*text).into_inner();
+                let (layout_dirty, invalidate) = layout_invalidation(&renderer.signals);
+                let guards = [
+                    config.content.watch({
+                        let invalidate = Rc::clone(&invalidate);
+                        move |_| invalidate()
+                    }),
+                    config.paragraph_alignment.watch(move |_| invalidate()),
+                ];
                 return Self::Text(Box::new(TextNode {
                     memo_gate: Cell::default(),
                     memo_slots: RefCell::default(),
@@ -41,6 +71,8 @@ impl RenderNode {
                     content: config.content,
                     alignment: config.paragraph_alignment,
                     line_limit: config.line_limit.map(core::num::NonZeroUsize::get),
+                    layout_dirty,
+                    _guards: guards,
                 }));
             }
             Err(view) => view,
@@ -290,7 +322,22 @@ impl RenderNode {
             Err(view) => view,
         };
         let view = match view.downcast::<IgnorableMetadata<MaterialBackground>>() {
-            Ok(meta) => return Self::build(meta.content, env, renderer),
+            Ok(meta) => {
+                let IgnorableMetadata {
+                    content,
+                    value: MaterialBackground(material),
+                } = *meta;
+                let runtime = crate::renderer::material::MaterialRuntime::new(
+                    crate::renderer::material::WithinWindowLevel::of(material),
+                    &waterui::theme::current_color_scheme(env),
+                );
+                return Self::build_wrapper(
+                    WrapperEffect::Material(Rc::new(runtime)),
+                    content,
+                    env,
+                    renderer,
+                );
+            }
             Err(view) => view,
         };
         // Transparent metadata wrappers: each applies its visual/interaction
@@ -1122,15 +1169,8 @@ impl RenderNode {
         background_slot: Option<usize>,
     ) -> Self {
         let (layout, children) = container.into_inner().into_inner();
-        let layout_dirty = Rc::new(Cell::new(false));
-        let signals = renderer.signals.clone();
-        let guards = layout.watch_invalidation({
-            let layout_dirty = Rc::clone(&layout_dirty);
-            Rc::new(move || {
-                layout_dirty.set(true);
-                signals.request_refresh();
-            })
-        });
+        let (layout_dirty, invalidate) = layout_invalidation(&renderer.signals);
+        let guards = layout.watch_invalidation(invalidate);
         #[cfg(feature = "accessibility")]
         let accessibility_child_env = accessibility_container_child_environment(env);
         #[cfg(feature = "accessibility")]

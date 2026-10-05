@@ -264,8 +264,11 @@ The `Window` builder, precisely:
   decorations. "Frosted" and "transparent" are **not** styles — they are backgrounds:
 - `.background(..)` accepts a `Color` (a translucent one gives a transparent window), a
   `WindowBackground` (`Opaque` is the theme background) or a `Binding<WindowBackground>`,
-  or a `Material` (frosted glass; applied to the window's content, best-effort per
-  backend). The background is reactive: setting the binding (or
+  or a `Material` (frosted glass applied to the window's content: `Regular`, `Thick`
+  and `UltraThick` are a backdrop treatment of the window's own content on every
+  backend; `UltraThin` and `Thin` blur what is behind the window through the
+  platform's blur-behind protocol and panic, naming the level and platform, where
+  there is none). The background is reactive: setting the binding (or
   `window.handle().set_background(..)`) re-applies it to the open window, e.g. to toggle
   between opaque and translucent.
 - `.resizable(bool)` — plain bool, default `true`. `.min_size(..)`/`.max_size(..)` each

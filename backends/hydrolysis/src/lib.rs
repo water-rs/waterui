@@ -71,6 +71,7 @@ pub use platform::{
     WindowSafeArea,
 };
 pub use platform_view::{PlatformView, PlatformViewPlacement, PlatformViewSink};
+pub use readback::{ReadbackError, readback_texture_rgba8};
 #[cfg(feature = "accessibility")]
 pub use renderer::accessibility::AccessibilityActivationPointError;
 pub use renderer::{
@@ -85,7 +86,6 @@ pub use runner::run;
 pub use runner::{FrameCounters, FramePhases, FrameProfile, SemanticPumpResult, SemanticRuntime};
 #[cfg(not(target_arch = "wasm32"))]
 pub use runner::{HeadlessPumpResult, HeadlessRuntime, HeadlessSnapshot};
-pub use readback::{ReadbackError, readback_texture_rgba8};
 pub use view_renderer::HydrolysisViewRenderer;
 #[cfg(hydrolysis_macos_system_webview)]
 pub use widgets::platform::webview::MacSystemWebViewController;

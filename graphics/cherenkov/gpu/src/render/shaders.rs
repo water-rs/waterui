@@ -198,6 +198,8 @@ pub mod spirv {
     pub const PROJECTIVE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/projective.spv"));
     /// `mip.wgsl`.
     pub const MIP: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/mip.spv"));
+    /// `resolve.wgsl`.
+    pub const RESOLVE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/resolve.spv"));
     /// `external_native.spv` — the Vulkan native module: `vs_main`,
     /// `fs_external` and `fs_external_format`, with the external-format
     /// pair merged into a combined sampled image by the build's
@@ -235,6 +237,10 @@ const PROJECTIVE_METALLIB: &[u8] = &[];
 const MIP_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/mip.metallib"));
 #[cfg(not(target_vendor = "apple"))]
 const MIP_METALLIB: &[u8] = &[];
+#[cfg(target_vendor = "apple")]
+const RESOLVE_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/resolve.metallib"));
+#[cfg(not(target_vendor = "apple"))]
+const RESOLVE_METALLIB: &[u8] = &[];
 
 /// The three `VARIANT` specializations of `shader.wgsl`, indexed by
 /// `variant_index`.
@@ -302,6 +308,15 @@ const MIP: Fixed = Fixed {
     #[cfg(cherenkov_spirv)]
     spirv: spirv::MIP,
     metallib: MIP_METALLIB,
+    entries: VS_FS_MAIN,
+};
+
+/// `resolve.wgsl`, the backdrop capture resolve module.
+const RESOLVE: Fixed = Fixed {
+    wgsl: include_str!("resolve.wgsl"),
+    #[cfg(cherenkov_spirv)]
+    spirv: spirv::RESOLVE,
+    metallib: RESOLVE_METALLIB,
     entries: VS_FS_MAIN,
 };
 
@@ -392,6 +407,12 @@ impl ShaderDelivery {
     #[must_use]
     pub fn mip_module(self, device: &wgpu::Device) -> wgpu::ShaderModule {
         self.module(device, "cherenkov mip", &MIP)
+    }
+
+    /// The backdrop capture resolve module.
+    #[must_use]
+    pub fn resolve_module(self, device: &wgpu::Device) -> wgpu::ShaderModule {
+        self.module(device, "cherenkov resolve", &RESOLVE)
     }
 
     fn module(

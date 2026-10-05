@@ -3,8 +3,9 @@
 //! # Window Backgrounds
 //!
 //! Windows support solid color backgrounds. For blur effects, use `Material`:
-//! `Material` is delegated to platform backends as `MaterialBackground` metadata
-//! and is best-effort (quality and behavior may vary by platform).
+//! the window's content is wrapped in `MaterialBackground` metadata, which the
+//! mainline backends realize as [`Material`] documents. The metadata is
+//! ignorable: a backend that does not realize it draws the window without it.
 //!
 //! ```rust
 //! use waterui::prelude::*;
@@ -626,8 +627,8 @@ impl Window {
     /// `Binding<WindowBackground>` to change the background after the window
     /// is shown, or a `Material` for blur effects. When using `Material`, the
     /// window stays opaque and the content is wrapped with
-    /// `MaterialBackground` metadata handled by the native backend on a
-    /// best-effort basis.
+    /// `MaterialBackground` metadata, which the backend realizes as
+    /// [`Material`] documents.
     ///
     /// # Examples
     ///
