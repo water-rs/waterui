@@ -2221,18 +2221,24 @@ impl<'a> Lowering<'a> {
         inst.grad[0] = rx;
         inst.grad[1] = ry;
         let mut pipeline = PipelineKind::SrcOver;
-        if effect.is_none() && !scale.is_full() {
-            // A reduced capture is a bilinear sample at `p · s`, never a
-            // texel read at `p`.
+        if effect.is_some() || !scale.is_full() {
             inst.meta[1] = super::instance::PAINT_BACKDROP;
-            inst.meta[3] |= super::instance::EFFECT_SAMPLE;
+            // `grad.z` maps device points onto the capture grid.
             inst.grad[2] = scale.get();
+            // `grad2.xy` is the region's size in texels; `grad2.zw` the
+            // member's device size for effect shaders: the unclipped
+            // bounds, not the visible intersection.
             inst.grad2 = [
                 rw,
                 rh,
                 f32_f64(member_bounds.width()),
                 f32_f64(member_bounds.height()),
             ];
+            if effect.is_none() {
+                // A reduced capture is a bilinear sample at `p · s`, never
+                // a texel read at `p`.
+                inst.meta[3] |= super::instance::EFFECT_SAMPLE;
+            }
         }
         if let Some(effect) = effect {
             // Refraction and shader effects evaluate the member clip's
@@ -2245,19 +2251,8 @@ impl<'a> Lowering<'a> {
             #[expect(clippy::cast_possible_truncation, reason = "stop counts fit u32")]
             let first = self.frame.stops.len() as u32;
             let (kind, count) = push_effect_stops(&mut self.frame.stops, effect);
-            inst.meta[1] = super::instance::PAINT_BACKDROP;
             inst.meta[2] = first;
             inst.meta[3] |= kind | (count << 8);
-            // `grad.z` maps device points onto the capture grid.
-            inst.grad[2] = scale.get();
-            // `grad2.zw` is the member's device size for effect shaders:
-            // the unclipped bounds, not the visible intersection.
-            inst.grad2 = [
-                rw,
-                rh,
-                f32_f64(member_bounds.width()),
-                f32_f64(member_bounds.height()),
-            ];
             if let cherenkov::BackdropEffect::Shader(s) = effect {
                 pipeline = PipelineKind::Effect(s.shader.raw());
             }
