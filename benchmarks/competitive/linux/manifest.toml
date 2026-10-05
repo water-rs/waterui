@@ -1,0 +1,74 @@
+# Competitive benchmark — Linux manifest (water-rs/waterui#1262).
+# Every framework and toolchain version used by a contestant is pinned here;
+# runner.py reads this file. Versions marked "resolved" are stamped by the
+# runner at build time so the recorded value is the one actually used.
+
+[environment]
+# All contestants run inside ONE container image (docker/Dockerfile):
+# debian:trixie, mesa 25.0.7 (llvmpipe GL + lavapipe Vulkan), wlroots 0.18.2.
+# The issue suggested wolfi-base for lavapipe; wolfi is musl and Flutter/
+# Electron prebuilts are glibc-only, so a single glibc image is used instead —
+# identical Mesa driver keeps the "same display server and GPU driver" rule.
+base_image = "debian:trixie"
+mesa_version = "25.0.7-2+deb13u1"      # resolved at image build
+wlroots_version = "0.18.2-3"           # resolved at image build
+display_server = "benchcomp (headless wlroots compositor, wayland-0, 1280x800@60Hz)"
+
+[toolchain]
+rustc = "1.98.1"          # rustup toolchain installed in the image
+node = "20.19.2"          # debian:trixie nodejs (only drives `npm i electron`)
+python = "3.13"           # trixie python3 (report tooling)
+cc = "gcc 14 (trixie)"    # resolved at image build
+
+# The water CLI is compiled from THIS checkout (`cargo install --locked
+# --path cli` — cli/ is a workspace member). Framework, CLI and backend
+# identity is the checkout's HEAD sha, recorded by the runner. Nothing to
+# pin here.
+
+[contestants.waterui-hydrolysis]
+kind = "water"
+project = "../apps/waterui"
+backend = "hydrolysis"
+profile = "release"
+# Forces hydrolysis onto the llvmpipe fallback adapter so the contestant
+# still runs on GPU-less hosts. The runner only exports this for
+# --development runs on a software adapter; a hardware-GPU run must never
+# force the fallback (numbers would stop being comparable evidence).
+env = { WATER_HYDROLYSIS_FORCE_FALLBACK_ADAPTER = "1" }
+
+[contestants.gtk4]
+kind = "gtk"
+project = "gtk4"
+gtk_version = "4.18.6"     # libgtk-4-dev from debian:trixie
+
+[contestants.electron]
+kind = "electron"
+project = "../apps/electron"
+electron_version = "44.4.5"
+node_version = "20.19.2"
+# In-container (no sandbox kernel support, wayland-only).
+flags = ["--no-sandbox", "--ozone-platform=wayland"]
+
+[contestants.flutter]
+kind = "flutter"
+project = "../apps/flutter"
+flutter_version = "3.47.5" # stable/linux/flutter_linux_3.47.5-stable.tar.xz
+dart_version = "3.13.4"
+
+[run]
+workloads = ["w1", "w2", "w3", "w4"]
+repetitions = 5
+window = "1280x800"
+refresh_mhz = 60000
+# Per-workload drive scripts live in scripts/<workload>.scr; durations below
+# include ~5s idle warmup before input starts.
+durations_ms = { w1 = 10000, w2 = 25000, w3 = 15000, w4 = 15000 }
+
+# W5 capacity (canonical ladder) runs per-step launches when enabled via
+# --workload w5: BENCH_STEP env selects the rect count, settle then hold —
+# same protocol as the other legs.
+[capacity.w5]
+steps = [200, 400, 800, 1600, 3200, 6400, 12800, 25600]
+settle_ms = 1000
+hold_ms = 4000
+collapse_frac = 0.5

@@ -1,0 +1,21 @@
+.cache/
+dist/
+out/
+results/
+stage/
+tools/
+out_tmp.jsonl
+contestants/electron/node_modules/
+contestants/flutter/build/
+contestants/waterui-hydrolysis/target/
+contestants/waterui-hydrolysis/.water/
+benchcomp/benchcomp
+# editor/OS noise
+*.swp
+.DS_Store
+contestants/gtk4/gtk-bench
+.waterui-sync-stamp
+vendor/
+
+.cargo-cache/
+.water-cache/
