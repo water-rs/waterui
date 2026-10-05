@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::sync::{Arc, mpsc};
 
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
-use waterui_graphics::cherenkov::{DEFAULT_REFRESH, Display, FrameTime, Next, Surface};
+use waterui_graphics::cherenkov::{DEFAULT_REFRESH, Display, FrameScope, FrameTime, Next, Surface};
 use waterui_graphics::cherenkov_gpu::{
     Gpu,
     interop::{OutputAlpha, OutputColor, Presenter, TextureOutput, TextureTarget, shader_delivery},
@@ -279,8 +279,10 @@ impl ScenePart {
 
     /// Applies the staged contract and any pending content onto this
     /// scene's own surface — `SceneParticipant::prepare`'s body, kept
-    /// separate so tests can drive it without a batch.
-    fn apply_staged(&self) -> Result<(), HostedLayerError> {
+    /// separate so tests can drive it without a batch — inside the frame
+    /// scope it returns for the batch to hold across its render.
+    fn apply_staged(&self) -> Result<FrameScope, HostedLayerError> {
+        let frame = self.surface.begin_frame();
         let (width, height, display) = self.staged.get();
         let pixels = (width, height);
         if self.surface.size() != pixels {
@@ -313,7 +315,7 @@ impl ScenePart {
             }
         }
         self.pending.set(false);
-        Ok(())
+        Ok(frame)
     }
 
     /// Records the content's scene at `width` x `height` logical points
@@ -351,9 +353,12 @@ impl ScenePart {
 }
 
 impl SceneParticipant for ScenePart {
-    fn prepare(&self, time: FrameTime) {
+    fn prepare(&self, time: FrameTime) -> Option<FrameScope> {
         match self.apply_staged() {
-            Ok(()) => self.prepared.set(Some(time)),
+            Ok(frame) => {
+                self.prepared.set(Some(time));
+                Some(frame)
+            }
             Err(error) => {
                 // A failure already routed stays until its owner settles
                 // it — a later shared preparation never overwrites it.
@@ -363,6 +368,7 @@ impl SceneParticipant for ScenePart {
                 // Same contract as `note_failure`: this scene's host has
                 // to come back to settle the typed failure.
                 self.redraw.request_redraw();
+                None
             }
         }
     }
@@ -419,7 +425,7 @@ impl SceneRenderer {
         display: Display,
     ) -> Result<(), HostedLayerError> {
         self.part.stage((target.width(), target.height()), display);
-        self.part.apply_staged()
+        self.part.apply_staged().map(drop)
     }
 }
 

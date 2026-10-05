@@ -306,9 +306,9 @@ impl<B: Backend> Engine<B> {
     ///
     /// A host that keeps one presentation loop behind several surfaces
     /// passes each of them the same request-redraw callback. A host that
-    /// drives its own frames announces each with
-    /// [`Surface::begin_frame`], so the edits it makes for that frame do
-    /// not ask for another.
+    /// drives its own frames opens each with [`Surface::begin_frame`] and
+    /// holds the scope across the frame's render, so the edits it makes
+    /// for that frame do not ask for another.
     ///
     /// # Errors
     /// [`SurfaceError`] when the backend cannot draw the target, or

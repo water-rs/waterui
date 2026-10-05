@@ -17,7 +17,7 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use waterui_backend_core::Environment;
 #[cfg(feature = "gpu_surface")]
-use waterui_graphics::cherenkov::{Engine, FrameTime};
+use waterui_graphics::cherenkov::{Engine, FrameScope, FrameTime};
 #[cfg(feature = "gpu_surface")]
 use waterui_graphics::cherenkov_gpu::Gpu;
 use waterui_graphics::gpu::GpuRuntime;
@@ -113,7 +113,11 @@ pub trait SceneParticipant {
     /// records `time` as the batch it prepared for — on failure the scene
     /// keeps the error for its own presenter to report and is simply not
     /// produced at `time`; it does not poison the batch.
-    fn prepare(&self, time: FrameTime);
+    ///
+    /// Returns the scene surface's frame scope, which the batch holds
+    /// across its render, so the edits made here wake no host; `None`
+    /// when the preparation failed and its scope already ended.
+    fn prepare(&self, time: FrameTime) -> Option<FrameScope>;
     /// Whether the batch produced at `time` contains this scene's latest
     /// staged state. `false` after a later mount, restage or failed
     /// prepare — the scene is then explicitly owed a later frame and must
@@ -222,9 +226,11 @@ impl EngineGeneration {
         if self.produced.get() == Some(time) {
             return Ok(());
         }
-        for participant in &self.live() {
-            participant.prepare(time);
-        }
+        let _frames: Vec<FrameScope> = self
+            .live()
+            .iter()
+            .filter_map(|participant| participant.prepare(time))
+            .collect();
         match self.engine.render(time) {
             Ok(_) => {
                 self.produced.set(Some(time));
@@ -374,10 +380,11 @@ mod tests {
     }
 
     impl SceneParticipant for Probe {
-        fn prepare(&self, time: FrameTime) {
+        fn prepare(&self, time: FrameTime) -> Option<FrameScope> {
             self.prepares.set(self.prepares.get() + 1);
             self.prepared.set(Some(time));
             self.pending.set(false);
+            None
         }
         fn produced_at(&self, time: FrameTime) -> bool {
             self.prepared.get() == Some(time) && !self.pending.get()

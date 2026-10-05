@@ -3,7 +3,7 @@
 //! into.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use arc_swap::ArcSwap;
 
@@ -14,6 +14,64 @@ use crate::backend::Visibility;
 /// a filter parameter's thread — so it is `Send` to cross threads and
 /// `Sync` to be shared across them, on every target.
 type Wake = dyn Fn() + Send + Sync;
+
+/// Where a surface's wake stands between its renders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum WakeState {
+    /// The next wake reaches the host.
+    Armed,
+    /// The host was woken and the render that answers it has not drained
+    /// the surface yet: every wake until then is part of that frame.
+    Disarmed,
+    /// A [`FrameScope`] is open and nothing has asked for a frame since
+    /// it opened.
+    InFrame,
+    /// A [`FrameScope`] is open and something asked for a frame since it
+    /// opened: the scope's render answers it, or the scope's end wakes
+    /// the host for it.
+    InFrameOwed,
+}
+
+impl WakeState {
+    const fn from_bits(bits: u8) -> Self {
+        match bits {
+            0 => Self::Armed,
+            1 => Self::Disarmed,
+            2 => Self::InFrame,
+            3 => Self::InFrameOwed,
+            _ => panic!("a surface wake state holds only the four WakeState values"),
+        }
+    }
+
+    /// A wake: it reaches the host only from `Armed`; inside a frame scope
+    /// it becomes the scope's debt.
+    const fn woken(self) -> Self {
+        match self {
+            Self::Armed | Self::Disarmed => Self::Disarmed,
+            Self::InFrame | Self::InFrameOwed => Self::InFrameOwed,
+        }
+    }
+
+    /// The host opens a frame: it answers every wake delivered before it.
+    fn opened(self) -> Self {
+        match self {
+            Self::Armed | Self::Disarmed => Self::InFrame,
+            Self::InFrame | Self::InFrameOwed => {
+                panic!("a surface has at most one open FrameScope")
+            }
+        }
+    }
+
+    /// The frame scope ends. A render inside it already left it; without
+    /// one, a debt becomes a delivered wake and no debt re-arms.
+    const fn closed(self) -> Self {
+        match self {
+            Self::Armed | Self::InFrame => Self::Armed,
+            Self::Disarmed | Self::InFrameOwed => Self::Disarmed,
+        }
+    }
+}
 
 /// One surface's host wake-up: the callback the host handed
 /// [`Engine::surface`](crate::Engine::surface), behind the visibility the
@@ -33,9 +91,13 @@ pub struct SurfaceWaker {
     /// slot, and a callback that touches the engine is never reentrant
     /// on the waker.
     wake: Box<Wake>,
-    /// Whether the next wake reaches the host: a wake clears it, and the
-    /// surface participating in a render sets it again.
-    armed: AtomicBool,
+    /// The [`WakeState`]. Every transition is a read-modify-write with
+    /// `AcqRel`, a wake that leaves the state unchanged included: a source
+    /// that writes its `dirty` flag and then finds the wake already taken
+    /// releases that write into this atomic, and the render's re-arm
+    /// acquires it, so the render that answers the wake sees the flag on
+    /// any thread and any memory model.
+    state: AtomicU8,
     /// Whether the host last announced the surface visible.
     visible: AtomicBool,
 }
@@ -43,7 +105,10 @@ pub struct SurfaceWaker {
 impl std::fmt::Debug for SurfaceWaker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SurfaceWaker")
-            .field("armed", &self.armed.load(Ordering::Relaxed))
+            .field(
+                "state",
+                &WakeState::from_bits(self.state.load(Ordering::Acquire)),
+            )
             .field("visibility", &self.visibility())
             .finish_non_exhaustive()
     }
@@ -54,29 +119,56 @@ impl SurfaceWaker {
     pub(crate) fn new(wake: impl Fn() + Send + Sync + 'static) -> Self {
         Self {
             wake: Box::new(wake),
-            armed: AtomicBool::new(true),
+            state: AtomicU8::new(WakeState::Armed as u8),
             visible: AtomicBool::new(true),
         }
     }
 
+    /// Applies `transition` to the state and returns the state it left.
+    fn transition(&self, transition: impl Fn(WakeState) -> WakeState) -> WakeState {
+        let mut current = WakeState::Armed;
+        loop {
+            match self.state.compare_exchange_weak(
+                current as u8,
+                transition(current) as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return current,
+                Err(actual) => current = WakeState::from_bits(actual),
+            }
+        }
+    }
+
     /// Wakes the host once if armed, then disarms until the surface next
-    /// renders — unless the surface is hidden.
+    /// renders — unless the surface is hidden. Inside a frame scope the
+    /// wake is owed to the scope instead.
     pub(crate) fn wake(&self) {
-        if self.visible.load(Ordering::Acquire) && self.armed.swap(false, Ordering::Relaxed) {
+        if self.visible.load(Ordering::Acquire)
+            && self.transition(WakeState::woken) == WakeState::Armed
+        {
             (self.wake)();
         }
     }
 
-    /// Re-arms the wake after the surface participated in a render.
+    /// Re-arms the wake after the surface participated in a render, which
+    /// answers whatever was owed.
     pub(crate) fn arm(&self) {
-        self.armed.store(true, Ordering::Relaxed);
+        self.state.swap(WakeState::Armed as u8, Ordering::AcqRel);
     }
 
-    /// Disarms the wake until the surface next renders: the host is
-    /// building the frame whose render drains whatever a wake would ask
-    /// for.
-    pub(crate) fn disarm(&self) {
-        self.armed.store(false, Ordering::Relaxed);
+    /// Opens the frame scope.
+    fn open_frame(&self) {
+        self.transition(WakeState::opened);
+    }
+
+    /// Ends the frame scope, waking the host for what it owes.
+    fn close_frame(&self) {
+        if self.transition(WakeState::closed) == WakeState::InFrameOwed
+            && self.visible.load(Ordering::Acquire)
+        {
+            (self.wake)();
+        }
     }
 
     /// The visibility the host last announced.
@@ -96,11 +188,16 @@ impl SurfaceWaker {
     /// Resumes the surface's wakes and asks its host for the frame that
     /// shows it — whether or not the wake is armed, then disarms: the host
     /// may have dropped the frame it requested while every surface it
-    /// draws was hidden.
+    /// draws was hidden. Inside a frame scope the request is owed to the
+    /// scope like any other wake.
     pub(crate) fn show(&self) {
         self.visible.store(true, Ordering::Release);
-        self.armed.store(false, Ordering::Relaxed);
-        (self.wake)();
+        if !matches!(
+            self.transition(WakeState::woken),
+            WakeState::InFrame | WakeState::InFrameOwed
+        ) {
+            (self.wake)();
+        }
     }
 
     /// The surface is gone: its wakes — a backend completion landing
@@ -108,6 +205,44 @@ impl SurfaceWaker {
     /// wakes still list it — stay silent forever.
     pub(crate) fn retire(&self) {
         self.hide();
+    }
+}
+
+/// A surface's frame, from [`Surface::begin_frame`](crate::Surface::begin_frame)
+/// until the scope is dropped: the host is building a frame that ends in
+/// [`Engine::render`](crate::Engine::render).
+///
+/// - Opening the scope takes over every wake the host was already given:
+///   the frame it opens answers them.
+/// - While the scope is open and before its render, a wake on the
+///   surface's behalf — the host's own edits, a bound signal, a producer,
+///   filter or backend completion on any thread, the surface becoming
+///   visible — does not call the host. It records that a frame is owed.
+/// - A render that draws the surface while the scope is open answers
+///   everything owed: it clears the debt and re-arms the wake. From then
+///   on, though the scope is still open, a wake reaches the host as usual
+///   and asks for the next frame; dropping the scope changes nothing.
+/// - Dropping the scope without such a render — the host's frame failed
+///   or returned early — wakes the host once if a frame is owed and the
+///   surface is visible, and re-arms the wake otherwise.
+///
+/// A wake is therefore deferred, never lost. A surface has at most one
+/// open scope: opening a second panics.
+#[derive(Debug)]
+#[must_use = "dropping the scope ends the frame; keep it until the frame's render"]
+pub struct FrameScope(Arc<SurfaceWaker>);
+
+impl FrameScope {
+    /// Opens the frame scope on the surface's wake.
+    pub(crate) fn open(waker: &Arc<SurfaceWaker>) -> Self {
+        waker.open_frame();
+        Self(Arc::clone(waker))
+    }
+}
+
+impl Drop for FrameScope {
+    fn drop(&mut self) {
+        self.0.close_frame();
     }
 }
 

@@ -9,7 +9,7 @@ mod wake;
 pub use browser::Engine;
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::Engine;
-pub use wake::{CompletionWaker, SurfaceWaker, SurfaceWakes};
+pub use wake::{CompletionWaker, FrameScope, SurfaceWaker, SurfaceWakes};
 
 use std::cell::RefCell;
 use std::rc::Weak;

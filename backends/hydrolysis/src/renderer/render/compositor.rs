@@ -1006,7 +1006,7 @@ impl HydrolysisRenderer {
         // Everything this frame sets on the surface below is drawn by the
         // render that ends it: only what lands after that render wakes the
         // host for another frame.
-        window.surface.begin_frame();
+        let _frame = window.surface.begin_frame();
 
         // The first marker lands after context resolution because the
         // profiler is device-owned like the window it rides on: a replaced

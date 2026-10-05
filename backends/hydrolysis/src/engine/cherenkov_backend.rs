@@ -265,11 +265,12 @@ impl CherenkovSurface {
         }
     }
 
-    /// Announces the renderer's frame: the edits it makes to the surface
-    /// before [`Self::render`] wake no host, because that render draws
-    /// them.
-    pub fn begin_frame(&self) {
-        self.surface.begin_frame();
+    /// Opens the renderer's frame: while the scope is held, the edits it
+    /// makes to the surface before [`Self::render`] wake no host, because
+    /// that render draws them.
+    #[must_use = "dropping the scope ends the frame; keep it until the frame's render"]
+    pub fn begin_frame(&self) -> cherenkov::FrameScope {
+        self.surface.begin_frame()
     }
 
     /// The engine surface behind this output target — mount, edit and

@@ -24,7 +24,7 @@ use crate::WorkingColor;
 use crate::animation::Animation;
 use crate::backend::{Backend, Display, SurfaceInfo, Visibility};
 use crate::capability::{Backdrop, BackdropChain, BackdropRuns};
-use crate::engine::SurfaceWaker;
+use crate::engine::{FrameScope, SurfaceWaker};
 use crate::error::{RenderError, SurfaceError};
 use crate::frame::Readback;
 use crate::message::Message;
@@ -295,18 +295,22 @@ impl<B: Backend> Surface<B> {
     }
 
     /// Announces that the host is building a frame that ends in
-    /// [`Engine::render`](crate::Engine::render): until that render, nothing
-    /// on the surface's behalf wakes the host, because the render drains it.
+    /// [`Engine::render`](crate::Engine::render), for as long as the
+    /// returned scope is held: until that render, nothing on the surface's
+    /// behalf wakes the host, because the render drains it.
     ///
     /// A host that drives its own frames and edits the surface inside its
-    /// frame callback calls this when the frame begins, so the edits it
-    /// makes for the frame it is rendering do not ask for another one.
-    /// Every wake from then on — the host's own edits, a bound signal, a
-    /// producer, filter or backend completion on any thread — is answered
-    /// by that render; the render re-arms the wake for whatever comes
-    /// after it.
-    pub fn begin_frame(&self) {
-        self.waker.disarm();
+    /// frame callback opens the scope when the frame begins and holds it
+    /// across the frame's render, so the edits it makes for the frame it
+    /// is rendering do not ask for another one. A frame that ends without
+    /// its render still delivers what was asked for meanwhile when the
+    /// scope drops; [`FrameScope`] states the exact semantics.
+    ///
+    /// # Panics
+    /// Panics if a scope is already open on the surface.
+    #[must_use = "dropping the scope ends the frame; keep it until the frame's render"]
+    pub fn begin_frame(&self) -> FrameScope {
+        FrameScope::open(&self.waker)
     }
 
     /// The clear colour, queued into the pending change set. Defaults to

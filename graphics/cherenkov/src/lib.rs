@@ -71,7 +71,7 @@ pub use crate::display_list::{
     Picture, ScopeError, Slot, SlotUpdate,
 };
 pub use crate::engine::Engine;
-pub use crate::engine::{CompletionWaker, SurfaceWakes};
+pub use crate::engine::{CompletionWaker, FrameScope, SurfaceWakes};
 pub use crate::error::{EngineError, RenderError, ResourceError, SurfaceError};
 pub use crate::frame::{
     DEFAULT_REFRESH, FrameId, FrameStats, FrameTime, FrameTiming, Next, Offscreen, OffscreenFormat,

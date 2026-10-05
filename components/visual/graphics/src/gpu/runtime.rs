@@ -1208,7 +1208,7 @@ impl GpuContentRenderer {
         display: Display,
         target_time: FrameTime,
     ) -> Result<Next, HostedLayerError> {
-        self.host.surface.begin_frame();
+        let _frame = self.host.surface.begin_frame();
         self.resize(size)?;
         self.host.render(display, target_time)
     }
@@ -1228,7 +1228,7 @@ impl GpuContentRenderer {
         display: Display,
         target_time: FrameTime,
     ) -> Result<Next, HostedLayerError> {
-        self.host.surface.begin_frame();
+        let _frame = self.host.surface.begin_frame();
         self.resize(size)?;
         self.host.render(display, target_time).await
     }
@@ -1433,7 +1433,7 @@ impl ExternalFrameRenderer {
         display: Display,
         target_time: FrameTime,
     ) -> Result<Next, HostedLayerError> {
-        self.host.surface.begin_frame();
+        let _frame = self.host.surface.begin_frame();
         self.prepare(size)?;
         self.host.render(display, target_time)
     }
@@ -1453,7 +1453,7 @@ impl ExternalFrameRenderer {
         display: Display,
         target_time: FrameTime,
     ) -> Result<Next, HostedLayerError> {
-        self.host.surface.begin_frame();
+        let _frame = self.host.surface.begin_frame();
         self.prepare(size)?;
         self.host.render(display, target_time).await
     }

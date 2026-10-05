@@ -309,9 +309,9 @@ impl<B: Backend> Engine<B> {
     ///
     /// A host that keeps one presentation loop behind several surfaces
     /// passes each of them the same request-redraw callback. A host that
-    /// drives its own frames announces each with
-    /// [`Surface::begin_frame`], so the edits it makes for that frame do
-    /// not ask for another.
+    /// drives its own frames opens each with [`Surface::begin_frame`] and
+    /// holds the scope across the frame's render, so the edits it makes
+    /// for that frame do not ask for another.
     ///
     /// # Errors
     /// [`SurfaceError`] when the backend cannot draw the target, or
@@ -779,6 +779,149 @@ mod tests {
             drawing.load(Ordering::Relaxed),
             2,
             "a frame landing after a render wakes again"
+        );
+    }
+
+    /// A Null engine and one visible surface whose host wake counts its
+    /// calls, rendered once so the count starts at zero with the wake
+    /// armed.
+    fn counted_surface() -> (Engine<Null>, Surface<Null>, Arc<AtomicUsize>) {
+        let (events, _) = std::sync::mpsc::channel();
+        let engine = Engine::<Null>::new(NullConfig {
+            events,
+            reject: std::collections::HashSet::default(),
+            image_limits: crate::ImageLimits::UNLIMITED,
+        })
+        .unwrap();
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let surface = engine
+            .surface(
+                crate::Offscreen::new((8, 8), crate::OffscreenFormat::LinearF16),
+                {
+                    let wakes = Arc::clone(&wakes);
+                    move || {
+                        wakes.fetch_add(1, Ordering::Relaxed);
+                    }
+                },
+            )
+            .unwrap();
+        engine.render(FrameTime::now()).unwrap();
+        wakes.store(0, Ordering::Relaxed);
+        (engine, surface, wakes)
+    }
+
+    /// Queues an edit on the surface's root.
+    fn edit(surface: &Surface<Null>, opacity: f32) {
+        surface.update(|tx| {
+            tx[surface.root()].opacity(opacity);
+        });
+    }
+
+    /// The edits a frame makes inside its scope wake nothing; its render
+    /// answers them and re-arms the wake, which the scope's end leaves
+    /// alone.
+    #[test]
+    fn a_frame_scope_holds_its_edits_until_its_render_rearms() {
+        let (engine, surface, wakes) = counted_surface();
+        let frame = surface.begin_frame();
+        edit(&surface, 0.5);
+        edit(&surface, 0.25);
+        assert_eq!(
+            wakes.load(Ordering::Relaxed),
+            0,
+            "an edit in the scope woke"
+        );
+        engine.render(FrameTime::now()).unwrap();
+        drop(frame);
+        assert_eq!(wakes.load(Ordering::Relaxed), 0, "the scope's end woke");
+        edit(&surface, 0.75);
+        edit(&surface, 1.0);
+        assert_eq!(
+            wakes.load(Ordering::Relaxed),
+            1,
+            "the render re-armed the wake once"
+        );
+    }
+
+    /// A scope that ends without its render delivers what it owes, once.
+    #[test]
+    fn a_frame_scope_dropped_owing_a_wake_delivers_exactly_one() {
+        let (_engine, surface, wakes) = counted_surface();
+        let frame = surface.begin_frame();
+        edit(&surface, 0.5);
+        edit(&surface, 0.25);
+        drop(frame);
+        assert_eq!(
+            wakes.load(Ordering::Relaxed),
+            1,
+            "the owed wake was delivered once"
+        );
+        edit(&surface, 0.75);
+        assert_eq!(
+            wakes.load(Ordering::Relaxed),
+            1,
+            "the delivered wake coalesces until a render"
+        );
+    }
+
+    /// A scope that ends without its render and owes nothing re-arms.
+    #[test]
+    fn a_frame_scope_dropped_without_a_debt_rearms() {
+        let (_engine, surface, wakes) = counted_surface();
+        drop(surface.begin_frame());
+        assert_eq!(wakes.load(Ordering::Relaxed), 0, "an empty scope woke");
+        edit(&surface, 0.5);
+        assert_eq!(
+            wakes.load(Ordering::Relaxed),
+            1,
+            "the scope's end re-armed the wake"
+        );
+    }
+
+    /// A frame submitted from another thread while a render is in flight
+    /// lands behind that render and still wakes the host.
+    #[test]
+    fn a_frame_submitted_during_an_in_flight_render_wakes_the_host() {
+        let (engine, surface, wakes) = counted_surface();
+        let (producer, sink) = engine.frame_producer();
+        let layer = surface.layer();
+        surface.update(|tx| {
+            tx[surface.root()].push(&layer);
+            tx[&layer].content(producer.at((8, 8)));
+        });
+        engine.render(FrameTime::now()).unwrap();
+        wakes.store(0, Ordering::Relaxed);
+
+        // The render thread is parked, so the next `Render` waits in the
+        // channel while the frame is submitted behind it.
+        let (parked, park) = std::sync::mpsc::channel::<()>();
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        engine
+            .tx
+            .send(Message::Resource(Box::new(move |_| {
+                parked.send(()).unwrap();
+                let _ = held.recv();
+            })))
+            .unwrap();
+        park.recv().unwrap();
+        let submitter = std::thread::spawn({
+            let tx = engine.tx.clone();
+            move || {
+                while tx.is_empty() {
+                    std::thread::yield_now();
+                }
+                sink.submit(());
+                drop(release);
+            }
+        });
+        engine.render(FrameTime::now()).unwrap();
+        submitter.join().unwrap();
+        // The reply follows every earlier message: the frame has landed.
+        let _ = engine.memory();
+        assert_eq!(
+            wakes.load(Ordering::Relaxed),
+            1,
+            "a frame landing behind an in-flight render wakes the host"
         );
     }
 
