@@ -95,7 +95,7 @@ pub struct CaptureGeometry {
     /// Vertical point-to-pixel scale.
     pub scale_y: f64,
     /// Whether the source's y axis points down — the actual source view's
-    /// `NSView.isFlipped` under AppKit, always `true` under UIKit's
+    /// `NSView.isFlipped` under `AppKit`, always `true` under `UIKit`'s
     /// top-left coordinate space.
     pub y_down: bool,
 }
@@ -2050,10 +2050,10 @@ mod tests {
 
         #[test]
         fn fractional_endpoints_size_from_ceil_high_minus_floor_low() {
-            // (0.9, 0.9)–(1.4, 1.4) at 1× touches pixels 0 and 1: width 2,
-            // not floor(0.9) + ceil(0.5) = 1.
+            // A 1× geometry: (0.9, 0.9)–(1.4, 1.4) touches pixels 0 and 1,
+            // so the size is 2 — not floor(0.9) + ceil(0.5) = 1.
             let spec = spec_for(
-                down(Rect::new(0.0, 0.0, 200.0, 200.0)),
+                CaptureGeometry::new(Rect::new(0.0, 0.0, 400.0, 400.0), 400, 400, true),
                 Rect::new(0.9, 0.9, 0.5, 0.5),
             );
             assert_eq!(clip(&spec), (0, 0, 2, 2));

@@ -122,8 +122,8 @@ pub fn bounds(view: &PlatformView) -> Rect {
     view.bounds().into()
 }
 
-/// Whether `view`'s y axis runs top-down — `NSView.isFlipped` on AppKit.
-/// UIKit's coordinate space is natively top-left, so `true`.
+/// Whether `view`'s y axis runs top-down — `NSView.isFlipped` on `AppKit`.
+/// `UIKit`'s coordinate space is natively top-left, so `true`.
 #[must_use]
 pub fn is_flipped(view: &PlatformView) -> bool {
     #[cfg(target_os = "macos")]
