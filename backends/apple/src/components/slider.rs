@@ -240,9 +240,11 @@ impl SubView for SliderSubView {
         let intrinsic_height = sizes.intrinsic_height(slider_height);
         let width = proposal
             .width
+            .filter(|w| w.is_finite())
             .map_or(min_width, |w| f64::from(w).max(min_width));
         let height = proposal
             .height
+            .filter(|h| h.is_finite())
             .map_or(intrinsic_height, |h| f64::from(h).max(intrinsic_height));
         ViewDimensions::new(Size::new(width as f32, height as f32))
     }

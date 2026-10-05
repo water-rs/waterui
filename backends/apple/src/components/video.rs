@@ -100,8 +100,14 @@ const fn leaf_stretch_axis(mode: ContentMode) -> StretchAxis {
 /// The leaf's measure: the proposal, falling back to `320×180` per side.
 fn measure(proposal: ProposalSize) -> ViewDimensions {
     ViewDimensions::new(Size::new(
-        proposal.width.unwrap_or(FALLBACK_WIDTH),
-        proposal.height.unwrap_or(FALLBACK_HEIGHT),
+        proposal
+            .width
+            .filter(|w| w.is_finite())
+            .unwrap_or(FALLBACK_WIDTH),
+        proposal
+            .height
+            .filter(|h| h.is_finite())
+            .unwrap_or(FALLBACK_HEIGHT),
     ))
 }
 

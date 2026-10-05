@@ -387,8 +387,14 @@ fn lazy_size_that_fits(state: &mut ContainerState, proposal: ProposalSize) -> Si
         return Size::new(0.0, 0.0);
     }
     let cross = match lazy.main_axis() {
-        Axis::Vertical => proposal.width.map_or(0.0, f64::from),
-        Axis::Horizontal => proposal.height.map_or(0.0, f64::from),
+        Axis::Vertical => proposal
+            .width
+            .filter(|w| w.is_finite())
+            .map_or(0.0, f64::from),
+        Axis::Horizontal => proposal
+            .height
+            .filter(|h| h.is_finite())
+            .map_or(0.0, f64::from),
         _ => unreachable!("lazy stack axis is vertical or horizontal"),
     };
     let estimate = estimated_main_extent(state, cross, &lazy);

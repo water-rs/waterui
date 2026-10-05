@@ -38,7 +38,10 @@ use platform::ImageView;
 /// with the picture's own size as the answer when a side is unproposed.
 fn fit(proposal: ProposalSize, point_size: Size) -> Size {
     let (pw, ph) = (point_size.width, point_size.height);
-    match (proposal.width, proposal.height) {
+    match (
+        proposal.width.filter(|w| w.is_finite()),
+        proposal.height.filter(|h| h.is_finite()),
+    ) {
         (None, None) => point_size,
         (Some(w), Some(h)) => Size::new(w, h),
         (Some(w), None) => Size::new(w, w * ph / pw),

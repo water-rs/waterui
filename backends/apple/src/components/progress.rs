@@ -177,7 +177,10 @@ fn measure_width(style_width: ProgressVariant, proposal: ProposalSize, intrinsic
     match style_width {
         ProgressVariant::Linear => {
             let floor = MIN_LINEAR_WIDTH.max(intrinsic);
-            proposal.width.map_or(floor, |w| f64::from(w).max(floor))
+            proposal
+                .width
+                .filter(|w| w.is_finite())
+                .map_or(floor, |w| f64::from(w).max(floor))
         }
         ProgressVariant::Circular => intrinsic,
     }

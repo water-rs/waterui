@@ -144,7 +144,7 @@ impl SubView for ToggleSubView {
         // a Mac's takes its own width — the box pushed to the far edge of a
         // window is not a thing macOS draws.
         #[cfg(target_os = "ios")]
-        let width = if has_label && let Some(proposed) = proposal.width {
+        let width = if has_label && let Some(proposed) = proposal.width.filter(|w| w.is_finite()) {
             proposed.max(intrinsic_width)
         } else {
             intrinsic_width

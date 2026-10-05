@@ -245,7 +245,10 @@ impl SubView for PickerSubView {
         // stretches it to the proposed width.
         let wheel = state.style == PickerStyle::Radio && cfg!(target_os = "ios");
         let width = if wheel {
-            proposal.width.map_or(intrinsic_width, f64::from)
+            proposal
+                .width
+                .filter(|w| w.is_finite())
+                .map_or(intrinsic_width, f64::from)
         } else {
             intrinsic_width
         };
@@ -254,6 +257,7 @@ impl SubView for PickerSubView {
         } else {
             proposal
                 .height
+                .filter(|h| h.is_finite())
                 .map_or(intrinsic_height, |h| f64::from(h).max(intrinsic_height))
         };
         ViewDimensions::new(Size::new(width as f32, height as f32))

@@ -494,6 +494,7 @@ impl core::fmt::Debug for TextFieldSubView {
 fn measure_width(proposal: ProposalSize, label_width: f64) -> f64 {
     proposal
         .width
+        .filter(|w| w.is_finite())
         .map_or(MIN_WIDTH, |w| f64::from(w).max(MIN_WIDTH))
         .max(label_width)
 }
@@ -526,9 +527,11 @@ impl SubView for TextFieldSubView {
         let min_width = f64::from(label.width).max(MIN_WIDTH);
         let width = proposal
             .width
+            .filter(|w| w.is_finite())
             .map_or(min_width, |w| f64::from(w).max(min_width));
         let height = proposal
             .height
+            .filter(|h| h.is_finite())
             .map_or(intrinsic_height, |h| f64::from(h).max(intrinsic_height));
         ViewDimensions::new(Size::new(width as f32, height as f32))
     }

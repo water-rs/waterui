@@ -248,6 +248,7 @@ impl SubView for ColorPickerSubView {
         // horizontally to whatever it's offered.
         let width = proposal
             .width
+            .filter(|w| w.is_finite())
             .map_or(intrinsic_width, |w| f64::from(w).max(intrinsic_width));
         ViewDimensions::new(Size::new(width as f32, intrinsic_height as f32))
     }
