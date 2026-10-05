@@ -106,14 +106,19 @@ pub enum ImageColorSpace {
 /// The data of an image to register, typed by its storage [`Format`].
 ///
 /// The byte length is validated at construction, so a well-formed
-/// `ImageData` always matches its dimensions.
+/// `ImageData` always matches its dimensions: [`width`](Self::width),
+/// [`height`](Self::height) and [`data`](Self::data) are read-only, and
+/// [`new`](Self::new) is the only constructor. `color_space` and
+/// `premultiplied` stay mutable: they tag how the texels decode, and every
+/// combination of them is a well-formed image, so they cannot break the
+/// length invariant.
 pub struct ImageData<F: Format> {
     /// Width in pixels.
-    pub width: u32,
+    width: u32,
     /// Height in pixels.
-    pub height: u32,
+    height: u32,
     /// The texel data in `F`'s encoding.
-    pub data: Arc<[u8]>,
+    data: Arc<[u8]>,
     /// The encoded colour space.
     pub color_space: ImageColorSpace,
     /// Whether the texels carry premultiplied alpha.
@@ -176,6 +181,24 @@ impl<F: Format> ImageData<F> {
             premultiplied: false,
             format: std::marker::PhantomData,
         })
+    }
+
+    /// Width in pixels.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Height in pixels.
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// The texel data in `F`'s encoding.
+    #[must_use]
+    pub const fn data(&self) -> &Arc<[u8]> {
+        &self.data
     }
 
     /// Sets the encoded colour space (default [`ImageColorSpace::Srgb`]).
