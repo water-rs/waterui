@@ -117,7 +117,7 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
                         device,
                         queue,
                         device_loss,
-                        texture: Some(frame.texture()),
+                        texture: frame.texture(),
                         format,
                         width,
                         height,
