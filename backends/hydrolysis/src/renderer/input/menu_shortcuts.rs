@@ -18,11 +18,12 @@ use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
 use nami::{Computed, Signal as _};
+use waterui::app::Quit;
 use waterui::window::WindowState;
 use waterui_controls::menu::{ResolvedMenuItem, Shortcut};
 use waterui_core::Environment;
 use waterui_core::Str;
-use waterui_core::handler::SharedAction;
+use waterui_core::handler::{SharedAction, shared_action};
 
 use super::popup_menu::{PopupMenuNode, PopupMenuStateGroup};
 use crate::HydrolysisRenderer;
@@ -153,6 +154,36 @@ pub const MISSING_MENU_SHORTCUT_REGISTRY: &str = "menu shortcuts require the run
      environment — the winit runner, headless run and HeadlessRuntime, SemanticRuntime and \
      the web runner all install one; a renderer built outside a runner seeds its own";
 
+/// The label a declared `MenuItem::Quit` shows — the platform's word for
+/// quitting the application.
+pub fn quit_item_label() -> Str {
+    // "Exit" is the Windows menu convention; "Quit" is macOS's and what
+    // Linux desktops (GTK/Qt) use.
+    #[cfg(target_os = "windows")]
+    {
+        Str::from("Exit")
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Str::from("Quit")
+    }
+}
+
+/// The platform's quit accelerator expressed as a semantic `Shortcut`:
+/// ⌘Q on macOS, and through [`ChordModifiers`]' command→control mapping
+/// Ctrl+Q everywhere else — the same translation the platform menu
+/// accelerators get.
+pub fn quit_shortcut() -> Shortcut {
+    Shortcut::new("q").command()
+}
+
+/// The action every declared `MenuItem::Quit` dispatches: a cancellable
+/// termination request filed through the `Quit` the runner installed in the
+/// application environment, so `App::on_quit_request` still decides.
+pub fn quit_action() -> SharedAction<()> {
+    shared_action(|quit: Quit| quit.request())
+}
+
 /// A window's identity for menu-chord dispatch: the runner assigns one when it
 /// creates the window and hands it to the window's renderer, so the shared
 /// [`MenuShortcutRegistry`] can scope a mounted `Menu`'s chords to the window
@@ -211,6 +242,14 @@ fn collect_menu_shortcuts(items: &[ResolvedMenuItem], out: &mut Vec<MenuShortcut
                 }
             }
             ResolvedMenuItem::Menu(menu) => collect_menu_shortcuts(&menu.items.snapshot(), out),
+            ResolvedMenuItem::Quit => {
+                out.push(MenuShortcut::new(
+                    &quit_shortcut(),
+                    quit_action(),
+                    Computed::constant(false),
+                    quit_item_label(),
+                ));
+            }
             ResolvedMenuItem::Divider => {}
         }
     }

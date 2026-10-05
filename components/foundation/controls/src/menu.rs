@@ -341,6 +341,20 @@ pub enum MenuItem {
     Divider,
     /// A nested menu.
     Menu(Menu),
+    /// The application's own Quit item.
+    ///
+    /// Declaring it is how an application relocates or retitles the standard
+    /// Quit — it renders once, with the platform's label and accelerator
+    /// (⌘Q on macOS, the platform equivalent elsewhere), and requests a
+    /// cancellable termination through `waterui::app::Quit`, so
+    /// `App::on_quit_request` still decides. On macOS it never appears in
+    /// the menu bar — the standard application menu already carries the
+    /// platform Quit — but it can appear in menus the window mounts.
+    ///
+    /// Do not redeclare the platform's quit chord on a plain [`Command`]:
+    /// the macOS menu bar rejects ⌘Q, ⌘H and ⌥⌘H on ordinary commands, and
+    /// a homemade Quit bypasses the termination hooks.
+    Quit,
 }
 
 impl_constant!(MenuItem);
@@ -352,6 +366,7 @@ impl MenuItem {
             Self::Command(command) => ResolvedMenuItem::Command(command.resolve(env)),
             Self::Divider => ResolvedMenuItem::Divider,
             Self::Menu(menu) => ResolvedMenuItem::Menu(menu.resolve(env)),
+            Self::Quit => ResolvedMenuItem::Quit,
         }
     }
 }
@@ -727,6 +742,8 @@ pub enum ResolvedMenuItem {
     Divider,
     /// A resolved nested menu.
     Menu(ResolvedNestedMenu),
+    /// The application's declared Quit item — see [`MenuItem::Quit`].
+    Quit,
 }
 
 impl_constant!(ResolvedMenuItem);

@@ -2210,6 +2210,10 @@ pub enum WuiMenuItemTag {
     Divider = 1,
     /// A nested menu.
     Menu = 2,
+    /// The application's declared Quit item — the backend gives it the
+    /// platform's label and accelerator and routes it through the app's
+    /// termination request.
+    Quit = 3,
 }
 
 ffi_safe!(WuiMenuItemTag);
@@ -2439,6 +2443,18 @@ impl IntoFFI for ResolvedMenuItemView {
                 subtitle: null_mut(),
                 items: menu_items_views(menu.items),
             },
+            ResolvedMenuItem::Quit => WuiMenuItem {
+                tag: WuiMenuItemTag::Quit,
+                label: null_mut(),
+                icon: null_mut(),
+                action: null_mut(),
+                disabled: null_mut(),
+                selected: null_mut(),
+                shortcut: null_mut(),
+                role: WuiCommandRole::Standard,
+                subtitle: null_mut(),
+                items: null_mut(),
+            },
         }
     }
 }
@@ -2449,6 +2465,7 @@ ffi_view!(ResolvedMenuItemView, WuiMenuItem, menu_item);
 enum MenuItemIdentity {
     Semantic(usize),
     Divider(usize),
+    Quit(usize),
 }
 
 fn menu_item_identity(items: &[ResolvedMenuItem], index: usize) -> MenuItemIdentity {
@@ -2459,6 +2476,12 @@ fn menu_item_identity(items: &[ResolvedMenuItem], index: usize) -> MenuItemIdent
             items[..=index]
                 .iter()
                 .filter(|item| matches!(item, ResolvedMenuItem::Divider))
+                .count(),
+        ),
+        ResolvedMenuItem::Quit => MenuItemIdentity::Quit(
+            items[..=index]
+                .iter()
+                .filter(|item| matches!(item, ResolvedMenuItem::Quit))
                 .count(),
         ),
     }

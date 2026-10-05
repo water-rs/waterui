@@ -52,6 +52,10 @@ use waterui_controls::menu::{ResolvedCommand, ResolvedMenuItem, Shortcut};
 use waterui_core::handler::SharedAction;
 
 use crate::renderer::call_action_discarding_result;
+#[cfg(target_os = "macos")]
+use crate::renderer::shortcut_hint_text;
+#[cfg(not(target_os = "macos"))]
+use crate::renderer::{quit_action, quit_item_label, quit_shortcut};
 
 /// One built native menu bar: the muda `Menu` tree, the `MenuId → action`
 /// table the event pump dispatches through, and the live watches.
@@ -172,6 +176,54 @@ fn code_for(key: &str) -> Option<Code> {
     })
 }
 
+/// ⌘Q, ⌘H and ⌥⌘H belong to the standard application-menu items — Quit,
+/// Hide, Hide Others — not to a plain command in the macOS menu bar.
+/// Re-declaring them would shadow the items the system expects to find, so
+/// building the bar rejects them and names the right API: `MenuItem::Quit`
+/// for the Quit item, `App::on_terminate` for shutdown work.
+#[cfg(target_os = "macos")]
+fn check_reserved_app_chord(command: &ResolvedCommand) {
+    let Some(shortcut) = &command.shortcut else {
+        return;
+    };
+    let reserved = [
+        (Shortcut::new("q").command(), "Quit"),
+        (Shortcut::new("h").command(), "Hide"),
+        (Shortcut::new("h").command().option(), "Hide Others"),
+    ];
+    for (chord, item) in reserved {
+        if chord.modifiers == shortcut.modifiers
+            && chord
+                .key
+                .as_str()
+                .eq_ignore_ascii_case(shortcut.key.as_str())
+        {
+            panic!(
+                "a menu command in the macOS menu bar may not use the {} chord — it belongs to the \
+                 standard {item} item; declare `MenuItem::Quit` for Quit behavior and \
+                 `App::on_terminate` for shutdown work instead of redeclaring the chord",
+                crate::renderer::shortcut_hint_text(&chord),
+            );
+        }
+    }
+}
+
+/// The Windows menu-bar Quit item: the platform's "Exit" label with a
+/// `&` mnemonic (matching `PredefinedMenuItem::quit`'s own text) and the
+/// Ctrl+Q accelerator text — the chord itself dispatches through the
+/// registry, since stock winit never calls `TranslateAcceleratorW`. The
+/// action files a cancellable termination request, not `PostQuitMessage`.
+#[cfg(not(target_os = "macos"))]
+fn build_quit_item(actions: &mut HashMap<MenuId, SharedAction<()>>) -> muda::MenuItem {
+    let item = muda::MenuItem::new(
+        format!("&{}", quit_item_label()),
+        true,
+        accelerator_for(&quit_shortcut()),
+    );
+    actions.insert(item.id().clone(), quit_action());
+    item
+}
+
 fn command_title(command: &ResolvedCommand) -> String {
     command.label.content.snapshot().to_plain().to_string()
 }
@@ -220,7 +272,17 @@ fn append_items(
     for item in items {
         match item {
             ResolvedMenuItem::Command(command) => {
+                #[cfg(target_os = "macos")]
+                check_reserved_app_chord(command);
                 parent(&build_command(command, actions, state_watches));
+            }
+            ResolvedMenuItem::Quit => {
+                // macOS's standard application menu already carries the
+                // platform Quit (`build_app_menu`), so a declared one never
+                // repeats it there. On Windows the bar shows the platform's
+                // "Exit" item, and the chord also arms on the registry.
+                #[cfg(not(target_os = "macos"))]
+                parent(&build_quit_item(actions));
             }
             ResolvedMenuItem::Divider => {
                 parent(&PredefinedMenuItem::separator());

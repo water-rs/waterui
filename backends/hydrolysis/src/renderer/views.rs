@@ -69,6 +69,28 @@ pub fn popup_menu_node(item: ResolvedMenuItem) -> PopupMenuNode {
                 subtitle: command.subtitle,
             }
         }
+        ResolvedMenuItem::Quit => {
+            // The platform's quit item: label, accelerator and the
+            // cancellable termination request `Quit` files (see
+            // `menu_shortcuts` for the per-platform mapping).
+            let styled = StyledStr::plain(crate::renderer::quit_item_label());
+            let plain_label = styled.to_plain().to_string();
+            let label = SemanticLabel::new(Text::new(styled.clone()), move || {
+                AnyView::new(
+                    waterui_layout::frame::Frame::new(Text::new(styled.clone()))
+                        .alignment(waterui_layout::alignment::Leading)
+                        .max_width(f32::INFINITY),
+                )
+            });
+            PopupMenuNode::Command {
+                label,
+                plain_label,
+                action: crate::renderer::quit_action(),
+                disabled: nami::Computed::constant(false),
+                shortcut: Some(crate::renderer::quit_shortcut()),
+                subtitle: None,
+            }
+        }
         ResolvedMenuItem::Divider => PopupMenuNode::Divider,
         ResolvedMenuItem::Menu(menu) => {
             let styled = menu.label.content.snapshot() + StyledStr::plain(" ›");

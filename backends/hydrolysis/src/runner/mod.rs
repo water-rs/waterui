@@ -269,12 +269,15 @@ pub fn run(app: App, style: impl crate::Style) {
     // executor installed just above.
     waterui_locale::start_system_locale_listener();
     // This host renders each window once and returns, so no window's closing
-    // ends it and the last-window policy has nothing to decide.
+    // ends it and the last-window policy has nothing to decide. Its lifetime
+    // is the pump's, not the app's, so the termination machine is never
+    // started.
     let AppParts {
         windows,
         menu_bar,
         env,
         last_window: _,
+        termination: _,
     } = app.into_parts();
     let mut env = env.extending(waterui_graphics::scene_view::SceneViewMergeToParent);
     waterui_core::install_application_resources(&mut env);

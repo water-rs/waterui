@@ -146,6 +146,9 @@ impl IntoFFI for App {
             menu_bar,
             env,
             last_window,
+            // The FFI host drives the application lifetime — the machine is
+            // never started.
+            termination: _,
         } = self.into_parts();
         let menu_bar = crate::menu_items_views(resolve_menu_bar_items(&menu_bar, &env));
         WuiApp {
