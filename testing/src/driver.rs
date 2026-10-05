@@ -244,6 +244,40 @@ pub const fn pointer_up_event(x: f32, y: f32) -> InputEvent {
     }
 }
 
+/// A primary touch contact's down/move/up — `PointerKind::Touch` rather than
+/// the mouse kind above. Touch drags are what a real device's finger
+/// produces: the scroll claim (`arm_touch_scroll`), the touch slop and the
+/// fling all key on the pointer kind, which `PointerKind::Mouse` never
+/// reaches.
+pub const fn touch_down_event(x: f32, y: f32) -> InputEvent {
+    InputEvent::PointerDown {
+        id: TEST_POINTER_ID,
+        kind: PointerKind::Touch,
+        x,
+        y,
+        button: PointerButton::Primary,
+    }
+}
+
+pub const fn touch_move_event(x: f32, y: f32) -> InputEvent {
+    InputEvent::PointerMove {
+        id: TEST_POINTER_ID,
+        kind: PointerKind::Touch,
+        x,
+        y,
+    }
+}
+
+pub const fn touch_up_event(x: f32, y: f32) -> InputEvent {
+    InputEvent::PointerUp {
+        id: TEST_POINTER_ID,
+        kind: PointerKind::Touch,
+        x,
+        y,
+        button: PointerButton::Primary,
+    }
+}
+
 /// Presses and releases the secondary button, which is what opens a context
 /// menu.
 pub const fn secondary_click_events(x: f32, y: f32) -> [InputEvent; 2] {

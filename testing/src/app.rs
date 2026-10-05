@@ -1690,6 +1690,51 @@ impl SemanticApp<HeadlessRuntime> {
             .push_input_event(driver::pointer_up_event(to_x, to_y));
     }
 
+    /// Dispatches a `PointerKind::Touch` drag between viewport coordinates
+    /// without the semantic settle. A touch drag is what a real device's
+    /// finger produces: scroll claims, the touch slop and flings all key on
+    /// the pointer kind, which [`Self::queue_drag_from_to_with`]'s mouse
+    /// events never reach. The runtime reports no touch-scroll
+    /// configuration until [`Self::set_touch_scroll_config`] supplies it —
+    /// on a host without one the drag still dispatches but claims nothing.
+    ///
+    /// Events are processed immediately; only the final settle is skipped,
+    /// so a release-triggered fling stays observable to
+    /// [`OffscreenApp::pump_for`] and [`OffscreenApp::snapshot`].
+    pub fn queue_touch_drag_from_to_with(
+        &mut self,
+        from_x: f32,
+        from_y: f32,
+        to_x: f32,
+        to_y: f32,
+        options: DragOptions,
+    ) {
+        let steps = options.steps.max(1);
+        self.runtime
+            .push_input_event(driver::touch_down_event(from_x, from_y));
+        for step in 1..=steps {
+            let t = f32::from(step) / f32::from(steps);
+            let x = (to_x - from_x).mul_add(t, from_x);
+            let y = (to_y - from_y).mul_add(t, from_y);
+            self.runtime
+                .push_input_event(driver::touch_move_event(x, y));
+            if options.frame_per_step {
+                let _ = self.pump_step(VIRTUAL_FRAME);
+            }
+        }
+        self.runtime
+            .push_input_event(driver::touch_up_event(to_x, to_y));
+    }
+
+    /// Supplies the touch-gesture parameters a real platform's window
+    /// reports (Android's `ViewConfiguration` values through
+    /// `PlatformWindow::touch_scroll_config`), enabling
+    /// `PointerKind::Touch` drags to claim scroll views the way they do on
+    /// device.
+    pub fn set_touch_scroll_config(&mut self, config: hydrolysis::TouchScrollConfig) {
+        self.runtime.set_touch_scroll_config(config);
+    }
+
     /// Dispatches a wheel/trackpad scroll at viewport coordinates and settles
     /// resulting updates.
     pub fn scroll_at(&mut self, x: f32, y: f32, dx: f32, dy: f32, is_line_delta: bool) {
