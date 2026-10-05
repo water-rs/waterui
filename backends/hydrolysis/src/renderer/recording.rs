@@ -170,6 +170,35 @@ pub fn assert_well_formed_image(image: &peniko::ImageData) {
     );
 }
 
+/// `image`'s RGBA8 bytes fitted to `limits`: an admitted source passes
+/// through with its own pixels; a larger one — a decoded photo past the
+/// device's texture limit or its per-image budget — is Lanczos3-resampled
+/// to the largest admitted size at the same aspect ratio, so the
+/// registration below still holds the engine's contract rather than
+/// panicking on it. Returns `(width, height, bytes)`.
+fn fit_image_to_limits(
+    image: &peniko::ImageData,
+    limits: waterui_graphics::draw::ImageLimits,
+) -> (u32, u32, Arc<[u8]>) {
+    let (width, height) = limits.fit(image.width, image.height);
+    assert!(
+        (width, height) != (0, 0),
+        "hydrolysis renderer: engine image limits admit no image at all"
+    );
+    if (width, height) == (image.width, image.height) {
+        return (width, height, Arc::from(image.data.data()));
+    }
+    let source = image::RgbaImage::from_raw(image.width, image.height, image.data.data().to_vec())
+        .expect("hydrolysis renderer: a well-formed image fits RgbaImage::from_raw");
+    let resized = image::imageops::resize(
+        &source,
+        width,
+        height,
+        image::imageops::FilterType::Lanczos3,
+    );
+    (width, height, Arc::from(resized.into_raw()))
+}
+
 /// Engine-facing caches shared by every lowered scene: registered fonts and
 /// images, keyed by the identity of the peniko resource they came from.
 ///
@@ -299,8 +328,10 @@ impl SceneResources {
             image.format
         );
         assert_well_formed_image(image);
-        let bytes = image.data.data();
-        let data = ImageData::<Rgba8>::new(image.width, image.height, Arc::<[u8]>::from(bytes))
+        // A decoded image can exceed what the engine holds: resample to
+        // the limits' fit so the registration is the contract it asserts.
+        let (width, height, bytes) = fit_image_to_limits(image, self.inner.image_limits());
+        let data = ImageData::<Rgba8>::new(width, height, bytes)
             .expect("hydrolysis renderer: well-formed Rgba8 image rejected")
             .color_space(ImageColorSpace::Srgb);
         let data = if image.alpha_type == peniko::ImageAlphaType::AlphaPremultiplied {
@@ -1090,5 +1121,30 @@ mod tests {
             MeshColorInterpolation::Smoothstep
         );
         assert_eq!(transformed.points()[0], Point::new(4.0, 2.0));
+    }
+
+    /// A decoded source the engine's limits admit keeps its own pixels;
+    /// a larger one is resampled to the fit before it reaches the
+    /// registration — the oversized-decode case from water-rs/waterui#1806.
+    #[test]
+    fn an_oversized_image_is_resampled_to_the_engine_limits() {
+        let source = peniko::ImageData {
+            data: peniko::Blob::from(vec![255u8; 16 * 4 * 4]),
+            format: peniko::ImageFormat::Rgba8,
+            alpha_type: peniko::ImageAlphaType::Alpha,
+            width: 16,
+            height: 4,
+        };
+        let limits = waterui_graphics::draw::ImageLimits {
+            max_dimension: 8,
+            max_texels: 64,
+        };
+        let (width, height, bytes) = fit_image_to_limits(&source, limits);
+        assert_eq!((width, height), (8, 2));
+        assert_eq!(bytes.len(), 8 * 2 * 4);
+        let (width, height, bytes) =
+            fit_image_to_limits(&source, waterui_graphics::draw::ImageLimits::UNLIMITED);
+        assert_eq!((width, height), (16, 4));
+        assert_eq!(&*bytes, &[255u8; 16 * 4 * 4][..]);
     }
 }

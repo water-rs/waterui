@@ -198,6 +198,7 @@ pub fn render_toggle_parts(
             label_bounds,
             |ctx| {
                 let render_ctx = ctx.render_context();
+                let label_area = ctx.safe_area_for(label_bounds);
                 let label_view = &mut state.label_view;
                 ctx.renderer_mut()
                     .with_suppressed_accessibility(|renderer| {
@@ -207,6 +208,7 @@ pub fn render_toggle_parts(
                             env,
                             ProposalSize::UNSPECIFIED,
                             label_bounds,
+                            label_area,
                         );
                     });
             },

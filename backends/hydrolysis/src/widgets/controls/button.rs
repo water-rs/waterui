@@ -312,7 +312,7 @@ enum MenuLabel {
     /// each frame (cloneable, like a button title).
     Title(Label),
     /// Any other view: re-flushed from a retained sub-view each frame.
-    View(RetainedSubview),
+    View(Box<RetainedSubview>),
 }
 
 impl MenuRenderState {
@@ -330,8 +330,8 @@ impl MenuRenderState {
             .is_some_and(|label| label_resolves_icon_only(label, env));
         let label = match label.downcast::<Label>() {
             Ok(label) if renders_as_plain_title(&label) => MenuLabel::Title(*label),
-            Ok(label) => MenuLabel::View(RetainedSubview::new(AnyView::new(*label))),
-            Err(view) => MenuLabel::View(RetainedSubview::new(view)),
+            Ok(label) => MenuLabel::View(Box::new(RetainedSubview::new(AnyView::new(*label)))),
+            Err(view) => MenuLabel::View(Box::new(RetainedSubview::new(view))),
         };
         Self {
             label,
@@ -433,8 +433,8 @@ pub fn menu_accessibility(
         let activation = AccessibilityActionTarget::Activate {
             action: Rc::new(RefCell::new(
                 move |renderer: &mut crate::renderer::SemanticCore, env: &Environment| {
-                    let nodes = popup_menu_nodes(&items.snapshot());
                     let env = menu_env.layered_on(env);
+                    let nodes = popup_menu_nodes(&items.snapshot(), &env);
                     match &request {
                         Some((anchor, metrics, theme)) => {
                             renderer.show_popup_menu_nodes(nodes, *anchor, *metrics, &env, theme);
@@ -606,6 +606,7 @@ pub fn render_button_parts(
             let (label_size, _) = subview.patch_and_measure(ctx.renderer_mut(), env, proposal);
             let label_target = centered_label_rect(label_target, label_size);
             let render_ctx = ctx.render_context();
+            let label_area = ctx.safe_area_for(label_target);
             ctx.renderer_mut()
                 .with_suppressed_accessibility(|renderer| {
                     subview.flush_in_rect(
@@ -614,6 +615,7 @@ pub fn render_button_parts(
                         env,
                         ProposalSize::UNSPECIFIED,
                         label_target,
+                        label_area,
                     );
                 });
         } else if label_target.width() > 0.0 && label_target.height() > 0.0 {
@@ -766,6 +768,7 @@ pub fn render_menu_parts(
                 let (label_size, _) = subview.patch_and_measure(ctx.renderer_mut(), env, proposal);
                 let label_bounds = centered_label_rect(label_bounds, label_size);
                 let render_ctx = ctx.render_context();
+                let label_area = ctx.safe_area_for(label_bounds);
                 ctx.renderer_mut()
                     .with_suppressed_accessibility(|renderer| {
                         subview.flush_in_rect(
@@ -774,6 +777,7 @@ pub fn render_menu_parts(
                             env,
                             ProposalSize::UNSPECIFIED,
                             label_bounds,
+                            label_area,
                         );
                     });
             }
@@ -811,7 +815,7 @@ pub fn render_menu_parts(
         move |renderer, _point, env| {
             let env = menu_env.layered_on(env);
             renderer.show_popup_menu_nodes(
-                popup_menu_nodes(&items.snapshot()),
+                popup_menu_nodes(&items.snapshot(), &env),
                 anchor,
                 menu_metrics,
                 &env,

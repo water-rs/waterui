@@ -70,9 +70,14 @@ pub struct MetricsSnapshot {
     pub(crate) font_scale: f64,
     /// The display's refresh rate in Hz, when the host reports one.
     pub(crate) refresh_hz: Option<f64>,
-    /// Window-inset edges in physical px: `[left, top, right, bottom]` —
-    /// the combined system-bar/cutout/IME insets the safe-area contract reads.
-    pub(crate) insets_px: [i32; 4],
+    /// Container-region inset edges in physical px: `[left, top, right,
+    /// bottom]` — the system-bar/cutout/window-chrome band of §7.1's
+    /// safe-area contract, never the IME.
+    pub(crate) container_insets_px: [i32; 4],
+    /// Keyboard-region inset edges in physical px — the IME band of §7.1's
+    /// contract, reported every animation frame the host's
+    /// `WindowInsetsAnimationCompat` callback produces.
+    pub(crate) keyboard_insets_px: [i32; 4],
     /// `ViewConfiguration.getScaledTouchSlop()`, in physical px.
     pub(crate) touch_slop_px: f32,
     /// `ViewConfiguration.getScaledMinimumFlingVelocity()`, in physical px/s.
@@ -628,6 +633,9 @@ pub struct AndroidSession {
     /// `set_metrics` writes it on every host insets change and the windowed
     /// pipeline re-lays out through the subscription it read.
     safe_area: nami::Binding<waterui_layout::padding::EdgeInsets>,
+    /// The live window keyboard-area binding `WindowKeyboardArea` wraps —
+    /// written on the same host pushes, IME animation frames included.
+    keyboard_area: nami::Binding<waterui_layout::padding::EdgeInsets>,
     /// A frame reached the surface at least once; together with an idle
     /// `wants_next_frame` it arms the one-shot readiness log the device's
     /// idle-CPU sampling waits on.
@@ -699,6 +707,9 @@ impl AndroidSession {
             // window asks to close the host finishes the activity, and the OS
             // itself decides whether the process stays resident.
             last_window: _,
+            // Android kills the process without notice, so the termination
+            // hooks are never called and the machine is never started.
+            termination: _,
         } = app.into_parts();
         let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
         waterui::inspector::install(&mut env, inspector);
@@ -720,6 +731,8 @@ impl AndroidSession {
             .clone();
         let safe_area = nami::binding(waterui_layout::padding::EdgeInsets::default());
         env.insert(crate::platform::WindowSafeArea(safe_area.clone()));
+        let keyboard_area = nami::binding(waterui_layout::padding::EdgeInsets::default());
+        env.insert(crate::platform::WindowKeyboardArea(keyboard_area.clone()));
         // The platform-view sink `PlatformView` leaves record their frames
         // into; the published table is what `nativePlatformViewFrames` serves.
         let platform_views = crate::platform_view::PlatformViewSink::new();
@@ -772,6 +785,7 @@ impl AndroidSession {
             surface_generation: 0,
             frame_deadline_in_nanos: None,
             safe_area,
+            keyboard_area,
             presented_once: Cell::new(false),
             ready_logged: Cell::new(false),
             back_navigation_available: false,
@@ -783,14 +797,16 @@ impl AndroidSession {
     /// arrive as one coherent unit. A size change becomes a `Resize` event so
     /// the window's frame binding tracks the host.
     pub(crate) fn set_metrics(&mut self, metrics: MetricsSnapshot) {
-        let insets_px = metrics.insets_px;
+        let container_insets_px = metrics.container_insets_px;
+        let keyboard_insets_px = metrics.keyboard_insets_px;
         let density = metrics.density;
-        let (size_changed, insets_changed) = {
+        let (size_changed, container_changed, keyboard_changed) = {
             let platform = &mut self.runtime.platform;
             let size_changed = platform.metrics.width_px != metrics.width_px
                 || platform.metrics.height_px != metrics.height_px
                 || platform.metrics.density.to_bits() != metrics.density.to_bits();
-            let insets_changed = platform.metrics.insets_px != insets_px;
+            let container_changed = platform.metrics.container_insets_px != container_insets_px;
+            let keyboard_changed = platform.metrics.keyboard_insets_px != keyboard_insets_px;
             platform.metrics = metrics;
             if size_changed {
                 let (w, h) = platform.content_size();
@@ -799,22 +815,30 @@ impl AndroidSession {
                     height: h,
                 });
             }
-            if insets_changed {
-                // The binding is the environment value the window pipeline
-                // reads; the write re-lays out through the subscription, and
-                // the explicit requests cover the frames before the first read
-                // landed one.
-                let [leading, top, trailing, bottom] = insets_px;
+            // Each binding write re-lays out through its own subscription, so
+            // a region only re-sets when its own value moved — an IME
+            // progress frame alone does not re-publish the container band.
+            if container_changed || keyboard_changed {
                 let density = crate::num_cast::f64_as_f32(density);
-                self.safe_area.set(waterui_layout::padding::EdgeInsets::new(
-                    crate::num_cast::i32_as_f32(top) / density,
-                    crate::num_cast::i32_as_f32(bottom) / density,
-                    crate::num_cast::i32_as_f32(leading) / density,
-                    crate::num_cast::i32_as_f32(trailing) / density,
-                ));
+                let to_insets = |px: [i32; 4]| {
+                    let [leading, top, trailing, bottom] = px;
+                    waterui_layout::padding::EdgeInsets::new(
+                        crate::num_cast::i32_as_f32(top) / density,
+                        crate::num_cast::i32_as_f32(bottom) / density,
+                        crate::num_cast::i32_as_f32(leading) / density,
+                        crate::num_cast::i32_as_f32(trailing) / density,
+                    )
+                };
+                if container_changed {
+                    self.safe_area.set(to_insets(container_insets_px));
+                }
+                if keyboard_changed {
+                    self.keyboard_area.set(to_insets(keyboard_insets_px));
+                }
             }
-            (size_changed, insets_changed)
+            (size_changed, container_changed, keyboard_changed)
         };
+        let insets_changed = container_changed || keyboard_changed;
         if size_changed || insets_changed {
             let metrics = &self.runtime.platform.metrics;
             tracing::debug!(
@@ -822,7 +846,8 @@ impl AndroidSession {
                 width = metrics.width_px,
                 height = metrics.height_px,
                 density = metrics.density,
-                insets_px = ?insets_px,
+                container_insets_px = ?container_insets_px,
+                keyboard_insets_px = ?keyboard_insets_px,
                 "wake posted: metrics changed"
             );
         }

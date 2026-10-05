@@ -55,6 +55,7 @@ pub use native_measure::*;
 pub use recording::assert_well_formed_image;
 pub use recording::{Glyph, GlyphRun, Recording, working_color};
 pub use retained::*;
+pub use tree::safe_area::{EdgeOffsets, SafeAreaLayout, ScrollSurfaceArea, grow_rect};
 pub use tree::*;
 pub use views::*;
 pub use waterui_backend_core::frame_signals::FrameSignals;
@@ -132,7 +133,7 @@ use waterui::widget::Divider;
 use waterui::window::{Window, WindowState, WindowStyle};
 use waterui_controls::button::{Button, ButtonConfig};
 use waterui_controls::label::Label as SemanticLabel;
-use waterui_controls::menu::{CommandRole, ResolvedMenu, ResolvedMenuItem};
+use waterui_controls::menu::{CommandRole, ResolvedCommand, ResolvedMenu, ResolvedMenuItem};
 use waterui_controls::slider::SliderConfig;
 use waterui_controls::stepper::StepperConfig;
 use waterui_controls::text_field::{ResolvedTextFieldConfig, TextField};
@@ -143,8 +144,8 @@ use waterui_core::handler::{AnyViewBuilder, BoxedAction, SharedAction};
 use waterui_core::key::{KeyHandling, KeyPress, OnKeyPress};
 use waterui_core::layout::{
     HorizontalAlignment, Layout, PlacedSubview, Point as LayoutPoint, ProposalSize,
-    Rect as LayoutRect, Size as LayoutSize, StretchAxis, SubView, VerticalAlignment,
-    ViewDimensions,
+    Rect as LayoutRect, Size as LayoutSize, StretchAxis, SubView, SubviewPlacement,
+    VerticalAlignment, ViewDimensions,
 };
 #[cfg(feature = "accessibility")]
 use waterui_core::metadata::MetadataKey;

@@ -661,10 +661,6 @@ pub struct GpuRenderer {
     /// The ready-candidate set `plane_only_frames` fills with the
     /// surface's current readiness — the filter the committed plan saw.
     ready: FxHashSet<LayerId>,
-    /// The reusable [`FrameRedraw`] `present_windows` and
-    /// `requested_redraw` fill per frame — reset in place, returned as
-    /// a cheap clone, so steady-state renders allocate no request map.
-    redraw: FrameRedraw,
     /// How the fixed modules reach this device (`shaders.rs`): SPIR-V,
     /// metallib, or WGSL — decided once at init by the adapter backend.
     shader_delivery: shaders::ShaderDelivery,
@@ -2099,7 +2095,6 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             candidate_frames: FxHashMap::default(),
             ready_sets: Vec::new(),
             ready: FxHashSet::default(),
-            redraw: FrameRedraw::default(),
             shader_delivery,
             shaders: paint::Registry::default(),
             backdrop_shaders: FxHashMap::default(),
@@ -2422,7 +2417,6 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         candidate_frames: FxHashMap::default(),
         ready_sets: Vec::new(),
         ready: FxHashSet::default(),
-        redraw: FrameRedraw::default(),
         shader_delivery,
         shaders: paint::Registry::default(),
         backdrop_shaders: FxHashMap::default(),
@@ -2596,17 +2590,6 @@ fn plane_frames<'a>(
             .then_some((*layer, (slot.frame.clone(), slot.generation)))
     }));
     frames
-}
-
-/// Rejects an image the device cannot hold as one texture.
-fn check_image_size(image: &ImageUpload, max: u32) -> Result<(), ResourceError> {
-    if image.width > max || image.height > max {
-        return Err(ResourceError::Image(format!(
-            "{}x{} exceeds the maximum texture size {max}",
-            image.width, image.height
-        )));
-    }
-    Ok(())
 }
 
 impl Renderer for GpuRenderer {
@@ -2887,7 +2870,18 @@ impl Renderer for GpuRenderer {
         // held its producer's last reference posts the retirement onto
         // the producer's own queue, never the channel this thread
         // consumes.
-        self.surfaces.remove(&id);
+        if let Some(state) = self.surfaces.remove(&id) {
+            // A backdrop group's chain is registered beside the surface,
+            // keyed by it: a group handle that outlives its surface finds
+            // no surface to remove it from, so the chains go here.
+            for key in state
+                .backdrop_groups
+                .values()
+                .filter_map(|group| group.filter)
+            {
+                self.release_backdrop_chain(key, "destroy");
+            }
+        }
         self.planes.remove(&id);
         self.exports.remove(&id);
         self.update_filter_activity();
@@ -2988,8 +2982,15 @@ impl Renderer for GpuRenderer {
         }
     }
 
+    fn image_limits(&self) -> cherenkov::ImageLimits {
+        cherenkov::ImageLimits {
+            max_dimension: self.max_texture,
+            // The upload lands as f16 RGBA: eight bytes a texel.
+            max_texels: self.config.budget.gpu.0 / 8,
+        }
+    }
+
     fn add_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError> {
-        check_image_size(&image, self.max_texture)?;
         let data = image_texels_f16(&image)?;
         let image = upload_image(
             &self.device,
@@ -3004,7 +3005,6 @@ impl Renderer for GpuRenderer {
 
     fn replace_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError> {
         let _diag_guard = diag::Guard::scope(self.diag.as_ref());
-        check_image_size(&image, self.max_texture)?;
         let data = image_texels_f16(&image)?;
         let size = (image.width, image.height);
         let current = self
@@ -3912,8 +3912,7 @@ impl GpuRenderer {
         dirty.truncate(full);
         if dirty.is_empty() {
             diag::set_phase("present");
-            self.present_windows(frame)?;
-            return Ok(self.redraw.clone());
+            return self.present_windows(frame);
         }
         let timing = self.filter_timing(frame, origin);
         self.frame_pass_count = 0;
@@ -4015,8 +4014,9 @@ impl GpuRenderer {
         }
         result?;
         diag::set_phase("present");
-        self.present_windows(frame)?;
-        Ok(self.requested_redraw())
+        let mut redraw = self.present_windows(frame)?;
+        self.request_redraw(&mut redraw);
+        Ok(redraw)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -4067,8 +4067,7 @@ impl GpuRenderer {
         dirty.truncate(full);
         if dirty.is_empty() {
             diag::set_phase("present");
-            self.present_windows(frame)?;
-            return Ok(self.redraw.clone());
+            return self.present_windows(frame);
         }
         let timing = self.filter_timing(frame, origin);
         self.frame_pass_count = 0;
@@ -4167,8 +4166,9 @@ impl GpuRenderer {
         }
         result?;
         diag::set_phase("present");
-        self.present_windows(frame)?;
-        Ok(self.requested_redraw())
+        let mut redraw = self.present_windows(frame)?;
+        self.request_redraw(&mut redraw);
+        Ok(redraw)
     }
 
     fn filter_timing(&mut self, frame: &Frame<'_>, origin: Instant) -> filtrate::EffectFrameTiming {
@@ -4267,21 +4267,6 @@ impl GpuRenderer {
             return;
         };
         if let Some(state) = surf.backdrop_groups.remove(&id.raw()) {
-            if let Some(key) = state.filter {
-                let bytes = self.filters.remove(key);
-                if bytes > 0 {
-                    diag::retire(
-                        &self.device,
-                        diag::RetireArgs {
-                            label: "filter targets",
-                            class: diag::Class::Target,
-                            bytes,
-                            used_in_latest_submit: true,
-                            reason: "backdrop group removed",
-                        },
-                    );
-                }
-            }
             if !state.captures.is_empty() {
                 surf.bind_gen += 1;
                 retire_binds1(
@@ -4293,6 +4278,25 @@ impl GpuRenderer {
                     |key| matches!(key.0, Some(Source::Backdrop { group, .. }) if group == id.raw()),
                 );
             }
+            if let Some(key) = state.filter {
+                self.release_backdrop_chain(key, "backdrop group removed");
+            }
+        }
+    }
+    /// Unregisters a backdrop group's capture chain and retires its targets.
+    fn release_backdrop_chain(&mut self, key: filter::FilterKey, reason: &'static str) {
+        let bytes = self.filters.remove(key);
+        if bytes > 0 {
+            diag::retire(
+                &self.device,
+                diag::RetireArgs {
+                    label: "filter targets",
+                    class: diag::Class::Target,
+                    bytes,
+                    used_in_latest_submit: true,
+                    reason,
+                },
+            );
         }
     }
     /// Validates a user shader paint on the caller thread.
@@ -4584,8 +4588,7 @@ impl GpuRenderer {
     /// its own entry: a filter, animated shader or producer source
     /// names exactly the surface it draws into — one animating surface
     /// never marks every other surface's deadline.
-    fn requested_redraw(&mut self) -> FrameRedraw {
-        let redraw = &mut self.redraw;
+    fn request_redraw(&self, redraw: &mut FrameRedraw) {
         for (id, surface) in &self.surfaces {
             if surface.visibility != Visibility::Visible {
                 continue;
@@ -4604,7 +4607,6 @@ impl GpuRenderer {
                 redraw.request(*id, surface.refresh.clone());
             }
         }
-        self.redraw.clone()
     }
 
     /// Opens a window target. Apple windows expose the view's layer: the
@@ -5158,19 +5160,18 @@ impl GpuRenderer {
         }
     }
 
-    fn present_windows(&mut self, frame: &Frame<'_>) -> Result<(), RenderError> {
-        // The retained scratch carries this frame's requests: reset in
-        // place and refilled, so steady-state renders reuse its storage.
-        self.redraw.clear();
+    /// Presents every window surface with a pending present, returning
+    /// the requests of the surfaces whose present must be retried.
+    fn present_windows(&mut self, frame: &Frame<'_>) -> Result<FrameRedraw, RenderError> {
+        let mut redraw = FrameRedraw::default();
         if self.presenter.is_none() {
-            return Ok(());
+            return Ok(redraw);
         }
         let currents: FxHashMap<ProducerId, &external::Slot> = self
             .producers
             .iter()
             .filter_map(|(id, producer)| producer.current().map(|slot| (*id, slot)))
             .collect();
-        let redraw = &mut self.redraw;
         for sf in frame.surfaces {
             let surface = self.surfaces.get_mut(&sf.id).expect("registered surface");
             // A headroom-only frame asks for a present without lowering
@@ -5256,7 +5257,7 @@ impl GpuRenderer {
                 planes::SystemPlanes::animate(system, sf.tree, &surface.plan);
             }
         }
-        Ok(())
+        Ok(redraw)
     }
 
     /// A display move or a scale change re-runs the window's output

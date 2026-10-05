@@ -23,7 +23,7 @@
 //! re-dispatching the same screen from the `View` tree costs ~15ms.
 
 macro_rules! impl_widget_behavior {
-    ($state:ty, $render:path, $measure:expr $(, $priority:expr)? $(; prepare: $prepare:ident)? $(; a11y: $a11y:path)? $(; renders_nothing: $renders_nothing:literal)?) => {
+    ($state:ty, $render:path, $measure:expr $(, $priority:expr)? $(; prepare: $prepare:ident)? $(; a11y: $a11y:path)? $(; renders_nothing: $renders_nothing:literal)? $(; surface: $surface:ident)?) => {
         impl WidgetBehavior for RefCell<$state> {
             $(fn priority(&self) -> i32 { $priority })?
 
@@ -34,8 +34,9 @@ macro_rules! impl_widget_behavior {
                 renderer: &mut HydrolysisRenderer,
                 ctx: RenderContext,
                 env: &Environment,
+                safe_area: Option<safe_area::SafeAreaLayout>,
             ) {
-                let mut widget_ctx = WidgetRenderContext::new(renderer, ctx);
+                let mut widget_ctx = WidgetRenderContext::new(renderer, ctx, safe_area);
                 $render(&mut widget_ctx, &self, env);
             }
 
@@ -52,6 +53,12 @@ macro_rules! impl_widget_behavior {
             $(fn prepare(&self, renderer: &mut HydrolysisRenderer, env: &Environment) {
                 self.borrow_mut().$prepare(renderer, env);
             })?
+
+            $(
+                fn update_scroll_surface(&self, facts: Option<safe_area::ScrollSurfaceFacts>) {
+                    self.borrow().$surface.facts.set(facts);
+                }
+            )?
 
             $(
                 #[cfg(feature = "accessibility")]
@@ -74,6 +81,7 @@ mod collection;
 mod flush;
 mod layout;
 mod nodes;
+pub(super) mod safe_area;
 mod subview;
 mod window;
 
@@ -176,6 +184,12 @@ pub enum RenderNode {
     /// / context-menu live: they reach their own dedicated nodes and keep updating.
     /// Layout-transparent (the effect is pure setup + render child).
     Wrapper(Box<WrapperNode>),
+    /// The fill occupying a [`BackgroundLayout`]'s background slot (§7.1):
+    /// wraps the slot's paint fill — a `Color` or the gradient leaf, inside
+    /// any layout-transparent wrappers — and carries the paint extension
+    /// layout records and flush applies. Layout-transparent: it is a paint
+    /// marker, not a frame.
+    Fill(Box<FillNode>),
     /// A native widget leaf (button, toggle, slider, picker, text field, …) rendered
     /// by its `HydroNativeView` handler **every flush** from a retained,
     /// signal-holding config — never baked. Its `builder` reconstructs the leaf view
@@ -218,6 +232,7 @@ impl RenderNode {
             Self::Filtered(node) => node.render_id,
             Self::Dynamic(node) => node.render_id,
             Self::Wrapper(node) => node.render_id,
+            Self::Fill(node) => node.render_id,
             Self::Widget(node) => node.render_id,
         }
     }
@@ -279,6 +294,7 @@ impl RenderNode {
             Self::Filtered(node) => node.child.collect_render_ids(out),
             Self::Dynamic(node) => node.child.borrow().collect_render_ids(out),
             Self::Wrapper(node) => node.child.collect_render_ids(out),
+            Self::Fill(node) => node.child.collect_render_ids(out),
         }
     }
 
@@ -308,6 +324,7 @@ impl RenderNode {
             Self::Offset(node) => node.child.accessibility_identity(),
             Self::Filtered(node) => node.child.accessibility_identity(),
             Self::Dynamic(node) => node.child.borrow().accessibility_identity(),
+            Self::Fill(node) => node.child.accessibility_identity(),
             Self::Color(_) => None,
         }
     }

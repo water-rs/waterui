@@ -186,6 +186,13 @@ pub struct TextInputTarget {
     pub(crate) interaction_key: InteractionKey,
     pub(crate) modal: bool,
     pub(crate) bounds: kurbo::Rect,
+    /// The field's laid-out frame in the same window coordinates, before
+    /// the hit clip [`Self::bounds`] went through. A field covered by a
+    /// scroll surface's clip keeps a real rectangle here — the §7.1
+    /// focused-field clearance measures "the field's frame" against it,
+    /// which the hit bounds cannot answer once they degenerate to the
+    /// clip's edge.
+    pub(crate) frame: kurbo::Rect,
     pub(crate) cursor_area: kurbo::Rect,
     pub(crate) text_bounds: kurbo::Rect,
     pub(crate) text_clip_bounds: kurbo::Rect,
@@ -2006,7 +2013,7 @@ impl SemanticCore {
 
     /// The selection menu's rows as [`PopupMenuNode`]s: built-in editing
     /// commands become plain command rows, the field's custom
-    /// `selection_menu` items go through the same [`popup_menu_node`]
+    /// `selection_menu` items go through the same [`popup_menu_nodes`]
     /// conversion `.context_menu` items take — a nested `Menu` keeps its
     /// structure and opens as a submenu rather than flattening or panicking.
     pub(crate) fn build_text_context_menu_nodes(
@@ -2036,13 +2043,10 @@ impl SemanticCore {
             nodes.push(builtin("select_all", TextContextMenuAction::SelectAll));
         }
         if has_selection {
-            nodes.extend(
-                target
-                    .model
-                    .custom_selection_menu_items()
-                    .into_iter()
-                    .map(crate::renderer::views::popup_menu_node),
-            );
+            nodes.extend(crate::renderer::views::popup_menu_nodes(
+                &target.model.custom_selection_menu_items(),
+                env,
+            ));
         }
         nodes
     }

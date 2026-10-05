@@ -179,11 +179,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // The content fills the wrapper; the stroke layer covers it and
         // traces the selected edges.
         host.set_layout_handler({
-            let state = Rc::downgrade(&state);
+            let state = Rc::clone(&state);
             move |host_view| {
-                let Some(state) = state.upgrade() else {
-                    return;
-                };
                 let state = &*state;
                 let bounds = view::bounds(host_view);
                 view::set_frame(state.child.view(), bounds);

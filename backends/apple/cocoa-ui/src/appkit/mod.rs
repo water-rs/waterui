@@ -68,6 +68,7 @@ pub use animate::{run_animation, set_animated_alpha};
 pub use appearance::ColorSchemeObservation;
 pub use application::{
     ActivationPolicy, Application, ApplicationHandlers, AttentionRequest, AttentionRequestToken,
+    TerminateReply,
 };
 pub use badge::BadgeView;
 pub use button::Button;

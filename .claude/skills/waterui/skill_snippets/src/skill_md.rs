@@ -408,7 +408,7 @@ pub fn skill_block_14() {
 pub fn skill_block_15() {
     use waterui::accessibility::AccessibilityRole;
     use waterui::gesture::Gesture;
-    use waterui::layout::EdgeSet;
+    use waterui::layout::{EdgeSet, SafeAreaRegions};
 
     let (w, h) = (100.0_f32, 40.0_f32);
     let (x, y) = (1.5_f32, 2.5_f32);
@@ -549,6 +549,8 @@ pub fn skill_block_15() {
     let _ = { view.ignore_safe_area(EdgeSet::ALL) };
     let view = Divider;
     let _ = { view.floating() };
+    let view = Divider;
+    let _ = { view.ignore_safe_area(SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM)) };
 }
 
 // ---------------------------------------------------------------------------

@@ -1892,11 +1892,34 @@ impl IntoFFI for waterui_layout::EdgeSet {
     }
 }
 
+/// FFI-safe representation of `SafeAreaRegions`: the regions an
+/// `IgnoreSafeArea` ignores.
+#[repr(C)]
+#[derive(Debug)]
+pub struct WuiSafeAreaRegions {
+    /// Ignore the container region (system bars, cutouts, window chrome).
+    pub container: bool,
+    /// Ignore the keyboard region (software keyboard, input-method surfaces).
+    pub keyboard: bool,
+}
+
+impl IntoFFI for waterui_layout::SafeAreaRegions {
+    type FFI = WuiSafeAreaRegions;
+    fn into_ffi(self) -> Self::FFI {
+        WuiSafeAreaRegions {
+            container: self.container(),
+            keyboard: self.keyboard(),
+        }
+    }
+}
+
 /// FFI-safe representation of `IgnoreSafeArea`.
 #[repr(C)]
 #[derive(Debug)]
 pub struct WuiIgnoreSafeArea {
-    /// Which edges should ignore safe area.
+    /// Which safe-area regions are ignored.
+    pub regions: WuiSafeAreaRegions,
+    /// Which edges ignore the named regions.
     pub edges: WuiEdgeSet,
 }
 
@@ -1904,6 +1927,7 @@ impl IntoFFI for IgnoreSafeArea {
     type FFI = WuiIgnoreSafeArea;
     fn into_ffi(self) -> Self::FFI {
         WuiIgnoreSafeArea {
+            regions: self.regions.into_ffi(),
             edges: self.edges.into_ffi(),
         }
     }
@@ -2173,7 +2197,8 @@ use crate::components::text::WuiText;
 use crate::views::{WuiAnyViews, signal_vec_views};
 use waterui::metadata::context_menu::ResolvedContextMenu;
 use waterui_controls::menu::{
-    CommandRole, ResolvedMenu, ResolvedMenuItem, Shortcut, ShortcutModifiers,
+    CommandRole, ResolvedCommand, ResolvedMenu, ResolvedMenuItem, ResolvedNestedMenu, Shortcut,
+    ShortcutModifiers,
 };
 use waterui_core::handler::SharedAction;
 use waterui_icon::SystemIcon;
@@ -2391,10 +2416,35 @@ fn optional_shortcut(shortcut: Option<Shortcut>) -> *mut WuiShortcut {
     })
 }
 
+/// A resolved menu item as it crosses the FFI boundary.
+///
+/// A declared `MenuItem::Quit` has no counterpart: an FFI host never starts
+/// the application's termination machine, so it has no application quit,
+/// and like every other host without one it omits the item.
+#[derive(Debug, Clone)]
+enum FfiMenuItem {
+    Command(ResolvedCommand),
+    Divider,
+    Menu(ResolvedNestedMenu),
+}
+
+impl FfiMenuItem {
+    /// The item an FFI host renders for `item`, or `None` for a declared
+    /// Quit.
+    fn crossing(item: ResolvedMenuItem) -> Option<Self> {
+        match item {
+            ResolvedMenuItem::Command(command) => Some(Self::Command(command)),
+            ResolvedMenuItem::Divider => Some(Self::Divider),
+            ResolvedMenuItem::Menu(menu) => Some(Self::Menu(menu)),
+            ResolvedMenuItem::Quit => None,
+        }
+    }
+}
+
 /// Raw semantic menu item stored in the framework's identity-aware collection.
 #[doc(hidden)]
 #[derive(Debug)]
-pub struct ResolvedMenuItemView(ResolvedMenuItem);
+pub struct ResolvedMenuItemView(FfiMenuItem);
 
 waterui_core::raw_view!(ResolvedMenuItemView);
 
@@ -2403,7 +2453,7 @@ impl IntoFFI for ResolvedMenuItemView {
 
     fn into_ffi(self) -> Self::FFI {
         match self.0 {
-            ResolvedMenuItem::Command(command) => WuiMenuItem {
+            FfiMenuItem::Command(command) => WuiMenuItem {
                 tag: WuiMenuItemTag::Command,
                 label: menu_text(command.label),
                 icon: optional_menu_icon(command.icon),
@@ -2415,7 +2465,7 @@ impl IntoFFI for ResolvedMenuItemView {
                 subtitle: optional_subtitle(command.subtitle),
                 items: null_mut(),
             },
-            ResolvedMenuItem::Divider => WuiMenuItem {
+            FfiMenuItem::Divider => WuiMenuItem {
                 tag: WuiMenuItemTag::Divider,
                 label: null_mut(),
                 icon: null_mut(),
@@ -2427,7 +2477,7 @@ impl IntoFFI for ResolvedMenuItemView {
                 subtitle: null_mut(),
                 items: null_mut(),
             },
-            ResolvedMenuItem::Menu(menu) => WuiMenuItem {
+            FfiMenuItem::Menu(menu) => WuiMenuItem {
                 tag: WuiMenuItemTag::Menu,
                 label: menu_text(menu.label),
                 icon: optional_menu_icon(menu.icon),
@@ -2437,7 +2487,7 @@ impl IntoFFI for ResolvedMenuItemView {
                 shortcut: null_mut(),
                 role: WuiCommandRole::Standard,
                 subtitle: null_mut(),
-                items: menu_items_views(menu.items),
+                items: menu_items_views(&menu.items),
             },
         }
     }
@@ -2451,22 +2501,32 @@ enum MenuItemIdentity {
     Divider(usize),
 }
 
-fn menu_item_identity(items: &[ResolvedMenuItem], index: usize) -> MenuItemIdentity {
+fn menu_item_identity(items: &[FfiMenuItem], index: usize) -> MenuItemIdentity {
     match &items[index] {
-        ResolvedMenuItem::Command(command) => MenuItemIdentity::Semantic(command.semantic_id()),
-        ResolvedMenuItem::Menu(menu) => MenuItemIdentity::Semantic(menu.semantic_id()),
-        ResolvedMenuItem::Divider => MenuItemIdentity::Divider(
+        FfiMenuItem::Command(command) => MenuItemIdentity::Semantic(command.semantic_id()),
+        FfiMenuItem::Menu(menu) => MenuItemIdentity::Semantic(menu.semantic_id()),
+        FfiMenuItem::Divider => MenuItemIdentity::Divider(
             items[..=index]
                 .iter()
-                .filter(|item| matches!(item, ResolvedMenuItem::Divider))
+                .filter(|item| matches!(item, FfiMenuItem::Divider))
                 .count(),
         ),
     }
 }
 
+/// The identity-aware FFI collection for resolved menu items, nested menus
+/// included — with a declared Quit omitted (see [`FfiMenuItem`]).
 pub(crate) fn menu_items_views(
-    items: nami::Computed<alloc::vec::Vec<ResolvedMenuItem>>,
+    items: &nami::Computed<alloc::vec::Vec<ResolvedMenuItem>>,
 ) -> *mut WuiAnyViews {
+    let items = items
+        .map(|items| {
+            items
+                .into_iter()
+                .filter_map(FfiMenuItem::crossing)
+                .collect::<alloc::vec::Vec<_>>()
+        })
+        .computed();
     signal_vec_views(items, menu_item_identity, |item| {
         AnyView::new(Native::new(ResolvedMenuItemView(item)))
     })
@@ -2492,7 +2552,7 @@ impl IntoFFI for ResolvedContextMenu {
     type FFI = WuiContextMenu;
     fn into_ffi(self) -> Self::FFI {
         WuiContextMenu {
-            items: menu_items_views(self.items),
+            items: menu_items_views(&self.items),
             preview: self.preview.map_or_else(null_mut, IntoFFI::into_ffi),
             accessory: self.accessory.map_or_else(null_mut, IntoFFI::into_ffi),
             dismiss_requests: self.dismiss_requests.into_ffi(),
@@ -2950,7 +3010,7 @@ impl IntoFFI for ResolvedMenu {
     fn into_ffi(self) -> Self::FFI {
         WuiMenu {
             label: self.label.into_ffi(),
-            items: menu_items_views(self.items),
+            items: menu_items_views(&self.items),
             accessibility_label: self.accessibility_label.into_ffi(),
         }
     }

@@ -9,10 +9,19 @@
 //! # Orientation and scale contract
 //!
 //! The destination texture is top-down and sized in device pixels.
-//! `CARenderer` draws bottom-up and takes its destination rect in pixels, so
-//! [`with_capture_transform`] scales the layer tree for the duration of the
-//! frame — without mirroring: the kit's views are already flipped, and a
-//! second inversion would count the flip twice.
+//! `CARenderer` takes its destination rect in pixels and rasterizes an
+//! unflipped (`isFlipped` false) source's tree bottom-up.
+//! [`with_capture_transform`] scales the layer tree for the duration of
+//! the frame and, when the source view's `CaptureGeometry.y_down` is false,
+//! mirrors the scaled output about the destination's midline inside the
+//! same composed transform, so native content lands in the same top-down
+//! destination as the GPU surfaces. A flipped source's tree is scaled only;
+//! its raster keeps the orientation `CARenderer` gives it.
+//!
+//! [`SurfaceSpec`] keeps the producer texture's full pixel size separate
+//! from the visible destination scissor: when a surface lands partially
+//! outside the capture, clipping narrows the sampled UV window instead of
+//! resizing or re-laying out the producer.
 //!
 //! # Safety
 //!
@@ -34,11 +43,12 @@ use dispatch2::{DispatchQoS, DispatchQueue, GlobalQueueIdentifier, MainThreadBou
 use objc2::Message;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
+use objc2_core_foundation::CGPoint;
 use objc2_foundation::NSString;
 use objc2_metal::{
     MTLBlendFactor, MTLBlendOperation, MTLClearColor, MTLCommandBuffer, MTLCommandBufferStatus,
-    MTLCommandEncoder, MTLCommandQueue, MTLDevice, MTLLibrary, MTLLoadAction, MTLOrigin,
-    MTLPixelFormat, MTLPrimitiveType, MTLRenderCommandEncoder, MTLRenderPassDescriptor,
+    MTLCommandEncoder, MTLCommandQueue, MTLDevice, MTLLibrary, MTLLoadAction, MTLPixelFormat,
+    MTLPrimitiveType, MTLRenderCommandEncoder, MTLRenderPassDescriptor,
     MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLResource, MTLSamplerAddressMode,
     MTLSamplerDescriptor, MTLSamplerMinMagFilter, MTLSamplerState, MTLScissorRect, MTLSize,
     MTLStorageMode, MTLStoreAction, MTLTexture, MTLTextureDescriptor, MTLTextureUsage, MTLViewport,
@@ -81,23 +91,32 @@ impl<T> QueueSend<T> {
 /// How a captured view's point-space bounds map onto the pixel destination.
 #[derive(Clone, Copy, Debug)]
 pub struct CaptureGeometry {
+    /// The content view's own bounds — the source rect that
+    /// [`CapturableSurface::content_bounds`] rects are expressed in, origin
+    /// included.
+    pub source: Rect,
     /// Horizontal point-to-pixel scale.
     pub scale_x: f64,
     /// Vertical point-to-pixel scale.
     pub scale_y: f64,
+    /// Whether the source's y axis points down — the actual source view's
+    /// `NSView.isFlipped` under `AppKit`, always `true` under `UIKit`'s
+    /// top-left coordinate space.
+    pub y_down: bool,
 }
 
 impl CaptureGeometry {
-    /// The geometry mapping `bounds` (non-empty, in points) onto a
-    /// `width` × `height` pixel destination.
+    /// The geometry mapping `source` (non-empty, in points) onto a
+    /// `width` × `height` pixel destination. `y_down` carries the source
+    /// view's own y-axis convention.
     ///
     /// # Panics
     ///
-    /// When `bounds` is empty.
+    /// When `source` is empty.
     #[must_use]
-    pub fn new(bounds: Rect, width: usize, height: usize) -> Self {
+    pub fn new(source: Rect, width: usize, height: usize, y_down: bool) -> Self {
         assert!(
-            bounds.size.width > 0.0 && bounds.size.height > 0.0,
+            source.size.width > 0.0 && source.size.height > 0.0,
             "capture content must have non-zero bounds"
         );
         #[expect(
@@ -105,8 +124,10 @@ impl CaptureGeometry {
             reason = "a capture texture is at most a few thousand pixels on a side"
         )]
         Self {
-            scale_x: width as f64 / bounds.size.width,
-            scale_y: height as f64 / bounds.size.height,
+            source,
+            scale_x: width as f64 / source.size.width,
+            scale_y: height as f64 / source.size.height,
+            y_down,
         }
     }
 }
@@ -129,15 +150,8 @@ pub fn with_capture_transform<T>(
 
     CATransaction::begin();
     CATransaction::setDisableActions(true);
-    layer.setTransform(saved_transform.concat(
-        CATransform3D::new_scale(geometry.scale_x, geometry.scale_y, 1.0).concat(
-            CATransform3D::new_translation(
-                saved_position.x * (geometry.scale_x - 1.0),
-                saved_position.y * (geometry.scale_y - 1.0),
-                0.0,
-            ),
-        ),
-    ));
+    let capture_transform = capture_transform(saved_position, geometry);
+    layer.setTransform(saved_transform.concat(capture_transform));
     CATransaction::commit();
     flush_transaction();
 
@@ -148,6 +162,43 @@ pub fn with_capture_transform<T>(
     let result = body();
     drop(restore);
     result
+}
+
+/// The transform that, applied to a layer at `position` in a superlayer
+/// whose content starts at the origin, scales the layer's content onto the
+/// pixel destination `geometry` describes and, for an unflipped source,
+/// also mirrors it top-down.
+///
+/// A layer transform acts on coordinates relative to the layer's anchor
+/// point, which sits at `position` in the superlayer. A content point at
+/// `position + v` must render at `scale · (position + v)`, so the
+/// transform is `v ↦ scale · v + (scale − 1) · position`. `CARenderer`
+/// rasterizes an unflipped source (`y_down` false) bottom-up, so its
+/// vertical axis is also mirrored about the destination's midline:
+/// `y ↦ height − scale_y · (position.y + v.y)`, which as a transform of
+/// `v` is a `−scale_y` scale followed by a translation of
+/// `height − (scale_y + 1) · position.y`.
+fn capture_transform(position: CGPoint, geometry: CaptureGeometry) -> CATransform3D {
+    let translate_x = position.x * (geometry.scale_x - 1.0);
+    if geometry.y_down {
+        CATransform3D::new_scale(geometry.scale_x, geometry.scale_y, 1.0).concat(
+            CATransform3D::new_translation(translate_x, position.y * (geometry.scale_y - 1.0), 0.0),
+        )
+    } else {
+        let height = geometry.source.size.height * geometry.scale_y;
+        CATransform3D::new_scale(geometry.scale_x, -geometry.scale_y, 1.0).concat(
+            CATransform3D::new_translation(
+                translate_x,
+                (geometry.scale_y + 1.0).mul_add(-position.y, height),
+                0.0,
+            ),
+        )
+    }
+}
+
+/// A pixel extent as the `f64` Metal viewports and bounds take.
+fn pixel_extent(value: usize) -> f64 {
+    f64::from(u32::try_from(value).expect("a pixel extent fits in u32"))
 }
 
 /// Restores a layer's transform when the capture frame ends.
@@ -206,21 +257,60 @@ fn car_renderer_options(
 }
 
 /// Where a GPU surface's own texture lands inside a capture.
+///
+/// `full_size` is the producer texture's pixel size — the surface's whole
+/// mapped rect. `clip` is the visible destination rect inside the capture
+/// target, and the `uv_*` pair selects the window of the producer texture
+/// that visible rect samples: `uv = uv_origin + unit * uv_scale` over the
+/// clipped region. Clipping therefore crops the destination and the UV
+/// window without ever resizing or re-laying out the producer.
 #[derive(Clone, Copy, Debug)]
 pub struct SurfaceSpec {
     /// The capture's identity for the surface — the surface view's address.
     pub surface_id: usize,
-    /// Pixel-space origin inside the destination texture.
-    pub origin: MTLOrigin,
-    /// Pixel-space size inside the destination texture.
-    pub size: MTLSize,
+    /// The producer texture's pixel size — the surface's full mapped rect.
+    /// Allocates the private texture and is the size
+    /// [`CapturableSurface::render_prepared_external_texture`] renders at.
+    pub full_size: MTLSize,
+    /// The visible destination rect inside the capture target — the
+    /// composition pass's viewport *and* scissor: non-negative and inside
+    /// the target by construction, so no Metal viewport bound is exercised.
+    pub clip: MTLScissorRect,
+    /// Origin of the window the visible rect samples in the producer
+    /// texture.
+    pub uv_origin: [f32; 2],
+    /// Size of the sampled window — see `uv_origin`.
+    pub uv_scale: [f32; 2],
     /// The format the surface renders at.
     pub pixel_format: MTLPixelFormat,
 }
 
-/// The rect `bounds` (already in the capture's content space) maps to in a
-/// `width` × `height` pixel destination: floored origin, ceiled size,
-/// clamped to the target. `None` when it lands entirely outside.
+/// The UV window handed to the composite vertex shader — mirrors
+/// `CaptureCompositeRegion` in `capture_composite.metal`. `float2` fields
+/// are `f32` pairs at matching offsets, so `repr(C)` preserves the Metal
+/// ABI.
+#[repr(C)]
+struct CompositeRegion {
+    uv_origin: [f32; 2],
+    uv_scale: [f32; 2],
+}
+
+/// The window the native overlay draws through — the whole texture.
+const IDENTITY_UV: CompositeRegion = CompositeRegion {
+    uv_origin: [0.0, 0.0],
+    uv_scale: [1.0, 1.0],
+};
+
+/// The spec `bounds` (already in the capture's content space) maps to in a
+/// `width` × `height` pixel destination.
+///
+/// The full rect is mapped through the source's origin and y convention
+/// *before* any clipping — endpoints quantize independently (floor the low
+/// edge, ceil the high edge) so the producer texture keeps every texel its
+/// content touches. Only the visible destination rect is clipped against
+/// the target; a surface partially outside keeps its full producer size
+/// and crops through `uv_origin`/`uv_scale` instead. `None` when the rect
+/// lands entirely outside.
 #[must_use]
 pub fn surface_spec(
     surface_id: usize,
@@ -230,44 +320,97 @@ pub fn surface_spec(
     target_width: usize,
     target_height: usize,
 ) -> Option<SurfaceSpec> {
+    let source_min_x = geometry.source.origin.x;
+    let source_min_y = geometry.source.origin.y;
+    let source_max_y = source_min_y + geometry.source.size.height;
+    let child_min_x = bounds.origin.x;
+    let child_min_y = bounds.origin.y;
+    let child_max_x = child_min_x + bounds.size.width;
+    let child_max_y = child_min_y + bounds.size.height;
+
+    // An empty rect touches no texels — quantizing its zero-area span
+    // would still produce a 1-pixel producer for nothing.
+    if !(bounds.size.width > 0.0 && bounds.size.height > 0.0) {
+        return None;
+    }
+
+    let low_x = (child_min_x - source_min_x) * geometry.scale_x;
+    let high_x = (child_max_x - source_min_x) * geometry.scale_x;
+    let (low_y, high_y) = if geometry.y_down {
+        (
+            (child_min_y - source_min_y) * geometry.scale_y,
+            (child_max_y - source_min_y) * geometry.scale_y,
+        )
+    } else {
+        // A bottom-up source measures `min_y` from the bottom: the child's
+        // top edge `child_max_y` lands on the destination's upper rows.
+        (
+            (source_max_y - child_max_y) * geometry.scale_y,
+            (source_max_y - child_min_y) * geometry.scale_y,
+        )
+    };
+
+    // The mapped full rect: `floor` the low edge, `ceil` the high edge so
+    // every touched texel survives — independent endpoints, not a floored
+    // origin plus a ceiled size.
+    let full_left = low_x.floor();
+    let full_top = low_y.floor();
+    let full_w = high_x.ceil() - full_left;
+    let full_h = high_y.ceil() - full_top;
+
+    // Only the destination region clips against the target.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a capture texture is at most a few thousand pixels on a side"
+    )]
+    let (target_width, target_height) = (target_width as f64, target_height as f64);
+    let clip_x = full_left.max(0.0);
+    let clip_y = full_top.max(0.0);
+    let clip_w = (full_left + full_w).min(target_width) - clip_x;
+    let clip_h = (full_top + full_h).min(target_height) - clip_y;
+    if !(full_w > 0.0 && full_h > 0.0 && clip_w > 0.0 && clip_h > 0.0) {
+        return None;
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "UV fractions stay inside [0, 1] — f32 precision is ample"
+    )]
+    let (uv_origin, uv_scale) = (
+        [
+            ((clip_x - full_left) / full_w) as f32,
+            ((clip_y - full_top) / full_h) as f32,
+        ],
+        [(clip_w / full_w) as f32, (clip_h / full_h) as f32],
+    );
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        reason = "captured rects are small, finite, and clamped to the target"
+        reason = "full extents are positive and clip extents are bounded by the non-negative target"
     )]
-    let origin_x = (bounds.origin.x * geometry.scale_x).floor().max(0.0) as usize;
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "captured rects are small, finite, and clamped to the target"
-    )]
-    let origin_y = (bounds.origin.y * geometry.scale_y).floor().max(0.0) as usize;
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "captured rects are small, finite, and clamped to the target"
-    )]
-    let width = (bounds.size.width * geometry.scale_x).ceil() as usize;
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "captured rects are small, finite, and clamped to the target"
-    )]
-    let height = (bounds.size.height * geometry.scale_y).ceil() as usize;
-    let width = width.min(target_width.saturating_sub(origin_x.min(target_width)));
-    let height = height.min(target_height.saturating_sub(origin_y.min(target_height)));
-    (width > 0 && height > 0).then_some(SurfaceSpec {
+    let (full_width, full_height, clip_x, clip_y, clip_w, clip_h) = (
+        full_w as usize,
+        full_h as usize,
+        clip_x as usize,
+        clip_y as usize,
+        clip_w as usize,
+        clip_h as usize,
+    );
+    Some(SurfaceSpec {
         surface_id,
-        origin: MTLOrigin {
-            x: origin_x,
-            y: origin_y,
-            z: 0,
-        },
-        size: MTLSize {
-            width,
-            height,
+        full_size: MTLSize {
+            width: full_width,
+            height: full_height,
             depth: 1,
         },
+        clip: MTLScissorRect {
+            x: clip_x,
+            y: clip_y,
+            width: clip_w,
+            height: clip_h,
+        },
+        uv_origin,
+        uv_scale,
         pixel_format,
     })
 }
@@ -451,8 +594,8 @@ impl DeviceResources {
     /// When the device cannot allocate a texture.
     fn surface_texture(&mut self, spec: SurfaceSpec) -> Retained<ProtocolObject<dyn MTLTexture>> {
         if let Some(texture) = self.surface_textures.get(&spec.surface_id) {
-            let matches = texture.width() == spec.size.width
-                && texture.height() == spec.size.height
+            let matches = texture.width() == spec.full_size.width
+                && texture.height() == spec.full_size.height
                 && texture.pixelFormat() == spec.pixel_format;
             if matches {
                 return texture.clone();
@@ -462,8 +605,8 @@ impl DeviceResources {
         let descriptor = unsafe {
             MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
                 spec.pixel_format,
-                spec.size.width,
-                spec.size.height,
+                spec.full_size.width,
+                spec.full_size.height,
                 false,
             )
         };
@@ -753,22 +896,27 @@ impl CompositorGuard<'_> {
         for surface in surfaces {
             let spec = surface.spec;
             encoder.setViewport(MTLViewport {
-                originX: f64::from(u32::try_from(spec.origin.x).unwrap_or(u32::MAX)),
-                originY: f64::from(u32::try_from(spec.origin.y).unwrap_or(u32::MAX)),
-                width: f64::from(u32::try_from(spec.size.width).unwrap_or(u32::MAX)),
-                height: f64::from(u32::try_from(spec.size.height).unwrap_or(u32::MAX)),
+                originX: pixel_extent(spec.clip.x),
+                originY: pixel_extent(spec.clip.y),
+                width: pixel_extent(spec.clip.width),
+                height: pixel_extent(spec.clip.height),
                 znear: 0.0,
                 zfar: 1.0,
             });
-            encoder.setScissorRect(MTLScissorRect {
-                x: spec.origin.x,
-                y: spec.origin.y,
-                width: spec.size.width,
-                height: spec.size.height,
-            });
-            // SAFETY: `encoder` is a live render encoder and index 0 is the
-            // texture slot the shader binds.
+            encoder.setScissorRect(spec.clip);
+            let region = CompositeRegion {
+                uv_origin: spec.uv_origin,
+                uv_scale: spec.uv_scale,
+            };
+            // SAFETY: `encoder` is a live render encoder, index 0 is the
+            // vertex-constant and texture slots the shader binds, and
+            // `setVertexBytes` copies `region`'s bytes into the command.
             unsafe {
+                encoder.setVertexBytes_length_atIndex(
+                    std::ptr::NonNull::from(&region).cast::<core::ffi::c_void>(),
+                    core::mem::size_of::<CompositeRegion>(),
+                    0,
+                );
                 encoder.setFragmentTexture_atIndex(Some(&surface.texture), 0);
                 encoder.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::Triangle, 0, 3);
             }
@@ -777,8 +925,8 @@ impl CompositorGuard<'_> {
             encoder.setViewport(MTLViewport {
                 originX: 0.0,
                 originY: 0.0,
-                width: f64::from(u32::try_from(target.width()).unwrap_or(u32::MAX)),
-                height: f64::from(u32::try_from(target.height()).unwrap_or(u32::MAX)),
+                width: pixel_extent(target.width()),
+                height: pixel_extent(target.height()),
                 znear: 0.0,
                 zfar: 1.0,
             });
@@ -788,8 +936,14 @@ impl CompositorGuard<'_> {
                 width: target.width(),
                 height: target.height(),
             });
-            // SAFETY: same encoder/slot contract as above.
+            // SAFETY: same encoder/slot contract as above; the overlay
+            // samples its whole texture — identity window.
             unsafe {
+                encoder.setVertexBytes_length_atIndex(
+                    std::ptr::NonNull::from(&IDENTITY_UV).cast::<core::ffi::c_void>(),
+                    core::mem::size_of::<CompositeRegion>(),
+                    0,
+                );
                 encoder.setFragmentTexture_atIndex(Some(overlay), 0);
                 encoder.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::Triangle, 0, 3);
             }
@@ -922,8 +1076,8 @@ impl NativeRenderer {
             Rect::new(
                 0.0,
                 0.0,
-                f64::from(u32::try_from(texture.width()).unwrap_or(u32::MAX)),
-                f64::from(u32::try_from(texture.height()).unwrap_or(u32::MAX)),
+                pixel_extent(texture.width()),
+                pixel_extent(texture.height()),
             )
             .into(),
         );
@@ -1342,6 +1496,7 @@ impl ViewCapture {
             crate::view::bounds(content),
             target.width(),
             target.height(),
+            crate::view::is_flipped(content),
         );
         let snapshots = self.collect_snapshots(target, geometry);
         self.update_external_surfaces(&snapshots);
@@ -1521,8 +1676,8 @@ impl ViewCapture {
             let batch = Arc::clone(&batch);
             surface.render_prepared_external_texture(
                 &item.texture,
-                u32::try_from(item.spec.size.width).expect("a surface is smaller than u32"),
-                u32::try_from(item.spec.size.height).expect("a surface is smaller than u32"),
+                u32::try_from(item.spec.full_size.width).expect("a surface is smaller than u32"),
+                u32::try_from(item.spec.full_size.height).expect("a surface is smaller than u32"),
                 Box::new(move |outcome| batch.complete_one(outcome)),
             );
         }
@@ -1599,11 +1754,15 @@ mod tests {
     use objc2_core_graphics::CGColorSpace;
     use objc2_foundation::NSString;
     use objc2_metal::{
-        MTLCopyAllDevices, MTLCreateSystemDefaultDevice, MTLDevice, MTLOrigin, MTLPixelFormat,
-        MTLResource, MTLSize, MTLTexture,
+        MTLCopyAllDevices, MTLCreateSystemDefaultDevice, MTLDevice, MTLPixelFormat, MTLResource,
+        MTLScissorRect, MTLSize, MTLTexture,
     };
 
-    use super::{CaptureDeferred, CompositorState, FenceBatch, SurfaceSpec, car_renderer_options};
+    use super::{
+        CaptureDeferred, CaptureGeometry, CompositorState, FenceBatch, SurfaceSpec,
+        car_renderer_options, surface_spec,
+    };
+    use crate::geometry::Rect;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -1713,12 +1872,19 @@ mod tests {
         };
         let spec = SurfaceSpec {
             surface_id: 1,
-            origin: MTLOrigin { x: 0, y: 0, z: 0 },
-            size: MTLSize {
+            full_size: MTLSize {
                 width: 8,
                 height: 8,
                 depth: 1,
             },
+            clip: MTLScissorRect {
+                x: 0,
+                y: 0,
+                width: 8,
+                height: 8,
+            },
+            uv_origin: [0.0, 0.0],
+            uv_scale: [1.0, 1.0],
             pixel_format: MTLPixelFormat::BGRA8Unorm,
         };
         let mut state = CompositorState { resources: None };
@@ -1795,7 +1961,269 @@ mod tests {
                 Retained::as_ptr(&device),
                 "a handed-out texture keeps its original device across a rebind",
             );
-            assert_eq!(texture.width(), spec.size.width);
+            assert_eq!(texture.width(), spec.full_size.width);
+        }
+    }
+
+    /// The `surface_spec` mapping table: the surface's full mapped rect
+    /// becomes its producer texture size, destination clipping crops the
+    /// scissor/viewport only, and the UV window selects the visible part
+    /// of the producer. These are geometry checks — they say nothing
+    /// about native acquisition under a non-zero source origin.
+    mod coordinates {
+        use objc2_core_foundation::CGPoint;
+
+        use super::*;
+
+        /// The `y_down` 200×200-point source captured at 2× into 400×400.
+        fn down(source: Rect) -> CaptureGeometry {
+            CaptureGeometry::new(source, 400, 400, true)
+        }
+
+        /// The same scale under an unflipped (bottom-up) source.
+        fn up(source: Rect) -> CaptureGeometry {
+            CaptureGeometry::new(source, 400, 400, false)
+        }
+
+        fn spec_for(geometry: CaptureGeometry, child: Rect) -> SurfaceSpec {
+            surface_spec(0, child, geometry, MTLPixelFormat::BGRA8Unorm, 400, 400)
+                .expect("the child intersects the target")
+        }
+
+        /// (origin.x, origin.y, width, height) of the spec's clip rect.
+        fn clip(spec: &SurfaceSpec) -> (usize, usize, usize, usize) {
+            (spec.clip.x, spec.clip.y, spec.clip.width, spec.clip.height)
+        }
+
+        /// The UV window as a whole value so a single `assert_eq!` asserts
+        /// the mapping — every expected component is exact by construction
+        /// (integer pixel ratios through floor/ceil endpoints), and
+        /// comparing the derived `PartialEq` value needs no
+        /// float-comparison lint exception.
+        #[derive(Debug, PartialEq)]
+        struct UvWindow {
+            origin: [f32; 2],
+            scale: [f32; 2],
+        }
+
+        fn uv(spec: &SurfaceSpec) -> UvWindow {
+            UvWindow {
+                origin: spec.uv_origin,
+                scale: spec.uv_scale,
+            }
+        }
+
+        #[test]
+        fn a_top_down_source_maps_straight_through() {
+            let spec = spec_for(
+                down(Rect::new(0.0, 0.0, 200.0, 200.0)),
+                Rect::new(40.0, 20.0, 100.0, 100.0),
+            );
+            assert_eq!(clip(&spec), (80, 40, 200, 200));
+            assert_eq!((spec.full_size.width, spec.full_size.height), (200, 200));
+            assert_eq!(
+                uv(&spec),
+                UvWindow {
+                    origin: [0.0, 0.0],
+                    scale: [1.0, 1.0],
+                }
+            );
+        }
+
+        #[test]
+        fn a_bottom_up_source_mirrors_against_its_own_height() {
+            let spec = spec_for(
+                up(Rect::new(0.0, 0.0, 200.0, 200.0)),
+                Rect::new(40.0, 20.0, 100.0, 100.0),
+            );
+            assert_eq!(clip(&spec), (80, 160, 200, 200));
+            assert_eq!((spec.full_size.width, spec.full_size.height), (200, 200));
+            assert_eq!(
+                uv(&spec),
+                UvWindow {
+                    origin: [0.0, 0.0],
+                    scale: [1.0, 1.0],
+                }
+            );
+        }
+
+        #[test]
+        fn a_non_zero_source_origin_offsets_the_child() {
+            let spec = spec_for(
+                down(Rect::new(50.0, 30.0, 200.0, 200.0)),
+                Rect::new(90.0, 50.0, 100.0, 100.0),
+            );
+            assert_eq!(clip(&spec), (80, 40, 200, 200));
+            let spec = spec_for(
+                up(Rect::new(50.0, 30.0, 200.0, 200.0)),
+                Rect::new(90.0, 50.0, 100.0, 100.0),
+            );
+            assert_eq!(clip(&spec), (80, 160, 200, 200));
+        }
+
+        #[test]
+        fn a_surface_past_the_top_left_keeps_its_full_texture() {
+            let spec = spec_for(
+                down(Rect::new(0.0, 0.0, 200.0, 200.0)),
+                Rect::new(-40.0, -20.0, 100.0, 100.0),
+            );
+            // The producer renders its whole 200×200 texture; only the
+            // destination scissor and the sampled UV window shrink.
+            assert_eq!((spec.full_size.width, spec.full_size.height), (200, 200));
+            assert_eq!(clip(&spec), (0, 0, 120, 160));
+            assert_eq!(
+                uv(&spec),
+                UvWindow {
+                    origin: [0.4, 0.2],
+                    scale: [0.6, 0.8],
+                }
+            );
+        }
+
+        #[test]
+        fn an_empty_child_rect_maps_to_none() {
+            let geometry = down(Rect::new(0.0, 0.0, 200.0, 200.0));
+            for rect in [
+                // Zero extent at a fractional position must not quantize
+                // into a 1-pixel producer.
+                Rect::new(0.9, 0.9, 0.0, 10.0),
+                Rect::new(0.9, 0.9, 10.0, 0.0),
+                Rect::new(0.9, 0.9, -10.0, 10.0),
+                Rect::new(0.9, 0.9, 10.0, -10.0),
+            ] {
+                assert!(
+                    surface_spec(0, rect, geometry, MTLPixelFormat::BGRA8Unorm, 400, 400).is_none(),
+                    "an empty child rect maps to None: {rect:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn a_surface_past_the_bottom_right_keeps_its_full_texture() {
+            let spec = spec_for(
+                down(Rect::new(0.0, 0.0, 200.0, 200.0)),
+                Rect::new(160.0, 180.0, 100.0, 100.0),
+            );
+            // The producer covers the whole mapped rect; only the
+            // destination scissor and the sampled UV window shrink.
+            assert_eq!((spec.full_size.width, spec.full_size.height), (200, 200));
+            assert_eq!(clip(&spec), (320, 360, 80, 40));
+            assert_eq!(
+                uv(&spec),
+                UvWindow {
+                    origin: [0.0, 0.0],
+                    scale: [0.4, 0.2],
+                }
+            );
+        }
+
+        #[test]
+        fn a_bottom_up_source_crops_through_the_same_uv_window() {
+            // Bottom-up source, child hanging off the bottom-left: the full
+            // producer is preserved while clip and UV window describe the
+            // visible corner — mirroring against the source height lands
+            // the rect on the target's lower rows.
+            let spec = spec_for(
+                up(Rect::new(0.0, 0.0, 200.0, 200.0)),
+                Rect::new(-40.0, -20.0, 100.0, 100.0),
+            );
+            assert_eq!((spec.full_size.width, spec.full_size.height), (200, 200));
+            assert_eq!(clip(&spec), (0, 240, 120, 160));
+            assert_eq!(
+                uv(&spec),
+                UvWindow {
+                    origin: [0.4, 0.0],
+                    scale: [0.6, 0.8],
+                }
+            );
+        }
+
+        /// Where `capture_transform` renders the anchor-relative point `v`
+        /// of a layer at `position`: `position + T(v)`.
+        fn rendered(position: CGPoint, geometry: CaptureGeometry, v: (f64, f64)) -> (f64, f64) {
+            let t = super::super::capture_transform(position, geometry);
+            (
+                position.x + t.m21.mul_add(v.1, t.m11.mul_add(v.0, t.m41)),
+                position.y + t.m22.mul_add(v.1, t.m12.mul_add(v.0, t.m42)),
+            )
+        }
+
+        #[test]
+        fn the_capture_transform_scales_about_the_superlayer_origin() {
+            let geometry = down(Rect::new(0.0, 0.0, 200.0, 200.0));
+            // A 200×200 content layer anchored at its centre: the content
+            // point (40, 20) is v = (−60, −80) from the anchor.
+            let position = CGPoint::new(100.0, 100.0);
+            assert_eq!(rendered(position, geometry, (-60.0, -80.0)), (80.0, 40.0));
+        }
+
+        #[test]
+        fn the_capture_transform_mirrors_a_bottom_up_source_about_the_destination() {
+            let geometry = up(Rect::new(0.0, 0.0, 200.0, 200.0));
+            // Content y 20 in a bottom-up source lands on row 400 − 2·20,
+            // whatever anchor the layer uses.
+            for (position, v) in [
+                (CGPoint::new(0.0, 0.0), (40.0, 20.0)),
+                (CGPoint::new(100.0, 100.0), (-60.0, -80.0)),
+            ] {
+                assert_eq!(rendered(position, geometry, v), (80.0, 360.0));
+            }
+        }
+
+        #[test]
+        fn a_surface_entirely_outside_maps_to_none() {
+            let geometry = down(Rect::new(0.0, 0.0, 200.0, 200.0));
+            assert!(
+                surface_spec(
+                    0,
+                    Rect::new(500.0, 0.0, 100.0, 100.0),
+                    geometry,
+                    MTLPixelFormat::BGRA8Unorm,
+                    400,
+                    400,
+                )
+                .is_none()
+            );
+            assert!(
+                surface_spec(
+                    0,
+                    Rect::new(-500.0, 0.0, 100.0, 100.0),
+                    geometry,
+                    MTLPixelFormat::BGRA8Unorm,
+                    400,
+                    400,
+                )
+                .is_none()
+            );
+        }
+
+        #[test]
+        fn anisotropic_scaling_uses_each_axiss_own_scale() {
+            // 200×200 points into 400×800 pixels: 2× horizontal, 4× vertical.
+            let geometry = CaptureGeometry::new(Rect::new(0.0, 0.0, 200.0, 200.0), 400, 800, true);
+            let spec = surface_spec(
+                0,
+                Rect::new(40.0, 20.0, 100.0, 100.0),
+                geometry,
+                MTLPixelFormat::BGRA8Unorm,
+                400,
+                800,
+            )
+            .expect("the child intersects the target");
+            assert_eq!(clip(&spec), (80, 80, 200, 400));
+            assert_eq!((spec.full_size.width, spec.full_size.height), (200, 400));
+        }
+
+        #[test]
+        fn fractional_endpoints_size_from_ceil_high_minus_floor_low() {
+            // A 1× geometry: (0.9, 0.9)–(1.4, 1.4) touches pixels 0 and 1,
+            // so the size is 2 — not floor(0.9) + ceil(0.5) = 1.
+            let spec = spec_for(
+                CaptureGeometry::new(Rect::new(0.0, 0.0, 400.0, 400.0), 400, 400, true),
+                Rect::new(0.9, 0.9, 0.5, 0.5),
+            );
+            assert_eq!(clip(&spec), (0, 0, 2, 2));
+            assert_eq!((spec.full_size.width, spec.full_size.height), (2, 2));
         }
     }
 }

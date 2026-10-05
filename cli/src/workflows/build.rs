@@ -5,7 +5,7 @@ pub(crate) use native_links::NativeLink;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     io::{self, Write as _},
     path::{Path, PathBuf},
     process::Stdio,
@@ -401,10 +401,19 @@ impl RustDynamicLibraries {
         &self.waterui.source
     }
 
+    /// The file name the artifact's dynamic section records for the
+    /// shared `WaterUI` runtime — `libwaterui_dylib-<metadata>.dylib` for
+    /// a dynamically linked build, the reported path's own name when the
+    /// artifact records no such dependency.
+    #[must_use]
+    pub fn waterui_staged_name(&self) -> &OsStr {
+        &self.waterui.staged_name
+    }
+
     /// The path the canonical `libwaterui_dylib.dylib` occupies once
     /// [`stage_apple_canonical`](Self::stage_apple_canonical) copies it into
-    /// `destination` — the file the `-lwaterui_dylib` link flag and the
-    /// `@rpath/libwaterui_dylib.dylib` install name resolve to. Apple-only:
+    /// `destination` — the file the `@rpath/libwaterui_dylib.dylib` install
+    /// name resolves to. Apple-only:
     /// the reported artifact path may be a hashed `deps/` name or already
     /// the canonical unhashed one, and staging must honor both (water-rs/cli#197,
     /// water-rs/cli#291). On other triples the staged copy already carries

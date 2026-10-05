@@ -74,6 +74,7 @@ fn render_node_container_lays_out_and_flushes_text() {
     node.layout(
         &mut renderer,
         &env,
+        None,
         ProposalSize::new(Some(window.width), Some(window.height)),
         window,
     );
@@ -136,6 +137,7 @@ fn geometry_static_flush_reuses_cached_placement() {
     node.layout(
         &mut renderer,
         &env,
+        None,
         ProposalSize::new(Some(window.width), Some(window.height)),
         window,
     );
@@ -185,6 +187,7 @@ fn opacity_wrapper_builds_and_flushes_via_dsl() {
     node.layout(
         &mut renderer,
         &env,
+        None,
         ProposalSize::new(Some(window.width), Some(window.height)),
         window,
     );

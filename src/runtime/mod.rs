@@ -12,6 +12,7 @@ pub mod realization;
 #[cfg(feature = "snackbar")]
 pub mod snackbar;
 pub mod task;
+mod termination;
 pub mod window;
 
 pub use entry::entry;

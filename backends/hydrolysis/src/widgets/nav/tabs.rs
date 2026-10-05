@@ -495,21 +495,25 @@ pub fn render_tabs_parts(
                 let mut st = state.borrow_mut();
                 // The icon draws whether or not the label has text to show.
                 if let (Some(icon), Some(icon_rect)) = (&mut st.tabs[index].icon, icon_rect) {
+                    let icon_area = ctx.safe_area_for(icon_rect);
                     icon.flush_in_rect(
                         ctx.renderer_mut(),
                         render_ctx,
                         env,
                         ProposalSize::UNSPECIFIED,
                         icon_rect,
+                        icon_area,
                     );
                 }
                 if has_label {
+                    let label_area = ctx.safe_area_for(label_rect);
                     st.tabs[index].label.flush_in_rect(
                         ctx.renderer_mut(),
                         render_ctx,
                         &label_env,
                         ProposalSize::UNSPECIFIED,
                         label_rect,
+                        label_area,
                     );
                 }
                 drop(st);
@@ -522,12 +526,16 @@ pub fn render_tabs_parts(
     if content_rect.width() > 0.0 && content_rect.height() > 0.0 {
         let mut st = state.borrow_mut();
         let render_ctx = ctx.render_context();
+        // §7.1: tab content is chrome-hosted — it inherits the widget's
+        // boundaries on the edges the tab bar leaves reachable.
+        let content_area = ctx.content_area_for(content_rect);
         st.tabs[selected_index].content.flush_in_rect(
             ctx.renderer_mut(),
             render_ctx,
             env,
             bounded_proposal(content_rect),
             content_rect,
+            content_area,
         );
     }
 }

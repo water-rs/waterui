@@ -149,6 +149,9 @@ fn mtm() -> MainThreadMarker {
 
 /// `NativeLeaf` mount/watch/bind against real views.
 mod leaf {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
     use waterui::reactive::binding;
     use waterui_apple::contract::NativeLeaf;
     use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
@@ -174,17 +177,30 @@ mod leaf {
 
     /// Mounting adds the leaf's view to the parent's subview list, and the
     /// returned `Mounted`'s `unmount` detaches it again and hands the leaf
-    /// back for reuse.
+    /// back for reuse: mounted again, the handlers its component installed
+    /// before the first mount still run.
     pub fn mount_attaches_and_unmount_detaches() {
         let mtm = mtm();
         let parent = HostView::new(mtm, cocoa_ui::Rect::new(0.0, 0.0, 200.0, 100.0));
+        let _window = attach(mtm, &parent);
         let child = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+        let laid_out = Rc::new(Cell::new(false));
+        child.set_layout_handler({
+            let laid_out = Rc::clone(&laid_out);
+            move |_| laid_out.set(true)
+        });
         let leaf = NativeLeaf::new(&*child, TestSubView);
         let mounted = leaf.mount(&parent);
         assert_eq!(cocoa_ui::view::subviews(&parent).len(), 1);
         let leaf = mounted.unmount();
         assert!(cocoa_ui::view::superview(leaf.view()).is_none());
         assert_eq!(cocoa_ui::view::subviews(&parent).len(), 0);
+
+        let _mounted = leaf.mount(&parent);
+        laid_out.set(false);
+        child.set_needs_layout();
+        child.layout_if_needed();
+        assert!(laid_out.get(), "a moved leaf keeps its layout handler");
     }
 
     /// Dropping a `Mounted` — how a container releases a replaced child —
@@ -1181,7 +1197,7 @@ mod window {
 #[cfg(all(target_os = "macos", feature = "native-test", feature = "gpu_surface"))]
 mod gpu_surface {
     use libtest_mimic::Trial;
-    use waterui_apple::native_test_support::gpu_surface::MountedSceneSurface;
+    use waterui_apple::native_test_support::{gpu_surface::MountedSceneSurface, pump_main_until};
 
     use super::mtm;
 
@@ -1198,23 +1214,6 @@ mod gpu_surface {
                 stale_completion_releases_only_its_lease,
             ),
         ]
-    }
-
-    /// Pumps the main run loop in small turns until `until` answers or
-    /// `seconds` elapse — how a synchronous case awaits the main-queue
-    /// work `request_redraw` enqueues. Bounded; a dead queue fails the
-    /// case instead of hanging it.
-    fn pump_main_until(seconds: f64, until: impl Fn() -> bool) -> bool {
-        use cocoa_ui::objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSRunLoop};
-        let deadline = NSDate::dateWithTimeIntervalSinceNow(seconds);
-        while !until() && deadline.timeIntervalSinceNow() > 0.0 {
-            // SAFETY: `NSDefaultRunLoopMode` is a system-owned run-loop mode.
-            NSRunLoop::currentRunLoop().runMode_beforeDate(
-                unsafe { NSDefaultRunLoopMode },
-                &NSDate::dateWithTimeIntervalSinceNow(0.02),
-            );
-        }
-        until()
     }
 
     /// A routed shared-generation failure reaches an owner that is idle
@@ -1636,9 +1635,10 @@ mod owner_lifetimes {
             .collect()
     }
 
-    /// Mounts `leaf` on a fresh host whose layout handler frames it —
-    /// the handler borrows the child weakly so it never keeps a dead
-    /// owner alive, the same edge the production handlers now take.
+    /// Mounts `leaf` on a fresh host whose layout handler frames it.
+    /// The host is a bare `HostView` that no leaf owns, so nothing clears
+    /// its handlers; the handler borrows the child weakly so dropping the
+    /// `Mounted` alone decides whether the child's views survive.
     fn mount_hosted(
         mtm: MainThreadMarker,
         leaf_inst: waterui_apple::contract::NativeLeaf,
