@@ -141,8 +141,9 @@ pub enum Background {
 ///   (a luminance curve, a chroma gain and a brightness offset) and is then
 ///   blurred, with no tint layer on top. Apple platforms project them onto the
 ///   native visual-effect views; self-drawn backends draw the treatment
-///   themselves. Hydrolysis's HWUI render target on Android does not realize
-///   them yet (water-rs/waterui#1899).
+///   themselves, Hydrolysis through Cherenkov on every platform, Android
+///   included. Hydrolysis's HWUI render target (water-rs/waterui#1899) must
+///   realize the same treatment when it lands.
 /// - **Behind-window levels** — [`UltraThin`](Self::UltraThin) and
 ///   [`Thin`](Self::Thin) — blur what lies behind the window, which needs the
 ///   compositor's blur-behind protocol and is therefore defined per platform.
@@ -150,9 +151,10 @@ pub enum Background {
 ///   window, and iOS, with nothing behind its windows, over the app's own
 ///   content. On X11 the compositor's KDE blur-behind region, on Wayland
 ///   `ext-background-effect-v1`, and on Windows the DWM system backdrop carry
-///   them; any other compositor does not support them. Hydrolysis does not
-///   realize them yet and panics when one reaches it
-///   (water-rs/waterui#1855).
+///   them. On a compositor with none of these protocols the backend does not
+///   ignore the level or substitute another: it fails fast with a panic that
+///   names the level and the platform. Hydrolysis does not realize these
+///   levels yet and panics when one reaches it (water-rs/waterui#1855).
 ///
 /// # Examples
 ///
@@ -166,8 +168,8 @@ pub enum Background {
 ///     .background(Material::Regular)
 ///     .clip(RoundedRectangle::new(0.1));
 ///
-/// // Subtle blur for overlays
-/// let overlay = text!("Overlay").background(Material::UltraThin);
+/// // A heavier frost for an overlay over busy content
+/// let overlay = text!("Overlay").background(Material::Thick);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Material {

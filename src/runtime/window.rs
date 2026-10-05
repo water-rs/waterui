@@ -6,7 +6,8 @@
 //! the window's content is wrapped in `MaterialBackground` metadata, which
 //! every backend realizes as [`Material`] documents — within-window levels as
 //! a backdrop treatment, behind-window levels through the compositor's
-//! blur-behind protocol where the platform has one.
+//! blur-behind protocol. On a compositor without one, a behind-window level
+//! fails fast with a panic naming the level and the platform.
 //!
 //! ```rust
 //! use waterui::prelude::*;
