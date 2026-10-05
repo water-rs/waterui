@@ -247,6 +247,9 @@ cd /repo/benchmarks/competitive/apps/electron
 # the committed package-lock is the version pin — `npm ci` installs it
 # verbatim and never rewrites tracked files
 npm ci --no-audit --no-fund
+# electron >= 43 ships the binary download as a bin entry, not a
+# postinstall — `npm ci` alone leaves node_modules/electron/dist absent
+node node_modules/electron/install.js
 mkdir -p /bench/dist/electron
 cp -a node_modules/electron/dist/. /bench/dist/electron/
 mkdir -p /bench/dist/electron/resources/app
