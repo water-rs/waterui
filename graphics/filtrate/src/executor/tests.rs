@@ -686,6 +686,154 @@ fn cpu_kernels_match_their_shaders() {
     assert_eq!(pixels, chained);
 }
 
+/// A luma curve with constant parameters.
+const fn luma_curve(
+    curve: [f32; 4],
+    amount: f32,
+    chroma: f32,
+    offset: f32,
+) -> filters::LumaCurve<f32> {
+    filters::LumaCurve {
+        curve,
+        amount,
+        chroma,
+        offset,
+    }
+}
+
+/// The luma curve's formula, evaluated independently in f64 on one
+/// premultiplied sRGB colour.
+fn luma_curve_reference(filter: &filters::LumaCurve<f32>, colour: [f32; 4]) -> [f32; 4] {
+    let alpha = f64::from(colour[3]);
+    let straight: [f64; 3] = core::array::from_fn(|i| f64::from(colour[i]) / alpha);
+    let luma = [0.2126, 0.7152, 0.0722]
+        .iter()
+        .zip(straight)
+        .map(|(weight, channel)| weight * channel)
+        .sum::<f64>();
+    let t = luma.clamp(0.0, 1.0);
+    let u = 1.0 - t;
+    let bezier = [u * u * u, 3.0 * t * u * u, 3.0 * t * t * u, t * t * t]
+        .iter()
+        .zip(filter.curve)
+        .map(|(weight, value)| weight * f64::from(value))
+        .sum::<f64>();
+    let amount = f64::from(filter.amount);
+    let tone = amount.mul_add(bezier - luma, luma) + f64::from(filter.offset);
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the f64 reference is compared at f32 precision"
+    )]
+    let channel =
+        |i: usize| (f64::from(filter.chroma).mul_add(straight[i] - luma, tone) * alpha) as f32;
+    [channel(0), channel(1), channel(2), colour[3]]
+}
+
+#[test]
+fn luma_curve_moves_luma_along_the_curve_and_scales_chroma() {
+    let filter = luma_curve([0.9, 0.83, 0.925, 0.815], 0.75, 0.375, 0.1);
+    let stage = colour_stage(&filter);
+    let params = filter.params();
+    for colour in COLOURS {
+        assert_close(
+            evaluate(stage, &params, colour),
+            luma_curve_reference(&filter, colour),
+            "the luma curve disagrees with its formula",
+        );
+    }
+}
+
+/// One within-window material level's measured colour stage and its
+/// interiors over black, grey 0.5 and white, in 8-bit sRGB on the device.
+struct MeasuredMaterial {
+    level: &'static str,
+    curve: [f32; 4],
+    amount: f32,
+    saturation: f32,
+    brightness: f32,
+    interiors: [u8; 3],
+}
+
+/// The measurements recorded on water-rs/waterui#1854.
+const MEASURED_MATERIALS: [MeasuredMaterial; 6] = [
+    MeasuredMaterial {
+        level: "regular light",
+        curve: [0.9, 0.83, 0.925, 0.815],
+        amount: 0.75,
+        saturation: 1.5,
+        brightness: 0.1,
+        interiors: [197, 225, 245],
+    },
+    MeasuredMaterial {
+        level: "regular dark",
+        curve: [0.16, 0.26, 0.1, 0.1],
+        amount: 0.75,
+        saturation: 1.5,
+        brightness: 0.0,
+        interiors: [31, 64, 83],
+    },
+    MeasuredMaterial {
+        level: "thick light",
+        curve: [0.99, 0.95, 0.98, 0.905],
+        amount: 0.88,
+        saturation: 1.5,
+        brightness: 0.045,
+        interiors: [233, 243, 245],
+    },
+    MeasuredMaterial {
+        level: "thick dark",
+        curve: [0.14, 0.16, 0.1, 0.03],
+        amount: 0.88,
+        saturation: 1.5,
+        brightness: 0.0,
+        interiors: [31, 42, 37],
+    },
+    MeasuredMaterial {
+        level: "ultra-thick light",
+        curve: [0.8, 0.9, 1.1, 0.825],
+        amount: 0.75,
+        saturation: 1.1,
+        brightness: 0.1,
+        interiors: [178, 240, 247],
+    },
+    MeasuredMaterial {
+        level: "ultra-thick dark",
+        curve: [0.23, 0.52, 0.27, 0.255],
+        amount: 0.75,
+        saturation: 2.0,
+        brightness: -0.1,
+        interiors: [18, 75, 87],
+    },
+];
+
+/// The stage maps a uniform backdrop straight to the measured interior: the
+/// blur that follows it leaves a uniform image alone.
+#[test]
+fn luma_curve_reproduces_the_measured_material_interiors() {
+    for measured in &MEASURED_MATERIALS {
+        // The chroma gain is the saturation applied to what the curve leaves.
+        let filter = luma_curve(
+            measured.curve,
+            measured.amount,
+            measured.saturation * (1.0 - measured.amount),
+            measured.brightness,
+        );
+        let stage = colour_stage(&filter);
+        let params = filter.params();
+        for (backdrop, interior) in [0.0_f32, 0.5, 1.0].into_iter().zip(measured.interiors) {
+            let out = evaluate(stage, &params, [backdrop, backdrop, backdrop, 1.0]);
+            for channel in &out[..3] {
+                let level8 = channel.clamp(0.0, 1.0) * 255.0;
+                assert!(
+                    (level8 - f32::from(interior)).abs() <= 2.0,
+                    "{} over {backdrop}: {level8} against the measured {interior}",
+                    measured.level
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn hue_rotation_matches_the_css_reference_matrices() {
     use filters::HueRotation;
@@ -2450,6 +2598,15 @@ fn gpu_export_filter_gallery_images() {
     export_filter!("brightness.png", Brightness(0.2_f32));
     export_filter!("contrast.png", Contrast(1.4_f32));
     export_filter!("saturation.png", Saturation(1.8_f32));
+    export_filter!(
+        "luma_curve.png",
+        LumaCurve {
+            curve: [0.9_f32, 0.83, 0.925, 0.815],
+            amount: 0.75,
+            chroma: 0.375,
+            offset: 0.1,
+        }
+    );
     export_filter!("grayscale.png", Grayscale(1.0_f32));
     export_filter!("hue_rotation.png", HueRotation(120.0_f32));
     export_filter!("sepia.png", Sepia(1.0_f32));
