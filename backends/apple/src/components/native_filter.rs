@@ -65,7 +65,8 @@ use objc2_metal::{
     MTLCommandBuffer as _, MTLCommandQueue as _, MTLDevice as _, MTLResource as _, MTLTexture as _,
 };
 use objc2_quartz_core::{
-    CACurrentMediaTime, CAKeyframeAnimation, CALayer, CAMediaTiming, CATransaction,
+    CACurrentMediaTime, CAKeyframeAnimation, CALayer, CAMediaTiming, CAMediaTimingFunction,
+    CATransaction, kCAAnimationLinear, kCAMediaTimingFunctionLinear,
 };
 use waterui_backend_core::{AnyView, Environment};
 use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
@@ -801,6 +802,135 @@ fn write_bound_input_at(
     }
 }
 
+/// The flat parameter indices a bound input references — the scalar's
+/// `Param`, or each `Param` component of a Vec4.
+fn bound_params(bound: &BoundValue) -> impl Iterator<Item = usize> + '_ {
+    let scalar = match bound {
+        BoundValue::Scalar(Bound::Param(flat, _)) => Some(*flat),
+        _ => None,
+    };
+    let components = match bound {
+        BoundValue::Vec4(components) => components.as_slice(),
+        _ => &[],
+    };
+    scalar
+        .into_iter()
+        .chain(components.iter().filter_map(|b| match b {
+            Bound::Param(flat, _) => Some(*flat),
+            Bound::Const(_) => None,
+        }))
+}
+
+/// Re-submits one bound input's CA stream so every bound parameter's own
+/// raw timeline stays authoritative: drops settled timelines, then —
+/// when any live curve remains — samples the whole input at `now` plus
+/// each display frame for the longest remaining duration, writes the
+/// resting value at `now + longest`, and marks every included timeline
+/// applied only when the submit actually happens. A parameter with no
+/// timeline contributes its constant current value through the
+/// resubmitted siblings' stream. With no live curves the explicit stream
+/// is removed and the current value written immediately.
+///
+/// `applied` is per-parameter — the current mapping binds each parameter
+/// to a single input; if that ever widens to several inputs, this flag
+/// must become per-(parameter, input) rather than redesigned now.
+///
+/// `force` re-samples even when every live timeline is already applied —
+/// the update path requires it: an immediate or replaced timeline must
+/// leave the live stream, and only a fresh submit excises the stale
+/// curve. Materialization passes `false` so repeated layout never
+/// restarts a stream already covering its timelines.
+#[allow(clippy::too_many_arguments)]
+fn resample_bound_stream(
+    owner: &NativeFilterOwner,
+    key_path: &str,
+    bound: &BoundValue,
+    animations: &mut HashMap<AnimKey, ComponentAnim>,
+    effect: usize,
+    model: &[f32],
+    now: f64,
+    force: bool,
+) {
+    let mut live = Vec::new();
+    let mut expired = Vec::new();
+    for flat in bound_params(bound) {
+        match animations.get(&(effect, flat)) {
+            Some(anim) if anim.is_settled(now) => expired.push(flat),
+            Some(_) => live.push(flat),
+            None => {}
+        }
+    }
+    for flat in expired {
+        animations.remove(&(effect, flat));
+    }
+    if live.is_empty() {
+        remove_animation(&owner.layer, key_path);
+        write_bound_input_at(
+            &owner.layer,
+            key_path,
+            bound,
+            animations,
+            effect,
+            model,
+            now,
+        );
+        return;
+    }
+    if !force && live.iter().all(|flat| animations[&(effect, *flat)].applied) {
+        return;
+    }
+    let stream = live
+        .iter()
+        .map(|flat| animations[&(effect, *flat)].remaining(now))
+        .max()
+        .unwrap_or_default();
+    let submitted = match bound {
+        BoundValue::Scalar(bound) => submit_animation(owner, key_path, stream, |elapsed| {
+            NSNumber::new_f32(bound_value_at(
+                bound,
+                animations,
+                effect,
+                model,
+                now + elapsed.as_secs_f64(),
+            ))
+        }),
+        BoundValue::Vec4(components) => submit_animation(owner, key_path, stream, |elapsed| {
+            let mut value = [0.0f32; 4];
+            for (index, b) in components.iter().enumerate() {
+                value[index] =
+                    bound_value_at(b, animations, effect, model, now + elapsed.as_secs_f64());
+            }
+            ci_vec4(value)
+        }),
+    };
+    if submitted {
+        for flat in &live {
+            if let Some(anim) = animations.get_mut(&(effect, *flat)) {
+                anim.applied = true;
+            }
+        }
+        write_bound_input_at(
+            &owner.layer,
+            key_path,
+            bound,
+            animations,
+            effect,
+            model,
+            now + stream.as_secs_f64(),
+        );
+    } else {
+        write_bound_input_at(
+            &owner.layer,
+            key_path,
+            bound,
+            animations,
+            effect,
+            model,
+            now,
+        );
+    }
+}
+
 /// Submits a `CAKeyframeAnimation` on `key_path` — one native value per
 /// display frame of `duration` — at the attached screen's cadence, no
 /// synthetic cap. Returns `false` when the view is not on a screen: no
@@ -832,18 +962,15 @@ fn submit_animation<T: Message>(
         animation.setValues(Some(&*(std::ptr::from_ref(&*array)).cast::<NSArray>()));
     }
     animation.setDuration(duration.as_secs_f64());
+    // Explicit linear calculation and pacing — `values` already carry
+    // the interpolator's curve, so CA must not pace them a second time.
+    animation.setCalculationMode(kCAAnimationLinear);
+    animation.setTimingFunction(Some(&CAMediaTimingFunction::functionWithName(
+        kCAMediaTimingFunctionLinear,
+    )));
     animation.setRemovedOnCompletion(false);
     owner.layer.addAnimation_forKey(&animation, Some(&path));
     true
-}
-
-/// The component index `flat` occupies in `components` — `binds` callers
-/// have already established a match exists.
-fn component_index_of(components: &[Bound; 4], flat: usize) -> usize {
-    components
-        .iter()
-        .position(|b| matches!(b, Bound::Param(i, _) if *i == flat))
-        .expect("binds() promised a matching component")
 }
 
 /// Applies one parameter update — the new timeline is installed once for
@@ -901,105 +1028,16 @@ fn apply_animated(
                 if !bound.binds(flat) {
                     continue;
                 }
-                let path = key_path(filter, key);
-                let Some(anim) = animations.get(&(effect, flat)) else {
-                    // An immediate update: drop the explicit CA stream
-                    // and land the input's current value — a still-
-                    // animating sibling component keeps its own curve at
-                    // `now` rather than snapping to end.
-                    remove_animation(&owner.layer, &path);
-                    write_bound_input_at(
-                        &owner.layer,
-                        &path,
-                        bound,
-                        &animations,
-                        filter.effect,
-                        &model[filter.effect],
-                        now,
-                    );
-                    continue;
-                };
-                let conv = match bound {
-                    BoundValue::Scalar(Bound::Param(_, conv)) => *conv,
-                    BoundValue::Scalar(Bound::Const(_)) => {
-                        unreachable!("binds() promised a Param")
-                    }
-                    BoundValue::Vec4(components) => {
-                        match components[component_index_of(components, flat)] {
-                            Bound::Param(_, conv) => conv,
-                            Bound::Const(_) => unreachable!("binds() promised Param"),
-                        }
-                    }
-                };
-                let duration = anim.interpolator.duration();
-                let submitted = match bound {
-                    BoundValue::Scalar(_) => {
-                        let submitted =
-                            submit_animation(owner, &path, duration, |elapsed| {
-                                NSNumber::new_f32(conv.map(
-                                    anim.interpolator.interpolate(anim.from, anim.to, elapsed),
-                                ))
-                            });
-                        if submitted {
-                            set_scalar(&owner.layer, &path, conv.map(anim.to));
-                        } else {
-                            write_bound_input_at(
-                                &owner.layer,
-                                &path,
-                                bound,
-                                &animations,
-                                filter.effect,
-                                &model[filter.effect],
-                                now,
-                            );
-                        }
-                        submitted
-                    }
-                    BoundValue::Vec4(components) => {
-                        // Each animating component keeps its own curve at
-                        // now+frame; never a time-zero sibling freeze.
-                        let mut stream = duration;
-                        for b in components {
-                            if let Bound::Param(index, _) = b
-                                && let Some(sibling) = animations.get(&(filter.effect, *index))
-                            {
-                                stream = stream.max(sibling.remaining(now));
-                            }
-                        }
-                        let submitted = submit_animation(owner, &path, stream, |elapsed| {
-                            let mut value = [0.0f32; 4];
-                            for (index, b) in components.iter().enumerate() {
-                                value[index] = bound_value_at(
-                                    b,
-                                    &animations,
-                                    filter.effect,
-                                    &model[filter.effect],
-                                    now + elapsed.as_secs_f64(),
-                                );
-                            }
-                            ci_vec4(value)
-                        });
-                        // Resting value at now+stream — own curves, not
-                        // the parameter's end model.
-                        write_bound_input_at(
-                            &owner.layer,
-                            &path,
-                            bound,
-                            &animations,
-                            filter.effect,
-                            &model[filter.effect],
-                            if submitted {
-                                now + stream.as_secs_f64()
-                            } else {
-                                now
-                            },
-                        );
-                        submitted
-                    }
-                };
-                if submitted && let Some(anim) = animations.get_mut(&(effect, flat)) {
-                    anim.applied = true;
-                }
+                resample_bound_stream(
+                    owner,
+                    &key_path(filter, key),
+                    bound,
+                    &mut animations,
+                    filter.effect,
+                    &model[filter.effect],
+                    now,
+                    true,
+                );
             }
         }
     }
@@ -1011,128 +1049,27 @@ fn apply_animated(
 }
 
 /// Materializes every pending timeline as a `CAKeyframeAnimation` over
-/// its *remaining* duration — the attach-time equivalent of the updates
-/// that recorded them. Live timelines stay in the map (capture keeps
-/// sampling them and an interrupt still reads its `from` there); the
-/// `applied` flag records the CA submission so a repeated layout pass
-/// never restarts an on-screen tween. A settled timeline is dropped, its
-/// explicit animation removed and its end state written.
+/// its *remaining* duration — the same resample the update path uses, in
+/// non-forced mode so a stream already covering its timelines is never
+/// restarted by a repeated layout pass. Live timelines stay in the map
+/// (capture samples them; an interrupt reads `from` there); settled ones
+/// are dropped and their end state written.
 fn materialize_animations(owner: &NativeFilterOwner) {
     let now = CACurrentMediaTime();
     let model = owner.model.borrow();
+    let mut animations = owner.animations.borrow_mut();
     for filter in &owner.filters {
         for (key, bound) in &filter.inputs {
-            let path = key_path(filter, key);
-            let mut animations = owner.animations.borrow_mut();
-            match bound {
-                BoundValue::Scalar(Bound::Param(flat, conv)) => {
-                    let Some(anim) = animations.get(&(filter.effect, *flat)) else {
-                        continue;
-                    };
-                    if anim.is_settled(now) {
-                        let end = conv.map(anim.to);
-                        animations.remove(&(filter.effect, *flat));
-                        remove_animation(&owner.layer, &path);
-                        set_scalar(&owner.layer, &path, end);
-                        continue;
-                    }
-                    if anim.applied {
-                        continue;
-                    }
-                    let elapsed = Duration::from_secs_f64((now - anim.started).max(0.0));
-                    let remaining = anim.interpolator.duration().saturating_sub(elapsed);
-                    let end = conv.map(anim.to);
-                    let submitted = submit_animation(owner, &path, remaining, |frame| {
-                        NSNumber::new_f32(conv.map(anim.interpolator.interpolate(
-                            anim.from,
-                            anim.to,
-                            elapsed + frame,
-                        )))
-                    });
-                    if submitted {
-                        animations
-                            .get_mut(&(filter.effect, *flat))
-                            .expect("timeline still present")
-                            .applied = true;
-                        set_scalar(&owner.layer, &path, end);
-                    }
-                }
-                BoundValue::Vec4(components) => {
-                    // Every bound param's own pending timeline — kept in
-                    // the map; the stream covers all still-live curves.
-                    let mut live = Vec::new();
-                    let mut dropped = Vec::new();
-                    for (component, b) in components.iter().enumerate() {
-                        let Bound::Param(flat, _) = b else {
-                            continue;
-                        };
-                        match animations.get(&(filter.effect, *flat)) {
-                            Some(anim) if anim.is_settled(now) => {
-                                dropped.push(*flat);
-                            }
-                            Some(_) => live.push(*flat),
-                            None => {}
-                        }
-                    }
-                    for flat in dropped {
-                        animations.remove(&(filter.effect, flat));
-                    }
-                    if live.is_empty() {
-                        remove_animation(&owner.layer, &path);
-                        write_bound_input_at(
-                            &owner.layer,
-                            &path,
-                            bound,
-                            &animations,
-                            filter.effect,
-                            &model[filter.effect],
-                            now,
-                        );
-                        continue;
-                    }
-                    let unapplied = live
-                        .iter()
-                        .any(|flat| !animations[&(filter.effect, *flat)].applied);
-                    if !unapplied {
-                        continue;
-                    }
-                    let stream = live
-                        .iter()
-                        .map(|flat| animations[&(filter.effect, *flat)].remaining(now))
-                        .max()
-                        .unwrap_or_default();
-                    let submitted = submit_animation(owner, &path, stream, |frame| {
-                        let mut value = [0.0f32; 4];
-                        for (index, b) in components.iter().enumerate() {
-                            value[index] = bound_value_at(
-                                b,
-                                &animations,
-                                filter.effect,
-                                &model[filter.effect],
-                                now + frame.as_secs_f64(),
-                            );
-                        }
-                        ci_vec4(value)
-                    });
-                    if submitted {
-                        for flat in &live {
-                            if let Some(anim) = animations.get_mut(&(filter.effect, *flat)) {
-                                anim.applied = true;
-                            }
-                        }
-                        write_bound_input_at(
-                            &owner.layer,
-                            &path,
-                            bound,
-                            &animations,
-                            filter.effect,
-                            &model[filter.effect],
-                            now + stream.as_secs_f64(),
-                        );
-                    }
-                }
-                BoundValue::Scalar(Bound::Const(_)) => {}
-            }
+            resample_bound_stream(
+                owner,
+                &key_path(filter, key),
+                bound,
+                &mut animations,
+                filter.effect,
+                &model[filter.effect],
+                now,
+                false,
+            );
         }
     }
 }
@@ -1833,10 +1770,13 @@ pub fn mount(
     let mounted = Rc::new(RefCell::new(mounted));
     {
         let weak = Rc::downgrade(&owner);
-        let mounted = Rc::clone(&mounted);
+        // The leaf owns `mounted` strongly through `NativeFilteredSubView`;
+        // the layout callback holds only a weak slot so the callback's
+        // owner chain never cycles back (#1575 callback rule).
+        let mounted = Rc::downgrade(&mounted);
         view.set_layout_handler(move |view| {
             let bounds = cocoa_ui::view::bounds(view);
-            {
+            if let Some(mounted) = mounted.upgrade() {
                 let mounted = mounted.borrow();
                 cocoa_ui::view::set_frame(mounted.view(), bounds);
                 cocoa_ui::view::layout_immediately(mounted.view());
