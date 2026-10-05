@@ -30,13 +30,17 @@
 //! capture is taken when its first member layer (in paint order: a layer's
 //! items in order, depth-first) is reached — a full-canvas copy of the
 //! compositing canvas the member is drawn into at that moment, meaning the
-//! nearest enclosing layer isolated for opacity `< 1` or a non-Normal blend
-//! (clips never isolate). Every child layer composites into a fresh
-//! canvas, so a member sitting inside clip-only ancestors sees the
-//! semantic level's canvas composited with each ancestor's partial
-//! contents in order (see [`flattened`]); a member that is itself
-//! isolated sees the parent canvas, since the capture happens before its
-//! own isolation begins. The group's filters then run over the copy: `GaussianBlur` is a
+//! nearest enclosing layer isolated for a filter or a non-Normal blend
+//! (clips and translucency never isolate). Every child layer composites
+//! into a fresh canvas, so a member sitting inside pass-through or
+//! `opacity < 1` ancestors sees the semantic level's canvas composited
+//! with each ancestor's partial contents in order, at each ancestor's
+//! full opacity (see [`flattened`]): the sample is what lies behind
+//! them. Every looked-through ancestor's opacity still applies to the
+//! whole result when that ancestor composites, so a fading material
+//! panel fades rather than disappearing. A member that
+//! is itself isolated sees the parent canvas, since the capture happens
+//! before its own isolation begins. The group's filters then run over the copy: `GaussianBlur` is a
 //! separable true Gaussian `w(o) = exp(-o² / 2σ²)` normalized over
 //! `⌈3σ⌉` taps, clamp-to-edge; `ColorMatrix` applies its three rows to
 //! the premultiplied `[r, g, b, a]` pixel, alpha untouched. Every member
@@ -194,10 +198,12 @@ impl Canvas {
 /// One compositing level: a canvas plus the opacity and blend mode it
 /// composites into the level below it with. `semantic` marks the canvases
 /// a backdrop capture sees as its compositing target: the surface canvas
-/// and every layer isolated for a filter, `opacity < 1` or a non-Normal
-/// blend. `space` is the canvas's storage space — an isolated level's own
-/// `blend_space`, or the enclosing level's for a transparent (clip-only)
-/// level, which inherits the space it composites into.
+/// and every layer isolated for a filter or a non-Normal blend. An
+/// `opacity < 1` level is not a root: a capture looks through it exactly
+/// as it looks through a pass-through level. `space` is the canvas's
+/// storage space — an isolated or translucent level's own `blend_space`,
+/// or the enclosing level's for a pass-through level, which inherits
+/// the space it composites into.
 struct Level {
     canvas: Canvas,
     opacity: f64,
@@ -213,8 +219,12 @@ const fn top(chain: &mut [Level]) -> &mut Canvas {
 
 /// What has been painted so far into the top level's compositing target:
 /// the nearest semantic level's canvas, composited with the partial
-/// contents of every clip-only level above it in order — exactly what the
-/// chain would produce if every pending level composited right now.
+/// contents of every looked-through level above it in order — what the
+/// chain would produce if every pending level composited right now at
+/// full opacity. A looked-through level is provably `Normal`-blended (a
+/// non-Normal level is a root) and stored in the root's linear space —
+/// layers never sit inside an encoded group scope — so each composites
+/// source-over as its pop would at opacity 1.
 fn flattened(chain: &[Level]) -> Canvas {
     let sem = chain
         .iter()
@@ -223,12 +233,7 @@ fn flattened(chain: &[Level]) -> Canvas {
     let mut acc = chain[sem].canvas.clone();
     for level in &chain[sem + 1..] {
         for (dst, &src) in acc.pixels.iter_mut().zip(&level.canvas.pixels) {
-            let s = src.map(|v| v * level.opacity);
-            *dst = if level.blend == BlendMode::Normal {
-                src_over(*dst, s)
-            } else {
-                blend(level.blend, *dst, s)
-            };
+            *dst = src_over(*dst, src);
         }
     }
     acc
@@ -406,8 +411,8 @@ impl Renderer {
                         // painter order: what has been painted so far into
                         // the member's compositing canvas — the nearest
                         // semantic level's canvas plus, in order, the
-                        // partial contents of every clip-only level the
-                        // member sits inside — filtered once and shared by
+                        // partial contents of every looked-through level
+                        // the member sits inside — filtered once and shared by
                         // all members.
                         let group = backdrops.group(gid)?;
                         let space = chain
@@ -444,9 +449,9 @@ impl Renderer {
     /// under the accumulated clips plus the child's own clip, then
     /// composites with opacity and blend mode: a `Normal`-blend child sees
     /// (and blends against) only what painted into its own canvas, never
-    /// the parent's. Clip-only levels are not semantic isolations — a
-    /// backdrop capture looks through them to the nearest `opacity < 1` or
-    /// `blend != Normal` level (see `flattened`).
+    /// the parent's. Clip-only and `opacity < 1` levels are not semantic
+    /// isolations — a backdrop capture looks through them to the nearest
+    /// filtered or `blend != Normal` level (see `flattened`).
     #[expect(
         clippy::many_single_char_names,
         reason = "w/h/dst/s/b/c name geometry and pixel values"
@@ -485,17 +490,19 @@ impl Renderer {
         }
         // A filtered layer is a semantic isolation too: a backdrop capture
         // inside it reads this canvas, matching `isolate` in
-        // gpu/src/render/lower.rs.
-        let semantic =
-            child.filter.is_some() || child.opacity < 1.0 || child.blend != BlendMode::Normal;
-        // A transparent level shares the space it composites into; an
-        // isolated level stores its declared space (layers always linear).
+        // gpu/src/render/lower.rs. Translucency is not an isolation:
+        // `opacity < 1` levels are looked through like pass-through levels.
+        let semantic = child.filter.is_some() || child.blend != BlendMode::Normal;
+        // A level that composites in isolation — isolated or translucent —
+        // stores its declared space (layers always linear); a
+        // pass-through level shares the space it composites into, and a
+        // member inside it composites in that space too.
         let parent_space = chain.last().map_or(BlendSpace::Linear, |l| l.space);
         chain.push(Level {
             canvas: Canvas::new(w, h, [0.0; 4]),
             opacity: child.opacity,
             blend: child.blend,
-            space: if semantic {
+            space: if semantic || child.opacity < 1.0 {
                 BlendSpace::Linear
             } else {
                 parent_space
@@ -748,9 +755,8 @@ impl Renderer {
     /// A display-list group: members composite with each other in the
     /// group's `blend_space` (the level's canvas stores premultiplied
     /// values in that space), then the group composites onto the level
-    /// below with `opacity` and `blend`. A fully transparent group
-    /// (`opacity` 1, `Normal`, `Linear`) shares the enclosing level's
-    /// space and passes through.
+    /// below with `opacity` and `blend`. A pass-through group (`opacity`
+    /// 1, `Normal`, `Linear`) shares the enclosing level's space.
     fn render_group(
         &self,
         group: &cherenkov_scene::Group,
@@ -761,10 +767,10 @@ impl Renderer {
         backdrops: &mut Backdrops<'_>,
     ) -> Result<(), RenderError> {
         let parent_space = chain.last().map_or(BlendSpace::Linear, |l| l.space);
-        let semantic = group.opacity < 1.0
-            || group.blend != BlendMode::Normal
-            || group.blend_space != BlendSpace::Linear;
-        let space = if semantic {
+        let semantic = group.blend != BlendMode::Normal || group.blend_space != BlendSpace::Linear;
+        // A translucent or isolated group keeps its declared `blend_space`;
+        // a pass-through group shares the space it composites into.
+        let space = if semantic || group.opacity < 1.0 {
             group.blend_space
         } else {
             parent_space

@@ -158,7 +158,7 @@ pub struct Capture {
 
 /// A reduced-scale capture (`resolve.wgsl`): the pass's `region` is on the
 /// capture grid, and the device pixels under it resolve into it. With no
-/// draw ranges the resolve reads `copy_from` directly; with clip-only
+/// draw ranges the resolve reads `copy_from` directly; with looked-through
 /// composites to apply first, `device` is copied 1:1 into the group's
 /// staging texture, the composites draw there, and the resolve reads it.
 #[derive(Clone, Copy, Debug)]
@@ -1016,9 +1016,9 @@ pub struct Lowering<'a> {
     /// scratch must then cover the full surface so its texel origin is
     /// `(0, 0)` for the capture's composite.
     capture_isolation: bool,
-    /// Clip-only scratch depths opened since the last semantic isolation,
-    /// outer first.
-    clip_scratches: Vec<usize>,
+    /// Scratch depths a backdrop capture looks through — pass-through
+    /// and translucent levels alike — outer first.
+    looked_through_scratches: Vec<usize>,
     /// The nearest semantic isolation's target the capture copies from.
     semantic_target: Target,
     /// The storage space of the enclosing level, innermost last; the
@@ -1033,8 +1033,9 @@ pub struct Lowering<'a> {
     /// plan's `opens_part`, so the walk emits exactly `parts()` passes.
     opens: Vec<LayerId>,
     /// The storage space of each scratch target by depth index: a
-    /// semantic isolate's declared space, a clip-only level's parent
-    /// space, or the opening level's for shadow and capture scopes.
+    /// level that composites in isolation keeps its declared space
+    /// (semantic or translucent), a pass-through level the parent space,
+    /// or the opening level's for shadow and capture scopes.
     scratch_space: Vec<cherenkov::BlendSpace>,
     /// Each backdrop capture texture's storage space (the semantic
     /// target it copies), by group id.
@@ -1082,7 +1083,7 @@ impl<'a> Lowering<'a> {
             backdrops: FxHashMap::default(),
             backdrop_filters: FxHashMap::default(),
             capture_isolation: false,
-            clip_scratches: Vec::new(),
+            looked_through_scratches: Vec::new(),
             semantic_target: Target::Part(0),
             part: 0,
             promoted: Vec::new(),
@@ -1781,17 +1782,18 @@ impl<'a> Lowering<'a> {
         // every segment at this depth needs the region.
         let passes_start = self.frame.passes.len();
         // Backdrop captures inside the body sample the nearest *semantic*
-        // isolation's target; clip-only scratches between it and the
-        // member compose over the capture. Opacity, blend, space and
-        // filter isolations change what the member sees; clip-only ones
-        // do not.
+        // isolation's target; the scratches opened since it — pass-through
+        // and translucent levels alike — compose over the capture at full
+        // opacity, so a member under a fading ancestor sees what lies
+        // behind it. Blend, space and filter isolations change what the
+        // member sees; translucent and pass-through ones do not.
         let semantic = filter.is_some()
-            || opacity < 1.0
             || blend != cherenkov::BlendMode::Normal
             || space != cherenkov::BlendSpace::Linear;
-        // Members composite in the declared space; a clip-only level
-        // shares the space it merges back into.
-        let storage = if semantic {
+        // Members composite in the declared space when the level
+        // composites onto it in isolation — isolated or translucent;
+        // a pass-through level shares the space it merges back into.
+        let storage = if semantic || opacity < 1.0 {
             space
         } else {
             self.current_space()
@@ -1805,13 +1807,13 @@ impl<'a> Lowering<'a> {
         let inst_start = self.frame.instances.len();
         let saved_capture = self.capture_isolation;
         let saved_target = self.semantic_target;
-        let saved_scratches = std::mem::take(&mut self.clip_scratches);
+        let saved_scratches = std::mem::take(&mut self.looked_through_scratches);
         self.capture_isolation = false;
         if semantic {
             self.semantic_target = Target::Scratch(scratch);
         } else {
-            self.clip_scratches.clone_from(&saved_scratches);
-            self.clip_scratches.push(scratch);
+            self.looked_through_scratches.clone_from(&saved_scratches);
+            self.looked_through_scratches.push(scratch);
         }
         self.space_stack.push(storage);
         body(self, glyphs)?;
@@ -1822,7 +1824,7 @@ impl<'a> Lowering<'a> {
         let inner_capture = self.capture_isolation;
         self.capture_isolation = saved_capture || inner_capture;
         self.semantic_target = saved_target;
-        self.clip_scratches = saved_scratches;
+        self.looked_through_scratches = saved_scratches;
         let outer_target = self.current_target();
         let region = if let Some(filter) = filter {
             self.frame
@@ -2090,7 +2092,8 @@ impl<'a> Lowering<'a> {
 
     /// Emits the group's capture passes at the first member's paint-order
     /// position — one per region: `region` is copied from the semantic
-    /// target, then every clip-only scratch opened since it composes over
+    /// target, then every looked-through scratch opened since it composes
+    /// over
     /// that copy. A reduced-scale group composes over the device pixels
     /// under the region and resolves them onto the capture grid.
     fn emit_capture(&mut self, gid: u64) {
@@ -2099,8 +2102,11 @@ impl<'a> Lowering<'a> {
         let scale = plan.scale;
         let copy_from = self.semantic_target;
         let current = self.current_target();
-        // The capture texture stores the semantic target's space: the
-        // copies and the clip-only composites over it all stay in it.
+        // The capture texture stores the semantic target's space, and
+        // every looked-through scratch shares it — layers never sit
+        // inside an encoded group scope, so each is stored in the root's
+        // linear space and composites over the copy source-over at full
+        // opacity.
         self.capture_space.insert(gid, self.target_space(copy_from));
         for (r, region) in regions.iter().enumerate() {
             #[expect(clippy::cast_possible_truncation, reason = "regions fit u32")]
@@ -2122,10 +2128,12 @@ impl<'a> Lowering<'a> {
                 });
             }
             let covered = resolve.map_or(*region, |resolve| resolve.device);
-            let scratches = std::mem::take(&mut self.clip_scratches);
+            let scratches = std::mem::take(&mut self.looked_through_scratches);
             for &k in &scratches {
-                // Clip-only scratches cover the full surface (see
-                // `isolate`), so their texel origin is (0, 0).
+                // Looked-through scratches cover the full surface (see
+                // `isolate`), so their texel origin is (0, 0), and each
+                // is stored in the copy's space — the root's linear
+                // space.
                 self.emit_composite(
                     Source::Scratch(k),
                     [0.0, 0.0],
@@ -2135,7 +2143,7 @@ impl<'a> Lowering<'a> {
                     self.target_space(copy_from),
                 );
             }
-            self.clip_scratches = scratches;
+            self.looked_through_scratches = scratches;
             self.finish_pass();
             let pass = self.frame.passes.len() - 1;
             if let Some(key) = self.backdrop_filters.get(&gid) {
