@@ -42,10 +42,10 @@ use crate::{
 };
 use bitmap::BitmapKey;
 use cherenkov::{
-    ContentOp, EngineError, FontData as EngineFontData, FontId, Frame, FrameId, FrameStats,
-    FrameTiming, ImageId, ImageUpload, LayerId, MemoryUsage, PassTiming, Pressure, ProducerId,
-    Readback, Redraw, RenderError, Renderer, ResourceError, ResourceId, SurfaceError, SurfaceFrame,
-    SurfaceId, SurfaceInfo, Visibility,
+    ContentOp, EngineError, FontData as EngineFontData, FontId, Frame, FrameId, FrameRedraw,
+    FrameStats, FrameTiming, ImageId, ImageUpload, LayerId, MemoryUsage, PassTiming, Pressure,
+    ProducerId, Readback, RenderError, Renderer, ResourceError, ResourceId, SurfaceError,
+    SurfaceFrame, SurfaceId, SurfaceInfo, Visibility,
 };
 /// The export pool's platform type: the bounded dma-buf pool on Linux
 /// (#1687), an uninhabited stand-in elsewhere.
@@ -2722,7 +2722,7 @@ impl Renderer for GpuRenderer {
             .expect("visibility of a created surface");
         // The producers' and filters' wakes already follow the announced
         // visibility through their gates; this decides what a frame lists
-        // and what counts in `Redraw`.
+        // and what counts in `FrameRedraw`.
         surface.visibility = visibility;
     }
 
@@ -3384,7 +3384,11 @@ impl Renderer for GpuRenderer {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn render(&mut self, frame: &Frame<'_>, stats: &mut FrameStats) -> Result<Redraw, RenderError> {
+    fn render(
+        &mut self,
+        frame: &Frame<'_>,
+        stats: &mut FrameStats,
+    ) -> Result<FrameRedraw, RenderError> {
         let _diag_guard = diag::Guard::scope(self.diag.as_ref());
         diag::set_phase("render");
         diag::frame_boundary(&self.device, frame.id.get(), true, false);
@@ -3402,7 +3406,7 @@ impl Renderer for GpuRenderer {
         &mut self,
         frame: &Frame<'_>,
         stats: &mut FrameStats,
-    ) -> Result<Redraw, RenderError> {
+    ) -> Result<FrameRedraw, RenderError> {
         let _diag_guard = diag::Guard::scope(self.diag.as_ref());
         diag::set_phase("render");
         diag::frame_boundary(&self.device, frame.id.get(), true, false);
@@ -3865,7 +3869,7 @@ impl GpuRenderer {
         &mut self,
         frame: &Frame<'_>,
         stats: &mut FrameStats,
-    ) -> Result<Redraw, RenderError> {
+    ) -> Result<FrameRedraw, RenderError> {
         let origin = *self.origin.get_or_insert(frame.time.0);
         self.frame_count += 1;
         self.drain_timestamps();
@@ -4017,7 +4021,7 @@ impl GpuRenderer {
         &mut self,
         frame: &Frame<'_>,
         stats: &mut FrameStats,
-    ) -> Result<Redraw, RenderError> {
+    ) -> Result<FrameRedraw, RenderError> {
         let origin = *self.origin.get_or_insert(frame.time.0);
         self.frame_count += 1;
         self.drain_timestamps();
@@ -4568,16 +4572,15 @@ impl GpuRenderer {
         Ok(())
     }
 
-    fn requested_redraw(&self, present: Redraw) -> Redraw {
-        let mut rate = match present {
-            Redraw::None => None,
-            Redraw::Wanted { rate } => Some(rate),
-        };
-        for surface in self
-            .surfaces
-            .values()
-            .filter(|surface| surface.visibility == Visibility::Visible)
-        {
+    /// Every visible surface that wants the next frame asks for it on
+    /// its own entry: a filter, animated shader or producer source
+    /// names exactly the surface it draws into — one animating surface
+    /// never marks every other surface's deadline.
+    fn requested_redraw(&self, mut redraw: FrameRedraw) -> FrameRedraw {
+        for (id, surface) in &self.surfaces {
+            if surface.visibility != Visibility::Visible {
+                continue;
+            }
             if surface
                 .frame
                 .filters
@@ -4589,16 +4592,10 @@ impl GpuRenderer {
                     .keys()
                     .any(|key| self.shaders.animated(key))
             {
-                rate = Some(rate.map_or_else(
-                    || surface.refresh.clone(),
-                    |rate| {
-                        (*rate.start()).min(*surface.refresh.start())
-                            ..=(*rate.end()).max(*surface.refresh.end())
-                    },
-                ));
+                redraw.request(*id, surface.refresh.clone());
             }
         }
-        rate.map_or(Redraw::None, |rate| Redraw::Wanted { rate })
+        redraw
     }
 
     /// Opens a window target. Apple windows expose the view's layer: the
@@ -5152,16 +5149,16 @@ impl GpuRenderer {
         }
     }
 
-    fn present_windows(&mut self, frame: &Frame<'_>) -> Result<Redraw, RenderError> {
+    fn present_windows(&mut self, frame: &Frame<'_>) -> Result<FrameRedraw, RenderError> {
         if self.presenter.is_none() {
-            return Ok(Redraw::None);
+            return Ok(FrameRedraw::default());
         }
         let currents: FxHashMap<ProducerId, &external::Slot> = self
             .producers
             .iter()
             .filter_map(|(id, producer)| producer.current().map(|slot| (*id, slot)))
             .collect();
-        let mut redraw = None::<cherenkov::RefreshRange>;
+        let mut redraw = FrameRedraw::default();
         for sf in frame.surfaces {
             let surface = self.surfaces.get_mut(&sf.id).expect("registered surface");
             // A headroom-only frame asks for a present without lowering
@@ -5238,13 +5235,7 @@ impl GpuRenderer {
                     planes::SystemPlanes::withdraw_animations(system);
                 }
                 if presentation == planes::Presentation::Retry {
-                    redraw = Some(redraw.map_or_else(
-                        || surface.refresh.clone(),
-                        |rate| {
-                            (*rate.start()).min(*surface.refresh.start())
-                                ..=(*rate.end()).max(*surface.refresh.end())
-                        },
-                    ));
+                    redraw.request(sf.id, surface.refresh.clone());
                 }
             }
             if !surface.present_pending
@@ -5253,7 +5244,7 @@ impl GpuRenderer {
                 planes::SystemPlanes::animate(system, sf.tree, &surface.plan);
             }
         }
-        Ok(redraw.map_or(Redraw::None, |rate| Redraw::Wanted { rate }))
+        Ok(redraw)
     }
 
     /// A display move or a scale change re-runs the window's output

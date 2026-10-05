@@ -219,11 +219,13 @@ impl<B: Backend> Engine<B> {
     /// completion the render thread queued fires it, so it must be
     /// [`Send`] and [`Sync`].
     ///
-    /// # Panics
-    /// When the callback slot is poisoned by a panic inside a previous
-    /// `f` running under the lock.
+    /// This is the aggregate-host model: one callback behind every
+    /// visible surface's wake. A surface whose host keeps its own
+    /// presentation loop installs
+    /// [`Surface::set_waker`](crate::Surface::set_waker) instead; its
+    /// changes, completions and reveals then reach that callback alone.
     pub fn set_waker(&self, f: impl Fn() + Send + Sync + 'static) {
-        *self.waker.callback.lock().expect("waker poisoned") = Some(Arc::new(f));
+        self.waker.set(Arc::new(f));
     }
 
     fn alloc(cell: &Cell<u64>) -> u64 {
@@ -362,7 +364,8 @@ impl<B: Backend> Engine<B> {
         self.recycle_commits(&mut reply.commits);
         reply.commits.clear();
         *self.commits.borrow_mut() = reply.commits;
-        let (next, stats) = reply.result?;
+        let (next, surface_next, stats) = reply.result?;
+        super::publish_next(&self.surfaces.borrow(), &surface_next);
         *self.stats.borrow_mut() = stats;
         Ok(next)
     }
@@ -723,7 +726,11 @@ mod tests {
             waker.wake();
             reply
                 .send(RenderReply {
-                    result: Ok((Next::Idle, FrameStats::default())),
+                    result: Ok((
+                        Next::Idle,
+                        rustc_hash::FxHashMap::default(),
+                        FrameStats::default(),
+                    )),
                     commits,
                     sender: reply.clone(),
                 })

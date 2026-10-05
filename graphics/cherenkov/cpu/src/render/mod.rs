@@ -23,8 +23,8 @@ mod raster;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use cherenkov::{
-    BackdropId, ContentOp, EngineError, FontData, FontId, Frame, FrameStats, ImageId, ImageUpload,
-    LayerId, MemoryUsage, Pressure, Readback, Redraw, RenderError, Renderer, ResourceError,
+    BackdropId, ContentOp, EngineError, FontData, FontId, Frame, FrameRedraw, FrameStats, ImageId,
+    ImageUpload, LayerId, MemoryUsage, Pressure, Readback, RenderError, Renderer, ResourceError,
     ResourceId, SurfaceError, SurfaceId, SurfaceInfo, SurfaceVisibility, Visibility,
 };
 use lower::{ContentData, Item, Lowering};
@@ -281,8 +281,8 @@ impl Renderer for RasterRenderer {
 
     fn set_visibility(&mut self, id: SurfaceId, visibility: Visibility) {
         // The filters' wakes already follow the announced visibility
-        // through their gates; this decides what counts in `Redraw` and
-        // what each frame housekeeps.
+        // through their gates; this decides what counts in `FrameRedraw`
+        // and what each frame housekeeps.
         self.surfaces
             .get_mut(&id)
             .expect("visibility of a created surface")
@@ -458,7 +458,11 @@ impl Renderer for RasterRenderer {
 
     /// Lowers and rasterizes every changed surface.
     #[cfg(not(target_arch = "wasm32"))]
-    fn render(&mut self, frame: &Frame<'_>, stats: &mut FrameStats) -> Result<Redraw, RenderError> {
+    fn render(
+        &mut self,
+        frame: &Frame<'_>,
+        stats: &mut FrameStats,
+    ) -> Result<FrameRedraw, RenderError> {
         self.render_frame(frame, stats)
     }
 
@@ -467,7 +471,7 @@ impl Renderer for RasterRenderer {
         &mut self,
         frame: &Frame<'_>,
         stats: &mut FrameStats,
-    ) -> impl core::future::Future<Output = Result<Redraw, RenderError>> {
+    ) -> impl core::future::Future<Output = Result<FrameRedraw, RenderError>> {
         core::future::ready(self.render_frame(frame, stats))
     }
 
@@ -596,7 +600,7 @@ impl RasterRenderer {
         &mut self,
         frame: &Frame<'_>,
         stats: &mut FrameStats,
-    ) -> Result<Redraw, RenderError> {
+    ) -> Result<FrameRedraw, RenderError> {
         self.filters.begin_frame(frame.id, frame.time);
         self.frame_count += 1;
         for sf in frame.surfaces {
@@ -619,31 +623,27 @@ impl RasterRenderer {
         self.evict_projective();
         self.gate_filters();
         self.filters.finish_frame(&used, &used_groups);
-        let rate = self
-            .surfaces
-            .iter()
-            .filter(|(_, surface)| surface.visibility == Visibility::Visible)
-            .filter(|(id, surface)| {
-                surface
-                    .filters
+        // Every visible surface whose filter or backdrop group still
+        // runs asks for the next frame on its own entry — the animated
+        // backdrop names the surface it draws into.
+        let mut redraw = FrameRedraw::default();
+        for (id, surface) in &self.surfaces {
+            if surface.visibility != Visibility::Visible {
+                continue;
+            }
+            if surface
+                .filters
+                .iter()
+                .any(|fid| self.filters.wants_redraw(*fid))
+                || surface
+                    .groups
                     .iter()
-                    .any(|fid| self.filters.wants_redraw(*fid))
-                    || surface
-                        .groups
-                        .iter()
-                        .any(|gid| self.filters.wants_redraw_group(**id, BackdropId::new(*gid)))
-            })
-            .map(|(_, surface)| surface)
-            .fold(None, |rate: Option<cherenkov::RefreshRange>, surface| {
-                Some(rate.map_or_else(
-                    || surface.refresh.clone(),
-                    |rate| {
-                        (*rate.start()).min(*surface.refresh.start())
-                            ..=(*rate.end()).max(*surface.refresh.end())
-                    },
-                ))
-            });
-        Ok(rate.map_or(Redraw::None, |rate| Redraw::Wanted { rate }))
+                    .any(|gid| self.filters.wants_redraw_group(*id, BackdropId::new(*gid)))
+            {
+                redraw.request(*id, surface.refresh.clone());
+            }
+        }
+        Ok(redraw)
     }
 
     /// Gates every filter's and backdrop chain's wakes on the surfaces whose

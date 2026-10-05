@@ -13,7 +13,7 @@ use crossbeam_channel::Receiver;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::backend::{
-    Backend, Display, Frame, Redraw, Renderer, SurfaceFrame, SurfaceInfo, Visibility,
+    Backend, Display, Frame, FrameRedraw, Renderer, SurfaceFrame, SurfaceInfo, Visibility,
 };
 use crate::engine::{CompletionWaker, SurfaceWaker};
 use crate::error::{EngineError, RenderError, ResourceError, SurfaceError};
@@ -836,16 +836,25 @@ fn sample_frames(
     frames
 }
 
-/// Consumes the per-frame state of every surface the frame listed, and
-/// answers when the next frame is needed: the animations' refresh class
-/// combined with the backend's.
+/// Consumes the per-frame state of every surface the frame listed and
+/// answers two schedules: each surface's own deadline — its animation
+/// refresh class combined with the backend's request for that surface
+/// alone, published through [`Surface::next_frame`] — and the aggregate
+/// answer `Engine::render` returns to hosts that keep one presentation
+/// loop.
+///
+/// [`Surface::next_frame`]: crate::Surface::next_frame
 fn finish_frame<B: Backend>(
     renderer: &B::Renderer,
     surfaces: &mut FxHashMap<SurfaceId, SurfaceState>,
     time: crate::Instant,
-    redraw: Redraw,
-) -> Next {
+    redraw: &FrameRedraw,
+) -> (Next, FxHashMap<SurfaceId, Next>) {
     let mut rate = None;
+    // Keyed by surface: one entry per visible surface, so publication
+    // stays linear in the surface count instead of rescanning a Vec.
+    let mut surface_next =
+        FxHashMap::with_capacity_and_hasher(surfaces.len(), rustc_hash::FxBuildHasher);
     for (id, state) in surfaces
         .iter_mut()
         .filter(|(_, state)| state.visibility == Visibility::Visible)
@@ -858,6 +867,17 @@ fn finish_frame<B: Backend>(
         } else {
             state.tree.animation_rate(|layer| owned.contains(&layer))
         };
+        // The surface's own deadline unions its animation demand with
+        // only the backend requests that name it.
+        let mine = match (running.clone(), redraw.for_surface(*id)) {
+            (None, None) => None,
+            (Some(running), None) => Some(running),
+            (None, Some(request)) => Some(request.clone()),
+            (Some(running), Some(request)) => {
+                Some(crate::backend::union_rate(running, request.clone()))
+            }
+        };
+        surface_next.insert(*id, mine.map_or(Next::Idle, |rate| next_at(time, rate)));
         match running {
             Some(r) if r == crate::tree::RATE_FAST => rate = Some(crate::tree::RATE_FAST),
             Some(r) => rate = rate.or(Some(r)),
@@ -868,17 +888,26 @@ fn finish_frame<B: Backend>(
         state.display_moved = false;
         state.presented();
     }
-    let rate = match redraw {
-        Redraw::None => rate,
-        Redraw::Wanted { rate: backend_rate } => Some(rate.map_or_else(
-            || backend_rate.clone(),
-            |r| (*r.start()).min(*backend_rate.start())..=(*r.end()).max(*backend_rate.end()),
-        )),
+    let rate = match redraw.rate() {
+        None => rate,
+        Some(backend_rate) => Some(match rate {
+            None => backend_rate,
+            Some(rate) => crate::backend::union_rate(rate, backend_rate),
+        }),
     };
-    rate.map_or(Next::Idle, |rate| Next::At {
+    (
+        rate.map_or(Next::Idle, |rate| next_at(time, rate)),
+        surface_next,
+    )
+}
+
+/// The next frame time for a refresh class: one interval of its fastest
+/// end after `time`.
+fn next_at(time: crate::Instant, rate: RefreshRange) -> Next {
+    Next::At {
         time: time + Duration::from_secs_f64(1.0 / f64::from(*rate.end())),
         rate,
-    })
+    }
 }
 
 /// One frame: apply every commit, sample, render, answer.
@@ -890,7 +919,7 @@ fn render<B: Backend>(
     id: FrameId,
     time: crate::Instant,
     commits: &mut [(SurfaceId, ChangeSet<B>)],
-) -> Result<(Next, FrameStats), RenderError> {
+) -> Result<(Next, FxHashMap<SurfaceId, Next>, FrameStats), RenderError> {
     sample_owned::<B>(renderer, surfaces, time);
     apply_commits(renderer, surfaces, resources, commits)?;
     let frames = sample_frames(surfaces, time);
@@ -904,7 +933,8 @@ fn render<B: Backend>(
         &mut stats,
     )?;
     drop(frames);
-    Ok((finish_frame::<B>(renderer, surfaces, time, redraw), stats))
+    let (next, surface_next) = finish_frame::<B>(renderer, surfaces, time, &redraw);
+    Ok((next, surface_next, stats))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -919,7 +949,7 @@ async fn render_local<B: Backend>(
     id: FrameId,
     time: crate::Instant,
     commits: &mut [(SurfaceId, ChangeSet<B>)],
-) -> Result<(Next, FrameStats), RenderError> {
+) -> Result<(Next, FxHashMap<SurfaceId, Next>, FrameStats), RenderError> {
     sample_owned::<B>(renderer, surfaces, time);
     apply_commits(renderer, surfaces, resources, commits)?;
     let frames = sample_frames(surfaces, time);
@@ -935,7 +965,8 @@ async fn render_local<B: Backend>(
         )
         .await?;
     drop(frames);
-    Ok((finish_frame::<B>(renderer, surfaces, time, redraw), stats))
+    let (next, surface_next) = finish_frame::<B>(renderer, surfaces, time, &redraw);
+    Ok((next, surface_next, stats))
 }
 
 #[cfg(all(test, feature = "testing", not(target_arch = "wasm32")))]

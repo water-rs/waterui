@@ -294,8 +294,11 @@ pub struct ChangeSet<B: Backend> {
 /// The render result and drained buffers returned to the UI thread.
 #[derive(Debug)]
 pub struct RenderReply<B: Backend> {
-    /// The result of rendering the frame.
-    pub result: Result<(Next, FrameStats), RenderError>,
+    /// The result of rendering the frame: the aggregate [`Next`] and,
+    /// per surface the frame listed, that surface's own deadline —
+    /// the values the engine publishes through
+    /// [`Surface::next_frame`](crate::Surface::next_frame).
+    pub result: Result<(Next, rustc_hash::FxHashMap<SurfaceId, Next>, FrameStats), RenderError>,
     /// The drained commits, including their reusable empty op vectors.
     pub commits: Vec<(SurfaceId, ChangeSet<B>)>,
     /// The persistent reply sender, returned so a disconnected render thread

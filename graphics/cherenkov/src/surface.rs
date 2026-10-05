@@ -89,10 +89,13 @@ pub struct Shared<B: Backend> {
     bindings: FxHashMap<(u64, PropKind), Binding>,
     /// The surface's host wake-up, fired when an op is queued outside a
     /// frame; silent while the surface is hidden.
-    waker: Arc<SurfaceWaker>,
+    pub(crate) waker: Arc<SurfaceWaker>,
     /// The render loop, which a hidden surface's changes are sent to as
     /// they are made.
     tx: Sender<Message<B>>,
+    /// The next frame this surface asked for, published by each
+    /// [`Engine::render`](crate::Engine::render).
+    pub(crate) next_frame: RefCell<crate::frame::Next>,
     /// The last display properties announced to the render thread.
     display: Cell<Display>,
     /// Set by installed contents' live states the moment an animated
@@ -136,6 +139,7 @@ impl<B: Backend> Shared<B> {
             bindings: FxHashMap::default(),
             waker,
             tx,
+            next_frame: RefCell::new(crate::frame::Next::Idle),
             display: Cell::new(Display::default()),
             animated: SampleFlag::new(),
             owner: None,
@@ -150,6 +154,7 @@ impl<B: Backend> Shared<B> {
     /// Queues an op outside a frame.
     fn push(&mut self, op: Op<B>) {
         self.pending.push(op);
+        self.waker.note_pending(true);
         self.queued();
     }
 
@@ -201,6 +206,7 @@ impl<B: Backend> Shared<B> {
         let mut ops = std::mem::take(&mut self.spare_ops);
         let recycled = std::mem::take(&mut self.spare_recycled);
         ops.append(&mut self.pending);
+        self.waker.note_pending(false);
         let mut animating = false;
         // `animated` is poked by a content's `LiveState` the moment an
         // animated operand arrives, so a surface that never saw one
@@ -941,6 +947,9 @@ pub struct Surface<B: Backend> {
     readable: bool,
     max_dimension: u32,
     root: Layer,
+    /// The surface's host wake-up — held here too so dropping the handle
+    /// retires it without borrowing the shared state.
+    waker: Arc<SurfaceWaker>,
     tx: Sender<Message<B>>,
 }
 
@@ -962,7 +971,11 @@ impl<B: Backend> Surface<B> {
         tx: Sender<Message<B>>,
         waker: Arc<SurfaceWaker>,
     ) -> Self {
-        let shared = Rc::new(RefCell::new(Shared::new(id, waker, tx.clone())));
+        let shared = Rc::new(RefCell::new(Shared::new(
+            id,
+            Arc::clone(&waker),
+            tx.clone(),
+        )));
         let owner: Rc<dyn LayerOwner> = Rc::clone(&shared) as Rc<dyn LayerOwner>;
         Self {
             shared,
@@ -975,6 +988,7 @@ impl<B: Backend> Surface<B> {
                 owner,
                 remove_on_drop: false,
             },
+            waker,
             tx,
         }
     }
@@ -1062,6 +1076,69 @@ impl<B: Backend> Surface<B> {
         self.tx
             .send(Message::DisplayMoved { id: self.id })
             .map_err(|_| SurfaceError::Lost)
+    }
+
+    /// The next frame this surface asked for, published by each
+    /// [`Engine::render`](crate::Engine::render): its own animation and
+    /// backend deadline — not the engine's aggregate, which keeps
+    /// answering the whole engine's demand for hosts that run one
+    /// presentation loop. [`Next::Idle`](crate::Next::Idle) while nothing
+    /// on the surface runs; a surface that never rendered reads `Idle`.
+    #[must_use]
+    pub fn next_frame(&self) -> crate::frame::Next {
+        self.shared.borrow().next_frame.borrow().clone()
+    }
+
+    /// Installs the surface's own wake-up callback — the per-surface host
+    /// model, for a host that keeps a presentation loop per surface
+    /// rather than one aggregate loop behind the whole engine.
+    ///
+    /// Queued changes (a `surface.update`, a layer drop, a bound signal
+    /// firing), the backend's completions for the surface and its
+    /// becoming visible fire `f` instead of the engine's
+    /// [`set_waker`](crate::Engine::set_waker) callback — coalesced
+    /// independently: at most once between two frames the surface
+    /// participates in. A hidden surface never calls it.
+    /// [`Engine::set_waker`](crate::Engine::set_waker) remains the host
+    /// API for applications that deliberately own one aggregate
+    /// presentation loop.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn set_waker(&self, f: impl Fn() + Send + Sync + 'static) {
+        self.waker.set_callback(Arc::new(f));
+        self.wake_pending();
+    }
+
+    /// Installs the surface's own wake-up callback — the per-surface host
+    /// model, for a host that keeps a presentation loop per surface
+    /// rather than one aggregate loop behind the whole engine.
+    ///
+    /// Queued changes (a `surface.update`, a layer drop, a bound signal
+    /// firing), the backend's completions for the surface and its
+    /// becoming visible fire `f` instead of the engine's
+    /// [`set_waker`](crate::Engine::set_waker) callback — coalesced
+    /// independently: at most once between two frames the surface
+    /// participates in. A hidden surface never calls it.
+    /// [`Engine::set_waker`](crate::Engine::set_waker) remains the host
+    /// API for applications that deliberately own one aggregate
+    /// presentation loop.
+    #[cfg(target_arch = "wasm32")]
+    pub fn set_waker(&self, f: impl Fn() + 'static) {
+        self.waker.set_callback(Arc::new(f));
+        self.wake_pending();
+    }
+
+    /// Wakes the surface's own callback once if work queued before it
+    /// landed is still unrendered — such a change already fired (and
+    /// disarmed) the aggregate engine wake, so without the nudge it would
+    /// sit until the next change. The queue's own `unrendered` flag
+    /// answers, never a borrow of the shared state: a `set_waker` that
+    /// lands while a transaction holds the borrow sees the queued ops'
+    /// flag and wakes, so reentrant callback replacement keeps the same
+    /// owed-wake semantics rather than guessing at pending state.
+    fn wake_pending(&self) {
+        if self.waker.has_pending() {
+            self.waker.wake();
+        }
     }
 
     /// Announces whether the user can see the surface, from the platform's
@@ -1295,7 +1372,9 @@ impl<B: Backend> Surface<B> {
                 }
             }
         }
+        let nonempty = !ops.is_empty();
         shared.pending = ops;
+        shared.waker.note_pending(nonempty);
         for (_, edit) in tx.edits.drain(..) {
             tx.edit_ops.push(edit.ops);
         }
@@ -1353,6 +1432,9 @@ impl<B: Backend> Surface<B> {
 
 impl<B: Backend> Drop for Surface<B> {
     fn drop(&mut self) {
+        // The surface is gone: backend completions landing after this and
+        // ops a leaked layer still queues wake nobody.
+        self.waker.retire();
         let _ = self.tx.send(Message::DestroySurface { id: self.id });
     }
 }

@@ -26,10 +26,10 @@ use objc2::MainThreadMarker;
 use objc2_metal::{MTLPixelFormat, MTLTexture};
 use waterui_core::NativeView;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
-use waterui_graphics::cherenkov::{Display, Next, kurbo};
+use waterui_graphics::cherenkov::{Display, FrameTime, Next, kurbo};
 use waterui_graphics::gpu::{
     ExternalFrameRenderer, ExternalFrameStream, ExternalFrameView, GpuContentRenderer,
-    GpuContentView, GpuRuntime, RedrawHandle, SharedGpuContext,
+    GpuContentView, GpuRuntime, HostedLayerError, RedrawHandle, SharedGpuContext,
 };
 use waterui_graphics::input::SurfaceInputEvent;
 use waterui_graphics::offscreen::OffscreenSize;
@@ -37,6 +37,8 @@ use waterui_graphics::wgpu;
 
 use crate::contract::NativeLeaf;
 use crate::dispatch::Dispatcher;
+use crate::gpu_runtime::{SceneEngine, SceneError};
+use crate::presentation_time::PresentationTime;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -92,14 +94,22 @@ trait HostedView {
         None
     }
     /// Builds the view's engine layer on `context` — the exact generation
-    /// the caller is holding for the frame this renderer presents.
+    /// the caller is holding for the frame this renderer presents — and on
+    /// the shared scene engine owner the runtime keeps beside it.
+    ///
+    /// # Errors
+    ///
+    /// [`HostedError`] when the layer or its engine cannot be created —
+    /// callers run inside frame callbacks where a panic is a process
+    /// abort, so creation failure is a typed result.
     fn renderer(
         &mut self,
         runtime: &GpuRuntime,
         context: &Arc<SharedGpuContext>,
+        engines: &Rc<SceneEngine>,
         redraw: &RedrawHandle,
         size: OffscreenSize,
-    ) -> Box<dyn HostedRenderer>;
+    ) -> Result<Box<dyn HostedRenderer>, HostedError>;
 }
 
 /// The engine half of a mounted GPU surface: one device generation's layer,
@@ -107,8 +117,63 @@ trait HostedView {
 trait HostedRenderer {
     /// The context generation the renderer was built under.
     fn generation(&self) -> u64;
-    /// Renders and composites into the host's texture.
-    fn present(&mut self, target: &wgpu::Texture, display: Display) -> Next;
+    /// Renders and composites into the host's texture for the production
+    /// target timestamp `target_time`.
+    ///
+    /// # Errors
+    ///
+    /// [`HostedError`] when preparation or the frame fails — the frame
+    /// path cannot unwind across an Objective-C callback, so every failure
+    /// is a typed result.
+    fn present(
+        &mut self,
+        target: &wgpu::Texture,
+        display: Display,
+        target_time: FrameTime,
+    ) -> Result<Next, HostedError>;
+}
+
+/// What building or presenting a hosted renderer's frame can fail with —
+/// the one typed failure channel of the private HostedView/HostedRenderer/
+/// frame path. A failure settles the surface through
+/// [`settle_failed`]: reported once as a native rendering failure, then
+/// the instance stops scheduling until a new context generation
+/// legitimately rebinds it — never a same-context retry.
+#[derive(Debug)]
+enum HostedError {
+    /// The shared scene engine generation failed — the generation
+    /// owner's owned carrier, so every affected participant and later
+    /// mount sees the same typed failure without rerunning it.
+    Scene(Rc<SceneError>),
+    /// The hosted cherenkov layer failed.
+    Layer(HostedLayerError),
+}
+
+impl fmt::Display for HostedError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Scene(error) => write!(f, "{error}"),
+            Self::Layer(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl From<SceneError> for HostedError {
+    fn from(error: SceneError) -> Self {
+        Self::Scene(Rc::new(error))
+    }
+}
+
+impl From<Rc<SceneError>> for HostedError {
+    fn from(error: Rc<SceneError>) -> Self {
+        Self::Scene(error)
+    }
+}
+
+impl From<HostedLayerError> for HostedError {
+    fn from(error: HostedLayerError) -> Self {
+        Self::Layer(error)
+    }
 }
 
 impl HostedView for GpuContentView {
@@ -152,9 +217,10 @@ impl HostedView for GpuContentView {
         &mut self,
         runtime: &GpuRuntime,
         context: &Arc<SharedGpuContext>,
+        engines: &Rc<SceneEngine>,
         redraw: &RedrawHandle,
         size: OffscreenSize,
-    ) -> Box<dyn HostedRenderer> {
+    ) -> Result<Box<dyn HostedRenderer>, HostedError> {
         // `engine_content` answers the same content object every time, so a
         // renderer rebuilt after device loss re-installs it with its state.
         let redraw = redraw.clone();
@@ -162,12 +228,13 @@ impl HostedView for GpuContentView {
             self.engine_content(),
             move || redraw.request_redraw(),
         );
-        Box::new(GpuContentRenderer::new(
+        let _ = engines;
+        Ok(Box::new(GpuContentRenderer::new(
             runtime,
             context.clone(),
             producer,
             size,
-        ))
+        )?))
     }
 }
 
@@ -176,8 +243,13 @@ impl HostedRenderer for GpuContentRenderer {
         Self::generation(self)
     }
 
-    fn present(&mut self, target: &wgpu::Texture, display: Display) -> Next {
-        Self::present(self, target, display)
+    fn present(
+        &mut self,
+        target: &wgpu::Texture,
+        display: Display,
+        target_time: FrameTime,
+    ) -> Result<Next, HostedError> {
+        Ok(Self::present(self, target, display, target_time)?)
     }
 }
 
@@ -220,17 +292,19 @@ impl HostedView for ExternalFrameView {
         &mut self,
         runtime: &GpuRuntime,
         context: &Arc<SharedGpuContext>,
+        engines: &Rc<SceneEngine>,
         redraw: &RedrawHandle,
         size: OffscreenSize,
-    ) -> Box<dyn HostedRenderer> {
+    ) -> Result<Box<dyn HostedRenderer>, HostedError> {
+        let _ = engines;
         let stream: ExternalFrameStream = self.stream();
-        Box::new(ExternalFrameRenderer::new(
+        Ok(Box::new(ExternalFrameRenderer::new(
             runtime,
             context.clone(),
             &stream,
             size,
             redraw.clone(),
-        ))
+        )?))
     }
 }
 
@@ -239,8 +313,13 @@ impl HostedRenderer for ExternalFrameRenderer {
         Self::generation(self)
     }
 
-    fn present(&mut self, target: &wgpu::Texture, display: Display) -> Next {
-        Self::present(self, target, display)
+    fn present(
+        &mut self,
+        target: &wgpu::Texture,
+        display: Display,
+        target_time: FrameTime,
+    ) -> Result<Next, HostedError> {
+        Ok(Self::present(self, target, display, target_time)?)
     }
 }
 
@@ -250,6 +329,18 @@ impl HostedRenderer for ExternalFrameRenderer {
 struct SurfaceState {
     /// The environment's GPU runtime; `context()` follows device rebuilds.
     runtime: GpuRuntime,
+    /// The environment's shared scene engine owner — one cherenkov engine
+    /// per exact context generation, shared by every mounted `SceneView`.
+    scene_engine: Rc<SceneEngine>,
+    /// The environment's shared presentation-time anchor — the display
+    /// link's target timestamp maps through it onto the engine's clock.
+    presentation: Rc<PresentationTime>,
+    /// Set when initialization or a frame settled as a typed failure: the
+    /// instance stops scheduling — `render_frame` returns immediately, so
+    /// no link tick, on-demand render or redraw wake retries the failed
+    /// surface. Only a new context generation legitimately rebinds it,
+    /// cleared in `arm_context_watch`'s publication wake.
+    failed: Cell<bool>,
     /// The hosted semantic view.
     view: RefCell<Box<dyn HostedView>>,
     /// The view's engine layer on the runtime's current context generation.
@@ -339,6 +430,8 @@ impl SurfaceState {
     fn new(
         weak: &Weak<Self>,
         runtime: GpuRuntime,
+        scene_engine: Rc<SceneEngine>,
+        presentation: Rc<PresentationTime>,
         view: Box<dyn HostedView>,
         platform_view: &Retained<SurfaceView>,
         mtm: cocoa_ui::MainThreadMarker,
@@ -380,6 +473,9 @@ impl SurfaceState {
         });
         Self {
             runtime,
+            scene_engine,
+            presentation,
+            failed: Cell::new(false),
             view: RefCell::new(view),
             renderer: RefCell::new(None),
             format: Cell::new(None),
@@ -430,13 +526,20 @@ impl SurfaceState {
     /// The renderer — engine, surface and the view's layer — is built lazily
     /// on the first frame and rebuilt from the view whenever the runtime's
     /// context generation moves on.
+    ///
+    /// # Errors
+    ///
+    /// [`HostedError`] when creating the renderer or presenting the frame
+    /// fails — the display-link callback cannot unwind, so every failure
+    /// arrives as a typed result for the caller to settle.
     fn render_into(
         &self,
         context: &Arc<SharedGpuContext>,
         texture: &wgpu::Texture,
         (width, height): (u32, u32),
         display: Display,
-    ) -> bool {
+        target_time: FrameTime,
+    ) -> Result<bool, HostedError> {
         self.dirty.set(false);
         self.view.borrow().before_frame();
         // A renderer bound to a context generation that has since been lost
@@ -451,18 +554,21 @@ impl SurfaceState {
             *slot = None;
         }
         if slot.is_none() {
-            *slot = Some(
-                self.view.borrow_mut().renderer(
-                    &self.runtime,
-                    context,
-                    &self.redraw_handle,
-                    OffscreenSize::try_from_pixels(width, height)
-                        .expect("native target must be nonempty"),
-                ),
-            );
+            let Some(size) = OffscreenSize::try_from_pixels(width, height) else {
+                return Err(HostedLayerError::EmptyTarget.into());
+            };
+            *slot = Some(self.view.borrow_mut().renderer(
+                &self.runtime,
+                context,
+                &self.scene_engine,
+                &self.redraw_handle,
+                size,
+            )?);
         }
-        let renderer = slot.as_mut().expect("renderer created above");
-        renderer.present(texture, display) != Next::Idle || self.dirty.get()
+        let Some(renderer) = slot.as_mut() else {
+            return Err(HostedLayerError::MissingTexture.into());
+        };
+        Ok(renderer.present(texture, display, target_time)? != Next::Idle || self.dirty.get())
     }
 }
 
@@ -538,11 +644,12 @@ fn render_to_metal_texture(
     width: u32,
     height: u32,
     scale: f64,
-) -> FrameRender {
+    target_time: FrameTime,
+) -> Result<FrameRender, HostedError> {
     let format = metal_texture_format(&metal_texture);
     state.prepare_format(format);
     if context.device_lost_reason().is_some() {
-        return FrameRender::PendingRebuild;
+        return Ok(FrameRender::PendingRebuild);
     }
     // SAFETY: these presentation buffers belong to this device and are
     // handed over as color attachments after their preceding frame completed.
@@ -564,9 +671,15 @@ fn render_to_metal_texture(
     };
     // The completion marker submitted by the caller orders the frame's work
     // ahead of the callback that presents it.
-    FrameRender::Submitted {
-        needs_redraw: state.render_into(context, &wgpu_texture, (width, height), display),
-    }
+    Ok(FrameRender::Submitted {
+        needs_redraw: state.render_into(
+            context,
+            &wgpu_texture,
+            (width, height),
+            display,
+            target_time,
+        )?,
+    })
 }
 
 // MARK: - Presentation lifecycle (WuiGpuSurface + WuiSurfacePresentation)
@@ -834,6 +947,10 @@ fn arm_context_watch(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>, gen
     *state.context_watch.borrow_mut() = Some(executor_core::spawn_local(async move {
         let _published = runtime.context_after(generation).await;
         if let Some(state) = weak.upgrade() {
+            // A new context generation is the one legitimate recovery: the
+            // failed surface rebinds against it — never a retry of the
+            // same frame on the generation that failed.
+            state.failed.set(false);
             if state.external_count.get() > 0 {
                 // Externally rendered surfaces own no presentation to
                 // replay: the owed frame replays by asking the enclosing
@@ -851,6 +968,11 @@ fn arm_context_watch(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>, gen
 /// The one-frame-per-tick body — `renderFrame`. `force` draws through the
 /// visibility gates for the first frame a window's reveal waits on.
 fn render_frame(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>, force: bool) {
+    // A failed surface stops scheduling entirely: no tick, on-demand render
+    // or redraw wake retries it — only a new context generation rebinds it.
+    if state.failed.get() {
+        return;
+    }
     if state.external_count.get() > 0 {
         notify_external_redraw(state);
         return;
@@ -884,7 +1006,15 @@ fn render_frame(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>, force: b
 
     let width = state.current_width.get();
     let height = state.current_height.get();
-    let FrameRender::Submitted { needs_redraw } = render_to_metal_texture(
+    // The frame's production target is the ticking link's exact target
+    // timestamp — the one correct native surface for it. On-demand renders
+    // run outside the callback, so they map the shared anchor's capture
+    // time instead of inventing a frame time.
+    let target_time = state.clock.current_target_timestamp().map_or_else(
+        || state.presentation.capture_time(),
+        |m| state.presentation.map(m),
+    );
+    let outcome = match render_to_metal_texture(
         state,
         view,
         &context,
@@ -892,7 +1022,15 @@ fn render_frame(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>, force: b
         width,
         height,
         state.current_scale.get(),
-    ) else {
+        target_time,
+    ) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            settle_failed(state, view, error);
+            return;
+        }
+    };
+    let FrameRender::Submitted { needs_redraw } = outcome else {
         // The lost context never receives work again; owe the frame and
         // park until the runtime publishes the rebuilt context, whose wake
         // replays it through `update_display_link_state` — the owed path
@@ -953,6 +1091,24 @@ fn render_frame(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>, force: b
             });
         },
     );
+}
+
+/// Settles a typed [`HostedError`] as an explicit native rendering
+/// failure: reported through tracing (the native `os_log` channel), native
+/// readiness resolves as failure so `ready` waiters never hang, and the
+/// instance stops scheduling — `render_frame`'s `failed` gate rejects
+/// every later tick, on-demand render and redraw wake. There is no
+/// automatic retry and no fallback presentation; the only legitimate
+/// recovery is a new context generation, which `arm_context_watch`'s
+/// publication wake rebinds against.
+fn settle_failed(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>, error: HostedError) {
+    tracing::error!(
+        "native rendering failed; the surface stops scheduling until a new context generation rebinds it: {error}"
+    );
+    state.failed.set(true);
+    state.keep_redrawing.set(false);
+    complete_ready(state, false);
+    update_display_link_state(state, view);
 }
 
 /// `handleRedrawRequest`: the redraw waker's main-queue body — republishes
@@ -1253,7 +1409,11 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
         }
         .expect("GpuSurface external render received a null texture");
         let context = self.state.runtime.context();
-        let FrameRender::Submitted { .. } = render_to_metal_texture(
+        // An explicit capture renders at the shared anchor's capture time —
+        // its own exact instant, never a borrowed or approximated frame
+        // timestamp.
+        let target_time = self.state.presentation.capture_time();
+        let outcome = match render_to_metal_texture(
             &self.state,
             &self.view,
             &context,
@@ -1261,7 +1421,20 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
             width,
             height,
             self.state.current_scale.get(),
-        ) else {
+            target_time,
+        ) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                // A typed failure settles the surface like any frame-path
+                // failure, and the capture gets its deferred answer — the
+                // completion contract has no richer error channel.
+                tracing::error!("native rendering failed during external capture: {error}");
+                settle_failed(&self.state, &self.view, error);
+                completion(Err(cocoa_ui::capture::CaptureDeferred));
+                return;
+            }
+        };
+        let FrameRender::Submitted { .. } = outcome else {
             complete_ready(&self.state, false);
             // The capture's deferred frame replays through the redraw
             // contract: publication resolves the watch, and an externally
@@ -1541,8 +1714,18 @@ fn build_surface<V: HostedView + 'static>(
         let mtm = ctx.mtm();
         let platform_view = SurfaceView::new(mtm);
         let runtime = crate::gpu_runtime::runtime(ctx.env());
+        let scene_engine = crate::gpu_runtime::scene_engine(ctx.env());
+        let presentation = PresentationTime::get(ctx.env());
         let state = Rc::new_cyclic(|weak| {
-            SurfaceState::new(weak, runtime, Box::new(view), &platform_view, mtm)
+            SurfaceState::new(
+                weak,
+                runtime,
+                scene_engine,
+                presentation,
+                Box::new(view),
+                &platform_view,
+                mtm,
+            )
         });
         state.view.borrow_mut().mount(&state.redraw_handle);
 
