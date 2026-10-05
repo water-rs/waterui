@@ -21,6 +21,7 @@ use waterui::layout::frame::Frame;
 use waterui::layout::padding::EdgeInsets;
 use waterui::layout::safe_area::{EdgeSet, SafeAreaRegions};
 use waterui::layout::scroll::ScrollView;
+use waterui::navigation::NavigationView;
 use waterui::prelude::*;
 use waterui::{AnyView, Binding, Color, View};
 use waterui_testing::{DragOptions, Role, Styled, UiBuilder};
@@ -322,6 +323,24 @@ fn ignoring_only_the_container_region_releases_nothing_under_the_keyboard(
         (bounds.y() + bounds.height() - KEYBOARD_TOP).abs() <= 1.0,
         "the keyboard region still binds: expected bottom {KEYBOARD_TOP}, got {bounds:?}"
     );
+
+    // With the keyboard down the container region is the deepest one on the
+    // bottom edge, and the declaration releases it: the frame slides under
+    // the navigation bar by the container inset and ends on the window edge.
+    keyboard.set(EdgeInsets::new(0.0, 0.0, 0.0, 0.0));
+    app.settle();
+
+    let released = app
+        .query()
+        .role(Role::LABEL)
+        .label("composer")
+        .single()
+        .bounds();
+    assert!(
+        (released.y() + released.height() - 844.0).abs() <= 1.0,
+        "the CONTAINER release ends on the window edge — the bottom grew by \
+         the container inset (34) once the keyboard left, got {released:?}"
+    );
 }
 
 /// §7.1 "Paint extends for fills": a background fill whose frame touches the
@@ -475,14 +494,17 @@ fn non_fill_leaves_at_an_edge_do_not_extend(ui: UiBuilder<Styled<hydrolysis_m3::
         .bounds();
     assert!(
         (content.y() - (SAFE_INSETS.top() + 4.0 + 10.0)).abs() <= 1.0,
-        "the color strip keeps its own frame at the top edge, got {content:?}"
+        "the color strip's laid-out frame stays inside the container inset, \
+         got {content:?}"
     );
     app.capture_snapshot("safe-area", "non-fill-leaves-at-edges", "keyboard");
 }
 
 /// A non-fill background — `.background` of a view rather than a color —
 /// extends only where it ignores the safe area, so with no declaration it
-/// keeps its frame even at the bottom edge.
+/// paints no further than its laid-out frame even at the bottom edge. The
+/// paint extension never changes a layout bound, so the snapshot is the
+/// check: the band stays the window background.
 #[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
 fn a_non_fill_background_stays_inside_the_keyboard_region(
     ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
@@ -503,16 +525,6 @@ fn a_non_fill_background_stays_inside_the_keyboard_region(
             .alignment(HorizontalAlignment::Leading)
         });
 
-    let bounds = app
-        .query()
-        .role(Role::LABEL)
-        .label("backdrop")
-        .single()
-        .bounds();
-    assert!(
-        bounds.y() + bounds.height() <= KEYBOARD_TOP + 1.0,
-        "a non-fill background must not extend into the keyboard band, got {bounds:?}"
-    );
     app.capture_snapshot("safe-area", "non-fill-under-keyboard", "keyboard");
 }
 
@@ -648,6 +660,17 @@ fn a_list_row_field_scrolls_clear_of_the_keyboard(ui: UiBuilder<Styled<hydrolysi
             })
         });
 
+    let covered = app
+        .query()
+        .role(Role::TEXT_INPUT)
+        .label("Message")
+        .single()
+        .bounds();
+    assert!(
+        covered.y() + covered.height() > KEYBOARD_TOP + 1.0,
+        "precondition: the row field starts under the keyboard band, got {covered:?}"
+    );
+
     app.query().role(Role::TEXT_INPUT).label("Message").focus();
     app.settle();
     app.pump_for(Duration::from_secs(1));
@@ -719,15 +742,7 @@ fn a_touch_drag_over_several_frames_keeps_scrolling_under_nonzero_insets(
 
     // A touch drag is what claims a scroll view on a real device; the host
     // reports its gesture constants through `PlatformWindow::touch_scroll_config`.
-    app.set_touch_scroll_config(hydrolysis::TouchScrollConfig {
-        touch_slop: 10.0,
-        min_fling_velocity: 50.0,
-        max_fling_velocity: 8_000.0,
-        fling: hydrolysis::FlingDeceleration {
-            physical_coeff: 9.806_65 * 39.37 * 160.0 * 0.84,
-            friction: 0.015,
-        },
-    });
+    app.set_touch_scroll_config(hydrolysis::TouchScrollConfig::android_default());
 
     let before = app
         .query()
@@ -738,7 +753,7 @@ fn a_touch_drag_over_several_frames_keeps_scrolling_under_nonzero_insets(
 
     // A 250 pt drag sampled over five frames: each move lands on its own
     // pump, so a stale scroll handle would drop everything after frame one.
-    app.queue_touch_drag_from_to_with(
+    app.queue_drag_from_to_with(
         195.0,
         400.0,
         195.0,
@@ -746,6 +761,7 @@ fn a_touch_drag_over_several_frames_keeps_scrolling_under_nonzero_insets(
         DragOptions {
             steps: 5,
             frame_per_step: true,
+            pointer: hydrolysis::PointerKind::Touch,
         },
     );
     app.pump_for(Duration::from_millis(500));
@@ -761,5 +777,301 @@ fn a_touch_drag_over_several_frames_keeps_scrolling_under_nonzero_insets(
         before.y() - after.y() >= 100.0,
         "the drag scrolled the content substantially across frames: \
          was {before:?}, now {after:?}"
+    );
+}
+
+/// Fractional geometry (§7.1's "touches" resolved at display resolution):
+/// Android-density insets and a text-height composer leave the f32-placed
+/// frame a sub-pixel off the boundary. A touch within half a physical
+/// pixel at the window's scale is still a touch — the nested declaration
+/// on the grown frame edge releases to the window edge.
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
+fn a_fractional_geometry_still_touches_the_boundary(
+    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
+) {
+    // 2.75x-density container insets: nothing in this geometry is an
+    // integer — not the boundary (844 - 24.38), not the release amounts,
+    // not the composer's measured text height.
+    const FRACTIONAL_INSETS: EdgeInsets = EdgeInsets::new(47.24, 24.38, 8.2, 8.6);
+    let container = waterui::binding(FRACTIONAL_INSETS);
+    let keyboard = waterui::binding(KEYBOARD_INSETS);
+    let mut app = ui
+        .scale_factor(2.75)
+        .environment(env_with_keyboard(&container, &keyboard))
+        .mount_offscreen(move || {
+            vstack((
+                spacer(),
+                vstack((spacer(), card("composer")))
+                    .ignore_safe_area(SafeAreaRegions::CONTAINER.on(EdgeSet::BOTTOM)),
+            ))
+            .alignment(HorizontalAlignment::Leading)
+            .ignore_safe_area(SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM))
+        });
+
+    // The outer release moves the bottom boundary to the container edge
+    // (819.62); the inner stack's f32-grown frame edge lands a sub-pixel
+    // off it. Its CONTAINER declaration still touches and releases the
+    // composer through the navigation-bar band to the window edge.
+    let composer = app
+        .query()
+        .role(Role::LABEL)
+        .label("composer")
+        .single()
+        .bounds();
+    assert!(
+        (composer.y() + composer.height() - 844.0).abs() <= 1.0,
+        "the nested declaration touches within half a physical pixel and \
+         releases to the window edge, got {composer:?}"
+    );
+    app.capture_snapshot("safe-area", "fractional-geometry-touch", "keyboard");
+}
+
+/// A declaration ON the fill replaces the default extension — including an
+/// empty one: a background `Color` carrying `.ignore_safe_area(EdgeSet::NONE)`
+/// names no edge, so it releases nothing and no default extension applies.
+/// The snapshot is the check: the bands stay the window background.
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
+fn a_fill_with_an_empty_ignore_extends_nowhere(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
+    let container = waterui::binding(SAFE_INSETS);
+    let keyboard = waterui::binding(KEYBOARD_INSETS);
+    let mut app = ui
+        .environment(env_with_keyboard(&container, &keyboard))
+        .mount_offscreen(move || {
+            vstack((
+                spacer(),
+                text("composer")
+                    .body()
+                    .foreground(Srgb::WHITE)
+                    .padding_with(8.0)
+                    .background(
+                        Color::new(Srgb::new(0.0, 0.35, 0.85)).ignore_safe_area(EdgeSet::NONE),
+                    ),
+            ))
+            .alignment(HorizontalAlignment::Leading)
+        });
+
+    let bounds = app
+        .query()
+        .role(Role::LABEL)
+        .label("composer")
+        .single()
+        .bounds();
+    // The declaration names no edges, so the padded frame still ends on the
+    // keyboard boundary — the layout precondition a default extension
+    // would share.
+    assert!(
+        (bounds.y() + bounds.height() - (KEYBOARD_TOP - 8.0)).abs() <= 1.0,
+        "the frame still ends on the boundary, got {bounds:?}"
+    );
+    app.capture_snapshot("safe-area", "fill-declared-none", "keyboard");
+}
+
+/// `.ignore_safe_area(EdgeSet::BOTTOM)` on a fill replaces the default on
+/// every edge: a full-height background touches both the top and bottom
+/// boundaries, and only the named edge reaches the window edge — the
+/// status-bar band keeps the window background (snapshot).
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
+fn a_fill_ignore_names_the_only_edge_that_extends(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
+    let container = waterui::binding(SAFE_INSETS);
+    let keyboard = waterui::binding(KEYBOARD_INSETS);
+    let mut app = ui
+        .environment(env_with_keyboard(&container, &keyboard))
+        .mount_offscreen(move || {
+            vstack((card("content"), spacer()))
+                .alignment(HorizontalAlignment::Leading)
+                .background(Color::new(Srgb::new(0.75, 0.4, 0.0)).ignore_safe_area(EdgeSet::BOTTOM))
+        });
+
+    // The named bottom edge's release is the fill's whole extension: the
+    // background paints to the window edge there (the card sits 48 below
+    // the top, so y + height lands past the window bottom only on the fill).
+    let content = app
+        .query()
+        .role(Role::LABEL)
+        .label("content")
+        .single()
+        .bounds();
+    assert!(
+        (content.y() - SAFE_INSETS.top()).abs() <= 1.0,
+        "the content frame keeps the container inset, got {content:?}"
+    );
+    app.capture_snapshot("safe-area", "fill-ignore-bottom-edge-only", "keyboard");
+}
+
+/// §7.1 chrome containers: a form inside `NavigationView` content is a
+/// scroll surface with the chrome's band consumed — it extends under the
+/// keyboard and clears a focused field exactly as a root-level surface
+/// does.
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
+fn a_form_inside_navigation_content_clears_the_focused_field(
+    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
+) {
+    let container = waterui::binding(SAFE_INSETS);
+    let keyboard = waterui::binding(KEYBOARD_INSETS);
+    let value = Binding::container(waterui::Str::from(""));
+    let mut app = ui
+        .environment(env_with_keyboard(&container, &keyboard))
+        .mount_offscreen(move || {
+            NavigationView::new(
+                "Compose",
+                ScrollView::vertical(vstack((
+                    spacer().size(390.0, 560.0),
+                    field("Message", &value).size(350.0, 44.0),
+                    spacer().size(390.0, 380.0),
+                ))),
+            )
+        });
+
+    let covered = app
+        .query()
+        .role(Role::TEXT_INPUT)
+        .label("Message")
+        .single()
+        .bounds();
+    assert!(
+        covered.y() + covered.height() > KEYBOARD_TOP + 1.0,
+        "precondition: the field starts under the keyboard band, got {covered:?}"
+    );
+
+    app.query().role(Role::TEXT_INPUT).label("Message").focus();
+    app.settle();
+    app.pump_for(Duration::from_secs(1));
+
+    let cleared = app
+        .query()
+        .role(Role::TEXT_INPUT)
+        .label("Message")
+        .single()
+        .bounds();
+    assert!(
+        (cleared.y() + cleared.height() - KEYBOARD_TOP).abs() <= 0.5,
+        "the navigation-hosted surface clears the field to the keyboard \
+         boundary, got {cleared:?}"
+    );
+}
+
+/// `.ignore_safe_area` inside navigation content still releases: the
+/// chrome's own band is consumed into the content frame's context, so a
+/// TOP declaration on the hero reaches through the bar and the status bar
+/// to the window edge.
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
+fn an_ignore_inside_navigation_content_still_releases(
+    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
+) {
+    let insets = waterui::binding(SAFE_INSETS);
+    let mut app = ui
+        .environment(env_with_insets(&insets))
+        .mount_offscreen(move || {
+            NavigationView::new(
+                "Hero",
+                vstack((card("hero").ignore_safe_area(EdgeSet::TOP), card("below"))),
+            )
+        });
+
+    let hero = app
+        .query()
+        .role(Role::LABEL)
+        .label("hero")
+        .single()
+        .bounds();
+    assert!(
+        hero.y().abs() <= 1.0,
+        "the declaration releases through the chrome to the window origin, got {hero:?}"
+    );
+}
+
+/// `ScrollNode` reads its metrics after `begin_flush`: a keyboard inset
+/// change scrolls the field clear inside the early pass, so the very frame
+/// the inset arrives already paints the field above the new keyboard top —
+/// not one frame later.
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
+fn a_keyboard_inset_change_clears_the_field_on_that_frame(
+    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
+) {
+    let container = waterui::binding(SAFE_INSETS);
+    let keyboard = waterui::binding(KEYBOARD_INSETS);
+    let value = Binding::container(waterui::Str::from(""));
+    let mut app = ui
+        .environment(env_with_keyboard(&container, &keyboard))
+        .mount_offscreen(move || {
+            ScrollView::vertical(vstack((
+                spacer().size(390.0, 560.0),
+                field("Message", &value).size(350.0, 44.0),
+                spacer().size(390.0, 380.0),
+            )))
+        });
+
+    app.query().role(Role::TEXT_INPUT).label("Message").focus();
+    app.settle();
+    app.pump_for(Duration::from_secs(1));
+
+    keyboard.set(EdgeInsets::new(0.0, 400.0, 0.0, 0.0));
+    // One frame — not a settle. The clearance must already be painted.
+    app.pump_for(Duration::from_millis(16));
+
+    let tracked = app
+        .query()
+        .role(Role::TEXT_INPUT)
+        .label("Message")
+        .single()
+        .bounds();
+    assert!(
+        (tracked.y() + tracked.height() - (844.0 - 400.0)).abs() <= 0.5,
+        "the field is already clear on the frame the inset arrived, got {tracked:?}"
+    );
+}
+
+/// A field inside a scroll nested in a scroll is claimed once by the
+/// surface that can clear it: the inner surface's content lays out without
+/// a safe-area context, so the outer surface owns the clearance — the
+/// field lands on the keyboard boundary, never over-scrolled by a second
+/// surface reading the field's pre-clearance rect.
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
+fn a_field_in_a_nested_scroll_is_cleared_once(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
+    let container = waterui::binding(SAFE_INSETS);
+    let keyboard = waterui::binding(KEYBOARD_INSETS);
+    let value = Binding::container(waterui::Str::from(""));
+    let mut app = ui
+        .environment(env_with_keyboard(&container, &keyboard))
+        .mount_offscreen(move || {
+            ScrollView::vertical(vstack((
+                spacer().size(390.0, 430.0),
+                ScrollView::vertical(vstack((
+                    spacer().size(350.0, 80.0),
+                    field("Message", &value).size(350.0, 44.0),
+                    spacer().size(350.0, 300.0),
+                )))
+                .size(350.0, 200.0),
+                spacer().size(390.0, 380.0),
+            )))
+        });
+
+    // The inner surface is context-free (§7.1: a scroll surface's content
+    // stays context-free): its field at 510..554 sits under the keyboard
+    // band inside the outer surface's extended window.
+    let covered = app
+        .query()
+        .role(Role::TEXT_INPUT)
+        .label("Message")
+        .single()
+        .bounds();
+    assert!(
+        covered.y() + covered.height() > KEYBOARD_TOP + 1.0,
+        "precondition: the nested field starts under the keyboard band, got {covered:?}"
+    );
+
+    app.query().role(Role::TEXT_INPUT).label("Message").focus();
+    app.settle();
+    app.pump_for(Duration::from_secs(1));
+
+    let cleared = app
+        .query()
+        .role(Role::TEXT_INPUT)
+        .label("Message")
+        .single()
+        .bounds();
+    assert!(
+        (cleared.y() + cleared.height() - KEYBOARD_TOP).abs() <= 0.5,
+        "the owning surface clears the nested field exactly once, got {cleared:?}"
     );
 }

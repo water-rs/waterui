@@ -8,7 +8,7 @@ use accesskit::{
 };
 use hydrolysis::{
     AccessibilityActivationPointError, FontFamilyResolution, HeadlessRuntime, KeyCode, Modifiers,
-    SemanticRuntime, Style,
+    PointerKind, SemanticRuntime, Style,
 };
 use waterui::app::{App, AppParts};
 use waterui::window::Window;
@@ -559,6 +559,13 @@ pub struct DragOptions {
     /// frame: gesture recognizers then observe a real motion timeline
     /// (velocity, glide) instead of every sample arriving at once.
     pub frame_per_step: bool,
+    /// The pointer kind the drag dispatches. `PointerKind::Touch` is what a
+    /// real device's finger produces: the scroll claim, the touch slop and
+    /// the fling all key on the pointer kind, which `PointerKind::Mouse`
+    /// never reaches. The runtime reports no touch-scroll configuration
+    /// until [`OffscreenApp::set_touch_scroll_config`] supplies it — on a
+    /// host without one a touch drag still dispatches but claims nothing.
+    pub pointer: PointerKind,
 }
 
 impl Default for DragOptions {
@@ -566,6 +573,7 @@ impl Default for DragOptions {
         Self {
             steps: 6,
             frame_per_step: false,
+            pointer: PointerKind::Mouse,
         }
     }
 }
@@ -686,7 +694,7 @@ impl OffscreenApp {
     pub fn queue_pointer_move(&mut self, x: f32, y: f32) {
         self.app
             .runtime
-            .push_input_event(driver::pointer_move_event(x, y));
+            .push_input_event(driver::pointer_move_event(PointerKind::Mouse, x, y));
     }
 }
 
@@ -1537,7 +1545,7 @@ impl SemanticApp<HeadlessRuntime> {
     /// [`OffscreenApp::pump_for`] and [`OffscreenApp::snapshot`].
     pub fn queue_hover_at(&mut self, x: f32, y: f32) {
         self.runtime
-            .push_input_event(driver::pointer_move_event(x, y));
+            .push_input_event(driver::pointer_move_event(PointerKind::Mouse, x, y));
     }
 
     /// Resolves the viewport point a pointer can activate on `node_id`'s
@@ -1577,9 +1585,9 @@ impl SemanticApp<HeadlessRuntime> {
     /// Dispatches a pointer tap at viewport coordinates and settles resulting updates.
     pub fn tap_at(&mut self, x: f32, y: f32) {
         self.runtime
-            .push_input_event(driver::pointer_down_event(x, y));
+            .push_input_event(driver::pointer_down_event(PointerKind::Mouse, x, y));
         self.runtime
-            .push_input_event(driver::pointer_up_event(x, y));
+            .push_input_event(driver::pointer_up_event(PointerKind::Mouse, x, y));
         self.settle();
     }
 
@@ -1596,7 +1604,7 @@ impl SemanticApp<HeadlessRuntime> {
     /// than being waited out.
     pub fn queue_pointer_down_at(&mut self, x: f32, y: f32) {
         self.runtime
-            .push_input_event(driver::pointer_down_event(x, y));
+            .push_input_event(driver::pointer_down_event(PointerKind::Mouse, x, y));
     }
 
     /// Right-clicks at viewport coordinates, opening a context menu if there is
@@ -1627,7 +1635,7 @@ impl SemanticApp<HeadlessRuntime> {
     /// by the next pump.
     pub fn queue_pointer_up_at(&mut self, x: f32, y: f32) {
         self.runtime
-            .push_input_event(driver::pointer_up_event(x, y));
+            .push_input_event(driver::pointer_up_event(PointerKind::Mouse, x, y));
     }
 
     pub(crate) fn drag_from_to(&mut self, from_x: f32, from_y: f32, to_x: f32, to_y: f32) {
@@ -1675,55 +1683,19 @@ impl SemanticApp<HeadlessRuntime> {
     ) {
         let steps = options.steps.max(1);
         self.runtime
-            .push_input_event(driver::pointer_down_event(from_x, from_y));
+            .push_input_event(driver::pointer_down_event(options.pointer, from_x, from_y));
         for step in 1..=steps {
             let t = f32::from(step) / f32::from(steps);
             let x = (to_x - from_x).mul_add(t, from_x);
             let y = (to_y - from_y).mul_add(t, from_y);
             self.runtime
-                .push_input_event(driver::pointer_move_event(x, y));
+                .push_input_event(driver::pointer_move_event(options.pointer, x, y));
             if options.frame_per_step {
                 let _ = self.pump_step(VIRTUAL_FRAME);
             }
         }
         self.runtime
-            .push_input_event(driver::pointer_up_event(to_x, to_y));
-    }
-
-    /// Dispatches a `PointerKind::Touch` drag between viewport coordinates
-    /// without the semantic settle. A touch drag is what a real device's
-    /// finger produces: scroll claims, the touch slop and flings all key on
-    /// the pointer kind, which [`Self::queue_drag_from_to_with`]'s mouse
-    /// events never reach. The runtime reports no touch-scroll
-    /// configuration until [`Self::set_touch_scroll_config`] supplies it —
-    /// on a host without one the drag still dispatches but claims nothing.
-    ///
-    /// Events are processed immediately; only the final settle is skipped,
-    /// so a release-triggered fling stays observable to
-    /// [`OffscreenApp::pump_for`] and [`OffscreenApp::snapshot`].
-    pub fn queue_touch_drag_from_to_with(
-        &mut self,
-        from_x: f32,
-        from_y: f32,
-        to_x: f32,
-        to_y: f32,
-        options: DragOptions,
-    ) {
-        let steps = options.steps.max(1);
-        self.runtime
-            .push_input_event(driver::touch_down_event(from_x, from_y));
-        for step in 1..=steps {
-            let t = f32::from(step) / f32::from(steps);
-            let x = (to_x - from_x).mul_add(t, from_x);
-            let y = (to_y - from_y).mul_add(t, from_y);
-            self.runtime
-                .push_input_event(driver::touch_move_event(x, y));
-            if options.frame_per_step {
-                let _ = self.pump_step(VIRTUAL_FRAME);
-            }
-        }
-        self.runtime
-            .push_input_event(driver::touch_up_event(to_x, to_y));
+            .push_input_event(driver::pointer_up_event(options.pointer, to_x, to_y));
     }
 
     /// Supplies the touch-gesture parameters a real platform's window

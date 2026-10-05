@@ -26,7 +26,6 @@ impl RenderNode {
                 return Self::Color(ColorNode {
                     render_id: RenderId::next(),
                     color: (*color).into_inner().resolve(env),
-                    fill_extension: Cell::new(None),
                 });
             }
             Err(view) => view,
@@ -60,16 +59,6 @@ impl RenderNode {
                     .downcast::<Native<FixedContainer>>()
                     .expect("FixedContainer::body produces Native<FixedContainer>");
                 return Self::build_fixed_container(container, env, renderer, background_slot);
-            }
-            Err(view) => view,
-        };
-        let view = match view.downcast::<IgnorableMetadata<BackgroundContainerMark>>() {
-            Ok(meta) => {
-                let container = *meta
-                    .content
-                    .downcast::<Native<FixedContainer>>()
-                    .expect("BackgroundContainerMark wraps Native<FixedContainer>");
-                return Self::build_fixed_container(container, env, renderer, Some(0));
             }
             Err(view) => view,
         };
@@ -518,14 +507,13 @@ impl RenderNode {
                 // pass hands the surface its facts and the child lays out
                 // with no safe-area context — the surface insets and
                 // scrolls its own content instead.
-                let child_env = env.clone();
                 return Self::Scroll(Box::new(ScrollNode {
                     memo_gate: Cell::default(),
                     memo_slots: RefCell::default(),
                     accessibility_identity: Rc::new(()),
                     render_id: RenderId::next(),
                     axis,
-                    child: Self::build(content, &child_env, renderer),
+                    child: Self::build(content, env, renderer),
                     controller,
                     offset,
                     applied_scroll_generation: Cell::new(0),
@@ -533,7 +521,7 @@ impl RenderNode {
                     content_size: Size::zero(),
                     viewport: Size::zero(),
                     non_scrolling_minimum: Cell::new(None),
-                    env: child_env,
+                    env: env.clone(),
                     surface: ScrollSurfaceArea::default(),
                 }));
             }
@@ -988,6 +976,7 @@ impl RenderNode {
             extent_index: RefCell::new(VirtualExtentIndex::default()),
             item_cache: RefCell::new(VisibleSubviewCache::new()),
             visible_range: RefCell::new(0..0),
+            safe_area: RefCell::new(None),
             visible_span: Cell::new(None),
             estimate: Cell::new(0.0),
             estimate_sample: Cell::new(None),
@@ -1119,11 +1108,13 @@ impl RenderNode {
 }
 impl RenderNode {
     /// Builds the [`RenderNode::Container`] for a `Native<FixedContainer>`
-    /// whose background slot was already identified — `Some(slot)` marks the
-    /// fill §7.1 extends to the window edge on every touched edge. The mark
-    /// lands after the children are built, so a declaration wrapping the
-    /// slot (`.ignore_safe_area` on the fill itself) replaces the default
-    /// rather than stacking with it.
+    /// whose background slot was already identified — `Some(slot)` wraps the
+    /// slot's fill in [`RenderNode::Fill`], the type §7.1's paint extension
+    /// records on. The identification happens once here, while the layout
+    /// type is still concrete (normalization rebuilds the `FixedContainer`
+    /// from its parts instead of running `body` early); a declaration
+    /// wrapping the fill (`.ignore_safe_area` on the fill itself) stops the
+    /// predicate, so it replaces the default rather than stacking with it.
     fn build_fixed_container(
         container: Native<FixedContainer>,
         env: &Environment,
@@ -1146,13 +1137,19 @@ impl RenderNode {
         let child_env = accessibility_child_env.as_ref().unwrap_or(env);
         #[cfg(not(feature = "accessibility"))]
         let child_env = env;
-        let mut children: Vec<Self> = children
+        let children: Vec<Self> = children
             .into_iter()
-            .map(|child| Self::build(normalize_layout_view(child, child_env), child_env, renderer))
+            .enumerate()
+            .map(|(index, child)| {
+                let node =
+                    Self::build(normalize_layout_view(child, child_env), child_env, renderer);
+                if Some(index) == background_slot && is_background_fill_leaf(&node) {
+                    Self::Fill(Box::new(FillNode::new(node)))
+                } else {
+                    node
+                }
+            })
             .collect();
-        if let Some(slot) = background_slot {
-            mark_background_fill(&mut children[slot]);
-        }
         Self::Container(Box::new(ContainerNode {
             memo_gate: Cell::default(),
             memo_slots: RefCell::default(),
@@ -1171,29 +1168,32 @@ impl RenderNode {
     }
 }
 
-/// Marks the node that fills a [`BackgroundLayout`]'s background slot with
-/// §7.1's fill role: a `Color` or a fill-widget leaf (the gradient)
-/// records its slot and extends its paint to the window edge on every edge
-/// its laid-out frame touches; any other content is not a fill and
-/// extends only through its own `.ignore_safe_area` declaration. The mark
-/// is a slot (`Cell`) the layout pass recomputes — it survives the
-/// declaration a user puts *on* the fill, which builds a wrapper around
-/// this node and replaces the default extension with its own release.
-fn mark_background_fill(node: &mut RenderNode) {
+/// Whether the node a [`BackgroundLayout`] slot holds paints a fill §7.1
+/// extends: a `Color` leaf, or the gradient's fill-widget leaf — read
+/// through the layout-transparent wrappers `passthrough_content` treats as
+/// transparent (`Opacity`, `Scale`/`Rotation`/`Offset`, `Env`, `Retain`,
+/// and every `Wrapper` effect that is not itself a safe-area declaration),
+/// so `Color.opacity(..)` or an accessibility-scoped env in the slot is
+/// still a fill.
+///
+/// An `.ignore_safe_area` wrapper on the fill is NOT transparent to this:
+/// a declaration on the fill replaces the default extension — the
+/// wrapper's own release (§7.1 rule 3) is the whole extension, so the node
+/// is not a fill and gets no [`RenderNode::Fill`].
+fn is_background_fill_leaf(node: &RenderNode) -> bool {
     match node {
-        RenderNode::Color(color) => color.fill_extension.set(Some(EdgeOffsets::default())),
-        RenderNode::Widget(widget) if widget.fill_leaf => {
-            widget.fill_extension.set(Some(EdgeOffsets::default()));
+        RenderNode::Color(_) => true,
+        RenderNode::Widget(widget) => widget.fill_leaf,
+        RenderNode::Opacity(node) => is_background_fill_leaf(&node.child),
+        RenderNode::Scale(node) => is_background_fill_leaf(&node.child),
+        RenderNode::Rotation(node) => is_background_fill_leaf(&node.child),
+        RenderNode::Offset(node) => is_background_fill_leaf(&node.child),
+        RenderNode::Retain(node) => is_background_fill_leaf(&node.child),
+        RenderNode::Env(node) => is_background_fill_leaf(&node.child),
+        RenderNode::Wrapper(node) => {
+            !matches!(node.effect, WrapperEffect::IgnoreSafeArea(_))
+                && is_background_fill_leaf(&node.child)
         }
-        // `.ignore_safe_area` on the fill itself wraps the leaf: it still
-        // fills the slot, so mark it — the release the wrapper's layout
-        // computes is what limits the extension (§7.1: a declaration on
-        // the fill replaces the default).
-        RenderNode::Wrapper(wrapper)
-            if matches!(wrapper.effect, WrapperEffect::IgnoreSafeArea(_)) =>
-        {
-            mark_background_fill(&mut wrapper.child);
-        }
-        _ => {}
+        _ => false,
     }
 }

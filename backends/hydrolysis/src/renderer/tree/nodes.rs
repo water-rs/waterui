@@ -54,6 +54,10 @@ struct BuiltSubview {
     /// A structural patch replaced content inside the retained node, so the new
     /// subtree must be laid out even when its outer rect did not change.
     needs_layout: bool,
+    /// The §7.1 context the node was last laid out against — a change (the
+    /// keyboard inset animating under an unchanged rect) re-runs layout so
+    /// the subtree's touch tests and surface facts track it.
+    laid_out_area: Option<SafeAreaLayout>,
     /// The default spoken accessibility label extracted from the source view once,
     /// at build time (mirrors `GestureObserverEffect::default_a11y_label`): the
     /// node owns the source after build, so the per-frame a11y path reads this.
@@ -92,6 +96,7 @@ impl RetainedSubview {
             laid_out: Size::zero(),
             laid_out_proposal: None,
             needs_layout: true,
+            laid_out_area: None,
             default_a11y_label,
         });
     }
@@ -302,9 +307,13 @@ impl RetainedSubview {
             .take_layout_dirty()
     }
 
-    /// Build (once), patch, lay out (when the rect size or the structure
-    /// changed), and flush the sub-view at `rect` under `env`. A zero-area rect
-    /// renders nothing, matching the dispatch path's empty-rect guard.
+    /// Build (once), patch, lay out (when the rect size, the structure or the
+    /// §7.1 context changed), and flush the sub-view at `rect` under `env`. A
+    /// zero-area rect renders nothing, matching the dispatch path's empty-rect
+    /// guard. `safe_area` is the context the sub-view lays out against — the
+    /// ambient context of where it is placed for an ordinary sub-view, the
+    /// consumed-band content context for chrome content (`NavigationView`,
+    /// `Tabs`), `None` for a scroll surface's context-free content.
     pub(crate) fn flush_in_rect(
         &mut self,
         renderer: &mut HydrolysisRenderer,
@@ -312,6 +321,7 @@ impl RetainedSubview {
         env: &Environment,
         proposal: ProposalSize,
         rect: kurbo::Rect,
+        safe_area: Option<SafeAreaLayout>,
     ) {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
@@ -323,11 +333,15 @@ impl RetainedSubview {
         #[allow(clippy::cast_possible_truncation)]
         let size = Size::new(rect.width() as f32, rect.height() as f32);
         built.needs_layout |= structural | built.node.take_layout_dirty();
-        if built.needs_layout || size != built.laid_out || built.laid_out_proposal != Some(proposal)
+        if built.needs_layout
+            || size != built.laid_out
+            || built.laid_out_proposal != Some(proposal)
+            || built.laid_out_area != safe_area
         {
-            built.node.layout(renderer, env, None, proposal, size);
+            built.node.layout(renderer, env, safe_area.clone(), proposal, size);
             built.laid_out = size;
             built.laid_out_proposal = Some(proposal);
+            built.laid_out_area = safe_area;
             built.needs_layout = false;
         }
         let child_ctx = ctx.child(
@@ -371,6 +385,7 @@ impl RetainedSubview {
         env: &Environment,
         proposal: ProposalSize,
         size: Size,
+        safe_area: Option<SafeAreaLayout>,
     ) {
         if size.width <= 0.0 || size.height <= 0.0 {
             return;
@@ -380,11 +395,15 @@ impl RetainedSubview {
         let structural = Self::patch_built(&mut built.node, renderer);
         built.node.prepare_for_measure(renderer);
         built.needs_layout |= structural | built.node.take_layout_dirty();
-        if built.needs_layout || size != built.laid_out || built.laid_out_proposal != Some(proposal)
+        if built.needs_layout
+            || size != built.laid_out
+            || built.laid_out_proposal != Some(proposal)
+            || built.laid_out_area != safe_area
         {
-            built.node.layout(renderer, env, None, proposal, size);
+            built.node.layout(renderer, env, safe_area.clone(), proposal, size);
             built.laid_out = size;
             built.laid_out_proposal = Some(proposal);
+            built.laid_out_area = safe_area;
             built.needs_layout = false;
         }
         if let Some(identity) = built.node.accessibility_identity() {
@@ -412,6 +431,7 @@ impl RetainedSubview {
         renderer: &mut HydrolysisRenderer,
         env: &Environment,
         placement: CapturedScenePlacement,
+        safe_area: Option<SafeAreaLayout>,
     ) -> NavigationCapturedScene {
         let CapturedScenePlacement {
             size,
@@ -423,11 +443,15 @@ impl RetainedSubview {
         built.node.prepare_for_measure(renderer);
         built.needs_layout |= structural | built.node.take_layout_dirty();
         let proposal = ProposalSize::new(Some(size.width), Some(size.height));
-        if built.needs_layout || size != built.laid_out || built.laid_out_proposal != Some(proposal)
+        if built.needs_layout
+            || size != built.laid_out
+            || built.laid_out_proposal != Some(proposal)
+            || built.laid_out_area != safe_area
         {
-            built.node.layout(renderer, env, None, proposal, size);
+            built.node.layout(renderer, env, safe_area.clone(), proposal, size);
             built.laid_out = size;
             built.laid_out_proposal = Some(proposal);
+            built.laid_out_area = safe_area;
             built.needs_layout = false;
         }
         let local_ctx = RenderContext::with_transforms(
@@ -453,12 +477,13 @@ impl RetainedSubview {
         renderer: &mut HydrolysisRenderer,
         env: &Environment,
         placement: CapturedScenePlacement,
+        safe_area: Option<SafeAreaLayout>,
     ) -> NavigationCapturedScene {
         let previous_hit_test_opacity = renderer.hit_test.hit_test_opacity;
         renderer.hit_test.hit_test_opacity = 0.0;
         #[cfg(feature = "accessibility")]
         renderer.push_accessibility_suppression();
-        let scene = self.render_built_scene(renderer, env, placement);
+        let scene = self.render_built_scene(renderer, env, placement, safe_area);
         #[cfg(feature = "accessibility")]
         renderer.pop_accessibility_suppression();
         renderer.hit_test.hit_test_opacity = previous_hit_test_opacity;
@@ -630,12 +655,17 @@ pub trait WidgetBehavior {
         false
     }
 
-    /// Re-renders the leaf from its retained state.
+    /// Re-renders the leaf from its retained state. `safe_area` is the §7.1
+    /// context this widget was laid out against — `None` inside a scroll
+    /// surface's context-free content — which retained sub-views it hosts
+    /// (a chrome container's content, a label, an overlay) derive their own
+    /// context from.
     fn render(
         self: Rc<Self>,
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
         env: &Environment,
+        safe_area: Option<SafeAreaLayout>,
     );
 
     /// Measures the leaf from its retained state.
@@ -680,11 +710,37 @@ pub struct WidgetNode {
     /// by [`RenderNode::build_gradient`]; a `Color` leaf is a fill by its
     /// own variant instead.
     pub(super) fill_leaf: bool,
-    /// `Some` when this leaf sits in a background slot as a fill:
-    /// [`SafeAreaLayout::touched_edge_offsets`] recomputes the paint
-    /// extension at layout and the flush grows the leaf's bounds by it.
-    pub(super) fill_extension: Cell<Option<EdgeOffsets>>,
+    /// The §7.1 context this widget was last laid out against, recorded
+    /// every layout so the retained sub-views it flushes (chrome content,
+    /// labels, popovers) derive their own context from it.
+    pub(super) safe_area: RefCell<Option<SafeAreaLayout>>,
     pub(super) env: Environment,
+}
+
+/// The background-slot fill (§7.1): wraps the node `build_fixed_container`
+/// identified as the slot's paint fill — a `Color` or the gradient leaf,
+/// possibly inside layout-transparent wrappers — and records the paint
+/// extension its laid-out frame earns. Extension is a paint fact, not a
+/// layout fact: layout computes the per-edge distances once and the flush
+/// grows the paint rect by exactly that, under unchanged transforms.
+pub struct FillNode {
+    pub(super) child: RenderNode,
+    /// Consumed by the retained-update mount path in H3.
+    #[allow(dead_code)]
+    pub(crate) render_id: RenderId,
+    /// The paint extension [`SafeAreaLayout::touched_edge_offsets`]
+    /// computed for the wrapped frame — `None` until the first layout.
+    pub(super) extension: Cell<Option<EdgeOffsets>>,
+}
+
+impl FillNode {
+    pub(crate) fn new(child: RenderNode) -> Self {
+        Self {
+            child,
+            render_id: RenderId::next(),
+            extension: Cell::new(None),
+        }
+    }
 }
 
 /// The per-flush effect a [`WrapperNode`] re-applies around its child. Each
@@ -866,10 +922,6 @@ pub struct ColorNode {
     #[allow(dead_code)]
     pub(crate) render_id: RenderId,
     pub(crate) color: Computed<waterui_graphics::draw::WorkingColor>,
-    /// `Some` when this fill sits in a background slot:
-    /// [`SafeAreaLayout::touched_edge_offsets`] recomputes the paint
-    /// extension at layout and the flush grows the fill's bounds by it.
-    pub(super) fill_extension: Cell<Option<EdgeOffsets>>,
 }
 
 pub struct TextNode {

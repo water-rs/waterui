@@ -5,6 +5,7 @@ use crate::renderer::frame::LayerTransforms;
 use crate::renderer::navigation::{
     NavigationCapturedScene, NavigationTransitionFrame, draw_navigation_transition,
 };
+use crate::renderer::tree::SafeAreaLayout;
 use waterui::navigation::{AnyNavigationTransition, NavigationTransitionDirection};
 use waterui_backend_core::widget::NavigationMotion;
 use waterui_core::Environment;
@@ -39,6 +40,11 @@ pub struct WidgetRenderContext<'a> {
     pub transform: kurbo::Affine,
     pub hit_transform: kurbo::Affine,
     pub bounds: kurbo::Rect,
+    /// The §7.1 context this widget was laid out against — `None` inside a
+    /// scroll surface's context-free content. Retained sub-views the handler
+    /// flushes derive theirs from it through [`Self::safe_area_for`] and
+    /// [`Self::content_area_for`].
+    safe_area: Option<SafeAreaLayout>,
 }
 
 /// An explicit offer from a native widget-owned content region.
@@ -75,13 +81,41 @@ impl RenderContext {
 }
 
 impl<'a> WidgetRenderContext<'a> {
-    pub(crate) const fn new(renderer: &'a mut HydrolysisRenderer, ctx: RenderContext) -> Self {
+    pub(crate) const fn new(
+        renderer: &'a mut HydrolysisRenderer,
+        ctx: RenderContext,
+        safe_area: Option<SafeAreaLayout>,
+    ) -> Self {
         Self {
             renderer,
             transform: ctx.transform,
             hit_transform: ctx.hit_transform,
             bounds: ctx.bounds,
+            safe_area,
         }
+    }
+
+    /// The §7.1 context for a retained sub-view the widget places at `rect`
+    /// in its own bounds space — a bar label, a popup's content: the ambient
+    /// boundaries, with the sub-view's frame recorded where the flush puts it
+    /// — `self.transform` maps the widget's bounds space to window space, so
+    /// the frame the context stores is window-space like the boundaries are.
+    pub(crate) fn safe_area_for(&self, rect: kurbo::Rect) -> Option<SafeAreaLayout> {
+        self.safe_area
+            .as_ref()
+            .map(|area| area.with_frame(self.transform.transform_rect_bbox(rect)))
+    }
+
+    /// The §7.1 context for retained *content* a chrome container places at
+    /// `rect` in its bounds space — `NavigationView`/`Tabs` content, a
+    /// popup's content: the band the chrome itself consumed is gone from
+    /// the boundaries (they reseed from the frame's own edges), so content's
+    /// `.ignore_safe_area` still reaches the window edge and its scroll
+    /// surfaces still extend and clear focused fields (§7.1).
+    pub(crate) fn content_area_for(&self, rect: kurbo::Rect) -> Option<SafeAreaLayout> {
+        self.safe_area
+            .as_ref()
+            .map(|area| area.for_subtree(self.transform.transform_rect_bbox(rect)))
     }
 
     pub(crate) const fn render_context(&self) -> RenderContext {

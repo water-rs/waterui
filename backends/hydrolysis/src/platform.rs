@@ -346,11 +346,30 @@ pub struct TouchScrollConfig {
     pub fling: FlingDeceleration,
 }
 
+impl TouchScrollConfig {
+    /// The constants Android's `ViewConfiguration` reports, normalized to
+    /// density-1 logical units — the values the touch-scroll tests drive
+    /// through the host's `touch_scroll_config` seam so a touch drag
+    /// claims scroll views the way it does on device.
+    #[must_use]
+    pub fn android_default() -> Self {
+        Self {
+            touch_slop: 10.0,
+            min_fling_velocity: 50.0,
+            max_fling_velocity: 8_000.0,
+            fling: FlingDeceleration {
+                physical_coeff: 9.806_65 * 39.37 * 160.0 * 0.84,
+                friction: 0.015,
+            },
+        }
+    }
+}
+
 /// The fling's deceleration model: Android `OverScroller`'s spline.
 ///
-/// The renderer ports its math
+/// The spline's math is ported
 /// (`frameworks/base/core/java/android/widget/OverScroller.java`,
-/// `SplineScroller`). The platform computes the coefficients for its own
+/// `SplineScroller`); the platform computes the coefficients for its own
 /// display and feel.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FlingDeceleration {
@@ -864,9 +883,10 @@ pub struct WindowSafeArea(pub nami::Binding<waterui_layout::padding::EdgeInsets>
 /// The binding rides the same subscription path as `WindowSafeArea`: a host
 /// write on it re-lays the window out per frame, which is how a keyboard
 /// animating with the platform's own animation reaches the layout — a host
-/// that reports every animation frame animates the layout too. Scroll
-/// surfaces read it themselves: inside a scroll surface the region is not
-/// visible (the surface owns its content inset instead).
+/// that reports every animation frame animates the layout too. Layout
+/// resolves it per edge as the deeper of the two regions: a scroll surface
+/// whose bottom touches it extends through it and scrolls a focused field
+/// clear of the keyboard band (layout-spec.md §7.1).
 #[derive(Debug, Clone)]
 pub struct WindowKeyboardArea(pub nami::Binding<waterui_layout::padding::EdgeInsets>);
 

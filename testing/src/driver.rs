@@ -215,63 +215,33 @@ impl ResourceSampler {
     }
 }
 
-pub const fn pointer_move_event(x: f32, y: f32) -> InputEvent {
+/// A primary contact's down/move/up under `kind`. Touch drags are what a
+/// real device's finger produces: the scroll claim (`arm_touch_scroll`),
+/// the touch slop and the fling all key on the pointer kind, which
+/// `PointerKind::Mouse` never reaches.
+pub const fn pointer_move_event(kind: PointerKind, x: f32, y: f32) -> InputEvent {
     InputEvent::PointerMove {
         id: TEST_POINTER_ID,
-        kind: PointerKind::Mouse,
+        kind,
         x,
         y,
     }
 }
 
-pub const fn pointer_down_event(x: f32, y: f32) -> InputEvent {
+pub const fn pointer_down_event(kind: PointerKind, x: f32, y: f32) -> InputEvent {
     InputEvent::PointerDown {
         id: TEST_POINTER_ID,
-        kind: PointerKind::Mouse,
+        kind,
         x,
         y,
         button: PointerButton::Primary,
     }
 }
 
-pub const fn pointer_up_event(x: f32, y: f32) -> InputEvent {
+pub const fn pointer_up_event(kind: PointerKind, x: f32, y: f32) -> InputEvent {
     InputEvent::PointerUp {
         id: TEST_POINTER_ID,
-        kind: PointerKind::Mouse,
-        x,
-        y,
-        button: PointerButton::Primary,
-    }
-}
-
-/// A primary touch contact's down/move/up — `PointerKind::Touch` rather than
-/// the mouse kind above. Touch drags are what a real device's finger
-/// produces: the scroll claim (`arm_touch_scroll`), the touch slop and the
-/// fling all key on the pointer kind, which `PointerKind::Mouse` never
-/// reaches.
-pub const fn touch_down_event(x: f32, y: f32) -> InputEvent {
-    InputEvent::PointerDown {
-        id: TEST_POINTER_ID,
-        kind: PointerKind::Touch,
-        x,
-        y,
-        button: PointerButton::Primary,
-    }
-}
-
-pub const fn touch_move_event(x: f32, y: f32) -> InputEvent {
-    InputEvent::PointerMove {
-        id: TEST_POINTER_ID,
-        kind: PointerKind::Touch,
-        x,
-        y,
-    }
-}
-
-pub const fn touch_up_event(x: f32, y: f32) -> InputEvent {
-    InputEvent::PointerUp {
-        id: TEST_POINTER_ID,
-        kind: PointerKind::Touch,
+        kind,
         x,
         y,
         button: PointerButton::Primary,

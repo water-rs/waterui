@@ -5,16 +5,6 @@ use waterui_core::Computed;
 use waterui_core::interaction::Selected;
 use waterui_core::layout::LayoutPriority;
 use waterui_core::metadata::MetadataKey;
-use waterui_layout::BackgroundLayout;
-
-/// Tags a `Native<FixedContainer>` whose unwrapped layout was
-/// `BackgroundLayout`. `FixedContainer::body` wraps the layout object in
-/// `DirectionalLayout`, hiding it from every later pass — normalization
-/// is the last point the modifier's own layout is visible, so it records
-/// §7.1's background slot here for the tree build.
-pub struct BackgroundContainerMark;
-
-impl MetadataKey for BackgroundContainerMark {}
 
 pub fn gesture_group_identity(view: &AnyView) -> usize {
     gesture_group_identity_with_budget(view, 64)
@@ -334,7 +324,6 @@ pub fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
     );
     passthrough_ignorable_metadata_content!(
         MaterialBackground,
-        BackgroundContainerMark,
         AccessibilityIdentifier,
         AccessibilityLabel,
         AccessibilityValue,
@@ -506,7 +495,6 @@ fn normalize_layout_view_with_budget(
     // then relabel every descendant leaf).
     normalize_passthrough_ignorable_metadata!(
         MaterialBackground,
-        BackgroundContainerMark,
         AccessibilityIdentifier,
         AccessibilityLabel,
         AccessibilityValue,
@@ -548,24 +536,23 @@ fn normalize_layout_view_with_budget(
     // A plain `FixedContainer` has not run `body()` yet: its layout object
     // is still the one the modifier built — the only moment
     // `BackgroundLayout` is identifiable, because `body` wraps it in
-    // `DirectionalLayout` before the tree build can look. Tag the
-    // normalized container so the build can mark the slot's fill (§7.1).
+    // `DirectionalLayout`. Keep the container plain: the tree build
+    // identifies the slot while the layout is still concrete and then runs
+    // `body` itself; normalization only descends into the children.
     if view.is::<FixedContainer>() {
         let container = *view
             .downcast::<FixedContainer>()
             .expect("layout normalization failed to downcast FixedContainer");
-        let is_background =
-            (container.as_parts().0 as &dyn core::any::Any).is::<BackgroundLayout>();
-        let normalized = normalize_layout_view_with_budget(
-            AnyView::new(container.body(env)),
-            env,
-            next_remaining,
-        );
-        return if is_background {
-            AnyView::new(IgnorableMetadata::new(normalized, BackgroundContainerMark))
-        } else {
-            normalized
-        };
+        let (layout, children) = container.into_inner();
+        let mut normalized_children = Vec::with_capacity(children.len());
+        for child in children {
+            normalized_children.push(normalize_layout_view_with_budget(
+                child,
+                env,
+                next_remaining,
+            ));
+        }
+        return AnyView::new(FixedContainer::from_parts(layout, normalized_children));
     }
 
     if view.is::<Native<FixedContainer>>() {

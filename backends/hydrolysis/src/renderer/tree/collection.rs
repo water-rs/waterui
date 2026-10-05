@@ -279,6 +279,10 @@ pub struct LazyStackNode {
     /// the only rows that need exact pre-layout remeasurement on a reactive
     /// height change; all other rows keep their virtual estimate.
     pub(super) visible_range: RefCell<Range<usize>>,
+    /// The §7.1 context this stack was laid out against — `None` inside a
+    /// scroll surface's context-free content — which lazily materialized
+    /// items read at their flush.
+    pub(super) safe_area: RefCell<Option<SafeAreaLayout>>,
     /// The main-axis span (in this stack's coordinates) the previous flush
     /// resolved as visible. `patch_visible` reuses it to materialize the
     /// window's items — including ids a membership change slid into it — while
@@ -492,14 +496,7 @@ impl CollectionNode {
             }
         }
         for (entry, placement) in self.entries.iter_mut().zip(&placements) {
-            let child_area = safe_area.map(|area| {
-                area.with_frame(kurbo::Rect::new(
-                    area.frame().x0 + f64::from(placement.frame.x()),
-                    area.frame().y0 + f64::from(placement.frame.y()),
-                    area.frame().x0 + f64::from(placement.frame.max_x()),
-                    area.frame().y0 + f64::from(placement.frame.max_y()),
-                ))
-            });
+            let child_area = safe_area.map(|area| area.child(placement.frame));
             entry.node.layout(
                 renderer,
                 &env,
@@ -1165,7 +1162,15 @@ impl LazyStackNode {
                     });
                     normalize_layout_view(view, env)
                 });
-                subview.flush_in_rect(renderer, ctx, env, proposal, child_rect);
+                let item_area = self.safe_area.borrow().as_ref().map(|area| {
+                    area.with_frame(kurbo::Rect::new(
+                        area.frame().x0 + child_rect.x0,
+                        area.frame().y0 + child_rect.y0,
+                        area.frame().x0 + child_rect.x1,
+                        area.frame().y0 + child_rect.y1,
+                    ))
+                });
+                subview.flush_in_rect(renderer, ctx, env, proposal, child_rect, item_area);
             }
             cursor += extent;
             if index + 1 < count {
