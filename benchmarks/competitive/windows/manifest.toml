@@ -3,8 +3,8 @@
 # run.py reads this file and refuses to run on a drifted toolchain.
 
 [meta]
-issue = "https://github.com/water-rs/waterui/issues/1864"
-harness_issue = "https://github.com/water-rs/waterui/issues/1262"
+issue = "https://github.com/water-rs/waterui/issues/1262"
+harness_issue = "https://github.com/water-rs/waterui/issues/1864"
 platform = "windows"
 
 [toolchain]
@@ -34,7 +34,7 @@ presentmon = "2.5.1"
 # The WaterUI contestant is the shared apps/waterui project — a
 # workspace member of this checkout; framework identity is HEAD.
 [frameworks]
-electron = "44.4.5"
+electron = "44.4.3"
 electron_packager = "20.3.0"
 flutter = "3.47.5"
 windowsappsdk = "2.5.1"
@@ -53,9 +53,16 @@ capture_seconds_w2 = 8.0
 capture_seconds_w3 = 8.0
 capture_seconds_static = 6.0
 memory_sample_interval_ms = 100
-# W2 drive: automated fling = repeated WM_MOUSEWHEEL ticks posted to the app
-# window while the real cursor rests over its centre. Same input for all apps.
-fling_tick_ms = 30
+# Scroll drive — the shared fling protocol (../WORKLOADS.md), declared once
+# for every scrolling workload (w2, w4): real wheel input via SendInput with
+# the cursor parked over the window centre — identical for every contestant.
+# One fling = `fling_detents` wheel detents (-120 units each) spread over
+# fling_duration_ms; down = content scrolls up.
+fling_down = 8
+fling_up = 2
+fling_detents = 12
+fling_duration_ms = 250
+fling_pause_ms = 350
 
 [measurement]
 # Uniform method for every contestant: one ETW trace per run enabling

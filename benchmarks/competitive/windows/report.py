@@ -318,13 +318,15 @@ def generate(data: dict) -> str:
     a("")
     tc = data.get("toolchain", {})
     fw = data.get("frameworks", {})
-    wp = data.get("waterui_pins", {})
     for k_, v in tc.items():
         a(f"- toolchain `{k_}`: {v}")
     for k_, v in fw.items():
         a(f"- framework `{k_}`: {v}")
-    for k_, v in wp.items():
-        a(f"- waterui pin `{k_}`: `{str(v)[:12]}`")
+    # in-tree CLI model: framework+CLI+backend identity = checkout HEAD
+    head = data.get("checkout_head") or \
+        (data.get("cli") or {}).get("checkout_head")
+    if head:
+        a(f"- waterui checkout HEAD: `{str(head)[:12]}`")
     a("")
     return "\n".join(lines)
 

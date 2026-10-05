@@ -254,15 +254,23 @@ def build_flutter(manifest: dict) -> None:
     flutter = flutter_bin(manifest)
     # the windows/ platform dir is generated, not committed — the pinned
     # SDK's `flutter create` produces it in a scratch dir so no committed
-    # file (pubspec, .gitignore) is rewritten
+    # file (pubspec, .gitignore) is rewritten. `.bench-generator` records
+    # the generator pin; a stale dir from a different SDK is regenerated.
     app = APPS / "flutter"
-    if not (app / "windows").is_dir():
+    tag = ("flutter create --platforms windows --project-name bench_flutter "
+           "--org dev.bench --template app | flutter_ver="
+           + manifest["toolchain"]["flutter"])
+    stamp = app / "windows" / ".bench-generator"
+    if not ((app / "windows").is_dir() and stamp.exists()
+            and stamp.read_text().strip() == tag):
+        shutil.rmtree(app / "windows", ignore_errors=True)
         with tempfile.TemporaryDirectory() as td:
             gen = Path(td) / "app"
             sh(["cmd", "/c", flutter, "create", "--platforms=windows",
                 "--project-name", "bench_flutter", "--org", "dev.bench",
                 "--template", "app", str(gen)])
             shutil.copytree(gen / "windows", app / "windows")
+            stamp.write_text(tag + "\n")
     # CreateProcess can't execute .bat directly — go through cmd.
     sh(["cmd", "/c", flutter, "build", "windows", "--release"],
        cwd=app)
@@ -396,16 +404,25 @@ def window_for_pids(pids: set[int]):
 WM_MOUSEWHEEL = 0x020A
 
 
-def fling_window(hwnd: int, rect: tuple[int, int, int, int], seconds: float, tick_ms: int) -> None:
-    """Automated fling: cursor parked over the window centre, real wheel
-    ticks via SendInput (routed exactly like physical wheel input, so every
-    framework's scroll handler sees it)."""
+SCROLL_WORKLOADS = ("w2", "w4")
+
+
+def fling_window(hwnd: int, rect: tuple[int, int, int, int], seconds: float,
+                 fling: dict) -> None:
+    """The shared fling protocol (../WORKLOADS.md) as real wheel input:
+    SendInput with the cursor parked over the window centre, routed exactly
+    like physical wheel input so every framework's scroll handler sees it.
+    One fling = `fling_detents` -120-unit detents spread over
+    `fling_duration_ms`, then a `fling_pause_ms` pause; `fling_down`
+    flings down (content scrolls up) then `fling_up` back — repeated to
+    cover the measurement window."""
     MOUSEEVENTF_WHEEL = 0x0800
+    WHEEL_DELTA = -120  # down (content scrolls up); negated for up
 
     class MOUSEINPUT(ctypes.Structure):
         _fields_ = [
             ("dx", c_long),
-            ("dy", c_long),
+            ("dy", c_ulong),
             ("mouseData", c_ulong),
             ("dwFlags", c_ulong),
             ("time", c_ulong),
@@ -419,12 +436,24 @@ def fling_window(hwnd: int, rect: tuple[int, int, int, int], seconds: float, tic
     cx = (rect[0] + rect[2]) // 2
     cy = (rect[1] + rect[3]) // 2
     user32.SetCursorPos(cx, cy)
-    mi = MOUSEINPUT(0, 0, (-120) & 0xFFFFFFFF, MOUSEEVENTF_WHEEL, 0, None)
-    inp = INPUT(INPUT_MOUSE, mi)
+    detent_s = fling["fling_duration_ms"] / 1000.0 / fling["fling_detents"]
+    pause_s = fling["fling_pause_ms"] / 1000.0
+
+    def one_fling(direction: int) -> None:
+        mi = MOUSEINPUT(0, 0, (direction * WHEEL_DELTA) & 0xFFFFFFFF,
+                        MOUSEEVENTF_WHEEL, 0, None)
+        inp = INPUT(INPUT_MOUSE, mi)
+        for _ in range(fling["fling_detents"]):
+            user32.SendInput(1, byref(inp), sizeof(INPUT))
+            time.sleep(detent_s)
+        time.sleep(pause_s)
+
     end = time.monotonic() + seconds
     while time.monotonic() < end:
-        user32.SendInput(1, byref(inp), sizeof(INPUT))
-        time.sleep(tick_ms / 1000)
+        for _ in range(fling["fling_down"]):
+            one_fling(1)
+        for _ in range(fling["fling_up"]):
+            one_fling(-1)
 
 
 # ---------------------------------------------------------------------------
@@ -1428,9 +1457,9 @@ def measure_run(c_key: str, workload: str, rep: int, cfg,
         # +capture] even when the first present lands after readiness
         drive_s = capture_s + warmup_s + min(
             cfg["runner"]["ready_timeout_seconds"], 5.0)
-        if workload == "w2" and hwnd_info:
+        if workload in SCROLL_WORKLOADS and hwnd_info:
             fling_window(hwnd_info[0], hwnd_info[1], drive_s,
-                         cfg["runner"]["fling_tick_ms"])
+                         cfg["runner"])
         else:
             time.sleep(drive_s)
 
@@ -1650,7 +1679,9 @@ def _self_test() -> None:
                    "warmup_seconds": 0.1,
                    "capture_seconds_static": 0.3,
                    "capture_seconds_w2": 0.3, "capture_seconds_w3": 0.3,
-                   "memory_sample_interval_ms": 10, "fling_tick_ms": 50},
+                                      "memory_sample_interval_ms": 10,
+                   "fling_down": 8, "fling_up": 2, "fling_detents": 12,
+                   "fling_duration_ms": 250, "fling_pause_ms": 350},
         "measurement": {"vsync_budget_ms": 16.7,
                         "dropped_threshold_ratio": 1.5},
     }
