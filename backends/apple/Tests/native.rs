@@ -1173,24 +1173,18 @@ mod gpu_surface {
 
     use super::mtm;
 
-    /// The registered trials — both verify their assertions but
-    /// deadlock in fixture teardown: `Engine::drop` joins the render
-    /// thread on the parked main thread while the render thread's
-    /// `MainThreadBound<Weak<SurfaceState>>` teardown needs the main
-    /// queue (#1776). Ignored until that design lands — not accepted
-    /// coverage.
+    /// The registered trials — the completion/failure seam coverage for
+    /// the mounted-surface ownership contract.
     pub fn trials() -> Vec<Trial> {
         vec![
             Trial::test(
                 "gpu_surface::routed_failure_drains_idle_owner_once",
                 routed_failure_drains_idle_owner_once,
-            )
-            .with_ignored_flag(true),
+            ),
             Trial::test(
                 "gpu_surface::stale_completion_releases_only_its_lease",
                 stale_completion_releases_only_its_lease,
-            )
-            .with_ignored_flag(true),
+            ),
         ]
     }
 
