@@ -139,7 +139,9 @@ pub use nami::signal::IntoSignal;
 pub use nami::{Binding, Computed, Signal, SignalExt, binding, constant, impl_constant};
 pub use state::IntoSignalF32;
 pub use suiteki::Str;
-pub use ui::{accessibility, event, gesture, interaction, key, layout, view, view_renderer, views};
+pub use ui::{
+    accessibility, event, gesture, interaction, key, layout, transition, view, view_renderer, views,
+};
 pub use view::View;
 pub use view_renderer::{CustomViewRenderer, RenderResult, RenderSize, ViewRenderer};
 pub use waterui_macros::catalog;

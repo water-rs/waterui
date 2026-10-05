@@ -2108,6 +2108,16 @@ typedef struct EdgeSet EdgeSet;
 typedef struct ProposalSize ProposalSize;
 
 /**
+ * A sampled set of visual properties, independent of layout.
+ *
+ * Translation is in logical pixels, rotation in radians, and blur in logical
+ * pixels. Scale and rotation apply about the slot's centre, then translation.
+ * These values compose with the view's ordinary properties rather than
+ * replacing them. No property changes the retained slot's dimensions.
+ */
+typedef struct TransitionProperties TransitionProperties;
+
+/**
  * Normalized coordinates (0.0–1.0) for positioning and gradient endpoints.
  *
  * Used to specify both anchor points on views and target positions in parents.
@@ -2262,6 +2272,21 @@ typedef struct WuiSharedAction WuiSharedAction;
  *Opaque FFI handle owning a `AnyViewBuilder<NavigationView>`.
  */
 typedef struct WuiTabContent WuiTabContent;
+
+/**
+ * Owning immutable declaration, reusable for independently retiring ghosts.
+ */
+typedef struct WuiTransitionSpec WuiTransitionSpec;
+
+/**
+ * Owning frame-driven clock and its host-updated overlay geometry.
+ *
+ * Destroy after the insertion or removal completes. The backend pushes the
+ * retained slot's current window frame through `waterui_transition_set_frame`
+ * after every placement, so a pixel effect's window overlay follows scroll
+ * and ancestor movement on the same signal the core body consumed.
+ */
+typedef struct WuiTransitionState WuiTransitionState;
 
 /**
  *Opaque FFI handle owning a `ValueFormatter`.
@@ -4586,6 +4611,106 @@ typedef struct WuiKeyPress {
    */
   bool repeat;
 } WuiKeyPress;
+
+/**
+ * Generic FFI payload for `Metadata<T>` views: the wrapped content plus the
+ * attached metadata value.
+ */
+typedef struct WuiMetadata_____WuiTransitionSpec {
+  /**
+   * The view content wrapped by this metadata node.
+   */
+  struct WuiAnyView *content;
+  /**
+   * The metadata value attached to `content`.
+   */
+  struct WuiTransitionSpec *value;
+} WuiMetadata_____WuiTransitionSpec;
+
+/**
+ * Transition metadata: wrapped content and its owning declaration handle.
+ */
+typedef struct WuiMetadata_____WuiTransitionSpec WuiMetadataTransition;
+
+/**
+ * Window-relative geometry for the transition overlay.
+ *
+ * `source_*` is the retained slot in window logical coordinates, `window_*`
+ * the full overlay size in logical pixels, `scale_factor` device pixels per
+ * logical pixel, and `right_to_left` selects the direction used to resolve
+ * leading and trailing edges.
+ */
+typedef struct WuiTransitionFrame {
+  /**
+   * Retained slot origin x in window logical coordinates.
+   */
+  float source_x;
+  /**
+   * Retained slot origin y in window logical coordinates.
+   */
+  float source_y;
+  /**
+   * Retained slot width in logical pixels.
+   */
+  float source_width;
+  /**
+   * Retained slot height in logical pixels.
+   */
+  float source_height;
+  /**
+   * Window overlay width in logical pixels.
+   */
+  float window_width;
+  /**
+   * Window overlay height in logical pixels.
+   */
+  float window_height;
+  /**
+   * Device pixels per logical pixel.
+   */
+  float scale_factor;
+  /**
+   * Whether the layout direction is right-to-left.
+   */
+  bool right_to_left;
+} WuiTransitionFrame;
+
+/**
+ * Native visual adjustments. Sizes and offsets use points/dp, rotation radians.
+ *
+ * Compose these with the view's ordinary properties. Scale and rotation apply
+ * about the slot centre before translation; none changes layout dimensions.
+ */
+typedef struct WuiTransitionProperties {
+  /**
+   * Multiplicative alpha.
+   */
+  float opacity;
+  /**
+   * Horizontal scale.
+   */
+  float scale_x;
+  /**
+   * Vertical scale.
+   */
+  float scale_y;
+  /**
+   * Horizontal translation in logical pixels.
+   */
+  float translation_x;
+  /**
+   * Vertical translation in logical pixels.
+   */
+  float translation_y;
+  /**
+   * Clockwise radians.
+   */
+  float rotation;
+  /**
+   * Gaussian radius in logical pixels.
+   */
+  float blur;
+} WuiTransitionProperties;
 
 /**
  * FFI-owned wrapper around a [`waterui::Binding`] signal.
@@ -8143,6 +8268,8 @@ typedef struct WuiApp {
 
 
 
+
+
 /**
  * # Safety
  * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
@@ -9545,6 +9672,121 @@ void waterui_drop_on_key_press(struct WuiOnKeyPress *value);
 enum WuiKeyHandling waterui_call_on_key_press(const struct WuiOnKeyPress *handler,
                                               const struct WuiEnv *env,
                                               struct WuiKeyPress press);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
+ */
+struct WuiTypeId waterui_metadata_transition_id(void);
+
+/**
+ * Force-casts an `AnyView` to this metadata type.
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataTransition waterui_force_as_metadata_transition(struct WuiAnyView *view);
+
+/**
+ * Starts an independent transition after structural insertion or removal.
+ *
+ * Before removal, detach all semantic membership, disable input and retain the
+ * last layout dimensions as a fixed-size leaf. A pixel removal captures once;
+ * its window overlay follows that leaf's current global frame, pushed through
+ * `waterui_transition_set_frame` after every placement. Release the visual and
+ * slot when `waterui_transition_advance` returns false.
+ *
+ * # Safety
+ * `spec` is a live declaration handle, borrowed on its owning UI thread.
+ * `frame` is the slot's initial window-relative geometry, copied by value.
+ */
+struct WuiTransitionState *waterui_transition_start(const struct WuiTransitionSpec *spec,
+                                                    bool removal,
+                                                    bool reduce_motion,
+                                                    struct WuiTransitionFrame frame);
+
+/**
+ * Pushes the slot's current window-relative geometry into the transition.
+ *
+ * Call after every placement — including scrolling and ancestor movement —
+ * so the pixel overlay reads the live frame through the signal the effect
+ * subscribed to at `waterui_transition_body`.
+ *
+ * # Safety
+ * `state` is a live borrowed state on its owning UI thread; `frame` is a plain
+ * data descriptor copied by value.
+ */
+void waterui_transition_set_frame(const struct WuiTransitionState *state,
+                                  struct WuiTransitionFrame frame);
+
+/**
+ * Advances from the host frame clock; false means the lifetime has ended.
+ *
+ * # Safety
+ * `state` is a live exclusively borrowed state on its owning UI thread.
+ */
+bool waterui_transition_advance(struct WuiTransitionState *state, uint64_t delta_ns);
+
+/**
+ * Samples visual properties for the current untransformed slot geometry.
+ *
+ * # Safety
+ * `state` is a live borrowed state on its owning UI thread.
+ */
+struct WuiTransitionProperties waterui_transition_properties(const struct WuiTransitionState *state,
+                                                             float width,
+                                                             float height,
+                                                             bool right_to_left,
+                                                             bool absent_endpoint);
+
+/**
+ * Returns the native animation definition for the resolved effect.
+ *
+ * # Safety
+ * `state` is a live borrowed state on its owning UI thread.
+ */
+struct WuiAnimation waterui_transition_animation(const struct WuiTransitionState *state);
+
+/**
+ * Whether this resolved phase uses the existing GPU capture/effect path.
+ *
+ * # Safety
+ * `state` is a live borrowed state on its owning UI thread.
+ */
+bool waterui_transition_captures_content(const struct WuiTransitionState *state);
+
+/**
+ * Constructs the pixel effect once and transfers its view to the caller.
+ *
+ * A backend with an already retained realization may pass an owning empty
+ * view and feed its capture into the resulting `FilteredView`. The output shares
+ * the state's progress signal and its frame signal, both updated by the host:
+ * progress by the frame clock, geometry by `waterui_transition_set_frame`.
+ *
+ * # Safety
+ * `state` is a live borrowed state; `content` is an owning view handle consumed
+ * exactly once. Both belong to the current UI thread.
+ */
+struct WuiAnyView *waterui_transition_body(const struct WuiTransitionState *state,
+                                           struct WuiAnyView *content);
+
+/**
+ * Releases one declaration; existing clocks remain independently owned.
+ *
+ * # Safety
+ * `spec` is an owning handle that is consumed exactly once on its UI thread.
+ */
+void waterui_transition_drop_spec(struct WuiTransitionSpec *spec);
+
+/**
+ * Releases an insertion clock or a completed ghost clock.
+ *
+ * # Safety
+ * `state` is an owning handle consumed exactly once on its UI thread. The
+ * backend has stopped callbacks into it before this call.
+ */
+void waterui_transition_drop_state(struct WuiTransitionState *state);
 
 /**
  * # Safety

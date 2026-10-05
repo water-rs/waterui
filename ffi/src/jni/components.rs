@@ -1086,6 +1086,41 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeColorScheme<'loc
 // Animation Functions
 // ============================================================================
 
+/// Packs a `WuiAnimation` into the three `Long` values Kotlin decodes: kind
+/// tag plus duration milliseconds, then two bit-packed parameter pairs.
+pub(super) fn pack_animation(animation: &crate::animation::WuiAnimation) -> (jlong, jlong, jlong) {
+    // Tags mirror the `WuiAnimation` C-ABI discriminants: the Kotlin side
+    // reads them against the same table the regenerated header publishes.
+    let (tag, duration_ms): (u32, u32) = match animation {
+        crate::animation::WuiAnimation::None => (0, 0),
+        crate::animation::WuiAnimation::SystemDefault => (1, 0),
+        crate::animation::WuiAnimation::Curve { duration_ms, .. } => (
+            2,
+            u32::try_from(*duration_ms)
+                .expect("Android animation duration exceeds packed JNI range"),
+        ),
+        crate::animation::WuiAnimation::Spring { .. } => (3, 0),
+    };
+    let (p1, p2): (f32, f32) = match animation {
+        crate::animation::WuiAnimation::Curve { x1, y1, .. } => (*x1, *y1),
+        crate::animation::WuiAnimation::Spring { stiffness, damping } => (*stiffness, *damping),
+        crate::animation::WuiAnimation::None | crate::animation::WuiAnimation::SystemDefault => {
+            (0.0, 0.0)
+        }
+    };
+    let (p3, p4): (f32, f32) = match animation {
+        crate::animation::WuiAnimation::Curve { x2, y2, .. } => (*x2, *y2),
+        crate::animation::WuiAnimation::None
+        | crate::animation::WuiAnimation::SystemDefault
+        | crate::animation::WuiAnimation::Spring { .. } => (0.0, 0.0),
+    };
+    (
+        ((u64::from(duration_ms) << 32) | u64::from(tag)).cast_signed(),
+        ((u64::from(p2.to_bits()) << 32) | u64::from(p1.to_bits())).cast_signed(),
+        ((u64::from(p4.to_bits()) << 32) | u64::from(p3.to_bits())).cast_signed(),
+    )
+}
+
 #[unsafe(no_mangle)]
 extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_getAnimationKindDurationPacked<
     'local,
@@ -1102,20 +1137,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_getAnimationKindDurat
         )
     };
 
-    // Tags mirror the `WuiAnimation` C-ABI discriminants: the Kotlin side
-    // reads them against the same table the regenerated header publishes.
-    let (tag, duration_ms): (u32, u32) = match animation {
-        crate::animation::WuiAnimation::None => (0, 0),
-        crate::animation::WuiAnimation::SystemDefault => (1, 0),
-        crate::animation::WuiAnimation::Curve { duration_ms, .. } => (
-            2,
-            u32::try_from(duration_ms)
-                .expect("Android animation duration exceeds packed JNI range"),
-        ),
-        crate::animation::WuiAnimation::Spring { .. } => (3, 0),
-    };
-
-    ((u64::from(duration_ms) << 32) | u64::from(tag)).cast_signed()
+    pack_animation(&animation).0
 }
 
 #[unsafe(no_mangle)]
@@ -1132,15 +1154,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_getAnimationParams12P
         )
     };
 
-    let (p1, p2): (f32, f32) = match animation {
-        crate::animation::WuiAnimation::Curve { x1, y1, .. } => (x1, y1),
-        crate::animation::WuiAnimation::Spring { stiffness, damping } => (stiffness, damping),
-        crate::animation::WuiAnimation::None | crate::animation::WuiAnimation::SystemDefault => {
-            (0.0, 0.0)
-        }
-    };
-
-    ((u64::from(p2.to_bits()) << 32) | u64::from(p1.to_bits())).cast_signed()
+    pack_animation(&animation).1
 }
 
 #[unsafe(no_mangle)]
@@ -1157,14 +1171,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_getAnimationParams34P
         )
     };
 
-    let (p3, p4): (f32, f32) = match animation {
-        crate::animation::WuiAnimation::Curve { x2, y2, .. } => (x2, y2),
-        crate::animation::WuiAnimation::None
-        | crate::animation::WuiAnimation::SystemDefault
-        | crate::animation::WuiAnimation::Spring { .. } => (0.0, 0.0),
-    };
-
-    ((u64::from(p4.to_bits()) << 32) | u64::from(p3.to_bits())).cast_signed()
+    pack_animation(&animation).2
 }
 
 // ============================================================================

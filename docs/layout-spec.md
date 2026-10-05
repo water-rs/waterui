@@ -249,6 +249,30 @@ member — and a conditional switching between rendering nothing and rendering
 a view is a membership change, so it invalidates the stack the same way a
 view swap does.
 
+### 4.5 Structural transition retention
+
+A view with a removal transition leaves semantic membership immediately: it
+is absent from accessibility, testing, hit testing, and focus traversal. Its
+outgoing realization becomes a non-interactive ghost, with a layout-only slot
+in the original container. The slot is a fixed-size leaf: every proposal
+returns the dimensions and alignment guides recorded at removal, its stretch
+axis is `None`, and its layout priority is preserved. It remains a layout
+member, including spacing, until the transition completes. At completion the
+slot is removed and siblings move using the container's animation. Without a
+removal transition, removal releases the slot immediately as in §4.4.
+
+Insertion allocates the new slot immediately at its normal layout size and
+animates only the content. Re-insertion during an exit creates a new semantic
+instance and a new slot; the old ghost completes independently. An exiting
+slot is still placed every frame, so its global frame follows scrolling and
+ancestor movement. A pixel transition is drawn in a window-filling overlay
+anchored to that frame; ancestor clipping does not clip the effect. Retention
+does not preserve removed descendants as semantic members.
+
+These rules apply at every structural site: dynamic replacement, collection
+membership, navigation, and overlays. Scalar property updates do not create
+transition instances or affect membership.
+
 ## 5. Other containers
 
 - **ZStack**: every child is measured with the stack's proposal; the stack's
