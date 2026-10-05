@@ -19,15 +19,17 @@ use crate::error::{EngineError, RenderError, ResourceError, SurfaceError};
 use crate::frame::{FrameStats, FrameTime, FrameTiming, Next};
 use crate::glyph::FontId;
 use crate::image::{Format, ImageData};
-use crate::message::{
-    ChangeSet, FontData, Message, ProducerId, RegisterOp, RenderReply, SurfaceId,
-};
+use cherenkov_record::{ChangeSet, SurfaceId};
+
+use crate::message::{FontData, Message, ProducerId, RegisterOp, RenderReply};
 use crate::paint::ImageId;
+use cherenkov_record::ResourceId;
+
 use crate::resource::{
-    Filter, Font, FontSource, FrameSink, GpuProducer, Image, ReplaceImage, ResourceId, Shader,
+    Filter, Font, FontSource, FrameSink, GpuProducer, Image, ReplaceImage, Shader,
 };
 use crate::style::FilterId;
-use crate::surface::{Shared, Surface};
+use crate::surface::Surface;
 
 /// Owns the device and a serial executor on the creating JS thread.
 ///

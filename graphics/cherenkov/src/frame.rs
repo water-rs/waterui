@@ -3,12 +3,9 @@
 //!
 //! [`Engine::render`]: crate::Engine::render
 
-use crate::Instant;
+use cherenkov_record::RefreshRange;
 
-// The range type is a plain `RangeInclusive`, used by `cherenkov-record`'s
-// animation rate classes; re-exported so `crate::frame::RefreshRange`
-// keeps resolving.
-pub use cherenkov_record::frame::RefreshRange;
+use crate::Instant;
 
 /// The presentation timestamp handed to [`Engine::render`](crate::Engine::render).
 ///

@@ -28,10 +28,10 @@ use crate::error::{EngineError, RenderError, ResourceError, SurfaceError};
 use crate::frame::{FrameId, FrameStats, FrameTime, FrameTiming, Readback};
 use crate::glyph::FontId;
 use crate::image::ImageUpload;
-use crate::message::{ContentOp, FontData, LayerId, SurfaceId};
+use crate::message::FontData;
 use crate::paint::ImageId;
-use crate::resource::ResourceId;
-use crate::tree::SurfaceTree;
+use cherenkov_record::{ContentOp, LayerId, SurfaceId};
+use cherenkov_record::{ResourceId, SurfaceTree};
 
 /// The render-thread contract, a zero-sized marker type (`Gpu`, `Raster`).
 ///

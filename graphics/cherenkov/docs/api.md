@@ -123,7 +123,7 @@ pub trait Renderer: 'static {
 ```
 
 - **Surface limits and cadence.** `SurfaceInfo::max_dimension` lets the UI thread reject an oversized resize before sending it to a backend. Animated backend content returns `Redraw::Wanted { rate }`; the frontend combines its refresh range with active property animations. A window target uses the host-supplied range; `Offscreen` uses `Offscreen::rate` (60 Hz by default).
-- **One copy of the layer tree.** `cherenkov-record` owns the `SurfaceTree`: the layer graph, every layer property, its animation track and the sampled value for the current frame — generic over the `Target` that consumes it, so an engine-free consumer holds the same tree. The render loop in `cherenkov` keeps one per surface. The backend never receives property ops; it keeps only what it alone can produce (encoded fragments, live display lists, atlases, GPU content objects) keyed by `LayerId`, and it reads the tree through `Frame`:
+- **One copy of the layer tree.** `cherenkov-record` owns the `SurfaceTree`: the layer graph, every layer property, its animation track and the sampled value for the current frame — target-neutral, so an engine-free consumer holds the same tree; the `Target` parameter lives only on the queue side (`Shared`, `ChangeSet`, the edits). The render loop in `cherenkov` keeps one per surface. The backend never receives property ops; it keeps only what it alone can produce (encoded fragments, live display lists, atlases, GPU content objects) keyed by `LayerId`, and it reads the tree through `Frame`:
 
   ```rust
   pub struct Frame<'a> { pub id: FrameId, pub time: FrameTime, pub surfaces: &'a [SurfaceFrame<'a>] }

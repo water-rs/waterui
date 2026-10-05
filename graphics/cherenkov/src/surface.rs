@@ -17,8 +17,7 @@ use crossbeam_channel::Sender;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use cherenkov_record::{ChangeSet, Queue, SurfaceId};
-pub use cherenkov_record::{Layer, LayerContent, Shared, Transaction};
+use cherenkov_record::{ChangeSet, Layer, Queue, Shared, SurfaceId, Transaction};
 
 use crate::WorkingColor;
 use crate::animation::Animation;

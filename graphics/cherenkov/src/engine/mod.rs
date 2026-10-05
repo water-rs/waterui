@@ -25,8 +25,7 @@ use arc_swap::ArcSwapOption;
 
 use crate::backend::{Backend, Visibility};
 use crate::frame::{FrameTime, Next};
-use crate::message::{ChangeSet, SurfaceId};
-use crate::surface::Shared;
+use cherenkov_record::{ChangeSet, Shared, SurfaceId};
 
 /// A live surface's engine-side entry: its shared UI-thread queue state
 /// (weak — the `Surface` handle owns it), its host waker, and the cell the

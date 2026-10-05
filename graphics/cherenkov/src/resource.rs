@@ -12,13 +12,12 @@ use crate::ShaderId;
 use crate::error::ResourceError;
 use crate::glyph::FontId;
 use crate::image::{Format, ImageData, ImageUpload};
-use crate::message::{BackdropId, BackdropShaderId};
+use cherenkov_record::{
+    BackdropEffect, BackdropId, BackdropSample, BackdropShaderId, LayerContent,
+};
 
 use crate::paint::ImageId;
 use crate::style::FilterId;
-pub use cherenkov_record::BackdropSample;
-
-pub use cherenkov_record::ResourceId;
 
 /// The data of a font to register with the engine.
 #[derive(Clone)]
@@ -290,7 +289,7 @@ impl BackdropGroup {
     /// A sample of this group with a per-member effect, evaluated in the
     /// member's composite against the shared filtered capture.
     #[must_use]
-    pub fn sample_with(&self, effect: impl Into<crate::BackdropEffect>) -> BackdropSample {
+    pub fn sample_with(&self, effect: impl Into<BackdropEffect>) -> BackdropSample {
         BackdropSample::with_effect(self.id(), effect)
     }
 }
@@ -455,12 +454,12 @@ impl<B: crate::GpuContent> GpuProducer<B> {
     /// At apply time, when the producer is bound on an engine other than
     /// the one that made it.
     #[must_use]
-    pub fn at(&self, size: (u32, u32)) -> crate::surface::LayerContent<B> {
+    pub fn at(&self, size: (u32, u32)) -> cherenkov_record::LayerContent<B> {
         let producer = self.clone();
         let install: crate::message::InstallOp<B> = Box::new(move |r, surface, layer| {
             B::bind_gpu_producer(r, surface, layer, &producer, size)
         });
-        crate::surface::LayerContent::install(install)
+        LayerContent::install(install)
     }
 }
 

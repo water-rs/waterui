@@ -19,9 +19,10 @@ use crate::error::{EngineError, RenderError, ResourceError, SurfaceError};
 use crate::frame::Readback;
 use crate::glyph::FontId;
 use crate::image::{ImageUpload, Rgba8, Rgba16F};
-use crate::message::{ContentOp, FontData, LayerId, SurfaceId};
+use cherenkov_record::{ContentOp, LayerId, ResourceId, SurfaceId};
+
+use crate::message::FontData;
 use crate::paint::{ImageId, ShaderId};
-use crate::resource::ResourceId;
 use crate::{Offscreen, Picture, Pressure, Uploads};
 
 /// A render-thread event [`Null`] reports.
@@ -48,8 +49,9 @@ pub enum Event {
     AddShader(ShaderId),
     /// `remove_shader` ran.
     RemoveShader(ShaderId),
-    /// `set_content` ran.
-    SetContent(SurfaceId, LayerId),
+    /// `set_content` ran, with the stored picture's address — `0` for
+    /// an update or a clear, which store no new picture.
+    SetContent(SurfaceId, LayerId, usize),
     /// `set_external_frame`-equivalent: a submitted frame landed on a
     /// bound layer.
     ProducerFrame(SurfaceId, LayerId),
@@ -398,6 +400,12 @@ impl Renderer for NullRenderer {
         layer: LayerId,
         content: Option<ContentOp>,
     ) -> Option<Picture> {
+        let token = match &content {
+            Some(ContentOp::Replace(picture) | ContentOp::Picture(picture)) => {
+                std::ptr::from_ref(picture.display_list()) as usize
+            }
+            _ => 0,
+        };
         let previous = match content {
             Some(ContentOp::Replace(picture) | ContentOp::Picture(picture)) => {
                 self.pictures.insert((surface, layer), picture)
@@ -413,7 +421,7 @@ impl Renderer for NullRenderer {
             None => self.pictures.remove(&(surface, layer)),
         };
         self.unbind(surface, layer);
-        let _ = self.events.send(Event::SetContent(surface, layer));
+        let _ = self.events.send(Event::SetContent(surface, layer, token));
         previous
     }
 
@@ -1999,8 +2007,8 @@ mod tests {
                 events.as_slice(),
                 [
                     Event::Visibility(id, Visibility::Hidden),
-                    Event::SetContent(operand, drawn),
-                    Event::SetContent(transaction, installed),
+                    Event::SetContent(operand, drawn, ..),
+                    Event::SetContent(transaction, installed, ..),
                     Event::ReplaceImage(replaced, (2, 2)),
                 ] if *id == surface.id()
                     && *operand == surface.id()
@@ -2149,7 +2157,7 @@ mod tests {
 
         let installed = |events: &[Event], surface: SurfaceId, layer: LayerId| {
             events.iter().any(
-                |event| matches!(event, Event::SetContent(s, l) if *s == surface && *l == layer),
+                |event| matches!(event, Event::SetContent(s, l, _) if *s == surface && *l == layer),
             )
         };
         let removed = |events: &[Event], image: ImageId| {
@@ -3065,7 +3073,7 @@ mod wasm_tests {
                 events.as_slice(),
                 [
                     Event::Visibility(id, Visibility::Hidden),
-                    Event::SetContent(set, layer_id),
+                    Event::SetContent(set, layer_id, ..),
                 ] if *id == surface.id() && *set == surface.id() && *layer_id == layer.id()
             ),
             "the hidden surface's transaction is applied as it is made, undrawn: {events:?}"

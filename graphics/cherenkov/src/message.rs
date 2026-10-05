@@ -1,8 +1,7 @@
 //! Messages the UI thread sends to the render thread. Everything crossing
 //! the channel is owned and `Send`; there are no locks anywhere in the
 //! engine. The change sets they carry — the layer ops a [`SurfaceTree`]
-//! applies — live in `cherenkov-record` and are re-exported here so
-//! `crate::message::*` keeps resolving.
+//! applies — live in `cherenkov-record`.
 //!
 //! [`SurfaceTree`]: cherenkov_record::SurfaceTree
 
@@ -17,7 +16,7 @@ pub type FrameReplySender<T> = Sender<T>;
 #[cfg(not(target_arch = "wasm32"))]
 pub type FrameReplySender<T> = SyncSender<T>;
 
-pub use cherenkov_record::ops::{BackdropId, ChangeSet, ContentOp, LayerId, Prop, SurfaceId};
+use cherenkov_record::{ChangeSet, LayerId, ResourceId, SurfaceId};
 
 use crate::backend::{Backend, Display, SurfaceInfo};
 use crate::config::{MemoryUsage, Pressure};
@@ -25,7 +24,6 @@ use crate::error::{RenderError, ResourceError, SurfaceError};
 use crate::frame::{FrameStats, FrameTime, FrameTiming, Next, Readback};
 use crate::image::ImageUpload;
 use crate::paint::ImageId;
-use crate::resource::ResourceId;
 
 /// A render-thread operation a capability method or a resource drop queues.
 #[cfg(not(target_arch = "wasm32"))]
@@ -91,11 +89,6 @@ impl ProducerId {
         self.0
     }
 }
-
-// `BackdropShaderId` lives in `cherenkov-record` with the other plain
-// resource ids; re-exported so `crate::message::BackdropShaderId` still
-// resolves.
-pub use cherenkov_record::BackdropShaderId;
 
 /// A font crossing to the render thread.
 #[derive(Clone)]

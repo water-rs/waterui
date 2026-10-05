@@ -10,8 +10,6 @@
 
 use std::borrow::Cow;
 
-pub use cherenkov_record::{BackdropEffect, BackdropShaderEffect, ColorMatrix, Refraction, Rim};
-
 /// A WGSL shader compiled for the backdrop composite contract
 /// ([`Engine::backdrop_shader`](crate::Engine::backdrop_shader)), not a
 /// shader paint.

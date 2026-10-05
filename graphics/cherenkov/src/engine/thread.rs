@@ -19,12 +19,15 @@ use crate::backend::{
 };
 use crate::engine::{CompletionWaker, SharedWaker, SurfaceWaker};
 use crate::error::{EngineError, RenderError, ResourceError, SurfaceError};
-use crate::frame::{FrameId, FrameStats, Next, RefreshRange};
+use cherenkov_record::RefreshRange;
+
+use crate::frame::{FrameId, FrameStats, Next};
 use crate::image::ImageUpload;
-use crate::message::{BackdropShaderId, ChangeSet, LayerId, Message, ResOp, SurfaceId};
+use cherenkov_record::ResourceId;
+use cherenkov_record::{BackdropShaderId, ChangeSet, LayerId, SurfaceId, SurfaceTree};
+
+use crate::message::{Message, ResOp};
 use crate::paint::ImageId;
-use crate::resource::ResourceId;
-use crate::tree::SurfaceTree;
 use crate::{BackdropEffect, WorkingColor};
 
 /// Whether a surface's frames can ask the backend to present, and the
@@ -870,7 +873,7 @@ fn finish_frame<B: Backend>(
     {
         let owned = renderer.owned_animations(*id);
         let running = if state.content_animating {
-            Some(crate::tree::RATE_FAST)
+            Some(cherenkov_record::tree::RATE_FAST)
         } else if owned.is_empty() {
             state.sampled_rate.take()
         } else {
@@ -888,7 +891,9 @@ fn finish_frame<B: Backend>(
         };
         surface_next.insert(*id, mine.map_or(Next::Idle, |rate| next_at(time, rate)));
         match running {
-            Some(r) if r == crate::tree::RATE_FAST => rate = Some(crate::tree::RATE_FAST),
+            Some(r) if r == cherenkov_record::tree::RATE_FAST => {
+                rate = Some(cherenkov_record::tree::RATE_FAST);
+            }
             Some(r) => rate = rate.or(Some(r)),
             None => {}
         }
@@ -984,10 +989,10 @@ mod tests {
     use crate::backend::{Backend, Display};
     use crate::display_list::{DisplayList, Picture};
     use crate::engine::{SurfaceWaker, Waker};
-    use crate::message::{ChangeSet, ContentOp, LayerId, LayerOp, Op, SurfaceId};
-    use crate::testing::{Null, NullConfig};
-    use crate::tree::SurfaceTree;
-    use crate::{Draw, WorkingColor};
+    use cherenkov_record::{ChangeSet, ContentOp, LayerId, LayerOp, Op, SurfaceId, SurfaceTree};
+
+    use crate::testing::{Event, Null, NullConfig};
+    use crate::{Draw, Engine, FrameTime, Offscreen, OffscreenFormat, WorkingColor};
 
     #[test]
     fn caller_shared_picture_is_not_recycled() {
@@ -1043,6 +1048,47 @@ mod tests {
 
         assert_eq!(second.recycled, []);
         assert_eq!(caller_picture.display_list().len(), 1);
+    }
+
+    /// The commit → reply → `Shared::recycle` round trip hands the stored
+    /// picture's storage back to the UI thread two frames later, so the
+    /// picture `set_content` stores alternates between the same two
+    /// buffers every other frame.
+    #[test]
+    fn render_reuses_picture_storage_every_other_frame() {
+        let (events, rx) = std::sync::mpsc::channel();
+        let engine = Engine::<Null>::new(NullConfig {
+            events,
+            reject: std::collections::HashSet::new(),
+        })
+        .expect("init");
+        let surface = engine
+            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16))
+            .expect("surface");
+        let layer = surface.layer();
+        let mut pointers = Vec::new();
+        for _ in 0..7 {
+            surface.update(|tx| {
+                tx[&layer].record(|_| {});
+            });
+            engine.render(FrameTime::now()).expect("render");
+            while let Ok(event) = rx.try_recv() {
+                if let Event::SetContent(s, l, pointer) = event
+                    && s == surface.id()
+                    && l == layer.id()
+                {
+                    pointers.push(pointer);
+                }
+            }
+        }
+
+        assert_eq!(pointers.len(), 7, "every frame stored a picture");
+        assert_eq!(pointers[0], pointers[2]);
+        assert_eq!(pointers[1], pointers[3]);
+        assert_eq!(pointers[2], pointers[4]);
+        assert_eq!(pointers[3], pointers[5]);
+        assert_eq!(pointers[4], pointers[6]);
+        assert_ne!(pointers[0], pointers[1]);
     }
 
     #[test]

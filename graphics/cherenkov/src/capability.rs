@@ -13,7 +13,11 @@ use crate::ShaderId;
 use crate::backend::Backend;
 use crate::error::ResourceError;
 use crate::image::Format;
-use crate::message::{BackdropId, BackdropShaderId, LayerId, ProducerId, SurfaceId};
+use cherenkov_record::{
+    BackdropId, BackdropSampling, BackdropShaderId, GpuInstalls, LayerId, SurfaceId,
+};
+
+use crate::message::ProducerId;
 use crate::style::FilterId;
 
 /// The backend draws user WGSL shader paints.
@@ -272,13 +276,6 @@ pub trait BackdropShaders: Backdrop {
 
 /// The backend produces HDR output.
 pub trait HdrOutput: Backend {}
-
-// The layer-tree capability markers — `ProjectiveLayers`,
-// `BackdropSampling` and `GpuInstalls` — are target traits declared in
-// `cherenkov-record`; they are re-exported here so `crate::capability::*`
-// keeps resolving. An engine backend implements them for the
-// capabilities its render loop owns.
-pub use cherenkov_record::{BackdropSampling, GpuInstalls, ProjectiveLayers};
 
 /// The backend presents on multiple hardware planes.
 pub trait Planes: Backend {}
