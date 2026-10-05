@@ -47,10 +47,10 @@ on:
         value: ${{ jobs.scope.outputs.test-assets }}
       scene-assets:
         description: >
-          `true` when cherenkov-oracle or cherenkov-gpu is in scope — the
-          packages whose `--all-targets` compile `include_bytes!`s the
-          generated Cherenkov scene fonts — so the scene tree must exist
-          before the check.
+          `true` when cherenkov-oracle, cherenkov-gpu, or cherenkov-cpu is
+          in scope — the packages whose `--all-targets` compile
+          `include_bytes!`s the generated Cherenkov scene fonts — so the
+          fonts must exist before the check.
         value: ${{ jobs.scope.outputs.scene-assets }}
 
 jobs:
