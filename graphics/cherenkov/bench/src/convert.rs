@@ -984,6 +984,33 @@ mod front {
     // `BenchError` owner name, the fill-rule lowering (`core_rule` vs
     // `front_rule`), and the interpolation `api` text.
 
+    /// A scene backdrop group's capture scale at the engine's `f32`
+    /// boundary. The scene's `f64` must narrow exactly, so the oracle and
+    /// the engine run the same scale; a scale that does not is an error,
+    /// never rounded.
+    ///
+    /// # Errors
+    /// `BenchError::Engine` when the scale is not a valid
+    /// [`cherenkov::CaptureScale`] or is not exactly representable in `f32`.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the narrowing is checked to be exact"
+    )]
+    pub fn capture_scale(
+        group: &cherenkov_scene::BackdropGroup,
+    ) -> Result<cherenkov::CaptureScale, BenchError> {
+        let narrowed = group.scale as f32;
+        let scale = cherenkov::CaptureScale::new(narrowed)
+            .map_err(|error| BenchError::Engine(format!("backdrop group {}: {error}", group.id)))?;
+        if f64::from(narrowed).to_bits() != group.scale.to_bits() {
+            return Err(BenchError::Engine(format!(
+                "backdrop group {}: capture scale {} is not exactly representable in f32",
+                group.id, group.scale
+            )));
+        }
+        Ok(scale)
+    }
+
     /// The adapter-specific constants the shared lowering needs.
     pub struct Front {
         /// `BenchError::Unsupported`'s `engine` (`Cherenkov::NAME`).
@@ -1462,5 +1489,28 @@ mod tests {
         );
         let wght = skrifa::raw::types::F2Dot14::from_f32(1.0).to_bits();
         assert!(bits.contains(&wght), "wght=1.0 bits missing: {bits:?}");
+    }
+
+    /// A capture scale reaches the engine only when it narrows to `f32`
+    /// exactly: `0.1` would run the engines at a different scale than the
+    /// oracle.
+    #[cfg(any(feature = "cherenkov", feature = "cherenkov-cpu"))]
+    #[test]
+    fn capture_scale_narrows_exactly_or_fails() {
+        let group = |scale| cherenkov_scene::BackdropGroup {
+            id: 1,
+            filters: Vec::new(),
+            scale,
+        };
+        let quarter = capture_scale(&group(0.25)).expect("0.25 is exact in f32");
+        assert_eq!(quarter.get().to_bits(), 0.25f32.to_bits());
+        assert!(matches!(
+            capture_scale(&group(0.1)),
+            Err(BenchError::Engine(_))
+        ));
+        assert!(matches!(
+            capture_scale(&group(1.5)),
+            Err(BenchError::Engine(_))
+        ));
     }
 }

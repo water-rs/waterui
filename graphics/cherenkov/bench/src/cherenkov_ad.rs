@@ -1541,8 +1541,7 @@ fn backdrop_group(
         feature: Feature::Backdrop,
         api: Some("backdrop filter chain shape is not built"),
     };
-    let scale = cherenkov::CaptureScale::new(group.scale as f32)
-        .map_err(|error| BenchError::Engine(format!("backdrop group {}: {error}", group.id)))?;
+    let scale = convert::capture_scale(group)?;
     Ok(match group.filters.as_slice() {
         [] => surface.backdrop_group_unfiltered(scale),
         [BackdropFilter::GaussianBlur { sigma }] => {
