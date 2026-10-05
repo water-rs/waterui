@@ -253,7 +253,7 @@ fn blurred_backdrop_matches_full_surface_blur_within_apron() {
         .surface(Offscreen::new(size, OffscreenFormat::LinearF32))
         .expect("surface");
     let group = surface.backdrop_group(
-        filtrate::filters::GaussianBlur(4.0f32),
+        filtrate::filters::GaussianBlur::new(4.0f32),
         cherenkov::CaptureScale::FULL,
     );
     let glass = surface.layer();
@@ -312,7 +312,7 @@ fn band_streamed_backdrop_matches_offscreen_byte_for_byte() {
         .expect("offscreen surface");
     let build = |surface: &cherenkov::Surface<Raster>| {
         let group = surface.backdrop_group(
-            filtrate::filters::GaussianBlur(4.0f32),
+            filtrate::filters::GaussianBlur::new(4.0f32),
             cherenkov::CaptureScale::FULL,
         );
         let member = surface.layer();
@@ -371,7 +371,7 @@ fn multi_band_capture_has_no_band_seams() {
         .surface(Offscreen::new((32, 96), OffscreenFormat::LinearF32))
         .expect("surface");
     let group = surface.backdrop_group(
-        filtrate::filters::GaussianBlur(5.0f32),
+        filtrate::filters::GaussianBlur::new(5.0f32),
         cherenkov::CaptureScale::FULL,
     );
     let member = surface.layer();
@@ -418,7 +418,7 @@ fn capture_memory_is_bounded_by_bands_not_capture_height() {
             .surface(Offscreen::new((32, height), OffscreenFormat::LinearF32))
             .expect("surface");
         let group = surface.backdrop_group(
-            filtrate::filters::GaussianBlur(4.0f32),
+            filtrate::filters::GaussianBlur::new(4.0f32),
             cherenkov::CaptureScale::FULL,
         );
         let member = surface.layer();
@@ -628,7 +628,7 @@ fn reduced_multi_band_capture_has_no_band_seams() {
         .surface(Offscreen::new((32, 96), OffscreenFormat::LinearF32))
         .expect("surface");
     let quarter = cherenkov::CaptureScale::new(0.25).expect("in range");
-    let group = surface.backdrop_group(filtrate::filters::GaussianBlur(1.5f32), quarter);
+    let group = surface.backdrop_group(filtrate::filters::GaussianBlur::new(1.5f32), quarter);
     let member = surface.layer();
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|r| {

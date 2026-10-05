@@ -11,7 +11,8 @@
 //! [`SpatialFilter::footprint`](crate::SpatialFilter::footprint). A filter
 //! operates in the linear working space and reads luma coefficients from the
 //! working-space constants, unless it declares sRGB as its operating space
-//! ([`LumaCurve`]), whose luma coefficients are sRGB's own.
+//! ([`LumaCurve`], whose luma coefficients are sRGB's own) or selects it
+//! ([`GaussianBlur::in_space`]).
 //!
 //! # Declaring one
 //!

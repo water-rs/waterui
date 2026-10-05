@@ -284,7 +284,7 @@ fn every_builtin_composes_into_valid_passes() {
     assert_composes("twirl", &TwirlDistortion([0.5_f32, 0.5, 0.3, 90.0]));
     assert_composes("vortex", &VortexDistortion([0.5_f32, 0.5, 0.3, 90.0]));
     assert_composes("blur", &Blur(3.0_f32));
-    assert_composes("gaussian_blur", &GaussianBlur(2.0_f32));
+    assert_composes("gaussian_blur", &GaussianBlur::new(2.0_f32));
     assert_composes("motion_blur", &MotionBlur(4.0_f32, 30.0_f32));
     assert_composes("zoom_blur", &ZoomBlur(0.2_f32, 0.5_f32, 0.5_f32));
     assert_composes("convolution3x3", &Convolution3x3([0.1_f32; 9]));
@@ -1946,7 +1946,7 @@ fn gpu_reactive_output_sizes_keep_each_encodes_uniforms() {
     let policy = Rc::clone(&size);
     // Spatial passes materialize at input resolution. A final colour pass
     // resizes that result, preserving each encode's uniforms before submit.
-    let mut executor = Executor::new(filters::GaussianBlur(0.0_f32))
+    let mut executor = Executor::new(filters::GaussianBlur::new(0.0_f32))
         .with_output_size(move |_, _| policy.get())
         .then(filters::Brightness(0.0_f32));
     setup(&gpu, &mut executor);
@@ -2107,13 +2107,26 @@ fn premultiplied_input(size: (usize, usize)) -> Vec<[f32; 4]> {
         .collect()
 }
 
+/// How far an f16 executor run may stray from the f32 CPU result, relative
+/// to `max(|value|, 1)`: a few f16 ulps, `2^-11` just below one.
+const F16_TOLERANCE: f32 = 2.0e-3;
+
+/// [`F16_TOLERANCE`] for a stage in encoded sRGB. The executor stores
+/// encoded values in f16 between its conversion passes, each store up to
+/// an ulp off, and decoding multiplies that error by up to 2.3 at white.
+const F16_SRGB_TOLERANCE: f32 = 5.0e-3;
+
+/// Runs `filter` on the wgpu executor over f16 textures and on the CPU,
+/// checks they agree within `tolerance` relative to `max(|value|, 1)`, and
+/// returns the GPU output.
 fn assert_f16_matches_cpu<F: Filter + CpuFilter>(
     gpu: &TestGpu,
     filter: F,
     size: (u32, u32),
     input: &[[f32; 4]],
+    tolerance: f32,
     label: &str,
-) {
+) -> Vec<[f32; 4]> {
     let params = filter.params();
     let mut expected = input
         .iter()
@@ -2165,13 +2178,31 @@ fn assert_f16_matches_cpu<F: Filter + CpuFilter>(
         for channel in 0..4 {
             assert!(
                 (actual[channel] - expected[channel]).abs()
-                    <= 2.0e-3 * expected[channel].abs().max(1.0),
+                    <= tolerance * expected[channel].abs().max(1.0),
                 "{label}, pixel {index}, channel {channel}: GPU {}, CPU {}",
                 actual[channel],
                 expected[channel]
             );
         }
     }
+    actual
+}
+
+/// Where a row of opaque greys crosses half in encoded sRGB, in pixels from
+/// the row's left edge: interpolated between the two pixel centres around
+/// the first crossing.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the test rows are a few dozen pixels wide"
+)]
+fn encoded_half_crossing(row: &[[f32; 4]]) -> f32 {
+    let encoded: Vec<f32> = row.iter().map(|pixel| srgb_encode(pixel[0])).collect();
+    let x = encoded
+        .windows(2)
+        .position(|pair| pair[0] < 0.5 && pair[1] >= 0.5)
+        .expect("the row crosses half");
+    let fraction = (0.5 - encoded[x]) / (encoded[x + 1] - encoded[x]);
+    x as f32 + 0.5 + fraction
 }
 
 #[test]
@@ -2179,13 +2210,70 @@ fn cpu_blurs_match_the_wgpu_executor_and_window_aprons() {
     let gpu = create_test_device();
     let size = (23_usize, 17_usize);
     let input = premultiplied_input(size);
-    let gaussian = filters::GaussianBlur(1.7_f32);
-    assert_f16_matches_cpu(&gpu, gaussian, (23, 17), &input, "GaussianBlur");
+    let gaussian = filters::GaussianBlur::new(1.7_f32);
+    assert_f16_matches_cpu(
+        &gpu,
+        gaussian,
+        (23, 17),
+        &input,
+        F16_TOLERANCE,
+        "GaussianBlur",
+    );
+    let encoded = gaussian.in_space(OperatingSpace::Srgb);
+    assert_f16_matches_cpu(
+        &gpu,
+        encoded,
+        (23, 17),
+        &input,
+        F16_SRGB_TOLERANCE,
+        "GaussianBlur in sRGB",
+    );
     let box_blur = filters::Blur(2.0_f32);
-    assert_f16_matches_cpu(&gpu, box_blur, (23, 17), &input, "Blur");
+    assert_f16_matches_cpu(&gpu, box_blur, (23, 17), &input, F16_TOLERANCE, "Blur");
 
-    assert_window_matches_full(&filters::GaussianBlur(1.0_f32), &input, size, 4);
+    assert_window_matches_full(&filters::GaussianBlur::new(1.0_f32), &input, size, 4);
+    let encoded = filters::GaussianBlur::new(1.0_f32).in_space(OperatingSpace::Srgb);
+    assert_window_matches_full(&encoded, &input, size, 4);
     assert_window_matches_full(&filters::Blur(2.0_f32), &input, size, 2);
+
+    // Over a black|white edge at x = 16, a blur averaging encoded sRGB
+    // crosses encoded half at the edge; one averaging linear light crosses
+    // half in light there, which encodes to about 0.735, so its encoded half
+    // lies on the dark side.
+    let step: Vec<[f32; 4]> = (0..32 * 3)
+        .map(|index| {
+            let grey = if index % 32 < 16 { 0.0 } else { 1.0 };
+            [grey, grey, grey, 1.0]
+        })
+        .collect();
+    let middle = 32..64;
+    let gaussian = filters::GaussianBlur::new(3.0_f32);
+    let blurred = assert_f16_matches_cpu(
+        &gpu,
+        gaussian.in_space(OperatingSpace::Srgb),
+        (32, 3),
+        &step,
+        F16_SRGB_TOLERANCE,
+        "GaussianBlur in sRGB over an edge",
+    );
+    let crossing = encoded_half_crossing(&blurred[middle.clone()]);
+    assert!(
+        (crossing - 16.0).abs() < 0.05,
+        "the sRGB blur crosses encoded half at {crossing}, not at the edge"
+    );
+    let blurred = assert_f16_matches_cpu(
+        &gpu,
+        gaussian,
+        (32, 3),
+        &step,
+        F16_TOLERANCE,
+        "GaussianBlur over an edge",
+    );
+    let crossing = encoded_half_crossing(&blurred[middle]);
+    assert!(
+        crossing < 15.0,
+        "the linear blur crosses encoded half at {crossing}, not on the dark side"
+    );
 }
 
 fn assert_window_matches_full<F: Filter + CpuFilter>(
@@ -2261,7 +2349,7 @@ fn cpu_image_blend_modes_match_the_wgpu_executor() {
             mode,
         };
         let label = format!("BlendWithImage::{mode:?}");
-        assert_f16_matches_cpu(&gpu, filter, (23, 17), &input, &label);
+        assert_f16_matches_cpu(&gpu, filter, (23, 17), &input, F16_TOLERANCE, &label);
     }
 
     let auxiliary_f16: Vec<half::f16> = (0..7 * 5 * 4)
@@ -2291,7 +2379,7 @@ fn cpu_image_blend_modes_match_the_wgpu_executor() {
             amount: 0.73_f32,
             mode: filters::BlendMode::Multiply,
         };
-        assert_f16_matches_cpu(&gpu, filter, (23, 17), &input, label);
+        assert_f16_matches_cpu(&gpu, filter, (23, 17), &input, F16_TOLERANCE, label);
     }
 }
 
@@ -2312,7 +2400,7 @@ fn image_blend_hsl_and_screen_match_gpu_at_alpha_edges() {
             mode,
         };
         let label = format!("BlendWithImage::{mode:?}, alpha edges");
-        assert_f16_matches_cpu(&gpu, filter, (4, 1), &input, &label);
+        assert_f16_matches_cpu(&gpu, filter, (4, 1), &input, F16_TOLERANCE, &label);
     }
 }
 
@@ -2524,7 +2612,7 @@ fn gpu_export_filter_gallery_images() {
     export_filter!("sepia.png", Sepia(1.0_f32));
     export_filter!("invert.png", Invert);
     export_filter!("blur.png", Blur(3.0_f32));
-    export_filter!("gaussian_blur.png", GaussianBlur(2.0_f32));
+    export_filter!("gaussian_blur.png", GaussianBlur::new(2.0_f32));
     export_filter!("motion_blur.png", MotionBlur(6.0_f32, 30.0_f32));
     export_filter!("zoom_blur.png", ZoomBlur(0.2_f32, 0.5_f32, 0.5_f32));
     export_filter!("sharpen.png", Sharpen(1.5_f32));
@@ -2659,7 +2747,7 @@ fn gpu_export_filter_gallery_images() {
 fn gpu_one_effect_two_sizes_one_encoder() {
     use filters::GaussianBlur;
     let gpu = create_test_device();
-    let mut executor = Executor::new(GaussianBlur(8.0_f32));
+    let mut executor = Executor::new(GaussianBlur::new(8.0_f32));
     setup(&gpu, &mut executor);
     let size_a = (64, 64);
     let size_b = (64, 32);
@@ -2712,14 +2800,14 @@ fn gpu_one_effect_two_sizes_one_encoder() {
     // References: the same effect, one encode per submission.
     let want_a = run(
         &gpu,
-        GaussianBlur(8.0_f32),
+        GaussianBlur::new(8.0_f32),
         size_a,
         &rgba_a,
         ShapeTextures::default(),
     );
     let want_b = run(
         &gpu,
-        GaussianBlur(8.0_f32),
+        GaussianBlur::new(8.0_f32),
         size_b,
         &rgba_b,
         ShapeTextures::default(),
@@ -2793,7 +2881,7 @@ fn gpu_intermediates_evicted_when_size_unused() {
             .clone()
     }
     let gpu = create_test_device();
-    let mut executor = Executor::new(GaussianBlur(4.0_f32));
+    let mut executor = Executor::new(GaussianBlur::new(4.0_f32));
     setup(&gpu, &mut executor);
     let size_a = (64, 64);
     let size_b = (64, 32);

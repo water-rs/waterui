@@ -828,7 +828,6 @@ impl<V: View, F: Filter + RenderTransfer> Filtered<V, F> {
     inherent_single_param_filter!(crystallize, Crystallize);
     inherent_single_param_filter!(exposure, Exposure);
     inherent_single_param_filter!(gamma, Gamma);
-    inherent_single_param_filter!(gaussian_blur, GaussianBlur);
     inherent_single_param_filter!(grayscale, Grayscale);
     inherent_single_param_filter!(hue_rotation, HueRotation);
     inherent_single_param_filter!(pixellate, Pixellate);
@@ -836,6 +835,18 @@ impl<V: View, F: Filter + RenderTransfer> Filtered<V, F> {
     inherent_single_param_filter!(sepia, Sepia);
     inherent_single_param_filter!(sharpen, Sharpen);
     inherent_single_param_filter!(vibrance, Vibrance);
+
+    /// Append a `GaussianBlur` filter, averaging in the working space, to
+    /// the chain.
+    #[must_use]
+    pub fn gaussian_blur<P: IntoSignalF32>(
+        self,
+        sigma: P,
+    ) -> Filtered<V, Chain<F, filtrate::filters::GaussianBlur<Reactive>>> {
+        let mut guards = ParamGuards::default();
+        let filter = filtrate::filters::GaussianBlur::new(guards.bind(sigma));
+        self.then_bound(filter, guards)
+    }
 
     /// Append an `Invert` filter to the chain.
     #[must_use]
@@ -1305,7 +1316,7 @@ pub trait FilterViewExt: View + Sized {
         let mut guards = ParamGuards::default();
         Filtered::bound(
             self,
-            filtrate::filters::GaussianBlur(guards.bind(sigma)),
+            filtrate::filters::GaussianBlur::new(guards.bind(sigma)),
             guards,
         )
     }

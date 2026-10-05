@@ -67,7 +67,7 @@ fn blurred_backdrop_keeps_extended_range() -> Result<(), Box<dyn std::error::Err
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
     let group = surface.backdrop_group(
-        filtrate::filters::GaussianBlur(4.0f32),
+        filtrate::filters::GaussianBlur::new(4.0f32),
         cherenkov::CaptureScale::FULL,
     );
     let glass = surface.layer();
@@ -989,7 +989,7 @@ fn reduced_blur_counts_its_footprint_in_capture_texels() -> Result<(), Box<dyn s
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
     let half = cherenkov::CaptureScale::new(0.5)?;
-    let group = surface.backdrop_group(filtrate::filters::GaussianBlur(2.0f32), half);
+    let group = surface.backdrop_group(filtrate::filters::GaussianBlur::new(2.0f32), half);
     let glass = surface.layer();
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|r| {
