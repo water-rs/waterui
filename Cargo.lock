@@ -12934,9 +12934,8 @@ dependencies = [
 [[package]]
 name = "waterui-canvas"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/canvas?rev=83f004bb1745708cbe9a72395756677c706f1020#83f004bb1745708cbe9a72395756677c706f1020"
+source = "git+https://github.com/water-rs/canvas?rev=8533cf99f511801c1ad3ee5850a28eefa5aef3ef#8533cf99f511801c1ad3ee5850a28eefa5aef3ef"
 dependencies = [
- "cherenkov",
  "image",
  "kurbo 0.13.1",
  "nami",
@@ -12949,7 +12948,7 @@ dependencies = [
 [[package]]
 name = "waterui-chart"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/chart?rev=bc1ffc4cf0cc4884b6104883f2c537e246ba2c7e#bc1ffc4cf0cc4884b6104883f2c537e246ba2c7e"
+source = "git+https://github.com/water-rs/chart?rev=85f377be58ce12870c3817e16fc81fadcdf61233#85f377be58ce12870c3817e16fc81fadcdf61233"
 dependencies = [
  "bytemuck",
  "nami",
@@ -13319,7 +13318,7 @@ dependencies = [
 [[package]]
 name = "waterui-image"
 version = "0.5.0"
-source = "git+https://github.com/water-rs/image?rev=87080fc2e06628eb990af9fdbfbc3b8a28af5acc#87080fc2e06628eb990af9fdbfbc3b8a28af5acc"
+source = "git+https://github.com/water-rs/image?rev=8b1aa2ce3f03d81ca02164f5563f2cefc34fb566#8b1aa2ce3f03d81ca02164f5563f2cefc34fb566"
 dependencies = [
  "half",
  "image",
@@ -13482,10 +13481,9 @@ dependencies = [
 [[package]]
 name = "waterui-map-gpu"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/map-gpu?rev=add3782ece2c48db44f28873dd6e2ce63e50cf9f#add3782ece2c48db44f28873dd6e2ce63e50cf9f"
+source = "git+https://github.com/water-rs/map-gpu?rev=759f907e2072c38616c85a928c6d95756883d20d#759f907e2072c38616c85a928c6d95756883d20d"
 dependencies = [
  "blocking",
- "cherenkov",
  "executor-core",
  "futures",
  "futures-lite",
@@ -13517,9 +13515,8 @@ dependencies = [
 [[package]]
 name = "waterui-math"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/math?rev=878bfc0284b32ee18c1a50860adf9ba489a4d5ab#878bfc0284b32ee18c1a50860adf9ba489a4d5ab"
+source = "git+https://github.com/water-rs/math?rev=765fb8bcd1e5dba30db973377ceabf12f9ed99f1#765fb8bcd1e5dba30db973377ceabf12f9ed99f1"
 dependencies = [
- "cherenkov",
  "kurbo 0.13.1",
  "mathcat",
  "nami",
