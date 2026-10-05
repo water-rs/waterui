@@ -6,6 +6,12 @@ kotlin = "2.2.21"
 compileSdk = "35"
 minSdk = "26"
 
+[libraries]
+# androidx.core carries the edge-to-edge window helpers and the insets
+# types (`WindowInsetsCompat`, `WindowInsetsAnimationCompat`) the safe-area
+# plumbing is written against.
+androidx-core = { module = "androidx.core:core", version = "1.15.0" }
+
 [plugins]
 android-library = { id = "com.android.library", version.ref = "agp" }
 android-application = { id = "com.android.application", version.ref = "agp" }

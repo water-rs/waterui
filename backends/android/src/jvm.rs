@@ -78,6 +78,11 @@ pub struct Bindings {
     rust_view_group: Global<JClass<'static>>,
     rust_view_group_ctor: JMethodID,
     rust_view_group_set_handle: JMethodID,
+    // The `ignoredSafeAreaMask` plumbing — the ignore-safe-area wrapper
+    // writes it once, the accumulated-mask walk reads it off every
+    // `RustViewGroup` ancestor.
+    rust_view_group_set_ignored_mask: JMethodID,
+    rust_view_group_ignored_mask: JFieldID,
     rust_click_listener: Global<JClass<'static>>,
     rust_click_listener_ctor: JMethodID,
 
@@ -88,6 +93,16 @@ pub struct Bindings {
     view_get_measured_height: JMethodID,
     view_layout: JMethodID,
     view_request_layout: JMethodID,
+    // Window-space geometry for host-local inset math: the view's origin
+    // in the window, the window's own size through the root view, and the
+    // view's laid-out size.
+    view_get_location_in_window: JMethodID,
+    view_get_root_view: JMethodID,
+    view_get_width: JMethodID,
+    view_get_height: JMethodID,
+    // `ViewParent.getParent()` — resolved on the interface so the
+    // accumulated-mask walk climbs past non-`View` ancestors too.
+    view_parent_get_parent: JMethodID,
     view_set_on_click_listener: JMethodID,
     view_set_content_description: JMethodID,
     view_set_text_alignment: JMethodID,
@@ -279,6 +294,18 @@ pub fn retain(view: &Global<JObject<'static>>) -> Global<JObject<'static>> {
     })
 }
 
+/// The window's insets, in pixels, split by safe-area region — the
+/// `InsetsForwarder` in `WaterActivity` pushes each frame's values in as
+/// `[left, top, right, bottom]` depths. Main-thread state, so `Cell`s
+/// suffice; containers read them during `nativeLayout`.
+#[derive(Debug, Default)]
+pub struct SafeAreaInsets {
+    /// The container region — system bars, cutouts, the caption bar.
+    pub container: Cell<[i32; 4]>,
+    /// The keyboard region — the IME's band.
+    pub keyboard: Cell<[i32; 4]>,
+}
+
 /// The backend's platform-facing state, owned by the runtime and threaded
 /// through every call that reaches JNI: the frozen [`Bindings`], the host
 /// `Context` views are constructed against, the display density the unit
@@ -303,6 +330,9 @@ pub struct Platform {
     /// view key → the leaf's selected-proposal sink — the L-2 channel.
     /// Registration, delivery and teardown all run on the main looper.
     proposals: Proposals,
+    /// Both safe-area regions' window insets — pushed by the activity's
+    /// inset forwarder on dispatch and on every inset-animation frame.
+    safe_area: SafeAreaInsets,
 }
 
 impl core::fmt::Debug for Platform {
@@ -324,6 +354,7 @@ impl Platform {
             density: Cell::new(1.0),
             measure_epoch: MeasureEpoch::new(),
             proposals: Proposals::new(),
+            safe_area: SafeAreaInsets::default(),
         })
     }
 
@@ -353,6 +384,20 @@ impl Platform {
     /// proposals a parent selected, per `docs/layout-spec.md` rule L-2.
     pub const fn proposals(&self) -> &Proposals {
         &self.proposals
+    }
+
+    /// The two safe-area regions' window insets, in pixels.
+    pub const fn safe_area(&self) -> &SafeAreaInsets {
+        &self.safe_area
+    }
+
+    /// Stores a pushed inset frame. Marks every memoized measure stale so
+    /// the relayout the `requestLayout` that follows triggers re-measures
+    /// against the new geometry.
+    pub fn set_safe_area(&self, container: [i32; 4], keyboard: [i32; 4]) {
+        self.safe_area.container.set(container);
+        self.safe_area.keyboard.set(keyboard);
+        self.invalidate_measures();
     }
 
     /// `context.getResources()`.
@@ -428,6 +473,7 @@ impl Bindings {
         let rust_click_listener = class(jni_str!("dev/waterui/android/RustOnClickListener"))?;
         let view = class(jni_str!("android/view/View"))?;
         let view_group = class(jni_str!("android/view/ViewGroup"))?;
+        let view_parent = class(jni_str!("android/view/ViewParent"))?;
         let text_view = class(jni_str!("android/widget/TextView"))?;
         let space = class(jni_str!("android/widget/Space"))?;
         let frame_layout = class(jni_str!("android/widget/FrameLayout"))?;
@@ -480,6 +526,16 @@ impl Bindings {
                 jni_str!("setHandle"),
                 jni_sig!("(J)V"),
             )?,
+            rust_view_group_set_ignored_mask: env.get_method_id(
+                &rust_view_group,
+                jni_str!("setIgnoredSafeAreaMask"),
+                jni_sig!("(I)V"),
+            )?,
+            rust_view_group_ignored_mask: env.get_field_id(
+                &rust_view_group,
+                jni_str!("ignoredSafeAreaMask"),
+                jni_sig!("I"),
+            )?,
             rust_view_group,
             rust_click_listener_ctor: env.get_method_id(
                 &rust_click_listener,
@@ -504,6 +560,23 @@ impl Bindings {
                 &view,
                 jni_str!("requestLayout"),
                 jni_sig!("()V"),
+            )?,
+            view_get_location_in_window: env.get_method_id(
+                &view,
+                jni_str!("getLocationInWindow"),
+                jni_sig!("([I)V"),
+            )?,
+            view_get_root_view: env.get_method_id(
+                &view,
+                jni_str!("getRootView"),
+                jni_sig!("()Landroid/view/View;"),
+            )?,
+            view_get_width: env.get_method_id(&view, jni_str!("getWidth"), jni_sig!("()I"))?,
+            view_get_height: env.get_method_id(&view, jni_str!("getHeight"), jni_sig!("()I"))?,
+            view_parent_get_parent: env.get_method_id(
+                &view_parent,
+                jni_str!("getParent"),
+                jni_sig!("()Landroid/view/ViewParent;"),
             )?,
             view_set_on_click_listener: env.get_method_id(
                 &view,
@@ -1280,6 +1353,139 @@ impl Bindings {
                 self.view_request_layout,
                 ReturnType::Primitive(Primitive::Void),
                 &[],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// `view.getParent()` — one step of the accumulated safe-area mask's
+    /// ancestor walk. Resolved on `ViewParent`, so the receiver may be any
+    /// ancestor, `View` or not. `None` at the hierarchy root.
+    pub fn parent(
+        &self,
+        env: &mut Env,
+        view: &JObject,
+    ) -> jni::errors::Result<Option<Global<JObject<'static>>>> {
+        // SAFETY: resolved id; `view` is a ViewParent.
+        let parent = unsafe {
+            env.call_method_unchecked(view, self.view_parent_get_parent, ReturnType::Object, &[])?
+                .l()?
+        };
+        if parent.is_null() {
+            Ok(None)
+        } else {
+            env.new_global_ref(parent).map(Some)
+        }
+    }
+
+    /// `view.getLocationInWindow(int[2])` — the view's origin in the
+    /// window's coordinate space, the anchor the host-local inset math
+    /// converts window depths with.
+    pub fn location_in_window(
+        &self,
+        env: &mut Env,
+        view: &JObject,
+    ) -> jni::errors::Result<[jint; 2]> {
+        let array = JIntArray::new(env, 2)?;
+        // SAFETY: resolved id; `view` is a View, `array` an int[2].
+        unsafe {
+            env.call_method_unchecked(
+                view,
+                self.view_get_location_in_window,
+                ReturnType::Primitive(Primitive::Void),
+                &[jvalue { l: array.as_raw() }],
+            )?;
+        }
+        let mut location = [0; 2];
+        array.get_region(env, 0, &mut location)?;
+        Ok(location)
+    }
+
+    /// `view.getRootView()` — the window's top view, whose laid-out size
+    /// is the window's. `None` while unattached.
+    pub fn root_view(
+        &self,
+        env: &mut Env,
+        view: &JObject,
+    ) -> jni::errors::Result<Option<Global<JObject<'static>>>> {
+        // SAFETY: resolved id; `view` is a View.
+        let root = unsafe {
+            env.call_method_unchecked(view, self.view_get_root_view, ReturnType::Object, &[])?
+                .l()?
+        };
+        if root.is_null() {
+            Ok(None)
+        } else {
+            env.new_global_ref(root).map(Some)
+        }
+    }
+
+    /// `view.getWidth()` — the view's laid-out width in pixels.
+    pub fn width(&self, env: &mut Env, view: &JObject) -> jni::errors::Result<jint> {
+        // SAFETY: resolved id; `view` is a View.
+        unsafe {
+            env.call_method_unchecked(
+                view,
+                self.view_get_width,
+                ReturnType::Primitive(Primitive::Int),
+                &[],
+            )?
+            .i()
+        }
+    }
+
+    /// `view.getHeight()` — the view's laid-out height in pixels.
+    pub fn height(&self, env: &mut Env, view: &JObject) -> jni::errors::Result<jint> {
+        // SAFETY: resolved id; `view` is a View.
+        unsafe {
+            env.call_method_unchecked(
+                view,
+                self.view_get_height,
+                ReturnType::Primitive(Primitive::Int),
+                &[],
+            )?
+            .i()
+        }
+    }
+
+    /// The safe-area mask this view declares — the `ignoredSafeAreaMask`
+    /// field when it is a `RustViewGroup`, zero for every other ancestor
+    /// kind. Bits per `crate::native_layout`: 0–3 container edges, 4–7
+    /// keyboard, bit 8 the ignorer mark.
+    pub fn declared_safe_area_mask(
+        &self,
+        env: &mut Env,
+        view: &JObject,
+    ) -> jni::errors::Result<jint> {
+        if !env.is_instance_of(view, &self.rust_view_group)? {
+            return Ok(0);
+        }
+        // SAFETY: resolved int field; `view` is a RustViewGroup.
+        unsafe {
+            env.get_field_unchecked(
+                view,
+                self.rust_view_group_ignored_mask,
+                JavaType::Primitive(Primitive::Int),
+            )?
+            .i()
+        }
+    }
+
+    /// `group.setIgnoredSafeAreaMask(mask)` — the ignore-safe-area
+    /// wrapper's one write, right after construction.
+    pub fn set_ignored_safe_area_mask(
+        &self,
+        env: &mut Env,
+        group: &JObject,
+        mask: jint,
+    ) -> jni::errors::Result<()> {
+        // SAFETY: resolved id; `group` is a RustViewGroup.
+        unsafe {
+            env.call_method_unchecked(
+                group,
+                self.rust_view_group_set_ignored_mask,
+                ReturnType::Primitive(Primitive::Void),
+                &[jvalue { i: mask }],
             )?;
         }
         Ok(())

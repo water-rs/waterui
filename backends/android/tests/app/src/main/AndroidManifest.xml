@@ -12,9 +12,12 @@
             android:name="dev.waterui.LIBRARY"
             android:value="waterui_android_test_app" />
 
+        <!-- The window never resizes for the IME — the backend avoids the
+             keyboard from the pushed insets alone (§7.1). -->
         <activity
             android:name="dev.waterui.android.WaterActivity"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode|locale|density|fontScale"
+            android:windowSoftInputMode="adjustNothing"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

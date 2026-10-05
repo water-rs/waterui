@@ -38,6 +38,24 @@ object WaterRuntime {
     /** Forwards `Activity.onConfigurationChanged` — theme, locale, density. */
     external fun nativeOnConfigurationChanged(handle: Long)
 
+    /**
+     * Pushes the window's insets, in pixels, split by safe-area region:
+     * [container*] the container region (system bars, cutouts, the caption
+     * bar), [keyboard*] the keyboard region (the IME). Fires on inset
+     * dispatch and on every `WindowInsetsAnimationCompat` frame.
+     */
+    external fun nativeInsetsChanged(
+        handle: Long,
+        containerLeft: Int,
+        containerTop: Int,
+        containerRight: Int,
+        containerBottom: Int,
+        keyboardLeft: Int,
+        keyboardTop: Int,
+        keyboardRight: Int,
+        keyboardBottom: Int,
+    )
+
     /** Forwards `Activity.onTrimMemory`. */
     external fun nativeOnTrimMemory(handle: Long, level: Int)
 }

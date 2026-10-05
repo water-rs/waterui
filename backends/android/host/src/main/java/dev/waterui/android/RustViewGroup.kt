@@ -12,9 +12,22 @@ import android.widget.FrameLayout
 class RustViewGroup(context: Context) : FrameLayout(context) {
     private var handle: Long = 0
 
+    /**
+     * The safe-area region edges this group erases for its subtree — the
+     * `ignore_safe_area` wrapper's mask: bits 0–3 the container region's
+     * edge mask, bits 4–7 the keyboard region's, bit 8 marking the view an
+     * ignorer. Rust reads the field while accumulating a group's mask.
+     */
+    var ignoredSafeAreaMask: Int = 0
+
     /** The Rust state pointer the callbacks forward. Called once, by Rust. */
     fun setHandle(handle: Long) {
         this.handle = handle
+    }
+
+    /** The ignore-safe-area mask — called once, by Rust, after construction. */
+    fun setIgnoredSafeAreaMask(mask: Int) {
+        this.ignoredSafeAreaMask = mask
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {

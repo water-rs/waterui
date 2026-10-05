@@ -8,6 +8,10 @@ pub mod button;
 pub mod container;
 pub mod dynamic;
 pub mod empty;
+// The wrapper is a `RustViewGroup` — it shares the container port's group
+// plumbing, so it builds only where that feature does.
+#[cfg(feature = "container")]
+pub mod ignore_safe_area;
 #[cfg(feature = "text")]
 pub mod text;
 pub mod with_env;

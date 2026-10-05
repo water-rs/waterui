@@ -46,11 +46,11 @@ type ItemId = <AnyViews<AnyView> as Views>::Id;
 
 /// The shared state the JNI callbacks reach through the handle the
 /// `RustViewGroup` carries.
-struct ContainerState {
+pub struct ContainerState {
     /// The layout object the `Layout` impl produced.
     layout: Box<dyn Layout>,
     /// The rendered children, in container order — the fixed path.
-    children: Vec<Mounted>,
+    pub children: Vec<Mounted>,
     /// The collection-backed child set — the lazy path.
     lazy: Option<LazyState>,
     /// The proposal the parent selected for this container, delivered before
@@ -79,7 +79,7 @@ impl core::fmt::Debug for ContainerState {
 /// The lazy path's child set: the id-keyed mounted children, in the state
 /// so the watch — and only the watch — mutates them. The collection
 /// itself lives on the leaf's `KeepAlive`, not here.
-struct LazyState {
+pub struct LazyState {
     /// The render capability `get_view` results are realized through.
     renderer: Renderer,
     /// The container view children mount on.
@@ -169,7 +169,7 @@ pub extern "system" fn Java_dev_waterui_android_RustViewGroup_nativeMeasure<'cal
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_android_RustViewGroup_nativeLayout<'caller>(
     mut unowned_env: jni::EnvUnowned<'caller>,
-    _this: JObject<'caller>,
+    this: JObject<'caller>,
     handle: jlong,
     left: jint,
     top: jint,
@@ -192,10 +192,20 @@ pub extern "system" fn Java_dev_waterui_android_RustViewGroup_nativeLayout<'call
         // `View.layout` writes them in the group's local space, so the
         // bounds handed to `place` must be the local rect (0, 0, w, h) —
         // the same space `view.bounds` supplies on Apple.
-        let bounds = Rect::from_size(Size::new(
+        let local = Rect::from_size(Size::new(
             platform.px_to_dp(right - left),
             platform.px_to_dp(bottom - top),
         ));
+        // §7.1: children lay out clear of every safe-area region whose
+        // edges this group's ancestors do not ignore, and an ignorer child
+        // — a `RustViewGroup` carrying the ignorer mark — extends through
+        // to its band target on each edge it touches.
+        let mask = crate::native_layout::accumulated_mask(env, &platform, &this)?;
+        let (container_depths, keyboard_depths) =
+            crate::native_layout::region_depths(env, &platform, &this)?;
+        let bounds =
+            crate::native_layout::safe_rect(local, mask, container_depths, keyboard_depths);
+        let avoided = crate::native_layout::avoided(mask, container_depths, keyboard_depths);
         // The proposal the parent selected, else the frame itself — the same
         // fallback `perform_fixed_layout` makes natively hosted.
         let proposal = state
@@ -238,13 +248,37 @@ pub extern "system" fn Java_dev_waterui_android_RustViewGroup_nativeLayout<'call
             platform
                 .proposals()
                 .deliver(child.view(), placement.proposal);
+            let mut frame = placement.frame;
+            // §7.1: an ignore-safe-area wrapper extends into the bands it
+            // manages — every edge its placed frame already touches on the
+            // safe rect reaches the band target's edge.
+            if platform
+                .bindings()
+                .declared_safe_area_mask(env, child.view().as_ref())?
+                & crate::native_layout::IGNORER_MARK
+                != 0
+            {
+                let child_mask =
+                    crate::native_layout::accumulated_mask(env, &platform, child.view().as_ref())?;
+                frame = crate::native_layout::extended_through(
+                    frame,
+                    bounds,
+                    crate::native_layout::band_target(
+                        local,
+                        child_mask,
+                        container_depths,
+                        keyboard_depths,
+                        avoided,
+                    ),
+                );
+            }
             platform.bindings().layout(
                 env,
                 child.view().as_ref(),
-                platform.dp_to_px(placement.frame.x()),
-                platform.dp_to_px(placement.frame.y()),
-                platform.dp_to_px(placement.frame.x() + placement.frame.width()),
-                platform.dp_to_px(placement.frame.y() + placement.frame.height()),
+                platform.dp_to_px(frame.x()),
+                platform.dp_to_px(frame.y()),
+                platform.dp_to_px(frame.x() + frame.width()),
+                platform.dp_to_px(frame.y() + frame.height()),
             )?;
         }
         Ok(())
@@ -253,7 +287,7 @@ pub extern "system" fn Java_dev_waterui_android_RustViewGroup_nativeLayout<'call
 }
 
 /// The container's `SubView` — what the parent measures and stretches.
-struct ContainerSubView {
+pub struct ContainerSubView {
     state: Rc<RefCell<ContainerState>>,
 }
 
@@ -304,7 +338,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
 /// The container's platform object: a `RustViewGroup` that does not clip —
 /// the layout writes frames directly, it does not clip them.
-fn new_group(platform: &Rc<Platform>) -> PlatformView {
+pub fn new_group(platform: &Rc<Platform>) -> PlatformView {
     let group = jvm::with_env(|env| {
         let group = platform
             .new_rust_view_group(env)
@@ -320,7 +354,7 @@ fn new_group(platform: &Rc<Platform>) -> PlatformView {
 
 /// The state plus the two watches every container installs: the L-2
 /// proposal sink and the layout's own invalidation signal.
-fn wire_container_state(
+pub fn wire_container_state(
     layout: Box<dyn Layout>,
     lazy: Option<LazyState>,
     platform: &Rc<Platform>,
@@ -381,7 +415,7 @@ fn wire_container_state(
 
 /// The leaf assembly every path ends with: the JNI handle the
 /// `RustViewGroup` calls back through, then the leaf that owns it.
-fn finish_container(
+pub fn finish_container(
     state: &Rc<RefCell<ContainerState>>,
     group: PlatformView,
     platform: &Rc<Platform>,

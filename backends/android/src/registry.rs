@@ -19,6 +19,12 @@ pub fn install(dispatcher: &mut Dispatcher) {
     // `body()` panics whenever no handler claims it.
     crate::components::with_env::install(dispatcher);
 
+    // `ignore_safe_area` — `Metadata<IgnoreSafeArea>` is shared layout API;
+    // unclaimed it falls into the same `body()` panic. The wrapper shares
+    // the container port's group, so it installs where that feature does.
+    #[cfg(feature = "container")]
+    crate::components::ignore_safe_area::install(dispatcher);
+
     // Reactive content — `Dynamic::watch`/`text!`-bound content arrives as
     // `Native<Dynamic>`; unclaimed it falls into the same `body()` panic.
     crate::components::dynamic::install(dispatcher);

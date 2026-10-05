@@ -22,7 +22,9 @@ use crate::theme::ThemeSignals;
 /// design kept in statics — the runtime owns it and shares it by `Rc`.
 struct Runtime {
     _env: Environment,
-    _root: PlatformView,
+    /// The window's root view — the `requestLayout` target an inset push
+    /// schedules the relayout through.
+    root: PlatformView,
     _content: Mounted,
     theme: ThemeSignals,
     locale: waterui::reactive::Binding<Locale>,
@@ -99,7 +101,7 @@ pub fn mount(
 
     let runtime = Box::new(Runtime {
         _env: app_env,
-        _root: root,
+        root,
         _content: content,
         theme,
         locale,
@@ -161,6 +163,49 @@ pub extern "system" fn Java_dev_waterui_android_WaterRuntime_nativeOnConfigurati
         let runtime = unsafe { runtime(handle) };
         crate::theme::refresh(env, &runtime.theme)?;
         crate::locale::refresh(&runtime.locale, &runtime.platform);
+        Ok(())
+    });
+    outcome.resolve::<crate::policy::ThrowRuntimeExAndDefault>();
+}
+
+/// `WaterRuntime.nativeInsetsChanged` — one frame of window insets.
+///
+/// The activity's inset forwarder pushes the two regions' left/top/right/
+/// bottom pixel depths — the container region (system bars, cutouts, the
+/// caption bar), then the keyboard region (the IME) — on dispatch and on
+/// every `WindowInsetsAnimationCompat` frame, so a keyboard move reaches
+/// the layout with the platform's own animation. The window never resizes
+/// (`adjustNothing`).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_WaterRuntime_nativeInsetsChanged<'caller>(
+    mut unowned_env: jni::EnvUnowned<'caller>,
+    _this: jni::objects::JObject<'caller>,
+    handle: jlong,
+    container_left: jni::sys::jint,
+    container_top: jni::sys::jint,
+    container_right: jni::sys::jint,
+    container_bottom: jni::sys::jint,
+    keyboard_left: jni::sys::jint,
+    keyboard_top: jni::sys::jint,
+    keyboard_right: jni::sys::jint,
+    keyboard_bottom: jni::sys::jint,
+) {
+    let outcome = unowned_env.with_env(|env| -> jni::errors::Result<()> {
+        // SAFETY: the handle stays live until nativeDestroy.
+        let runtime = unsafe { runtime(handle) };
+        runtime.platform.set_safe_area(
+            [
+                container_left,
+                container_top,
+                container_right,
+                container_bottom,
+            ],
+            [keyboard_left, keyboard_top, keyboard_right, keyboard_bottom],
+        );
+        runtime
+            .platform
+            .bindings()
+            .request_layout(env, &runtime.root)?;
         Ok(())
     });
     outcome.resolve::<crate::policy::ThrowRuntimeExAndDefault>();
