@@ -1045,7 +1045,7 @@ mod platform {
                             view: cocoa_ui::view::retain_base(item.leaf.view()),
                             size: measure(&item.leaf),
                         },
-                        icon: self.view_icon(entry, item, icon),
+                        icon: Self::view_icon(self, entry, item, icon),
                         label,
                         bordered,
                         action,
@@ -1069,12 +1069,12 @@ mod platform {
         /// republishes the chrome.
         #[cfg(feature = "gpu_surface")]
         fn view_icon(
-            &self,
+            stack: &Self,
             entry: &Entry,
             item: &BarItem,
             icon: &NativeLeaf,
         ) -> Option<Retained<NSImage>> {
-            self.icon_jobs(entry).image(
+            stack.icon_jobs(entry).image(
                 core::ptr::from_ref(item).cast::<u8>() as usize,
                 icon.view(),
                 18.0,
@@ -1086,7 +1086,7 @@ mod platform {
         /// subtree.
         #[cfg(not(feature = "gpu_surface"))]
         fn view_icon(
-            &self,
+            _stack: &Self,
             _entry: &Entry,
             _item: &BarItem,
             icon: &NativeLeaf,
