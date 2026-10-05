@@ -401,9 +401,8 @@ fn render(config: ScrollView, ctx: &RenderContext<'_>) -> NativeLeaf {
     // the content has not been laid out against asks for another pass.
     #[cfg(target_os = "macos")]
     scroll.set_tile_handler({
-        // Same owner edge as the layout handler: the `AppKit` clip
-        // observation retains the clip side, so a strong content capture
-        // still pins the subtree through the observed path (water-rs/waterui#1575).
+        // Borrow the same explicitly leaf-owned content from this native
+        // callback, as the layout handler does (water-rs/waterui#1575).
         let content = Rc::downgrade(&content);
         move |scroll| {
             let Some(content) = content.upgrade() else {
