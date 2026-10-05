@@ -3398,10 +3398,10 @@ mod tests {
     }
 
     /// A project that patches a crate the framework also patches, to another
-    /// source, fails the scaffold naming both entries rather than letting
-    /// either win silently.
+    /// source, overrides the framework's entry, as the project's own build
+    /// does: Cargo takes `[patch]` from the root manifest.
     #[test]
-    fn ffi_scaffold_rejects_a_project_patch_the_framework_contradicts() {
+    fn ffi_scaffold_takes_the_projects_entry_over_the_frameworks() {
         let tempdir = tempdir().expect("temporary ffi scaffold dir");
         let (ctx, ffi_dir) = patched_project_ffi(
             tempdir.path(),
@@ -3409,13 +3409,53 @@ mod tests {
              [patch.crates-io]\nwaterui-core = { path = \"../elsewhere/core\" }\n",
         );
 
-        let error = smol::block_on(crate::templates::ffi::scaffold(&ffi_dir, &ctx, "app-ffi"))
-            .expect_err("the project contradicts the framework");
+        smol::block_on(crate::templates::ffi::scaffold(&ffi_dir, &ctx, "app-ffi"))
+            .expect("ffi scaffold should succeed");
 
-        let message = error.to_string();
-        assert!(message.contains("`waterui-core`"), "{message}");
-        assert!(message.contains("elsewhere/core"), "{message}");
-        assert!(message.contains("waterui/core"), "{message}");
+        let manifest = std::fs::read_to_string(ffi_dir.join("Cargo.toml"))
+            .expect("ffi Cargo.toml should be written")
+            .parse::<toml::Table>()
+            .expect("ffi Cargo.toml should parse");
+        assert_eq!(
+            manifest["patch"]["crates-io"]["waterui-core"]["path"].as_str(),
+            Some(
+                normalize_path_for_config(&tempdir.path().join("app").join("../elsewhere/core"))
+                    .as_str()
+            ),
+            "the project's entry replaces the framework's"
+        );
+    }
+
+    /// The `gpu-allocator` entry `waterui-winui` needs is the framework's
+    /// side of the merge: a project pinning the crate itself keeps its pin.
+    #[test]
+    fn winui_scaffold_keeps_a_projects_gpu_allocator_patch() {
+        let tempdir = tempdir().expect("temporary project dir");
+        std::fs::write(
+            tempdir.path().join("Cargo.toml"),
+            "[package]\nname = \"waterui_test\"\nversion = \"0.1.0\"\n\n\
+             [patch.crates-io]\n\
+             gpu-allocator = { git = \"https://github.com/Traverse-Research/gpu-allocator\", rev = \"project-rev\" }\n",
+        )
+        .expect("project manifest");
+        let mut ctx = ctx(None, None, Some(tempdir.path().to_path_buf()));
+        ctx.framework = dev_framework();
+        let manifest = crate::templates::winui::rendered_outputs(&ctx, "waterui-test-winui")
+            .expect("winui outputs should render")
+            .into_iter()
+            .find_map(|(path, content)| {
+                (path == std::path::Path::new("Cargo.toml"))
+                    .then(|| String::from_utf8(content).expect("Cargo.toml must be UTF-8"))
+            })
+            .expect("winui Cargo.toml output should exist");
+        let manifest: toml::Value = toml::from_str(&manifest).expect("winui manifest must parse");
+
+        let gpu_allocator = &manifest["patch"]["crates-io"]["gpu-allocator"];
+        assert_eq!(
+            gpu_allocator["git"].as_str(),
+            Some("https://github.com/Traverse-Research/gpu-allocator")
+        );
+        assert_eq!(gpu_allocator["rev"].as_str(), Some("project-rev"));
     }
 
     #[test]
@@ -5212,17 +5252,18 @@ pub mod winui {
 
     /// The `[patch]` table the launcher needs as its own workspace root: the
     /// checkout's or channel's set every generated crate gets, plus the
-    /// `gpu-allocator` entry only `waterui-winui` requires.
+    /// `gpu-allocator` entry only `waterui-winui` requires, with the project's
+    /// own entries merged over both.
     fn winui_patch_set(
         ctx: &TemplateContext,
         gpu_allocator_patch: Dependency,
     ) -> io::Result<cargo_toml::PatchSet> {
-        let mut patch = super::generated_crate_patches(ctx)?;
+        let mut patch = super::framework_crate_patches(ctx)?;
         patch
             .entry("crates-io".to_string())
             .or_default()
             .insert("gpu-allocator".to_string(), gpu_allocator_patch);
-        Ok(patch)
+        super::with_project_patches(patch, ctx.project_root_path.as_deref())
     }
 }
 
@@ -5945,10 +5986,11 @@ pub mod tui {
 
     /// The `[patch]` table the launcher needs as its own workspace root: the
     /// checkout's or channel's set every other generated crate gets, plus the
-    /// [`EXTRA_PATCHES`] entries `waterui-tui` alone requires.
+    /// [`EXTRA_PATCHES`] entries `waterui-tui` alone requires, with the
+    /// project's own entries merged over both.
     fn tui_patch_set(ctx: &TemplateContext) -> io::Result<cargo_toml::PatchSet> {
         let waterui_root = ctx.waterui_workspace_root();
-        let mut patch = super::generated_crate_patches(ctx)?;
+        let mut patch = super::framework_crate_patches(ctx)?;
         let crates_io = patch.entry("crates-io".to_string()).or_default();
         if let Some(root) = &waterui_root {
             for &(name, subdir) in EXTRA_PATCHES {
@@ -5967,7 +6009,7 @@ pub mod tui {
                 });
             }
         }
-        Ok(patch)
+        super::with_project_patches(patch, ctx.project_root_path.as_deref())
     }
 
     fn path_dependency_patch(path: &Path) -> Dependency {
@@ -6151,20 +6193,26 @@ pub fn collect_framework_checkout_patches(
     Ok(patches)
 }
 
-/// The `[patch]` tables a generated crate resolves with.
-///
-/// The framework's come first: the checkout's own when `waterui_path` names a
-/// checkout — carrying the repository-source mirror
-/// [`collect_workspace_patches`] synthesizes — and the resolved channel's
-/// otherwise, whose resolution rebases the same table onto the channel's
-/// revision. The project's own entries are merged in through
-/// [`with_project_patches`].
+/// The `[patch]` tables a generated crate resolves with: the framework's
+/// ([`framework_crate_patches`]) with the project's own merged over them
+/// through [`with_project_patches`].
 fn generated_crate_patches(ctx: &TemplateContext) -> io::Result<cargo_toml::PatchSet> {
-    let framework = ctx.waterui_workspace_root().map_or_else(
+    with_project_patches(
+        framework_crate_patches(ctx)?,
+        ctx.project_root_path.as_deref(),
+    )
+}
+
+/// The framework's `[patch]` tables for a generated crate: the checkout's own
+/// when `waterui_path` names a checkout — carrying the repository-source
+/// mirror [`collect_workspace_patches`] synthesizes — and the resolved
+/// channel's otherwise, whose resolution rebases the same table onto the
+/// channel's revision.
+fn framework_crate_patches(ctx: &TemplateContext) -> io::Result<cargo_toml::PatchSet> {
+    ctx.waterui_workspace_root().map_or_else(
         || Ok(ctx.framework.patches()),
         |root| collect_framework_checkout_patches(&root),
-    )?;
-    with_project_patches(framework, ctx.project_root_path.as_deref())
+    )
 }
 
 /// `framework` merged with the `[patch]` tables governing the project's own
@@ -6178,12 +6226,12 @@ fn generated_crate_patches(ctx: &TemplateContext) -> io::Result<cargo_toml::Patc
 /// when the project also depends on the pinned crate directly (#178, #1997).
 /// Every source key the project patches is carried, and its `path` entries
 /// are made absolute, since the generated crate lives outside the project.
-/// An entry both sides name must agree.
+/// A crate both sides patch takes the project's entry, as the project's own
+/// build does (see [`crate::patch_tables::merge`]).
 ///
 /// # Errors
 ///
-/// Returns an error when the project's manifest cannot be read, or when the
-/// project and the framework patch one crate of one source differently.
+/// Returns an error when the project's manifest cannot be read.
 pub fn with_project_patches(
     framework: cargo_toml::PatchSet,
     project_root: Option<&Path>,
@@ -6192,7 +6240,7 @@ pub fn with_project_patches(
         return Ok(framework);
     };
     let project = collect_workspace_patches(project_root)?;
-    crate::patch_tables::merge(framework, project).map_err(io::Error::other)
+    Ok(crate::patch_tables::merge(framework, project))
 }
 
 /// The copy of the application's lockfile a managed crate was last seeded

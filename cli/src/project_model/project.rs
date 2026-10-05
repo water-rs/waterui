@@ -1542,9 +1542,10 @@ impl Project {
     /// are known exactly: they are replaced with the checkout's current set,
     /// and every other entry is the project's own and stays (#1997). An entry
     /// identical to the checkout's is the checkout's. A project entry for a
-    /// crate the checkout patches differently is an error naming both, never a
-    /// silent overwrite. The manifests are rewritten only when they change, so
-    /// an up-to-date project stays untouched.
+    /// crate the checkout patches differently overrides it, as Cargo's root
+    /// `[patch]` does: the checkout's entry is not written beside it, and the
+    /// override is logged. The manifests are rewritten only when they change,
+    /// so an up-to-date project stays untouched.
     ///
     /// A project that is itself a member of the checkout's workspace — every
     /// example in this repository — needs no copy, because the
@@ -1586,20 +1587,23 @@ impl Project {
             let next = templates::local_framework_patches(&project_root, &waterui_path)?;
             let own = crate::patch_tables::beyond(&current, &written);
             let own = crate::patch_tables::beyond(&own, &next);
-            let tables = crate::patch_tables::merge(next.clone(), own.clone())?;
+            // The checkout's entries the project does not override: exactly
+            // what this refresh writes, and so what it records.
+            let copy = crate::patch_tables::without(&next, &own);
+            let tables = crate::patch_tables::merge(next, own.clone());
             if current != tables {
                 // Only the checkout's entries are rewritten; the project's own
-                // keep their spelling. `merge` has proven the two disjoint.
+                // keep their spelling.
                 let mut document: toml_edit::DocumentMut = text.parse()?;
                 let copied = crate::patch_tables::beyond(&current, &own);
-                crate::framework::rewrite_patch_tables(&mut document, &copied, &next)?;
+                crate::framework::rewrite_patch_tables(&mut document, &copied, &copy)?;
                 std::fs::write(&cargo_path, document.to_string())?;
                 info!(
                     path = %cargo_path.display(),
                     "Refreshed the [patch] tables from the local checkout"
                 );
             }
-            if written != next {
+            if written != copy {
                 let water_path = project_root.join("Water.toml");
                 let mut water: toml_edit::DocumentMut =
                     std::fs::read_to_string(&water_path)?.parse()?;
@@ -1608,7 +1612,7 @@ impl Project {
                 // one `[waterui_patches.<source>.<crate>]` table per entry —
                 // then spliced in, so the rest of the file keeps its spelling.
                 let mut rendered: toml_edit::DocumentMut =
-                    toml::to_string_pretty(&WateruiPatchesRecord { patches: &next })?.parse()?;
+                    toml::to_string_pretty(&WateruiPatchesRecord { patches: &copy })?.parse()?;
                 if let Some(record) = rendered.remove(WATERUI_PATCHES_KEY) {
                     water[WATERUI_PATCHES_KEY] = record;
                 }
@@ -2039,7 +2043,8 @@ pub struct Manifest {
     pub waterui_path: Option<String>,
     /// The `[patch]` entries the CLI last copied from the `waterui_path`
     /// checkout into the project's `Cargo.toml`. Every other entry there is
-    /// the project's own, which the next copy keeps.
+    /// the project's own — an override of a checkout entry included — which
+    /// the next copy keeps.
     #[serde(default, skip_serializing_if = "cargo_toml::PatchSet::is_empty")]
     pub waterui_patches: cargo_toml::PatchSet,
     /// Exact framework and backend selection, resolved only by explicit version operations.
@@ -3475,36 +3480,71 @@ mod local_patch_tests {
         );
     }
 
-    /// A project entry for a crate the checkout patches to somewhere else is
-    /// neither overwritten nor kept: the refresh fails naming both, and both
-    /// manifests stay as they were.
+    /// A project entry for a crate the checkout patches to somewhere else
+    /// overrides the checkout's: it stays as written, the checkout's entry is
+    /// not copied beside it nor recorded, and dropping the override later
+    /// brings the checkout's entry back.
     #[test]
-    fn a_project_entry_the_checkout_contradicts_fails_naming_both() {
+    fn a_project_entry_overrides_the_checkouts_for_the_same_crate() {
         let directory = tempfile::tempdir().expect("temp dir");
         let app = checkout_and_project(directory.path());
         let cargo_path = app.join("Cargo.toml");
-        let manifest = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[patch.crates-io]\nvello = { git = \"https://github.com/linebender/vello\", rev = \"project-rev\" }\n";
-        std::fs::write(&cargo_path, manifest).expect("project manifest");
-        std::fs::write(app.join("Water.toml"), WATER_TOML).expect("water manifest");
+        let header = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n";
+        let manifest = format!(
+            "{header}\n[patch.crates-io]\nvello = {{ git = \"https://github.com/linebender/vello\", rev = \"project-rev\" }}\n"
+        );
+        std::fs::write(&cargo_path, &manifest).expect("project manifest");
+        let water_path = app.join("Water.toml");
+        std::fs::write(&water_path, WATER_TOML).expect("water manifest");
 
-        let error = smol::block_on(Project::refresh_local_patches(
+        smol::block_on(Project::refresh_local_patches(
             &app,
             Path::new("../waterui"),
             &cargo_toml::PatchSet::new(),
         ))
-        .expect_err("the project contradicts the checkout");
+        .expect("an override refreshes");
 
-        let message = error.to_string();
-        assert!(message.contains("`vello`"), "{message}");
-        assert!(message.contains("project-rev"), "{message}");
-        assert!(message.contains("lexoliu/vello"), "{message}");
-        assert_eq!(
-            std::fs::read_to_string(&cargo_path).expect("manifest after the refusal"),
-            manifest
+        let refreshed = std::fs::read_to_string(&cargo_path).expect("refreshed manifest");
+        let crates_io = &cargo_toml::Manifest::from_str(&refreshed)
+            .expect("manifest parses")
+            .patch["crates-io"];
+        let cargo_toml::Dependency::Detailed(vello) = &crates_io["vello"] else {
+            panic!("the vello patch is a git dependency");
+        };
+        assert_eq!(vello.rev.as_deref(), Some("project-rev"));
+        assert!(crates_io.contains_key("waterui-core"), "the rest is copied");
+        let recorded = smol::block_on(super::Manifest::open(&water_path))
+            .expect("water manifest parses")
+            .waterui_patches;
+        assert!(
+            !recorded["crates-io"].contains_key("vello"),
+            "the overridden entry was not copied, so it is not recorded"
         );
+
+        // Dropping the override hands the crate back to the checkout.
+        let mut document: toml_edit::DocumentMut = refreshed.parse().expect("manifest parses");
+        document["patch"]["crates-io"]
+            .as_table_like_mut()
+            .expect("crates-io table")
+            .remove("vello");
+        std::fs::write(&cargo_path, document.to_string()).expect("override dropped");
+        smol::block_on(Project::refresh_local_patches(
+            &app,
+            Path::new("../waterui"),
+            &recorded,
+        ))
+        .expect("second refresh");
+        let crates_io = cargo_toml::Manifest::from_path(&cargo_path)
+            .expect("manifest parses")
+            .patch
+            .remove("crates-io")
+            .expect("crates-io table");
+        let cargo_toml::Dependency::Detailed(vello) = &crates_io["vello"] else {
+            panic!("the vello patch is a git dependency");
+        };
         assert_eq!(
-            std::fs::read_to_string(app.join("Water.toml")).expect("water manifest"),
-            WATER_TOML
+            vello.git.as_deref(),
+            Some("https://github.com/lexoliu/vello")
         );
     }
 

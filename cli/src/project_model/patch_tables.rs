@@ -5,72 +5,67 @@
 //! own — into every manifest it roots a build at: the project's `Cargo.toml`
 //! and each crate it generates in the build cache. The project adds entries of
 //! its own beside them, to consume an unreleased component through a git pin
-//! for one. Both owners name crates in the same tables, so combining them is a
-//! merge with one rule: an entry may be named twice only when both owners
-//! agree on it.
+//! for one. Both owners name crates in the same tables, and the project's
+//! entry wins, as it does in Cargo, where the root manifest's `[patch]` is
+//! authoritative: an application may try a revision of a component the
+//! framework pins differently.
 
 use std::path::Path;
 
 use cargo_toml::{Dependency, PatchSet};
 use serde::Serialize as _;
 
-/// The framework and the project patch the same crate of the same source to
-/// different places.
-///
-/// Neither entry can be preferred silently. The framework's entry is the
-/// source its own graph is tested against, and the project's is a deliberate
-/// pin: taking either one would build something one of the two owners never
-/// asked for.
-#[derive(Debug, thiserror::Error)]
-#[error(
-    "`{name}` is patched twice under [patch.\"{registry}\"]: the framework patches it to \
-     {framework} and the project's Cargo.toml to {project}. Remove the project's entry to \
-     build the framework's, or pin the framework itself to a revision that carries the \
-     project's."
-)]
-pub struct PatchConflict {
-    /// The source key of the `[patch]` table both entries sit in.
-    pub registry: String,
-    /// The patched crate.
-    pub name: String,
-    /// The framework's entry, as inline TOML.
-    pub framework: String,
-    /// The project's entry, as inline TOML.
-    pub project: String,
-}
-
 /// Merge the project's `[patch]` entries into the framework's.
 ///
-/// Every source key of either set is kept. A crate named under the same
-/// source by both must carry the same entry (see [`same_entry`]); the
-/// framework's spelling of it is the one kept. Both sets must express their
-/// `path` entries relative to the same directory, or as absolute paths.
-///
-/// # Errors
-///
-/// Returns [`PatchConflict`] for the first crate both sets patch differently.
-pub fn merge(framework: PatchSet, project: PatchSet) -> Result<PatchSet, PatchConflict> {
+/// Every source key of either set is kept. A crate both name under the same
+/// source takes the project's entry; each such override is logged with both
+/// entries, since it builds a graph the framework was not tested against. An
+/// identical entry (see [`same_entry`]) is no override and keeps the
+/// framework's spelling. Both sets must express their `path` entries relative
+/// to the same directory, or as absolute paths.
+#[must_use]
+pub fn merge(framework: PatchSet, project: PatchSet) -> PatchSet {
     let mut merged = framework;
     for (registry, dependencies) in project {
         let table = merged.entry(registry.clone()).or_default();
         for (name, dependency) in dependencies {
-            match table.get(&name) {
-                Some(existing) if same_entry(existing, &dependency) => {}
-                Some(existing) => {
-                    return Err(PatchConflict {
-                        registry,
-                        name,
-                        framework: inline_toml(existing),
-                        project: inline_toml(&dependency),
-                    });
+            if let Some(existing) = table.get(&name) {
+                if same_entry(existing, &dependency) {
+                    continue;
                 }
-                None => {
-                    table.insert(name, dependency);
-                }
+                tracing::info!(
+                    source = %registry,
+                    package = %name,
+                    framework = %inline_toml(existing),
+                    project = %inline_toml(&dependency),
+                    "the project's [patch] entry overrides the framework's"
+                );
+            }
+            table.insert(name, dependency);
+        }
+    }
+    merged
+}
+
+/// `set` without the crates `names` patches under the same source, whatever
+/// their entries there.
+#[must_use]
+pub fn without(set: &PatchSet, names: &PatchSet) -> PatchSet {
+    let mut remainder = PatchSet::new();
+    for (registry, dependencies) in set {
+        for (name, dependency) in dependencies {
+            if !names
+                .get(registry)
+                .is_some_and(|table| table.contains_key(name))
+            {
+                remainder
+                    .entry(registry.clone())
+                    .or_default()
+                    .insert(name.clone(), dependency.clone());
             }
         }
     }
-    Ok(merged)
+    remainder
 }
 
 /// The entries of `current` that `written` does not hold verbatim.
@@ -175,7 +170,7 @@ mod tests {
             ("crates-io", "waterkit-clipboard", git("abc")),
             ("https://github.com/water-rs/fork", "forked", path("/fork")),
         ]);
-        let merged = super::merge(framework, project).expect("disjoint sets merge");
+        let merged = super::merge(framework, project);
         assert_eq!(
             merged,
             set(&[
@@ -195,31 +190,62 @@ mod tests {
     fn an_entry_both_owners_spell_the_same_way_is_kept_once() {
         let framework = set(&[("crates-io", "waterui-core", path("/checkout/core"))]);
         let project = set(&[("crates-io", "waterui-core", path("/app/../checkout/./core"))]);
-        let merged = super::merge(framework.clone(), project).expect("identical entries merge");
+        let merged = super::merge(framework.clone(), project);
         assert_eq!(merged, framework);
     }
 
     #[test]
-    fn two_entries_for_one_crate_fail_naming_both() {
-        let framework = set(&[("crates-io", "waterkit-clipboard", git("framework-rev"))]);
+    fn the_projects_entry_overrides_the_frameworks_for_the_same_crate() {
+        let framework = set(&[
+            ("crates-io", "waterkit-clipboard", git("framework-rev")),
+            ("crates-io", "waterkit-core", git("framework-rev")),
+        ]);
         let project = set(&[("crates-io", "waterkit-clipboard", git("project-rev"))]);
-        let conflict = super::merge(framework, project).expect_err("the entries disagree");
-        assert_eq!(conflict.registry, "crates-io");
-        assert_eq!(conflict.name, "waterkit-clipboard");
-        let message = conflict.to_string();
-        assert!(message.contains("framework-rev"), "{message}");
-        assert!(message.contains("project-rev"), "{message}");
+        assert_eq!(
+            super::merge(framework, project),
+            set(&[
+                ("crates-io", "waterkit-clipboard", git("project-rev")),
+                ("crates-io", "waterkit-core", git("framework-rev")),
+            ])
+        );
     }
 
     #[test]
-    fn the_same_crate_under_another_source_is_not_a_conflict() {
+    fn without_drops_the_named_crates_of_the_same_source_only() {
+        let full = set(&[
+            ("crates-io", "waterkit-clipboard", git("a")),
+            ("crates-io", "waterkit-core", git("a")),
+            (
+                "https://github.com/water-rs/waterui",
+                "waterkit-clipboard",
+                git("a"),
+            ),
+        ]);
+        let names = set(&[("crates-io", "waterkit-clipboard", git("other"))]);
+        assert_eq!(
+            super::without(&full, &names),
+            set(&[
+                ("crates-io", "waterkit-core", git("a")),
+                (
+                    "https://github.com/water-rs/waterui",
+                    "waterkit-clipboard",
+                    git("a")
+                ),
+            ])
+        );
+    }
+
+    #[test]
+    fn the_same_crate_under_another_source_is_not_an_override() {
         let framework = set(&[("crates-io", "waterui-core", path("/checkout/core"))]);
         let project = set(&[(
             "https://github.com/water-rs/waterui",
             "waterui-core",
             path("/elsewhere/core"),
         )]);
-        super::merge(framework, project).expect("different sources are different tables");
+        let merged = super::merge(framework.clone(), project);
+        assert_eq!(merged.len(), 2, "different sources are different tables");
+        assert_eq!(merged["crates-io"], framework["crates-io"]);
     }
 
     #[test]
