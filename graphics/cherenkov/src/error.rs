@@ -12,7 +12,7 @@ use std::sync::Arc;
 pub use cherenkov_record::ResourceError;
 
 use crate::frame::OffscreenFormat;
-use crate::resource::ResourceId;
+use cherenkov_record::ResourceId;
 
 /// Engine initialization or engine-wide failure.
 #[derive(Debug, thiserror::Error)]

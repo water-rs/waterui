@@ -655,9 +655,9 @@ impl FrameInstall<'_> {
                             .runtime
                             .borrow_mut()
                             .filter(self.engine, self.metrics)
-                            .clone();
+                            .id();
                         let target = slot_layer(self.mounts, self.surface, scope, slot);
-                        tx[target].filter(&filter);
+                        tx[target].filter(filter);
                     }
                     let group_order =
                         self.install_scope(tx, &layer.children, InstallScope::Group(layer.key));

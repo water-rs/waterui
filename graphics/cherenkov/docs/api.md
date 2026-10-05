@@ -21,8 +21,8 @@ Sections marked **Proposal** are not yet agreed; everything else records a decis
 
 | Crate | Directory | Contents |
 |---|---|---|
-| `cherenkov` | `src/` | Front end: engine, surfaces, layer tree, transactions, resource handles, scrolling, the render-thread loop and the `Backend` contract, CPU geometry. No GPU dependency. |
-| `cherenkov-record` | `record/` | The recording layer: the `Draw` verbs, `Recorder`/`StaticRecorder`, `DisplayList`/`Picture`, live operands and operand animation, and the paint, shape, style and glyph vocabulary — no engine, GPU or text layout. `cherenkov` depends on it and re-exports it; another render target takes it alone. |
+| `cherenkov` | `src/` | Front end: engine, surfaces, resource handles, scrolling, the render-thread loop and the `Backend` contract, CPU geometry. No GPU dependency. |
+| `cherenkov-record` | `record/` | The recording layer and the retained layer tree: the `Draw` verbs, `Recorder`/`StaticRecorder`, `DisplayList`/`Picture`, live operands and operand animation, the paint, shape, style and glyph vocabulary, `Layer`/`Transaction`/`ChangeSet`, `SurfaceTree` and its property sampler, and the `Target`/`Queue` contract a render target implements — no engine, GPU or text layout. `cherenkov` depends on it and re-exports it; another render target takes it alone. |
 | `cherenkov-gpu` | `gpu/` | GPU backend `Gpu` and the wgpu, Apple, Android, Windows and Wayland interop. |
 | `cherenkov-cpu` | `cpu/` | CPU backends `Raster` (desktop/server: full framebuffer, multi-threaded, SIMD) and `Banded<P>` (microcontroller: banded output, panel pixel formats, flash-resident assets). |
 | `cherenkov-shader` | `shader/` | The shared shader composer on naga IR, used by the engine and by filtrate. |
@@ -60,7 +60,11 @@ The `cherenkov` crate owns the whole front end and the render thread's loop. A b
 
 ```rust
 /// The render-thread contract. Implemented by a zero-sized marker type (`Gpu`, `Raster`).
-pub trait Backend: Sized + 'static {
+/// `Target` is `cherenkov-record`'s layer-tree target: an engine backend's queue
+/// is the engine's `EngineQueue` and its install payload the render-side `InstallOp`.
+pub trait Backend:
+    Sized + cherenkov_record::Target<Queue = EngineQueue<Self>, Install = InstallOp<Self>> + 'static
+{
     type Config: RenderTransfer + 'static;               // GpuConfig, RasterConfig
     type Info: Clone + Send + 'static;                   // GpuInfo, RasterInfo: provenance for reports
     type Target: From<Offscreen> + RenderTransfer + 'static; // Offscreen or an interop window target
@@ -119,7 +123,7 @@ pub trait Renderer: 'static {
 ```
 
 - **Surface limits and cadence.** `SurfaceInfo::max_dimension` lets the UI thread reject an oversized resize before sending it to a backend. Animated backend content returns `Redraw::Wanted { rate }`; the frontend combines its refresh range with active property animations. A window target uses the host-supplied range; `Offscreen` uses `Offscreen::rate` (60 Hz by default).
-- **One copy of the layer tree.** The render loop in `cherenkov` owns a `SurfaceTree` per surface: the layer graph, every layer property, its animation track and the sampled value for the current frame. The backend never receives property ops; it keeps only what it alone can produce (encoded fragments, live display lists, atlases, GPU content objects) keyed by `LayerId`, and it reads the tree through `Frame`:
+- **One copy of the layer tree.** `cherenkov-record` owns the `SurfaceTree`: the layer graph, every layer property, its animation track and the sampled value for the current frame — target-neutral, so an engine-free consumer holds the same tree; the `Target` parameter lives only on the queue side (`Shared`, `ChangeSet`, the edits). The render loop in `cherenkov` keeps one per surface. The backend never receives property ops; it keeps only what it alone can produce (encoded fragments, live display lists, atlases, GPU content objects) keyed by `LayerId`, and it reads the tree through `Frame`:
 
   ```rust
   pub struct Frame<'a> { pub id: FrameId, pub time: FrameTime, pub surfaces: &'a [SurfaceFrame<'a>] }

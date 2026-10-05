@@ -15,6 +15,7 @@ serde = ["dep:serde", "color/serde", "kurbo/serde"]
 color = "0.3.3"
 kurbo = "0.13.1"
 nami-core = { version = "0.3.3", features = ["kurbo"] }
+rustc-hash = "2"
 serde = { version = "1", features = ["derive", "rc"], optional = true }
 thiserror = "2"
 web-time = "1"
