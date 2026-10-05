@@ -13,6 +13,7 @@ use executor_core::async_task::{self, AsyncTask, Runnable};
 
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod anchored_overlay;
+mod chrome_safe_area;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod context_menu_occlusion;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
@@ -2417,6 +2418,13 @@ fn inactive_modal_scope_does_not_trap_keyboard_focus() {
 #[derive(Default)]
 pub struct MinimalTestTheme {
     badge_draws: Rc<RefCell<Vec<Rect>>>,
+    /// Every navigation-bar surface bounds the theme was asked to draw —
+    /// the painted geometry §7.1's chrome extension lives in.
+    navigation_bar_draws: Rc<RefCell<Vec<Rect>>>,
+    /// Every navigation-bar separator bounds the theme was asked to draw.
+    navigation_bar_separator_draws: Rc<RefCell<Vec<Rect>>>,
+    /// Every tabs-bar surface bounds the theme was asked to draw.
+    tabs_bar_draws: Rc<RefCell<Vec<Rect>>>,
     /// Forces the tab item layout the theme reports; `None` defaults to
     /// `Vertical` like [`WidgetTheme::tabs_item_layout`]'s default.
     forced_tab_item_layout: Option<TabItemLayout>,
@@ -2849,9 +2857,15 @@ impl WidgetTheme for MinimalTestTheme {
         }
     }
 
-    fn draw_navigation_bar(&self, _draw: &mut Recorder, _bounds: Rect, _background: &Paint) {}
+    fn draw_navigation_bar(&self, _draw: &mut Recorder, bounds: Rect, _background: &Paint) {
+        self.navigation_bar_draws.borrow_mut().push(bounds);
+    }
 
-    fn draw_navigation_bar_separator(&self, _draw: &mut Recorder, _bounds: Rect) {}
+    fn draw_navigation_bar_separator(&self, _draw: &mut Recorder, bounds: Rect) {
+        self.navigation_bar_separator_draws
+            .borrow_mut()
+            .push(bounds);
+    }
     fn draw_navigation_back_button(&self, _draw: &mut Recorder, _bounds: Rect) {}
     fn tabs_item_layout(&self, bar_width: f64, item_count: usize) -> TabItemLayout {
         self.tabs_layout_queries
@@ -2878,7 +2892,9 @@ impl WidgetTheme for MinimalTestTheme {
             icon_label_spacing: 4.0,
         }
     }
-    fn draw_tabs_bar(&self, _draw: &mut Recorder, _bounds: Rect, _top_edge: bool) {}
+    fn draw_tabs_bar(&self, _draw: &mut Recorder, bounds: Rect, _top_edge: bool) {
+        self.tabs_bar_draws.borrow_mut().push(bounds);
+    }
     fn draw_tabs_highlight(&self, _draw: &mut Recorder, bounds: Rect, layout: TabItemLayout) {
         self.tabs_highlight_draws
             .borrow_mut()
