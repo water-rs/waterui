@@ -1,6 +1,10 @@
-//! Messages the UI thread sends to the render thread, and the change-set
-//! types they carry. Everything crossing the channel is owned and `Send`;
-//! there are no locks anywhere in the engine.
+//! Messages the UI thread sends to the render thread. Everything crossing
+//! the channel is owned and `Send`; there are no locks anywhere in the
+//! engine. The change sets they carry — the layer ops a [`SurfaceTree`]
+//! applies — live in `cherenkov-record` and are re-exported here so
+//! `crate::message::*` keeps resolving.
+//!
+//! [`SurfaceTree`]: cherenkov_record::SurfaceTree
 
 #[cfg(target_arch = "wasm32")]
 use crate::local::ReplySender as Sender;
@@ -13,20 +17,17 @@ pub type FrameReplySender<T> = Sender<T>;
 #[cfg(not(target_arch = "wasm32"))]
 pub type FrameReplySender<T> = SyncSender<T>;
 
-use kurbo::{Affine, Vec2};
+pub use cherenkov_record::ops::{
+    BackdropId, ChangeSet, ContentOp, LayerId, LayerOp, Op, Prop, SurfaceId,
+};
 
-use crate::WorkingColor;
-use crate::animation::Animation;
 use crate::backend::{Backend, Display, SurfaceInfo};
 use crate::config::{MemoryUsage, Pressure};
-use crate::display_list::{Picture, SlotUpdate};
 use crate::error::{RenderError, ResourceError, SurfaceError};
 use crate::frame::{FrameStats, FrameTime, FrameTiming, Next, Readback};
 use crate::image::ImageUpload;
 use crate::paint::ImageId;
 use crate::resource::ResourceId;
-use crate::shape::ShapeData;
-use crate::style::{BlendMode, FilterId};
 
 /// A render-thread operation a capability method or a resource drop queues.
 #[cfg(not(target_arch = "wasm32"))]
@@ -34,15 +35,19 @@ pub type ResOp<B> = Box<dyn FnOnce(&mut <B as Backend>::Renderer) + Send>;
 /// A resource operation that stays on the creating JS thread.
 #[cfg(target_arch = "wasm32")]
 pub type ResOp<B> = Box<dyn FnOnce(&mut <B as Backend>::Renderer)>;
-/// A render-side install: the closure reports the installed content's
-/// declared alpha — `Some(opaque)` from the producer's current frame,
-/// `None` before one has landed — which the [`Op::Install`] arm notes
-/// on the layer.
+/// A render-side install: a closure run on the render thread.
+///
+/// It installs on the render side, learns the surface and layer it is
+/// installed on, and reports the installed content's declared alpha —
+/// `Some(opaque)` from the producer's current frame, `None` before one
+/// has landed — which the [`Op::Install`] arm notes on the layer.
 #[cfg(not(target_arch = "wasm32"))]
-pub type InstallApply<B> = Box<dyn FnOnce(&mut <B as Backend>::Renderer) -> Option<bool> + Send>;
-/// The owning JS thread's [`InstallApply`].
+pub type InstallOp<B> =
+    Box<dyn FnOnce(&mut <B as Backend>::Renderer, SurfaceId, LayerId) -> Option<bool> + Send>;
+/// The owning JS thread's [`InstallOp`].
 #[cfg(target_arch = "wasm32")]
-pub type InstallApply<B> = Box<dyn FnOnce(&mut <B as Backend>::Renderer) -> Option<bool>>;
+pub type InstallOp<B> =
+    Box<dyn FnOnce(&mut <B as Backend>::Renderer, SurfaceId, LayerId) -> Option<bool>>;
 /// A submitted frame's application: installs the frame on the render side
 /// and returns the `(surface, layer)` pairs the producer is bound on, so
 /// the frame's declared alpha contract is noted on each of them.
@@ -70,67 +75,12 @@ pub type RegisterOp<B> = Box<
     >,
 >;
 
-/// Identifier of a surface.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct SurfaceId(u64);
-
-impl SurfaceId {
-    /// Creates an identifier from a raw value.
-    #[must_use]
-    pub const fn new(raw: u64) -> Self {
-        Self(raw)
-    }
-
-    /// The raw value.
-    #[must_use]
-    pub const fn raw(self) -> u64 {
-        self.0
-    }
-}
-
-/// Identifier of a layer within a surface.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct LayerId(u64);
-
-impl LayerId {
-    /// Creates an identifier from a raw value.
-    #[must_use]
-    pub const fn new(raw: u64) -> Self {
-        Self(raw)
-    }
-
-    /// The raw value.
-    #[must_use]
-    pub const fn raw(self) -> u64 {
-        self.0
-    }
-}
-
 /// Identifier of a GPU producer shared across surfaces, allocated by
 /// [`Engine::gpu_producer`](crate::Engine::gpu_producer).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ProducerId(u64);
 
 impl ProducerId {
-    /// Creates an identifier from a raw value.
-    #[must_use]
-    pub const fn new(raw: u64) -> Self {
-        Self(raw)
-    }
-
-    /// The raw value.
-    #[must_use]
-    pub const fn raw(self) -> u64 {
-        self.0
-    }
-}
-
-/// Identifier of a backdrop group, allocated per surface by
-/// [`Surface::backdrop_group`](crate::Surface::backdrop_group).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct BackdropId(u64);
-
-impl BackdropId {
     /// Creates an identifier from a raw value.
     #[must_use]
     pub const fn new(raw: u64) -> Self {
@@ -165,131 +115,6 @@ impl std::fmt::Debug for FontData {
             .field("index", &self.index)
             .finish()
     }
-}
-
-/// A property target plus the animation that reaches it.
-#[derive(Clone, Debug)]
-pub struct Prop<T> {
-    /// The value the property moves to.
-    pub target: T,
-    /// The animation applied, if any; `None` snaps.
-    pub animation: Option<Animation>,
-}
-
-/// What a layer draws, crossing the channel.
-#[derive(Clone, Debug)]
-pub enum ContentOp {
-    /// The whole display list of a live content, sent on first commit.
-    Replace(Picture),
-    /// New values for a live content's bound slots.
-    Update(Vec<SlotUpdate>),
-    /// A shared immutable picture.
-    Picture(Picture),
-}
-
-/// One layer mutation in a committed change set.
-#[derive(Clone, Debug)]
-pub enum LayerOp {
-    /// Create a detached layer node.
-    Create(LayerId),
-    /// Remove a layer node — only it. Its children stay in the tree,
-    /// detached and undrawn, until their own `Remove` or re-attachment.
-    Remove(LayerId),
-    /// Set the local transform.
-    Transform(LayerId, Prop<Affine>),
-    /// Sets the translation in local coordinates; initially zero.
-    Translation(LayerId, Prop<Vec2>),
-    /// Sets the unwrapped rotation angle in radians; initially zero.
-    Rotation(LayerId, Prop<f64>),
-    /// Sets the x/y scale factors; initially (1, 1).
-    Scale(LayerId, Prop<Vec2>),
-    /// Sets x/y skew angles in radians; initially zero.
-    Skew(LayerId, Prop<Vec2>),
-    /// Sets the local pivot for rotation, skew and scale; initially zero.
-    Pivot(LayerId, Prop<Vec2>),
-    /// Sets the projection base of a projective layer; never animated.
-    Projection(LayerId, crate::Projective),
-    /// Sets the X/Y depth-rotation angles in radians; initially zero.
-    Tilt(LayerId, Prop<Vec2>),
-    /// Sets the translation along Z; initially zero.
-    Depth(LayerId, Prop<f64>),
-    /// Removes projection, tilt and depth; the layer is affine again.
-    ClearProjection(LayerId),
-    /// Set the opacity.
-    Opacity(LayerId, Prop<f32>),
-    /// Set the scroll offset.
-    ScrollOffset(LayerId, Prop<Vec2>),
-    /// Set or clear the clip shape.
-    Clip(LayerId, Option<ShapeData>),
-    /// Set the blend mode.
-    Blend(LayerId, BlendMode),
-    /// Set or clear the filter.
-    Filter(LayerId, Option<FilterId>),
-    /// Set or clear the backdrop sample (group and optional per-member
-    /// effect).
-    Backdrop(LayerId, Option<crate::BackdropSample>),
-    /// Set the layer content, or clear it.
-    Content(LayerId, Option<ContentOp>),
-    /// Append a child.
-    Push {
-        /// The parent.
-        parent: LayerId,
-        /// The child.
-        child: LayerId,
-    },
-    /// Insert a child at an index.
-    Insert {
-        /// The parent.
-        parent: LayerId,
-        /// Child index.
-        index: usize,
-        /// The child.
-        child: LayerId,
-    },
-    /// Remove a child from a parent's child list.
-    Detach {
-        /// The parent.
-        parent: LayerId,
-        /// The child.
-        child: LayerId,
-    },
-}
-
-/// One committed op: a layer mutation, or an opaque render-side install a
-/// capability method wrapped (GPU producers) travelling in order with the
-/// layer ops.
-pub enum Op<B: Backend> {
-    /// A layer-tree mutation.
-    Layer(LayerOp),
-    /// A render-side install on `layer`, applied in order: the reported
-    /// declared alpha is noted on the layer — `None`, no frame landed
-    /// yet, notes it not known opaque.
-    Install(LayerId, InstallApply<B>),
-}
-
-impl<B: Backend> std::fmt::Debug for Op<B> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // `Install` carries an opaque render-side closure.
-        match self {
-            Self::Layer(op) => f.debug_tuple("Layer").field(op).finish(),
-            Self::Install(..) => f.write_str("Install(..)"),
-        }
-    }
-}
-
-/// The committed change set for one surface.
-#[derive(Debug)]
-pub struct ChangeSet<B: Backend> {
-    /// New clear colour, when set this commit.
-    pub clear: Option<WorkingColor>,
-    /// The ops, in order.
-    pub ops: Vec<Op<B>>,
-    /// Replaced pictures, cleared on the render thread, whose storage returns to the UI thread.
-    pub recycled: Vec<(LayerId, Picture)>,
-    /// Whether recorded-content operands still animate: their tracks live
-    /// on the UI thread and need the next frame's sample, at the fast rate
-    /// class like a spring or curve on a layer.
-    pub animating: bool,
 }
 
 /// The render result and drained buffers returned to the UI thread.

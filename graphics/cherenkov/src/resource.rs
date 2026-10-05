@@ -13,8 +13,10 @@ use crate::error::ResourceError;
 use crate::glyph::FontId;
 use crate::image::{Format, ImageData, ImageUpload};
 use crate::message::{BackdropId, BackdropShaderId};
+
 use crate::paint::ImageId;
 use crate::style::FilterId;
+pub use cherenkov_record::BackdropSample;
 
 pub use cherenkov_record::ResourceId;
 
@@ -282,45 +284,14 @@ impl BackdropGroup {
     /// A sample of this group for [`LayerEdit::backdrop`](crate::LayerEdit::backdrop).
     #[must_use]
     pub fn sample(&self) -> BackdropSample {
-        BackdropSample {
-            group: self.id(),
-            effect: None,
-        }
+        BackdropSample::new(self.id())
     }
 
     /// A sample of this group with a per-member effect, evaluated in the
     /// member's composite against the shared filtered capture.
     #[must_use]
     pub fn sample_with(&self, effect: impl Into<crate::BackdropEffect>) -> BackdropSample {
-        BackdropSample {
-            group: self.id(),
-            effect: Some(effect.into()),
-        }
-    }
-}
-
-/// A sample of a [`BackdropGroup`], attached to a layer by
-/// [`LayerEdit::backdrop`](crate::LayerEdit::backdrop).
-#[derive(Clone, Debug, PartialEq)]
-pub struct BackdropSample {
-    /// The sampled group.
-    group: BackdropId,
-    /// The per-member effect applied in the member's composite.
-    effect: Option<crate::BackdropEffect>,
-}
-
-impl BackdropSample {
-    /// The sampled group.
-    #[must_use]
-    pub const fn group(&self) -> BackdropId {
-        self.group
-    }
-
-    /// The per-member effect, when the sample was made with
-    /// [`BackdropGroup::sample_with`].
-    #[must_use]
-    pub const fn effect(&self) -> Option<&crate::BackdropEffect> {
-        self.effect.as_ref()
+        BackdropSample::with_effect(self.id(), effect)
     }
 }
 
@@ -362,11 +333,7 @@ impl BackdropShader {
     /// declared order (at most 64 finite values, packed four per `vec4`).
     #[must_use]
     pub fn effect(&self, uniforms: Vec<f32>) -> crate::BackdropShaderEffect {
-        crate::BackdropShaderEffect {
-            shader: self.id(),
-            uniforms,
-            reach: self.reach,
-        }
+        crate::BackdropShaderEffect::new(self.id(), uniforms, self.reach)
     }
 }
 
@@ -484,12 +451,19 @@ impl<B: crate::GpuContent> GpuProducer<B> {
     /// # Panics
     /// At apply time, when the producer is bound on an engine other than
     /// the one that made it.
+    /// [`LayerContent::install`] names this producer at `size`; the
+    /// `GpuInstalls` bound is what keeps a target without GPU installs —
+    /// `Null` or the engine-free consumer — from ever requesting one.
     #[must_use]
-    pub fn at(&self, size: (u32, u32)) -> crate::surface::LayerContent<B> {
+    pub fn at(&self, size: (u32, u32)) -> crate::surface::LayerContent<B>
+    where
+        B: crate::GpuInstalls,
+    {
         let producer = self.clone();
-        crate::surface::LayerContent::Install(Box::new(move |r, surface, layer| {
+        let install: crate::message::InstallOp<B> = Box::new(move |r, surface, layer| {
             B::bind_gpu_producer(r, surface, layer, &producer, size)
-        }))
+        });
+        crate::surface::LayerContent::install(install)
     }
 }
 

@@ -4,8 +4,7 @@
 
 use super::components::sample;
 use super::{Animation, Instant, LayerNode, Prop, Track, Vec2, set_prop};
-use crate::projective::Pose;
-use crate::{Projective, ProjectiveError};
+use crate::projective::{Pose, Projective, ProjectiveError};
 
 /// One projective layer's projection base, depth components and their
 /// tracks, plus the complete pose sampled for the current frame.
@@ -83,8 +82,8 @@ fn assert_not_decay(animation: Option<Animation>) {
 
 #[cfg(test)]
 mod tests {
-    use crate::message::{LayerOp, Prop};
-    use crate::{Curve, Display, Instant, LayerId, Projective, SurfaceTree};
+    use crate::ops::{LayerOp, Prop};
+    use crate::{Curve, Instant, LayerId, Projective, SurfaceTree};
     use kurbo::{Affine, Vec2};
     use std::f64::consts::PI;
     use std::time::Duration;
@@ -159,15 +158,15 @@ mod tests {
             },
         ));
         let stamp = tree.content_stamp(root);
-        tree.sample(start, Display::default());
-        let half = tree.sample(start + Duration::from_millis(500), Display::default());
+        tree.sample(start, 1.0);
+        let half = tree.sample(start + Duration::from_millis(500), 1.0);
         assert_eq!(half.rate, Some(crate::tree::RATE_FAST));
         // Half of a full turn about Y mirrors x.
         let r = *tree.projective_pose(root).unwrap().unwrap().as_rows();
         assert!((r[0][0] + 1.0).abs() < 1e-5, "{}", r[0][0]);
         // Pose motion never changes what the local image depends on.
         assert_eq!(tree.content_stamp(root), stamp);
-        let done = tree.sample(start + Duration::from_secs(1), Display::default());
+        let done = tree.sample(start + Duration::from_secs(1), 1.0);
         assert_eq!(done.rate, None);
     }
 
@@ -179,7 +178,7 @@ mod tests {
         tree.apply(LayerOp::Scale(root, snap(Vec2::new(0.0, 1.0))));
         assert_eq!(
             tree.projective_pose(root).unwrap(),
-            Err(crate::ProjectiveError::NonInvertible)
+            Err(crate::projective::ProjectiveError::NonInvertible)
         );
     }
 

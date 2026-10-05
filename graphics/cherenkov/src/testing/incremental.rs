@@ -81,7 +81,7 @@ where
             renderer.trim(Pressure::Critical);
         }
         let time = start + Duration::from_millis(u64::from(step) * 16);
-        let _ = tree.sample(time, Display::default());
+        let _ = tree.sample(time, 1.0);
         let _ = renderer.set_content(
             ids[1],
             layer,
@@ -197,7 +197,7 @@ where
             renderer.trim(Pressure::Critical);
         }
         let time = start + Duration::from_millis(u64::from(step) * 16);
-        let _ = tree.sample(time, Display::default());
+        let _ = tree.sample(time, 1.0);
         let _ = renderer.set_content(
             ids[1],
             layer,

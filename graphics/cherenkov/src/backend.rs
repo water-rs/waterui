@@ -33,9 +33,20 @@ use crate::paint::ImageId;
 use crate::resource::ResourceId;
 use crate::tree::SurfaceTree;
 
-/// The render-thread contract. Implemented by a zero-sized marker type
-/// (`Gpu`, `Vello`, `Raster`).
-pub trait Backend: Sized + 'static {
+/// The render-thread contract, a zero-sized marker type (`Gpu`, `Raster`).
+///
+/// The [`cherenkov_record::Target`] the layer tree is generic over: an
+/// engine backend's queue is the engine's
+/// [`EngineQueue`](crate::EngineQueue) and its install payload the
+/// render-side [`InstallOp`](crate::message::InstallOp), which is
+/// render-thread transferable like every other render op.
+pub trait Backend:
+    Sized
+    + cherenkov_record::Target<
+        Queue = crate::surface::EngineQueue<Self>,
+        Install = crate::message::InstallOp<Self>,
+    > + 'static
+{
     /// The backend's configuration type.
     type Config: RenderTransfer + 'static;
     /// Provenance for reports.

@@ -247,6 +247,11 @@ impl NullRenderer {
     }
 }
 
+impl cherenkov_record::Target for Null {
+    type Queue = crate::EngineQueue<Self>;
+    type Install = crate::InstallOp<Self>;
+}
+
 impl Backend for Null {
     type Config = NullConfig;
     type Info = NullInfo;
@@ -1471,7 +1476,8 @@ mod tests {
 
     use super::*;
     use crate::image::ImageData;
-    use crate::resource::FontSource;
+    use crate::resource::{FontSource, GpuProducer};
+    use crate::surface::LayerContent;
     use crate::{
         Decay, Engine, FrameTime, Image, Layer, Next, OffscreenFormat, ShaderSource, Spring,
         Surface,
@@ -1764,12 +1770,23 @@ mod tests {
         let video = surface.layer();
         let above = surface.layer();
         let (producer, sink) = engine.frame_producer();
+        // `Null` cannot request a GPU install — it has no `GpuInstalls` —
+        // so the binding's `LayerContent::Install` is built like an
+        // engine's target would build it: the variant carries the
+        // render-side install directly.
+        let content = |producer: &GpuProducer<Null>| {
+            let producer = producer.clone();
+            let install: crate::message::InstallOp<Null> = Box::new(move |r, surface, layer| {
+                <Null as crate::GpuContent>::bind_gpu_producer(r, surface, layer, &producer, (8, 8))
+            });
+            LayerContent::Install(install)
+        };
         // Creating and pushing the layers is an ordinary change, so the
         // frame that also binds the producer is not plane-only.
         surface.update(|tx| {
             tx[surface.root()].push(&video);
             tx[surface.root()].push(&above);
-            tx[&video].content(producer.at((8, 8)));
+            tx[&video].content(content(&producer));
         });
         engine.render(FrameTime::now()).expect("render");
         let record = frames(&rx).pop().expect("a frame record");
@@ -1788,7 +1805,7 @@ mod tests {
 
         // Two bindings' new frames commute to one set.
         surface.update(|tx| {
-            tx[&above].content(producer.at((8, 8)));
+            tx[&above].content(content(&producer));
         });
         engine.render(FrameTime::now()).expect("render");
         sink.submit(());
@@ -2908,7 +2925,8 @@ mod wasm_tests {
     use super::balance;
     use super::{Event, Null, NullConfig, NullReject};
     use crate::image::ImageData;
-    use crate::resource::FontSource;
+    use crate::resource::{FontSource, GpuProducer};
+    use crate::surface::LayerContent;
     use crate::{
         Draw as _, Engine, FrameTime, Offscreen, OffscreenFormat, RenderError, ResourceId, Rgba8,
         Sampling, ShaderPaint, ShaderSource, WorkingColor,

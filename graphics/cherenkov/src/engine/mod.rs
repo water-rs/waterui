@@ -28,14 +28,29 @@ use crate::frame::{FrameTime, Next};
 use crate::message::{ChangeSet, SurfaceId};
 use crate::surface::Shared;
 
+/// A live surface's engine-side entry: its shared UI-thread queue state
+/// (weak — the `Surface` handle owns it), its host waker, and the cell the
+/// frame's per-surface [`Next`] is published into.
+pub struct SurfaceEntry<B: Backend> {
+    /// The shared pending-changes state.
+    pub shared: Weak<RefCell<Shared<B>>>,
+    /// The surface's host wake-up; the queue reads visibility through it.
+    pub waker: SharedWaker<SurfaceWaker>,
+    /// The cell `Surface::next_frame` reads.
+    pub next_frame: Weak<RefCell<Next>>,
+}
+
 /// The engine's surfaces, by their shared UI-thread state.
-type Surfaces<B> = Vec<Weak<RefCell<Shared<B>>>>;
+type Surfaces<B> = Vec<SurfaceEntry<B>>;
 
 /// Whether the engine has a surface and every one is hidden: a render
 /// would have nothing it may draw.
 fn all_hidden<B: Backend>(surfaces: &Surfaces<B>) -> bool {
-    let mut live = surfaces.iter().filter_map(Weak::upgrade).peekable();
-    live.peek().is_some() && live.all(|shared| shared.borrow().visibility() == Visibility::Hidden)
+    let mut live = surfaces
+        .iter()
+        .filter(|entry| entry.shared.strong_count() > 0)
+        .peekable();
+    live.peek().is_some() && live.all(|entry| entry.waker.visibility() == Visibility::Hidden)
 }
 
 /// Drains every visible surface's queued changes, sampled at `time`, into
@@ -51,13 +66,13 @@ fn drain_visible<B: Backend>(
     time: FrameTime,
     commits: &mut Vec<(SurfaceId, ChangeSet<B>)>,
 ) {
-    surfaces.retain(|weak| {
-        let Some(shared) = weak.upgrade() else {
+    surfaces.retain(|entry| {
+        let Some(shared) = entry.shared.upgrade() else {
             return false;
         };
-        let mut shared_mut = shared.borrow_mut();
-        if shared_mut.visibility() == Visibility::Visible {
-            shared_mut.waker.arm();
+        if entry.waker.visibility() == Visibility::Visible {
+            entry.waker.arm();
+            let mut shared_mut = shared.borrow_mut();
             if let Some(changes) = shared_mut.take_changes(time.0) {
                 commits.push((shared_mut.id, changes));
             }
@@ -75,15 +90,15 @@ fn publish_next<B: Backend>(
     surfaces: &Surfaces<B>,
     frame_next: &rustc_hash::FxHashMap<SurfaceId, Next>,
 ) {
-    for weak in surfaces {
-        let Some(shared) = weak.upgrade() else {
+    for entry in surfaces {
+        let (Some(shared), Some(next_frame)) = (entry.shared.upgrade(), entry.next_frame.upgrade())
+        else {
             continue;
         };
-        let shared_mut = shared.borrow_mut();
         let next = frame_next
-            .get(&shared_mut.id)
+            .get(&shared.borrow().id)
             .map_or(Next::Idle, Clone::clone);
-        shared_mut.next_frame.replace(next);
+        next_frame.replace(next);
     }
 }
 

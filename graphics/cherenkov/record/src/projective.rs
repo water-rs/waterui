@@ -150,6 +150,10 @@ pub struct Pose {
 impl Pose {
     /// `embed(B) · T(t + p) · P · T(0, 0, z) · Rz(r) · Ry(v) · Rx(u) ·
     /// embed(K · S) · T(−p)`, validated.
+    ///
+    /// # Errors
+    /// Returns [`ProjectiveError`] when a factor is non-finite, the
+    /// perspective is out of range, or the scale is zero.
     pub fn matrix(&self) -> Result<Projective, ProjectiveError> {
         let skew_scale = Affine::new([1., self.skew.y.tan(), self.skew.x.tan(), 1., 0., 0.])
             * Affine::scale_non_uniform(self.scale.x, self.scale.y);
@@ -400,7 +404,10 @@ mod tests {
         p.tilt = Vec2::new(0.0, FRAC_PI_2);
         let m = p.matrix().unwrap();
         let h = m.plane_homography();
-        let det = crate::lowering::projective::Homography(h).determinant();
+        let m0 = h[1][1].mul_add(h[2][2], -h[1][2] * h[2][1]);
+        let m1 = h[1][0].mul_add(h[2][2], -h[1][2] * h[2][0]);
+        let m2 = h[1][0].mul_add(h[2][1], -h[1][1] * h[2][0]);
+        let det = h[0][0].mul_add(m0, h[0][2].mul_add(m2, -h[0][1] * m1));
         assert!(det.abs() < 1e-12, "det {det}");
     }
 

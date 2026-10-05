@@ -285,7 +285,7 @@ fn host_contracts_at_one_revision() -> Result<(), Box<dyn std::error::Error>> {
             .transform(cherenkov::kurbo::Affine::translate((1.0, 1.0)))
             .clip(Rect::new(0.0, 0.0, 4.0, 4.0))
             .opacity(0.5_f32)
-            .filter(&effect)
+            .filter(effect.id())
             .content(engine.gpu_producer(content).at((8, 8)));
         tx[&video_layer]
             .transform(cherenkov::kurbo::Affine::translate((8.0, 8.0)))

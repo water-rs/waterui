@@ -1,9 +1,8 @@
-//! The render thread's copy of a surface's layer tree: the layer graph,
-//! every layer property, its animation track and the sampled value for the
-//! current frame.
+//! A surface's layer tree as its consumer holds it: the layer graph,
+//! every layer property, its animation track and the sampled value for
+//! the current frame.
 //!
-//! The backend never receives property ops; it reads the sampled tree
-//! through [`SurfaceFrame`](crate::SurfaceFrame).
+//! The consumer never receives property ops; it reads the sampled tree.
 
 mod components;
 mod projective;
@@ -14,13 +13,14 @@ use rustc_hash::FxHashMap;
 use kurbo::{Affine, Vec2};
 
 use crate::animation::{
-    Animatable, Animation, Lanes, clamp_to_rect, curve_value, decay_step, rubber_band_spring,
-    settled, spring_step,
+    Animatable, Animation, AnimationTrack, Lanes, clamp_to_rect, curve_value, decay_step,
+    rubber_band_spring, settled, spring_step,
 };
-use crate::backend::Display;
-use crate::display_list::{Operand, SlotUpdate};
+use crate::backdrop::BackdropSample;
+use crate::display_list::{Operand, SlotUpdate, blends_within, translucent_within};
 use crate::frame::RefreshRange;
-use crate::message::{ContentOp, LayerId, LayerOp, Prop};
+use crate::ops::{ContentOp, LayerId, LayerOp, Prop};
+use crate::projective::{Projective, ProjectiveError};
 use crate::shape::ShapeData;
 use crate::style::{BlendMode, FilterId};
 
@@ -34,9 +34,9 @@ pub const RATE_SLOW: RefreshRange = 30..=60;
 #[derive(Clone, Debug)]
 pub struct LayerAnimations {
     /// The affine motion, when running.
-    pub transform: Option<crate::AnimationTrack<Affine>>,
+    pub transform: Option<AnimationTrack<Affine>>,
     /// The opacity motion, when running.
-    pub opacity: Option<crate::AnimationTrack<f32>>,
+    pub opacity: Option<AnimationTrack<f32>>,
 }
 
 /// A surface's layer tree on the render thread.
@@ -66,7 +66,7 @@ pub struct LayerNode {
     pub filter: Option<FilterId>,
     /// The backdrop group (and optional per-member effect) this layer
     /// samples.
-    pub backdrop: Option<crate::BackdropSample>,
+    pub backdrop: Option<BackdropSample>,
     /// The child layers, in paint order.
     pub children: Vec<LayerId>,
     /// Counts direct children that blend; each such child isolates itself so
@@ -116,7 +116,7 @@ impl LayerNode {
     /// Component transforms are returned only when their sole moving
     /// component is translation, which is affine-linear in the same lanes.
     #[must_use]
-    fn transform_animation(&self) -> Option<crate::AnimationTrack<Affine>> {
+    fn transform_animation(&self) -> Option<AnimationTrack<Affine>> {
         match &self.components {
             None => self.transform_track.as_ref()?.description(),
             Some(components) if self.transform_track.is_none() => {
@@ -208,19 +208,15 @@ impl LayerNode {
         self.content_translucent
     }
 
-    fn classify_rate(&self, display: Display, components_running: bool) -> Option<RefreshRange> {
+    fn classify_rate(&self, scale: f64, components_running: bool) -> Option<RefreshRange> {
         if components_running {
             return Some(RATE_FAST);
         }
         let mut rate = None;
         for fast in [
-            self.transform_track
-                .as_ref()
-                .map(|t| t.is_fast(display.scale)),
-            self.opacity_track
-                .as_ref()
-                .map(|t| t.is_fast(display.scale)),
-            self.scroll_track.as_ref().map(|t| t.is_fast(display.scale)),
+            self.transform_track.as_ref().map(|t| t.is_fast(scale)),
+            self.opacity_track.as_ref().map(|t| t.is_fast(scale)),
+            self.scroll_track.as_ref().map(|t| t.is_fast(scale)),
         ]
         .into_iter()
         .flatten()
@@ -275,8 +271,8 @@ impl<T: Animatable> std::fmt::Debug for Track<T> {
 }
 
 impl<T: Animatable> Track<T> {
-    fn description(&self) -> Option<crate::AnimationTrack<T>> {
-        Some(crate::AnimationTrack {
+    fn description(&self) -> Option<AnimationTrack<T>> {
+        Some(AnimationTrack {
             from: T::from_lanes(self.from),
             velocity: self.velocity,
             target: self.target,
@@ -369,7 +365,7 @@ impl SurfaceTree {
     /// Refreshes compositor-owned motion before a new transaction retargets
     /// it. Without engine frames, `last` otherwise describes the handoff
     /// frame rather than the position and velocity currently on screen.
-    pub(crate) fn sample_owned(&mut self, time: Instant, owns: impl Fn(LayerId) -> bool) {
+    pub fn sample_owned(&mut self, time: Instant, owns: impl Fn(LayerId) -> bool) {
         for (&raw, node) in &mut self.nodes {
             if !owns(LayerId::new(raw)) {
                 continue;
@@ -396,7 +392,7 @@ impl SurfaceTree {
     /// Rate required by tracks the backend has not accepted. Called after
     /// presentation so a handoff suppresses the very next frame, and a
     /// demotion resumes scheduling immediately.
-    pub(crate) fn animation_rate(&self, owns: impl Fn(LayerId) -> bool) -> Option<RefreshRange> {
+    pub fn animation_rate(&self, owns: impl Fn(LayerId) -> bool) -> Option<RefreshRange> {
         let mut running = false;
         for (&raw, node) in &self.nodes {
             if owns(LayerId::new(raw)) {
@@ -437,10 +433,7 @@ impl SurfaceTree {
     /// as well. The pose is validated after composition: an invalid
     /// composition is an error, never an identity.
     #[must_use]
-    pub fn projective_pose(
-        &self,
-        id: LayerId,
-    ) -> Option<Result<crate::Projective, crate::ProjectiveError>> {
+    pub fn projective_pose(&self, id: LayerId) -> Option<Result<Projective, ProjectiveError>> {
         self.projective.get(&id.raw()).map(|state| state.pose)
     }
 
@@ -599,13 +592,13 @@ impl SurfaceTree {
 
     /// Records whether the layer's content contains a non-`Normal` group
     /// or may paint a pixel of alpha below one.
-    pub(crate) fn note_content(&mut self, id: LayerId, content: Option<&ContentOp>) {
+    pub fn note_content(&mut self, id: LayerId, content: Option<&ContentOp>) {
         let node = self.node_mut(id);
         match content {
             Some(ContentOp::Replace(picture) | ContentOp::Picture(picture)) => {
                 let list = picture.display_list();
-                node.content_blends = crate::lowering::blends_within(list, 0..list.len());
-                node.content_translucent = crate::lowering::translucent_within(list, 0..list.len());
+                node.content_blends = blends_within(list, 0..list.len());
+                node.content_translucent = translucent_within(list, 0..list.len());
             }
             Some(ContentOp::Update(updates)) => {
                 node.content_blends |= updates.iter().any(|SlotUpdate { value, .. }| {
@@ -638,7 +631,7 @@ impl SurfaceTree {
     /// producer's to declare — `opaque` is that declaration, `false`
     /// where the producer declares none, so the layer is not known to
     /// be opaque.
-    pub(crate) fn note_installed(&mut self, id: LayerId, opaque: bool) {
+    pub fn note_installed(&mut self, id: LayerId, opaque: bool) {
         let node = self.node_mut(id);
         node.content_blends = false;
         node.content_translucent = !opaque;
@@ -828,9 +821,9 @@ impl SurfaceTree {
     }
 
     /// Samples every animation track at `time`, updating the layers'
-    /// sampled properties. `display.scale` snaps the scroll offset to the
+    /// sampled properties. `scale` snaps the scroll offset to the
     /// device-pixel grid and classifies slow decays.
-    pub fn sample(&mut self, time: Instant, display: Display) -> Sampling {
+    pub fn sample(&mut self, time: Instant, scale: f64) -> Sampling {
         let mut stepped = false;
         let mut fast = false;
         let mut slow = false;
@@ -906,13 +899,13 @@ impl SurfaceTree {
                 }
                 // A decay keeps where it stopped; a settled spring (including
                 // the rubber-band handoff) reports its target exactly.
-                node.scroll_offset = snap(Vec2::from_lanes(pos), display.scale);
+                node.scroll_offset = snap(Vec2::from_lanes(pos), scale);
                 if done {
                     node.scroll_track = None;
                 }
             }
             node.restamp(&mut self.clock, outer_changed, inner_changed);
-            node.animation_rate = node.classify_rate(display, node_fast);
+            node.animation_rate = node.classify_rate(scale, node_fast);
             fast |= node.animation_rate == Some(RATE_FAST);
             slow |= node.animation_rate == Some(RATE_SLOW);
         }
@@ -1007,7 +1000,7 @@ mod hierarchy_tests {
     use super::*;
     use crate::display_list::{Operand, Picture, SlotUpdate};
     use crate::style::Group;
-    use crate::{Curve, Decay};
+    use crate::{Curve, Decay, Spring};
     use crate::{Draw, WorkingColor};
     use kurbo::Rect;
     use std::time::Duration;
@@ -1074,10 +1067,10 @@ mod hierarchy_tests {
                 animation: Some(Curve::linear(Duration::from_secs(1)).into()),
             },
         ));
-        tree.sample(start, Display::default());
-        tree.sample(start + Duration::from_millis(500), Display::default());
+        tree.sample(start, 1.0);
+        tree.sample(start + Duration::from_millis(500), 1.0);
         assert!(tree.layer(tree.root()).animating());
-        tree.sample(start + Duration::from_secs(1), Display::default());
+        tree.sample(start + Duration::from_secs(1), 1.0);
         assert!(!tree.layer(tree.root()).animating());
     }
 
@@ -1092,9 +1085,9 @@ mod hierarchy_tests {
                 animation: Some(Decay::new(Vec2::new(0., 400.)).into()),
             },
         ));
-        tree.sample(start + Duration::from_millis(100), Display::default());
+        tree.sample(start + Duration::from_millis(100), 1.0);
         assert!(tree.layer(tree.root()).animating());
-        tree.sample(start + Duration::from_secs(10), Display::default());
+        tree.sample(start + Duration::from_secs(10), 1.0);
         assert!(!tree.layer(tree.root()).animating());
     }
 
@@ -1109,7 +1102,7 @@ mod hierarchy_tests {
                 animation: Some(Curve::linear(Duration::from_secs(1)).into()),
             },
         ));
-        tree.sample(start + Duration::from_millis(500), Display::default());
+        tree.sample(start + Duration::from_millis(500), 1.0);
         assert!(!tree.layer(tree.root()).animating());
     }
 
@@ -1125,7 +1118,7 @@ mod hierarchy_tests {
             },
         ));
         assert!(tree.layer(root).animations().is_none());
-        tree.sample(Instant::now(), Display::default());
+        tree.sample(Instant::now(), 1.0);
         let tracks = tree.layer(root).animations().expect("sampled opacity");
         assert!(tracks.transform.is_none());
         assert!(tracks.opacity.is_some());
@@ -1166,10 +1159,10 @@ mod hierarchy_tests {
             owned,
             Prop {
                 target: Affine::translate((100., 0.)),
-                animation: Some(crate::Curve::linear(std::time::Duration::from_secs(1)).into()),
+                animation: Some(Curve::linear(std::time::Duration::from_secs(1)).into()),
             },
         ));
-        let sampled = tree.sample(Instant::now(), Display::default());
+        let sampled = tree.sample(Instant::now(), 1.0);
         assert_eq!(sampled.rate, Some(RATE_FAST));
         assert_eq!(tree.animation_rate(|layer| layer == owned), Some(RATE_SLOW));
         assert_eq!(tree.animation_rate(|_| false), sampled.rate);
@@ -1389,7 +1382,7 @@ mod hierarchy_tests {
                 animation: Some(Curve::linear(Duration::from_secs(2)).into()),
             },
         ));
-        tree.sample(start, Display::default());
+        tree.sample(start, 1.0);
         assert_eq!(tree.animation_rate(|_| true), None);
         assert_eq!(tree.animation_rate(|_| false), Some(RATE_FAST));
         tree.sample_owned(start + Duration::from_secs(1), |_| true);
@@ -1397,10 +1390,10 @@ mod hierarchy_tests {
             layer,
             Prop {
                 target: 0.8,
-                animation: Some(crate::Spring::smooth().into()),
+                animation: Some(Spring::smooth().into()),
             },
         ));
-        tree.sample(start + Duration::from_secs(1), Display::default());
+        tree.sample(start + Duration::from_secs(1), 1.0);
         let track = tree
             .layer(layer)
             .animations()
@@ -1432,7 +1425,7 @@ mod hierarchy_tests {
         assert_eq!(stamp, tree.composition_stamp(|id| id == layer));
         tree.apply(LayerOp::Clip(
             layer,
-            Some(crate::ShapeData::Rect(Rect::new(0., 0., 20., 20.))),
+            Some(ShapeData::Rect(Rect::new(0., 0., 20., 20.))),
         ));
         assert_ne!(stamp, tree.composition_stamp(|id| id == layer));
     }

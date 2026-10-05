@@ -199,7 +199,7 @@ impl<F: filtrate_core::Filter<Kind = filtrate_core::kind::Color>>
 
 /// The backend captures and samples backdrops
 /// (`Surface::backdrop_group_unfiltered`, `LayerEdit::backdrop`).
-pub trait Backdrop: Filters {
+pub trait Backdrop: Filters + BackdropSampling {
     /// Registers backdrop group `id` on `surface` with no filter chain.
     fn add_backdrop_group(r: &mut Self::Renderer, surface: SurfaceId, id: BackdropId);
 
@@ -269,13 +269,12 @@ pub trait BackdropShaders: Backdrop {
 /// The backend produces HDR output.
 pub trait HdrOutput: Backend {}
 
-/// The backend composes projective layers (`LayerEdit::projection`).
-///
-/// It renders a projective layer's subtree into a bounded
-/// layer-local image and projects that image during composition. A
-/// banded backend that cannot hold the bounded local image does not
-/// implement it.
-pub trait ProjectiveLayers: Backend {}
+// The layer-tree capability markers — `ProjectiveLayers`,
+// `BackdropSampling` and `GpuInstalls` — are target traits declared in
+// `cherenkov-record`; they are re-exported here so `crate::capability::*`
+// keeps resolving. An engine backend implements them for the
+// capabilities its render loop owns.
+pub use cherenkov_record::{BackdropSampling, GpuInstalls, ProjectiveLayers};
 
 /// The backend presents on multiple hardware planes.
 pub trait Planes: Backend {}

@@ -185,6 +185,7 @@ pub use render::present::{present_linear_p3, present_srgb8};
 pub struct Raster;
 
 impl cherenkov::ProjectiveLayers for Raster {}
+impl cherenkov::BackdropSampling for Raster {}
 impl cherenkov::Uploads<cherenkov::Rgba8> for Raster {}
 impl cherenkov::Uploads<cherenkov::Rgba16F> for Raster {}
 
@@ -240,6 +241,11 @@ where
             .filters
             .add_filtered_backdrop_group(surface, id, filter);
     }
+}
+
+impl cherenkov::Target for Raster {
+    type Queue = cherenkov::EngineQueue<Self>;
+    type Install = cherenkov::InstallOp<Self>;
 }
 
 impl Backend for Raster {

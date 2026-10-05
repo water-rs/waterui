@@ -730,9 +730,10 @@ fn commit<B: Backend>(
                 state.commits = Commits::Other;
                 // The install reports its content's declared alpha —
                 // `None` before its first frame — noted on the layer.
-                state
-                    .tree
-                    .note_installed(layer, install(&mut *renderer).unwrap_or(false));
+                state.tree.note_installed(
+                    layer,
+                    install(&mut *renderer, surface, layer).unwrap_or(false),
+                );
             }
         }
     }
@@ -821,7 +822,7 @@ fn sample_frames(
         .iter_mut()
         .filter(|(_, state)| state.visibility == Visibility::Visible)
     {
-        let sampling = state.tree.sample(time, state.display);
+        let sampling = state.tree.sample(time, state.display.scale);
         let changed = state.commits != Commits::Clean || sampling.stepped;
         state.sampled_rate = sampling.rate;
         frames.push(SurfaceFrame {
