@@ -23,6 +23,7 @@ waterui-internal.workspace = true
 # through the layer DLLs instead of embedding a second copy (#1615).
 waterui-dylib-foundation = { path = "foundation" }
 waterui-dylib-graphics = { path = "graphics" }
+waterui-dylib-widgets = { path = "widgets" }
 waterui-dylib-media = { path = "media", optional = true }
 waterui-dylib-webview = { path = "webview", optional = true }
 waterui-dylib-markdown = { path = "markdown", optional = true }

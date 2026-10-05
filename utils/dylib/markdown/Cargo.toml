@@ -18,7 +18,7 @@ categories.workspace = true
 crate-type = ["dylib", "rlib"]
 
 [dependencies]
-waterui-dylib-graphics = { path = "../graphics" }
+waterui-dylib-widgets = { path = "../widgets" }
 pulldown-cmark = "0.13"
 waterui-math = { workspace = true, optional = true }
 

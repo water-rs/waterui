@@ -13119,6 +13119,7 @@ dependencies = [
  "waterui-dylib-markdown",
  "waterui-dylib-media",
  "waterui-dylib-webview",
+ "waterui-dylib-widgets",
  "waterui-internal",
 ]
 
@@ -13129,7 +13130,7 @@ dependencies = [
  "waterui-barcode",
  "waterui-canvas",
  "waterui-chart",
- "waterui-dylib-graphics",
+ "waterui-dylib-widgets",
  "waterui-particle",
 ]
 
@@ -13154,16 +13155,10 @@ dependencies = [
 name = "waterui-dylib-graphics"
 version = "0.5.1"
 dependencies = [
- "waterui-controls",
  "waterui-dylib-foundation",
- "waterui-form",
  "waterui-graphics",
- "waterui-icon",
- "waterui-layout",
- "waterui-navigation",
  "waterui-shape",
  "waterui-svg",
- "waterui-text",
 ]
 
 [[package]]
@@ -13171,7 +13166,7 @@ name = "waterui-dylib-markdown"
 version = "0.5.1"
 dependencies = [
  "pulldown-cmark",
- "waterui-dylib-graphics",
+ "waterui-dylib-widgets",
  "waterui-math",
 ]
 
@@ -13179,7 +13174,7 @@ dependencies = [
 name = "waterui-dylib-media"
 version = "0.5.1"
 dependencies = [
- "waterui-dylib-graphics",
+ "waterui-dylib-widgets",
  "waterui-media",
  "waterui-video",
  "waterui-video-gpu",
@@ -13189,8 +13184,21 @@ dependencies = [
 name = "waterui-dylib-webview"
 version = "0.5.1"
 dependencies = [
- "waterui-dylib-graphics",
+ "waterui-dylib-widgets",
  "waterui-webview",
+]
+
+[[package]]
+name = "waterui-dylib-widgets"
+version = "0.5.1"
+dependencies = [
+ "waterui-controls",
+ "waterui-dylib-graphics",
+ "waterui-form",
+ "waterui-icon",
+ "waterui-layout",
+ "waterui-navigation",
+ "waterui-text",
 ]
 
 [[package]]

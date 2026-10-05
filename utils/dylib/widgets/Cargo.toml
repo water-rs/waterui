@@ -1,12 +1,12 @@
 [package]
-name = "waterui-dylib-webview"
+name = "waterui-dylib-widgets"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 readme.workspace = true
 repository.workspace = true
-description = "Webview family layer of the layered waterui dylib chain"
+description = "Widget layer of the layered waterui dylib chain"
 keywords.workspace = true
 categories.workspace = true
 
@@ -18,8 +18,13 @@ categories.workspace = true
 crate-type = ["dylib", "rlib"]
 
 [dependencies]
-waterui-dylib-widgets = { path = "../widgets" }
-waterui-webview.workspace = true
+waterui-dylib-graphics = { path = "../graphics" }
+waterui-layout.workspace = true
+waterui-text.workspace = true
+waterui-form.workspace = true
+waterui-controls.workspace = true
+waterui-navigation.workspace = true
+waterui-icon.workspace = true
 
 [lints]
 workspace = true

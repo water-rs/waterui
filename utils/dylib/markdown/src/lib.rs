@@ -6,7 +6,7 @@
 //! stays in the graphics layer; its `markdown` feature is enabled by
 //! `waterui-internal`'s `flow-markdown` feature.
 
-pub use waterui_dylib_graphics;
+pub use waterui_dylib_widgets;
 
 pub use pulldown_cmark;
 #[cfg(feature = "math")]

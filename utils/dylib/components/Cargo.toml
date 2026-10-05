@@ -18,7 +18,7 @@ categories.workspace = true
 crate-type = ["dylib", "rlib"]
 
 [dependencies]
-waterui-dylib-graphics = { path = "../graphics" }
+waterui-dylib-widgets = { path = "../widgets" }
 waterui-canvas = { workspace = true, optional = true }
 waterui-chart = { workspace = true, optional = true }
 waterui-barcode = { workspace = true, optional = true }

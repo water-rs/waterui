@@ -21,3 +21,4 @@ pub use waterui_dylib_markdown;
 pub use waterui_dylib_media;
 #[cfg(feature = "webview")]
 pub use waterui_dylib_webview;
+pub use waterui_dylib_widgets;

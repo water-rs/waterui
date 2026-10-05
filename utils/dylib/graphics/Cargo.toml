@@ -21,12 +21,6 @@ crate-type = ["dylib", "rlib"]
 waterui-dylib-foundation = { path = "../foundation" }
 waterui-graphics.workspace = true
 waterui-shape.workspace = true
-waterui-layout.workspace = true
-waterui-text.workspace = true
-waterui-form.workspace = true
-waterui-controls.workspace = true
-waterui-navigation.workspace = true
-waterui-icon.workspace = true
 waterui-svg = { workspace = true, optional = true }
 
 [features]
