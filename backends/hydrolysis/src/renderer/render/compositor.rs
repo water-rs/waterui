@@ -204,7 +204,7 @@ pub struct HydrolysisRenderTarget<'a> {
     /// The render target's height in pixels.
     pub height: u32,
     /// The colour under the scene's content.
-    pub base_color: cherenkov::WorkingColor,
+    pub base_color: waterui_graphics::draw::WorkingColor,
 }
 
 /// The full frame description [`HydrolysisRenderer::render_scene_to_texture`]
@@ -236,7 +236,7 @@ pub struct FrameRenderTarget<'a> {
     pub format: wgpu::TextureFormat,
     pub width: u32,
     pub height: u32,
-    pub base_color: cherenkov::WorkingColor,
+    pub base_color: waterui_graphics::draw::WorkingColor,
 }
 
 impl<'a> HydrolysisRenderTarget<'a> {
@@ -1032,12 +1032,12 @@ fn ancestry_scopes(
         .iter()
         .map(|layer| {
             let mut path = match &layer.shape {
-                LayerShape::Rect(rect) => rect.to_path(cherenkov::PATH_TOLERANCE),
+                LayerShape::Rect(rect) => rect.to_path(waterui_graphics::draw::PATH_TOLERANCE),
                 LayerShape::RoundedRect { path, .. } | LayerShape::Path(path) => path.clone(),
             };
             path.apply_affine(layer.transform);
             crate::renderer::retained::mount::AncestryScope {
-                clip: Some(cherenkov::ShapeData::of(&path)),
+                clip: Some(waterui_graphics::draw::ShapeData::of(&path)),
                 opacity: layer.alpha,
             }
         })

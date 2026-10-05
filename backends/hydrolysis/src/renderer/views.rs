@@ -240,7 +240,7 @@ pub fn render_shape_parts(
             resolved.fill.clone(),
         )
     };
-    let fill = cherenkov::Paint::Solid(ctx.renderer_mut().read_signal(&fill_signal));
+    let fill = waterui_graphics::draw::Paint::Solid(ctx.renderer_mut().read_signal(&fill_signal));
     let transform = ctx.transform;
     ctx.renderer_mut()
         .scene
@@ -300,7 +300,7 @@ pub fn render_morph_shape_parts(
         let fill = renderer.read_signal(&resolved.fill);
         (
             resolved_morph_shape_to_path(&resolved, progress, bounds),
-            cherenkov::Paint::Solid(fill),
+            waterui_graphics::draw::Paint::Solid(fill),
         )
     };
     renderer

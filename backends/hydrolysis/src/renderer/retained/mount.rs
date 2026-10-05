@@ -52,7 +52,7 @@ pub enum MountSlot {
 /// coordinates; `opacity` is the scope's alpha.
 pub struct AncestryScope {
     /// The scope's clip shape in root coordinates, when it clips.
-    pub(crate) clip: Option<cherenkov::ShapeData>,
+    pub(crate) clip: Option<waterui_graphics::draw::ShapeData>,
     /// The scope's alpha.
     pub(crate) opacity: f32,
 }

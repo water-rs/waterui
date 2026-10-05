@@ -102,7 +102,10 @@ impl<'a> WidgetRenderContext<'a> {
         self.renderer
     }
 
-    pub(crate) fn draw_context(&mut self, body: impl FnOnce(&mut cherenkov::Recorder)) {
+    pub(crate) fn draw_context(
+        &mut self,
+        body: impl FnOnce(&mut waterui_graphics::draw::Recorder),
+    ) {
         let ctx = self.render_context();
         self.renderer.draw_context(ctx, body);
     }
