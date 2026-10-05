@@ -160,8 +160,8 @@ struct ImageShape {
 impl ImageShape {
     const fn of<F: Format>(data: &ImageData<F>) -> Self {
         Self {
-            width: data.width,
-            height: data.height,
+            width: data.width(),
+            height: data.height(),
             color_space: data.color_space,
             premultiplied: data.premultiplied,
         }
@@ -358,10 +358,11 @@ const fn engine_color_space(color_space: ImageColorSpace) -> cherenkov::ImageCol
 /// `ImageData` rebuilt as the engine's typed upload: same texels, same
 /// colour space and alpha convention, its own format marker.
 #[cfg(any(feature = "cherenkov", test))]
-fn engine_image<F: Format, E: cherenkov::Format>(data: ImageData<F>) -> cherenkov::ImageData<E> {
-    let upload = cherenkov::ImageData::<E>::new(data.width, data.height, data.data)
-        .expect("a validated ImageData stays valid")
-        .color_space(engine_color_space(data.color_space));
+fn engine_image<F: Format, E: cherenkov::Format>(data: &ImageData<F>) -> cherenkov::ImageData<E> {
+    let upload =
+        cherenkov::ImageData::<E>::new(data.width(), data.height(), Arc::clone(data.data()))
+            .expect("a validated ImageData stays valid")
+            .color_space(engine_color_space(data.color_space));
     if data.premultiplied {
         upload.premultiplied()
     } else {
@@ -389,12 +390,12 @@ where
     }
 
     fn register_rgba8(&self, data: ImageData<Rgba8>) -> Result<Handle<ImageId>, ResourceError> {
-        let image = Self::image(self, engine_image::<Rgba8, cherenkov::Rgba8>(data))?;
+        let image = Self::image(self, engine_image::<Rgba8, cherenkov::Rgba8>(&data))?;
         Ok(Handle::new(image))
     }
 
     fn register_rgba16f(&self, data: ImageData<Rgba16F>) -> Result<Handle<ImageId>, ResourceError> {
-        let image = Self::image(self, engine_image::<Rgba16F, cherenkov::Rgba16F>(data))?;
+        let image = Self::image(self, engine_image::<Rgba16F, cherenkov::Rgba16F>(&data))?;
         Ok(Handle::new(image))
     }
 }
@@ -1055,7 +1056,7 @@ impl SceneResources {
         self.intern(
             |table| &table.images_rgba8,
             ImageShape::of(&data),
-            SourceBytes::Shared(Arc::clone(&data.data)),
+            SourceBytes::Shared(Arc::clone(data.data())),
             EntryKey::Rgba8,
             |table| table.backend.register_rgba8(data),
         )
@@ -1075,7 +1076,7 @@ impl SceneResources {
         self.intern(
             |table| &table.images_rgba16f,
             ImageShape::of(&data),
-            SourceBytes::Shared(Arc::clone(&data.data)),
+            SourceBytes::Shared(Arc::clone(data.data())),
             EntryKey::Rgba16F,
             |table| table.backend.register_rgba16f(data),
         )
