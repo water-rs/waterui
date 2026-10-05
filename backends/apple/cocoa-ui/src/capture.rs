@@ -873,25 +873,17 @@ impl CompositorGuard<'_> {
         unsafe {
             encoder.setFragmentSamplerState_atIndex(Some(&sampler), 0);
         }
+        // Clip extents are pixel counts inside the target by construction.
+        let pixels = |value: usize| {
+            f64::from(u32::try_from(value).expect("a clip extent fits the capture target"))
+        };
         for surface in surfaces {
             let spec = surface.spec;
             encoder.setViewport(MTLViewport {
-                originX: f64::from(
-                    u32::try_from(spec.clip.x)
-                        .expect("the clip rect is inside the capture target by construction"),
-                ),
-                originY: f64::from(
-                    u32::try_from(spec.clip.y)
-                        .expect("the clip rect is inside the capture target by construction"),
-                ),
-                width: f64::from(
-                    u32::try_from(spec.clip.width)
-                        .expect("the clip rect is inside the capture target by construction"),
-                ),
-                height: f64::from(
-                    u32::try_from(spec.clip.height)
-                        .expect("the clip rect is inside the capture target by construction"),
-                ),
+                originX: pixels(spec.clip.x),
+                originY: pixels(spec.clip.y),
+                width: pixels(spec.clip.width),
+                height: pixels(spec.clip.height),
                 znear: 0.0,
                 zfar: 1.0,
             });
