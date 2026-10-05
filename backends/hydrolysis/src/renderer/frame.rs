@@ -446,7 +446,7 @@ impl HydrolysisRenderer {
     pub(crate) fn draw_context(
         &mut self,
         ctx: RenderContext,
-        body: impl FnOnce(&mut cherenkov::Recorder),
+        body: impl FnOnce(&mut waterui_graphics::draw::Recorder),
     ) {
         self.scene.record_picture(ctx.transform, body);
     }

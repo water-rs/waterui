@@ -1836,7 +1836,7 @@ impl SurfaceProvider for OffscreenSurface {
 }
 
 /// An offscreen Cherenkov surface on the shared engine, for scene-level tests
-/// and exports that mount [`cherenkov::Content`] directly instead of driving
+/// and exports that mount [`waterui_graphics::draw::Content`] directly instead of driving
 /// the full view pipeline.
 ///
 /// One `OffscreenSceneSurface` owns a GPU context, the engine shared on that

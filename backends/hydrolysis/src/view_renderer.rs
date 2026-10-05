@@ -121,7 +121,7 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
                         format,
                         width,
                         height,
-                        base_color: cherenkov::WorkingColor::TRANSPARENT,
+                        base_color: waterui_graphics::draw::WorkingColor::TRANSPARENT,
                     }
                 ));
                 renderer.frame_work_counters_mut().gpu_submissions += 1;

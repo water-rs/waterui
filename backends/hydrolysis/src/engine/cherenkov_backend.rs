@@ -276,7 +276,7 @@ impl CherenkovSurface {
     }
 
     /// The colour the surface clears to before content.
-    pub fn clear_color(&self, color: cherenkov::WorkingColor) {
+    pub fn clear_color(&self, color: waterui_graphics::draw::WorkingColor) {
         self.surface.clear_color(color);
     }
 

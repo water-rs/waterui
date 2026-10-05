@@ -2,7 +2,7 @@
 //!
 //! [`Recording`] keeps the fixed imperative API drawing code records through;
 //! internally it is an ordered op list. The flush lowers each contiguous run
-//! into a [`cherenkov::Content`] the mounted engine layer shows, so engine
+//! into a [`waterui_graphics::draw::Content`] the mounted engine layer shows, so engine
 //! mounts and hierarchy persist across frames while only the content payload
 //! is replaced.
 //!
