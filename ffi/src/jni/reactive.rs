@@ -949,15 +949,8 @@ use std::sync::{Arc, Mutex};
 
 struct JavaConstructor {
     class: Global<JClass<'static>>,
-    method: jni::sys::jmethodID,
+    method: JMethodID,
 }
-
-// SAFETY: the raw method id is only ever passed back to JNI for the class it
-// was resolved on, and the `Global` keeps that class loaded for the
-// constructor's lifetime; method ids are valid across threads.
-unsafe impl Send for JavaConstructor {}
-// SAFETY: `new_object` takes `&self` and uses the id read-only.
-unsafe impl Sync for JavaConstructor {}
 
 impl JavaConstructor {
     fn load(
@@ -978,8 +971,7 @@ impl JavaConstructor {
                     "watcher constructor not found: {class_name}{}",
                     descriptor.sig()
                 )
-            })
-            .into_raw();
+            });
         Self { class, method }
     }
 
@@ -992,12 +984,8 @@ impl JavaConstructor {
         // belongs to that class and is a constructor; the caller passes the arguments
         // its descriptor names.
         unsafe {
-            env.new_object_unchecked(
-                &self.class,
-                jni::objects::JMethodID::from_raw(self.method),
-                args,
-            )
-            .expect("failed to invoke cached watcher constructor")
+            env.new_object_unchecked(&self.class, self.method, args)
+                .expect("failed to invoke cached watcher constructor")
         }
     }
 }
@@ -1028,13 +1016,6 @@ pub(crate) struct JniWatcherContext {
     /// Value-class constructors memoized per class as watchers need them.
     value_constructors: Mutex<Vec<(&'static JNIStr, Arc<JavaConstructor>)>>,
 }
-
-// SAFETY: the JavaVM handle, the global reference and the cached ids are all
-// process-wide JNI resources only used for the calls they were resolved for;
-// the constructor memo is the only mutable member and it is `Mutex`-guarded.
-unsafe impl Send for JniWatcherContext {}
-// SAFETY: same reasoning — `&self` methods only invoke JNI calls.
-unsafe impl Sync for JniWatcherContext {}
 
 impl JniWatcherContext {
     fn new(env: &mut Env, registry: &JObject) -> Self {
