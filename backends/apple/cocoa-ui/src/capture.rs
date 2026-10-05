@@ -9,10 +9,15 @@
 //! # Orientation and scale contract
 //!
 //! The destination texture is top-down and sized in device pixels.
-//! `CARenderer` draws bottom-up and takes its destination rect in pixels, so
-//! [`with_capture_transform`] scales the layer tree for the duration of the
-//! frame — without mirroring: the kit's views are already flipped, and a
-//! second inversion would count the flip twice.
+//! `CARenderer` draws the layer tree in its own frame convention — a
+//! flipped (`isFlipped`) source's tree rasterizes top-down, an unflipped
+//! source's rasterizes bottom-up — and takes its destination rect in
+//! pixels. [`with_capture_transform`] therefore scales the layer tree for
+//! the duration of the frame and — for a bottom-up raster, i.e. when the
+//! source view's `CaptureGeometry.y_down` is false — mirrors the scaled
+//! output about the destination's midline inside the same composed
+//! transform, so native content and GPU surfaces land in the same top-down
+//! destination.
 //!
 //! [`SurfaceSpec`] keeps the producer texture's full pixel size separate
 //! from the visible destination scissor: when a surface lands partially
@@ -145,15 +150,25 @@ pub fn with_capture_transform<T>(
 
     CATransaction::begin();
     CATransaction::setDisableActions(true);
-    layer.setTransform(saved_transform.concat(
-        CATransform3D::new_scale(geometry.scale_x, geometry.scale_y, 1.0).concat(
-            CATransform3D::new_translation(
-                saved_position.x * (geometry.scale_x - 1.0),
-                saved_position.y * (geometry.scale_y - 1.0),
-                0.0,
-            ),
-        ),
-    ));
+    let mut capture_transform = CATransform3D::new_scale(geometry.scale_x, geometry.scale_y, 1.0)
+        .concat(CATransform3D::new_translation(
+            saved_position.x * (geometry.scale_x - 1.0),
+            saved_position.y * (geometry.scale_y - 1.0),
+            0.0,
+        ));
+    // `CARenderer` rasterizes the layer tree in its own convention: an
+    // unflipped source (`y_down` false) comes out bottom-up and is mirrored
+    // about the destination's midline inside the same composed transform —
+    // scale(1,-1) then translate(+height) maps layer-local y to
+    // `height − y` — so native content and GPU surfaces land in the same
+    // destination space. A flipped source already rasterizes top-down.
+    if !geometry.y_down {
+        let height = geometry.source.size.height * geometry.scale_y;
+        capture_transform = capture_transform
+            .concat(CATransform3D::new_scale(1.0, -1.0, 1.0))
+            .concat(CATransform3D::new_translation(0.0, height, 0.0));
+    }
+    layer.setTransform(saved_transform.concat(capture_transform));
     CATransaction::commit();
     flush_transaction();
 
