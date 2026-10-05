@@ -213,18 +213,13 @@ pub unsafe fn mount(
     }
     #[cfg(target_os = "ios")]
     {
-        let background = declaration.resolved_background(&env);
-        let background_host = root.clone();
-        keepalive.bind(&background, move |color| {
-            let [r, g, b, a] = color.components;
-            let color = cocoa_ui::uikit::colors::extended_linear_display_p3(
-                f64::from(r),
-                f64::from(g),
-                f64::from(b),
-                f64::from(a),
-            );
-            cocoa_ui::view::set_background_color(&background_host, Some(&color));
-        });
+        crate::windows::bind_background(
+            &mut keepalive,
+            &root,
+            &declaration.resolved_background(&env),
+            &env,
+            mtm,
+        );
         let declarations = std::iter::once(declaration).chain(windows).collect();
         crate::windows::declare(&scenes.state, declarations, &env, 1, mtm);
         keepalive.keep(parts.menu_bar);

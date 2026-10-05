@@ -12,14 +12,23 @@
 //! centres the transition on the edge, where an average in linear light
 //! pulls it several points toward the dark side.
 //!
+//! A window whose background is a within-window level mounts its root over
+//! the same backdrop treatment, of the window's opaque theme background.
+//!
 //! The levels the reference platform blends behind the window (`UltraThin`,
-//! `Thin`) need the compositor's blur-behind protocol rather than a backdrop
-//! of the window's own content; Hydrolysis does not realize them yet
-//! (water-rs/waterui#1855), and [`WithinWindowLevel::of`] rejects them.
+//! `Thin`) show the desktop through a translucent window
+//! (water-rs/waterui#1855). The compositor owns the desktop's pixels and
+//! their blur, so the level's colour stage cannot run on them: it is realized
+//! as the closest source-over [`Tint`] the window composites under its
+//! content. As a view background, rather than a window background, a
+//! behind-window level is rejected by [`WithinWindowLevel::of`].
+
+use std::rc::Rc;
 
 use nami::{Computed, SignalExt as _};
 use waterui::background::Material;
 use waterui::theme::ColorScheme;
+use waterui_core::Environment;
 use waterui_graphics::filtrate::filters::{GaussianBlur, LumaCurve};
 use waterui_graphics::filtrate::{Chain, FilterExt as _, OperatingSpace};
 use waterui_graphics::{ParamGuards, Reactive};
@@ -35,6 +44,28 @@ pub fn capture_scale() -> cherenkov::CaptureScale {
         .expect("hydrolysis: the material capture scale is in (0, 1]")
 }
 
+/// Where the reference platform blends a material level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Blending {
+    /// Over the window's own content: a backdrop treatment.
+    WithinWindow(WithinWindowLevel),
+    /// Over what lies behind the window: a translucent window.
+    BehindWindow(BehindWindowLevel),
+}
+
+impl Blending {
+    /// Where `material` is blended.
+    pub(crate) const fn of(material: Material) -> Self {
+        match material {
+            Material::Regular => Self::WithinWindow(WithinWindowLevel::Regular),
+            Material::Thick => Self::WithinWindow(WithinWindowLevel::Thick),
+            Material::UltraThick => Self::WithinWindow(WithinWindowLevel::UltraThick),
+            Material::UltraThin => Self::BehindWindow(BehindWindowLevel::UltraThin),
+            Material::Thin => Self::BehindWindow(BehindWindowLevel::Thin),
+        }
+    }
+}
+
 /// A material level the reference platform blends within the window: the
 /// levels a backdrop of the window's own content realizes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,22 +79,22 @@ pub enum WithinWindowLevel {
 }
 
 impl WithinWindowLevel {
-    /// The within-window level `material` names.
+    /// The within-window level `material` names, as a view's background.
     ///
     /// # Panics
     ///
     /// When `material` is a level blended behind the window (`UltraThin`,
-    /// `Thin`): those need the compositor's blur-behind protocol, which
-    /// Hydrolysis does not realize yet.
+    /// `Thin`): Hydrolysis realizes those as a window's background only. A
+    /// region of the desktop blurred behind an inner view is
+    /// water-rs/waterui#1853's decision.
     pub(crate) fn of(material: Material) -> Self {
-        match material {
-            Material::Regular => Self::Regular,
-            Material::Thick => Self::Thick,
-            Material::UltraThick => Self::UltraThick,
-            Material::UltraThin | Material::Thin => panic!(
-                "hydrolysis: Material::{material:?} is blended behind the window, which \
-                 needs the compositor's blur-behind protocol; Hydrolysis does not realize \
-                 behind-window materials yet (water-rs/waterui#1855)"
+        match Blending::of(material) {
+            Blending::WithinWindow(level) => level,
+            Blending::BehindWindow(_) => panic!(
+                "hydrolysis: Material::{material:?} is blended behind the window; Hydrolysis \
+                 realizes it as a window's background (`Window::background`), not as a view's \
+                 — blurring the desktop behind an inner view's region is \
+                 water-rs/waterui#1853's decision"
             ),
         }
     }
@@ -171,6 +202,83 @@ const ULTRA_THICK: Treatment = Treatment {
     sigma: 22.5,
 };
 
+/// A material level the reference platform blends behind the window: the
+/// levels a translucent window realizes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BehindWindowLevel {
+    /// `Material::UltraThin`.
+    UltraThin,
+    /// `Material::Thin`.
+    Thin,
+}
+
+impl BehindWindowLevel {
+    /// The tint the window composites over the desktop under `scheme`.
+    pub(crate) const fn tint(self, scheme: ColorScheme) -> Tint {
+        match (self, scheme) {
+            (Self::UltraThin, ColorScheme::Light) => ULTRA_THIN_LIGHT,
+            (Self::UltraThin, ColorScheme::Dark) => ULTRA_THIN_DARK,
+            (Self::Thin, ColorScheme::Light) => THIN_LIGHT,
+            (Self::Thin, ColorScheme::Dark) => THIN_DARK,
+        }
+    }
+}
+
+/// A behind-window level's colour stage realized as a source-over tint in
+/// encoded sRGB, `out = alpha·color + (1 − alpha)·in`, over the desktop the
+/// compositor blurs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Tint {
+    /// The tint's coverage.
+    pub alpha: f32,
+    /// The tint's grey, in encoded sRGB.
+    pub color: f32,
+}
+
+impl Tint {
+    /// The tint as a straight-alpha encoded-sRGB colour.
+    pub(crate) const fn srgb(self) -> peniko::Color {
+        peniko::Color::new([self.color, self.color, self.color, self.alpha])
+    }
+}
+
+// The tint of each behind-window level, per appearance. The compositor owns
+// the blur of the desktop behind the window, so the measured colour stage
+// `f(Y) + k·(c − Y)` cannot run on those pixels; the tint is the source-over
+// layer closest to it: `(1 − alpha)·Y + alpha·color` fitted by least squares
+// to the stage's grey-ramp response `f(Y)` at Y = 0, 0.1, …, 0.9, 1. The
+// curve's bend is what a straight line leaves; the chroma gain `k` becomes
+// `1 − alpha`.
+// Source: the measured device models recorded on water-rs/waterui#1854.
+//
+// level      appearance  alpha   color   worst residual  |k − (1 − alpha)|
+// UltraThin  light       0.3825  0.9193  2.33 levels     0.068
+// UltraThin  dark        0.4239  0.2579  2.72 levels     0.026
+// Thin       light       0.6056  0.9525  5.58 levels     0.146
+// Thin       dark        0.6421  0.1879  2.92 levels     0.182
+//
+// Residuals are in 8-bit levels of encoded sRGB, at the ramp's ends.
+
+const ULTRA_THIN_LIGHT: Tint = Tint {
+    alpha: 0.3825,
+    color: 0.9193,
+};
+
+const ULTRA_THIN_DARK: Tint = Tint {
+    alpha: 0.4239,
+    color: 0.2579,
+};
+
+const THIN_LIGHT: Tint = Tint {
+    alpha: 0.6056,
+    color: 0.9525,
+};
+
+const THIN_DARK: Tint = Tint {
+    alpha: 0.6421,
+    color: 0.1879,
+};
+
 /// The backdrop chain a material group runs: the colour stage, then the
 /// blur.
 pub type MaterialChain = Chain<LumaCurve<Reactive>, GaussianBlur<f32>>;
@@ -241,15 +349,155 @@ impl MaterialRuntime {
     }
 }
 
+/// A window background's within-window material: the backdrop the window's
+/// root is mounted over, keyed like a material wrapper's mount.
+pub struct WindowBackdrop {
+    level: WithinWindowLevel,
+    key: crate::renderer::retained::RenderKey,
+    runtime: Rc<MaterialRuntime>,
+}
+
+impl crate::renderer::HydrolysisRenderer {
+    /// Presents a material at `bounds` under `transform`: everything painted
+    /// so far is its backdrop, so that segment closes, and the keyed member
+    /// mount `key` samples the backdrop group `runtime` runs. Content flushed
+    /// afterwards draws above it.
+    pub(crate) fn present_material(
+        &mut self,
+        key: crate::renderer::retained::RenderKey,
+        runtime: &Rc<MaterialRuntime>,
+        transform: kurbo::Affine,
+        bounds: kurbo::Rect,
+    ) {
+        self.flush_scene_layer();
+        let active_layers = self.compositor.active_scene_layers.clone();
+        self.compositor
+            .render_layers
+            .push(crate::renderer::RenderLayer::Material(
+                crate::renderer::MaterialLayer {
+                    key,
+                    runtime: Rc::clone(runtime),
+                    transform,
+                    bounds,
+                    active_layers,
+                },
+            ));
+    }
+
+    /// Sets the within-window material the window's background names, or
+    /// `None` for any other background. The window's root is mounted over
+    /// it, as a view is over its material background. A change of level
+    /// builds a fresh backdrop under a new mount and asks for a refresh, so
+    /// the frame re-flushes over it.
+    pub(crate) fn set_window_backdrop(
+        &mut self,
+        level: Option<WithinWindowLevel>,
+        env: &Environment,
+    ) {
+        if self.window_backdrop.as_ref().map(|backdrop| backdrop.level) == level {
+            return;
+        }
+        self.window_backdrop = level.map(|level| WindowBackdrop {
+            level,
+            key: crate::renderer::retained::RenderKey {
+                render: crate::renderer::retained::RenderId::next(),
+                presentation: crate::renderer::retained::PresentationId::ORDINARY,
+            },
+            runtime: Rc::new(MaterialRuntime::new(
+                level,
+                &waterui::theme::current_color_scheme(env),
+            )),
+        });
+        self.request_refresh();
+    }
+
+    /// Presents the window's backdrop, if its background names one, over the
+    /// whole window at `bounds` under the root `transform`. Called before the
+    /// root flushes, so the root mounts over it.
+    pub(crate) fn present_window_backdrop(
+        &mut self,
+        bounds: kurbo::Rect,
+        transform: kurbo::Affine,
+    ) {
+        if let Some(backdrop) = &self.window_backdrop {
+            let (key, runtime) = (backdrop.key, Rc::clone(&backdrop.runtime));
+            self.present_material(key, &runtime, transform, bounds);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use waterui_graphics::filtrate::Filter as _;
 
     #[test]
-    #[should_panic(expected = "water-rs/waterui#1855")]
-    fn a_behind_window_level_names_its_issue() {
+    #[should_panic(expected = "water-rs/waterui#1853")]
+    fn a_behind_window_view_background_names_its_decision() {
         let _ = WithinWindowLevel::of(Material::Thin);
+    }
+
+    /// Each tint reproduces the colour stage it stands in for on the grey
+    /// ramp within the recorded worst residual.
+    #[test]
+    fn the_tints_reproduce_the_grey_ramp() {
+        // The stage's measured parameters per behind-window level and
+        // appearance: curve values, amount and brightness.
+        let stages: [(BehindWindowLevel, ColorScheme, [f32; 4], f32, f32, f32); 4] = [
+            (
+                BehindWindowLevel::UltraThin,
+                ColorScheme::Light,
+                [0.45, 0.55, 0.65, 0.68],
+                0.5,
+                0.12,
+                2.33,
+            ),
+            (
+                BehindWindowLevel::UltraThin,
+                ColorScheme::Dark,
+                [0.24, 0.24, 0.3, 0.39],
+                0.5,
+                0.0,
+                2.72,
+            ),
+            (
+                BehindWindowLevel::Thin,
+                ColorScheme::Light,
+                [0.725, 0.825, 0.76, 0.73],
+                0.6,
+                0.12,
+                5.58,
+            ),
+            (
+                BehindWindowLevel::Thin,
+                ColorScheme::Dark,
+                [0.2, 0.21, 0.1, 0.15],
+                0.6,
+                0.0,
+                2.92,
+            ),
+        ];
+        for (level, scheme, [v0, v1, v2, v3], amount, brightness, worst) in stages {
+            let tint = level.tint(scheme);
+            for step in 0..=10_u8 {
+                let grey = f32::from(step) / 10.0;
+                let u = 1.0 - grey;
+                let bezier = (u * u * u).mul_add(
+                    v0,
+                    (3.0 * grey * u * u).mul_add(
+                        v1,
+                        (3.0 * grey * grey * u).mul_add(v2, grey * grey * grey * v3),
+                    ),
+                );
+                let stage = amount.mul_add(bezier - grey, grey) + brightness;
+                let tinted = tint.alpha.mul_add(tint.color - grey, grey);
+                let residual = (stage - tinted).abs() * 255.0;
+                assert!(
+                    residual <= worst + 0.01,
+                    "{level:?} {scheme:?} over {grey}: {residual} levels from the stage"
+                );
+            }
+        }
     }
 
     #[test]

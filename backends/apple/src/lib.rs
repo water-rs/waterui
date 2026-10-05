@@ -47,6 +47,7 @@ pub(crate) mod startup;
 pub(crate) mod theme;
 #[cfg(target_os = "macos")]
 mod toolbar;
+pub(crate) mod window_background;
 pub(crate) mod windows;
 
 /// Harness-only internals for `Tests/native.rs`: private `windows` and

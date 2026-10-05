@@ -225,24 +225,15 @@ impl RenderNode {
                         });
                     }
                     WrapperEffect::Material(runtime) => {
-                        // Everything painted so far is the material's
-                        // backdrop: close that segment, present the keyed
-                        // member mount, and flush the content above it.
-                        renderer.flush_scene_layer();
-                        renderer
-                            .compositor
-                            .render_layers
-                            .push(RenderLayer::Material(MaterialLayer {
-                                key: crate::renderer::retained::RenderKey {
-                                    render: node.render_id,
-                                    presentation:
-                                        crate::renderer::retained::PresentationId::ORDINARY,
-                                },
-                                runtime: Rc::clone(runtime),
-                                transform: ctx.transform,
-                                bounds: ctx.bounds,
-                                active_layers: renderer.compositor.active_scene_layers.clone(),
-                            }));
+                        renderer.present_material(
+                            crate::renderer::retained::RenderKey {
+                                render: node.render_id,
+                                presentation: crate::renderer::retained::PresentationId::ORDINARY,
+                            },
+                            runtime,
+                            ctx.transform,
+                            ctx.bounds,
+                        );
                         node.child.flush(renderer, ctx, child_env);
                     }
                     WrapperEffect::PopupMenuSurface => {

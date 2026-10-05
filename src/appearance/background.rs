@@ -153,8 +153,15 @@ pub enum Background {
 ///   `ext-background-effect-v1`, and on Windows the DWM system backdrop carry
 ///   them. On a compositor with none of these protocols the backend does not
 ///   ignore the level or substitute another: it fails fast with a panic that
-///   names the level and the platform. Hydrolysis does not realize these
-///   levels yet and panics when one reaches it (water-rs/waterui#1855).
+///   names the level and the platform. Hydrolysis realizes these levels as a
+///   window's background ([`WindowBackground::Material`]): the window turns
+///   translucent with the level's colour treatment as a tint, and does not
+///   yet ask the compositor for blur-behind (water-rs/waterui#1856,
+///   water-rs/waterui#1857, water-rs/waterui#1858). As a view's background
+///   it panics naming the level: blurring the desktop behind an inner view's
+///   region is water-rs/waterui#1853's decision.
+///
+/// [`WindowBackground::Material`]: crate::window::WindowBackground::Material
 ///
 /// # Examples
 ///

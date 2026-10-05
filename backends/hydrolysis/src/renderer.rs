@@ -29,7 +29,7 @@ mod identity;
 mod input;
 mod interaction_layers;
 mod lifecycle;
-mod material;
+pub mod material;
 mod metadata;
 mod native_measure;
 mod navigation;
@@ -351,6 +351,9 @@ pub struct HydrolysisRenderer {
     /// byte-identical.
     #[cfg(feature = "frame-profile")]
     last_layout_signature: Option<u64>,
+    /// The within-window material the window's background names, which the
+    /// window's root is mounted over; `None` for any other background.
+    window_backdrop: Option<crate::renderer::material::WindowBackdrop>,
 }
 
 impl core::ops::Deref for HydrolysisRenderer {
@@ -502,6 +505,7 @@ impl HydrolysisRenderer {
             frame_stage_times: FrameStageTimes::default(),
             #[cfg(feature = "frame-profile")]
             last_layout_signature: None,
+            window_backdrop: None,
         }
     }
 

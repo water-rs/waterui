@@ -4,10 +4,11 @@ use core::ptr::NonNull;
 use core::ptr::null_mut;
 use std::rc::Rc;
 
-use nami::SignalExt as _;
+use nami::{Computed, SignalExt as _, signal::IntoComputed as _};
 use waterui::window::{
-    Activation, Monitor, MonitorSelector, UserAttention, Window, WindowBackground, WindowLevel,
-    WindowManager, WindowPlacement, WindowState, WindowStyle, resolve_background,
+    Activation, Monitor, MonitorSelector, ResolvedWindowBackground, UserAttention, Window,
+    WindowBackground, WindowLevel, WindowManager, WindowPlacement, WindowState, WindowStyle,
+    resolve_background,
 };
 use waterui::{AnyView, Str};
 use waterui_graphics::WorkingColor;
@@ -391,13 +392,46 @@ impl IntoRust for WuiUserAttention {
 ffi_binding!(Option<UserAttention>, WuiUserAttention, user_attention);
 crate::ffi_watcher!(Option<UserAttention>, WuiUserAttention, user_attention);
 
-/// Resolves a window's reactive background to the colour the native backend
-/// paints behind the window's content, consuming `background`.
+/// The colour the Kotlin Android runtime paints behind a window's content,
+/// following `background`.
+///
+/// # Panics
+///
+/// When the background resolves to a [`WindowBackground::Material`], now or
+/// after a later change: the Kotlin Android runtime does not realize a
+/// material window background. Hydrolysis is the Android backend that does
+/// (water-rs/waterui#1899).
+fn android_window_background(
+    background: &Computed<WindowBackground>,
+    env: &waterui::Environment,
+) -> Computed<WorkingColor> {
+    resolve_background(background, env)
+        .map(|resolved| match resolved {
+            ResolvedWindowBackground::Color(color) => color,
+            ResolvedWindowBackground::Material(material) => panic!(
+                "waterui_resolve_window_background: the window background is \
+                 Material::{material:?}, but the Kotlin Android runtime does not realize a \
+                 Material window background; Hydrolysis is the Android backend that does \
+                 (water-rs/waterui#1899)"
+            ),
+        })
+        .into_computed()
+}
+
+/// Resolves a window's reactive background to the colour the Kotlin Android
+/// runtime paints behind the window's content, consuming `background`.
 ///
 /// The returned signal follows both a change of the background — including a
 /// switch between opaque and a translucent colour — and a change of the colour
 /// it resolves to. A colour whose opacity is below one asks for a translucent
 /// window.
+///
+/// # Panics
+///
+/// When the background resolves to a [`WindowBackground::Material`] — on the
+/// first read or after a later change. The Kotlin Android runtime realizes no
+/// material; Hydrolysis is the Android backend that realizes a material window
+/// background (water-rs/waterui#1899).
 ///
 /// # Safety
 ///
@@ -413,7 +447,7 @@ pub unsafe extern "C" fn waterui_resolve_window_background(
     // exactly once here, and `env` a valid borrow for the call.
     unsafe {
         let background = Box::from_raw(background).0;
-        resolve_background(&background, &*env).into_ffi()
+        android_window_background(&background, &*env).into_ffi()
     }
 }
 
@@ -562,7 +596,7 @@ impl WuiWindow {
         // of the wrapper hands the one release to the resolved signal.
         let background = unsafe { Box::from_raw(background.into_raw()) }.0;
         let background = OwnedFfiHandle::required(
-            resolve_background(&background, env).into_ffi(),
+            android_window_background(&background, env).into_ffi(),
             "resolved window background",
         );
         let content = OwnedFfiHandle::required(content, "WuiWindow.content");
@@ -690,4 +724,29 @@ pub unsafe extern "C" fn waterui_env_install_window_manager(
     });
 
     env.insert(manager);
+}
+
+#[cfg(test)]
+mod tests {
+    use nami::{Binding, Signal as _, SignalExt as _};
+    use waterui::background::Material;
+    use waterui::window::WindowBackground;
+    use waterui_graphics::Color;
+
+    use super::android_window_background;
+
+    /// A colour passes through; a material, which the Kotlin Android runtime
+    /// cannot realize, fails naming the level and the backend that does.
+    #[test]
+    #[should_panic(expected = "Material::Thin, but the Kotlin Android runtime does not realize")]
+    fn the_kotlin_runtime_rejects_a_material_window_background() {
+        let env = waterui::Environment::new();
+        let background = Binding::container(WindowBackground::Color(
+            Color::srgb(0, 0, 0).with_opacity(0.5),
+        ));
+        let resolved = android_window_background(&background.computed(), &env);
+        assert!((resolved.snapshot().components[3] - 0.5).abs() < 1e-6);
+        background.set(WindowBackground::Material(Material::Thin));
+        let _ = resolved.snapshot();
+    }
 }
