@@ -117,23 +117,21 @@ fn a_material_installs_a_quarter_scale_colour_then_blur_backdrop_group() {
         "the material is shown under its opacity scope"
     );
 
-    // The chain the install builds runs the colour stage in sRGB, then the
-    // blur's two passes.
+    // The chain the install builds runs the colour stage, then the blur's
+    // two passes, all in encoded sRGB.
     let chain = material_layer(&runtime).runtime.chain(DISPLAY_SCALE);
     let mut stages = Stages::default();
     chain.collect_stages(&mut stages);
-    let order: Vec<&str> = stages.0.iter().map(|(name, _)| *name).collect();
     assert_eq!(
-        order,
+        stages.0,
         [
-            "LumaCurve",
-            "gaussian_blur_horizontal",
-            "gaussian_blur_vertical"
+            ("LumaCurve", OperatingSpace::Srgb),
+            ("gaussian_blur_horizontal_srgb", OperatingSpace::Srgb),
+            ("gaussian_blur_vertical_srgb", OperatingSpace::Srgb),
         ]
     );
-    assert_eq!(stages.0[0].1, OperatingSpace::Srgb);
     // 29.5 pt at 2 px/pt, captured at a quarter: 14.75 texels.
-    assert!((chain.second.0 - 14.75).abs() <= f32::EPSILON);
+    assert!((chain.second.sigma - 14.75).abs() <= f32::EPSILON);
 
     // Install: the mount holds a group built for this display scale, and the
     // engine captures it at a quarter of the 320×240 device pixels: 80×60

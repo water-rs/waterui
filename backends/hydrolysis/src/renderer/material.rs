@@ -7,6 +7,12 @@
 //! level's Gaussian σ; the view's mount samples the result inside its clip.
 //! The colour stage runs before the blur, and there is no tint layer.
 //!
+//! The blur averages encoded sRGB too, as the reference platform's does: an
+//! edge between dark and light content settles halfway in encoded value, a
+//! point or two to the dark side of the edge, where an average in linear
+//! light would pull the halfway point several points further into the dark
+//! side.
+//!
 //! The levels the reference platform blends behind the window (`UltraThin`,
 //! `Thin`) need the compositor's blur-behind protocol rather than a backdrop
 //! of the window's own content; Hydrolysis does not realize them yet
@@ -16,7 +22,7 @@ use nami::{Computed, SignalExt as _};
 use waterui::background::Material;
 use waterui::theme::ColorScheme;
 use waterui_graphics::filtrate::filters::{GaussianBlur, LumaCurve};
-use waterui_graphics::filtrate::{Chain, FilterExt as _};
+use waterui_graphics::filtrate::{Chain, FilterExt as _, OperatingSpace};
 use waterui_graphics::{ParamGuards, Reactive};
 
 /// The fraction of device resolution a material's backdrop is captured at.
@@ -222,8 +228,8 @@ impl MaterialRuntime {
     }
 
     /// The backdrop chain for a surface at `display_scale` device pixels per
-    /// point: the colour stage, then the blur with σ converted from points
-    /// to capture texels.
+    /// point: the colour stage, then the blur in encoded sRGB with σ
+    /// converted from points to capture texels.
     pub(crate) fn chain(&self, display_scale: f64) -> MaterialChain {
         #[expect(
             clippy::cast_possible_truncation,
@@ -232,7 +238,7 @@ impl MaterialRuntime {
         let texels_per_point = (display_scale * f64::from(CAPTURE_SCALE)) as f32;
         self.tone
             .clone()
-            .then(GaussianBlur(self.sigma * texels_per_point))
+            .then(GaussianBlur::new(self.sigma * texels_per_point).in_space(OperatingSpace::Srgb))
     }
 }
 
@@ -261,7 +267,7 @@ mod tests {
             [0.16, 0.26, 0.1, 0.1, 0.75, 0.375, 0.0]
         );
         // σ = 29.5 pt at 2 px/pt, captured at a quarter: 14.75 texels.
-        assert!((runtime.chain(2.0).second.0 - 14.75).abs() <= f32::EPSILON);
+        assert!((runtime.chain(2.0).second.sigma - 14.75).abs() <= f32::EPSILON);
     }
 
     /// The interiors measured on water-rs/waterui#1854 through each
