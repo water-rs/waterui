@@ -1,0 +1,34 @@
+# Build outputs — the deliverable tar.gz carries these, not the repo.
+dist/
+results.json
+results.md
+
+# Contestant build trees
+build/
+**/build/
+**/node_modules/
+**/.gradle/
+**/target/
+**/.cxx/
+**/DerivedData/
+# Rust .so staging copied in by `water build` — regenerated on each build.
+**/jniLibs/
+# Lockfiles (Cargo.lock, Water.lock, package-lock) stay tracked — they are the pin record.
+# flutter/gradle generated trees
+**/android/.cxx/
+**/android/app/.cxx/
+**/local.properties
+**/gradlew
+**/gradlew.bat
+**/gradle-wrapper.jar
+*.iml
+.idea/
+.metadata
+.packages
+.flutter-plugins*
+.dart_tool/
+!**/pubspec.lock
+**/*.keystore  # debug.keystore included — keytool regenerates it at build
+# runner-owned caches: provisioned water CLI, verified gradle dists, bundletool
+.cache/
+traces/
