@@ -118,12 +118,12 @@ impl<'a> WidgetRenderContext<'a> {
     }
 
     /// The §7.1 context for retained *content* a chrome container places at
-    /// `rect` in its bounds space — `NavigationView`/`Tabs` content: the
-    /// hosted content inherits the widget's
-    /// boundaries and released regions; only the edges whose frame edge
-    /// still touches a boundary stay reachable, so a scroll surface inside
-    /// still extends and `.ignore_safe_area` inside still releases on the
-    /// edges the chrome left on the boundary (§7.1).
+    /// `rect` in its bounds space — stack pages, split panes, `NavigationView`
+    /// content and `Tabs` content: the hosted content inherits the widget's
+    /// boundaries and released regions; only the edges whose frame edge still
+    /// touches a boundary stay reachable, so a scroll surface inside still
+    /// extends and `.ignore_safe_area` inside still releases on the edges the
+    /// chrome left on the boundary (§7.1).
     pub(crate) fn content_area_for(&self, rect: kurbo::Rect) -> Option<SafeAreaLayout> {
         self.safe_area
             .as_ref()
