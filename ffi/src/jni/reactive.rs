@@ -997,9 +997,10 @@ impl JavaConstructor {
 /// reference table. Now Kotlin creates one of these per `WuiEnvironment` —
 /// including every `Metadata<Environment>` node and every `clone()` — through
 /// `initWatcherContext`, and keeps the handle alive until that environment is
-/// released. The cost per context is one global reference to the
-/// environment's `WatcherRegistry` instance plus the class references each
-/// lazily-resolved constructor loads, and those resolve on first use rather
+/// released. Each context holds two global references from the start, the
+/// environment's `WatcherRegistry` instance and the `WuiWatcherMetadata`
+/// class, plus one class reference for each value-class constructor a
+/// watcher has needed so far. Those constructors resolve on first use rather
 /// than eagerly: a class that does not exist yet on the running backend (for
 /// example `WorkingColorStruct` until water-rs/android-backend#237 lands)
 /// fails only a watcher type that actually needs it. Kotlin passes the
