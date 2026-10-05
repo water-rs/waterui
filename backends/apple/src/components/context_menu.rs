@@ -432,11 +432,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // The content always fills the wrapper.
         host.set_layout_handler({
-            let state = Rc::downgrade(&state);
+            let state = Rc::clone(&state);
             move |host| {
-                let Some(state) = state.upgrade() else {
-                    return;
-                };
                 let state = state.borrow();
                 view::set_frame(state.child.view(), view::bounds(host));
             }
@@ -543,11 +540,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         #[cfg(target_os = "macos")]
         host.set_right_mouse_handler({
-            let state = Rc::downgrade(&state);
+            let state = Rc::clone(&state);
             move |host_view, event| {
-                let Some(state) = state.upgrade() else {
-                    return;
-                };
                 let menu = {
                     let mtm = state.borrow().mtm;
                     let nodes = {

@@ -209,11 +209,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // through to the bounds they touch.
         host.set_manages_safe_area(true);
         host.set_primary_content_handler({
-            // Optional query callback: weak state, natural empty answer
-            // once the leaf's owner is gone (WaterUI #1575).
-            let state = Rc::downgrade(&state);
+            let state = Rc::clone(&state);
             move |_host| {
-                let state = state.upgrade()?;
                 state
                     .borrow()
                     .children
@@ -224,11 +221,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // The scroll-surface search descends through this container's
         // children, in stacking order.
         host.set_scroll_surface_handler({
-            let state = Rc::downgrade(&state);
+            let state = Rc::clone(&state);
             move |_host| {
-                let Some(state) = state.upgrade() else {
-                    return Vec::new();
-                };
                 state
                     .borrow()
                     .children
@@ -238,14 +232,9 @@ pub fn install(dispatcher: &mut Dispatcher) {
             }
         });
 
-        let measure_state = Rc::downgrade(&state);
+        let measure_state = Rc::clone(&state);
         host.set_measure_handler(move |_host, proposal| {
-            // Weak state — the handler must not own the leaf (#1575). A
-            // live mounted leaf always owns it, so the upgrade is explicit.
-            let state = measure_state
-                .upgrade()
-                .expect("fixed-container measure outlived its leaf");
-            let state = state.borrow();
+            let state = measure_state.borrow();
             let measured = measure(&state, to_proposal(proposal));
             cocoa_ui::Size::new(
                 f64::from(measured.size.width),
@@ -254,14 +243,9 @@ pub fn install(dispatcher: &mut Dispatcher) {
         });
 
         host.set_layout_handler({
-            // Lifecycle callback — the platform view may legitimately
-            // outlive its leaf through a native retain or a queued layout
-            // pass, so a dead owner no-ops (WaterUI #1575).
-            let state = Rc::downgrade(&state);
+            let state = Rc::clone(&state);
             move |_host| {
-                if let Some(state) = state.upgrade() {
-                    perform_layout(&state);
-                }
+                perform_layout(&state);
             }
         });
 

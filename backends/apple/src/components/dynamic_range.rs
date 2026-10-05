@@ -94,11 +94,8 @@ fn dynamic_range_leaf(
     // Each layout pass stretches the content over the bounds and re-applies
     // the mode so newly attached sublayers inherit the override.
     host.set_layout_handler({
-        let state = Rc::downgrade(&state);
+        let state = Rc::clone(&state);
         move |host| {
-            let Some(state) = state.upgrade() else {
-                return;
-            };
             let bounds = view::bounds(host);
             view::set_frame(state.child.view(), bounds);
             dynamic_range::apply_to_view(mode, host);
