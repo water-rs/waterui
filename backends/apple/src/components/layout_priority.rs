@@ -79,11 +79,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // The content always fills the wrapper — `contentView.frame = bounds`.
         host.set_layout_handler({
-            let state = Rc::downgrade(&state);
+            let state = Rc::clone(&state);
             move |host| {
-                let Some(state) = state.upgrade() else {
-                    return;
-                };
                 let state = state.borrow();
                 view::set_frame(state.child.view(), view::bounds(host));
             }

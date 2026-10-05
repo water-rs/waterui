@@ -269,13 +269,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // selected proposal — or the bounds — reaches the label as its
         // offer.
         host.set_layout_handler({
-            // Weak: the host is owned by `MenuState` itself, so a strong
-            // capture would be a retain cycle on the leaf's lifetime.
-            let state = Rc::downgrade(&state);
+            let state = Rc::clone(&state);
             move |host| {
-                let Some(state) = state.upgrade() else {
-                    return;
-                };
                 let bounds = view::bounds(host);
                 let state = state.borrow();
                 view::set_frame(state.button.view(), bounds);

@@ -50,6 +50,10 @@ impl core::fmt::Debug for Mount {
 
 impl Drop for Mount {
     fn drop(&mut self) {
+        // Clear the root's handler slots first so a callback the removal
+        // itself delivers — a window/superview move, a final layout pass —
+        // finds `None` and does nothing by construction.
+        self.root.clear_handlers();
         #[cfg(target_os = "ios")]
         cocoa_ui::uikit::view_controller::will_move_to_parent(&self.controller);
         cocoa_ui::view::remove_from_superview(&self.root);
@@ -264,12 +268,9 @@ pub(crate) fn mount_content(
     let leaf = crate::dispatch::render(view, env);
     let content = Rc::new(leaf.mount(root));
     crate::primary_content::forward(root, content.view());
-    let placed = Rc::downgrade(&content);
+    let placed = Rc::clone(&content);
     crate::inspector::install(root, env, keepalive);
     root.set_layout_handler(move |root| {
-        let Some(placed) = placed.upgrade() else {
-            return;
-        };
         let frame = crate::native_layout::content_frame(placed.view(), root);
         #[expect(
             clippy::cast_possible_truncation,

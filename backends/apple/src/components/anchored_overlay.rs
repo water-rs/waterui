@@ -443,21 +443,15 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // overlay follows the anchor's new position.
         host.set_layout_handler({
             let child = view::retain_base(state.child.view());
-            let state = Rc::downgrade(&state);
+            let state = Rc::clone(&state);
             move |view| {
-                let Some(state) = state.upgrade() else {
-                    return;
-                };
                 view::set_frame(&child, view::bounds(view));
                 reposition(&state);
             }
         });
         host.set_window_handler({
-            let state = Rc::downgrade(&state);
+            let state = Rc::clone(&state);
             move |_| {
-                let Some(state) = state.upgrade() else {
-                    return;
-                };
                 attachment_changed(&state);
             }
         });

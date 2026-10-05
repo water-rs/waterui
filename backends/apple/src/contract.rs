@@ -144,18 +144,14 @@ impl NativeLeaf {
     /// content size and the constraint system collapses it to zero.
     fn install_intrinsic_measure(view: &PlatformView, layout: &Rc<dyn SubView>) {
         if let Some(host) = view.downcast_ref::<HostView>() {
-            // The view must not keep the leaf alive: a strong layout here
-            // closes a HostView → handler → SubView → leaf-state → HostView
-            // cycle (water-rs/waterui#1567). The leaf retains the layout
-            // for its mounted lifetime — the context-menu panel clones it
-            // through `layout_handle` — so the handler upgrades only for
-            // the measure call, and `detach` clears it before the leaf
-            // can be released.
-            let layout = Rc::downgrade(layout);
-            host.set_measure_handler(move |_host, proposal| {
-                let layout = layout.upgrade().expect("measure handler outlived its leaf");
-                measure_layout(&layout, proposal)
-            });
+            // The handler may hold the layout face strongly: the
+            // HostView → handler → SubView → leaf-state → HostView cycle
+            // it forms is broken by `detach`, which clears every handler
+            // slot before the leaf can be released (water-rs/waterui#1567).
+            // The leaf retains the layout for its mounted lifetime — the
+            // context-menu panel clones it through `layout_handle`.
+            let layout = Rc::clone(layout);
+            host.set_measure_handler(move |_host, proposal| measure_layout(&layout, proposal));
         }
     }
 
@@ -205,12 +201,14 @@ impl NativeLeaf {
         )
     )]
     fn detach(&mut self) {
-        // The intrinsic-measure handler borrows this leaf's layout weakly;
-        // clear it at the ownership boundary so a platform view that briefly
-        // outlives the leaf falls back to its own intrinsic size instead of
-        // querying dead layout.
+        // The ownership boundary: every handler slot the view holds is
+        // cleared so a platform callback delivered after detach — a queued
+        // layout pass, a superview/window move triggered by the removal
+        // itself — finds `None` and does nothing by construction, and the
+        // HostView → handler → leaf-state → HostView cycle is broken even
+        // while the platform view briefly outlives the leaf.
         if let Some(host) = self.view.downcast_ref::<HostView>() {
-            host.clear_measure_handler();
+            host.clear_handlers();
         }
         #[cfg(target_os = "ios")]
         let controllers = std::mem::take(&mut self.attached_controllers);
@@ -223,6 +221,17 @@ impl NativeLeaf {
         for controller in controllers.iter().rev() {
             cocoa_ui::uikit::view_controller::remove_from_parent(controller);
         }
+    }
+}
+
+impl Drop for NativeLeaf {
+    /// A leaf that dies mounted — a `Mounted` dropped without `unmount`,
+    /// a leaf kept in a window's keepalive and released with it — passes
+    /// through the same detach teardown, so handler clearing stays total
+    /// instead of depending on which owner let go last. `detach` is
+    /// idempotent: the `Mounted` paths above already ran it once.
+    fn drop(&mut self) {
+        self.detach();
     }
 }
 
