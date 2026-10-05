@@ -59,6 +59,7 @@ pub struct ActiveSceneLayer {
 /// A `SceneView` leaf presenting this frame: the retained content is
 /// re-recorded onto its keyed layer every frame inside
 /// [`waterui_graphics::SceneContent::build_scene`].
+#[derive(Clone)]
 pub struct SceneContentLayer {
     /// The mount identity: which visual node presents this content.
     pub(crate) key: crate::renderer::retained::RenderKey,
@@ -83,6 +84,7 @@ pub struct SceneContentLayer {
 
 /// A `GpuContentView` leaf presenting this frame: install-once engine content
 /// sized per frame on a keyed layer.
+#[derive(Clone)]
 pub struct GpuContentLayer {
     /// The mount identity: which visual node presents this content.
     pub(crate) key: crate::renderer::retained::RenderKey,
@@ -100,6 +102,7 @@ pub struct GpuContentLayer {
 /// An `ExternalFrameView` leaf presenting this frame: a keyed layer that
 /// drains the stream's mailbox each pass and hands the newest published
 /// frame to the engine as its layer content.
+#[derive(Clone)]
 pub struct ExternalFrameLayer {
     /// The mount identity: which visual node presents this content.
     pub(crate) key: crate::renderer::retained::RenderKey,
@@ -116,6 +119,7 @@ pub struct ExternalFrameLayer {
 
 /// A `FilteredView` wrapper presenting this frame: a keyed layer carrying the
 /// registered `Filter`, whose children mount under it as group layers.
+#[derive(Clone)]
 pub struct FilteredLayer {
     /// The mount identity: which visual node owns this filter.
     pub(crate) key: crate::renderer::retained::RenderKey,
@@ -144,6 +148,7 @@ pub(crate) struct NativeViewLayer {
     pub(crate) occlusion: Rc<RefCell<Vec<kurbo::Rect>>>,
 }
 
+#[derive(Clone)]
 pub enum RenderLayer {
     /// Positional recorded content: a contiguous run of scene ops drained by
     /// `flush_scene_layer` shows on the segment layer at that stack position.
@@ -261,10 +266,105 @@ impl<'a> HydrolysisRenderTarget<'a> {
     }
 }
 
+/// A subtree's contribution to the frame, recorded in the subtree's own local
+/// space: the scene segments it drew and the keyed layers (scene content, GPU
+/// content, external frames, filtered groups, native views) between them, in
+/// bottom-to-top order, each carrying only the clip/opacity scopes opened
+/// inside the subtree.
+///
+/// A navigation page or a matched-transition element is recorded this way and
+/// presented later, at a transform the recording does not know, possibly more
+/// than once and under transition scopes:
+/// [`HydrolysisRenderer::present_layers`] places every layer, not only the
+/// drawing, so content on its own layer moves with the subtree.
+#[derive(Clone, Default)]
+pub struct CapturedLayers(pub(crate) Vec<RenderLayer>);
+
+impl CapturedLayers {
+    /// Appends `other`'s layers above these.
+    pub(crate) fn extend(&mut self, other: &Self) {
+        self.0.extend(other.0.iter().cloned());
+    }
+}
+
+impl RenderLayer {
+    /// This layer, recorded in a captured subtree's local space, placed by
+    /// `transform` under the presenting frame's open `ancestry`. A scene
+    /// segment is re-recorded through `transform`; a keyed layer's placement
+    /// and its own scopes are mapped and the ancestry is prepended to them.
+    pub(crate) fn placed(&self, transform: kurbo::Affine, ancestry: &[ActiveSceneLayer]) -> Self {
+        let scopes = |own: &[ActiveSceneLayer]| -> Vec<ActiveSceneLayer> {
+            ancestry
+                .iter()
+                .cloned()
+                .chain(own.iter().map(|scope| scope.placed(transform)))
+                .collect()
+        };
+        match self {
+            Self::Scene(recording) => {
+                let mut placed = Recording::new();
+                placed.append(recording, transform);
+                Self::Scene(placed)
+            }
+            // A filtered group's children carry only the scopes inside the
+            // group, so they take the transform but no outer ancestry.
+            Self::Filtered(layer) => Self::Filtered(FilteredLayer {
+                key: layer.key,
+                runtime: Rc::clone(&layer.runtime),
+                children: layer
+                    .children
+                    .iter()
+                    .map(|child| child.placed(transform, &[]))
+                    .collect(),
+                active_layers: scopes(&layer.active_layers),
+            }),
+            // Every other layer is one keyed leaf: its placement and its
+            // own scopes are mapped, everything else is carried over.
+            _ => {
+                let mut placed = self.clone();
+                let (layer_transform, active_layers) = match &mut placed {
+                    Self::SceneContent(SceneContentLayer {
+                        transform: layer_transform,
+                        active_layers,
+                        ..
+                    })
+                    | Self::GpuContent(GpuContentLayer {
+                        transform: layer_transform,
+                        active_layers,
+                        ..
+                    })
+                    | Self::ExternalFrame(ExternalFrameLayer {
+                        transform: layer_transform,
+                        active_layers,
+                        ..
+                    }) => (layer_transform, active_layers),
+                    #[cfg(hydrolysis_macos_system_webview)]
+                    Self::NativeView(layer) => (&mut layer.transform, &mut layer.active_layers),
+                    Self::Scene(_) | Self::Filtered(_) => {
+                        unreachable!("scene segments and filtered groups are placed above")
+                    }
+                };
+                *layer_transform = transform * *layer_transform;
+                *active_layers = scopes(active_layers);
+                placed
+            }
+        }
+    }
+}
+
 /// One layer fully prepared for the final composite pass: its content and mask
 /// views (pooled textures ride along so they return to the pool afterwards)
 /// plus the 80-byte compositor uniform.
 impl ActiveSceneLayer {
+    /// This scope, recorded in a captured subtree's local space, placed by
+    /// `transform`.
+    pub(crate) fn placed(&self, transform: kurbo::Affine) -> Self {
+        Self {
+            transform: transform * self.transform,
+            ..self.clone()
+        }
+    }
+
     pub(crate) fn push_to_scene(&self, scene: &mut Recording) {
         match &self.shape {
             LayerShape::Rect(rect) => {
@@ -455,30 +555,30 @@ impl FrameInstall<'_> {
                     let visible = scopes.iter().all(|scope| scope.opacity != 0.0);
                     if visible {
                         let mut runtime = layer.runtime.borrow_mut();
-                        if !runtime.installed {
+                        let runtime = &mut *runtime;
+                        let producer = runtime.producer.get_or_insert_with(|| {
                             let wake = self.wake.clone();
                             let content = runtime.view.take_engine_content(move || {
                                 if let Some(wake) = &wake {
                                     wake.request_redraw();
                                 }
                             });
-                            let producer = self.engine.gpu_producer(content);
-                            tx[target].content(producer.at(pixels));
-                            runtime.producer = Some(producer);
-                            runtime.bound_size = Some(pixels);
-                            runtime.installed = true;
                             self.installs += 1;
+                            self.engine.gpu_producer(content)
+                        });
+                        // A binding belongs to one engine layer: a mount that
+                        // was dropped and comes back (a navigation page that
+                        // was covered and is shown again) is a new layer, so
+                        // the producer is bound to it again.
+                        let binding = (target.id(), pixels);
+                        if runtime.binding != Some(binding) {
+                            tx[target].content(producer.at(pixels));
+                            runtime.binding = Some(binding);
                         }
                         // The UI-thread pump runs once per presented frame —
                         // producers flush their staged work here before the
                         // engine renders the layer.
                         runtime.view.frame();
-                        if runtime.bound_size != Some(pixels) {
-                            if let Some(producer) = &runtime.producer {
-                                tx[target].content(producer.at(pixels));
-                            }
-                            runtime.bound_size = Some(pixels);
-                        }
                     }
                     tx[target].transform(gpu_frame_transform(
                         layer.transform,
@@ -518,19 +618,22 @@ impl FrameInstall<'_> {
                             .as_ref()
                             .and_then(waterui_graphics::gpu::FrameReceiver::take)
                         {
-                            let pixels = external_frame_plane_size(&frame);
-                            runtime.frame_pixels = Some(pixels);
+                            runtime.frame_pixels = Some(external_frame_plane_size(&frame));
                             if let Some(sink) = &runtime.sink {
                                 sink.submit(frame);
                             }
-                            if runtime.bound_size != Some(pixels) {
+                        }
+                        if let Some(pixels) = runtime.frame_pixels {
+                            // Rebound on a new plane size, and on a new mount
+                            // layer: the producer keeps its current frame, so
+                            // a mount that comes back shows it at once.
+                            let binding = (target.id(), pixels);
+                            if runtime.binding != Some(binding) {
                                 if let Some(producer) = &runtime.producer {
                                     tx[target].content(producer.at(pixels));
                                 }
-                                runtime.bound_size = Some(pixels);
+                                runtime.binding = Some(binding);
                             }
-                        }
-                        if let Some(pixels) = runtime.frame_pixels {
                             tx[target].transform(gpu_frame_transform(
                                 layer.transform,
                                 layer.bounds,
