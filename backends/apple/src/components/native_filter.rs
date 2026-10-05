@@ -22,16 +22,16 @@
 //! inputs, which the SDK declares undefined. Animated parameter updates
 //! submit a `CAKeyframeAnimation` sampled from the change's
 //! [`Interpolator`] at the attached display's cadence, interrupting from
-//! the current presentation value and preserving every unaffected bound
-//! component; an update while the view has no screen keeps its pending
-//! timeline instead of installing a final value.
+//! the parameter's own pending timeline and preserving every unaffected
+//! bound component's curve; an update while the view has no screen keeps
+//! its pending timeline instead of installing a final value.
 //!
 //! Captures go through the owned seam: the mount's `CapturableSurface`
 //! external render captures the mounted content through the existing
 //! `ViewCapture` pipeline (native + resolved GPU surfaces included) and
 //! then runs a dedicated `CIFilter` set — synced to the current
 //! presentation and in-flight parameter timelines — into the
-//! compositor's texture through a generation-owned `CIContext` with a
+//! compositor's texture through an issue-owned `CIContext` with a
 //! real Metal command submission; `Ok(())` is settled only after that
 //! command buffer reports completion.
 //!
@@ -64,7 +64,9 @@ use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSObjectNSKeyValueCoding
 use objc2_metal::{
     MTLCommandBuffer as _, MTLCommandQueue as _, MTLDevice as _, MTLResource as _, MTLTexture as _,
 };
-use objc2_quartz_core::{CACurrentMediaTime, CAKeyframeAnimation, CALayer, CAMediaTiming};
+use objc2_quartz_core::{
+    CACurrentMediaTime, CAKeyframeAnimation, CALayer, CAMediaTiming, CATransaction,
+};
 use waterui_backend_core::{AnyView, Environment};
 use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
 use waterui_graphics::filter_view::{AnyEffect, ParamGuards};
@@ -98,18 +100,6 @@ impl Conv {
             Self::DegToRad => value.to_radians(),
             Self::OneMinus => 1.0 - value,
             Self::InverseGamma => 1.0 / value.max(0.001),
-        }
-    }
-
-    /// The raw parameter an on-screen converted value came from — the
-    /// `from` of an interrupting animation, since the interpolator works
-    /// in raw parameter space.
-    fn unmap(self, value: f32) -> f32 {
-        match self {
-            Self::Direct => value,
-            Self::DegToRad => value.to_degrees(),
-            Self::OneMinus => 1.0 - value,
-            Self::InverseGamma => 1.0 / value.max(1e-9),
         }
     }
 }
@@ -480,22 +470,28 @@ struct BoundFilter {
     effect: usize,
 }
 
-/// One bound component's pending timeline — the single source of truth
-/// for parameter animation state, on or off screen.
+/// One parameter's pending timeline — the single source of truth for
+/// its animation state, on or off screen, live until it settles or the
+/// next update replaces it. Materializing submits it to CA without
+/// discarding it: `applied` records that submission so a repeated layout
+/// pass never restarts the on-screen tween and an interrupting update
+/// still reads the raw curve.
 struct ComponentAnim {
     /// The raw (pre-`Conv`) value the tween started from.
     from: f32,
     /// The raw value it heads to.
     to: f32,
-    /// The raw→native conversion applied to every sampled frame.
-    conv: Conv,
-    /// The curve the change arrived with.
+    /// The curve the change arrived with — installed once per parameter
+    /// and evaluated by every bound input.
     interpolator: Box<dyn Interpolator>,
     /// The `CACurrentMediaTime` the update arrived at — the timeline's
     /// epoch on the shared CA media clock, the same axis the
     /// #1683 `PresentationTime` anchor maps; at integration the
     /// evaluation timestamp becomes `PresentationTime::capture_time`.
     started: f64,
+    /// Whether the current timeline has been sampled into a live CA
+    /// animation; `false` is pending materialization.
+    applied: bool,
 }
 
 impl ComponentAnim {
@@ -508,15 +504,17 @@ impl ComponentAnim {
         )
     }
 
-    /// The component's native (converted) value at `now`.
-    fn value_at(&self, now: f64) -> f32 {
-        self.conv.map(self.raw_at(now))
-    }
-
     /// Whether the timeline has settled — its remaining value is `to`.
     fn is_settled(&self, now: f64) -> bool {
         self.interpolator
             .is_complete(Duration::from_secs_f64((now - self.started).max(0.0)))
+    }
+
+    /// The time still on the curve at `now`.
+    fn remaining(&self, now: f64) -> Duration {
+        self.interpolator
+            .duration()
+            .saturating_sub(Duration::from_secs_f64((now - self.started).max(0.0)))
     }
 }
 
@@ -525,11 +523,13 @@ impl ComponentAnim {
 /// inputs evaluate the parameter's timeline at the frame's timestamp.
 type AnimKey = (usize, usize);
 
-/// A GPU-generation-owned Core Image context and command queue — created
-/// on the `SharedGpuContext` generation the compositor's textures belong
-/// to and rebuilt whenever the generation changes.
+/// A context-owned Core Image context and command queue — created on the
+/// exact `SharedGpuContext` issue that produced the compositor's
+/// textures and rebuilt whenever a different context instance issues a
+/// frame. The `Arc` is the identity: a generation number or a device
+/// pointer alone cannot tell two contexts of the same generation apart.
 struct CaptureGpu {
-    generation: u64,
+    context: Arc<waterui_graphics::gpu::SharedGpuContext>,
     ci_context: Retained<CIContext>,
     queue: Retained<MetalQueue>,
 }
@@ -545,11 +545,9 @@ struct Prepared {
     /// The private texture the content captures into.
     input: Retained<MetalTexture>,
     /// The exact `SharedGpuContext` that issued this frame's textures —
-    /// its device backs the `CIContext` and command queue.
+    /// its device backs the `CIContext` and command queue, and its `Arc`
+    /// identity is what staleness checks compare.
     context: std::sync::Arc<waterui_graphics::gpu::SharedGpuContext>,
-    /// That context's generation — a stale publication under a replaced
-    /// context settles `Deferred`.
-    generation: u64,
     /// Fresh, unattached `CIFilter` instances with inputs already synced
     /// to the issue timestamp — presentation values plus in-flight
     /// timelines.
@@ -596,14 +594,17 @@ struct NativeFilterOwner {
     /// Per-component pending timelines — evaluated for capture and
     /// materialized to CA on attach; never a source of silent jumps.
     animations: RefCell<HashMap<AnimKey, ComponentAnim>>,
-    /// The generation-owned capture context — rebuilt on generation
-    /// change.
+    /// The issued-context-owned capture context — rebuilt when a
+    /// different `SharedGpuContext` instance issues a frame.
     capture_gpu: RefCell<Option<CaptureGpu>>,
     /// The immutable snapshot of the active external render — one
     /// prepare/render pair at a time.
     external_prepared: RefCell<Option<Prepared>>,
     /// Nested native-pass suppression scopes.
     capture_suppression: Cell<usize>,
+    /// The `hidden` state the outermost suppression found — restored on
+    /// release instead of unconditionally unhiding.
+    suppressed_hidden: Cell<bool>,
     /// External-render scopes — redirecting redraw to the capture hook.
     external_count: Cell<usize>,
     /// While external, parameter updates notify this capture hook.
@@ -662,33 +663,45 @@ fn ci_vec4(value: [f32; 4]) -> Retained<CIVector> {
     }
 }
 
+/// Runs `body` inside a `CATransaction` with implicit actions disabled —
+/// every model write through `setValue:forKeyPath:` then lands
+/// immediately instead of picking up CA's default tween on top of the
+/// explicit keyframe stream.
+fn with_implicit_actions_disabled(body: impl FnOnce()) {
+    CATransaction::begin();
+    CATransaction::setDisableActions(true);
+    body();
+    CATransaction::commit();
+}
+
 /// Writes one scalar input through the layer key path — the only legal
-/// post-attach mutation route.
+/// post-attach mutation route — with implicit actions disabled.
 fn set_scalar(layer: &CALayer, key_path: &str, value: f32) {
     let path = NSString::from_str(key_path);
     let number = NSNumber::new_f32(value);
     // SAFETY: `filters.<name>.<input>` accepts an `NSNumber` for scalar
     // filter inputs; the object is the correct KVC type.
-    unsafe {
+    with_implicit_actions_disabled(|| unsafe {
         layer.setValue_forKeyPath(
             Some(&*(std::ptr::from_ref::<NSNumber>(&number)).cast::<AnyObject>()),
             &path,
         );
-    }
+    });
 }
 
-/// Writes one `CIVector` input through the layer key path.
+/// Writes one `CIVector` input through the layer key path, implicit
+/// actions disabled.
 fn set_vec4(layer: &CALayer, key_path: &str, value: [f32; 4]) {
     let path = NSString::from_str(key_path);
     let vector = ci_vec4(value);
     // SAFETY: `filters.<name>.<input>` accepts a `CIVector` for vector
     // filter inputs.
-    unsafe {
+    with_implicit_actions_disabled(|| unsafe {
         layer.setValue_forKeyPath(
             Some(&*(std::ptr::from_ref::<CIVector>(&vector)).cast::<AnyObject>()),
             &path,
         );
-    }
+    });
 }
 
 /// Writes one bound input through the layer key path from `model`.
@@ -708,6 +721,15 @@ fn key_path(filter: &BoundFilter, key: &str) -> String {
     format!("filters.{}.{}", filter.name, key)
 }
 
+/// Removes the explicit `CAKeyframeAnimation` on `path` — an immediate
+/// update's presentation lands on the written value instead of finishing
+/// a stale submitted stream.
+fn remove_animation(layer: &CALayer, key_path: &str) {
+    let path = NSString::from_str(key_path);
+    // SAFETY: `removeAnimationForKey:` accepts an absent key.
+    unsafe { layer.removeAnimationForKey(&path) };
+}
+
 /// The scalar `filters.<name>.<key>` currently presents — the
 /// presentation layer's value when it exists, so an interrupting
 /// animation starts from what is on screen, never a stale model value.
@@ -721,44 +743,6 @@ fn presentation_scalar(layer: &CALayer, key_path: &str, model_value: f32) -> f32
         .valueForKeyPath(&path)
         .and_then(|object| object.downcast::<NSNumber>().ok())
         .map_or(model_value, |number| number.floatValue())
-}
-
-/// The vector `filters.<name>.<key>` currently presents, component-wise,
-/// falling back to `model` where no presentation value exists.
-fn presentation_vec4(layer: &CALayer, key_path: &str, model: [f32; 4]) -> [f32; 4] {
-    let path = NSString::from_str(key_path);
-    // SAFETY: `presentationLayer` is a main-thread read on a live layer.
-    let Some(presentation) = (unsafe { layer.presentationLayer() }) else {
-        return model;
-    };
-    presentation
-        .valueForKeyPath(&path)
-        .and_then(|object| object.downcast::<CIVector>().ok())
-        .map_or(model, |vector| {
-            [
-                #[allow(clippy::cast_possible_truncation)]
-                // SAFETY: a four-component `CIVector` answers
-                // `valueAtIndex:` for each index.
-                unsafe {
-                    vector.valueAtIndex(0) as f32
-                },
-                #[allow(clippy::cast_possible_truncation)]
-                // SAFETY: same four-component contract, index 1.
-                unsafe {
-                    vector.valueAtIndex(1) as f32
-                },
-                #[allow(clippy::cast_possible_truncation)]
-                // SAFETY: same four-component contract, index 2.
-                unsafe {
-                    vector.valueAtIndex(2) as f32
-                },
-                #[allow(clippy::cast_possible_truncation)]
-                // SAFETY: same four-component contract, index 3.
-                unsafe {
-                    vector.valueAtIndex(3) as f32
-                },
-            ]
-        })
 }
 
 /// The display cadence `view`'s attached screen reports — `None` when
@@ -782,10 +766,38 @@ fn bound_value_at(
     now: f64,
 ) -> f32 {
     match bound {
-        Bound::Param(index, _) => animations
-            .get(&(effect, *index))
-            .map_or_else(|| bound_scalar(bound, model), |anim| anim.value_at(now)),
+        Bound::Param(index, conv) => animations.get(&(effect, *index)).map_or_else(
+            || bound_scalar(bound, model),
+            |anim| conv.map(anim.raw_at(now)),
+        ),
         Bound::Const(value) => *value,
+    }
+}
+
+/// Writes one bound input through the layer key path with every
+/// component evaluated at `at` — the resting value CA presents where no
+/// submitted stream is running, and never a snap to the parameter's end
+/// model while a sibling component's own timeline is still moving.
+fn write_bound_input_at(
+    layer: &CALayer,
+    key_path: &str,
+    bound: &BoundValue,
+    animations: &HashMap<AnimKey, ComponentAnim>,
+    effect: usize,
+    model: &[f32],
+    at: f64,
+) {
+    match bound {
+        BoundValue::Scalar(bound) => set_scalar(
+            layer,
+            key_path,
+            bound_value_at(bound, animations, effect, model, at),
+        ),
+        BoundValue::Vec4(components) => set_vec4(
+            layer,
+            key_path,
+            components.map(|component| bound_value_at(&component, animations, effect, model, at)),
+        ),
     }
 }
 
@@ -834,13 +846,15 @@ fn component_index_of(components: &[Bound; 4], flat: usize) -> usize {
         .expect("binds() promised a matching component")
 }
 
-/// Applies one parameter update — raw model write, then every bound
-/// input through the layer key path. The parameter's pending timeline is
-/// recorded keyed by `(effect, flat)`; an input carrying an interpolator
-/// submits a keyframe tween when a screen is attached, off screen the
-/// timeline stands in for presentation until it settles or materializes.
-/// When an external capture owns this output the update also notifies
-/// its redraw hook.
+/// Applies one parameter update — the new timeline is installed once for
+/// the parameter and every bound input evaluates that same timeline.
+/// The raw model write happens only after the timeline's start is read:
+/// `from` is the previous timeline's raw value at `now`, else the prior
+/// raw model value — never a presentation read and never the freshly
+/// written target. An unanimated or zero-duration update clears any
+/// explicit CA animation on the input and writes the end value
+/// immediately. When an external capture owns this output the update
+/// also notifies its redraw hook.
 #[allow(clippy::too_many_lines)]
 fn apply_animated(
     owner: &NativeFilterOwner,
@@ -850,7 +864,32 @@ fn apply_animated(
 ) {
     let now = CACurrentMediaTime();
     let mut target = target;
-    owner.model.borrow_mut()[effect][flat] = target.value;
+    let interpolator = target.interpolator.take();
+    let from = owner.animations.borrow().get(&(effect, flat)).map_or_else(
+        || owner.model.borrow()[effect][flat],
+        |prior| prior.raw_at(now),
+    );
+    let to = target.value;
+    owner.model.borrow_mut()[effect][flat] = to;
+    match interpolator {
+        Some(interpolator) if !interpolator.duration().is_zero() => {
+            owner.animations.borrow_mut().insert(
+                (effect, flat),
+                ComponentAnim {
+                    from,
+                    to,
+                    interpolator,
+                    started: now,
+                    applied: false,
+                },
+            );
+        }
+        // An immediate update retires any pending timeline so the input
+        // loop takes the write-now path rather than the stale curve.
+        _ => {
+            owner.animations.borrow_mut().remove(&(effect, flat));
+        }
+    }
     {
         let model = owner.model.borrow();
         let mut animations = owner.animations.borrow_mut();
@@ -863,17 +902,23 @@ fn apply_animated(
                     continue;
                 }
                 let path = key_path(filter, key);
-                let Some(interpolator) = target.interpolator.take() else {
-                    // An unanimated update: drop any pending timeline and
-                    // write the input directly.
-                    animations.remove(&(effect, flat));
-                    set_input(&owner.layer, &path, bound, &model[filter.effect]);
+                let Some(anim) = animations.get(&(effect, flat)) else {
+                    // An immediate update: drop the explicit CA stream
+                    // and land the input's current value — a still-
+                    // animating sibling component keeps its own curve at
+                    // `now` rather than snapping to end.
+                    remove_animation(&owner.layer, &path);
+                    write_bound_input_at(
+                        &owner.layer,
+                        &path,
+                        bound,
+                        &animations,
+                        filter.effect,
+                        &model[filter.effect],
+                        now,
+                    );
                     continue;
                 };
-                // The tween's start: the previous timeline's position
-                // when one exists (interrupt from where it is), else the
-                // value the layer currently shows — the presentation
-                // keypath's value, unmapped to raw parameter space.
                 let conv = match bound {
                     BoundValue::Scalar(Bound::Param(_, conv)) => *conv,
                     BoundValue::Scalar(Bound::Const(_)) => {
@@ -886,78 +931,75 @@ fn apply_animated(
                         }
                     }
                 };
-                let from = animations.get(&(effect, flat)).map_or_else(
-                    || {
-                        conv.unmap(match bound {
-                            BoundValue::Scalar(_) => presentation_scalar(
+                let duration = anim.interpolator.duration();
+                let submitted = match bound {
+                    BoundValue::Scalar(_) => {
+                        let submitted =
+                            submit_animation(owner, &path, duration, |elapsed| {
+                                NSNumber::new_f32(conv.map(
+                                    anim.interpolator.interpolate(anim.from, anim.to, elapsed),
+                                ))
+                            });
+                        if submitted {
+                            set_scalar(&owner.layer, &path, conv.map(anim.to));
+                        } else {
+                            write_bound_input_at(
                                 &owner.layer,
                                 &path,
-                                conv.map(model[filter.effect][flat]),
-                            ),
-                            BoundValue::Vec4(components) => {
-                                let component = component_index_of(components, flat);
-                                let mut defaults = [0.0f32; 4];
-                                for (position, b) in components.iter().enumerate() {
-                                    defaults[position] = bound_value_at(
-                                        b,
-                                        &animations,
-                                        filter.effect,
-                                        &model[filter.effect],
-                                        now,
-                                    );
-                                }
-                                presentation_vec4(&owner.layer, &path, defaults)[component]
-                            }
-                        })
-                    },
-                    |prior| prior.raw_at(now),
-                );
-                let duration = interpolator.duration();
-                let to = target.value;
-                let (from, conv, interp) = (from, conv, interpolator.as_ref());
-                match bound {
-                    BoundValue::Scalar(_) => {
-                        let submitted = submit_animation(owner, &path, duration, |elapsed| {
-                            NSNumber::new_f32(conv.map(interp.interpolate(from, to, elapsed)))
-                        });
-                        if submitted {
-                            set_scalar(&owner.layer, &path, conv.map(to));
+                                bound,
+                                &animations,
+                                filter.effect,
+                                &model[filter.effect],
+                                now,
+                            );
                         }
+                        submitted
                     }
                     BoundValue::Vec4(components) => {
-                        let submitted = submit_animation(owner, &path, duration, |elapsed| {
+                        // Each animating component keeps its own curve at
+                        // now+frame; never a time-zero sibling freeze.
+                        let mut stream = duration;
+                        for b in components {
+                            if let Bound::Param(index, _) = b
+                                && let Some(sibling) = animations.get(&(filter.effect, *index))
+                            {
+                                stream = stream.max(sibling.remaining(now));
+                            }
+                        }
+                        let submitted = submit_animation(owner, &path, stream, |elapsed| {
                             let mut value = [0.0f32; 4];
                             for (index, b) in components.iter().enumerate() {
-                                value[index] = match b {
-                                    Bound::Param(i, _) if *i == flat => {
-                                        conv.map(interp.interpolate(from, to, elapsed))
-                                    }
-                                    other => bound_value_at(
-                                        other,
-                                        &animations,
-                                        filter.effect,
-                                        &model[filter.effect],
-                                        now,
-                                    ),
-                                };
+                                value[index] = bound_value_at(
+                                    b,
+                                    &animations,
+                                    filter.effect,
+                                    &model[filter.effect],
+                                    now + elapsed.as_secs_f64(),
+                                );
                             }
                             ci_vec4(value)
                         });
-                        if submitted {
-                            set_input(&owner.layer, &path, bound, &model[filter.effect]);
-                        }
+                        // Resting value at now+stream — own curves, not
+                        // the parameter's end model.
+                        write_bound_input_at(
+                            &owner.layer,
+                            &path,
+                            bound,
+                            &animations,
+                            filter.effect,
+                            &model[filter.effect],
+                            if submitted {
+                                now + stream.as_secs_f64()
+                            } else {
+                                now
+                            },
+                        );
+                        submitted
                     }
+                };
+                if submitted && let Some(anim) = animations.get_mut(&(effect, flat)) {
+                    anim.applied = true;
                 }
-                animations.insert(
-                    (effect, flat),
-                    ComponentAnim {
-                        from,
-                        to,
-                        conv,
-                        interpolator,
-                        started: now,
-                    },
-                );
             }
         }
     }
@@ -970,97 +1012,123 @@ fn apply_animated(
 
 /// Materializes every pending timeline as a `CAKeyframeAnimation` over
 /// its *remaining* duration — the attach-time equivalent of the updates
-/// that recorded them — then writes the model value so CA owns the rest.
-/// A settled timeline just writes its end state.
+/// that recorded them. Live timelines stay in the map (capture keeps
+/// sampling them and an interrupt still reads its `from` there); the
+/// `applied` flag records the CA submission so a repeated layout pass
+/// never restarts an on-screen tween. A settled timeline is dropped, its
+/// explicit animation removed and its end state written.
 fn materialize_animations(owner: &NativeFilterOwner) {
     let now = CACurrentMediaTime();
     let model = owner.model.borrow();
     for filter in &owner.filters {
         for (key, bound) in &filter.inputs {
             let path = key_path(filter, key);
+            let mut animations = owner.animations.borrow_mut();
             match bound {
-                BoundValue::Scalar(Bound::Param(flat, _)) => {
-                    let Some(anim) = owner
-                        .animations
-                        .borrow_mut()
-                        .remove(&(filter.effect, *flat))
-                    else {
+                BoundValue::Scalar(Bound::Param(flat, conv)) => {
+                    let Some(anim) = animations.get(&(filter.effect, *flat)) else {
                         continue;
                     };
                     if anim.is_settled(now) {
-                        set_scalar(&owner.layer, &path, anim.conv.map(anim.to));
+                        let end = conv.map(anim.to);
+                        animations.remove(&(filter.effect, *flat));
+                        remove_animation(&owner.layer, &path);
+                        set_scalar(&owner.layer, &path, end);
+                        continue;
+                    }
+                    if anim.applied {
                         continue;
                     }
                     let elapsed = Duration::from_secs_f64((now - anim.started).max(0.0));
                     let remaining = anim.interpolator.duration().saturating_sub(elapsed);
-                    if submit_animation(owner, &path, remaining, |frame| {
-                        NSNumber::new_f32(anim.conv.map(anim.interpolator.interpolate(
+                    let end = conv.map(anim.to);
+                    let submitted = submit_animation(owner, &path, remaining, |frame| {
+                        NSNumber::new_f32(conv.map(anim.interpolator.interpolate(
                             anim.from,
                             anim.to,
                             elapsed + frame,
                         )))
-                    }) {
-                        set_scalar(&owner.layer, &path, anim.conv.map(anim.to));
-                    } else {
-                        owner
-                            .animations
-                            .borrow_mut()
-                            .insert((filter.effect, *flat), anim);
+                    });
+                    if submitted {
+                        animations
+                            .get_mut(&(filter.effect, *flat))
+                            .expect("timeline still present")
+                            .applied = true;
+                        set_scalar(&owner.layer, &path, end);
                     }
                 }
                 BoundValue::Vec4(components) => {
-                    // Every bound param's own pending timeline.
-                    let mut pending: Vec<(usize, usize, ComponentAnim)> = Vec::new();
+                    // Every bound param's own pending timeline — kept in
+                    // the map; the stream covers all still-live curves.
+                    let mut live = Vec::new();
+                    let mut dropped = Vec::new();
                     for (component, b) in components.iter().enumerate() {
-                        if let Bound::Param(flat, _) = b
-                            && let Some(anim) = owner
-                                .animations
-                                .borrow_mut()
-                                .remove(&(filter.effect, *flat))
-                        {
-                            pending.push((component, *flat, anim));
+                        let Bound::Param(flat, _) = b else {
+                            continue;
+                        };
+                        match animations.get(&(filter.effect, *flat)) {
+                            Some(anim) if anim.is_settled(now) => {
+                                dropped.push(*flat);
+                            }
+                            Some(_) => live.push(*flat),
+                            None => {}
                         }
                     }
-                    if pending.is_empty() {
+                    for flat in dropped {
+                        animations.remove(&(filter.effect, flat));
+                    }
+                    if live.is_empty() {
+                        remove_animation(&owner.layer, &path);
+                        write_bound_input_at(
+                            &owner.layer,
+                            &path,
+                            bound,
+                            &animations,
+                            filter.effect,
+                            &model[filter.effect],
+                            now,
+                        );
                         continue;
                     }
-                    let mut longest = Duration::ZERO;
-                    let mut all_settled = true;
-                    for (_, _, anim) in &pending {
-                        if !anim.is_settled(now) {
-                            all_settled = false;
-                            longest = longest.max(anim.interpolator.duration().saturating_sub(
-                                Duration::from_secs_f64((now - anim.started).max(0.0)),
-                            ));
-                        }
-                    }
-                    let effect = filter.effect;
-                    if all_settled {
-                        set_input(&owner.layer, &path, bound, &model[effect]);
+                    let unapplied = live
+                        .iter()
+                        .any(|flat| !animations[&(filter.effect, *flat)].applied);
+                    if !unapplied {
                         continue;
                     }
-                    let submitted = submit_animation(owner, &path, longest, |frame| {
+                    let stream = live
+                        .iter()
+                        .map(|flat| animations[&(filter.effect, *flat)].remaining(now))
+                        .max()
+                        .unwrap_or_default();
+                    let submitted = submit_animation(owner, &path, stream, |frame| {
                         let mut value = [0.0f32; 4];
                         for (index, b) in components.iter().enumerate() {
-                            value[index] = bound_scalar(b, &model[effect]);
-                        }
-                        for (component, _, anim) in &pending {
-                            let elapsed = Duration::from_secs_f64(
-                                (now - anim.started + frame.as_secs_f64()).max(0.0),
+                            value[index] = bound_value_at(
+                                b,
+                                &animations,
+                                filter.effect,
+                                &model[filter.effect],
+                                now + frame.as_secs_f64(),
                             );
-                            value[*component] = anim
-                                .conv
-                                .map(anim.interpolator.interpolate(anim.from, anim.to, elapsed));
                         }
                         ci_vec4(value)
                     });
                     if submitted {
-                        set_input(&owner.layer, &path, bound, &model[effect]);
-                    } else {
-                        let mut animations = owner.animations.borrow_mut();
-                        for (_, flat, anim) in pending {
-                            animations.insert((effect, flat), anim);
+                        for flat in &live {
+                            if let Some(anim) = animations.get_mut(&(filter.effect, *flat)) {
+                                anim.applied = true;
+                            }
                         }
+                        write_bound_input_at(
+                            &owner.layer,
+                            &path,
+                            bound,
+                            &animations,
+                            filter.effect,
+                            &model[filter.effect],
+                            now + stream.as_secs_f64(),
+                        );
                     }
                 }
                 BoundValue::Scalar(Bound::Const(_)) => {}
@@ -1088,14 +1156,15 @@ fn build_capture_filter(owner: &NativeFilterOwner, index: usize, now: f64) -> Re
         match bound {
             BoundValue::Scalar(bound) => {
                 let fallback = bound_scalar(bound, &model[capture.effect]);
-                let flat = match bound {
-                    Bound::Param(index, _) => *index,
-                    Bound::Const(_) => usize::MAX,
+                let value = match bound {
+                    Bound::Param(index, conv) => {
+                        animations.get(&(capture.effect, *index)).map_or_else(
+                            || presentation_scalar(&owner.layer, &path, fallback),
+                            |anim| conv.map(anim.raw_at(now)),
+                        )
+                    }
+                    Bound::Const(_) => presentation_scalar(&owner.layer, &path, fallback),
                 };
-                let value = animations.get(&(capture.effect, flat)).map_or_else(
-                    || presentation_scalar(&owner.layer, &path, fallback),
-                    |anim| anim.value_at(now),
-                );
                 let number = NSNumber::new_f32(value);
                 // SAFETY: `setValue:forKey:` on an unattached `CIFilter`
                 // is a legal input write — the SDK's undefined-behaviour
@@ -1227,6 +1296,7 @@ impl CapturableSurface for NativeFilterCapturable {
         let count = owner.capture_suppression.get() + 1;
         owner.capture_suppression.set(count);
         if count == 1 {
+            owner.suppressed_hidden.set(owner.layer.isHidden());
             owner.layer.setHidden(true);
         }
     }
@@ -1242,7 +1312,7 @@ impl CapturableSurface for NativeFilterCapturable {
         );
         owner.capture_suppression.set(count - 1);
         if count == 1 {
-            owner.layer.setHidden(false);
+            owner.layer.setHidden(owner.suppressed_hidden.get());
         }
     }
 
@@ -1277,7 +1347,7 @@ impl CapturableSurface for NativeFilterCapturable {
 
     /// Imports the compositor-owned target as the external destination
     /// and issues the immutable `Prepared`: the exact GPU context and
-    /// generation that allocated the input texture, the issue timestamp
+    /// context that allocated the input texture, the issue timestamp
     /// on the shared CA clock, and a fresh unattached `CIFilter` set
     /// synced to the layer's presentation values and in-flight
     /// timelines at that timestamp — mid-animation state included.
@@ -1290,16 +1360,15 @@ impl CapturableSurface for NativeFilterCapturable {
         let retained =
             unsafe { Retained::<MetalTexture>::retain(std::ptr::from_ref(texture).cast_mut()) }
                 .expect("native filter external render received a null texture");
-        // The exact context that issued this frame — same-generation
-        // replacement is legal, so the generation is carried, not
-        // re-fetched at completion.
+        // The exact context that issued this frame — its `Arc` is the
+        // identity, carried so completion never re-fetches a replacement
+        // issue of the same generation.
         let context = crate::gpu_runtime::runtime(&owner.env).context();
-        let generation = context.generation();
         if !std::ptr::eq(
             &raw const *retained.device(),
             &raw const *crate::gpu_runtime::raw_metal_device(&context),
         ) {
-            // The compositor handed a texture the current generation
+            // The compositor handed a texture the current context issue
             // cannot drive — a stale or foreign target, not a failure.
             return false;
         }
@@ -1317,7 +1386,6 @@ impl CapturableSurface for NativeFilterCapturable {
             target: retained,
             input,
             context,
-            generation,
             filters,
             width,
             height,
@@ -1329,7 +1397,7 @@ impl CapturableSurface for NativeFilterCapturable {
     /// and resolved GPU surfaces alike — into the private input, runs
     /// the capture `CIFilter` chain over it at the current timestamp, and
     /// renders into the compositor's texture through the
-    /// generation-owned `CIContext` with a real command submission.
+    /// issued-context-owned `CIContext` with a real command submission.
     /// `Ok(())` lands only after the command buffer reports completion;
     /// `Err(CaptureDeferred)` for a stale preparation, a dropped leaf or
     /// a Metal error.
@@ -1381,7 +1449,7 @@ impl CapturableSurface for NativeFilterCapturable {
 
 /// The main-thread half of the external render: builds the `CIImage`
 /// pipeline, runs the capture chain and submits the `CIContext` encode
-/// on the generation-owned queue — `Ok` settles only when Metal reports
+/// on the issued-context-owned queue — `Ok` settles only when Metal reports
 /// the command buffer completed.
 #[allow(clippy::too_many_lines)]
 fn finish_capture(work: &Shared<CaptureWork>, captured: bool, mtm: MainThreadMarker) {
@@ -1400,13 +1468,14 @@ fn finish_capture(work: &Shared<CaptureWork>, captured: bool, mtm: MainThreadMar
     if !captured {
         settle!(Err(CaptureDeferred));
     }
-    // Obsolescence: the frame's own context/generation was recorded at
-    // prepare; if the runtime has moved on, this capture publishes under
-    // a stale context — deferred, never rebound onto the new one.
-    let current = crate::gpu_runtime::runtime(&owner.env)
-        .context()
-        .generation();
-    if current != work_inner.prepared.generation {
+    // Obsolescence: the frame's exact context `Arc` was recorded at
+    // prepare; if the runtime has moved to a different issue, this
+    // capture publishes under a stale context — deferred, never rebound
+    // onto the new one.
+    if !Arc::ptr_eq(
+        &crate::gpu_runtime::runtime(&owner.env).context(),
+        &work_inner.prepared.context,
+    ) {
         settle!(Err(CaptureDeferred));
     }
     // The captured content as a `CIImage`, tagged with its actual
@@ -1451,15 +1520,15 @@ fn finish_capture(work: &Shared<CaptureWork>, captured: bool, mtm: MainThreadMar
         image = unsafe { filter.outputImage() }
             .expect("native capture filter produced no output image");
     }
-    // The generation-owned context — cached per exact
-    // `SharedGpuContext` generation and bound to that generation's
-    // device. The work's own context is authoritative; the device
-    // equality was established at prepare.
-    let generation = work_inner.prepared.generation;
+    // The exact-issue context — cached per `SharedGpuContext` instance
+    // and bound to its device. The work's own context is authoritative;
+    // the device equality was established at prepare.
     let device = crate::gpu_runtime::raw_metal_device(&work_inner.prepared.context);
     {
         let mut slot = owner.capture_gpu.borrow_mut();
-        let stale = slot.as_ref().is_none_or(|gpu| gpu.generation != generation);
+        let stale = slot
+            .as_ref()
+            .is_none_or(|gpu| !Arc::ptr_eq(&gpu.context, &work_inner.prepared.context));
         if stale {
             // The Cherenkov/filtrate `Working` space is extended-linear
             // Display P3 — the context's working AND output space, so
@@ -1485,14 +1554,14 @@ fn finish_capture(work: &Shared<CaptureWork>, captured: bool, mtm: MainThreadMar
                     &[working.clone(), working],
                 )
             };
-            // SAFETY: `device` is the generation's own Metal device.
+            // SAFETY: `device` is the prepared context's own Metal device.
             let ci_context =
                 unsafe { CIContext::contextWithMTLDevice_options(&device, Some(&options)) };
             let queue = device
                 .newCommandQueue()
                 .expect("capture command queue creation failed");
             *slot = Some(CaptureGpu {
-                generation,
+                context: Arc::clone(&work_inner.prepared.context),
                 ci_context,
                 queue,
             });
@@ -1520,7 +1589,7 @@ fn finish_capture(work: &Shared<CaptureWork>, captured: bool, mtm: MainThreadMar
             cocoa_ui::main_queue::enqueue(move |mtm| {
                 // Settle is `Ok` only when every live-state check still
                 // holds at the main-queue turn: the owner survives, the
-                // runtime is still on the prepared context generation, the
+                // runtime is still on the prepared context's issue, the
                 // retained context is not device-lost, and Metal reported
                 // `Completed`. Anything else is `Deferred` — never a
                 // synthetic success on stale or lost state.
@@ -1532,10 +1601,10 @@ fn finish_capture(work: &Shared<CaptureWork>, captured: bool, mtm: MainThreadMar
                     return;
                 };
                 let completed = status == objc2_metal::MTLCommandBufferStatus::Completed
-                    && crate::gpu_runtime::runtime(&owner.env)
-                        .context()
-                        .generation()
-                        == work_inner.prepared.generation
+                    && Arc::ptr_eq(
+                        &crate::gpu_runtime::runtime(&owner.env).context(),
+                        &work_inner.prepared.context,
+                    )
                     && work_inner.prepared.context.device_lost_reason().is_none();
                 if let Some(completion) = work_inner.completion.borrow_mut().take() {
                     completion(if completed {
@@ -1695,6 +1764,7 @@ pub fn mount(
         capture_gpu: RefCell::new(None),
         external_prepared: RefCell::new(None),
         capture_suppression: Cell::new(0),
+        suppressed_hidden: Cell::new(false),
         external_count: Cell::new(0),
         external_redraw: RefCell::new(None),
         guards: RefCell::new(Vec::new()),
