@@ -4,11 +4,20 @@
 //! the window, and those layers have to be placed the same way and only when
 //! the page itself is presented.
 //!
-//! The assertions read the frame's `render_layers` before presentation, which
-//! is where a layer's window placement and its presence are decided.
+//! Most assertions read the frame's `render_layers` before presentation,
+//! which is where a layer's window placement and its presence are decided;
+//! the last test drives the real install pass, where a page's layers are
+//! mounted on engine layers.
+
+use core::cell::RefCell;
+use core::sync::atomic::{AtomicU32, Ordering};
+use core::time::Duration;
+use std::sync::Arc;
+use std::time::Instant;
 
 use kurbo::{Affine, Rect};
 use waterui::ViewExt as _;
+use waterui_core::handler::AnyViewBuilder;
 use waterui_core::layout::Size;
 use waterui_core::{AnyView, Environment};
 use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
@@ -18,7 +27,8 @@ use waterui_layout::stack::vstack;
 use waterui_navigation::{NavigationPath, NavigationStack, NavigationView, navigation_transition};
 use waterui_shape::Rectangle;
 
-use super::{test_environment, test_renderer};
+use super::{MinimalTestTheme, pumped_test_environment, test_environment, test_renderer};
+use crate::HeadlessRuntime;
 use crate::platform::WindowSafeArea;
 use crate::renderer::HydrolysisRenderer;
 use crate::renderer::RenderLayer;
@@ -28,16 +38,32 @@ const TOP_INSET: f32 = 48.0;
 const ROOT_CONTENT: Size = Size::new(40.0, 30.0);
 const DETAIL_CONTENT: Size = Size::new(60.0, 20.0);
 
-struct Probe;
+/// GPU content that asks for a frame from every frame it renders, and counts
+/// them: it renders exactly while one of its bindings is drawn.
+#[derive(Clone, Default)]
+struct Probe(Arc<AtomicU32>);
+
+impl Probe {
+    fn renders(&self) -> u32 {
+        self.0.load(Ordering::Relaxed)
+    }
+}
 
 impl GpuContent for Probe {
     fn setup(&mut self, _gpu: &GpuContext<'_>) {}
 
-    fn render(&mut self, _frame: &mut GpuFrame<'_>) {}
+    fn render(&mut self, frame: &mut GpuFrame<'_>) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        frame.request_redraw();
+    }
 }
 
 fn gpu(size: Size) -> impl waterui_core::View {
-    GpuContentView::new(Probe).size(size.width, size.height)
+    probe_view(Probe::default(), size)
+}
+
+fn probe_view(probe: Probe, size: Size) -> impl waterui_core::View {
+    GpuContentView::new(probe).size(size.width, size.height)
 }
 
 fn env_with_top_inset(top: f32) -> Environment {
@@ -50,17 +76,30 @@ fn env_with_top_inset(top: f32) -> Environment {
 
 fn capture(view: impl waterui_core::View, env: &Environment) -> HydrolysisRenderer {
     let mut renderer = test_renderer();
+    render_frame(&mut renderer, AnyView::new(view), env);
+    renderer
+}
+
+/// Renders one frame of the window tree; the tree is built by the first frame
+/// and later frames reuse it, so `view` matters only the first time.
+fn render_frame(renderer: &mut HydrolysisRenderer, view: AnyView, env: &Environment) {
     renderer.reset_scene();
     renderer.begin_rebuild_frame();
-    renderer.capture_window_tree(
-        AnyView::new(view),
-        env,
-        WINDOW,
-        Affine::IDENTITY,
-        Affine::IDENTITY,
-    );
+    renderer.capture_window_tree(view, env, WINDOW, Affine::IDENTITY, Affine::IDENTITY);
     renderer.finish_rebuild_frame();
+}
+
+/// Every GPU content layer the frame presents.
+fn presented_gpu_layers(renderer: &HydrolysisRenderer) -> Vec<&crate::renderer::GpuContentLayer> {
     renderer
+        .compositor
+        .render_layers
+        .iter()
+        .filter_map(|layer| match layer {
+            RenderLayer::GpuContent(layer) => Some(layer),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Every GPU content layer the frame presents, as its window-space rect.
@@ -115,14 +154,24 @@ fn a_page_gpu_layer_follows_the_stack_placement() {
 }
 
 /// A stack inside a clip presents its pages' GPU content without breaking the
-/// compositor's scope bookkeeping.
+/// compositor's scope bookkeeping, at the same place as an unclipped stack and
+/// under the stack's clip.
 #[test]
 fn a_clipped_stack_presents_its_page_gpu_layer() {
-    let renderer = capture(root_stack().clip(Rectangle), &env_with_top_inset(TOP_INSET));
+    let env = env_with_top_inset(TOP_INSET);
+    let unclipped = single(&presented_gpu_rects(&capture(root_stack(), &env)));
+    let renderer = capture(root_stack().clip(Rectangle), &env);
     let rect = single(&presented_gpu_rects(&renderer));
     assert!(
-        rect.y0 >= f64::from(TOP_INSET),
-        "the clipped stack's GPU layer should sit below the inset, got {rect:?}"
+        (rect.x0 - unclipped.x0).abs() <= 0.5 && (rect.y0 - unclipped.y0).abs() <= 0.5,
+        "the clipped stack's GPU layer should sit where the unclipped one does: \
+         {rect:?} clipped, {unclipped:?} unclipped"
+    );
+    let layers = presented_gpu_layers(&renderer);
+    assert_eq!(
+        layers[0].active_layers.len(),
+        1,
+        "the page's GPU layer should be shown under the stack's clip"
     );
 }
 
@@ -149,10 +198,14 @@ fn a_covered_page_presents_no_gpu_layer() {
 }
 
 /// A page in a push transition presents its GPU layer under the transition's
-/// clip/opacity scope, the same scope its drawing is shown under. At the
-/// first frame of the default transition only the outgoing root is visible.
+/// clip/opacity scope and moves with it. At the transition's first frame only
+/// the outgoing root is visible, at its settled place; a few frames in, it
+/// has slid toward the leading edge and is fading out.
 #[test]
-fn a_transitioning_page_gpu_layer_is_shown_under_the_transition_scope() {
+fn a_transitioning_page_gpu_layer_follows_the_transition() {
+    let env = env_with_top_inset(TOP_INSET);
+    let settled = single(&presented_gpu_rects(&capture(root_stack(), &env)));
+
     let path = NavigationPath::<u8>::new();
     path.push(1);
     let stack = NavigationStack::with_path(
@@ -160,29 +213,108 @@ fn a_transitioning_page_gpu_layer_is_shown_under_the_transition_scope() {
         NavigationView::new("Root", vstack((gpu(ROOT_CONTENT),))),
     )
     .destination(|_| NavigationView::new("Detail", vstack((gpu(DETAIL_CONTENT),))));
-    let renderer = capture(stack, &env_with_top_inset(TOP_INSET));
-    let layers: Vec<_> = renderer
-        .compositor
-        .render_layers
-        .iter()
-        .filter_map(|layer| match layer {
-            RenderLayer::GpuContent(layer) => Some(layer),
-            _ => None,
-        })
-        .collect();
+    let mut renderer = test_renderer();
+    let start = renderer.frame_instant();
+    render_frame(&mut renderer, AnyView::new(stack), &env);
+
+    let first = presented_gpu_layers(&renderer);
     assert_eq!(
-        layers.len(),
+        first.len(),
         1,
         "only the outgoing root is visible at the transition's first frame"
     );
-    let rect = layers[0].transform.transform_rect_bbox(layers[0].bounds);
+    let rect = first[0].transform.transform_rect_bbox(first[0].bounds);
     assert!(
-        (rect.width() - f64::from(ROOT_CONTENT.width)).abs() <= 0.5,
-        "the visible GPU layer should be the root page's, got {rect:?}"
+        (rect.x0 - settled.x0).abs() <= 0.5 && (rect.y0 - settled.y0).abs() <= 0.5,
+        "the root's GPU layer should start at its settled place {settled:?}, got {rect:?}"
     );
     assert_eq!(
-        layers[0].active_layers.len(),
+        first[0].active_layers.len(),
         1,
         "the root's GPU layer should be shown under the transition scope"
+    );
+
+    renderer.set_frame_instant(
+        start
+            .checked_add(Duration::from_millis(32))
+            .expect("test frame instant overflow"),
+    );
+    render_frame(&mut renderer, AnyView::new(()), &env);
+    let moving = presented_gpu_layers(&renderer);
+    assert_eq!(
+        moving.len(),
+        1,
+        "early in the transition only the outgoing root is visible"
+    );
+    let rect = moving[0].transform.transform_rect_bbox(moving[0].bounds);
+    assert!(
+        rect.x0 < settled.x0 - 0.5 && (rect.y0 - settled.y0).abs() <= 0.5,
+        "the root's GPU layer should slide toward the leading edge with its page: \
+         settled at {settled:?}, at {rect:?} mid-transition"
+    );
+    let alpha = moving[0].active_layers[0].alpha;
+    assert!(
+        alpha > 0.0 && alpha < 1.0,
+        "the root's GPU layer should fade with its page, got scope alpha {alpha}"
+    );
+}
+
+/// A page's GPU content keeps rendering after the page is covered and shown
+/// again: the page's mount is dropped while it is covered, and the mount it
+/// comes back on has to be bound to the content again.
+#[test]
+fn a_page_gpu_content_renders_again_after_push_and_pop() {
+    let probe = Probe::default();
+    let path = NavigationPath::<u8>::new();
+    let views = RefCell::new(Some((probe.clone(), path.clone())));
+    let builder = AnyViewBuilder::<AnyView>::new(move || {
+        let (probe, path) = views
+            .borrow_mut()
+            .take()
+            .expect("the navigation window is built once");
+        AnyView::new(
+            NavigationStack::with_path(
+                path,
+                NavigationView::new("Root", vstack((probe_view(probe, ROOT_CONTENT),))),
+            )
+            .destination(|_| NavigationView::new("Detail", vstack((gpu(DETAIL_CONTENT),))))
+            .transition(navigation_transition::none()),
+        )
+    });
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the test window size is a small positive constant"
+    )]
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        pumped_test_environment(),
+        builder,
+        WINDOW.width() as u32,
+        WINDOW.height() as u32,
+        MinimalTestTheme::default(),
+    );
+    let start = Instant::now();
+    let mut next = 0;
+    let mut pump = |runtime: &mut HeadlessRuntime, count: u64| {
+        for _ in 0..count {
+            let _ = runtime.pump_at(false, start + Duration::from_millis(next * 16));
+            next += 1;
+        }
+    };
+
+    pump(&mut runtime, 4);
+    assert!(probe.renders() > 0, "the root page's GPU content renders");
+
+    path.push(1);
+    pump(&mut runtime, 4);
+    path.pop();
+    pump(&mut runtime, 2);
+    let shown_again = probe.renders();
+    pump(&mut runtime, 4);
+    assert!(
+        probe.renders() > shown_again,
+        "the root page's GPU content should render again once the page is shown \
+         again, got {} renders before and after four more frames",
+        probe.renders()
     );
 }

@@ -236,6 +236,11 @@ fn append_scene_layer(
         * kurbo::Affine::scale(f64::from(layer.scale))
         * kurbo::Affine::translate((-center.x, -center.y));
     let transformed_bounds = local.transform_rect_bbox(clip_bounds);
+    // The scope's opacity reaches every layer the page presents, but each
+    // keyed layer and each run of drawing between them is faded on its own
+    // engine layer rather than as one flattened group, so translucent
+    // content that overlaps across those layers blends slightly differently
+    // mid-transition than it would flattened.
     renderer.with_clip_rect_scope(layer.opacity, transforms, transformed_bounds, |renderer| {
         renderer.present_layers(content, transforms.paint * local);
     });

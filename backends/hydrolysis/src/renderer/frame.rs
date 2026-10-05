@@ -591,8 +591,9 @@ impl HydrolysisRenderer {
             .frame_clip_layers
             .checked_add(1)
             .expect("hydrolysis frame clip layer counter overflow");
-        let depth = u32::try_from(self.compositor.active_scene_layers.len() + 1)
-            .expect("hydrolysis active scene layer depth exceeds u32");
+        let depth =
+            u32::try_from(self.captured_clip_depth + self.compositor.active_scene_layers.len() + 1)
+                .expect("hydrolysis active scene layer depth exceeds u32");
         self.frame_max_clip_depth = self.frame_max_clip_depth.max(depth);
     }
 
@@ -605,10 +606,12 @@ impl HydrolysisRenderer {
     pub(crate) fn capture_layers(&mut self, record: impl FnOnce(&mut Self)) -> CapturedLayers {
         let outer_scene = core::mem::replace(&mut self.scene, Recording::new());
         let outer_ancestry = core::mem::take(&mut self.compositor.active_scene_layers);
+        self.captured_clip_depth += outer_ancestry.len();
         let start = self.compositor.render_layers.len();
         record(self);
         self.flush_scene_layer();
         let layers = self.compositor.render_layers.split_off(start);
+        self.captured_clip_depth -= outer_ancestry.len();
         self.scene = outer_scene;
         self.compositor.active_scene_layers = outer_ancestry;
         CapturedLayers(layers)

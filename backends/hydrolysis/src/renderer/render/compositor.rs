@@ -306,38 +306,48 @@ impl RenderLayer {
                 placed.append(recording, transform);
                 Self::Scene(placed)
             }
-            Self::SceneContent(layer) => Self::SceneContent(SceneContentLayer {
-                transform: transform * layer.transform,
-                active_layers: scopes(&layer.active_layers),
-                ..layer.clone()
-            }),
-            Self::GpuContent(layer) => Self::GpuContent(GpuContentLayer {
-                transform: transform * layer.transform,
-                active_layers: scopes(&layer.active_layers),
-                ..layer.clone()
-            }),
-            Self::ExternalFrame(layer) => Self::ExternalFrame(ExternalFrameLayer {
-                transform: transform * layer.transform,
-                active_layers: scopes(&layer.active_layers),
-                ..layer.clone()
-            }),
             // A filtered group's children carry only the scopes inside the
             // group, so they take the transform but no outer ancestry.
             Self::Filtered(layer) => Self::Filtered(FilteredLayer {
+                key: layer.key,
+                runtime: Rc::clone(&layer.runtime),
                 children: layer
                     .children
                     .iter()
                     .map(|child| child.placed(transform, &[]))
                     .collect(),
                 active_layers: scopes(&layer.active_layers),
-                ..layer.clone()
             }),
-            #[cfg(hydrolysis_macos_system_webview)]
-            Self::NativeView(layer) => Self::NativeView(NativeViewLayer {
-                transform: transform * layer.transform,
-                active_layers: scopes(&layer.active_layers),
-                ..layer.clone()
-            }),
+            // Every other layer is one keyed leaf: its placement and its
+            // own scopes are mapped, everything else is carried over.
+            _ => {
+                let mut placed = self.clone();
+                let (layer_transform, active_layers) = match &mut placed {
+                    Self::SceneContent(SceneContentLayer {
+                        transform: layer_transform,
+                        active_layers,
+                        ..
+                    })
+                    | Self::GpuContent(GpuContentLayer {
+                        transform: layer_transform,
+                        active_layers,
+                        ..
+                    })
+                    | Self::ExternalFrame(ExternalFrameLayer {
+                        transform: layer_transform,
+                        active_layers,
+                        ..
+                    }) => (layer_transform, active_layers),
+                    #[cfg(hydrolysis_macos_system_webview)]
+                    Self::NativeView(layer) => (&mut layer.transform, &mut layer.active_layers),
+                    Self::Scene(_) | Self::Filtered(_) => {
+                        unreachable!("scene segments and filtered groups are placed above")
+                    }
+                };
+                *layer_transform = transform * *layer_transform;
+                *active_layers = scopes(active_layers);
+                placed
+            }
         }
     }
 }
@@ -545,30 +555,30 @@ impl FrameInstall<'_> {
                     let visible = scopes.iter().all(|scope| scope.opacity != 0.0);
                     if visible {
                         let mut runtime = layer.runtime.borrow_mut();
-                        if !runtime.installed {
+                        let runtime = &mut *runtime;
+                        let producer = runtime.producer.get_or_insert_with(|| {
                             let wake = self.wake.clone();
                             let content = runtime.view.take_engine_content(move || {
                                 if let Some(wake) = &wake {
                                     wake.request_redraw();
                                 }
                             });
-                            let producer = self.engine.gpu_producer(content);
-                            tx[target].content(producer.at(pixels));
-                            runtime.producer = Some(producer);
-                            runtime.bound_size = Some(pixels);
-                            runtime.installed = true;
                             self.installs += 1;
+                            self.engine.gpu_producer(content)
+                        });
+                        // A binding belongs to one engine layer: a mount that
+                        // was dropped and comes back (a navigation page that
+                        // was covered and is shown again) is a new layer, so
+                        // the producer is bound to it again.
+                        let binding = (target.id(), pixels);
+                        if runtime.binding != Some(binding) {
+                            tx[target].content(producer.at(pixels));
+                            runtime.binding = Some(binding);
                         }
                         // The UI-thread pump runs once per presented frame —
                         // producers flush their staged work here before the
                         // engine renders the layer.
                         runtime.view.frame();
-                        if runtime.bound_size != Some(pixels) {
-                            if let Some(producer) = &runtime.producer {
-                                tx[target].content(producer.at(pixels));
-                            }
-                            runtime.bound_size = Some(pixels);
-                        }
                     }
                     tx[target].transform(gpu_frame_transform(
                         layer.transform,
@@ -608,19 +618,22 @@ impl FrameInstall<'_> {
                             .as_ref()
                             .and_then(waterui_graphics::gpu::FrameReceiver::take)
                         {
-                            let pixels = external_frame_plane_size(&frame);
-                            runtime.frame_pixels = Some(pixels);
+                            runtime.frame_pixels = Some(external_frame_plane_size(&frame));
                             if let Some(sink) = &runtime.sink {
                                 sink.submit(frame);
                             }
-                            if runtime.bound_size != Some(pixels) {
+                        }
+                        if let Some(pixels) = runtime.frame_pixels {
+                            // Rebound on a new plane size, and on a new mount
+                            // layer: the producer keeps its current frame, so
+                            // a mount that comes back shows it at once.
+                            let binding = (target.id(), pixels);
+                            if runtime.binding != Some(binding) {
                                 if let Some(producer) = &runtime.producer {
                                     tx[target].content(producer.at(pixels));
                                 }
-                                runtime.bound_size = Some(pixels);
+                                runtime.binding = Some(binding);
                             }
-                        }
-                        if let Some(pixels) = runtime.frame_pixels {
                             tx[target].transform(gpu_frame_transform(
                                 layer.transform,
                                 layer.bounds,
