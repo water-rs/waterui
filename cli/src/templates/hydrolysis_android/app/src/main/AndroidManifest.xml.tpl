@@ -18,6 +18,7 @@
             android:name=".MainActivity"
             android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|keyboardHidden"
             android:exported="true"
+            android:windowSoftInputMode="adjustNothing"
             android:launchMode="singleTask"
             android:theme="@style/Theme.WaterUIApp.Launch">
             <intent-filter>

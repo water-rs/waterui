@@ -4,7 +4,9 @@
 
 #[cfg(test)]
 use super::ContainerNode;
-use super::window::window_safe_area_insets;
+use super::window::{
+    declared_ignore_mask, released_insets, window_container_insets, window_keyboard_insets,
+};
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
@@ -453,21 +455,24 @@ impl RenderNode {
             }
             // Layout-transparent: the child lays out at the same concrete size,
             // under the wrapper's scoped environment — except `.ignore_safe_area`,
-            // which releases the window's safe-area insets on its flagged edges.
+            // which releases the safe-area depth of the regions and edges its own
+            // declaration names: the released amount stops at the nearest
+            // unignored region on each edge (§7.1's "layout avoids").
             Self::Wrapper(node) => {
                 let node_env = node.env.clone();
-                if let WrapperEffect::IgnoreSafeArea(edges) = &node.effect {
-                    let insets = window_safe_area_insets(renderer, env);
-                    let width = size.width
-                        + if edges.leading { insets.leading() } else { 0.0 }
-                        + if edges.trailing {
-                            insets.trailing()
-                        } else {
-                            0.0
-                        };
-                    let height = size.height
-                        + if edges.top { insets.top() } else { 0.0 }
-                        + if edges.bottom { insets.bottom() } else { 0.0 };
+                if let WrapperEffect::IgnoreSafeArea(ignore) = &node.effect {
+                    let container = window_container_insets(renderer, env);
+                    let keyboard = window_keyboard_insets(renderer, env);
+                    let [top, leading, bottom, trailing] =
+                        released_insets(declared_ignore_mask(*ignore), &container, &keyboard);
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "the released depths are window insets — within display scale"
+                    )]
+                    let (leading, top, trailing, bottom) =
+                        (leading as f32, top as f32, trailing as f32, bottom as f32);
+                    let width = size.width + leading + trailing;
+                    let height = size.height + top + bottom;
                     let child_proposal = ProposalSize::new(
                         proposal.width.map(|_| width),
                         proposal.height.map(|_| height),
@@ -496,7 +501,7 @@ impl RenderNode {
                 };
                 let intrinsic = node
                     .child
-                    .measure(&mut renderer.state, env, &theme, child_proposal)
+                    .measure(&mut renderer.state, &node.env, &theme, child_proposal)
                     .size;
                 let content_size = match node.axis {
                     ScrollAxis::Horizontal => {
@@ -512,7 +517,7 @@ impl RenderNode {
                     _ => panic!("hydrolysis render tree: unsupported scroll axis"),
                 };
                 node.child
-                    .layout(renderer, env, child_proposal, content_size);
+                    .layout(renderer, &node.env, child_proposal, content_size);
                 let handle = if let Some(handle) = node.handle.borrow_mut().as_mut() {
                     handle.rebind(
                         node.axis,

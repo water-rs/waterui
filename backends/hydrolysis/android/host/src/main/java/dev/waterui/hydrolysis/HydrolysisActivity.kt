@@ -5,6 +5,7 @@ import android.view.View
 import androidx.activity.BackEventCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
+import androidx.core.view.WindowCompat
 
 /**
  * The minimal host activity: creates the [HydrolysisSession] once, mounts a
@@ -30,6 +31,10 @@ abstract class HydrolysisActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Edge to edge: the system bars and the IME arrive as window insets
+        // the engine avoids by contract (layout-spec.md §7.1) — the window
+        // and its rendering surface never resize for the keyboard.
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         NativeBridge.load(nativeLibraryName, intent.getStringExtra(LOG_LEVEL_EXTRA))
         @Suppress("DEPRECATION")
         val retained = lastCustomNonConfigurationInstance as? HydrolysisSession
