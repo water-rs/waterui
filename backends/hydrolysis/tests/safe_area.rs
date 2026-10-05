@@ -1698,3 +1698,114 @@ fn a_navigation_page_without_a_bar_passes_the_edge_through(
     );
     app.capture_snapshot("safe-area", "nav-barless-pass-through", "insets");
 }
+
+/// §7.1 "Chrome" capture vehicle — this test exists to export the offscreen
+/// PNG captures a human reviews; its assertions only gate the captures on the
+/// layout being what it should be. The bars' paint extension has no a11y or
+/// layout signal by design, so the snapshots are the evidence:
+/// `navigation-chrome-extension/{insets,transition}` show a navigation
+/// stack's bar surfaces covering the status band and the bottom inset —
+/// settled and mid-push — and `tab-bar-extension/insets` the bottom-docked
+/// tab bar's surface at the window edge.
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
+fn chrome_surface_extension_captures(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
+    use waterui::navigation::{
+        NavigationLink, NavigationStack, NavigationToolbar, NavigationToolbarItem,
+        NavigationToolbarPlacement, Tab, Tabs,
+    };
+    use waterui::{Str, ViewExt};
+
+    let insets = waterui::binding(SAFE_INSETS);
+    let query = waterui::binding(Str::from(""));
+    let mut app = ui
+        .clone()
+        .environment(env_with_insets(&insets))
+        .mount_offscreen(move || {
+            NavigationStack::new(
+                NavigationView::new(
+                    "Inbox",
+                    vstack((
+                        card("mail"),
+                        NavigationLink::new("Open Detail", || {
+                            NavigationView::new("Detail", text("detail body"))
+                                .navigation_bar_color(Color::new(Srgb::new(0.55, 0.2, 0.7)))
+                        }),
+                        spacer(),
+                    ))
+                    .background(Color::new(Srgb::new(0.08, 0.1, 0.2))),
+                )
+                .navigation_bar_color(Color::new(Srgb::new(0.55, 0.2, 0.7)))
+                .navigation_toolbar(
+                    NavigationToolbar::default()
+                        .item(NavigationToolbarItem::new(
+                            NavigationToolbarPlacement::TopBarTrailing,
+                            button("Add").action(|| {}),
+                        ))
+                        .item(NavigationToolbarItem::new(
+                            NavigationToolbarPlacement::BottomBar,
+                            button("Mark All").action(|| {}),
+                        )),
+                )
+                .searchable(&query, "Search mail"),
+            )
+        });
+    app.settle();
+    app.capture_snapshot("safe-area", "navigation-chrome-extension", "insets");
+
+    // Mid-push: the queued pointer events arm the transition and one pumped
+    // clock window lands the capture inside the fade-through.
+    let link = app
+        .query()
+        .role(Role::BUTTON)
+        .label("Open Detail")
+        .single()
+        .bounds();
+    let (x, y) = (
+        link.x() + link.width() / 2.0,
+        link.y() + link.height() / 2.0,
+    );
+    app.queue_pointer_down(x, y);
+    app.queue_pointer_up(x, y);
+    app.pump_for(Duration::from_millis(180));
+    app.capture_snapshot("safe-area", "navigation-chrome-extension", "transition");
+
+    let selection = Binding::container(0i32);
+    let mut app = ui
+        .environment(env_with_insets(&insets))
+        .mount_offscreen(move || {
+            Tabs::new(
+                &selection,
+                vec![
+                    Tab::new(0i32, "Messages", move || {
+                        NavigationView::new(
+                            "Messages",
+                            vstack((card("chat list"), spacer()))
+                                .background(Color::new(Srgb::new(0.08, 0.1, 0.2)))
+                                .a11y_label("tab-page"),
+                        )
+                    }),
+                    Tab::new(1i32, "Settings", move || {
+                        NavigationView::new("Settings", text("settings"))
+                    }),
+                ],
+            )
+        });
+    app.settle();
+
+    let bar = app.query().role(Role::TAB_LIST).single().bounds();
+    assert!(
+        (bar.y() + bar.height() - CONTAINER_TOP).abs() <= 1.0,
+        "the tab bar's frame keeps the navigation-band boundary, got {bar:?}"
+    );
+    let title = app
+        .query()
+        .role(Role::HEADER)
+        .label("Messages")
+        .single()
+        .bounds();
+    assert!(
+        title.y() >= SAFE_INSETS.top() - 1.0,
+        "the nested page's title stays inside the safe area, got {title:?}"
+    );
+    app.capture_snapshot("safe-area", "tab-bar-extension", "insets");
+}

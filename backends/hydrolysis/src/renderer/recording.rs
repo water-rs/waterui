@@ -665,6 +665,36 @@ impl Recording {
         self.open_layers
     }
 
+    /// Each clip/opacity scope's clip rect with the transform it was pushed
+    /// under, in op order — `transform` maps the clip's own rect into scene
+    /// space, so `transform * clip` is the rect the scope clips to. For
+    /// tests asserting clip geometry.
+    #[cfg(test)]
+    pub(crate) fn clip_scopes(&self) -> impl Iterator<Item = (Affine, Rect)> {
+        self.ops.iter().filter_map(|op| match op {
+            Op::PushGroup {
+                transform, clip, ..
+            } => Some((*transform, clip.bounds())),
+            _ => None,
+        })
+    }
+
+    /// Each fill op's shape bounds with the transform it was drawn under,
+    /// in op order — `transform * shape` is the rect the fill paints. For
+    /// tests asserting paint geometry.
+    #[cfg(test)]
+    pub(crate) fn fill_bounds(&self) -> impl Iterator<Item = (Affine, Rect)> {
+        self.ops.iter().filter_map(|op| match op {
+            Op::Fill {
+                transform, shape, ..
+            }
+            | Op::FillPaint {
+                transform, shape, ..
+            } => Some((*transform, shape.bounds())),
+            _ => None,
+        })
+    }
+
     /// Each recorded glyph run's transform and run-local glyph offsets, in op
     /// order — the actual positions a flush lowers. `append` has already folded
     /// every placement into the op's transform, so `transform * (x, y)` is the

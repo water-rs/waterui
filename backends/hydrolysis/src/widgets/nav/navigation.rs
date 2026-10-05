@@ -5,7 +5,7 @@ use crate::renderer::ROOT_NAVIGATION_IDENTITY;
 use crate::renderer::SafeAreaLayout;
 use crate::renderer::bounded_proposal;
 use crate::renderer::{
-    CapturedScenePlacement, HydroNativeView, HydroState, HydrolysisRenderer, RenderContext,
+    CapturedScenePlacement, Edge, HydroNativeView, HydroState, HydrolysisRenderer, RenderContext,
     RetainedSubview, WidgetRenderContext, measure_navigation_view_intrinsic,
     measure_owned_navigation_view_with_proposal, measure_transient_view_with_proposal,
     navigation_back_button_rect, navigation_base_bar_height_for_display_mode,
@@ -578,14 +578,19 @@ pub fn render_navigation_view_parts(
             (ctx.bounds.y0 + top_bar_height).min(ctx.bounds.y1),
         );
         let bar_color = Paint::Solid(ctx.renderer_mut().read_signal(&color_signal));
+        // §7.1 "Chrome": the bar's surface extends through the regions of
+        // the edges a top bar can touch — top, leading, trailing — to the
+        // window edge; the separator stays at the bar's inner edge and
+        // everything else keeps `bar_rect`.
+        let bar_surface = ctx.chrome_surface(bar_rect, Edge::Top);
         {
             let theme = ctx.theme();
             ctx.draw_context(|draw| {
-                theme.draw_navigation_bar(&mut *draw, bar_rect, &bar_color);
+                theme.draw_navigation_bar(&mut *draw, bar_surface, &bar_color);
                 let separator = kurbo::Rect::new(
-                    bar_rect.x0,
+                    bar_surface.x0,
                     (bar_rect.y1 - 1.0).max(bar_rect.y0),
-                    bar_rect.x1,
+                    bar_surface.x1,
                     bar_rect.y1,
                 );
                 theme.draw_navigation_bar_separator(&mut *draw, separator);
@@ -751,10 +756,14 @@ pub fn render_navigation_view_parts(
             ctx.bounds.y1,
         );
         let bar_color = Paint::Solid(ctx.renderer_mut().read_signal(&color_signal));
+        // §7.1 "Chrome": the bottom bar's surface extends through the
+        // regions of the edges a bottom bar can touch — bottom, leading,
+        // trailing — to the window edge.
+        let bottom_surface = ctx.chrome_surface(bottom_rect, Edge::Bottom);
         {
             let theme = ctx.theme();
             ctx.draw_context(|draw| {
-                theme.draw_navigation_bar(&mut *draw, bottom_rect, &bar_color);
+                theme.draw_navigation_bar(&mut *draw, bottom_surface, &bar_color);
             });
         }
         flush_toolbar_group(
@@ -1997,12 +2006,16 @@ pub fn render_navigation_stack_parts(
     let background = state.borrow().background();
     let background = Paint::Solid(ctx.renderer_mut().read_signal(&background));
     let transform = ctx.transform;
-    let bounds = ctx.bounds;
+    // §7.1 "Chrome": the stack's backdrop paints what the pages paint —
+    // `chrome_paint_bounds`, the same reach the transition page clips
+    // cover — so a bar surface extended to the window edge never lands on
+    // the window background.
+    let paint_bounds = ctx.chrome_paint_bounds();
     ctx.renderer_mut().scene_mut().fill_paint(
         peniko::Fill::NonZero,
         transform,
         background,
-        &bounds,
+        &paint_bounds,
     );
 
     let navigation_change =

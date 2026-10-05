@@ -5,7 +5,7 @@ use std::rc::Rc;
 #[cfg(feature = "accessibility")]
 use crate::renderer::{AccessibilityActionTarget, RenderContext};
 use crate::renderer::{
-    HydroNativeView, HydroState, RetainedSubview, WidgetRenderContext, measure_tabs_layout,
+    Edge, HydroNativeView, HydroState, RetainedSubview, WidgetRenderContext, measure_tabs_layout,
     tabs_bar_and_content_rect, tabs_button_rect, tabs_content_proposal,
 };
 #[cfg(feature = "accessibility")]
@@ -376,10 +376,27 @@ pub fn render_tabs_parts(
         tabs_bar_and_content_rect(ctx.bounds, style, theme_metrics.bar_height);
     let label_env = tab_label_env(env);
 
+    // §7.1 "Chrome": the bar's surface extends through the regions of the
+    // edges it touches to the window edge. A leading-docked strip keeps
+    // only its top edge on its own frame — hydrolysis-m3 draws the
+    // sidebar's divider at the surface's *top* edge under `top_edge:
+    // false`, a boundary the strip touches, so extending the surface there
+    // would move the divider under the status band; no `top_edge` argument
+    // yields the vertical inner-edge rule a sidebar needs. Extending the
+    // strip's top edge and placing its divider is a `WidgetTheme` contract
+    // change tracked as a follow-up issue.
+    let bar_surface = match style {
+        NativeTabStyle::Sidebar => {
+            ctx.chrome_surface_except(bar_rect, &[Edge::Top, Edge::Trailing])
+        }
+        NativeTabStyle::Automatic | NativeTabStyle::TabBar => {
+            ctx.chrome_surface(bar_rect, Edge::Bottom)
+        }
+    };
     {
         let theme = ctx.theme();
         ctx.draw_context(|draw| {
-            theme.draw_tabs_bar(&mut *draw, bar_rect, false);
+            theme.draw_tabs_bar(&mut *draw, bar_surface, false);
         });
     }
 

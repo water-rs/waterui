@@ -1,8 +1,11 @@
 use super::{CapturedLayers, HydrolysisRenderer, TailMark};
 
+use crate::renderer::Edge;
+use crate::renderer::EdgeOffsets;
 use crate::renderer::HydroState;
 use crate::renderer::SafeAreaLayout;
 use crate::renderer::frame::LayerTransforms;
+use crate::renderer::grow_rect;
 use crate::renderer::navigation::{
     NavigationCapturedScene, NavigationTransitionFrame, draw_navigation_transition,
 };
@@ -128,6 +131,59 @@ impl<'a> WidgetRenderContext<'a> {
         self.safe_area
             .as_ref()
             .map(|area| area.hosted(self.hosted_frame(area, rect)))
+    }
+
+    /// The §7.1 paint extension a bar the widget draws at `rect` in its own
+    /// bounds space earns — "Chrome": a bar extends its background under the
+    /// regions of every edge it touches, to the window edge. The answer is
+    /// [`SafeAreaLayout::touched_edge_offsets`] on the bar's own window-space
+    /// frame — the same computation a slot fill's layout-recorded extension
+    /// runs — so a bar whose edge clears the subtree's boundary extends
+    /// nowhere, and a widget with no context (inside a scroll surface's
+    /// content) extends nothing.
+    fn chrome_extension(&self, rect: kurbo::Rect) -> EdgeOffsets {
+        self.safe_area_for(rect)
+            .map(|area| area.touched_edge_offsets())
+            .unwrap_or_default()
+    }
+
+    /// `self.bounds` grown by the touched-edge offsets of the area its
+    /// content paints — the reach a transition clip and a stack backdrop
+    /// fill must both cover so an extended bar surface is never clipped and
+    /// never lands on the window background. `self.bounds` itself stays
+    /// the layout reference.
+    pub(crate) fn chrome_paint_bounds(&self) -> kurbo::Rect {
+        grow_rect(
+            self.bounds,
+            self.content_area_for(self.bounds)
+                .map(|area| area.touched_edge_offsets())
+                .unwrap_or_default(),
+        )
+    }
+
+    /// The surface rect a bar docked at `dock` paints — `rect` grown by
+    /// [`Self::chrome_extension`] on every edge except `dock`'s opposite,
+    /// the one boundary a bar docked at `dock` can never reach. The mask
+    /// matters when a bar's measured frame is clamped to the widget's
+    /// bounds — a top bar on a `NavigationView` shorter than the bar lands
+    /// its inner edge on the bottom boundary and would otherwise extend
+    /// through that inset.
+    pub(crate) fn chrome_surface(&self, rect: kurbo::Rect, dock: Edge) -> kurbo::Rect {
+        self.chrome_surface_except(rect, &[dock.opposite()])
+    }
+
+    /// `rect` grown by [`Self::chrome_extension`] with every edge in
+    /// `except` cleared — the surface of a bar that must keep some edges it
+    /// touches unextended, e.g. because a decoration the `WidgetTheme`
+    /// contract receives no placement for would move off its edge.
+    pub(crate) fn chrome_surface_except(&self, rect: kurbo::Rect, except: &[Edge]) -> kurbo::Rect {
+        grow_rect(
+            rect,
+            except
+                .iter()
+                .copied()
+                .fold(self.chrome_extension(rect), EdgeOffsets::cleared),
+        )
     }
 
     pub(crate) const fn render_context(&self) -> RenderContext {
@@ -273,6 +329,11 @@ impl<'a> WidgetRenderContext<'a> {
         from_scene: &NavigationCapturedScene,
         to_scene: &NavigationCapturedScene,
     ) {
+        // The transition's page clips and the stack's backdrop fill cover
+        // the same reach — `chrome_paint_bounds` — so an extended bar
+        // surface is never clipped mid-animation. `bounds` stays the
+        // scale-centre reference.
+        let paint_bounds = self.chrome_paint_bounds();
         draw_navigation_transition(NavigationTransitionFrame {
             renderer: self.renderer,
             transforms: LayerTransforms {
@@ -280,6 +341,7 @@ impl<'a> WidgetRenderContext<'a> {
                 hit: self.hit_transform,
             },
             bounds: self.bounds,
+            paint_bounds,
             style,
             motion,
             direction,
