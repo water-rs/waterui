@@ -307,8 +307,9 @@ impl Device {
     /// Probes the Vulkan device behind `shared` for the capabilities native
     /// import needs and resolves the per-device shared context.
     ///
-    /// The device must have been created through [`open_device`] (or with an
-    /// equivalent extension set) — external-memory, semaphore and YCbCr
+    /// The device must have been created through
+    /// [`SharedDevice::create`](crate::interop::SharedDevice::create) (or with
+    /// an equivalent extension set) — external-memory, semaphore and YCbCr
     /// capabilities are enabled at device creation, not at first import.
     ///
     /// # Errors
@@ -485,14 +486,18 @@ impl std::fmt::Debug for Vk {
 /// The per-`VkDevice` context shared between host-side imports and the
 /// render thread.
 pub struct Shared {
+    /// The raw device context: the `ash` device, the engine's queue family,
+    /// the extension entry points and the retire queues.
     pub vk: Vk,
     /// The `wgpu::Device` the raw device wraps — RGB imports wrap planes
     /// as `wgpu::Texture`s on it and it keeps the `VkDevice` alive.
     pub wgpu: wgpu::Device,
+    /// The capability record probed when the context was opened.
     pub caps: Caps,
     /// `vkGetPhysicalDeviceFormatProperties`/`vkGetPhysicalDeviceImageFormatProperties2`
     /// and friends run on the physical device behind this instance.
     pub instance: ash::Instance,
+    /// The physical device the `VkDevice` was created on.
     pub physical_device: vk::PhysicalDevice,
     /// Conversion/layout/pipeline objects cached by their complete
     /// conversion key — bounded, see `ycbcr`.
