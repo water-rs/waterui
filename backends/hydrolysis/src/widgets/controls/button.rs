@@ -9,7 +9,6 @@ use crate::renderer::{
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
-use cherenkov::Draw as _;
 use nami::{Signal, SignalExt};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -27,6 +26,7 @@ use waterui_core::layout::Size as LayoutSize;
 use waterui_core::layout::{ProposalSize, ViewDimensions};
 use waterui_core::{AnyView, Environment, Native};
 use waterui_graphics::color::Color;
+use waterui_graphics::draw::Draw as _;
 use waterui_text::styled::StyledStr;
 
 use crate::widgets::util::{centered_label_rect, inset_rect, widget_disabled};

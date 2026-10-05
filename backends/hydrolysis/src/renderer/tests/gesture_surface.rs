@@ -14,7 +14,7 @@ use waterui::gesture::{DragEvent, DragGesture, GesturePhase};
 use waterui::{AnyView, Color, ViewExt as _};
 use waterui_core::extract::Use;
 use waterui_core::handler::AnyViewBuilder;
-use waterui_graphics::cherenkov::Recorder;
+use waterui_graphics::draw::Recorder;
 use waterui_graphics::input::SurfaceInputEvent;
 use waterui_graphics::{RecordingResources, SceneContent, SceneInvalidator, SceneView};
 use waterui_layout::stack::hstack;

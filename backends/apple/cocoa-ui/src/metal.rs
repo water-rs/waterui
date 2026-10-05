@@ -21,7 +21,7 @@
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2_core_foundation::{CFDictionary, CFRetained, CFType};
-use objc2_core_graphics::{CGColorSpace, kCGColorSpaceExtendedLinearSRGB, kCGColorSpaceSRGB};
+use objc2_core_graphics::{CGColorSpace, kCGColorSpaceExtendedLinearDisplayP3, kCGColorSpaceSRGB};
 use objc2_foundation::{NSDictionary, NSNumber, NSString};
 use objc2_io_surface::{
     IOSurfaceRef, kIOSurfaceAllocSize, kIOSurfaceBytesPerElement, kIOSurfaceBytesPerRow,
@@ -155,10 +155,12 @@ fn surface_format(format: MTLPixelFormat) -> (u32, usize) {
 /// colour space of its own, so an extended-range surface left unlabelled is
 /// composited as if its values were display-referred sRGB and an HDR frame
 /// comes out clipped and dark.
+/// Half-float pixels use extended linear Display P3, matching the GPU
+/// presenter's output and the filter working space; 8-bit pixels use sRGB.
 pub(crate) fn color_space(format: MTLPixelFormat) -> CFRetained<CGColorSpace> {
     let name = if format == MTLPixelFormat::RGBA16Float {
         // SAFETY: the colorspace statics are system constants.
-        unsafe { kCGColorSpaceExtendedLinearSRGB }
+        unsafe { kCGColorSpaceExtendedLinearDisplayP3 }
     } else {
         // SAFETY: see above.
         unsafe { kCGColorSpaceSRGB }

@@ -3,7 +3,7 @@ use alloc::rc::Rc;
 use alloc::string::String;
 use core::fmt;
 
-use cherenkov::Recorder;
+use crate::draw::Recorder;
 use nami::Signal;
 use nami::watcher::BoxWatcherGuard;
 
@@ -42,7 +42,7 @@ pub trait SceneContent: 'static {
     /// through `resources` whatever engine resource the drawing uses.
     ///
     /// The recorder is the engine's live recording target: constant operands
-    /// freeze into the [`Content`](cherenkov::Content) it finishes, and
+    /// freeze into the [`Content`](crate::draw::Content) it finishes, and
     /// `nami` signals handed to it stay bound, so a colour or transform the
     /// content draws from a signal animates without another call here.
     ///
@@ -223,7 +223,7 @@ pub trait SceneContent: 'static {
     /// Backends place the input-method candidate window against it, so
     /// content that accepts composed text reports its caret. `None` — the
     /// default — means there is no caret to place the panel against.
-    fn ime_caret(&self) -> Option<cherenkov::kurbo::Rect> {
+    fn ime_caret(&self) -> Option<crate::draw::kurbo::Rect> {
         None
     }
 }
@@ -399,7 +399,7 @@ impl View for SceneView {
 
 #[cfg(test)]
 mod tests {
-    use cherenkov::{Draw, kurbo::Shape};
+    use crate::draw::{Draw, kurbo::Shape};
 
     use super::{
         NativeView, ProposalSize, Recorder, RecordingResources, SceneContent, SceneView, Size,
@@ -422,9 +422,9 @@ mod tests {
             height: f32,
         ) -> bool {
             recorder.fill(
-                cherenkov::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height))
+                crate::draw::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height))
                     .to_path(0.1),
-                cherenkov::WorkingColor::BLACK,
+                crate::draw::WorkingColor::BLACK,
             );
             false
         }

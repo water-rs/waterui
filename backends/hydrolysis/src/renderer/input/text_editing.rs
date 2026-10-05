@@ -2,7 +2,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use unicode_segmentation::UnicodeSegmentation;
-use waterui_graphics::cherenkov::Draw as _;
+use waterui_graphics::draw::Draw as _;
 
 /// What became of a key press once the framework finished with it.
 ///
@@ -1097,7 +1097,7 @@ impl HydrolysisRenderer {
                         .map(|opacity| theme.input_caret_paint(opacity));
                     draw.clip(target.text_clip_bounds, |draw| {
                         draw.group(
-                            cherenkov::Group::new().opacity(target.content_alpha),
+                            waterui_graphics::draw::Group::new().opacity(target.content_alpha),
                             |draw| {
                                 if selection.is_collapsed() {
                                     if let Some(paint) = &caret_paint {

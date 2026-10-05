@@ -1,23 +1,61 @@
 name: Generate the Cherenkov scene tree
 description: >
-  Writes graphics/cherenkov/scenes/{fonts,corpus,perf}, which the
-  repository deliberately does not store: the OFL font subsets the
-  engine's test targets `include_bytes!`, and the corpus/perf scenes the
-  corpus renders and bench tests read. One command generates the whole
-  tree deterministically — the same bytes on every host — from the
-  pinned, sha256-verified upstream fonts in
-  `scenes/fonts/tools/fetch-fonts.py` (this is the same contract the
-  cherenkov repository's own CI ran under `scenes: generate`).
+  Writes graphics/cherenkov/scenes/fonts, and when `mode` is `full` also
+  scenes/corpus and scenes/perf. The repository deliberately does not
+  store them: the OFL font subsets the engine's test targets
+  `include_bytes!`, and the corpus/perf scenes the corpus renders and
+  bench tests read. Generation is deterministic — the same bytes on
+  every host — from the pinned, sha256-verified upstream fonts in
+  `scenes/fonts/tools/fetch-fonts.py`.
+
+inputs:
+  mode:
+    description: >
+      `fonts` writes only scenes/fonts, for a job whose reader is a
+      compile of those bytes. `full` also writes scenes/corpus and
+      scenes/perf for a job that runs the corpus, the perf scenes, or
+      the benches. Corpus and perf are generated on every such run and
+      are never cached.
+    required: true
 
 runs:
   using: composite
   steps:
-    # The full upstream fonts are the only network input: they are pinned
-    # by URL + sha256 in fetch-fonts.py, so one cache entry per tool
-    # revision is exact — it can never go stale, and it saves the fetch of
-    # ~150 MB on every job that generates the tree. OS-independent key:
-    # the files are pure data every platform's leg reads.
+    - name: Check mode
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+      run: |
+        case "$MODE" in
+          fonts|full) ;;
+          *)
+            echo "generate-scene-assets: mode must be fonts or full, got: ${MODE}" >&2
+            exit 1
+            ;;
+        esac
+    # The generated subsets are pure data, byte-identical across hosts, so
+    # the key has no OS in it and the archive is readable on every runner.
+    # Inputs are everything the font bytes are a function of: the generator
+    # script (which tools run, and in what order), the pinned fetch, the
+    # font tools, the cherenkov-scene generator, and the lockfile.
+    # Corpus and perf are not in this cache.
+    - name: Restore generated font subsets
+      id: font-subsets
+      uses: actions/cache@v4
+      with:
+        path: |
+          graphics/cherenkov/scenes/fonts/*.ttf
+          graphics/cherenkov/scenes/fonts/OFL.txt
+        enableCrossOsArchive: "true"
+        key: cherenkov-font-subsets-${{ hashFiles('graphics/cherenkov/scenes/tools/generate.py', 'graphics/cherenkov/scenes/fonts/tools/fetch-fonts.py', 'graphics/cherenkov/scenes/fonts/tools/**', 'graphics/cherenkov/scene/src/**', 'graphics/cherenkov/scene/Cargo.toml', 'Cargo.lock') }}
+    # The full upstream fonts are the only network input, and only the font
+    # generation reads them. They are pinned by URL + sha256 in
+    # fetch-fonts.py, so one cache entry per tool revision is exact — it can
+    # never go stale, and it saves the fetch of ~150 MB when the subsets
+    # themselves missed. OS-independent key: the files are pure data every
+    # platform's leg reads.
     - name: Restore fetched fonts
+      if: steps.font-subsets.outputs.cache-hit != 'true'
       uses: actions/cache@v4
       with:
         path: graphics/cherenkov/scenes/fonts/_full
@@ -25,12 +63,25 @@ runs:
     # The pinned font tools need Python >= 3.10 in a writable
     # environment; uv supplies it (runner Pythons may be externally
     # managed). `uv run --with-requirements` installs the exact
-    # requirements.txt the cherenkov repository pinned.
+    # requirements.txt the cherenkov repository pinned. A fonts-only job
+    # whose subsets restored has nothing to run.
     - uses: astral-sh/setup-uv@v10.2.0
-    - name: Generate the scene tree
+      if: steps.font-subsets.outputs.cache-hit != 'true' || inputs.mode == 'full'
+    - name: Generate the scene fonts
+      if: steps.font-subsets.outputs.cache-hit != 'true'
       shell: bash
       run: |
         set -euo pipefail
         cd graphics/cherenkov
         uv run --python 3.12 --with-requirements scenes/fonts/tools/requirements.txt \
-          python scenes/tools/generate.py
+          python scenes/tools/generate.py --fonts-only
+    # Corpus and perf stay generated on every run that reads them. They are
+    # not cached: a restored font tree is enough for this step.
+    - name: Generate the corpus and perf scenes
+      if: inputs.mode == 'full'
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd graphics/cherenkov
+        uv run --python 3.12 --with-requirements scenes/fonts/tools/requirements.txt \
+          python scenes/tools/generate.py --corpus-only

@@ -152,10 +152,12 @@ jobs:
       # fixtures — the repository stores none of them.
       - name: Generate Hydrolysis test assets
         uses: ./.github/actions/generate-test-assets
-      # And the Cherenkov test targets the workspace pass compiles: their
-      # scene fonts and corpus are generated, not committed.
+      # The instrumented nextest run executes the Cherenkov tests that
+      # read the generated fonts and scenes/corpus. Neither is committed.
       - name: Generate Cherenkov scene assets
         uses: ./.github/actions/generate-scene-assets
+        with:
+          mode: full
       - name: Prepare coverage target dir
         run: |
           mkdir -p target/llvm-cov-target

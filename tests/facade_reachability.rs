@@ -36,12 +36,12 @@ use waterui::easing::{EasingCurve, Interpolatable};
 use waterui::Intensity;
 
 // `.filter(F)` requires `F: Filter + RenderTransfer` and `.effect(E)` requires
-// `E: Effect + RenderTransfer`; `filtrate` (the filters and effects) and
-// `cherenkov` (the render-transfer trait) are re-exported at the graphics root
-// so an app links the same copies the engine runs.
+// `E: Effect + RenderTransfer`; `filtrate` (the filters and effects) and the
+// render-transfer trait are re-exported at the graphics root so an app links
+// the same copies the engine runs.
 #[cfg(feature = "gpu")]
 use waterui::graphics::{
-    cherenkov::RenderTransfer,
+    RenderTransfer,
     filtrate::{
         Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
         Filter,
