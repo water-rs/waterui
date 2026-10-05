@@ -167,8 +167,11 @@ fn render(config: BadgeConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
     }));
 
     host.set_layout_handler({
-        let state = Rc::clone(&state);
+        let state = Rc::downgrade(&state);
         move |view| {
+            let Some(state) = state.upgrade() else {
+                return;
+            };
             let state = state.borrow();
             let bounds = cocoa_ui::view::bounds(view);
             cocoa_ui::view::set_frame(state.content.view(), bounds);

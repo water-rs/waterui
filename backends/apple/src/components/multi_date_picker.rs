@@ -425,8 +425,11 @@ fn platform_controls(
         );
         cocoa_ui::view::add_subview(host_view, &borrowed.picker);
         borrowed.toggle.set_press_handler({
-            let state = Rc::clone(state);
+            let state = Rc::downgrade(state);
             move |_, pressed| {
+                let Some(state) = state.upgrade() else {
+                    return;
+                };
                 if pressed {
                     return;
                 }
@@ -575,8 +578,13 @@ fn render(config: MultiDatePickerConfig, ctx: &RenderContext<'_>) -> NativeLeaf 
     platform_controls(host_view, &state, &decorated_keys);
 
     host.set_layout_handler({
-        let state = Rc::clone(&state);
-        move |view| layout_children(view, &state.borrow())
+        let state = Rc::downgrade(&state);
+        move |view| {
+            let Some(state) = state.upgrade() else {
+                return;
+            };
+            layout_children(view, &state.borrow());
+        }
     });
 
     let mut leaf = NativeLeaf::new(

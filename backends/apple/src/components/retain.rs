@@ -82,8 +82,11 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // `contentView.frame = bounds`.
         host.set_layout_handler({
-            let state = Rc::clone(&state);
+            let state = Rc::downgrade(&state);
             move |host| {
+                let Some(state) = state.upgrade() else {
+                    return;
+                };
                 view::set_frame(state.child.view(), view::bounds(host));
             }
         });

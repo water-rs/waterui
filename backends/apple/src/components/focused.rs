@@ -17,7 +17,7 @@ use alloc::vec::Vec;
 use core::cell::Cell;
 
 use cocoa_ui::view::bounds;
-use cocoa_ui::{PlatformView, Rect, Retained, focus, view};
+use cocoa_ui::{PlatformView, Rect, focus, view};
 use waterui::component::focus::Focused;
 use waterui::reactive::Signal;
 use waterui_core::Metadata;
@@ -41,7 +41,9 @@ struct FocusedState {
 /// mirrors, and the flag coalescing deferred syncs.
 struct FocusSync {
     /// The wrapper's own view; both it and the target must be in a window.
-    container: Retained<PlatformView>,
+    /// Borrowed from the leaf's own view — the host-owned window callback
+    /// holding this object must not keep the host alive.
+    container: cocoa_ui::objc2::rc::Weak<PlatformView>,
     /// The child's single focus anchor.
     target: focus::FocusTarget,
     /// The `Focused` binding: requested focus out, platform focus back in.
@@ -77,7 +79,10 @@ fn request_sync(sync: &Rc<FocusSync>, mtm: cocoa_ui::MainThreadMarker) {
 /// nothing happens while either the container or the anchor is outside a
 /// window; a refused request is the same `fatalError` the Swift port raised.
 fn perform_sync(sync: &FocusSync) {
-    if !focus::in_window(&sync.container) || !focus::in_window(sync.target.view()) {
+    let Some(container) = sync.container.load() else {
+        return;
+    };
+    if !focus::in_window(&container) || !focus::in_window(sync.target.view()) {
         return;
     }
     if sync.binding.snapshot() {
@@ -144,7 +149,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let target = require_single_target(focus::targets_in(host_view));
 
         let sync = Rc::new(FocusSync {
-            container: view::retain_base(host_view),
+            container: cocoa_ui::objc2::rc::Weak::new(&*view::retain_base(host_view)),
             target,
             binding: metadata.value.0,
             scheduled: Cell::new(false),

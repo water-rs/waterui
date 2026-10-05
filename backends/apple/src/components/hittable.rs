@@ -79,8 +79,11 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // `hitTest`: disabled means the hit passes through the wrapper.
         host.set_hit_test_handler({
-            let state = Rc::clone(&state);
+            let state = Rc::downgrade(&state);
             move |_, _| {
+                let Some(state) = state.upgrade() else {
+                    return HitTest::Default;
+                };
                 if state.borrow().enabled.get() {
                     HitTest::Default
                 } else {
@@ -91,8 +94,11 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // The content always fills the wrapper.
         host.set_layout_handler({
-            let state = Rc::clone(&state);
+            let state = Rc::downgrade(&state);
             move |host| {
+                let Some(state) = state.upgrade() else {
+                    return;
+                };
                 let state = state.borrow();
                 view::set_frame(state.child.view(), view::bounds(host));
             }

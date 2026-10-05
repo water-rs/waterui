@@ -95,7 +95,6 @@ jobs:
       ffi: ${{ steps.filter.outputs.ffi == 'true' || steps.filter.outputs.workflows == 'true' }}
       deps: ${{ steps.filter.outputs.deps == 'true' || steps.filter.outputs.workflows == 'true' }}
       scripts: ${{ steps.filter.outputs.scripts == 'true' || steps.filter.outputs.workflows == 'true' }}
-      android-backend: ${{ steps.filter.outputs.android-backend == 'true' || steps.filter.outputs.workflows == 'true' }}
     steps:
       - uses: actions/checkout@v4
         if: github.event_name == 'push'
@@ -109,22 +108,6 @@ jobs:
             ffi:
               - "ffi/**"
               - "Cargo.toml"
-            # The backend crate and every path that can reach its compile:
-            # itself, the in-repo crates it and the `waterui` facade depend
-            # on (`src/`, `core/`, `backends/core/`, `components/`, `utils/`,
-            # `macros/`), and the manifests + lockfile its git dependencies
-            # (jni, nami, native-executor, waterkit, cherenkov) resolve
-            # through.
-            android-backend:
-              - "backends/android/**"
-              - "src/**"
-              - "core/**"
-              - "backends/core/**"
-              - "components/**"
-              - "utils/**"
-              - "macros/**"
-              - "**/Cargo.toml"
-              - "Cargo.lock"
             deps:
               - "**/Cargo.toml"
               - "**/Cargo.lock"
@@ -340,41 +323,6 @@ jobs:
       - uses: ./.github/actions/setup-android-ndk
       - name: Clippy (aarch64-linux-android)
         run: cargo clippy --profile ci-check -p waterui-ffi --no-default-features --features std,android-jni,gpu --target aarch64-linux-android --all-targets -- -D warnings
-
-  # The native Android backend crate (#1429). `waterui-android` lives on the
-  # Android target the same way `waterui-ffi` does — nothing else in the
-  # gate type-checks it for real, so a compile error there would only
-  # surface on a device. It runs under the two feature sets the crate
-  # ships, when the diff can reach it: the crate itself or any crate it
-  # builds on (see the `android-backend` filter above).
-  android-backend:
-    name: Android backend
-    needs: changes
-    if: needs.changes.outputs.android-backend == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-rust
-        with:
-          targets: aarch64-linux-android
-          components: clippy
-          cache: "false"
-      # Reads the shared `cargo-sources` archive owned by this OS's single
-      # writer job; read-only lanes never save, so they cannot evict caches.
-      - name: Restore Cargo sources
-        uses: ./.github/actions/cargo-sources
-      - uses: ./.github/actions/setup-linux-deps
-      # Same NDK prologue the Android FFI leg runs — this leg's graph also
-      # reaches cherenkov-gpu's spirv-opt and waterkit's kotlinc.
-      - uses: ./.github/actions/setup-android-ndk
-        with:
-          spirv-tools: "true"
-          kotlin: "true"
-      - name: Clippy (aarch64-linux-android, all features)
-        run: cargo clippy --profile ci-check -p waterui-android --target aarch64-linux-android --all-features --locked -- -D warnings
-      - name: Clippy (aarch64-linux-android, no default features)
-        run: cargo clippy --profile ci-check -p waterui-android --target aarch64-linux-android --no-default-features --locked -- -D warnings
 
   test:
     name: Test

@@ -68,14 +68,27 @@ def copy_file(source: pathlib.Path, destination: pathlib.Path) -> pathlib.Path:
 
 
 def package_owner(path: pathlib.Path) -> str:
-    result = subprocess.run(
-        ["dpkg-query", "-S", str(path)],
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-    )
-    if result.returncode != 0:
+    # lddtree reports the resolved path, which sits under /usr on merged-usr
+    # systems; dpkg's database still records the pre-merge /lib|/bin|/sbin
+    # spelling, so a /usr-prefixed path may need its merged alias stripped
+    # before the query matches.
+    candidates = [str(path)]
+    merged = str(path)
+    for directory in ("/usr/lib", "/usr/bin", "/usr/sbin"):
+        if merged.startswith(directory + "/"):
+            candidates.append(merged.removeprefix("/usr"))
+            break
+    for candidate in candidates:
+        result = subprocess.run(
+            ["dpkg-query", "-S", candidate],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        if result.returncode == 0:
+            break
+    else:
         raise RuntimeError(f"runtime dependency has no Debian package owner: {path}")
     return result.stdout.split(":", maxsplit=1)[0].split(",", maxsplit=1)[0]
 

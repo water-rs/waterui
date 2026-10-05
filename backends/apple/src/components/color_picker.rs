@@ -261,6 +261,47 @@ impl SubView for ColorPickerSubView {
     }
 }
 
+/// `Binding`/`Computed` → well: each `Color` the binding produces is
+/// resolved in this environment and observed — `observeColor` re-arming
+/// on every `Color` the binding emits, as `WuiColorPicker` does.
+fn bind_value_well(
+    leaf: &mut NativeLeaf,
+    value: &waterui::reactive::Binding<Color>,
+    state: &Rc<RefCell<ColorPickerState>>,
+    env: &waterui_backend_core::Environment,
+    support_hdr: bool,
+) {
+    leaf.bind(value, {
+        let state = Rc::clone(state);
+        let env = env.clone();
+        move |color| {
+            let resolved = color.resolve(&env);
+            let apply = |resolved: &WorkingColor| {
+                let state = state.borrow();
+                state.syncing.set(true);
+                state.well.set_color(&platform_color(resolved, support_hdr));
+                state.syncing.set(false);
+            };
+            apply(&resolved.snapshot());
+            let guard = resolved.watch({
+                let state = Rc::downgrade(&state);
+                move |ctx| {
+                    let Some(state) = state.upgrade() else {
+                        return;
+                    };
+                    let state = state.borrow();
+                    state.syncing.set(true);
+                    state
+                        .well
+                        .set_color(&platform_color(ctx.value(), support_hdr));
+                    state.syncing.set(false);
+                }
+            });
+            state.borrow_mut().color_guard = Some(guard);
+        }
+    });
+}
+
 /// Installs the `color_picker` handler on the dispatcher:
 /// `Native<ColorPickerConfig>` maps to a container view with the label
 /// child and the platform color well.
@@ -317,8 +358,13 @@ pub fn install(dispatcher: &mut Dispatcher) {
         }));
 
         host.set_layout_handler({
-            let state = Rc::clone(&state);
-            move |view| layout_children(view, &state.borrow())
+            let state = Rc::downgrade(&state);
+            move |view| {
+                let Some(state) = state.upgrade() else {
+                    return;
+                };
+                layout_children(view, &state.borrow());
+            }
         });
 
         let mut leaf = NativeLeaf::new(
@@ -331,32 +377,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // Binding → well: each `Color` the binding produces is resolved in
         // this environment and observed — `observeColor` re-arming on every
         // `Color` the binding emits, as `WuiColorPicker` does.
-        leaf.bind(&config.value, {
-            let state = Rc::clone(&state);
-            let env = ctx.env().clone();
-            move |color| {
-                let resolved = color.resolve(&env);
-                let apply = |resolved: &WorkingColor| {
-                    let state = state.borrow();
-                    state.syncing.set(true);
-                    state.well.set_color(&platform_color(resolved, support_hdr));
-                    state.syncing.set(false);
-                };
-                apply(&resolved.snapshot());
-                let guard = resolved.watch({
-                    let state = Rc::clone(&state);
-                    move |ctx| {
-                        let state = state.borrow();
-                        state.syncing.set(true);
-                        state
-                            .well
-                            .set_color(&platform_color(ctx.value(), support_hdr));
-                        state.syncing.set(false);
-                    }
-                });
-                state.borrow_mut().color_guard = Some(guard);
-            }
-        });
+        bind_value_well(&mut leaf, &config.value, &state, ctx.env(), support_hdr);
 
         // The label's semantic text is announced on the well.
         let accessibility_label = config.label.accessibility_label();

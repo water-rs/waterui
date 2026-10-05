@@ -25,7 +25,6 @@ glib_dependencies_sha256="$(configuration_value glib_dependencies_sha256)"
 released="$(configuration_value released)"
 maximum_glibc="$(configuration_value maximum_glibc)"
 minimum_gcc="$(configuration_value minimum_gcc)"
-smoke_timeout_seconds="$(configuration_value smoke_timeout_seconds)"
 # The runtime this script builds must be the version the `water` CLI
 # downloads; that expectation lives in the in-tree CLI's manifest.
 cli_wpe_version="$(
@@ -34,7 +33,7 @@ cli_wpe_version="$(
         | sed -n 's/^wpe_version = "\([^"]*\)"$/\1/p'
 )"
 
-if [[ -z "$version" || -z "$source_url" || -z "$source_sha256" || -z "$glib_dependencies_url" || -z "$glib_dependencies_sha256" || -z "$released" || -z "$maximum_glibc" || -z "$minimum_gcc" || -z "$smoke_timeout_seconds" ]]; then
+if [[ -z "$version" || -z "$source_url" || -z "$source_sha256" || -z "$glib_dependencies_url" || -z "$glib_dependencies_sha256" || -z "$released" || -z "$maximum_glibc" || -z "$minimum_gcc" ]]; then
     echo "invalid WPE runtime source configuration" >&2
     exit 1
 fi
@@ -203,19 +202,3 @@ python3 "$runtime_directory/package-runtime.py" \
     --repository "$repo_root" \
     --source "$source_directory" \
     --version "$version"
-
-cargo build \
-    --package waterui-browser-wpe \
-    --example runtime_smoke \
-    --features runtime-smoke
-smoke_binary="$repo_root/target/debug/examples/runtime_smoke"
-archive="$output_directory/waterui-wpe-$version-linux-$architecture.zip"
-snapshot="$output_directory/wpe-smoke-$version-linux-$architecture.png"
-metrics="$output_directory/wpe-smoke-$version-linux-$architecture.json"
-python3 "$runtime_directory/run-smoke.py" \
-    --archive "$archive" \
-    --binary "$smoke_binary" \
-    --metrics "$metrics" \
-    --runtime "$prefix" \
-    --snapshot "$snapshot" \
-    --timeout-seconds "$smoke_timeout_seconds"

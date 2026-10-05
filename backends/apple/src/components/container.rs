@@ -594,9 +594,14 @@ fn install_scroll_observation(state: &mut ContainerState) {
     let Some(scroll_view) = enclosing_scroll_view(&state.host) else {
         return;
     };
-    let host = state.host.clone();
+    // The observation lives inside the state; borrow the view rather
+    // than retain it — the state owns the host, not the other way around,
+    // and a dead view needs no layout pass.
+    let host = objc2::rc::Weak::new(&*state.host);
     state.scroll = Some(observe_scroll_viewport(&scroll_view, move || {
-        host.set_needs_layout();
+        if let Some(host) = host.load() {
+            host.set_needs_layout();
+        }
     }));
 }
 
@@ -904,8 +909,13 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // The scroll-surface search descends through this container's
         // children, in stacking order.
         host.set_scroll_surface_handler({
-            let state = Rc::clone(&state);
+            // Optional query callback: weak state, natural empty answer
+            // once the leaf's owner is gone (WaterUI #1575).
+            let state = Rc::downgrade(&state);
             move |_host| {
+                let Some(state) = state.upgrade() else {
+                    return Vec::new();
+                };
                 let state = state.borrow();
                 state
                     .order
@@ -916,9 +926,14 @@ pub fn install(dispatcher: &mut Dispatcher) {
         });
         let pending = Rc::new(RefCell::new(PendingChildren::default()));
         host.set_measure_handler({
-            let state = Rc::clone(&state);
+            // Weak state — the handler must not own the leaf (#1575). A
+            // live mounted leaf always owns it, so the upgrade is explicit.
+            let state = Rc::downgrade(&state);
             let pending = Rc::clone(&pending);
             move |_host, proposal| {
+                let state = state
+                    .upgrade()
+                    .expect("container measure outlived its leaf");
                 let measured = measure(&state, &pending, to_proposal(proposal));
                 cocoa_ui::Size::new(
                     f64::from(measured.size.width),
@@ -927,17 +942,27 @@ pub fn install(dispatcher: &mut Dispatcher) {
             }
         });
         host.set_layout_handler({
-            let state = Rc::clone(&state);
+            // Lifecycle callback — the platform view may legitimately
+            // outlive its leaf through a native retain or a queued layout
+            // pass, so a dead owner no-ops (WaterUI #1575).
+            let state = Rc::downgrade(&state);
             let pending = Rc::clone(&pending);
-            move |_host| perform_layout(&state, &pending)
+            move |_host| {
+                if let Some(state) = state.upgrade() {
+                    perform_layout(&state, &pending);
+                }
+            }
         });
         // Moving superviews can change the enclosing scroll view.
         host.set_superview_handler({
-            let state = Rc::clone(&state);
+            // Lifecycle callback: no-op once the owner is gone.
+            let state = Rc::downgrade(&state);
             move |_host| {
-                let mut borrowed = state.borrow_mut();
-                teardown_scroll_observation(&mut borrowed);
-                install_scroll_observation(&mut borrowed);
+                if let Some(state) = state.upgrade() {
+                    let mut borrowed = state.borrow_mut();
+                    teardown_scroll_observation(&mut borrowed);
+                    install_scroll_observation(&mut borrowed);
+                }
             }
         });
 
@@ -988,10 +1013,15 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // `WuiLayoutInvalidationTarget.invalidate`: rebuild by re-laying
         // out, since stretch axes and priorities bake into the child set.
         let layout_guards = state.borrow().layout.watch_invalidation(Rc::new({
-            let state = Rc::clone(&state);
-            let host = host.clone();
+            // The guards are stored inside the very state a strong capture
+            // would keep alive — a self-cycle with no outside participant
+            // (WaterUI #1575). Both captures stay weak; a dead owner no-ops.
+            let state = Rc::downgrade(&state);
+            let host = objc2::rc::Weak::new(&*host);
             move || {
-                let _ = &state;
+                let (Some(_state), Some(host)) = (state.upgrade(), host.load()) else {
+                    return;
+                };
                 crate::invalidation::invalidate_layout_hierarchy(&host);
             }
         }));
