@@ -169,6 +169,9 @@ pub unsafe fn mount(
     };
     keepalive.keep(crate::locale::install(&mut env, mtm));
     let parts = app(env).into_parts();
+    // An embedded application's lifetime belongs to its host — iOS kills the
+    // process without notice — so the termination machine is never started.
+    let _ = parts.termination;
     #[allow(unused_mut)]
     let mut env = parts.env;
     #[cfg(feature = "webview")]

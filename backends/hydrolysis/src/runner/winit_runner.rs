@@ -20,7 +20,9 @@ use executor_core::{
     try_init_local_executor,
 };
 use nami::Signal;
-use waterui::app::{App, AppParts, LastWindowPolicy};
+use waterui::app::{
+    App, AppParts, LastWindowPolicy, TerminationHandle, TerminationHost, TerminationKind,
+};
 use waterui::window::{Monitor, MonitorSelector, Window, WindowState};
 use waterui_core::Environment;
 #[cfg(hydrolysis_wayland_platform)]
@@ -55,7 +57,9 @@ pub(super) enum RunnerEvent {
     /// `x11_state_watch`).
     #[cfg(hydrolysis_wayland_platform)]
     X11VisibilitySignal,
-    /// Sent by the termination handler installed in [`run`].
+    /// Sent by the termination handler installed in [`run`]: the runner
+    /// files a [`Required`](TerminationKind::Required) request with its
+    /// [`TerminationHandle`].
     ///
     /// No windowing system turns a termination signal into a winit event, on
     /// any desktop platform, so the runner listens for the signals itself. The
@@ -63,6 +67,14 @@ pub(super) enum RunnerEvent {
     /// Windows console control events.
     #[cfg(any(unix, windows))]
     Terminate,
+    /// The termination machine finished its work — the runner's
+    /// [`TerminationHost`] sent it — so teardown happens on the event loop,
+    /// where runtime cleanup is safe.
+    TerminationFinished,
+    /// The console window closing, sent by `console_close_handler`, which
+    /// blocks until the sender sends — once the machine reports `terminate`.
+    #[cfg(target_os = "windows")]
+    ConsoleClose(mpsc::Sender<()>),
 }
 
 /// What a termination signal does, given how many arrived before it.
@@ -111,18 +123,21 @@ const FORCED_TERMINATION_EXIT_CODE: i32 = 130;
 /// Turns termination signals into [`RunnerEvent::Terminate`].
 ///
 /// The `termination` feature of `ctrlc` covers SIGINT, SIGTERM and SIGHUP on
-/// Unix and the console close/logoff/shutdown events on Windows, so every way a
-/// desktop shell or session manager asks a windowed app to stop reaches the
-/// same teardown the last window closing does.
+/// Unix and Ctrl+C and Ctrl+Break on Windows, so every way a desktop shell or
+/// session manager asks a windowed app to stop reaches the same teardown the
+/// last window closing does. Closing the Windows console goes to
+/// `console_close_handler` instead, which holds the event open until
+/// `on_terminate` finished; a logoff or shutdown reaches the application
+/// windows as `WM_ENDSESSION` (see `session_end_proc`).
 #[cfg(any(unix, windows))]
 fn install_termination_handler(event_proxy: &winit::event_loop::EventLoopProxy<RunnerEvent>) {
-    let event_proxy = event_proxy.clone();
     let requests = TerminationRequests::default();
+    let signal_proxy = event_proxy.clone();
     ctrlc::set_handler(move || match requests.record() {
         TerminationAction::RequestExit => {
             // `ctrlc` runs this on a thread of its own rather than inside a
             // signal handler, so waking the loop from here is an ordinary send.
-            let _ = event_proxy.send_event(RunnerEvent::Terminate);
+            let _ = signal_proxy.send_event(RunnerEvent::Terminate);
         }
         TerminationAction::ForceExit => {
             tracing::warn!(
@@ -132,6 +147,8 @@ fn install_termination_handler(event_proxy: &winit::event_loop::EventLoopProxy<R
         }
     })
     .expect("hydrolysis runner: failed to install the termination handler");
+    #[cfg(target_os = "windows")]
+    install_console_close_handler(event_proxy);
 }
 
 /// Whether the event loop ends, given the application's last-window policy
@@ -144,6 +161,344 @@ const fn ends_event_loop(policy: LastWindowPolicy, open_windows: usize) -> bool 
         LastWindowPolicy::Quit => open_windows == 0,
         LastWindowPolicy::StayResident => false,
     }
+}
+
+/// The runner's [`TerminationHost`]: the machine's `terminate` arrives on
+/// the event loop as [`RunnerEvent::TerminationFinished`] — teardown only
+/// runs on the loop thread. On Windows it also tells the session-end paths
+/// that `on_terminate` finished, and both answers release the
+/// `ShutdownBlockReason`s the `WM_QUERYENDSESSION` subclass created.
+struct WinitTerminationHost {
+    event_proxy: winit::event_loop::EventLoopProxy<RunnerEvent>,
+    #[cfg(target_os = "windows")]
+    session_end: Rc<SessionEnd>,
+}
+
+impl TerminationHost for WinitTerminationHost {
+    fn terminate(&self) {
+        #[cfg(target_os = "windows")]
+        self.session_end.terminated();
+        let _ = self
+            .event_proxy
+            .send_event(RunnerEvent::TerminationFinished);
+    }
+    fn refuse(&self) {
+        #[cfg(target_os = "windows")]
+        self.session_end.destroy_block_reasons();
+    }
+}
+
+/// What the Windows session-end paths share with the runner's
+/// [`TerminationHost`].
+///
+/// Windows ends the process as soon as a session-end notification returns —
+/// `WM_ENDSESSION` on an application window for a logoff or shutdown, or
+/// the console close event — so each of them holds its notification open
+/// until the machine reports `terminate`, which is what proves
+/// `on_terminate` ran to completion.
+#[cfg(target_os = "windows")]
+#[derive(Default)]
+struct SessionEnd {
+    /// HWNDs holding a `ShutdownBlockReasonCreate`, filled by the
+    /// `WM_QUERYENDSESSION` subclass.
+    block_reasons: RefCell<std::collections::HashSet<isize>>,
+    /// Whether the machine reported `terminate`.
+    terminated: std::cell::Cell<bool>,
+    /// Console control handlers waiting for `terminate`, each released by a
+    /// send on its channel.
+    console_waiters: RefCell<Vec<mpsc::Sender<()>>>,
+}
+
+#[cfg(target_os = "windows")]
+impl SessionEnd {
+    /// Destroys every outstanding `ShutdownBlockReason` — on `terminate`
+    /// because the veto is moot, on `refuse` because the veto is lifted.
+    fn destroy_block_reasons(&self) {
+        for hwnd in self.block_reasons.borrow_mut().drain() {
+            // SAFETY: each hwnd is an application window this process owns
+            // and the reason it holds was created by `session_end_proc`.
+            unsafe {
+                windows_sys::Win32::System::Shutdown::ShutdownBlockReasonDestroy(hwnd);
+            }
+        }
+    }
+
+    /// The machine reported `terminate`: release every session-end path
+    /// waiting on it.
+    fn terminated(&self) {
+        self.destroy_block_reasons();
+        self.terminated.set(true);
+        for waiter in self.console_waiters.borrow_mut().drain(..) {
+            // A waiter whose handler thread is gone has nothing to release.
+            let _ = waiter.send(());
+        }
+    }
+
+    /// Holds a console control handler until the machine reports
+    /// `terminate` — released at once when it already has.
+    fn release_console_on_terminate(&self, waiter: mpsc::Sender<()>) {
+        if self.terminated.get() {
+            let _ = waiter.send(());
+        } else {
+            self.console_waiters.borrow_mut().push(waiter);
+        }
+    }
+}
+
+/// State handed to the session-end subclass: the machine to report through,
+/// what the host shares with the session-end paths, and the main-thread
+/// executor's queue, which `WM_ENDSESSION` drives itself while it holds the
+/// message open.
+#[cfg(target_os = "windows")]
+struct TerminationSubclass {
+    termination: TerminationHandle,
+    session_end: Rc<SessionEnd>,
+    runnables: Rc<mpsc::Receiver<Runnable>>,
+}
+
+#[cfg(target_os = "windows")]
+impl TerminationSubclass {
+    /// Runs main-thread tasks until the machine reports `terminate`.
+    ///
+    /// The event loop is inside this window message, so it neither runs the
+    /// executor nor pumps the thread's message queue until the message
+    /// returns. This loop does both: it runs every runnable queued so far,
+    /// then waits for the queue to receive input and dispatches it. A waker
+    /// on any thread queues its runnable and posts the loop's wake-up
+    /// message, so the wait ends for executor work as well as for the
+    /// window and loop messages an `on_terminate` future may be awaiting.
+    ///
+    /// # Panics
+    ///
+    /// When `MsgWaitForMultipleObjectsEx` fails, with `GetLastError`.
+    fn run_until_terminated(&self) {
+        use windows_sys::Win32::Foundation::WAIT_FAILED;
+        use windows_sys::Win32::System::Threading::INFINITE;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            DispatchMessageW, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE,
+            PeekMessageW, QS_ALLINPUT, TranslateMessage,
+        };
+        loop {
+            while let Ok(runnable) = self.runnables.try_recv() {
+                runnable.run();
+            }
+            if self.session_end.terminated.get() {
+                return;
+            }
+            // SAFETY: no handles are passed, so the wait is on this thread's
+            // message queue alone.
+            let woke = unsafe {
+                MsgWaitForMultipleObjectsEx(
+                    0,
+                    std::ptr::null(),
+                    INFINITE,
+                    QS_ALLINPUT,
+                    MWMO_INPUTAVAILABLE,
+                )
+            };
+            assert!(
+                woke != WAIT_FAILED,
+                "hydrolysis runner: waiting for on_terminate at session end failed: {}",
+                std::io::Error::last_os_error()
+            );
+            // SAFETY: `MSG` is plain data, and the all-zero value is valid.
+            let mut msg: MSG = unsafe { std::mem::zeroed() };
+            // SAFETY: `msg` is a writable `MSG`; a null HWND takes every
+            // message of this thread.
+            while unsafe { PeekMessageW(&raw mut msg, 0, 0, 0, PM_REMOVE) } != 0 {
+                // SAFETY: `msg` was just filled by `PeekMessageW`.
+                unsafe {
+                    TranslateMessage(&raw const msg);
+                    DispatchMessageW(&raw const msg);
+                }
+            }
+        }
+    }
+}
+
+/// `SetWindowSubclass` id for the session-end subclass. Unique per window
+/// among this process's subclasses — this module is the only one that
+/// subclasses application windows.
+#[cfg(target_os = "windows")]
+const TERMINATION_SUBCLASS_ID: usize = 1;
+
+/// Answers the session-end messages on an application window.
+///
+/// `WM_QUERYENDSESSION` and `WM_ENDSESSION` arrive on every top-level window
+/// of the process, so the subclass is installed on each application window
+/// where the menu bar attaches its `HMENU`.
+///
+/// - `WM_QUERYENDSESSION` asks whether the session may end. With
+///   termination hooks set the proc blocks the shutdown with a reason
+///   string, answers `FALSE`, and files a cancellable request — the machine
+///   deduplicates the per-window repetition. With no hook there is nothing
+///   to ask, so the message passes through, letting the session end.
+/// - `WM_ENDSESSION` with `wParam` `TRUE` says the session is ending
+///   regardless — the user chose to end it anyway, or nobody vetoed. The
+///   proc files a required request, then runs the local executor and
+///   dispatches the thread's messages until the machine reports
+///   `terminate`, so `on_terminate` has finished before the message returns
+///   and Windows ends the process.
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn session_end_proc(
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    msg: u32,
+    wparam: windows_sys::Win32::Foundation::WPARAM,
+    lparam: windows_sys::Win32::Foundation::LPARAM,
+    _uidsubclass: usize,
+    refdata: usize,
+) -> windows_sys::Win32::Foundation::LRESULT {
+    use windows_sys::Win32::System::Shutdown::ShutdownBlockReasonCreate;
+    use windows_sys::Win32::UI::Shell::DefSubclassProc;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{WM_ENDSESSION, WM_QUERYENDSESSION};
+    // SAFETY: `refdata` is the `TerminationSubclass` box installed by
+    // `install_termination_subclass`, alive until
+    // `remove_termination_subclass` reclaims it at window teardown.
+    let subclass = unsafe { &*(refdata as *const TerminationSubclass) };
+    match msg {
+        WM_QUERYENDSESSION if subclass.termination.has_hooks() => {
+            // SAFETY: `hwnd` is the window the message arrived on.
+            unsafe {
+                ShutdownBlockReasonCreate(hwnd, windows_sys::w!("The application is finishing up"));
+            }
+            subclass.session_end.block_reasons.borrow_mut().insert(hwnd);
+            subclass.termination.request(TerminationKind::Cancellable);
+            0
+        }
+        WM_ENDSESSION if wparam != 0 => {
+            subclass.termination.request(TerminationKind::Required);
+            subclass.run_until_terminated();
+            0
+        }
+        // SAFETY: forwarding every unclaimed message to the previous proc.
+        _ => unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) },
+    }
+}
+
+/// Subclasses an application window's `HWND` for the session-end messages.
+///
+/// # Panics
+///
+/// When `SetWindowSubclass` fails, with the error `GetLastError` reports:
+/// the window would otherwise end with the session without running
+/// `on_terminate`.
+#[cfg(target_os = "windows")]
+fn install_termination_subclass(hwnd: isize, subclass: TerminationSubclass) {
+    use windows_sys::Win32::UI::Shell::SetWindowSubclass;
+    let subclass = Box::into_raw(Box::new(subclass));
+    // SAFETY: `hwnd` is a live application window this process owns; the
+    // `TerminationSubclass` allocation is reclaimed by
+    // `remove_termination_subclass` before the window is destroyed.
+    let installed = unsafe {
+        SetWindowSubclass(
+            hwnd,
+            Some(session_end_proc),
+            TERMINATION_SUBCLASS_ID,
+            subclass as usize,
+        )
+    };
+    if installed == 0 {
+        let error = std::io::Error::last_os_error();
+        // SAFETY: the subclass was not installed, so nothing else holds the
+        // allocation `Box::into_raw` produced above.
+        drop(unsafe { Box::from_raw(subclass) });
+        panic!(
+            "hydrolysis runner: SetWindowSubclass failed on an application window, so its \
+             session end would skip on_terminate: {error}"
+        );
+    }
+}
+
+/// Removes the session-end subclass before the window's `HWND` is
+/// destroyed — the same teardown point the menu bar detaches at.
+#[cfg(target_os = "windows")]
+fn remove_termination_subclass(hwnd: isize) {
+    use windows_sys::Win32::UI::Shell::{GetWindowSubclass, RemoveWindowSubclass};
+    // SAFETY: `hwnd` is still a live application window (this runs before
+    // the winit window is dropped).
+    unsafe {
+        let mut refdata = 0usize;
+        if GetWindowSubclass(
+            hwnd,
+            Some(session_end_proc),
+            TERMINATION_SUBCLASS_ID,
+            &raw mut refdata,
+        ) != 0
+            && RemoveWindowSubclass(hwnd, Some(session_end_proc), TERMINATION_SUBCLASS_ID) != 0
+            && refdata != 0
+        {
+            let subclass = Box::from_raw(refdata as *mut TerminationSubclass);
+            // A reason this window still holds dies with it.
+            subclass
+                .session_end
+                .block_reasons
+                .borrow_mut()
+                .remove(&hwnd);
+        }
+    }
+}
+
+/// The event loop the console control handler reports to.
+///
+/// `SetConsoleCtrlHandler` calls a bare function pointer with no context
+/// argument, so the one piece of state the handler needs — how to reach the
+/// loop — has to live in a process-wide slot. It is set once, by
+/// [`install_console_close_handler`].
+#[cfg(target_os = "windows")]
+static CONSOLE_CLOSE: std::sync::OnceLock<winit::event_loop::EventLoopProxy<RunnerEvent>> =
+    std::sync::OnceLock::new();
+
+/// Holds the console close event open until `on_terminate` finished.
+///
+/// Windows ends the process as soon as the handler for this event returns,
+/// and `ctrlc`'s handler returns at once, so the request it wakes the loop
+/// with would never be served. This handler runs first — the system calls
+/// the most recently registered handler first — files a required request on
+/// the loop, and blocks its own thread, which the system created for the
+/// event, until the machine reports `terminate`. Ctrl+C and Ctrl+Break fall
+/// through to `ctrlc`. The logoff and shutdown control events never arrive:
+/// the system withholds them from a process that loads user32, and the
+/// application windows receive `WM_ENDSESSION` instead.
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn console_close_handler(
+    ctrl_type: u32,
+) -> windows_sys::Win32::Foundation::BOOL {
+    use windows_sys::Win32::System::Console::CTRL_CLOSE_EVENT;
+    if ctrl_type != CTRL_CLOSE_EVENT {
+        return 0;
+    }
+    let event_proxy = CONSOLE_CLOSE
+        .get()
+        .expect("the console handler is registered after its event loop is recorded");
+    let (released, release) = mpsc::channel();
+    // A loop that already exited drops the event and its sender, which ends
+    // the wait at once.
+    let _ = event_proxy.send_event(RunnerEvent::ConsoleClose(released));
+    let _ = release.recv();
+    1
+}
+
+/// Registers [`console_close_handler`] ahead of `ctrlc`'s handler.
+///
+/// # Panics
+///
+/// When it is called a second time in the process, or when
+/// `SetConsoleCtrlHandler` fails.
+#[cfg(target_os = "windows")]
+fn install_console_close_handler(event_proxy: &winit::event_loop::EventLoopProxy<RunnerEvent>) {
+    use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
+    assert!(
+        CONSOLE_CLOSE.set(event_proxy.clone()).is_ok(),
+        "hydrolysis runner: the console close handler is installed once per process"
+    );
+    // SAFETY: `console_close_handler` matches `PHANDLER_ROUTINE` and lives
+    // for the whole process.
+    let installed = unsafe { SetConsoleCtrlHandler(Some(console_close_handler), 1) };
+    assert!(
+        installed != 0,
+        "hydrolysis runner: failed to install the console close handler: {}",
+        std::io::Error::last_os_error()
+    );
 }
 
 struct PendingWindow {
@@ -230,14 +585,11 @@ pub fn run(
         menu_bar,
         env,
         last_window,
+        termination,
     } = app.into_parts();
-    if ends_event_loop(last_window, windows.len()) {
-        tracing::info!(
-            "hydrolysis runner: the application declares no window and quits after its last one; \
-             nothing to run"
-        );
-        return;
-    }
+    // No early return for a windowless `Quit` launch: its required
+    // termination goes through the machine like every other path, and its
+    // hook future needs the loop running — the first `resumed` files it.
     let mut event_loop_builder = EventLoop::<RunnerEvent>::with_user_event();
     #[cfg(target_os = "macos")]
     {
@@ -268,6 +620,7 @@ pub fn run(
         .expect("hydrolysis runner: failed to create event loop");
     let event_proxy = event_loop.create_proxy();
     let (local_runnable_tx, local_runnable_rx) = mpsc::channel::<Runnable>();
+    let local_runnable_rx = Rc::new(local_runnable_rx);
     let local_executor = WinitMainThreadExecutor {
         runnable_tx: local_runnable_tx,
         event_proxy: event_proxy.clone(),
@@ -314,22 +667,6 @@ pub fn run(
     // the menu's chords to that window's dispatch, which must resolve them
     // while the menu is open (water-rs/hydrolysis#247).
     let _ = env.get_or_insert_with::<MenuShortcutRegistry, _>(MenuShortcutRegistry::default);
-    // The app's menu bar: its command chords arm on the shared registry,
-    // and the native menu-bar surface installs where the platform has
-    // one — see `menu_bar` for the per-platform contract (the two chord
-    // paths see disjoint keys, so dispatch stays exactly-once).
-    // Only the winit runner turns the resolved menus into a native
-    // surface: `NSApp.mainMenu` on macOS, an `HMENU` per application
-    // window on Windows. Every other runner just arms the chords. The
-    // event loop is the main thread, which is what the install's
-    // `MainThreadMarker` contract needs.
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    let native_menu_bar = crate::platform::native_menu_bar::NativeMenuBar::install(
-        &super::menu_bar::register_menu_bar(&menu_bar, &env),
-        &env,
-    );
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    super::menu_bar::register_menu_bar(&menu_bar, &env);
     crate::theme::install_theme_tokens(&mut env, Some(&style));
     let theme: Rc<dyn crate::engine::WidgetTheme> = Rc::new(style);
     env.insert(waterui_core::ViewRenderer::new(
@@ -345,6 +682,37 @@ pub fn run(
     fonts.clone().install(&mut env);
     let window_icon =
         load_staged_window_icon(waterui_core::ResourceContext::from_environment(&env));
+    // The machine installs `Quit` into the composition-root environment and
+    // hands its hooks that environment as it stands now; their futures run
+    // on the local executor the first `resumed` installs.
+    #[cfg(target_os = "windows")]
+    let session_end = Rc::new(SessionEnd::default());
+    let termination = termination.start(
+        &mut env,
+        WinitTerminationHost {
+            event_proxy: event_proxy.clone(),
+            #[cfg(target_os = "windows")]
+            session_end: Rc::clone(&session_end),
+        },
+    );
+    // The app's menu bar resolves after the machine installed `Quit`, so a
+    // declared `MenuItem::Quit` and `|quit: Quit|` command actions find it.
+    // Its command chords arm on the shared registry, and the native
+    // menu-bar surface installs where the platform has one — see `menu_bar`
+    // for the per-platform contract (the two chord paths see disjoint keys,
+    // so dispatch stays exactly-once).
+    // Only the winit runner turns the resolved menus into a native
+    // surface: `NSApp.mainMenu` on macOS, an `HMENU` per application
+    // window on Windows. Every other runner just arms the chords. The
+    // event loop is the main thread, which is what the install's
+    // `MainThreadMarker` contract needs.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    let native_menu_bar = crate::platform::native_menu_bar::NativeMenuBar::install(
+        &super::menu_bar::register_menu_bar(&menu_bar, &env),
+        &env,
+    );
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    super::menu_bar::register_menu_bar(&menu_bar, &env);
     let mut runner = WinitRunner {
         env,
         theme,
@@ -370,6 +738,9 @@ pub fn run(
         outside_pointer_presses: 0,
         focused_window: None,
         last_pointer_window: None,
+        termination,
+        #[cfg(target_os = "windows")]
+        session_end,
         #[cfg(hydrolysis_wayland_platform)]
         x11_state_watch: None,
     };
@@ -419,7 +790,10 @@ struct WinitRunner {
     /// reachable (the first `resumed`), which is the earliest winit 0.30
     /// exposes monitor enumeration.
     local_executor: Option<WinitMainThreadExecutor>,
-    local_runnable_rx: mpsc::Receiver<Runnable>,
+    /// The main-thread executor's queue — shared with the Windows
+    /// session-end subclass, which drives it while it holds `WM_ENDSESSION`
+    /// open.
+    local_runnable_rx: Rc<mpsc::Receiver<Runnable>>,
     event_proxy: winit::event_loop::EventLoopProxy<RunnerEvent>,
     render_diagnostics_config: RenderDiagnosticsConfig,
     /// Raw pointer presses seen at the device level but not (yet) matched by a
@@ -433,6 +807,14 @@ struct WinitRunner {
     /// pointer position, so for `MonitorSelector::Pointer` this window's
     /// monitor stands in for the pointer's home.
     last_pointer_window: Option<WindowId>,
+    /// The termination machine every quit path reports through: signals,
+    /// the last window closing, `Quit` in the environment, Windows'
+    /// `WM_QUERYENDSESSION`.
+    termination: TerminationHandle,
+    /// What the Windows session-end paths — the window subclass and the
+    /// console control handler — share with the `TerminationHost`.
+    #[cfg(target_os = "windows")]
+    session_end: Rc<SessionEnd>,
     /// The second-connection `_NET_WM_STATE`/unmap watch that delivers the
     /// X11 transitions winit drops. `None` on Wayland, and stays `None` if
     /// no connection could be opened — the coverage is then what winit
@@ -610,14 +992,17 @@ impl WinitRunner {
         event_loop.exit();
     }
 
-    /// Ends the event loop when the application's last-window policy says a
-    /// runner with no window left stops.
-    fn exit_if_last_window_closed(&self, event_loop: &ActiveEventLoop) {
+    /// Files a required termination when the application's last-window
+    /// policy says a runner with no window left stops. The loop keeps
+    /// running — possibly with zero windows — until `on_terminate` finishes
+    /// and the host's `TerminationFinished` reaches
+    /// [`Self::exit_after_runtime_cleanup`].
+    fn exit_if_last_window_closed(&self) {
         if ends_event_loop(
             self.last_window,
             self.windows.len() + self.pending_windows.len(),
         ) {
-            self.exit_after_runtime_cleanup(event_loop);
+            self.termination.request(TerminationKind::Required);
         }
     }
 
@@ -676,12 +1061,22 @@ impl WinitRunner {
         #[cfg(target_os = "windows")]
         if activates {
             // Windows' menu bar lives on the window: attach the app bar's
-            // HMENU to this HWND (see `menu_bar` for the platform contract).
+            // HMENU to this HWND (see `menu_bar` for the platform contract),
+            // and subclass the same HWND so a session shutdown asks the
+            // termination machine before ending the process.
             use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
             if let Ok(handle) = native_window.window_handle()
                 && let RawWindowHandle::Win32(win) = handle.as_raw()
             {
                 self.native_menu_bar.attach_hwnd(win.hwnd.get());
+                install_termination_subclass(
+                    win.hwnd.get(),
+                    TerminationSubclass {
+                        termination: self.termination.clone(),
+                        session_end: Rc::clone(&self.session_end),
+                        runnables: Rc::clone(&self.local_runnable_rx),
+                    },
+                );
             }
         }
         let (mut platform, gpu_context) = pollster::block_on(WinitWindow::new_with_shared_gpu(
@@ -832,9 +1227,10 @@ impl WinitRunner {
         })
     }
 
-    /// Lets the native menu bar forget a closing window's HWND before
-    /// the winit window (and its HWND) is destroyed, so `init_for_hwnd`
-    /// and `remove_for_hwnd` only ever run on live handles.
+    /// Lets the native menu bar forget a closing window's HWND — and
+    /// removes the session-end subclass — before the winit window (and
+    /// its HWND) is destroyed, so `init_for_hwnd`/`remove_for_hwnd` and
+    /// the subclass proc only ever run on live handles.
     #[cfg(target_os = "windows")]
     fn detach_menu_bar_hwnd(&self, runtime: &RuntimeWindow<WinitWindow>) {
         use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -842,10 +1238,11 @@ impl WinitRunner {
             && let RawWindowHandle::Win32(win) = handle.as_raw()
         {
             self.native_menu_bar.detach_hwnd(win.hwnd.get());
+            remove_termination_subclass(win.hwnd.get());
         }
     }
 
-    fn remove_closed_windows(&mut self, event_loop: &ActiveEventLoop) {
+    fn remove_closed_windows(&mut self) {
         let mut close_ids = Vec::new();
         for (id, runtime) in &mut self.windows {
             runtime.platform.apply_properties(&runtime.window);
@@ -865,7 +1262,7 @@ impl WinitRunner {
             self.last_accessibility_updates.remove(&id);
         }
 
-        self.exit_if_last_window_closed(event_loop);
+        self.exit_if_last_window_closed();
     }
 
     fn flush_cross_window_rebuild_requests(&mut self) {
@@ -891,6 +1288,10 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
             runtime.request_redraw();
             runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
         }
+        // A windowless launch under `Quit` is a required termination —
+        // asked here, not before the loop runs, so the hook futures have a
+        // local executor to run on (installed by `mount_pending_windows`).
+        self.exit_if_last_window_closed();
     }
 
     fn window_event(
@@ -959,7 +1360,7 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
             self.popup_window_ids.remove(&window_id);
             self.accesskit_adapters.remove(&window_id);
             self.last_accessibility_updates.remove(&window_id);
-            self.exit_if_last_window_closed(event_loop);
+            self.exit_if_last_window_closed();
             return;
         }
 
@@ -1025,7 +1426,7 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
                 }
             }
         }
-        self.remove_closed_windows(event_loop);
+        self.remove_closed_windows();
     }
 
     fn device_event(
@@ -1121,6 +1522,14 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
             }
             #[cfg(any(unix, windows))]
             RunnerEvent::Terminate => {
+                self.termination.request(TerminationKind::Required);
+            }
+            #[cfg(target_os = "windows")]
+            RunnerEvent::ConsoleClose(release) => {
+                self.session_end.release_console_on_terminate(release);
+                self.termination.request(TerminationKind::Required);
+            }
+            RunnerEvent::TerminationFinished => {
                 self.exit_after_runtime_cleanup(event_loop);
             }
             #[cfg(hydrolysis_wayland_platform)]

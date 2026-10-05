@@ -385,12 +385,15 @@ pub fn run(app: App, style: impl crate::Style) {
 
         // The page is the application's one window: it has no windowless
         // state to stay resident in, and closing the tab ends the application
-        // whatever its policy says.
+        // whatever its policy says. The browser kills the page without
+        // notice, so the termination hooks are never called and the machine
+        // is never started.
         let AppParts {
             windows,
             menu_bar,
             env,
             last_window: _,
+            termination: _,
         } = app.into_parts();
         let window_count = windows.len();
         let Ok([window]) = <[Window; 1]>::try_from(windows) else {

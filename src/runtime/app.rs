@@ -1,12 +1,22 @@
 //! A `WaterUI` application representation.
 
+use core::future::Future;
+use core::pin::Pin;
+
 use nami::Computed;
 use suiteki::Str;
-use waterui_core::{Environment, handler::ViewBuilder};
+use waterui_core::{
+    Environment,
+    handler::{Handler, HandlerOnce, ViewBuilder, boxed_action, boxed_action_once},
+};
 
 use crate::{
     component::menu::{Menu, MenuBarView},
     window::Window,
+};
+
+pub use crate::runtime::termination::{
+    Quit, Termination, TerminationHandle, TerminationHost, TerminationKind,
 };
 
 /// Represents a `WaterUI` application.
@@ -25,6 +35,8 @@ pub struct App {
     pub menu_bar: Computed<Vec<Menu>>,
     /// The application environment containing injected services.
     pub env: Environment,
+    /// The termination hooks, carried to the runner inside [`AppParts`].
+    termination: Termination,
 }
 
 /// What an application does once it has no open window.
@@ -67,6 +79,10 @@ pub struct AppParts {
     pub env: Environment,
     /// What the runner does once the application has no open window.
     pub last_window: LastWindowPolicy,
+    /// The application's termination hooks. The runner starts the machine
+    /// with [`Termination::start`] once its local executor exists, then
+    /// reports every quit path through the returned handle.
+    pub termination: Termination,
 }
 
 /// What this application is called, or empty when nothing said.
@@ -138,6 +154,7 @@ impl App {
             last_window: LastWindowPolicy::default(),
             menu_bar: Computed::constant(Vec::new()),
             env,
+            termination: Termination::default(),
         }
     }
 
@@ -189,6 +206,64 @@ impl App {
         self
     }
 
+    /// Ask the application before it quits.
+    ///
+    /// `handler` runs when a *cancellable* termination request arrives: the
+    /// user choosing Quit, the platform's quit gesture, a declared
+    /// `MenuItem::Quit`, or [`Quit::request`]. Returning
+    /// [`QuitReply::Cancel`] vetoes the quit and the application keeps
+    /// running; [`QuitReply::Quit`] lets termination proceed to
+    /// [`App::on_terminate`]. A *required* termination — a termination
+    /// signal, the last window closing under [`LastWindowPolicy::Quit`], or
+    /// a Windows session that ends whatever the application answered —
+    /// never asks. At most one question is open at a time; a required
+    /// request arriving while the question is open supersedes it.
+    ///
+    /// The handler extracts from the application environment like any other
+    /// [`Handler`], and its future is driven on the runner's local executor.
+    /// iOS, Android and web kill the process without notice and never call
+    /// this handler.
+    #[must_use]
+    pub fn on_quit_request<H, Args, Fut>(mut self, handler: H) -> Self
+    where
+        H: Handler<Args, Fut>,
+        Fut: Future<Output = QuitReply> + 'static,
+    {
+        let mut action = boxed_action(handler);
+        self.termination.on_quit_request = Some(Box::new(
+            move |env| -> Pin<Box<dyn Future<Output = QuitReply>>> { Box::pin(action(env)) },
+        ));
+        self
+    }
+
+    /// Run shutdown work once the application is actually ending.
+    ///
+    /// `handler` runs exactly once, after [`App::on_quit_request`] answered
+    /// [`QuitReply::Quit`] — or immediately for a *required* termination,
+    /// which skips the question: a termination signal, the last window
+    /// closing under [`LastWindowPolicy::Quit`], or a Windows session that
+    /// ends whatever the application answered. The runner waits for the
+    /// future to complete before tearing down, so this is where state is
+    /// persisted and resources released.
+    ///
+    /// The handler extracts from the application environment like any other
+    /// [`HandlerOnce`], and its future is driven on the runner's local
+    /// executor. iOS, Android and web kill the process without notice and
+    /// never call this handler.
+    #[must_use]
+    pub fn on_terminate<H, Args, Fut>(mut self, handler: H) -> Self
+    where
+        H: HandlerOnce<Args, Fut>,
+        Fut: Future<Output = ()> + 'static,
+    {
+        let action = boxed_action_once(handler);
+        self.termination.on_terminate =
+            Some(Box::new(move |env| -> Pin<Box<dyn Future<Output = ()>>> {
+                Box::pin(action(env))
+            }));
+        self
+    }
+
     /// Consume the app and return its windows, in declaration order.
     #[must_use]
     pub fn into_windows(self) -> Vec<Window> {
@@ -203,8 +278,19 @@ impl App {
             menu_bar: self.menu_bar,
             env: self.env,
             last_window: self.last_window,
+            termination: self.termination,
         }
     }
+}
+
+/// An application's answer to "may I quit?", returned by
+/// [`App::on_quit_request`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuitReply {
+    /// Allow termination: `on_terminate` runs, then the process ends.
+    Quit,
+    /// Veto termination: the application keeps running.
+    Cancel,
 }
 
 #[cfg(test)]
