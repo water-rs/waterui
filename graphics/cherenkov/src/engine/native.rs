@@ -755,4 +755,105 @@ mod tests {
         assert_eq!(engine.render(FrameTime::now()).unwrap(), Next::Idle);
         assert_eq!(wake_count.load(Ordering::Relaxed), 2);
     }
+
+    /// `Surface::next_frame` publishes each surface's own deadline and
+    /// only its own: a hidden surface drops to `Idle` instead of
+    /// retaining or borrowing demand, a finished animation overwrites
+    /// its old `At` with a real idle frame, and removal clears a live
+    /// deadline — all while the surviving peer's `At` stays untouched.
+    #[test]
+    fn hide_idle_and_remove_publish_idle_while_peer_keeps_demand() {
+        let (events, _rx) = std::sync::mpsc::channel();
+        let engine = Engine::<Null>::new(NullConfig {
+            events,
+            reject: std::collections::HashSet::default(),
+        })
+        .unwrap();
+        let surface = engine
+            .surface(crate::Offscreen::new(
+                (16, 16),
+                crate::OffscreenFormat::LinearF16,
+            ))
+            .unwrap();
+        let peer = engine
+            .surface(crate::Offscreen::new(
+                (16, 16),
+                crate::OffscreenFormat::LinearF16,
+            ))
+            .unwrap();
+        // Property animations give each surface real frame demand while
+        // they run; the peer's long curve outlives the short one, so an
+        // idle frame can be observed on `surface` alone. The `Layer`
+        // handles stay bound for the animation's life: a dropped layer
+        // removes itself from the tree.
+        let layer = surface.layer();
+        surface.update_animated(
+            crate::Curve::linear(std::time::Duration::from_secs(60)),
+            |tx| {
+                tx[surface.root()].push(&layer);
+                tx[&layer].opacity(0.5f32);
+            },
+        );
+        let peer_layer = peer.layer();
+        peer.update_animated(
+            crate::Curve::linear(std::time::Duration::from_secs(3600)),
+            |tx| {
+                tx[peer.root()].push(&peer_layer);
+                tx[&peer_layer].opacity(0.5f32);
+            },
+        );
+
+        let _ = engine.render(FrameTime::now()).unwrap();
+        assert!(matches!(surface.next_frame(), Next::At { .. }));
+        assert!(matches!(peer.next_frame(), Next::At { .. }));
+
+        // Hidden: the surface reads Idle — never the peer's deadline.
+        surface.visibility(crate::Visibility::Hidden).unwrap();
+        let _ = engine.render(FrameTime::now()).unwrap();
+        assert_eq!(surface.next_frame(), Next::Idle);
+        assert!(matches!(peer.next_frame(), Next::At { .. }));
+
+        // Revealed again: its own demand republishes a live deadline.
+        surface.visibility(crate::Visibility::Visible).unwrap();
+        let _ = engine.render(FrameTime::now()).unwrap();
+        assert!(matches!(surface.next_frame(), Next::At { .. }));
+        assert!(matches!(peer.next_frame(), Next::At { .. }));
+
+        // Visible with its animation finished: a real idle frame
+        // overwrites the stale `At`; the still-running peer is
+        // unaffected.
+        let _ = engine
+            .render(FrameTime::at(
+                crate::Instant::now() + std::time::Duration::from_secs(120),
+            ))
+            .unwrap();
+        assert_eq!(surface.next_frame(), Next::Idle);
+        assert!(matches!(peer.next_frame(), Next::At { .. }));
+
+        // Re-arming the still-owned layer with a different animation
+        // republishes its deadline: removing it next genuinely clears a
+        // live `At`, not an already-idle slot.
+        surface.update_animated(
+            crate::Curve::linear(std::time::Duration::from_secs(600)),
+            |tx| {
+                tx[&layer].opacity(0.25f32);
+            },
+        );
+        let _ = engine.render(FrameTime::now()).unwrap();
+        assert!(matches!(surface.next_frame(), Next::At { .. }));
+        assert!(matches!(peer.next_frame(), Next::At { .. }));
+
+        // Removed: the layer's own drop sends the remove op, so its
+        // animation and deadline go with it — only the peer's stays.
+        drop(layer);
+        let _ = engine.render(FrameTime::now()).unwrap();
+        assert_eq!(surface.next_frame(), Next::Idle);
+        assert!(matches!(peer.next_frame(), Next::At { .. }));
+
+        // The surface itself going away likewise leaves the peer's
+        // deadline untouched.
+        drop(surface);
+        let _ = engine.render(FrameTime::now()).unwrap();
+        assert!(matches!(peer.next_frame(), Next::At { .. }));
+    }
 }
