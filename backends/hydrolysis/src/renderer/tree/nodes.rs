@@ -57,40 +57,26 @@ struct BuiltSubview {
     /// The §7.1 context the node was last laid out against — a change (the
     /// keyboard inset animating under an unchanged rect) re-runs layout so
     /// the subtree's touch tests and surface facts track it.
-    laid_out_area: Cell<Option<Box<safe_area::SafeAreaLayout>>>,
+    laid_out_area: Option<Box<safe_area::SafeAreaLayout>>,
     /// The default spoken accessibility label extracted from the source view once,
     /// at build time (mirrors `GestureObserverEffect::default_a11y_label`): the
     /// node owns the source after build, so the per-frame a11y path reads this.
     default_a11y_label: Option<String>,
 }
 
-/// Writes `safe_area` into a node's stored-context slot, taking the `Box`
-/// out, overwriting it in place and setting it back: a `Some` over `Some`
-/// reuses the allocation, so a per-frame re-layout pays no new `Box` — the
-/// only allocation is the `None -> Some` transition.
+/// Writes `safe_area` into a node's stored-context slot, overwriting the
+/// existing `Box` in place when there is one: a `Some` over `Some` reuses
+/// the allocation, so a per-frame re-layout pays no new `Box` — the only
+/// allocation is the `None -> Some` transition.
 pub(super) fn store_safe_area(
-    slot: &Cell<Option<Box<safe_area::SafeAreaLayout>>>,
+    slot: &mut Option<Box<safe_area::SafeAreaLayout>>,
     safe_area: Option<safe_area::SafeAreaLayout>,
 ) {
-    let mut stored = slot.take();
-    if let (Some(kept), Some(area)) = (stored.as_deref_mut(), safe_area.as_ref()) {
-        kept.clone_from(area);
+    if let (Some(stored), Some(area)) = (slot.as_deref_mut(), safe_area.as_ref()) {
+        stored.clone_from(area);
     } else {
-        stored = safe_area.map(Box::new);
+        *slot = safe_area.map(Box::new);
     }
-    slot.set(stored);
-}
-
-/// The §7.1 context the node was last laid out against. The clone is a
-/// plain field copy — `SafeAreaLayout` is flat data — not a heap
-/// allocation; the take/set dance keeps `Cell` sound for the boxed value.
-pub(super) fn read_safe_area(
-    slot: &Cell<Option<Box<safe_area::SafeAreaLayout>>>,
-) -> Option<safe_area::SafeAreaLayout> {
-    let stored = slot.take();
-    let read = stored.as_deref().cloned();
-    slot.set(stored);
-    read
 }
 
 impl BuiltSubview {
@@ -105,18 +91,16 @@ impl BuiltSubview {
         proposal: ProposalSize,
         size: Size,
     ) {
-        let stored = self.laid_out_area.take();
-        let stale = self.needs_layout
+        if self.needs_layout
             || size != self.laid_out
             || self.laid_out_proposal != Some(proposal)
-            || stored.as_deref() != safe_area.as_ref();
-        self.laid_out_area.set(stored);
-        if stale {
+            || self.laid_out_area.as_deref() != safe_area.as_ref()
+        {
             self.node
                 .layout(renderer, env, safe_area.clone(), proposal, size);
             self.laid_out = size;
             self.laid_out_proposal = Some(proposal);
-            store_safe_area(&self.laid_out_area, safe_area);
+            store_safe_area(&mut self.laid_out_area, safe_area);
             self.needs_layout = false;
         }
     }
@@ -154,7 +138,7 @@ impl RetainedSubview {
             laid_out: Size::zero(),
             laid_out_proposal: None,
             needs_layout: true,
-            laid_out_area: Cell::new(None),
+            laid_out_area: None,
             default_a11y_label,
         });
     }
@@ -736,7 +720,7 @@ pub struct WidgetNode {
     /// storage: a widget inside an unchanged retained sub-view is not
     /// re-laid out on steady frames, but its flush still reads the context
     /// here for `safe_area_for`/`content_area_for` and its scroll surface.
-    pub(super) safe_area: Cell<Option<Box<safe_area::SafeAreaLayout>>>,
+    pub(super) safe_area: Option<Box<safe_area::SafeAreaLayout>>,
     pub(super) behavior: Rc<dyn WidgetBehavior>,
     pub(super) stretch: StretchAxis,
     /// Whether this leaf paints a fill — the gradient — marking it
@@ -1180,7 +1164,7 @@ pub struct DynamicHostNode {
     pub render_id: RenderId,
     /// The §7.1 context the host was last laid out against — the flush's
     /// mid-pass layout for a child that applied its pending reuses it.
-    pub(super) safe_area: Cell<Option<Box<safe_area::SafeAreaLayout>>>,
+    pub(super) safe_area: Option<Box<safe_area::SafeAreaLayout>>,
     /// The source `Dynamic`, kept alive so its identity cannot be reused while
     /// this node lives — otherwise a freed identity could be reallocated to a
     /// different `Dynamic` and confused for this one. Also read by

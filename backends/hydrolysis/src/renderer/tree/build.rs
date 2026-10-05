@@ -971,7 +971,7 @@ impl RenderNode {
             env: env.clone(),
             accessibility_identity: Rc::new(()),
             render_id: RenderId::next(),
-            safe_area: Cell::new(None),
+            safe_area: None,
             #[cfg(feature = "accessibility")]
             accessibility_container_env,
             extent_index: RefCell::new(VirtualExtentIndex::default()),
@@ -1097,7 +1097,7 @@ impl RenderNode {
             .register_dynamic_node(identity, &child);
         Self::Dynamic(Box::new(DynamicHostNode {
             render_id: RenderId::next(),
-            safe_area: Cell::new(None),
+            safe_area: None,
             source,
             pending,
             env: env.clone(),
