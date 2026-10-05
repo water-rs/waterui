@@ -704,6 +704,47 @@ impl ResolvedCommand {
     pub fn semantic_id(&self) -> usize {
         Rc::as_ptr(&self.identity) as usize
     }
+
+    /// Rejects a command the macOS menu bar may not carry.
+    ///
+    /// ⌘Q, ⌘H and ⌥⌘H belong to the standard application-menu items — Quit,
+    /// Hide, Hide Others. A plain command redeclaring one would shadow the
+    /// item the system expects to find, and a homemade Quit bypasses the
+    /// termination hooks. Every backend that builds a macOS menu bar calls
+    /// this for each declared command, so the rule holds whichever backend
+    /// renders the bar.
+    ///
+    /// # Panics
+    ///
+    /// When the command's shortcut is one of the reserved chords; the
+    /// message names `MenuItem::Quit` and `App::on_terminate` as the APIs to
+    /// use instead.
+    #[doc(hidden)]
+    pub fn assert_allowed_in_macos_menu_bar(&self) {
+        let Some(shortcut) = &self.shortcut else {
+            return;
+        };
+        let reserved = [
+            (Shortcut::new("q").command(), "⌘Q", "Quit"),
+            (Shortcut::new("h").command(), "⌘H", "Hide"),
+            (Shortcut::new("h").command().option(), "⌥⌘H", "Hide Others"),
+        ];
+        for (chord, chord_text, item) in reserved {
+            if chord.modifiers == shortcut.modifiers
+                && chord
+                    .key
+                    .as_str()
+                    .eq_ignore_ascii_case(shortcut.key.as_str())
+            {
+                panic!(
+                    "a menu command in the macOS menu bar may not use the {chord_text} chord — it \
+                     belongs to the standard {item} item; declare `MenuItem::Quit` for Quit \
+                     behavior and `App::on_terminate` for shutdown work instead of redeclaring \
+                     the chord"
+                );
+            }
+        }
+    }
 }
 
 /// Raw resolved nested menu payload consumed by native backends.

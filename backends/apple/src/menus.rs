@@ -85,10 +85,11 @@ fn kit_command_fields(
     }
 }
 
-/// Resolved items as the kit's shared `MenuTreeNode` list, with each
-/// command's action bound to fire under `env`. The menu-tree conversion's
-/// semantic owner: every caller that renders resolved menu content — app
-/// menus and `Native<ResolvedMenu>` alike — goes through this.
+/// The declared menu bar's resolved items as the kit's shared
+/// `MenuTreeNode` list, with each command's action bound to fire under
+/// `env` — the content both the macOS and the iOS menu bar build from.
+/// On macOS each command is checked against the chords the standard
+/// application menu reserves.
 pub fn menu_tree(
     items: &[ResolvedMenuItem],
     env: &Environment,
@@ -98,6 +99,8 @@ pub fn menu_tree(
         .map(|item| match item {
             ResolvedMenuItem::Divider => cocoa_ui::menu::MenuTreeNode::Divider,
             ResolvedMenuItem::Command(command) => {
+                #[cfg(target_os = "macos")]
+                command.assert_allowed_in_macos_menu_bar();
                 let action = command.action.clone();
                 let env = env.clone();
                 cocoa_ui::menu::MenuTreeNode::Command(
