@@ -2930,6 +2930,10 @@ mod wasm_tests {
         Sampling, ShaderPaint, ShaderSource, WorkingColor,
     };
 
+    #[expect(
+        clippy::future_not_send,
+        reason = "the engine is main-thread on wasm, so its futures are !Send by design"
+    )]
     async fn engine(reject: HashSet<NullReject>) -> (Engine<Null>, Receiver<Event>) {
         let (tx, rx) = std::sync::mpsc::channel();
         let engine = Engine::<Null>::new(NullConfig { events: tx, reject })
