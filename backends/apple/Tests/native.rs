@@ -1335,7 +1335,7 @@ mod owner_lifetimes {
 
     use cocoa_ui::objc2_foundation::{NSDate, NSRunLoop};
 
-    use super::{HostView, Label, PlatformView, leaf, mtm, resolve};
+    use super::{HostView, Label, MainThreadMarker, PlatformView, Retained, leaf, mtm, resolve};
 
     /// A stable-id row for the `ForEach` membership.
     #[derive(Clone, Copy, Identifiable)]
@@ -1375,8 +1375,7 @@ mod owner_lifetimes {
 
     /// The hierarchy the repairs cover: `.size`/`padding` wrappers around
     /// `hstack`/`zstack` containers plus a lazy `ForEach` membership — one
-    /// tree holding every repaired owner class, resolved through the
-    /// shared dispatcher env.
+    /// tree holding every repaired owner class.
     fn hierarchy(
         track: &waterui::reactive::Binding<String>,
         items: &ReactiveList<Row>,
@@ -1393,33 +1392,83 @@ mod owner_lifetimes {
         ))
     }
 
+    /// The first `Label` inside the subtree — the observable end of the
+    /// per-chunk signal path this fix touches.
+    fn first_label(view: &PlatformView) -> Option<Retained<Label>> {
+        for sub in cocoa_ui::view::subviews(view) {
+            if let Some(label) = sub.downcast_ref::<Label>() {
+                return Some(label.into());
+            }
+            if let Some(label) = first_label(&sub) {
+                return Some(label);
+            }
+        }
+        None
+    }
+
+    /// The class names of every subtree view that still lives — the
+    /// observable list of real retainers a drop failed to release.
+    fn surviving_classes(weaks: &[objc2::rc::Weak<PlatformView>]) -> Vec<String> {
+        weaks
+            .iter()
+            .filter_map(|weak| {
+                weak.load()
+                    .map(|view| view.class().name().to_string_lossy().into_owned())
+            })
+            .collect()
+    }
+
+    /// Mounts `leaf` on a fresh host whose layout handler frames it —
+    /// the handler borrows the child weakly so it never keeps a dead
+    /// owner alive, the same edge the production handlers now take.
+    fn mount_hosted(
+        mtm: MainThreadMarker,
+        leaf_inst: waterui_apple::contract::NativeLeaf,
+    ) -> (Retained<HostView>, waterui_apple::contract::Mounted) {
+        let parent = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+        let mounted = leaf_inst.mount(&parent);
+        let child_view: objc2::rc::Weak<PlatformView> =
+            objc2::rc::Weak::new(&cocoa_ui::view::retain_base(mounted.view()));
+        parent.set_layout_handler(move |host| {
+            let host_view: &PlatformView = host;
+            if let Some(child) = child_view.load() {
+                cocoa_ui::view::set_frame(&child, cocoa_ui::view::bounds(host_view));
+            }
+        });
+        (parent, mounted)
+    }
+
     /// One consolidated regression for #1575: mount the repaired owner
-    /// classes in a single tree, prove the drop releases the whole
-    /// subtree, then prove a remount keeps working. The mount, the
-    /// submitted work, the drop and the queued drain all live inside a
-    /// bounded `autoreleasepool` — only `Weak` handles escape it, so a
-    /// surviving read outside proves a real retainer, never a pooled
-    /// temporary (mirrors the ownership fixture's idiom).
+    /// classes in a single tree against ONE explicit environment, prove
+    /// live updates still land, prove the drop releases the whole
+    /// subtree, then prove a remount on the same env keeps working. The
+    /// mount, the submitted work, the drop and the queued drain all live
+    /// inside bounded `autoreleasepool`s — only `Weak` handles escape
+    /// them, so a surviving read outside proves a real retainer, never a
+    /// pooled temporary (mirrors the ownership fixture's idiom).
     pub fn a_dropped_mounted_hierarchy_releases_views_and_remounts() {
         let mtm = mtm();
-        // Shared env, binding and membership live outside the pool — a
-        // weak read that still answers `Some` afterwards names a real
-        // retainer, not a pooled autorelease.
+        // The environment, binding, membership and per-chunk signal all
+        // live outside the pools — a weak read that still answers `Some`
+        // afterwards names a real retainer, not a pooled autorelease.
+        let mut env = resolve::env();
         let track = binding(String::from("first"));
         let items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }]);
+        // The theme `Foreground` slot backs every unstyled chunk — the
+        // `label_leaf` default watcher this fix touches. Reinstall it
+        // from a binding the test keeps, so a live update is reachable.
+        let foreground = binding(waterui::graphics::color::WorkingColor::BLACK);
+        waterui::theme::install_color_signal::<waterui::theme::color::Foreground>(
+            &mut env,
+            foreground.computed(),
+        );
 
         let weaks = objc2::rc::autoreleasepool(|_| {
-            let leaf_inst = resolve::render(hierarchy(&track, &items));
-            let parent = HostView::new(mtm, cocoa_ui::Rect::ZERO);
-            let mounted = leaf_inst.mount(&parent);
-            let child_view: objc2::rc::Weak<PlatformView> =
-                objc2::rc::Weak::new(&cocoa_ui::view::retain_base(mounted.view()));
-            parent.set_layout_handler(move |host| {
-                let host_view: &PlatformView = host;
-                if let Some(child) = child_view.load() {
-                    cocoa_ui::view::set_frame(&child, cocoa_ui::view::bounds(host_view));
-                }
-            });
+            let leaf_inst = waterui_apple::dispatch::render(
+                waterui_backend_core::AnyView::new(hierarchy(&track, &items)),
+                &env,
+            );
+            let (parent, mounted) = mount_hosted(mtm, leaf_inst);
             let _window = leaf::attach(mtm, &parent);
             parent.set_needs_layout();
             parent.layout_if_needed();
@@ -1443,17 +1492,23 @@ mod owner_lifetimes {
             assert!(texts.iter().any(|t| t.contains("second")));
             assert!(texts.iter().any(|t| t.contains("row 3")));
 
+            // The default-foreground signal path still updates while
+            // live: a new theme foreground rebuilds the label's
+            // attributed text — the `Weak`-borrowing watcher answers
+            // instead of being frozen.
+            let label = first_label(mounted.view()).expect("the track label mounted");
+            let before = Retained::as_ptr(&label.source_text().expect("attributed text"));
+            foreground.set(waterui::graphics::color::WorkingColor::WHITE);
+            pump();
+            let after = Retained::as_ptr(&label.source_text().expect("attributed text"));
+            assert_ne!(before, after, "the chunk-signal update must rebuild");
+
             drop(mounted);
             pump();
             weaks
         });
 
-        let mut survivors = Vec::new();
-        for weak in &weaks {
-            if let Some(view) = weak.load() {
-                survivors.push(view.class().name().to_owned());
-            }
-        }
+        let survivors = surviving_classes(&weaks);
         assert!(
             survivors.is_empty(),
             "mounted child views survived the owner drop: {survivors:?}"
@@ -1463,13 +1518,17 @@ mod owner_lifetimes {
         // dead owner and cannot panic through a cleared weak edge.
         objc2::rc::autoreleasepool(|_| {
             track.set(String::from("third"));
+            foreground.set(waterui::graphics::color::WorkingColor::BLACK);
             pump();
         });
 
-        // Remount through the same shared env: measurement, binding and
-        // membership all still work, and the remounted tree releases too.
+        // Remount on the same env: measurement, binding and membership
+        // all still work, and the remounted tree releases too.
         let weaks = objc2::rc::autoreleasepool(|_| {
-            let leaf_inst = resolve::render(hierarchy(&track, &items));
+            let leaf_inst = waterui_apple::dispatch::render(
+                waterui_backend_core::AnyView::new(hierarchy(&track, &items)),
+                &env,
+            );
             assert!(
                 leaf_inst
                     .layout()
@@ -1479,16 +1538,7 @@ mod owner_lifetimes {
                     > 0.0,
                 "the remounted hierarchy still answers measure"
             );
-            let parent = HostView::new(mtm, cocoa_ui::Rect::ZERO);
-            let mounted = leaf_inst.mount(&parent);
-            let child_view: objc2::rc::Weak<PlatformView> =
-                objc2::rc::Weak::new(&cocoa_ui::view::retain_base(mounted.view()));
-            parent.set_layout_handler(move |host| {
-                let host_view: &PlatformView = host;
-                if let Some(child) = child_view.load() {
-                    cocoa_ui::view::set_frame(&child, cocoa_ui::view::bounds(host_view));
-                }
-            });
+            let (parent, mounted) = mount_hosted(mtm, leaf_inst);
             let _window = leaf::attach(mtm, &parent);
             parent.set_needs_layout();
             parent.layout_if_needed();
@@ -1507,12 +1557,7 @@ mod owner_lifetimes {
             pump();
             weaks
         });
-        let mut survivors = Vec::new();
-        for weak in &weaks {
-            if let Some(view) = weak.load() {
-                survivors.push(view.class().name().to_owned());
-            }
-        }
+        let survivors = surviving_classes(&weaks);
         assert!(
             survivors.is_empty(),
             "the remounted hierarchy must release the same way: {survivors:?}"
