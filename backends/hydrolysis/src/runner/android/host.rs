@@ -227,6 +227,17 @@ impl HostBridge {
     fn close_requested(&self) {
         self.call("onNativeCloseRequested", "()V", &[]);
     }
+
+    /// `session.onNativeBackAvailable(available)` — the host enables its back
+    /// callback only while a navigation stack can accept the pop. A disabled
+    /// callback leaves back to the system, which finishes the activity.
+    fn set_back_navigation_available(&self, available: bool) {
+        self.call(
+            "onNativeBackAvailable",
+            "(Z)V",
+            &[JValue::Bool(available.into())],
+        );
+    }
 }
 
 /// The Kotlin host's window on the runner's side: host services only. The
@@ -624,6 +635,9 @@ pub struct AndroidSession {
     /// The readiness line was already logged — it fires exactly once per
     /// session so a later busy window cannot re-arm it.
     ready_logged: Cell<bool>,
+    /// The last value reported to the host's back callback. Starts disabled,
+    /// matching the callback the activity registers.
+    back_navigation_available: bool,
     /// Sessions are owned and driven on the UI thread only.
     _not_send: std::marker::PhantomData<*const ()>,
 }
@@ -760,6 +774,7 @@ impl AndroidSession {
             safe_area,
             presented_once: Cell::new(false),
             ready_logged: Cell::new(false),
+            back_navigation_available: false,
             _not_send: std::marker::PhantomData,
         }))
     }
@@ -828,6 +843,22 @@ impl AndroidSession {
         self.runtime.sync_occlusion_and_post_restore();
     }
 
+    /// Tells the host when the rendered frame's back-target answer changes.
+    ///
+    /// The callback starts disabled. A disabled callback leaves back to the
+    /// system, which finishes the activity with its own predictive animation.
+    fn sync_back_navigation_available(&mut self) {
+        let available = self.runtime.renderer.has_back_navigation_target();
+        if available == self.back_navigation_available {
+            return;
+        }
+        self.back_navigation_available = available;
+        self.runtime
+            .platform
+            .bridge
+            .set_back_navigation_available(available);
+    }
+
     /// The one coordinated frame transaction — the scheduler's
     /// Choreographer callback lands here. Executor wakes and input dispatch
     /// run against the last presented geometry; the pump renders only when
@@ -850,6 +881,7 @@ impl AndroidSession {
             if presented {
                 self.presented_once.set(true);
             }
+            self.sync_back_navigation_available();
         }
         // A lost device is fatal for the session — surface it through the
         // host's explicit error callback, not a silently black band.

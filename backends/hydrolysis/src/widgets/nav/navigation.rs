@@ -2217,6 +2217,16 @@ pub fn render_navigation_stack_parts(
     let previous_scene_for_gesture = previous_scene;
     let navigation_width = ctx.bounds.width();
     let drag_slot_key = slot_key.clone();
+    let back_from_scene = active_scene_for_gesture.clone();
+    let back_to_scene = previous_scene_for_gesture.clone();
+    let controller = ctx
+        .renderer_mut()
+        .navigation
+        .slots
+        .get(&slot_key)
+        .expect("Hydrolysis navigation slot missing")
+        .controller
+        .clone();
     ctx.renderer_mut().register_pointer_drag_target(
         edge_hit_rect,
         move |renderer, point, pop_env| {
@@ -2259,16 +2269,17 @@ pub fn render_navigation_stack_parts(
                 .update(point.x)
         },
     );
+    ctx.renderer_mut().register_back_target(
+        crate::renderer::navigation_state::NavigationBackTarget {
+            slot_key: slot_key.clone(),
+            width: navigation_width,
+            from_scene: back_from_scene,
+            to_scene: back_to_scene,
+            controller: controller.clone(),
+        },
+    );
 
     let back_button_rect = navigation_back_button_rect(ctx.bounds, metrics);
-    let controller = ctx
-        .renderer_mut()
-        .navigation
-        .slots
-        .get(&slot_key)
-        .expect("Hydrolysis navigation slot missing")
-        .controller
-        .clone();
     let hit_transform = ctx.hit_transform;
     let back_hit_rect = transformed_rect(hit_transform, back_button_rect);
     let back_interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
