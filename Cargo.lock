@@ -6929,7 +6929,7 @@ dependencies = [
 [[package]]
 name = "nami"
 version = "0.11.1"
-source = "git+https://github.com/water-rs/nami?rev=f1db5017f5d64cb45b9b304c74ff420377258476#f1db5017f5d64cb45b9b304c74ff420377258476"
+source = "git+https://github.com/water-rs/nami?rev=c706e272247d92796eedac6180eb6a1ce0c03609#c706e272247d92796eedac6180eb6a1ce0c03609"
 dependencies = [
  "async-channel",
  "async-io",
@@ -6946,7 +6946,7 @@ dependencies = [
 [[package]]
 name = "nami-core"
 version = "0.3.3"
-source = "git+https://github.com/water-rs/nami?rev=f1db5017f5d64cb45b9b304c74ff420377258476#f1db5017f5d64cb45b9b304c74ff420377258476"
+source = "git+https://github.com/water-rs/nami?rev=c706e272247d92796eedac6180eb6a1ce0c03609#c706e272247d92796eedac6180eb6a1ce0c03609"
 dependencies = [
  "kurbo 0.13.1",
 ]
@@ -6954,7 +6954,7 @@ dependencies = [
 [[package]]
 name = "nami-derive"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/nami?rev=f1db5017f5d64cb45b9b304c74ff420377258476#f1db5017f5d64cb45b9b304c74ff420377258476"
+source = "git+https://github.com/water-rs/nami?rev=c706e272247d92796eedac6180eb6a1ce0c03609#c706e272247d92796eedac6180eb6a1ce0c03609"
 dependencies = [
  "proc-macro2",
  "quote",
