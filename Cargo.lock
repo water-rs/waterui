@@ -1709,7 +1709,7 @@ dependencies = [
  "filtrate-core",
  "kurbo 0.13.1",
  "libm",
- "nami 0.12.0",
+ "nami",
  "parley",
  "rustc-hash 2.1.3",
  "thiserror 2.0.21",
@@ -1736,7 +1736,7 @@ dependencies = [
  "half",
  "kurbo 0.13.1",
  "libc",
- "nami 0.12.0",
+ "nami",
  "ndk-sys",
  "objc2 0.6.4",
  "objc2-core-foundation",
@@ -1773,7 +1773,7 @@ dependencies = [
  "filtrate-core",
  "half",
  "kurbo 0.13.1",
- "nami 0.12.0",
+ "nami",
  "png",
  "rayon",
  "rustc-hash 2.1.3",
@@ -1803,7 +1803,7 @@ dependencies = [
  "libc",
  "libtest-mimic",
  "naga 30.0.1",
- "nami 0.12.0",
+ "nami",
  "ndk",
  "ndk-sys",
  "objc2 0.6.4",
@@ -1850,8 +1850,8 @@ version = "0.0.0"
 dependencies = [
  "color",
  "kurbo 0.13.1",
- "nami 0.12.0",
- "nami-core 0.4.0",
+ "nami",
+ "nami-core",
  "rustc-hash 2.1.3",
  "serde",
  "serde_json",
@@ -4668,7 +4668,7 @@ dependencies = [
  "libc",
  "lru 0.18.5",
  "muda",
- "nami 0.12.0",
+ "nami",
  "native-executor",
  "ndk",
  "ndk-context",
@@ -6926,24 +6926,6 @@ dependencies = [
 
 [[package]]
 name = "nami"
-version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13226b5f8e1c76078ec086ac0903dff0274b1cd2ef141c502ec1386b79782978"
-dependencies = [
- "async-channel",
- "async-io",
- "executor-core",
- "futures-core",
- "gloo-timers 0.4.0",
- "log",
- "nami-core 0.3.3",
- "nami-derive 0.3.1",
- "num-traits",
- "pin-project-lite",
-]
-
-[[package]]
-name = "nami"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2682abc0f1ffae7dcea58fea6792290d2279193f0a521ea06c5043cffbefe13"
@@ -6954,17 +6936,11 @@ dependencies = [
  "futures-core",
  "gloo-timers 0.4.0",
  "log",
- "nami-core 0.4.0",
- "nami-derive 0.4.0",
+ "nami-core",
+ "nami-derive",
  "num-traits",
  "pin-project-lite",
 ]
-
-[[package]]
-name = "nami-core"
-version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a70d1da3e07e48053148d4e32d49274c9249ab710ec26e9f10570e175a647ec"
 
 [[package]]
 name = "nami-core"
@@ -6973,17 +6949,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8998544a5a89948c3e5f0e18ae340f9ed09a165ead95108f7fbffcdb6a1e43cf"
 dependencies = [
  "kurbo 0.13.1",
-]
-
-[[package]]
-name = "nami-derive"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b76f4c97f6726b9589ca160480b114b8ee6cf4bfbe839253f426c1b778fc5fe"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 3.0.6",
 ]
 
 [[package]]
@@ -10669,7 +10634,7 @@ name = "suiteki"
 version = "0.1.1"
 source = "git+https://github.com/water-rs/suiteki?rev=7cf17bdba0e978d388a096b1916daebdc17253b4#7cf17bdba0e978d388a096b1916daebdc17253b4"
 dependencies = [
- "nami-core 0.4.0",
+ "nami-core",
  "serde",
 ]
 
@@ -12535,7 +12500,7 @@ source = "git+https://github.com/water-rs/waterkit?rev=24ff906aaaaeccfee9b014760
 dependencies = [
  "executor-core",
  "jiff",
- "nami 0.12.0",
+ "nami",
  "thiserror 2.0.21",
  "uuid",
 ]
@@ -12844,7 +12809,7 @@ name = "waterui-backend-core"
 version = "0.5.2"
 dependencies = [
  "kurbo 0.13.1",
- "nami 0.12.0",
+ "nami",
  "num-traits",
  "tracing",
  "waterui",
@@ -12860,12 +12825,12 @@ dependencies = [
 [[package]]
 name = "waterui-barcode"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/barcode?rev=d3c61e9b17dbe8d5b3eb7261876d6cdf5fdf5249#d3c61e9b17dbe8d5b3eb7261876d6cdf5fdf5249"
+source = "git+https://github.com/water-rs/barcode?rev=45db548f2a39660cabd67870a883345de79ee8e8#45db548f2a39660cabd67870a883345de79ee8e8"
 dependencies = [
  "barcoders",
  "fast_qr",
  "kurbo 0.13.1",
- "nami 0.11.1",
+ "nami",
  "thiserror 2.0.21",
  "waterui-core",
  "waterui-graphics",
@@ -12922,7 +12887,7 @@ dependencies = [
  "keycode",
  "kurbo 0.13.1",
  "libloading 0.9.0",
- "nami 0.12.0",
+ "nami",
  "num-traits",
  "pollster 1.0.1",
  "serde",
@@ -12942,11 +12907,11 @@ dependencies = [
 [[package]]
 name = "waterui-canvas"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/canvas?rev=8533cf99f511801c1ad3ee5850a28eefa5aef3ef#8533cf99f511801c1ad3ee5850a28eefa5aef3ef"
+source = "git+https://github.com/water-rs/canvas?rev=639957374ed6eac16ac410249b6ba7d9f06c3978#639957374ed6eac16ac410249b6ba7d9f06c3978"
 dependencies = [
  "image",
  "kurbo 0.13.1",
- "nami 0.11.1",
+ "nami",
  "parley",
  "tracing",
  "waterui-core",
@@ -12956,10 +12921,10 @@ dependencies = [
 [[package]]
 name = "waterui-chart"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/chart?rev=85f377be58ce12870c3817e16fc81fadcdf61233#85f377be58ce12870c3817e16fc81fadcdf61233"
+source = "git+https://github.com/water-rs/chart?rev=1062c5058f488b7edd302ee065ae3a2776847227#1062c5058f488b7edd302ee065ae3a2776847227"
 dependencies = [
  "bytemuck",
- "nami 0.11.1",
+ "nami",
  "num-traits",
  "waterui-canvas",
  "waterui-core",
@@ -13090,7 +13055,7 @@ name = "waterui-controls"
 version = "0.5.1"
 dependencies = [
  "executor-core",
- "nami 0.12.0",
+ "nami",
  "waterui",
  "waterui-core",
  "waterui-icon",
@@ -13108,7 +13073,7 @@ dependencies = [
  "anyhow",
  "bitflags 2.13.2",
  "keyboard-types",
- "nami 0.12.0",
+ "nami",
  "num-traits",
  "serde",
  "smallvec",
@@ -13136,7 +13101,7 @@ dependencies = [
  "jni 0.22.4",
  "kurbo 0.13.1",
  "libc",
- "nami 0.12.0",
+ "nami",
  "native-executor",
  "ndk-context",
  "ndk-sys",
@@ -13193,7 +13158,7 @@ dependencies = [
  "bcrypt",
  "getrandom 0.4.3",
  "jiff",
- "nami 0.12.0",
+ "nami",
  "regex",
  "tracing",
  "waterkit-dialog",
@@ -13230,7 +13195,7 @@ dependencies = [
  "image",
  "keyboard-types",
  "mp4parse",
- "nami 0.12.0",
+ "nami",
  "objc2 0.6.4",
  "objc2-core-foundation",
  "objc2-core-video",
@@ -13375,7 +13340,7 @@ dependencies = [
  "cpu-time",
  "executor-core",
  "futures",
- "nami 0.12.0",
+ "nami",
  "native-executor",
  "object",
  "pastey 0.2.3",
@@ -13424,7 +13389,7 @@ dependencies = [
 name = "waterui-layout"
 version = "0.5.1"
 dependencies = [
- "nami 0.12.0",
+ "nami",
  "num-traits",
  "smallvec",
  "waterui",
@@ -13447,7 +13412,7 @@ dependencies = [
  "icu_provider",
  "icu_time",
  "jiff",
- "nami 0.12.0",
+ "nami",
  "num-traits",
  "serde",
  "suiteki",
@@ -13480,7 +13445,7 @@ dependencies = [
 name = "waterui-map"
 version = "0.5.1"
 dependencies = [
- "nami 0.12.0",
+ "nami",
  "suiteki",
  "waterkit-location",
  "waterui-core",
@@ -13489,7 +13454,7 @@ dependencies = [
 [[package]]
 name = "waterui-map-gpu"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/map-gpu?rev=759f907e2072c38616c85a928c6d95756883d20d#759f907e2072c38616c85a928c6d95756883d20d"
+source = "git+https://github.com/water-rs/map-gpu?rev=1a7c3e8afe31f8e13039de2aa116c3e37bcdccb0#1a7c3e8afe31f8e13039de2aa116c3e37bcdccb0"
 dependencies = [
  "blocking",
  "executor-core",
@@ -13503,7 +13468,7 @@ dependencies = [
  "lru 0.16.4",
  "maplibre-expr",
  "mvt-reader",
- "nami 0.11.1",
+ "nami",
  "native-executor",
  "parley",
  "rayon",
@@ -13523,11 +13488,11 @@ dependencies = [
 [[package]]
 name = "waterui-math"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/math?rev=765fb8bcd1e5dba30db973377ceabf12f9ed99f1#765fb8bcd1e5dba30db973377ceabf12f9ed99f1"
+source = "git+https://github.com/water-rs/math?rev=d780cf01082d6b24db12535ec6199a5dcbfc6ee5#d780cf01082d6b24db12535ec6199a5dcbfc6ee5"
 dependencies = [
  "kurbo 0.13.1",
  "mathcat",
- "nami 0.11.1",
+ "nami",
  "parley",
  "peniko",
  "pulldown-latex",
@@ -13608,7 +13573,7 @@ name = "waterui-navigation"
 version = "0.5.1"
 dependencies = [
  "erased-serde",
- "nami 0.12.0",
+ "nami",
  "serde",
  "serde_json",
  "waterui",
@@ -13680,7 +13645,7 @@ dependencies = [
  "async-channel",
  "executor-core",
  "futures-lite",
- "nami 0.12.0",
+ "nami",
  "native-executor",
  "num-traits",
  "waterui-core",
@@ -13729,7 +13694,7 @@ dependencies = [
 name = "waterui-text"
 version = "0.5.1"
 dependencies = [
- "nami 0.12.0",
+ "nami",
  "parley",
  "pulldown-cmark",
  "smallvec",
@@ -13805,8 +13770,8 @@ dependencies = [
  "executor-core",
  "futures-lite",
  "mime_guess",
- "nami 0.12.0",
- "nami-core 0.4.0",
+ "nami",
+ "nami-core",
  "sha2",
  "suiteki",
  "tracing",
@@ -13817,7 +13782,7 @@ dependencies = [
 name = "waterui-video"
 version = "0.5.1"
 dependencies = [
- "nami 0.12.0",
+ "nami",
  "thiserror 2.0.21",
  "uuid",
  "waterui-core",
@@ -13827,14 +13792,14 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?rev=c9ef2400c644e166c4fa65618adb88fa8c6610bd#c9ef2400c644e166c4fa65618adb88fa8c6610bd"
+source = "git+https://github.com/water-rs/video-gpu?rev=f43d46521dee1af7660d773e9dbfdf8547ad3480#f43d46521dee1af7660d773e9dbfdf8547ad3480"
 dependencies = [
  "async-channel",
  "executor-core",
  "futures",
  "futures-timer",
  "jni 0.22.4",
- "nami 0.11.1",
+ "nami",
  "num-traits",
  "shaderloom",
  "tracing",

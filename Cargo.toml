@@ -288,11 +288,13 @@ waterui-mcp = { version = "0.5.1", path = "components/devtools/mcp/server" }
 # Nothing in this workspace links the GTK, WinUI or Dew backends: the `water`
 # CLI reads these entries to scaffold a launcher crate. Each pins the
 # backend's nami-migration head — the published releases still require the
-# pre-rename nami line (`^0.11.2` and peers), which cannot resolve beside the
-# `nami = "0.12"` requirement above — so `dev`, `nightly` and local-checkout
-# scaffolds declare the commit directly while `stable` withholds the packages
-# under `experimental-packages` (water-rs/nami#26). Drop the `git`/`rev` half
-# once each backend releases a migrated version.
+# pre-rename nami line (`^0.11.2` and peers) — so `dev`, `nightly` and
+# local-checkout scaffolds declare the commit directly while `stable`
+# withholds the packages under `experimental-packages`. These heads are still
+# on nami 0.11 and do not build beside the `nami = "0.12"` requirement above
+# until each backend moves (water-rs/gtk-backend#144,
+# water-rs/waterui-winui#84, water-rs/dew#25). Drop the `git`/`rev` half once
+# each backend releases a migrated version.
 waterui-gtk = { version = "0.2.1", git = "https://github.com/water-rs/gtk-backend", rev = "9fe7a1f47f64aa1fc26a50c59f6670010559fa71" }
 waterui-winui = { version = "0.1.0", git = "https://github.com/water-rs/waterui-winui", rev = "830932ce5f0a3d316d225da207c88ae9e66ff946" }
 waterui-testing = { path = "testing" }
@@ -665,14 +667,14 @@ wgpu-hal = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3
 wgpu-naga-bridge = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
 wgpu-types = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
 
-# The migrated component repositories ride the nami-snapshot wave
-# (`Signal::get` -> `snapshot`, water-rs/nami#26); each entry pins the
-# repo's current dev head, which this graph is consumed alongside.
-waterui-barcode = { git = "https://github.com/water-rs/barcode", rev = "d3c61e9b17dbe8d5b3eb7261876d6cdf5fdf5249" }
-waterui-canvas = { git = "https://github.com/water-rs/canvas", rev = "8533cf99f511801c1ad3ee5850a28eefa5aef3ef" }
-waterui-chart = { git = "https://github.com/water-rs/chart", rev = "85f377be58ce12870c3817e16fc81fadcdf61233" }
-waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "759f907e2072c38616c85a928c6d95756883d20d" }
-waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "c9ef2400c644e166c4fa65618adb88fa8c6610bd" }
+# Split component repositories at their `dev` heads; the six that name
+# nami directly (barcode, canvas, chart, map-gpu, math, video-gpu) are at
+# the merges that moved them to nami 0.12 from crates.io.
+waterui-barcode = { git = "https://github.com/water-rs/barcode", rev = "45db548f2a39660cabd67870a883345de79ee8e8" }
+waterui-canvas = { git = "https://github.com/water-rs/canvas", rev = "639957374ed6eac16ac410249b6ba7d9f06c3978" }
+waterui-chart = { git = "https://github.com/water-rs/chart", rev = "1062c5058f488b7edd302ee065ae3a2776847227" }
+waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "1a7c3e8afe31f8e13039de2aa116c3e37bcdccb0" }
+waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "f43d46521dee1af7660d773e9dbfdf8547ad3480" }
 waterui-particle = { git = "https://github.com/water-rs/particle", rev = "4364f1ece5373bf322ea99cde595d7b4ec6958dc" }
 waterui-image = { git = "https://github.com/water-rs/image", rev = "8b1aa2ce3f03d81ca02164f5563f2cefc34fb566" }
 waterui-svg = { git = "https://github.com/water-rs/svg", rev = "16f99e021f735d0b1b31c95552b074e953d56418" }
@@ -698,7 +700,7 @@ waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", rev =
 # water-rs/shaderloom#24, whose default enables only `runtime`, so no
 # consumer links the build-script code generator into its runtime.
 shaderloom = { git = "https://github.com/water-rs/shaderloom", rev = "b0b6870c8b560d902c1de9a4d039c3a921b18b92" }
-waterui-math = { git = "https://github.com/water-rs/math", rev = "765fb8bcd1e5dba30db973377ceabf12f9ed99f1" }
+waterui-math = { git = "https://github.com/water-rs/math", rev = "d780cf01082d6b24db12535ec6199a5dcbfc6ee5" }
 # suiteki 0.1.1 on crates.io implements nami-core 0.3's `Signal`; suiteki dev
 # at the merge of water-rs/suiteki#27 implements 0.4's. Drop once a release
 # carries it.
