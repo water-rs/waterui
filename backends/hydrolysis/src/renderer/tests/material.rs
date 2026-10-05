@@ -232,9 +232,11 @@ fn a_within_window_material_window_mounts_its_root_over_the_backdrop_group() {
 
 #[test]
 fn a_behind_window_material_window_clears_transparent_to_its_tint_under_the_content() {
-    let scheme = waterui::theme::current_color_scheme(&pumped_test_environment()).snapshot();
-    let tint = BehindWindowLevel::UltraThin.tint(scheme);
     let mut runtime = window_with_background(Material::UltraThin);
+    // The tint the frame cleared to is the one in the runtime's own colour
+    // scheme.
+    let scheme = waterui::theme::current_color_scheme(runtime.env()).snapshot();
+    let tint = BehindWindowLevel::UltraThin.tint(scheme);
     assert!(
         runtime
             .renderer()
