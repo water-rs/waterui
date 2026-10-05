@@ -11,6 +11,26 @@ use cocoa_ui::MainThreadMarker;
 use waterui::window::WindowManager;
 use waterui_backend_core::Environment;
 
+/// Pumps the main run loop until `until` answers or `seconds` elapse.
+///
+/// A synchronous case awaits work enqueued on the main queue — a deferred
+/// emission apply, an enqueued drop — in small turns rather than one
+/// fixed wait. Answers whether `until` was reached; callers assert with
+/// the condition's name so a dead queue fails the case instead of
+/// hanging it.
+pub fn pump_main_until(seconds: f64, until: impl Fn() -> bool) -> bool {
+    use cocoa_ui::objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSRunLoop};
+    let deadline = NSDate::dateWithTimeIntervalSinceNow(seconds);
+    while !until() && deadline.timeIntervalSinceNow() > 0.0 {
+        // SAFETY: `NSDefaultRunLoopMode` is a system-owned run-loop mode.
+        NSRunLoop::currentRunLoop().runMode_beforeDate(
+            unsafe { NSDefaultRunLoopMode },
+            &NSDate::dateWithTimeIntervalSinceNow(0.02),
+        );
+    }
+    until()
+}
+
 /// A real controller/window lifetime around the production mounting path.
 #[cfg(target_os = "ios")]
 #[derive(Debug)]
@@ -190,9 +210,11 @@ pub fn bind_root_window_wires_a_live_window(mtm: MainThreadMarker) {
     drop(binding);
 }
 
-/// GPU-surface mounted-scene reach — the `native_test` module inside
-/// `components::gpu_surface` builds a real `SceneView` mount and drives
-/// the production failure drain and completion settlement paths on it.
+/// Re-exports the GPU-surface mounted-scene fixtures.
+///
+/// The `native_test` module inside `components::gpu_surface` builds a real
+/// `SceneView` mount and drives the production failure drain and
+/// completion settlement paths on it.
 #[cfg(all(target_os = "macos", feature = "gpu_surface"))]
 pub mod gpu_surface {
     pub use crate::components::gpu_surface::native_test::{MountedSceneSurface, WakeProbe};
