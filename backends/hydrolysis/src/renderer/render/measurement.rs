@@ -982,9 +982,10 @@ pub fn measure_tabs_layout(
 /// bottom strip for `Automatic`/`TabBar`, a leading strip for `Sidebar`.
 /// This is a *measurement* proposal, not the rendered content rect: the §7.1
 /// chrome split at render time carves the band out of the laid-out frame,
-/// and under a keyboard covering the docked band the rendered content rect
-/// keeps the whole frame. Bounded axes echo the offer; an axis the container
-/// left open stays open.
+/// and the rendered content rect keeps the whole frame once the keyboard
+/// covers the band outright (keyboard deeper than container inset plus bar
+/// height). Bounded axes echo the offer; an axis the container left open
+/// stays open.
 pub fn tabs_content_proposal(
     proposal: ProposalSize,
     style: NativeTabStyle,

@@ -224,8 +224,9 @@ pub fn tabs_accessibility(
 /// Measures a retained tabs leaf from its [`TabsRenderState`]: each tab's
 /// retained content answers the pane minus the tab bar (see
 /// [`tabs_content_proposal`]) — a measurement proposal, not the rendered
-/// content rect: under a keyboard covering the docked band the content lays
-/// out in the whole frame. Mirrors `measure_tabs_layout`.
+/// content rect: the rendered content keeps the whole frame only once the
+/// keyboard covers the band outright (keyboard deeper than container inset
+/// plus bar height). Mirrors `measure_tabs_layout`.
 pub fn measure_tabs_node(
     state: &TabsRenderState,
     proposal: ProposalSize,
@@ -298,11 +299,19 @@ pub fn render_tabs_node(
     env: &Environment,
 ) {
     let style = state.borrow().style;
-    let chrome = {
+    // The bar's layout and metrics are decided once with the chrome
+    // split: `render_tabs_parts` draws the bar the split carved, so the
+    // layout it places items under is the one the band was derived from.
+    let (chrome, layout, theme_metrics) = {
         let theme = ctx.theme();
         let extent = tabs_bar_item_extent(ctx.bounds.width(), style, &theme);
-        let metrics = theme.tabs_metrics(theme.tabs_item_layout(extent, state.borrow().tabs.len()));
-        ctx.chrome_split(tabs_dock_edge(style), metrics.bar_height)
+        let layout = theme.tabs_item_layout(extent, state.borrow().tabs.len());
+        let metrics = theme.tabs_metrics(layout);
+        (
+            ctx.chrome_split(tabs_dock_edge(style), metrics.bar_height),
+            layout,
+            metrics,
+        )
     };
     #[cfg(feature = "accessibility")]
     {
@@ -344,7 +353,7 @@ pub fn render_tabs_node(
             );
         }
     }
-    render_tabs_parts(ctx, state, env, &chrome);
+    render_tabs_parts(ctx, state, env, &chrome, layout, theme_metrics);
 }
 
 #[expect(
@@ -356,6 +365,8 @@ fn render_tabs_parts(
     state: &Rc<RefCell<TabsRenderState>>,
     env: &Environment,
     chrome: &crate::renderer::ChromeRects,
+    layout: TabItemLayout,
+    theme_metrics: waterui_backend_core::widget::TabsMetrics,
 ) {
     let (selection, style, tab_count) = {
         let st = state.borrow();
@@ -368,17 +379,11 @@ fn render_tabs_parts(
     let selected_id = ctx.renderer_mut().read_signal(&selection);
     let selected_index = state.borrow().selected_index(selected_id);
 
-    let extent = {
-        let theme = ctx.theme();
-        tabs_bar_item_extent(ctx.bounds.width(), style, &theme)
-    };
-    let layout = ctx.theme().tabs_item_layout(extent, tab_count);
-    let theme_metrics = ctx.theme().tabs_metrics(layout);
-    // §7.1's chrome split — derived once by `render_tabs_node`: the bar
-    // docks to its edge clear of the container region only, so the
-    // keyboard covers it instead of lifting it, while the content keeps
-    // the laid-out frame — clear of both regions — with the bar's edge
-    // docked on the band's inner edge.
+    // §7.1's chrome split — derived once by `render_tabs_node` together
+    // with `layout` and `theme_metrics`: the bar docks to its edge clear
+    // of the container region only, so the keyboard covers it instead of
+    // lifting it, while the content keeps the laid-out frame — clear of
+    // both regions — with the bar's edge docked on the band's inner edge.
     let (bar_rect, content_rect) = (chrome.bar, chrome.content);
     let label_env = tab_label_env(env);
 

@@ -215,19 +215,43 @@ impl<'a> WidgetRenderContext<'a> {
         )
     }
 
-    /// The §7.1 context for hosted content laid out at `rect` with bars
-    /// docked on `docks`' edges — the composed context a chrome container
-    /// with bars on several edges hands its content: [`Self::content_area_for`]
-    /// plus a `Docked` boundary per dock, so the content touches no edge a
-    /// bar sits on and a nested bar on that edge stacks on it.
-    pub(crate) fn chrome_content_area(
+    /// The multi-edge counterpart of [`Self::chrome_split`] — §7.1's
+    /// chrome split over every `(edge, extent)` in `bars`, derived in one
+    /// call: each bar's band and context plus the one content rect
+    /// `bounds` leaves once every band is carved and the one composed
+    /// content context — see [`SafeAreaLayout::chrome_splits`]. A widget
+    /// with no safe-area context keeps `bounds`' own edges, the placement
+    /// every context-free chrome container gets, and the contexts stay
+    /// `None`.
+    pub(crate) fn chrome_splits<const N: usize>(
         &self,
-        rect: kurbo::Rect,
-        docks: &[(crate::renderer::Edge, f64)],
-    ) -> Option<SafeAreaLayout> {
-        self.safe_area
-            .as_ref()
-            .map(|area| area.chrome_content_area(self.hosted_frame(area, rect), docks))
+        bars: [(crate::renderer::Edge, f64); N],
+    ) -> ChromeGroup<N> {
+        self.safe_area.as_ref().map_or_else(
+            || {
+                let bands = bars.map(|(edge, extent)| {
+                    edge.split_band(self.bounds, edge.frame_edge(self.bounds), extent)
+                });
+                ChromeGroup {
+                    bars: bands.map(|(bar, _)| ChromeBarRects { bar, split: None }),
+                    content: bands
+                        .iter()
+                        .fold(self.bounds, |content, &(_, rest)| content.intersect(rest)),
+                    content_area: None,
+                }
+            },
+            |area| {
+                let splits = area.chrome_splits(self.bounds, bars);
+                ChromeGroup {
+                    bars: splits.bars.map(|split| ChromeBarRects {
+                        bar: split.band,
+                        split: Some(split),
+                    }),
+                    content: splits.content,
+                    content_area: Some(splits.content_area),
+                }
+            },
+        )
     }
     pub(crate) const fn render_context(&self) -> RenderContext {
         RenderContext::with_transforms(self.bounds, self.transform, self.hit_transform)
@@ -406,20 +430,37 @@ pub struct ChromeRects {
     /// The remainder of `bounds` the hosted content lays out in.
     pub content: kurbo::Rect,
     /// The full split — the bar's context ([`ChromeSplit::bar_area`],
-    /// [`ChromeSplit::bar_area_for`]), the content's context
-    /// ([`ChromeSplit::content_area`]) and the dock it establishes
-    /// ([`ChromeSplit::dock`]).
+    /// [`ChromeSplit::bar_area_for`]) and the content's context
+    /// ([`ChromeSplit::content_area`]).
     pub split: Option<crate::renderer::ChromeSplit>,
 }
 
-impl ChromeRects {
-    /// The dock this split's bar establishes — `(edge, inner edge in
-    /// window space)` for a composed
-    /// [`WidgetRenderContext::chrome_content_area`] call, `None` when the
-    /// split ran for no bar (`extent <= 0`) or without a §7.1 context.
-    pub(crate) fn dock(&self) -> Option<(crate::renderer::Edge, f64)> {
-        self.split
-            .as_ref()
-            .and_then(crate::renderer::ChromeSplit::dock)
-    }
+/// The pieces of [`WidgetRenderContext::chrome_splits`]: each bar's
+/// [`ChromeBarRects`] plus the one content rect and composed content
+/// context — `None` where the widget owns no safe-area context.
+pub struct ChromeGroup<const N: usize> {
+    /// Each bar's share of the split, in the order the edges were given.
+    pub bars: [ChromeBarRects; N],
+    /// The remainder of `bounds` outside every band — always inside
+    /// `bounds`, clear of both regions.
+    pub content: kurbo::Rect,
+    /// The hosted content's context: `hosted` plus every bar's `Docked`
+    /// boundary — nothing inside touches, releases or extends through an
+    /// edge a bar sits on, and a nested bar whose frame lands on a dock
+    /// edge stacks on the outer bar.
+    pub content_area: Option<SafeAreaLayout>,
+}
+
+/// One bar's share of [`ChromeGroup`]: its band rect in the widget's
+/// bounds space, plus the full [`ChromeBar`] carrying the bar's §7.1
+/// context and the dock it establishes — `None` where the widget owns no
+/// safe-area context.
+pub struct ChromeBarRects {
+    /// The band the bar occupies — it may sit wholly past `bounds`' own
+    /// edge once the keyboard covers it.
+    pub bar: kurbo::Rect,
+    /// The bar's share of the split — its context
+    /// ([`ChromeBar::bar_area`], [`ChromeBar::bar_area_for`]) and the dock
+    /// it establishes ([`ChromeBar::dock`]).
+    pub split: Option<crate::renderer::ChromeBar>,
 }

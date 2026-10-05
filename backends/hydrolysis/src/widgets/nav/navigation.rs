@@ -573,14 +573,17 @@ pub fn render_navigation_view_parts(
         0.0
     };
 
-    // §7.1's chrome split: each bar docks to its edge clear of the
-    // container region only, so the keyboard covers it instead of lifting
-    // it, while the hosted content keeps the laid-out frame minus both
-    // bands — clear of both regions.
-    let top = ctx.chrome_split(Edge::Top, top_bar_height);
-    let bottom = ctx.chrome_split(Edge::Bottom, bottom_bar_height);
-    let (bar_rect, below_top) = (top.bar, top.content);
-    let bottom_rect = bottom.bar;
+    // §7.1's multi-edge chrome split — one derivation for both bars:
+    // each bar docks to its edge clear of the container region only, so
+    // the keyboard covers it instead of lifting it, while the hosted
+    // content keeps the laid-out frame minus both bands — clear of both
+    // regions — with each bar's edge docked on its band's inner edge.
+    let chrome = ctx.chrome_splits([
+        (Edge::Top, top_bar_height),
+        (Edge::Bottom, bottom_bar_height),
+    ]);
+    let [top, bottom] = &chrome.bars;
+    let (bar_rect, bottom_rect) = (top.bar, bottom.bar);
 
     if top_bar_height > 0.0 {
         let base_bar_height = navigation_base_bar_height_for_display_mode(display_mode, &theme);
@@ -738,12 +741,7 @@ pub fn render_navigation_view_parts(
         }
     }
 
-    let content_rect = kurbo::Rect::new(
-        ctx.bounds.x0,
-        below_top.y0,
-        ctx.bounds.x1,
-        bottom_rect.y0.clamp(below_top.y0, below_top.y1),
-    );
+    let content_rect = chrome.content;
     if content_rect.width() > 0.0 && content_rect.height() > 0.0 {
         let render_ctx = ctx.render_context();
         // §7.1: navigation content is chrome-hosted — it inherits the
@@ -751,16 +749,13 @@ pub fn render_navigation_view_parts(
         // and clears on the edges the bars leave reachable, and an
         // `.ignore_safe_area` inside still releases there; each bar's
         // edge docks on its band's inner edge.
-        let docks: Vec<(crate::renderer::Edge, f64)> =
-            [top.dock(), bottom.dock()].into_iter().flatten().collect();
-        let content_area = ctx.chrome_content_area(content_rect, &docks);
         state.borrow_mut().content.flush_in_rect(
             ctx.renderer_mut(),
             render_ctx,
             env,
             bounded_proposal(content_rect),
             content_rect,
-            content_area,
+            chrome.content_area.clone(),
         );
     }
 
@@ -823,7 +818,7 @@ fn flush_toolbar_group(
     env: &Environment,
     bounds: kurbo::Rect,
     alignment: ToolbarAlignment,
-    bar: Option<&crate::renderer::ChromeSplit>,
+    bar: Option<&crate::renderer::ChromeBar>,
 ) {
     if group.is_empty() || bounds.width() <= 0.0 || bounds.height() <= 0.0 {
         return;
@@ -888,7 +883,7 @@ fn flush_title_and_subtitle(
     state: &mut NavigationViewRenderState,
     env: &Environment,
     bounds: kurbo::Rect,
-    bar: Option<&crate::renderer::ChromeSplit>,
+    bar: Option<&crate::renderer::ChromeBar>,
 ) {
     let title_size = state.title.measure_intrinsic(ctx.renderer_mut(), env);
     let subtitle_size = if state.subtitle_present {
