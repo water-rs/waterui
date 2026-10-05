@@ -339,14 +339,20 @@ impl RetainedSubview {
         structural
     }
 
-    /// Consume the subtree's layout-invalidated mark. The flush sites fold this
-    /// into `needs_layout` so a layout-signal change re-places the subtree at
-    /// its unchanged rect. Running before build panics, a caller ordering bug
-    /// rather than a `false` answer.
+    /// Consume the subtree's layout-invalidated mark, keeping it in
+    /// `needs_layout` as well as reporting it. The flush sites fold it into
+    /// `needs_layout` so a layout input change re-places the subtree at its
+    /// unchanged rect. An enclosing sub-view walking through this one (a lazy
+    /// row inside a navigation page) consumes the mark before this sub-view
+    /// flushes, and the enclosing layout does not place it — the row is placed
+    /// by its own flush — so the mark must survive here for that flush.
+    /// Running before build panics, a caller ordering bug rather than a
+    /// `false` answer.
     pub(crate) fn take_layout_dirty(&mut self) -> bool {
-        self.expect_built_mut("take_layout_dirty")
-            .node
-            .take_layout_dirty()
+        let built = self.expect_built_mut("take_layout_dirty");
+        let dirty = built.node.take_layout_dirty();
+        built.needs_layout |= dirty;
+        dirty
     }
 
     /// Build (once), patch, lay out (when the rect size, the structure or the
@@ -956,6 +962,15 @@ pub struct TextNode {
     pub(crate) alignment: Computed<HorizontalAlignment>,
     /// Maximum laid-out lines, from `TextConfig::line_limit`.
     pub(crate) line_limit: Option<usize>,
+    /// Set by the `content`/`alignment` subscriptions when a measurement input
+    /// changes. The text's size is a function of what it says, so an outer
+    /// `RetainedSubview` consumes this through [`RenderNode::take_layout_dirty`]
+    /// and re-places its tree: otherwise the leaf keeps the box it measured at
+    /// mount while the flush paints the new string wrapped inside it.
+    pub(crate) layout_dirty: Rc<Cell<bool>>,
+    /// The `content` and `alignment` subscriptions that arm `layout_dirty`,
+    /// owned by this retained leaf.
+    pub(crate) _guards: [BoxWatcherGuard; 2],
 }
 
 pub struct ContainerNode {
