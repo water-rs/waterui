@@ -181,15 +181,17 @@ fn command_title(command: &ResolvedCommand) -> String {
 /// Builds one `CheckMenuItem` per command: the check gutter is invisible
 /// while unselected on every platform, and `set_checked` can then reflect
 /// `selected` live — the same validation contract a mounted `Menu` gives
-/// through the registry's per-dispatch snapshot.
+/// through the registry's per-dispatch snapshot. `title` is the native
+/// item's text, which on Windows may mark an access key with `&`.
 fn build_command(
+    title: &str,
     command: &ResolvedCommand,
     actions: &mut HashMap<MenuId, SharedAction<()>>,
     state_watches: &mut Vec<BoxWatcherGuard>,
 ) -> CheckMenuItem {
     let accelerator = command.shortcut.as_ref().and_then(accelerator_for);
     let item = CheckMenuItem::new(
-        command_title(command),
+        title,
         !command.disabled.snapshot(),
         command.selected.snapshot(),
         accelerator,
@@ -225,17 +227,30 @@ fn append_items(
             ResolvedMenuItem::Command(command) => {
                 #[cfg(target_os = "macos")]
                 command.assert_allowed_in_macos_menu_bar();
-                parent(&build_command(command, actions, state_watches));
+                parent(&build_command(
+                    &command_title(command),
+                    command,
+                    actions,
+                    state_watches,
+                ));
             }
             ResolvedMenuItem::Quit => {
                 // macOS's standard application menu already carries the
                 // platform Quit (`build_app_menu`), so a declared one never
                 // repeats it there. On Windows the bar shows the quit
                 // command — "Exit", Ctrl+Q — whose chord also arms on the
-                // registry.
+                // registry, with the `&` access key the platform's own Exit
+                // item carries. The mnemonic belongs to the Win32 menu
+                // alone: the command's label is also a self-drawn popup
+                // row, which would print the `&`.
                 #[cfg(not(target_os = "macos"))]
                 if let Some(command) = quit_command(env) {
-                    parent(&build_command(&command, actions, state_watches));
+                    parent(&build_command(
+                        &format!("&{}", command_title(&command)),
+                        &command,
+                        actions,
+                        state_watches,
+                    ));
                 }
             }
             ResolvedMenuItem::Divider => {

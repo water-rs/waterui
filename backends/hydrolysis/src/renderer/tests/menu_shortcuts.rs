@@ -502,9 +502,25 @@ fn a_declared_quit_chord_requests_termination() {
 /// instead of panicking on the missing service.
 #[test]
 fn a_declared_quit_arms_no_chord_where_nothing_can_quit() {
-    let mut runtime = runtime_with_declared_quit(test_environment());
+    let env = test_environment();
+    let registry = env
+        .get::<crate::renderer::MenuShortcutRegistry>()
+        .cloned()
+        .expect("the test environment seeds a menu shortcut registry");
+    let mut runtime = runtime_with_declared_quit(env.clone());
 
     key_chord(&mut runtime, "q", command());
+    // The app bar's chords answer to every window, so no window id is
+    // needed to ask the registry whether it claims the quit chord.
+    assert!(
+        !registry.dispatch(
+            crate::renderer::WindowId::Orphan,
+            &KeyCode::Character("q".to_owned()),
+            command(),
+            &env,
+        ),
+        "no menu claims the quit chord where nothing can quit"
+    );
 }
 
 /// With the app bar and a mounted `Menu` claiming the same chord, the
