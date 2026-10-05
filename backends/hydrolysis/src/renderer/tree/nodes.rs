@@ -425,9 +425,11 @@ impl RetainedSubview {
 /// placed by whoever replays it; the hit targets and accessibility bounds are
 /// registered live and so must already carry the placement.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct CapturedScenePlacement {
-    pub(crate) size: Size,
-    pub(crate) hit_transform: kurbo::Affine,
+pub struct CapturedScenePlacement {
+    /// The size the captured content lays out at.
+    pub size: Size,
+    /// Local space to window hit-test space.
+    pub hit_transform: kurbo::Affine,
 }
 
 /// A cache of retained node sub-views for a *virtualized* collection (a lazy
