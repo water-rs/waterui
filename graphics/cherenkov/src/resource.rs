@@ -185,13 +185,19 @@ impl<F: Format> Image<F> {
     /// id. The next render redraws the surfaces whose content draws this
     /// image, and the engine's waker fires to request that render.
     ///
-    /// `image` is validated by [`ImageData::new`]. A rejection only the
-    /// backend can detect keeps the previous pixels and fails every render
-    /// that draws the image with [`RenderError::Rejected`], until a later
-    /// replacement succeeds, as for [`Engine::image`](crate::Engine::image).
+    /// `image` is validated by [`ImageData::new`], and its size is checked
+    /// against the engine's [`ImageLimits`](crate::ImageLimits) on the
+    /// calling thread: an image the device cannot hold fails here with
+    /// [`ResourceError::TooLarge`] and keeps the previous pixels. A
+    /// rejection only the backend can detect keeps the previous pixels
+    /// too, and fails every render that draws the image with
+    /// [`RenderError::Rejected`], until a later replacement succeeds, as
+    /// for [`Engine::image`](crate::Engine::image).
     ///
     /// # Errors
-    /// [`ResourceError::Lost`] when the render thread is gone.
+    /// [`ResourceError::TooLarge`] when the image exceeds the engine's
+    /// image limits, [`ResourceError::Lost`] when the render thread is
+    /// gone.
     ///
     /// [`RenderError::Rejected`]: crate::RenderError::Rejected
     pub fn replace(&self, image: ImageData<F>) -> Result<(), ResourceError> {

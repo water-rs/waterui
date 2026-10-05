@@ -1503,6 +1503,7 @@ mod tests {
         let engine = Engine::<Null>::new(NullConfig {
             events,
             reject: HashSet::new(),
+            image_limits: crate::ImageLimits::UNLIMITED,
         })
         .expect("init");
         let surface = engine
@@ -1590,6 +1591,7 @@ mod tests {
         Engine::<Null>::new(NullConfig {
             events,
             reject: HashSet::new(),
+            image_limits: crate::ImageLimits::UNLIMITED,
         })
         .expect("init")
     }

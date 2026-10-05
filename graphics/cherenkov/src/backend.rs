@@ -124,6 +124,16 @@ pub trait Renderer: 'static {
     /// Unregisters a font no installed content draws any more.
     fn remove_font(&mut self, id: FontId);
 
+    /// The largest image this renderer admits, in each dimension and in
+    /// total texels: the device's texture limit, or the per-image share
+    /// of the backend's memory budget. The engine reads it once, right
+    /// after [`Backend::init`] returns the renderer, and it must not
+    /// change afterwards: [`Engine::image`](crate::Engine::image) and
+    /// [`Image::replace`](crate::Image::replace) check it on the calling
+    /// thread and reject what it does not admit before anything is
+    /// queued.
+    fn image_limits(&self) -> crate::ImageLimits;
+
     /// Registers an image. A rejection fails every later render that
     /// draws the image with [`RenderError::Rejected`].
     ///

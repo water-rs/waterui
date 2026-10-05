@@ -239,7 +239,9 @@ pub trait SceneBackend: 'static {
     ///
     /// # Errors
     ///
-    /// [`ResourceError::Image`] when the target rejects the upload,
+    /// [`ResourceError::TooLarge`] when the image exceeds
+    /// [`image_limits`](Self::image_limits), [`ResourceError::Image`] when
+    /// the target rejects the upload for another cause,
     /// [`ResourceError::Lost`] when the renderer is gone.
     fn register_rgba8(&self, data: ImageData<Rgba8>) -> Result<Handle<ImageId>, ResourceError>;
 
@@ -247,9 +249,19 @@ pub trait SceneBackend: 'static {
     ///
     /// # Errors
     ///
-    /// [`ResourceError::Image`] when the target rejects the upload,
+    /// [`ResourceError::TooLarge`] when the image exceeds
+    /// [`image_limits`](Self::image_limits), [`ResourceError::Image`] when
+    /// the target rejects the upload for another cause,
     /// [`ResourceError::Lost`] when the renderer is gone.
     fn register_rgba16f(&self, data: ImageData<Rgba16F>) -> Result<Handle<ImageId>, ResourceError>;
+
+    /// The largest image the target admits, in each dimension and in
+    /// total texels — the device's texture limit, or the per-image share
+    /// of the target's memory budget. Fixed for the target's life: an
+    /// image it does not admit fails at registration with
+    /// [`ResourceError::TooLarge`] instead of failing every render that
+    /// draws it.
+    fn image_limits(&self) -> crate::draw::ImageLimits;
 }
 
 /// The registration only a target that draws shader paints provides.
@@ -396,6 +408,10 @@ where
     fn register_rgba16f(&self, data: ImageData<Rgba16F>) -> Result<Handle<ImageId>, ResourceError> {
         let image = Self::image(self, engine_image::<Rgba16F, cherenkov::Rgba16F>(data))?;
         Ok(Handle::new(image))
+    }
+
+    fn image_limits(&self) -> crate::draw::ImageLimits {
+        Self::image_limits(self)
     }
 }
 
@@ -772,6 +788,13 @@ impl RecordingResources<'_> {
         self.resources.shader(source)
     }
 
+    /// The largest image the target admits; see
+    /// [`SceneResources::image_limits`].
+    #[must_use]
+    pub fn image_limits(&self) -> crate::draw::ImageLimits {
+        self.resources.image_limits()
+    }
+
     /// The registrations this recording names, for the host to keep beside
     /// it; see [`HeldResources`].
     #[must_use = "the recording names these resources; keep them for as long as it is installed"]
@@ -889,16 +912,16 @@ impl Table {
 /// # Blocking
 ///
 /// A request for a source whose registration is live returns without
-/// touching the renderer. Any other request — [`font`](Self::font),
+/// touching the target. Any other request — [`font`](Self::font),
 /// [`image`](Self::image), [`image16f`](Self::image16f) or
-/// [`shader`](Self::shader) — is a round trip into the target's renderer,
-/// and blocks the calling thread until it has parsed the font, converted
-/// and uploaded the image, or compiled and validated the shader. Called
-/// from [`SceneContent::build_scene`], that is the host's frame: a
-/// first-time registration stalls the frame that first draws the resource,
-/// by as long as that work takes. The blocking is what makes the id valid
-/// the moment it is recorded, with no frame in which the recording names a
-/// resource the target does not have yet.
+/// [`shader`](Self::shader) — validates on the calling thread and queues
+/// the registration on the target, in order ahead of every render that
+/// could draw it, so the returned id is valid the moment it is recorded.
+/// The calling thread's only waits are inside that validation — a font's
+/// parse, a shader's pre-validation, an image's check against
+/// [`image_limits`](Self::image_limits): an image the limits do not
+/// admit fails here with [`ResourceError::TooLarge`] before anything is
+/// queued, never as a failed render.
 ///
 /// [`SceneContent::build_scene`]: crate::scene_view::SceneContent::build_scene
 pub struct SceneResources {
@@ -949,6 +972,18 @@ impl SceneResources {
             resources: self,
             held: HashMap::new(),
         }
+    }
+
+    /// The largest image the target admits, in each dimension and in
+    /// total texels — what it reports through
+    /// [`SceneBackend::image_limits`]. Fixed for the target's life.
+    /// [`ImageLimits::fit`](crate::draw::ImageLimits::fit) gives the
+    /// largest admitted size at a kept aspect ratio, for content that
+    /// scales an oversized source down itself instead of taking the
+    /// [`ResourceError::TooLarge`].
+    #[must_use]
+    pub fn image_limits(&self) -> crate::draw::ImageLimits {
+        self.table.backend.image_limits()
     }
 
     /// The live registration of `bytes` in `shape`, or a new one from
@@ -1009,8 +1044,8 @@ impl SceneResources {
     /// with the `Arc` the registration was made from is a single lookup; an
     /// identical font in another allocation is hashed and compared.
     ///
-    /// A new registration blocks until the render thread has made it; see
-    /// [Blocking](Self#blocking).
+    /// A new registration validates on the calling thread and is queued
+    /// on the target; see [Blocking](Self#blocking).
     ///
     /// # Errors
     ///
@@ -1044,13 +1079,16 @@ impl SceneResources {
     /// share one registration; as with fonts, asking again with the same
     /// `Arc` is a single lookup.
     ///
-    /// A new registration blocks until the render thread has made it; see
+    /// A new registration is checked against
+    /// [`image_limits`](Self::image_limits) and queued on the target; see
     /// [Blocking](Self#blocking).
     ///
     /// # Errors
     ///
-    /// [`ResourceError::Image`] when the backend rejects the upload,
-    /// [`ResourceError::Lost`] when the render thread is gone.
+    /// [`ResourceError::TooLarge`] when the image exceeds the target's
+    /// image limits, [`ResourceError::Image`] when the target rejects the
+    /// upload for another cause, [`ResourceError::Lost`] when the render
+    /// thread is gone.
     pub fn image(&self, data: ImageData<Rgba8>) -> Result<Registered<ImageId>, ResourceError> {
         self.intern(
             |table| &table.images_rgba8,
@@ -1064,13 +1102,16 @@ impl SceneResources {
     /// Registers `Rgba16Float` image data — the format HDR and linear-space
     /// sources upload as — deduplicated as [`image`](Self::image) is.
     ///
-    /// A new registration blocks until the render thread has made it; see
+    /// A new registration is checked against
+    /// [`image_limits`](Self::image_limits) and queued on the target; see
     /// [Blocking](Self#blocking).
     ///
     /// # Errors
     ///
-    /// [`ResourceError::Image`] when the backend rejects the upload,
-    /// [`ResourceError::Lost`] when the render thread is gone.
+    /// [`ResourceError::TooLarge`] when the image exceeds the target's
+    /// image limits, [`ResourceError::Image`] when the target rejects the
+    /// upload for another cause, [`ResourceError::Lost`] when the render
+    /// thread is gone.
     pub fn image16f(&self, data: ImageData<Rgba16F>) -> Result<Registered<ImageId>, ResourceError> {
         self.intern(
             |table| &table.images_rgba16f,
@@ -1087,8 +1128,8 @@ impl SceneResources {
     /// `animated` flag maps to that one registration. Static text asked for
     /// again is a single lookup; owned text is hashed and compared.
     ///
-    /// A new registration blocks until the render thread has made it; see
-    /// [Blocking](Self#blocking).
+    /// A new registration validates on the calling thread and is queued
+    /// on the target; see [Blocking](Self#blocking).
     ///
     /// # Errors
     ///
@@ -1163,6 +1204,7 @@ pub(crate) mod tests {
         let engine = Engine::<Null>::new(NullConfig {
             events,
             reject: HashSet::new(),
+            image_limits: cherenkov::ImageLimits::UNLIMITED,
         })
         .expect("the null engine failed to start");
         (Rc::new(engine), probe)

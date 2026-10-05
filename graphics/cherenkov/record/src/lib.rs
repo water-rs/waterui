@@ -55,7 +55,7 @@ pub use crate::record::{
     Animating, Binding, Content, ContentChange, ContentSpare, Draw, Fixed, Live, LiveOwner,
     Recorder, SampleFlag, StaticRecorder,
 };
-pub use crate::resource::{BackdropShaderId, ResourceId};
+pub use crate::resource::{BackdropShaderId, ImageLimits, ResourceId};
 pub use crate::shape::{
     ContinuousRect, EvenOdd, FillRule, PATH_TOLERANCE, PathRef, Semantic, Shape, ShapeData,
 };

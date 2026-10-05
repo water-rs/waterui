@@ -109,5 +109,6 @@ pub use crate::surface::{Layer, LayerContent, LayerEdit, Surface, Transaction};
 pub use crate::text::{TextLayout, draw_text};
 pub use crate::tree::{LayerAnimations, LayerNode, SurfaceTree, snap_animating};
 pub use cherenkov_record::BackdropShaderId;
+pub use cherenkov_record::ImageLimits;
 pub use cherenkov_record::ResourceId;
 pub use kurbo::Stroke;
