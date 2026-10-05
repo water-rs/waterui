@@ -1553,8 +1553,13 @@ async fn scaffold_preview_app(path: &Path, requirements: &PreviewRequirements) -
         // The support app inherits the previewed project's framework
         // selection exactly: its scaffold's lockfile and `[patch]` table are
         // generated against the same revision the app resolves, so a `dev`
-        // project never meets a `stable` support graph (cli#197).
-        framework: Some(requirements.framework.clone()),
+        // project never meets a `stable` support graph (cli#197). A checkout
+        // is its own framework source — `Project::create` resolves the same
+        // framework from `waterui_path` — and the two are mutually exclusive,
+        // so the resolved selection is handed over only without one.
+        framework: waterui_path
+            .is_none()
+            .then(|| requirements.framework.clone()),
         framework_lock: requirements.framework_lock.clone(),
         author: String::new(),
         web: None,
