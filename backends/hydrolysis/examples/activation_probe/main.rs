@@ -1,6 +1,6 @@
 //! Activation-policy probe for water-rs/waterui#1302.
 //!
-//! The window starts [`WindowState::Closed`]; `StayResident` keeps the
+//! The window starts `WindowState::Closed`; `StayResident` keeps the
 //! process alive with zero windows so another app (`TextEdit` in the test
 //! harness) can be frontmost when the probe finally shows. A timer flips
 //! the presentation state to `Normal` — the same show path a drop-down
