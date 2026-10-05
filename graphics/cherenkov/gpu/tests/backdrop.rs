@@ -1020,3 +1020,94 @@ fn reduced_blur_counts_its_footprint_in_capture_texels() -> Result<(), Box<dyn s
     Ok(())
 }
 }
+
+split_test! {
+fn reduced_refraction_samples_the_displaced_point_on_the_capture_grid()
+-> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let half = cherenkov::CaptureScale::new(0.5)?;
+    let group = surface.backdrop_group_unfiltered(half);
+    let member = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 52.0, 64.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+            r.fill(
+                Rect::new(52.0, 0.0, 64.0, 64.0),
+                WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&member);
+        tx[&member]
+            .clip(Rect::new(8.0, 8.0, 56.0, 56.0))
+            .backdrop(group.sample_with(cherenkov::Refraction {
+                depth: 8.0,
+                strength: 4.0,
+            }));
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    let readback = wait!(surface.readback())?;
+    // Pixel 54's centre is 1.5 inside the right edge: t = 1 − 1.5/8 =
+    // 0.8125, so q = 54.5 − 4·t² = 51.859375 device pixels, 25.9296875 on
+    // the grid — 0.4296875 past texel 25's centre, between texel 25 (red,
+    // device [50, 52)) and texel 26 (blue, [52, 54)). The undisplaced
+    // point would read only blue texels.
+    assert_pixel(
+        pixel(&readback, 54, 32),
+        [0.570_312_5, 0.0, 0.429_687_5, 1.0],
+        2e-3,
+    );
+    // The centre is past `depth` from every edge: q = p, at 16.25 on the
+    // grid, between two red texels.
+    assert_pixel(pixel(&readback, 32, 32), [1.0, 0.0, 0.0, 1.0], 1e-3);
+    Ok(())
+}
+}
+
+split_test! {
+fn reduced_rim_lights_the_bilinear_sample_on_the_capture_grid()
+-> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let half = cherenkov::CaptureScale::new(0.5)?;
+    let group = surface.backdrop_group_unfiltered(half);
+    let member = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 54.0, 64.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+            r.fill(
+                Rect::new(54.0, 0.0, 64.0, 64.0),
+                WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&member);
+        tx[&member]
+            .clip(Rect::new(8.0, 8.0, 56.0, 56.0))
+            .backdrop(group.sample_with(cherenkov::Rim {
+                width: 4.0,
+                color: [0.0, 1.0, 0.0, 1.0],
+                gain: 2.0,
+            }));
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    let readback = wait!(surface.readback())?;
+    // Pixel 54's centre lands at 27.25 on the grid, 0.75 past texel 26's
+    // centre: a quarter of texel 26 (red, device [52, 54)) and three
+    // quarters of texel 27 (blue, [54, 56)). It is 1.5 inside the right
+    // edge, so the rim adds 1 · 2 · (1 − 1.5/4)² = 0.78125 of green.
+    assert_pixel(
+        pixel(&readback, 54, 32),
+        [0.25, 0.781_25, 0.75, 1.0],
+        2e-3,
+    );
+    // Past the rim's width the sample is unlit.
+    assert_pixel(pixel(&readback, 32, 32), [1.0, 0.0, 0.0, 1.0], 1e-3);
+    Ok(())
+}
+}
