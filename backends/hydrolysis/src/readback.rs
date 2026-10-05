@@ -34,6 +34,9 @@ pub enum ReadbackError {
 /// Copies `texture`, rendered on `surface`'s device, into tightly packed
 /// RGBA8 rows.
 ///
+/// For export and test paths only — never for a runtime render path, which
+/// stays GPU-resident end to end.
+///
 /// # Errors
 ///
 /// Returns [`ReadbackError`] when the device was lost or the copy could not
@@ -43,7 +46,7 @@ pub enum ReadbackError {
 ///
 /// Panics when a padded row of `width` pixels exceeds `u32::MAX` bytes.
 pub fn readback_texture_rgba8(
-    surface: &dyn SurfaceProvider,
+    surface: &(impl SurfaceProvider + ?Sized),
     texture: &wgpu::Texture,
     width: u32,
     height: u32,

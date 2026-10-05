@@ -49,7 +49,8 @@ pub struct ViewRenderCallback {
     /// - `message_len`: Length of the message in bytes
     ///
     /// The message is only read during the call; native keeps ownership. It
-    /// must be valid UTF-8.
+    /// must be valid UTF-8: a message that is not valid UTF-8 aborts the
+    /// process.
     pub fail: unsafe extern "C" fn(data: *mut (), message_ptr: *const u8, message_len: usize),
 }
 

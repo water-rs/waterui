@@ -820,7 +820,7 @@ crate::engine::cfg_async_fn! {
         render: impl FnOnce(
             &mut HydrolysisRenderer,
             crate::renderer::FrameRenderTarget<'_>,
-        ) -> crate::renderer::EngineFrame,
+        ) -> Result<crate::renderer::EngineFrame, cherenkov::RenderError>,
     } {
         renderer: &mut HydrolysisRenderer,
         surface: &mut dyn crate::platform::SurfaceProvider,
@@ -830,7 +830,7 @@ crate::engine::cfg_async_fn! {
         render: impl AsyncFnOnce(
             &mut HydrolysisRenderer,
             crate::renderer::FrameRenderTarget<'_>,
-        ) -> crate::renderer::EngineFrame,
+        ) -> Result<crate::renderer::EngineFrame, cherenkov::RenderError>,
     } -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
     let (width, height) = surface.size();
     let format = surface.format();
@@ -859,7 +859,10 @@ crate::engine::cfg_async_fn! {
             height,
             base_color: crate::renderer::working_color(clear_color),
         },
-    ));
+    ))
+    .unwrap_or_else(|error| {
+        panic!("hydrolysis renderer: engine render failed: {error:#}")
+    });
     let engine_render = render_started_at.elapsed();
     let acquire_started_at = Instant::now();
     let frame = acquire_surface_frame(surface)?;
@@ -1064,9 +1067,7 @@ crate::engine::cfg_async_fn! {
                     scale_factor,
                     false,
                     |renderer, target| {
-                        renderer
-                            .render_hybrid_segment(segment, transient_scene, target)
-                            .expect("hydrolysis renderer: engine render failed")
+                        renderer.render_hybrid_segment(segment, transient_scene, target)
                     },
                 ) {
                     Ok(rendered) => {
@@ -1096,17 +1097,12 @@ crate::engine::cfg_async_fn! {
                 scale_factor,
                 capture_snapshot,
                 #[cfg(not(target_arch = "wasm32"))]
-                |renderer, target| {
-                    renderer
-                        .render_engine_frame(target, reader.rasterizes())
-                        .expect("hydrolysis renderer: engine render failed")
-                },
+                |renderer, target| renderer.render_engine_frame(target, reader.rasterizes()),
                 #[cfg(target_arch = "wasm32")]
                 async |renderer, target| {
                     renderer
                         .render_engine_frame(target, reader.rasterizes())
                         .await
-                        .expect("hydrolysis renderer: engine render failed")
                 },
             ))
         };
@@ -1121,17 +1117,12 @@ crate::engine::cfg_async_fn! {
                 scale_factor,
                 capture_snapshot,
                 #[cfg(not(target_arch = "wasm32"))]
-                |renderer, target| {
-                    renderer
-                        .render_engine_frame(target, reader.rasterizes())
-                        .expect("hydrolysis renderer: engine render failed")
-                },
+                |renderer, target| renderer.render_engine_frame(target, reader.rasterizes()),
                 #[cfg(target_arch = "wasm32")]
                 async |renderer, target| {
                     renderer
                         .render_engine_frame(target, reader.rasterizes())
                         .await
-                        .expect("hydrolysis renderer: engine render failed")
                 },
             ))
         };

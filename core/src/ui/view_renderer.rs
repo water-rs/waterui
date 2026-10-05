@@ -75,8 +75,10 @@ pub trait CustomViewRenderer: 'static {
     /// 3. Capture the final composited result to RGBA pixels
     /// 4. Return the pixel data
     ///
-    /// A capture that cannot produce the view's pixels returns
-    /// [`RenderError`].
+    /// # Errors
+    ///
+    /// Returns [`RenderError`] when the capture cannot produce the view's
+    /// pixels.
     fn render_to_rgba(
         &self,
         view: AnyView,
@@ -123,7 +125,10 @@ impl ViewRenderer {
     ///
     /// Returns the [`RenderError`] the installed renderer reports when the
     /// capture fails.
-    #[allow(clippy::future_not_send)]
+    #[expect(
+        clippy::future_not_send,
+        reason = "the erased `CustomViewRenderer` future is not Send; `render` runs on the caller's thread"
+    )]
     pub async fn render(
         &self,
         view: AnyView,

@@ -19,6 +19,7 @@ use crate::contract::{NativeLeaf, Renderer};
 /// dispatcher, an environment clone and the main-thread proof.
 struct AppleViewRenderer {
     renderer: Renderer,
+    mtm: cocoa_ui::MainThreadMarker,
 }
 
 impl core::fmt::Debug for AppleViewRenderer {
@@ -28,14 +29,17 @@ impl core::fmt::Debug for AppleViewRenderer {
 }
 
 impl CustomViewRenderer for AppleViewRenderer {
-    #[allow(clippy::future_not_send)]
+    #[expect(
+        clippy::future_not_send,
+        reason = "view rendering runs on the main thread; the future borrows the non-Send native leaf and `MainThreadMarker` across the capture await"
+    )]
     async fn render_to_rgba(
         &self,
         view: AnyView,
         size: RenderSize,
     ) -> Result<RenderResult, RenderError> {
         let leaf = self.renderer.render(view);
-        let (pixels, width, height) = capture_leaf_to_rgba(&leaf, size)
+        let (pixels, width, height) = capture_leaf_to_rgba(&leaf, size, self.mtm)
             .await
             .map_err(|error| RenderError::Capture(Box::new(error)))?;
         Ok(RenderResult {
@@ -74,7 +78,7 @@ pub fn install_service(env: &mut Environment) {
     let mtm = cocoa_ui::MainThreadMarker::new().expect("main thread");
     let renderer =
         crate::contract::RenderContext::new(env, crate::dispatch::dispatcher(env), mtm).renderer();
-    env.insert(ViewRenderer::new(AppleViewRenderer { renderer }));
+    env.insert(ViewRenderer::new(AppleViewRenderer { renderer, mtm }));
 }
 
 /// Captures `leaf` into premultiplied RGBA8 under `size`'s proposal —
@@ -88,6 +92,7 @@ pub fn install_service(env: &mut Environment) {
 async fn capture_leaf_to_rgba(
     leaf: &NativeLeaf,
     size: RenderSize,
+    mtm: cocoa_ui::MainThreadMarker,
 ) -> Result<(alloc::vec::Vec<u8>, u32, u32), CaptureError> {
     let view = leaf.view();
     let proposed = cocoa_ui::Size::new(f64::from(size.width), f64::from(size.height));
@@ -138,7 +143,7 @@ async fn capture_leaf_to_rgba(
 
     #[cfg(feature = "gpu_surface")]
     wait_for_surfaces(view).await;
-    capture::capture(view, actual, scale, pixel_width, pixel_height)
+    capture::capture(view, actual, scale, pixel_width, pixel_height, mtm)
 }
 
 #[cfg(target_os = "macos")]
@@ -156,6 +161,7 @@ mod capture {
         scale: f64,
         pixel_width: usize,
         pixel_height: usize,
+        mtm: cocoa_ui::MainThreadMarker,
     ) -> Result<(Vec<u8>, u32, u32), CaptureError> {
         let mut pixels = alloc::vec![0u8; pixel_width * pixel_height * 4];
         let context = cocoa_ui::bitmap::bitmap_context(&mut pixels, pixel_width, pixel_height)
@@ -165,7 +171,6 @@ mod capture {
             })?;
         cocoa_ui::bitmap::scale_to_pixels(&context, scale);
 
-        let mtm = cocoa_ui::MainThreadMarker::new().expect("main thread");
         let window = cocoa_ui::bitmap::make_offscreen_window(mtm, actual);
         cocoa_ui::view::ensure_layer_backed(view);
         let content_view = window.contentView().expect("offscreen window content");
@@ -205,6 +210,7 @@ mod capture {
         scale: f64,
         pixel_width: usize,
         pixel_height: usize,
+        mtm: cocoa_ui::MainThreadMarker,
     ) -> Result<(Vec<u8>, u32, u32), CaptureError> {
         let mut pixels = alloc::vec![0u8; pixel_width * pixel_height * 4];
         let context = cocoa_ui::bitmap::bitmap_context(&mut pixels, pixel_width, pixel_height)
@@ -215,7 +221,6 @@ mod capture {
         cocoa_ui::bitmap::scale_to_pixels(&context, scale);
 
         let scene = cocoa_ui::bitmap::any_window_scene().ok_or(CaptureError::NoWindowScene)?;
-        let mtm = cocoa_ui::MainThreadMarker::new().expect("main thread");
         let window = cocoa_ui::bitmap::make_offscreen_window(mtm, &scene, actual);
         cocoa_ui::bitmap::show_capture_window(&window, view, actual);
 

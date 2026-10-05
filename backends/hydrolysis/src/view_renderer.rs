@@ -60,9 +60,17 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
     ) -> Result<RenderResult, RenderError> {
         let surface = Rc::clone(&self.surface);
         let configure_environment = Rc::clone(&self.configure_environment);
-        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_sign_loss,
+            clippy::cast_possible_truncation,
+            reason = "the proposal's width is clamped to at least 1.0 and a display size always fits u32"
+        )]
         let width = size.width.max(1.0).round() as u32;
-        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_sign_loss,
+            clippy::cast_possible_truncation,
+            reason = "the proposal's height is clamped to at least 1.0 and a display size always fits u32"
+        )]
         let height = size.height.max(1.0).round() as u32;
 
         if surface.borrow().is_none() {
