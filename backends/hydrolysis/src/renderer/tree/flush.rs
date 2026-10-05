@@ -41,7 +41,7 @@ impl RenderNode {
                 let ctx = node
                     .extension
                     .get()
-                    .map_or(ctx, |extension| fill_paint_ctx(ctx, extension));
+                    .map_or(ctx, |extension| safe_area::fill_paint_ctx(ctx, extension));
                 node.child.flush(renderer, ctx, env);
             }
             Self::Text(text) => {
@@ -180,7 +180,7 @@ impl RenderNode {
                     node.child.borrow_mut().layout(
                         renderer,
                         &node.env,
-                        node.safe_area.borrow().clone(),
+                        node.safe_area.borrow().as_deref().cloned(),
                         proposal,
                         size,
                     );
@@ -263,7 +263,7 @@ impl RenderNode {
                         // origin too.
                         node.child.flush(
                             renderer,
-                            released_ctx(ctx, node.released_offsets.get()),
+                            safe_area::released_ctx(ctx, node.released_offsets.get()),
                             child_env,
                         );
                     }
@@ -536,7 +536,7 @@ impl RenderNode {
                 // grown by the extension layout computed — the surface
                 // paints through the bands its frame touched, clips its
                 // content there, and its own subtree owns the inset.
-                let viewport_rect = grow_rect(ctx.bounds, node.surface.extension());
+                let viewport_rect = safe_area::grow_rect(ctx.bounds, node.surface.extension());
                 let Some(handle) = node.handle.borrow().clone() else {
                     return;
                 };
@@ -668,7 +668,7 @@ impl RenderNode {
                     renderer,
                     ctx,
                     env,
-                    node.safe_area.borrow().clone(),
+                    node.safe_area.borrow().as_deref().cloned(),
                 );
                 renderer.pop_render_owner();
             }

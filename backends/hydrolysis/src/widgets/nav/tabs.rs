@@ -526,8 +526,8 @@ pub fn render_tabs_parts(
     if content_rect.width() > 0.0 && content_rect.height() > 0.0 {
         let mut st = state.borrow_mut();
         let render_ctx = ctx.render_context();
-        // §7.1: tab content is chrome-hosted — it lays out against the
-        // boundaries the content frame leaves, the tab bar's band consumed.
+        // §7.1: tab content is chrome-hosted — it inherits the widget's
+        // boundaries on the edges the tab bar leaves reachable.
         let content_area = ctx.content_area_for(content_rect);
         st.tabs[selected_index].content.flush_in_rect(
             ctx.renderer_mut(),

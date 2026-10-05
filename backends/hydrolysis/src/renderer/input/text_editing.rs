@@ -59,12 +59,6 @@ pub struct TextEditingState {
     pub(crate) last_text_selection_click: Option<TextSelectionClickState>,
     pub(crate) active_text_context_menu: Option<ActiveTextContextMenu>,
     focused_text_input: RefCell<Option<InteractionKey>>,
-    /// §7.1 ownership for nested scroll surfaces: the surface that cleared
-    /// the focused field this frame records its target key here, and outer
-    /// surfaces skip targets an inner one already claimed (an outer surface
-    /// must not scroll for a field only its inner surface covers). Cleared
-    /// with the per-flush target list in `reset_scene`.
-    pub(crate) focused_clearance_claim: Option<InteractionKey>,
     /// The `.focused()` binding of the field holding text focus, captured
     /// while the target is emitted so unfocus writes still reach it after
     /// the target has been truncated or unmounted.

@@ -15,6 +15,10 @@
 //! bounds layout computed once, and the focused-field state the flush
 //! drives.
 
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
+use super::*;
+
 use core::cell::{Cell, RefCell};
 use core::ops::Range;
 
@@ -23,12 +27,9 @@ use waterui_layout::padding::EdgeInsets;
 use waterui_layout::safe_area::{EdgeSet, IgnoreSafeArea, SafeAreaRegions};
 use waterui_layout::scroll::Axis as ScrollAxis;
 
-use crate::renderer::{HydrolysisRenderer, InteractionKey, RenderContext};
-use crate::scroll::{ScrollHandle, ScrollMetrics};
-
 /// One of the four edges §7.1's regions sit on.
-#[derive(Clone, Copy)]
-pub(crate) enum Edge {
+#[derive(Clone, Copy, Debug)]
+pub enum Edge {
     Top,
     Leading,
     Bottom,
@@ -111,33 +112,12 @@ impl Edge {
     }
 }
 
-/// The deepest region `released` leaves covering `edge` under `container`
-/// and `keyboard` inset depths — zero when every region is released, which
-/// puts the boundary at the window edge itself. With `released` empty this
-/// is also the window content rect's per-edge inset: the one place the
-/// `max(container, keyboard)` resolution lives.
-pub(crate) fn unreleased_depth(
-    edge: Edge,
-    container: &EdgeInsets,
-    keyboard: &EdgeInsets,
-    released: ReleasedRegions,
-) -> f64 {
-    let mut depth = 0.0_f64;
-    if !released.container {
-        depth = depth.max(f64::from(edge.depth_in(container)));
-    }
-    if !released.keyboard {
-        depth = depth.max(f64::from(edge.depth_in(keyboard)));
-    }
-    depth
-}
-
 /// The regions enclosing `.ignore_safe_area` declarations released on an
 /// edge: the subtree boundary sits at the deepest region not named, so an
 /// inner declaration can only move it outward — never re-cover a region an
 /// outer declaration already released.
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct ReleasedRegions {
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReleasedRegions {
     container: bool,
     keyboard: bool,
 }
@@ -150,37 +130,79 @@ impl ReleasedRegions {
             keyboard: self.keyboard | regions.keyboard(),
         }
     }
+
+    /// The deepest region this set leaves covering `edge` under `container`
+    /// and `keyboard` inset depths — zero when every region is released,
+    /// which puts the boundary at the window edge itself. With the set
+    /// empty this is also the window content rect's per-edge inset: the one
+    /// place the `max(container, keyboard)` resolution lives.
+    pub(super) fn unreleased_depth(
+        self,
+        edge: Edge,
+        container: &EdgeInsets,
+        keyboard: &EdgeInsets,
+    ) -> f64 {
+        let mut depth = 0.0_f64;
+        if !self.container {
+            depth = depth.max(f64::from(edge.depth_in(container)));
+        }
+        if !self.keyboard {
+            depth = depth.max(f64::from(edge.depth_in(keyboard)));
+        }
+        depth
+    }
 }
 
-/// One edge's safe-area boundary: the window-space position the subtree's
-/// laid-out area ends at, and the regions released past it.
-#[derive(Clone, Copy, PartialEq)]
-struct EdgeBoundary {
-    position: f64,
-    released: ReleasedRegions,
+/// One edge's safe-area boundary.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum EdgeBoundary {
+    /// The window-space position the subtree's laid-out area ends at, and
+    /// the regions released past it. A frame edge touching this position
+    /// can release further and paint or extend through the band beyond it.
+    Reachable {
+        position: f64,
+        released: ReleasedRegions,
+    },
+    /// No boundary: a hosted subtree's edge that does not touch the host's
+    /// boundary is covered — nothing inside can touch, release or extend
+    /// past it (§7.1: hosted content inherits, never reseeds).
+    Covered,
+}
+
+impl EdgeBoundary {
+    /// The regions released past the boundary — none while covered.
+    const fn released(&self) -> ReleasedRegions {
+        match self {
+            Self::Reachable { released, .. } => *released,
+            Self::Covered => ReleasedRegions {
+                container: false,
+                keyboard: false,
+            },
+        }
+    }
 }
 
 /// Per-edge distances in window logical units, named by the edge they sit
 /// on — a fill's paint extension, an `.ignore_safe_area` release, and a
 /// scroll surface's content inset all express themselves in this shape.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct EdgeOffsets {
-    pub(crate) top: f64,
-    pub(crate) leading: f64,
-    pub(crate) bottom: f64,
-    pub(crate) trailing: f64,
+pub struct EdgeOffsets {
+    pub top: f64,
+    pub leading: f64,
+    pub bottom: f64,
+    pub trailing: f64,
 }
 
 impl EdgeOffsets {
     /// The leading/trailing pair summed — the amount a released edge pair
     /// or extension grows a frame horizontally.
-    pub(crate) const fn horizontal(&self) -> f64 {
+    pub const fn horizontal(&self) -> f64 {
         self.leading + self.trailing
     }
 
     /// The top/bottom pair summed — the amount a released edge pair or
     /// extension grows a frame vertically.
-    pub(crate) const fn vertical(&self) -> f64 {
+    pub const fn vertical(&self) -> f64 {
         self.top + self.bottom
     }
 
@@ -204,9 +226,9 @@ impl EdgeOffsets {
 /// `None` is passed where there is no context: inside a scroll surface's
 /// content (the surface insets and clears its own subtree, so nothing
 /// inside touches an edge) and inside the retained sub-views widgets lay
-/// out themselves (list rows, table cells, navigation content).
-#[derive(Clone, PartialEq)]
-pub(crate) struct SafeAreaLayout {
+/// out themselves (list rows and table cells).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SafeAreaLayout {
     /// This node's laid-out frame in window space.
     frame: kurbo::Rect,
     /// The window rect in the same space.
@@ -215,8 +237,8 @@ pub(crate) struct SafeAreaLayout {
     container: EdgeInsets,
     /// The keyboard region's depths at the window edges.
     keyboard: EdgeInsets,
-    /// The window's horizontal scale factor — logical units per physical
-    /// pixel inverted: the x-axis touch tolerance derives from it.
+    /// The window's horizontal scale factor — physical pixels per logical
+    /// unit: the x-axis touch tolerance derives from it.
     x_scale: f64,
     /// The window's vertical scale factor — the y-axis touch tolerance
     /// derives from it.
@@ -235,7 +257,7 @@ impl SafeAreaLayout {
     /// means the f32-measured root frame is what touch tests compare
     /// against. `x_scale`/`y_scale` are the window transform's axis scale
     /// factors, the physical-pixel units the touch tolerance derives from.
-    pub(crate) fn root(
+    pub fn root(
         window: kurbo::Rect,
         container: EdgeInsets,
         keyboard: EdgeInsets,
@@ -243,7 +265,7 @@ impl SafeAreaLayout {
         x_scale: f64,
         y_scale: f64,
     ) -> Self {
-        let boundary = |position: f64| EdgeBoundary {
+        let boundary = |position: f64| EdgeBoundary::Reachable {
             position,
             released: ReleasedRegions::default(),
         };
@@ -262,13 +284,13 @@ impl SafeAreaLayout {
     }
 
     /// This node's laid-out frame in window space.
-    pub(crate) const fn frame(&self) -> kurbo::Rect {
+    pub const fn frame(&self) -> kurbo::Rect {
         self.frame
     }
 
     /// The context for a child whose laid-out frame is `frame` — the same
     /// boundaries, regions and window.
-    pub(crate) fn with_frame(&self, frame: kurbo::Rect) -> Self {
+    pub fn with_frame(&self, frame: kurbo::Rect) -> Self {
         Self {
             frame,
             ..self.clone()
@@ -278,7 +300,7 @@ impl SafeAreaLayout {
     /// The context for a child laid out at `placement` — a frame in this
     /// node's local (f32) coordinates — the one placement→window-frame
     /// mapping the container and collection layout loops share.
-    pub(crate) fn child(&self, placement: Rect) -> Self {
+    pub fn child(&self, placement: Rect) -> Self {
         self.with_frame(kurbo::Rect::new(
             self.frame.x0 + f64::from(placement.x()),
             self.frame.y0 + f64::from(placement.y()),
@@ -287,22 +309,38 @@ impl SafeAreaLayout {
         ))
     }
 
-    /// The context for a retained subtree a chrome container or overlay
-    /// places at `frame` — `NavigationView`/`Tabs` content, a popup's
-    /// content. The band the chrome consumed is gone from the subtree's
-    /// boundaries: they seed from the frame's own edges with no regions
-    /// released, so an `.ignore_safe_area` inside still reaches the window
-    /// edge and a scroll surface inside still extends and clears (§7.1).
-    /// Window, region depths and touch tolerance carry over unchanged.
-    pub(crate) fn for_subtree(&self, frame: kurbo::Rect) -> Self {
-        Self::root(
-            self.window,
-            self.container.clone(),
-            self.keyboard.clone(),
-            frame,
-            self.x_scale,
-            self.y_scale,
+    /// The window-space frame of hosted content placed at `rect` inside a
+    /// container laid out at `bounds` — the f64 counterpart of [`Self::child`]
+    /// for retained sub-views: `rect`'s offset inside `bounds` applied to
+    /// this context's recorded layout frame, so touches and extensions
+    /// derive from the laid-out position before scroll offsets and visual
+    /// transforms (§7.1). The render transform is never consulted — it is
+    /// in device pixels and carries visual transforms.
+    pub fn hosted_frame(&self, bounds: kurbo::Rect, rect: kurbo::Rect) -> kurbo::Rect {
+        kurbo::Rect::from_origin_size(
+            self.frame.origin() + (rect.origin() - bounds.origin()),
+            rect.size(),
         )
+    }
+
+    /// The context for retained *content* a chrome container places at
+    /// `frame` — `NavigationView`/`Tabs` content, a split pane's columns.
+    /// The subtree inherits this context's window, boundaries and released
+    /// regions: on each edge whose frame edge touches this context's
+    /// boundary (§7.1's touch, at display resolution) the boundary stays
+    /// reachable with its released regions, so a scroll surface inside
+    /// still extends and clears and `.ignore_safe_area` inside still
+    /// releases; every other edge is `Covered` — nothing inside can touch,
+    /// release or extend past it, so chrome content never reseeds a band
+    /// the host did not leave on the boundary.
+    pub fn hosted(&self, frame: kurbo::Rect) -> Self {
+        let mut next = self.with_frame(frame);
+        for edge in EDGES {
+            if !next.touches(edge) {
+                next.set_boundary(edge, EdgeBoundary::Covered);
+            }
+        }
+        next
     }
 
     const fn boundary(&self, edge: Edge) -> EdgeBoundary {
@@ -326,7 +364,7 @@ impl SafeAreaLayout {
     /// The deepest region `released` does not cover on `edge` — zero when
     /// every region is released, putting the boundary at the window edge.
     fn unreleased_depth(&self, edge: Edge, released: ReleasedRegions) -> f64 {
-        unreleased_depth(edge, &self.container, &self.keyboard, released)
+        released.unreleased_depth(edge, &self.container, &self.keyboard)
     }
 
     /// The edge's touch tolerance in window logical units: half a physical
@@ -348,8 +386,10 @@ impl SafeAreaLayout {
     /// the same touch to the eye; comparing exactly would flip the answer
     /// frame to frame while a keyboard animation resizes the window.
     fn touches(&self, edge: Edge) -> bool {
-        (edge.frame_edge(self.frame) - self.boundary(edge).position).abs()
-            < self.touch_tolerance(edge)
+        let EdgeBoundary::Reachable { position, .. } = self.boundary(edge) else {
+            return false;
+        };
+        (edge.frame_edge(self.frame) - position).abs() < self.touch_tolerance(edge)
     }
 
     /// The context and laid-out size for the child of an
@@ -370,7 +410,7 @@ impl SafeAreaLayout {
     /// the released boundary positions and the trailing edges come back
     /// from `size`, so a descendant's f32-derived frame edge lands on the
     /// moved boundary the same way the root's own frame lands on its own.
-    pub(crate) fn release(&self, ignore: IgnoreSafeArea, size: Size) -> (Self, EdgeOffsets, Size) {
+    pub fn release(&self, ignore: IgnoreSafeArea, size: Size) -> (Self, EdgeOffsets, Size) {
         let mut positions: [Option<(f64, ReleasedRegions)>; 4] = [None; 4];
         let mut released = EdgeOffsets::default();
         for (index, edge) in EDGES.iter().enumerate() {
@@ -378,9 +418,11 @@ impl SafeAreaLayout {
             if !edge.named_in(ignore.edges) || !self.touches(*edge) {
                 continue;
             }
-            let regions = boundary.released.union(ignore.regions);
+            let regions = boundary.released().union(ignore.regions);
             let position = edge.boundary_at(self.window, self.unreleased_depth(*edge, regions));
-            released.set(*edge, edge.released_amount(self.frame, position));
+            // A frame edge inside the tolerance but past the boundary puts
+            // the amount under zero — a release never moves a frame inward.
+            released.set(*edge, edge.released_amount(self.frame, position).max(0.0));
             positions[index] = Some((position, regions));
         }
         let child_size = released_size(size, released);
@@ -405,7 +447,7 @@ impl SafeAreaLayout {
                 // from the f32 size, like `root`, not the f64 region depth.
                 next.set_boundary(
                     *edge,
-                    EdgeBoundary {
+                    EdgeBoundary::Reachable {
                         position: edge.frame_edge(frame),
                         released: regions,
                     },
@@ -421,7 +463,7 @@ impl SafeAreaLayout {
     /// fill's default paint extension and a scroll surface's extension are
     /// this same answer: both reach the window edge through every region
     /// on a touched edge.
-    pub(crate) fn touched_edge_offsets(&self) -> EdgeOffsets {
+    pub fn touched_edge_offsets(&self) -> EdgeOffsets {
         let mut offsets = EdgeOffsets::default();
         for edge in EDGES {
             if self.touches(edge) {
@@ -436,7 +478,7 @@ impl SafeAreaLayout {
     /// sitting at this frame: the touched-edge extension the surface's
     /// viewport, content inset, clip and lazy viewport all grow by, and
     /// the bounds the focused-field clearance clamps against.
-    pub(crate) fn surface_facts(&self) -> ScrollSurfaceFacts {
+    pub fn surface_facts(&self) -> ScrollSurfaceFacts {
         ScrollSurfaceFacts {
             extension: self.touched_edge_offsets(),
             window_frame: self.frame,
@@ -450,22 +492,22 @@ impl SafeAreaLayout {
 /// surface's local space too, because layout space carries no visual
 /// transforms.
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct ScrollSurfaceFacts {
+pub struct ScrollSurfaceFacts {
     /// Per-edge distance from the surface's laid-out frame to the window
     /// edge — non-zero only on edges the frame touched the boundary on.
     /// The clip, the wheel target, the published lazy viewport and the
     /// scroll metrics' viewport/content all extend by it.
-    pub(crate) extension: EdgeOffsets,
+    pub extension: EdgeOffsets,
     /// The surface's laid-out frame in window space — the clearance
     /// bound's lower term and the taller-field clamp.
-    pub(crate) window_frame: kurbo::Rect,
+    pub window_frame: kurbo::Rect,
     /// The keyboard region's top edge in window space — the clearance
     /// bound's upper term.
-    pub(crate) keyboard_top: f64,
+    pub keyboard_top: f64,
 }
 
 /// `rect` grown by `offsets` on each edge, in the same space.
-pub(crate) fn grow_rect(rect: kurbo::Rect, offsets: EdgeOffsets) -> kurbo::Rect {
+pub fn grow_rect(rect: kurbo::Rect, offsets: EdgeOffsets) -> kurbo::Rect {
     kurbo::Rect::new(
         rect.x0 - offsets.leading,
         rect.y0 - offsets.top,
@@ -478,7 +520,7 @@ pub(crate) fn grow_rect(rect: kurbo::Rect, offsets: EdgeOffsets) -> kurbo::Rect 
 /// under: bounds grown by the released amounts, the transform carrying the
 /// leading/top overhang so the child's local origin lands where the grown
 /// frame's does — the flush-side mirror of [`SafeAreaLayout::release`].
-pub(crate) fn released_ctx(ctx: RenderContext, released: EdgeOffsets) -> RenderContext {
+pub fn released_ctx(ctx: RenderContext, released: EdgeOffsets) -> RenderContext {
     ctx.child(
         kurbo::Affine::translate((-released.leading, -released.top)),
         kurbo::Rect::new(
@@ -494,7 +536,7 @@ pub(crate) fn released_ctx(ctx: RenderContext, released: EdgeOffsets) -> RenderC
 /// background fill: bounds grown by the paint extension on every edge its
 /// laid-out frame touched — the transforms unchanged, so nothing else
 /// moves (§7.1: extension is a paint fact, not a layout fact).
-pub(crate) fn fill_paint_ctx(ctx: RenderContext, extension: EdgeOffsets) -> RenderContext {
+pub fn fill_paint_ctx(ctx: RenderContext, extension: EdgeOffsets) -> RenderContext {
     RenderContext::with_transforms(
         grow_rect(ctx.bounds, extension),
         ctx.transform,
@@ -509,10 +551,10 @@ pub(crate) fn fill_paint_ctx(ctx: RenderContext, extension: EdgeOffsets) -> Rend
 /// another surface, or a widget laid out by the semantic pipeline — and
 /// the surface extends and clears nothing.
 #[derive(Default)]
-pub(crate) struct ScrollSurfaceArea {
+pub struct ScrollSurfaceArea {
     /// What [`SafeAreaLayout::surface_facts`] recorded at layout; `None`
     /// where the surface owns no safe-area behaviour.
-    pub(crate) facts: Cell<Option<ScrollSurfaceFacts>>,
+    pub facts: Cell<Option<ScrollSurfaceFacts>>,
     /// The field the clearance last handled: its window-space rect and the
     /// scroll offset it was captured at — the early pass's starting point.
     cleared: RefCell<Option<ClearedField>>,
@@ -522,6 +564,12 @@ pub(crate) struct ScrollSurfaceArea {
     /// Whether the keyboard top moved in this flush's early pass — selects
     /// the direct (not eased) scroll for a focus landing now.
     keyboard_moved: Cell<bool>,
+}
+
+impl core::fmt::Debug for ScrollSurfaceArea {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ScrollSurfaceArea").finish_non_exhaustive()
+    }
 }
 
 /// One cleared field's identity and last observed geometry.
@@ -542,7 +590,7 @@ impl ScrollSurfaceArea {
     /// where the surface has no safe-area context. The one place the
     /// `facts → extension` read lives, so `ScrollNode`, `List` and `Table`
     /// share it.
-    pub(crate) fn extension(&self) -> EdgeOffsets {
+    pub fn extension(&self) -> EdgeOffsets {
         self.facts
             .get()
             .map_or_else(EdgeOffsets::default, |facts| facts.extension)
@@ -553,7 +601,11 @@ impl ScrollSurfaceArea {
     /// through the already extension-grown viewport the metrics report.
     /// `List`'s visible row windows and `Table`'s column windows read
     /// this.
-    pub(crate) fn visible_span(&self, metrics: &ScrollMetrics, axis: ScrollAxis) -> Range<f64> {
+    pub fn visible_span(
+        &self,
+        metrics: &crate::scroll::ScrollMetrics,
+        axis: ScrollAxis,
+    ) -> Range<f64> {
         let extension = self.extension();
         let (offset, viewport, inset) = match axis {
             ScrollAxis::Vertical => (metrics.offset_y, metrics.viewport_height, extension.top),
@@ -568,7 +620,7 @@ impl ScrollSurfaceArea {
     /// the resting edges on the avoided boundary while scrolling paints
     /// through the band (§7.1). The one place the growth lives —
     /// `ScrollNode`, `List` and `Table` all rebind through it.
-    pub(crate) fn extended(
+    pub fn extended(
         &self,
         viewport: kurbo::Size,
         content: kurbo::Size,
@@ -593,11 +645,7 @@ impl ScrollSurfaceArea {
     /// stored field rect, so the content paints already clear. Returns the
     /// text-input target count before the subtree's registrations to hand
     /// to [`Self::end_flush`].
-    pub(crate) fn begin_flush(
-        &self,
-        renderer: &HydrolysisRenderer,
-        handle: &ScrollHandle,
-    ) -> usize {
+    pub fn begin_flush(&self, renderer: &HydrolysisRenderer, handle: &ScrollHandle) -> usize {
         let targets_start = renderer.text_editing.text_input_targets.len();
         let Some(facts) = self.facts.get() else {
             return targets_start;
@@ -617,9 +665,9 @@ impl ScrollSurfaceArea {
     /// The cleared field is refreshed for the next frame's early pass, and
     /// dropped when nothing in this subtree holds focus — so a user scroll
     /// afterwards is never fought.
-    pub(crate) fn end_flush(
+    pub fn end_flush(
         &self,
-        renderer: &mut HydrolysisRenderer,
+        renderer: &HydrolysisRenderer,
         handle: &ScrollHandle,
         targets_start: usize,
     ) {
@@ -628,30 +676,20 @@ impl ScrollSurfaceArea {
             return;
         };
         let offset_y = handle.metrics().offset_y;
+        // Only an outermost surface holds facts (a surface's content lays
+        // out without a safe-area context), so the field a surface finds
+        // here is always one it alone covers — nested surfaces clear the
+        // same field once through the outer surface.
         let field = renderer
             .text_editing
             .focused_index()
             .filter(|index| *index >= targets_start)
             .map(|index| renderer.text_editing.text_input_targets[index].clone())
-            // The innermost surface that registered the field claims it:
-            // its `end_flush` runs inside an enclosing surface's window, so
-            // by the time an outer surface reads the focus the claim is
-            // already taken and the outer does not scroll for it.
-            .filter(|target| {
-                renderer
-                    .text_editing
-                    .focused_clearance_claim
-                    .as_ref()
-                    .is_none_or(|claimed| claimed != &target.interaction_key)
-            });
-        let field = field.map(|target| {
-            renderer.text_editing.focused_clearance_claim = Some(target.interaction_key.clone());
-            ClearedField {
+            .map(|target| ClearedField {
                 key: target.interaction_key,
                 rect: target.frame,
                 offset_y,
-            }
-        });
+            });
         let newly_focused = field.as_ref().is_some_and(|field| {
             self.cleared
                 .borrow()
@@ -720,7 +758,7 @@ impl ScrollSurfaceArea {
 
 /// `size` grown by the released amounts on each axis — the laid-out size
 /// an `.ignore_safe_area` child is placed at.
-pub(crate) fn released_size(size: Size, released: EdgeOffsets) -> Size {
+pub fn released_size(size: Size, released: EdgeOffsets) -> Size {
     #[expect(
         clippy::cast_possible_truncation,
         reason = "released depths are window insets — within display scale"

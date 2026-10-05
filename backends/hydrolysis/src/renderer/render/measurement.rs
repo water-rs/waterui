@@ -304,16 +304,21 @@ fn measure_view_dimensions_with_proposal_with_budget(
         ));
     }
     // Normalization keeps a `FixedContainer` plain (its `body` runs at
-    // build); the estimator measures it like the body-produced Native form.
+    // build); the estimator measures it like the body-produced Native form —
+    // `body` wraps the layout in `DirectionalLayout`, which mirrors the
+    // placements under RTL before explicit guides resolve against them.
     if let Some(container) = view.downcast_ref::<FixedContainer>() {
         let (layout, children) = container.as_parts();
-        return measure_layout_dimensions(
+        return measure_layout_dimensions_mirrored(
             layout,
             children.iter(),
             proposal,
             state,
             &scoped_env,
             theme,
+            waterui_core::layout::layout_direction(&scoped_env)
+                .snapshot()
+                .is_right_to_left(),
         );
     }
 
@@ -341,6 +346,23 @@ pub fn measure_layout_dimensions<'a>(
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> ViewDimensions {
+    measure_layout_dimensions_mirrored(layout, children, proposal, state, env, theme, false)
+}
+
+/// `measure_layout_dimensions` with the `DirectionalLayout` mirror applied
+/// to the placements: a layout that never went through `body` (the plain
+/// `FixedContainer` normalization keeps) must still resolve its explicit
+/// horizontal guides against the frames the built tree sees, which
+/// `DirectionalLayout` mirrors under RTL.
+fn measure_layout_dimensions_mirrored<'a>(
+    layout: &dyn Layout,
+    children: impl IntoIterator<Item = &'a AnyView>,
+    proposal: ProposalSize,
+    state: &mut HydroState,
+    env: &Environment,
+    theme: &Rc<dyn WidgetTheme>,
+    mirror_placements: bool,
+) -> ViewDimensions {
     let state = RefCell::new(state);
     let children: Vec<&AnyView> = children.into_iter().collect();
     let mut subviews = Vec::new();
@@ -358,6 +380,25 @@ pub fn measure_layout_dimensions<'a>(
 
     let bounds = LayoutRect::from_size(size);
     let placements = layout.place(bounds, proposal, &refs);
+    let placements: Vec<SubviewPlacement> = if mirror_placements {
+        placements
+            .into_iter()
+            .map(|placement| {
+                SubviewPlacement::new(
+                    LayoutRect::new(
+                        LayoutPoint::new(
+                            bounds.min_x() + bounds.max_x() - placement.frame.max_x(),
+                            placement.frame.y(),
+                        ),
+                        *placement.frame.size(),
+                    ),
+                    placement.proposal,
+                )
+            })
+            .collect()
+    } else {
+        placements
+    };
     let placed_subviews: Vec<PlacedSubview<'_>> = subviews
         .iter()
         .zip(placements)

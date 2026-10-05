@@ -702,7 +702,11 @@ impl ListRenderState {
         let metrics = handle.metrics();
         let row_start = extent_index.offset_of(index);
         let row_end = row_start + extent;
-        let viewport_end = metrics.offset_y + metrics.viewport_height;
+        // The surface's safe-area extension covers rows a `scroll_to` was
+        // asked to reveal, so the visibility check ends before the bands it
+        // reaches under rather than at the grown viewport's bottom.
+        let viewport_end =
+            metrics.offset_y + metrics.viewport_height - self.surface.extension().vertical();
         let row_visible = row_end > metrics.offset_y && row_start < viewport_end;
         if row_visible && !handle.is_smooth_scrolling() {
             self.applied_scroll_generation.set(pending_generation);

@@ -522,7 +522,7 @@ impl RenderNode {
                     viewport: Size::zero(),
                     non_scrolling_minimum: Cell::new(None),
                     env: env.clone(),
-                    surface: ScrollSurfaceArea::default(),
+                    surface: safe_area::ScrollSurfaceArea::default(),
                 }));
             }
             Err(view) => view,
@@ -1169,12 +1169,16 @@ impl RenderNode {
 }
 
 /// Whether the node a [`BackgroundLayout`] slot holds paints a fill §7.1
-/// extends: a `Color` leaf, or the gradient's fill-widget leaf — read
-/// through the layout-transparent wrappers `passthrough_content` treats as
-/// transparent (`Opacity`, `Scale`/`Rotation`/`Offset`, `Env`, `Retain`,
-/// and every `Wrapper` effect that is not itself a safe-area declaration),
-/// so `Color.opacity(..)` or an accessibility-scoped env in the slot is
-/// still a fill.
+/// extends: a `Color` leaf, or the gradient's fill-widget leaf — read only
+/// through wrappers that never read their bounds, so the extended rect
+/// reaches nothing that draws or registers against it: `Opacity`,
+/// `Env` (accessibility and other scoped metadata), `Retain`, and the
+/// `Wrapper` effects with no geometry — `LayoutPriority`, `LifeCycle`,
+/// `Focused` and `OnKeyPress`. So `Color.opacity(..)` or an
+/// accessibility-scoped env in the slot is still a fill, while a clipped,
+/// bordered, scaled or hit-registered color is just another background
+/// view and never extends (§7.1's fill is a solid color, a gradient or a
+/// material).
 ///
 /// An `.ignore_safe_area` wrapper on the fill is NOT transparent to this:
 /// a declaration on the fill replaces the default extension — the
@@ -1185,14 +1189,16 @@ fn is_background_fill_leaf(node: &RenderNode) -> bool {
         RenderNode::Color(_) => true,
         RenderNode::Widget(widget) => widget.fill_leaf,
         RenderNode::Opacity(node) => is_background_fill_leaf(&node.child),
-        RenderNode::Scale(node) => is_background_fill_leaf(&node.child),
-        RenderNode::Rotation(node) => is_background_fill_leaf(&node.child),
-        RenderNode::Offset(node) => is_background_fill_leaf(&node.child),
         RenderNode::Retain(node) => is_background_fill_leaf(&node.child),
         RenderNode::Env(node) => is_background_fill_leaf(&node.child),
         RenderNode::Wrapper(node) => {
-            !matches!(node.effect, WrapperEffect::IgnoreSafeArea(_))
-                && is_background_fill_leaf(&node.child)
+            matches!(
+                node.effect,
+                WrapperEffect::LayoutPriority(_)
+                    | WrapperEffect::LifeCycle(_)
+                    | WrapperEffect::Focused(_)
+                    | WrapperEffect::OnKeyPress(_)
+            ) && is_background_fill_leaf(&node.child)
         }
         _ => false,
     }

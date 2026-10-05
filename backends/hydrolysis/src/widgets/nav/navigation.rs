@@ -728,10 +728,10 @@ pub fn render_navigation_view_parts(
     );
     if content_rect.width() > 0.0 && content_rect.height() > 0.0 {
         let render_ctx = ctx.render_context();
-        // §7.1: navigation content is chrome-hosted — it lays out against
-        // the boundaries the content frame leaves (the bars' band consumed),
-        // so a scroll surface inside extends to the window edge and an
-        // `.ignore_safe_area` inside still releases.
+        // §7.1: navigation content is chrome-hosted — it inherits the
+        // widget's boundaries, so a scroll surface inside still extends
+        // and clears on the edges the bars leave reachable, and an
+        // `.ignore_safe_area` inside still releases there.
         let content_area = ctx.content_area_for(content_rect);
         state.borrow_mut().content.flush_in_rect(
             ctx.renderer_mut(),
@@ -1442,7 +1442,8 @@ pub fn render_navigation_split_parts(
 
     if let Some(primary_rect) = primary_rect {
         let render_ctx = ctx.render_context();
-        // A split column is chrome-hosted content, like navigation content.
+        // A split column is chrome-hosted content, like navigation content:
+        // it inherits the widget's boundaries edge by edge.
         let primary_area = ctx.content_area_for(primary_rect);
         state.borrow_mut().primary.flush_in_rect(
             ctx.renderer_mut(),
@@ -1984,9 +1985,10 @@ pub fn render_navigation_stack_parts(
         ),
         hit_transform: ctx.hit_transform,
     };
-    // A captured page is chrome-hosted content: it lays out against the
-    // boundaries the stack's frame leaves, so a scroll surface inside a page
-    // extends to the window edge and `.ignore_safe_area` inside releases.
+    // A captured page is chrome-hosted content: it inherits the stack's
+    // boundaries, so a scroll surface inside a page extends to the window
+    // edge on the edges it touches and `.ignore_safe_area` inside releases
+    // there.
     let page_area = ctx.content_area_for(ctx.bounds);
     let background = state.borrow().background();
     let background = Paint::Solid(ctx.renderer_mut().read_signal(&background));

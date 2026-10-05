@@ -237,6 +237,12 @@ pub struct CollectionNode {
     pub(super) _layout_guards: Vec<BoxWatcherGuard>,
 }
 
+impl core::fmt::Debug for CollectionNode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CollectionNode").finish_non_exhaustive()
+    }
+}
+
 pub struct LazyStackNode {
     /// Per-frame measure memo gate: records whether this node's body was
     /// re-probed within a frame, gating `memo_slots` so a node measured
@@ -282,7 +288,7 @@ pub struct LazyStackNode {
     /// The §7.1 context this stack was laid out against — `None` inside a
     /// scroll surface's context-free content — which lazily materialized
     /// items read at their flush.
-    pub(super) safe_area: RefCell<Option<SafeAreaLayout>>,
+    pub(super) safe_area: RefCell<Option<Box<safe_area::SafeAreaLayout>>>,
     /// The main-axis span (in this stack's coordinates) the previous flush
     /// resolved as visible. `patch_visible` reuses it to materialize the
     /// window's items — including ids a membership change slid into it — while
@@ -319,6 +325,12 @@ pub struct LazyStackNode {
     /// `spacing` signal change schedules the refresh that re-derives the
     /// extent index and item rects.
     pub(super) _layout_guards: Vec<BoxWatcherGuard>,
+}
+
+impl core::fmt::Debug for LazyStackNode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("LazyStackNode").finish_non_exhaustive()
+    }
 }
 
 impl CollectionNode {
@@ -437,7 +449,7 @@ impl CollectionNode {
     pub(super) fn layout(
         &mut self,
         renderer: &mut HydrolysisRenderer,
-        safe_area: Option<&SafeAreaLayout>,
+        safe_area: Option<&safe_area::SafeAreaLayout>,
         proposal: ProposalSize,
         size: Size,
     ) {
@@ -1162,14 +1174,16 @@ impl LazyStackNode {
                     });
                     normalize_layout_view(view, env)
                 });
-                let item_area = self.safe_area.borrow().as_ref().map(|area| {
-                    area.with_frame(kurbo::Rect::new(
-                        area.frame().x0 + child_rect.x0,
-                        area.frame().y0 + child_rect.y0,
-                        area.frame().x0 + child_rect.x1,
-                        area.frame().y0 + child_rect.y1,
-                    ))
-                });
+                // The item's frame in the context the stack recorded at
+                // layout: `child_rect` resolves in `ctx.bounds` space — the
+                // same layout-fact mapping `WidgetRenderContext` and the
+                // collection layout loop share through
+                // `SafeAreaLayout::hosted_frame`.
+                let item_area = self
+                    .safe_area
+                    .borrow()
+                    .as_deref()
+                    .map(|area| area.with_frame(area.hosted_frame(ctx.bounds, child_rect)));
                 subview.flush_in_rect(renderer, ctx, env, proposal, child_rect, item_area);
             }
             cursor += extent;
