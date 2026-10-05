@@ -9,7 +9,7 @@ android {
 
     defaultConfig {
         applicationId = "dev.waterui.hydrolysis.testapp"
-        minSdk = 26
+        minSdk = 31
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"

@@ -13,7 +13,7 @@ rust-version = "1.95.0"
 [framework.metadata]
 android-backend-revision = "986bc4ed98aa68573f50a08cfb869c1d54a66284"
 android-backend-url = "https://github.com/water-rs/android-backend.git"
-android-min-api-level = 26
+android-min-api-level = 31
 android-runtime-module = "dev.waterui.android:waterui-android"
 apple-backend-path = "backends/apple"
 hydrolysis-android-host-subdirectory = "backends/hydrolysis/android"

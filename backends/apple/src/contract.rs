@@ -132,7 +132,7 @@ impl NativeLeaf {
     /// The leaf's measure handle itself — a caller that measures the
     /// leaf apart from `HostView`'s intrinsic forwarding (the iOS
     /// context-menu panel is one) clones this and queries it directly.
-    #[cfg(target_os = "ios")]
+    #[cfg(all(target_os = "ios", feature = "context_menu"))]
     #[must_use]
     pub(crate) fn layout_handle(&self) -> Rc<dyn SubView> {
         Rc::clone(&self.layout)
@@ -234,7 +234,7 @@ fn measure_layout(
 
 /// A leaf's own measure as a retained `MeasureProposal` callback — the
 /// panel's per-slot measure, alive independently of the leaf's owner.
-#[cfg(target_os = "ios")]
+#[cfg(all(target_os = "ios", feature = "context_menu"))]
 pub(crate) fn measure_callback(
     layout: Rc<dyn SubView>,
 ) -> Rc<dyn Fn(cocoa_ui::geometry::MeasureProposal) -> cocoa_ui::geometry::Size> {
@@ -265,7 +265,7 @@ impl Mounted {
     /// # Panics
     ///
     /// When called on a `Mounted` that is already unmounting.
-    #[cfg(target_os = "ios")]
+    #[cfg(all(target_os = "ios", feature = "context_menu"))]
     #[must_use]
     pub(crate) fn layout_handle(&self) -> Rc<dyn SubView> {
         self.0.as_ref().expect("a live Mounted").layout_handle()

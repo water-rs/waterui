@@ -2492,7 +2492,7 @@ mod tests {
                 project_root: "..".to_string(),
                 painter_dependency: "dev.waterui.hydrolysis:gpu".to_string(),
                 painter_module: "gpu".to_string(),
-                min_api_level: 26,
+                min_api_level: 31,
                 painter_band_import: None,
                 painter_band_class: None,
             });

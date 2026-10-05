@@ -6,9 +6,9 @@ name: WPE Runtime
 #
 # The build is a multi-hour from-source compile of WebKit, so it is never on
 # the dev gate or the nightly critical path: it runs on demand, and on a
-# `wpe-runtime-v*` tag push, which is how a built runtime is published. A tag
-# run ends by attaching the packaged runtime zips and the generated artifact
-# manifest to a GitHub Release on that tag.
+# `browser-wpe-runtime/v*` tag push, which is how a built runtime is
+# published. A tag run ends by attaching the packaged runtime zips and the
+# generated artifact manifest to a GitHub Release on that tag.
 
 permissions:
   contents: read
@@ -16,7 +16,7 @@ permissions:
 on:
   workflow_dispatch:
   push:
-    tags: ["wpe-runtime-v*"]
+    tags: ["browser-wpe-runtime/v*"]
 
 concurrency:
   group: browser-runtime-wpe-${{ github.ref }}

@@ -4667,14 +4667,12 @@ dependencies = [
  "keyboard-types",
  "kurbo 0.13.1",
  "libc",
- "libloading 0.9.0",
  "lru 0.18.5",
  "muda",
  "nami",
  "native-executor",
  "ndk",
  "ndk-context",
- "ndk-sys",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-core-graphics",
@@ -4740,6 +4738,7 @@ dependencies = [
  "hydrolysis-m3",
  "jni 0.21.1",
  "waterui",
+ "waterui-core",
 ]
 
 [[package]]
@@ -10174,7 +10173,7 @@ dependencies = [
 [[package]]
 name = "shaderloom"
 version = "0.1.2"
-source = "git+https://github.com/water-rs/shaderloom?rev=84c37c8314f1bb6d228fce30f78d94872247a18f#84c37c8314f1bb6d228fce30f78d94872247a18f"
+source = "git+https://github.com/water-rs/shaderloom?rev=b0b6870c8b560d902c1de9a4d039c3a921b18b92#b0b6870c8b560d902c1de9a4d039c3a921b18b92"
 dependencies = [
  "naga 30.0.1",
  "prettyplease 0.3.0",
@@ -13621,7 +13620,7 @@ dependencies = [
 [[package]]
 name = "waterui-particle"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/particle?rev=b07a8e7a950a4590c475edb65dc7abd967f7d820#b07a8e7a950a4590c475edb65dc7abd967f7d820"
+source = "git+https://github.com/water-rs/particle?rev=ae7bcb7f5260b22723dcb5892fb28f5d776c03eb#ae7bcb7f5260b22723dcb5892fb28f5d776c03eb"
 dependencies = [
  "bytemuck",
  "encase",

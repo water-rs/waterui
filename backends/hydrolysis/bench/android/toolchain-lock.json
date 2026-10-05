@@ -39,7 +39,7 @@
     },
     "reference_app": {
       "compileSdk": 37,
-      "minSdk": 26,
+      "minSdk": 31,
       "targetSdk": 37,
       "compose_bom": "2025.09.00",
       "compose_bom_note": "Debug/development pin, explicitly NOT the required production baseline: the plan requires release/R8/baseline-profile configuration, resolved and frozen per campaign.",

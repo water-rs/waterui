@@ -1,7 +1,6 @@
 package dev.waterui.hydrolysis
 
 import android.content.Context
-import android.os.Build
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 
@@ -21,7 +20,7 @@ class HydrolysisSession internal constructor(context: Context) {
      * host-family modules (the GPU band, painters) that hand it back over JNI.
      */
     val nativePtr: Long =
-        NativeBridge.nativeCreateSession(this, Build.VERSION.SDK_INT, context.applicationContext)
+        NativeBridge.nativeCreateSession(this, context.applicationContext)
 
     /** The view currently presenting this session, or none between bindings. */
     internal var hostView: HydrolysisHostView? = null
