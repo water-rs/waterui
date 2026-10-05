@@ -26,6 +26,8 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- begin waterui android manifest components -->
+        <!-- end waterui android manifest components -->
     </application>
 
 </manifest>

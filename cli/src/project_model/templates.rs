@@ -1694,6 +1694,10 @@ mod tests {
             android_manifest.contains("android:name=\"android.permission.CAMERA\""),
             "{android_manifest}"
         );
+        // The library manifest carries the managed components block too: the
+        // host's manifest merger folds its `<application>` children into the
+        // host's own.
+        crate::assets::assert_component_markers_inside_application(&android_manifest);
     }
 
     fn support_ctx() -> TemplateContext {
@@ -2273,6 +2277,7 @@ mod tests {
         assert!(rendered.contains(
             "android:configChanges=\"screenSize|smallestScreenSize|screenLayout|orientation\""
         ));
+        crate::assets::assert_component_markers_inside_application(&rendered);
     }
 
     /// The Apple backend is a framework workspace member: every channel pins
