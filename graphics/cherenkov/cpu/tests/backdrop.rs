@@ -536,7 +536,11 @@ fn reduced_capture_resolves_and_samples_bilinearly() {
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|r| {
             r.fill(
-                Rect::new(0.0, 0.0, 16.0, 32.0),
+                Rect::new(0.0, 0.0, 8.0, 32.0),
+                WorkingColor::new([0.0, 1.0, 0.0, 1.0]),
+            );
+            r.fill(
+                Rect::new(8.0, 0.0, 16.0, 32.0),
                 WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
             );
             r.fill(
@@ -556,7 +560,11 @@ fn reduced_capture_resolves_and_samples_bilinearly() {
     // centre; pixel 17's at 4.375, 0.875 past it.
     assert_pixel(pixel(&readback, 15, 16), [0.625, 0.0, 0.375, 1.0], 1e-5);
     assert_pixel(pixel(&readback, 17, 16), [0.125, 0.0, 0.875, 1.0], 1e-5);
-    assert_pixel(pixel(&readback, 9, 16), [1.0, 0.0, 0.0, 1.0], 1e-5);
+    // The member's edge pixel 8 lands at 8.5 / 4 = 2.125, 0.375 short of
+    // texel 2's centre: its taps are texel 1 — green [4, 8), outside the
+    // member — and texel 2 — red [8, 12).
+    assert_pixel(pixel(&readback, 8, 16), [0.625, 0.375, 0.0, 1.0], 1e-5);
+    assert_pixel(pixel(&readback, 11, 16), [1.0, 0.0, 0.0, 1.0], 1e-5);
     assert_pixel(pixel(&readback, 23, 16), [0.0, 0.0, 1.0, 1.0], 1e-5);
 }
 

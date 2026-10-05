@@ -341,8 +341,9 @@ struct BackdropPlan {
 impl BackdropPlan {
     /// Places the capture on a `width × h` surface: the union's rows, and
     /// the union on the capture grid inflated by the chain `footprint`'s
-    /// apron in texels, clamped to the grid's extent and rounded out to
-    /// whole texels.
+    /// apron in texels — plus one texel for the bilinear taps of a reduced
+    /// capture — clamped to the grid's extent and rounded out to whole
+    /// texels.
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -364,13 +365,17 @@ impl BackdropPlan {
         let a = (f64::from(footprint.extent).mul_add(uw.max(uh) * s, f64::from(footprint.pixels))
             / 2.0f64.mul_add(-f64::from(footprint.extent), 1.0))
         .ceil();
+        // A reduced capture is sampled bilinearly at `p · s`: an edge
+        // pixel's second tap lies one texel past the union on the grid, so
+        // the region covers that texel too.
+        let taps = if self.scale.is_full() { 0.0 } else { 1.0 };
         // The capture grid's extent in texels: `⌈len · s⌉`.
         let (gw, gh) = ((width as f64 * s).ceil(), (h as f64 * s).ceil());
         let region = IRect {
-            x0: self.union.x0.mul_add(s, -a).floor().max(0.0) as i32,
-            y0: self.union.y0.mul_add(s, -a).floor().max(0.0) as i32,
-            x1: self.union.x1.mul_add(s, a).ceil().min(gw) as i32,
-            y1: self.union.y1.mul_add(s, a).ceil().min(gh) as i32,
+            x0: self.union.x0.mul_add(s, -a - taps).floor().max(0.0) as i32,
+            y0: self.union.y0.mul_add(s, -a - taps).floor().max(0.0) as i32,
+            x1: self.union.x1.mul_add(s, a + taps).ceil().min(gw) as i32,
+            y1: self.union.y1.mul_add(s, a + taps).ceil().min(gh) as i32,
         };
         self.apron = a.min(gh) as usize;
         self.device_apron = if self.scale.is_full() {

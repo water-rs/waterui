@@ -1127,7 +1127,8 @@ impl<'a> Lowering<'a> {
     /// Plans every backdrop group: paint-order walk collecting each
     /// member's device-space clip bounds, then the capture regions — each
     /// member's aproned rect `A_i` (bounds ∪ reach on the capture grid,
-    /// inflated by the filter footprint's apron in capture texels)
+    /// inflated by the filter footprint's apron in capture texels, plus
+    /// one texel for the bilinear taps of a reduced capture)
     /// integer-rounded and clipped to the grid's extent, clustered by the
     /// `cluster` cost model into one or more regions. A group that ends up
     /// with one region produces exactly the union rect this planning
@@ -1180,22 +1181,24 @@ impl<'a> Lowering<'a> {
             }
             // The footprint resolves against the capture's size in texels.
             let extent = uw.max(uh) * s;
+            // A reduced capture is sampled bilinearly at `p · s`: an edge
+            // pixel's second tap lies one texel past the member's rect on
+            // the grid, so the apron covers that texel too.
+            let taps = if plan.scale.is_full() { 0.0 } else { 1.0 };
+            let a = (f64::from(footprint.extent).mul_add(extent, f64::from(footprint.pixels))
+                / 2.0f64.mul_add(-f64::from(footprint.extent), 1.0))
+            .ceil()
+                + taps;
             // Relative-extent filters make the apron depend on the region
             // size, so per-cluster regions are not guaranteed identical:
             // they stay a single union region (a rule, not an error).
             if footprint.extent > 0.0 {
-                let a = (f64::from(footprint.extent).mul_add(extent, f64::from(footprint.pixels))
-                    / 2.0f64.mul_add(-f64::from(footprint.extent), 1.0))
-                .ceil();
                 plan.regions = aproned(plan.union, a).into_iter().collect();
                 for (i, _) in &plan.aproned {
                     plan.members.entry(*i).and_modify(|e| e.1 = 0);
                 }
                 continue;
             }
-            let a = (f64::from(footprint.extent).mul_add(extent, f64::from(footprint.pixels))
-                / 2.0f64.mul_add(-f64::from(footprint.extent), 1.0))
-            .ceil();
             // Integer aproned rects per member, in paint order. Members
             // fully outside the surface take no region index.
             let rects: Vec<(LayerId, Option<[u32; 4]>)> = plan

@@ -890,7 +890,11 @@ fn reduced_capture_resolves_and_samples_bilinearly() -> Result<(), Box<dyn std::
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|r| {
             r.fill(
-                Rect::new(0.0, 0.0, 16.0, 32.0),
+                Rect::new(0.0, 0.0, 8.0, 32.0),
+                WorkingColor::new([0.0, 1.0, 0.0, 1.0]),
+            );
+            r.fill(
+                Rect::new(8.0, 0.0, 16.0, 32.0),
                 WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
             );
             r.fill(
@@ -910,12 +914,18 @@ fn reduced_capture_resolves_and_samples_bilinearly() -> Result<(), Box<dyn std::
     // centre; pixel 17's at 4.375, 0.875 past it.
     assert_pixel(pixel(&readback, 15, 16), [0.625, 0.0, 0.375, 1.0], 2e-3);
     assert_pixel(pixel(&readback, 17, 16), [0.125, 0.0, 0.875, 1.0], 2e-3);
-    // Far from the step every tap is one colour.
-    assert_pixel(pixel(&readback, 9, 16), [1.0, 0.0, 0.0, 1.0], 1e-3);
+    // The member's edge pixel 8 lands at 8.5 / 4 = 2.125, 0.375 short of
+    // texel 2's centre: its taps are texel 1 — green [4, 8), outside the
+    // member — and texel 2 — red [8, 12).
+    assert_pixel(pixel(&readback, 8, 16), [0.625, 0.375, 0.0, 1.0], 2e-3);
+    // Far from the steps every tap is one colour.
+    assert_pixel(pixel(&readback, 11, 16), [1.0, 0.0, 0.0, 1.0], 1e-3);
     assert_pixel(pixel(&readback, 23, 16), [0.0, 0.0, 1.0, 1.0], 1e-3);
-    // The member [8, 24)² is texels [2, 6)²: 16 texels, not 256 pixels.
+    // The member [8, 24)² is texels [2, 6)², and the bilinear taps of its
+    // edge pixels reach one texel further: [1, 7)², 36 texels, not 256
+    // pixels.
     let memory = wait!(engine.memory());
-    assert_eq!(memory.backdrop_captures, Bytes(4 * 4 * 8));
+    assert_eq!(memory.backdrop_captures, Bytes(6 * 6 * 8));
     Ok(())
 }
 }
