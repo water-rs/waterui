@@ -332,6 +332,11 @@ pub(crate) async fn build_rust_lib_with_links(
         })
         .join("deps");
 
+    // The executable's `-l` names the runtime soname this build recorded —
+    // `RustDynamicLibraries` reads it from the artifact's own dynamic
+    // section; absent a dynamic runtime it stays the canonical name.
+    let mut runtime_link_name = "waterui_dylib".to_string();
+
     // Stage the host library and shared runtime before the executable links,
     // so its dependencies already carry their final install names.
     if let Some(output_dir) = options.output_dir() {
@@ -341,6 +346,9 @@ pub(crate) async fn build_rust_lib_with_links(
         remove_superseded_host_library(output_dir, host_library).await?;
         if options.linkage() == RustLinkage::SharedRuntime {
             let libraries = RustDynamicLibraries::resolve(&built_target, &triple, project).await?;
+            runtime_link_name = dynamic_runtime::runtime_link_name(
+                &libraries.waterui_staged_name().to_string_lossy(),
+            );
             libraries.stage(output_dir).await?;
             let staged_runtime = libraries.stage_apple_canonical(output_dir).await?;
             if host_library == AppleHostLibrary::Dynamic {
@@ -355,11 +363,12 @@ pub(crate) async fn build_rust_lib_with_links(
     } else if host_library == AppleHostLibrary::Dynamic {
         // Without an output directory the link's runtime search dir is the
         // deps dir below, which Cargo fills only with the hashed
-        // `libwaterui_dylib-<metadata>.dylib` — so `-lwaterui_dylib` cannot
-        // resolve. Stage the canonical install-name copy there first, with
-        // the same `@rpath` handling the packaged staging path performs
-        // (cli#272).
+        // `libwaterui_dylib-<metadata>.dylib` the `-l` below resolves.
+        // Stage the canonical install-name copy there first, with the same
+        // `@rpath` handling the packaged staging path performs (cli#272).
         let libraries = RustDynamicLibraries::resolve(&built_target, &triple, project).await?;
+        runtime_link_name =
+            dynamic_runtime::runtime_link_name(&libraries.waterui_staged_name().to_string_lossy());
         let staged_runtime = libraries.stage_apple_canonical(&deps_dir).await?;
         dynamic_runtime::prepare_host_runtime(&staged_runtime).await?;
     }
@@ -413,7 +422,7 @@ pub(crate) async fn build_rust_lib_with_links(
         let runtime_dir = staged_dir.clone().unwrap_or(deps_dir);
         executable = executable
             .with_final_rustc_arg(link_search_flag(runtime_dir.as_os_str()))
-            .with_final_rustc_arg("-Clink-arg=-lwaterui_dylib");
+            .with_final_rustc_arg(format!("-Clink-arg=-l{runtime_link_name}"));
     }
     executable
         .build_binary(APPLE_ENTRY_BINARY_NAME, options.is_release())
