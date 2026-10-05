@@ -94,7 +94,7 @@ pub enum ResourceError {
 /// Checks an image size against a backend's limits: `Ok` when it is
 /// admitted, [`ResourceError::TooLarge`] naming the limits when it is
 /// not. Runs wherever a registration or replacement is made.
-pub(crate) fn admit(limits: ImageLimits, width: u32, height: u32) -> Result<(), ResourceError> {
+pub fn admit(limits: ImageLimits, width: u32, height: u32) -> Result<(), ResourceError> {
     if limits.admits(width, height) {
         Ok(())
     } else {

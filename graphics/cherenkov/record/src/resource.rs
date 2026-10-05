@@ -71,6 +71,11 @@ impl ImageLimits {
     /// zero `max_dimension` or `max_texels` — and a side under a pixel
     /// keeps one pixel, with the texel bound carried by the side the
     /// ratio left standing.
+    ///
+    /// # Panics
+    ///
+    /// Never: `fit` only shrinks its `u32` inputs, so the narrowing
+    /// conversions cannot fail.
     #[must_use]
     pub fn fit(&self, width: u32, height: u32) -> (u32, u32) {
         if self.admits(width, height) {
@@ -105,6 +110,7 @@ impl ImageLimits {
             h = 1;
             w = w.min(texels).max(1);
         }
+        // `fit` only shrinks a `u32` size, so each side still fits `u32`.
         (
             u32::try_from(w).expect("fit only shrinks a u32 size"),
             u32::try_from(h).expect("fit only shrinks a u32 size"),

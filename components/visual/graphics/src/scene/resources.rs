@@ -1080,8 +1080,8 @@ impl SceneResources {
     /// `Arc` is a single lookup.
     ///
     /// A new registration is checked against
-    /// [`image_limits`](Self::image_limits) and queued on the target; see
-    /// [Blocking](Self#blocking).
+    /// [`image_limits`](Self::image_limits) — before the source is even
+    /// hashed — and queued on the target; see [Blocking](Self#blocking).
     ///
     /// # Errors
     ///
@@ -1090,6 +1090,14 @@ impl SceneResources {
     /// upload for another cause, [`ResourceError::Lost`] when the render
     /// thread is gone.
     pub fn image(&self, data: ImageData<Rgba8>) -> Result<Registered<ImageId>, ResourceError> {
+        let limits = self.image_limits();
+        if !limits.admits(data.width, data.height) {
+            return Err(ResourceError::TooLarge {
+                width: data.width,
+                height: data.height,
+                limits,
+            });
+        }
         self.intern(
             |table| &table.images_rgba8,
             ImageShape::of(&data),
@@ -1103,8 +1111,8 @@ impl SceneResources {
     /// sources upload as — deduplicated as [`image`](Self::image) is.
     ///
     /// A new registration is checked against
-    /// [`image_limits`](Self::image_limits) and queued on the target; see
-    /// [Blocking](Self#blocking).
+    /// [`image_limits`](Self::image_limits) — before the source is even
+    /// hashed — and queued on the target; see [Blocking](Self#blocking).
     ///
     /// # Errors
     ///
@@ -1113,6 +1121,14 @@ impl SceneResources {
     /// upload for another cause, [`ResourceError::Lost`] when the render
     /// thread is gone.
     pub fn image16f(&self, data: ImageData<Rgba16F>) -> Result<Registered<ImageId>, ResourceError> {
+        let limits = self.image_limits();
+        if !limits.admits(data.width, data.height) {
+            return Err(ResourceError::TooLarge {
+                width: data.width,
+                height: data.height,
+                limits,
+            });
+        }
         self.intern(
             |table| &table.images_rgba16f,
             ImageShape::of(&data),
