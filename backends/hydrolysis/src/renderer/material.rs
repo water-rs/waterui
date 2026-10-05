@@ -7,11 +7,10 @@
 //! level's Gaussian σ; the view's mount samples the result inside its clip.
 //! The colour stage runs before the blur, and there is no tint layer.
 //!
-//! The blur averages encoded sRGB too, as the reference platform's does: an
-//! edge between dark and light content settles halfway in encoded value, a
-//! point or two to the dark side of the edge, where an average in linear
-//! light would pull the halfway point several points further into the dark
-//! side.
+//! The blur averages encoded sRGB too, as the reference platform's does:
+//! across an edge between dark and light content, an encoded-sRGB average
+//! centres the transition on the edge, where an average in linear light
+//! pulls it several points toward the dark side.
 //!
 //! The levels the reference platform blends behind the window (`UltraThin`,
 //! `Thin`) need the compositor's blur-behind protocol rather than a backdrop
