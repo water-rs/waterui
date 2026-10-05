@@ -69,9 +69,6 @@ pub fn window_root_layout(
     bounds: kurbo::Rect,
     transform: kurbo::Affine,
 ) -> (kurbo::Rect, Size, safe_area::SafeAreaLayout) {
-    // A whole-tree layout pass begins: every live node re-records its
-    // context below, so records keyed by dropped nodes go with the pass.
-    renderer.state.safe_area_records.clear();
     let container = window_container_insets(renderer, env);
     let keyboard = window_keyboard_insets(renderer, env);
     let content = window_content_rect(bounds, &container, &keyboard);

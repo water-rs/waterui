@@ -19,7 +19,7 @@ use waterui::graphics::color::Srgb;
 use waterui::id::SelfId;
 use waterui::layout::frame::Frame;
 use waterui::layout::padding::EdgeInsets;
-use waterui::layout::safe_area::{EdgeSet, SafeAreaRegions};
+use waterui::layout::safe_area::{EdgeSet, IgnoreSafeArea, SafeAreaRegions};
 use waterui::layout::scroll::ScrollView;
 use waterui::navigation::NavigationView;
 use waterui::prelude::*;
@@ -42,6 +42,18 @@ const CONTAINER_TOP: f32 = 844.0 - 34.0;
 
 fn card(label: &'static str) -> impl View {
     text(label).body().foreground(Srgb::WHITE)
+}
+
+/// A labelled probe carrying an `.ignore_safe_area` release: the label's
+/// bounds land on the released boundary only when the edge its frame
+/// touches is reachable — a covered edge releases nothing, so the frame
+/// discriminates the two.
+fn edge_probe(
+    view: impl View,
+    label: impl signal::IntoComputed<Str>,
+    ignore: impl Into<IgnoreSafeArea>,
+) -> impl View {
+    view.ignore_safe_area(ignore).a11y_label(label)
 }
 
 fn env_with_insets(insets: &Binding<EdgeInsets>) -> Environment {
@@ -255,6 +267,115 @@ fn navigation_page_targets_follow_the_safe_area(ui: UiBuilder<Styled<hydrolysis_
     assert!(
         app.query().role(Role::BUTTON).label("Back").exists(),
         "a tap on the link's reported bounds must push the detail page"
+    );
+}
+
+/// The context a retained sub-view's nodes were laid out against lasts
+/// the node's lifetime, not the frame's: nodes inside an unchanged
+/// retained sub-view are not re-laid out on steady frames. The
+/// navigation chrome that hosts a page lives inside the stack's own
+/// retained subtree — if its context expired with the frame, the next
+/// steady-frame flush would hand the page content `None`, the page would
+/// re-lay out context-free and the probe's `.ignore_safe_area` release
+/// would silently release nothing, ending at the keyboard boundary
+/// instead of the released one.
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
+fn a_retained_navigation_page_keeps_its_context_on_steady_frames(
+    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
+) {
+    use waterui::navigation::NavigationStack;
+
+    let container = waterui::binding(SAFE_INSETS);
+    let keyboard = waterui::binding(KEYBOARD_INSETS);
+    let draft = waterui::binding(String::new());
+    let mut app = ui
+        .environment(env_with_keyboard(&container, &keyboard))
+        .mount_offscreen(move || {
+            NavigationStack::new(NavigationView::new(
+                "Compose",
+                vstack((
+                    field("composer", &draft),
+                    edge_probe(
+                        vstack((card("compose"), spacer())),
+                        "compose-area",
+                        SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM),
+                    ),
+                )),
+            ))
+        });
+    app.settle();
+    // Focusing the field invalidates a frame without moving the page's
+    // layout: the retained subtree flushes on a steady frame, where a
+    // frame-scoped context would already be gone.
+    app.query().role(Role::TEXT_INPUT).label("composer").focus();
+    app.pump_for(Duration::from_millis(250));
+
+    let probe = app.query().label("compose-area").single().bounds();
+    assert!(
+        (probe.y() + probe.height() - CONTAINER_TOP).abs() <= 1.0,
+        "the released page should still end at {CONTAINER_TOP} on a steady \
+         frame, got {probe:?}"
+    );
+}
+
+/// Focused-field clearance through a retained page survives steady frames:
+/// the scroll surface's facts are laid out only while the hosting widget
+/// still has a context, so a second field focused under the keyboard band
+/// must still scroll clear inside a `NavigationStack`.
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
+fn a_second_field_in_a_navigation_stack_still_clears_the_keyboard(
+    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
+) {
+    use waterui::navigation::NavigationStack;
+
+    let container = waterui::binding(SAFE_INSETS);
+    let keyboard = waterui::binding(KEYBOARD_INSETS);
+    let first = Binding::container(waterui::Str::from(""));
+    let second = Binding::container(waterui::Str::from(""));
+    let mut app = ui
+        .environment(env_with_keyboard(&container, &keyboard))
+        .mount_offscreen(move || {
+            NavigationStack::new(NavigationView::new(
+                "Compose",
+                ScrollView::vertical(vstack((
+                    field("First", &first).size(350.0, 44.0),
+                    spacer().size(390.0, 400.0),
+                    field("Second", &second).size(350.0, 44.0),
+                    spacer().size(390.0, 300.0),
+                ))),
+            ))
+        });
+    app.settle();
+
+    let covered = app
+        .query()
+        .role(Role::TEXT_INPUT)
+        .label("Second")
+        .single()
+        .bounds();
+    assert!(
+        covered.y() + covered.height() > KEYBOARD_TOP,
+        "precondition: the second field starts under the keyboard band, \
+         got {covered:?}"
+    );
+
+    app.query().role(Role::TEXT_INPUT).label("First").focus();
+    app.settle();
+    app.pump_for(Duration::from_secs(1));
+
+    app.query().role(Role::TEXT_INPUT).label("Second").focus();
+    app.settle();
+    app.pump_for(Duration::from_secs(1));
+
+    let cleared = app
+        .query()
+        .role(Role::TEXT_INPUT)
+        .label("Second")
+        .single()
+        .bounds();
+    assert!(
+        (cleared.y() + cleared.height() - KEYBOARD_TOP).abs() <= 0.5,
+        "the second field scrolls clear of the keyboard, got {cleared:?}"
     );
 }
 
@@ -1079,7 +1200,9 @@ fn an_ignore_top_inside_navigation_content_stays_below_the_bar(
 /// The edge a hosted subtree still touches stays reachable: a navigation
 /// page ending on the bottom boundary extends its background fill through
 /// the keyboard band to the window edge — the snapshot shows the fill
-/// painting the band, the page's frame ending on the boundary.
+/// painting the band, the page's frame ending on the boundary. A release
+/// probe at the page's bottom edge discriminates reachability: released
+/// past the keyboard, it lands on the container boundary.
 #[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
 fn a_navigation_page_touching_the_bottom_still_extends_its_fill(
     ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
@@ -1091,9 +1214,17 @@ fn a_navigation_page_touching_the_bottom_still_extends_its_fill(
         .mount_offscreen(move || {
             NavigationView::new(
                 "Home",
-                vstack((card("content"), spacer()))
-                    .background(Color::new(Srgb::new(0.2, 0.6, 0.35)))
-                    .a11y_label("page"),
+                vstack((
+                    card("content"),
+                    spacer(),
+                    edge_probe(
+                        card("docked"),
+                        "docked",
+                        SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM),
+                    ),
+                ))
+                .background(Color::new(Srgb::new(0.2, 0.6, 0.35)))
+                .a11y_label("page"),
             )
         });
 
@@ -1101,6 +1232,12 @@ fn a_navigation_page_touching_the_bottom_still_extends_its_fill(
     assert!(
         (page.y() + page.height() - KEYBOARD_TOP).abs() <= 1.0,
         "the page's frame still ends on the keyboard boundary, got {page:?}"
+    );
+    let docked = app.query().label("docked").single().bounds();
+    assert!(
+        (docked.y() + docked.height() - CONTAINER_TOP).abs() <= 1.0,
+        "the bottom edge is reachable: the release lands the probe at \
+         {CONTAINER_TOP}, got {docked:?}"
     );
     app.capture_snapshot("safe-area", "nav-bottom-fill", "keyboard");
 }
@@ -1460,9 +1597,10 @@ fn a_context_menu_panel_background_stays_at_the_panel(
 
 /// A lazy stack outside a scroll surface records its context for lazily
 /// materialized items — the `LazyStack` layout arm used to leave it unset,
-/// so items always saw `None`: items inherit the window's boundaries like
-/// static siblings, and the last item's background extends through the
-/// keyboard band.
+/// so items always saw `None`. Items inherit the window's boundaries like
+/// static siblings: the last row's bottom edge is reachable, so the release
+/// probe inside it lands on the container boundary (the row's fixed
+/// intrinsic height places its bottom edge exactly on the boundary).
 #[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
 fn a_lazy_stack_outside_a_scroll_gives_items_a_context(
     ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
@@ -1475,15 +1613,32 @@ fn a_lazy_stack_outside_a_scroll_gives_items_a_context(
             vstack((
                 spacer(),
                 VStack::for_each((0..4).map(SelfId::new).collect::<Vec<_>>(), |item| {
-                    Frame::new(text(format!("lazy {}", *item)))
-                        .width(390.0)
-                        .height(40.0)
-                        .background(if *item == 3 {
-                            Color::new(Srgb::new(0.2, 0.5, 0.8))
-                        } else {
-                            Color::new(Srgb::new(0.92, 0.92, 0.92))
-                        })
-                        .a11y_label(format!("lazy-{}", *item))
+                    let color = if *item == 3 {
+                        Color::new(Srgb::new(0.2, 0.5, 0.8))
+                    } else {
+                        Color::new(Srgb::new(0.92, 0.92, 0.92))
+                    };
+                    if *item == 3 {
+                        AnyView::new(
+                            vstack((
+                                spacer().size(390.0, 16.0),
+                                edge_probe(
+                                    card("lazy 3"),
+                                    "lazy-3",
+                                    SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM),
+                                ),
+                            ))
+                            .spacing(0.0)
+                            .background(color),
+                        )
+                    } else {
+                        AnyView::new(
+                            Frame::new(text(format!("lazy {}", *item)))
+                                .width(390.0)
+                                .height(40.0)
+                                .background(color),
+                        )
+                    }
                 }),
             ))
         });
@@ -1491,8 +1646,9 @@ fn a_lazy_stack_outside_a_scroll_gives_items_a_context(
 
     let last = app.query().label("lazy-3").single().bounds();
     assert!(
-        (last.y() + last.height() - KEYBOARD_TOP).abs() <= 1.0,
-        "the last lazy item's frame ends on the keyboard boundary, got {last:?}"
+        (last.y() + last.height() - CONTAINER_TOP).abs() <= 1.0,
+        "the last lazy item's bottom edge is reachable: the release lands \
+         it at {CONTAINER_TOP}, got {last:?}"
     );
     app.capture_snapshot("safe-area", "lazy-stack-item-fill", "keyboard");
 }
@@ -1500,7 +1656,9 @@ fn a_lazy_stack_outside_a_scroll_gives_items_a_context(
 /// A navigation view without a visible bar on an edge passes that edge
 /// through: with the bar hidden the page's top edge touches the status
 /// boundary, so the page is laid out against it and its background fill
-/// extends through the status band — no chrome covers the band.
+/// extends through the status band — no chrome covers the band. The hero
+/// probe on the page's top edge discriminates reachability: released, it
+/// lands on the window edge itself.
 #[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
 fn a_navigation_page_without_a_bar_passes_the_edge_through(
     ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
@@ -1511,9 +1669,13 @@ fn a_navigation_page_without_a_bar_passes_the_edge_through(
         .mount_offscreen(move || {
             NavigationView::new(
                 "Home",
-                vstack((card("content"), spacer()))
-                    .background(Color::new(Srgb::new(0.7, 0.55, 0.1)))
-                    .a11y_label("page"),
+                vstack((
+                    edge_probe(card("hero"), "hero", EdgeSet::TOP),
+                    card("content"),
+                    spacer(),
+                ))
+                .background(Color::new(Srgb::new(0.7, 0.55, 0.1)))
+                .a11y_label("page"),
             )
             .navigation_bar_visibility(false)
         });
@@ -1523,6 +1685,12 @@ fn a_navigation_page_without_a_bar_passes_the_edge_through(
     assert!(
         (page.y() - SAFE_INSETS.top()).abs() <= 1.0,
         "with no bar the page starts at the status boundary, got {page:?}"
+    );
+    let hero = app.query().label("hero").single().bounds();
+    assert!(
+        hero.y().abs() <= 1.0,
+        "the top edge is reachable: the release lands the hero at the \
+         window edge, got {hero:?}"
     );
     app.capture_snapshot("safe-area", "nav-barless-pass-through", "insets");
 }

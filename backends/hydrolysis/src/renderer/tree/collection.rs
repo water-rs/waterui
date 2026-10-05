@@ -260,9 +260,14 @@ pub struct LazyStackNode {
     /// Stable identity owning this stack's own accessibility node id, so the id
     /// survives the visible window shifting the sibling ordinals.
     pub(super) accessibility_identity: Rc<()>,
-    /// The stack's own render identity — the key flush reads its recorded
-    /// §7.1 context under (`HydroState::safe_area_records`).
+    /// The stack's own render identity.
+    /// Consumed by the retained-update mount path in H3.
+    #[allow(dead_code)]
     pub(crate) render_id: RenderId,
+    /// The §7.1 context the stack was last laid out against — node-lifetime
+    /// storage, so a stack inside an unchanged retained sub-view still hands
+    /// each materialized item its context at flush.
+    pub(super) safe_area: Cell<Option<Box<safe_area::SafeAreaLayout>>>,
     /// The unshielded environment when this stack carries accessibility naming
     /// metadata: `Some` means it emits the node naming itself.
     #[cfg(feature = "accessibility")]
@@ -1162,9 +1167,7 @@ impl LazyStackNode {
                 // same layout-fact mapping `WidgetRenderContext` and the
                 // collection layout loop share through
                 // `SafeAreaLayout::hosted_frame`.
-                let item_area = renderer
-                    .state
-                    .recorded_safe_area(self.render_id)
+                let item_area = read_safe_area(&self.safe_area)
                     .map(|area| area.with_frame(area.hosted_frame(ctx.bounds, child_rect)));
                 subview.flush_in_rect(renderer, ctx, env, proposal, child_rect, item_area);
             }
