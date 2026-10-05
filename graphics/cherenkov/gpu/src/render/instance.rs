@@ -53,6 +53,9 @@ pub const EFFECT_REFRACTION: u32 = 2;
 pub const EFFECT_SHADER: u32 = 3;
 /// A rim highlight additive on the sample inside the clip edge.
 pub const EFFECT_RIM: u32 = 4;
+/// No effect on a reduced-scale capture: the plain bilinear sample at
+/// `p · s`, which a texel read cannot express.
+pub const EFFECT_SAMPLE: u32 = 5;
 /// Smooth colour weights; low 16 bits still identify the mesh paint kind.
 pub const PAINT_MESH_SMOOTH: u32 = 1 << 17;
 
@@ -176,7 +179,8 @@ pub struct Instance {
     pub color: [f32; 4],
     /// Linear: start.xy, end.xy. Radial: start centre.xy, end centre.xy.
     /// Sweep: centre.xy. Image: local→image affine `[a, b, c, d]`.
-    /// `PAINT_TEXTURE`: source region origin.xy.
+    /// `PAINT_TEXTURE`: source region origin.xy. `PAINT_BACKDROP`: the
+    /// capture region's texel origin.xy and the capture scale in z.
     pub grad: [f32; 4],
     /// Radial: start radius, end radius. Sweep: start angle, end angle.
     /// Image: local→image affine `[e, f]` and image `[w, h]`.

@@ -577,8 +577,9 @@ impl cherenkov::Backdrop for Gpu {
         r: &mut Self::Renderer,
         surface: cherenkov::SurfaceId,
         id: cherenkov::BackdropId,
+        scale: cherenkov::CaptureScale,
     ) {
-        r.add_backdrop_group(surface, id, None);
+        r.add_backdrop_group(surface, id, None, scale);
     }
     fn remove_backdrop_group(
         r: &mut Self::Renderer,
@@ -598,6 +599,7 @@ where
         surface: cherenkov::SurfaceId,
         id: cherenkov::BackdropId,
         filter: F,
+        scale: cherenkov::CaptureScale,
     ) {
         r.add_backdrop_group(
             surface,
@@ -606,6 +608,7 @@ where
                 filter,
                 std::marker::PhantomData,
             ))),
+            scale,
         );
     }
 }

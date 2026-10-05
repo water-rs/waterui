@@ -498,7 +498,7 @@ impl Pipelines {
 
 /// A triangle-list pipeline over `vs_main` and `fragment` of `module`,
 /// without vertex buffers, writing `format` through `blend`.
-fn quad_pipeline(
+pub(super) fn quad_pipeline(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
     module: &wgpu::ShaderModule,

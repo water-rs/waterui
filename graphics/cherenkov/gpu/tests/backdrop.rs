@@ -23,7 +23,7 @@ split_test! {
 fn unfiltered_member_samples_what_is_behind_it() -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16)))?;
-    let group = surface.backdrop_group_unfiltered();
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     let glass = surface.layer();
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|r| {
@@ -66,7 +66,10 @@ split_test! {
 fn blurred_backdrop_keeps_extended_range() -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
-    let group = surface.backdrop_group(filtrate::filters::GaussianBlur(4.0f32));
+    let group = surface.backdrop_group(
+        filtrate::filters::GaussianBlur(4.0f32),
+        cherenkov::CaptureScale::FULL,
+    );
     let glass = surface.layer();
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|r| {
@@ -112,8 +115,8 @@ split_test! {
 fn nested_groups_capture_in_paint_order() -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16)))?;
-    let outer = surface.backdrop_group_unfiltered();
-    let inner = surface.backdrop_group_unfiltered();
+    let outer = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
+    let inner = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     let m1 = surface.layer();
     let m2 = surface.layer();
     surface.update(|tx| {
@@ -159,7 +162,7 @@ split_test! {
 fn member_inside_clip_only_isolation_sees_the_surface() -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16)))?;
-    let group = surface.backdrop_group_unfiltered();
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     let p = surface.layer();
     let member = surface.layer();
     surface.update(|tx| {
@@ -202,7 +205,7 @@ split_test! {
 fn member_without_clip_is_unsupported() -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16)))?;
-    let group = surface.backdrop_group_unfiltered();
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     let member = surface.layer();
     surface.update(|tx| {
         tx[surface.root()].push(&member);
@@ -226,7 +229,7 @@ fn dropped_group_fails_the_frame() -> Result<(), Box<dyn std::error::Error>> {
     let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16)))?;
     let member = surface.layer();
     {
-        let group = surface.backdrop_group_unfiltered();
+        let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
         surface.update(|tx| {
             tx[surface.root()].push(&member);
             tx[&member]
@@ -247,7 +250,7 @@ split_test! {
 fn two_members_share_one_capture() -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16)))?;
-    let group = surface.backdrop_group_unfiltered();
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     let left = surface.layer();
     let right = surface.layer();
     surface.update(|tx| {
@@ -289,7 +292,7 @@ fn member_inside_blended_descendant_layer_sees_the_layer_contents()
 -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16)))?;
-    let group = surface.backdrop_group_unfiltered();
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     let outer = surface.layer();
     let cutout = surface.layer();
     let member = surface.layer();
@@ -357,7 +360,7 @@ fn member_sample_is_not_attenuated_by_layer_opacity() -> Result<(), Box<dyn std:
 // the two scenes stay independent while engine construction is shared.
 fn render(engine: &Engine<Gpu>, opacity: f32) -> Result<cherenkov::Readback, Box<dyn std::error::Error>> {
         let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16)))?;
-        let group = surface.backdrop_group_unfiltered();
+        let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
         let member = surface.layer();
         let child = surface.layer();
         surface.update(|tx| {
@@ -407,7 +410,7 @@ split_test! {
 fn colour_effect_tints_the_sampled_capture() -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16)))?;
-    let group = surface.backdrop_group_unfiltered();
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     let member = surface.layer();
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|r| {
@@ -440,7 +443,7 @@ fn refraction_displaces_edge_samples_but_not_the_centre() -> Result<(), Box<dyn 
 {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
-    let group = surface.backdrop_group_unfiltered();
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     let member = surface.layer();
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|r| {
@@ -486,7 +489,7 @@ fn shader_effect_lights_the_rim() -> Result<(), Box<dyn std::error::Error>> {
         }",
     ))?;
     let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
-    let group = surface.backdrop_group_unfiltered();
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     let member = surface.layer();
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|r| {
@@ -520,7 +523,7 @@ fn shader_effect_size_is_the_unclipped_member_size() -> Result<(), Box<dyn std::
         }",
     ))?;
     let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
-    let group = surface.backdrop_group_unfiltered();
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     let member = surface.layer();
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|r| {
@@ -562,7 +565,7 @@ split_test! {
 fn refraction_on_a_path_clip_is_unsupported() -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16)))?;
-    let group = surface.backdrop_group_unfiltered();
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     let member = surface.layer();
     surface.update(|tx| {
         tx[surface.root()].push(&member);
@@ -598,7 +601,7 @@ split_test! {
 fn dropped_backdrop_shader_fails_the_frame() -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16)))?;
-    let group = surface.backdrop_group_unfiltered();
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     let member = surface.layer();
     {
         let shader = engine.backdrop_shader(cherenkov::BackdropShaderSource::wgsl(
@@ -626,7 +629,7 @@ split_test! {
 fn effect_members_do_not_duplicate_the_capture() -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16)))?;
-    let group = surface.backdrop_group_unfiltered();
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     let tint = cherenkov::ColorMatrix([
         1.0, 0.0, 0.0, 0.0, //
         0.0, 1.0, 0.0, 0.0, //
@@ -668,7 +671,7 @@ fn a_shaders_reach_grows_the_capture_region() -> Result<(), Box<dyn std::error::
         .reach(8.0),
     )?;
     let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
-    let group = surface.backdrop_group_unfiltered();
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     let member = surface.layer();
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|r| {
@@ -711,8 +714,9 @@ fn far_members_take_two_regions() -> Result<(), Box<dyn std::error::Error>> {
     > {
         let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
         let surface = wait!(engine.surface(Offscreen::new((512, 512), OffscreenFormat::LinearF16)))?;
-        let group_a = surface.backdrop_group_unfiltered();
-        let group_b = two_groups.then(|| surface.backdrop_group_unfiltered());
+        let group_a = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
+        let group_b = two_groups
+            .then(|| surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL));
         let top = surface.layer();
         let bottom = surface.layer();
         surface.update(|tx| {
@@ -762,7 +766,7 @@ split_test! {
 fn reach_merges_aproned_rects() -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
-    let group = surface.backdrop_group_unfiltered();
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     let a = surface.layer();
     let b = surface.layer();
     surface.update(|tx| {
@@ -795,7 +799,7 @@ split_test! {
 fn removing_a_member_drops_its_region() -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let surface = wait!(engine.surface(Offscreen::new((512, 512), OffscreenFormat::LinearF16)))?;
-    let group = surface.backdrop_group_unfiltered();
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     let top = surface.layer();
     let bottom = surface.layer();
     surface.update(|tx| {
@@ -834,7 +838,7 @@ fn a_released_backdrop_shader_stays_while_a_member_samples_it()
     ))?;
     let effect = shader.effect(vec![3.0]);
     let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
-    let group = surface.backdrop_group_unfiltered();
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     let member = surface.layer();
     let fill = |color: [f32; 4]| {
         surface.update(|tx| {
@@ -872,6 +876,137 @@ fn a_released_backdrop_shader_stays_while_a_member_samples_it()
         matches!(&result, Err(cherenkov::RenderError::Render(message)) if message.contains("is not registered")),
         "a member sampling the freed shader: {result:?}"
     );
+    Ok(())
+}
+}
+
+split_test! {
+fn reduced_capture_resolves_and_samples_bilinearly() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16)))?;
+    let quarter = cherenkov::CaptureScale::new(0.25)?;
+    let group = surface.backdrop_group_unfiltered(quarter);
+    let glass = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 16.0, 32.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+            r.fill(
+                Rect::new(16.0, 0.0, 32.0, 32.0),
+                WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&glass);
+        tx[&glass]
+            .clip(Rect::new(8.0, 8.0, 24.0, 24.0))
+            .backdrop(group.sample());
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    let readback = wait!(surface.readback())?;
+    // Texel 3 covers device [12, 16) — red — and texel 4 [16, 20) — blue.
+    // Pixel 15's centre lands at 15.5 / 4 = 3.875, 0.375 past texel 3's
+    // centre; pixel 17's at 4.375, 0.875 past it.
+    assert_pixel(pixel(&readback, 15, 16), [0.625, 0.0, 0.375, 1.0], 2e-3);
+    assert_pixel(pixel(&readback, 17, 16), [0.125, 0.0, 0.875, 1.0], 2e-3);
+    // Far from the step every tap is one colour.
+    assert_pixel(pixel(&readback, 9, 16), [1.0, 0.0, 0.0, 1.0], 1e-3);
+    assert_pixel(pixel(&readback, 23, 16), [0.0, 0.0, 1.0, 1.0], 1e-3);
+    // The member [8, 24)² is texels [2, 6)²: 16 texels, not 256 pixels.
+    let memory = wait!(engine.memory());
+    assert_eq!(memory.backdrop_captures, Bytes(4 * 4 * 8));
+    Ok(())
+}
+}
+
+split_test! {
+fn reduced_capture_composes_clip_only_levels_before_resolving()
+-> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16)))?;
+    let half = cherenkov::CaptureScale::new(0.5)?;
+    let group = surface.backdrop_group_unfiltered(half);
+    let p = surface.layer();
+    let member = surface.layer();
+    surface.update(|tx| {
+        // As in `member_inside_clip_only_isolation_sees_the_surface`: P's
+        // body lands in a clip-only scratch, composed over the surface
+        // copy at device resolution before the resolve.
+        tx[surface.root()]
+            .clip(RoundedRect::new(0.0, 0.0, 32.0, 32.0, 2.0))
+            .content(surface.record(|r| {
+                r.fill(
+                    Rect::new(0.0, 0.0, 32.0, 32.0),
+                    WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+                );
+            }));
+        tx[surface.root()].push(&p);
+        tx[&p]
+            .clip(RoundedRect::new(0.0, 0.0, 32.0, 32.0, 4.0))
+            .content(surface.record(|r| {
+                r.fill(
+                    Rect::new(8.0, 8.0, 12.0, 24.0),
+                    WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+                );
+            }));
+        tx[&p].push(&member);
+        tx[&member]
+            .clip(RoundedRect::new(8.0, 8.0, 24.0, 24.0, 3.0))
+            .backdrop(group.sample());
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    let readback = wait!(surface.readback())?;
+    // Texels 4 and 5 cover the blue [8, 12); texel 6 [12, 14) is red.
+    // Pixel 10 samples between texels 4 and 5; pixel 12's centre lands at
+    // 6.25, 0.75 past texel 5's centre.
+    assert_pixel(pixel(&readback, 10, 16), [0.0, 0.0, 1.0, 1.0], 1e-3);
+    assert_pixel(pixel(&readback, 12, 16), [0.75, 0.0, 0.25, 1.0], 2e-3);
+    assert_pixel(pixel(&readback, 18, 16), [1.0, 0.0, 0.0, 1.0], 1e-3);
+    Ok(())
+}
+}
+
+split_test! {
+fn reduced_blur_counts_its_footprint_in_capture_texels() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let half = cherenkov::CaptureScale::new(0.5)?;
+    let group = surface.backdrop_group(filtrate::filters::GaussianBlur(2.0f32), half);
+    let glass = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 32.0, 64.0),
+                WorkingColor::new([16.0, 16.0, 16.0, 1.0]),
+            );
+            r.fill(
+                Rect::new(32.0, 0.0, 64.0, 64.0),
+                WorkingColor::new([0.25, 0.25, 0.25, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&glass);
+        tx[&glass]
+            .clip(Rect::new(8.0, 8.0, 56.0, 56.0))
+            .backdrop(group.sample());
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    let readback = wait!(surface.readback())?;
+    // σ = 2 texels is 4 device pixels: HDR whites survive the resolve,
+    // blur and sampling unclamped, and the step blurs to its mean.
+    let bright = pixel(&readback, 12, 32);
+    assert!(bright[..3].iter().all(|c| *c > 15.0), "pixel {bright:?}");
+    assert_pixel(pixel(&readback, 52, 32), [0.25, 0.25, 0.25, 1.0], 0.05);
+    let edge = pixel(&readback, 32, 32);
+    let expected = f32::midpoint(16.0, 0.25);
+    assert!(
+        (edge[0] - expected).abs() < 1.5,
+        "edge pixel {edge:?}, expected about {expected}"
+    );
+    // footprint 6 texels around texels [4, 28) → [0, 32)²: the capture
+    // holds a quarter of the 1:1 region's 64 × 64 pixels.
+    let memory = wait!(engine.memory());
+    assert_eq!(memory.backdrop_captures, Bytes(32 * 32 * 8));
     Ok(())
 }
 }

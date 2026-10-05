@@ -405,16 +405,18 @@ fn paint(i: u32, meta_: vec4<u32>, color: vec4<f32>, local: vec2<f32>, device: v
 
 // Per-member backdrop effects: a member composite bilinearly samples the
 // bound capture and applies the effect packed in meta_.w's low bits.
-// `backdrop_origin`/`backdrop_size` are set per instance by
-// paint_backdrop; registered effect shaders call backdrop_sample.
+// `backdrop_origin`/`backdrop_size`/`backdrop_scale` are set per instance
+// by paint_backdrop; registered effect shaders call backdrop_sample.
 var<private> backdrop_origin: vec2<f32>;
 var<private> backdrop_size: vec2<f32>;
+var<private> backdrop_scale: f32;
 
-// Bilinear sample of the bound capture at device point `q`: the four
-// texels around `q - 0.5` (texel centres), clamped to the capture
-// region, values unclamped.
+// Bilinear sample of the bound capture at device point `q`: on the
+// capture grid `q` is `q · scale`, and the four texels around it minus
+// 0.5 (texel centres) are read, clamped to the capture region, values
+// unclamped.
 fn backdrop_sample(q: vec2<f32>) -> vec4<f32> {
-    let f = clamp(q - backdrop_origin - 0.5, vec2<f32>(0.0), backdrop_size - 1.0);
+    let f = clamp(q * backdrop_scale - backdrop_origin - 0.5, vec2<f32>(0.0), backdrop_size - 1.0);
     let lo = vec2<i32>(floor(f));
     let hi = min(lo + 1, vec2<i32>(backdrop_size) - 1);
     let t = f - floor(f);
@@ -433,14 +435,18 @@ fn backdrop_effect(p: vec2<f32>, sdf: f32, normal: vec2<f32>, size: vec2<f32>, p
 
 // The member composite for a PAINT_BACKDROP instance: the effect in
 // meta_.w's low bits (`kind | stop count << 8`) evaluated at the device
-// pixel centre `pixel`. grad.xy is the capture origin, grad2.xy its
-// size, grad2.zw the member's device size.
+// pixel centre `pixel`. grad.xy is the capture origin, grad.z the capture
+// scale, grad2.xy its size, grad2.zw the member's device size.
 fn paint_backdrop(i: u32, pixel: vec2<f32>) -> vec4<f32> {
     let inst = instances[i];
     backdrop_origin = inst.grad.xy;
+    backdrop_scale = inst.grad.z;
     backdrop_size = inst.grad2.xy;
     let kind = inst.meta_.w & 0xffu;
     let first = inst.meta_.z;
+    if kind == EFFECT_SAMPLE {
+        return backdrop_sample(pixel);
+    }
     if kind == EFFECT_COLOR {
         // 3x4 premultiplied matrix, filtrate ColorMatrix layout:
         // dot(row, c) per channel, alpha passes through.

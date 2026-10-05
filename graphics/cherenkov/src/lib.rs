@@ -52,7 +52,7 @@ pub use crate::animation::{
     Animatable, Animation, AnimationTrack, Curve, Decay, Lanes, Spring, curve_value, decay_step,
     settled, spring_step,
 };
-pub use crate::backdrop::BackdropShaderSource;
+pub use crate::backdrop::{BackdropShaderSource, CaptureScale, CaptureScaleError};
 pub use crate::backend::{
     Backend, Display, Frame, FrameRedraw, Renderer, SurfaceFrame, SurfaceInfo, Visibility,
 };
