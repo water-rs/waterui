@@ -486,59 +486,67 @@ pub(super) fn create_bounds(width: u32, height: u32, scale_factor: f64) -> kurbo
     )
 }
 
-/// How the presentation path realizes a window's resolved background: the
-/// colour the surface clears to, and the within-window material the root is
-/// mounted over.
+/// How the presentation path realizes a window's resolved background: whether
+/// the window is transparent, the colour the surface clears to, and the
+/// within-window material the root is mounted over.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) struct SurfaceBackground {
-    /// The clear colour, straight alpha in encoded sRGB. An alpha below one
-    /// makes the window and its surface transparent.
-    clear: peniko::Color,
-    /// The within-window material the window's root is mounted over.
-    backdrop: Option<WithinWindowLevel>,
-}
+pub(super) struct SurfaceBackground(ResolvedWindowBackground);
 
 impl SurfaceBackground {
-    /// The realization of `window`'s background as it resolves now.
+    /// `window`'s background as it resolves now.
+    pub(super) fn of(window: &Window, env: &Environment) -> Self {
+        Self(window.resolved_background(env).snapshot())
+    }
+
+    /// Whether the window must be transparent: a colour with alpha, or a
+    /// behind-window material, whatever its tint — the level's blending
+    /// alone decides, so no colour scheme is consulted.
+    pub(super) fn transparent(self) -> bool {
+        match self.0 {
+            ResolvedWindowBackground::Color(color) => color.components[3] < 1.0,
+            ResolvedWindowBackground::Material(material) => {
+                matches!(Blending::of(material), Blending::BehindWindow(_))
+            }
+        }
+    }
+
+    /// The within-window material the window's root is mounted over.
+    pub(super) const fn backdrop(self) -> Option<WithinWindowLevel> {
+        match self.0 {
+            ResolvedWindowBackground::Material(material) => match Blending::of(material) {
+                Blending::WithinWindow(level) => Some(level),
+                Blending::BehindWindow(_) => None,
+            },
+            ResolvedWindowBackground::Color(_) => None,
+        }
+    }
+
+    /// The colour the surface clears to, straight alpha in encoded sRGB.
     ///
     /// - A colour is the clear colour; `Opaque` resolved it to the theme
     ///   background.
     /// - A within-window material keeps the surface opaque, cleared to the
     ///   theme background, which the material's backdrop treatment covers.
     /// - A behind-window material clears the transparent surface to the
-    ///   level's [`Tint`](crate::renderer::material::Tint) under the
-    ///   content: clearing to the tint is compositing it source-over onto a
-    ///   cleared-transparent surface, which leaves it unchanged. The
-    ///   compositor then blends the window over the desktop it blurs.
-    pub(super) fn of(window: &Window, env: &Environment) -> Self {
+    ///   level's [`Tint`](crate::renderer::material::Tint) in `env`'s colour
+    ///   scheme under the content: clearing to the tint is compositing it
+    ///   source-over onto a cleared-transparent surface, which leaves it
+    ///   unchanged. The compositor then blends the window over the desktop
+    ///   it blurs.
+    pub(super) fn clear(self, env: &Environment) -> peniko::Color {
         let srgb = |color: WorkingColor| {
             let srgb = waterui_graphics::color::working::to_srgb(color);
             peniko::Color::new([srgb.red, srgb.green, srgb.blue, color.components[3]])
         };
-        match window.resolved_background(env).snapshot() {
-            ResolvedWindowBackground::Color(color) => Self {
-                clear: srgb(color),
-                backdrop: None,
-            },
+        match self.0 {
+            ResolvedWindowBackground::Color(color) => srgb(color),
             ResolvedWindowBackground::Material(material) => match Blending::of(material) {
-                Blending::WithinWindow(level) => Self {
-                    clear: srgb(Color::new(Background).resolve(env).snapshot()),
-                    backdrop: Some(level),
-                },
-                Blending::BehindWindow(level) => Self {
-                    clear: level
-                        .tint(waterui::theme::current_color_scheme(env).snapshot())
-                        .srgb(),
-                    backdrop: None,
-                },
+                Blending::WithinWindow(_) => srgb(Color::new(Background).resolve(env).snapshot()),
+                Blending::BehindWindow(level) => level
+                    .tint(waterui::theme::current_color_scheme(env).snapshot())
+                    .srgb(),
             },
         }
-    }
-
-    /// Whether the window must be transparent: its clear colour carries
-    /// alpha.
-    pub(super) fn transparent(&self) -> bool {
-        self.clear.components[3] < 1.0
     }
 }
 
@@ -557,8 +565,8 @@ pub(super) fn apply_window_background<P: GpuSurfaceWindow>(
     runtime.platform.set_transparent(background.transparent());
     runtime
         .renderer
-        .set_window_backdrop(background.backdrop, env);
-    background.clear
+        .set_window_backdrop(background.backdrop(), env);
+    background.clear(env)
 }
 
 #[cfg(hydrolysis_winit)]
