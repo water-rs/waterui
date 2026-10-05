@@ -40,7 +40,7 @@ split_fn! {
 pub fn interpolation<B: Backend>(config: B::Config) {
     let engine = wait!(Engine::<B>::new(config)).expect("backend");
     let surface = wait!(engine
-        .surface(Offscreen::new((24, 20), OffscreenFormat::LinearF16)))
+        .surface(Offscreen::new((24, 20), OffscreenFormat::LinearF16), || {}))
         .expect("surface");
     let value = nami::Binding::container(wait!(mesh(MeshColorInterpolation::Linear)));
     surface.update(|tx| {

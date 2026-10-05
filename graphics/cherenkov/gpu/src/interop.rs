@@ -91,17 +91,16 @@ impl std::fmt::Debug for GpuContentBox {
 }
 
 impl GpuContentBox {
-    /// Creates a producer with the host's event-loop wake callback.
-    /// The callback must be safe to invoke from a producer thread, including
-    /// while the engine is idle (for example, a window event-loop proxy).
+    /// Boxes a producer. Its redraw requests wake the hosts of the
+    /// surfaces that draw it, each through the wake the surface was
+    /// created with.
     #[must_use]
-    pub fn new(content: impl GpuContent, wake: impl Fn() + Send + Sync + 'static) -> Self {
+    pub fn new(content: impl GpuContent) -> Self {
         Self {
             content: Box::new(content),
             redraw: RedrawHandle {
                 dirty: Arc::new(AtomicBool::new(true)),
-                gate: Arc::new(cherenkov::WakeGate::default()),
-                wake: Arc::new(wake),
+                wakes: Arc::new(cherenkov::SurfaceWakes::default()),
             },
         }
     }
@@ -117,9 +116,8 @@ impl GpuContentBox {
 #[derive(Clone)]
 pub struct RedrawHandle {
     pub(crate) dirty: Arc<AtomicBool>,
-    /// Open while the content is composed on a visible surface.
-    pub(crate) gate: Arc<cherenkov::WakeGate>,
-    wake: Arc<dyn Fn() + Send + Sync>,
+    /// The wakes of the surfaces whose frames draw the content.
+    pub(crate) wakes: Arc<cherenkov::SurfaceWakes>,
 }
 
 impl std::fmt::Debug for RedrawHandle {
@@ -131,13 +129,15 @@ impl std::fmt::Debug for RedrawHandle {
 }
 
 impl RedrawHandle {
-    /// Marks the producer's output stale. Requests coalesce until consumed.
-    /// Detached or removed content, and content on a surface the host has
-    /// announced hidden, retains the request without waking the host; the
-    /// frame that draws it again draws its latest state.
+    /// Marks the producer's output stale and wakes the host of each
+    /// surface whose frames draw it, through the surface's own wake.
+    /// Requests coalesce until a frame consumes them. Detached or removed
+    /// content, and content on a surface the host has announced hidden,
+    /// retains the request without waking the host; the frame that draws
+    /// it again draws its latest state.
     pub fn request_redraw(&self) {
-        if !self.dirty.swap(true, Ordering::AcqRel) && self.gate.is_open() {
-            (self.wake)();
+        if !self.dirty.swap(true, Ordering::AcqRel) {
+            self.wakes.wake();
         }
     }
 
@@ -175,28 +175,6 @@ impl<C: GpuContent> Content for C {
 
     fn render(&mut self, frame: &mut wgpu::Frame<'_>) {
         GpuContent::render(self, frame);
-    }
-}
-
-/// A host event-loop callback callable from the engine or producer threads.
-#[derive(Clone)]
-pub struct RedrawCallback(Arc<dyn Fn() + Send + Sync>);
-
-impl RedrawCallback {
-    /// Wraps the host's display-link or event-loop wake operation.
-    pub fn new(wake: impl Fn() + Send + Sync + 'static) -> Self {
-        Self(Arc::new(wake))
-    }
-
-    /// Asks the host to schedule an engine frame.
-    pub fn wake(&self) {
-        (self.0)();
-    }
-}
-
-impl std::fmt::Debug for RedrawCallback {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RedrawCallback").finish_non_exhaustive()
     }
 }
 

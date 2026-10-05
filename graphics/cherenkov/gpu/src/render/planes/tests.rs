@@ -664,7 +664,7 @@ fn a_backdrop_on_or_above_the_layer_keeps_it_in_the_engine() {
         return;
     };
     let surface = engine
-        .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16))
+        .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {})
         .expect("offscreen surface");
     let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     let mut tree = scene();

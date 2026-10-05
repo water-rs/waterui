@@ -128,19 +128,14 @@ thread_local! {
 cfg_async_fn! {
     /// The shared engine state for `context_id`'s GPU context, created on
     /// first use: one engine and one resource table, alive while any window
-    /// or capture mount on this context holds it.
-    ///
-    /// `wake` is the host's display-link wake: it may be invoked from any thread
-    /// the engine or its producers run on. The callback passed on the creating
-    /// call wins; later calls for the same context leave it unchanged — every
-    /// window on the shared context wakes the same event loop.
+    /// or capture mount on this context holds it. Each window's surface on
+    /// it carries that window's own host wake ([`CherenkovSurface::new`]).
     ///
     /// Async on wasm32, where `Engine::new` awaits the browser's GPU device.
     pub fn shared_engine_state(
         context_id: u64,
         adapter: &wgpu::Adapter,
         shared_device: cherenkov_gpu::interop::SharedDevice,
-        wake: impl Fn() + Send + Sync + 'static,
     ) -> Rc<SharedEngineState> {
         let pooled =
             ENGINES.with(|pool| pool.borrow().get(&context_id).and_then(Weak::upgrade));
@@ -149,7 +144,6 @@ cfg_async_fn! {
         }
         let config = cherenkov_gpu::GpuConfig {
             device: Some(shared_device),
-            redraw: Some(cherenkov_gpu::interop::RedrawCallback::new(wake)),
             pipeline_cache: pipeline_cache_path(adapter),
             ..cherenkov_gpu::GpuConfig::default()
         };
@@ -205,7 +199,11 @@ impl core::fmt::Debug for CherenkovSurface {
 
 impl CherenkovSurface {
     /// Creates the engine surface at `size` (physical pixels) and takes the
-    /// presenter for `device`'s shader delivery.
+    /// presenter for `device`'s shader delivery. `wake` is the host's
+    /// display-link wake: the surface calls it, from whichever thread the
+    /// cause lands on, when its content — a GPU producer, a filter, a
+    /// submitted frame, a live operand — asks for a frame between the
+    /// renderer's own ([`Self::begin_frame`]).
     ///
     /// Async on wasm32, where `Engine::surface` awaits the browser device.
     #[cfg(not(target_arch = "wasm32"))]
@@ -214,10 +212,11 @@ impl CherenkovSurface {
         device: &wgpu::Device,
         backend: wgpu::Backend,
         size: (u32, u32),
+        wake: impl Fn() + Send + Sync + 'static,
     ) -> Self {
         let (target, textures) = cherenkov_gpu::interop::TextureTarget::new(size);
         let surface = engine
-            .surface(target)
+            .surface(target, wake)
             .expect("hydrolysis renderer: failed to create the Cherenkov surface");
         Self::build(engine, device, backend, size, surface, textures)
     }
@@ -234,10 +233,11 @@ impl CherenkovSurface {
         device: &wgpu::Device,
         backend: wgpu::Backend,
         size: (u32, u32),
+        wake: impl Fn() + Send + Sync + 'static,
     ) -> Self {
         let (target, textures) = cherenkov_gpu::interop::TextureTarget::new(size);
         let surface = engine
-            .surface(target)
+            .surface(target, wake)
             .await
             .expect("hydrolysis renderer: failed to create the Cherenkov surface");
         Self::build(engine, device, backend, size, surface, textures)
@@ -263,6 +263,14 @@ impl CherenkovSurface {
             presenter: cherenkov_gpu::interop::Presenter::new(device, delivery),
             size,
         }
+    }
+
+    /// Opens the renderer's frame: while the scope is held, the edits it
+    /// makes to the surface before [`Self::render`] wake no host, because
+    /// that render draws them.
+    #[must_use = "dropping the scope ends the frame; keep it until the frame's render"]
+    pub fn begin_frame(&self) -> cherenkov::FrameScope {
+        self.surface.begin_frame()
     }
 
     /// The engine surface behind this output target — mount, edit and

@@ -14,7 +14,10 @@ fn engine() -> Engine<Gpu> {
 
 fn surface(engine: &Engine<Gpu>) -> cherenkov::Surface<Gpu> {
     engine
-        .surface(Offscreen::new((960, 2142), OffscreenFormat::LinearF16))
+        .surface(
+            Offscreen::new((960, 2142), OffscreenFormat::LinearF16),
+            || {},
+        )
         .expect("offscreen surface")
 }
 

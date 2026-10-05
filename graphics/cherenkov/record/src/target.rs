@@ -54,8 +54,6 @@ pub trait Queue<T: Target> {
     fn apply(&self, changes: ChangeSet<T>);
     /// Wakes the consumer: queued changes wait for its next drain.
     fn wake(&self);
-    /// Notes whether the shared queue is holding un-drained changes.
-    fn pending(&self, pending: bool);
 }
 
 /// The target samples projective layer transforms: `LayerEdit::projection`,

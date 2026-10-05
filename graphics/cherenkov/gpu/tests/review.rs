@@ -33,7 +33,7 @@ fn make(
     font: cherenkov::FontId,
     color: WorkingColor,
 ) -> Result<cherenkov::Surface<Gpu>, Box<dyn std::error::Error>> {
-    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
             c.fill(Rect::new(8.0, 8.0, 56.0, 56.0), color);
@@ -89,7 +89,7 @@ fn render_text(
     let engine = wait!(engine(config))?;
     let font = engine.font(font()).expect("font");
     let surface = wait!(engine
-        .surface(Offscreen::new((512, 512), OffscreenFormat::LinearF16)))
+        .surface(Offscreen::new((512, 512), OffscreenFormat::LinearF16), || {}))
         .expect("surface");
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
@@ -155,7 +155,7 @@ fn a_clear_only_commit_renders() -> Result<(), Box<dyn std::error::Error>> {
     let Some(engine) = wait!(engine(GpuConfig::default())) else {
         return Ok(());
     };
-    let surface = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {}))?;
     surface.clear_color(WorkingColor::new([1.0, 0.0, 0.0, 1.0]));
     wait!(engine.render(cherenkov::FrameTime::now()))?;
     assert!(wait!(surface.readback())?.pixels[0][0] > 0.9, "red clear");
@@ -178,7 +178,7 @@ fn dropped_surfaces_do_not_leak() -> Result<(), Box<dyn std::error::Error>> {
     };
     let before = wait!(engine.memory()).gpu;
     for _ in 0..200 {
-        drop(wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?);
+        drop(wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?);
     }
     wait!(engine.render(cherenkov::FrameTime::now()))?;
     assert_eq!(engine.live_surfaces(), 0, "surfaces still live");
@@ -243,7 +243,7 @@ split_fn! {
 fn render_radial(gradient: cherenkov::RadialGradient) -> Option<Vec<[f32; 4]>> {
     let engine = wait!(engine(GpuConfig::default()))?;
     let surface = wait!(engine
-        .surface(Offscreen::new((128, 128), OffscreenFormat::LinearF16)))
+        .surface(Offscreen::new((128, 128), OffscreenFormat::LinearF16), || {}))
         .expect("surface");
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
@@ -324,7 +324,7 @@ fn dropping_a_font_frees_its_renderer_state() -> Result<(), Box<dyn std::error::
     };
     let font = engine.font(font())?;
     let font_id = font.id();
-    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     let solid = |surface: &cherenkov::Surface<Gpu>| {
         surface.update(|tx| {
             tx[surface.root()].content(surface.record(|c| {
@@ -384,7 +384,7 @@ fn finish_timings_returns_every_drawn_frame_once() -> Result<(), Box<dyn std::er
     if engine.info().timestamps == TimestampSupport::Unsupported {
         return Ok(());
     }
-    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     let mut submitted = Vec::new();
     for frame in 0..3u8 {
         let color = [f32::from(frame) / 3.0, 0.0, 0.0, 1.0];
@@ -426,7 +426,7 @@ fn timestamps_off_reports_no_passes() -> Result<(), Box<dyn std::error::Error>> 
     let Some(engine) = wait!(engine(GpuConfig::default())) else {
         return Ok(());
     };
-    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
             c.fill(
@@ -451,7 +451,7 @@ fn bind_groups_are_reused_across_frames() -> Result<(), Box<dyn std::error::Erro
     let Some(engine) = wait!(engine(GpuConfig::default())) else {
         return Ok(());
     };
-    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     let record = |c: &mut cherenkov::Recorder| {
         c.fill(
             Rect::new(0.0, 0.0, 64.0, 64.0),
@@ -499,7 +499,7 @@ fn trim_releases_cached_memory() -> Result<(), Box<dyn std::error::Error>> {
     let Some(engine) = wait!(engine(GpuConfig::default())) else {
         return Ok(());
     };
-    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     // Isolated group: needs a composition plan and grows the instance buffer.
     let scene = |c: &mut cherenkov::Recorder| {
         c.fill(
@@ -563,7 +563,7 @@ fn render_returns_idle() -> Result<(), Box<dyn std::error::Error>> {
     let Some(engine) = wait!(engine(GpuConfig::default())) else {
         return Ok(());
     };
-    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
             c.fill(
@@ -587,7 +587,7 @@ fn a_zero_size_surface_is_an_error() {
         return;
     };
     for size in [(0, 64), (64, 0), (0, 0)] {
-        let result = wait!(engine.surface(Offscreen::new(size, OffscreenFormat::LinearF16)));
+        let result = wait!(engine.surface(Offscreen::new(size, OffscreenFormat::LinearF16), || {}));
         assert!(
             matches!(result, Err(SurfaceError::ZeroSize)),
             "{size:?}: {result:?}"
@@ -632,8 +632,8 @@ fn reflected_shape_preserves_antialiasing() -> Result<(), Box<dyn std::error::Er
     use cherenkov::kurbo::{Affine, Circle};
 
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
-    let normal = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16)))?;
-    let reflected = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16)))?;
+    let normal = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
+    let reflected = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
     for (surface, transform) in [
         (&normal, Affine::IDENTITY),
         (&reflected, Affine::new([-1.0, 0.0, 0.0, 1.0, 32.0, 0.0])),

@@ -1694,7 +1694,7 @@ impl Engine for Cherenkov {
                 let (target, textures) = TextureTarget::new(size);
                 let surface = self
                     .engine
-                    .surface(target)
+                    .surface(target, || {})
                     .map_err(|e| BenchError::Gpu(format!("cherenkov surface: {e}")))?;
                 present.source =
                     Some(textures.try_recv().map_err(|e| {
@@ -1709,7 +1709,7 @@ impl Engine for Cherenkov {
             }
             None => self
                 .engine
-                .surface(Offscreen::new(size, OffscreenFormat::LinearF16))
+                .surface(Offscreen::new(size, OffscreenFormat::LinearF16), || {})
                 .map_err(|e| BenchError::Gpu(format!("cherenkov surface: {e}")))?,
         };
         if let Some(present) = self.present.as_deref_mut() {

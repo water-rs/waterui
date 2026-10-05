@@ -84,14 +84,12 @@ pub trait Renderer: 'static {
     type Font: RenderTransfer + 'static;
 
     /// Creates the render-side state for surface `id`. `waker` is the
-    /// surface's host wake-up for render-side completions that land after
-    /// a render (a promoted plane's attach on the main queue); it wakes
-    /// nothing while the surface is hidden. A source the backend drives on
-    /// its own that wakes the host through another callback (a GPU
-    /// producer, a filter) gates that wake with a
-    /// [`WakeGate`](crate::WakeGate) over the
-    /// [`visibility`](crate::CompletionWaker::visibility) of the surfaces
-    /// it draws into.
+    /// surface's host wake-up: for render-side completions that land after
+    /// a render (a promoted plane's attach on the main queue), and for the
+    /// redraw requests of the sources the backend drives on its own (a GPU
+    /// producer, a filter), which keep the wakers of the surfaces they draw
+    /// into in a [`SurfaceWakes`](crate::SurfaceWakes). It wakes nothing
+    /// while the surface is hidden.
     ///
     /// # Errors
     /// [`SurfaceError`] when the target cannot be drawn.
@@ -111,8 +109,8 @@ pub trait Renderer: 'static {
     /// While a surface is hidden the render loop leaves it out of every
     /// [`Frame`], and [`FrameRedraw`] counts only visible surfaces: custom
     /// GPU content and filters on a hidden surface want no redraw. Their
-    /// host wakes stop earlier, through their [`WakeGate`](crate::WakeGate),
-    /// the moment the host hides the surface. Content ops, installs and
+    /// host wakes stop earlier, through the surface's own waker, the moment
+    /// the host hides the surface. Content ops, installs and
     /// resource changes still arrive while it is hidden. When it becomes
     /// visible again the next frame lists it, and a producer or filter
     /// that asked for a redraw while it was hidden is drawn then.

@@ -331,7 +331,10 @@ fn nv12_frame_decodes_in_place() -> Result<(), Box<dyn std::error::Error>> {
     let Some((engine, device, queue)) = engine()? else {
         return Ok(());
     };
-    let surface = engine.surface(Offscreen::new((SIZE, SIZE), OffscreenFormat::LinearF16))?;
+    let surface = engine.surface(
+        Offscreen::new((SIZE, SIZE), OffscreenFormat::LinearF16),
+        || {},
+    )?;
     let (luma, uv) = yuv_fixture(8);
     let color = FrameColor::BT709_VIDEO;
     let y_plane = plane(
@@ -374,7 +377,10 @@ fn p010_frame_decodes_in_place() -> Result<(), Box<dyn std::error::Error>> {
     let Some((engine, device, queue)) = engine()? else {
         return Ok(());
     };
-    let surface = engine.surface(Offscreen::new((SIZE, SIZE), OffscreenFormat::LinearF16))?;
+    let surface = engine.surface(
+        Offscreen::new((SIZE, SIZE), OffscreenFormat::LinearF16),
+        || {},
+    )?;
     let (luma, uv) = yuv_fixture(10);
     let color = FrameColor::BT709_VIDEO;
     let y_plane = plane(
@@ -418,7 +424,10 @@ fn rgba_frame_decodes_in_place() -> Result<(), Box<dyn std::error::Error>> {
     let Some((engine, device, queue)) = engine()? else {
         return Ok(());
     };
-    let surface = engine.surface(Offscreen::new((SIZE, SIZE), OffscreenFormat::LinearF16))?;
+    let surface = engine.surface(
+        Offscreen::new((SIZE, SIZE), OffscreenFormat::LinearF16),
+        || {},
+    )?;
     let color = FrameColor {
         transfer: Transfer::Bt709,
         ..FrameColor::SRGB
@@ -477,8 +486,14 @@ fn frame_producer_shows_each_submitted_frame_on_two_surfaces()
     let Some((engine, device, queue)) = engine()? else {
         return Ok(());
     };
-    let first = engine.surface(Offscreen::new((SIZE, SIZE), OffscreenFormat::LinearF16))?;
-    let second = engine.surface(Offscreen::new((SIZE, SIZE), OffscreenFormat::LinearF16))?;
+    let first = engine.surface(
+        Offscreen::new((SIZE, SIZE), OffscreenFormat::LinearF16),
+        || {},
+    )?;
+    let second = engine.surface(
+        Offscreen::new((SIZE, SIZE), OffscreenFormat::LinearF16),
+        || {},
+    )?;
     let a = first.layer();
     let b = second.layer();
     let (video, sink) = engine.frame_producer();

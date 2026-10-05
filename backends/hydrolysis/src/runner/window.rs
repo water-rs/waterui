@@ -1266,8 +1266,8 @@ crate::engine::cfg_async_fn! {
         runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
     }
     // The engine's own scheduling answer: an in-flight animation asks for its
-    // next frame through `Next::At` (its `RedrawCallback` already woke the
-    // host too — the request is idempotent).
+    // next frame through `Next::At` (the surface's wake may already have woken
+    // the host too — the request is idempotent).
     if matches!(
         runtime.renderer.take_engine_next(),
         Some(cherenkov::Next::At { .. })

@@ -816,9 +816,16 @@ impl GpuRuntime {
         size: OffscreenSize,
         scale: f32,
     ) -> OffscreenImage {
-        let content = GpuContentView::new(content).take_engine_content(|| {});
-        let mut renderer = GpuContentRenderer::new(self, self.context(), content, size)
-            .expect("GPU content renderer creation failed");
+        let content = GpuContentView::new(content).take_engine_content();
+        // One frame, read back at once: no host loop exists to wake.
+        let mut renderer = GpuContentRenderer::new(
+            self,
+            self.context(),
+            content,
+            size,
+            RedrawHandle::new(|| {}),
+        )
+        .expect("GPU content renderer creation failed");
         renderer
             .render(
                 size,
@@ -856,10 +863,17 @@ impl GpuRuntime {
         size: OffscreenSize,
         scale: f32,
     ) -> OffscreenImage {
-        let content = GpuContentView::new(content).take_engine_content(|| {});
-        let mut renderer = GpuContentRenderer::new(self, self.context(), content, size)
-            .await
-            .expect("GPU content renderer creation failed");
+        let content = GpuContentView::new(content).take_engine_content();
+        // One frame, read back at once: no host loop exists to wake.
+        let mut renderer = GpuContentRenderer::new(
+            self,
+            self.context(),
+            content,
+            size,
+            RedrawHandle::new(|| {}),
+        )
+        .await
+        .expect("GPU content renderer creation failed");
         renderer
             .render(
                 size,
@@ -923,7 +937,9 @@ struct LayerHost {
 
 impl LayerHost {
     /// Creates an engine and a retained surface on `context`, the one
-    /// generation the whole host is bound to.
+    /// generation the whole host is bound to. `redraw` is the host's frame
+    /// request: the surface wakes it for whatever its content asks for
+    /// between the host's frames.
     ///
     /// # Errors
     /// When engine or surface creation fails.
@@ -932,15 +948,18 @@ impl LayerHost {
         runtime: &GpuRuntime,
         context: Shared<SharedGpuContext>,
         size: OffscreenSize,
+        redraw: RedrawHandle,
     ) -> Result<Self, HostedLayerError> {
         let engine = runtime.engine_on(&context)?;
         let (target, textures) = TextureTarget::new((size.width(), size.height()));
-        let surface = engine.surface(target)?;
+        let surface = engine.surface(target, move || redraw.request_redraw())?;
         Self::assemble(surface, engine, context, textures)
     }
 
     /// Creates an engine and a retained surface on `context`, the one
-    /// generation the whole host is bound to.
+    /// generation the whole host is bound to. `redraw` is the host's frame
+    /// request: the surface wakes it for whatever its content asks for
+    /// between the host's frames.
     ///
     /// # Errors
     /// When engine or surface creation fails.
@@ -953,10 +972,13 @@ impl LayerHost {
         runtime: &GpuRuntime,
         context: Shared<SharedGpuContext>,
         size: OffscreenSize,
+        redraw: RedrawHandle,
     ) -> Result<Self, HostedLayerError> {
         let engine = runtime.engine_on(&context).await?;
         let (target, textures) = TextureTarget::new((size.width(), size.height()));
-        let surface = engine.surface(target).await?;
+        let surface = engine
+            .surface(target, move || redraw.request_redraw())
+            .await?;
         Self::assemble(surface, engine, context, textures)
     }
 
@@ -1096,6 +1118,8 @@ impl fmt::Debug for GpuContentRenderer {
 impl GpuContentRenderer {
     /// Moves the producer to a retained engine layer on `context` — the one
     /// generation the caller retains for the frame this renderer presents.
+    /// `redraw` wakes the host when the producer asks for a frame between
+    /// the host's own.
     ///
     /// # Errors
     /// When engine or surface creation fails.
@@ -1105,9 +1129,10 @@ impl GpuContentRenderer {
         context: Shared<SharedGpuContext>,
         producer: GpuContentBox,
         size: OffscreenSize,
+        redraw: RedrawHandle,
     ) -> Result<Self, HostedLayerError> {
         Ok(Self::install(
-            LayerHost::new(runtime, context, size)?,
+            LayerHost::new(runtime, context, size, redraw)?,
             producer,
             size,
         ))
@@ -1115,6 +1140,8 @@ impl GpuContentRenderer {
 
     /// Moves the producer to a retained engine layer on `context` — the one
     /// generation the caller retains for the frame this renderer presents.
+    /// `redraw` wakes the host when the producer asks for a frame between
+    /// the host's own.
     ///
     /// # Errors
     /// When engine or surface creation fails.
@@ -1128,9 +1155,10 @@ impl GpuContentRenderer {
         context: Shared<SharedGpuContext>,
         producer: GpuContentBox,
         size: OffscreenSize,
+        redraw: RedrawHandle,
     ) -> Result<Self, HostedLayerError> {
         Ok(Self::install(
-            LayerHost::new(runtime, context, size).await?,
+            LayerHost::new(runtime, context, size, redraw).await?,
             producer,
             size,
         ))
@@ -1180,6 +1208,7 @@ impl GpuContentRenderer {
         display: Display,
         target_time: FrameTime,
     ) -> Result<Next, HostedLayerError> {
+        let _frame = self.host.surface.begin_frame();
         self.resize(size)?;
         self.host.render(display, target_time)
     }
@@ -1199,6 +1228,7 @@ impl GpuContentRenderer {
         display: Display,
         target_time: FrameTime,
     ) -> Result<Next, HostedLayerError> {
+        let _frame = self.host.surface.begin_frame();
         self.resize(size)?;
         self.host.render(display, target_time).await
     }
@@ -1285,7 +1315,8 @@ impl ExternalFrameRenderer {
     /// Builds the layer on `context` — the one generation the caller retains
     /// for the frame this renderer presents — and starts the stream's source
     /// on that device. `redraw` wakes the host whenever the source publishes
-    /// a frame.
+    /// a frame, and whenever the surface needs a frame between the host's
+    /// own.
     ///
     /// # Errors
     /// When engine or surface creation fails.
@@ -1298,7 +1329,7 @@ impl ExternalFrameRenderer {
         redraw: RedrawHandle,
     ) -> Result<Self, HostedLayerError> {
         Ok(Self::install(
-            LayerHost::new(runtime, context, size)?,
+            LayerHost::new(runtime, context, size, redraw.clone())?,
             stream,
             redraw,
         ))
@@ -1307,7 +1338,8 @@ impl ExternalFrameRenderer {
     /// Builds the layer on `context` — the one generation the caller retains
     /// for the frame this renderer presents — and starts the stream's source
     /// on that device. `redraw` wakes the host whenever the source publishes
-    /// a frame.
+    /// a frame, and whenever the surface needs a frame between the host's
+    /// own.
     ///
     /// # Errors
     /// When engine or surface creation fails.
@@ -1324,7 +1356,7 @@ impl ExternalFrameRenderer {
         redraw: RedrawHandle,
     ) -> Result<Self, HostedLayerError> {
         Ok(Self::install(
-            LayerHost::new(runtime, context, size).await?,
+            LayerHost::new(runtime, context, size, redraw.clone()).await?,
             stream,
             redraw,
         ))
@@ -1401,6 +1433,7 @@ impl ExternalFrameRenderer {
         display: Display,
         target_time: FrameTime,
     ) -> Result<Next, HostedLayerError> {
+        let _frame = self.host.surface.begin_frame();
         self.prepare(size)?;
         self.host.render(display, target_time)
     }
@@ -1420,6 +1453,7 @@ impl ExternalFrameRenderer {
         display: Display,
         target_time: FrameTime,
     ) -> Result<Next, HostedLayerError> {
+        let _frame = self.host.surface.begin_frame();
         self.prepare(size)?;
         self.host.render(display, target_time).await
     }
