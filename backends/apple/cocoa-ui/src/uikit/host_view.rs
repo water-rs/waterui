@@ -87,8 +87,8 @@ pub struct HostViewIvars {
     pointer_events: Cell<PointerEvents>,
     /// Whether the pointer is currently over the view.
     pointer_inside: Cell<bool>,
-    /// The recognizer serving the pointer handler, kept so the target
-    /// stays alive.
+    /// The one recognizer attached for the pointer handler, kept so the
+    /// target stays alive and a replacement can detach it.
     hover_recognizer: RefCell<Option<Retained<UIHoverGestureRecognizer>>>,
     key: RefCell<Option<KeyHandler>>,
 }
@@ -518,7 +518,9 @@ impl HostView {
             )
         };
         self.addGestureRecognizer(&recognizer);
-        self.ivars().hover_recognizer.replace(Some(recognizer));
+        if let Some(previous) = self.ivars().hover_recognizer.replace(Some(recognizer)) {
+            self.removeGestureRecognizer(&previous);
+        }
     }
 
     /// Whether the pointer is currently over this view.
