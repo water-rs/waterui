@@ -235,45 +235,53 @@ define_class!(
         // SAFETY: see the module safety note.
         #[unsafe(method(layoutSubviews))]
         fn layout_subviews_override(&self) {
-            // SAFETY: see the module safety note.
-            let _: () = unsafe { msg_send![super(self), layoutSubviews] };
-            let handler = self.ivars().on_layout.borrow().clone();
-            if let Some(handler) = handler {
-                handler();
-            }
+            guarded("SurfaceView layoutSubviews", || {
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), layoutSubviews] };
+                let handler = self.ivars().on_layout.borrow().clone();
+                if let Some(handler) = handler {
+                    handler();
+                }
+            });
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(didMoveToWindow))]
         fn did_move_to_window_override(&self) {
-            // SAFETY: see the module safety note.
-            let _: () = unsafe { msg_send![super(self), didMoveToWindow] };
-            let handler = self.ivars().on_window_changed.borrow().clone();
-            if let Some(handler) = handler {
-                handler();
-            }
+            guarded("SurfaceView didMoveToWindow", || {
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), didMoveToWindow] };
+                let handler = self.ivars().on_window_changed.borrow().clone();
+                if let Some(handler) = handler {
+                    handler();
+                }
+            });
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(didMoveToSuperview))]
         fn did_move_to_superview_override(&self) {
-            // SAFETY: see the module safety note.
-            let _: () = unsafe { msg_send![super(self), didMoveToSuperview] };
-            let handler = self.ivars().on_visibility_changed.borrow().clone();
-            if let Some(handler) = handler {
-                handler();
-            }
+            guarded("SurfaceView didMoveToSuperview", || {
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), didMoveToSuperview] };
+                let handler = self.ivars().on_visibility_changed.borrow().clone();
+                if let Some(handler) = handler {
+                    handler();
+                }
+            });
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(traitCollectionDidChange:))]
         fn trait_collection_did_change(&self, previous: Option<&UITraitCollection>) {
-            // SAFETY: see the module safety note.
-            let _: () = unsafe { msg_send![super(self), traitCollectionDidChange: previous] };
-            let handler = self.ivars().on_backing_changed.borrow().clone();
-            if let Some(handler) = handler {
-                handler();
-            }
+            guarded("SurfaceView traitCollectionDidChange:", || {
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), traitCollectionDidChange: previous] };
+                let handler = self.ivars().on_backing_changed.borrow().clone();
+                if let Some(handler) = handler {
+                    handler();
+                }
+            });
         }
 
         // SAFETY: see the module safety note.
@@ -510,7 +518,7 @@ impl SurfaceView {
     fn emit(&self, interaction: PointerInteraction) {
         let handler = self.ivars().on_interaction.borrow().clone();
         if let Some(handler) = handler {
-            handler(interaction);
+            guarded("SurfaceView pointer interaction", || handler(interaction));
         }
     }
 
