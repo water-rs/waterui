@@ -10,7 +10,7 @@
   </p>
 </div>
 
-`WaterUI` is a cross-platform UI framework for Rust. You write views once, and each backend maps them onto whatever the platform actually uses: `UIKit` and `AppKit` on Apple, Android Views on Android, GTK4 on Linux. Where no native toolkit fits there are two self-drawn renderers: Hydrolysis draws on the GPU through Cherenkov, and Dew is a CPU renderer frugal enough for microcontrollers.
+`WaterUI` is a cross-platform UI framework for Rust. You write views once, and each backend maps them onto whatever the platform actually uses: `UIKit` and `AppKit` on Apple, GTK4 on Linux. Where no native toolkit fits there are two self-drawn renderers: Hydrolysis draws through Android's hardware-accelerated renderer (HWUI) on Android and on the GPU through Cherenkov elsewhere, and Dew is a CPU renderer frugal enough for microcontrollers.
 
 State is plain values. Put mutable state in a `Binding`, derive from it with `Computed`, and hand those to views. When a value changes, the views that read it update. There is no virtual tree to diff, and changing one string never rebuilds the subtree around it.
 
@@ -150,14 +150,14 @@ One thing to know early: `watch` replaces the subtree it wraps, losing any state
 | Target | Backend | Renders through |
 | --- | --- | --- |
 | iOS and macOS | Apple | `UIKit` / `AppKit` |
-| Android | Android | Android Views |
+| Android | Hydrolysis | Self-drawn, HWUI `RenderNode` display lists |
 | Linux | GTK4 | GTK4 widgets |
 | macOS, Linux, Windows, web | Hydrolysis | Self-drawn, GPU (Cherenkov) |
 | ESP32-S3 / ESP32-C3 | Dew | Self-drawn, CPU, dirty-region |
 
 ## Status
 
-Pre-1.0. The API still moves, and we break it on purpose when a better shape is found. Apple and Android backends are the most complete; Hydrolysis is close behind; GTK4 and Dew are younger. If you hit a wall, an issue with a small reproduction is genuinely useful.
+Pre-1.0. The API still moves, and we break it on purpose when a better shape is found. The Apple backend is the most complete; Hydrolysis, which also serves Android, is close behind; GTK4 and Dew are younger. If you hit a wall, an issue with a small reproduction is genuinely useful.
 
 ## Examples
 
