@@ -82,9 +82,12 @@ jobs:
         uses: ./.github/actions/generate-test-assets
       # Same for the Cherenkov test targets the workspace pass below
       # compiles and runs: their fonts and corpus scenes are generated,
-      # not committed.
+      # not committed. The all-features pass also runs the bench tests
+      # that read scenes/perf.
       - name: Generate Cherenkov scene assets
         uses: ./.github/actions/generate-scene-assets
+        with:
+          mode: full
       # Four crates cannot be tested here, for reasons that are not bugs:
       #
       # waterui-dylib is the dynamic-link anchor — a Rust `dylib` on purpose, so
@@ -251,13 +254,14 @@ jobs:
       # does not store.
       - name: Generate Hydrolysis test assets
         uses: ./.github/actions/generate-test-assets
-      # cherenkov-oracle's glyph tests and cherenkov-gpu's bitmap/browser
-      # test targets `include_bytes!` fonts only `scenes/tools/generate.py`
-      # writes; `--all-targets` compiles them, so the tree must exist
-      # first. The corpus/perf readers (cherenkov-cpu tests,
-      # cherenkov-bench) are runtime readers — this job never runs tests.
+      # cherenkov-oracle, cherenkov-gpu, and cherenkov-cpu compile
+      # `include_bytes!` of fonts only `scenes/tools/generate.py` writes;
+      # `--all-targets` compiles them, so the fonts must exist first.
+      # Corpus and perf are read at run time — this job never runs tests.
       - name: Generate Cherenkov scene assets
         uses: ./.github/actions/generate-scene-assets
+        with:
+          mode: fonts
       # Compile the CEF backend without its binary distribution (see the test
       # job for why it cannot be linked here). Clippy, not check (#1441): the
       # pass used to re-check a graph the workspace lint already covers while
