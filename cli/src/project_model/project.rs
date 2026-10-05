@@ -1393,6 +1393,9 @@ impl Project {
                 .waterui_path
                 .as_ref()
                 .map(|p| p.display().to_string()),
+            // The scaffold's copy of the checkout's tables is identical to the
+            // checkout's, which the first open adopts and records.
+            waterui_patches: cargo_toml::PatchSet::new(),
             // A local checkout's framework is a filesystem source — never
             // persisted; `waterui_path` above is the record.
             framework: framework.channel().is_some().then_some(framework),
@@ -1527,23 +1530,35 @@ impl Project {
         Self::open_with_mode(path, OpenMode::PreviewBuild, ManagedBackends::NONE).await
     }
 
-    /// Make a local-checkout project's `[patch]` tables the checkout's.
+    /// Keep the checkout's entries in a local-checkout project's `[patch]`
+    /// tables current, beside the project's own.
     ///
     /// Cargo applies `[patch]` only from the workspace it builds, so a project
     /// on a `waterui_path` carries a copy of the checkout's tables, and the
     /// copy has to follow the checkout: a fork pin moves, an entry is added or
     /// dropped, and a project scaffolded earlier would otherwise build a graph
-    /// the checkout no longer produces, silently. The manifest is rewritten
-    /// only when the tables differ, so an up-to-date project stays untouched.
+    /// the checkout no longer produces, silently. `Water.toml` records the
+    /// copy last written under `waterui_patches`, so the entries the CLI owns
+    /// are known exactly: they are replaced with the checkout's current set,
+    /// and every other entry is the project's own and stays (#1997). An entry
+    /// identical to the checkout's is the checkout's. A project entry for a
+    /// crate the checkout patches differently is an error naming both, never a
+    /// silent overwrite. The manifests are rewritten only when they change, so
+    /// an up-to-date project stays untouched.
     ///
     /// A project that is itself a member of the checkout's workspace — every
     /// example in this repository — needs no copy, because the
     /// tables Cargo reads are the checkout's own. Writing one anyway put a
     /// `[patch.crates-io]` table into a member manifest, where Cargo ignores it
     /// and says so on every single build.
-    async fn refresh_local_patches(project_root: &Path, waterui_path: &Path) -> eyre::Result<()> {
+    async fn refresh_local_patches(
+        project_root: &Path,
+        waterui_path: &Path,
+        written: &cargo_toml::PatchSet,
+    ) -> eyre::Result<()> {
         let project_root = project_root.to_path_buf();
         let waterui_path = waterui_path.to_path_buf();
+        let written = written.clone();
         unblock(move || {
             let checkout = project_root.join(&waterui_path);
             let patch_root = templates::patch_manifest_dir(&project_root)?;
@@ -1569,16 +1584,36 @@ impl Project {
             let text = std::fs::read_to_string(&cargo_path)?;
             let current = CargoManifest::from_slice(text.as_bytes())?.patch;
             let next = templates::local_framework_patches(&project_root, &waterui_path)?;
-            if current == next {
-                return Ok(());
+            let own = crate::patch_tables::beyond(&current, &written);
+            let own = crate::patch_tables::beyond(&own, &next);
+            let tables = crate::patch_tables::merge(next.clone(), own.clone())?;
+            if current != tables {
+                // Only the checkout's entries are rewritten; the project's own
+                // keep their spelling. `merge` has proven the two disjoint.
+                let mut document: toml_edit::DocumentMut = text.parse()?;
+                let copied = crate::patch_tables::beyond(&current, &own);
+                crate::framework::rewrite_patch_tables(&mut document, &copied, &next)?;
+                std::fs::write(&cargo_path, document.to_string())?;
+                info!(
+                    path = %cargo_path.display(),
+                    "Refreshed the [patch] tables from the local checkout"
+                );
             }
-            let mut document: toml_edit::DocumentMut = text.parse()?;
-            crate::framework::rewrite_patch_tables(&mut document, &current, &next)?;
-            std::fs::write(&cargo_path, document.to_string())?;
-            info!(
-                path = %cargo_path.display(),
-                "Refreshed the [patch] tables from the local checkout"
-            );
+            if written != next {
+                let water_path = project_root.join("Water.toml");
+                let mut water: toml_edit::DocumentMut =
+                    std::fs::read_to_string(&water_path)?.parse()?;
+                water.remove(WATERUI_PATCHES_KEY);
+                // Rendered the way `Manifest::save` renders the whole file —
+                // one `[waterui_patches.<source>.<crate>]` table per entry —
+                // then spliced in, so the rest of the file keeps its spelling.
+                let mut rendered: toml_edit::DocumentMut =
+                    toml::to_string_pretty(&WateruiPatchesRecord { patches: &next })?.parse()?;
+                if let Some(record) = rendered.remove(WATERUI_PATCHES_KEY) {
+                    water[WATERUI_PATCHES_KEY] = record;
+                }
+                std::fs::write(&water_path, water.to_string())?;
+            }
             Ok(())
         })
         .await
@@ -1617,7 +1652,7 @@ impl Project {
             validate_local_cli(&path.join(local))
                 .await
                 .map_err(FailToOpenProject::Framework)?;
-            Self::refresh_local_patches(&path, Path::new(local))
+            Self::refresh_local_patches(&path, Path::new(local), &manifest.waterui_patches)
                 .await
                 .map_err(FailToOpenProject::LocalPatches)?;
         }
@@ -1972,6 +2007,20 @@ use crate::{
     web,
 };
 
+/// The `Water.toml` key of [`Manifest::waterui_patches`].
+const WATERUI_PATCHES_KEY: &str = "waterui_patches";
+
+/// [`Manifest::waterui_patches`] alone, serialized to splice into an existing
+/// `Water.toml`.
+#[derive(Serialize)]
+struct WateruiPatchesRecord<'a> {
+    #[serde(
+        rename = "waterui_patches",
+        skip_serializing_if = "cargo_toml::PatchSet::is_empty"
+    )]
+    patches: &'a cargo_toml::PatchSet,
+}
+
 /// Configuration for a `WaterUI` project persisted to `Water.toml`.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Manifest {
@@ -1988,6 +2037,11 @@ pub struct Manifest {
     /// When set, all backends will use this path instead of the published versions.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub waterui_path: Option<String>,
+    /// The `[patch]` entries the CLI last copied from the `waterui_path`
+    /// checkout into the project's `Cargo.toml`. Every other entry there is
+    /// the project's own, which the next copy keeps.
+    #[serde(default, skip_serializing_if = "cargo_toml::PatchSet::is_empty")]
+    pub waterui_patches: cargo_toml::PatchSet,
     /// Exact framework and backend selection, resolved only by explicit version operations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub framework: Option<ResolvedFramework>,
@@ -2164,6 +2218,7 @@ impl Manifest {
             esp32: None,
             hydrolysis: None,
             waterui_path: None,
+            waterui_patches: cargo_toml::PatchSet::new(),
             framework: None,
             permissions: BTreeMap::default(),
             app: None,
@@ -3322,31 +3377,54 @@ mod local_patch_tests {
 
     use super::Project;
 
-    /// A project on a `waterui_path` mirrors the checkout's `[patch]` tables
-    /// every time it opens: entries the checkout dropped disappear, moved ones
-    /// follow, and a project already in line is left byte-for-byte alone.
-    #[test]
-    fn a_local_checkout_project_follows_the_checkouts_patch_tables() {
-        let directory = tempfile::tempdir().expect("temp dir");
-        let checkout = directory.path().join("waterui");
+    const WATER_TOML: &str = "waterui_path = \"../waterui\"\n\n[package]\nname = \"App\"\nbundle_identifier = \"dev.waterui.app\"\n";
+
+    /// A checkout beside a project directory `app`, returning the project.
+    fn checkout_and_project(directory: &Path) -> std::path::PathBuf {
+        let checkout = directory.join("waterui");
         std::fs::create_dir_all(&checkout).expect("checkout dir");
         std::fs::write(
             checkout.join("Cargo.toml"),
             include_str!("../../tests/fixtures/local_checkout_patches.toml"),
         )
         .expect("checkout manifest");
-        let app = directory.path().join("app");
+        let app = directory.join("app");
         std::fs::create_dir_all(&app).expect("project dir");
+        app
+    }
+
+    /// A project on a `waterui_path` keeps the checkout's entries in its
+    /// `[patch]` tables current every time it opens — the entries recorded as
+    /// copied earlier are replaced, so a dropped one disappears and a moved one
+    /// follows — while the project's own entries stay as written, and a
+    /// project already in line is left byte-for-byte alone.
+    #[test]
+    fn a_local_checkout_project_follows_the_checkout_and_keeps_its_own_patches() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let app = checkout_and_project(directory.path());
         let cargo_path = app.join("Cargo.toml");
         std::fs::write(
             &cargo_path,
-            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nwaterui = { path = \"../waterui\" }\n\n[patch.crates-io]\nwaterui-core = { path = \"../elsewhere/core\" }\nstale = { path = \"../elsewhere/stale\" }\n",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nwaterui = { path = \"../waterui\" }\n\n[patch.crates-io]\nwaterui-core = { path = \"../elsewhere/core\" }\nstale = { path = \"../elsewhere/stale\" }\nnami-derive = { git = \"https://github.com/water-rs/nami\", rev = \"1ffe641ad7e18d341a7cb6d8bcb326d76fb7cf03\" }\n",
         )
         .expect("project manifest");
+        let water_path = app.join("Water.toml");
+        std::fs::write(
+            &water_path,
+            format!(
+                "{WATER_TOML}\n[waterui_patches.crates-io.waterui-core]\npath = \"../elsewhere/core\"\n\n[waterui_patches.crates-io.stale]\npath = \"../elsewhere/stale\"\n"
+            ),
+        )
+        .expect("water manifest");
+        let written = super::Manifest::open(&water_path);
+        let written = smol::block_on(written)
+            .expect("water manifest parses")
+            .waterui_patches;
 
         smol::block_on(Project::refresh_local_patches(
             &app,
             Path::new("../waterui"),
+            &written,
         ))
         .expect("tables refresh");
         let refreshed = std::fs::read_to_string(&cargo_path).expect("refreshed manifest");
@@ -3358,16 +3436,75 @@ mod local_patch_tests {
         assert_eq!(core.path.as_deref(), Some("../waterui/core"));
         assert!(!crates_io.contains_key("stale"));
         assert!(crates_io.contains_key("vello"));
+        assert!(
+            refreshed.contains(
+                "nami-derive = { git = \"https://github.com/water-rs/nami\", rev = \"1ffe641ad7e18d341a7cb6d8bcb326d76fb7cf03\" }"
+            ),
+            "the project's own entry keeps its spelling:\n{refreshed}"
+        );
         assert!(refreshed.starts_with("[package]"));
+        let recorded = smol::block_on(super::Manifest::open(&water_path))
+            .expect("water manifest parses")
+            .waterui_patches;
+        assert_eq!(
+            recorded,
+            crate::templates::local_framework_patches(&app, Path::new("../waterui"))
+                .expect("checkout tables"),
+            "Water.toml records exactly the checkout's copy"
+        );
+        let recorded_text = std::fs::read_to_string(&water_path).expect("water manifest");
+        assert!(
+            recorded_text.starts_with(WATER_TOML)
+                && recorded_text.contains("\n[waterui_patches.crates-io.waterui-core]\npath = "),
+            "the record is spliced in as one table per entry:\n{recorded_text}"
+        );
 
         smol::block_on(Project::refresh_local_patches(
             &app,
             Path::new("../waterui"),
+            &recorded,
         ))
         .expect("second refresh");
         assert_eq!(
             std::fs::read_to_string(&cargo_path).expect("manifest after the second refresh"),
             refreshed
+        );
+        assert_eq!(
+            std::fs::read_to_string(&water_path).expect("water manifest after the second refresh"),
+            recorded_text
+        );
+    }
+
+    /// A project entry for a crate the checkout patches to somewhere else is
+    /// neither overwritten nor kept: the refresh fails naming both, and both
+    /// manifests stay as they were.
+    #[test]
+    fn a_project_entry_the_checkout_contradicts_fails_naming_both() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let app = checkout_and_project(directory.path());
+        let cargo_path = app.join("Cargo.toml");
+        let manifest = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[patch.crates-io]\nvello = { git = \"https://github.com/linebender/vello\", rev = \"project-rev\" }\n";
+        std::fs::write(&cargo_path, manifest).expect("project manifest");
+        std::fs::write(app.join("Water.toml"), WATER_TOML).expect("water manifest");
+
+        let error = smol::block_on(Project::refresh_local_patches(
+            &app,
+            Path::new("../waterui"),
+            &cargo_toml::PatchSet::new(),
+        ))
+        .expect_err("the project contradicts the checkout");
+
+        let message = error.to_string();
+        assert!(message.contains("`vello`"), "{message}");
+        assert!(message.contains("project-rev"), "{message}");
+        assert!(message.contains("lexoliu/vello"), "{message}");
+        assert_eq!(
+            std::fs::read_to_string(&cargo_path).expect("manifest after the refusal"),
+            manifest
+        );
+        assert_eq!(
+            std::fs::read_to_string(app.join("Water.toml")).expect("water manifest"),
+            WATER_TOML
         );
     }
 
@@ -3390,8 +3527,12 @@ mod local_patch_tests {
         let cargo_path = app.join("Cargo.toml");
         std::fs::write(&cargo_path, manifest).expect("project manifest");
 
-        smol::block_on(Project::refresh_local_patches(&app, Path::new("../..")))
-            .expect("tables refresh");
+        smol::block_on(Project::refresh_local_patches(
+            &app,
+            Path::new("../.."),
+            &cargo_toml::PatchSet::new(),
+        ))
+        .expect("tables refresh");
 
         assert_eq!(
             std::fs::read_to_string(&cargo_path).expect("manifest after the refresh"),
@@ -3427,6 +3568,7 @@ mod local_patch_tests {
         let error = smol::block_on(Project::refresh_local_patches(
             &app,
             Path::new("../../waterui"),
+            &cargo_toml::PatchSet::new(),
         ))
         .expect_err("a copy here would be ignored");
 

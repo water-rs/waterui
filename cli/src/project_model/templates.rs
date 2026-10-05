@@ -3331,6 +3331,93 @@ mod tests {
         );
     }
 
+    /// A fake checkout patching `waterui-core` to its own `core/`, and a
+    /// project beside it at `app/` with the given `Cargo.toml`, returning the
+    /// FFI companion's context and directory.
+    fn patched_project_ffi(directory: &Path, project_manifest: &str) -> (TemplateContext, PathBuf) {
+        let checkout = directory.join("waterui");
+        write_fake_framework_checkout(&checkout, super::FORWARDED_FFI_FEATURES);
+        let root_manifest = checkout.join("Cargo.toml");
+        let mut text = std::fs::read_to_string(&root_manifest).expect("checkout manifest");
+        text.push_str("\n[patch.crates-io]\nwaterui-core = { path = \"core\" }\n");
+        std::fs::write(&root_manifest, text).expect("checkout patch table");
+        let app = directory.join("app");
+        std::fs::create_dir_all(&app).expect("project dir");
+        std::fs::write(app.join("Cargo.toml"), project_manifest).expect("project manifest");
+        let ffi_dir = directory.join("managed_backends/ffi");
+        let ctx = ctx(Some(checkout), Some(ffi_dir.clone()), Some(app));
+        (ctx, ffi_dir)
+    }
+
+    /// The FFI companion roots its own workspace, so the project's `[patch]`
+    /// entries reach it only by being copied: every source key, `path`
+    /// entries made absolute, merged with the checkout's, and an entry the
+    /// project spells differently from the checkout but resolving to the same
+    /// directory kept once (#1997).
+    #[test]
+    fn ffi_scaffold_merges_the_projects_patches_with_the_frameworks() {
+        let tempdir = tempdir().expect("temporary ffi scaffold dir");
+        let (ctx, ffi_dir) = patched_project_ffi(
+            tempdir.path(),
+            "[package]\nname = \"waterui_test\"\nversion = \"0.1.0\"\n\n\
+             [patch.crates-io]\n\
+             waterui-core = { path = \"../waterui/core\" }\n\
+             own-fork = { path = \"vendor/own-fork\" }\n\n\
+             [patch.\"https://github.com/water-rs/fork\"]\n\
+             forked = { path = \"vendor/forked\" }\n",
+        );
+
+        smol::block_on(crate::templates::ffi::scaffold(&ffi_dir, &ctx, "app-ffi"))
+            .expect("ffi scaffold should succeed");
+
+        let manifest = std::fs::read_to_string(ffi_dir.join("Cargo.toml"))
+            .expect("ffi Cargo.toml should be written")
+            .parse::<toml::Table>()
+            .expect("ffi Cargo.toml should parse");
+        let patch = &manifest["patch"];
+        let app = tempdir.path().join("app");
+        assert_eq!(
+            patch["crates-io"]["own-fork"]["path"].as_str(),
+            Some(normalize_path_for_config(&app.join("vendor/own-fork")).as_str()),
+            "the project's path patch resolves from outside the project"
+        );
+        assert_eq!(
+            patch["https://github.com/water-rs/fork"]["forked"]["path"].as_str(),
+            Some(normalize_path_for_config(&app.join("vendor/forked")).as_str()),
+            "a git-source table of the project is carried too"
+        );
+        assert_eq!(
+            patch["crates-io"]["waterui-core"]["path"].as_str(),
+            Some(normalize_path_for_config(&tempdir.path().join("waterui").join("core")).as_str()),
+            "the entry both name is the framework's"
+        );
+        assert!(
+            patch["crates-io"].get("waterui-ffi").is_some(),
+            "the checkout's member entries stay"
+        );
+    }
+
+    /// A project that patches a crate the framework also patches, to another
+    /// source, fails the scaffold naming both entries rather than letting
+    /// either win silently.
+    #[test]
+    fn ffi_scaffold_rejects_a_project_patch_the_framework_contradicts() {
+        let tempdir = tempdir().expect("temporary ffi scaffold dir");
+        let (ctx, ffi_dir) = patched_project_ffi(
+            tempdir.path(),
+            "[package]\nname = \"waterui_test\"\nversion = \"0.1.0\"\n\n\
+             [patch.crates-io]\nwaterui-core = { path = \"../elsewhere/core\" }\n",
+        );
+
+        let error = smol::block_on(crate::templates::ffi::scaffold(&ffi_dir, &ctx, "app-ffi"))
+            .expect_err("the project contradicts the framework");
+
+        let message = error.to_string();
+        assert!(message.contains("`waterui-core`"), "{message}");
+        assert!(message.contains("elsewhere/core"), "{message}");
+        assert!(message.contains("waterui/core"), "{message}");
+    }
+
     #[test]
     fn ffi_scaffold_declares_minimal_cef_helper_for_chromium() {
         let tempdir = tempdir().expect("temporary ffi scaffold dir");
@@ -5181,7 +5268,7 @@ pub mod hydrolysis {
     ) -> io::Result<Vec<(std::path::PathBuf, Vec<u8>)>> {
         let mut outputs =
             super::render_dir_outputs(TemplateNamespace::Hydrolysis, &embedded::HYDROLYSIS, ctx)?;
-        let patch = generated_patch_set(ctx)?;
+        let patch = super::generated_crate_patches(ctx)?;
         outputs.push((
             std::path::PathBuf::from("Cargo.toml"),
             super::render_generated_cargo_toml(&generated_manifest(ctx, package_name, patch)?)?
@@ -5280,24 +5367,6 @@ pub mod hydrolysis {
         ctx.cef_runtime_enabled()
     }
 
-    /// The `[patch]` tables the generated crate resolves with.
-    ///
-    /// The crate is its own workspace root inside the build cache, and Cargo
-    /// honours `[patch]` only from the root of the workspace being built, so
-    /// the tables governing the application's own `cargo build` are carried
-    /// over from the application root — the same copy
-    /// [`super::propagate_workspace_patches`] makes for the FFI companion.
-    /// Without them an app that patches a crate, a fork carrying an
-    /// unreleased fix say, silently links the unpatched source into the
-    /// binary `water run` builds (#178). The checkout's or channel's tables
-    /// stand in when no application root is recorded.
-    fn generated_patch_set(ctx: &TemplateContext) -> io::Result<cargo_toml::PatchSet> {
-        ctx.project_root_path.as_deref().map_or_else(
-            || super::generated_crate_patches(ctx),
-            super::collect_workspace_patches,
-        )
-    }
-
     async fn generate_cargo_toml(
         base_dir: &Path,
         ctx: &TemplateContext,
@@ -5305,7 +5374,7 @@ pub mod hydrolysis {
     ) -> io::Result<()> {
         let patch = {
             let ctx = TemplateContext::clone(ctx);
-            smol::unblock(move || generated_patch_set(&ctx)).await?
+            smol::unblock(move || super::generated_crate_patches(&ctx)).await?
         };
         let manifest = generated_manifest(ctx, package_name, patch)?;
         write_generated_cargo_toml(base_dir, super::render_generated_cargo_toml(&manifest)?).await
@@ -5879,10 +5948,7 @@ pub mod tui {
     /// [`EXTRA_PATCHES`] entries `waterui-tui` alone requires.
     fn tui_patch_set(ctx: &TemplateContext) -> io::Result<cargo_toml::PatchSet> {
         let waterui_root = ctx.waterui_workspace_root();
-        let mut patch = match &waterui_root {
-            Some(root) => super::collect_framework_checkout_patches(root)?,
-            None => ctx.framework.patches(),
-        };
+        let mut patch = super::generated_crate_patches(ctx)?;
         let crates_io = patch.entry("crates-io".to_string()).or_default();
         if let Some(root) = &waterui_root {
             for &(name, subdir) in EXTRA_PATCHES {
@@ -5910,25 +5976,6 @@ pub mod tui {
             ..Default::default()
         }))
     }
-}
-
-/// Copies the `[patch]` tables governing the app's own build into a generated
-/// companion manifest.
-///
-/// The companion crate is its own workspace root inside the build cache, and
-/// Cargo only honours `[patch]` from the root of the workspace being built.
-/// Without this, an app whose workspace patches a crate — say, a fork carrying
-/// an urgent upstream fix — silently builds the unpatched version whenever the
-/// build goes through a companion crate. Path patches are rebased onto
-/// absolute paths because the companion lives outside the app tree.
-async fn propagate_workspace_patches(
-    manifest: &mut cargo_toml::Manifest<()>,
-    project_root: &Path,
-) -> io::Result<()> {
-    let project_root = project_root.to_path_buf();
-    let patches = smol::unblock(move || collect_workspace_patches(&project_root)).await?;
-    manifest.patch = patches;
-    Ok(())
 }
 
 /// Reads the `[patch]` tables from the workspace root that governs a build
@@ -6104,16 +6151,48 @@ pub fn collect_framework_checkout_patches(
     Ok(patches)
 }
 
-/// The `[patch]` tables a generated crate resolves the framework with: the
-/// checkout's own when `waterui_path` names a checkout — carrying the
-/// repository-source mirror [`collect_workspace_patches`] synthesizes — and
-/// the resolved channel's otherwise, whose resolution rebases the same table
-/// onto the channel's revision.
+/// The `[patch]` tables a generated crate resolves with.
+///
+/// The framework's come first: the checkout's own when `waterui_path` names a
+/// checkout — carrying the repository-source mirror
+/// [`collect_workspace_patches`] synthesizes — and the resolved channel's
+/// otherwise, whose resolution rebases the same table onto the channel's
+/// revision. The project's own entries are merged in through
+/// [`with_project_patches`].
 fn generated_crate_patches(ctx: &TemplateContext) -> io::Result<cargo_toml::PatchSet> {
-    ctx.waterui_workspace_root().map_or_else(
+    let framework = ctx.waterui_workspace_root().map_or_else(
         || Ok(ctx.framework.patches()),
         |root| collect_framework_checkout_patches(&root),
-    )
+    )?;
+    with_project_patches(framework, ctx.project_root_path.as_deref())
+}
+
+/// `framework` merged with the `[patch]` tables governing the project's own
+/// build at `project_root`.
+///
+/// A generated crate is its own workspace root inside the build cache, and
+/// Cargo honours `[patch]` only from the root of the workspace being built.
+/// Without the project's tables an application that pins a crate — an
+/// unreleased component through a git revision, a fork carrying a fix — links
+/// the unpatched source into everything the CLI builds, or two copies of it
+/// when the project also depends on the pinned crate directly (#178, #1997).
+/// Every source key the project patches is carried, and its `path` entries
+/// are made absolute, since the generated crate lives outside the project.
+/// An entry both sides name must agree.
+///
+/// # Errors
+///
+/// Returns an error when the project's manifest cannot be read, or when the
+/// project and the framework patch one crate of one source differently.
+pub fn with_project_patches(
+    framework: cargo_toml::PatchSet,
+    project_root: Option<&Path>,
+) -> io::Result<cargo_toml::PatchSet> {
+    let Some(project_root) = project_root else {
+        return Ok(framework);
+    };
+    let project = collect_workspace_patches(project_root)?;
+    crate::patch_tables::merge(framework, project).map_err(io::Error::other)
 }
 
 /// The copy of the application's lockfile a managed crate was last seeded
@@ -6584,7 +6663,7 @@ fn forward_targets(manifest: &cargo_toml::Manifest<()>) -> Vec<&'static str> {
 /// filesystem: a generated manifest's relative dependency paths chain `..`
 /// through directories the scaffold has not written yet, and the OS form
 /// only resolves once every intermediate directory exists.
-fn collapse_dotdot(path: &Path) -> PathBuf {
+pub fn collapse_dotdot(path: &Path) -> PathBuf {
     let mut collapsed = PathBuf::new();
     for component in path.components() {
         match component {
@@ -6953,11 +7032,9 @@ pub mod ffi {
 
         configure_native_dependencies(&mut manifest, ctx)?;
 
-        manifest.patch = match ctx.waterui_workspace_root() {
-            Some(root) => {
-                smol::unblock(move || super::collect_framework_checkout_patches(&root)).await?
-            }
-            None => ctx.framework.patches(),
+        manifest.patch = {
+            let ctx = TemplateContext::clone(ctx);
+            smol::unblock(move || super::generated_crate_patches(&ctx)).await?
         };
 
         // This crate roots the workspace that also holds preview modules. A preview
@@ -6976,10 +7053,6 @@ pub mod ffi {
             members: super::preview_module_members(base_dir).await?,
             ..Workspace::default()
         });
-
-        if let Some(project_root) = &ctx.project_root_path {
-            super::propagate_workspace_patches(&mut manifest, project_root).await?;
-        }
 
         configure_capability_forwards(&mut manifest, base_dir).await?;
 
@@ -7115,18 +7188,19 @@ pub mod ffi {
         patches: cargo_toml::PatchSet,
         project_root: Option<&Path>,
     ) -> io::Result<()> {
-        let mut manifest = Manifest::<()> {
+        let project_root = project_root.map(Path::to_path_buf);
+        let patch =
+            smol::unblock(move || super::with_project_patches(patches, project_root.as_deref()))
+                .await?;
+        let manifest = Manifest::<()> {
             profile: generated_profiles(),
-            patch: patches,
+            patch,
             workspace: Some(Workspace {
                 members: super::preview_module_members(base_dir).await?,
                 ..Workspace::default()
             }),
             ..Default::default()
         };
-        if let Some(project_root) = project_root {
-            super::propagate_workspace_patches(&mut manifest, project_root).await?;
-        }
         let toml_string = toml::to_string_pretty(&manifest)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         fs::create_dir_all(base_dir).await?;
