@@ -591,9 +591,45 @@ impl HydrolysisRenderer {
             .frame_clip_layers
             .checked_add(1)
             .expect("hydrolysis frame clip layer counter overflow");
-        let depth = u32::try_from(self.compositor.active_scene_layers.len() + 1)
-            .expect("hydrolysis active scene layer depth exceeds u32");
+        let depth =
+            u32::try_from(self.captured_clip_depth + self.compositor.active_scene_layers.len() + 1)
+                .expect("hydrolysis active scene layer depth exceeds u32");
         self.frame_max_clip_depth = self.frame_max_clip_depth.max(depth);
+    }
+
+    /// Records what `record` flushes as [`CapturedLayers`] in the subtree's
+    /// own space instead of presenting it: the frame's scene and its open
+    /// clip/opacity scopes are set aside, so the subtree records from an empty
+    /// scope stack, and every layer it produces — its drawing and any keyed
+    /// layer — is taken out of the frame. Hit targets and accessibility nodes
+    /// the flush registers are live, as for any other flush.
+    pub(crate) fn capture_layers(&mut self, record: impl FnOnce(&mut Self)) -> CapturedLayers {
+        let outer_scene = core::mem::replace(&mut self.scene, Recording::new());
+        let outer_ancestry = core::mem::take(&mut self.compositor.active_scene_layers);
+        self.captured_clip_depth += outer_ancestry.len();
+        let start = self.compositor.render_layers.len();
+        record(self);
+        self.flush_scene_layer();
+        let layers = self.compositor.render_layers.split_off(start);
+        self.captured_clip_depth -= outer_ancestry.len();
+        self.scene = outer_scene;
+        self.compositor.active_scene_layers = outer_ancestry;
+        CapturedLayers(layers)
+    }
+
+    /// Presents `layers` at `transform` under the frame's open scopes: scene
+    /// segments are drawn into the current scene, and each keyed layer is
+    /// placed by `transform` and shown under the open ancestry, in order.
+    pub(crate) fn present_layers(&mut self, layers: &CapturedLayers, transform: kurbo::Affine) {
+        for layer in &layers.0 {
+            if let RenderLayer::Scene(recording) = layer {
+                self.scene.append(recording, transform);
+            } else {
+                self.flush_scene_layer();
+                let placed = layer.placed(transform, &self.compositor.active_scene_layers);
+                self.compositor.render_layers.push(placed);
+            }
+        }
     }
 
     pub(super) fn flush_scene_layer(&mut self) {

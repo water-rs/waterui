@@ -155,8 +155,8 @@ fn engine_executes_composed_filters_and_effects_after_resize()
     let effect = engine.effect(EffectBox::from(CopyEffect(send)));
     let invert = engine.filter(filtrate::filters::Invert);
     surface.update(|tx| {
-        tx[surface.root()].push(&layer).filter(&effect);
-        tx[&layer].filter(&invert).content(surface.record(|r| {
+        tx[surface.root()].push(&layer).filter(effect.id());
+        tx[&layer].filter(invert.id()).content(surface.record(|r| {
             r.fill(
                 Rect::new(0.0, 0.0, 32.0, 32.0),
                 WorkingColor::new([0.25, 0.5, 0.75, 1.0]),
@@ -272,7 +272,7 @@ fn filter_wakes_coalesce_and_stop_after_detach() -> Result<(), Box<dyn std::erro
         fail_setup: false,
     }));
     surface.update(|tx| {
-        tx[surface.root()].filter(&effect).content(
+        tx[surface.root()].filter(effect.id()).content(
             surface.record(|r| r.fill(Rect::new(0.0, 0.0, 8.0, 8.0), WorkingColor::WHITE)),
         );
     });
@@ -302,7 +302,7 @@ fn filter_wakes_coalesce_and_stop_after_detach() -> Result<(), Box<dyn std::erro
     assert_eq!(wakes.load(Ordering::Relaxed), before);
     assert_eq!(wait!(engine.render(FrameTime::now()))?, Next::Idle);
     surface.update(|tx| {
-        tx[surface.root()].filter(&effect);
+        tx[surface.root()].filter(effect.id());
     });
     wait!(engine.render(FrameTime::now()))?;
     drop(surface);
@@ -337,7 +337,7 @@ fn filter_setup_failure_keeps_render_thread_alive() -> Result<(), Box<dyn std::e
         fail_setup: true,
     }));
     surface.update(|tx| {
-        tx[surface.root()].filter(&effect).content(
+        tx[surface.root()].filter(effect.id()).content(
             surface.record(|r| r.fill(Rect::new(0.0, 0.0, 8.0, 8.0), WorkingColor::WHITE)),
         );
     });
@@ -374,7 +374,7 @@ fn shared_effect_consumes_one_delta_per_presentation() -> Result<(), Box<dyn std
     surface.update(|tx| {
         tx[surface.root()].push(&first).push(&second);
         for layer in [&first, &second] {
-            tx[layer].filter(&effect).content(
+            tx[layer].filter(effect.id()).content(
                 surface.record(|r| r.fill(Rect::new(0.0, 0.0, 8.0, 8.0), WorkingColor::WHITE)),
             );
         }

@@ -1,8 +1,9 @@
 use super::headless::HeadlessPlatformWindow;
 use super::{
     FrameMode, RenderDiagnosticsConfig, RuntimeWindow, acquire_surface_frame, advance_runtime,
-    clamp_window_size, handle_input_events, pump_window_semantics, render_window, reports_ui_idle,
-    schedule_animation_update, schedule_redraw_or_refresh, surface_error_requires_reconfigure,
+    axes_whose_limits_changed, clamp_window_size, handle_input_events, pump_window_semantics,
+    render_window, reports_ui_idle, schedule_animation_update, schedule_redraw_or_refresh,
+    surface_error_requires_reconfigure,
 };
 use crate::platform::{
     GpuSurfaceWindow as _, InputEvent, OffscreenSurface, PlatformWindow as _, SurfaceError,
@@ -398,22 +399,22 @@ fn clamp_window_size_only_moves_out_of_bounds_axes() {
 
     // Inside the limits: untouched — a re-measure keeps the user's size.
     assert_eq!(
-        clamp_window_size(Size::new(400.0, 300.0), min, max),
+        clamp_window_size(Size::new(400.0, 300.0), min, max, (true, true)),
         Size::new(400.0, 300.0)
     );
     // Below the minimum: lifted to it.
     assert_eq!(
-        clamp_window_size(Size::new(50.0, 300.0), min, max),
+        clamp_window_size(Size::new(50.0, 300.0), min, max, (true, true)),
         Size::new(200.0, 300.0)
     );
     // Above the maximum: pulled down to it.
     assert_eq!(
-        clamp_window_size(Size::new(800.0, 300.0), min, max),
+        clamp_window_size(Size::new(800.0, 300.0), min, max, (true, true)),
         Size::new(640.0, 300.0)
     );
     // Out of bounds on one axis only: the other axis passes through.
     assert_eq!(
-        clamp_window_size(Size::new(50.0, 700.0), min, max),
+        clamp_window_size(Size::new(50.0, 700.0), min, max, (true, true)),
         Size::new(200.0, 480.0)
     );
     // An inverted range floors the maximum at the minimum rather than
@@ -423,8 +424,52 @@ fn clamp_window_size_only_moves_out_of_bounds_axes() {
             Size::new(400.0, 300.0),
             Some(Size::new(700.0, 100.0)),
             Some(Size::new(640.0, 480.0)),
+            (true, true),
         ),
         Size::new(700.0, 300.0)
+    );
+}
+
+/// A re-apply clamps only the axes whose applied limits changed: a
+/// width-only move never snaps the height, and the first apply — with no
+/// previous limits — moves no axis at all, so a launch frame below the
+/// content minimum keeps its size until that axis's own limit moves.
+#[test]
+fn a_reapply_clamps_only_the_axes_whose_limits_changed() {
+    use waterui_core::layout::Size;
+
+    let installed = (Some(Size::new(200.0, 100.0)), Some(Size::new(640.0, 480.0)));
+    let wider_min = (Some(Size::new(500.0, 100.0)), Some(Size::new(640.0, 480.0)));
+    let taller_max = (Some(Size::new(200.0, 100.0)), Some(Size::new(640.0, 400.0)));
+
+    // The first apply has no previous limits: it installs, moving no axis.
+    assert_eq!(axes_whose_limits_changed(None, installed), (false, false));
+    // A width-only move names the width axis; a height-max move the height.
+    assert_eq!(
+        axes_whose_limits_changed(Some(installed), wider_min),
+        (true, false)
+    );
+    assert_eq!(
+        axes_whose_limits_changed(Some(installed), taller_max),
+        (false, true)
+    );
+    // An identical re-apply moves nothing.
+    assert_eq!(
+        axes_whose_limits_changed(Some(installed), installed),
+        (false, false)
+    );
+
+    // The frame therefore clamps on the moved axis only: 90 is below the
+    // height minimum, yet stays put while only the width's limit moved —
+    // and lifts only when the height's own limit moves.
+    let settled = Size::new(600.0, 90.0);
+    assert_eq!(
+        clamp_window_size(settled, wider_min.0, wider_min.1, (true, false)),
+        Size::new(600.0, 90.0)
+    );
+    assert_eq!(
+        clamp_window_size(settled, wider_min.0, wider_min.1, (true, true)),
+        Size::new(600.0, 100.0)
     );
 }
 

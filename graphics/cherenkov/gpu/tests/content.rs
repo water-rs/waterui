@@ -518,7 +518,7 @@ fn hidden_wakes_stop_before_the_render_thread_applies_the_hide()
             .push(&producer_layer)
             .push(&filtered_layer);
         tx[&producer_layer].content(engine.gpu_producer(content).at((8, 8)));
-        tx[&filtered_layer].filter(&effect).content(
+        tx[&filtered_layer].filter(effect.id()).content(
             surface.record(|c| c.fill(Rect::new(8.0, 8.0, 16.0, 16.0), WorkingColor::WHITE)),
         );
     });

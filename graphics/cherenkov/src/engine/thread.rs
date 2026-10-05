@@ -12,19 +12,22 @@ use crossbeam_channel::Receiver;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use cherenkov_record::Realize;
+
 use crate::backend::{
     Backend, Display, Frame, FrameRedraw, Renderer, SurfaceFrame, SurfaceInfo, Visibility,
 };
 use crate::engine::{CompletionWaker, SharedWaker, SurfaceWaker};
 use crate::error::{EngineError, RenderError, ResourceError, SurfaceError};
-use crate::frame::{FrameId, FrameStats, Next, RefreshRange};
+use cherenkov_record::RefreshRange;
+
+use crate::frame::{FrameId, FrameStats, Next};
 use crate::image::ImageUpload;
-use crate::message::{
-    BackdropShaderId, ChangeSet, LayerId, LayerOp, Message, Op, ResOp, SurfaceId,
-};
+use cherenkov_record::ResourceId;
+use cherenkov_record::{BackdropShaderId, ChangeSet, LayerId, SurfaceId, SurfaceTree};
+
+use crate::message::{Message, ResOp};
 use crate::paint::ImageId;
-use crate::resource::ResourceId;
-use crate::tree::SurfaceTree;
 use crate::{BackdropEffect, WorkingColor};
 
 /// Whether a surface's frames can ask the backend to present, and the
@@ -706,34 +709,25 @@ fn commit<B: Backend>(
     }
     state.content_animating = *animating;
     for op in ops.drain(..) {
-        match op {
-            Op::Layer(LayerOp::Remove(layer)) => {
-                state.commits = Commits::Other;
-                state.tree.remove(layer);
-                renderer.remove_layer(surface, layer);
-            }
-            Op::Layer(LayerOp::Content(layer, content)) => {
-                state.commits = Commits::Other;
-                state.tree.apply(LayerOp::Content(layer, None));
-                state.tree.note_content(layer, content.as_ref());
+        state.commits = Commits::Other;
+        match state.tree.apply_op(op) {
+            Realize::Remove(layer) => renderer.remove_layer(surface, layer),
+            Realize::Content(layer, content) => {
                 if let Some(mut old) = renderer.set_content(surface, layer, content)
                     && old.try_recycle()
                 {
                     recycled.push((layer, old));
                 }
             }
-            Op::Layer(op) => {
-                state.commits = Commits::Other;
-                state.tree.apply(op);
-            }
-            Op::Install(layer, install) => {
-                state.commits = Commits::Other;
+            Realize::Install(layer, install) => {
                 // The install reports its content's declared alpha —
                 // `None` before its first frame — noted on the layer.
-                state
-                    .tree
-                    .note_installed(layer, install(&mut *renderer).unwrap_or(false));
+                state.tree.note_installed(
+                    layer,
+                    install.into_inner()(&mut *renderer, surface, layer).unwrap_or(false),
+                );
             }
+            Realize::Applied => {}
         }
     }
 }
@@ -821,7 +815,7 @@ fn sample_frames(
         .iter_mut()
         .filter(|(_, state)| state.visibility == Visibility::Visible)
     {
-        let sampling = state.tree.sample(time, state.display);
+        let sampling = state.tree.sample(time, state.display.scale);
         let changed = state.commits != Commits::Clean || sampling.stepped;
         state.sampled_rate = sampling.rate;
         frames.push(SurfaceFrame {
@@ -879,7 +873,7 @@ fn finish_frame<B: Backend>(
     {
         let owned = renderer.owned_animations(*id);
         let running = if state.content_animating {
-            Some(crate::tree::RATE_FAST)
+            Some(cherenkov_record::tree::RATE_FAST)
         } else if owned.is_empty() {
             state.sampled_rate.take()
         } else {
@@ -897,7 +891,9 @@ fn finish_frame<B: Backend>(
         };
         surface_next.insert(*id, mine.map_or(Next::Idle, |rate| next_at(time, rate)));
         match running {
-            Some(r) if r == crate::tree::RATE_FAST => rate = Some(crate::tree::RATE_FAST),
+            Some(r) if r == cherenkov_record::tree::RATE_FAST => {
+                rate = Some(cherenkov_record::tree::RATE_FAST);
+            }
             Some(r) => rate = rate.or(Some(r)),
             None => {}
         }
@@ -993,10 +989,10 @@ mod tests {
     use crate::backend::{Backend, Display};
     use crate::display_list::{DisplayList, Picture};
     use crate::engine::{SurfaceWaker, Waker};
-    use crate::message::{ChangeSet, ContentOp, LayerId, LayerOp, Op, SurfaceId};
-    use crate::testing::{Null, NullConfig};
-    use crate::tree::SurfaceTree;
-    use crate::{Draw, WorkingColor};
+    use cherenkov_record::{ChangeSet, ContentOp, LayerId, LayerOp, Op, SurfaceId, SurfaceTree};
+
+    use crate::testing::{Event, Null, NullConfig};
+    use crate::{Draw, Engine, FrameTime, Offscreen, OffscreenFormat, WorkingColor};
 
     #[test]
     fn caller_shared_picture_is_not_recycled() {
@@ -1052,6 +1048,47 @@ mod tests {
 
         assert_eq!(second.recycled, []);
         assert_eq!(caller_picture.display_list().len(), 1);
+    }
+
+    /// The commit → reply → `Shared::recycle` round trip hands the stored
+    /// picture's storage back to the UI thread two frames later, so the
+    /// picture `set_content` stores alternates between the same two
+    /// buffers every other frame.
+    #[test]
+    fn render_reuses_picture_storage_every_other_frame() {
+        let (events, rx) = std::sync::mpsc::channel();
+        let engine = Engine::<Null>::new(NullConfig {
+            events,
+            reject: std::collections::HashSet::new(),
+        })
+        .expect("init");
+        let surface = engine
+            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16))
+            .expect("surface");
+        let layer = surface.layer();
+        let mut pointers = Vec::new();
+        for _ in 0..7 {
+            surface.update(|tx| {
+                tx[&layer].record(|_| {});
+            });
+            engine.render(FrameTime::now()).expect("render");
+            while let Ok(event) = rx.try_recv() {
+                if let Event::SetContent(s, l, pointer) = event
+                    && s == surface.id()
+                    && l == layer.id()
+                {
+                    pointers.push(pointer);
+                }
+            }
+        }
+
+        assert_eq!(pointers.len(), 7, "every frame stored a picture");
+        assert_eq!(pointers[0], pointers[2]);
+        assert_eq!(pointers[1], pointers[3]);
+        assert_eq!(pointers[2], pointers[4]);
+        assert_eq!(pointers[3], pointers[5]);
+        assert_eq!(pointers[4], pointers[6]);
+        assert_ne!(pointers[0], pointers[1]);
     }
 
     #[test]

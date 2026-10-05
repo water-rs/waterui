@@ -6,13 +6,13 @@ use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
 use crate::kurbo::{Affine, BezPath, Circle, Rect, Stroke, Vec2};
-use crate::message::LayerOp;
 use crate::{
     Animation, Command, ContentOp, Curve, Display, Draw, FontData, FontId, Frame, FrameId,
     FrameStats, FrameTime, Glyph, GlyphRun, GlyphStyle, Group, LayerId, LinearGradient, Offscreen,
     OffscreenFormat, Operand, Paint, Picture, Pressure, Prop, Renderer, Shadow, ShapeData,
     SlotUpdate, SurfaceFrame, SurfaceId, SurfaceTree, WorkingColor,
 };
+use cherenkov_record::LayerOp;
 
 /// Runs deterministic randomized slot changes against fresh full lowering.
 /// Backend initialization must succeed: a missing GPU must fail this test.
@@ -81,7 +81,7 @@ where
             renderer.trim(Pressure::Critical);
         }
         let time = start + Duration::from_millis(u64::from(step) * 16);
-        let _ = tree.sample(time, Display::default());
+        let _ = tree.sample(time, 1.0);
         let _ = renderer.set_content(
             ids[1],
             layer,
@@ -197,7 +197,7 @@ where
             renderer.trim(Pressure::Critical);
         }
         let time = start + Duration::from_millis(u64::from(step) * 16);
-        let _ = tree.sample(time, Display::default());
+        let _ = tree.sample(time, 1.0);
         let _ = renderer.set_content(
             ids[1],
             layer,

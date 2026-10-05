@@ -119,7 +119,8 @@ impl OutputSelection {
     }
 
     /// The [`OutputColor`] the selection maps to for the present pass.
-    const fn output_color(&self) -> OutputColor {
+    #[must_use]
+    pub const fn output_color(&self) -> OutputColor {
         match (self.primaries, self.transfer) {
             (DestinationPrimaries::DisplayP3, TransferEncoding::Srgb) => OutputColor::DisplayP3,
             (DestinationPrimaries::DisplayP3, TransferEncoding::Linear) => {
@@ -316,6 +317,15 @@ fn select_present_mode(
 /// (`WindowTarget::require_color_space`) and `request.sync` its pacing
 /// (`WindowTarget::display_sync`); when either cannot be met the surface
 /// is `Unsupported`, never silently substituted.
+///
+/// # Errors
+/// [`SurfaceError::UnsupportedTarget`] when the surface offers no present
+/// mode for `request.sync`, no transparency-capable alpha mode for a
+/// transparent request, the required colour space, or any format at all.
+///
+/// # Panics
+/// If the surface reports no composite alpha mode, which a configurable
+/// surface always does.
 pub fn select_output(
     caps: &wgpu::SurfaceCapabilities,
     backend: wgpu::Backend,
