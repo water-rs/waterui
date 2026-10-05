@@ -22,7 +22,7 @@ tracing = "0.1"
 cherenkov = { path = "..", features = ["testing"] }
 cherenkov-oracle = { path = "../oracle" }
 filtrate = { path = "../../filtrate" }
-nami = { version = "0.11.1", default-features = false, features = ["std", "kurbo"] }
+nami = { version = "0.12", default-features = false, features = ["std", "kurbo"] }
 
 [lints]
 workspace = true
