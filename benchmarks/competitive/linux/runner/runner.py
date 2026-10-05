@@ -572,7 +572,9 @@ def gpu_probe() -> dict:
     """
     q = docker_run_bash("python3 /bench/runner/gpu_probe.py",
                         quiet=True, dri=True)
-    return json.loads(q.stdout.strip().splitlines()[-1])
+    # the probe's stdout is the JSON document itself (indent=2);
+    # diagnostics go to stderr
+    return json.loads(q.stdout)
 
 
 def adapter_software(a: dict) -> bool:
