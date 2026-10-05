@@ -953,7 +953,7 @@ struct BackdropPlan {
     first: LayerId,
     /// The capture scale `s`: regions are on the capture grid, whose
     /// texel `i` covers the device interval `[i/s, (i+1)/s)`.
-    scale: f64,
+    scale: cherenkov::CaptureScale,
     /// The union of members' clip bounds before the footprint apron.
     union: Rect,
     /// Each member's aproned rect (`A_i`) in paint order — the
@@ -1145,7 +1145,7 @@ impl<'a> Lowering<'a> {
         self.plan_layer(self.start(tree), tree, groups, Affine::IDENTITY)?;
         let (width, height) = (f64::from(self.width), f64::from(self.height));
         for (gid, plan) in &mut self.backdrops {
-            let s = plan.scale;
+            let s = f64::from(plan.scale.get());
             // The capture grid's extent in texels: `⌈len · s⌉`.
             let (w, h) = ((width * s).ceil(), (height * s).ceil());
             // A member's device rect aproned on the capture grid in whole
@@ -1258,7 +1258,7 @@ impl<'a> Lowering<'a> {
                 f64::from(reach.unwrap_or(0.0)),
                 f64::from(reach.unwrap_or(0.0)),
             );
-            let scale = f64::from(groups[&g].scale.get());
+            let scale = groups[&g].scale;
             let plan = self.backdrops.entry(g).or_insert_with(|| BackdropPlan {
                 first: id,
                 scale,
@@ -2109,7 +2109,7 @@ impl<'a> Lowering<'a> {
                 },
                 None,
             );
-            let resolve = (scale < 1.0).then(|| self.resolve(*region, scale));
+            let resolve = (!scale.is_full()).then(|| self.resolve(*region, scale));
             if let Some(open) = &mut self.frame.open {
                 open.capture = Some(Capture {
                     group: gid,
@@ -2151,14 +2151,15 @@ impl<'a> Lowering<'a> {
         clippy::cast_sign_loss,
         reason = "the region lies on the grid of this walk's raster, which is a small positive size"
     )]
-    fn resolve(&self, region: [u32; 4], scale: f64) -> Resolve {
+    fn resolve(&self, region: [u32; 4], scale: cherenkov::CaptureScale) -> Resolve {
         let (w, h) = (self.width as u32, self.height as u32);
-        let x0 = ((f64::from(region[0]) / scale).floor() as u32).saturating_sub(1);
-        let y0 = ((f64::from(region[1]) / scale).floor() as u32).saturating_sub(1);
-        let x1 = ((f64::from(region[0] + region[2]) / scale).ceil() as u32 + 1).min(w);
-        let y1 = ((f64::from(region[1] + region[3]) / scale).ceil() as u32 + 1).min(h);
+        let s = f64::from(scale.get());
+        let x0 = ((f64::from(region[0]) / s).floor() as u32).saturating_sub(1);
+        let y0 = ((f64::from(region[1]) / s).floor() as u32).saturating_sub(1);
+        let x1 = ((f64::from(region[0] + region[2]) / s).ceil() as u32 + 1).min(w);
+        let y1 = ((f64::from(region[1] + region[3]) / s).ceil() as u32 + 1).min(h);
         Resolve {
-            scale: scale as f32,
+            scale: scale.get(),
             device: [x0, y0, x1 - x0, y1 - y0],
             extent: [w, h],
         }
@@ -2171,10 +2172,6 @@ impl<'a> Lowering<'a> {
     /// turns the instance into `PAINT_BACKDROP` with its kind and
     /// parameter stops packed in `meta[3]`'s low bits.
     #[expect(clippy::cast_precision_loss, reason = "region fits the surface")]
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the capture scale is an f32 widened for planning"
-    )]
     fn emit_backdrop_sample(
         &mut self,
         gid: u64,
@@ -2194,6 +2191,7 @@ impl<'a> Lowering<'a> {
             return Ok(());
         }
         let scale = plan.scale;
+        let s = f64::from(scale.get());
         let (rx, ry, rw, rh) = (
             region[0] as f32,
             region[1] as f32,
@@ -2202,10 +2200,10 @@ impl<'a> Lowering<'a> {
         );
         // The device rect the region's texels cover.
         let bounds = member_bounds.intersect(Rect::new(
-            f64::from(region[0]) / scale,
-            f64::from(region[1]) / scale,
-            f64::from(region[0] + region[2]) / scale,
-            f64::from(region[1] + region[3]) / scale,
+            f64::from(region[0]) / s,
+            f64::from(region[1]) / s,
+            f64::from(region[0] + region[2]) / s,
+            f64::from(region[1] + region[3]) / s,
         ));
         if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
             return Ok(());
@@ -2223,12 +2221,12 @@ impl<'a> Lowering<'a> {
         inst.grad[0] = rx;
         inst.grad[1] = ry;
         let mut pipeline = PipelineKind::SrcOver;
-        if effect.is_none() && scale < 1.0 {
+        if effect.is_none() && !scale.is_full() {
             // A reduced capture is a bilinear sample at `p · s`, never a
             // texel read at `p`.
             inst.meta[1] = super::instance::PAINT_BACKDROP;
             inst.meta[3] |= super::instance::EFFECT_SAMPLE;
-            inst.grad[2] = scale as f32;
+            inst.grad[2] = scale.get();
             inst.grad2 = [
                 rw,
                 rh,
@@ -2251,7 +2249,7 @@ impl<'a> Lowering<'a> {
             inst.meta[2] = first;
             inst.meta[3] |= kind | (count << 8);
             // `grad.z` maps device points onto the capture grid.
-            inst.grad[2] = scale as f32;
+            inst.grad[2] = scale.get();
             // `grad2.zw` is the member's device size for effect shaders:
             // the unclipped bounds, not the visible intersection.
             inst.grad2 = [

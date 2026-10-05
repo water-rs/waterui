@@ -83,7 +83,7 @@ struct Capture {
     /// `w × rows` premultiplied texels starting at texel row `y0`.
     buf: Vec<[f32; 4]>,
     /// The capture scale `s`.
-    scale: f32,
+    scale: cherenkov::CaptureScale,
     /// First kept texel row.
     y0: usize,
     /// Kept texel row count.
@@ -132,14 +132,14 @@ fn capture_rows(item: &CaptureItem, band: (usize, usize), h: usize) -> Option<Ca
     if k0 >= k1 {
         return None;
     }
-    if item.scale >= 1.0 {
+    if item.scale.is_full() {
         return Some(CaptureRows {
             device: (k0, k1),
             kept: (k0, k1),
             window: (k0.saturating_sub(item.apron), k1.saturating_add(item.apron)),
         });
     }
-    let s = f64::from(item.scale);
+    let s = f64::from(item.scale.get());
     let (ty0, ty1) = (
         usize::try_from(item.region.y0).unwrap_or(0),
         usize::try_from(item.region.y1).unwrap_or(0),
@@ -609,7 +609,7 @@ fn sdf_at(edges: &[Edge], x: f32, y: f32) -> (f32, f32, f32) {
     reason = "pixels stay well below f32's integer bound"
 )]
 fn pixel_sample(capture: &Capture, px: usize, py: usize, crow: usize) -> [f32; 4] {
-    if capture.scale >= 1.0 {
+    if capture.scale.is_full() {
         capture.buf[crow + px - capture.x0]
     } else {
         capture_sample(capture, px as f32 + 0.5, py as f32 + 0.5)
@@ -626,10 +626,9 @@ fn pixel_sample(capture: &Capture, px: usize, py: usize, crow: usize) -> [f32; 4
     reason = "the coordinates are clamped into the capture first"
 )]
 fn capture_sample(capture: &Capture, x: f32, y: f32) -> [f32; 4] {
-    let fx =
-        (x.mul_add(capture.scale, -(capture.x0 as f32)) - 0.5).clamp(0.0, capture.w as f32 - 1.0);
-    let fy = (y.mul_add(capture.scale, -(capture.y0 as f32)) - 0.5)
-        .clamp(0.0, capture.rows as f32 - 1.0);
+    let s = capture.scale.get();
+    let fx = (x.mul_add(s, -(capture.x0 as f32)) - 0.5).clamp(0.0, capture.w as f32 - 1.0);
+    let fy = (y.mul_add(s, -(capture.y0 as f32)) - 0.5).clamp(0.0, capture.rows as f32 - 1.0);
     let (x_lo, y_lo) = (fx.floor() as usize, fy.floor() as usize);
     let (x_hi, y_hi) = (
         (x_lo + 1).min(capture.w - 1),
@@ -1286,8 +1285,8 @@ fn capture_band(
         return Ok(());
     }
     // The device rows and columns under the window's texels.
-    let reduced = item.scale < 1.0;
-    let s = f64::from(item.scale);
+    let reduced = !item.scale.is_full();
+    let s = f64::from(item.scale.get());
     let ((d0, d1), (c0, c1)) = if reduced {
         (
             (
