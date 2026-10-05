@@ -145,21 +145,20 @@ pub enum Background {
 ///   included. Hydrolysis's HWUI render target (water-rs/waterui#1899) must
 ///   realize the same treatment when it lands.
 /// - **Behind-window levels** — [`UltraThin`](Self::UltraThin) and
-///   [`Thin`](Self::Thin) — blur what lies behind the window, which needs the
-///   compositor's blur-behind protocol and is therefore defined per platform.
-///   Apple platforms realize them natively: macOS blends them behind the
-///   window, and iOS, with nothing behind its windows, over the app's own
-///   content. On X11 the compositor's KDE blur-behind region, on Wayland
-///   `ext-background-effect-v1`, and on Windows the DWM system backdrop carry
-///   them. On a compositor with none of these protocols the backend does not
-///   ignore the level or substitute another: it fails fast with a panic that
-///   names the level and the platform. Hydrolysis realizes these levels as a
-///   window's background ([`WindowBackground::Material`]): the window turns
-///   translucent with the level's colour treatment as a tint, and does not
-///   yet ask the compositor for blur-behind (water-rs/waterui#1856,
-///   water-rs/waterui#1857, water-rs/waterui#1858). As a view's background
-///   it panics naming the level: blurring the desktop behind an inner view's
-///   region is water-rs/waterui#1853's decision.
+///   [`Thin`](Self::Thin) — blur what lies behind the window, which is the
+///   compositor's work and is therefore defined per platform. Apple platforms
+///   realize them natively: macOS blends them behind the window, and iOS,
+///   with nothing behind its windows, over the app's own content.
+///
+///   On Hydrolysis a behind-window level is realized as a window's
+///   background ([`WindowBackground::Material`]): the window is translucent
+///   and tinted with the level's colour treatment. The desktop behind it is
+///   blurred where the platform's blur-behind is wired and shows through
+///   unblurred elsewhere; X11 and Wayland on Linux and the system backdrop on
+///   Windows are water-rs/waterui#1856, water-rs/waterui#1857 and
+///   water-rs/waterui#1858. As a view's background, a behind-window level is
+///   unsupported on Hydrolysis and panics naming the level
+///   (water-rs/waterui#1853).
 ///
 /// [`WindowBackground::Material`]: crate::window::WindowBackground::Material
 ///

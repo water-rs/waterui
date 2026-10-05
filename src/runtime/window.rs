@@ -18,7 +18,9 @@
 //! let tinted = Window::new("Tinted", binding::<WindowState>(WindowState::default()), || text!("Hello"))
 //!     .background(Color::srgb(0, 0, 0).with_opacity(0.8));
 //!
-//! // Frosted glass window: the desktop shows through, blurred
+//! // Frosted glass window: the desktop shows through, blurred on macOS;
+//! // on Hydrolysis tinted, and blurred where the compositor
+//! // supports it
 //! let frosted = Window::new("Frosted", binding::<WindowState>(WindowState::default()), || text!("Hello"))
 //!     .background(Material::UltraThin);
 //! ```
@@ -354,14 +356,19 @@ pub enum WindowBackground {
     /// - **iOS**: a `UIVisualEffectView` filling the window behind its
     ///   content, over the theme background — nothing lies behind an iOS
     ///   window.
-    /// - **Hydrolysis**: a within-window level mounts the window's content
-    ///   over the level's backdrop treatment of the opaque theme background.
-    ///   A behind-window level makes a desktop window and its surface
-    ///   transparent and composites the level's colour treatment as the closest
-    ///   source-over tint under the content; blurring the desktop is the
-    ///   compositor's job. Hydrolysis does not ask a compositor for
-    ///   blur-behind yet (water-rs/waterui#1856, #1857, #1858), so the desktop
-    ///   shows through tinted but unblurred.
+    /// - **Hydrolysis on a desktop**: a within-window level mounts the
+    ///   window's content over the level's backdrop treatment of the opaque
+    ///   theme background. A behind-window level makes the window and its
+    ///   surface transparent and composites the level's colour treatment as
+    ///   the closest source-over tint under the content; blurring the desktop
+    ///   is the compositor's job. The desktop is blurred where the platform's
+    ///   blur-behind is wired and shows through tinted but unblurred
+    ///   elsewhere; X11 and Wayland on Linux and the system backdrop on
+    ///   Windows are water-rs/waterui#1856, #1857 and #1858.
+    /// - **Hydrolysis on Android**: a within-window level is realized as on a
+    ///   desktop. Window transparency is not realized on Android yet, so a
+    ///   behind-window level renders as an opaque window
+    ///   (water-rs/waterui#1966).
     /// - **Android (the Kotlin runtime)**: unsupported. Resolving a material
     ///   window background there panics naming the level; Hydrolysis is the
     ///   Android backend that realizes it (water-rs/waterui#1899).
@@ -685,7 +692,9 @@ impl Window {
     /// let tinted = Window::new("Tinted", binding::<WindowState>(WindowState::default()), || text!("Hello"))
     ///     .background(Color::srgb(0, 0, 0).with_opacity(0.8));
     ///
-    /// // Frosted glass window: a behind-window material window
+    /// // Frosted glass window: the desktop shows through, blurred on macOS;
+    /// // on Hydrolysis tinted, and blurred where the compositor
+    /// // supports it
     /// let frosted = Window::new("Frosted", binding::<WindowState>(WindowState::default()), || text!("Hello"))
     ///     .background(Material::UltraThin);
     /// ```
