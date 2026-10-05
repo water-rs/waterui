@@ -122,6 +122,21 @@ pub fn bounds(view: &PlatformView) -> Rect {
     view.bounds().into()
 }
 
+/// Whether `view`'s y axis runs top-down — `NSView.isFlipped` on AppKit.
+/// UIKit's coordinate space is natively top-left, so `true`.
+#[must_use]
+pub fn is_flipped(view: &PlatformView) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        view.isFlipped()
+    }
+    #[cfg(target_os = "ios")]
+    {
+        let _ = view;
+        true
+    }
+}
+
 /// Moves and resizes `view` in its superview's coordinate space.
 pub fn set_frame(view: &PlatformView, frame: Rect) {
     view.setFrame(frame.into());
