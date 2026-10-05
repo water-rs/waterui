@@ -487,10 +487,15 @@ fn horizontal_scrollbar_drag_moves_the_offset() {
     );
     app.settle();
     let x = offset.snapshot().x;
+    // The thumb's extent is track * viewport / content (120 * 120 / 516 ≈
+    // 27.9), so its travel is ≈ 92.1. The press at 10pt grabs the thumb 10pt
+    // in; dragging to 70pt maps 60pt of pointer travel onto the 396pt
+    // content extent: (70 - 10) / 92.1 * 396 ≈ 258.
+    let expected = (70.0 - 10.0) / (120.0 - 120.0 * 120.0 / 516.0) * 396.0;
     assert!(
-        x > 0.0,
-        "a thumb drag must move offset_x, got {:?}",
-        offset.snapshot()
+        (x - expected).abs() <= 2.0,
+        "the thumb maps pointer travel through its geometry: expected \
+         ≈{expected}, got {x}"
     );
     assert!(
         x <= 396.0,

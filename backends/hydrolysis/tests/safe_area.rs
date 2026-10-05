@@ -996,37 +996,58 @@ fn a_form_inside_navigation_content_clears_the_focused_field_at_device_scale(
 /// bar's band is not a boundary the content inherited, so the fill never
 /// paints over the bar or the status-bar band, and rows scrolled to the
 /// top stop at the bar's inner edge. Paint is the check — the snapshot
-/// shows the fill beginning at the bar, never covering the title.
+/// shows the fill beginning at the bar and the scrolled rows clipping at
+/// the bar's inner edge, never covering the title.
 #[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
 fn a_navigation_page_background_stays_below_the_bar(
     ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
 ) {
     let insets = waterui::binding(SAFE_INSETS);
-    let mut app = ui
-        .environment(env_with_insets(&insets))
-        .mount_offscreen(move || {
+    let offset = waterui::binding(waterui::layout::Point::zero());
+    let mut app = ui.environment(env_with_insets(&insets)).mount_offscreen({
+        let offset = offset.clone();
+        move || {
             NavigationView::new(
                 "Home",
                 ScrollView::vertical(vstack((
                     card("row one"),
                     card("row two"),
                     card("row three"),
-                    spacer().size(390.0, 480.0),
+                    spacer().size(390.0, 1400.0),
                 )))
+                .report_offset(&offset)
                 .background(Color::new(Srgb::new(0.85, 0.2, 0.3)))
                 .a11y_label("page-scroll"),
             )
-        });
+        }
+    });
     app.settle();
+
+    // Read the bar's own bounds — the navigation-bar a11y node carries the
+    // laid-out bar rect, so the test does not restate the theme metric.
+    let bar = app.query().role(Role::NAVIGATION).single().bounds();
+    let scroll = app.query().label("page-scroll").single().bounds();
+    assert!(
+        (scroll.y() - (bar.y() + bar.height())).abs() <= 1.0,
+        "the page's scroll surface starts at the bar's inner edge, \
+         got scroll {scroll:?} with bar {bar:?}"
+    );
+
     app.query().label("page-scroll").scroll_down();
     app.settle();
+    assert!(
+        offset.snapshot().y > 1.0,
+        "the page scrolls under the bar: the offset must move, got {:?}",
+        offset.snapshot()
+    );
     app.capture_snapshot("safe-area", "nav-page-background", "insets");
 }
 
 /// `.ignore_safe_area(EdgeSet::TOP)` inside navigation content releases
 /// nothing it does not touch: the page's top edge is not on the host's top
 /// boundary — the bar's band covers it — so the hero stays at the content
-/// top, below the bar (48 inset + the 64pt bar), never at the window edge.
+/// top, below the bar (48 inset + the bar's height), never at the window
+/// edge.
 #[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
 fn an_ignore_top_inside_navigation_content_stays_below_the_bar(
     ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
@@ -1041,6 +1062,7 @@ fn an_ignore_top_inside_navigation_content_stays_below_the_bar(
             )
         });
 
+    let bar = app.query().role(Role::NAVIGATION).single().bounds();
     let hero = app
         .query()
         .role(Role::LABEL)
@@ -1048,16 +1070,16 @@ fn an_ignore_top_inside_navigation_content_stays_below_the_bar(
         .single()
         .bounds();
     assert!(
-        (hero.y() - (SAFE_INSETS.top() + 64.0)).abs() <= 1.0,
+        (hero.y() - (bar.y() + bar.height())).abs() <= 1.0,
         "the covered top edge releases nothing: the hero stays below the \
-         bar, got {hero:?}"
+         bar, got hero {hero:?} with bar {bar:?}"
     );
 }
 
 /// The edge a hosted subtree still touches stays reachable: a navigation
 /// page ending on the bottom boundary extends its background fill through
 /// the keyboard band to the window edge — the snapshot shows the fill
-/// painting the band, the content frame ending on the boundary.
+/// painting the band, the page's frame ending on the boundary.
 #[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
 fn a_navigation_page_touching_the_bottom_still_extends_its_fill(
     ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
@@ -1070,19 +1092,15 @@ fn a_navigation_page_touching_the_bottom_still_extends_its_fill(
             NavigationView::new(
                 "Home",
                 vstack((card("content"), spacer()))
-                    .background(Color::new(Srgb::new(0.2, 0.6, 0.35))),
+                    .background(Color::new(Srgb::new(0.2, 0.6, 0.35)))
+                    .a11y_label("page"),
             )
         });
 
-    let content = app
-        .query()
-        .role(Role::LABEL)
-        .label("content")
-        .single()
-        .bounds();
+    let page = app.query().label("page").single().bounds();
     assert!(
-        content.y() + content.height() <= KEYBOARD_TOP + 1.0,
-        "the content frame still ends on the boundary, got {content:?}"
+        (page.y() + page.height() - KEYBOARD_TOP).abs() <= 1.0,
+        "the page's frame still ends on the keyboard boundary, got {page:?}"
     );
     app.capture_snapshot("safe-area", "nav-bottom-fill", "keyboard");
 }
@@ -1119,9 +1137,21 @@ fn an_anchored_overlay_fill_stays_at_its_own_frame(
             .alignment(HorizontalAlignment::Leading)
         });
 
+    let anchor = app
+        .query()
+        .role(Role::LABEL)
+        .label("anchor")
+        .single()
+        .bounds();
+    let tip = app.query().role(Role::LABEL).label("tip").single().bounds();
     assert!(
-        app.query().role(Role::LABEL).label("tip").exists(),
-        "precondition: the presented overlay content is in the tree"
+        tip.y() >= anchor.y() + anchor.height() - 1.0,
+        "the tip presents below its anchor, anchor {anchor:?} tip {tip:?}"
+    );
+    assert!(
+        tip.width() <= 120.0 && tip.height() <= 80.0,
+        "the tip keeps its own small frame rather than flooding the window, \
+         got {tip:?}"
     );
     app.capture_snapshot("safe-area", "overlay-fill", "insets");
 }
@@ -1159,9 +1189,17 @@ fn a_split_detail_background_does_not_cross_the_sidebar(
         });
     app.settle();
 
+    let sidebar = app.query().role(Role::LIST).single().bounds();
+    let detail = app
+        .query()
+        .role(Role::LABEL)
+        .label("detail-fill")
+        .single()
+        .bounds();
     assert!(
-        app.query().role(Role::LABEL).label("detail-fill").exists(),
-        "precondition: the detail column rendered"
+        detail.x() >= sidebar.x() + sidebar.width() - 1.0,
+        "the detail column starts at or past the sidebar's trailing edge, \
+         sidebar {sidebar:?} detail {detail:?}"
     );
     app.capture_snapshot("safe-area", "split-detail-background", "insets");
 }
@@ -1326,4 +1364,165 @@ fn a_field_in_a_nested_scroll_is_cleared_once(ui: UiBuilder<Styled<hydrolysis_m3
         (cleared.y() + cleared.height() - KEYBOARD_TOP).abs() <= 0.5,
         "the owning surface clears the nested field exactly once, got {cleared:?}"
     );
+}
+
+/// Tab content above the bottom bar is `Covered` on its bottom edge: the
+/// page's frame ends at the bar's top and a background fill inside extends
+/// nowhere through the bar — the snapshot shows the fill stopping at the
+/// tab bar's top edge.
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
+fn a_tab_page_background_stops_at_the_tab_bar(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
+    use waterui::navigation::{Tab, Tabs};
+
+    let insets = waterui::binding(SAFE_INSETS);
+    let selection = Binding::container(0i32);
+    let mut app = ui
+        .environment(env_with_insets(&insets))
+        .mount_offscreen(move || {
+            Tabs::new(
+                &selection,
+                vec![
+                    Tab::new(0i32, "Messages", move || {
+                        NavigationView::new(
+                            "Messages",
+                            vstack((card("tab content"), spacer()))
+                                .background(Color::new(Srgb::new(0.55, 0.3, 0.75)))
+                                .a11y_label("tab-page"),
+                        )
+                    }),
+                    Tab::new(1i32, "Settings", move || {
+                        NavigationView::new("Settings", text("settings"))
+                    }),
+                ],
+            )
+        });
+    app.settle();
+
+    let page = app.query().label("tab-page").single().bounds();
+    let bar = app.query().role(Role::TAB_LIST).single().bounds();
+    assert!(
+        (page.y() + page.height() - bar.y()).abs() <= 1.0,
+        "the page's bottom edge sits at the tab bar's top edge, \
+         page {page:?} bar {bar:?}"
+    );
+    app.capture_snapshot("safe-area", "tab-page-background", "insets");
+}
+
+/// A drawn context-menu panel hosts its accessory under the panel's own
+/// frame (`with_frame` on the window root context): the accessory's
+/// background stays inside the panel — the snapshot shows a small tinted
+/// accessory row, not a window-wide fill.
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
+fn a_context_menu_panel_background_stays_at_the_panel(
+    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
+) {
+    let insets = waterui::binding(SAFE_INSETS);
+    let mut app = ui
+        .environment(env_with_insets(&insets))
+        .mount_offscreen(move || {
+            Frame::new(
+                button("host").action(|| {}).context_menu(
+                    ContextMenu::new(vec!["Copy".action(|| {})]).accessory(
+                        text("preview")
+                            .padding_with(6.0)
+                            .background(Color::new(Srgb::new(0.75, 0.25, 0.55)))
+                            .a11y_label("preview-panel"),
+                    ),
+                ),
+            )
+            .width(160.0)
+            .height(80.0)
+        });
+    app.settle();
+
+    let host = app
+        .query()
+        .role(Role::BUTTON)
+        .label("host")
+        .single()
+        .bounds();
+    // A secondary click opens the menu; the accessory forces the drawn
+    // presentation so the panel renders inside this window's scene.
+    app.secondary_click_at(
+        host.x() + host.width() / 2.0,
+        host.y() + host.height() / 2.0,
+    );
+    app.settle();
+
+    let preview = app.query().label("preview-panel").single().bounds();
+    assert!(
+        preview.width() <= 200.0 && preview.height() <= 120.0,
+        "the panel keeps its own small frame rather than flooding the \
+         window, got {preview:?}"
+    );
+    app.capture_snapshot("safe-area", "context-menu-panel", "insets");
+}
+
+/// A lazy stack outside a scroll surface records its context for lazily
+/// materialized items — the `LazyStack` layout arm used to leave it unset,
+/// so items always saw `None`: items inherit the window's boundaries like
+/// static siblings, and the last item's background extends through the
+/// keyboard band.
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
+fn a_lazy_stack_outside_a_scroll_gives_items_a_context(
+    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
+) {
+    let container = waterui::binding(SAFE_INSETS);
+    let keyboard = waterui::binding(KEYBOARD_INSETS);
+    let mut app = ui
+        .environment(env_with_keyboard(&container, &keyboard))
+        .mount_offscreen(move || {
+            vstack((
+                spacer(),
+                VStack::for_each((0..4).map(SelfId::new).collect::<Vec<_>>(), |item| {
+                    Frame::new(text(format!("lazy {}", *item)))
+                        .width(390.0)
+                        .height(40.0)
+                        .background(if *item == 3 {
+                            Color::new(Srgb::new(0.2, 0.5, 0.8))
+                        } else {
+                            Color::new(Srgb::new(0.92, 0.92, 0.92))
+                        })
+                        .a11y_label(format!("lazy-{}", *item))
+                }),
+            ))
+        });
+    app.settle();
+
+    let last = app.query().label("lazy-3").single().bounds();
+    assert!(
+        (last.y() + last.height() - KEYBOARD_TOP).abs() <= 1.0,
+        "the last lazy item's frame ends on the keyboard boundary, got {last:?}"
+    );
+    app.capture_snapshot("safe-area", "lazy-stack-item-fill", "keyboard");
+}
+
+/// A navigation view without a visible bar on an edge passes that edge
+/// through: with the bar hidden the page's top edge touches the status
+/// boundary, so the page is laid out against it and its background fill
+/// extends through the status band — no chrome covers the band.
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
+fn a_navigation_page_without_a_bar_passes_the_edge_through(
+    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
+) {
+    let insets = waterui::binding(SAFE_INSETS);
+    let mut app = ui
+        .environment(env_with_insets(&insets))
+        .mount_offscreen(move || {
+            NavigationView::new(
+                "Home",
+                vstack((card("content"), spacer()))
+                    .background(Color::new(Srgb::new(0.7, 0.55, 0.1)))
+                    .a11y_label("page"),
+            )
+            .navigation_bar_visibility(false)
+        });
+    app.settle();
+
+    let page = app.query().label("page").single().bounds();
+    assert!(
+        (page.y() - SAFE_INSETS.top()).abs() <= 1.0,
+        "with no bar the page starts at the status boundary, got {page:?}"
+    );
+    app.capture_snapshot("safe-area", "nav-barless-pass-through", "insets");
 }
