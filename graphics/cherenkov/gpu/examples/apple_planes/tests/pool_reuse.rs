@@ -23,7 +23,10 @@ fn slots_drain_past_the_pool_depth() {
     })
     .expect("host GPU engine");
     let surface = engine
-        .surface(Offscreen::new((480, 270), OffscreenFormat::LinearF16))
+        .surface(
+            Offscreen::new((480, 270), OffscreenFormat::LinearF16),
+            || {},
+        )
         .expect("offscreen surface");
     let video = surface.layer();
     let (prod, sink) = engine.frame_producer();

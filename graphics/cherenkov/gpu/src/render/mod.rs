@@ -351,10 +351,10 @@ struct SurfaceState {
     /// hidden surface is in no frame, and its producers and filters want
     /// no redraw.
     visibility: Visibility,
-    /// The host's announced visibility as it flips on the UI thread: the
-    /// wake gates of the surface's producers and filters read it, so they
-    /// stop waking the moment the host hides the surface.
-    announced: cherenkov::SurfaceVisibility,
+    /// The surface's host wake-up: the producers and filters its frames
+    /// draw wake the host through it, so they stop waking the moment the
+    /// host hides the surface.
+    waker: cherenkov::CompletionWaker,
 }
 
 /// A registered backdrop group: its optional capture filter, its capture
@@ -2214,7 +2214,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             shader_delivery,
             shaders: paint::Registry::default(),
             backdrop_shaders: FxHashMap::default(),
-            filters: filter::Registry::new(config.redraw.clone()),
+            filters: filter::Registry::default(),
             shadow_blur: None,
             resolve: None,
             last_frame: None,
@@ -2537,7 +2537,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         shader_delivery,
         shaders: paint::Registry::default(),
         backdrop_shaders: FxHashMap::default(),
-        filters: filter::Registry::new(config.redraw.clone()),
+        filters: filter::Registry::default(),
         shadow_blur: None,
         resolve: None,
         last_frame: None,
@@ -2721,11 +2721,6 @@ impl Renderer for GpuRenderer {
     ) -> Result<SurfaceInfo, SurfaceError> {
         let _diag_guard = diag::Guard::scope(self.diag.as_ref());
         diag::set_surface(Some(id.raw()));
-        let announced = waker.visibility();
-        // Only Apple windows complete work after a render: a promoted
-        // plane's attach on the main queue.
-        #[cfg(not(target_vendor = "apple"))]
-        drop(waker);
         let size = self.target_size(&target)?;
         let (window, textures, refresh, presents) = match target {
             GpuTarget::Offscreen(offscreen) => (None, None, offscreen.refresh, false),
@@ -2738,8 +2733,10 @@ impl Renderer for GpuRenderer {
             GpuTarget::Dmabuf(target) => (None, None, self.dmabuf_export(id, target)?, true),
             GpuTarget::Window(window) => {
                 let refresh = window.refresh.clone();
+                // Only Apple windows complete work after a render: a
+                // promoted plane's attach on the main queue.
                 #[cfg(target_vendor = "apple")]
-                let surface = self.open_window(id, window, size, waker);
+                let surface = self.open_window(id, window, size, waker.clone());
                 #[cfg(not(target_vendor = "apple"))]
                 let surface = self.open_window(id, window, size)?;
                 (surface, None, refresh, true)
@@ -2808,7 +2805,7 @@ impl Renderer for GpuRenderer {
                 composed: Vec::new(),
                 interop: 0,
                 visibility: Visibility::Visible,
-                announced,
+                waker,
             },
         );
         diag::set_surface(None);
@@ -2828,8 +2825,8 @@ impl Renderer for GpuRenderer {
             .get_mut(&id)
             .expect("visibility of a created surface");
         // The producers' and filters' wakes already follow the announced
-        // visibility through their gates; this decides what a frame lists
-        // and what counts in `FrameRedraw`.
+        // visibility through the surface's waker; this decides what a frame
+        // lists and what counts in `FrameRedraw`.
         surface.visibility = visibility;
     }
 
@@ -3003,7 +3000,7 @@ impl Renderer for GpuRenderer {
         self.planes.remove(&id);
         self.exports.remove(&id);
         self.update_filter_activity();
-        self.update_producer_gates();
+        self.update_producer_wakes();
     }
 
     /// Validates font data and detects native colour-glyph formats.
@@ -4093,8 +4090,7 @@ impl GpuRenderer {
             "frame lowered"
         );
         if result.is_ok() {
-            self.update_filter_activity();
-            self.update_producer_gates();
+            self.update_producer_wakes();
             for sf in &dirty {
                 self.render_shaders(
                     sf.id,
@@ -4120,6 +4116,9 @@ impl GpuRenderer {
                     || self.exports.contains_key(&sf.id);
             }
             self.evict_projective();
+            // Set once the encode has consumed the filters' redraw
+            // requests (`SurfaceWakes::set`).
+            self.update_filter_activity();
             stats.phases.encode_seconds = t.elapsed().as_secs_f64();
             stats.frame = Some(frame.id);
             if self.timestamps && self.frame_pass_count > 0 {
@@ -4246,8 +4245,7 @@ impl GpuRenderer {
             "frame lowered"
         );
         if result.is_ok() {
-            self.update_filter_activity();
-            self.update_producer_gates();
+            self.update_producer_wakes();
             for sf in &dirty {
                 self.render_shaders(
                     sf.id,
@@ -4272,6 +4270,9 @@ impl GpuRenderer {
                     || self.exports.contains_key(&sf.id);
             }
             self.evict_projective();
+            // Set once the encode has consumed the filters' redraw
+            // requests (`SurfaceWakes::set`).
+            self.update_filter_activity();
             stats.phases.encode_seconds = t.elapsed().as_secs_f64();
             stats.frame = Some(frame.id);
             if self.timestamps && self.frame_pass_count > 0 {
@@ -4301,34 +4302,33 @@ impl GpuRenderer {
         timing
     }
 
-    /// Drives each producer's redraw wake gate from the surfaces whose
-    /// frames drew it: a request wakes the host while a binding is
-    /// drawn on a surface announced visible — the same
-    /// frame-membership model [`Self::update_filter_activity`] applies
-    /// to filters, so a binding whose layer was detached (and may
-    /// return) closes the gate until it is drawn again.
-    fn update_producer_gates(&mut self) {
-        let mut uses: FxHashMap<ProducerId, Vec<cherenkov::SurfaceVisibility>> =
-            FxHashMap::default();
+    /// Sets each producer's redraw wakes to the surfaces whose frames drew
+    /// it: a request wakes the host of each, through the surface's own
+    /// waker — the same frame-membership model
+    /// [`Self::update_filter_activity`] applies to filters, so a binding
+    /// whose layer was detached (and may return) wakes nothing until it is
+    /// drawn again.
+    fn update_producer_wakes(&mut self) {
+        let mut uses: FxHashMap<ProducerId, Vec<cherenkov::CompletionWaker>> = FxHashMap::default();
         for surface in self.surfaces.values() {
             for (id, _) in &surface.frame.content {
                 let surfaces = uses.entry(*id).or_default();
-                if surfaces.last() != Some(&surface.announced) {
-                    surfaces.push(surface.announced.clone());
+                if surfaces.last() != Some(&surface.waker) {
+                    surfaces.push(surface.waker.clone());
                 }
             }
         }
         for (id, producer) in &mut self.producers {
-            producer.set_gate(uses.get(id).map_or(&[][..], Vec::as_slice));
+            producer.set_wakes(uses.get(id).map_or(&[][..], Vec::as_slice));
         }
     }
 
     fn update_filter_activity(&self) {
         // A retained local image keeps the filters its realization ran
-        // active: an animating one must make it stale. Each filter's gate
-        // holds the surfaces that run it, so a hidden surface's filters
-        // wake no host; the frame that shows it runs them.
-        let mut uses: FxHashMap<filter::FilterKey, Vec<cherenkov::SurfaceVisibility>> =
+        // active: an animating one must make it stale. Each filter's wakes
+        // are the surfaces that run it, so a hidden surface's filters wake
+        // no host; the frame that shows it runs them.
+        let mut uses: FxHashMap<filter::FilterKey, Vec<cherenkov::CompletionWaker>> =
             FxHashMap::default();
         for surface in self.surfaces.values() {
             for key in surface.frame.filters.iter().map(|(_, id)| *id).chain(
@@ -4342,8 +4342,8 @@ impl GpuRenderer {
             ) {
                 let surfaces = uses.entry(key).or_default();
                 // Listed surface by surface: one entry per surface.
-                if surfaces.last() != Some(&surface.announced) {
-                    surfaces.push(surface.announced.clone());
+                if surfaces.last() != Some(&surface.waker) {
+                    surfaces.push(surface.waker.clone());
                 }
             }
         }
@@ -4796,21 +4796,16 @@ impl GpuRenderer {
             .insert(id, gpu_content::Producer::rendered(content));
     }
 
-    /// Registers a submitted-frame producer's wake state — `dirty`
-    /// flags a landed frame, `gate` gates its host wake on a visible
-    /// binding (`cherenkov::GpuContent`). A frame producer has no setup:
-    /// the first [`Self::submit_frame`] supplies its frame.
-    pub fn add_frame_producer(
-        &mut self,
-        id: ProducerId,
-        dirty: std::sync::Arc<std::sync::atomic::AtomicBool>,
-        gate: std::sync::Arc<cherenkov::WakeGate>,
-    ) {
+    /// Registers a submitted-frame producer (`cherenkov::GpuContent`). A
+    /// frame producer has no setup: the first [`Self::submit_frame`]
+    /// supplies its frame, and the render loop wakes the surfaces the
+    /// frame lands on.
+    pub fn add_frame_producer(&mut self, id: ProducerId) {
         if self.pending_retire.remove(&id) {
             return;
         }
         self.producers
-            .insert(id, gpu_content::Producer::submitted(dirty, gate));
+            .insert(id, gpu_content::Producer::submitted());
     }
 
     /// Retires a producer: its last handle dropped, so no binding of it

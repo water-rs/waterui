@@ -22,7 +22,7 @@ const RED: WorkingColor = WorkingColor::new([1., 0., 0., 1.]);
 fn a_parent_dropped_before_its_child_removes_only_the_parent() {
     let engine = engine();
     let surface = engine
-        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16))
+        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {})
         .expect("surface");
     let parent = surface.layer();
     let child = surface.layer();
@@ -42,7 +42,7 @@ fn a_parent_dropped_before_its_child_removes_only_the_parent() {
 fn a_child_dropped_before_its_parent_keeps_the_grandchild() {
     let engine = engine();
     let surface = engine
-        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16))
+        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {})
         .expect("surface");
     let parent = surface.layer();
     let child = surface.layer();
@@ -66,7 +66,7 @@ fn a_child_dropped_before_its_parent_keeps_the_grandchild() {
 fn a_child_reattached_before_its_parent_drops_still_renders() {
     let engine = engine();
     let surface = engine
-        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     let parent = surface.layer();
     let child = surface.layer();

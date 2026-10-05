@@ -138,7 +138,7 @@ fn measure_table_intrinsic(
     env: &Environment,
     theme: &Rc<dyn crate::engine::WidgetTheme>,
 ) -> LayoutSize {
-    let columns = table.columns.snapshot();
+    let columns = state.measure_signal(&table.columns);
     if columns.is_empty() {
         return LayoutSize::zero();
     }

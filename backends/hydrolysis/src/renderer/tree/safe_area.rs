@@ -51,6 +51,18 @@ impl Edge {
         }
     }
 
+    /// The edge across the window from this one — the boundary a bar docked
+    /// at `self` can never touch: a top bar reaches top, leading and
+    /// trailing, never the bottom edge.
+    pub const fn opposite(self) -> Self {
+        match self {
+            Self::Top => Self::Bottom,
+            Self::Leading => Self::Trailing,
+            Self::Bottom => Self::Top,
+            Self::Trailing => Self::Leading,
+        }
+    }
+
     /// This edge's depth inside `insets`.
     const fn depth_in(self, insets: &EdgeInsets) -> f32 {
         match self {
@@ -204,6 +216,14 @@ impl EdgeOffsets {
     /// extension grows a frame vertically.
     pub const fn vertical(&self) -> f64 {
         self.top + self.bottom
+    }
+
+    /// `self` with `edge` zeroed — the mask a chrome surface applies so a
+    /// bar only ever extends through the edges its docking can touch, even
+    /// when a clamped frame lands its inner edge on the opposite boundary.
+    pub const fn cleared(mut self, edge: Edge) -> Self {
+        self.set(edge, 0.0);
+        self
     }
 
     /// Writes `value` onto `edge` — the per-edge assignment the release

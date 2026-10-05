@@ -6,8 +6,8 @@
 //! multiply-adds.
 
 use filtrate_core::{
-    AuxData, AuxFormat, AuxImage, CpuFilter, CpuFilterError, CpuImage, FilterParam, SpatialFilter,
-    WorkingSpace,
+    AuxData, AuxFormat, AuxImage, CpuFilter, CpuFilterError, CpuImage, FilterParam, OperatingSpace,
+    SpatialFilter, WorkingSpace,
 };
 use wide::f32x4;
 
@@ -132,7 +132,14 @@ impl<T: FilterParam> CpuFilter for GaussianBlur<T> {
         _space: &WorkingSpace,
         image: &mut CpuImage<'_>,
     ) -> Result<(), CpuFilterError> {
-        gaussian_blur(params[0], image);
+        match self.space {
+            OperatingSpace::Working => gaussian_blur(params[0], image),
+            OperatingSpace::Srgb => {
+                to_srgb(image.pixels);
+                gaussian_blur(params[0], image);
+                from_srgb(image.pixels);
+            }
+        }
         Ok(())
     }
 }
@@ -177,6 +184,79 @@ impl<A: FilterParam> CpuFilter for BlendWithImage<A> {
         );
         Ok(())
     }
+}
+
+/// Linear Display P3 to linear sRGB (both D65), rows first: the matrix of
+/// `shaders/space/to_srgb.wgsl`.
+pub const P3_TO_SRGB: [[f32; 3]; 3] = [
+    [1.224_940_2, -0.224_940_2, 0.0],
+    [-0.042_057, 1.042_057, 0.0],
+    [-0.019_637_6, -0.078_636, 1.098_273_6],
+];
+
+/// Linear sRGB to linear Display P3 (both D65), rows first: the matrix of
+/// `shaders/space/from_srgb.wgsl`.
+pub const SRGB_TO_P3: [[f32; 3]; 3] = [
+    [0.822_462, 0.177_538, 0.0],
+    [0.033_194_2, 0.966_805_8, 0.0],
+    [0.017_082_6, 0.072_397_4, 0.910_519_9],
+];
+
+/// The executor's `to_srgb` stage on the CPU: premultiplied working-space
+/// pixels to premultiplied sRGB, the transfer mirrored through zero so
+/// extended values stay extended.
+fn to_srgb(pixels: &mut [[f32; 4]]) {
+    convert(pixels, |straight| {
+        transform(&P3_TO_SRGB, straight).map(srgb_encode)
+    });
+}
+
+/// The executor's `from_srgb` stage on the CPU: premultiplied sRGB back to
+/// premultiplied working-space pixels.
+fn from_srgb(pixels: &mut [[f32; 4]]) {
+    convert(pixels, |straight| {
+        transform(&SRGB_TO_P3, straight.map(srgb_decode))
+    });
+}
+
+/// The sRGB transfer of one linear channel, mirrored through zero.
+pub fn srgb_encode(linear: f32) -> f32 {
+    let magnitude = linear.abs();
+    let curve = if magnitude > 0.003_130_8 {
+        1.055f32.mul_add(magnitude.powf(1.0 / 2.4), -0.055)
+    } else {
+        magnitude * 12.92
+    };
+    curve.copysign(linear)
+}
+
+/// The inverse of [`srgb_encode`]: one encoded channel back to linear,
+/// mirrored through zero.
+pub fn srgb_decode(encoded: f32) -> f32 {
+    let magnitude = encoded.abs();
+    let curve = if magnitude > 0.040_45 {
+        ((magnitude + 0.055) / 1.055).powf(2.4)
+    } else {
+        magnitude / 12.92
+    };
+    curve.copysign(encoded)
+}
+
+/// Applies `map` to each pixel's straight-alpha colour, as the conversion
+/// stages do: the colour is unpremultiplied by `max(alpha, 1e-6)` and
+/// premultiplied again by alpha.
+fn convert(pixels: &mut [[f32; 4]], map: impl Fn([f32; 3]) -> [f32; 3]) {
+    for pixel in pixels {
+        let alpha = pixel[3];
+        let divisor = alpha.max(1.0e-6);
+        let [r, g, b] = map([pixel[0] / divisor, pixel[1] / divisor, pixel[2] / divisor]);
+        *pixel = [r * alpha, g * alpha, b * alpha, alpha];
+    }
+}
+
+/// `matrix * rgb`, `matrix` given rows first.
+pub fn transform(matrix: &[[f32; 3]; 3], rgb: [f32; 3]) -> [f32; 3] {
+    matrix.map(|row| row[0].mul_add(rgb[0], row[1].mul_add(rgb[1], row[2] * rgb[2])))
 }
 
 #[expect(

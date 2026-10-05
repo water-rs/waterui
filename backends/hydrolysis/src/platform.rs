@@ -838,12 +838,13 @@ pub trait SurfaceProvider {
     /// from — all four from the same creation chain, which the shared
     /// Cherenkov engine requires of its [`SharedDevice`].
     fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice;
-    /// Whether the pixels written into this surface's textures are consumed
-    /// as premultiplied-alpha. True only for an OS surface configured
-    /// `CompositeAlphaMode::PreMultiplied`; offscreen/readback targets keep
-    /// their straight-alpha bytes and stay `false`.
-    fn premultiply_alpha(&self) -> bool {
-        false
+    /// The alpha convention the pixels written into this surface's textures
+    /// are presented with — the engine's `surface_output_alpha` verdict for
+    /// the surface's configured `CompositeAlphaMode`. Offscreen/readback
+    /// targets have no compositor and keep their straight-alpha bytes, so
+    /// the default is [`cherenkov_gpu::interop::OutputAlpha::Straight`].
+    fn output_alpha(&self) -> cherenkov_gpu::interop::OutputAlpha {
+        cherenkov_gpu::interop::OutputAlpha::Straight
     }
     /// The display's HDR headroom — the brightest white the surface
     /// presents, relative to SDR white. Every current surface is SDR, so
@@ -1940,13 +1941,15 @@ impl OffscreenSceneSurface {
                 target.gpu_context_id(),
                 target.adapter(),
                 target.shared_device(),
-                || {},
             ));
+            // The caller drives `engine.render` itself: no host loop exists
+            // for the surface to wake.
             let cherenkov = crate::engine::engine_await!(crate::engine::CherenkovSurface::new(
                 std::rc::Rc::clone(&state.engine),
                 target.device(),
                 target.adapter().get_info().backend,
                 (width.max(1), height.max(1)),
+                || {},
             ));
             Self {
                 target,
@@ -1979,7 +1982,7 @@ impl OffscreenSceneSurface {
     ///
     /// # Panics
     /// Panics when the offscreen surface fails to hand back a frame or the
-    /// readback copy cannot be mapped.
+    /// readback fails.
     #[must_use]
     pub fn readback_rgba8(&mut self) -> Vec<u8> {
         let (width, height) = self.target.size();
@@ -1993,16 +1996,16 @@ impl OffscreenSceneSurface {
             self.target.queue(),
             &texture,
             crate::engine::format_output_color(texture.format()),
-            true,
+            cherenkov_gpu::interop::OutputAlpha::Premultiplied,
             1.0,
         );
-        crate::readback::readback_texture_rgba8(
-            self.target.device(),
-            self.target.queue(),
-            &texture,
-            width,
-            height,
-        )
+        crate::readback::readback_texture_rgba8(&self.target, &texture, width, height)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "hydrolysis offscreen scene surface: readback failed: {:#}",
+                    waterui_core::Error::from(error)
+                )
+            })
     }
 }
 
@@ -2611,8 +2614,8 @@ mod winit_impl {
             self.surface.configure(&self.gpu.device, &self.config);
         }
 
-        fn premultiply_alpha(&self) -> bool {
-            self.config.alpha_mode == wgpu::CompositeAlphaMode::PreMultiplied
+        fn output_alpha(&self) -> cherenkov_gpu::interop::OutputAlpha {
+            cherenkov_gpu::interop::surface_output_alpha(self.config.alpha_mode)
         }
 
         fn gpu_context_id(&self) -> u64 {
@@ -3288,6 +3291,9 @@ mod winit_impl {
     )]
     pub struct WinitWindow {
         window: Arc<NativeWindow>,
+        /// The host's wake for this window, behind every
+        /// [`gpu_surface_redraw_handle`](GpuSurfaceWindow::gpu_surface_redraw_handle).
+        wake: RedrawHandle,
         surface: WinitSurface,
         pending_surface_size: Option<PhysicalSize<u32>>,
         pending_events: Vec<InputEvent>,
@@ -3357,9 +3363,16 @@ mod winit_impl {
     }
 
     impl WinitWindow {
-        /// Creates an offscreen surface synchronously.
-        pub async fn new(window: Arc<NativeWindow>, requires_transparency: bool) -> Self {
-            Self::new_with_shared_gpu(window, None, requires_transparency)
+        /// Creates the surface for `window` on a GPU context of its own.
+        ///
+        /// `wake` is the host's request for another frame of this window;
+        /// see [`Self::new_with_shared_gpu`] for its contract.
+        pub async fn new(
+            window: Arc<NativeWindow>,
+            wake: RedrawHandle,
+            requires_transparency: bool,
+        ) -> Self {
+            Self::new_with_shared_gpu(window, wake, None, requires_transparency)
                 .await
                 .0
         }
@@ -3368,10 +3381,21 @@ mod winit_impl {
         /// chain when given and returning the [`WinitGpuContext`] in use so
         /// the caller can hand it to the next surface.
         ///
+        /// `wake` asks the host's event loop to redraw this window. GPU
+        /// content and the engine's render thread call it from their own
+        /// threads, and the render thread may hold its last clone, so it
+        /// must not own or touch the winit window: on macOS a winit window
+        /// used or dropped off the main thread hops synchronously onto the
+        /// main thread, which deadlocks while the main thread waits on the
+        /// calling thread — as it does when it shuts the engine down after
+        /// the last window closes. Post the request to the event loop and
+        /// redraw the window there.
+        ///
         /// # Panics
         /// Propagates panics from surface and device creation.
         pub async fn new_with_shared_gpu(
             window: Arc<NativeWindow>,
+            wake: RedrawHandle,
             shared_gpu: Option<&WinitGpuContext>,
             requires_transparency: bool,
         ) -> (Self, WinitGpuContext) {
@@ -3393,6 +3417,7 @@ mod winit_impl {
                     #[cfg(hydrolysis_macos_system_webview)]
                     hybrid_compositor: MacHybridCompositor::new(gpu.clone()),
                     window,
+                    wake,
                     surface,
                     occluded: false,
                     zero_sized,
@@ -4387,14 +4412,14 @@ mod winit_impl {
         }
 
         fn gpu_surface_redraw_handle(&self) -> Option<RedrawHandle> {
-            let window = Arc::clone(&self.window);
+            let wake = self.wake.clone();
             let occluded = Arc::clone(&self.occlusion_signal);
             Some(RedrawHandle::new(move || {
                 // GPU content cannot see the window's pump state, so the
                 // occlusion report is shared as a flag: a frame produced
                 // while the window is hidden posts no wake.
                 if !occluded.load(Ordering::Relaxed) {
-                    window.request_redraw();
+                    wake.request_redraw();
                 }
             }))
         }

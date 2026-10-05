@@ -13,6 +13,7 @@ use executor_core::async_task::{self, AsyncTask, Runnable};
 
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod anchored_overlay;
+mod chrome_safe_area;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod context_menu_occlusion;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
@@ -46,6 +47,7 @@ mod list_row_hit;
 mod list_row_metrics;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod list_visibility;
+mod material;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod menu_shortcuts;
 mod mid_flush_subview;
@@ -889,45 +891,6 @@ fn stacked_icon_buttons_above_gesture_surface_receive_clicks() {
         renderer.take_patch_request(),
         "a synchronous button action must schedule a retained-tree refresh"
     );
-}
-
-#[test]
-fn gpu_content_box_starts_dirty_and_coalesces_requests() {
-    // The redraw coalescing the retired `take_gpu_surface_redraw_request`
-    // owned now lives in `cherenkov_gpu::GpuContentBox`: a freshly installed
-    // producer is dirty (so its first frame draws without a request), and a
-    // request on an already-dirty producer does not re-wake the host. The
-    // consumption side — a render clearing `dirty` — is pinned by the
-    // gpu_surface_idle end-to-end render counts on Metal.
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicU32, Ordering};
-    use waterui_graphics::{GpuContent, GpuContentView};
-
-    struct Probe;
-    impl GpuContent for Probe {
-        fn setup(&mut self, _gpu: &waterui_graphics::gpu::Context<'_>) {}
-        fn render(&mut self, _frame: &mut waterui_graphics::gpu::Frame<'_>) {}
-    }
-
-    let wakes = Arc::new(AtomicU32::new(0));
-    let wake_counter = wakes.clone();
-    let mut view = GpuContentView::new(Probe);
-    let content = view.take_engine_content(move || {
-        wake_counter.fetch_add(1, Ordering::Relaxed);
-    });
-
-    let handle = content.redraw_handle();
-    assert!(
-        handle.is_dirty(),
-        "freshly installed content draws on the next engine frame"
-    );
-    handle.request_redraw();
-    assert_eq!(
-        wakes.load(Ordering::Relaxed),
-        0,
-        "a request on an already-dirty producer must not re-wake the host"
-    );
-    assert!(handle.is_dirty(), "the coalesced request stays outstanding");
 }
 
 #[test]
@@ -2417,6 +2380,13 @@ fn inactive_modal_scope_does_not_trap_keyboard_focus() {
 #[derive(Default)]
 pub struct MinimalTestTheme {
     badge_draws: Rc<RefCell<Vec<Rect>>>,
+    /// Every navigation-bar surface bounds the theme was asked to draw —
+    /// the painted geometry §7.1's chrome extension lives in.
+    navigation_bar_draws: Rc<RefCell<Vec<Rect>>>,
+    /// Every navigation-bar separator bounds the theme was asked to draw.
+    navigation_bar_separator_draws: Rc<RefCell<Vec<Rect>>>,
+    /// Every tabs-bar surface bounds the theme was asked to draw.
+    tabs_bar_draws: Rc<RefCell<Vec<Rect>>>,
     /// Forces the tab item layout the theme reports; `None` defaults to
     /// `Vertical` like [`WidgetTheme::tabs_item_layout`]'s default.
     forced_tab_item_layout: Option<TabItemLayout>,
@@ -2849,9 +2819,15 @@ impl WidgetTheme for MinimalTestTheme {
         }
     }
 
-    fn draw_navigation_bar(&self, _draw: &mut Recorder, _bounds: Rect, _background: &Paint) {}
+    fn draw_navigation_bar(&self, _draw: &mut Recorder, bounds: Rect, _background: &Paint) {
+        self.navigation_bar_draws.borrow_mut().push(bounds);
+    }
 
-    fn draw_navigation_bar_separator(&self, _draw: &mut Recorder, _bounds: Rect) {}
+    fn draw_navigation_bar_separator(&self, _draw: &mut Recorder, bounds: Rect) {
+        self.navigation_bar_separator_draws
+            .borrow_mut()
+            .push(bounds);
+    }
     fn draw_navigation_back_button(&self, _draw: &mut Recorder, _bounds: Rect) {}
     fn tabs_item_layout(&self, bar_width: f64, item_count: usize) -> TabItemLayout {
         self.tabs_layout_queries
@@ -2878,7 +2854,9 @@ impl WidgetTheme for MinimalTestTheme {
             icon_label_spacing: 4.0,
         }
     }
-    fn draw_tabs_bar(&self, _draw: &mut Recorder, _bounds: Rect, _top_edge: bool) {}
+    fn draw_tabs_bar(&self, _draw: &mut Recorder, bounds: Rect, _top_edge: bool) {
+        self.tabs_bar_draws.borrow_mut().push(bounds);
+    }
     fn draw_tabs_highlight(&self, _draw: &mut Recorder, bounds: Rect, layout: TabItemLayout) {
         self.tabs_highlight_draws
             .borrow_mut()

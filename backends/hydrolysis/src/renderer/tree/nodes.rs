@@ -58,6 +58,14 @@ struct BuiltSubview {
     /// keyboard inset animating under an unchanged rect) re-runs layout so
     /// the subtree's touch tests and surface facts track it.
     laid_out_area: Option<Box<safe_area::SafeAreaLayout>>,
+    /// The signal dependencies of the cached layout: every signal the last
+    /// layout pass read, kept subscribed for as long as that layout lives —
+    /// an update on any of them marks the set dirty so the next flush re-runs
+    /// exactly this sub-view's layout (a signal read inside a cached layout,
+    /// e.g. a scroll controller's request generation, would otherwise never
+    /// reach the sub-view again). `None` only while the set is lent to
+    /// [`HydroState::layout_dependencies`] for the duration of a pass.
+    layout_dependencies: Option<LayoutDependencies>,
     /// The default spoken accessibility label extracted from the source view once,
     /// at build time (mirrors `GestureObserverEffect::default_a11y_label`): the
     /// node owns the source after build, so the per-frame a11y path reads this.
@@ -80,9 +88,10 @@ pub(super) fn store_safe_area(
 }
 
 impl BuiltSubview {
-    /// Lays the node out when the structure, the size, the proposal or the
-    /// §7.1 context moved since the last layout — recording what it laid out
-    /// against so an unchanged re-flush skips the pass.
+    /// Lays the node out when the structure, the size, the proposal, the
+    /// §7.1 context or a signal the last layout pass read changed since the
+    /// last layout — recording what it laid out against so an unchanged
+    /// re-flush skips the pass.
     fn layout_if_needed(
         &mut self,
         renderer: &mut HydrolysisRenderer,
@@ -92,12 +101,49 @@ impl BuiltSubview {
         size: Size,
     ) {
         if self.needs_layout
+            || self
+                .layout_dependencies
+                .as_ref()
+                .is_some_and(LayoutDependencies::is_dirty)
             || size != self.laid_out
             || self.laid_out_proposal != Some(proposal)
             || self.laid_out_area.as_deref() != safe_area.as_ref()
         {
+            // Collect this pass's signal reads as dependencies: while the
+            // set is installed in `HydroState::layout_dependencies`,
+            // `watch_signal` and `measure_signal` record every read into it,
+            // so each signal the layout consumed stays watched — and its
+            // updates mark the sub-view's layout dirty — for as long as the
+            // cached layout lives. Two passes are never live at once
+            // (`RenderNode::layout` does not lay out a retained sub-view),
+            // so the slot must be empty coming in and full going out.
+            let mut dependencies = self
+                .layout_dependencies
+                .take()
+                .expect("hydrolysis renderer: a retained sub-view lost its layout dependency set");
+            dependencies.begin_pass();
+            // A host may have measured this sub-view earlier in the same
+            // flush (a label's `measure_built`, a lazy row's
+            // `patch_and_measure`), filling measure memos the pass would
+            // hit instead of re-running the reads beneath them — sweeping
+            // the dependencies those reads feed. Invalidate them so only
+            // memos filled during the pass can answer inside it.
+            renderer.state.measurement.begin_dependency_pass();
+            assert!(
+                renderer.state.layout_dependencies.is_none(),
+                "hydrolysis renderer: a retained sub-view's layout pass ran \
+                 inside another — RenderNode::layout must not lay out a \
+                 retained sub-view"
+            );
+            renderer.state.layout_dependencies = Some(dependencies);
             self.node
                 .layout(renderer, env, safe_area.clone(), proposal, size);
+            let mut dependencies =
+                renderer.state.layout_dependencies.take().expect(
+                    "hydrolysis renderer: a layout pass emptied the sub-view dependency slot",
+                );
+            dependencies.finish_pass();
+            self.layout_dependencies = Some(dependencies);
             self.laid_out = size;
             self.laid_out_proposal = Some(proposal);
             store_safe_area(&mut self.laid_out_area, safe_area);
@@ -139,6 +185,7 @@ impl RetainedSubview {
             laid_out_proposal: None,
             needs_layout: true,
             laid_out_area: None,
+            layout_dependencies: Some(LayoutDependencies::new(renderer.signals.clone())),
             default_a11y_label,
         });
     }
@@ -339,14 +386,20 @@ impl RetainedSubview {
         structural
     }
 
-    /// Consume the subtree's layout-invalidated mark. The flush sites fold this
-    /// into `needs_layout` so a layout-signal change re-places the subtree at
-    /// its unchanged rect. Running before build panics, a caller ordering bug
-    /// rather than a `false` answer.
+    /// Consume the subtree's layout-invalidated mark, keeping it in
+    /// `needs_layout` as well as reporting it. The flush sites fold it into
+    /// `needs_layout` so a layout input change re-places the subtree at its
+    /// unchanged rect. An enclosing sub-view walking through this one (a lazy
+    /// row inside a navigation page) consumes the mark before this sub-view
+    /// flushes, and the enclosing layout does not place it — the row is placed
+    /// by its own flush — so the mark must survive here for that flush.
+    /// Running before build panics, a caller ordering bug rather than a
+    /// `false` answer.
     pub(crate) fn take_layout_dirty(&mut self) -> bool {
-        self.expect_built_mut("take_layout_dirty")
-            .node
-            .take_layout_dirty()
+        let built = self.expect_built_mut("take_layout_dirty");
+        let dirty = built.node.take_layout_dirty();
+        built.needs_layout |= dirty;
+        dirty
     }
 
     /// Build (once), patch, lay out (when the rect size, the structure or the
@@ -633,8 +686,8 @@ impl<K: Eq + core::hash::Hash + Clone> VisibleSubviewCache<K> {
 /// read env every frame), and the child node it recurses into.
 pub struct WrapperNode {
     pub(super) accessibility_identity: Rc<()>,
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
+    /// The node's render identity; a `Material` wrapper keys its engine
+    /// mount by it.
     pub(crate) render_id: RenderId,
     pub(super) effect: WrapperEffect,
     pub(super) env: Environment,
@@ -816,6 +869,12 @@ pub(super) enum WrapperEffect {
     /// fill (water-rs/hydrolysis#200). Draws nothing on targets that lack a
     /// `draw_text_context_menu_panel` implementation.
     PopupMenuSurface,
+    /// A within-window `Material` background (water-rs/waterui#1854): every
+    /// flush closes the scene segment painted so far — the content behind
+    /// the view — and presents a keyed mount that samples the material's
+    /// backdrop group inside the view's bounds, then flushes the child on
+    /// top. The runtime is shared with the mount the compositor installs.
+    Material(Rc<crate::renderer::material::MaterialRuntime>),
     /// An `.anchored_overlay(...)` (water-rs/waterui#1275): every flush the
     /// wrapper registers the anchor's live bounds plus the effect's handles
     /// for the post-flush `render_anchored_overlays` pass, which measures,
@@ -956,6 +1015,15 @@ pub struct TextNode {
     pub(crate) alignment: Computed<HorizontalAlignment>,
     /// Maximum laid-out lines, from `TextConfig::line_limit`.
     pub(crate) line_limit: Option<usize>,
+    /// Set by the `content`/`alignment` subscriptions when a measurement input
+    /// changes. The text's size is a function of what it says, so an outer
+    /// `RetainedSubview` consumes this through [`RenderNode::take_layout_dirty`]
+    /// and re-places its tree: otherwise the leaf keeps the box it measured at
+    /// mount while the flush paints the new string wrapped inside it.
+    pub(crate) layout_dirty: Rc<Cell<bool>>,
+    /// The `content` and `alignment` subscriptions that arm `layout_dirty`,
+    /// owned by this retained leaf.
+    pub(crate) _guards: [BoxWatcherGuard; 2],
 }
 
 pub struct ContainerNode {

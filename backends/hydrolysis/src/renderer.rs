@@ -29,6 +29,7 @@ mod identity;
 mod input;
 mod interaction_layers;
 mod lifecycle;
+mod material;
 mod metadata;
 mod native_measure;
 mod navigation;
@@ -55,7 +56,7 @@ pub use native_measure::*;
 pub use recording::assert_well_formed_image;
 pub use recording::{Glyph, GlyphRun, Recording, working_color};
 pub use retained::*;
-pub use tree::safe_area::{EdgeOffsets, SafeAreaLayout, ScrollSurfaceArea, grow_rect};
+pub use tree::safe_area::{Edge, EdgeOffsets, SafeAreaLayout, ScrollSurfaceArea, grow_rect};
 pub use tree::*;
 pub use views::*;
 pub use waterui_backend_core::frame_signals::FrameSignals;
@@ -82,6 +83,7 @@ pub use render::{
     resolved_morph_shape_to_path, resolved_shape_to_path, transformed_rect,
 };
 use rustc_hash::FxHashSet;
+use signals::LayoutDependencies;
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;

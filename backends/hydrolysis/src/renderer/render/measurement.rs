@@ -52,8 +52,12 @@ pub fn table_data_cell_rect(
     )
 }
 
-fn navigation_bar_height(view: &NavigationView, theme: &Rc<dyn WidgetTheme>) -> f64 {
-    if view.bar.hidden.snapshot() {
+fn navigation_bar_height(
+    view: &NavigationView,
+    state: &mut HydroState,
+    theme: &Rc<dyn WidgetTheme>,
+) -> f64 {
+    if state.measure_signal(&view.bar.hidden) {
         0.0
     } else {
         let metrics = theme.navigation_metrics();
@@ -274,10 +278,12 @@ fn measure_view_dimensions_with_proposal_with_budget(
     }
     if let Some(text) = view.downcast_ref::<Text>() {
         let resolved = text.resolve(&scoped_env);
+        let content = state.measure_signal(&resolved.content);
+        let alignment = state.measure_signal(&resolved.paragraph_alignment);
         return HydrolysisRenderer::measure_text_dimensions(
             state,
-            resolved.content.snapshot(),
-            resolved.paragraph_alignment.snapshot(),
+            content,
+            alignment,
             &scoped_env,
             proposal.width,
             resolved.line_limit.map(core::num::NonZeroUsize::get),
@@ -777,7 +783,7 @@ pub fn measure_navigation_view_intrinsic(
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
-    let bar_height = navigation_bar_height(navigation, theme);
+    let bar_height = navigation_bar_height(navigation, state, theme);
     let mut principal_width = 0.0_f64;
     let mut principal_height = 0.0_f64;
     let mut leading_width = 0.0_f64;
@@ -1075,7 +1081,7 @@ pub fn measure_list_intrinsic(
     if row_count == 0 {
         return LayoutSize::zero();
     }
-    let editing = list.editing.snapshot();
+    let editing = state.measure_signal(&list.editing);
     let mut first_item = contents
         .get_view(0)
         .unwrap_or_else(|| panic!("ListConfig failed to materialize item at index 0"));
@@ -1161,7 +1167,7 @@ pub fn list_row_height_for_content(
 
 pub fn measure_progress_intrinsic(
     progress: &ProgressConfig,
-    _state: &mut HydroState,
+    state: &mut HydroState,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
@@ -1176,7 +1182,7 @@ pub fn measure_progress_intrinsic(
                     .size,
             )
             .max(metrics.label_height);
-            let value_label_height = if progress.value.snapshot().is_finite() {
+            let value_label_height = if state.measure_signal(&progress.value).is_finite() {
                 metrics.value_label_top_spacing + label_height
             } else {
                 0.0
@@ -1249,8 +1255,8 @@ pub fn measure_text_field_size_with_label_size(
 ) -> LayoutSize {
     let metrics = theme.input_field_metrics();
     let line_limit = text_field.line_limit.map(NonZeroUsize::get);
-    let prompt = text_field.prompt.content.snapshot();
-    let value = text_field.value.snapshot();
+    let prompt = state.measure_signal(&text_field.prompt.content);
+    let value = state.measure_signal(&text_field.value);
     let prompt_size = HydrolysisRenderer::measure_text_intrinsic_size_with_line_limit(
         state, prompt, env, line_limit,
     );
@@ -1333,7 +1339,11 @@ pub fn measure_secure_field_size_with_label_size(
     proposal: ProposalSize,
 ) -> LayoutSize {
     let metrics = theme.input_field_metrics();
-    let secure_len = secure_field.value.snapshot().expose().chars().count();
+    let secure_len = state
+        .measure_signal(&secure_field.value)
+        .expose()
+        .chars()
+        .count();
     let masked = if secure_len == 0 {
         StyledStr::plain("")
     } else {
@@ -1397,7 +1407,7 @@ pub fn measure_table_metrics(
         width = width.max(f64::from(label_size.width) + metrics.cell_horizontal_padding);
 
         let rows = column.rows();
-        max_rows = max_rows.max(rows.len().snapshot());
+        max_rows = max_rows.max(state.measure_signal(&rows.len()));
         column_widths.push(width);
     }
 
@@ -1502,8 +1512,9 @@ pub fn measure_slider_intrinsic(
     )
 }
 
-fn resolved_text_styled(text: &Text, env: &Environment) -> StyledStr {
-    text.resolve(env).content.snapshot()
+fn resolved_text_styled(text: &Text, env: &Environment, state: &mut HydroState) -> StyledStr {
+    let resolved = text.resolve(env);
+    state.measure_signal(&resolved.content)
 }
 
 pub fn measure_date_picker_intrinsic(
@@ -1521,9 +1532,8 @@ pub fn measure_date_picker_intrinsic(
     } else {
         0.0
     };
-    let current = date_picker
-        .value
-        .snapshot()
+    let current = state
+        .measure_signal(&date_picker.value)
         .clamp(*date_picker.range.start(), *date_picker.range.end());
     let candidates = [
         date_picker.ty.format_value(*date_picker.range.start()),
@@ -1613,7 +1623,7 @@ pub fn measure_picker_intrinsic_with_label_size(
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
-    let items = picker.items.snapshot();
+    let items = state.measure_signal(&picker.items);
     assert!(
         !(items.is_empty()),
         "hydrolysis picker requires at least one item"
@@ -1626,7 +1636,7 @@ pub fn measure_picker_intrinsic_with_label_size(
             let mut max_item_width: f64 = 0.0;
             let mut max_item_height: f64 = 0.0;
             for item in &items {
-                let styled = resolved_text_styled(&item.content, env);
+                let styled = resolved_text_styled(&item.content, env, state);
                 let size = HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env);
                 max_item_width = max_item_width.max(f64::from(size.width));
                 max_item_height = max_item_height.max(f64::from(size.height));
@@ -1666,7 +1676,7 @@ pub fn measure_picker_intrinsic_with_label_size(
             let mut max_item_width: f64 = 0.0;
             let mut total_height = 0.0;
             for (index, item) in items.iter().enumerate() {
-                let styled = resolved_text_styled(&item.content, env);
+                let styled = resolved_text_styled(&item.content, env, state);
                 let size = HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env);
                 max_item_width = max_item_width.max(f64::from(size.width));
                 total_height += f64::from(size.height).max(metrics.radio_indicator_size);
@@ -1708,7 +1718,7 @@ pub fn measure_picker_intrinsic_with_label_size(
             let mut total_width: f64 = 0.0;
             let mut max_item_height: f64 = 0.0;
             for item in &items {
-                let styled = resolved_text_styled(&item.content, env);
+                let styled = resolved_text_styled(&item.content, env, state);
                 let size = HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env);
                 total_width += metrics
                     .horizontal_inset

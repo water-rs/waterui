@@ -7,6 +7,157 @@ use super::*;
 
 type SignalUpdateHandler<T> = Rc<dyn Fn(nami::watcher::Context<T>)>;
 
+/// Subscribes `callback` to `signal`, returning the [`Retain`] that keeps the
+/// subscription alive.
+///
+/// Some signals emit synchronously while `watch` registers — a collection's
+/// populated emission reports the current contents as an insertion. That
+/// registration-time emission echoes the value a `snapshot()` beside the call
+/// reads, so it must not count as an update: the callback arms only after
+/// `watch` returns.
+fn subscribe_signal<S>(
+    signal: &S,
+    callback: impl Fn(nami::watcher::Context<S::Output>) + 'static,
+) -> Retain
+where
+    S: Signal + Clone + 'static,
+{
+    let armed = Rc::new(Cell::new(false));
+    let armed_for_watch = Rc::clone(&armed);
+    let guard = signal.watch(move |update| {
+        if armed_for_watch.get() {
+            callback(update);
+        }
+    });
+    armed.set(true);
+    Retain::new(guard)
+}
+
+/// The signal dependencies of one `BuiltSubview`'s cached layout.
+///
+/// `BuiltSubview::layout_if_needed` runs `RenderNode::layout` only when the
+/// inputs it caches against changed; once a pass is skipped, the frame watch
+/// registry drops the pass's subscriptions after one unread frame, so a write
+/// to a signal only that pass read never reaches the sub-view again — the
+/// cached layout stays stale. The dependency set lives beside the layout it
+/// describes: while a pass runs it is installed in
+/// [`HydroState::layout_dependencies`], where [`SemanticCore::watch_signal`]
+/// and [`HydroState::measure_signal`] record every read, and it keeps each
+/// signal subscribed for as long as the cached layout lives. An update marks
+/// `dirty` and requests one refresh, which the owning `BuiltSubview` folds
+/// into `needs_layout` — the next flush re-runs exactly that sub-view's
+/// layout.
+///
+/// `identities` is the same [`SignalWatchRegistry`] the frame pump uses: a
+/// signal with a stable identity subscribes once and the subscription is
+/// reused while every pass keeps reading it, so a steady-state pass allocates
+/// and subscribes nothing. Identity-less signals have no key to reuse under —
+/// each pass drops their previous subscriptions and re-subscribes.
+pub(super) struct LayoutDependencies {
+    /// Identity-stable dependencies: subscribed on first read and kept —
+    /// pruned back to what the latest pass read by `finish_pass`.
+    identities: SignalWatchRegistry,
+    /// The identity-less dependencies of the latest pass: subscribed fresh
+    /// every pass, so subscriptions are replaced wholesale rather than
+    /// reused.
+    anonymous: Vec<Retain>,
+    /// Set by a dependency's subscription when the signal updates. The owning
+    /// `BuiltSubview` reads it once per flush: `true` forces its layout pass
+    /// to re-run, so the next flush's `begin_pass` clears it.
+    dirty: Rc<Cell<bool>>,
+    /// Refresh requester the dependency subscriptions' update callbacks use.
+    signals: FrameSignals,
+}
+
+impl LayoutDependencies {
+    /// An empty set for a sub-view whose layout has not run yet.
+    pub(super) fn new(signals: FrameSignals) -> Self {
+        Self {
+            identities: SignalWatchRegistry::default(),
+            anonymous: Vec::new(),
+            dirty: Rc::new(Cell::new(false)),
+            signals,
+        }
+    }
+
+    /// Whether a dependency delivered an update since the last pass — the
+    /// invalidation mark `layout_if_needed` folds into `needs_layout`.
+    pub(super) fn is_dirty(&self) -> bool {
+        self.dirty.get()
+    }
+
+    /// Opens a collection pass: a clean dirty flag, a fresh sweep window for
+    /// the identity set, and the previous pass's identity-less subscriptions
+    /// dropped (the pass re-subscribes each one it still reads).
+    pub(super) fn begin_pass(&mut self) {
+        self.dirty.set(false);
+        self.identities.begin_frame();
+        self.anonymous.clear();
+    }
+
+    /// Closes the pass: identity subscriptions this pass did not read are
+    /// swept — the layout they fed is gone.
+    pub(super) fn finish_pass(&mut self) {
+        self.identities.finish_frame();
+    }
+
+    /// Records one signal read as a dependency of the cached layout this set
+    /// describes.
+    fn watch<S>(&mut self, signal: &S)
+    where
+        S: Signal + Clone + 'static,
+    {
+        if let Some(identity) = signal.identity() {
+            let key = identity.raw();
+            let signal_type = core::any::TypeId::of::<S>();
+            if self.identities.mark_seen(key, signal_type) {
+                return;
+            }
+            let guard = self.subscribe(signal);
+            self.identities
+                .insert(key, signal_type, Box::new(signal.clone()), guard);
+        } else {
+            self.anonymous.push(self.subscribe(signal));
+        }
+    }
+
+    /// One subscription marking the set dirty on an update. A refresh is
+    /// requested only on the dirty edge — the owning `BuiltSubview` folds the
+    /// flag into `needs_layout` on that frame, so a busy signal read by a
+    /// sub-view whose layout stays cached (hidden off-screen, or yet to
+    /// settle) requests one frame, not one per write.
+    fn subscribe<S>(&self, signal: &S) -> Retain
+    where
+        S: Signal + Clone + 'static,
+    {
+        let dirty = Rc::clone(&self.dirty);
+        let signals = self.signals.clone();
+        subscribe_signal(signal, move |_| {
+            if !dirty.replace(true) {
+                signals.request_refresh();
+            }
+        })
+    }
+}
+
+impl HydroState {
+    /// Reads `signal` at measure time: a plain `snapshot()`, plus — while a
+    /// `BuiltSubview` layout pass is collecting — a record in the pass's
+    /// dependency set so an update invalidates the cached layout that read
+    /// it. Measure paths hold `&mut HydroState`, not the renderer, so layout
+    /// reads through `snapshot()` here would otherwise leave no watch
+    /// anywhere once the layout result is cached.
+    pub(crate) fn measure_signal<S>(&mut self, signal: &S) -> S::Output
+    where
+        S: Signal + Clone + 'static,
+    {
+        if let Some(dependencies) = &mut self.layout_dependencies {
+            dependencies.watch(signal);
+        }
+        signal.snapshot()
+    }
+}
+
 struct SubscribedSnapshotState<T> {
     pending: Vec<nami::watcher::Context<T>>,
     handler: Option<SignalUpdateHandler<T>>,
@@ -60,28 +211,22 @@ impl SemanticCore {
     where
         S: Signal + Clone + 'static,
     {
+        // Inside a `BuiltSubview` layout pass the read is also a dependency of
+        // the cached layout it produces: the dependency set keeps the signal
+        // watched — and the sub-view's layout invalidated — for as long as
+        // that layout stays cached.
+        if let Some(dependencies) = &mut self.state.layout_dependencies {
+            dependencies.watch(signal);
+        }
         // A reactive *value* change re-flushes the retained tree (re-read, re-layout,
         // re-encode) — the cheap per-frame pump — instead of re-running the whole view
         // `body()`. Structural changes go through `Dynamic`/`when` (a patch), not a
         // plain signal read, so a refresh is sufficient here.
-        // Some signals emit synchronously while `watch` registers — a
-        // collection's populated emission reports the current contents as an
-        // insertion. That registration-time emission echoes the value the
-        // caller's `snapshot()` reads this frame, so it must not count as a new
-        // update; only a callback invoked after `watch` returns requests a
-        // refresh.
-        let armed = Rc::new(Cell::new(false));
-        let armed_for_watch = Rc::clone(&armed);
         let Some(identity) = signal.identity() else {
             // Identity-less signal: subscribe fresh each read, retained for one frame.
             let signals = self.signals.clone();
-            let guard = signal.watch(move |_| {
-                if armed_for_watch.get() {
-                    signals.request_refresh();
-                }
-            });
-            armed.set(true);
-            self.lifecycle.current_frame_retain.push(Retain::new(guard));
+            let guard = subscribe_signal(signal, move |_| signals.request_refresh());
+            self.lifecycle.current_frame_retain.push(guard);
             return;
         };
         // Identity-stable signal: one subscription per signal, reused across frames
@@ -92,18 +237,10 @@ impl SemanticCore {
             return;
         }
         let signals = self.signals.clone();
-        let guard = signal.watch(move |_| {
-            if armed_for_watch.get() {
-                signals.request_refresh();
-            }
-        });
-        armed.set(true);
-        self.lifecycle.signal_watches.insert(
-            key,
-            signal_type,
-            Box::new(signal.clone()),
-            Retain::new(guard),
-        );
+        let guard = subscribe_signal(signal, move |_| signals.request_refresh());
+        self.lifecycle
+            .signal_watches
+            .insert(key, signal_type, Box::new(signal.clone()), guard);
     }
 
     pub(crate) fn read_signal<S>(&mut self, signal: &S) -> S::Output

@@ -116,7 +116,7 @@ pub fn progress_accessibility(
 pub fn measure_progress_node(
     render_state: &ProgressRenderState,
     _proposal: ProposalSize,
-    _state: &mut HydroState,
+    state: &mut HydroState,
     env: &Environment,
     theme: &Rc<dyn crate::engine::WidgetTheme>,
 ) -> ViewDimensions {
@@ -130,7 +130,7 @@ pub fn measure_progress_node(
                     .size,
             )
             .max(metrics.label_height);
-            let value_label_height = if render_state.value.snapshot().is_finite() {
+            let value_label_height = if state.measure_signal(&render_state.value).is_finite() {
                 metrics.value_label_top_spacing + label_height
             } else {
                 0.0

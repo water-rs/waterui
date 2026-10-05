@@ -820,21 +820,7 @@ impl Presenter {
         let Some(frame) = window.acquire(device)? else {
             return Ok(None);
         };
-        let alpha = match window.config.alpha_mode {
-            wgpu::CompositeAlphaMode::PreMultiplied | wgpu::CompositeAlphaMode::Inherit => {
-                OutputAlpha::Premultiplied
-            }
-            // Core Animation composites a non-opaque layer's contents as
-            // premultiplied; wgpu's Metal backend offers exactly that mode,
-            // under the name `PostMultiplied`.
-            #[cfg(target_vendor = "apple")]
-            wgpu::CompositeAlphaMode::PostMultiplied => OutputAlpha::Premultiplied,
-            #[cfg(not(target_vendor = "apple"))]
-            wgpu::CompositeAlphaMode::PostMultiplied => OutputAlpha::Straight,
-            wgpu::CompositeAlphaMode::Auto | wgpu::CompositeAlphaMode::Opaque => {
-                OutputAlpha::Opaque
-            }
-        };
+        let alpha = surface_output_alpha(window.config.alpha_mode);
         self.texture(
             device,
             queue,
@@ -1048,7 +1034,7 @@ pub enum OutputColor {
 }
 
 /// Alpha convention of a host-owned presentation texture.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutputAlpha {
     /// The destination is opaque.
     Opaque,
@@ -1058,6 +1044,32 @@ pub enum OutputAlpha {
     Premultiplied,
     /// Channels are independent of alpha.
     Straight,
+}
+
+/// The [`OutputAlpha`] a surface's composite alpha mode reads.
+///
+/// `PreMultiplied` reads premultiplied by definition, and `Inherit` inherits
+/// the platform compositor's convention — premultiplied on the
+/// alpha-capable visuals that report it, such as X11's ARGB visuals.
+/// `PostMultiplied` is `setOpaque(false)` on a `CAMetalLayer`, and Core
+/// Animation composites the layer's contents as premultiplied; outside
+/// Apple targets the mode reads straight. `Auto` and `Opaque` discard the
+/// alpha channel.
+///
+/// Every host that configures its own swapchain derives its output alpha
+/// from this function rather than carrying its own mapping.
+#[must_use]
+pub const fn surface_output_alpha(mode: wgpu::CompositeAlphaMode) -> OutputAlpha {
+    match mode {
+        wgpu::CompositeAlphaMode::PreMultiplied | wgpu::CompositeAlphaMode::Inherit => {
+            OutputAlpha::Premultiplied
+        }
+        #[cfg(target_vendor = "apple")]
+        wgpu::CompositeAlphaMode::PostMultiplied => OutputAlpha::Premultiplied,
+        #[cfg(not(target_vendor = "apple"))]
+        wgpu::CompositeAlphaMode::PostMultiplied => OutputAlpha::Straight,
+        wgpu::CompositeAlphaMode::Auto | wgpu::CompositeAlphaMode::Opaque => OutputAlpha::Opaque,
+    }
 }
 
 /// A host-owned texture and its presentation conventions.
@@ -1084,8 +1096,8 @@ mod tests {
     };
 
     use super::{
-        DestinationPrimaries, OutputColor, OutputRequest, SelectionReason, TransferEncoding,
-        select_output,
+        DestinationPrimaries, OutputAlpha, OutputColor, OutputRequest, SelectionReason,
+        TransferEncoding, select_output, surface_output_alpha,
     };
     use crate::DisplaySync;
 
@@ -1519,6 +1531,30 @@ mod tests {
                     Err(cherenkov::SurfaceError::UnsupportedTarget(_))
                 ),
                 "{modes:?} must not be substituted for unsynchronized presentation"
+            );
+        }
+    }
+
+    #[test]
+    fn every_composite_alpha_mode_maps_to_one_output_alpha() {
+        use wgpu::CompositeAlphaMode as M;
+        let cases: &[(M, OutputAlpha)] = &[
+            (M::Auto, OutputAlpha::Opaque),
+            (M::Opaque, OutputAlpha::Opaque),
+            (M::Inherit, OutputAlpha::Premultiplied),
+            (M::PreMultiplied, OutputAlpha::Premultiplied),
+            // Core Animation reads a non-opaque layer premultiplied; the
+            // mode is straight elsewhere.
+            #[cfg(target_vendor = "apple")]
+            (M::PostMultiplied, OutputAlpha::Premultiplied),
+            #[cfg(not(target_vendor = "apple"))]
+            (M::PostMultiplied, OutputAlpha::Straight),
+        ];
+        for &(mode, expected) in cases {
+            assert_eq!(
+                surface_output_alpha(mode),
+                expected,
+                "{mode:?} must present as {expected:?}"
             );
         }
     }

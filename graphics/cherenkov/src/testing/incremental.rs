@@ -681,8 +681,7 @@ async fn assert_patch_counts<R: Renderer>(
 /// A surface wake-up with no host behind it: the harness drives the
 /// renderer directly and renders on its own schedule.
 fn unhosted_waker() -> crate::CompletionWaker {
-    let engine = crate::engine::SharedWaker::new(crate::engine::Waker::new());
-    crate::CompletionWaker::new(&crate::engine::SharedWaker::new(
-        crate::engine::SurfaceWaker::new(engine),
-    ))
+    crate::CompletionWaker::new(&std::sync::Arc::new(crate::engine::SurfaceWaker::new(
+        || {},
+    )))
 }
