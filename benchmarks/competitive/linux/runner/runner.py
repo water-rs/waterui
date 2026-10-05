@@ -857,6 +857,9 @@ def main() -> int:
     ap.add_argument("--only", type=str, default="")
     ap.add_argument("--workload", type=str, default="")
     ap.add_argument("--skip-build", action="store_true")
+    ap.add_argument("--build-only", action="store_true",
+                    help="build the image and every contestant, stage them "
+                    "under dist/, and stop — no measurement, no GPU need")
     ap.add_argument("--development", action="store_true",
                     help="permit a software GPU adapter (llvmpipe/lavapipe) "
                     "and mark the run development-only")
@@ -974,6 +977,10 @@ def main() -> int:
     else:
         staged = {c: f"dist/{c}" for c in CONTESTANT_CMDS
                   if not only or c in only}
+    if args.build_only:
+        for c, d in staged.items():
+            print(f"   staged {c} -> {ROOT / d}")
+        return 0
 
     # No adapter-forcing env ever exports — which GPU hydrolysis picks is
     # what the evidence must record, not what the runner dictates.
