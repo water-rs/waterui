@@ -1395,53 +1395,59 @@ mod owner_lifetimes {
 
     /// One consolidated regression for #1575: mount the repaired owner
     /// classes in a single tree, prove the drop releases the whole
-    /// subtree, then prove a remount keeps working.
+    /// subtree, then prove a remount keeps working. The mount, the
+    /// submitted work, the drop and the queued drain all live inside a
+    /// bounded `autoreleasepool` — only `Weak` handles escape it, so a
+    /// surviving read outside proves a real retainer, never a pooled
+    /// temporary (mirrors the ownership fixture's idiom).
     pub fn a_dropped_mounted_hierarchy_releases_views_and_remounts() {
         let mtm = mtm();
+        // Shared env, binding and membership live outside the pool — a
+        // weak read that still answers `Some` afterwards names a real
+        // retainer, not a pooled autorelease.
         let track = binding(String::from("first"));
         let items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }]);
 
-        // A real (never shown) window runs the view layer's layout path —
-        // the parent's handler frames the mounted tree and the lazy stack
-        // materializes its visible-window rows.
-        let leaf_inst = resolve::render(hierarchy(&track, &items));
-        let parent = HostView::new(mtm, cocoa_ui::Rect::ZERO);
-        let mounted = leaf_inst.mount(&parent);
-        let child_view: objc2::rc::Weak<PlatformView> =
-            objc2::rc::Weak::new(&cocoa_ui::view::retain_base(mounted.view()));
-        parent.set_layout_handler(move |host| {
-            let host_view: &PlatformView = host;
-            if let Some(child) = child_view.load() {
-                cocoa_ui::view::set_frame(&child, cocoa_ui::view::bounds(host_view));
-            }
+        let weaks = objc2::rc::autoreleasepool(|_| {
+            let leaf_inst = resolve::render(hierarchy(&track, &items));
+            let parent = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+            let mounted = leaf_inst.mount(&parent);
+            let child_view: objc2::rc::Weak<PlatformView> =
+                objc2::rc::Weak::new(&cocoa_ui::view::retain_base(mounted.view()));
+            parent.set_layout_handler(move |host| {
+                let host_view: &PlatformView = host;
+                if let Some(child) = child_view.load() {
+                    cocoa_ui::view::set_frame(&child, cocoa_ui::view::bounds(host_view));
+                }
+            });
+            let _window = leaf::attach(mtm, &parent);
+            parent.set_needs_layout();
+            parent.layout_if_needed();
+            pump();
+            parent.layout_if_needed();
+
+            let mut weaks = Vec::new();
+            weak_views(mounted.view(), &mut weaks);
+            assert!(weaks.len() > 3, "the fixture must mount a real hierarchy");
+            assert!(weaks.iter().all(|w| w.load().is_some()));
+
+            // Submitted work while alive: the binding write lands on the
+            // mounted text and the pushed member mounts through membership.
+            track.set(String::from("second"));
+            items.push(Row { id: 3 });
+            parent.layout_if_needed();
+            pump();
+            parent.layout_if_needed();
+            let mut texts = Vec::new();
+            label_texts(mounted.view(), &mut texts);
+            assert!(texts.iter().any(|t| t.contains("second")));
+            assert!(texts.iter().any(|t| t.contains("row 3")));
+
+            drop(mounted);
+            pump();
+            weaks
         });
-        let _window = leaf::attach(mtm, &parent);
-        parent.set_needs_layout();
-        parent.layout_if_needed();
-        pump();
-        parent.layout_if_needed();
 
-        let mut weaks = Vec::new();
-        weak_views(mounted.view(), &mut weaks);
-        assert!(weaks.len() > 3, "the fixture must mount a real hierarchy");
-        assert!(weaks.iter().all(|w| w.load().is_some()));
-
-        // Submitted work while alive: the binding write lands on the
-        // mounted text and the pushed member mounts through membership.
-        track.set(String::from("second"));
-        items.push(Row { id: 3 });
-        parent.layout_if_needed();
-        pump();
-        parent.layout_if_needed();
-        let mut texts = Vec::new();
-        label_texts(mounted.view(), &mut texts);
-        assert!(texts.iter().any(|t| t.contains("second")));
-        assert!(texts.iter().any(|t| t.contains("row 3")));
-
-        // The drop: every weak view in the subtree must die — the owner
-        // states retaining them are gone, so the whole teardown ran.
-        drop(mounted);
-        pump();
         let mut survivors = Vec::new();
         for weak in &weaks {
             if let Some(view) = weak.load() {
@@ -1455,44 +1461,61 @@ mod owner_lifetimes {
 
         // Post-owner callbacks cease naturally: a later write reaches no
         // dead owner and cannot panic through a cleared weak edge.
-        track.set(String::from("third"));
-        pump();
+        objc2::rc::autoreleasepool(|_| {
+            track.set(String::from("third"));
+            pump();
+        });
 
         // Remount through the same shared env: measurement, binding and
-        // membership all still work.
-        let leaf_inst = resolve::render(hierarchy(&track, &items));
-        assert!(
-            leaf_inst
-                .layout()
-                .measure(ProposalSize::new(Some(400.0), Some(200.0)))
-                .size
-                .width
-                > 0.0,
-            "the remounted hierarchy still answers measure"
-        );
-        let parent = HostView::new(mtm, cocoa_ui::Rect::ZERO);
-        let mounted = leaf_inst.mount(&parent);
-        let child_view: objc2::rc::Weak<PlatformView> =
-            objc2::rc::Weak::new(&cocoa_ui::view::retain_base(mounted.view()));
-        parent.set_layout_handler(move |host| {
-            let host_view: &PlatformView = host;
-            if let Some(child) = child_view.load() {
-                cocoa_ui::view::set_frame(&child, cocoa_ui::view::bounds(host_view));
-            }
+        // membership all still work, and the remounted tree releases too.
+        let weaks = objc2::rc::autoreleasepool(|_| {
+            let leaf_inst = resolve::render(hierarchy(&track, &items));
+            assert!(
+                leaf_inst
+                    .layout()
+                    .measure(ProposalSize::new(Some(400.0), Some(200.0)))
+                    .size
+                    .width
+                    > 0.0,
+                "the remounted hierarchy still answers measure"
+            );
+            let parent = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+            let mounted = leaf_inst.mount(&parent);
+            let child_view: objc2::rc::Weak<PlatformView> =
+                objc2::rc::Weak::new(&cocoa_ui::view::retain_base(mounted.view()));
+            parent.set_layout_handler(move |host| {
+                let host_view: &PlatformView = host;
+                if let Some(child) = child_view.load() {
+                    cocoa_ui::view::set_frame(&child, cocoa_ui::view::bounds(host_view));
+                }
+            });
+            let _window = leaf::attach(mtm, &parent);
+            parent.set_needs_layout();
+            parent.layout_if_needed();
+            track.set(String::from("fourth"));
+            items.push(Row { id: 4 });
+            pump();
+            parent.layout_if_needed();
+            pump();
+            let mut texts = Vec::new();
+            label_texts(mounted.view(), &mut texts);
+            assert!(texts.iter().any(|t| t.contains("fourth")));
+            assert!(texts.iter().any(|t| t.contains("row 4")));
+            let mut weaks = Vec::new();
+            weak_views(mounted.view(), &mut weaks);
+            drop(mounted);
+            pump();
+            weaks
         });
-        let _window = leaf::attach(mtm, &parent);
-        parent.set_needs_layout();
-        parent.layout_if_needed();
-        track.set(String::from("fourth"));
-        items.push(Row { id: 4 });
-        pump();
-        parent.layout_if_needed();
-        pump();
-        let mut texts = Vec::new();
-        label_texts(mounted.view(), &mut texts);
-        assert!(texts.iter().any(|t| t.contains("fourth")));
-        assert!(texts.iter().any(|t| t.contains("row 4")));
-        drop(mounted);
-        pump();
+        let mut survivors = Vec::new();
+        for weak in &weaks {
+            if let Some(view) = weak.load() {
+                survivors.push(view.class().name().to_owned());
+            }
+        }
+        assert!(
+            survivors.is_empty(),
+            "the remounted hierarchy must release the same way: {survivors:?}"
+        );
     }
 }
