@@ -636,7 +636,9 @@ fn windows_pointer_position() -> Option<(f64, f64)> {
     use windows_sys::Win32::Foundation::POINT;
     use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
     let mut point = POINT { x: 0, y: 0 };
-    (unsafe { GetCursorPos(&mut point) } != 0).then(|| (f64::from(point.x), f64::from(point.y)))
+    // SAFETY: `point` is a valid, writable `POINT` for the duration of the
+    // call, which is all `lpPoint` requires.
+    (unsafe { GetCursorPos(&raw mut point) } != 0).then(|| (f64::from(point.x), f64::from(point.y)))
 }
 
 /// The monitor's work area from `GetMonitorInfoW.rcWork` (physical pixels,
@@ -661,9 +663,13 @@ fn windows_visible_frame(spec: &MonitorSpec) -> Option<FrameSpec> {
         _rect: *mut RECT,
         data: LPARAM,
     ) -> BOOL {
+        // SAFETY: `data` is the `&mut Lookup` the enclosing call handed
+        // `EnumDisplayMonitors`, which runs this callback synchronously on
+        // the calling thread before it returns — the pointer is valid and
+        // no other reference to `lookup` exists for the call.
         let lookup = unsafe { &mut *(data as *mut Lookup) };
         let mut info = MONITORINFO {
-            cbSize: size_of::<MONITORINFO>() as u32,
+            cbSize: u32::try_from(size_of::<MONITORINFO>()).expect("MONITORINFO's size fits u32"),
             rcMonitor: RECT {
                 left: 0,
                 top: 0,
@@ -678,7 +684,9 @@ fn windows_visible_frame(spec: &MonitorSpec) -> Option<FrameSpec> {
             },
             dwFlags: 0,
         };
-        if unsafe { GetMonitorInfoW(monitor, &mut info) } == 0 {
+        // SAFETY: `info` is a valid, writable `MONITORINFO` with `cbSize`
+        // set, which is what the call requires.
+        if unsafe { GetMonitorInfoW(monitor, &raw mut info) } == 0 {
             return TRUE;
         }
         if monitor == lookup.hmonitor {
@@ -693,12 +701,16 @@ fn windows_visible_frame(spec: &MonitorSpec) -> Option<FrameSpec> {
         hmonitor: spec.handle.hmonitor(),
         work_area: None,
     };
+    // SAFETY: `EnumDisplayMonitors` runs `find_monitor` synchronously on
+    // this thread before it returns, so `lookup` outlives every callback
+    // and the `&mut` the callback dereferences stays unique; a null HDC
+    // and null clip rect enumerate every monitor's full frame.
     unsafe {
         EnumDisplayMonitors(
             0,
             std::ptr::null(),
             Some(find_monitor),
-            (&mut lookup) as *mut _ as LPARAM,
+            &raw mut lookup as LPARAM,
         );
     }
     let work = lookup.work_area?;
@@ -876,12 +888,16 @@ fn apply_windows_noactivate(native_window: &NativeWindow, never: bool) {
         return;
     };
     let hwnd = win32.hwnd.get() as windows_sys::Win32::Foundation::HWND;
+    let flag = isize::try_from(WS_EX_NOACTIVATE).expect("WS_EX_NOACTIVATE's bit fits isize");
+    // SAFETY: `hwnd` is the window's live Win32 handle for as long as the
+    // `NativeWindow` lives; the calls only read and rewrite its
+    // extended-style word.
     unsafe {
         let mut extended = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
         if never {
-            extended |= WS_EX_NOACTIVATE as isize;
+            extended |= flag;
         } else {
-            extended &= !(WS_EX_NOACTIVATE as isize);
+            extended &= !flag;
         }
         SetWindowLongPtrW(hwnd, GWL_EXSTYLE, extended);
     }

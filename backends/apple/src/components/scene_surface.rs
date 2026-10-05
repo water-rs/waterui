@@ -11,7 +11,7 @@ use waterui_graphics::cherenkov_gpu::{
     interop::{OutputAlpha, OutputColor, Presenter, TextureOutput, TextureTarget, shader_delivery},
 };
 use waterui_graphics::draw::{Content, Draw, kurbo};
-use waterui_graphics::gpu::{GpuRuntime, RedrawHandle, SharedGpuContext};
+use waterui_graphics::gpu::{GpuRuntime, HostedLayerError, RedrawHandle, SharedGpuContext};
 use waterui_graphics::input::SurfaceInputEvent;
 use waterui_graphics::offscreen::OffscreenSize;
 use waterui_graphics::resources::{HeldResources, SceneResources};
@@ -21,7 +21,7 @@ use waterui_graphics::scene_view::{
 use waterui_graphics::wgpu;
 
 use super::{HostedError, HostedRenderer, HostedView};
-use crate::gpu_runtime::{EngineGeneration, SceneEngine, SceneError, SceneParticipant};
+use crate::gpu_runtime::{EngineGeneration, SceneEngine, SceneParticipant};
 
 /// Content and its structural invalidation survive ordinary frame submissions.
 pub struct Scene {
@@ -193,7 +193,7 @@ struct ScenePart {
     prepared: Cell<Option<FrameTime>>,
     /// The failure this scene must report — its own prepare error, or a
     /// batch failure the generation routed to it.
-    failure: RefCell<Option<Rc<SceneError>>>,
+    failure: RefCell<Option<Rc<HostedLayerError>>>,
 }
 
 /// The mounted `SceneView`'s handle into an [`EngineGeneration`]: the
@@ -209,7 +209,7 @@ impl ScenePart {
         redraw: &RedrawHandle,
         size: OffscreenSize,
         scene: &Scene,
-    ) -> Result<Rc<Self>, SceneError> {
+    ) -> Result<Rc<Self>, HostedLayerError> {
         let context = generation.context().clone();
         let (target, textures) = TextureTarget::new((size.width(), size.height()));
         // `TextureTarget::new` always opens on the engine's default range;
@@ -221,15 +221,13 @@ impl ScenePart {
         let wake = redraw.clone();
         let surface = generation
             .engine()
-            .surface(target, move || wake.request_redraw())
-            .map_err(SceneError::Surface)?;
+            .surface(target, move || wake.request_redraw())?;
         let source = textures
             .try_recv()
-            .map_err(|_| SceneError::MissingTexture)?;
+            .expect("a TextureTarget publishes its texture when its surface is created");
         let presenter = Presenter::new(
             context.device(),
-            shader_delivery(context.adapter().get_info().backend, context.device())
-                .map_err(SceneError::Shaders)?,
+            shader_delivery(context.adapter().get_info().backend, context.device())?,
         );
         // `rebuild_for_engine` clears the content's engine-bound state,
         // including the watchers its invalidator feeds — so the mounted
@@ -282,7 +280,7 @@ impl ScenePart {
     /// Applies the staged contract and any pending content onto this
     /// scene's own surface — `SceneParticipant::prepare`'s body, kept
     /// separate so tests can drive it without a batch.
-    fn apply_staged(&self) -> Result<(), SceneError> {
+    fn apply_staged(&self) -> Result<(), HostedLayerError> {
         let (width, height, display) = self.staged.get();
         let pixels = (width, height);
         if self.surface.size() != pixels {
@@ -373,7 +371,7 @@ impl SceneParticipant for ScenePart {
         self.prepared.get() == Some(time) && !self.pending.get() && !self.dirty.get()
     }
 
-    fn note_failure(&self, failure: Rc<SceneError>) {
+    fn note_failure(&self, failure: Rc<HostedLayerError>) {
         // An unsettled earlier failure is never overwritten — the owner
         // settles the first typed failure it was woken for.
         self.failure.borrow_mut().get_or_insert(failure);
@@ -384,7 +382,7 @@ impl SceneParticipant for ScenePart {
         self.redraw.request_redraw();
     }
 
-    fn take_failure(&self) -> Option<Rc<SceneError>> {
+    fn take_failure(&self) -> Option<Rc<HostedLayerError>> {
         self.failure.borrow_mut().take()
     }
 }
@@ -398,7 +396,7 @@ impl SceneRenderer {
         redraw: &RedrawHandle,
         size: OffscreenSize,
         scene: &Scene,
-    ) -> Result<Self, Rc<SceneError>> {
+    ) -> Result<Self, Rc<HostedLayerError>> {
         let generation = engines.generation(runtime, context)?;
         let part = ScenePart::new(&generation, redraw, size, scene)?;
         let participant: Rc<dyn SceneParticipant> = part.clone();
@@ -415,7 +413,11 @@ impl SceneRenderer {
     /// Applies the staged frame contract now — the test driver for what
     /// `produce` does inside a batch.
     #[cfg(all(test, target_os = "macos"))]
-    fn record_if_needed(&self, target: &wgpu::Texture, display: Display) -> Result<(), SceneError> {
+    fn record_if_needed(
+        &self,
+        target: &wgpu::Texture,
+        display: Display,
+    ) -> Result<(), HostedLayerError> {
         self.part.stage((target.width(), target.height()), display);
         self.part.apply_staged()
     }
@@ -501,6 +503,7 @@ mod tests {
 
     use waterui::{Binding, SignalExt, binding};
     use waterui_core::{AnyView, Environment, View};
+    use waterui_graphics::cherenkov::RenderError;
     use waterui_graphics::draw::{Command, Draw, Paint, Recorder, WorkingColor};
     use waterui_graphics::resources::RecordingResources;
     use waterui_graphics::scene_view::{SceneContent, SceneViewMergeToParent};
@@ -949,7 +952,7 @@ mod tests {
         let generation = engines
             .generation(&runtime, &context)
             .expect("the shared generation");
-        generation.fail_for_testing(SceneError::MissingTexture);
+        generation.fail_for_testing(HostedLayerError::Render(RenderError::DeviceLost));
 
         // Each affected owner was summoned through its own redraw handle.
         assert_eq!(
@@ -991,7 +994,10 @@ mod tests {
         assert!(
             generation
                 .produce(FrameTime(std::time::Instant::now()))
-                .is_err_and(|error| matches!(*error, SceneError::MissingTexture)),
+                .is_err_and(|error| matches!(
+                    *error,
+                    HostedLayerError::Render(RenderError::DeviceLost)
+                )),
             "the retained failed generation never retries"
         );
     }

@@ -339,6 +339,14 @@ impl Renderer for RasterRenderer {
         }
     }
 
+    fn image_limits(&self) -> cherenkov::ImageLimits {
+        cherenkov::ImageLimits {
+            max_dimension: u32::MAX,
+            // The decoded image is f32 RGBA: sixteen bytes a texel.
+            max_texels: self.image_budget / 16,
+        }
+    }
+
     fn add_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError> {
         let resident: u64 = self.images.values().map(|image| image.bytes()).sum();
         let required = u64::from(image.width)

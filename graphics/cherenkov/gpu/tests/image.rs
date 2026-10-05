@@ -289,10 +289,11 @@ fn an_f16_image_keeps_hdr_and_wide_gamut() -> Result<(), Box<dyn std::error::Err
 }
 
 split_test! {
-/// An image larger than the device's texture limit is a rejection only the
-/// backend can detect: registration returns the handle, and the render
-/// that draws the image fails naming it and the backend's reason.
-fn an_image_beyond_the_texture_limit_fails_the_render_that_draws_it()
+/// An image larger than the device's texture limit is rejected where it
+/// is registered: `Engine::image` returns `TooLarge` naming the limits
+/// the engine read off the device and budget, nothing is queued, and the
+/// app goes on rendering.
+fn an_image_beyond_the_texture_limit_fails_registration()
 -> Result<(), Box<dyn std::error::Error>> {
     let shared = match wait!(cherenkov_gpu::interop::SharedDevice::create(&GpuConfig::default())) {
         Ok(shared) => shared,
@@ -304,27 +305,74 @@ fn an_image_beyond_the_texture_limit_fails_the_render_that_draws_it()
         device: Some(shared),
         ..GpuConfig::default()
     }))?;
-    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {}))?;
-    let image = engine.image(ImageData::<Rgba8>::new(
+    let limits = engine.image_limits();
+    assert_eq!(
+        limits.max_dimension,
+        width - 1,
+        "the limit is the device's max_texture_dimension_2d"
+    );
+    match engine.image(ImageData::<Rgba8>::new(
         width,
         1,
         vec![255; width as usize * 4],
-    )?)?;
+    )?) {
+        Err(cherenkov::ResourceError::TooLarge {
+            width: rejected_width,
+            height,
+            limits: rejected_limits,
+        }) => {
+            assert_eq!((rejected_width, height), (width, 1));
+            assert_eq!(rejected_limits, limits);
+        }
+        other => panic!("an oversized image registered: {other:?}"),
+    }
+
+    // The rejection never reached the backend: the engine still renders.
+    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].record(|c| {
-            c.image(image.id(), Rect::new(0.0, 0.0, 8.0, 8.0), Sampling::Nearest);
+            c.fill(
+                Rect::new(0.0, 0.0, 8.0, 8.0),
+                cherenkov::WorkingColor::WHITE,
+            );
         });
     });
-    match wait!(engine.render(cherenkov::FrameTime::now())) {
-        Err(cherenkov::RenderError::Rejected { resource, reason }) => {
-            assert_eq!(resource, cherenkov::ResourceId::Image(image.id()));
-            assert!(
-                matches!(*reason, cherenkov::ResourceError::Image(_)),
-                "{reason}"
-            );
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    Ok(())
+}
+}
+
+split_test! {
+/// An image inside the dimension limit but over the per-image share of
+/// the GPU budget — eight bytes a texel — is rejected at registration
+/// too.
+fn an_image_beyond_the_per_image_budget_fails_registration()
+-> Result<(), Box<dyn std::error::Error>> {
+    let budget = cherenkov::Bytes::mib(1);
+    let engine = match wait!(Engine::<Gpu>::new(GpuConfig {
+        budget: cherenkov::Budget {
+            gpu: budget,
+            cpu: budget,
+        },
+        ..GpuConfig::default()
+    })) {
+        Ok(engine) => engine,
+        Err(EngineError::Backend(_)) => return Ok(()),
+        Err(e) => panic!("engine init failed: {e}"),
+    };
+    let limits = engine.image_limits();
+    assert_eq!(limits.max_texels, budget.0 / 8);
+    // 512×512 = 262144 texels > 131072, each side well under the
+    // dimension limit: only the texel budget binds.
+    assert!(limits.max_dimension >= 512);
+    match engine.image(ImageData::<Rgba8>::new(512, 512, vec![255; 512 * 512 * 4])?) {
+        Err(cherenkov::ResourceError::TooLarge { limits: rejected, .. }) => {
+            assert_eq!(rejected, limits);
         }
-        other => panic!("an oversized image was drawn: {other:?}"),
+        other => panic!("an over-budget image registered: {other:?}"),
     }
+    // An admitted image of the same format registers.
+    engine.image(ImageData::<Rgba8>::new(256, 256, vec![255; 256 * 256 * 4])?)?;
     Ok(())
 }
 }

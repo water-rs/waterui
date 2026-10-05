@@ -17,12 +17,12 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use waterui_backend_core::Environment;
 #[cfg(feature = "gpu_surface")]
-use waterui_graphics::cherenkov::{Engine, EngineError, FrameTime, RenderError, SurfaceError};
+use waterui_graphics::cherenkov::{Engine, FrameTime};
 #[cfg(feature = "gpu_surface")]
 use waterui_graphics::cherenkov_gpu::Gpu;
 use waterui_graphics::gpu::GpuRuntime;
 #[cfg(feature = "gpu_surface")]
-use waterui_graphics::gpu::SharedGpuContext;
+use waterui_graphics::gpu::{HostedLayerError, SharedGpuContext};
 #[cfg(feature = "gpu_surface")]
 use wgpu_hal::api::Metal as MetalApi;
 
@@ -102,65 +102,6 @@ pub fn raw_metal_device(context: &SharedGpuContext) -> Retained<ProtocolObject<d
     }
 }
 
-/// What creating, preparing or rendering through a scene engine generation
-/// can fail with — a typed result on the frame path, where a panic is a
-/// process abort, instead of an `expect` across an Objective-C callback.
-#[cfg(feature = "gpu_surface")]
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum SceneError {
-    /// The shared engine could not be created on this context generation.
-    Engine(EngineError),
-    /// The presentation shader set could not be built.
-    Shaders(EngineError),
-    /// The scene's surface rejected a resize or display update.
-    Surface(SurfaceError),
-    /// The produced batch's shared engine render failed.
-    Render(RenderError),
-    /// The created surface published no texture — the engine/target
-    /// contract is broken, not a recoverable state.
-    MissingTexture,
-}
-
-#[cfg(feature = "gpu_surface")]
-impl core::fmt::Display for SceneError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Engine(error) => write!(f, "scene engine creation failed: {error}"),
-            Self::Shaders(error) => write!(f, "scene presentation shaders failed: {error}"),
-            Self::Surface(error) => write!(f, "scene surface failed: {error}"),
-            Self::Render(error) => write!(f, "scene engine render failed: {error}"),
-            Self::MissingTexture => write!(f, "scene surface published no texture"),
-        }
-    }
-}
-
-#[cfg(feature = "gpu_surface")]
-impl std::error::Error for SceneError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Engine(error) | Self::Shaders(error) => Some(error),
-            Self::Surface(error) => Some(error),
-            Self::Render(error) => Some(error),
-            Self::MissingTexture => None,
-        }
-    }
-}
-
-#[cfg(feature = "gpu_surface")]
-impl From<SurfaceError> for SceneError {
-    fn from(error: SurfaceError) -> Self {
-        Self::Surface(error)
-    }
-}
-
-#[cfg(feature = "gpu_surface")]
-impl From<RenderError> for SceneError {
-    fn from(error: RenderError) -> Self {
-        Self::Render(error)
-    }
-}
-
 /// A mounted scene's preparation hook inside an [`EngineGeneration`]:
 /// applies the scene's pending content/geometry/display changes onto its
 /// own surface before the shared batch renders. Each scene implements it
@@ -181,10 +122,10 @@ pub trait SceneParticipant {
     /// Routes a batch-level failure to this participant — a shared render
     /// failure belongs to every mounted scene, not only the requester that
     /// happened to drive `produce`.
-    fn note_failure(&self, failure: Rc<SceneError>);
+    fn note_failure(&self, failure: Rc<HostedLayerError>);
     /// The scene's own failure — its prepare error or a batch failure the
     /// generation routed to it — once; a repeated read returns `None`.
-    fn take_failure(&self) -> Option<Rc<SceneError>>;
+    fn take_failure(&self) -> Option<Rc<HostedLayerError>>;
 }
 
 /// One engine generation: the shared cherenkov engine, the exact
@@ -210,7 +151,7 @@ pub struct EngineGeneration {
     /// The shared render failure once it settles: every later `produce`
     /// answers the same `Rc`'d failure without rerunning the frame — a
     /// generation never recovers, only a new context generation does.
-    failure: RefCell<Option<Rc<SceneError>>>,
+    failure: RefCell<Option<Rc<HostedLayerError>>>,
 }
 
 #[cfg(feature = "gpu_surface")]
@@ -243,7 +184,7 @@ impl EngineGeneration {
     /// later `produce` answers the same `Rc`'d failure without rerunning,
     /// and routed to every live participant so no requester waits forever
     /// or retries a frame another presenter already saw fail.
-    fn settle_failed(&self, error: SceneError) -> Rc<SceneError> {
+    fn settle_failed(&self, error: HostedLayerError) -> Rc<HostedLayerError> {
         let failure = Rc::new(error);
         *self.failure.borrow_mut() = Some(failure.clone());
         for participant in self.live() {
@@ -254,7 +195,7 @@ impl EngineGeneration {
 
     /// The retained typed failure this generation was sealed with, if
     /// any — immutable once set; a retained old generation stays failed.
-    pub fn failure(&self) -> Option<Rc<SceneError>> {
+    pub fn failure(&self) -> Option<Rc<HostedLayerError>> {
         self.failure.borrow().clone()
     }
 
@@ -267,14 +208,14 @@ impl EngineGeneration {
     ///
     /// # Errors
     ///
-    /// The shared [`Rc<SceneError>`] — [`SceneError::Render`] — when the
-    /// shared frame fails: the failure is retained on the generation,
-    /// routed to every live participant through `note_failure`, and
-    /// answered unchanged to every later `produce` — a failed generation
+    /// The shared [`Rc<HostedLayerError>`] — [`HostedLayerError::Render`] —
+    /// when the shared frame fails: the failure is retained on the
+    /// generation, routed to every live participant through `note_failure`,
+    /// and answered unchanged to every later `produce` — a failed generation
     /// never retries; only a new context generation produces fresh
     /// resources. `produced` is not stamped, so no participant consumes
     /// the failed batch as rendered.
-    pub fn produce(&self, time: FrameTime) -> Result<(), Rc<SceneError>> {
+    pub fn produce(&self, time: FrameTime) -> Result<(), Rc<HostedLayerError>> {
         if let Some(failure) = self.failure.borrow().as_ref() {
             return Err(failure.clone());
         }
@@ -289,7 +230,7 @@ impl EngineGeneration {
                 self.produced.set(Some(time));
                 Ok(())
             }
-            Err(error) => Err(self.settle_failed(SceneError::Render(error))),
+            Err(error) => Err(self.settle_failed(HostedLayerError::Render(error))),
         }
     }
 
@@ -303,7 +244,7 @@ impl EngineGeneration {
         target_os = "macos",
         feature = "gpu_surface"
     ))]
-    pub fn fail_for_testing(&self, error: SceneError) -> Rc<SceneError> {
+    pub fn fail_for_testing(&self, error: HostedLayerError) -> Rc<HostedLayerError> {
         self.settle_failed(error)
     }
 }
@@ -328,7 +269,7 @@ pub struct SceneEngine {
 /// What one context generation settled to — the shared engine generation,
 /// or the `Rc`'d creation failure every mount on it receives unchanged.
 #[cfg(feature = "gpu_surface")]
-type GenerationOutcome = Result<Rc<EngineGeneration>, Rc<SceneError>>;
+type GenerationOutcome = Result<Rc<EngineGeneration>, Rc<HostedLayerError>>;
 
 #[cfg(feature = "gpu_surface")]
 impl SceneEngine {
@@ -347,17 +288,17 @@ impl SceneEngine {
     ///
     /// # Errors
     ///
-    /// The shared [`Rc<SceneError>`] — [`SceneError::Engine`] — when the
-    /// engine cannot be created on this context. The failure is cached
-    /// against this exact generation: every later mount under it receives
-    /// the same typed failure rather than rerunning creation, and a failed
-    /// generation is never a ready one. Only a new context generation
+    /// The shared [`Rc<HostedLayerError>`] — [`HostedLayerError::Engine`] —
+    /// when the engine cannot be created on this context. The failure is
+    /// cached against this exact generation: every later mount under it
+    /// receives the same typed failure rather than rerunning creation, and a
+    /// failed generation is never a ready one. Only a new context generation
     /// attempts creation again.
     pub fn generation(
         &self,
         runtime: &GpuRuntime,
         context: &Arc<SharedGpuContext>,
-    ) -> Result<Rc<EngineGeneration>, Rc<SceneError>> {
+    ) -> Result<Rc<EngineGeneration>, Rc<HostedLayerError>> {
         let key = context.generation();
         if let Some((cached_key, outcome)) = self.current.borrow().as_ref()
             && *cached_key == key
@@ -375,7 +316,7 @@ impl SceneEngine {
                     failure: RefCell::new(None),
                 })
             })
-            .map_err(|error| Rc::new(SceneError::Engine(error)));
+            .map_err(|error| Rc::new(HostedLayerError::Engine(error)));
         *self.current.borrow_mut() = Some((key, outcome.clone()));
         outcome
     }
@@ -385,7 +326,7 @@ impl SceneEngine {
     /// can verify every later mount receives that exact typed failure
     /// without rerunning creation.
     #[cfg(all(test, target_os = "macos", feature = "gpu_surface"))]
-    pub fn install_failure_for_testing(&self, key: u64, error: SceneError) {
+    pub fn install_failure_for_testing(&self, key: u64, error: HostedLayerError) {
         *self.current.borrow_mut() = Some((key, Err(Rc::new(error))));
     }
 }
@@ -406,7 +347,7 @@ pub fn scene_engine(env: &Environment) -> Rc<SceneEngine> {
 #[cfg(all(test, target_os = "macos", feature = "gpu_surface"))]
 mod tests {
     use super::*;
-    use waterui_graphics::cherenkov::Instant;
+    use waterui_graphics::cherenkov::{EngineError, Instant, RenderError};
 
     /// A mounted scene's contract reduced to observation: whether `prepare`
     /// ran and for which timestamp, whether it is owed a later frame, and
@@ -415,7 +356,7 @@ mod tests {
         prepares: Cell<u32>,
         prepared: Cell<Option<FrameTime>>,
         pending: Cell<bool>,
-        failure: RefCell<Option<Rc<SceneError>>>,
+        failure: RefCell<Option<Rc<HostedLayerError>>>,
     }
 
     impl Probe {
@@ -441,10 +382,10 @@ mod tests {
         fn produced_at(&self, time: FrameTime) -> bool {
             self.prepared.get() == Some(time) && !self.pending.get()
         }
-        fn note_failure(&self, failure: Rc<SceneError>) {
+        fn note_failure(&self, failure: Rc<HostedLayerError>) {
             *self.failure.borrow_mut() = Some(failure);
         }
-        fn take_failure(&self) -> Option<Rc<SceneError>> {
+        fn take_failure(&self) -> Option<Rc<HostedLayerError>> {
             self.failure.borrow_mut().take()
         }
     }
@@ -464,7 +405,10 @@ mod tests {
     fn failed_creation_serves_one_typed_failure_to_every_mount() {
         let (runtime, context) = gpu();
         let engines = SceneEngine::new();
-        engines.install_failure_for_testing(context.generation(), SceneError::MissingTexture);
+        engines.install_failure_for_testing(
+            context.generation(),
+            HostedLayerError::Engine(EngineError::Backend("no adapter".into())),
+        );
         let first = engines
             .generation(&runtime, &context)
             .err()
@@ -478,7 +422,7 @@ mod tests {
             "creation ran once: both mounts carry the same owned failure"
         );
         assert!(
-            matches!(*first, SceneError::MissingTexture),
+            matches!(*first, HostedLayerError::Engine(EngineError::Backend(_))),
             "the typed failure survives unchanged"
         );
     }
@@ -502,7 +446,7 @@ mod tests {
         generation.produce(time).expect("the first batch produces");
         assert_eq!(first_part.prepares.get(), 1);
         // The shared render then fails — settled exactly once.
-        let routed = generation.fail_for_testing(SceneError::MissingTexture);
+        let routed = generation.fail_for_testing(HostedLayerError::Render(RenderError::DeviceLost));
 
         let first = generation
             .produce(time)
@@ -550,7 +494,7 @@ mod tests {
         let generation = engines
             .generation(&runtime, &context)
             .expect("the generation settles");
-        generation.fail_for_testing(SceneError::MissingTexture);
+        generation.fail_for_testing(HostedLayerError::Render(RenderError::DeviceLost));
 
         context.mark_device_lost_for_testing("test device loss");
         let fresh = pollster::block_on(runtime.context_after(context.generation()));
@@ -569,9 +513,10 @@ mod tests {
             .expect("the fresh generation produces");
         assert!(probe.produced_at(time));
         assert!(
-            generation
-                .produce(time)
-                .is_err_and(|error| matches!(*error, SceneError::MissingTexture)),
+            generation.produce(time).is_err_and(|error| matches!(
+                *error,
+                HostedLayerError::Render(RenderError::DeviceLost)
+            )),
             "the retained generation stays failed"
         );
     }
