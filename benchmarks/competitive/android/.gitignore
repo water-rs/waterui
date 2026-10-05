@@ -13,7 +13,7 @@ build/
 **/DerivedData/
 # Rust .so staging copied in by `water build` — regenerated on each build.
 **/jniLibs/
-# Lockfiles (Cargo.lock, Water.lock, package-lock) stay tracked — they are the pin record.
+# package-lock.json stays tracked — it is the pin record.
 # flutter/gradle generated trees
 **/android/.cxx/
 **/android/app/.cxx/
@@ -28,7 +28,8 @@ build/
 .flutter-plugins*
 .dart_tool/
 !**/pubspec.lock
-**/*.keystore  # debug.keystore included — keytool regenerates it at build
+# debug.keystore included — keytool regenerates it at build
+**/*.keystore
 # runner-owned caches: provisioned water CLI, verified gradle dists, bundletool
 .cache/
 traces/

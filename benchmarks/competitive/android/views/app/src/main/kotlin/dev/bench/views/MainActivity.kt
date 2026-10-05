@@ -51,11 +51,32 @@ const val FIELD_W = 720f
 const val FIELD_H = 440f
 const val RECT = 40f
 
+// xorshift64 on unsigned-64-bit state (WORKLOADS.md): `ushr` is the
+// logical shift; the Kotlin Long is two's-complement u64 bits, so
+// `u64 % 10000` is computed in two 32-bit halves (2^32 mod 10000 = 7296) —
+// a signed `%` on a high-bit state would diverge from the shared sequence.
 class XorShift64(private var s: Long) {
     fun next01(): Float {
         s = s xor (s shl 13); s = s xor (s ushr 7); s = s xor (s shl 17)
-        return (s % 10_000).toFloat() / 10_000f
+        val hi = s ushr 32
+        val lo = s and 0xFFFFFFFFL
+        val u = ((hi % 10_000) * 7296 + (lo % 10_000)) % 10_000
+        return u.toFloat() / 10_000f
     }
+}
+
+// Capacity ladders — the runner's per-launch step must name a member;
+// anything else is a failed launch, not a silent default.
+val W5_STEPS = listOf(200, 400, 800, 1600, 3200, 6400, 12800, 25600)
+val W6_STEPS = listOf(1, 2, 4, 8, 16, 32, 64)
+
+fun ladderStep(workload: String, step: Int?, ladder: List<Int>): Int {
+    if (step == null || step !in ladder) {
+        throw IllegalStateException(
+            "$workload: missing or unrecognized 'step' intent extra " +
+            "(got $step); expected one of $ladder")
+    }
+    return step
 }
 
 class MainActivity : Activity() {
@@ -68,14 +89,16 @@ class MainActivity : Activity() {
         val workload = intent.getStringExtra("workload")?.uppercase()
             ?: throw IllegalStateException(
                 "missing 'workload' intent extra; expected W1..W6")
-        val step = intent.getIntExtra("step", 0)
+        // W5/W6 pin one ladder step per launch — a missing or
+        // out-of-ladder step traps, never silently a wrong count.
+        val step = if (intent.hasExtra("step")) intent.getIntExtra("step", -1) else null
         when (workload) {
             "W1" -> w1()
             "W2" -> w2()
             "W3" -> w3(200)
             "W4" -> w4()
-            "W5" -> w3(step)
-            "W6" -> w6(step)
+            "W5" -> w3(ladderStep("W5", step, W5_STEPS))
+            "W6" -> w6(ladderStep("W6", step, W6_STEPS))
             else -> throw IllegalStateException(
                 "unrecognized workload extra '$workload'")
         }
@@ -264,7 +287,7 @@ class MainActivity : Activity() {
     // W6 Feed capacity — the W2 feed, each row carrying `complexity`
     // sibling cells (canonical model: extras appended after the text column).
     private fun w6(complexity0: Int) {
-        val complexity = if (complexity0 <= 0) 1 else complexity0
+        val complexity = complexity0
         val rv = RecyclerView(this).apply {
             layoutManager = LinearLayoutManager(this@MainActivity)
             adapter = DeepFeedAdapter(complexity)

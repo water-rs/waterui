@@ -14,6 +14,10 @@ workloads = ["w1", "w2", "w3", "w4", "w5", "w6"]
 # member). Framework, CLI and backend identity is the checkout's HEAD sha;
 # the runner records it plus the root Cargo.toml's android-backend-revision
 # for the `android` (Kotlin runtime) backend. There is nothing to pin here.
+#
+# The normative workload definition every contestant implements is
+# ../WORKLOADS.md — the [workloads.*] tables below declare the harness
+# parameters this leg consumes with the spec's values.
 
 [toolchain.flutter]
 version = "3.47.5"
@@ -23,6 +27,10 @@ sdk_root = "~/flutter"        # <sdk_root>/bin/flutter must report the pins abov
 [toolchain.reactnative]
 version = "0.81.6"          # New Architecture + Hermes; pins the lockfile
 cli_version = "20.0.0"      # @react-native-community/cli — generates android/
+# sha256 over the generated template files the app materializes (root files
+# minus the authored set — relpath+content digest, lib/toolchain.py
+# rn_template_digest): `init` re-resolving to different content fails loudly.
+template_sha256 = "29b1ccee1d2054aabfff8792cd35782a65753a026c38d25d9ab8199d2a10c10f"
 node_version = "24.21.0"
 node_root = "~/node"         # <node_root>/bin/node must report v<node_version>
 
@@ -64,9 +72,9 @@ backend = "android"
 package = "dev.waterui.bench"
 activity = ".MainActivity"
 kind = "waterui"
-# one universal APK covers every ABI — the generated project keeps all
-# requested ABIs in abiFilters and `water package` produces no splits
-abi_apks = { arm64 = "app-release.apk", x86_64 = "app-release.apk" }
+# `water package --platform android --arch <abi>` builds one ABI per
+# invocation; each artifact is recorded separately under its ABI name.
+abi_apks = { arm64 = "app-arm64.apk", x86_64 = "app-x86_64.apk" }
 aab = "app-release.aab"
 gradle_project = "backends/android"
 
@@ -76,7 +84,7 @@ backend = "hydrolysis"
 package = "dev.waterui.bench"
 activity = ".MainActivity"
 kind = "waterui"
-abi_apks = { arm64 = "app-release.apk", x86_64 = "app-release.apk" }
+abi_apks = { arm64 = "app-arm64.apk", x86_64 = "app-x86_64.apk" }
 aab = "app-release.aab"
 gradle_project = "backends/hydrolysis"
 
@@ -97,7 +105,7 @@ kind = "reactnative"
 abi_apks = { arm64 = "app-arm64-v8a-release.apk", x86_64 = "app-x86_64-release.apk" }
 aab = "app-release.aab"
 gradle_project = "android"
-# RN 0.87.1 ships Gradle 9.4.1 via its own wrapper; other contestants use the
+# RN 0.81.6 ships its own Gradle wrapper; other contestants use the
 # [toolchain.native] gradle_version.
 
 [contestants.compose]
@@ -119,120 +127,56 @@ aab = "app-release.aab"
 gradle_project = "."
 
 # ---------------------------------------------------------------------------
-# Workload spec — every contestant implements these *exactly*.
-# Text is templated with {i} = row index (0-based).
+# Harness workload parameters — the normative definition (geometry,
+# palette, text, motion model, readiness) is ../WORKLOADS.md; every
+# contestant hardcodes it. These tables declare only the pacing values
+# this leg's runner consumes.
+#
+# w1..w4 are captured by measure_rep (fixed windows in bench.py); w5/w6
+# step geometrically — ONE step per `am start` (`--es workload w5 --es
+# step <n>`; WaterUI reads waterui.env.BENCH_STEP), settle then hold.
+# A step "collapses" (runner stops stepping) when fewer than
+# collapse_frac of its presents fall inside TWO 60 Hz budgets (33.3 ms) —
+# drawing slower than ~30 fps — or the capture errors.
 # ---------------------------------------------------------------------------
 
 [workloads.w1]
 name = "Hello"
-label_template = "Count: {i}"          # starts at 0
-button_text = "Increment"
-font_size_sp = 20
-spacing_dp = 16
 
 [workloads.w2]
 name = "Feed"
-row_count = 10000
-avatar_dp = 40
-title_template = "Row title {i}"
-subtitle_template = "Second line of subtitle for item {i}"
-timestamp_template = "{hh}:{mm}"       # hh = (i/60)%24, mm = i%60
-title_size_sp = 16
-subtitle_size_sp = 13
-row_padding_h_dp = 16
-row_padding_v_dp = 10
-avatar_text_gap_dp = 12
-palette = ["#3B82F6","#10B981","#F59E0B","#EF4444","#8B5CF6","#EC4899"]   # avatar i % 6
-
-# Automated fling sequence the runner drives through `adb shell input swipe`.
-# Coordinates are device pixels for the 1080x2400@420dpi emulator window; the
-# runner rescales them for other displays.
-# Shared fling program: 8 eased flings covering the list, 2 back up.
-fling_down_swipes = 8       # content moves up (list scrolls forward)
-fling_up_swipes = 2         # content moves down (back toward top)
-swipe_margin_x_frac = 0.5
-swipe_start_y_frac = 0.75
-swipe_end_y_frac = 0.15
-swipe_duration_ms = 250
-settle_ms = 1500
 
 [workloads.w3]
 name = "Motion"
-rect_count = 200
-rect_size_dp = 40
-corner_radius_dp = 10
-stage_width_dp = 720
-stage_height_dp = 440
-# Per-rect wander on its own xorshift64 stream (init seed
-# 0xD1B54A32D192ED03 ^ i*0x2545F4914F6CDD1D, drive seed
-# 0x9E3779B97F4A7C15 ^ i*0xBF58476D1CE4E5B9): every tick picks new
-# position/rotation(0..360)/opacity(0.3..1.0) targets and animates to them
-# ease-in-out over (1200 + (i%5)*200) ms — same tick duration for all
-# channels, repeating forever.
-opacity_min = 0.3
-palette = ["#3B82F6","#10B981","#F59E0B","#EF4444","#8B5CF6","#EC4899"]
 
 [workloads.w4]
 name = "Text"
-paragraph_count = 50
-font_size_sp = 16
-spacing_dp = 6
-padding_h_dp = 16
-padding_v_dp = 10
-# The canonical ten paragraphs live in benchmarks/competitive/lib/
-# paragraphs.txt; every contestant embeds its own copy.
-paragraphs_source = "../lib/paragraphs.txt"
-
-# ---------------------------------------------------------------------------
-# Capacity workloads — fixed work saturates a 120 Hz flagship, so W5/W6 step
-# the scene geometrically and find the largest step that keeps >=99% of
-# presents inside the frame budget (8.33 ms @120 Hz, 16.67 ms @60 Hz).
-# The runner launches ONE step per app start: `adb shell am start` with
-# `--es workload w5 --es step <n>` (WaterUI reads waterui.env.BENCH_STEP),
-# waits settle_ms, then measures hold_ms of frames.
-# A step "collapses" (runner stops stepping the workload) when fewer than
-# collapse_frac of its presents fall inside TWO 60 Hz budgets (33.3 ms) —
-# drawing slower than ~30 fps, not jittering at the refresh line — or the
-# capture errors.
-# ---------------------------------------------------------------------------
 
 [workloads.w5]
 name = "Motion capacity"
-# The W3 scene (identical rect size/radius/field/palette/animation) with
-# rect_count stepped geometrically — canonical ladder shared by every leg.
-rect_size_dp = 40
-corner_radius_dp = 10
-stage_width_dp = 720
-stage_height_dp = 440
-opacity_min = 0.3
 steps = [200, 400, 800, 1600, 3200, 6400, 12800, 25600]
 settle_ms = 1000
 hold_ms = 4000
 collapse_frac = 0.5
-palette = ["#3B82F6","#10B981","#F59E0B","#EF4444","#8B5CF6","#EC4899"]
 
 [workloads.w6]
 name = "Feed capacity"
-# The W2 feed (identical row structure, 10 000 rows, palette, text
-# templates) whose every row additionally carries `complexity` sibling
-# cells appended after the text column: cell j is one 14 dp rounded square
-# of palette[(i+j) % 6] over text "c{j}" (12 sp) — same on every platform.
-row_count = 10000
 steps = [1, 2, 4, 8, 16, 32, 64]
 settle_ms = 1000
-# hold covers the full W2 fling program (8 down + 2 up swipes, 1.5 s settle
-# between them) — ~16.5 s.
+# hold covers the full shared fling program plus margin — the W2/W4 drive
+# in [fling] runs during each step's hold window.
 hold_ms = 17000
 collapse_frac = 0.5
-detail_size_dp = 14
-detail_text_template = "c{j}"
-detail_text_sp = 12
-palette = ["#3B82F6","#10B981","#F59E0B","#EF4444","#8B5CF6","#EC4899"]
-# Same fling program as W2 runs during each step's hold window.
-fling_down_swipes = 8
-fling_up_swipes = 2
-swipe_margin_x_frac = 0.5
-swipe_start_y_frac = 0.75
-swipe_end_y_frac = 0.15
-swipe_duration_ms = 250
-settle_between_swipes_ms = 1500
+
+# The shared fling protocol (../WORKLOADS.md), declared once for every
+# scrolling workload on this platform: OS-level `adb shell input swipe`
+# outside the app — 8 flings down then 2 up, 75%→15% of the surface
+# height, 250 ms gesture, 350 ms pause — identical for every contestant.
+[fling]
+down_swipes = 8
+up_swipes = 2
+margin_x_frac = 0.5
+start_y_frac = 0.75
+end_y_frac = 0.15
+duration_ms = 250
+pause_between_ms = 350

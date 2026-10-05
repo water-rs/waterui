@@ -395,22 +395,27 @@ def ensure_gradle_wrapper(proj: Path, version: str, e: dict) -> None:
 def build_waterui(man, dist_dir: Path, e: dict):
     d = (ROOT / man["dir"]).resolve()
     backend = man.get("backend", "android")
-    # `water package` scaffolds backends/<backend>/, cross-builds the Rust
-    # library for every requested arch, stages assets and runs
-    # assembleRelease — one universal APK containing every ABI (the
-    # generated project keeps all requested ABIs in abiFilters; there are
-    # no per-ABI splits in this model). `--distribution` yields the AAB.
-    # Release signing comes from [signing.android] in Water.toml — the
-    # debug keystore is generated at build time, never committed.
+    # `water package` builds ONE ABI per --arch: the APKs are produced by
+    # a separate `water package --arch <abi>` invocation per ABI and
+    # recorded separately (app-release.apk is the CLI's output name; the
+    # manifest's per-ABI names are the dist names). `--distribution`
+    # yields the universal AAB. Release signing comes from
+    # [signing.android] in Water.toml — the debug keystore is generated
+    # at build time, never committed.
     ensure_debug_keystore(d / "debug.keystore")
     be = dict(e, WATERUI_ANDROID_STORE_PASSWORD="android",
               WATERUI_ANDROID_KEY_PASSWORD="android")
     base = ["water", "package", "--platform", "android", "--backend",
-            backend, "--arch", "arm64,x86-64", "--release", "-y"]
-    checked(base, cwd=d, env=be)
-    checked([*base, "--distribution"], cwd=d, env=be)
-    stage(man, d / man["gradle_project"] / "app" / "build" / "outputs",
-          dist_dir)
+            backend, "--release", "-y"]
+    outs = d / man["gradle_project"] / "app" / "build" / "outputs"
+    for abi, name in man["abi_apks"].items():
+        checked([*base, "--arch", abi], cwd=d, env=be)
+        shutil.copy(outs / "apk" / "release" / "app-release.apk",
+                    dist_dir / name)
+    checked([*base, "--arch", "arm64,x86-64", "--distribution"],
+            cwd=d, env=be)
+    shutil.copy(outs / "bundle" / "release" / man["aab"],
+                dist_dir / man["aab"])
 
 
 def rewrite_wrapper_pin(proj: Path, version: str) -> None:
@@ -437,9 +442,16 @@ def rewrite_wrapper_pin(proj: Path, version: str) -> None:
 def ensure_flutter_android(d: Path, e: dict) -> None:
     """The flutter app's android/ directory is generated, not committed:
     produced by the pinned Flutter SDK's `flutter create` in a scratch dir,
-    then the authored override replaces the template MainActivity."""
-    if (d / "android").is_dir():
+    then the authored override replaces the template MainActivity.
+    A `.bench-generator` stamp records the generator pin; a stale
+    android/ from a different flutter version is regenerated."""
+    tag = ("flutter create --platforms android --project-name bench_flutter "
+           "--org dev.bench --template app | flutter="
+           + FULL_MAN["toolchain"]["flutter"]["version"])
+    stamp = d / "android" / ".bench-generator"
+    if (d / "android").is_dir() and stamp.exists()                 and stamp.read_text().strip() == tag:
         return
+    shutil.rmtree(d / "android", ignore_errors=True)
     with tempfile.TemporaryDirectory() as td:
         checked(["flutter", "create", "--platforms", "android",
                  "--project-name", "bench_flutter", "--org", "dev.bench",
@@ -449,16 +461,25 @@ def ensure_flutter_android(d: Path, e: dict) -> None:
     shutil.copy(d / "android-override" / "MainActivity.kt",
                 d / "android" / "app" / "src" / "main" / "kotlin" /
                 "dev" / "bench" / "bench_flutter" / "MainActivity.kt")
+    stamp.write_text(tag + "\n")
 
 
 def ensure_rn_android(d: Path, e: dict) -> None:
     """The RN app's android/ directory is generated, not committed:
     produced by the manifest-pinned @react-native-community/cli `init` in a
     scratch dir, then the authored override replaces the template
-    MainActivity and `npm ci` restores the lockfile-pinned node_modules."""
-    if (d / "android").is_dir():
-        return
+    MainActivity and `npm ci` restores the lockfile-pinned node_modules.
+    Root template files (index.js, app.json, metro/babel config…) come
+    from toolchain.ensure_rn_template — same generator, digest-pinned."""
     t = FULL_MAN["toolchain"]["reactnative"]
+    toolchain.ensure_rn_template(d, t["cli_version"], t["version"],
+                                 t["template_sha256"], env=e)
+    tag = (f"@react-native-community/cli@{t['cli_version']} init RnBench "
+           f"--version {t['version']} --skip-install | android/ subtree")
+    stamp = d / "android" / ".bench-generator"
+    if (d / "android").is_dir() and stamp.exists()                 and stamp.read_text().strip() == tag:
+        return
+    shutil.rmtree(d / "android", ignore_errors=True)
     with tempfile.TemporaryDirectory() as td:
         checked(["npx", f"@react-native-community/cli@{t['cli_version']}",
                  "init", "RnBench", "--version", t["version"],
@@ -475,6 +496,7 @@ def ensure_rn_android(d: Path, e: dict) -> None:
     app_gradle.write_text(app_gradle.read_text().replace(
         "enableSeparateBuildPerCPUArchitecture = false",
         "enableSeparateBuildPerCPUArchitecture = true"))
+    stamp.write_text(tag + "\n")
     checked(["npm", "ci"], cwd=d, env=e)
 
 
@@ -702,6 +724,29 @@ def apk_for_abi(man_entry, device_abi: str) -> str:
 
 def install(serial: str, apk: Path):
     adb(serial, "install", "-r", "--no-streaming", str(apk), timeout=300)
+
+
+def verify_installed(serial: str, pkg: str, apk: Path) -> str:
+    """Install `apk` for `pkg` and verify the installed base APK's sha256
+    equals the artifact the row records. Two contestants may share one
+    application id (waterui android vs hydrolysis backends): identity is
+    the installed file's hash, checked per rep — never install order or
+    a static label. Mismatch fails the attempt."""
+    install(serial, apk)
+    out = adb_shell(serial, f"pm path {pkg}")
+    paths = [l.split(":", 1)[1].strip() for l in out.splitlines()
+             if l.startswith("package:")]
+    if not paths:
+        raise RuntimeError(f"{pkg}: pm path reports no installed package")
+    base = next((p for p in paths if p.endswith("base.apk")), paths[0])
+    got = adb_shell(serial, f"sha256sum {base}").split()[0]
+    want = toolchain.sha256_file(apk)
+    if got != want:
+        raise RuntimeError(
+            f"{pkg}: installed APK sha256 {got} does not match the "
+            f"measured artifact {apk.name} ({want}) — the package on "
+            "device belongs to a different build")
+    return got
 
 
 def launch(serial: str, pkg: str, activity: str, workload: str,
@@ -1881,8 +1926,8 @@ def measure_capacity(man, name: str, c: dict, serial: str, wl: str,
             launch(serial, pkg, activity, wl, kind, step=n)
             time.sleep(settle)
             if wl == "w6":
-                def drive():  # noqa: B023 — dims/wl bound at call time
-                    drive_workload(serial, "w2", dims)
+                def drive():  # noqa: B023 — dims bound at call time
+                    drive_workload(serial, man["fling"], dims)
             else:
                 def drive():
                     time.sleep(hold / 1000.0)
@@ -1942,18 +1987,20 @@ def measure_capacity(man, name: str, c: dict, serial: str, wl: str,
     return out
 
 
-def drive_workload(serial: str, w: str, screen: tuple[int, int]):
+def drive_workload(serial: str, fling: dict, screen: tuple[int, int]):
+    """The shared fling protocol (../WORKLOADS.md): OS-level `input swipe`
+    outside the app — 8 down then 2 up, 75%→15% of the surface height,
+    250 ms gesture, 350 ms pause — identical for every contestant."""
     sw, shp = screen
-    if w == "w2":
-        x = int(sw * 0.5)
-        for _ in range(3):
-            adb_shell(serial, "input swipe %d %d %d %d %d" %
-                      (x, int(shp * 0.75), x, int(shp * 0.15), 250))
-            time.sleep(1.5)
-        for _ in range(3):
-            adb_shell(serial, "input swipe %d %d %d %d %d" %
-                      (x, int(shp * 0.15), x, int(shp * 0.75), 250))
-            time.sleep(1.5)
+    x = int(sw * fling["margin_x_frac"])
+    y0, y1 = int(shp * fling["start_y_frac"]), int(shp * fling["end_y_frac"])
+    dur, pause = fling["duration_ms"], fling["pause_between_ms"] / 1000.0
+    for _ in range(fling["down_swipes"]):
+        adb_shell(serial, "input swipe %d %d %d %d %d" % (x, y0, x, y1, dur))
+        time.sleep(pause)
+    for _ in range(fling["up_swipes"]):
+        adb_shell(serial, "input swipe %d %d %d %d %d" % (x, y1, x, y0, dur))
+        time.sleep(pause)
 
 
 ALL_WORKLOADS = ("w1", "w2", "w3", "w4", "w5", "w6")
@@ -1991,11 +2038,11 @@ def measure_rep(man, name: str, c: dict, serial: str,
         stop = [False]
         t = threading.Thread(target=sample_loop, args=(stop,), daemon=True)
         t.start()
-        if w in ("w2", "w3"):
-            ms = 12000 if w == "w2" else 15000
-            if w == "w2":
+        if w in ("w2", "w3", "w4"):
+            ms = 12000 if w in ("w2", "w4") else 15000
+            if w in ("w2", "w4"):
                 def drive():  # noqa: B023 — dims bound at call time
-                    drive_workload(serial, "w2", dims)
+                    drive_workload(serial, man["fling"], dims)
             else:
                 # W3 animates by itself: the window is the hold
                 def drive():  # noqa: B023 — ms bound at call time
@@ -2090,10 +2137,6 @@ def _measure_locked(man, serial: str, reps: int, locks_dir: Path | None,
         dev["vsync_hz"] = PINNED_REFRESH
         dev["vsync_hz_active"] = active_refresh(serial)
         abi = dev["abi"]
-        for n in names:
-            if not (artifacts / n / "BUILD_ERROR.txt").exists():
-                install(serial, artifacts / n
-                        / apk_for_abi(man["contestants"][n], abi))
         if dev.get("frame_source"):
             # resumed run: keep the sources its saved reps were measured with
             FRAME_SOURCES = srcs = dev["frame_source"]
@@ -2164,6 +2207,20 @@ def _measure_locked(man, serial: str, reps: int, locks_dir: Path | None,
                     st = wait_nominal(serial)
                     print(f"rep {rep} {name}: thermal {st}", flush=True)
                 print(f"rep {rep} {name}: measuring", flush=True)
+                # the measured binary is installed+verified per rep —
+                # two contestants share dev.waterui.bench, and anything
+                # else on device could have replaced it between reps
+                entry = res.setdefault(name, {})
+                apk = artifacts / name / apk_for_abi(c, abi)
+                try:
+                    verify_installed(serial, c["package"], apk)
+                except RuntimeError as ex:
+                    entry.setdefault("runs", []).append(
+                        {"workload": None, "repeat": rep,
+                         "error": f"install verify: {ex}"})
+                    print(f"rep {rep} {name}: FAILED {ex}", flush=True)
+                    save()
+                    continue
                 # a capture error aborts the run — never stored as a
                 # per-run error and aggregated around
                 t0 = time.monotonic()
@@ -2181,7 +2238,6 @@ def _measure_locked(man, serial: str, reps: int, locks_dir: Path | None,
                           f"rep ({', '.join(installs)}); measuring again",
                           flush=True)
                 spent = time.monotonic() - t0
-                entry = res.setdefault(name, {})
                 entry.setdefault("runs", []).append(r)
                 entry["measure_s"] = round(entry.get("measure_s", 0) + spent, 1)
                 print(f"rep {rep} {name}: {spent:.0f} s "
