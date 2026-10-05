@@ -315,6 +315,11 @@ pub enum AccessibilityActionTarget {
         index: usize,
         handle: ScrollHandle,
         extents: Rc<RefCell<crate::renderer::lazy::VirtualExtentIndex>>,
+        /// §7.1's touched-edge extension the list's handle was rebound with:
+        /// the metrics' viewport covers it, and a row is "in view" only
+        /// inside the laid-out frame — a reveal must not land a row under
+        /// an avoided band.
+        extension: crate::renderer::EdgeOffsets,
         /// The row's erased collection id — the value the list's selection
         /// binding is keyed by.
         id: crate::widgets::layout::list::ListItemId,
@@ -1306,11 +1311,12 @@ impl SemanticCore {
                 index,
                 handle,
                 extents,
+                extension,
                 id,
                 selection,
             } => match action {
                 AccessibilityAction::Focus => {
-                    Self::scroll_list_row_into_view(index, &handle, &extents);
+                    Self::scroll_list_row_into_view(index, &handle, &extents, extension);
                     true
                 }
                 AccessibilityAction::Click => {
@@ -1328,7 +1334,7 @@ impl SemanticCore {
                     }
                 }
                 AccessibilityAction::ScrollIntoView => {
-                    Self::scroll_list_row_into_view(index, &handle, &extents)
+                    Self::scroll_list_row_into_view(index, &handle, &extents, extension)
                 }
                 _ => panic!("hydrolysis accessibility list row does not support action {action:?}"),
             },
@@ -1538,16 +1544,21 @@ impl SemanticCore {
         index: usize,
         handle: &ScrollHandle,
         extents: &Rc<RefCell<crate::renderer::lazy::VirtualExtentIndex>>,
+        extension: crate::renderer::EdgeOffsets,
     ) -> bool {
         let metrics = handle.metrics();
         let extents = extents.borrow();
         let row_start = extents.offset_of(index);
         let row_end = extents.offset_of(index + 1);
-        let viewport_end = metrics.offset_y + metrics.viewport_height;
+        // The rebound viewport covers the §7.1 extension into the avoided
+        // bands; the reveal resolves against the laid-out frame's window —
+        // a screen-reader focus move must not land a row under the band.
+        let visible_height = (metrics.viewport_height - extension.vertical()).max(0.0);
+        let visible_end = metrics.offset_y + visible_height;
         let target = if row_start < metrics.offset_y {
             row_start
-        } else if row_end > viewport_end {
-            (row_end - metrics.viewport_height).min(row_start)
+        } else if row_end > visible_end {
+            (row_end - visible_height).min(row_start)
         } else {
             return true;
         };
@@ -2220,8 +2231,14 @@ impl SemanticCore {
                     )
                 });
         }
-        if let Some(container) = view.downcast_ref::<Native<FixedContainer>>() {
-            let (_, children) = container.as_inner().as_parts();
+        // Normalization keeps a `FixedContainer` plain (its `body` runs at
+        // build), so both the modifier-time and the body-produced (Native)
+        // forms reach here.
+        if let Some(container) = view.downcast_ref::<FixedContainer>().or_else(|| {
+            view.downcast_ref::<Native<FixedContainer>>()
+                .map(Native::as_inner)
+        }) {
+            let (_, children) = container.as_parts();
             let labels = children
                 .iter()
                 .filter_map(|child| {

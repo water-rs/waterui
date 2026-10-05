@@ -107,6 +107,10 @@ pub fn render_badge_node(
     render_badge_parts(ctx, state, env);
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the render sequence is one continuous scenario; splitting it would obscure the order"
+)]
 pub fn render_badge_parts(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<BadgeRenderState>>,
@@ -116,12 +120,14 @@ pub fn render_badge_parts(
     {
         let render_ctx = ctx.render_context();
         let mut state = state.borrow_mut();
+        let content_area = ctx.safe_area_for(bounds);
         state.content.flush_in_rect(
             ctx.renderer_mut(),
             render_ctx,
             env,
             ProposalSize::UNSPECIFIED,
             bounds,
+            content_area,
         );
     }
 

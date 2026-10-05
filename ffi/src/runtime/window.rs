@@ -395,25 +395,25 @@ crate::ffi_watcher!(Option<UserAttention>, WuiUserAttention, user_attention);
 /// The colour the Kotlin Android runtime paints behind a window's content,
 /// following `background`.
 ///
-/// # Panics
-///
-/// When the background resolves to a [`WindowBackground::Material`], now or
-/// after a later change: the Kotlin Android runtime does not realize a
-/// material window background. Hydrolysis is the Android backend that does
+/// The Kotlin Android runtime realizes no material: a
+/// [`WindowBackground::Material`] draws the window opaque in the theme's
+/// background colour, as [`WindowBackground::Opaque`] does. Hydrolysis is the
+/// Android backend that realizes a material window background
 /// (water-rs/waterui#1899).
 fn android_window_background(
     background: &Computed<WindowBackground>,
     env: &waterui::Environment,
 ) -> Computed<WorkingColor> {
-    resolve_background(background, env)
+    let without_material = background.map(|background| match background {
+        WindowBackground::Material(_) => WindowBackground::Opaque,
+        background => background,
+    });
+    resolve_background(&without_material, env)
         .map(|resolved| match resolved {
             ResolvedWindowBackground::Color(color) => color,
-            ResolvedWindowBackground::Material(material) => panic!(
-                "waterui_resolve_window_background: the window background is \
-                 Material::{material:?}, but the Kotlin Android runtime does not realize a \
-                 Material window background; Hydrolysis is the Android backend that does \
-                 (water-rs/waterui#1899)"
-            ),
+            ResolvedWindowBackground::Material(_) => {
+                unreachable!("every material was mapped to an opaque background above")
+            }
         })
         .into_computed()
 }
@@ -426,12 +426,10 @@ fn android_window_background(
 /// it resolves to. A colour whose opacity is below one asks for a translucent
 /// window.
 ///
-/// # Panics
-///
-/// When the background resolves to a [`WindowBackground::Material`] — on the
-/// first read or after a later change. The Kotlin Android runtime realizes no
-/// material; Hydrolysis is the Android backend that realizes a material window
-/// background (water-rs/waterui#1899).
+/// The Kotlin Android runtime realizes no material, so a
+/// [`WindowBackground::Material`] resolves to the theme's background colour,
+/// drawing the window opaque; Hydrolysis is the Android backend that realizes
+/// a material window background (water-rs/waterui#1899).
 ///
 /// # Safety
 ///
@@ -730,23 +728,29 @@ pub unsafe extern "C" fn waterui_env_install_window_manager(
 mod tests {
     use nami::{Binding, Signal as _, SignalExt as _};
     use waterui::background::Material;
+    use waterui::theme::{ColorSettings, Theme};
     use waterui::window::WindowBackground;
-    use waterui_graphics::Color;
+    use waterui_core::plugin::Plugin as _;
+    use waterui_graphics::{Color, color::working::from_linear_srgb};
 
     use super::android_window_background;
 
     /// A colour passes through; a material, which the Kotlin Android runtime
-    /// cannot realize, fails naming the level and the backend that does.
+    /// does not realize, resolves as an opaque background does.
     #[test]
-    #[should_panic(expected = "Material::Thin, but the Kotlin Android runtime does not realize")]
-    fn the_kotlin_runtime_rejects_a_material_window_background() {
-        let env = waterui::Environment::new();
+    fn the_kotlin_runtime_draws_a_material_window_background_opaque() {
+        let mut env = waterui::Environment::new();
+        Theme::new()
+            .colors(ColorSettings::new().background(from_linear_srgb([0.5, 0.5, 0.5], 1.0)))
+            .install(&mut env);
         let background = Binding::container(WindowBackground::Color(
             Color::srgb(0, 0, 0).with_opacity(0.5),
         ));
         let resolved = android_window_background(&background.computed(), &env);
         assert!((resolved.snapshot().components[3] - 0.5).abs() < 1e-6);
         background.set(WindowBackground::Material(Material::Thin));
-        let _ = resolved.snapshot();
+        let material = resolved.snapshot();
+        background.set(WindowBackground::Opaque);
+        assert_eq!(material, resolved.snapshot());
     }
 }

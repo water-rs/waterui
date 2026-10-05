@@ -96,8 +96,10 @@ impl RenderNode {
         Self::Widget(WidgetNode {
             accessibility_identity: Rc::new(()),
             render_id: RenderId::next(),
+            safe_area: None,
             behavior: state,
             stretch,
+            fill_leaf: false,
             env: env.clone(),
         })
     }

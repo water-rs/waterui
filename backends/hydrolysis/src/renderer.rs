@@ -56,6 +56,7 @@ pub use native_measure::*;
 pub use recording::assert_well_formed_image;
 pub use recording::{Glyph, GlyphRun, Recording, working_color};
 pub use retained::*;
+pub use tree::safe_area::{EdgeOffsets, SafeAreaLayout, ScrollSurfaceArea, grow_rect};
 pub use tree::*;
 pub use views::*;
 pub use waterui_backend_core::frame_signals::FrameSignals;
@@ -144,8 +145,8 @@ use waterui_core::handler::{AnyViewBuilder, BoxedAction, SharedAction};
 use waterui_core::key::{KeyHandling, KeyPress, OnKeyPress};
 use waterui_core::layout::{
     HorizontalAlignment, Layout, PlacedSubview, Point as LayoutPoint, ProposalSize,
-    Rect as LayoutRect, Size as LayoutSize, StretchAxis, SubView, VerticalAlignment,
-    ViewDimensions,
+    Rect as LayoutRect, Size as LayoutSize, StretchAxis, SubView, SubviewPlacement,
+    VerticalAlignment, ViewDimensions,
 };
 #[cfg(feature = "accessibility")]
 use waterui_core::metadata::MetadataKey;

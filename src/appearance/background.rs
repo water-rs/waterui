@@ -131,8 +131,11 @@ pub enum Background {
 /// Materials create translucent blur effects that allow content behind the view
 /// to show through with varying degrees of blur and vibrancy.
 ///
-/// Every backend realizes `Material`; none ignores it. The levels fall in two
-/// groups:
+/// The mainline backends, Apple and Hydrolysis, realize `Material`. As a
+/// view's background it travels as ignorable metadata, so a backend that does
+/// not realize it, such as an experimental one, draws the content without it;
+/// as a window's background see [`WindowBackground::Material`]. The levels
+/// fall in two groups:
 ///
 /// - **Within-window levels** — [`Regular`](Self::Regular),
 ///   [`Thick`](Self::Thick) and [`UltraThick`](Self::UltraThick) — are a

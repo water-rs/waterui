@@ -4,11 +4,13 @@
 //!
 //! A window's background is what lies behind its content: the theme's
 //! background colour, a solid colour (translucent through its alpha), or a
-//! [`Material`]. A material window background is that window's material, and
-//! every backend realizes it at the window — within-window levels as a
+//! [`Material`]. A material window background is that window's material. The
+//! mainline backends realize it at the window — within-window levels as a
 //! backdrop treatment of the window behind its content, behind-window levels
-//! by letting the desktop show through the window. See
-//! [`WindowBackground::Material`] for the per-platform realizations.
+//! by letting the desktop show through the window; a backend that does not
+//! realize materials draws the window opaque in the theme's background
+//! colour. See [`WindowBackground::Material`] for the per-platform
+//! realizations.
 //!
 //! ```rust
 //! use waterui::prelude::*;
@@ -369,9 +371,10 @@ pub enum WindowBackground {
     ///   desktop. Window transparency is not realized on Android yet, so a
     ///   behind-window level renders as an opaque window
     ///   (water-rs/waterui#1966).
-    /// - **Android (the Kotlin runtime)**: unsupported. Resolving a material
-    ///   window background there panics naming the level; Hydrolysis is the
-    ///   Android backend that realizes it (water-rs/waterui#1899).
+    /// - **Android (the Kotlin runtime)** and the experimental backends realize
+    ///   no material: the window is drawn opaque in the theme's background
+    ///   colour. Hydrolysis is the Android backend that realizes it
+    ///   (water-rs/waterui#1899).
     Material(Material),
 }
 

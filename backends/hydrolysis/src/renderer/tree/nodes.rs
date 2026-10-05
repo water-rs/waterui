@@ -6,7 +6,7 @@ use super::layout::{SignatureHasher, hash_size};
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use waterui_layout::safe_area::EdgeSet;
+use waterui_layout::safe_area::IgnoreSafeArea;
 
 /// A retained sub-view a native widget owns and re-renders every flush — the
 /// solution for a widget's move-only `AnyView` label sub-views (slider min/max
@@ -54,10 +54,56 @@ struct BuiltSubview {
     /// A structural patch replaced content inside the retained node, so the new
     /// subtree must be laid out even when its outer rect did not change.
     needs_layout: bool,
+    /// The §7.1 context the node was last laid out against — a change (the
+    /// keyboard inset animating under an unchanged rect) re-runs layout so
+    /// the subtree's touch tests and surface facts track it.
+    laid_out_area: Option<Box<safe_area::SafeAreaLayout>>,
     /// The default spoken accessibility label extracted from the source view once,
     /// at build time (mirrors `GestureObserverEffect::default_a11y_label`): the
     /// node owns the source after build, so the per-frame a11y path reads this.
     default_a11y_label: Option<String>,
+}
+
+/// Writes `safe_area` into a node's stored-context slot, overwriting the
+/// existing `Box` in place when there is one: a `Some` over `Some` reuses
+/// the allocation, so a per-frame re-layout pays no new `Box` — the only
+/// allocation is the `None -> Some` transition.
+pub(super) fn store_safe_area(
+    slot: &mut Option<Box<safe_area::SafeAreaLayout>>,
+    safe_area: Option<safe_area::SafeAreaLayout>,
+) {
+    if let (Some(stored), Some(area)) = (slot.as_deref_mut(), safe_area.as_ref()) {
+        stored.clone_from(area);
+    } else {
+        *slot = safe_area.map(Box::new);
+    }
+}
+
+impl BuiltSubview {
+    /// Lays the node out when the structure, the size, the proposal or the
+    /// §7.1 context moved since the last layout — recording what it laid out
+    /// against so an unchanged re-flush skips the pass.
+    fn layout_if_needed(
+        &mut self,
+        renderer: &mut HydrolysisRenderer,
+        env: &Environment,
+        safe_area: Option<safe_area::SafeAreaLayout>,
+        proposal: ProposalSize,
+        size: Size,
+    ) {
+        if self.needs_layout
+            || size != self.laid_out
+            || self.laid_out_proposal != Some(proposal)
+            || self.laid_out_area.as_deref() != safe_area.as_ref()
+        {
+            self.node
+                .layout(renderer, env, safe_area.clone(), proposal, size);
+            self.laid_out = size;
+            self.laid_out_proposal = Some(proposal);
+            store_safe_area(&mut self.laid_out_area, safe_area);
+            self.needs_layout = false;
+        }
+    }
 }
 
 impl RetainedSubview {
@@ -92,6 +138,7 @@ impl RetainedSubview {
             laid_out: Size::zero(),
             laid_out_proposal: None,
             needs_layout: true,
+            laid_out_area: None,
             default_a11y_label,
         });
     }
@@ -302,9 +349,14 @@ impl RetainedSubview {
             .take_layout_dirty()
     }
 
-    /// Build (once), patch, lay out (when the rect size or the structure
-    /// changed), and flush the sub-view at `rect` under `env`. A zero-area rect
-    /// renders nothing, matching the dispatch path's empty-rect guard.
+    /// Build (once), patch, lay out (when the rect size, the structure or the
+    /// §7.1 context changed), and flush the sub-view at `rect` under `env`. A
+    /// zero-area rect renders nothing, matching the dispatch path's empty-rect
+    /// guard. `safe_area` is the context the sub-view lays out against — the
+    /// ambient context of where it is placed for an ordinary sub-view, the
+    /// host's context inherited with `Covered` edges where its chrome sits for
+    /// chrome content (`NavigationView`, `Tabs`), `None` for a scroll
+    /// surface's context-free content.
     pub(crate) fn flush_in_rect(
         &mut self,
         renderer: &mut HydrolysisRenderer,
@@ -312,6 +364,7 @@ impl RetainedSubview {
         env: &Environment,
         proposal: ProposalSize,
         rect: kurbo::Rect,
+        safe_area: Option<safe_area::SafeAreaLayout>,
     ) {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
@@ -323,13 +376,7 @@ impl RetainedSubview {
         #[allow(clippy::cast_possible_truncation)]
         let size = Size::new(rect.width() as f32, rect.height() as f32);
         built.needs_layout |= structural | built.node.take_layout_dirty();
-        if built.needs_layout || size != built.laid_out || built.laid_out_proposal != Some(proposal)
-        {
-            built.node.layout(renderer, env, proposal, size);
-            built.laid_out = size;
-            built.laid_out_proposal = Some(proposal);
-            built.needs_layout = false;
-        }
+        built.layout_if_needed(renderer, env, safe_area, proposal, size);
         let child_ctx = ctx.child(
             kurbo::Affine::translate((rect.x0, rect.y0)),
             kurbo::Rect::new(0.0, 0.0, rect.width(), rect.height()),
@@ -371,6 +418,7 @@ impl RetainedSubview {
         env: &Environment,
         proposal: ProposalSize,
         size: Size,
+        safe_area: Option<safe_area::SafeAreaLayout>,
     ) {
         if size.width <= 0.0 || size.height <= 0.0 {
             return;
@@ -380,13 +428,7 @@ impl RetainedSubview {
         let structural = Self::patch_built(&mut built.node, renderer);
         built.node.prepare_for_measure(renderer);
         built.needs_layout |= structural | built.node.take_layout_dirty();
-        if built.needs_layout || size != built.laid_out || built.laid_out_proposal != Some(proposal)
-        {
-            built.node.layout(renderer, env, proposal, size);
-            built.laid_out = size;
-            built.laid_out_proposal = Some(proposal);
-            built.needs_layout = false;
-        }
+        built.layout_if_needed(renderer, env, safe_area, proposal, size);
         if let Some(identity) = built.node.accessibility_identity() {
             renderer.push_input_owner(&identity);
             built.node.flush(renderer, ctx, env);
@@ -412,6 +454,7 @@ impl RetainedSubview {
         renderer: &mut HydrolysisRenderer,
         env: &Environment,
         placement: CapturedScenePlacement,
+        safe_area: Option<safe_area::SafeAreaLayout>,
     ) -> NavigationCapturedScene {
         let CapturedScenePlacement {
             size,
@@ -423,13 +466,7 @@ impl RetainedSubview {
         built.node.prepare_for_measure(renderer);
         built.needs_layout |= structural | built.node.take_layout_dirty();
         let proposal = ProposalSize::new(Some(size.width), Some(size.height));
-        if built.needs_layout || size != built.laid_out || built.laid_out_proposal != Some(proposal)
-        {
-            built.node.layout(renderer, env, proposal, size);
-            built.laid_out = size;
-            built.laid_out_proposal = Some(proposal);
-            built.needs_layout = false;
-        }
+        built.layout_if_needed(renderer, env, safe_area, proposal, size);
         let local_ctx = RenderContext::with_transforms(
             kurbo::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
             kurbo::Affine::IDENTITY,
@@ -453,12 +490,13 @@ impl RetainedSubview {
         renderer: &mut HydrolysisRenderer,
         env: &Environment,
         placement: CapturedScenePlacement,
+        safe_area: Option<safe_area::SafeAreaLayout>,
     ) -> NavigationCapturedScene {
         let previous_hit_test_opacity = renderer.hit_test.hit_test_opacity;
         renderer.hit_test.hit_test_opacity = 0.0;
         #[cfg(feature = "accessibility")]
         renderer.push_accessibility_suppression();
-        let scene = self.render_built_scene(renderer, env, placement);
+        let scene = self.render_built_scene(renderer, env, placement, safe_area);
         #[cfg(feature = "accessibility")]
         renderer.pop_accessibility_suppression();
         renderer.hit_test.hit_test_opacity = previous_hit_test_opacity;
@@ -600,6 +638,10 @@ pub struct WrapperNode {
     pub(crate) render_id: RenderId,
     pub(super) effect: WrapperEffect,
     pub(super) env: Environment,
+    /// The per-edge release [`safe_area::SafeAreaLayout::release`] computed for an
+    /// `IgnoreSafeArea` wrapper — the flush mirrors it into the child's
+    /// context. Zero for every other effect.
+    pub(super) released_offsets: Cell<safe_area::EdgeOffsets>,
     pub(super) child: RenderNode,
 }
 
@@ -610,6 +652,13 @@ pub trait WidgetBehavior {
         0
     }
 
+    /// §7.1's scroll-surface facts, handed from layout each pass — `None`
+    /// where the leaf has no safe-area context (inside a scroll surface's
+    /// content, or in the semantic pipeline). The surfaces that own a
+    /// [`crate::scroll::ScrollHandle`] (list, table) store it; the default
+    /// is a no-op for every other widget.
+    fn update_scroll_surface(&self, _facts: Option<safe_area::ScrollSurfaceFacts>) {}
+
     /// Whether this leaf draws nothing — `WaterUI`'s empty view `()`.
     ///
     /// This is a semantic answer, not a measured size: a `Spacer` squeezed to
@@ -619,12 +668,17 @@ pub trait WidgetBehavior {
         false
     }
 
-    /// Re-renders the leaf from its retained state.
+    /// Re-renders the leaf from its retained state. `safe_area` is the §7.1
+    /// context this widget was laid out against — `None` inside a scroll
+    /// surface's context-free content — which retained sub-views it hosts
+    /// (a chrome container's content, a label, an overlay) derive their own
+    /// context from.
     fn render(
         self: Rc<Self>,
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
         env: &Environment,
+        safe_area: Option<safe_area::SafeAreaLayout>,
     );
 
     /// Measures the leaf from its retained state.
@@ -662,9 +716,46 @@ pub struct WidgetNode {
     /// Consumed by the retained-update mount path in H3.
     #[allow(dead_code)]
     pub(crate) render_id: RenderId,
+    /// The §7.1 context the widget was last laid out against — node-lifetime
+    /// storage: a widget inside an unchanged retained sub-view is not
+    /// re-laid out on steady frames, but its flush still reads the context
+    /// here for `safe_area_for`/`content_area_for` and its scroll surface.
+    pub(super) safe_area: Option<Box<safe_area::SafeAreaLayout>>,
     pub(super) behavior: Rc<dyn WidgetBehavior>,
     pub(super) stretch: StretchAxis,
+    /// Whether this leaf paints a fill — the gradient — marking it
+    /// eligible for §7.1's background-slot paint extension. Set at build
+    /// by [`RenderNode::build_gradient`]; a `Color` leaf is a fill by its
+    /// own variant instead.
+    pub(super) fill_leaf: bool,
     pub(super) env: Environment,
+}
+
+/// The background-slot fill (§7.1): wraps the node `build_fixed_container`
+/// identified as the slot's paint fill — a `Color` or the gradient leaf,
+/// possibly inside layout-transparent wrappers — and records the paint
+/// extension its laid-out frame earns. Extension is a paint fact, not a
+/// layout fact: layout computes the per-edge distances once and the flush
+/// grows the paint rect by exactly that, under unchanged transforms.
+pub struct FillNode {
+    pub(super) child: RenderNode,
+    /// The fill's own render identity, surfaced through
+    /// [`RenderNode::render_id`]. The wrapped leaf's id is still collected
+    /// separately (`collect_render_ids` recurses past this node).
+    pub(crate) render_id: RenderId,
+    /// The paint extension [`safe_area::SafeAreaLayout::touched_edge_offsets`]
+    /// computed for the wrapped frame — `None` until the first layout.
+    pub(super) extension: Cell<Option<safe_area::EdgeOffsets>>,
+}
+
+impl FillNode {
+    pub(crate) fn new(child: RenderNode) -> Self {
+        Self {
+            child,
+            render_id: RenderId::next(),
+            extension: Cell::new(None),
+        }
+    }
 }
 
 /// The per-flush effect a [`WrapperNode`] re-applies around its child. Each
@@ -674,12 +765,13 @@ pub(super) enum WrapperEffect {
     /// Purely a layout hint: it changes which child a stack compresses first and
     /// draws nothing, so the flush path renders straight through it.
     LayoutPriority(LayoutPriority),
-    /// `.ignore_safe_area(edges)` — the window's `WindowSafeArea` insets are
-    /// released on the flagged edges: layout offers the child the window bounds
-    /// expanded by those edges' insets, and flush shifts its frame back the
-    /// same amount, so the subtree reaches the window edge where it meets the
-    /// safe-area boundary.
-    IgnoreSafeArea(EdgeSet),
+    /// `.ignore_safe_area(regions.on(edges))` — the window's safe-area
+    /// insets are released through the regions and edges the declaration
+    /// names: layout offers the child the window bounds expanded by the
+    /// released depths, and flush shifts its frame back the same amount, so
+    /// the subtree reaches through the ignored zones and stops at the
+    /// nearest unignored one (layout-spec.md §7.1).
+    IgnoreSafeArea(IgnoreSafeArea),
     NavigationTransitionSource(RawId),
     NavigationTransitionDestination(RawId),
     Clip(ClipShape),
@@ -980,8 +1072,13 @@ pub struct ScrollNode {
     /// measure would count as re-measurement; `patch` and
     /// `take_layout_dirty` reset it when the subtree changes underneath.
     pub(super) non_scrolling_minimum: Cell<Option<f32>>,
-    /// Environment captured at build, for scroll-target accessibility.
+    /// Environment captured at build — for scroll-target accessibility and
+    /// the child layout/flush environment.
     pub(super) env: Environment,
+    /// §7.1's scroll-surface bookkeeping: the extension and clearance
+    /// bounds layout computed once (the handle is rebound exactly once per
+    /// layout with them), plus the focused-field state the flush drives.
+    pub(super) surface: safe_area::ScrollSurfaceArea,
 }
 
 pub struct RetainNode {
@@ -1071,6 +1168,9 @@ pub struct DynamicHostNode {
     /// Consumed by the retained-update mount path in H3.
     #[allow(dead_code)]
     pub render_id: RenderId,
+    /// The §7.1 context the host was last laid out against — the flush's
+    /// mid-pass layout for a child that applied its pending reuses it.
+    pub(super) safe_area: Option<Box<safe_area::SafeAreaLayout>>,
     /// The source `Dynamic`, kept alive so its identity cannot be reused while
     /// this node lives — otherwise a freed identity could be reallocated to a
     /// different `Dynamic` and confused for this one. Also read by
