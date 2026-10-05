@@ -1,0 +1,16 @@
+[project]
+name = "competitive-bench-windows"
+version = "0.1.0"
+description = "water-rs/waterui#1262 competitive benchmark: Windows runner"
+requires-python = ">=3.12"
+dependencies = [
+    "psutil>=6.0",
+    # maintained Windows bindings — Job Object lifecycle and DXGI COM;
+    # the hand-rolled ctypes ABI they replace truncated handles and
+    # mis-indexed vtables
+    "pywin32==311; sys_platform=='win32'",
+    "comtypes==1.4.10; sys_platform=='win32'",
+]
+
+[tool.uv]
+package = false

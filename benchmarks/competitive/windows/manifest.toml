@@ -1,0 +1,78 @@
+# water-rs/waterui#1262 — Windows leg manifest.
+# Every toolchain and framework version the runner relies on is pinned here;
+# run.py reads this file and refuses to run on a drifted toolchain.
+
+[meta]
+issue = "https://github.com/water-rs/waterui/issues/1864"
+harness_issue = "https://github.com/water-rs/waterui/issues/1262"
+platform = "windows"
+
+[toolchain]
+os = "Windows Server 2022"
+uv = "0.12.19"
+python = "3.12"
+msvc = "14.44.35207"
+windows_sdk = "10.0.26100"
+dotnet_sdk = "10.0.401"
+node = "22.20.0"
+flutter = "3.47.5"
+dxc = "1.8.2505.1"
+# The water CLI is compiled from THIS checkout (`cargo install --locked
+# --path cli` — cli/ is a workspace member). Framework, CLI and backend
+# identity is the checkout's HEAD sha, recorded by the runner.
+# Runner-resolved tool paths — declarative, verified by the runner before
+# any build step runs. `~` expands to the build user's home.
+dotnet_root = "~/dotnet"
+node_root = "~/tools/node22"
+flutter_root = "~/tools/flutter"
+dxc_root = "~/.water/tools/dxc/1.8.2505.1/bin/x64"
+# PresentMon is the reference consumer for the ETW present stream; the runner
+# reads the same DXGI/DxgKrnl events directly so contestants that submit
+# frames via DirectComposition or CDD blits are still timed identically.
+presentmon = "2.5.1"
+
+# The WaterUI contestant is the shared apps/waterui project — a
+# workspace member of this checkout; framework identity is HEAD.
+[frameworks]
+electron = "44.4.5"
+electron_packager = "20.3.0"
+flutter = "3.47.5"
+windowsappsdk = "2.5.1"
+windows_sdk_buildtools = "10.0.28000.2705"
+dotnet_target = "net10.0-windows10.0.26100.0"
+
+[runner]
+repetitions = 5
+# bounds the event-driven readiness wait (WaitForInputIdle + an owned
+# visible window) — a timeout, not a sleep
+ready_timeout_seconds = 30.0
+# the measured window starts at the contestant's first owned present
+# plus this warmup, then capture_seconds_* wide
+warmup_seconds = 1.0
+capture_seconds_w2 = 8.0
+capture_seconds_w3 = 8.0
+capture_seconds_static = 6.0
+memory_sample_interval_ms = 100
+# W2 drive: automated fling = repeated WM_MOUSEWHEEL ticks posted to the app
+# window while the real cursor rests over its centre. Same input for all apps.
+fling_tick_ms = 30
+
+[measurement]
+# Uniform method for every contestant: one ETW trace per run enabling
+# Microsoft-Windows-DXGI (all keywords), Microsoft-Windows-DxgKrnl
+# (Events keyword) and Microsoft-Windows-Kernel-Process (process events);
+# per-process frame-submission timestamps are picked out of the trace:
+#   1. DXGI "Present" task Start events      — swapchain presenters
+#      (waterui/vello, flutter) — the same events PresentMon reports.
+#   2. DXGI event-id 144/145 task-63 pairs   — composition-path presents
+#      (WinUI 3's compositor); PresentMon's keyword mask filters these out,
+#      so PresentMon alone cannot time WinUI 3.
+#   3. DxgKrnl "DxgkCddDrvBitBlt" pairs      — per-frame canonical-display-
+#      driver blits; the path Chromium/Electron takes when the only adapter
+#      is the Basic Render Driver (WARP-class), emitting no DXGI presents.
+# dropped_pct is the share of frame intervals longer than 1.5x the 60 Hz
+# budget (25 ms): display-finalisation timestamps are not available on an
+# indirect-display VM, so true "presented but not displayed" drops cannot be
+# observed; this is the closest uniformly-computable proxy.
+vsync_budget_ms = 16.667
+dropped_threshold_ratio = 1.5

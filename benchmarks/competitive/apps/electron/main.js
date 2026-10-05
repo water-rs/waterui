@@ -109,6 +109,9 @@ app.whenReady().then(() => {
   win = new BrowserWindow({
     width: 960,
     height: 640,
+    // hidden until the first frame is committed so the visible first
+    // present is the measured frame — not a white flash
+    show: false,
     webPreferences: {
       sandbox: false,
       // renderer.js uses ipcRenderer for the auto-drive handshake; the
@@ -122,6 +125,7 @@ app.whenReady().then(() => {
   // did-frame-finish-load fires when the first frame is committed —
   // the closest Electron equivalent of "first frame on screen".
   win.webContents.once('did-frame-finish-load', () => {
+    win.show();
     process.stdout.write('BENCH_READY\n');
   });
   win.loadFile('index.html', {
