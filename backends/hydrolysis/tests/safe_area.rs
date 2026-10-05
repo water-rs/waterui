@@ -258,12 +258,35 @@ fn navigation_page_targets_follow_the_safe_area(ui: UiBuilder<Styled<hydrolysis_
     );
 }
 
-/// A fill background under a translucent keyboard region is painted by the
-/// fill: the content's frame stops on the avoided edge, but the fill's paint
-/// runs on through the keyboard band to the window edge (§7.1 "Paint extends
-/// for fills"). The extension is verified by reading the snapshot PNG — below
-/// the avoided edge the fill covers the band where no paint would otherwise
-/// reach.
+/// A fill's extension reaches through wrappers that never read bounds: an
+/// `Opacity` over the color is still a fill, so the translucent paint runs
+/// on through the keyboard band to the window edge exactly as the opaque
+/// case does (snapshot).
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
+fn a_fill_inside_opacity_still_extends(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
+    let container = waterui::binding(SAFE_INSETS);
+    let keyboard = waterui::binding(KEYBOARD_INSETS);
+    let mut app = ui
+        .environment(env_with_keyboard(&container, &keyboard))
+        .mount_offscreen(move || {
+            vstack((card("content"), spacer()))
+                .alignment(HorizontalAlignment::Leading)
+                .background(Color::new(Srgb::new(0.2, 0.5, 0.9)).opacity(0.6))
+        });
+
+    let content = app
+        .query()
+        .role(Role::LABEL)
+        .label("content")
+        .single()
+        .bounds();
+    assert!(
+        (content.y() - SAFE_INSETS.top()).abs() <= 1.0,
+        "the content frame keeps the boundary, got {content:?}"
+    );
+    app.capture_snapshot("safe-area", "fill-inside-opacity", "keyboard");
+}
+
 /// `SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM)` lays the view out under the
 /// keyboard but still clear of the container (navigation-bar) inset: the
 /// bottom edge slides under the keyboard band and stops at
@@ -882,9 +905,10 @@ fn a_fill_ignore_names_the_only_edge_that_extends(ui: UiBuilder<Styled<hydrolysi
                 .background(Color::new(Srgb::new(0.75, 0.4, 0.0)).ignore_safe_area(EdgeSet::BOTTOM))
         });
 
-    // The named bottom edge's release is the fill's whole extension: the
-    // background paints to the window edge there (the card sits 48 below
-    // the top, so y + height lands past the window bottom only on the fill).
+    // The named bottom edge's release is the fill's whole extension. The
+    // assertion is a precondition — the card keeps the container inset —
+    // and the snapshot is the check: the background paints to the window
+    // bottom edge and nowhere else.
     let content = app
         .query()
         .role(Role::LABEL)
@@ -898,18 +922,21 @@ fn a_fill_ignore_names_the_only_edge_that_extends(ui: UiBuilder<Styled<hydrolysi
     app.capture_snapshot("safe-area", "fill-ignore-bottom-edge-only", "keyboard");
 }
 
-/// §7.1 chrome containers: a form inside `NavigationView` content is a
-/// scroll surface with the chrome's band consumed — it extends under the
-/// keyboard and clears a focused field exactly as a root-level surface
-/// does.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn a_form_inside_navigation_content_clears_the_focused_field(
+/// §7.1 chrome containers: a form inside `NavigationView` content inherits
+/// the host's boundaries — it extends under the keyboard and clears a
+/// focused field exactly as a root-level surface does. Runs at scale 1 and
+/// at 2.625, a real device density: the hosted frame maps from the layout
+/// record, so the clearance lands on the boundary in logical units
+/// whatever the window's scale.
+fn navigation_hosted_form_clears_the_focused_field(
     ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
+    scale: f64,
 ) {
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
     let value = Binding::container(waterui::Str::from(""));
     let mut app = ui
+        .scale_factor(scale)
         .environment(env_with_keyboard(&container, &keyboard))
         .mount_offscreen(move || {
             NavigationView::new(
@@ -930,7 +957,8 @@ fn a_form_inside_navigation_content_clears_the_focused_field(
         .bounds();
     assert!(
         covered.y() + covered.height() > KEYBOARD_TOP + 1.0,
-        "precondition: the field starts under the keyboard band, got {covered:?}"
+        "precondition at scale {scale}: the field starts under the keyboard \
+         band, got {covered:?}"
     );
 
     app.query().role(Role::TEXT_INPUT).label("Message").focus();
@@ -945,17 +973,62 @@ fn a_form_inside_navigation_content_clears_the_focused_field(
         .bounds();
     assert!(
         (cleared.y() + cleared.height() - KEYBOARD_TOP).abs() <= 0.5,
-        "the navigation-hosted surface clears the field to the keyboard \
-         boundary, got {cleared:?}"
+        "at scale {scale} the navigation-hosted surface clears the field to \
+         the keyboard boundary, got {cleared:?}"
     );
 }
 
-/// `.ignore_safe_area` inside navigation content still releases: the
-/// chrome's own band is consumed into the content frame's context, so a
-/// TOP declaration on the hero reaches through the bar and the status bar
-/// to the window edge.
 #[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn an_ignore_inside_navigation_content_still_releases(
+fn a_form_inside_navigation_content_clears_the_focused_field(
+    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
+) {
+    navigation_hosted_form_clears_the_focused_field(ui, 1.0);
+}
+
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
+fn a_form_inside_navigation_content_clears_the_focused_field_at_device_scale(
+    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
+) {
+    navigation_hosted_form_clears_the_focused_field(ui, 2.625);
+}
+
+/// A navigation page's background fill stays inside the content frame: the
+/// bar's band is not a boundary the content inherited, so the fill never
+/// paints over the bar or the status-bar band, and rows scrolled to the
+/// top stop at the bar's inner edge. Paint is the check — the snapshot
+/// shows the fill beginning at the bar, never covering the title.
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
+fn a_navigation_page_background_stays_below_the_bar(
+    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
+) {
+    let insets = waterui::binding(SAFE_INSETS);
+    let mut app = ui
+        .environment(env_with_insets(&insets))
+        .mount_offscreen(move || {
+            NavigationView::new(
+                "Home",
+                ScrollView::vertical(vstack((
+                    card("row one"),
+                    card("row two"),
+                    card("row three"),
+                    spacer().size(390.0, 480.0),
+                )))
+                .background(Color::new(Srgb::new(0.85, 0.2, 0.3)))
+                .a11y_label("page-scroll"),
+            )
+        });
+    app.settle();
+    app.query().label("page-scroll").scroll_down();
+    app.settle();
+    app.capture_snapshot("safe-area", "nav-page-background", "insets");
+}
+
+/// `.ignore_safe_area(EdgeSet::TOP)` inside navigation content releases
+/// nothing it does not touch: the page's top edge is not on the host's top
+/// boundary — the bar's band covers it — so the hero stays at the content
+/// top, below the bar (48 inset + the 64pt bar), never at the window edge.
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
+fn an_ignore_top_inside_navigation_content_stays_below_the_bar(
     ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
 ) {
     let insets = waterui::binding(SAFE_INSETS);
@@ -975,8 +1048,187 @@ fn an_ignore_inside_navigation_content_still_releases(
         .single()
         .bounds();
     assert!(
-        hero.y().abs() <= 1.0,
-        "the declaration releases through the chrome to the window origin, got {hero:?}"
+        (hero.y() - (SAFE_INSETS.top() + 64.0)).abs() <= 1.0,
+        "the covered top edge releases nothing: the hero stays below the \
+         bar, got {hero:?}"
+    );
+}
+
+/// The edge a hosted subtree still touches stays reachable: a navigation
+/// page ending on the bottom boundary extends its background fill through
+/// the keyboard band to the window edge — the snapshot shows the fill
+/// painting the band, the content frame ending on the boundary.
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
+fn a_navigation_page_touching_the_bottom_still_extends_its_fill(
+    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
+) {
+    let container = waterui::binding(SAFE_INSETS);
+    let keyboard = waterui::binding(KEYBOARD_INSETS);
+    let mut app = ui
+        .environment(env_with_keyboard(&container, &keyboard))
+        .mount_offscreen(move || {
+            NavigationView::new(
+                "Home",
+                vstack((card("content"), spacer()))
+                    .background(Color::new(Srgb::new(0.2, 0.6, 0.35))),
+            )
+        });
+
+    let content = app
+        .query()
+        .role(Role::LABEL)
+        .label("content")
+        .single()
+        .bounds();
+    assert!(
+        content.y() + content.height() <= KEYBOARD_TOP + 1.0,
+        "the content frame still ends on the boundary, got {content:?}"
+    );
+    app.capture_snapshot("safe-area", "nav-bottom-fill", "keyboard");
+}
+
+/// An anchored overlay's background fill stays at the overlay's own frame:
+/// the overlay inherits the window's boundaries, and a tooltip mid-window
+/// touches none of them, so its fill extends nowhere — the snapshot shows
+/// a small fill under the anchor, not a window-flooding one.
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
+fn an_anchored_overlay_fill_stays_at_its_own_frame(
+    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
+) {
+    use waterui::metadata::anchored_overlay::{AnchorEdge, AnchoredOverlay};
+
+    let insets = waterui::binding(SAFE_INSETS);
+    let open = waterui::binding(true);
+    let mut app = ui
+        .environment(env_with_insets(&insets))
+        .mount_offscreen(move || {
+            vstack((
+                spacer().size(390.0, 200.0),
+                text("anchor").body().anchored_overlay(
+                    AnchoredOverlay::new(
+                        &open,
+                        text("tip")
+                            .caption()
+                            .padding_with(6.0)
+                            .background(Color::new(Srgb::new(0.2, 0.7, 0.9))),
+                    )
+                    .edge(AnchorEdge::Bottom),
+                ),
+                spacer(),
+            ))
+            .alignment(HorizontalAlignment::Leading)
+        });
+
+    assert!(
+        app.query().role(Role::LABEL).label("tip").exists(),
+        "precondition: the presented overlay content is in the tree"
+    );
+    app.capture_snapshot("safe-area", "overlay-fill", "insets");
+}
+
+/// A split view's detail background does not cross the sidebar: the
+/// detail column's leading edge is not on the host's leading boundary, so
+/// it is covered — the snapshot shows the fill starting at the column's
+/// leading edge with the sidebar unpainted-over beside it.
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (1400, 900))]
+fn a_split_detail_background_does_not_cross_the_sidebar(
+    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
+) {
+    use waterui::navigation::NavigationSplitView;
+
+    let insets = waterui::binding(SAFE_INSETS);
+    let selection = Binding::container(Some(0i32));
+    let mut app = ui
+        .environment(env_with_insets(&insets))
+        .mount_offscreen(move || {
+            NavigationSplitView::new(
+                &selection,
+                || {
+                    List::for_each((0..8).map(SelfId::new).collect::<Vec<_>>(), |item| {
+                        ListItem::new(text(format!("side {}", *item)))
+                    })
+                },
+                |id| {
+                    NavigationView::new(
+                        format!("Detail {id}"),
+                        vstack((card("detail-fill"), spacer()))
+                            .background(Color::new(Srgb::new(0.85, 0.45, 0.1))),
+                    )
+                },
+            )
+        });
+    app.settle();
+
+    assert!(
+        app.query().role(Role::LABEL).label("detail-fill").exists(),
+        "precondition: the detail column rendered"
+    );
+    app.capture_snapshot("safe-area", "split-detail-background", "insets");
+}
+
+/// Nested declarations across chrome content never move a boundary inward:
+/// hosted content inherits the host's boundary and released regions, so an
+/// inner `.ignore_safe_area` can only release further out — never re-cover
+/// a band the outer declaration already released. Both directions run:
+/// KEYBOARD under the navigation view with CONTAINER inside, and CONTAINER
+/// under the navigation view with KEYBOARD inside.
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
+fn nested_releases_never_move_the_navigation_boundary_inward(
+    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
+) {
+    let container = waterui::binding(SAFE_INSETS);
+    let keyboard = waterui::binding(KEYBOARD_INSETS);
+
+    // Outer releases the keyboard region, inner names the container: both
+    // regions end up released, so the inner declaration extends the
+    // content outward to the window edge — never inward to a re-covered
+    // boundary.
+    let mut keyboard_first = ui
+        .clone()
+        .environment(env_with_keyboard(&container, &keyboard))
+        .mount_offscreen(move || {
+            NavigationView::new(
+                "Outer",
+                vstack((spacer(), card("inner")))
+                    .ignore_safe_area(SafeAreaRegions::CONTAINER.on(EdgeSet::BOTTOM)),
+            )
+            .ignore_safe_area(SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM))
+        });
+    let inner = keyboard_first
+        .query()
+        .role(Role::LABEL)
+        .label("inner")
+        .single()
+        .bounds();
+    assert!(
+        (inner.y() + inner.height() - 844.0).abs() <= 1.0,
+        "KEYBOARD under nav + CONTAINER inside: the bottom edge lands on the \
+         window edge, got {inner:?}"
+    );
+
+    // Outer releases the container region, inner names the keyboard: the
+    // inner declaration releases outward past the container band to the
+    // window edge.
+    let mut container_first = ui
+        .environment(env_with_keyboard(&container, &keyboard))
+        .mount_offscreen(move || {
+            NavigationView::new(
+                "Outer",
+                vstack((spacer(), card("inner")))
+                    .ignore_safe_area(SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM)),
+            )
+            .ignore_safe_area(SafeAreaRegions::CONTAINER.on(EdgeSet::BOTTOM))
+        });
+    let inner = container_first
+        .query()
+        .role(Role::LABEL)
+        .label("inner")
+        .single()
+        .bounds();
+    assert!(
+        (inner.y() + inner.height() - 844.0).abs() <= 1.0,
+        "CONTAINER under nav + KEYBOARD inside: the bottom edge lands on the \
+         window edge, got {inner:?}"
     );
 }
 

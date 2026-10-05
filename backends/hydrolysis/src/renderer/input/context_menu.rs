@@ -494,7 +494,7 @@ impl HydrolysisRenderer {
     pub(crate) fn render_context_menu_presentation(
         &mut self,
         transform: kurbo::Affine,
-        safe_area: &SafeAreaLayout,
+        safe_area: &crate::renderer::SafeAreaLayout,
     ) {
         let Some(mut presentation) = self.popup_menu.context_menu_presentation.take() else {
             return;
@@ -641,8 +641,10 @@ impl HydrolysisRenderer {
             &presentation_env,
             bounded_proposal(presentation.menu_frame),
             presentation.menu_frame,
-            // §7.1: the presentation is chrome of its own placement.
-            Some(safe_area.for_subtree(presentation.menu_frame)),
+            // §7.1: the presentation is chrome of its own placement — its
+            // content inherits the window's boundaries, releasing only
+            // where the panel's frame really sits on one.
+            Some(safe_area.with_frame(presentation.menu_frame)),
         );
 
         if let Some(preview) = presentation.preview.as_mut() {
@@ -654,7 +656,7 @@ impl HydrolysisRenderer {
                         &presentation_env,
                         bounded_proposal(layout.lift),
                         layout.lift,
-                        Some(safe_area.for_subtree(layout.lift)),
+                        Some(safe_area.with_frame(layout.lift)),
                     );
                 });
             });
@@ -669,7 +671,7 @@ impl HydrolysisRenderer {
                 &presentation_env,
                 bounded_proposal(content),
                 content,
-                Some(safe_area.for_subtree(content)),
+                Some(safe_area.with_frame(content)),
             );
         }
 

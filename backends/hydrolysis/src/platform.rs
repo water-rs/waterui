@@ -347,10 +347,11 @@ pub struct TouchScrollConfig {
 }
 
 impl TouchScrollConfig {
-    /// The constants Android's `ViewConfiguration` reports, normalized to
-    /// density-1 logical units — the values the touch-scroll tests drive
-    /// through the host's `touch_scroll_config` seam so a touch drag
-    /// claims scroll views the way it does on device.
+    /// Android's density-1 defaults — `ViewConfiguration`'s constants
+    /// normalized to logical units, not the scaled values a host reports
+    /// at runtime. Tests drive them through the host's
+    /// `touch_scroll_config` seam so a touch drag claims scroll views the
+    /// way it does on device.
     #[must_use]
     pub fn android_default() -> Self {
         Self {

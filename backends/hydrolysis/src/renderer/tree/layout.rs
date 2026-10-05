@@ -412,7 +412,7 @@ impl RenderNode {
         &mut self,
         renderer: &mut HydrolysisRenderer,
         env: &Environment,
-        safe_area: Option<SafeAreaLayout>,
+        safe_area: Option<safe_area::SafeAreaLayout>,
         proposal: ProposalSize,
         size: Size,
     ) {
@@ -484,7 +484,7 @@ impl RenderNode {
                 let node_env = node.env.clone();
                 if let WrapperEffect::IgnoreSafeArea(ignore) = &node.effect {
                     let Some(area) = safe_area else {
-                        node.released_offsets.set(EdgeOffsets::default());
+                        node.released_offsets.set(safe_area::EdgeOffsets::default());
                         node.child.layout(renderer, &node_env, None, proposal, size);
                         return;
                     };
@@ -509,7 +509,7 @@ impl RenderNode {
             Self::Dynamic(node) => {
                 // The context stays on the host: the flush's mid-pass layout
                 // for a child that applied its pending then reuses it.
-                (*node.safe_area.borrow_mut()).clone_from(&safe_area);
+                *node.safe_area.borrow_mut() = safe_area.clone().map(Box::new);
                 node.child
                     .borrow_mut()
                     .layout(renderer, env, safe_area, proposal, size);
@@ -544,7 +544,9 @@ impl RenderNode {
                 // is rebound exactly once, with the extended viewport and
                 // content, so an input closure captured mid-frame never
                 // meets a second generation bump at flush.
-                let facts = safe_area.as_ref().map(SafeAreaLayout::surface_facts);
+                let facts = safe_area
+                    .as_ref()
+                    .map(safe_area::SafeAreaLayout::surface_facts);
                 node.surface.facts.set(facts);
                 let (viewport, content) = node.surface.extended(
                     kurbo::Size::new(f64::from(size.width), f64::from(size.height)),
@@ -607,25 +609,35 @@ impl RenderNode {
             // rect by exactly this) — then lays its child out at the
             // unchanged frame.
             Self::Fill(node) => {
-                node.extension
-                    .set(safe_area.as_ref().map(SafeAreaLayout::touched_edge_offsets));
+                node.extension.set(
+                    safe_area
+                        .as_ref()
+                        .map(safe_area::SafeAreaLayout::touched_edge_offsets),
+                );
                 node.child.layout(renderer, env, safe_area, proposal, size);
             }
             Self::Widget(node) => {
-                node.behavior
-                    .update_scroll_surface(safe_area.as_ref().map(SafeAreaLayout::surface_facts));
+                node.behavior.update_scroll_surface(
+                    safe_area
+                        .as_ref()
+                        .map(safe_area::SafeAreaLayout::surface_facts),
+                );
                 // The context the widget's retained sub-views read through
                 // `safe_area_for`/`content_area_for` at flush.
-                *node.safe_area.borrow_mut() = safe_area;
+                *node.safe_area.borrow_mut() = safe_area.map(Box::new);
             }
-            // A lazy stack places its items lazily at flush (offset-dependent);
-            // text, color and GPU leaves render at flush from `ctx.bounds`.
+            // The context a lazy stack's flush-time item placements read —
+            // its items inherit the context it laid out against, like a
+            // collection's placed children do.
+            Self::LazyStack(node) => {
+                *node.safe_area.borrow_mut() = safe_area.map(Box::new);
+            }
+            // Text, color and GPU leaves render at flush from `ctx.bounds`.
             Self::Color(_)
             | Self::Text(_)
             | Self::SceneView(_)
             | Self::GpuContent(_)
-            | Self::ExternalFrame(_)
-            | Self::LazyStack(_) => {}
+            | Self::ExternalFrame(_) => {}
         }
     }
 }

@@ -313,7 +313,7 @@ pub fn draw_scroll_indicators(
                 let Some(geometry) = indicator_geometry(
                     gutter.width(),
                     (metrics.viewport_width - extension.horizontal()).max(0.0),
-                    metrics.content_height,
+                    metrics.content_width,
                     metrics.max_x,
                     metrics.offset_x,
                 ) else {

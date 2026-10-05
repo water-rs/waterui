@@ -550,6 +550,47 @@ fn measure_layout_dimensions_collects_alignment_keys_from_wrapper_layouts() {
     );
 }
 
+/// A plain `FixedContainer` — normalization's form, before `body` wraps its
+/// layout in `DirectionalLayout` — must still resolve explicit horizontal
+/// guides against the placements `DirectionalLayout` produces: under RTL the
+/// leading-aligned child sits on the trailing edge, so a guide anchored in
+/// its frame mirrors to `width - offset`.
+#[test]
+fn plain_fixed_container_measurement_mirrors_guides_under_rtl() {
+    use waterui_core::layout::LayoutDirection;
+    use waterui_layout::container::FixedContainer;
+    let mut env = test_environment();
+    env.insert(LayoutDirection::RightToLeft);
+    let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
+    let view = normalize_layout_view(
+        AnyView::new(FixedContainer::new(
+            VStackLayout {
+                alignment: HorizontalAlignment::Leading,
+                spacing: Computed::constant(0.0),
+            },
+            vec![
+                AnyView::new(().size(20.0, 10.0).horizontal_alignment_guide(
+                    HorizontalAlignment::Leading,
+                    |dimensions: &ViewDimensions| dimensions.size.width * 0.5,
+                )),
+                AnyView::new(().size(100.0, 10.0)),
+            ],
+        )),
+        &env,
+    );
+    let mut state = HydroState::new(FontFamilyResolution::Strict);
+    let dimensions = measure_view_dimensions(&view, &mut state, &env, &theme);
+
+    // Under RTL the 20-wide leading child mirrors to the trailing edge —
+    // placed at `width - 20`, so its mid-child guide resolves at
+    // `width - 10` (unmirrored it would sit at 10) — the same value the
+    // built tree's DirectionalLayout reports.
+    assert_eq!(
+        dimensions.explicit_horizontal(HorizontalAlignment::Leading),
+        Some(dimensions.size.width - 10.0)
+    );
+}
+
 #[test]
 fn layout_normalization_does_not_charge_metadata_depth_to_component_recursion() {
     let env = test_environment();

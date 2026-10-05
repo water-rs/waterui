@@ -34,7 +34,7 @@ macro_rules! impl_widget_behavior {
                 renderer: &mut HydrolysisRenderer,
                 ctx: RenderContext,
                 env: &Environment,
-                safe_area: Option<SafeAreaLayout>,
+                safe_area: Option<safe_area::SafeAreaLayout>,
             ) {
                 let mut widget_ctx = WidgetRenderContext::new(renderer, ctx, safe_area);
                 $render(&mut widget_ctx, &self, env);
@@ -55,7 +55,7 @@ macro_rules! impl_widget_behavior {
             })?
 
             $(
-                fn update_scroll_surface(&self, facts: Option<ScrollSurfaceFacts>) {
+                fn update_scroll_surface(&self, facts: Option<safe_area::ScrollSurfaceFacts>) {
                     self.borrow().$surface.facts.set(facts);
                 }
             )?
@@ -81,24 +81,13 @@ mod collection;
 mod flush;
 mod layout;
 mod nodes;
-/// `pub(crate)` states the intended crate scope on this private
-/// module's items; `pub` trips `missing_debug_implementations` instead.
-#[expect(clippy::redundant_pub_crate)]
-mod safe_area;
+pub(super) mod safe_area;
 mod subview;
-/// Same crate-scope intent as `safe_area`.
-#[expect(clippy::redundant_pub_crate)]
 mod window;
 
-#[expect(clippy::redundant_pub_crate)]
-pub(crate) use collection::*;
-#[expect(clippy::redundant_pub_crate)]
-pub(crate) use nodes::*;
-#[expect(clippy::redundant_pub_crate)]
-pub(crate) use safe_area::*;
+pub use collection::*;
+pub use nodes::*;
 use subview::NodeSubView;
-#[expect(clippy::redundant_pub_crate)]
-pub(crate) use window::*;
 
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
@@ -125,10 +114,6 @@ type CollectionItemId = SelfId<RawId>;
 /// A node in the persistent retained render tree. The render-primitive set is
 /// closed by the nature of a self-drawn renderer; the open `HydroDispatcher` maps
 /// the open universe of `View` types onto this closed set.
-#[expect(
-    clippy::large_enum_variant,
-    reason = "the widget variant carries the renderer's retained widget payload; boxing it costs an indirection on the tree's most common node, and the size spread over the leaf variants predates the fill variant"
-)]
 pub enum RenderNode {
     /// A solid fill of the node's bounds.
     Color(ColorNode),
@@ -214,6 +199,12 @@ pub enum RenderNode {
     /// expansion and no structural rebuild, so the leaf never has to be captured
     /// and replayed to stay affordable.
     Widget(WidgetNode),
+}
+
+impl core::fmt::Debug for RenderNode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("RenderNode").finish_non_exhaustive()
+    }
 }
 
 impl RenderNode {

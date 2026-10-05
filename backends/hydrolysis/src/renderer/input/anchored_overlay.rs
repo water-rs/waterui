@@ -121,7 +121,7 @@ impl HydrolysisRenderer {
     pub(crate) fn render_anchored_overlays(
         &mut self,
         transform: kurbo::Affine,
-        safe_area: &SafeAreaLayout,
+        safe_area: &crate::renderer::SafeAreaLayout,
     ) {
         let registered = core::mem::take(&mut self.popup_menu.anchored_overlays);
         let last_presented = core::mem::take(&mut self.popup_menu.presented_anchored_overlays);
@@ -249,8 +249,9 @@ impl HydrolysisRenderer {
                 bounded_proposal(frame),
                 frame,
                 // §7.1: the overlay is chrome of its own placement — content
-                // inside lays out against the boundaries its frame leaves.
-                Some(safe_area.for_subtree(frame)),
+                // inside inherits the window's boundaries, so it can only
+                // touch and release where its frame really sits on one.
+                Some(safe_area.with_frame(frame)),
             );
             self.animation_controller.end_animation_scope();
 
