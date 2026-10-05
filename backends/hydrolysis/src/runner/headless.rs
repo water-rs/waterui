@@ -1220,16 +1220,16 @@ mod generation_tests {
     use super::*;
     use crate::platform::GpuSurfaceWindow;
     use crate::renderer::tests::{MinimalTestTheme, test_environment};
-    use cherenkov::{
-        Draw as _, Font, FontSource, Glyph, GlyphRun, GlyphStyle, Image, ImageData, Rgba8,
-        Sampling, WorkingColor,
-    };
     use core::time::Duration;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
     use std::time::Instant;
+    use waterui_graphics::draw::{
+        Draw as _, FontId, Glyph, GlyphRun, GlyphStyle, ImageId, Recorder, Sampling, WorkingColor,
+    };
     use waterui_graphics::{
-        RecordingResources, Registered, SceneContent, SceneInvalidator, SceneView,
+        FontSource, ImageData, RecordingResources, Registered, Rgba8, SceneContent,
+        SceneInvalidator, SceneView,
     };
 
     /// Replaces `runtime`'s GPU context: the platform window is rebuilt on
@@ -1274,14 +1274,14 @@ mod generation_tests {
         rebuilds: Rc<Cell<u32>>,
         installs: Rc<Cell<u32>>,
         latest: Rc<RefCell<Option<SceneInvalidator>>>,
-        font: Option<Registered<Font>>,
-        image: Option<Registered<Image<Rgba8>>>,
+        font: Option<Registered<FontId>>,
+        image: Option<Registered<ImageId>>,
     }
 
     impl SceneContent for ResourceSceneContent {
         fn build_scene(
             &mut self,
-            recorder: &mut cherenkov::Recorder,
+            recorder: &mut Recorder,
             resources: &mut RecordingResources<'_>,
             width: f32,
             height: f32,
