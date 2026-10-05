@@ -1482,7 +1482,7 @@ mod generation_tests {
             .expect("the re-installed invalidator is held by the content");
         invalidator();
         assert!(
-            runtime.runtime.renderer.take_patch_request(),
+            runtime.runtime.renderer.root_is_dirty(),
             "re-installed invalidator requests a frame on the new engine"
         );
     }

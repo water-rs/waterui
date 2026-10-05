@@ -618,10 +618,11 @@ fn advance_semantic_window(window: &mut SemanticWindow, env: &Environment, now: 
         window.refresh_requested = true;
     }
     let _animations_active = window.core.advance_animations();
-    if window.core.take_patch_request() {
-        window.refresh_requested = true;
-    }
-    if window.core.take_rebuild_request() || window.core.take_next_frame_rebuild_request() {
+    window.core.drain_producer_wakes();
+    // Any mark — a reactive update, a structural patch, a rebuild-worthy
+    // change — lands on the root cell through the owner chain and arms the
+    // patch flag; structural marks persist until the emit clears them.
+    if window.core.take_patch_request() || window.core.has_structure_marks() {
         window.refresh_requested = true;
     }
 }
@@ -632,9 +633,9 @@ fn advance_semantic_window(window: &mut SemanticWindow, env: &Environment, now: 
 fn pump_semantic_window(window: &mut SemanticWindow, env: &Environment) -> bool {
     // The rendered pump subscribes to the window's frame/state signals every
     // frame (`render_window_with_capture`): the semantic pump holds the same
-    // subscriptions so a `frame`/`state` change re-emits here too, and so their
-    // watch guards roll over through `signal_watches` in the same teardown
-    // order the renderer releases them in (water-rs/waterui#1213).
+    // subscriptions so a `frame`/`state` change marks the window's cells and
+    // re-emits here too; the reads repeat every pump so the guards' lifetime
+    // follows the window's cells (water-rs/waterui#1213).
     let _ = window.core.read_signal(&window.window.frame);
     let _ = window.core.read_signal(&window.window.state);
     let _ = window.core.read_signal(&window.window.level);
@@ -647,7 +648,7 @@ fn pump_semantic_window(window: &mut SemanticWindow, env: &Environment) -> bool 
         .core
         .set_accessibility_root_label(window.window.title.snapshot().as_str());
 
-    if window.core.take_rebuild_request() {
+    if window.core.has_structure_marks() {
         window.refresh_requested = true;
     }
     let work_pending = window.refresh_requested

@@ -25,12 +25,6 @@ pub struct RetainedSubview {
     /// The lifecycle state: the unbuilt source, or the built node with its
     /// layout bookkeeping.
     state: RetainedSubviewState,
-    /// This host's presentation instance: a subview is an additional placement
-    /// of its content's visual nodes (a preview, an accessory), so its mounts
-    /// key under its own `PresentationId` — never the content's ordinary one.
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub(crate) presentation: PresentationId,
 }
 
 /// The [`RetainedSubview`] lifecycle: the unbuilt source view, or the built
@@ -153,11 +147,23 @@ impl BuiltSubview {
 }
 
 impl RetainedSubview {
-    pub(crate) fn new(source: AnyView) -> Self {
+    pub(crate) const fn new(source: AnyView) -> Self {
         Self {
             state: RetainedSubviewState::Unbuilt { source },
-            presentation: PresentationId::next(),
         }
+    }
+
+    /// Parents the built node's cell under `owner`: the mark the subtree
+    /// raises reaches the owner's `below`, and the placement chain the
+    /// node resolves against reads the owner's. Called once, by
+    /// `ensure_built`, with the cell reading at build time — the widget's
+    /// cell while a record/measuring reader is installed, the window root
+    /// otherwise.
+    pub(crate) fn attach(&self, owner: &Rc<NodeCell>) {
+        let RetainedSubviewState::Built(built) = &self.state else {
+            return;
+        };
+        built.node.core().cell.set_parent(owner);
     }
 
     /// Eagerly build the sub-view's node now (the caller has the renderer),
@@ -179,8 +185,9 @@ impl RetainedSubview {
         // Normalize as the container/collection build paths do, so a layout
         // view (stack/spacer/etc.) inside a label lowers to its native form.
         let view = normalize_layout_view(view, env);
+        let node = RenderNode::build(view, env, renderer);
         self.state = RetainedSubviewState::Built(BuiltSubview {
-            node: RenderNode::build(view, env, renderer),
+            node,
             laid_out: Size::zero(),
             laid_out_proposal: None,
             needs_layout: true,
@@ -188,6 +195,13 @@ impl RetainedSubview {
             layout_dependencies: Some(LayoutDependencies::new(renderer.signals.clone())),
             default_a11y_label,
         });
+        // The current reader — the record or layout pass this build runs
+        // inside — is the owning widget's cell; a build with no reader
+        // attaches to the window root.
+        let owner = renderer
+            .reader_cell()
+            .unwrap_or_else(|| Rc::clone(renderer.root_cell()));
+        self.attach(&owner);
     }
 
     /// The built sub-view, or a panic naming `method`: measure, layout, flush,
@@ -195,10 +209,7 @@ impl RetainedSubview {
     /// use fails at the call site instead of answering empty.
     fn expect_built(&self, method: &'static str) -> &BuiltSubview {
         let RetainedSubviewState::Built(built) = &self.state else {
-            panic!(
-                "RetainedSubview::{method} ran before the sub-view was built (presentation {:?})",
-                self.presentation
-            );
+            panic!("RetainedSubview::{method} ran before the sub-view was built");
         };
         built
     }
@@ -207,10 +218,7 @@ impl RetainedSubview {
     /// [`Self::expect_built`].
     fn expect_built_mut(&mut self, method: &'static str) -> &mut BuiltSubview {
         let RetainedSubviewState::Built(built) = &mut self.state else {
-            panic!(
-                "RetainedSubview::{method} ran before the sub-view was built (presentation {:?})",
-                self.presentation
-            );
+            panic!("RetainedSubview::{method} ran before the sub-view was built");
         };
         built
     }
@@ -239,8 +247,7 @@ impl RetainedSubview {
         matches!(self.state, RetainedSubviewState::Built(_))
     }
 
-    /// The built child node, for render-identity probes.
-    #[cfg(test)]
+    /// The built child node.
     pub(crate) const fn node(&self) -> Option<&RenderNode> {
         match &self.state {
             RetainedSubviewState::Built(built) => Some(&built.node),
@@ -628,12 +635,6 @@ impl<K: Eq + core::hash::Hash + Clone> VisibleSubviewCache<K> {
         self.entries.get(key)
     }
 
-    /// Iterate the retained sub-views (unordered; test callers sort).
-    #[cfg(test)]
-    pub(crate) fn values(&self) -> impl Iterator<Item = &RetainedSubview> {
-        self.entries.values()
-    }
-
     /// Drop the retained sub-views of exactly the keys in `ids`. The next
     /// `entry` for a dropped key re-materializes it from the collection's
     /// current data; keys not in `ids` keep their nodes (and their retained
@@ -686,9 +687,9 @@ impl<K: Eq + core::hash::Hash + Clone> VisibleSubviewCache<K> {
 /// read env every frame), and the child node it recurses into.
 pub struct WrapperNode {
     pub(super) accessibility_identity: Rc<()>,
-    /// The node's render identity; a `Material` wrapper keys its engine
-    /// mount by it.
-    pub(crate) render_id: RenderId,
+    /// The node's own mount core: its cell keys the engine mounts a
+    /// `Material` wrapper (or any keyed effect) presents under.
+    pub(crate) core: NodeCore,
     pub(super) effect: WrapperEffect,
     pub(super) env: Environment,
     /// The per-edge release [`safe_area::SafeAreaLayout::release`] computed for an
@@ -766,9 +767,7 @@ pub trait WidgetBehavior {
 /// current bounds. No bake, no capture-once freeze.
 pub struct WidgetNode {
     pub(super) accessibility_identity: Rc<()>,
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub(crate) render_id: RenderId,
+    pub(crate) core: NodeCore,
     /// The §7.1 context the widget was last laid out against — node-lifetime
     /// storage: a widget inside an unchanged retained sub-view is not
     /// re-laid out on steady frames, but its flush still reads the context
@@ -792,20 +791,18 @@ pub struct WidgetNode {
 /// grows the paint rect by exactly that, under unchanged transforms.
 pub struct FillNode {
     pub(super) child: RenderNode,
-    /// The fill's own render identity, surfaced through
-    /// [`RenderNode::render_id`]. The wrapped leaf's id is still collected
-    /// separately (`collect_render_ids` recurses past this node).
-    pub(crate) render_id: RenderId,
+    /// The fill's own mount core: cell, placement and subscriptions.
+    pub(crate) core: NodeCore,
     /// The paint extension [`safe_area::SafeAreaLayout::touched_edge_offsets`]
     /// computed for the wrapped frame — `None` until the first layout.
     pub(super) extension: Cell<Option<safe_area::EdgeOffsets>>,
 }
 
 impl FillNode {
-    pub(crate) fn new(child: RenderNode) -> Self {
+    pub(crate) fn new(child: RenderNode, core: NodeCore) -> Self {
         Self {
             child,
-            render_id: RenderId::next(),
+            core,
             extension: Cell::new(None),
         }
     }
@@ -992,9 +989,7 @@ pub struct GestureObserverEffect {
 }
 
 pub struct ColorNode {
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub(crate) render_id: RenderId,
+    pub(crate) core: NodeCore,
     pub(crate) color: Computed<waterui_graphics::draw::WorkingColor>,
 }
 
@@ -1008,9 +1003,7 @@ pub struct TextNode {
     /// leaves a stale answer behind.
     pub(crate) memo_slots: RefCell<NodeMeasureEntry>,
     pub(crate) accessibility_identity: Rc<()>,
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub(crate) render_id: RenderId,
+    pub(crate) core: NodeCore,
     pub(crate) content: Computed<StyledStr>,
     pub(crate) alignment: Computed<HorizontalAlignment>,
     /// Maximum laid-out lines, from `TextConfig::line_limit`.
@@ -1036,9 +1029,7 @@ pub struct ContainerNode {
     /// leaves a stale answer behind.
     pub(crate) memo_slots: RefCell<NodeMeasureEntry>,
     pub(crate) accessibility_identity: Rc<()>,
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub(crate) render_id: RenderId,
+    pub(crate) core: NodeCore,
     pub(crate) layout: Box<dyn Layout>,
     pub(crate) children: Vec<RenderNode>,
     #[cfg(feature = "accessibility")]
@@ -1067,33 +1058,25 @@ pub struct ContainerNode {
 /// layer around the child. Layout-transparent (the child measures/places as if
 /// the wrapper were absent), matching the SwiftUI/WaterUI transform model.
 pub struct OpacityNode {
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub(crate) render_id: RenderId,
+    pub(crate) core: NodeCore,
     pub(crate) value: Opacity,
     pub(crate) child: RenderNode,
 }
 
 pub struct ScaleNode {
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub(crate) render_id: RenderId,
+    pub(crate) core: NodeCore,
     pub(crate) value: Scale,
     pub(crate) child: RenderNode,
 }
 
 pub struct RotationNode {
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub(crate) render_id: RenderId,
+    pub(crate) core: NodeCore,
     pub(crate) value: Rotation,
     pub(crate) child: RenderNode,
 }
 
 pub struct OffsetNode {
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub(crate) render_id: RenderId,
+    pub(crate) core: NodeCore,
     pub(crate) value: Offset,
     pub(crate) child: RenderNode,
 }
@@ -1108,9 +1091,7 @@ pub struct ScrollNode {
     /// leaves a stale answer behind.
     pub(crate) memo_slots: RefCell<NodeMeasureEntry>,
     pub(super) accessibility_identity: Rc<()>,
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub(crate) render_id: RenderId,
+    pub(crate) core: NodeCore,
     pub(super) axis: ScrollAxis,
     pub(super) child: RenderNode,
     pub(super) controller: Option<ScrollController<Point>>,
@@ -1144,17 +1125,13 @@ pub struct ScrollNode {
 }
 
 pub struct RetainNode {
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub render_id: RenderId,
+    pub(crate) core: NodeCore,
     pub(super) _retain: Retain,
     pub(super) child: RenderNode,
 }
 
 pub struct EnvNode {
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub render_id: RenderId,
+    pub(crate) core: NodeCore,
     /// The scoped environment this subtree was built under, used to override the
     /// inherited environment at every measure/layout/flush.
     pub(super) env: Environment,
@@ -1163,9 +1140,7 @@ pub struct EnvNode {
 
 pub struct SceneViewNode {
     pub(super) accessibility_identity: Rc<()>,
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub(crate) render_id: RenderId,
+    pub(crate) core: NodeCore,
     /// The owned scene content, re-drawn each flush (it reads its own reactive
     /// inputs in `build_scene`). `RefCell` because `build_scene` needs `&mut` but
     /// `flush` takes `&self`.
@@ -1191,9 +1166,7 @@ pub struct SceneViewNode {
 /// desync.
 pub struct GpuContentNode {
     pub(super) accessibility_identity: Rc<()>,
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub(crate) render_id: RenderId,
+    pub(crate) core: NodeCore,
     pub(super) runtime: Rc<RefCell<crate::gpu_view::GpuContentRuntime>>,
 }
 
@@ -1204,9 +1177,7 @@ pub struct GpuContentNode {
 /// the layer drains the receiver's mailbox and presents the newest frame.
 pub struct ExternalFrameNode {
     pub(super) accessibility_identity: Rc<()>,
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub(crate) render_id: RenderId,
+    pub(crate) core: NodeCore,
     pub(super) runtime: Rc<RefCell<crate::gpu_view::ExternalFrameRuntime>>,
 }
 
@@ -1218,18 +1189,14 @@ pub struct ExternalFrameNode {
 /// presents the child's layers inside a keyed filtered mount — the engine
 /// applies the filter across the whole group.
 pub struct FilteredNode {
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub render_id: RenderId,
+    pub(crate) core: NodeCore,
     pub(super) runtime: Rc<RefCell<crate::renderer::effects::FilteredRuntime>>,
     pub(super) child: RenderNode,
     pub(super) env: Environment,
 }
 
 pub struct DynamicHostNode {
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub render_id: RenderId,
+    pub(crate) core: NodeCore,
     /// The §7.1 context the host was last laid out against — the flush's
     /// mid-pass layout for a child that applied its pending reuses it.
     pub(super) safe_area: Option<Box<safe_area::SafeAreaLayout>>,
@@ -1279,7 +1246,12 @@ impl DynamicHostNode {
         match pending {
             Some(content) => {
                 let node_env = self.env.clone();
-                *self.child.borrow_mut() = RenderNode::build(content, &node_env, renderer);
+                let child = RenderNode::build(content, &node_env, renderer);
+                // The rebuilt child re-roots its marks under this host —
+                // without it the subtree is an orphan whose dirty bits can
+                // never reach the window root.
+                child.core().cell.set_parent(&self.core.cell);
+                *self.child.borrow_mut() = child;
                 renderer.state.counters.structural_patches += 1;
                 true
             }

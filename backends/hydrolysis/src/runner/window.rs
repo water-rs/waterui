@@ -461,9 +461,6 @@ pub(super) fn schedule_redraw_or_refresh<P: PlatformWindow>(
     if !changed {
         return;
     }
-    // A pending renderer-side rebuild request is subsumed by the refresh;
-    // consume it so it does not schedule a stale extra frame later.
-    let _ = runtime.renderer.take_rebuild_request();
     runtime.request_refresh();
     runtime.request_redraw();
     runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
@@ -662,8 +659,12 @@ pub(super) fn pump_window_scene<P: GpuSurfaceWindow>(
     let animations_active = runtime.renderer.advance_animations();
     schedule_animation_update(runtime, animations_active);
 
-    let renderer_requested_rebuild = runtime.renderer.take_rebuild_request();
-    if renderer_requested_rebuild {
+    // Producer wakes posted since the last frame mark their owners; the
+    // marks that brought this pump here then decide the work.
+    runtime.renderer.drain_producer_wakes();
+    // Structural marks raised since the last flush land on the root cell
+    // through the owner chain and still arm the full refresh.
+    if runtime.renderer.has_structure_marks() {
         runtime.request_refresh();
     }
 
@@ -689,13 +690,13 @@ pub(super) fn pump_window_scene<P: GpuSurfaceWindow>(
             if let Some((x, y)) = runtime.pointer_position
                 && runtime.renderer.sync_pointer_hover_state(x, y, env)
             {
-                if runtime.renderer.take_rebuild_request() {
+                if runtime.renderer.has_structure_marks() {
                     refresh_after_build = true;
                 } else {
                     runtime.renderer.request_redraw();
                 }
             }
-            if runtime.renderer.take_rebuild_request() {
+            if runtime.renderer.has_structure_marks() {
                 refresh_after_build = true;
             }
             if refresh_after_build {
@@ -707,8 +708,8 @@ pub(super) fn pump_window_scene<P: GpuSurfaceWindow>(
             runtime.clear_frame_mode();
         }
     }
-    if runtime.renderer.take_next_frame_rebuild_request() {
-        // An effect needs another frame.
+    if runtime.renderer.has_structure_marks() {
+        // A structural mark raised mid-flush — an effect needs another frame.
         runtime.request_refresh();
         runtime.request_redraw();
         runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
@@ -754,7 +755,7 @@ pub(super) fn pump_window_semantics<P: GpuSurfaceWindow>(
         .renderer
         .set_accessibility_root_label(runtime.window.title.snapshot().as_str());
 
-    if runtime.renderer.take_rebuild_request() {
+    if runtime.renderer.has_structure_marks() {
         runtime.request_refresh();
     }
     let work_pending = runtime.mode.is_pending()
@@ -1348,7 +1349,7 @@ fn refresh_pending_input_geometry<P: GpuSurfaceWindow>(
     // only lags behind an *unapplied* content change — a pending reactive
     // patch or structural rebuild.
     let geometry_pending =
-        runtime.renderer.has_patch_request() || runtime.renderer.has_rebuild_request();
+        runtime.renderer.has_patch_request() || runtime.renderer.has_structure_marks();
     if !geometry_pending || !runtime.renderer.has_render_tree() {
         return;
     }
@@ -1916,13 +1917,14 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
         tracing::debug!("wake cause: animations active");
     }
     schedule_animation_update(runtime, animations_active);
-    // A pending fine-grained reactive patch composites through the window-refresh path,
-    // which re-dispatches only the dirty Dynamic nodes. If there is no retained window
-    // frame yet (or a structural rebuild is already pending), fall back to a rebuild.
+    // Producer wakes posted since the last frame mark their owners; the
+    // marks that brought this pump here then decide the work.
+    runtime.renderer.drain_producer_wakes();
+    // Marks raised since the last flush — reactive updates, structural
+    // patches, widget signals — land on the root cell; any mark still arms
+    // the full refresh.
     if runtime.renderer.take_patch_request() {
-        tracing::debug!("wake cause: reactive patch request");
-        // The refresh re-flushes the retained tree, which applies the pending
-        // Dynamic patch to only the affected subtree and relays out if it changed size.
+        tracing::debug!("wake cause: dirty mark");
         runtime.request_refresh();
         runtime.request_redraw();
         runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
@@ -1933,8 +1935,8 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
         runtime.request_redraw();
         runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
     }
-    if runtime.renderer.take_rebuild_request() {
-        tracing::debug!("wake cause: rebuild request");
+    if runtime.renderer.has_structure_marks() {
+        tracing::debug!("wake cause: structural mark");
         runtime.request_refresh();
     }
     let next_deadline = runtime.renderer.next_gesture_deadline();

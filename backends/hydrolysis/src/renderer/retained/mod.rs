@@ -2,9 +2,7 @@
 //! tree. These re-sample animated transform/opacity/morph signals every flush so
 //! the node tree's transform/opacity/morph nodes stay live without re-dispatching.
 
-pub mod identity;
 pub mod mount;
-pub use identity::{PresentationId, RenderId, RenderKey};
 pub use mount::{MountSlot, Mounts};
 
 use super::signals::SubscribedSnapshot;
@@ -41,11 +39,21 @@ impl SemanticCore {
             .bind_scalar(key, observed_value, now);
         let watcher_handle = handle.clone();
         let signals = self.signals.clone();
+        let owner = self.mark_owner_for_animation(key, Dirty::PAINT);
+        // A subscription's registration emission echoes the value `bind`
+        // already sampled — only a later fire may mark the owner.
+        let armed = Rc::new(Cell::new(false));
+        let armed_for_watch = Rc::clone(&armed);
         let guard = subscription.activate(move |update| {
             watcher_handle.apply_update_from_context(update, signals.frame_clock());
-            signals.request_redraw();
+            if armed_for_watch.get()
+                && let Some(cell) = owner.upgrade()
+            {
+                cell.mark(Dirty::PAINT);
+            }
         });
-        self.lifecycle.current_frame_retain.push(Retain::new(guard));
+        armed.set(true);
+        self.push_guard(Retain::new(guard));
         handle.sample(now)
     }
 

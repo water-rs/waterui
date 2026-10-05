@@ -138,6 +138,10 @@ pub struct NavigationSlot {
     pub entries: NavigationEntries,
     pub(crate) events: NavigationEvents,
     pub(crate) controller: NavigationController,
+    /// The cell controller-side mutations mark — the owning stack widget's
+    /// cell, bound at each `bind_navigation_entries`; shared with the
+    /// controller's `HydroNavigationController::target`.
+    pub(crate) target: Rc<RefCell<Weak<NodeCell>>>,
     pub(crate) last_depth: usize,
     pub(crate) active_identity: u64,
     pub(crate) root_state: Option<NavigationDestinationState>,
@@ -170,7 +174,18 @@ pub struct HydroNavigationController {
     pub entries: NavigationEntries,
     pub(crate) events: NavigationEvents,
     pub(crate) next_entry_identity: u64,
-    pub(crate) signals: FrameSignals,
+    /// The cell a controller-side mutation marks — the owning stack widget's
+    /// cell once the slot is bound (see `NavigationSlot::target`).
+    pub(crate) target: Rc<RefCell<Weak<NodeCell>>>,
+}
+
+impl HydroNavigationController {
+    /// An entries mutation is layout-affecting: mark the stack's cell.
+    fn mark_layout(&self) {
+        if let Some(cell) = self.target.borrow().upgrade() {
+            cell.mark_layout();
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -256,20 +271,22 @@ impl NavigationState {
 }
 
 impl NavigationSlot {
-    pub(crate) fn new(signals: FrameSignals) -> Self {
+    pub(crate) fn new() -> Self {
         let entries = Rc::new(RefCell::new(Vec::new()));
         let events = Rc::new(RefCell::new(Vec::new()));
+        let target = Rc::new(RefCell::new(Weak::new()));
         let controller = NavigationController::new(HydroNavigationController {
             entries: Rc::clone(&entries),
             events: Rc::clone(&events),
             next_entry_identity: 1,
-            signals,
+            target: Rc::clone(&target),
         });
 
         Self {
             entries,
             events,
             controller,
+            target,
             last_depth: 0,
             active_identity: ROOT_NAVIGATION_IDENTITY,
             root_state: None,
@@ -469,7 +486,7 @@ impl CustomNavigationController for HydroNavigationController {
             current_identity,
             removed,
         });
-        self.signals.request_refresh();
+        self.mark_layout();
     }
 }
 
@@ -604,11 +621,16 @@ impl SemanticCore {
 
     pub(crate) fn bind_navigation_entries(&mut self, key: &NavigationKey) -> NavigationEntries {
         self.navigation.active.insert(key.address());
+        // A navigation controller marks the stack widget's cell (the spec's
+        // 77-site mapping); the reading cell is it, or the root before a
+        // reader exists.
+        let cell = self.reader_cell().unwrap_or_else(|| Rc::clone(&self.root));
         let slot = self
             .navigation
             .slots
             .entry(key.clone())
-            .or_insert_with(|| NavigationSlot::new(self.signals.clone()));
+            .or_insert_with(NavigationSlot::new);
+        *slot.target.borrow_mut() = Rc::downgrade(&cell);
         Rc::clone(&slot.entries)
     }
 
@@ -637,7 +659,7 @@ impl SemanticCore {
             }
         }
         if changed {
-            self.signals.request_refresh();
+            self.context_mark_layout();
         }
         changed
     }
@@ -712,7 +734,7 @@ impl SemanticCore {
             target.to_scene,
         ));
         self.hit_test.system_back = SystemBackGesture::Active(target.slot_key);
-        self.signals.request_refresh();
+        self.context_mark_layout();
         true
     }
 
@@ -727,7 +749,7 @@ impl SemanticCore {
             .and_then(|slot| slot.interactive_pop.as_mut())
             .is_some_and(|pop| pop.set_progress(progress));
         if changed {
-            self.signals.request_refresh();
+            self.context_mark_layout();
         }
         changed
     }
@@ -789,7 +811,7 @@ impl SemanticCore {
             return false;
         }
         interactive.finish(now, outcome);
-        self.signals.request_refresh();
+        self.context_mark_layout();
         true
     }
 

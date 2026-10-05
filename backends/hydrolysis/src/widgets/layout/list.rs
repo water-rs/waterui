@@ -386,7 +386,14 @@ impl ListRenderState {
         let replaced_for_watch = Rc::clone(&replaced_row_ids);
         let rows_snapshot = Rc::new(RefCell::new(config.contents.snapshot()));
         let snapshot_for_watch = Rc::clone(&rows_snapshot);
-        let signals = renderer.frame_signals();
+        // Membership changes mark the owning widget's cell — the node whose
+        // read built this state, or the window root when built unowned.
+        let cell = Rc::downgrade(
+            &renderer
+                .reader_cell()
+                .unwrap_or_else(|| Rc::clone(renderer.root_cell())),
+        );
+
         let guard = config.contents.watch(.., move |ctx, change| {
             rows_dirty_for_watch.set(true);
             // Each event hands over an immutable snapshot of the exact row set
@@ -399,7 +406,9 @@ impl ListRenderState {
                 &mut replaced_for_watch.borrow_mut(),
             );
             *snapshot_for_watch.borrow_mut() = event_snapshot;
-            signals.request_refresh();
+            if let Some(cell) = cell.upgrade() {
+                cell.mark(crate::renderer::Dirty::STRUCTURE);
+            }
         });
         let row_selection = ListRowSelection::new(&config.selection, Rc::clone(&rows_snapshot));
         Self {
@@ -1479,7 +1488,7 @@ pub fn render_list_parts(
     // frames coming while it is still travelling.
     let now = ctx.renderer_mut().frame_instant();
     if state.borrow().advance_swipe_settle(now) {
-        ctx.renderer_mut().request_refresh();
+        ctx.renderer_mut().context_mark_layout();
     }
     // One hit-test group for every row gesture in this list, so a swipe on one
     // row and a reorder drag on another can never both claim the same pointer.
@@ -1563,7 +1572,7 @@ pub fn render_list_parts(
         // indicators — was resolved against the stale values, so pull one
         // more frame rather than leaving them stale until an unrelated
         // refresh happens to arrive.
-        ctx.renderer_mut().request_refresh();
+        ctx.renderer_mut().context_mark_layout();
     }
     let lifted_id = state.borrow().reorder.get().map(|reorder| reorder.id);
     if let Some(lifted_id) = lifted_id
@@ -2038,7 +2047,7 @@ pub fn render_list_parts(
             .borrow()
             .apply_scroll_request(ctx.renderer_mut(), &rebound, row_count, true);
         metrics = rebound.metrics();
-        ctx.renderer_mut().frame_signals().request_refresh();
+        ctx.renderer_mut().context_mark_layout();
     }
     state.borrow().record_viewport_anchor(metrics, row_count);
 

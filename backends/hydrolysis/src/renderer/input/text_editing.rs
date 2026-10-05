@@ -1350,7 +1350,7 @@ impl SemanticCore {
             self.dismiss_active_text_context_menu();
             self.dismiss_active_popup_menu();
         }
-        self.request_refresh();
+        self.context_mark_layout();
         true
     }
 
@@ -1367,7 +1367,7 @@ impl SemanticCore {
                     {
                         self.popup_menu.active_popup_menu_group = None;
                     }
-                    self.request_refresh();
+                    self.context_mark_layout();
                 }
                 ActiveTextContextMenu::NativeWindow { group, .. } => {
                     group.close_all();
@@ -1563,7 +1563,7 @@ impl SemanticCore {
             .expect("hydrolysis text selection menus require PopupWindowManager in environment")
             .show(window, env);
         self.popup_menu.active_popup_menu_group = Some(group);
-        self.request_refresh();
+        self.context_mark_layout();
     }
 
     pub(crate) fn focused_text_target_data(
@@ -2115,7 +2115,7 @@ impl HydrolysisRenderer {
                     env: menu_env,
                 },
             });
-            self.request_refresh();
+            self.context_mark_layout();
             return true;
         }
 

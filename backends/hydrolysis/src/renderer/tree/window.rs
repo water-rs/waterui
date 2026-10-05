@@ -318,7 +318,6 @@ impl SemanticCore {
     /// clears stay in `reset_semantic_scene`, which the pump runs after the
     /// patch like the rendered path.
     fn begin_semantic_emit_frame(&mut self) {
-        self.lifecycle.begin_rebuild_frame();
         self.hit_test.begin_rebuild_frame();
         self.lazy.begin_rebuild_frame();
         self.navigation.begin_rebuild_frame();
@@ -331,7 +330,6 @@ impl SemanticCore {
     /// `signals.begin_rebuild` stays with the caller — only a build enters one.
     fn begin_semantic_rebuild_frame(&mut self) {
         self.state.measurement.begin_frame();
-        self.lifecycle.begin_rebuild_frame();
         self.hit_test.begin_rebuild_frame();
         self.gesture_group_ids.clear();
         self.next_gesture_group_id = 0;
@@ -349,7 +347,6 @@ impl SemanticCore {
     /// `signals.finish_rebuild` stays with the caller — only a build entered
     /// one.
     fn finish_semantic_rebuild_frame(&mut self, live_dynamics: &FxHashSet<usize>) {
-        self.lifecycle.finish_rebuild_frame();
         self.prune_dynamic_measurements(live_dynamics);
         self.validate_focused_text_input_after_flush();
         self.animation_controller
@@ -358,6 +355,7 @@ impl SemanticCore {
             .finish_rebuild_frame(&self.text_editing.text_input_targets);
         self.relocate_dropped_focus();
         self.navigation.finish_rebuild_frame();
+        self.finish_outside_read_frame();
         #[cfg(feature = "accessibility")]
         self.finalize_accessibility_tree_update();
     }
@@ -373,6 +371,7 @@ impl SemanticCore {
         self.hit_test
             .finish_rebuild_frame(&self.text_editing.text_input_targets);
         self.navigation.finish_rebuild_frame();
+        self.finish_outside_read_frame();
         if structural_change {
             // The emit re-bound every live animation slot; drop the slots and
             // cached Dynamic measurements belonging to subtrees the patch
@@ -381,7 +380,6 @@ impl SemanticCore {
                 .finish_rebuild_frame_with_inactive_slot_retention(false);
             self.prune_dynamic_measurements(&tree.collect_dynamic_identities());
         }
-        self.lifecycle.finish_rebuild_frame();
         self.validate_focused_text_input_after_flush();
         self.relocate_dropped_focus();
         #[cfg(feature = "accessibility")]
@@ -406,16 +404,25 @@ impl SemanticCore {
         // Mirror `build_window_scene`: `reset_scene` runs before the frame
         // opens on the rendered build path.
         self.reset_semantic_scene();
-        self.signals.begin_rebuild();
+        self.begin_rebuild();
         self.begin_semantic_rebuild_frame();
         self.render_depth = 0;
         let tree = RenderNode::build(content, env, self);
+        // Marks on the window tree propagate to the window's root cell,
+        // which the pump polls.
+        tree.core().cell.set_parent(self.root_cell());
+        // The build is the flush for every mark it raised — registration
+        // echoes, initial-content deliveries and read catch-ups were all
+        // recorded by this pass, so only a mark raised after it may
+        // schedule more work.
+        self.clear_all_marks();
+        let _ = self.signals.take_patch_request();
         let live_dynamics = tree.collect_dynamic_identities();
         #[cfg(feature = "accessibility")]
         tree.emit_accessibility(self, env);
         self.render_tree = Some(tree);
         self.finish_semantic_rebuild_frame(&live_dynamics);
-        self.signals.finish_rebuild();
+        self.finish_rebuild();
     }
 
     /// Apply pending structural changes and re-emit the retained tree's
@@ -434,6 +441,13 @@ impl SemanticCore {
         let Some(mut tree) = self.render_tree.take() else {
             return false;
         };
+        // Producer wakes posted since the last frame mark their owners
+        // before the marks below are cleared.
+        self.drain_producer_wakes();
+        // The marks that brought this frame here are consumed by the flush;
+        // clear them up front so a mark raised mid-flush re-arms the next.
+        self.clear_all_marks();
+        self.begin_outside_read_frame();
         self.begin_semantic_emit_frame();
         let structural_change = self.take_subview_structural_change() | tree.patch(self);
         if structural_change {
@@ -463,6 +477,10 @@ impl HydrolysisRenderer {
         self.begin_rebuild_frame();
         self.render_depth = 0;
         let tree = RenderNode::build(content, env, self);
+        tree.core().cell.set_parent(self.root_cell());
+        // Build-time marks are consumed by the build itself.
+        self.clear_all_marks();
+        let _ = self.signals.take_patch_request();
         self.render_tree = Some(tree);
         self.finish_rebuild_frame();
     }
@@ -511,6 +529,9 @@ impl HydrolysisRenderer {
         // `Dynamic` can only connect once). Called within a begin/finish rebuild
         // frame, so scene/layer flushing is handled by the caller.
         if let Some(mut tree) = self.render_tree.take() {
+            self.drain_producer_wakes();
+            self.clear_all_marks();
+            self.begin_outside_read_frame();
             tree.patch(self);
             #[cfg(feature = "frame-profile")]
             {
@@ -542,6 +563,12 @@ impl HydrolysisRenderer {
         }
         self.render_depth = 0;
         let mut node = RenderNode::build(content, env, self);
+        node.core().cell.set_parent(self.root_cell());
+        // The build is the flush for every mark it raised (dev's rebuild
+        // generation dropped the same marks): only a mark raised by the
+        // layout/flush passes below may schedule more work.
+        self.clear_all_marks();
+        let _ = self.signals.take_patch_request();
         #[cfg(feature = "frame-profile")]
         let layout_started_at = Instant::now();
         node.prepare_for_measure(self);
@@ -584,9 +611,15 @@ impl HydrolysisRenderer {
         let update_started_at = Instant::now();
         let update_span = tracing::debug_span!("hydrolysis_frame_update").entered();
         self.set_window_viewport(bounds, transform);
+        // Producer wakes posted since the last frame mark their owners
+        // before the marks below are cleared.
+        self.drain_producer_wakes();
+        // The marks that brought this frame here are consumed by the flush;
+        // clear them up front so a mark raised mid-flush re-arms the next.
+        self.clear_all_marks();
+        self.begin_outside_read_frame();
         // Roll over this frame's Retain watcher guards exactly like the build path:
         // every re-encode re-reads and re-subscribes reactive visual inputs.
-        self.lifecycle.begin_rebuild_frame();
         // Reset frame-bound input registrations. Scroll, list, and table state are
         // owned by their semantic retained nodes.
         self.hit_test.begin_rebuild_frame();
@@ -650,6 +683,7 @@ impl HydrolysisRenderer {
             .hit_test
             .finish_rebuild_frame(&self.core.text_editing.text_input_targets);
         self.core.navigation.finish_rebuild_frame();
+        self.core.finish_outside_read_frame();
         if structural_change {
             // The flush re-bound every live animation. Drop slots and cached
             // Dynamic measurements belonging to subtrees removed by the patch.
@@ -658,7 +692,6 @@ impl HydrolysisRenderer {
                 .finish_rebuild_frame_with_inactive_slot_retention(false);
             self.prune_dynamic_measurements(&tree.collect_dynamic_identities());
         }
-        self.lifecycle.finish_rebuild_frame();
         // Drop focus or drag targets that are no longer emitted, relocate the
         // focus a dropped view released, then publish the refreshed
         // accessibility tree.

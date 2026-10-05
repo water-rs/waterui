@@ -270,7 +270,7 @@ fn retained_subview_relayouts_when_a_layout_signal_invalidates() {
     );
     max_width.set(400.0);
     assert!(
-        renderer.has_patch_request(),
+        renderer.root_is_dirty(),
         "the constraint signal must still schedule a refresh"
     );
     retained.flush_in_rect(&mut renderer, ctx, &env, proposal, rect, None);

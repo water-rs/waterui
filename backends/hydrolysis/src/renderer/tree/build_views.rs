@@ -104,19 +104,15 @@ impl RenderNode {
     /// a changing collection length stay live; the `LazyListController` row-extent
     /// cache (keyed by body-order cursor slot) persists across frames. Stretches to
     /// fill the proposal (`StretchAxis::Both`, read from the config).
-    #[expect(
-        clippy::needless_pass_by_ref_mut,
-        reason = "the mutable borrow is required by the shared signature even though this implementation does not mutate it"
-    )]
     pub(super) fn build_list(
         config: ListConfig,
         env: &Environment,
-        renderer: &mut SemanticCore,
+        renderer: &SemanticCore,
     ) -> Self {
         use crate::widgets::layout::list::ListRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let state = Rc::new(RefCell::new(ListRenderState::from_config(config, renderer)));
-        Self::build_widget(state, stretch, env)
+        Self::build_widget(renderer, state, stretch, env)
     }
 
     /// Build a persistent table node: retain the config (its `columns` signal and
@@ -126,11 +122,15 @@ impl RenderNode {
     /// reactive cell content and a changing column/row set stay live; the
     /// `LazyTableController` column-width/row-count cache (keyed by body-order cursor
     /// slot) persists across frames. Stretch is read from the config.
-    pub(super) fn build_table(config: TableConfig, env: &Environment) -> Self {
+    pub(super) fn build_table(
+        renderer: &SemanticCore,
+        config: TableConfig,
+        env: &Environment,
+    ) -> Self {
         use crate::widgets::layout::table::TableRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let state = Rc::new(RefCell::new(TableRenderState::from_config(config)));
-        Self::build_widget(state, stretch, env)
+        Self::build_widget(renderer, state, stretch, env)
     }
 
     /// Build a persistent navigation-view node: its bar `title`/`leading`/`trailing`
@@ -146,9 +146,14 @@ impl RenderNode {
         use crate::widgets::nav::navigation::NavigationViewRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&navigation);
         let mut state = NavigationViewRenderState::from_view(navigation, env);
-        state.prebuild(renderer, env);
+        // See build_controls: the prebuild runs under this widget's
+        // cell as the record reader, so its subviews attach to it.
+        let core = renderer.new_core();
+        renderer.with_reader(&core, ReaderPhase::Record, |renderer| {
+            state.prebuild(renderer, env);
+        });
         let state = Rc::new(RefCell::new(state));
-        Self::build_widget(state, stretch, env)
+        Self::build_widget_with_core(state, stretch, env, core)
     }
 
     /// Build a persistent navigation-split node: the layout's sidebar/detail/
@@ -165,9 +170,14 @@ impl RenderNode {
         let stretch = waterui_core::NativeView::stretch_axis(&split);
         let mut state = NavigationSplitRenderState::from_layout(split);
         // Pre-build the sidebar + placeholder sub-views (the measure path has no renderer).
-        state.prebuild(renderer, env);
+        // See build_controls: the prebuild runs under this widget's
+        // cell as the record reader, so its subviews attach to it.
+        let core = renderer.new_core();
+        renderer.with_reader(&core, ReaderPhase::Record, |renderer| {
+            state.prebuild(renderer, env);
+        });
         let state = Rc::new(RefCell::new(state));
-        Self::build_widget(state, stretch, env)
+        Self::build_widget_with_core(state, stretch, env, core)
     }
 
     /// Build a persistent navigation-stack node: the move-only stack root is held in
@@ -177,13 +187,14 @@ impl RenderNode {
     /// slot persist across frames so push/pop transitions keep animating. Stretch is
     /// `Both` (read from the config).
     pub(super) fn build_navigation_stack(
+        renderer: &SemanticCore,
         stack: NavigationStack<(), ()>,
         env: &Environment,
     ) -> Self {
         use crate::widgets::nav::navigation::NavigationStackRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&stack);
         let state = Rc::new(RefCell::new(NavigationStackRenderState::from_stack(stack)));
-        Self::build_widget(state, stretch, env)
+        Self::build_widget(renderer, state, stretch, env)
     }
 
     /// Build a persistent tabs node: the tab labels are move-only `AnyView`s
@@ -199,9 +210,14 @@ impl RenderNode {
         use crate::widgets::nav::tabs::TabsRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&tabs);
         let mut state = TabsRenderState::from_tabs(tabs);
-        state.prebuild_labels(renderer, env);
+        // See build_controls: the prebuild runs under this widget's
+        // cell as the record reader, so its subviews attach to it.
+        let core = renderer.new_core();
+        renderer.with_reader(&core, ReaderPhase::Record, |renderer| {
+            state.prebuild_labels(renderer, env);
+        });
         let state = Rc::new(RefCell::new(state));
-        Self::build_widget(state, stretch, env)
+        Self::build_widget_with_core(state, stretch, env, core)
     }
 
     /// Build a persistent gradient node: retain the view — its `Paint` is
@@ -211,10 +227,14 @@ impl RenderNode {
     /// (`StretchAxis::Both`, read from the payload). A gradient paints a
     /// fill — `fill_leaf` marks it so a background slot can give it §7.1's
     /// band extension.
-    pub(super) fn build_gradient(gradient: waterui_graphics::Gradient, env: &Environment) -> Self {
+    pub(super) fn build_gradient(
+        renderer: &SemanticCore,
+        gradient: waterui_graphics::Gradient,
+        env: &Environment,
+    ) -> Self {
         let stretch = waterui_core::NativeView::stretch_axis(&gradient);
         let gradient = Rc::new(RefCell::new(gradient));
-        let mut node = Self::build_widget(gradient, stretch, env);
+        let mut node = Self::build_widget(renderer, gradient, stretch, env);
         if let Self::Widget(widget) = &mut node {
             widget.fill_leaf = true;
         }
@@ -225,10 +245,14 @@ impl RenderNode {
     /// its bounds-aware path every flush. The fill signal is observed by the render
     /// path so theme and binding changes patch this node precisely. The shape
     /// stretches to fill the proposal (`StretchAxis::Both`, read from the payload).
-    pub(super) fn build_shape(shape: ResolvedShape, env: &Environment) -> Self {
+    pub(super) fn build_shape(
+        renderer: &SemanticCore,
+        shape: ResolvedShape,
+        env: &Environment,
+    ) -> Self {
         let stretch = waterui_core::NativeView::stretch_axis(&shape);
         let shape = Rc::new(RefCell::new(shape));
-        Self::build_widget(shape, stretch, env)
+        Self::build_widget(renderer, shape, stretch, env)
     }
 
     /// Build a persistent morph-shape node: retain the resolved morph payload and
@@ -237,10 +261,14 @@ impl RenderNode {
     /// is watched via `read_signal`/`resolve_animated_scalar_with_discriminator`, and
     /// a time-based animation drives continuous frames via `sample_morph_progress` —
     /// so the morph stays live. Stretches to fill the proposal (`StretchAxis::Both`).
-    pub(super) fn build_morph_shape(shape: ResolvedMorphShape, env: &Environment) -> Self {
+    pub(super) fn build_morph_shape(
+        renderer: &SemanticCore,
+        shape: ResolvedMorphShape,
+        env: &Environment,
+    ) -> Self {
         let stretch = waterui_core::NativeView::stretch_axis(&shape);
         let shape = Rc::new(RefCell::new(shape));
-        Self::build_widget(shape, stretch, env)
+        Self::build_widget(renderer, shape, stretch, env)
     }
 
     /// Build a persistent webview node for the platform bridge: retain the
@@ -255,9 +283,14 @@ impl RenderNode {
         use crate::widgets::platform::webview::WebViewRenderState;
         let stretch = waterui_core::View::stretch_axis(&webview);
         let mut state = WebViewRenderState::from_view(webview, env);
-        state.prebuild(renderer, env);
+        // See build_controls: the prebuild runs under this widget's
+        // cell as the record reader, so its subviews attach to it.
+        let core = renderer.new_core();
+        renderer.with_reader(&core, ReaderPhase::Record, |renderer| {
+            state.prebuild(renderer, env);
+        });
         let state = Rc::new(RefCell::new(state));
-        Self::build_widget(state, stretch, env)
+        Self::build_widget_with_core(state, stretch, env, core)
     }
 
     /// Without the platform bridge a `WebView` reaching the backend has no
@@ -274,35 +307,39 @@ impl RenderNode {
     /// Build a persistent spacer node: a no-op render with zero intrinsic; it
     /// expands during placement, not from its intrinsic size. Stretch is its
     /// main-axis fill (`StretchAxis::MainAxis`, read from the config).
-    pub(super) fn build_spacer(spacer: Spacer, env: &Environment) -> Self {
+    pub(super) fn build_spacer(renderer: &SemanticCore, spacer: Spacer, env: &Environment) -> Self {
         let stretch = waterui_core::NativeView::stretch_axis(&spacer);
         let spacer = Rc::new(RefCell::new(spacer));
-        Self::build_widget(spacer, stretch, env)
+        Self::build_widget(renderer, spacer, stretch, env)
     }
 
     /// Build a persistent empty (`()`) node: a no-op render with zero intrinsic and
     /// no accessibility. Never stretches (`StretchAxis::None`, read from the unit
     /// view).
-    pub(super) fn build_empty(env: &Environment) -> Self {
+    pub(super) fn build_empty(renderer: &SemanticCore, env: &Environment) -> Self {
         let stretch = waterui_core::NativeView::stretch_axis(&());
         let empty = Rc::new(RefCell::new(()));
-        Self::build_widget(empty, stretch, env)
+        Self::build_widget(renderer, empty, stretch, env)
     }
 
     /// Build a persistent divider node: a static separator line drawn from theme
     /// metrics, oriented by the enclosing stack axis (read from env every flush).
     /// Stretches on its cross axis (`StretchAxis::CrossAxis`, matching the dispatch
     /// path's [`effective_stretch_axis`] for `Divider`).
-    pub(super) fn build_divider(divider: Divider, env: &Environment) -> Self {
+    pub(super) fn build_divider(
+        renderer: &SemanticCore,
+        divider: Divider,
+        env: &Environment,
+    ) -> Self {
         let divider = Rc::new(RefCell::new(divider));
-        Self::build_widget(divider, StretchAxis::CrossAxis, env)
+        Self::build_widget(renderer, divider, StretchAxis::CrossAxis, env)
     }
 
     /// Build a persistent string node: an immutable `Str` rendered as plain styled
     /// text each flush (no signal — its content never changes for a given node).
     /// Never stretches (`StretchAxis::None`, like text).
-    pub(super) fn build_str(text: Str, env: &Environment) -> Self {
+    pub(super) fn build_str(renderer: &SemanticCore, text: Str, env: &Environment) -> Self {
         let text = Rc::new(RefCell::new(text));
-        Self::build_widget(text, StretchAxis::None, env)
+        Self::build_widget(renderer, text, StretchAxis::None, env)
     }
 }

@@ -1371,7 +1371,7 @@ impl SemanticCore {
             .expect("hydrolysis popup menus require PopupWindowManager in environment")
             .show(window, env);
         self.popup_menu.active_popup_menu_group = Some(group);
-        self.request_refresh();
+        self.context_mark_layout();
         true
     }
 
@@ -1398,7 +1398,7 @@ impl SemanticCore {
             .expect("hydrolysis picker menus require PopupWindowManager in environment")
             .show(window, env);
         self.popup_menu.active_popup_menu_group = Some(group);
-        self.request_refresh();
+        self.context_mark_layout();
         true
     }
 
@@ -1431,7 +1431,7 @@ impl SemanticCore {
             .expect("hydrolysis picker menus require PopupWindowManager in environment")
             .show(window, env);
         self.popup_menu.active_popup_menu_group = Some(group);
-        self.request_refresh();
+        self.context_mark_layout();
         true
     }
 
@@ -1503,7 +1503,7 @@ impl SemanticCore {
             .expect("hydrolysis color picker requires PopupWindowManager in environment")
             .show(window, env);
         self.popup_menu.active_popup_menu_group = Some(group);
-        self.request_refresh();
+        self.context_mark_layout();
         true
     }
 
@@ -1525,7 +1525,7 @@ impl SemanticCore {
             .expect("hydrolysis date picker requires PopupWindowManager in environment")
             .show(window, env);
         self.popup_menu.active_popup_menu_group = Some(group);
-        self.request_refresh();
+        self.context_mark_layout();
         true
     }
 

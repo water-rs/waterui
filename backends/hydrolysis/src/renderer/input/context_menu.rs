@@ -408,7 +408,7 @@ impl HydrolysisRenderer {
                 env: env.clone(),
             });
             self.popup_menu.active_popup_menu_group = Some(group);
-            self.request_refresh();
+            self.context_mark_layout();
         } else {
             let (window, state) =
                 popup_menu_window(nodes, popup_origin, group.clone(), 0, metrics, text, &theme);

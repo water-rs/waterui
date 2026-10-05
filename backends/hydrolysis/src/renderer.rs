@@ -31,6 +31,7 @@ mod interaction_layers;
 mod lifecycle;
 mod material;
 mod metadata;
+mod mount;
 mod native_measure;
 mod navigation;
 pub mod recording;
@@ -51,11 +52,11 @@ pub use gpu_profile::GpuFrameProfiler;
 #[cfg(feature = "frame-profile")]
 pub use gpu_profile::{FrameStageTimes, GpuIdentity};
 pub use identity::*;
+pub use mount::{Dirty, NodeCell, NodeCore, Placement, PlacementClock, ProducerKey};
 pub use native_measure::*;
 #[cfg(test)]
 pub use recording::assert_well_formed_image;
 pub use recording::{Glyph, GlyphRun, Recording, working_color};
-pub use retained::*;
 pub use tree::safe_area::{Edge, EdgeOffsets, SafeAreaLayout, ScrollSurfaceArea, grow_rect};
 pub use tree::*;
 pub use views::*;
@@ -84,10 +85,11 @@ pub use render::{
 };
 use rustc_hash::FxHashSet;
 use signals::LayoutDependencies;
+use std::any::Any;
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
 #[cfg(feature = "accessibility")]
@@ -210,6 +212,90 @@ pub use input::{
     text_editing,
 };
 
+/// Which pass attributed the current [`Reader`]: a signal guard's mark
+/// follows the phase — record reads mark `PAINT`, measure/layout reads
+/// mark `LAYOUT` through the cell chain.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ReaderPhase {
+    /// Inside a node's record (its `sync` arm): reads subscribe to
+    /// `subscriptions` and mark `PAINT`.
+    Record,
+    /// Inside a node's measure or layout call: reads subscribe to
+    /// `layout_subscriptions` and `mark_layout`.
+    Layout,
+}
+
+/// The node a signal read attributes to while `f` runs.
+pub struct Reader {
+    /// The reading node's cell — watcher closures mark it on update.
+    pub(crate) cell: Rc<NodeCell>,
+    /// The store the phase pushes watcher guards into: the node's
+    /// `subscriptions` while it records, `layout_subscriptions` while it
+    /// measures or lays out.
+    pub(crate) store: Rc<RefCell<Vec<Retain>>>,
+    /// The phase the read happens in.
+    pub(crate) phase: ReaderPhase,
+}
+
+/// An outside-reader subscription: the read was made with no node recording
+/// or measuring (window-signal polls, driver reads), so its marks land on
+/// the root cell. The signal clone pins the identity allocation so its
+/// address cannot resurface as a different signal under the same key.
+///
+/// Lifetime is one flush: `last_seen` carries the flush generation the
+/// entry was last read in, and the finish-prune drops an entry the flush
+/// did not re-read — the [`SignalWatchRegistry`](waterui_backend_core)
+/// semantics outside reads had before owner attribution.
+pub struct OutsideWatch {
+    /// Clone of the watched signal; pins the identity allocation.
+    pub _signal: Box<dyn Any>,
+    /// Concrete type of the subscribed signal, used to detect identity-key
+    /// collisions between different signal types.
+    pub signal_type: core::any::TypeId,
+    /// The watcher subscription, cancelled on drop.
+    pub _guard: Retain,
+    /// The flush generation this watch was last read in.
+    pub last_seen: u64,
+}
+
+/// Slot-owner attribution for the animation controller: the cell a slot's
+/// tick marks and the [`Dirty`] it raises.
+#[derive(Clone)]
+pub struct AnimationOwner {
+    /// The cell marked while the slot is active.
+    pub(crate) cell: Weak<NodeCell>,
+    /// The dirty bit the slot raises.
+    pub(crate) dirty: Dirty,
+}
+
+/// A cross-thread wake handle for a GPU or external-frame producer: posts
+/// its `ProducerKey` through the renderer's wake channel and wakes the
+/// host, so the next frame update marks exactly the owning cell `PRODUCER`.
+#[derive(Clone)]
+pub struct ProducerWake {
+    /// Identity of the owning cell (from the renderer's key counter).
+    key: ProducerKey,
+    /// The channel the frame update drains.
+    tx: std::sync::mpsc::Sender<ProducerKey>,
+    /// The host wake (an engine surface's redraw handle), when the host
+    /// provides one.
+    redraw: Option<RedrawHandle>,
+}
+
+impl ProducerWake {
+    /// Posts the producer key and wakes the host for a frame.
+    pub(crate) fn request_redraw(&self) {
+        // A producer thread can outlive the renderer at window close: a
+        // closed channel means the owner is gone, so the post is a no-op.
+        if self.tx.send(self.key).is_err() {
+            return;
+        }
+        if let Some(redraw) = &self.redraw {
+            redraw.request_redraw();
+        }
+    }
+}
+
 /// The GPU-free dispatch core: everything the retained view tree's build,
 /// patch and accessibility emission need, without a device, a scene, or a
 /// style.
@@ -249,7 +335,6 @@ pub struct SemanticCore {
     owner_stack: Vec<RetainedIdentity>,
     /// Frame triggers shared with reactive closures; see [`FrameSignals`].
     signals: FrameSignals,
-    lifecycle: LifecycleState,
     animation_controller: AnimationController,
     frame_instant: Instant,
     pub(crate) lazy: LazyState,
@@ -285,6 +370,58 @@ pub struct SemanticCore {
     /// still applies the rendered-runtime rule.
     #[cfg(feature = "accessibility")]
     semantic_walk: bool,
+    /// The window's root cell: the tree's root node and the presentation
+    /// hosts attach to it. The pump reads `own|below` on it to see pending
+    /// marks without walking the tree.
+    root: Rc<NodeCell>,
+    /// Epoch every placement in the window caches resolutions against;
+    /// any placement write bumps it.
+    placement_clock: Rc<PlacementClock>,
+    /// The node currently recording or measuring, and the phase — signal
+    /// reads inside attribute their watcher guards (and marks) to it.
+    reader: Option<Reader>,
+    /// Slot-owner attribution for the animation controller: a bound key
+    /// maps to the cell that re-records when the slot advances, plus the
+    /// [`Dirty`] it raises.
+    animation_owners: rustc_hash::FxHashMap<AnimationKey, AnimationOwner>,
+    /// Identity-keyed subscriptions for reads no node owns (window-signal
+    /// polls and driver reads outside a record or layout): one guard per
+    /// signal identity, marking the root cell, kept only while the flush
+    /// keeps reading it — `outside_watch_generation`/`last_seen` prune the
+    /// rest.
+    outside_watches: rustc_hash::FxHashMap<usize, OutsideWatch>,
+    /// The flush generation `OutsideWatch::last_seen` stamps against —
+    /// bumped at the start of every flush.
+    outside_watch_generation: u64,
+    /// Identity-less guards from reads no node owns — fresh each flush,
+    /// dropped at the next flush's start.
+    outside_frame_retains: Vec<Retain>,
+    /// Mirror of `FrameSignals::rebuild_in_progress` for watch closures: marks
+    /// the rebuild subsumes must not re-arm a frame — the generation gate the
+    /// dirty-collection/dynamic flags already enforce on the flag side.
+    rebuild_active: Rc<Cell<bool>>,
+    /// Weak handles to every live cell in the window: `mark`'s early-exit is
+    /// only sound while `below` bits clear on every cell, and the tree walk
+    /// misses `RetainedSubview` subtrees (navigation pages, lazy items,
+    /// overlays) whose roots attach off the render tree. The flush clears
+    /// marks through this registry instead, pruning dead handles as it goes.
+    /// Bridge state — the per-frame sweep over `cells` goes away with the
+    /// dirty-guided descent (commit 4).
+    cells: RefCell<Vec<Weak<NodeCell>>>,
+    /// Producer wakes posted (possibly cross-thread) by GPU/external-frame
+    /// content callbacks; the frame update drains them and marks the
+    /// owning cells `PRODUCER`.
+    producer_wakes: (
+        std::sync::mpsc::Sender<ProducerKey>,
+        std::sync::mpsc::Receiver<ProducerKey>,
+    ),
+    /// Key counter for producer registrations.
+    next_producer_key: Cell<u64>,
+    /// Which cell each producer key reports to.
+    producer_owners: rustc_hash::FxHashMap<ProducerKey, std::rc::Weak<NodeCell>>,
+    /// Owner cell address to its producer key: an owner re-binds the same
+    /// key across re-installs so the map does not grow per frame.
+    producer_keys_by_owner: rustc_hash::FxHashMap<usize, ProducerKey>,
 }
 
 // The state members are engine internals (gesture/hit-test/executor state)
@@ -404,6 +541,10 @@ impl SemanticCore {
     }
 
     pub(crate) fn new(frame_instant: Instant, family_resolution: FontFamilyResolution) -> Self {
+        let signals = FrameSignals::new(frame_instant);
+        let placement_clock = PlacementClock::new();
+        let root = NodeCell::new(signals.clone(), Placement::new(&placement_clock));
+        let cells = RefCell::new(vec![Rc::downgrade(&root)]);
         Self {
             state: HydroState::new(family_resolution),
             hit_test: HitTestState::default(),
@@ -415,8 +556,7 @@ impl SemanticCore {
             window_id: WindowId::Orphan,
             render_depth: 0,
             owner_stack: Vec::new(),
-            signals: FrameSignals::new(frame_instant),
-            lifecycle: LifecycleState::default(),
+            signals,
             animation_controller: AnimationController::default(),
             frame_instant,
             lazy: LazyState::default(),
@@ -424,12 +564,261 @@ impl SemanticCore {
             #[cfg(feature = "accessibility")]
             accessibility: AccessibilityBuilder::default(),
             render_tree: None,
+            rebuild_active: Rc::new(Cell::new(false)),
+            cells,
             subview_structural_change: false,
             key_handler_stack: None,
             ime_swallowed_codes: Vec::new(),
             #[cfg(feature = "accessibility")]
             semantic_walk: false,
+            root,
+            placement_clock,
+            reader: None,
+            animation_owners: rustc_hash::FxHashMap::default(),
+            outside_watches: rustc_hash::FxHashMap::default(),
+            outside_watch_generation: 1,
+            outside_frame_retains: Vec::new(),
+            producer_wakes: std::sync::mpsc::channel(),
+            next_producer_key: Cell::new(1),
+            producer_owners: rustc_hash::FxHashMap::default(),
+            producer_keys_by_owner: rustc_hash::FxHashMap::default(),
         }
+    }
+
+    /// The window's root cell — what `mark`s escalate to when no node is
+    /// reading, and what the pump checks for pending work.
+    pub(crate) const fn root_cell(&self) -> &Rc<NodeCell> {
+        &self.root
+    }
+
+    /// Whether any node in the window carries a mark — the pump's
+    /// frame-work trigger.
+    pub(crate) fn root_is_dirty(&self) -> bool {
+        !self.root_marks().is_empty()
+    }
+
+    /// The mark bits pending anywhere in the window — `own|below` on the
+    /// root cell. Tests read it for the same "work armed" answer the pump
+    /// reads `root_is_dirty` for.
+    pub(crate) fn root_marks(&self) -> Dirty {
+        self.root.own() | self.root.below()
+    }
+
+    /// A fresh [`NodeCore`] for a node being built: a loose cell on this
+    /// window's signals and placement clock. The caller attaches it
+    /// (`set_parent` / `attach_subtree`) when the node lands in the tree.
+    pub(crate) fn new_core(&self) -> NodeCore {
+        let core = NodeCore::new(self.signals.clone(), Placement::new(&self.placement_clock));
+        self.cells.borrow_mut().push(Rc::downgrade(&core.cell));
+        core
+    }
+
+    /// Whether a structural rebuild is capturing right now — the gate
+    /// [`FrameSignals::mark_collection_dirty`] applies to the dirty flag: a
+    /// `views.watch` fire while a rebuild covers the whole tree must not mark
+    /// its owner's cell either.
+    pub(crate) fn rebuild_active_flag(&self) -> Rc<Cell<bool>> {
+        Rc::clone(&self.rebuild_active)
+    }
+
+    /// Enters the rebuild scope: `FrameSignals::begin_rebuild` plus the
+    /// hydrolysis-side mirror the watch closures read (`rebuild_active`).
+    /// The pair stays one call so no site can arm one without the other.
+    pub(crate) fn begin_rebuild(&self) {
+        self.rebuild_active.set(true);
+        self.signals.begin_rebuild();
+    }
+
+    /// Leaves the rebuild scope — the [`Self::begin_rebuild`] pair.
+    pub(crate) fn finish_rebuild(&self) {
+        self.signals.finish_rebuild();
+        self.rebuild_active.set(false);
+    }
+
+    /// Reports whether a patch request is pending, without consuming it —
+    /// the flag [`NodeCell`](mount::NodeCell) marks raise through
+    /// `request_refresh`.
+    pub(crate) fn has_patch_request(&self) -> bool {
+        self.signals.has_patch_request()
+    }
+
+    /// Reports whether the root cell carries a `STRUCTURE` mark — the
+    /// scheduling input the deleted `take_rebuild_request` flags carried.
+    /// A mark persists until the flush clears it, so peeking is correct.
+    pub(crate) fn has_structure_marks(&self) -> bool {
+        self.root_marks().contains(Dirty::STRUCTURE)
+    }
+
+    /// Consumes the window's patch request — a mark asked for another frame.
+    /// Marks still wake the pump exactly once each, as `request_refresh`
+    /// always did.
+    pub(crate) fn take_patch_request(&mut self) -> bool {
+        let requested = self.signals.take_patch_request();
+        if requested {
+            self.state.counters.host_wakeups += 1;
+        }
+        requested
+    }
+
+    /// Clears `own`/`below` on every live cell in the window, pruning dead
+    /// handles: the flush's "the marks that brought this frame are consumed"
+    /// step. The registry — not a tree walk — is what reaches `RetainedSubview`
+    /// subtrees (navigation pages, lazy items, overlays) whose roots attach
+    /// off the render tree, so `mark`'s early-exit can trust `below`.
+    /// Bridge sweep — the dirty-guided descent consumes marks per node and
+    /// this per-frame walk is deleted with it (commit 4).
+    pub(crate) fn clear_all_marks(&self) {
+        self.cells.borrow_mut().retain(|weak| {
+            weak.upgrade().is_some_and(|cell| {
+                cell.clear_marks();
+                true
+            })
+        });
+    }
+
+    /// Runs `f` with `core` as the current reader in `phase`: signal reads
+    /// inside attribute their watcher guards to it. The store the phase
+    /// reads is cleared on entry — guards are replaced on each record and
+    /// each layout.
+    /// Installs `core` as the reader for `f`, restoring the displaced
+    /// reader after. The semantic emit path and build-time prebuilds run
+    /// here; the record and layout descents take the renderer-level
+    /// `with_reader`.
+    pub(crate) fn with_reader<R>(
+        &mut self,
+        core: &NodeCore,
+        phase: ReaderPhase,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let outer = self.enter_reader(core, phase);
+        let out = f(self);
+        self.reader = outer;
+        out
+    }
+
+    /// Installs `core` as the current reader in `phase`, returning the
+    /// reader it displaced. The store the phase reads is cleared on entry —
+    /// guards are replaced on each record and each layout.
+    pub(crate) fn enter_reader(&mut self, core: &NodeCore, phase: ReaderPhase) -> Option<Reader> {
+        let store = match phase {
+            ReaderPhase::Record => Rc::clone(&core.subscriptions),
+            ReaderPhase::Layout => Rc::clone(&core.layout_subscriptions),
+        };
+        store.borrow_mut().clear();
+        self.reader.replace(Reader {
+            cell: Rc::clone(&core.cell),
+            store,
+            phase,
+        })
+    }
+
+    /// Restores the reader `enter_reader` displaced.
+    pub(crate) fn leave_reader(&mut self, outer: Option<Reader>) {
+        self.reader = outer;
+    }
+
+    /// The current reader's cell, if a node is recording or measuring.
+    pub(crate) fn reader_cell(&self) -> Option<Rc<NodeCell>> {
+        self.reader.as_ref().map(|reader| Rc::clone(&reader.cell))
+    }
+
+    /// A layout-affecting change attributed to the node now reading (its
+    /// `mark_layout`), or to the root cell when no node is reading.
+    pub(crate) fn context_mark_layout(&self) {
+        match &self.reader {
+            Some(reader) => reader.cell.mark_layout(),
+            None => self.root.mark_layout(),
+        }
+    }
+
+    /// A paint-only change attributed to the node now reading (a `PAINT`
+    /// mark), or to the root cell when no node is reading.
+    pub(crate) fn context_mark_paint(&self) {
+        match &self.reader {
+            Some(reader) => reader.cell.mark(Dirty::PAINT),
+            None => self.root.mark(Dirty::PAINT),
+        }
+    }
+
+    /// A [`ProducerWake`] for the producer owned by `cell`: the wake posts
+    /// the cell's producer key through the wake channel and redraws the
+    /// host through `redraw` when one exists.
+    pub(crate) fn producer_wake(
+        &mut self,
+        cell: &Rc<NodeCell>,
+        redraw: Option<RedrawHandle>,
+    ) -> ProducerWake {
+        let addr = Rc::as_ptr(cell) as usize;
+        let key = match self.producer_keys_by_owner.get(&addr) {
+            Some(&key)
+                if self
+                    .producer_owners
+                    .get(&key)
+                    .and_then(std::rc::Weak::upgrade)
+                    .is_some_and(|owner| Rc::ptr_eq(&owner, cell)) =>
+            {
+                key
+            }
+            _ => {
+                let key = self.next_producer_key.get();
+                self.next_producer_key.set(
+                    key.checked_add(1)
+                        .expect("hydrolysis producer key counter overflow"),
+                );
+                self.producer_owners.insert(key, Rc::downgrade(cell));
+                self.producer_keys_by_owner.insert(addr, key);
+                key
+            }
+        };
+        ProducerWake {
+            key,
+            tx: self.producer_wakes.0.clone(),
+            redraw,
+        }
+    }
+
+    /// Drains queued producer wakes, marking each live owner `PRODUCER`.
+    /// Dead producers and dead owners are dropped from the map.
+    pub(crate) fn drain_producer_wakes(&mut self) {
+        let wakes: Vec<ProducerKey> = self.producer_wakes.1.try_iter().collect();
+        if wakes.is_empty() {
+            return;
+        }
+        self.producer_owners
+            .retain(|_key, owner| owner.upgrade().is_some());
+        self.producer_keys_by_owner.retain(|_addr, key| {
+            self.producer_owners
+                .get(key)
+                .and_then(std::rc::Weak::upgrade)
+                .is_some()
+        });
+        for key in wakes {
+            if let Some(cell) = self
+                .producer_owners
+                .get(&key)
+                .and_then(std::rc::Weak::upgrade)
+            {
+                cell.mark(Dirty::PRODUCER);
+            }
+        }
+    }
+
+    /// Attributes the animation slot `key` to `cell` with `dirty`, so its
+    /// ticks mark the owning node. A rebind under the same key replaces the
+    /// entry — one owner per slot.
+    pub(crate) fn bind_animation_owner(
+        &mut self,
+        key: AnimationKey,
+        cell: &Rc<NodeCell>,
+        dirty: Dirty,
+    ) {
+        self.animation_owners.insert(
+            key,
+            AnimationOwner {
+                cell: Rc::downgrade(cell),
+                dirty,
+            },
+        );
     }
 
     /// Runs `f` with accessibility-node registration suppressed. For a control
@@ -459,7 +848,7 @@ impl SemanticCore {
     /// any layout it invalidated in ancestors) settles on the next pump.
     pub(crate) fn note_subview_structural_change(&mut self) {
         self.subview_structural_change = true;
-        self.signals.request_refresh();
+        self.context_mark_layout();
     }
 
     /// Consumes the carried subview structural-change flag; the refresh pump
@@ -470,6 +859,21 @@ impl SemanticCore {
 }
 
 impl HydrolysisRenderer {
+    /// The renderer-level reader wrap: same contract as
+    /// [`SemanticCore::with_reader`] but the closure runs on the full
+    /// renderer — the record and layout descents take it.
+    pub(crate) fn with_reader<R>(
+        &mut self,
+        core: &NodeCore,
+        phase: ReaderPhase,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let outer = self.core.enter_reader(core, phase);
+        let out = f(self);
+        self.core.leave_reader(outer);
+        out
+    }
+
     /// A renderer drawing with `theme`. `family_resolution` decides whether a
     /// named font family the collection cannot resolve is skipped
     /// ([`FontFamilyResolution::Lenient`], applications) or fails the shape

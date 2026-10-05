@@ -175,22 +175,8 @@ impl SemanticCore {
             .any(|(id, emitted)| *id == node && !emitted.is_hidden() && !emitted.is_disabled())
     }
 
-    /// The shared frame-trigger handle for closures that outlive a borrow of
-    /// the renderer (navigation controllers, GPU-surface invalidators, …).
-    pub(crate) fn frame_signals(&self) -> FrameSignals {
-        self.signals.clone()
-    }
-
     pub fn request_redraw(&self) {
         self.signals.request_redraw();
-    }
-
-    /// Schedules a full frame: every awake frame re-reads signals, runs
-    /// layout, and re-encodes the retained tree. Reactive updates and visual
-    /// values outside the reactive graph (a scroll offset, a scrollbar drag)
-    /// share this one path.
-    pub fn request_refresh(&self) {
-        self.signals.request_refresh();
     }
 
     pub fn take_redraw_request(&mut self) -> bool {
@@ -201,64 +187,20 @@ impl SemanticCore {
         requested
     }
 
-    pub fn request_rebuild(&self) {
-        self.signals.request_rebuild();
-    }
-
-    #[must_use]
-    pub fn has_rebuild_request(&self) -> bool {
-        self.signals.has_rebuild_request()
-    }
-
-    pub fn request_next_frame_rebuild(&self) {
-        self.signals.request_next_frame_rebuild();
-    }
-
-    pub fn take_rebuild_request(&mut self) -> bool {
-        let requested = self.signals.take_rebuild_request();
-        if requested {
-            self.state.counters.host_wakeups += 1;
-        }
-        requested
-    }
-
-    #[must_use]
-    pub fn has_patch_request(&self) -> bool {
-        self.signals.has_patch_request()
-    }
-
-    pub fn take_patch_request(&mut self) -> bool {
-        let requested = self.signals.take_patch_request();
-        if requested {
-            self.state.counters.host_wakeups += 1;
-        }
-        requested
-    }
-
-    pub fn take_next_frame_rebuild_request(&mut self) -> bool {
-        let requested = self.signals.take_next_frame_rebuild_request();
-        if requested {
-            self.state.counters.host_wakeups += 1;
-        }
-        requested
-    }
-
-    /// Whether a state change has already been requested but not yet applied,
+    /// Whether a state change has already been marked but not yet applied,
     /// so the semantics the last flush produced are stale.
     ///
     /// This is the *unapplied* half of [`Self::has_scheduled_semantic_work`]:
-    /// a signal fired and asked for a patch or a rebuild, and the next flush
-    /// will show a different tree. It deliberately excludes work that merely
-    /// continues over future frames — animations, gesture deadlines, gliding
-    /// scrolls — because those never stop asking, so a caller that waits on
-    /// them waits forever. An observer that needs to see the current state
-    /// waits on this; one that needs the app to come fully to rest waits on
+    /// a signal fired and marked its owner, and the next flush will show a
+    /// different tree. It deliberately excludes work that merely continues
+    /// over future frames — animations, gesture deadlines, gliding scrolls —
+    /// because those never stop asking, so a caller that waits on them waits
+    /// forever. An observer that needs to see the current state waits on
+    /// this; one that needs the app to come fully to rest waits on
     /// `has_scheduled_semantic_work`.
     #[must_use]
     pub fn has_pending_semantic_update(&self) -> bool {
-        self.signals.has_patch_request()
-            || self.signals.has_rebuild_request()
-            || self.signals.has_next_frame_rebuild_request()
+        self.root_is_dirty()
     }
 
     /// Whether the renderer has scheduled work that will still change layout,
@@ -365,12 +307,12 @@ impl HydrolysisRenderer {
     pub fn begin_rebuild_frame(&mut self) {
         // A full rebuild re-dispatches every Dynamic node, so any pending isolated
         // reactive patch is subsumed by it.
-        self.signals.begin_rebuild();
+        self.begin_rebuild();
+        self.core.begin_outside_read_frame();
         self.state.measurement.begin_frame();
         self.frame_clip_layers = 0;
         self.frame_max_clip_depth = 0;
         self.frame_filtered_count = 0;
-        self.lifecycle.begin_rebuild_frame();
         self.hit_test.begin_rebuild_frame();
         self.gesture_group_ids.clear();
         self.next_gesture_group_id = 0;
@@ -410,7 +352,6 @@ impl HydrolysisRenderer {
             self.compositor.active_scene_layers.len()
         );
         self.flush_scene_layer();
-        self.lifecycle.finish_rebuild_frame();
         // Prune the measure-path `Dynamic` dimension cache down to the identities
         // still present in the retained render tree. The cache is read by
         // `measure_dynamic` when a `Dynamic` leaf is measured after its content was
@@ -433,7 +374,8 @@ impl HydrolysisRenderer {
             .finish_rebuild_frame(&self.core.text_editing.text_input_targets);
         self.relocate_dropped_focus();
         self.core.navigation.finish_rebuild_frame();
-        self.core.signals.finish_rebuild();
+        self.core.finish_outside_read_frame();
+        self.core.finish_rebuild();
         #[cfg(feature = "accessibility")]
         self.finalize_accessibility_tree_update();
     }

@@ -760,7 +760,7 @@ impl ScrollSurfaceArea {
         // that applies it (a glide also arms the pump through the scroll
         // target the surface registers every flush).
         if scrolled {
-            renderer.request_refresh();
+            renderer.core.signals.request_refresh();
         }
     }
 }

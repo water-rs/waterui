@@ -10,15 +10,26 @@ use super::*;
 impl RenderNode {
     /// Re-encode this subtree into the renderer's scene using the cached
     /// placements. Runs every frame.
+    // `_focus_node` is bound only for the accessibility surface-input path; on
+    // builds without the feature the bindings stay dormant, which is why they keep
+    // the underscore marker.
+    pub(crate) fn flush(
+        &self,
+        renderer: &mut HydrolysisRenderer,
+        ctx: RenderContext,
+        env: &Environment,
+    ) {
+        renderer.with_reader(self.core(), ReaderPhase::Record, |renderer| {
+            self.flush_inner(renderer, ctx, env);
+        });
+    }
+
+    #[allow(clippy::used_underscore_binding)]
     #[expect(
         clippy::too_many_lines,
         reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
     )]
-    // `_focus_node` is bound only for the accessibility surface-input path; on
-    // builds without the feature the bindings stay dormant, which is why they keep
-    // the underscore marker.
-    #[allow(clippy::used_underscore_binding)]
-    pub(crate) fn flush(
+    fn flush_inner(
         &self,
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
@@ -241,11 +252,7 @@ impl RenderNode {
                             .compositor
                             .render_layers
                             .push(RenderLayer::Material(MaterialLayer {
-                                key: crate::renderer::retained::RenderKey {
-                                    render: node.render_id,
-                                    presentation:
-                                        crate::renderer::retained::PresentationId::ORDINARY,
-                                },
+                                owner: Rc::clone(&node.core.cell),
                                 runtime: Rc::clone(runtime),
                                 transform: ctx.transform,
                                 bounds: ctx.bounds,
@@ -401,10 +408,7 @@ impl RenderNode {
                     .compositor
                     .render_layers
                     .push(RenderLayer::SceneContent(SceneContentLayer {
-                        key: crate::renderer::retained::RenderKey {
-                            render: node.render_id,
-                            presentation: crate::renderer::retained::PresentationId::ORDINARY,
-                        },
+                        owner: Rc::clone(&node.core.cell),
                         content: Rc::clone(&node.content),
                         invalidator: Rc::clone(&node.invalidator),
                         association: Rc::clone(&node.association),
@@ -456,10 +460,7 @@ impl RenderNode {
                     .compositor
                     .render_layers
                     .push(RenderLayer::GpuContent(GpuContentLayer {
-                        key: crate::renderer::retained::RenderKey {
-                            render: node.render_id,
-                            presentation: crate::renderer::retained::PresentationId::ORDINARY,
-                        },
+                        owner: Rc::clone(&node.core.cell),
                         runtime: Rc::clone(&node.runtime),
                         transform: ctx.transform,
                         bounds: ctx.bounds,
@@ -503,10 +504,7 @@ impl RenderNode {
                     .compositor
                     .render_layers
                     .push(RenderLayer::ExternalFrame(ExternalFrameLayer {
-                        key: crate::renderer::retained::RenderKey {
-                            render: node.render_id,
-                            presentation: crate::renderer::retained::PresentationId::ORDINARY,
-                        },
+                        owner: Rc::clone(&node.core.cell),
                         runtime: Rc::clone(&node.runtime),
                         transform: ctx.transform,
                         bounds: ctx.bounds,
@@ -540,10 +538,7 @@ impl RenderNode {
                     .compositor
                     .render_layers
                     .push(RenderLayer::Filtered(FilteredLayer {
-                        key: crate::renderer::retained::RenderKey {
-                            render: node.render_id,
-                            presentation: crate::renderer::retained::PresentationId::ORDINARY,
-                        },
+                        owner: Rc::clone(&node.core.cell),
                         runtime: Rc::clone(&node.runtime),
                         children,
                         active_layers: ancestry,
@@ -699,15 +694,22 @@ impl RenderNode {
     /// produce, and every registration goes through the no-bounds semantic
     /// path.
     #[cfg(feature = "accessibility")]
-    #[expect(
-        clippy::option_if_let_else,
-        reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
-    )]
+    pub(crate) fn emit_accessibility(&self, renderer: &mut SemanticCore, env: &Environment) {
+        renderer.with_reader(self.core(), ReaderPhase::Record, |renderer| {
+            self.emit_accessibility_inner(renderer, env);
+        });
+    }
+
+    #[cfg(feature = "accessibility")]
     #[expect(
         clippy::too_many_lines,
         reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
     )]
-    pub(crate) fn emit_accessibility(&self, renderer: &mut SemanticCore, env: &Environment) {
+    #[expect(
+        clippy::option_if_let_else,
+        reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
+    )]
+    fn emit_accessibility_inner(&self, renderer: &mut SemanticCore, env: &Environment) {
         match self {
             // A color fill carries no semantics.
             Self::Color(_) => {}

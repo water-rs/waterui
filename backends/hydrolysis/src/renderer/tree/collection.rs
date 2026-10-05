@@ -103,6 +103,10 @@ struct TransitionAxis {
 pub(super) struct CollectionEntry {
     /// Stable item identity from the source collection.
     pub(super) id: CollectionItemId,
+    /// The entry's own mount core: the layer its presence factor writes and
+    /// the cell a presence animation marks, distinct from `node`'s so an
+    /// entry transition re-places only the entry, not the subtree inside it.
+    pub(crate) core: NodeCore,
     /// The item's retained node, kept across membership changes by id.
     pub(super) node: RenderNode,
     /// Membership-transition phase. Always `Stable` when the collection has no
@@ -117,9 +121,10 @@ pub(super) struct CollectionEntry {
 impl CollectionEntry {
     /// An at-rest entry: full presence, no transition. The initial membership
     /// of a collection is built from these.
-    pub(super) const fn stable(id: CollectionItemId, node: RenderNode) -> Self {
+    pub(super) const fn stable(id: CollectionItemId, node: RenderNode, core: NodeCore) -> Self {
         Self {
             id,
+            core,
             node,
             phase: EntryPhase::Stable,
             factor: 1.0,
@@ -195,10 +200,8 @@ pub struct CollectionNode {
     /// Stable identity owning this collection's own accessibility node id, so the
     /// id survives membership changes shifting the sibling ordinals.
     pub(super) accessibility_identity: Rc<()>,
-    /// The collection's own render identity.
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub(crate) render_id: RenderId,
+    /// The collection's own mount core: cell, placement and subscriptions.
+    pub(crate) core: NodeCore,
     /// The unshielded environment when this collection carries accessibility
     /// naming metadata: `Some` means it emits the node naming itself.
     #[cfg(feature = "accessibility")]
@@ -261,10 +264,8 @@ pub struct LazyStackNode {
     /// Stable identity owning this stack's own accessibility node id, so the id
     /// survives the visible window shifting the sibling ordinals.
     pub(super) accessibility_identity: Rc<()>,
-    /// The stack's own render identity.
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub(crate) render_id: RenderId,
+    /// The stack's own mount core: cell, placement and subscriptions.
+    pub(crate) core: NodeCore,
     /// The §7.1 context the stack was last laid out against — node-lifetime
     /// storage, so a stack inside an unchanged retained sub-view still hands
     /// each materialized item its context at flush.
@@ -710,15 +711,21 @@ impl CollectionNode {
                         .unwrap_or_else(|| panic!("hydrolysis collection: item {index} missing"));
                     previous.node =
                         RenderNode::build(normalize_layout_view(view, &env), &env, renderer);
+                    previous.node.core().cell.set_parent(&previous.core.cell);
                 }
                 previous
             } else {
                 let view = snapshot
                     .get_view(index)
                     .unwrap_or_else(|| panic!("hydrolysis collection: item {index} missing"));
+                let core = renderer.new_core();
+                core.cell.set_parent(&self.core.cell);
+                let node = RenderNode::build(normalize_layout_view(view, &env), &env, renderer);
+                node.core().cell.set_parent(&core.cell);
                 CollectionEntry {
                     id,
-                    node: RenderNode::build(normalize_layout_view(view, &env), &env, renderer),
+                    core,
+                    node,
                     phase: if animated {
                         EntryPhase::Entering(now)
                     } else {
@@ -744,11 +751,7 @@ impl CollectionNode {
     /// `Stable`, and while anything is still mid-flight a refresh is requested
     /// so frames keep coming until the collection settles. Returns whether the
     /// tree changed shape or is still animating (both need a fresh layout).
-    #[expect(
-        clippy::needless_pass_by_ref_mut,
-        reason = "the mutable borrow is required by the shared signature even though this implementation does not mutate it"
-    )]
-    pub(super) fn advance_transitions(&mut self, renderer: &mut SemanticCore) -> bool {
+    pub(super) fn advance_transitions(&mut self, renderer: &SemanticCore) -> bool {
         let Some(runtime) = &self.transition else {
             return false;
         };
@@ -769,7 +772,7 @@ impl CollectionNode {
             transitioning |= entry.phase.is_transitioning(now, &animation);
         }
         if transitioning {
-            renderer.signals.request_refresh();
+            renderer.context_mark_layout();
         }
         dropped || transitioning
     }
@@ -1196,7 +1199,7 @@ impl LazyStackNode {
         // the re-encode path.
         let total_extent_after = self.extent_index.borrow().total_extent();
         if (total_extent_after - total_extent_before).abs() > 0.5 {
-            renderer.request_refresh();
+            renderer.context_mark_layout();
         }
     }
 

@@ -1,7 +1,7 @@
 //! Phase 1 unit tests for the persistent retained render tree.
 
 use super::{MinimalTestTheme, test_environment, test_renderer};
-use crate::renderer::{ContainerNode, RenderContext, RenderId, RenderNode, TextNode};
+use crate::renderer::{ContainerNode, NodeCore, RenderContext, RenderNode, TextNode};
 use core::cell::{Cell, RefCell};
 use kurbo::{Affine, Rect};
 use nami::Computed;
@@ -33,7 +33,7 @@ fn text_node(content: &'static str) -> RenderNode {
         memo_gate: Cell::default(),
         memo_slots: RefCell::default(),
         accessibility_identity: Rc::new(()),
-        render_id: RenderId::next(),
+        core: NodeCore::detached(),
         _guards: [content.watch(|_| {}), alignment.watch(|_| {})],
         content,
         alignment,
@@ -51,7 +51,7 @@ fn render_node_container_lays_out_and_flushes_text() {
         memo_gate: Cell::default(),
         memo_slots: RefCell::default(),
         accessibility_identity: Rc::new(()),
-        render_id: RenderId::next(),
+        core: NodeCore::detached(),
         layout: Box::new(VStackLayout {
             alignment: HorizontalAlignment::Center,
             spacing: Computed::constant(8.0),
@@ -115,7 +115,7 @@ fn geometry_static_flush_reuses_cached_placement() {
         memo_gate: Cell::default(),
         memo_slots: RefCell::default(),
         accessibility_identity: Rc::new(()),
-        render_id: RenderId::next(),
+        core: NodeCore::detached(),
         layout: Box::new(VStackLayout {
             alignment: HorizontalAlignment::Center,
             spacing: Computed::constant(8.0),
@@ -1664,7 +1664,7 @@ fn when_subtree_and_shared_signal_text_present_one_frame_state() {
     // it reads `unwrap_or_default` — both derive from the same `Binding`.
     let label = binding(Some(Str::from("HELLO")));
     // `armed` flags the write `MidFlushWrite::get` performs inside the flush;
-    // `drive` only raises `patch_requested` so the pump runs a refresh frame.
+    // `drive` only marks the reading cell so the pump runs a refresh frame.
     let armed = Rc::new(Cell::new(0u8));
     let drive = binding::<u32>(0u32);
     let builder = {

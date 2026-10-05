@@ -888,7 +888,7 @@ fn stacked_icon_buttons_above_gesture_surface_receive_clicks() {
 
     assert_eq!(zoom.snapshot(), 0.5);
     assert!(
-        renderer.take_patch_request(),
+        renderer.root_is_dirty(),
         "a synchronous button action must schedule a retained-tree refresh"
     );
 }
@@ -2954,12 +2954,14 @@ fn ime_preedit_commit_and_disable_update_focused_text_target() {
 
     assert!(renderer.set_focused_text_input(Some(0)));
     assert!(
-        renderer.take_patch_request(),
+        renderer.root_is_dirty(),
         "text input focus changes must refresh the retained tree so focus animations start on click"
     );
     assert!(
-        !renderer.take_rebuild_request(),
-        "text input focus changes must not rebuild the view body"
+        !renderer
+            .root_marks()
+            .contains(crate::renderer::Dirty::STRUCTURE),
+        "text input focus changes must not mark structure — the view body is never re-dispatched"
     );
     assert!(renderer.handle_ime_preedit("拼音", Some(0)));
     assert_eq!(renderer.text_editing.ime_preedit.as_deref(), Some("拼音"));
@@ -3100,14 +3102,16 @@ fn text_selection_pointer_update_uses_transient_redraw_path() {
         ));
 
     assert!(renderer.update_text_selection_from_pointer(0, Point::ZERO, false));
-    assert!(
-        !renderer.take_rebuild_request(),
-        "text selection changes are rendered by the transient overlay instead of a full scene rebuild"
+    assert_eq!(
+        renderer.root_marks(),
+        crate::renderer::Dirty::NONE,
+        "text selection changes are rendered by the transient overlay instead of a structural mark"
     );
     assert!(!renderer.update_text_selection_from_pointer(0, Point::ZERO, false));
-    assert!(
-        !renderer.take_rebuild_request(),
-        "unchanged text selection must not schedule redundant rebuilds"
+    assert_eq!(
+        renderer.root_marks(),
+        crate::renderer::Dirty::NONE,
+        "unchanged text selection must not mark structure"
     );
 }
 

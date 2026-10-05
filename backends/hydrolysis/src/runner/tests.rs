@@ -27,7 +27,7 @@ use waterui_layout::scroll::ScrollController;
 fn changed_rebuild_input_wakes_platform_window() {
     let mut runtime = test_runtime_window();
     runtime.clear_frame_mode();
-    runtime.renderer.request_rebuild();
+    runtime.renderer.root_cell().mark_layout();
 
     schedule_redraw_or_refresh(&mut runtime, true);
 
@@ -42,7 +42,7 @@ fn changed_rebuild_input_wakes_platform_window() {
 fn changed_reactive_input_refreshes_retained_tree() {
     let mut runtime = test_runtime_window();
     runtime.clear_frame_mode();
-    runtime.renderer.request_refresh();
+    runtime.renderer.context_mark_layout();
 
     schedule_redraw_or_refresh(&mut runtime, true);
 
@@ -130,8 +130,14 @@ fn text_caret_tick_wakes_redraw_without_layout_rebuild() {
             .renderer
             .set_focused_text_input_key(Some(InteractionKey::for_rc(&focused_field, 0)))
     );
+    assert!(runtime.renderer.root_is_dirty());
+    assert!(
+        !runtime
+            .renderer
+            .root_marks()
+            .contains(crate::renderer::Dirty::STRUCTURE)
+    );
     assert!(runtime.renderer.take_patch_request());
-    assert!(!runtime.renderer.take_rebuild_request());
     runtime.clear_frame_mode();
     assert!(!runtime.platform.take_redraw_request());
 
@@ -170,7 +176,7 @@ fn hidden_window_parks_the_pump_and_restores_exactly_one_frame() {
     runtime.set_hidden(true);
     // Work that lands while hidden stays armed: neither the pump tick nor
     // a platform redraw already in flight when the window hid may render it.
-    runtime.renderer.request_rebuild();
+    runtime.renderer.root_cell().mark_layout();
     now += Duration::from_millis(32);
     assert!(
         advance_runtime(&mut runtime, &env, now).is_none(),

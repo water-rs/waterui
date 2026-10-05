@@ -61,8 +61,8 @@ pub struct ActiveSceneLayer {
 /// [`waterui_graphics::SceneContent::build_scene`].
 #[derive(Clone)]
 pub struct SceneContentLayer {
-    /// The mount identity: which visual node presents this content.
-    pub(crate) key: crate::renderer::retained::RenderKey,
+    /// The mount owner: the node cell this mount answers to (keyed by address).
+    pub(crate) owner: Rc<crate::renderer::NodeCell>,
     /// The node-owned content — shared so the compositor can borrow it while
     /// the render tree still owns it.
     pub(crate) content: Rc<RefCell<Box<dyn waterui_graphics::SceneContent>>>,
@@ -86,8 +86,8 @@ pub struct SceneContentLayer {
 /// sized per frame on a keyed layer.
 #[derive(Clone)]
 pub struct GpuContentLayer {
-    /// The mount identity: which visual node presents this content.
-    pub(crate) key: crate::renderer::retained::RenderKey,
+    /// The mount owner: the node cell this mount answers to (keyed by address).
+    pub(crate) owner: Rc<crate::renderer::NodeCell>,
     /// The node-owned view state — the `GpuContentView` and its one-shot
     /// engine-content install flag.
     pub(crate) runtime: Rc<RefCell<crate::gpu_view::GpuContentRuntime>>,
@@ -104,8 +104,8 @@ pub struct GpuContentLayer {
 /// frame to the engine as its layer content.
 #[derive(Clone)]
 pub struct ExternalFrameLayer {
-    /// The mount identity: which visual node presents this content.
-    pub(crate) key: crate::renderer::retained::RenderKey,
+    /// The mount owner: the node cell this mount answers to (keyed by address).
+    pub(crate) owner: Rc<crate::renderer::NodeCell>,
     /// The node-owned view state — the `ExternalFrameView` and its stream's
     /// frame receiver once the source has been started.
     pub(crate) runtime: Rc<RefCell<crate::gpu_view::ExternalFrameRuntime>>,
@@ -121,8 +121,8 @@ pub struct ExternalFrameLayer {
 /// registered `Filter`, whose children mount under it as group layers.
 #[derive(Clone)]
 pub struct FilteredLayer {
-    /// The mount identity: which visual node owns this filter.
-    pub(crate) key: crate::renderer::retained::RenderKey,
+    /// The mount owner: the node cell this mount answers to (keyed by address).
+    pub(crate) owner: Rc<crate::renderer::NodeCell>,
     /// The node-owned filter runtime — unbuilt source until registration,
     /// then the engine `Filter` handle.
     pub(crate) runtime: Rc<RefCell<crate::renderer::effects::FilteredRuntime>>,
@@ -138,8 +138,9 @@ pub struct FilteredLayer {
 /// content the view wraps draws in the layers after it.
 #[derive(Clone)]
 pub struct MaterialLayer {
-    /// The mount identity: which wrapper node presents this material.
-    pub(crate) key: crate::renderer::retained::RenderKey,
+    /// The mount owner: the wrapper node cell presenting this material, its
+    /// address keying the mount.
+    pub(crate) owner: Rc<crate::renderer::NodeCell>,
     /// The node-owned colour stage and blur radius the backdrop group runs.
     pub(crate) runtime: Rc<crate::renderer::material::MaterialRuntime>,
     /// Placement transform mapping `bounds` into scene space.
@@ -328,7 +329,7 @@ impl RenderLayer {
             // A filtered group's children carry only the scopes inside the
             // group, so they take the transform but no outer ancestry.
             Self::Filtered(layer) => Self::Filtered(FilteredLayer {
-                key: layer.key,
+                owner: Rc::clone(&layer.owner),
                 runtime: Rc::clone(&layer.runtime),
                 children: layer
                     .children
@@ -419,16 +420,16 @@ impl ActiveSceneLayer {
 enum InstallScope {
     /// Children order under the surface root.
     Root,
-    /// Children order under the `RenderKey` mount's content layer — the
-    /// filtered subtree under its filter.
-    Group(crate::renderer::retained::RenderKey),
+    /// Children order under the `usize` (cell-address) mount's content
+    /// layer — the filtered subtree under its filter.
+    Group(usize),
 }
 
 impl InstallScope {
     /// The filtered group's key in group scope, `None` at the root — the
     /// mount scope a layer's [`HeldResources`](waterui_graphics::HeldResources)
     /// stores under.
-    const fn parent_key(self) -> Option<crate::renderer::retained::RenderKey> {
+    const fn parent_key(self) -> Option<usize> {
         match self {
             Self::Root => None,
             Self::Group(key) => Some(key),
@@ -459,6 +460,9 @@ struct FrameInstall<'a> {
     resources: &'a Rc<crate::renderer::recording::SceneResources>,
     /// The host's display-link wake, installed on external-frame streams.
     wake: Option<RedrawHandle>,
+    /// The renderer core producer wakes are registered on: an owner cell gets
+    /// a `ProducerWake` whose posts mark it `PRODUCER`.
+    producer_wakes: &'a mut crate::renderer::SemanticCore,
     /// The frame's device and queue, for starting external-frame sources —
     /// planes are imported on the device the window presents through.
     device: &'a wgpu::Device,
@@ -467,11 +471,10 @@ struct FrameInstall<'a> {
     rasterize: bool,
     /// Device pixels per logical unit on the target's display.
     display_scale: f64,
-    /// Set when a `build_scene` or `view.frame()` asks for another frame.
-    needs_redraw: bool,
+
     /// Every keyed mount presented this frame, at any group depth — the
     /// `sync_order` prune set.
-    live_keys: FxHashSet<crate::renderer::retained::RenderKey>,
+    live_keys: FxHashSet<usize>,
     /// Content installs this frame, for `recorded_view_contents` accounting.
     installs: u64,
 }
@@ -511,13 +514,18 @@ impl FrameInstall<'_> {
                     }
                 }
                 RenderLayer::SceneContent(layer) => {
-                    let slot = MountSlot::Keyed(layer.key);
+                    let slot = MountSlot::Keyed(Rc::as_ptr(&layer.owner) as usize);
+                    self.mounts.keyed_for(self.surface, &layer.owner);
                     order.push(slot);
-                    self.live_keys.insert(layer.key);
+                    self.live_keys.insert(Rc::as_ptr(&layer.owner) as usize);
                     self.mounts.layer(self.surface, slot);
                     let scopes = ancestry_scopes(&layer.active_layers);
-                    self.mounts
-                        .set_ancestry(self.surface, tx, layer.key, &scopes);
+                    self.mounts.set_ancestry(
+                        self.surface,
+                        tx,
+                        Rc::as_ptr(&layer.owner) as usize,
+                        &scopes,
+                    );
                     let target = slot_layer(self.mounts, self.surface, scope, slot);
                     let content = Rc::clone(&layer.content);
                     // The retained content records only against the engine
@@ -539,7 +547,7 @@ impl FrameInstall<'_> {
                     }
                     *layer.association.borrow_mut() = Some(Rc::downgrade(self.resources));
                     let mut names = self.resources.waterui().recording();
-                    let needs_redraw = &mut self.needs_redraw;
+                    let owner = Rc::clone(&layer.owner);
                     #[allow(clippy::cast_possible_truncation)]
                     let (width, height) =
                         (layer.bounds.width() as f32, layer.bounds.height() as f32);
@@ -548,7 +556,7 @@ impl FrameInstall<'_> {
                             .borrow_mut()
                             .build_scene(recorder, &mut names, width, height)
                         {
-                            *needs_redraw = true;
+                            owner.mark(crate::renderer::Dirty::PAINT);
                         }
                     });
                     let held = names.finish();
@@ -556,20 +564,28 @@ impl FrameInstall<'_> {
                         layer.transform
                             * kurbo::Affine::translate((layer.bounds.x0, layer.bounds.y0)),
                     );
-                    self.mounts
-                        .set_held(scope.parent_key(), MountSlot::Keyed(layer.key), held);
+                    self.mounts.set_held(
+                        scope.parent_key(),
+                        MountSlot::Keyed(Rc::as_ptr(&layer.owner) as usize),
+                        held,
+                    );
                     self.installs += 1;
                 }
                 RenderLayer::GpuContent(layer) => {
-                    let slot = MountSlot::Keyed(layer.key);
+                    let slot = MountSlot::Keyed(Rc::as_ptr(&layer.owner) as usize);
+                    self.mounts.keyed_for(self.surface, &layer.owner);
                     order.push(slot);
-                    self.live_keys.insert(layer.key);
+                    self.live_keys.insert(Rc::as_ptr(&layer.owner) as usize);
                     self.mounts.layer(self.surface, slot);
                     let pixels =
                         gpu_content_pixels(layer.transform, layer.bounds, self.display_scale);
                     let scopes = ancestry_scopes(&layer.active_layers);
-                    self.mounts
-                        .set_ancestry(self.surface, tx, layer.key, &scopes);
+                    self.mounts.set_ancestry(
+                        self.surface,
+                        tx,
+                        Rc::as_ptr(&layer.owner) as usize,
+                        &scopes,
+                    );
                     let target = slot_layer(self.mounts, self.surface, scope, slot);
                     // A fully transparent ancestry discards every pixel the
                     // content would draw — the producer stays uninstalled
@@ -604,22 +620,27 @@ impl FrameInstall<'_> {
                     ));
                 }
                 RenderLayer::ExternalFrame(layer) => {
-                    let slot = MountSlot::Keyed(layer.key);
+                    let slot = MountSlot::Keyed(Rc::as_ptr(&layer.owner) as usize);
+                    self.mounts.keyed_for(self.surface, &layer.owner);
                     order.push(slot);
-                    self.live_keys.insert(layer.key);
+                    self.live_keys.insert(Rc::as_ptr(&layer.owner) as usize);
                     self.mounts.layer(self.surface, slot);
                     let scopes = ancestry_scopes(&layer.active_layers);
-                    self.mounts
-                        .set_ancestry(self.surface, tx, layer.key, &scopes);
+                    self.mounts.set_ancestry(
+                        self.surface,
+                        tx,
+                        Rc::as_ptr(&layer.owner) as usize,
+                        &scopes,
+                    );
                     let target = slot_layer(self.mounts, self.surface, scope, slot);
                     let visible = scopes.iter().all(|scope| scope.opacity != 0.0);
                     if visible {
                         let mut runtime = layer.runtime.borrow_mut();
                         if runtime.receiver.is_none() {
-                            let redraw = self
-                                .wake
-                                .clone()
-                                .unwrap_or_else(|| RedrawHandle::new(|| {}));
+                            let wake = self
+                                .producer_wakes
+                                .producer_wake(&layer.owner, self.wake.clone());
+                            let redraw = RedrawHandle::new(move || wake.request_redraw());
                             let (producer, sink) = self.engine.frame_producer();
                             runtime.producer = Some(producer);
                             runtime.sink = Some(sink);
@@ -660,13 +681,18 @@ impl FrameInstall<'_> {
                     }
                 }
                 RenderLayer::Filtered(layer) => {
-                    let slot = MountSlot::Keyed(layer.key);
+                    let slot = MountSlot::Keyed(Rc::as_ptr(&layer.owner) as usize);
+                    self.mounts.keyed_for(self.surface, &layer.owner);
                     order.push(slot);
-                    self.live_keys.insert(layer.key);
+                    self.live_keys.insert(Rc::as_ptr(&layer.owner) as usize);
                     self.mounts.layer(self.surface, slot);
                     let scopes = ancestry_scopes(&layer.active_layers);
-                    self.mounts
-                        .set_ancestry(self.surface, tx, layer.key, &scopes);
+                    self.mounts.set_ancestry(
+                        self.surface,
+                        tx,
+                        Rc::as_ptr(&layer.owner) as usize,
+                        &scopes,
+                    );
                     {
                         let filter = layer
                             .runtime
@@ -676,34 +702,48 @@ impl FrameInstall<'_> {
                         let target = slot_layer(self.mounts, self.surface, scope, slot);
                         tx[target].filter(filter);
                     }
-                    let group_order =
-                        self.install_scope(tx, &layer.children, InstallScope::Group(layer.key));
-                    self.mounts.sync_group_order(tx, layer.key, &group_order);
+                    let group_order = self.install_scope(
+                        tx,
+                        &layer.children,
+                        InstallScope::Group(Rc::as_ptr(&layer.owner) as usize),
+                    );
+                    self.mounts.sync_group_order(
+                        tx,
+                        Rc::as_ptr(&layer.owner) as usize,
+                        &group_order,
+                    );
                 }
                 RenderLayer::Material(layer) => {
-                    let slot = MountSlot::Keyed(layer.key);
+                    let slot = MountSlot::Keyed(Rc::as_ptr(&layer.owner) as usize);
+                    self.mounts.keyed_for(self.surface, &layer.owner);
                     order.push(slot);
-                    self.live_keys.insert(layer.key);
+                    self.live_keys.insert(Rc::as_ptr(&layer.owner) as usize);
                     self.mounts.layer(self.surface, slot);
                     let scopes = ancestry_scopes(&layer.active_layers);
-                    self.mounts
-                        .set_ancestry(self.surface, tx, layer.key, &scopes);
+                    self.mounts.set_ancestry(
+                        self.surface,
+                        tx,
+                        Rc::as_ptr(&layer.owner) as usize,
+                        &scopes,
+                    );
                     // A fully transparent ancestry discards every pixel the
                     // member would composite: the mount holds no backdrop
                     // group until it can become visible, so a hidden
                     // material costs no capture or blur.
                     let visible = scopes.iter().all(|scope| scope.opacity != 0.0);
+                    let owner_key = Rc::as_ptr(&layer.owner) as usize;
                     if visible {
                         let surface = self.surface;
                         let display_scale = self.display_scale;
-                        self.mounts.set_backdrop(tx, layer.key, display_scale, || {
-                            surface.backdrop_group(
-                                layer.runtime.chain(display_scale),
-                                crate::renderer::material::capture_scale(),
-                            )
-                        });
+                        self.mounts
+                            .set_backdrop(tx, owner_key, display_scale, || {
+                                surface.backdrop_group(
+                                    layer.runtime.chain(display_scale),
+                                    crate::renderer::material::capture_scale(),
+                                )
+                            });
                     } else {
-                        self.mounts.clear_backdrop(tx, layer.key);
+                        self.mounts.clear_backdrop(tx, owner_key);
                     }
                     let target = slot_layer(self.mounts, self.surface, scope, slot);
                     tx[target]
@@ -1080,11 +1120,12 @@ impl HydrolysisRenderer {
             metrics: &self.applied_filter_metrics,
             resources: &window.state.resources,
             wake: host_wake,
+            producer_wakes: &mut self.core,
             device: target.device,
             queue: target.queue,
             rasterize: rasterize_scene_layers,
             display_scale: target.display_scale,
-            needs_redraw: false,
+
             live_keys: FxHashSet::default(),
             installs: 0,
         };
@@ -1110,7 +1151,6 @@ impl HydrolysisRenderer {
                 .mounts
                 .sync_order(install.surface, tx, &order, &install.live_keys);
         });
-        let needs_redraw = install.needs_redraw;
         let installs = install.installs;
         drop(install);
         let window = transient_window.as_mut().unwrap_or_else(|| {
@@ -1138,10 +1178,6 @@ impl HydrolysisRenderer {
         self.compositor.render_layers = render_layers;
         self.cherenkov_windows = windows;
         self.engine_next = Some(rendered?);
-
-        if needs_redraw {
-            self.request_redraw();
-        }
         Ok(EngineFrame {
             context_id,
             headroom: target.headroom,

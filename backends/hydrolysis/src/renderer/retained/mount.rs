@@ -9,9 +9,9 @@
 //!   mount carries no identity — it only keeps the engine layer alive
 //!   while the content payload is replaced.
 //! - **Keyed mounts** are identity-bearing: a GPU content view's or filtered
-//!   group's mount lives under its [`RenderKey`], created on first appearance
-//!   and dropped — detached at the next commit — the first frame it is
-//!   absent. Clip and opacity scopes the view is drawn under become a
+//!   group's mount lives under its owning node's cell address, created on
+//!   first appearance and dropped — detached at the next commit — the first
+//!   frame it is absent. Clip and opacity scopes the view is drawn under become a
 //!   persistent chain of wrapper layers above its content mount, each
 //!   carrying one clip and one alpha. This is the mount "reused across
 //!   frames, never rebuilt per frame".
@@ -20,7 +20,7 @@
 //! layers and committed order of the children a filtered mount draws under
 //! its content layer. Group children are mounts like any other — a keyed
 //! child simply has its ordered layer pushed under the group's content
-//! layer rather than the surface root — so the same `RenderKey` identity
+//! layer rather than the surface root — so the same cell-address identity
 //! works at any depth.
 //!
 //! Wrapper layers are never destroyed while their mount lives: a
@@ -31,8 +31,9 @@
 //! One persistent overlay layer sits above every other child for the
 //! frame's transient scene (popups, menus and capture/transition content).
 
-use super::identity::RenderKey;
+use crate::renderer::NodeCell;
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::rc::{Rc, Weak};
 use waterui_graphics::HeldResources;
 
 /// One slot in the surface root's desired child order for a presented frame.
@@ -40,8 +41,8 @@ use waterui_graphics::HeldResources;
 pub enum MountSlot {
     /// Positional scene-segment mount.
     Segment(usize),
-    /// Identity-bearing mount for one [`RenderKey`].
-    Keyed(RenderKey),
+    /// Identity-bearing mount for one node cell (its `Rc` address).
+    Keyed(usize),
     /// The single overlay mount above every other child.
     Overlay,
 }
@@ -75,9 +76,13 @@ struct GroupBody {
     order_ids: Vec<cherenkov::LayerId>,
 }
 
-/// The engine layers one [`RenderKey`] owns: an ancestry chain of clip and
+/// The engine layers one node cell owns: an ancestry chain of clip and
 /// opacity wrappers (outermost first) above the content mount.
 struct KeyedMount {
+    /// The cell this mount answers to, held weak: a stale entry under a
+    /// recycled `Rc` address fails `upgrade` and is evicted, so a dead
+    /// node's mount can never be handed to a live one.
+    owner: Weak<NodeCell>,
     /// Attached ancestry wrappers, outermost first — `wrappers.len()` is
     /// the committed scope count.
     wrappers: Vec<cherenkov::Layer>,
@@ -130,8 +135,8 @@ pub struct Mounts {
     /// `segments` — released when the segment's content is replaced or the
     /// layer truncated.
     segment_held: Vec<Option<HeldResources>>,
-    /// Identity-bearing mounts, keyed by the visual node's [`RenderKey`].
-    keyed: FxHashMap<RenderKey, KeyedMount>,
+    /// Identity-bearing mounts, keyed by the owning node cell's address.
+    keyed: FxHashMap<usize, KeyedMount>,
     /// The overlay layer, created on first transient scene and kept.
     overlay: Option<cherenkov::Layer>,
     /// The registrations the overlay's installed content names.
@@ -201,18 +206,8 @@ impl Mounts {
             MountSlot::Keyed(key) => {
                 &self
                     .keyed
-                    .entry(key)
-                    .or_insert_with(|| {
-                        self.frame_created += 1;
-                        KeyedMount {
-                            wrappers: Vec::new(),
-                            parked: Vec::new(),
-                            content: surface.layer(),
-                            held: None,
-                            group: None,
-                            backdrop: None,
-                        }
-                    })
+                    .get(&key)
+                    .expect("hydrolysis mounts: content layer for an uncreated mount")
                     .content
             }
             MountSlot::Overlay => self.overlay.get_or_insert_with(|| {
@@ -220,6 +215,37 @@ impl Mounts {
                 surface.layer()
             }),
         }
+    }
+
+    /// The mount `cell`'s node owns, evicting a stale entry under a
+    /// recycled address first: a cell address is only reused after the
+    /// last `Rc` to the old cell drops, which drops the `Weak` here — so
+    /// `upgrade` failing is proof the entry is another node's.
+    pub(crate) fn keyed_for(
+        &mut self,
+        surface: &cherenkov::Surface<cherenkov_gpu::Gpu>,
+        cell: &Rc<NodeCell>,
+    ) {
+        let key = Rc::as_ptr(cell) as usize;
+        if self
+            .keyed
+            .get(&key)
+            .is_some_and(|mount| mount.owner.upgrade().is_none())
+        {
+            self.keyed.remove(&key);
+        }
+        self.keyed.entry(key).or_insert_with(|| {
+            self.frame_created += 1;
+            KeyedMount {
+                owner: Rc::downgrade(cell),
+                wrappers: Vec::new(),
+                parked: Vec::new(),
+                content: surface.layer(),
+                held: None,
+                group: None,
+                backdrop: None,
+            }
+        });
     }
 
     /// The layer the parent orders for `slot`: a keyed mount's outermost
@@ -248,7 +274,7 @@ impl Mounts {
         &mut self,
         surface: &cherenkov::Surface<cherenkov_gpu::Gpu>,
         tx: &mut cherenkov::Transaction<'_, cherenkov_gpu::Gpu>,
-        key: RenderKey,
+        key: usize,
         scopes: &[AncestryScope],
     ) {
         let mount = self
@@ -314,7 +340,7 @@ impl Mounts {
     pub(crate) fn set_backdrop(
         &mut self,
         tx: &mut cherenkov::Transaction<'_, cherenkov_gpu::Gpu>,
-        key: RenderKey,
+        key: usize,
         display_scale: f64,
         group: impl FnOnce() -> cherenkov::BackdropGroup,
     ) {
@@ -344,7 +370,7 @@ impl Mounts {
     pub(crate) fn clear_backdrop(
         &mut self,
         tx: &mut cherenkov::Transaction<'_, cherenkov_gpu::Gpu>,
-        key: RenderKey,
+        key: usize,
     ) {
         let mount = self
             .keyed
@@ -358,7 +384,7 @@ impl Mounts {
     /// The display scale `key`'s held backdrop group was built for, `None`
     /// while the mount holds none.
     #[cfg(test)]
-    pub(crate) fn backdrop_display_scale(&self, key: RenderKey) -> Option<f64> {
+    pub(crate) fn backdrop_display_scale(&self, key: usize) -> Option<f64> {
         self.keyed
             .get(&key)
             .expect("hydrolysis mounts: backdrop for an uncreated mount")
@@ -375,7 +401,7 @@ impl Mounts {
     pub(crate) fn group_layer(
         &mut self,
         surface: &cherenkov::Surface<cherenkov_gpu::Gpu>,
-        key: RenderKey,
+        key: usize,
         index: usize,
     ) -> &cherenkov::Layer {
         let mount = self
@@ -394,7 +420,7 @@ impl Mounts {
     /// keyed mount's ordered layer — the same resolution [`Self::ordered`]
     /// applies at the root, with segments drawn from the group body. An
     /// overlay slot is a programmer error inside a group.
-    pub(crate) fn ordered_in_group(&self, group: RenderKey, slot: MountSlot) -> &cherenkov::Layer {
+    pub(crate) fn ordered_in_group(&self, group: usize, slot: MountSlot) -> &cherenkov::Layer {
         match slot {
             MountSlot::Segment(index) => {
                 &self
@@ -418,12 +444,7 @@ impl Mounts {
     /// surface root. Replaces whatever the slot held before: the previous
     /// set releases once the replacement content is installed, which is the
     /// ordering the caller already guarantees by installing content first.
-    pub(crate) fn set_held(
-        &mut self,
-        parent: Option<RenderKey>,
-        slot: MountSlot,
-        held: HeldResources,
-    ) {
+    pub(crate) fn set_held(&mut self, parent: Option<usize>, slot: MountSlot, held: HeldResources) {
         match (parent, slot) {
             (Some(parent), MountSlot::Segment(index)) => {
                 let group = self
@@ -467,7 +488,7 @@ impl Mounts {
     pub(crate) fn sync_group_order(
         &mut self,
         tx: &mut cherenkov::Transaction<'_, cherenkov_gpu::Gpu>,
-        key: RenderKey,
+        key: usize,
         order: &[MountSlot],
     ) {
         let order_ids: Vec<cherenkov::LayerId> = order
@@ -531,10 +552,11 @@ impl Mounts {
         surface: &cherenkov::Surface<cherenkov_gpu::Gpu>,
         tx: &mut cherenkov::Transaction<'_, cherenkov_gpu::Gpu>,
         order: &[MountSlot],
-        live_keys: &FxHashSet<RenderKey>,
+        live_keys: &FxHashSet<usize>,
     ) {
         let keyed_before = self.keyed.len();
-        self.keyed.retain(|key, _| live_keys.contains(key));
+        self.keyed
+            .retain(|key, mount| live_keys.contains(key) && mount.owner.upgrade().is_some());
         self.frame_removed += (keyed_before - self.keyed.len()) as u64;
 
         let segment_count = order

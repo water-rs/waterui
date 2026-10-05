@@ -188,6 +188,10 @@ pub struct ScrollTarget {
     /// The scroll view's offset handle, ticked per frame while a smoothed
     /// wheel scroll glides toward its target.
     pub(crate) handle: crate::scroll::ScrollHandle,
+    /// The node cell owning this target: a smoothed tick marks it `PAINT`
+    /// so the next frame re-records this scroll view's content, nothing
+    /// else's. Weak — the target and its owner drop together.
+    pub(crate) owner: Weak<crate::renderer::NodeCell>,
     /// The stacking key every target carries: a scroll region painted above
     /// an embedded surface wins the wheel through the same (order, depth)
     /// priority pointer and text targets already sort by.
@@ -1072,9 +1076,9 @@ impl HydrolysisRenderer {
         visual_changed |= press_clear.visual_changed;
         refresh_requested |= press_clear.chrome_changed;
         if refresh_requested {
-            self.request_refresh();
+            self.context_mark_layout();
         } else if visual_changed {
-            self.request_redraw();
+            self.context_mark_paint();
         }
         self.text_editing.active_text_selection_drag = None;
         let overlay_hit = matches!(
@@ -1467,10 +1471,10 @@ impl HydrolysisRenderer {
                 self.hit_test.active_press_bounds = Some(target.bounds);
                 self.hit_test.active_press_origin = Some(point);
                 if chrome_state_dependent && visual_changed {
-                    self.request_refresh();
+                    self.context_mark_layout();
                     refresh_requested = true;
                 } else if visual_changed {
-                    self.request_redraw();
+                    self.context_mark_paint();
                 }
             }
             tracing::trace!(
@@ -1486,7 +1490,7 @@ impl HydrolysisRenderer {
             if target.captures_drag {
                 let changed = (target.action.borrow_mut())(self, point, env);
                 if changed {
-                    self.request_refresh();
+                    self.context_mark_layout();
                     refresh_requested = true;
                 }
                 self.hit_test.active_pointer_drag_target = Some(Rc::clone(&target.action));
@@ -1502,7 +1506,7 @@ impl HydrolysisRenderer {
             }
             let changed = (target.action.borrow_mut())(self, point, env);
             if changed {
-                self.request_refresh();
+                self.context_mark_layout();
                 refresh_requested = true;
             }
             // Slot-less utility targets stay transparent when unhandled,
@@ -1606,9 +1610,9 @@ impl HydrolysisRenderer {
                 .interaction
                 .begin_press(&pending.slot, pending.origin, at);
             if pending.chrome_state_dependent {
-                self.request_refresh();
+                self.context_mark_layout();
             } else {
-                self.request_redraw();
+                self.context_mark_paint();
             }
             changed = true;
         }
@@ -1617,13 +1621,13 @@ impl HydrolysisRenderer {
         {
             let action_changed = (target.action.borrow_mut())(self, point, env);
             if action_changed {
-                self.request_refresh();
+                self.context_mark_layout();
             }
             changed |= action_changed;
         }
         let drop_changed = self.finish_active_drag(point, env);
         if drop_changed {
-            self.request_refresh();
+            self.context_mark_layout();
         }
         changed |= drop_changed;
         changed |=
@@ -1641,9 +1645,9 @@ impl HydrolysisRenderer {
         self.hit_test.active_pointer_button = None;
         let press_clear = self.hit_test.interaction.clear_all_presses(at);
         if press_clear.chrome_changed {
-            self.request_refresh();
+            self.context_mark_layout();
         } else if press_clear.visual_changed {
-            self.request_redraw();
+            self.context_mark_paint();
         }
         changed |= press_clear.visual_changed || press_clear.chrome_changed;
         let gesture_changed = gesture_button(button).is_some_and(|mapped| {
@@ -1739,7 +1743,7 @@ impl HydrolysisRenderer {
         if let Some(action) = self.hit_test.active_pointer_drag_target.clone() {
             let pointer_drag_changed = (action.borrow_mut())(self, point, env);
             if pointer_drag_changed {
-                self.request_refresh();
+                self.context_mark_layout();
             }
             drag_changed |= pointer_drag_changed;
             refresh_requested |= pointer_drag_changed;
@@ -1749,7 +1753,7 @@ impl HydrolysisRenderer {
         // drag-target action just ran, a no-op while the target is unchanged.
         let drag_hover_changed = self.sync_active_drag_hover(point, env);
         if drag_hover_changed {
-            self.request_refresh();
+            self.context_mark_layout();
         }
         drag_changed |= drag_hover_changed;
         refresh_requested |= drag_hover_changed;
@@ -1759,10 +1763,10 @@ impl HydrolysisRenderer {
             HoverSync::default()
         };
         if hover.visual_changed {
-            self.request_redraw();
+            self.context_mark_paint();
         }
         if hover.handler_changed {
-            self.request_refresh();
+            self.context_mark_layout();
         }
         refresh_requested |= hover.handler_changed;
         tracing::trace!(
@@ -1786,11 +1790,11 @@ impl HydrolysisRenderer {
         let at = self.frame_instant();
         let hover = self.hit_test.sync_hover_targets(point, env, false, at);
         if hover.visual_changed {
-            self.request_redraw();
+            self.context_mark_paint();
         }
         let changed = hover.handler_changed;
         if changed {
-            self.request_refresh();
+            self.context_mark_layout();
         }
         tracing::trace!(
             target: "waterui::hydrolysis::input",
@@ -2149,7 +2153,7 @@ impl SemanticCore {
             .or(leaving)
             .or(self.hit_test.traversal_anchor);
         self.hit_test.keyboard_focus_visible = visible;
-        self.request_refresh();
+        self.context_mark_layout();
         true
     }
 
@@ -2607,7 +2611,7 @@ impl SemanticCore {
             };
             let changed = (action.borrow_mut())(step_forward);
             if changed {
-                self.request_refresh();
+                self.context_mark_layout();
             }
             return true;
         }
@@ -2705,9 +2709,9 @@ impl SemanticCore {
             .as_ref()
             .is_some_and(|handles| handles.chrome_state_dependent())
         {
-            self.request_refresh();
+            self.context_mark_layout();
         } else {
-            self.request_redraw();
+            self.context_mark_paint();
         }
         self.hit_test.active_keyboard_target = Some(target);
         true
@@ -2729,9 +2733,9 @@ impl SemanticCore {
             .interaction
             .clear_all_presses(self.frame_instant());
         if action_changed || clear.chrome_changed {
-            self.request_refresh();
+            self.context_mark_layout();
         } else if clear.visual_changed {
-            self.request_redraw();
+            self.context_mark_paint();
         }
         true
     }
@@ -2760,9 +2764,9 @@ impl SemanticCore {
             .interaction
             .clear_all_presses(self.frame_instant());
         if clear.chrome_changed {
-            self.request_refresh();
+            self.context_mark_layout();
         } else if clear.visual_changed {
-            self.request_redraw();
+            self.context_mark_paint();
         }
         true
     }
@@ -2809,9 +2813,9 @@ impl HydrolysisRenderer {
         self.hit_test.active_press_origin = None;
         let press_clear = self.hit_test.interaction.clear_all_presses(at);
         if press_clear.chrome_changed {
-            self.request_refresh();
+            self.context_mark_layout();
         } else if press_clear.visual_changed {
-            self.request_redraw();
+            self.context_mark_paint();
         }
         let _ = self.gesture_engine.handle_pointer_cancel(at, env);
     }
@@ -2915,9 +2919,9 @@ impl HydrolysisRenderer {
         refresh_requested |= self.cancel_active_drag(env);
         let press_clear = self.hit_test.interaction.clear_all_presses(at);
         if press_clear.chrome_changed {
-            self.request_refresh();
+            self.context_mark_layout();
         } else if press_clear.visual_changed {
-            self.request_redraw();
+            self.context_mark_paint();
         }
         refresh_requested |= press_clear.chrome_changed;
         let frame_instant = self.core.frame_instant;
@@ -2943,7 +2947,7 @@ impl HydrolysisRenderer {
             }
         }
         if hover_visual_changed {
-            self.request_redraw();
+            self.context_mark_paint();
         }
         refresh_requested || hover_visual_changed
     }
@@ -2992,7 +2996,7 @@ impl HydrolysisRenderer {
             // reactive graph: the retained tree must re-encode at the
             // new offset (scene, hit-test geometry, accessibility),
             // but its placements are unchanged — no layout.
-            self.request_refresh();
+            self.context_mark_layout();
             self.dismiss_active_text_context_menu();
             // A scroll inside the context-menu presentation — its
             // drawn menu or its accessory — belongs to it and does
@@ -3089,7 +3093,7 @@ impl HydrolysisRenderer {
                 drag.last = point;
                 self.hit_test.touch_scroll = TouchScrollGesture::Dragging(drag);
                 if changed {
-                    self.request_refresh();
+                    self.context_mark_layout();
                 }
                 true
             }
@@ -3144,7 +3148,7 @@ impl HydrolysisRenderer {
                     tracker: pending.tracker,
                 });
                 if changed {
-                    self.request_refresh();
+                    self.context_mark_layout();
                 }
                 true
             }
@@ -3878,7 +3882,7 @@ impl SemanticCore {
     /// dragged, so ending one schedules a re-encode to restore it.
     fn clear_scrollbar_drag(&mut self) {
         if self.hit_test.active_scrollbar_drag.take().is_some() {
-            self.request_refresh();
+            self.context_mark_layout();
         }
     }
 
@@ -3981,10 +3985,17 @@ impl SemanticCore {
         }
         let bounds = self.hit_test.clip_hit_bounds(bounds);
         let order = self.hit_test.next_hit_test_order();
+        // The registering node's cell — this call runs inside the scroll
+        // node's record under its reader, so `reader_cell()` is the owner a
+        // smoothed scroll tick marks.
+        let owner = self
+            .reader_cell()
+            .map_or_else(Weak::new, |cell| Rc::downgrade(&cell));
         self.hit_test.scroll_targets.push(ScrollTarget {
             bounds,
             action: Rc::new(RefCell::new(action)),
             handle,
+            owner,
             depth: self.render_depth,
             order,
         });
@@ -3999,7 +4010,11 @@ impl SemanticCore {
     pub(crate) fn tick_smooth_scrolls(&mut self, now: Instant) -> bool {
         let mut active = false;
         for target in &self.hit_test.scroll_targets {
-            active |= target.handle.tick_smooth_scroll(now);
+            let ticked = target.handle.tick_smooth_scroll(now);
+            if ticked && let Some(cell) = target.owner.upgrade() {
+                cell.mark(crate::renderer::Dirty::PAINT);
+            }
+            active |= ticked;
         }
         active
     }
