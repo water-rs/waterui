@@ -24,6 +24,7 @@ use core::num::NonZeroU64;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 
+use crate::main_queue_owned::{Shared, shared};
 use cocoa_ui::avkit::{
     ItemStatus, LoadGuard, MediaCharacteristic, PipEvent, Player, PlayerItem, PlayerLayerView,
     PlayerView, TimeControlStatus, VideoGravity, media_option_is_forced, media_option_label,
@@ -32,7 +33,6 @@ use cocoa_ui::avkit::{
 };
 use cocoa_ui::objc2_av_foundation::{AVAssetVariant, AVMediaSelectionGroup};
 use cocoa_ui::{MainThreadMarker, Retained, Size as CocoaSize, main_queue};
-use dispatch2::MainThreadBound;
 use waterkit_audio::{
     MediaCommand, MediaMetadata as SessionMetadata, MediaSession, PlaybackState as SessionState,
     PlaybackStatus as SessionStatus, QueueNavigationControls,
@@ -1056,7 +1056,10 @@ impl State {
                 Ok(session) => {
                     let receiver = session.command_receiver();
                     let alive = self.session.pump_alive.clone();
-                    let bound = Arc::new(MainThreadBound::new(self.weak.clone(), self.mtm));
+                    // The pump thread holds the only handle — its last
+                    // drop lands off-main, so the weak must release
+                    // through the queue, not `exec_sync` (#1776).
+                    let bound = shared(self.weak.clone(), self.mtm);
                     if std::thread::Builder::new()
                         .name("video-media-commands".into())
                         .spawn(move || pump_media_commands(receiver, bound, alive))
@@ -1200,7 +1203,7 @@ impl State {
 #[allow(clippy::needless_pass_by_value)]
 fn pump_media_commands(
     receiver: async_channel::Receiver<MediaCommand>,
-    bound: Arc<MainThreadBound<Weak<RefCell<State>>>>,
+    bound: Shared<Weak<RefCell<State>>>,
     alive: Arc<AtomicBool>,
 ) {
     while alive.load(Ordering::Acquire) {
