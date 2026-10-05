@@ -105,9 +105,10 @@ pub enum Item {
     },
     /// Start a fresh transparent scratch layer. The level stores
     /// premultiplied pixels in `space`: the isolate's declared
-    /// `blend_space` when it composites semantically, or the enclosing
-    /// level's space when it is clip-only — a transparent level shares
-    /// the space it merges back into.
+    /// `blend_space` when it composites in isolation — semantically
+    /// isolated or translucent — or the enclosing level's space when it
+    /// is pass-through: a pass-through level shares the space it merges
+    /// back into.
     PushIsolate {
         /// The level's storage space.
         space: cherenkov::BlendSpace,
@@ -144,9 +145,10 @@ pub enum Item {
         clip: Option<ClipRef>,
     },
     /// Capture the rows a backdrop group's members can sample: flatten
-    /// the trailing `flatten` clip-only isolation levels over the nearest
-    /// semantic level's contents and run the group's chain on the copy.
-    /// Boxed: a capture is rare and large — it must not grow `Item`.
+    /// the trailing `flatten` looked-through isolation levels —
+    /// pass-through and translucent alike — over the nearest semantic
+    /// level's contents and run the group's chain on the copy. Boxed: a
+    /// capture is rare and large — it must not grow `Item`.
     Capture(Box<CaptureItem>),
     /// Composite a projective layer's local image, projected into this
     /// raster through the anisotropic filter. Boxed: rare and large.
@@ -198,8 +200,9 @@ pub struct CaptureItem {
     pub reach: usize,
     /// The prepared chain, when the group is filtered.
     pub filter: Option<FrameFilter>,
-    /// Clip-only isolation levels on the stack flattened over the
-    /// nearest semantic level.
+    /// Looked-through isolation levels on the stack flattened over the
+    /// nearest semantic level: pass-through and `opacity < 1` levels
+    /// alike, composited as though each were at full opacity.
     pub flatten: usize,
 }
 
@@ -425,9 +428,9 @@ pub struct Lowering<'a, 'b> {
     /// content then snaps its translation to the ¼-pixel grid.
     animating: bool,
     clip: Option<ClipRef>,
-    /// Whether each open isolation level is clip-only (`true` when its
-    /// opacity is 1 and its blend is `Normal` in the linear space), in
-    /// emission order.
+    /// Whether each open isolation level is looked through by a backdrop
+    /// capture (`true` when its blend is `Normal` in the linear space —
+    /// pass-through and translucent levels alike), in emission order.
     iso_kinds: Vec<bool>,
     /// The storage space of each open isolation level, in emission
     /// order, parallel to [`Lowering::iso_kinds`].
@@ -1139,15 +1142,17 @@ impl<'a, 'b> Lowering<'a, 'b> {
         body: impl FnOnce(&mut Self) -> Result<(), RenderError>,
     ) -> Result<(), RenderError> {
         let saved = std::mem::replace(&mut self.clip, inner_clip);
-        // A non-linear-space isolate changes pixels even when fully
-        // transparent and normally blended: it is semantic, never
-        // clip-only.
-        let clip_only = opacity >= 1.0
-            && blend.0 == BlendMode::Normal
-            && blend.1 == cherenkov::BlendSpace::Linear;
-        // Members composite in the declared space; a clip-only level
-        // shares the space it merges back into.
-        let space = if clip_only {
+        // A backdrop capture looks through a level exactly when it is
+        // `Normal`-blended in the linear space: pass-through and
+        // `opacity < 1` levels alike. A non-linear-space isolate changes
+        // pixels even when fully transparent and normally blended: it
+        // stays semantic.
+        let looked_through =
+            blend.0 == BlendMode::Normal && blend.1 == cherenkov::BlendSpace::Linear;
+        // A level that composites in isolation — semantic or translucent —
+        // keeps its declared space for members to composite in; a
+        // pass-through level shares the space it merges back into.
+        let space = if opacity >= 1.0 && looked_through {
             self.iso_spaces
                 .last()
                 .copied()
@@ -1155,7 +1160,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
         } else {
             blend.1
         };
-        self.iso_kinds.push(clip_only);
+        self.iso_kinds.push(looked_through);
         self.iso_spaces.push(space);
         self.items.push(Item::PushIsolate { space });
         let result = body(self);

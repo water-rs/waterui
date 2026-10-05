@@ -1251,10 +1251,10 @@ fn apply_filter(
 
 /// Runs one backdrop group's capture for this band: copies the device
 /// rows under the chain's window of the nearest semantic level with the
-/// trailing `flatten` clip-only levels composited raw over it, resolves
-/// them onto the capture grid when the capture is reduced, applies the
-/// group's chain, and keeps the `rows.kept` texel rows for this band's
-/// samples.
+/// trailing `flatten` looked-through levels composited raw over it,
+/// resolves them onto the capture grid when the capture is reduced,
+/// applies the group's chain, and keeps the `rows.kept` texel rows for
+/// this band's samples.
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -1362,9 +1362,12 @@ fn capture_band(
 }
 
 /// Copies the device `rows × cols` of the nearest semantic level below
-/// the trailing `count` clip-only levels into `out`, composites those
-/// levels raw src-over it — the oracle's `flattened` — and returns the
-/// space it is stored in, which the clip-only levels share.
+/// the trailing `count` looked-through levels into `out` and composites
+/// those levels over it as each would pop at full opacity — the oracle's
+/// `flattened` — and returns the semantic level's space. Every
+/// looked-through level is `Normal`-blended and stored in the root's
+/// linear space (layers never sit inside an encoded group scope), so
+/// each composites source-over.
 fn flatten(
     band: &Band<'_>,
     stack: &[Plane],
@@ -1381,7 +1384,7 @@ fn flatten(
     let (w, cw) = (band.w, c1 - c0);
     let base = stack.len() - count;
     // The nearest semantic level: the framebuffer when every live level
-    // is clip-only, else the level below the flattened ones.
+    // is looked through, else the level below the flattened ones.
     let (src, space): (&[[f32; 4]], _) = if base == 0 {
         (band.fb, band.space)
     } else {
@@ -1894,7 +1897,8 @@ impl Band<'_> {
     /// Composites the popped isolation buffer onto the buffer below:
     /// the blend runs in the popped level's storage space (`src_space`),
     /// which is its declared `blend_space` for a semantic level or the
-    /// parent's for a clip-only one — members already composited in it.
+    /// parent's for a pass-through one — members already composited in
+    /// it.
     fn composite_isolate(
         &mut self,
         scratch: &[[f32; 4]],
