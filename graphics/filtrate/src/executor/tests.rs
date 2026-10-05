@@ -19,8 +19,9 @@ use crate::{
     CpuKernel, Effect, EffectContext, EffectFrameTiming, EffectInput, EffectOutput,
     EffectRenderError, EffectSetupError, Filter, FilterExt, FilterParam, Footprint, ImageVisitor,
     Interpolator, OperatingSpace, ParamArray, ParamSource, Placed, ShaderEffect, ShapeInput,
-    ShapeTextures, SpatialFilter, SpatialStage, StageCollector, WatchGuard, WorkingSpace, filters,
-    kind,
+    ShapeTextures, SpatialFilter, SpatialStage, StageCollector, WatchGuard, WorkingSpace,
+    cpu::{P3_TO_SRGB, SRGB_TO_P3, srgb_decode, srgb_encode, transform},
+    filters, kind,
 };
 
 // ============================================================================
@@ -1407,48 +1408,8 @@ fn gpu_shape_mask_reaches_the_stage() {
     );
 }
 
-/// The sRGB transfer, mirrored through zero.
-fn srgb_encode(linear: f32) -> f32 {
-    let magnitude = linear.abs();
-    let curve = if magnitude > 0.003_130_8 {
-        1.055f32.mul_add(magnitude.powf(1.0 / 2.4), -0.055)
-    } else {
-        magnitude * 12.92
-    };
-    curve.copysign(linear)
-}
-
-fn srgb_decode(encoded: f32) -> f32 {
-    let magnitude = encoded.abs();
-    let curve = if magnitude > 0.040_45 {
-        ((magnitude + 0.055) / 1.055).powf(2.4)
-    } else {
-        magnitude / 12.92
-    };
-    curve.copysign(encoded)
-}
-
-fn transform(matrix: [[f32; 3]; 3], rgb: [f32; 3]) -> [f32; 3] {
-    core::array::from_fn(|row| {
-        matrix[row][0].mul_add(
-            rgb[0],
-            matrix[row][1].mul_add(rgb[1], matrix[row][2] * rgb[2]),
-        )
-    })
-}
-
 #[test]
 fn gpu_srgb_stages_run_in_srgb() {
-    const P3_TO_SRGB: [[f32; 3]; 3] = [
-        [1.224_94, -0.224_94, 0.0],
-        [-0.042_057, 1.042_057, 0.0],
-        [-0.019_637_6, -0.078_636, 1.098_274],
-    ];
-    const SRGB_TO_P3: [[f32; 3]; 3] = [
-        [0.822_462, 0.177_538, 0.0],
-        [0.033_194_2, 0.966_805_8, 0.0],
-        [0.017_082_6, 0.072_397_4, 0.910_519_9],
-    ];
     let gpu = create_test_device();
     let size = (16, 4);
     let rgba = test_pixels(size.0 * size.1);
@@ -1457,9 +1418,9 @@ fn gpu_srgb_stages_run_in_srgb() {
         .chunks(4)
         .flat_map(|texel| {
             let linear = core::array::from_fn(|i| from_unorm(texel[i]));
-            let encoded = transform(P3_TO_SRGB, linear).map(srgb_encode);
+            let encoded = transform(&P3_TO_SRGB, linear).map(srgb_encode);
             let inverted = encoded.map(|value| 1.0 - value);
-            let [r, g, b] = transform(SRGB_TO_P3, inverted.map(srgb_decode)).map(to_unorm);
+            let [r, g, b] = transform(&SRGB_TO_P3, inverted.map(srgb_decode)).map(to_unorm);
             [r, g, b, 255]
         })
         .collect();
