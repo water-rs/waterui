@@ -23,9 +23,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     window = UIWindow(frame: UIScreen.main.bounds)
 
-    // Launch arguments `-bench-workload W2 -bench-drive swipe` land in
-    // NSUserDefaults' NSArgumentDomain. Missing or unrecognized workload
-    // traps — a wrong page must fail, never silently measure W1.
+    // Launch argument `-bench-workload W2` lands in NSUserDefaults'
+    // NSArgumentDomain. Missing or unrecognized workload traps — a wrong
+    // page must fail, never silently measure W1. Scrolling is the
+    // runner's OS-level input; no drive argument exists anymore.
     let rawWorkload = UserDefaults.standard.string(forKey: "bench-workload")
     guard let workload = rawWorkload,
       ["W1", "W2", "W3", "W4", "W5", "W6"].contains(workload)
@@ -34,10 +35,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         "missing or unrecognized -bench-workload launch argument "
           + "(got \(rawWorkload ?? "nil")); expected W1..=W6")
     }
-    let rawDrive = UserDefaults.standard.string(forKey: "bench-drive") ?? "swipe"
-    guard rawDrive == "swipe" || rawDrive == "auto" else {
-      fatalError("unrecognized -bench-drive value \(rawDrive); expected swipe|auto")
-    }
 
     // The runner waits for `dev.bench.ready.<bundle-id>.<W>` to confirm
     // this argument arrived — a deep AX query on the 10k-row feed stalls
@@ -45,8 +42,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     notify_post("dev.bench.ready.\(Bundle.main.bundleIdentifier ?? "unknown").\(workload)")
 
     let initialProps: [String: Any] = [
-      "workload": workload,
-      "drive": rawDrive,
+      "workload": workload
     ]
 
     factory.startReactNative(

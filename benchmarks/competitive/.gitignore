@@ -1,0 +1,6 @@
+# Suite-local run state: toolchain cache, generated scripts, results.
+.cache/
+out/
+tools/
+__pycache__/
+*.pyc

@@ -1,8 +1,6 @@
 // Competitive benchmark — Electron renderer, workloads W1–W4.
 // Same constants and animation program as every other contestant.
 
-const { ipcRenderer } = require('electron');
-
 const params = new URLSearchParams(location.search);
 const WORKLOAD = params.get('workload');
 // The main process traps on missing/unrecognized args before the window
@@ -13,23 +11,21 @@ if (!['W1', 'W2', 'W3', 'W4'].includes(WORKLOAD)) {
       `(got ${WORKLOAD ?? 'null'}); expected W1|W2|W3|W4`,
   );
 }
-const AUTO_DRIVE = params.get('drive') === 'auto';
-
 const ROW_COLORS = [
   '#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899',
 ];
 
 const PARAGRAPHS = [
-  'The quick brown fox jumps over the lazy dog. 。🦊🐶 Packing my box with five dozen liquor jugs.',
-  'WaterUI renders native widgets from a single Rust view tree. 。🌊 Fine-grained reactivity updates only the widgets that read the value.',
-  'Almost all programming can be viewed as state management. ，。📚 Signals flow through the graph and wake the views that observe them.',
-  'Sphinx of black quartz, judge my vow. のテキストもぜます。🗻 Typography is the visual component of the written word.',
-  'How vexingly quick daft zebras jump! ，。🦓 The first principle is that you must not fool yourself.',
-  'Bright vixens jump; dozy fowl quack. ，。🐦 Rendering pipelines measure progress in milliseconds per frame.',
-  '。Benchmarks that are honest make optimisation honest. 📏',
-  'Two driven jocks help fax my big quiz. ，。🌲 Lazily built lists keep memory flat while content grows without bound.',
-  'The five boxing wizards jump quickly. ，。🧙 Every frame has a budget of 8.33 milliseconds at 120 Hz.',
-  'Jackdaws love my big sphinx of quartz. ，。🐦‍⬛ Measure, then optimise; never optimise on faith alone.',
+  'The quick brown fox jumps over the lazy dog. 敏捷的棕色狐狸跳過懶惰的狗。🦊🐶 Packing my box with five dozen liquor jugs.',
+  'WaterUI renders native widgets from a single Rust view tree. 水のインターフェースはネイティブウィジェットを描画する。🌊',
+  'Almost all programming can be viewed as state management. 几乎所有的编程都可以视为状态管理。📚 Signals flow through the graph.',
+  'Sphinx of black quartz, judge my vow. 黒い水晶のスフィンクス、私の誓いを裁け。🗻 Typography is the visual component of the written word.',
+  'How vexingly quick daft zebras jump! 빠른 얼룩말이 얼마나 성가시게 뛰는가! 🦓 The first principle is that you must not fool yourself.',
+  'Bright vixens jump; dozy fowl quack. 밝은 여우가 뛰고 졸린 새가 꽥꽥 운다. 🐦 Rendering pipelines measure progress in milliseconds per frame.',
+  'ベンチマークが正直であれば最適化も正直になる。Benchmarks that are honest make optimisation honest. 📏',
+  'Two driven jocks help fax my big quiz. 두 명의 조키가 내 큰 퀴즈를 팩스로 보내는 것을 돕는다. 🌲 Lazily built lists keep memory flat.',
+  'The five boxing wizards jump quickly. 五個拳擊巫師跳得很快。🧙 Every frame has a budget of 8.33 milliseconds at 120 Hz.',
+  'Jackdaws love my big sphinx of quartz. 寒鸦喜欢我巨大的石英斯芬克斯。🐦‍⬛ Measure, then optimise; never optimise on faith alone.',
 ];
 
 const timestamp = i =>
@@ -61,67 +57,6 @@ function renderHello(root) {
   });
 }
 
-// MARK: - Scroll self-drive (identical fling program on every platform)
-
-// `auto` drive affordance: the runner's dev.bench.begin Darwin post is
-// relayed by the main process over the 'bench-begin' IPC (a DOM button
-// can't be tapped — the AX query is exactly what stalls past the test
-// cap). ack/done go back over IPC for main to post as Darwin tokens.
-function autoDriveListen(runProgram) {
-  let running = false;
-  ipcRenderer.on('bench-begin', () => {
-    if (running) return;
-    running = true;
-    ipcRenderer.send('bench-ack');
-    runProgram(() => {
-      running = false;
-      ipcRenderer.send('bench-done');
-    });
-  });
-  ipcRenderer.send('bench-armed');
-}
-
-function markDone(root) {
-  const el = document.createElement('div');
-  el.id = 'bench-done';
-  el.style.cssText = 'position:fixed;top:8px;right:8px;width:1px;height:1px';
-  root.appendChild(el);
-}
-
-function driveFling(el, onDone, retries) {
-  const max = el.scrollHeight - el.clientHeight;
-  if (max <= 0) {
-    // Layout may still be settling when `begin` lands right after load —
-    // retry briefly rather than reporting a finished program.
-    if ((retries || 0) < 50) {
-      setTimeout(() => driveFling(el, onDone, (retries || 0) + 1), 300);
-      return;
-    }
-    onDone();
-    return;
-  }
-  const steps = [1, 2, 3, 4, 5, 6, 7, 8, 6, 3, 0].map(s => (max * s) / 8);
-  let idx = 0;
-  const runStep = () => {
-    if (idx >= steps.length) {
-      onDone();
-      return;
-    }
-    const from = el.scrollTop;
-    const to = steps[idx++];
-    const t0 = performance.now();
-    const tick = now => {
-      const t = Math.min((now - t0) / 900, 1);
-      const e = 1 - Math.pow(1 - t, 3); // easeOutCubic
-      el.scrollTop = from + (to - from) * e;
-      if (t < 1) requestAnimationFrame(tick);
-      else setTimeout(runStep, 250);
-    };
-    requestAnimationFrame(tick);
-  };
-  setTimeout(runStep, 1000);
-}
-
 // MARK: - W2 Feed
 
 function renderFeed(root) {
@@ -131,7 +66,7 @@ function renderFeed(root) {
   // gives real scroll geometry while only the visible rows (+overscan)
   // exist as elements. Row nodes are pooled and recycled like
   // UITableView's dequeueReusableCell.
-  const ROW_H = 48, COUNT = 10000, OVERSCAN = 6;
+  const ROW_H = 60, COUNT = 10000, OVERSCAN = 6;
   const inner = document.createElement('div');
   inner.className = 'vscroll';
   inner.style.height = `${COUNT * ROW_H}px`;
@@ -169,11 +104,6 @@ function renderFeed(root) {
   };
   feed.addEventListener('scroll', render);
   render();
-  if (AUTO_DRIVE) {
-    autoDriveListen(onDone =>
-      driveFling(feed, () => { markDone(root); onDone(); }),
-    );
-  }
 }
 
 // MARK: - W3 Motion
@@ -189,7 +119,6 @@ function renderMotion(root) {
     const init = makeXorShift(
       0xd1b54a32d192ed03n ^ BigInt(i) * 0x2545f4914f6cdd1dn,
     );
-    init();
     const rng = makeXorShift(
       0x9e3779b97f4a7c15n ^ BigInt(i) * 0xbf58476d1ce4e5b9n,
     );
@@ -236,7 +165,9 @@ function renderMotion(root) {
         step();
       };
     };
-    setTimeout(step, duration);
+    // Retarget at t=0 (first draw eases init pose → first target), then
+    // again each time this rect's own animation completes.
+    step();
   }
 }
 
@@ -250,11 +181,6 @@ function renderText(root) {
     html.push(`<div class="paragraph">${PARAGRAPHS[i % PARAGRAPHS.length]}</div>`);
   }
   sc.innerHTML = html.join('');
-  if (AUTO_DRIVE) {
-    autoDriveListen(onDone =>
-      driveFling(sc, () => { markDone(root); onDone(); }),
-    );
-  }
 }
 
 // MARK: - Root
@@ -262,8 +188,7 @@ function renderText(root) {
 const root = document.getElementById('root');
 // Workload identity for the accessibility tree — as a data attribute and
 // aria-label, NOT the id: renaming the element would unmatch the
-// `#root{height:100%}` rule and unbound the scrollers (scrollHeight ==
-// clientHeight → driveFling measures max=0 and finishes instantly).
+// `#root{height:100%}` rule and unbound the scrollers.
 root.setAttribute('data-workload', WORKLOAD);
 root.setAttribute('role', 'main');
 root.setAttribute('aria-label', `workload ${WORKLOAD}`);

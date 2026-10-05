@@ -1,13 +1,16 @@
-// Competitive benchmark — React Native contestant, workloads W1–W6.
-// Workload and drive mode arrive as initial props from the native side,
-// which reads `-bench-workload`/`-bench-drive` launch arguments from
-// NSUserDefaults' NSArgumentDomain (identical on iOS and macOS).
+// Competitive benchmark — React Native contestant, workloads W1–W6, per
+// benchmarks/competitive/WORKLOADS.md. The workload (and capacity `step`
+// on Android/desktop) arrive as initial props from the native side, which
+// reads `-bench-workload` launch arguments from NSUserDefaults'
+// NSArgumentDomain (Apple) or intent extras (Android). Scrolling is driven
+// from outside the app by OS-level input — the app never scrolls itself.
 
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Animated,
   Easing,
   NativeModules,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -19,16 +22,16 @@ const ROW_COLORS = [
 ];
 
 const PARAGRAPHS = [
-  'The quick brown fox jumps over the lazy dog. 。🦊🐶 Packing my box with five dozen liquor jugs.',
-  'WaterUI renders native widgets from a single Rust view tree. 。🌊 Fine-grained reactivity updates only the widgets that read the value.',
-  'Almost all programming can be viewed as state management. ，。📚 Signals flow through the graph and wake the views that observe them.',
-  'Sphinx of black quartz, judge my vow. のテキストもぜます。🗻 Typography is the visual component of the written word.',
-  'How vexingly quick daft zebras jump! ，。🦓 The first principle is that you must not fool yourself.',
-  'Bright vixens jump; dozy fowl quack. ，。🐦 Rendering pipelines measure progress in milliseconds per frame.',
-  '。Benchmarks that are honest make optimisation honest. 📏',
-  'Two driven jocks help fax my big quiz. ，。🌲 Lazily built lists keep memory flat while content grows without bound.',
-  'The five boxing wizards jump quickly. ，。🧙 Every frame has a budget of 8.33 milliseconds at 120 Hz.',
-  'Jackdaws love my big sphinx of quartz. ，。🐦‍⬛ Measure, then optimise; never optimise on faith alone.',
+  'The quick brown fox jumps over the lazy dog. 敏捷的棕色狐狸跳過懶惰的狗。🦊🐶 Packing my box with five dozen liquor jugs.',
+  'WaterUI renders native widgets from a single Rust view tree. 水のインターフェースはネイティブウィジェットを描画する。🌊',
+  'Almost all programming can be viewed as state management. 几乎所有的编程都可以视为状态管理。📚 Signals flow through the graph.',
+  'Sphinx of black quartz, judge my vow. 黒い水晶のスフィンクス、私の誓いを裁け。🗻 Typography is the visual component of the written word.',
+  'How vexingly quick daft zebras jump! 빠른 얼룩말이 얼마나 성가시게 뛰는가! 🦓 The first principle is that you must not fool yourself.',
+  'Bright vixens jump; dozy fowl quack. 밝은 여우가 뛰고 졸린 새가 꽥꽥 운다. 🐦 Rendering pipelines measure progress in milliseconds per frame.',
+  'ベンチマークが正直であれば最適化も正直になる。Benchmarks that are honest make optimisation honest. 📏',
+  'Two driven jocks help fax my big quiz. 두 명의 조키가 내 큰 퀴즈를 팩스로 보내는 것을 돕는다. 🌲 Lazily built lists keep memory flat.',
+  'The five boxing wizards jump quickly. 五個拳擊巫師跳得很快。🧙 Every frame has a budget of 8.33 milliseconds at 120 Hz.',
+  'Jackdaws love my big sphinx of quartz. 寒鸦喜欢我巨大的石英斯芬克斯。🐦‍⬛ Measure, then optimise; never optimise on faith alone.',
 ];
 
 const timestamp = i =>
@@ -66,98 +69,6 @@ function Hello() {
   );
 }
 
-// MARK: - Scroll self-drive (identical fling program on every platform)
-
-// `auto` mode waits for the runner's `dev.bench.begin` Darwin
-// notification inside its measure block — polled through the BenchNotify
-// native module, not AX (a timed-out AX query fails the test instead of
-// driving it) — then drives the ScrollView through the ref: 8 ease-out
-// bursts to the bottom, then 2 back to the top, each 0.9 s + 0.25 s
-// settle, and posts `dev.bench.done` when the program finishes. The
-// program never self-starts at mount.
-function useScrollDrive(enabled) {
-  const scrollRef = useRef(null);
-  const extent = useRef({ max: 0, pos: 0, viewH: 0 });
-  const [ready, setReady] = useState(false);
-  const [began, setBegan] = useState(false);
-  const beganRef = useRef(false);
-  // Re-arms after every program: XCTest may invoke the measure block more
-  // than once, so the poll keeps running and each observed post starts a
-  // fresh program. The poll is gated on `beganRef` so a post arriving
-  // mid-program stays latched for the next window instead of being lost.
-  useEffect(() => {
-    if (!enabled) return;
-    let cancelled = false;
-    const timer = setInterval(async () => {
-      if (beganRef.current) return;
-      try {
-        if (await NativeModules.BenchNotify.beginObserved()) {
-          beganRef.current = true;
-          if (!cancelled) setBegan(true);
-        }
-      } catch {}
-    }, 50);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [enabled]);
-  useEffect(() => {
-    if (!enabled || !began || !ready || extent.current.max <= 0) return;
-    const view = scrollRef.current;
-    if (!view) return;
-    const max = extent.current.max;
-    const steps = [1, 2, 3, 4, 5, 6, 7, 8, 6, 3, 0].map(s => (max * s) / 8);
-    let cancelled = false;
-    const sleep = ms => new Promise(r => setTimeout(r, ms));
-    (async () => {
-      await sleep(1000);
-      for (const v of steps) {
-        if (cancelled) return;
-        // RN's scrollTo cannot take an easing+duration; step it smoothly.
-        const from = extent.current.pos;
-        const t0 = Date.now();
-        while (!cancelled) {
-          const t = Math.min((Date.now() - t0) / 900, 1);
-          const e = 1 - Math.pow(1 - t, 3); // easeOutCubic
-          scrollY(view, from + (v - from) * e);
-          if (t >= 1) break;
-          await sleep(16);
-        }
-        await sleep(250);
-      }
-      if (!cancelled) {
-        NativeModules.BenchNotify.postDone();
-        // Drop ack-race backlog: a begin latched while the program ran is
-        // not a new window (the runner stops reposting once it sees done).
-        NativeModules.BenchNotify.discardBegins();
-        beganRef.current = false;
-        setBegan(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [enabled, began, ready]);
-  const updateMax = (contentH, viewH) => {
-    extent.current.max = Math.max(contentH - viewH, 0);
-    if (extent.current.max > 0) setReady(true);
-  };
-  return {
-    ref: scrollRef,
-    onContentSizeChange: (w, h) => updateMax(h, extent.current.viewH),
-    onLayout: e => {
-      extent.current.viewH = e.nativeEvent.layout.height;
-      updateMax(extent.current.contentH ?? 0, extent.current.viewH);
-    },
-    onScroll: e => {
-      extent.current.pos = e.nativeEvent.contentOffset.y;
-      extent.current.contentH = e.nativeEvent.contentSize.height;
-    },
-    scrollEventThrottle: 16,
-  };
-}
-
 // MARK: - W2 Feed
 
 const FEED_ROWS = Array.from({ length: 10_000 }, (_, i) => i);
@@ -165,7 +76,7 @@ const FEED_ROWS = Array.from({ length: 10_000 }, (_, i) => i);
 // A FlatList is the idiomatic RN feed: it virtualizes rows like the
 // UITableView/UICollectionView in the native contestants, instead of
 // mounting all 10k rows into a ScrollView at once.
-const FeedRow = React.memo(function FeedRow({ i }) {
+const FeedRow = React.memo(function FeedRow({ i, extra }) {
   return (
     <View style={styles.row}>
       <View
@@ -178,27 +89,16 @@ const FeedRow = React.memo(function FeedRow({ i }) {
             styles.rowSub
           }>{`Second line of subtitle for item ${i}`}</Text>
       </View>
+      {extra}
       <Text style={styles.rowTime}>{timestamp(i)}</Text>
     </View>
   );
 });
 
-// scrollToOffset on FlatList takes {offset}; a ScrollView ref takes {y}.
-// Same easing program either way.
-function scrollY(view, y) {
-  if (view.scrollToOffset) {
-    view.scrollToOffset({ offset: y, animated: false });
-  } else {
-    view.scrollTo({ y, animated: false });
-  }
-}
-
-function Feed({ autoDrive }) {
-  const scrollProps = useScrollDrive(autoDrive);
+function Feed() {
   return (
     <View style={styles.fill}>
       <Animated.FlatList
-        {...scrollProps}
         data={FEED_ROWS}
         renderItem={({ item }) => <FeedRow i={item} />}
         keyExtractor={i => String(i)}
@@ -211,13 +111,14 @@ function Feed({ autoDrive }) {
 // MARK: - W5/W6 Capacity ladders
 
 // Waits for one `dev.bench.begin` cycle through the native module — the
-// same handshake the scroll self-drive uses.
-function useCapacityDrive(autoDrive, runLadder) {
+// runner's Apple-side measure handshake; measurement pacing, not a scroll
+// drive (the flings themselves are the runner's OS-level input).
+function useCapacityDrive(selfPaced, runLadder) {
   const armedRef = useRef(false);
   const runRef = useRef(runLadder);
   runRef.current = runLadder;
   useEffect(() => {
-    if (!autoDrive) return;
+    if (!selfPaced) return;
     let cancelled = false;
     const sleep = ms => new Promise(r => setTimeout(r, ms));
     (async () => {
@@ -237,7 +138,7 @@ function useCapacityDrive(autoDrive, runLadder) {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoDrive]);
+  }, [selfPaced]);
 }
 
 // `step k n=<param> t=<unix>` → bench-steps.log + dev.bench.step post —
@@ -249,10 +150,12 @@ const logStep = (step, n) =>
 // 5 s per step once the runner posts `dev.bench.begin`.
 const W5_STEPS = [200, 400, 800, 1600, 3200, 6400, 12800, 25600];
 
-function MotionCapacity({ autoDrive }) {
-  const [count, setCount] = useState(W5_STEPS[0]);
+function MotionCapacity({ step }) {
+  // step pinned by the launch (Android/desktop) or self-paced ladder
+  // (Apple: begins on the runner's `dev.bench.begin` post).
+  const [count, setCount] = useState(step ?? W5_STEPS[0]);
   const sleep = ms => new Promise(r => setTimeout(r, ms));
-  useCapacityDrive(autoDrive, async () => {
+  useCapacityDrive(step == null, async () => {
     for (let i = 0; i < W5_STEPS.length; i++) {
       setCount(W5_STEPS[i]);
       logStep(i, W5_STEPS[i]);
@@ -270,89 +173,42 @@ function MotionCapacity({ autoDrive }) {
   );
 }
 
-// W6: W2's fling program over rows with `complexity` nested text+shape
-// children (1…64); two full sweeps inside each 5 s hold.
+// W6: W2's feed with `complexity` nested text+shape cells per row
+// (1…64); the runner's OS-level fling program runs during each hold.
 const W6_STEPS = [1, 2, 4, 8, 16, 32, 64];
 
-function FeedCapacity({ autoDrive }) {
-  const [complexity, setComplexity] = useState(W6_STEPS[0]);
-  const scrollRef = useRef(null);
-  const extent = useRef({ max: 0, pos: 0 });
+function FeedCapacity({ step }) {
+  const [complexity, setComplexity] = useState(step ?? W6_STEPS[0]);
   const sleep = ms => new Promise(r => setTimeout(r, ms));
-  const sweep = async to => {
-    const view = scrollRef.current;
-    if (!view) return;
-    const from = extent.current.pos;
-    const t0 = Date.now();
-    while (true) {
-      const t = Math.min((Date.now() - t0) / 900, 1);
-      const e = 1 - Math.pow(1 - t, 3);
-      scrollY(view, from + (to - from) * e);
-      if (t >= 1) break;
-      await sleep(16);
-    }
-    await sleep(100);
-  };
-  useCapacityDrive(autoDrive, async () => {
+  useCapacityDrive(step == null, async () => {
     for (let i = 0; i < W6_STEPS.length; i++) {
       setComplexity(W6_STEPS[i]);
       logStep(i, W6_STEPS[i]);
-      await sleep(1000);
-      for (let k = 0; k < 2; k++) {
-        await sweep(extent.current.max);
-        await sweep(0);
-      }
+      // settle 1 s + hold 4 s; the runner drives the flings.
+      await sleep(5000);
     }
   });
   return (
     <View style={styles.fill}>
       <Animated.FlatList
-        ref={scrollRef}
         style={styles.fill}
         data={FEED_ROWS}
         extraData={complexity}
         keyExtractor={i => String(i)}
-        onContentSizeChange={(w, h) => {
-          extent.current.max = Math.max(
-            h - (extent.current.viewH ?? 0), 0);
-        }}
-        onLayout={e => {
-          extent.current.viewH = e.nativeEvent.layout.height;
-        }}
-        onScroll={e => {
-          extent.current.pos = e.nativeEvent.contentOffset.y;
-          extent.current.max = Math.max(
-            e.nativeEvent.contentSize.height -
-              e.nativeEvent.layoutMeasurement.height, 0);
-        }}
-        scrollEventThrottle={16}
         renderItem={({ item: i }) => (
-          <View style={styles.row}>
-            <View
-              style={[styles.avatar, { backgroundColor: ROW_COLORS[i % 6] }]}
-            />
-            <View style={{ flex: 1, marginLeft: 12 }}>
-              <Text style={styles.rowTitle}>{`Row title ${i}`}</Text>
-              <Text
-                style={
-                  styles.rowSub
-                }>{`Second line of subtitle for item ${i}`}</Text>
+          <FeedRow i={i} extra={Array.from({ length: complexity }, (_, j) => (
+            <View key={j} style={{ alignItems: 'center', marginLeft: 4 }}>
+              <View
+                style={{
+                  width: 14,
+                  height: 14,
+                  borderRadius: 4,
+                  backgroundColor: ROW_COLORS[(i + j) % 6],
+                }}
+              />
+              <Text style={{ fontSize: 12, color: '#666' }}>{`c${j}`}</Text>
             </View>
-            {Array.from({ length: complexity }, (_, j) => (
-              <View key={j} style={{ alignItems: 'center', marginLeft: 4 }}>
-                <View
-                  style={{
-                    width: 14,
-                    height: 14,
-                    borderRadius: 4,
-                    backgroundColor: ROW_COLORS[(i + j) % 6],
-                  }}
-                />
-                <Text style={{ fontSize: 9, color: '#666' }}>{`c${j}`}</Text>
-              </View>
-            ))}
-            <Text style={styles.rowTime}>{timestamp(i)}</Text>
-          </View>
+          ))} />
         )}
       />
     </View>
@@ -374,7 +230,6 @@ function MotionRect({ index }) {
     const init = makeXorShift(
       0xd1b54a32d192ed03n ^ BigInt(index) * 0x2545f4914f6cdd1dn,
     );
-    init();
     const rng = makeXorShift(
       0x9e3779b97f4a7c15n ^ BigInt(index) * 0xbf58476d1ce4e5b9n,
     );
@@ -417,10 +272,11 @@ function MotionRect({ index }) {
         if (finished && alive) step();
       });
     };
-    const t = setTimeout(step, duration);
+    // Retarget at t=0 (the first draw eases init pose → first target),
+    // then again each time this rect's own animation completes.
+    step();
     return () => {
       alive = false;
-      clearTimeout(t);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -483,11 +339,11 @@ function Motion() {
 
 // MARK: - W4 Text
 
-function TextBench({ autoDrive }) {
-  const scrollProps = useScrollDrive(autoDrive);
+// All 50 paragraphs mount eagerly — layout cost is part of the measure.
+function TextBench() {
   return (
     <View style={styles.fill}>
-      <Animated.ScrollView {...scrollProps} style={styles.fill}>
+      <Animated.ScrollView style={styles.fill}>
         {Array.from({ length: 50 }, (_, i) => (
           <Text key={i} style={styles.paragraph}>
             {PARAGRAPHS[i % PARAGRAPHS.length]}
@@ -500,7 +356,10 @@ function TextBench({ autoDrive }) {
 
 // MARK: - Root
 
-export default function App({ workload, drive }) {
+export default function App({ workload: rawWorkload, step }) {
+  // Legs deliver the id case-insensitively (`-bench-workload W2` on
+  // Apple, `--es workload w2` on Android) — normalize before matching.
+  const workload = (rawWorkload ?? '').toUpperCase();
   // The native side traps on a missing/unrecognized -bench-workload; this
   // guard keeps the same contract if JS ever runs without it.
   if (!['W1', 'W2', 'W3', 'W4', 'W5', 'W6'].includes(workload)) {
@@ -509,23 +368,38 @@ export default function App({ workload, drive }) {
         `(got ${workload ?? 'null'}); expected W1..=W6`,
     );
   }
-  if (!['swipe', 'auto'].includes(drive)) {
-    throw new Error(
-      `unrecognized -bench-drive value ${drive}; expected swipe|auto`,
-    );
+  // W5/W6: a `step` prop pins one ladder step per launch; without one only
+  // the Apple self-paced ladder is valid — every other leg must pass it.
+  const ladder = workload === 'W5' ? W5_STEPS : W6_STEPS;
+  if (workload === 'W5' || workload === 'W6') {
+    if (step != null && !ladder.includes(step)) {
+      throw new Error(
+        `unrecognized -bench-step value ${step} for ${workload}; ` +
+          `expected one of ${ladder}`,
+      );
+    }
+    if (
+      step == null &&
+      Platform.OS !== 'ios' &&
+      Platform.OS !== 'macos'
+    ) {
+      throw new Error(
+        `${workload} requires -bench-step (or BENCH_STEP); this leg ` +
+          'measures one ladder step per launch',
+      );
+    }
   }
-  const autoDrive = drive === 'auto';
   const page =
     workload === 'W2' ? (
-      <Feed autoDrive={autoDrive} />
+      <Feed />
     ) : workload === 'W3' ? (
       <Motion />
     ) : workload === 'W4' ? (
-      <TextBench autoDrive={autoDrive} />
+      <TextBench />
     ) : workload === 'W5' ? (
-      <MotionCapacity autoDrive={autoDrive} />
+      <MotionCapacity step={step} />
     ) : workload === 'W6' ? (
-      <FeedCapacity autoDrive={autoDrive} />
+      <FeedCapacity step={step} />
     ) : (
       <Hello />
     );
@@ -560,12 +434,17 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 16,
-    paddingVertical: 4,
+    paddingVertical: 10,
   },
   avatar: { width: 40, height: 40, borderRadius: 20 },
   rowTitle: { fontSize: 16, color: '#111' },
   rowSub: { fontSize: 13, color: '#666' },
   rowTime: { fontSize: 13, color: '#666', marginLeft: 12 },
   rect: { position: 'absolute', left: 0, top: 0, width: RECT, height: RECT },
-  paragraph: { paddingHorizontal: 16, paddingVertical: 6, fontSize: 17 },
+  paragraph: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    marginBottom: 6,
+    fontSize: 16,
+  },
 });

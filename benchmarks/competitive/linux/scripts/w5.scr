@@ -1,3 +1,0 @@
-# W5 Capacity — no input; the scene appends 4000 dense paths over ~5 s
-# (outgrowing the initial vello bump-buffer pool, exercising
-# grow-on-overflow mid-run) and keeps animating after it is full.

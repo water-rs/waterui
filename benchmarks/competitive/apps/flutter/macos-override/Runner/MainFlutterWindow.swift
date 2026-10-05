@@ -13,10 +13,6 @@ class MainFlutterWindow: NSWindow {
         "missing or unrecognized -bench-workload launch argument "
           + "(got \(rawWorkload ?? "nil")); expected W1..=W6")
     }
-    let rawDrive = UserDefaults.standard.string(forKey: "bench-drive") ?? "swipe"
-    guard rawDrive == "swipe" || rawDrive == "auto" else {
-      fatalError("unrecognized -bench-drive value \(rawDrive); expected swipe|auto")
-    }
 
     // The runner waits for `dev.bench.ready.<bundle-id>.<W>` to confirm
     // this argument arrived — a deep AX query on the 10k-row feed stalls

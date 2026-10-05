@@ -9,22 +9,17 @@
 - (void)applicationDidFinishLaunching:(NSNotification *)notification
 {
   self.moduleName = @"RnBench";
-  // Launch arguments `-bench-workload W2 -bench-drive swipe` land in
-  // NSUserDefaults' NSArgumentDomain. Missing or unrecognized workload
-  // traps — a wrong page must fail, never silently measure W1.
+  // Launch argument `-bench-workload W2` lands in NSUserDefaults'
+  // NSArgumentDomain. Missing or unrecognized workload traps — a wrong
+  // page must fail, never silently measure W1. Scrolling is the runner's
+  // OS-level input; no drive argument exists anymore.
   NSString *workload = [[NSUserDefaults standardUserDefaults] stringForKey:@"bench-workload"];
   if (workload == nil ||
-      ![@[@"W1", @"W2", @"W3", @"W4"] containsObject:workload]) {
+      ![@[@"W1", @"W2", @"W3", @"W4", @"W5", @"W6"] containsObject:workload]) {
     fprintf(stderr,
             "missing or unrecognized -bench-workload launch argument "
-            "(got %s); expected W1|W2|W3|W4\n",
+            "(got %s); expected W1..=W6\n",
             workload ? workload.UTF8String : "nil");
-    abort();
-  }
-  NSString *drive = [[NSUserDefaults standardUserDefaults] stringForKey:@"bench-drive"] ?: @"swipe";
-  if (![drive isEqualToString:@"swipe"] && ![drive isEqualToString:@"auto"]) {
-    fprintf(stderr, "unrecognized -bench-drive value %s; expected swipe|auto\n",
-            drive.UTF8String);
     abort();
   }
   // The runner waits for `dev.bench.ready.<bundle-id>.<W>` to confirm the
@@ -35,7 +30,7 @@
                         bid, workload]
                   .UTF8String);
 
-  self.initialProps = @{@"workload": workload, @"drive": drive};
+  self.initialProps = @{@"workload": workload};
 
   // The runner asserts this accessibility identifier after launch; retry
   // until a window's content view exists.

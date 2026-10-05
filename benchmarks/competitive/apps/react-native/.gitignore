@@ -74,3 +74,21 @@ yarn-error.log
 !.yarn/sdks
 !.yarn/versions
 /android/
+
+# Generated at build by the pinned RN `init` (toolchain.ensure_rn_template)
+# — committed authored files only
+/index.js
+/app.json
+/babel.config.js
+/metro.config.js
+/jest.config.js
+/tsconfig.json
+/Gemfile
+/Gemfile.lock
+/.bundle/
+/.watchmanconfig
+/.eslintrc.js
+/.prettierrc.js
+/README.md
+/__tests__/
+/.bench-generator

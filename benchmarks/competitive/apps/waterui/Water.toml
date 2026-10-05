@@ -1,4 +1,4 @@
-waterui_path = "../../.."
+waterui_path = "../../../.."
 
 [package]
 name = "WaterUI Bench"

@@ -59,8 +59,12 @@ def host_target() -> str:
     if sys.platform.startswith("win"):
         return f"{machine.replace('amd64', 'x86_64')}-pc-windows-msvc"
     if sys.platform == "darwin":
-        arch = "aarch64" if machine in ("arm64", "aarch64") else "x86_64"
-        return f"{arch}-apple-darwin"
+        if machine not in ("arm64", "aarch64"):
+            raise RuntimeError(
+                f"unsupported target: Intel macOS "
+                f"({machine}-apple-darwin) is retired — Apple support "
+                "is ARM64-only")
+        return "aarch64-apple-darwin"
     return f"{machine.replace('amd64', 'x86_64')}-unknown-linux-gnu"
 
 
@@ -103,30 +107,121 @@ def _parse_version_tuple(text: str) -> tuple[int, ...] | None:
     return tuple(int(p) for p in m.group(1).split(".")) if m else None
 
 
-def require_version(name: str, cmd: list[str], expect: str,
+# Generated-but-uncommitted RN app files: the community CLI `init` template
+# files the committed app does not keep. The sha256 over
+# relpath+content-sha256 of exactly this set is the template lock —
+# re-resolution to different content fails loudly (M4).
+_RN_TEMPLATE_SKIP_DIRS = {".git", "android", "ios", "node_modules"}
+_RN_TEMPLATE_SKIP_FILES = {"App.tsx", "package.json", "package-lock.json"}
+
+
+def rn_template_digest(gen: Path) -> tuple[str, list[str]]:
+    """sha256 over relpath+content of the generated RN template files the
+    app dir materializes (root files minus the authored set)."""
+    gen = Path(gen)
+    files = []
+    digest = hashlib.sha256()
+    for f in sorted(gen.rglob("*")):
+        rel = f.relative_to(gen)
+        if rel.parts[0] in _RN_TEMPLATE_SKIP_DIRS \
+                or str(rel) in _RN_TEMPLATE_SKIP_FILES or not f.is_file():
+            continue
+        files.append(str(rel))
+        digest.update(str(rel).encode() + b"\0"
+                      + hashlib.sha256(f.read_bytes()).digest())
+    return digest.hexdigest(), files
+
+
+def generate_rn_template(cli_version: str, rn_version: str,
+                         work_dir: Path, env: dict | None = None,
+                         run=None) -> Path:
+    """Run the pinned `@react-native-community/cli init` in `work_dir` and
+    return the generated app dir."""
+    r = (run or _run)(
+        ["npx", f"@react-native-community/cli@{cli_version}", "init",
+         "RnBench", "--version", rn_version, "--skip-install",
+         "--directory", str(Path(work_dir) / "RnBench")], cwd=work_dir,
+        env=env)
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"react-native init failed ({r.returncode}): "
+            f"{(r.stderr or r.stdout).strip()[-500:]}")
+    return Path(work_dir) / "RnBench"
+
+
+def ensure_rn_template(app_dir: Path, cli_version: str, rn_version: str,
+                       template_sha256: str, env: dict | None = None,
+                       run=None):
+    """Materialize the RN `init` template files the committed app does
+    not keep (index.js, app.json, babel/metro/jest config, Gemfile…).
+
+    cli_version + rn_version + `template_sha256` pin the generator and
+    its output: a re-resolution that yields different content fails
+    loudly instead of silently changing the app. Committed authored
+    files always win — generated files only fill paths the app does not
+    already have. `.bench-generator` records the tag and the generated
+    file list; a stale tag deletes them and regenerates.
+    """
+    import tempfile
+    app_dir = Path(app_dir)
+    stamp = app_dir / ".bench-generator"
+    tag = f"rn-template {cli_version} {rn_version} {template_sha256}"
+    if stamp.exists() and stamp.read_text().splitlines()[0] == tag:
+        return
+    if stamp.exists():
+        for rel in stamp.read_text().splitlines()[1:]:
+            (app_dir / rel).unlink(missing_ok=True)
+        stamp.unlink()
+    with tempfile.TemporaryDirectory() as td:
+        gen = generate_rn_template(cli_version, rn_version, Path(td),
+                                   env=env, run=run)
+        digest, files = rn_template_digest(gen)
+        if digest != template_sha256:
+            raise RuntimeError(
+                f"RN template digest {digest} != declared "
+                f"{template_sha256} (cli {cli_version}, rn {rn_version}): "
+                "the generator re-resolved to different content")
+        written = []
+        for rel in files:
+            dst = app_dir / rel
+            if dst.exists():
+                continue  # committed authored file wins
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(gen / rel, dst)
+            written.append(rel)
+        stamp.write_text(tag + "\n" + "\n".join(written) + "\n")
+
+
+def require_version(name: str, cmd: list[str],
+                    expect: str | list[str],
                     env: dict | None = None) -> str:
-    """Run a tool's version probe; fail unless a reported version token
-    matches the declared `expect` tuple EXACTLY over the declared
-    components (major-only '21' requires a report whose major is 21;
-    '21.0.12' requires all three). Never a substring match."""
+    """Run a tool's version probe; fail unless the reported tokens
+    satisfy the declared `expect` — a single string matches one token,
+    a list requires EVERY element to match some token (e.g. both
+    'Flutter 3.35.4' and 'Dart 3.9.2' in `flutter --version`). Matching
+    is EXACT over the declared components (major-only '21' requires a
+    report whose major is 21; '21.0.12' requires all three). Never a
+    substring match."""
     out = _run(cmd, env=env)
     if out.returncode != 0:
         raise RuntimeError(
             f"{name} version probe failed ({out.returncode}): "
             f"{(out.stderr or out.stdout).strip()[:300]}")
     text = (out.stdout or "") + "\n" + (out.stderr or "")
-    want = _parse_version_tuple(expect)
-    if want is None:
-        raise RuntimeError(f"manifest {name} version pin is not a version: "
-                           f"{expect!r}")
+    wants = expect if isinstance(expect, list) else [expect]
     reported = [tuple(int(p) for p in m.group(1).split("."))
                 for m in _VERSION_TOKEN.finditer(text)]
-    for got in reported:
-        if len(got) >= len(want) and got[: len(want)] == want:
-            return text.strip()
-    raise RuntimeError(
-        f"{name} reports {reported or text.strip().splitlines()[0]!r} — "
-        f"manifest declares {expect!r}. Fix the tool or the pin.")
+    for e in wants:
+        want = _parse_version_tuple(e)
+        if want is None:
+            raise RuntimeError(
+                f"manifest {name} version pin is not a version: {e!r}")
+        if not any(len(got) >= len(want) and got[: len(want)] == want
+                   for got in reported):
+            raise RuntimeError(
+                f"{name} reports {reported or text.strip().splitlines()[0]!r} — "
+                f"manifest declares {e!r}. Fix the tool or the pin.")
+    return text.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -193,21 +288,28 @@ def _build_lock(cache_dir: Path):
     """Serialize CLI builds across concurrently running legs."""
     cache_dir.mkdir(parents=True, exist_ok=True)
     fd = os.open(cache_dir / "water-cli.lock", os.O_CREAT | os.O_RDWR)
+    locked = False
     try:
         if sys.platform.startswith("win"):
             import msvcrt
+            # LK_LOCK retries ~10 s then raises; only the held flag below
+            # unlocks — unlocking a byte never locked would raise again
+            # and mask the timeout error.
             msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+            locked = True
         else:
             import fcntl
             fcntl.flock(fd, fcntl.LOCK_EX)
+            locked = True
         yield
     finally:
         try:
-            if sys.platform.startswith("win"):
-                os.lseek(fd, 0, os.SEEK_SET)
-                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-            else:
-                fcntl.flock(fd, fcntl.LOCK_UN)
+            if locked:
+                if sys.platform.startswith("win"):
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
             os.close(fd)
 
@@ -326,24 +428,25 @@ def unzip_verified(zip_path: Path, dest_dir: Path,
 def _self_test() -> None:
     import tempfile
 
-    # require_version: exact parsed-tuple match, never substring
-    fake = tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False)
-    fake.write("#!/bin/sh\necho 'water 0.4.4'\n")
+    # require_version: exact parsed-tuple match, never substring.
+    # The fake tool is a python script invoked via sys.executable —
+    # runnable on Windows too (a #!/bin/sh script is not).
+    fake = tempfile.NamedTemporaryFile("w", suffix=".py", delete=False)
+    fake.write("print('water 0.4.4')\n")
     fake.close()
-    os.chmod(fake.name, 0o755)
-    assert "0.4.4" in require_version(
-        "water CLI", [fake.name, "--version"], "0.4.4")
+    fake_cmd = [sys.executable, fake.name, "--version"]
+    assert "0.4.4" in require_version("water CLI", fake_cmd, "0.4.4")
     # major-only pin matches the same major, exactly
-    assert require_version("java", [fake.name], "0")
+    assert require_version("java", [sys.executable, fake.name], "0")
     try:
         # 0.4.44 must NOT satisfy a 0.4.4 pin via substring
-        require_version("water CLI", [fake.name], "0.4.44")
+        require_version("water CLI", fake_cmd, "0.4.44")
     except RuntimeError as e:
         assert "manifest declares" in str(e)
     else:
         raise AssertionError("version mismatch accepted")
     try:
-        require_version("water CLI", [fake.name], "9.9.9")
+        require_version("water CLI", fake_cmd, "9.9.9")
     except RuntimeError:
         pass
     else:
@@ -357,7 +460,7 @@ def _self_test() -> None:
             self.stdout = stdout
             self.stderr = ""
 
-    head = "b" * 40
+    head = {"v": "b" * 40}
     calls = []
 
     def fake_run(cmd, env=None):
@@ -365,7 +468,7 @@ def _self_test() -> None:
         if cmd[0] == "git" and "status" in cmd:
             return Out("")
         if cmd[0] == "git" and "rev-parse" in cmd:
-            return Out(head + "\n")
+            return Out(head["v"] + "\n")
         if cmd[0] == "cargo":
             cli_root = Path(str(cmd[cmd.index("--root") + 1]))
             (cli_root / "bin").mkdir(parents=True, exist_ok=True)
@@ -386,7 +489,7 @@ def _self_test() -> None:
         assert str(root / "cli") in cargo_cmd
         # provenance stamp records head identity + binary hash
         prov = json.loads((exe.parent.parent / ".provenance").read_text())
-        assert prov["head"] == head and prov["sha256"] == sha256_file(exe)
+        assert prov["head"] == head["v"] and prov["sha256"] == sha256_file(exe)
         # second call: stamp verifies -> no rebuild (git probes still run)
         cargo_calls = lambda: [c for c in calls if c[0] == "cargo"]
         n = len(cargo_calls())
@@ -396,6 +499,39 @@ def _self_test() -> None:
         exe.write_bytes(b"tampered")
         provision_water_cli(root, Path(td) / "cache", run=fake_run)
         assert len(cargo_calls()) == n + 1
+        # a new checkout HEAD provisions a fresh root — the previous
+        # build is never reused for a different framework identity
+        head["v"] = "c" * 40
+        exe2 = provision_water_cli(root, Path(td) / "cache", run=fake_run)
+        assert exe2 != exe and exe2.exists()
+        assert len(cargo_calls()) == n + 2
+        assert "water-cli-cccccccccccc" in str(exe2)
+
+    # the suite-shared build lock serializes concurrent legs: while one
+    # holds it, another provision cannot enter the build section
+    if not sys.platform.startswith("win"):
+        import fcntl
+        import threading
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "checkout"
+            (root / "cli").mkdir(parents=True)
+            (root / "Cargo.toml").write_text('x = 1')
+            cache = Path(td) / "cache"
+            cache.mkdir()
+            lock_fd = os.open(cache / "water-cli.lock",
+                              os.O_CREAT | os.O_RDWR)
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            done = []
+            t = threading.Thread(
+                target=lambda: done.append(
+                    provision_water_cli(root, cache, run=fake_run)))
+            t.start()
+            t.join(0.5)
+            assert not done, "provision ran without the build lock"
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
+            t.join(10)
+            assert done and done[0].exists()
 
     # dirty checkout refused before any build
     def dirty_run(cmd, env=None):

@@ -7,7 +7,7 @@ import UIKit
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
-    // Launch arguments `-bench-workload W2 -bench-drive swipe` land in
+    // Launch arguments `-bench-workload W2` land in
     // NSUserDefaults' NSArgumentDomain. Missing or unrecognized workload
     // traps — a wrong page must fail, never silently measure W1.
     let rawWorkload = UserDefaults.standard.string(forKey: "bench-workload")
@@ -17,10 +17,6 @@ import UIKit
       fatalError(
         "missing or unrecognized -bench-workload launch argument "
           + "(got \(rawWorkload ?? "nil")); expected W1..=W6")
-    }
-    let rawDrive = UserDefaults.standard.string(forKey: "bench-drive") ?? "swipe"
-    guard rawDrive == "swipe" || rawDrive == "auto" else {
-      fatalError("unrecognized -bench-drive value \(rawDrive); expected swipe|auto")
     }
 
     // The runner waits for `dev.bench.ready.<bundle-id>.<W>` to confirm

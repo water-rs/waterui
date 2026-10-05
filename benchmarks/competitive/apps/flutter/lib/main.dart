@@ -1,11 +1,12 @@
-// Competitive benchmark — Flutter contestant, workloads W1–W6.
-// Workload selection: `-bench-workload W1|W2|W3|W4|W5|W6 -bench-drive swipe|auto`,
-// read through NSUserDefaults' NSArgumentDomain via the bench/config channel
-// (the native side traps on missing/unrecognized values before Dart runs).
-// `auto` runs the built-in fling program only after the runner posts the
-// `dev.bench.begin` Darwin notification inside its measure block (polled
-// through the bench/config channel; AX cannot carry the signal because a
-// timed-out AX query fails the test), and posts `dev.bench.done` at the end.
+// Competitive benchmark — Flutter contestant, workloads W1–W6, per
+// benchmarks/competitive/WORKLOADS.md. Workload selection:
+// `-bench-workload W1|W2|W3|W4|W5|W6` (and `-bench-step N` for W5/W6),
+// read through NSUserDefaults' NSArgumentDomain via the bench/config
+// channel. Scrolling is driven from outside the app by OS-level input —
+// the app never scrolls itself. On Apple the W5/W6 ladder waits for the
+// runner's `dev.bench.begin` Darwin post inside the measure block (polled
+// through bench/config; AX cannot carry the signal because a timed-out
+// AX query fails the test) and posts `dev.bench.done` at the end.
 
 import 'dart:async';
 import 'dart:io';
@@ -23,15 +24,28 @@ Future<void> main() async {
         'missing or unrecognized -bench-workload launch argument '
         '(got ${workload ?? 'null'}); expected W1..=W6');
   }
-  final drive = await _readConfig('drive') ?? 'swipe';
   final stepStr = await _readConfig('step');
   final pinnedStep = stepStr == null ? null : int.tryParse(stepStr);
-  if (drive != 'swipe' && drive != 'auto') {
-    throw StateError(
-        'unrecognized -bench-drive value $drive; expected swipe|auto');
+  if (stepStr != null && pinnedStep == null) {
+    throw StateError('malformed -bench-step value $stepStr; expected integer');
   }
-  runApp(BenchApp(
-      workload: workload!, autoDrive: drive == 'auto', pinnedStep: pinnedStep));
+  final selfPaced = Platform.isIOS || Platform.isMacOS;
+  if (const ['W5', 'W6'].contains(workload)) {
+    final ladder = workload == 'W5'
+        ? MotionCapacityPage.steps
+        : FeedCapacityPage.steps;
+    if (pinnedStep != null && !ladder.contains(pinnedStep)) {
+      throw StateError(
+          'unrecognized -bench-step value $pinnedStep for $workload; '
+          'expected one of $ladder');
+    }
+    if (pinnedStep == null && !selfPaced) {
+      throw StateError(
+          '$workload requires -bench-step (or BENCH_STEP); this leg '
+          'measures one ladder step per launch');
+    }
+  }
+  runApp(BenchApp(workload: workload!, pinnedStep: pinnedStep));
 }
 
 /// Reads a benchmark config value. On Apple targets the platform channel
@@ -52,16 +66,12 @@ Future<String?> _readConfig(String name) async {
 }
 
 class BenchApp extends StatelessWidget {
-  const BenchApp(
-      {super.key,
-      required this.workload,
-      required this.autoDrive,
-      this.pinnedStep});
+  const BenchApp({super.key, required this.workload, this.pinnedStep});
   final String workload;
-  final bool autoDrive;
 
-  /// The Android leg's capacity protocol: one launch per ladder step, the
-  /// step arriving as the `step` config value. Null = the auto ladder.
+  /// The per-launch capacity protocol: one ladder step per app start on
+  /// Android/desktop, arriving as the `step` config value. Null on Apple =
+  /// the self-paced in-app ladder driven by the bench handshake.
   final int? pinnedStep;
 
   @override
@@ -72,13 +82,11 @@ class BenchApp extends StatelessWidget {
       home: Semantics(
         identifier: 'bench-workload-$workload',
         child: switch (workload) {
-          'W2' => FeedPage(autoDrive: autoDrive),
+          'W2' => const FeedPage(),
           'W3' => const MotionPage(),
-          'W4' => TextPage(autoDrive: autoDrive),
-          'W5' => MotionCapacityPage(
-              autoDrive: autoDrive, pinnedStep: pinnedStep),
-          'W6' => FeedCapacityPage(
-              autoDrive: autoDrive, pinnedStep: pinnedStep),
+          'W4' => const TextPage(),
+          'W5' => MotionCapacityPage(pinnedStep: pinnedStep),
+          'W6' => FeedCapacityPage(pinnedStep: pinnedStep),
           _ => const HelloPage(),
         },
       ),
@@ -103,27 +111,33 @@ String timestamp(int i) =>
     '${((i ~/ 60) % 24).toString().padLeft(2, '0')}:${(i % 60).toString().padLeft(2, '0')}';
 
 const paragraphs = [
-  'The quick brown fox jumps over the lazy dog. 。🦊🐶 Packing my box with five dozen liquor jugs.',
-  'WaterUI renders native widgets from a single Rust view tree. 。🌊 Fine-grained reactivity updates only the widgets that read the value.',
-  'Almost all programming can be viewed as state management. ，。📚 Signals flow through the graph and wake the views that observe them.',
-  'Sphinx of black quartz, judge my vow. のテキストもぜます。🗻 Typography is the visual component of the written word.',
-  'How vexingly quick daft zebras jump! ，。🦓 The first principle is that you must not fool yourself.',
-  'Bright vixens jump; dozy fowl quack. ，。🐦 Rendering pipelines measure progress in milliseconds per frame.',
-  '。Benchmarks that are honest make optimisation honest. 📏',
-  'Two driven jocks help fax my big quiz. ，。🌲 Lazily built lists keep memory flat while content grows without bound.',
-  'The five boxing wizards jump quickly. ，。🧙 Every frame has a budget of 8.33 milliseconds at 120 Hz.',
-  'Jackdaws love my big sphinx of quartz. ，。🐦‍⬛ Measure, then optimise; never optimise on faith alone.',
+  'The quick brown fox jumps over the lazy dog. 敏捷的棕色狐狸跳過懶惰的狗。🦊🐶 Packing my box with five dozen liquor jugs.',
+  'WaterUI renders native widgets from a single Rust view tree. 水のインターフェースはネイティブウィジェットを描画する。🌊',
+  'Almost all programming can be viewed as state management. 几乎所有的编程都可以视为状态管理。📚 Signals flow through the graph.',
+  'Sphinx of black quartz, judge my vow. 黒い水晶のスフィンクス、私の誓いを裁け。🗻 Typography is the visual component of the written word.',
+  'How vexingly quick daft zebras jump! 빠른 얼룩말이 얼마나 성가시게 뛰는가! 🦓 The first principle is that you must not fool yourself.',
+  'Bright vixens jump; dozy fowl quack. 밝은 여우가 뛰고 졸린 새가 꽥꽥 운다. 🐦 Rendering pipelines measure progress in milliseconds per frame.',
+  'ベンチマークが正直であれば最適化も正直になる。Benchmarks that are honest make optimisation honest. 📏',
+  'Two driven jocks help fax my big quiz. 두 명의 조키가 내 큰 퀴즈를 팩스로 보내는 것을 돕는다. 🌲 Lazily built lists keep memory flat.',
+  'The five boxing wizards jump quickly. 五個拳擊巫師跳得很快。🧙 Every frame has a budget of 8.33 milliseconds at 120 Hz.',
+  'Jackdaws love my big sphinx of quartz. 寒鸦喜欢我巨大的石英斯芬克斯。🐦‍⬛ Measure, then optimise; never optimise on faith alone.',
 ];
 
-/// Deterministic PRNG so every contestant animates the same sequence.
+/// Deterministic PRNG so every contestant animates the same sequence —
+/// xorshift64 on unsigned 64-bit state (WORKLOADS.md): `>>>` is the
+/// logical shift (arithmetic `>>` sign-extends and breaks the stream) and
+/// `state` is a signed int64 holding u64 bits, so `u64 % 10000` is computed
+/// in two 32-bit halves (2^32 mod 10000 = 7296).
 class XorShift {
   int state;
   XorShift(int seed) : state = seed & 0xFFFFFFFFFFFFFFFF;
   double next() {
     state ^= (state << 13) & 0xFFFFFFFFFFFFFFFF;
-    state ^= state >> 7;
+    state ^= state >>> 7;
     state ^= (state << 17) & 0xFFFFFFFFFFFFFFFF;
-    return (state % 10000) / 10000.0;
+    final hi = state >>> 32;
+    final lo = state & 0xFFFFFFFF;
+    return ((hi % 10000) * 7296 + (lo % 10000)) % 10000 / 10000.0;
   }
 }
 
@@ -167,10 +181,10 @@ class _HelloPageState extends State<HelloPage> {
   }
 }
 
-// MARK: - Scroll self-drive (identical fling program on every platform)
+// MARK: - Apple capacity-ladder handshake (measurement pacing, not a scroll drive)
 
 /// Waits for the runner's `dev.bench.begin` post, forwarded by the native
-/// side of bench/config. The program must not start before the measure
+/// side of bench/config. The ladder must not start before the measure
 /// block signals it.
 Future<void> _awaitBegin() async {
   while (true) {
@@ -200,92 +214,61 @@ Future<void> _logStep(int step, int n) async {
   } catch (_) {}
 }
 
-/// Runs the shared fling program on each `dev.bench.begin` post — XCTest
-/// may invoke the measure block more than once, so the program re-arms
-/// after every `dev.bench.done`. Fire-and-forget from initState; the widget
-/// still runs it even after unmount (a detached controller just no-ops).
-void _autoDrive(ScrollController controller) {
-  () async {
-    while (true) {
-      await _awaitBegin();
-      await _ScrollDriver.fling(controller);
-      await _postDone();
-      // Drop ack-race backlog: a begin that latched while the fling ran is
-      // not a new window (the runner stops reposting once it sees done).
-      await _configChannel.invokeMethod('discardBegins');
-    }
-  }();
-}
-
-class _ScrollDriver {
-  static Future<void> fling(ScrollController c) async {
-    if (!c.hasClients) return;
-    final max = c.position.maxScrollExtent;
-    await Future.delayed(const Duration(seconds: 1));
-    for (var step = 1; step <= 8; step++) {
-      await c.animateTo(max * step / 8,
-          duration: const Duration(milliseconds: 900), curve: Curves.easeOut);
-      await Future.delayed(const Duration(milliseconds: 250));
-    }
-    for (var step = 6; step >= 0; step -= 3) {
-      await c.animateTo(max * step / 8,
-          duration: const Duration(milliseconds: 900), curve: Curves.easeOut);
-      await Future.delayed(const Duration(milliseconds: 250));
-    }
-  }
-}
-
 // MARK: - W2 Feed
 
+/// Row of the W2 feed — geometry, text and palette per WORKLOADS.md.
+Widget feedRow(int i, [List<Widget> extra = const []]) {
+  return Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+    child: Row(
+      children: [
+        Container(
+          width: 40, height: 40,
+          decoration: BoxDecoration(
+            color: rowColors[i % 6],
+            shape: BoxShape.circle,
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Row title $i',
+                  style: const TextStyle(fontSize: 16)),
+              Text('Second line of subtitle for item $i',
+                  style: TextStyle(
+                      fontSize: 13, color: Colors.grey.shade600)),
+            ],
+          ),
+        ),
+        ...extra,
+        Text(timestamp(i),
+            style: TextStyle(fontSize: 13, color: Colors.grey.shade600)),
+      ],
+    ),
+  );
+}
+
 class FeedPage extends StatefulWidget {
-  const FeedPage({super.key, required this.autoDrive});
-  final bool autoDrive;
+  const FeedPage({super.key});
   @override
   State<FeedPage> createState() => _FeedPageState();
 }
 
 class _FeedPageState extends State<FeedPage> {
-  final _controller = ScrollController();
   @override
   void initState() {
     super.initState();
     _ready();
-    if (widget.autoDrive) _autoDrive(_controller);
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: ListView.builder(
-        controller: _controller,
         itemCount: 10000,
-        itemBuilder: (context, i) => Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-          child: Row(
-            children: [
-              Container(
-                width: 40, height: 40,
-                decoration: BoxDecoration(
-                  color: rowColors[i % 6],
-                  shape: BoxShape.circle,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('Row title $i'),
-                    Text('Second line of subtitle for item $i',
-                        style: Theme.of(context).textTheme.bodySmall),
-                  ],
-                ),
-              ),
-              Text(timestamp(i),
-                  style: Theme.of(context).textTheme.bodySmall),
-            ],
-          ),
-        ),
+        itemBuilder: (context, i) => feedRow(i),
       ),
     );
   }
@@ -337,23 +320,38 @@ class _MotionRectState extends State<MotionRect> {
     super.initState();
     final i = widget.index;
     var initRng = XorShift(0xD1B54A32D192ED03 ^ i * 0x2545F4914F6CDD1D);
-    initRng.next();
     x = initRng.next() * (_fieldW - _rectSize);
     y = initRng.next() * (_fieldH - _rectSize);
     rot = initRng.next() * 360;
     op = 0.3 + initRng.next() * 0.7;
     _rng = XorShift(0x9E3779B97F4A7C15 ^ i * 0xBF58476D1CE4E5B9);
     _duration = Duration(milliseconds: 1200 + (i % 5) * 200);
+    // Retarget at t=0, then each time this rect's animation completes.
+    _step(init: true);
     _timer = Timer.periodic(_duration, (_) => _step());
   }
 
-  void _step() {
-    setState(() {
-      x = _rng.next() * (_fieldW - _rectSize);
-      y = _rng.next() * (_fieldH - _rectSize);
-      rot = _rng.next() * 360;
-      op = 0.3 + _rng.next() * 0.7;
-    });
+  /// Pulls the next drive-stream target. In initState the rect's fields are
+  /// assigned directly (the first build animates init pose → first target);
+  /// after that a setState retargets.
+  void _step({bool init = false}) {
+    final nx = _rng.next() * (_fieldW - _rectSize);
+    final ny = _rng.next() * (_fieldH - _rectSize);
+    final nrot = _rng.next() * 360;
+    final nop = 0.3 + _rng.next() * 0.7;
+    if (init) {
+      x = nx;
+      y = ny;
+      rot = nrot;
+      op = nop;
+    } else {
+      setState(() {
+        x = nx;
+        y = ny;
+        rot = nrot;
+        op = nop;
+      });
+    }
   }
 
   @override
@@ -395,32 +393,36 @@ class _MotionRectState extends State<MotionRect> {
 
 // MARK: - W4 Text
 
+/// W4: all 50 paragraphs laid out eagerly — layout cost is part of the
+/// measurement, so the list is not lazy.
 class TextPage extends StatefulWidget {
-  const TextPage({super.key, required this.autoDrive});
-  final bool autoDrive;
+  const TextPage({super.key});
   @override
   State<TextPage> createState() => _TextPageState();
 }
 
 class _TextPageState extends State<TextPage> {
-  final _controller = ScrollController();
   @override
   void initState() {
     super.initState();
     _ready();
-    if (widget.autoDrive) _autoDrive(_controller);
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: ListView.builder(
-        controller: _controller,
-        itemCount: 50,
-        itemBuilder: (context, i) => Padding(
-          padding:
-              const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-          child: Text(paragraphs[i % paragraphs.length]),
+      body: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            for (var i = 0; i < 50; i++)
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 16, vertical: 10),
+                child: Text(paragraphs[i % paragraphs.length],
+                    style: const TextStyle(fontSize: 16)),
+              ),
+          ],
         ),
       ),
     );
@@ -433,8 +435,7 @@ class _TextPageState extends State<TextPage> {
 /// `dev.bench.begin`, each step logs its boundary, holds 5 s, advances;
 /// `dev.bench.done` ends the program.
 class MotionCapacityPage extends StatefulWidget {
-  const MotionCapacityPage({super.key, required this.autoDrive, this.pinnedStep});
-  final bool autoDrive;
+  const MotionCapacityPage({super.key, this.pinnedStep});
   final int? pinnedStep;
   static const steps = [200, 400, 800, 1600, 3200, 6400, 12800, 25600];
   @override
@@ -448,7 +449,9 @@ class _MotionCapacityPageState extends State<MotionCapacityPage> {
   void initState() {
     super.initState();
     _ready();
-    if (widget.autoDrive && widget.pinnedStep == null) {
+    // Apple leg: the in-app ladder is driven by the begin/done handshake;
+    // other legs pin one step per launch (main() already traps if absent).
+    if (widget.pinnedStep == null) {
       () async {
         while (true) {
           await _awaitBegin();
@@ -487,9 +490,10 @@ class _MotionCapacityPageState extends State<MotionCapacityPage> {
 
 /// W2's fling program over rows whose nested text+shape child count
 /// doubles per step (1…64); two full sweeps inside each 5 s hold.
+/// W2's feed rows whose nested text+shape cell count doubles per step
+/// (1…64); the runner's OS-level fling program runs during each hold.
 class FeedCapacityPage extends StatefulWidget {
-  const FeedCapacityPage({super.key, required this.autoDrive, this.pinnedStep});
-  final bool autoDrive;
+  const FeedCapacityPage({super.key, this.pinnedStep});
   final int? pinnedStep;
   static const steps = [1, 2, 4, 8, 16, 32, 64];
   @override
@@ -497,33 +501,23 @@ class FeedCapacityPage extends StatefulWidget {
 }
 
 class _FeedCapacityPageState extends State<FeedCapacityPage> {
-  final _controller = ScrollController();
   late int _complexity = widget.pinnedStep ?? FeedCapacityPage.steps.first;
 
   @override
   void initState() {
     super.initState();
     _ready();
-    if (widget.autoDrive && widget.pinnedStep == null) {
+    // Apple leg: the in-app ladder is driven by the begin/done handshake;
+    // other legs pin one step per launch (main() already traps if absent).
+    if (widget.pinnedStep == null) {
       () async {
         while (true) {
           await _awaitBegin();
           for (var i = 0; i < FeedCapacityPage.steps.length; i++) {
             setState(() => _complexity = FeedCapacityPage.steps[i]);
             await _logStep(i, _complexity);
-            await Future.delayed(const Duration(seconds: 1));
-            if (!_controller.hasClients) continue;
-            final max = _controller.position.maxScrollExtent;
-            for (var sweep = 0; sweep < 2; sweep++) {
-              await _controller.animateTo(max,
-                  duration: const Duration(milliseconds: 900),
-                  curve: Curves.easeOut);
-              await Future.delayed(const Duration(milliseconds: 100));
-              await _controller.animateTo(0,
-                  duration: const Duration(milliseconds: 900),
-                  curve: Curves.easeOut);
-              await Future.delayed(const Duration(milliseconds: 100));
-            }
+            // settle 1 s + hold 4 s; the runner drives the flings.
+            await Future.delayed(const Duration(seconds: 5));
           }
           await _postDone();
           await _configChannel.invokeMethod('discardBegins');
@@ -536,48 +530,22 @@ class _FeedCapacityPageState extends State<FeedCapacityPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       body: ListView.builder(
-        controller: _controller,
         itemCount: 10000,
-        itemBuilder: (context, i) => Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-          child: Row(
-            children: [
+        itemBuilder: (context, i) => feedRow(i, [
+          for (var j = 0; j < _complexity; j++)
+            Column(children: [
               Container(
-                width: 40, height: 40,
+                width: 14, height: 14,
                 decoration: BoxDecoration(
-                  color: rowColors[i % 6],
-                  shape: BoxShape.circle,
+                  color: rowColors[(i + j) % 6],
+                  borderRadius: BorderRadius.circular(4),
                 ),
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('Row title $i'),
-                    Text('Second line of subtitle for item $i',
-                        style: Theme.of(context).textTheme.bodySmall),
-                  ],
-                ),
-              ),
-              for (var j = 0; j < _complexity; j++)
-                Column(children: [
-                  Container(
-                    width: 14, height: 14,
-                    decoration: BoxDecoration(
-                      color: rowColors[(i + j) % 6],
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                  ),
-                  Text('c$j',
-                      style: Theme.of(context).textTheme.labelSmall),
-                ]),
-              const SizedBox(width: 8),
-              Text(timestamp(i),
-                  style: Theme.of(context).textTheme.bodySmall),
-            ],
-          ),
-        ),
+              Text('c$j',
+                  style: TextStyle(
+                      fontSize: 12, color: Colors.grey.shade600)),
+            ]),
+        ]),
       ),
     );
   }
