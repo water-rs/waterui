@@ -44,8 +44,9 @@ pub enum TerminationKind {
     Cancellable,
     /// The process is ending on the system's terms — a termination signal,
     /// the last window closing under
-    /// [`LastWindowPolicy::Quit`](crate::app::LastWindowPolicy). The question
-    /// is skipped; only `on_terminate` runs.
+    /// [`LastWindowPolicy::Quit`](crate::app::LastWindowPolicy), a session
+    /// ending whatever the application answered. The question is skipped;
+    /// only `on_terminate` runs.
     Required,
 }
 

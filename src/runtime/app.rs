@@ -214,8 +214,9 @@ impl App {
     /// [`QuitReply::Cancel`] vetoes the quit and the application keeps
     /// running; [`QuitReply::Quit`] lets termination proceed to
     /// [`App::on_terminate`]. A *required* termination — a termination
-    /// signal, or the last window closing under [`LastWindowPolicy::Quit`]
-    /// — never asks. At most one question is open at a time; a required
+    /// signal, the last window closing under [`LastWindowPolicy::Quit`], or
+    /// a Windows session that ends whatever the application answered —
+    /// never asks. At most one question is open at a time; a required
     /// request arriving while the question is open supersedes it.
     ///
     /// The handler extracts from the application environment like any other
@@ -239,8 +240,9 @@ impl App {
     ///
     /// `handler` runs exactly once, after [`App::on_quit_request`] answered
     /// [`QuitReply::Quit`] — or immediately for a *required* termination,
-    /// which skips the question: a termination signal, or the last window
-    /// closing under [`LastWindowPolicy::Quit`]. The runner waits for the
+    /// which skips the question: a termination signal, the last window
+    /// closing under [`LastWindowPolicy::Quit`], or a Windows session that
+    /// ends whatever the application answered. The runner waits for the
     /// future to complete before tearing down, so this is where state is
     /// persisted and resources released.
     ///
