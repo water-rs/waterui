@@ -288,11 +288,9 @@ pub struct SurfaceInfo {
 /// model: `Arc` natively, where a returned result crosses the render
 /// thread's reply channel; `Rc` in the browser's single-threaded engine.
 #[cfg(not(target_arch = "wasm32"))]
-type SharedRequests =
-    std::sync::Arc<rustc_hash::FxHashMap<SurfaceId, crate::RefreshRange>>;
+type SharedRequests = std::sync::Arc<rustc_hash::FxHashMap<SurfaceId, crate::RefreshRange>>;
 #[cfg(target_arch = "wasm32")]
-type SharedRequests =
-    std::rc::Rc<rustc_hash::FxHashMap<SurfaceId, crate::RefreshRange>>;
+type SharedRequests = std::rc::Rc<rustc_hash::FxHashMap<SurfaceId, crate::RefreshRange>>;
 
 /// The per-surface refresh requests a backend reported for a frame.
 ///
@@ -307,7 +305,7 @@ type SharedRequests =
 /// surface's request all stay O(1), so per-frame bookkeeping is linear in
 /// the surface count — linear scans would make the 200-surface path this
 /// scheduling fix exists for quadratic.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default)]
 pub struct FrameRedraw {
     /// The unioned request per surface that asked for the next frame —
     /// copy-on-write shared storage: a renderer retains this map as its
@@ -318,6 +316,22 @@ pub struct FrameRedraw {
     /// carries the empty collection without any allocation.
     requests: Option<SharedRequests>,
 }
+
+impl PartialEq for FrameRedraw {
+    /// Logical collection equality — keyed map contents only, never
+    /// storage allocation state or iteration order: a default (`None`)
+    /// and a cleared previously-nonempty collection (`Some` empty map)
+    /// both represent exactly no requests and compare equal.
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.requests, &other.requests) {
+            (None, None) => true,
+            (Some(a), Some(b)) => **a == **b,
+            (Some(map), None) | (None, Some(map)) => map.is_empty(),
+        }
+    }
+}
+
+impl Eq for FrameRedraw {}
 
 impl FrameRedraw {
     /// Records that `surface` wants the next frame at `rate`, unioning

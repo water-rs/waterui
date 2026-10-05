@@ -452,7 +452,16 @@ impl Renderer for NullRenderer {
         Ok(FrameRedraw::default())
     }
 
+    /// The wasm render path shares the CPU-side contract of returning the
+    /// owned `FrameRedraw`, whose request storage is `Rc` on this target —
+    /// the engine is single-threaded on the page, so the future is
+    /// deliberately not `Send`, matching `NullRenderer::init` and the
+    /// browser engine's own futures.
     #[cfg(target_arch = "wasm32")]
+    #[allow(
+        clippy::future_not_send,
+        reason = "the engine is single-threaded on wasm — FrameRedraw's shared request storage is Rc there"
+    )]
     fn render(
         &mut self,
         frame: &Frame<'_>,

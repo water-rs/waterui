@@ -1046,6 +1046,27 @@ mod tests {
         assert_eq!(second.recycled, []);
         assert_eq!(caller_picture.display_list().len(), 1);
     }
+
+    #[test]
+    fn redraw_equality_is_logical_and_snapshots_stay_independent() {
+        use crate::backend::FrameRedraw;
+
+        let surface = SurfaceId::new(1);
+        let mut redraw = FrameRedraw::default();
+        redraw.request(surface, 30..=60);
+        let snapshot = redraw.clone();
+        redraw.clear();
+
+        // A cleared previously-nonempty collection and a fresh default
+        // are the same empty collection — equality ignores whether the
+        // copy-on-write map was ever allocated.
+        assert_eq!(redraw, FrameRedraw::default());
+        // The retained snapshot keeps its requests through the clear —
+        // and through the next render's refill — exactly.
+        assert!(snapshot.for_surface(surface).is_some());
+        redraw.request(surface, 5..=10);
+        assert_eq!(snapshot.for_surface(surface), Some(&(30..=60)));
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
