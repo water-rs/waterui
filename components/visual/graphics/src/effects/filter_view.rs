@@ -37,8 +37,8 @@ use cherenkov::{RenderTransfer, curve_value, settled, spring_step};
 pub use filtrate::filters::{BlendMode, TransitionDirection};
 use filtrate::{
     AnimatedCallback, AnimatedTarget, AuxData, AuxImage, Chain, ColorStage, Filter, FilterExt as _,
-    FilterParam, ImageVisitor, Interpolator, ParamArray, Placed, SignalVisitor, SpatialStage,
-    StageCollector, WatchGuard,
+    FilterLink, FilterParam, ImageVisitor, Interpolator, LinkVisitor, ParamArray, Placed,
+    SignalVisitor, SpatialStage, StageCollector, WatchGuard,
 };
 pub use filtrate::{FilterImage, LutImage};
 use nami::{Signal, signal::IntoComputed};
@@ -368,6 +368,7 @@ trait FilterSource: RenderTransfer {
     /// The flattened parameter values, in the order the stages index them.
     fn dyn_params(&self) -> Vec<f32>;
     fn dyn_collect_stages(&self, collector: &mut dyn StageCollector);
+    fn dyn_visit_links(&self, visit: &mut dyn FnMut(FilterLink<'_>));
     fn dyn_visit_signals(&self, visit: &mut dyn FnMut(FilterSignal<'_>));
     fn dyn_visit_images(&self, visit: &mut dyn FnMut(usize, &dyn AuxImage));
     /// Lowers the filter into `filtrate`'s executor on the render thread.
@@ -386,6 +387,10 @@ impl<F: Filter + RenderTransfer> FilterSource for F {
         self.collect_stages(&mut DynStages(collector));
     }
 
+    fn dyn_visit_links(&self, visit: &mut dyn FnMut(FilterLink<'_>)) {
+        self.visit_links(&mut DynLinks(visit));
+    }
+
     fn dyn_visit_signals(&self, visit: &mut dyn FnMut(FilterSignal<'_>)) {
         self.visit_signals(&mut DynSignals(visit));
     }
@@ -397,6 +402,15 @@ impl<F: Filter + RenderTransfer> FilterSource for F {
     #[cfg(feature = "gpu")]
     fn build(self: Box<Self>, output_size: OutputSizeState) -> Box<dyn ErasedEffect> {
         gpu::lower_filter(*self, output_size)
+    }
+}
+
+/// A [`LinkVisitor`] handing each link to a `dyn` sink.
+struct DynLinks<'a>(&'a mut dyn FnMut(FilterLink<'_>));
+
+impl LinkVisitor for DynLinks<'_> {
+    fn link(&mut self, link: FilterLink<'_>) {
+        (self.0)(link);
     }
 }
 
@@ -572,6 +586,16 @@ impl FilterDescription<'_> {
     /// place its parameter and image indices.
     pub fn collect_stages(&self, collector: &mut impl StageCollector) {
         self.0.dyn_collect_stages(collector);
+    }
+
+    /// Visits every link of the filter in application order.
+    ///
+    /// A link's current values are
+    /// <code>[params](Self::params)()[link.param_base..]</code>, and its
+    /// reactive updates arrive through [`visit_signals`](Self::visit_signals)
+    /// at those indices.
+    pub fn visit_links(&self, mut visit: impl FnMut(FilterLink<'_>)) {
+        self.0.dyn_visit_links(&mut visit);
     }
 
     /// Visits every reactive parameter, by index in [`params`](Self::params).
@@ -1853,9 +1877,9 @@ mod tests {
     #[cfg(feature = "gpu")]
     use super::AnyEffect;
     use super::{
-        AnimationInterpolator, ColorStage, FilterParam as _, FilterSignal, FilterViewExt as _,
-        FilteredView, OutputSize, ParamGuards, Placed, SPRING_LIMIT, SpatialStage, StageCollector,
-        cherenkov_animation,
+        AnimationInterpolator, Brightness, ColorStage, FilterLink, FilterParam as _, FilterSignal,
+        FilterViewExt as _, FilteredView, GaussianBlur, OutputSize, ParamGuards, Placed,
+        SPRING_LIMIT, SpatialStage, StageCollector, cherenkov_animation,
     };
     use core::time::Duration;
     use filtrate::Interpolator as _;
@@ -1901,6 +1925,26 @@ mod tests {
             ]
         );
         assert_eq!(description.params(), [0.25, 4.0]);
+        drop(guards);
+    }
+
+    #[test]
+    fn described_filter_links_are_the_concrete_filters() {
+        let FilteredView { effect, guards, .. } =
+            ().gaussian_blur(1.5_f32).brightness(0.25_f32).erase();
+        let description = effect.description().expect("a filter is portable");
+
+        let mut links = Vec::new();
+        description.visit_links(|link: FilterLink<'_>| {
+            links.push((
+                link.downcast_ref::<GaussianBlur>().is_some(),
+                link.downcast_ref::<Brightness>().is_some(),
+                link.param_base,
+                link.image_base,
+            ));
+        });
+        assert_eq!(links, [(true, false, 0, 0), (false, true, 1, 0)]);
+        assert_eq!(description.params(), [1.5, 0.25]);
         drop(guards);
     }
 

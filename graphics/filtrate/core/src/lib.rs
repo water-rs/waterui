@@ -102,6 +102,7 @@ pub use param::{AnimatedCallback, AnimatedTarget, FilterParam, Interpolator, Wat
 pub use params::ParamArray;
 pub use space::{OperatingSpace, WorkingSpace};
 pub use stage::{
-    AuxSource, ColorStage, ParamSource, Placed, ShapeInput, SpatialStage, StageCollector,
+    AuxSource, ColorStage, FilterLink, LinkVisitor, ParamSource, Placed, ShapeInput, SpatialStage,
+    StageCollector,
 };
 pub use visitor::SignalVisitor;
