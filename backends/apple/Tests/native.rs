@@ -1652,9 +1652,10 @@ mod owner_lifetimes {
             .collect()
     }
 
-    /// Mounts `leaf` on a fresh host whose layout handler frames it —
-    /// the handler borrows the child weakly so it never keeps a dead
-    /// owner alive, the same edge the production handlers now take.
+    /// Mounts `leaf` on a fresh host whose layout handler frames it.
+    /// The host is a bare `HostView` that no leaf owns, so nothing clears
+    /// its handlers; the handler borrows the child weakly so dropping the
+    /// `Mounted` alone decides whether the child's views survive.
     fn mount_hosted(
         mtm: MainThreadMarker,
         leaf_inst: waterui_apple::contract::NativeLeaf,

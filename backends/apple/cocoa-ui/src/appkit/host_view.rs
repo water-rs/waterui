@@ -652,14 +652,11 @@ impl HostView {
         ivars.hidden.replace(None);
         ivars.mouse_down.replace(None);
         ivars.mouse_dragged.replace(None);
-        ivars.drop.replace(None);
-        self.unregisterDraggedTypes();
+        self.set_drop_handlers(&[], None);
         ivars.pointer.replace(None);
         ivars.pointer_events.set(PointerEvents::NONE);
         ivars.pointer_inside.set(false);
-        if let Some(area) = ivars.tracking_area.replace(None) {
-            self.removeTrackingArea(&area);
-        }
+        self.updateTrackingAreas();
         ivars.key.replace(None);
         ivars.right_mouse.replace(None);
         ivars.backing_changed.replace(None);
