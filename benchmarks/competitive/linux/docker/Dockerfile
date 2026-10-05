@@ -14,10 +14,16 @@ FROM debian:trixie@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d28
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Dated snapshot archive: every package resolved is the one published at
-# 2025-09-27T00:00Z on any host — no floating deb.debian.org metadata.
-RUN echo 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/20250927T000000Z trixie main' \
+# 2026-09-25T00:00Z on any host — no floating deb.debian.org metadata.
+# The date must be at or after the base image's package set (trixie 13.7);
+# an earlier snapshot resolves -dev packages older than the installed
+# runtime libs (uuid-dev 2.41-5 vs libuuid1 2.41.5-0+deb13u1) and the
+# install fails.
+RUN echo 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/20260925T000000Z trixie main' \
         > /etc/apt/sources.list \
-    && echo 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/20250927T000000Z trixie-security main' \
+    && echo 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/20260925T000000Z trixie-updates main' \
+        >> /etc/apt/sources.list \
+    && echo 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/20260925T000000Z trixie-security main' \
         >> /etc/apt/sources.list \
     && rm -f /etc/apt/sources.list.d/debian.sources \
     && apt-get update && apt-get install -y --no-install-recommends \
