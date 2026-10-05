@@ -346,10 +346,31 @@ pub struct TouchScrollConfig {
     pub fling: FlingDeceleration,
 }
 
-/// The fling's deceleration model: Android `OverScroller`'s spline, whose
-/// math the renderer ports
+impl TouchScrollConfig {
+    /// Android's density-1 defaults — `ViewConfiguration`'s constants
+    /// normalized to logical units, not the scaled values a host reports
+    /// at runtime. Tests drive them through the host's
+    /// `touch_scroll_config` seam so a touch drag claims scroll views the
+    /// way it does on device.
+    #[must_use]
+    pub fn android_default() -> Self {
+        Self {
+            touch_slop: 10.0,
+            min_fling_velocity: 50.0,
+            max_fling_velocity: 8_000.0,
+            fling: FlingDeceleration {
+                physical_coeff: 9.806_65 * 39.37 * 160.0 * 0.84,
+                friction: 0.015,
+            },
+        }
+    }
+}
+
+/// The fling's deceleration model: Android `OverScroller`'s spline.
+///
+/// The spline's math is ported
 /// (`frameworks/base/core/java/android/widget/OverScroller.java`,
-/// `SplineScroller`). The platform computes the coefficients for its own
+/// `SplineScroller`); the platform computes the coefficients for its own
 /// display and feel.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FlingDeceleration {
@@ -839,18 +860,36 @@ pub trait SurfaceProvider {
     }
 }
 
-/// The window's platform safe area, in logical units — the insets the host
-/// reports for regions obscured by system chrome (status bar, navigation bar,
-/// display cutout) and the IME.
+/// The window's platform safe area in logical units.
 ///
-/// The host owns the binding: it writes the combined insets on every change,
-/// and the windowed pipeline lays the root content out inside them while
-/// `waterui_layout::safe_area::IgnoreSafeArea` content reaches the window
-/// edge on its flagged edges. The binding lives in the session environment so
-/// an update re-lays out through the ordinary input path; hosts with no
-/// unsafe regions simply never install one.
+/// This is the *container* region of the safe-area contract (layout-spec.md
+/// §7.1): the insets the host reports for system chrome (status bar,
+/// navigation bar, display cutout, window chrome), never the keyboard.
+///
+/// The host owns the binding: it writes the container insets on every
+/// change, and the windowed pipeline lays the root content out inside the
+/// union of the two regions while `waterui_layout::safe_area::IgnoreSafeArea`
+/// content reaches through the regions and edges it names. The binding lives
+/// in the session environment so an update re-lays out through the ordinary
+/// input path; hosts with no unsafe regions simply never install one.
 #[derive(Debug, Clone)]
 pub struct WindowSafeArea(pub nami::Binding<waterui_layout::padding::EdgeInsets>);
+
+/// The window's *keyboard* region in logical units.
+///
+/// This is the inset the host reports for the software keyboard and other
+/// input-method surfaces, a separate safe-area region from [`WindowSafeArea`]
+/// (layout-spec.md §7.1).
+///
+/// The binding rides the same subscription path as `WindowSafeArea`: a host
+/// write on it re-lays the window out per frame, which is how a keyboard
+/// animating with the platform's own animation reaches the layout — a host
+/// that reports every animation frame animates the layout too. Layout
+/// resolves it per edge as the deeper of the two regions: a scroll surface
+/// whose bottom touches it extends through it and scrolls a focused field
+/// clear of the keyboard band (layout-spec.md §7.1).
+#[derive(Debug, Clone)]
+pub struct WindowKeyboardArea(pub nami::Binding<waterui_layout::padding::EdgeInsets>);
 
 /// Asserts the app's `Window::frame` binding carries finite components on
 /// all four fields. The binding is a trust boundary — a NaN or infinite

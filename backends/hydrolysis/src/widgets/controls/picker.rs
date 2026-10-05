@@ -794,10 +794,18 @@ fn flush_picker_label(
 ) {
     let mut state = owner.borrow_mut();
     let render_ctx = ctx.render_context();
+    let label_area = ctx.safe_area_for(rect);
     let label_view = &mut state.label_view;
     ctx.renderer_mut()
         .with_suppressed_accessibility(|renderer| {
-            label_view.flush_in_rect(renderer, render_ctx, env, ProposalSize::UNSPECIFIED, rect);
+            label_view.flush_in_rect(
+                renderer,
+                render_ctx,
+                env,
+                ProposalSize::UNSPECIFIED,
+                rect,
+                label_area,
+            );
         });
 }
 

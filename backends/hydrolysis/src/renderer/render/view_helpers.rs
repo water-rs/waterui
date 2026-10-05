@@ -533,6 +533,28 @@ fn normalize_layout_view_with_budget(
         AccessibilityState, a11y_scoped_env_for_state
     );
 
+    // A plain `FixedContainer` has not run `body()` yet: its layout object
+    // is still the one the modifier built — the only moment
+    // `BackgroundLayout` is identifiable, because `body` wraps it in
+    // `DirectionalLayout`. Keep the container plain: the tree build
+    // identifies the slot while the layout is still concrete and then runs
+    // `body` itself; normalization only descends into the children.
+    if view.is::<FixedContainer>() {
+        let container = *view
+            .downcast::<FixedContainer>()
+            .expect("layout normalization failed to downcast FixedContainer");
+        let (layout, children) = container.into_inner();
+        let mut normalized_children = Vec::with_capacity(children.len());
+        for child in children {
+            normalized_children.push(normalize_layout_view_with_budget(
+                child,
+                env,
+                next_remaining,
+            ));
+        }
+        return AnyView::new(FixedContainer::from_parts(layout, normalized_children));
+    }
+
     if view.is::<Native<FixedContainer>>() {
         let native = *view
             .downcast::<Native<FixedContainer>>()

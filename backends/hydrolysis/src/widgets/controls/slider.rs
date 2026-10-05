@@ -287,6 +287,7 @@ pub fn render_slider_parts(
             label_rect,
             |ctx| {
                 let render_ctx = ctx.render_context();
+                let label_area = ctx.safe_area_for(label_rect);
                 let label_view = &mut state.label_view;
                 ctx.renderer_mut()
                     .with_suppressed_accessibility(|renderer| {
@@ -296,6 +297,7 @@ pub fn render_slider_parts(
                             env,
                             ProposalSize::UNSPECIFIED,
                             label_rect,
+                            label_area,
                         );
                     });
             },
@@ -350,12 +352,14 @@ pub fn render_slider_parts(
             min_label_rect,
             |ctx| {
                 let render_ctx = ctx.render_context();
+                let label_area = ctx.safe_area_for(min_label_rect);
                 state.min_value_label.flush_in_rect(
                     ctx.renderer_mut(),
                     render_ctx,
                     env,
                     ProposalSize::UNSPECIFIED,
                     min_label_rect,
+                    label_area,
                 );
             },
         );
@@ -374,12 +378,14 @@ pub fn render_slider_parts(
             max_label_rect,
             |ctx| {
                 let render_ctx = ctx.render_context();
+                let label_area = ctx.safe_area_for(max_label_rect);
                 state.max_value_label.flush_in_rect(
                     ctx.renderer_mut(),
                     render_ctx,
                     env,
                     ProposalSize::UNSPECIFIED,
                     max_label_rect,
+                    label_area,
                 );
             },
         );

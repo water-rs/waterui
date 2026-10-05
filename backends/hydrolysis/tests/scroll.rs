@@ -11,7 +11,7 @@ use waterui::graphics::color::Srgb;
 use waterui::prelude::*;
 use waterui_layout::scroll;
 use waterui_layout::scroll::{ScrollView, scroll_horizontal};
-use waterui_testing::{OffscreenApp, Role, ui};
+use waterui_testing::{DragOptions, OffscreenApp, Role, ui};
 
 fn visual_shell<V: View>(content: V) -> impl View {
     content.padding_with(20.0).background(Srgb::BLACK)
@@ -437,6 +437,69 @@ fn report_offset_writes_the_offset_on_controller_scroll_to() {
         offset.snapshot(),
         waterui::layout::Point::new(0.0, 60.0),
         "a controller scroll_to must land in the report binding"
+    );
+}
+
+// Dragging the horizontal scrollbar's thumb moves `offset_x`: the gutter
+// target maps the pointer through the thumb geometry of the *horizontal*
+// axis, so the content width — not the height — sizes the thumb and its
+// travel.
+#[test]
+fn horizontal_scrollbar_drag_moves_the_offset() {
+    let offset = waterui::binding(waterui::layout::Point::zero());
+    let mut app = ui()
+        .viewport(180, 180)
+        .theme(hydrolysis_m3::Material3::defaults())
+        .mount_offscreen({
+            let offset = offset.clone();
+            move || {
+                scroll_horizontal(
+                    hstack((
+                        labeled_card("First chip", 120.0, 48.0, Srgb::new(1.0, 0.1, 0.1)),
+                        labeled_card("Second chip", 120.0, 48.0, Srgb::new(0.1, 1.0, 0.1)),
+                        labeled_card("Third chip", 120.0, 48.0, Srgb::new(0.1, 0.1, 1.0)),
+                        labeled_card("Fourth chip", 120.0, 48.0, Srgb::new(1.0, 0.8, 0.1)),
+                    ))
+                    .spacing(12.0),
+                )
+                .report_offset(&offset)
+                .size(120.0, 120.0)
+                .a11y_label("h-rail")
+            }
+        });
+    app.settle();
+    let rail = app.query().label("h-rail").single().bounds();
+    assert!(
+        offset.snapshot().x.abs() <= 0.5,
+        "the rail starts at offset zero: {:?}",
+        offset.snapshot()
+    );
+    // The horizontal gutter is the bottom 12pt of the rail's viewport; at
+    // offset zero the thumb starts at the gutter's left edge, so a press
+    // near the left edge grabs the thumb and a drag right scrolls.
+    let gutter_y = rail.y() + rail.height() - 6.0;
+    app.drag_from_to_with(
+        rail.x() + 10.0,
+        gutter_y,
+        rail.x() + 70.0,
+        gutter_y,
+        DragOptions::default(),
+    );
+    app.settle();
+    let x = offset.snapshot().x;
+    // The thumb's extent is track * viewport / content (120 * 120 / 516 ≈
+    // 27.9), so its travel is ≈ 92.1. The press at 10pt grabs the thumb 10pt
+    // in; dragging to 70pt maps 60pt of pointer travel onto the 396pt
+    // content extent: (70 - 10) / 92.1 * 396 ≈ 258.
+    let expected = (70.0 - 10.0) / (120.0 - 120.0 * 120.0 / 516.0) * 396.0;
+    assert!(
+        (x - expected).abs() <= 2.0,
+        "the thumb maps pointer travel through its geometry: expected \
+         ≈{expected}, got {x}"
+    );
+    assert!(
+        x <= 396.0,
+        "offset_x cannot pass the content extent (4 x 120 + 3 x 12 - 120): {x}"
     );
 }
 

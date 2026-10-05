@@ -26,13 +26,10 @@ use waterui_layout::stack::{VStack, vstack};
 
 use super::{MinimalTestTheme, test_environment};
 use crate::HeadlessRuntime;
-use crate::platform::{
-    FlingDeceleration, InputEvent, PointerButton, PointerKind, TouchScrollConfig,
-};
+use crate::platform::{InputEvent, PointerButton, PointerKind, TouchScrollConfig};
 
 const WINDOW_WIDTH: u32 = 400;
 const WINDOW_HEIGHT: u32 = 640;
-const TOUCH_SLOP: f32 = 10.0;
 const ROW_HEIGHT: f32 = 44.0;
 const ROWS: usize = 80;
 
@@ -41,15 +38,7 @@ const ROWS: usize = 80;
 /// density-1 display produces (`GRAVITY_EARTH * 39.37 * 160 * 0.84` px/s²,
 /// in logical units at `ppi = 160`).
 fn test_config() -> TouchScrollConfig {
-    TouchScrollConfig {
-        touch_slop: TOUCH_SLOP,
-        min_fling_velocity: 50.0,
-        max_fling_velocity: 8_000.0,
-        fling: FlingDeceleration {
-            physical_coeff: 9.806_65 * 39.37 * 160.0 * 0.84,
-            friction: 0.015,
-        },
-    }
+    TouchScrollConfig::android_default()
 }
 
 fn runtime(view: AnyView) -> HeadlessRuntime {
