@@ -1038,12 +1038,12 @@ pub enum OutputColor {
     /// Extended-range Display P3: the extended transfer on the working
     /// primaries (`ExtendedDisplayP3` surface colour space).
     ExtendedDisplayP3,
-    /// BT.2020 primaries with the PQ transfer; SDR white calibrates to
-    /// [`REFERENCE_WHITE_NITS`] of the 10 000-nit signal.
+    /// BT.2020 primaries with the PQ transfer; SDR white calibrates to the
+    /// BT.2408 reference white of 203 nits within the 10 000-nit signal.
     Bt2100Pq,
-    /// BT.2020 primaries with the HLG transfer; SDR white calibrates to
-    /// [`REFERENCE_WHITE_NITS`] of the 1000-nit nominal peak under the
-    /// BT.2100 reference OOTF (system gamma 1.2).
+    /// BT.2020 primaries with the HLG transfer; SDR white calibrates to the
+    /// BT.2408 reference white of 203 nits within the 1000-nit nominal peak
+    /// under the BT.2100 reference OOTF (system gamma 1.2).
     Bt2100Hlg,
 }
 
