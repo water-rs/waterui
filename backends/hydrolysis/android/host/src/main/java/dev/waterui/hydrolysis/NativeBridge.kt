@@ -70,8 +70,9 @@ object NativeBridge {
     @JvmStatic private external fun nativeInit(schema: Int, logLevel: String?): Int
 
     /**
-     * `context` is the application context — the native side publishes it
-     * through `ndk_context` so service backends (clipboard) can resolve it.
+     * `context` is any `Context` of the app — the native side resolves its
+     * `Application` and publishes that, once per process, through
+     * `ndk_context` so service backends (clipboard) can resolve it.
      */
     @JvmStatic
     external fun nativeCreateSession(
