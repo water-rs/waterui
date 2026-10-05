@@ -83,6 +83,7 @@ pub use render::{
     resolved_morph_shape_to_path, resolved_shape_to_path, transformed_rect,
 };
 use rustc_hash::FxHashSet;
+use signals::LayoutDependencies;
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
