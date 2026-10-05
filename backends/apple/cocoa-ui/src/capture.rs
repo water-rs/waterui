@@ -293,6 +293,12 @@ pub fn surface_spec(
     let child_max_x = child_min_x + bounds.size.width;
     let child_max_y = child_min_y + bounds.size.height;
 
+    // An empty rect touches no texels — quantizing its zero-area span
+    // would still produce a 1-pixel producer for nothing.
+    if !(bounds.size.width > 0.0 && bounds.size.height > 0.0) {
+        return None;
+    }
+
     let low_x = (child_min_x - source_min_x) * geometry.scale_x;
     let high_x = (child_max_x - source_min_x) * geometry.scale_x;
     let (low_y, high_y) = if geometry.y_down {
@@ -855,10 +861,22 @@ impl CompositorGuard<'_> {
         for surface in surfaces {
             let spec = surface.spec;
             encoder.setViewport(MTLViewport {
-                originX: f64::from(u32::try_from(spec.clip.x).unwrap_or(u32::MAX)),
-                originY: f64::from(u32::try_from(spec.clip.y).unwrap_or(u32::MAX)),
-                width: f64::from(u32::try_from(spec.clip.width).unwrap_or(u32::MAX)),
-                height: f64::from(u32::try_from(spec.clip.height).unwrap_or(u32::MAX)),
+                originX: f64::from(
+                    u32::try_from(spec.clip.x)
+                        .expect("the clip rect is inside the capture target by construction"),
+                ),
+                originY: f64::from(
+                    u32::try_from(spec.clip.y)
+                        .expect("the clip rect is inside the capture target by construction"),
+                ),
+                width: f64::from(
+                    u32::try_from(spec.clip.width)
+                        .expect("the clip rect is inside the capture target by construction"),
+                ),
+                height: f64::from(
+                    u32::try_from(spec.clip.height)
+                        .expect("the clip rect is inside the capture target by construction"),
+                ),
                 znear: 0.0,
                 zfar: 1.0,
             });
@@ -2032,6 +2050,64 @@ mod tests {
                 uv(&spec),
                 UvWindow {
                     origin: [0.4, 0.2],
+                    scale: [0.6, 0.8],
+                }
+            );
+        }
+
+        #[test]
+        fn an_empty_child_rect_maps_to_none() {
+            let geometry = down(Rect::new(0.0, 0.0, 200.0, 200.0));
+            for rect in [
+                // Zero extent at a fractional position must not quantize
+                // into a 1-pixel producer.
+                Rect::new(0.9, 0.9, 0.0, 10.0),
+                Rect::new(0.9, 0.9, 10.0, 0.0),
+                Rect::new(0.9, 0.9, -10.0, 10.0),
+                Rect::new(0.9, 0.9, 10.0, -10.0),
+            ] {
+                assert!(
+                    surface_spec(0, rect, geometry, MTLPixelFormat::BGRA8Unorm, 400, 400).is_none(),
+                    "an empty child rect maps to None: {rect:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn a_surface_past_the_bottom_right_keeps_its_full_texture() {
+            let spec = spec_for(
+                down(Rect::new(0.0, 0.0, 200.0, 200.0)),
+                Rect::new(160.0, 180.0, 100.0, 100.0),
+            );
+            // The producer covers the whole mapped rect; only the
+            // destination scissor and the sampled UV window shrink.
+            assert_eq!((spec.full_size.width, spec.full_size.height), (200, 200));
+            assert_eq!(clip(&spec), (320, 360, 80, 40));
+            assert_eq!(
+                uv(&spec),
+                UvWindow {
+                    origin: [0.0, 0.0],
+                    scale: [0.4, 0.2],
+                }
+            );
+        }
+
+        #[test]
+        fn a_bottom_up_source_crops_through_the_same_uv_window() {
+            // Bottom-up source, child hanging off the top-left: the full
+            // producer is preserved while clip and UV window describe the
+            // visible corner — mirroring against the source height lands
+            // the rect on the target's lower rows.
+            let spec = spec_for(
+                up(Rect::new(0.0, 0.0, 200.0, 200.0)),
+                Rect::new(-40.0, -20.0, 100.0, 100.0),
+            );
+            assert_eq!((spec.full_size.width, spec.full_size.height), (200, 200));
+            assert_eq!(clip(&spec), (0, 240, 120, 160));
+            assert_eq!(
+                uv(&spec),
+                UvWindow {
+                    origin: [0.4, 0.0],
                     scale: [0.6, 0.8],
                 }
             );
