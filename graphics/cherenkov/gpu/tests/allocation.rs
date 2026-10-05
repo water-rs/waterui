@@ -159,7 +159,7 @@ fn stale_bind_groups_retire_at_capture_regen() -> Result<(), Box<dyn std::error:
     let sink = Sink::new();
     let engine = wait!(diag_engine(&sink))?;
     let surface = wait!(engine.surface(Offscreen::new((128, 128), OffscreenFormat::LinearF16), || {}))?;
-    let group = surface.backdrop_group_unfiltered();
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     let glass = surface.layer();
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|r| {
@@ -214,7 +214,7 @@ fn small_big_small_with_work_in_flight() -> Result<(), Box<dyn std::error::Error
     let sink = Sink::new();
     let engine = wait!(diag_engine(&sink))?;
     let surface = wait!(engine.surface(Offscreen::new((256, 256), OffscreenFormat::LinearF16), || {}))?;
-    let group = surface.backdrop_group_unfiltered();
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     let glass = surface.layer();
     let start = Instant::now();
     let mut was_big = false;

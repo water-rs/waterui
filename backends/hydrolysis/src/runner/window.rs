@@ -616,7 +616,7 @@ fn build_window_scene<P: PlatformWindow>(
     phases.build_content += build_content_started_at.elapsed();
     let _ = drain_local_tasks();
     let scene_dispatch_started_at = Instant::now();
-    runtime.renderer.capture_window_tree(
+    let safe_area = runtime.renderer.capture_window_tree_with_root(
         content,
         env,
         bounds,
@@ -630,7 +630,7 @@ fn build_window_scene<P: PlatformWindow>(
     // path is where its sub-views are first built and placed.
     runtime
         .renderer
-        .render_context_menu_presentation(root_transform);
+        .render_context_menu_presentation(root_transform, &safe_area);
     phases.scene_dispatch += scene_dispatch_started_at.elapsed();
     let scene_finish_started_at = Instant::now();
     runtime.renderer.finish_rebuild_frame();
@@ -834,7 +834,7 @@ crate::engine::cfg_async_fn! {
     } -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
     let (width, height) = surface.size();
     let format = surface.format();
-    let premultiply_alpha = surface.premultiply_alpha();
+    let output_alpha = surface.output_alpha();
     let context = surface.device_loss().gpu_context();
     // The engine renders into its own retained output before the swapchain
     // image is acquired: the render awaits the GPU device on wasm32, and a
@@ -871,7 +871,7 @@ crate::engine::cfg_async_fn! {
         surface.queue(),
         frame.texture(),
         surface.output_color(),
-        premultiply_alpha,
+        output_alpha,
     );
     let render = engine_render + copy_started_at.elapsed();
     #[cfg(feature = "frame-profile")]

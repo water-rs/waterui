@@ -127,7 +127,8 @@ pub use driver::{FrameTiming, RuntimeDriver, VIRTUAL_FRAME};
 pub use executor::drain_parked_local_work;
 pub use executor::{TestLocalExecutor, install_test_executor};
 pub use hydrolysis::{
-    AccessibilityActivationPointError, HeadlessRuntime, KeyCode, Modifiers, SemanticRuntime, Style,
+    AccessibilityActivationPointError, HeadlessRuntime, KeyCode, Modifiers, PointerKind,
+    SemanticRuntime, Style,
 };
 pub use perf::{PerfApp, PerfConfig, PerfMeasurement, PerfReport, PerfRun, PerfStats};
 pub use query::Query;

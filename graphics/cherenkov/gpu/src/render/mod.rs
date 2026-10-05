@@ -21,6 +21,7 @@ mod prepared;
 pub mod present;
 mod projective;
 mod raster;
+mod resolve;
 pub mod shaders;
 mod shadow;
 pub mod surface_control;
@@ -356,15 +357,37 @@ struct SurfaceState {
     waker: cherenkov::CompletionWaker,
 }
 
-/// A registered backdrop group: its optional capture filter and the
-/// capture textures, one per region (#117 sparse capture), each exactly
-/// sized to this frame's region.
+/// A registered backdrop group: its optional capture filter, its capture
+/// scale and the capture textures, one per region (#117 sparse capture),
+/// each exactly sized to this frame's region.
 struct BackdropGroupState {
     /// The group's filter chain key, when registered with a filter.
     filter: Option<filter::FilterKey>,
+    /// The resolution the group captures at.
+    scale: cherenkov::CaptureScale,
     /// The capture textures indexed by region, empty until a frame
     /// samples the group.
     captures: Vec<ScratchTarget>,
+    /// A reduced capture's 1:1 device copy by region, where clip-only
+    /// composites draw before the resolve; `None` for a region that
+    /// resolves straight from its source.
+    staging: Vec<Option<ScratchTarget>>,
+    /// Each region's cached resolve bind group.
+    resolves: Vec<Option<resolve::Bind>>,
+}
+
+impl BackdropGroupState {
+    /// Every texture the group holds: captures and staging copies.
+    fn textures(&self) -> impl Iterator<Item = &ScratchTarget> {
+        self.captures.iter().chain(self.staging.iter().flatten())
+    }
+
+    /// Keeps the first `regions` regions' textures and bind groups.
+    fn truncate(&mut self, regions: usize) {
+        self.captures.truncate(regions);
+        self.staging.truncate(regions);
+        self.resolves.truncate(regions);
+    }
 }
 
 impl SurfaceState {
@@ -393,6 +416,7 @@ impl SurfaceState {
                             .map_or(Some(filtrate_core::Footprint::ZERO), |key| {
                                 filters.footprint_bound(key)
                             }),
+                        scale: state.scale,
                     },
                 )
             })
@@ -400,11 +424,11 @@ impl SurfaceState {
     }
 
     /// Bytes held by this surface's backdrop captures, summed over all
-    /// regions of all groups.
+    /// regions of all groups, staging copies included.
     fn backdrop_bytes(&self) -> u64 {
         self.backdrop_groups
             .values()
-            .flat_map(|g| &g.captures)
+            .flat_map(BackdropGroupState::textures)
             .map(|c| {
                 u64::from(c.width)
                     * u64::from(c.height)
@@ -534,6 +558,95 @@ impl SurfaceState {
 
 /// The retained local image `key` names: the frame composes only images
 /// it realized or found current, so a missing one is a lowering bug.
+/// A reduced capture pass's resolve, prepared before its render pass: the
+/// pipeline, the bind group reading its source, and — for a staged
+/// resolve, which runs in a pass of its own after the draws — the
+/// capture it writes.
+struct ResolveDraw {
+    pipeline: wgpu::RenderPipeline,
+    bind: wgpu::BindGroup,
+    /// The capture view and the region's size, for a staged resolve.
+    staged: Option<(wgpu::TextureView, (u32, u32))>,
+}
+
+/// The view a capture's `copy_from` target is read through.
+fn source_view(surf: &SurfaceState, target: Target) -> Result<&wgpu::TextureView, RenderError> {
+    Ok(match target {
+        Target::Plane(layer) => {
+            &surf.static_layers[&layer]
+                .capture
+                .as_ref()
+                .expect("allocated capture")
+                .source
+                .as_ref()
+                .expect("capture source allocated before encode")
+                .1
+        }
+        Target::Part(n) => surf.part(n).0,
+        Target::Projected(key) => &projective_entry(&surf.projective, key).levels[0],
+        Target::Scratch(k) => &surf.scratch[&k].view,
+        Target::Backdrop { group, .. } => {
+            return Err(RenderError::Render(format!(
+                "backdrop group {group} copies from a capture"
+            )));
+        }
+    })
+}
+
+/// Prepares pass `index`'s resolve when its capture is reduced: a direct
+/// resolve reads `copy_from` inside the pass, a staged one reads the
+/// staging texture after it.
+fn prepare_resolve(
+    device: &wgpu::Device,
+    pipelines: &mut resolve::Pipelines,
+    globals: &wgpu::Buffer,
+    surf: &mut SurfaceState,
+    index: usize,
+) -> Result<Option<ResolveDraw>, RenderError> {
+    let pass = &surf.frame.passes[index];
+    let (Some(capture), Target::Backdrop { group, region }) = (pass.capture, pass.target) else {
+        return Ok(None);
+    };
+    if capture.resolve.is_none() {
+        return Ok(None);
+    }
+    let staged = resolve::staged(pass);
+    let size = (pass.region[2], pass.region[3]);
+    let state = &surf.backdrop_groups[&group];
+    let target = &state.captures[region as usize];
+    let pipeline = pipelines.pipeline(device, target.texture.format()).clone();
+    let capture_view = target.view.clone();
+    let source = if staged {
+        state.staging[region as usize]
+            .as_ref()
+            .expect("staging allocated before encode")
+            .view
+            .clone()
+    } else {
+        source_view(surf, capture.copy_from)?.clone()
+    };
+    let state = surf
+        .backdrop_groups
+        .get_mut(&group)
+        .expect("looked up above");
+    if state.resolves.len() <= region as usize {
+        state.resolves.resize_with(region as usize + 1, || None);
+    }
+    let bind = pipelines
+        .bind(
+            device,
+            &mut state.resolves[region as usize],
+            globals,
+            &source,
+        )
+        .clone();
+    Ok(Some(ResolveDraw {
+        pipeline,
+        bind,
+        staged: staged.then_some((capture_view, size)),
+    }))
+}
+
 fn projective_entry(
     entries: &FxHashMap<LayerId, Vec<projective::Entry>>,
     key: projective::LocalKey,
@@ -669,6 +782,9 @@ pub struct GpuRenderer {
     /// The silhouette-morphology pipeline — `None` until a frame actually
     /// composes a shadow, so shadow-free engines pay nothing (#170).
     shadow_blur: Option<shadow::Blur>,
+    /// The reduced-capture resolve pipelines — `None` until a frame
+    /// resolves a backdrop group captured below device resolution.
+    resolve: Option<resolve::Pipelines>,
     last_frame: Option<Instant>,
     origin: Option<Instant>,
     device: wgpu::Device,
@@ -2100,6 +2216,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             backdrop_shaders: FxHashMap::default(),
             filters: filter::Registry::default(),
             shadow_blur: None,
+            resolve: None,
             last_frame: None,
             origin: None,
             max_texture: device.limits().max_texture_dimension_2d,
@@ -2422,6 +2539,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         backdrop_shaders: FxHashMap::default(),
         filters: filter::Registry::default(),
         shadow_blur: None,
+        resolve: None,
         last_frame: None,
         origin: None,
         max_texture: device.limits().max_texture_dimension_2d,
@@ -2834,7 +2952,7 @@ impl Renderer for GpuRenderer {
             let capture_bytes: u64 = state
                 .backdrop_groups
                 .values()
-                .flat_map(|g| &g.captures)
+                .flat_map(BackdropGroupState::textures)
                 .map(|s| u64::from(s.width) * u64::from(s.height) * texel_bytes(s.texture.format()))
                 .sum();
             let dropped = state.binds1.len() as u64;
@@ -3127,7 +3245,7 @@ impl Renderer for GpuRenderer {
             let capture_bytes: u64 = surf
                 .backdrop_groups
                 .values()
-                .flat_map(|state| state.captures.iter())
+                .flat_map(BackdropGroupState::textures)
                 .map(|s| u64::from(s.width) * u64::from(s.height) * texel_bytes(s.texture.format()))
                 .sum();
             let dropped = surf.binds1.len() as u64;
@@ -3168,7 +3286,7 @@ impl Renderer for GpuRenderer {
             surf.coverage_depth = None;
             surf.backdrop = [None, None];
             for state in surf.backdrop_groups.values_mut() {
-                state.captures.clear();
+                state.truncate(0);
             }
             // The bind groups' views died with the textures.
             surf.binds1.clear();
@@ -4242,6 +4360,7 @@ impl GpuRenderer {
         surface: SurfaceId,
         id: cherenkov::BackdropId,
         source: Option<Box<dyn filter::Source>>,
+        scale: cherenkov::CaptureScale,
     ) {
         let Some(surf) = self.surfaces.get_mut(&surface) else {
             return;
@@ -4258,7 +4377,10 @@ impl GpuRenderer {
             id.raw(),
             BackdropGroupState {
                 filter,
+                scale,
                 captures: Vec::new(),
+                staging: Vec::new(),
+                resolves: Vec::new(),
             },
         );
     }
@@ -6693,6 +6815,50 @@ impl GpuRenderer {
                     self.atlas.mask_texture_generation(),
                 );
             }
+            // A staged resolve's 1:1 device copy, grown like the capture.
+            if let Some(resolve) = resolve::of(pass).filter(|_| resolve::staged(pass)) {
+                let (dw, dh) = (resolve.device[2], resolve.device[3]);
+                if group_state.staging.len() <= r {
+                    group_state.staging.resize_with(r + 1, || None);
+                }
+                let slot = &mut group_state.staging[r];
+                if slot
+                    .as_ref()
+                    .is_none_or(|c| c.width < dw || c.height < dh || c.texture.format() != format)
+                {
+                    let (old, nw, nh) = slot.as_ref().map_or((0, dw, dh), |c| {
+                        (
+                            u64::from(c.width)
+                                * u64::from(c.height)
+                                * texel_bytes(c.texture.format()),
+                            dw.max(c.width),
+                            dh.max(c.height),
+                        )
+                    });
+                    let (texture, view) = create_target(
+                        &self.device,
+                        "backdrop staging",
+                        (nw, nh),
+                        TARGET_USAGES,
+                        format,
+                    );
+                    *slot = Some(ScratchTarget {
+                        texture,
+                        view,
+                        width: nw,
+                        height: nh,
+                    });
+                    diag::grow(
+                        &self.device,
+                        "backdrop capture",
+                        diag::Class::Target,
+                        old,
+                        u64::from(nw) * u64::from(nh) * texel_bytes(format),
+                        0,
+                        true,
+                    );
+                }
+            }
         }
         // Regions dropped between frames drop their textures too.
         let needed: FxHashMap<u64, u32> = surf
@@ -6708,7 +6874,7 @@ impl GpuRenderer {
             if let Some(state) = surf.backdrop_groups.get_mut(&gid)
                 && state.captures.len() > n as usize
             {
-                state.captures.truncate(n as usize);
+                state.truncate(n as usize);
                 surf.bind_gen += 1;
                 let before = surf.binds1.len();
                 surf.binds1.retain(
@@ -6966,23 +7132,31 @@ impl GpuRenderer {
             }
             let mut entry = [0u8; 256];
             for surf in &surfaces {
+                // A staged resolve's draws land in device space; its
+                // parameters follow the globals in the same slot.
                 let globals = surf.frame.passes.iter().map(|pass| {
-                    lower::globals(
-                        [pass.region[2] as f32, pass.region[3] as f32],
-                        [pass.region[0] as f32, pass.region[1] as f32],
-                        pass.space,
+                    let region = resolve::draw_region(pass);
+                    (
+                        lower::globals(
+                            [region[2] as f32, region[3] as f32],
+                            [region[0] as f32, region[1] as f32],
+                            pass.space,
+                        ),
+                        resolve::params(pass),
                     )
                 });
                 #[cfg(target_vendor = "apple")]
-                let globals = globals.enumerate().map(|(index, mut g)| {
+                let globals = globals.enumerate().map(|(index, (mut g, params))| {
                     if let Some(origin) = surf.composition.attachment_origin(index) {
                         g.attachment_origin = origin.map(|value| value as f32);
                     }
-                    g
+                    (g, params)
                 });
-                for g in globals {
+                for (g, params) in globals {
                     let g = bytemuck::bytes_of(&g);
+                    let params = bytemuck::bytes_of(&params);
                     entry[..g.len()].copy_from_slice(g);
+                    entry[g.len()..g.len() + params.len()].copy_from_slice(params);
                     put(&entry);
                 }
             }
@@ -7220,6 +7394,16 @@ impl GpuRenderer {
                 i = end;
                 continue;
             }
+            // First reduced capture of the engine's life builds the
+            // resolve pipelines here, like the shadow blur (#170).
+            let resolve_draw = if resolve::of(&surf.frame.passes[i]).is_some() {
+                let pipelines = self.resolve.get_or_insert_with(|| {
+                    resolve::Pipelines::new(&self.device, self.shader_delivery)
+                });
+                prepare_resolve(&self.device, pipelines, &self.globals, surf, i)?
+            } else {
+                None
+            };
             let pass = &surf.frame.passes[i];
             let coverage_order = matches!(pass.target, Target::Part(_))
                 && !pass.ranges.is_empty()
@@ -7290,8 +7474,16 @@ impl GpuRenderer {
                 }
                 Target::Part(n) => surf.part(n),
                 Target::Scratch(i) => (&surf.scratch[&i].view, &surf.scratch[&i].texture),
+                // A staged resolve's draws land in the staging texture.
                 Target::Backdrop { group, region } => {
-                    let capture = &surf.backdrop_groups[&group].captures[region as usize];
+                    let group_state = &surf.backdrop_groups[&group];
+                    let capture = if resolve::of(pass).is_some() && resolve::staged(pass) {
+                        group_state.staging[region as usize]
+                            .as_ref()
+                            .expect("staging allocated before encode")
+                    } else {
+                        &group_state.captures[region as usize]
+                    };
                     (&capture.view, &capture.texture)
                 }
                 Target::Projected(key) => {
@@ -7299,9 +7491,14 @@ impl GpuRenderer {
                     (&entry.levels[0], &entry.texture)
                 }
             };
-            // A backdrop-group capture first copies `pass.region` out of
-            // its `copy_from` target into the group's capture texture.
-            if let Some(capture) = pass.capture {
+            // A backdrop-group capture first copies its draw region out
+            // of its `copy_from` target into the group's capture texture —
+            // into the staging texture for a staged resolve. A direct
+            // resolve reads `copy_from` in the pass instead.
+            let draw_region = resolve::draw_region(pass);
+            if let Some(capture) = pass.capture
+                && (capture.resolve.is_none() || resolve::staged(pass))
+            {
                 let (src, sx, sy) = match capture.copy_from {
                     Target::Plane(layer) => (
                         &surf.static_layers[&layer]
@@ -7325,15 +7522,15 @@ impl GpuRenderer {
                         (&capture.texture, 0, 0)
                     }
                 };
-                debug_assert!(pass.region[0] + pass.region[2] <= src.width());
-                debug_assert!(pass.region[1] + pass.region[3] <= src.height());
+                debug_assert!(draw_region[0] + draw_region[2] <= src.width());
+                debug_assert!(draw_region[1] + draw_region[3] <= src.height());
                 encoder.copy_texture_to_texture(
                     wgpu::TexelCopyTextureInfo {
                         texture: src,
                         mip_level: 0,
                         origin: wgpu::Origin3d {
-                            x: pass.region[0].saturating_sub(sx),
-                            y: pass.region[1].saturating_sub(sy),
+                            x: draw_region[0].saturating_sub(sx),
+                            y: draw_region[1].saturating_sub(sy),
                             z: 0,
                         },
                         aspect: wgpu::TextureAspect::All,
@@ -7345,8 +7542,8 @@ impl GpuRenderer {
                         aspect: wgpu::TextureAspect::All,
                     },
                     wgpu::Extent3d {
-                        width: pass.region[2],
-                        height: pass.region[3],
+                        width: draw_region[2],
+                        height: draw_region[3],
                         depth_or_array_layers: 1,
                     },
                 );
@@ -7601,16 +7798,26 @@ impl GpuRenderer {
                 render_pass.set_viewport(
                     0.0,
                     0.0,
-                    pass.region[2] as f32,
-                    pass.region[3] as f32,
+                    draw_region[2] as f32,
+                    draw_region[3] as f32,
                     0.0,
                     1.0,
                 );
-                render_pass.set_scissor_rect(0, 0, pass.region[2], pass.region[3]);
+                render_pass.set_scissor_rect(0, 0, draw_region[2], draw_region[3]);
             }
             // The uniform slot written for this pass above (256-byte
             // stride), which matches `surf.frame.passes` ordering.
             let offset = (surf.globals_base + u32::try_from(i).unwrap()) * 256;
+            // A direct resolve is the pass's only draw.
+            if let Some(draw) = resolve_draw.as_ref().filter(|draw| draw.staged.is_none()) {
+                resolve::draw(
+                    &mut render_pass,
+                    &draw.pipeline,
+                    &draw.bind,
+                    offset,
+                    (pass.region[2], pass.region[3]),
+                );
+            }
             render_pass.set_bind_group(0, &self.bind0, &[offset]);
             // External ranges bind a slot's group-1 over the external
             // pipeline; an engine range after one must rebind its pipeline.
@@ -8044,6 +8251,34 @@ impl GpuRenderer {
                 ri += 1;
             }
             drop(render_pass);
+            // A staged resolve runs once the clip-only composites landed.
+            if let Some(ResolveDraw {
+                pipeline,
+                bind,
+                staged: Some((capture, size)),
+            }) = &resolve_draw
+            {
+                let mut resolve_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("backdrop resolve"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: capture,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                let offset = (surf.globals_base + u32::try_from(i).unwrap()) * 256;
+                resolve::draw(&mut resolve_pass, pipeline, bind, offset, *size);
+                drop(resolve_pass);
+                stats.passes += 1;
+            }
             if let Some((_, parameters)) = surf.frame.shadows.iter().find(|(pass, _)| *pass == i) {
                 let Target::Scratch(depth) = pass.target else {
                     unreachable!("shadow captures scratch")

@@ -346,10 +346,31 @@ pub struct TouchScrollConfig {
     pub fling: FlingDeceleration,
 }
 
-/// The fling's deceleration model: Android `OverScroller`'s spline, whose
-/// math the renderer ports
+impl TouchScrollConfig {
+    /// Android's density-1 defaults — `ViewConfiguration`'s constants
+    /// normalized to logical units, not the scaled values a host reports
+    /// at runtime. Tests drive them through the host's
+    /// `touch_scroll_config` seam so a touch drag claims scroll views the
+    /// way it does on device.
+    #[must_use]
+    pub fn android_default() -> Self {
+        Self {
+            touch_slop: 10.0,
+            min_fling_velocity: 50.0,
+            max_fling_velocity: 8_000.0,
+            fling: FlingDeceleration {
+                physical_coeff: 9.806_65 * 39.37 * 160.0 * 0.84,
+                friction: 0.015,
+            },
+        }
+    }
+}
+
+/// The fling's deceleration model: Android `OverScroller`'s spline.
+///
+/// The spline's math is ported
 /// (`frameworks/base/core/java/android/widget/OverScroller.java`,
-/// `SplineScroller`). The platform computes the coefficients for its own
+/// `SplineScroller`); the platform computes the coefficients for its own
 /// display and feel.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FlingDeceleration {
@@ -817,12 +838,13 @@ pub trait SurfaceProvider {
     /// from — all four from the same creation chain, which the shared
     /// Cherenkov engine requires of its [`SharedDevice`].
     fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice;
-    /// Whether the pixels written into this surface's textures are consumed
-    /// as premultiplied-alpha. True only for an OS surface configured
-    /// `CompositeAlphaMode::PreMultiplied`; offscreen/readback targets keep
-    /// their straight-alpha bytes and stay `false`.
-    fn premultiply_alpha(&self) -> bool {
-        false
+    /// The alpha convention the pixels written into this surface's textures
+    /// are presented with — the engine's `surface_output_alpha` verdict for
+    /// the surface's configured `CompositeAlphaMode`. Offscreen/readback
+    /// targets have no compositor and keep their straight-alpha bytes, so
+    /// the default is [`cherenkov_gpu::interop::OutputAlpha::Straight`].
+    fn output_alpha(&self) -> cherenkov_gpu::interop::OutputAlpha {
+        cherenkov_gpu::interop::OutputAlpha::Straight
     }
     /// The display's HDR headroom — the brightest white the surface
     /// presents, relative to SDR white. Every current surface is SDR, so
@@ -839,18 +861,36 @@ pub trait SurfaceProvider {
     }
 }
 
-/// The window's platform safe area, in logical units — the insets the host
-/// reports for regions obscured by system chrome (status bar, navigation bar,
-/// display cutout) and the IME.
+/// The window's platform safe area in logical units.
 ///
-/// The host owns the binding: it writes the combined insets on every change,
-/// and the windowed pipeline lays the root content out inside them while
-/// `waterui_layout::safe_area::IgnoreSafeArea` content reaches the window
-/// edge on its flagged edges. The binding lives in the session environment so
-/// an update re-lays out through the ordinary input path; hosts with no
-/// unsafe regions simply never install one.
+/// This is the *container* region of the safe-area contract (layout-spec.md
+/// §7.1): the insets the host reports for system chrome (status bar,
+/// navigation bar, display cutout, window chrome), never the keyboard.
+///
+/// The host owns the binding: it writes the container insets on every
+/// change, and the windowed pipeline lays the root content out inside the
+/// union of the two regions while `waterui_layout::safe_area::IgnoreSafeArea`
+/// content reaches through the regions and edges it names. The binding lives
+/// in the session environment so an update re-lays out through the ordinary
+/// input path; hosts with no unsafe regions simply never install one.
 #[derive(Debug, Clone)]
 pub struct WindowSafeArea(pub nami::Binding<waterui_layout::padding::EdgeInsets>);
+
+/// The window's *keyboard* region in logical units.
+///
+/// This is the inset the host reports for the software keyboard and other
+/// input-method surfaces, a separate safe-area region from [`WindowSafeArea`]
+/// (layout-spec.md §7.1).
+///
+/// The binding rides the same subscription path as `WindowSafeArea`: a host
+/// write on it re-lays the window out per frame, which is how a keyboard
+/// animating with the platform's own animation reaches the layout — a host
+/// that reports every animation frame animates the layout too. Layout
+/// resolves it per edge as the deeper of the two regions: a scroll surface
+/// whose bottom touches it extends through it and scrolls a focused field
+/// clear of the keyboard band (layout-spec.md §7.1).
+#[derive(Debug, Clone)]
+pub struct WindowKeyboardArea(pub nami::Binding<waterui_layout::padding::EdgeInsets>);
 
 /// Asserts the app's `Window::frame` binding carries finite components on
 /// all four fields. The binding is a trust boundary — a NaN or infinite
@@ -1956,7 +1996,7 @@ impl OffscreenSceneSurface {
             self.target.queue(),
             &texture,
             crate::engine::format_output_color(texture.format()),
-            true,
+            cherenkov_gpu::interop::OutputAlpha::Premultiplied,
             1.0,
         );
         crate::readback::readback_texture_rgba8(
@@ -2574,8 +2614,8 @@ mod winit_impl {
             self.surface.configure(&self.gpu.device, &self.config);
         }
 
-        fn premultiply_alpha(&self) -> bool {
-            self.config.alpha_mode == wgpu::CompositeAlphaMode::PreMultiplied
+        fn output_alpha(&self) -> cherenkov_gpu::interop::OutputAlpha {
+            cherenkov_gpu::interop::surface_output_alpha(self.config.alpha_mode)
         }
 
         fn gpu_context_id(&self) -> u64 {
@@ -3251,6 +3291,9 @@ mod winit_impl {
     )]
     pub struct WinitWindow {
         window: Arc<NativeWindow>,
+        /// The host's wake for this window, behind every
+        /// [`gpu_surface_redraw_handle`](GpuSurfaceWindow::gpu_surface_redraw_handle).
+        wake: RedrawHandle,
         surface: WinitSurface,
         pending_surface_size: Option<PhysicalSize<u32>>,
         pending_events: Vec<InputEvent>,
@@ -3320,9 +3363,16 @@ mod winit_impl {
     }
 
     impl WinitWindow {
-        /// Creates an offscreen surface synchronously.
-        pub async fn new(window: Arc<NativeWindow>, requires_transparency: bool) -> Self {
-            Self::new_with_shared_gpu(window, None, requires_transparency)
+        /// Creates the surface for `window` on a GPU context of its own.
+        ///
+        /// `wake` is the host's request for another frame of this window;
+        /// see [`Self::new_with_shared_gpu`] for its contract.
+        pub async fn new(
+            window: Arc<NativeWindow>,
+            wake: RedrawHandle,
+            requires_transparency: bool,
+        ) -> Self {
+            Self::new_with_shared_gpu(window, wake, None, requires_transparency)
                 .await
                 .0
         }
@@ -3331,10 +3381,21 @@ mod winit_impl {
         /// chain when given and returning the [`WinitGpuContext`] in use so
         /// the caller can hand it to the next surface.
         ///
+        /// `wake` asks the host's event loop to redraw this window. GPU
+        /// content and the engine's render thread call it from their own
+        /// threads, and the render thread may hold its last clone, so it
+        /// must not own or touch the winit window: on macOS a winit window
+        /// used or dropped off the main thread hops synchronously onto the
+        /// main thread, which deadlocks while the main thread waits on the
+        /// calling thread — as it does when it shuts the engine down after
+        /// the last window closes. Post the request to the event loop and
+        /// redraw the window there.
+        ///
         /// # Panics
         /// Propagates panics from surface and device creation.
         pub async fn new_with_shared_gpu(
             window: Arc<NativeWindow>,
+            wake: RedrawHandle,
             shared_gpu: Option<&WinitGpuContext>,
             requires_transparency: bool,
         ) -> (Self, WinitGpuContext) {
@@ -3356,6 +3417,7 @@ mod winit_impl {
                     #[cfg(hydrolysis_macos_system_webview)]
                     hybrid_compositor: MacHybridCompositor::new(gpu.clone()),
                     window,
+                    wake,
                     surface,
                     occluded: false,
                     zero_sized,
@@ -4350,14 +4412,14 @@ mod winit_impl {
         }
 
         fn gpu_surface_redraw_handle(&self) -> Option<RedrawHandle> {
-            let window = Arc::clone(&self.window);
+            let wake = self.wake.clone();
             let occluded = Arc::clone(&self.occlusion_signal);
             Some(RedrawHandle::new(move || {
                 // GPU content cannot see the window's pump state, so the
                 // occlusion report is shared as a flag: a frame produced
                 // while the window is hidden posts no wake.
                 if !occluded.load(Ordering::Relaxed) {
-                    window.request_redraw();
+                    wake.request_redraw();
                 }
             }))
         }

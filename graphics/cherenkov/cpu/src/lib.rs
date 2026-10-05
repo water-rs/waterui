@@ -183,8 +183,9 @@ impl cherenkov::Backdrop for Raster {
         renderer: &mut Self::Renderer,
         surface: cherenkov::SurfaceId,
         id: cherenkov::BackdropId,
+        scale: cherenkov::CaptureScale,
     ) {
-        renderer.filters.add_backdrop_group(surface, id);
+        renderer.filters.add_backdrop_group(surface, id, scale);
     }
 
     fn remove_backdrop_group(
@@ -210,10 +211,11 @@ where
         surface: cherenkov::SurfaceId,
         id: cherenkov::BackdropId,
         filter: F,
+        scale: cherenkov::CaptureScale,
     ) {
         renderer
             .filters
-            .add_filtered_backdrop_group(surface, id, filter);
+            .add_filtered_backdrop_group(surface, id, filter, scale);
     }
 }
 

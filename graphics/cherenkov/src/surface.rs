@@ -434,23 +434,30 @@ impl<B: Backdrop> Surface<B> {
     }
 
     /// Creates a backdrop group on this surface whose members sample the
-    /// unfiltered backdrop.
+    /// unfiltered backdrop, captured at `scale`.
     #[must_use]
-    pub fn backdrop_group_unfiltered(&self) -> crate::BackdropGroup {
-        self.new_backdrop_group(B::add_backdrop_group)
+    pub fn backdrop_group_unfiltered(&self, scale: crate::CaptureScale) -> crate::BackdropGroup {
+        self.new_backdrop_group(move |r, surface, id| {
+            B::add_backdrop_group(r, surface, id, scale);
+        })
     }
 
-    /// Creates a backdrop group whose capture runs through `filter` once;
-    /// members share the result.
+    /// Creates a backdrop group whose capture, taken at `scale`, runs
+    /// through `filter` once; members share the result. The filter runs
+    /// on the reduced capture, its footprint counted in capture texels.
     #[must_use]
-    pub fn backdrop_group<K, F>(&self, filter: F) -> crate::BackdropGroup
+    pub fn backdrop_group<K, F>(
+        &self,
+        filter: F,
+        scale: crate::CaptureScale,
+    ) -> crate::BackdropGroup
     where
         K: filtrate_core::kind::Kind,
         F: BackdropChain<K> + crate::RenderTransfer,
         B: BackdropRuns<K, F>,
     {
         self.new_backdrop_group(move |r, surface, id| {
-            B::add_filtered_backdrop_group(r, surface, id, filter);
+            B::add_filtered_backdrop_group(r, surface, id, filter, scale);
         })
     }
 }

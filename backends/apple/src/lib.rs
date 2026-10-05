@@ -44,6 +44,8 @@ mod registry;
 #[cfg(any(target_os = "ios", test))]
 mod scene_registry;
 pub(crate) mod startup;
+#[cfg(target_os = "macos")]
+mod termination;
 pub(crate) mod theme;
 #[cfg(target_os = "macos")]
 mod toolbar;

@@ -27,14 +27,18 @@ use waterui_layout::stack::{VStackLayout, vstack};
 use waterui_text::styled::StyledStr;
 
 fn text_node(content: &'static str) -> RenderNode {
+    let content = Computed::constant(StyledStr::plain(content));
+    let alignment = Computed::constant(HorizontalAlignment::Leading);
     RenderNode::Text(Box::new(TextNode {
         memo_gate: Cell::default(),
         memo_slots: RefCell::default(),
         accessibility_identity: Rc::new(()),
         render_id: RenderId::next(),
-        content: Computed::constant(StyledStr::plain(content)),
-        alignment: Computed::constant(HorizontalAlignment::Leading),
+        _guards: [content.watch(|_| {}), alignment.watch(|_| {})],
+        content,
+        alignment,
         line_limit: None,
+        layout_dirty: Rc::new(Cell::new(false)),
     }))
 }
 
@@ -70,6 +74,7 @@ fn render_node_container_lays_out_and_flushes_text() {
     node.layout(
         &mut renderer,
         &env,
+        None,
         ProposalSize::new(Some(window.width), Some(window.height)),
         window,
     );
@@ -132,6 +137,7 @@ fn geometry_static_flush_reuses_cached_placement() {
     node.layout(
         &mut renderer,
         &env,
+        None,
         ProposalSize::new(Some(window.width), Some(window.height)),
         window,
     );
@@ -181,6 +187,7 @@ fn opacity_wrapper_builds_and_flushes_via_dsl() {
     node.layout(
         &mut renderer,
         &env,
+        None,
         ProposalSize::new(Some(window.width), Some(window.height)),
         window,
     );

@@ -410,7 +410,9 @@ pub fn backdrop_spaces_are_checked<B: Backend + ProjectiveLayers + Backdrop>(
     // error under test.
     let member_engine = Engine::<B>::new(config()).expect("backend required");
     let mut member = Scene::<B>::new(&member_engine, |_| {});
-    let group = member.surface.backdrop_group_unfiltered();
+    let group = member
+        .surface
+        .backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     member.edit(|e| {
         e.projection(Projective::IDENTITY).backdrop(group.sample());
     });
@@ -425,7 +427,9 @@ pub fn backdrop_spaces_are_checked<B: Backend + ProjectiveLayers + Backdrop>(
     let mut spanning = Scene::<B>::new(&spanning_engine, |e| {
         e.projection(Projective::IDENTITY);
     });
-    let group = spanning.surface.backdrop_group_unfiltered();
+    let group = spanning
+        .surface
+        .backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     let (inside, outside) = (spanning.surface.layer(), spanning.surface.layer());
     spanning.surface.update(|tx| {
         tx[&spanning.layer].push(&inside);

@@ -129,7 +129,12 @@ that overflows its intrinsic size.
 
 Safe areas: content is inset from notches and home indicators by default; a full-bleed
 layer opts out with `.ignore_safe_area(EdgeSet::ALL)` (per-edge: `EdgeSet` has
-`top`/`leading`/`bottom`/`trailing` fields and `ALL`/`NONE` consts).
+`top`/`leading`/`bottom`/`trailing` fields and `ALL`/`NONE` consts). The safe area has
+two regions per edge — `container` (bars, cutouts, window chrome) and `keyboard` (the
+software keyboard) — and `.ignore_safe_area` takes an `Into<IgnoreSafeArea>`:
+`SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM)` lays a view under the keyboard but above
+the container inset, `SafeAreaRegions::CONTAINER` / `ALL` name the other combinations,
+and a bare `EdgeSet` ignores every region.
 
 Grid — note the import and the `row` name collision with the list row builder:
 

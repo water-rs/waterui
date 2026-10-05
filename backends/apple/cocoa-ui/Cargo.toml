@@ -53,7 +53,7 @@ native-test = []
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 block2 = "0.6"
-dispatch2 = { version = "0.3", default-features = false, features = ["std", "objc2"] }
+dispatch2 = { version = "0.3", default-features = false, features = ["std", "objc2", "block2"] }
 libc = "0.2"
 keyboard-types = { version = "0.8.3", default-features = false }
 objc2 = "0.6"

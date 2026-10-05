@@ -583,7 +583,7 @@ mod tests {
 
     fn entry() -> Entry {
         Entry {
-            effect: Box::new(filtrate::Executor::new(GaussianBlur(2.0_f32))),
+            effect: Box::new(filtrate::Executor::new(GaussianBlur::new(2.0_f32))),
             dirty: Arc::new(AtomicBool::new(false)),
             wakes: Arc::new(SurfaceWakes::default()),
             again: false,

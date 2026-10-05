@@ -107,6 +107,7 @@ fn main() {
     let blend_path = manifest.join("src/render/blend.wgsl");
     let projective_path = manifest.join("src/render/projective.wgsl");
     let mip_path = manifest.join("src/render/mip.wgsl");
+    let resolve_path = manifest.join("src/render/resolve.wgsl");
     for path in [
         &shader_path,
         &present_path,
@@ -115,6 +116,7 @@ fn main() {
         &blend_path,
         &projective_path,
         &mip_path,
+        &resolve_path,
     ] {
         println!("cargo::rerun-if-changed={}", path.display());
     }
@@ -137,13 +139,16 @@ fn main() {
         .unwrap_or_else(|e| panic!("{}: {e}", projective_path.display()));
     let mip = std::fs::read_to_string(&mip_path)
         .unwrap_or_else(|e| panic!("{}: {e}", mip_path.display()));
+    let resolve = std::fs::read_to_string(&resolve_path)
+        .unwrap_or_else(|e| panic!("{}: {e}", resolve_path.display()));
     let native_path = manifest.join("src/render/external_native.wgsl");
     println!("cargo::rerun-if-changed={}", native_path.display());
     let native = std::fs::read_to_string(&native_path)
         .unwrap_or_else(|e| panic!("{}: {e}", native_path.display()));
 
     // The three VARIANT specializations of shader.wgsl plus present.wgsl,
-    // external.wgsl, projective.wgsl and mip.wgsl — the fixed module set
+    // external.wgsl, projective.wgsl, mip.wgsl and resolve.wgsl — the
+    // fixed module set
     // `render` creates. The engine, external and projective modules share
     // the `shared.wgsl` prelude; the engine and projective tails share the
     // `blend.wgsl` compositing helpers.
@@ -192,6 +197,13 @@ fn main() {
         name: "mip".into(),
         source: mip,
         groups: bindings::MIP_GROUPS,
+        metal: true,
+        merge_pair: None,
+    });
+    specs.push(Spec {
+        name: "resolve".into(),
+        source: resolve,
+        groups: bindings::RESOLVE_GROUPS,
         metal: true,
         merge_pair: None,
     });
