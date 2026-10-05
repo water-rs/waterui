@@ -432,6 +432,9 @@ pub fn run(app: App, style: impl crate::Style) {
             load_web_fonts()
         );
         platform.apply_properties(&window);
+        // The root content lays out inside the page's safe area while
+        // backgrounds reach under the browser and system chrome around it.
+        env.insert(crate::platform::WindowSafeArea(platform.safe_area()));
         let mut renderer = HydrolysisRenderer::new(theme, FontFamilyResolution::Lenient);
         let fonts = FontCollection::new(font_cx);
         fonts.clone().install(&mut env);
