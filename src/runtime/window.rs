@@ -3,11 +3,9 @@
 //! # Window Backgrounds
 //!
 //! Windows support solid color backgrounds. For blur effects, use `Material`:
-//! the window's content is wrapped in `MaterialBackground` metadata, which
-//! every backend realizes as [`Material`] documents — within-window levels as
-//! a backdrop treatment, behind-window levels through the compositor's
-//! blur-behind protocol. On a compositor without one, a behind-window level
-//! fails fast with a panic naming the level and the platform.
+//! the window's content is wrapped in `MaterialBackground` metadata, which the
+//! mainline backends realize as [`Material`] documents. The metadata is
+//! ignorable: a backend that does not realize it draws the window without it.
 //!
 //! ```rust
 //! use waterui::prelude::*;
