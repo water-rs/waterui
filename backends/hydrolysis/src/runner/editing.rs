@@ -35,6 +35,7 @@
 use std::ops::Range;
 
 use crate::renderer::{FocusedEditorSnapshot, InteractionKey, SemanticCore, TextContextMenuAction};
+use crate::text::{SessionTextLayout, TextLayout as _, TextPosition};
 
 /// `InputConnection.CURSOR_UPDATE_IMMEDIATE` — send the anchor info once.
 pub const CURSOR_UPDATE_IMMEDIATE: i32 = 0x01;
@@ -881,7 +882,7 @@ impl EditingSession {
     }
 }
 
-fn layout_of(snapshot: &FocusedEditorSnapshot) -> &parley::Layout<[u8; 4]> {
+const fn layout_of(snapshot: &FocusedEditorSnapshot) -> &SessionTextLayout {
     &snapshot.display_layout
 }
 
@@ -889,22 +890,13 @@ fn layout_of(snapshot: &FocusedEditorSnapshot) -> &parley::Layout<[u8; 4]> {
 /// at its start extended to the next character's caret x — the convention
 /// `CursorAnchorInfo.Builder.addCharacterBounds` expects.
 fn char_rect(
-    layout: &parley::Layout<[u8; 4]>,
+    layout: &SessionTextLayout,
     display: &str,
     byte_start: usize,
     byte_next: usize,
 ) -> kurbo::Rect {
-    let affinity = |byte: usize| {
-        if byte >= display.len() {
-            parley::Affinity::Upstream
-        } else {
-            parley::Affinity::Downstream
-        }
-    };
-    let start = parley::Cursor::from_byte_index(layout, byte_start, affinity(byte_start))
-        .geometry(layout, 1.0);
-    let end = parley::Cursor::from_byte_index(layout, byte_next, affinity(byte_next))
-        .geometry(layout, 1.0);
+    let start = layout.caret_rect(TextPosition::in_text(byte_start, display.len()));
+    let end = layout.caret_rect(TextPosition::in_text(byte_next, display.len()));
     let x0 = start.x0.min(end.x0);
     let x1 = start.x0.max(end.x0).max(x0 + 1.0);
     kurbo::Rect::new(x0, start.y0, x1, start.y1)

@@ -51,6 +51,7 @@ use crate::runner::{
     RenderDiagnosticsConfig, init_main_thread_executors, install_headless_window_managers,
     install_native_component_hooks, menu_bar,
 };
+use crate::text::SessionTextEngine;
 use crate::time::Instant;
 
 /// One coherent metrics snapshot the host pushes — size, density, font scale,
@@ -759,8 +760,10 @@ impl AndroidSession {
             soft_input: None,
         };
         platform.apply_properties(&window);
-        let mut renderer = HydrolysisRenderer::new(theme, FontFamilyResolution::Lenient);
-        crate::runner::fonts::seed_core(&mut renderer, &fonts);
+        let mut renderer = HydrolysisRenderer::with_engine(
+            theme,
+            SessionTextEngine::from_collection(&fonts, FontFamilyResolution::Lenient),
+        );
         renderer.set_window_id(shortcuts.mint_window_id());
         let mut runtime = RuntimeWindow::new(
             window,

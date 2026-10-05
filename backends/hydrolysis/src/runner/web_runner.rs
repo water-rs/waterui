@@ -39,6 +39,7 @@ use crate::runner::web_accessibility::WebAccessibilityBridge;
 use crate::runner::{
     RenderDiagnosticsConfig, RuntimeWindow, advance_runtime, handle_input_events, render_window,
 };
+use crate::text::SessionTextEngine;
 use crate::time::Instant;
 
 const WEB_FONT_MANIFEST_PATH: &str = "fonts/waterui-fonts.json";
@@ -435,10 +436,12 @@ pub fn run(app: App, style: impl crate::Style) {
         // The root content lays out inside the page's safe area while
         // backgrounds reach under the browser and system chrome around it.
         env.insert(crate::platform::WindowSafeArea(platform.safe_area()));
-        let mut renderer = HydrolysisRenderer::new(theme, FontFamilyResolution::Lenient);
         let fonts = FontCollection::new(font_cx);
         fonts.clone().install(&mut env);
-        super::fonts::seed_core(&mut renderer, &fonts);
+        let mut renderer = HydrolysisRenderer::with_engine(
+            theme,
+            SessionTextEngine::from_collection(&fonts, FontFamilyResolution::Lenient),
+        );
         renderer.set_window_id(
             env.get::<MenuShortcutRegistry>()
                 .expect("the web runner seeds MenuShortcutRegistry")

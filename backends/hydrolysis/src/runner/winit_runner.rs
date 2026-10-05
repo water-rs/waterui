@@ -48,6 +48,7 @@ use crate::runner::{
     RenderDiagnosticsConfig, RuntimeWindow, advance_runtime, handle_input_events_with,
     pump_window_semantics, render_window, runtime_window_origin,
 };
+use crate::text::SessionTextEngine;
 
 pub(super) enum RunnerEvent {
     PollLocalTasks,
@@ -1120,9 +1121,8 @@ impl WinitRunner {
         }
         let mut platform = self.create_platform_window(native_window, &window);
         platform.apply_properties(&window);
-        let mut renderer =
-            HydrolysisRenderer::new(Rc::clone(&self.theme), FontFamilyResolution::Lenient);
-        super::seed_core(&mut renderer, &self.fonts);
+        let text = SessionTextEngine::from_collection(&self.fonts, FontFamilyResolution::Lenient);
+        let renderer = HydrolysisRenderer::with_engine(Rc::clone(&self.theme), text);
         let mut runtime =
             RuntimeWindow::new(window, platform, renderer, self.render_diagnostics_config);
         runtime

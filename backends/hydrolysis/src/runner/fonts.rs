@@ -6,14 +6,13 @@
 //! loader in [`super::web_runner`] (which fetches fonts from a manifest).
 //!
 //! The result is built **once per application**, installed into the root
-//! environment as the shared [`FontCollection`], and every window's renderer is
-//! seeded from it by [`seed_renderer`]. Building it per window meant scanning
+//! environment as the shared `FontCollection`, and every window's text engine
+//! is constructed from it. Building it per window meant scanning
 //! the resource directories and enumerating the system's fonts again for each
 //! one, and a self-drawn component reading the environment would have had no
 //! single collection to read.
 
 use parley::fontique::{Collection, FallbackKey, FamilyId, FontInfo, GenericFamily, Script};
-use waterui_text::FontCollection;
 
 /// Font-family buckets recognized from `WaterUI`'s bundled resource fonts.
 #[derive(Default)]
@@ -183,14 +182,4 @@ pub(super) fn native_resource_fonts(
     }
     resource_fonts.install(&mut font_cx.collection);
     font_cx
-}
-
-/// Gives `core` the application's fonts to shape with.
-///
-/// Every window shapes against the one collection the runner installed, so a
-/// popup opened later measures text exactly as the window that opened it does.
-/// The renderer keeps its own copy because it shapes across worker threads and
-/// `parley`'s contexts are not `Sync`; the faces in it are the same ones.
-pub(super) fn seed_core(core: &mut crate::renderer::SemanticCore, fonts: &FontCollection) {
-    *core.state_mut().text_fonts_mut() = fonts.use_fonts(|fonts| fonts.clone());
 }

@@ -56,9 +56,11 @@ impl SemanticWindow {
         window_id: WindowId,
         family_resolution: FontFamilyResolution,
     ) -> Self {
-        let mut core = SemanticCore::new(Instant::now(), family_resolution);
+        let mut core = SemanticCore::new(
+            Instant::now(),
+            SessionTextEngine::from_collection(fonts, family_resolution),
+        );
         core.set_window_id(window_id);
-        seed_core(&mut core, fonts);
         #[cfg(feature = "accessibility")]
         {
             core.use_semantic_keyboard_activation();

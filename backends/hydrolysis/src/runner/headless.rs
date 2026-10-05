@@ -473,8 +473,10 @@ impl HeadlessRuntime {
             wgpu::TextureFormat::Rgba8Unorm,
         );
         platform.apply_properties(&window);
-        let mut renderer = HydrolysisRenderer::new(Rc::clone(&theme), family_resolution);
-        super::seed_core(&mut renderer, &fonts);
+        let mut renderer = HydrolysisRenderer::with_engine(
+            Rc::clone(&theme),
+            SessionTextEngine::from_collection(&fonts, family_resolution),
+        );
         renderer.set_window_id(
             env.get::<MenuShortcutRegistry>()
                 .expect("install_headless_window_managers seeds MenuShortcutRegistry")
@@ -516,8 +518,10 @@ impl HeadlessRuntime {
             wgpu::TextureFormat::Rgba8Unorm,
         );
         platform.apply_properties(&window);
-        let mut renderer = HydrolysisRenderer::new(Rc::clone(&self.theme), self.family_resolution);
-        super::seed_core(&mut renderer, &self.fonts);
+        let mut renderer = HydrolysisRenderer::with_engine(
+            Rc::clone(&self.theme),
+            SessionTextEngine::from_collection(&self.fonts, self.family_resolution),
+        );
         renderer.set_window_id(
             self.env
                 .get::<MenuShortcutRegistry>()
