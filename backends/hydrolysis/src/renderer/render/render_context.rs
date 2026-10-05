@@ -133,20 +133,6 @@ impl<'a> WidgetRenderContext<'a> {
             .map(|area| area.hosted(self.hosted_frame(area, rect)))
     }
 
-    /// The §7.1 paint extension a bar the widget draws at `rect` in its own
-    /// bounds space earns — "Chrome": a bar extends its background under the
-    /// regions of every edge it touches, to the window edge. The answer is
-    /// [`SafeAreaLayout::touched_edge_offsets`] on the bar's own window-space
-    /// frame — the same computation a slot fill's layout-recorded extension
-    /// runs — so a bar whose edge clears the subtree's boundary extends
-    /// nowhere, and a widget with no context (inside a scroll surface's
-    /// content) extends nothing.
-    fn chrome_extension(&self, rect: kurbo::Rect) -> EdgeOffsets {
-        self.safe_area_for(rect)
-            .map(|area| area.touched_edge_offsets())
-            .unwrap_or_default()
-    }
-
     /// `self.bounds` grown by the touched-edge offsets of the area its
     /// content paints — the reach a transition clip and a stack backdrop
     /// fill must both cover so an extended bar surface is never clipped and
@@ -162,27 +148,43 @@ impl<'a> WidgetRenderContext<'a> {
     }
 
     /// The surface rect a bar docked at `dock` paints — `rect` grown by
-    /// [`Self::chrome_extension`] on every edge except `dock`'s opposite,
-    /// the one boundary a bar docked at `dock` can never reach. The mask
-    /// matters when a bar's measured frame is clamped to the widget's
-    /// bounds — a top bar on a `NavigationView` shorter than the bar lands
-    /// its inner edge on the bottom boundary and would otherwise extend
-    /// through that inset.
-    pub(crate) fn chrome_surface(&self, rect: kurbo::Rect, dock: Edge) -> kurbo::Rect {
-        self.chrome_surface_except(rect, &[dock.opposite()])
+    /// [`ChromeBar::bar_area_for`]'s touched-edge offsets on every edge
+    /// except `dock`'s opposite, the one boundary a bar docked at `dock`
+    /// can never reach. The offsets come from the split's bar context —
+    /// the keyboard-released one — so a docked bar still extends to the
+    /// window edge once the keyboard sits deeper than the container inset
+    /// (the ambient context's boundary would then sit at the keyboard
+    /// top). The mask matters when a bar's measured frame is clamped to
+    /// the widget's bounds — a top bar on a `NavigationView` shorter than
+    /// the bar lands its inner edge on the bottom boundary and would
+    /// otherwise extend through that inset.
+    pub(crate) fn chrome_surface(
+        rect: kurbo::Rect,
+        bar: Option<&crate::renderer::ChromeBar>,
+        dock: Edge,
+    ) -> kurbo::Rect {
+        Self::chrome_surface_except(rect, bar, &[dock.opposite()])
     }
 
-    /// `rect` grown by [`Self::chrome_extension`] with every edge in
-    /// `except` cleared — the surface of a bar that must keep some edges it
-    /// touches unextended, e.g. because a decoration the `WidgetTheme`
-    /// contract receives no placement for would move off its edge.
-    pub(crate) fn chrome_surface_except(&self, rect: kurbo::Rect, except: &[Edge]) -> kurbo::Rect {
+    /// `rect` grown by [`ChromeBar::bar_area_for`]'s touched-edge offsets
+    /// with every edge in `except` cleared — the surface of a bar that
+    /// must keep some edges it touches unextended, e.g. because a
+    /// decoration the `WidgetTheme` contract receives no placement for
+    /// would move off its edge. A `None` split — a widget with no §7.1
+    /// context — extends nothing.
+    pub(crate) fn chrome_surface_except(
+        rect: kurbo::Rect,
+        bar: Option<&crate::renderer::ChromeBar>,
+        except: &[Edge],
+    ) -> kurbo::Rect {
         grow_rect(
             rect,
-            except
-                .iter()
-                .copied()
-                .fold(self.chrome_extension(rect), EdgeOffsets::cleared),
+            except.iter().copied().fold(
+                bar.map_or_else(EdgeOffsets::default, |bar| {
+                    bar.bar_area_for(rect).touched_edge_offsets()
+                }),
+                EdgeOffsets::cleared,
+            ),
         )
     }
 
@@ -207,7 +209,7 @@ impl<'a> WidgetRenderContext<'a> {
             |area| {
                 let split = area.chrome_split(self.bounds, edge, extent);
                 ChromeRects {
-                    bar: split.band,
+                    bar: split.bar.band,
                     content: split.content,
                     split: Some(split),
                 }

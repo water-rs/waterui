@@ -592,7 +592,8 @@ pub fn render_navigation_view_parts(
         // the edges a top bar can touch — top, leading, trailing — to the
         // window edge; the separator stays at the bar's inner edge and
         // everything else keeps `bar_rect`.
-        let bar_surface = ctx.chrome_surface(bar_rect, Edge::Top);
+        let bar_surface =
+            WidgetRenderContext::chrome_surface(bar_rect, top.split.as_ref(), Edge::Top);
         {
             let theme = ctx.theme();
             ctx.draw_context(|draw| {
@@ -764,7 +765,8 @@ pub fn render_navigation_view_parts(
         // §7.1 "Chrome": the bottom bar's surface extends through the
         // regions of the edges a bottom bar can touch — bottom, leading,
         // trailing — to the window edge.
-        let bottom_surface = ctx.chrome_surface(bottom_rect, Edge::Bottom);
+        let bottom_surface =
+            WidgetRenderContext::chrome_surface(bottom_rect, bottom.split.as_ref(), Edge::Bottom);
         {
             let theme = ctx.theme();
             ctx.draw_context(|draw| {

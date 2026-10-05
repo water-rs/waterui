@@ -470,10 +470,15 @@ impl SafeAreaLayout {
             self.hosted(self.hosted_frame(bounds, content))
         };
         ChromeSplit {
-            bounds,
-            band,
+            bar: ChromeBar {
+                bounds,
+                edge,
+                inner: (extent > 0.0).then_some(inner),
+                band,
+                rest: content,
+                bar_area,
+            },
             content,
-            bar_area,
             content_area,
         }
     }
@@ -810,42 +815,24 @@ pub struct ScrollSurfaceFacts {
 }
 
 /// The answers [`SafeAreaLayout::chrome_split`] derives together for one
-/// edge of one `bounds` (§7.1): the docked bar's band, the context the
-/// bar's subtree lays out against, the hosted content's rect, and the
-/// content's context. A chrome container drawing bars on several edges
-/// runs [`SafeAreaLayout::chrome_splits`] instead — one call returning
-/// each bar's share and the single composed content rect and context.
+/// edge of one `bounds` (§7.1): the bar's [`ChromeBar`], the hosted
+/// content's rect, and the content's context. A chrome container drawing
+/// bars on several edges runs [`SafeAreaLayout::chrome_splits`] instead —
+/// one call returning each bar's share and the single composed content
+/// rect and context.
 pub struct ChromeSplit {
-    /// The `bounds` the split ran on — the space `band`, `content` and
-    /// [`Self::bar_area_for`]'s `rect` live in.
-    bounds: kurbo::Rect,
-    /// The band the bar occupies, in `bounds` space — it may sit wholly
-    /// past `bounds`' own edge once the keyboard covers it.
-    pub band: kurbo::Rect,
+    /// The bar's share of the split — its band, the context its subtree
+    /// lays out against, and the dock it establishes.
+    pub bar: ChromeBar,
     /// The remainder of `bounds` the hosted content lays out in — always
-    /// inside `bounds`, clear of both regions.
+    /// inside `bounds`, clear of both regions. Equal to `bar.rest`: a
+    /// single-edge split's content rect is the rest outside its one band.
     pub content: kurbo::Rect,
-    /// The context for views placed inside the band — the keyboard
-    /// region released on the bar's edge so the bar's fills and
-    /// extensions still reach the window edge. Its frame is the chrome
-    /// container's own; re-frame it per placed rect with
-    /// [`Self::bar_area_for`].
-    pub bar_area: SafeAreaLayout,
     /// The hosted content's context: [`SafeAreaLayout::hosted`] on
     /// `content`'s frame plus a `Docked` boundary on the bar's edge
     /// carrying the band's inner edge — nothing inside the content
     /// touches, releases or extends through the edge the bar sits on.
     pub content_area: SafeAreaLayout,
-}
-
-impl ChromeSplit {
-    /// The context for a view placed at `rect` inside the band — the
-    /// bar's context re-framed the way [`SafeAreaLayout::hosted_frame`]
-    /// maps `rect` inside `bounds`.
-    pub fn bar_area_for(&self, rect: kurbo::Rect) -> SafeAreaLayout {
-        self.bar_area
-            .with_frame(self.bar_area.hosted_frame(self.bounds, rect))
-    }
 }
 
 /// One bar's share of [`ChromeSplits`]: its band, the context its

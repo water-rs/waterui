@@ -397,12 +397,16 @@ fn render_tabs_parts(
     // strip's top edge and placing its divider is a `WidgetTheme` contract
     // change tracked as a follow-up issue.
     let bar_surface = match style {
-        NativeTabStyle::Sidebar => {
-            ctx.chrome_surface_except(bar_rect, &[Edge::Top, Edge::Trailing])
-        }
-        NativeTabStyle::Automatic | NativeTabStyle::TabBar => {
-            ctx.chrome_surface(bar_rect, Edge::Bottom)
-        }
+        NativeTabStyle::Sidebar => WidgetRenderContext::chrome_surface_except(
+            bar_rect,
+            chrome.split.as_ref().map(|split| &split.bar),
+            &[Edge::Top, Edge::Trailing],
+        ),
+        NativeTabStyle::Automatic | NativeTabStyle::TabBar => WidgetRenderContext::chrome_surface(
+            bar_rect,
+            chrome.split.as_ref().map(|split| &split.bar),
+            Edge::Bottom,
+        ),
     };
     {
         let theme = ctx.theme();
@@ -526,7 +530,7 @@ fn render_tabs_parts(
                     let icon_area = chrome
                         .split
                         .as_ref()
-                        .map(|split| split.bar_area_for(icon_rect));
+                        .map(|split| split.bar.bar_area_for(icon_rect));
                     icon.flush_in_rect(
                         ctx.renderer_mut(),
                         render_ctx,
@@ -540,7 +544,7 @@ fn render_tabs_parts(
                     let label_area = chrome
                         .split
                         .as_ref()
-                        .map(|split| split.bar_area_for(label_rect));
+                        .map(|split| split.bar.bar_area_for(label_rect));
                     st.tabs[index].label.flush_in_rect(
                         ctx.renderer_mut(),
                         render_ctx,
