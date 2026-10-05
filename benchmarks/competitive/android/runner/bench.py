@@ -313,6 +313,9 @@ def env(man: dict) -> dict:
                     "reported": t["reported"]}, indent=2))
     e = dict(os.environ)
     e["ANDROID_SDK_ROOT"] = str(t["sdk"])
+    # AGP refuses a split identity (minifyReleaseWithR8): ANDROID_HOME and
+    # ANDROID_SDK_ROOT must name the SAME directory — pin both.
+    e["ANDROID_HOME"] = str(t["sdk"])
     e["JAVA_HOME"] = str(t["java_home"])
     e["PATH"] = ":".join(
         [
@@ -411,8 +414,11 @@ def build_waterui(man, dist_dir: Path, e: dict):
     base = ["water", "package", "--platform", "android", "--backend",
             backend, "--release", "-y"]
     outs = d / "target" / "package"
+    # the manifest's logical abi keys are NOT the CLI's --arch spelling:
+    # `water package --arch` accepts arm64|x86-64|armv7|x86 only
+    cli_arch = {"arm64": "arm64", "x86_64": "x86-64"}
     for abi, name in man["abi_apks"].items():
-        checked([*base, "--arch", abi], cwd=d, env=be)
+        checked([*base, "--arch", cli_arch[abi]], cwd=d, env=be)
         shutil.copy(outs / "app-release.apk", dist_dir / name)
     checked([*base, "--arch", "arm64,x86-64", "--distribution"],
             cwd=d, env=be)
