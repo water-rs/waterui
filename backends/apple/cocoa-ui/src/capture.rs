@@ -1293,14 +1293,6 @@ impl ViewCapture {
     ) -> (Preparation, Vec<SurfaceSpec>) {
         let content = &*self.content;
         let was_hidden = crate::view::is_hidden(content);
-        self.set_content_hidden(false);
-        let restore = HiddenRestore {
-            owner: self,
-            was: was_hidden,
-        };
-
-        crate::view::prepare_for_capture(content);
-        let layer = crate::view::layer(content).expect("a capture view must be layer-backed");
         let geometry = CaptureGeometry::new(
             crate::view::bounds(content),
             target.width(),
@@ -1336,28 +1328,46 @@ impl ViewCapture {
             generation,
         );
 
-        // INVARIANT: the synchronous native raster pass runs inside one
-        // outer disabled-actions `CATransaction` — suppression open, the
-        // `renderInContext` draw, and suppression close all happen inside
-        // it, then a single commit pushes every model change at once.
-        // Nothing inside may open, commit or flush a transaction of its
-        // own: a mid-pass commit would push the suppressed state to the
-        // render server and flicker the on-screen tree. The suppression
-        // setters (`CapturableSurface::begin/end_capture_suppression`)
-        // are plain model mutations for exactly this reason, and the
-        // guard restores exactly the subset it opened — synchronously
-        // before the sole commit on success, from Drop on an early exit.
-        // The layer tree itself is never transformed or reparented — the
-        // destination geometry lives in the context's CTM.
+        // INVARIANT: every temporary mutation of the capture — the
+        // reveal of a normally-hidden root, surface suppression, and
+        // their restoration — happens inside ONE outer disabled-actions
+        // `CATransaction`, and the sole commit runs only after every
+        // original state is back. A normally-hidden filter-owned root is
+        // un-hidden in-model, drawn, and re-hidden before that commit:
+        // the render server never sees the revealed source tree. Nothing
+        // inside may open, commit or flush a transaction of its own: a
+        // mid-pass commit would publish the revealed or suppressed state
+        // and flicker — or leak — the on-screen tree. The guards restore
+        // exactly what they opened — synchronously before the sole
+        // commit on success, from Drop on an early exit — and the
+        // transaction closes last, so an early exit commits only the
+        // already-restored model state. The layer tree itself is never
+        // transformed or reparented — the destination geometry lives in
+        // the context's CTM.
         {
-            // Declared in drop order: `transaction` closes AFTER
-            // `suppression` restores, so an early exit commits only the
-            // already-restored model state.
+            // Declared in drop order: `restore` re-hides first, then
+            // `suppression` ends, then `transaction` closes — the commit
+            // only ever sees the original state.
             let transaction = TransactionGuard::begin();
             let mut suppression = SuppressionGuard::new(&snapshots);
+            let restore = HiddenRestore {
+                owner: self,
+                was: was_hidden,
+            };
+            if was_hidden {
+                crate::view::set_hidden(content, false);
+            }
+            // Layout/display preparation is a synchronous model-side
+            // pass — it never publishes; it must run while the subtree
+            // is un-hidden or a hidden view may have deferred it.
+            crate::view::prepare_for_capture(content);
+            let layer = crate::view::layer(content).expect("a capture view must be layer-backed");
             suppression.begin();
             raster.draw(&layer, geometry);
             suppression.end();
+            // Re-hide before the sole commit — `restore` would do it on
+            // drop, but the restore must be explicit before commit.
+            drop(restore);
             transaction.commit();
             flush_transaction();
         }
@@ -1369,21 +1379,18 @@ impl ViewCapture {
             device: target.device(),
             surfaces,
         };
-        drop(restore);
         (preparation, specs)
     }
 
-    /// Shows or re-hides the captured content without anything else seeing
-    /// it — actions disabled, state restored before the frame ends.
+    /// Restores the captured content's hidden state — a plain model
+    /// mutation. The caller's transaction decides when it is published;
+    /// in the capture pass that is the sole outer commit, after the
+    //  raster has already read the revealed tree.
     fn set_content_hidden(&self, hidden: bool) {
         if crate::view::is_hidden(&self.content) == hidden {
             return;
         }
-        CATransaction::begin();
-        CATransaction::setDisableActions(true);
         crate::view::set_hidden(&self.content, hidden);
-        CATransaction::commit();
-        flush_transaction();
     }
 
     /// The surface snapshot list for one capture.

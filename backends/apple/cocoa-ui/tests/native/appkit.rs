@@ -79,6 +79,7 @@ pub fn trials() -> Vec<Trial> {
             "capture",
             a_detached_capture_renders_and_teardown_stays_clean
         ),
+        case!("capture", a_hidden_capture_renders_without_revealing),
     ])
 }
 
@@ -963,5 +964,91 @@ fn a_detached_capture_renders_and_teardown_stays_clean() {
     drop(capture);
     crate::harness::pump_main_turn();
     let _layer = content.layer(); // crashes on an invalidated layer
+    label.removeFromSuperview();
+}
+
+/// A normally-hidden subtree — the shape a filter-owned source actually
+/// has — must still rasterize: the capture un-hides the root inside the
+/// single transaction, reads the revealed tree, and re-hides before the
+/// sole commit, so the flag never leaves `true` and the pixels still
+/// land.
+fn a_hidden_capture_renders_without_revealing() {
+    use std::rc::Rc;
+
+    use cocoa_ui::capture::ViewCapture;
+    use cocoa_ui::objc2_app_kit::{NSColor, NSView};
+    use cocoa_ui::objc2_foundation::{NSPoint, NSRect, NSSize};
+
+    let mtm = marker();
+    let content = NSView::new(mtm);
+    content.setFrame(NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(200.0, 200.0),
+    ));
+    content.setWantsLayer(true);
+    content
+        .layer()
+        .expect("a wanted layer exists")
+        .setBackgroundColor(Some(&NSColor::orangeColor().CGColor()));
+    let label = Label::new(mtm);
+    label.setTextColor(Some(&NSColor::whiteColor()));
+    label.set_text("hidden");
+    label.setWantsLayer(true);
+    label.setFrame(NSRect::new(
+        NSPoint::new(4.0, 60.0),
+        NSSize::new(150.0, 24.0),
+    ));
+    content.addSubview(&label);
+
+    // Same backing-fill trick as the detached arm: a brief window
+    // residency rasterizes the label into its layer contents first.
+    {
+        let window = Window::new(
+            mtm,
+            Rect::new(0.0, 0.0, 200.0, 200.0),
+            WindowStyle::all() - WindowStyle::FULL_SCREEN,
+        );
+        let host = NSView::new(mtm);
+        host.setFrameSize(NSSize::new(200.0, 200.0));
+        host.setWantsLayer(true);
+        window.native().setContentView(Some(&host));
+        host.addSubview(&content);
+        window.native().orderFrontRegardless();
+        crate::harness::pump_main_turn();
+        content.removeFromSuperview();
+        window.close();
+    }
+
+    // The hidden filter-owned-root case: hidden before the capture ever
+    // runs.
+    content.setHidden(true);
+
+    let target = crate::harness::capture_target();
+    let capture = Rc::new(ViewCapture::new(mtm, content.clone(), |_| None));
+    capture.set_on_redraw(|| {});
+    let (flag, complete) = crate::harness::fence_flag();
+    capture.capture(&target, 0, complete);
+    // The reveal lived and died inside one transaction: the flag is
+    // already restored when `capture` returns — nothing was committed
+    // while the tree was un-hidden.
+    assert!(
+        content.isHidden(),
+        "a hidden root must be re-hidden before the capture commits"
+    );
+    crate::harness::await_fence(&flag, "hidden");
+    assert!(
+        content.isHidden(),
+        "the flag must stay set after the frame settles"
+    );
+
+    let texels = crate::harness::readback(&target);
+    assert!(
+        crate::harness::count_pixels(&texels, [0, 110, 220, 255], [60, 200, 255, 255]) > 5_000,
+        "a hidden root must still rasterize its own color"
+    );
+
+    capture.shutdown();
+    drop(capture);
+    crate::harness::pump_main_turn();
     label.removeFromSuperview();
 }
