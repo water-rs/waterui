@@ -75,7 +75,14 @@ RUN set -eu; \
     chmod +x /tmp/rustup-init; \
     /tmp/rustup-init -y --default-toolchain "$RUST_CHANNEL" --profile minimal; \
     rm /tmp/rustup-init; \
-    rustc --version
+    # the checkout's rust-toolchain.toml asks for clippy+rustfmt — missing
+    # components make the cargo shim sync the channel into /opt/rustup
+    rustup component add clippy rustfmt; \
+    # containers run as the host uid — the rustup home must be writable or
+    # the cargo shim's channel check fails on /opt/rustup/tmp
+    chmod -R a+rwX /opt/rustup /opt/cargo; \
+    rustc --version; \
+    cargo clippy --version
 
 # Flutter SDK — tarball sha256-verified against the pinned version
 ARG FLUTTER_VERSION=3.47.5
