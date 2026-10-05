@@ -1000,6 +1000,13 @@ fn a_hidden_capture_renders_without_revealing() {
     ));
     content.addSubview(&label);
 
+    // A contrasting band so the readback can see the label's frame,
+    // not just its glyphs.
+    label
+        .layer()
+        .expect("a wanted layer exists")
+        .setBackgroundColor(Some(&NSColor::systemYellowColor().CGColor()));
+
     // Same backing-fill trick as the detached arm: a brief window
     // residency rasterizes the label into its layer contents first.
     {
@@ -1018,6 +1025,14 @@ fn a_hidden_capture_renders_without_revealing() {
         content.removeFromSuperview();
         window.close();
     }
+
+    // A pending layout the pass must absorb: the root already resized,
+    // so the label's autoresizing only applies when layout runs inside
+    // the transaction — a wider label frame afterwards proves the
+    // collected geometry and the draw both saw the post-layout tree.
+    label.setAutoresizingMask(cocoa_ui::objc2_app_kit::NSAutoresizingMaskOptions::ViewWidthSizable);
+    content.setFrameSize(NSSize::new(300.0, 200.0));
+    content.setNeedsLayout(true);
 
     // The hidden filter-owned-root case: hidden before the capture ever
     // runs.
@@ -1040,11 +1055,23 @@ fn a_hidden_capture_renders_without_revealing() {
         content.isHidden(),
         "the flag must stay set after the frame settles"
     );
+    // The autoresized label widens only when the pending layout runs:
+    // the right margin 200 - 4 - 150 = 46 is preserved, so the
+    // post-layout width is 300 - 4 - 46 = 250.
+    assert!(
+        (label.frame().size.width - 250.0).abs() < 1.0,
+        "the pending layout must have run inside the capture: {:?}",
+        label.frame()
+    );
 
     let texels = crate::harness::readback(&target);
     assert!(
         crate::harness::count_pixels(&texels, [0, 110, 220, 255], [60, 200, 255, 255]) > 5_000,
         "a hidden root must still rasterize its own color"
+    );
+    assert!(
+        crate::harness::count_pixels(&texels, [0, 180, 180, 255], [120, 255, 255, 255]) > 1_000,
+        "the raster must come from the post-layout tree: the label's widened band"
     );
 
     capture.shutdown();

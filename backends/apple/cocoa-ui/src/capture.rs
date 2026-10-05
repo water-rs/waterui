@@ -1293,63 +1293,35 @@ impl ViewCapture {
     ) -> (Preparation, Vec<SurfaceSpec>) {
         let content = &*self.content;
         let was_hidden = crate::view::is_hidden(content);
-        let geometry = CaptureGeometry::new(
-            crate::view::bounds(content),
-            target.width(),
-            target.height(),
-        );
-        let snapshots = self.collect_snapshots(target, geometry);
-        self.update_external_surfaces(&snapshots);
-        // The registrations this capture owns — the immutable snapshot
-        // of who must stay external until its frame settles.
-        let surfaces: HashMap<usize, Rc<SurfaceRegistration>> = {
-            let active = self.active.borrow();
-            snapshots
-                .iter()
-                .map(|s| {
-                    (
-                        s.spec.surface_id,
-                        active
-                            .get(&s.spec.surface_id)
-                            .expect("a just-joined surface is registered")
-                            .clone(),
-                    )
-                })
-                .collect()
-        };
-
-        // Fallible work happens BEFORE any suppression mutation: a frame
-        // allocation panic leaves the live tree untouched.
-        let raster = self.renderer.borrow_mut().issue(
-            &target.device(),
-            target.pixelFormat(),
-            target.width(),
-            target.height(),
-            generation,
-        );
 
         // INVARIANT: every temporary mutation of the capture — the
         // reveal of a normally-hidden root, surface suppression, and
         // their restoration — happens inside ONE outer disabled-actions
         // `CATransaction`, and the sole commit runs only after every
-        // original state is back. A normally-hidden filter-owned root is
-        // un-hidden in-model, drawn, and re-hidden before that commit:
-        // the render server never sees the revealed source tree. Nothing
-        // inside may open, commit or flush a transaction of its own: a
-        // mid-pass commit would publish the revealed or suppressed state
-        // and flicker — or leak — the on-screen tree. The guards restore
-        // exactly what they opened — synchronously before the sole
-        // commit on success, from Drop on an early exit — and the
+        // original state is back. The ordering inside is fixed:
+        // reveal → synchronous layout/display preparation → geometry
+        // and snapshot collection — of the POST-layout tree: a pending
+        // layout can resize bounds or mount a capturable child, so
+        // nothing may be collected from the pre-layout tree → raster
+        // allocation (still before any suppression mutation) →
+        // suppression open → draw → suppression restore → re-hide →
+        // sole commit. A normally-hidden filter-owned root is un-hidden
+        // in-model, drawn, and re-hidden before that commit: the render
+        // server never sees the revealed source tree. Nothing inside
+        // may open, commit or flush a transaction of its own: a
+        // mid-pass commit would publish the revealed or suppressed
+        // state and flicker — or leak — the on-screen tree. The guards
+        // restore exactly what they opened — synchronously before the
+        // sole commit on success, from Drop on an early exit — and the
         // transaction closes last, so an early exit commits only the
         // already-restored model state. The layer tree itself is never
         // transformed or reparented — the destination geometry lives in
         // the context's CTM.
-        {
-            // Declared in drop order: `restore` re-hides first, then
-            // `suppression` ends, then `transaction` closes — the commit
-            // only ever sees the original state.
+        let (preparation, specs) = {
+            // Declared in drop order: `suppression` ends first, then
+            // `restore` re-hides, then `transaction` closes — the
+            // commit only ever sees the original state.
             let transaction = TransactionGuard::begin();
-            let mut suppression = SuppressionGuard::new(&snapshots);
             let restore = HiddenRestore {
                 owner: self,
                 was: was_hidden,
@@ -1359,25 +1331,62 @@ impl ViewCapture {
             }
             // Layout/display preparation is a synchronous model-side
             // pass — it never publishes; it must run while the subtree
-            // is un-hidden or a hidden view may have deferred it.
+            // is un-hidden or a hidden view may have deferred it, and
+            // everything collected after it sees the laid-out tree.
             crate::view::prepare_for_capture(content);
             let layer = crate::view::layer(content).expect("a capture view must be layer-backed");
+            let geometry = CaptureGeometry::new(
+                crate::view::bounds(content),
+                target.width(),
+                target.height(),
+            );
+            let snapshots = self.collect_snapshots(target, geometry);
+            self.update_external_surfaces(&snapshots);
+            // The registrations this capture owns — the immutable
+            // snapshot of who must stay external until its frame
+            // settles.
+            let surfaces: HashMap<usize, Rc<SurfaceRegistration>> = {
+                let active = self.active.borrow();
+                snapshots
+                    .iter()
+                    .map(|s| {
+                        (
+                            s.spec.surface_id,
+                            active
+                                .get(&s.spec.surface_id)
+                                .expect("a just-joined surface is registered")
+                                .clone(),
+                        )
+                    })
+                    .collect()
+            };
+            // Fallible allocation still precedes suppression: an
+            // allocation panic leaves suppression untouched and the
+            // guards still restore what they opened.
+            let raster = self.renderer.borrow_mut().issue(
+                &target.device(),
+                target.pixelFormat(),
+                target.width(),
+                target.height(),
+                generation,
+            );
+            let mut suppression = SuppressionGuard::new(&snapshots);
             suppression.begin();
             raster.draw(&layer, geometry);
             suppression.end();
+            let specs: Vec<SurfaceSpec> = snapshots.iter().map(|s| s.spec).collect();
+            let preparation = Preparation {
+                raster,
+                target: target.retain(),
+                device: target.device(),
+                surfaces,
+            };
             // Re-hide before the sole commit — `restore` would do it on
             // drop, but the restore must be explicit before commit.
             drop(restore);
             transaction.commit();
             flush_transaction();
-        }
-
-        let specs: Vec<SurfaceSpec> = snapshots.iter().map(|s| s.spec).collect();
-        let preparation = Preparation {
-            raster,
-            target: target.retain(),
-            device: target.device(),
-            surfaces,
+            (preparation, specs)
         };
         (preparation, specs)
     }
