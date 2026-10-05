@@ -4,9 +4,11 @@
 //! Quit in the Dock menu, a quit Apple event, a logout, restart or
 //! shutdown — arrives as `applicationShouldTerminate:`. The delegate files
 //! a [`Cancellable`](TerminationKind::Cancellable) request with the
-//! termination machine and answers `NSTerminateLater`; the machine's
-//! decision comes back through [`AppKitTerminationHost`] as
-//! `replyToApplicationShouldTerminate:`.
+//! termination machine. When the machine decides while the request is being
+//! filed — an application with no hooks terminates at once — the delegate
+//! answers `NSTerminateNow` or `NSTerminateCancel` directly. Otherwise it
+//! answers `NSTerminateLater`, and the machine's decision comes back
+//! through [`AppKitTerminationHost`] as `replyToApplicationShouldTerminate:`.
 //!
 //! A logout, restart or shutdown is cancellable too: `AppKit` asks the
 //! application before the session ends, and a `NO` reply cancels the logout
@@ -70,6 +72,13 @@ enum Phase {
 }
 
 /// Matches the machine's answers to `AppKit`'s quit question.
+///
+/// A `terminate:` answered `NSTerminateLater` must never originate inside a
+/// main-queue block: `AppKit` waits for the reply in a run loop that does
+/// not serve the main queue re-entrantly, so the reply could never arrive.
+/// The gate keeps that invariant by construction — every `terminate:` sent
+/// from a main-queue block is the host's own, which reaches the gate in
+/// [`Phase::Exiting`] and is answered `NSTerminateNow`.
 struct QuitGate<T> {
     target: T,
     phase: Cell<Phase>,
@@ -212,11 +221,16 @@ impl Session {
 mod tests {
     use alloc::rc::Rc;
     use alloc::vec::Vec;
-    use core::cell::RefCell;
+    use core::cell::{Cell, RefCell};
+    use std::sync::mpsc;
 
     use cocoa_ui::appkit::TerminateReply;
+    use executor_core::LocalExecutor;
+    use executor_core::async_task::{self, AsyncTask, Runnable};
+    use waterui::app::{App, QuitReply, TerminationKind};
+    use waterui_backend_core::Environment;
 
-    use super::{QuitGate, QuitTarget};
+    use super::{AppKitTerminationHost, QuitGate, QuitTarget};
 
     /// What the gate sent to `AppKit`.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -294,6 +308,91 @@ mod tests {
             gate.should_terminate(|| panic!("the host's own terminate: was filed")),
             TerminateReply::Now
         );
+    }
+
+    /// A `spawn_local` executor that parks runnables until [`drain`] runs
+    /// them, so a hook future's progress is observable step by step.
+    struct ParkedExecutor;
+
+    thread_local! {
+        static PARKED: (mpsc::Sender<Runnable>, mpsc::Receiver<Runnable>) =
+            mpsc::channel();
+    }
+
+    impl LocalExecutor for ParkedExecutor {
+        type Task<T: 'static> = AsyncTask<T>;
+
+        fn spawn_local<Fut>(&self, fut: Fut) -> Self::Task<Fut::Output>
+        where
+            Fut: Future + 'static,
+        {
+            let (runnable, task) = async_task::spawn_local(fut, |runnable| {
+                PARKED.with(|(sender, _)| {
+                    if let Err(unsent) = sender.send(runnable) {
+                        // The queue is gone at thread teardown; dropping a
+                        // `spawn_local` runnable off its thread panics.
+                        core::mem::forget(unsent.0);
+                    }
+                });
+            });
+            runnable.schedule();
+            task
+        }
+    }
+
+    /// Runs every parked runnable, and every one those park in turn.
+    fn drain() {
+        PARKED.with(|(_, receiver)| {
+            while let Ok(runnable) = receiver.try_recv() {
+                runnable.run();
+            }
+        });
+    }
+
+    #[test]
+    fn termination_answers_appkit_through_the_gate() {
+        let _ = executor_core::try_init_local_executor(ParkedExecutor);
+
+        // No hooks: the machine terminates while the request is filed, so
+        // the delegate answers directly and sends nothing.
+        let (gate, app) = new_gate();
+        let machine = App::new_with_windows(Vec::new(), Environment::new())
+            .into_parts()
+            .termination
+            .start(
+                &mut Environment::new(),
+                AppKitTerminationHost(Rc::clone(&gate)),
+            );
+        assert_eq!(
+            gate.should_terminate(|| machine.request(TerminationKind::Cancellable)),
+            TerminateReply::Now
+        );
+        assert_eq!(app.sent(), []);
+
+        // A required request — a termination signal — supersedes the open
+        // question: `on_terminate` runs once and `AppKit` hears one reply.
+        let (gate, app) = new_gate();
+        let terminated = Rc::new(Cell::new(0_u32));
+        let counter = Rc::clone(&terminated);
+        let machine = App::new_with_windows(Vec::new(), Environment::new())
+            .on_quit_request(core::future::pending::<QuitReply>)
+            .on_terminate(move || async move { counter.set(counter.get() + 1) })
+            .into_parts()
+            .termination
+            .start(
+                &mut Environment::new(),
+                AppKitTerminationHost(Rc::clone(&gate)),
+            );
+        assert_eq!(
+            gate.should_terminate(|| machine.request(TerminationKind::Cancellable)),
+            TerminateReply::Later
+        );
+        drain();
+        assert_eq!(app.sent(), []);
+        machine.request(TerminationKind::Required);
+        drain();
+        assert_eq!(app.sent(), [Sent::Reply(true)]);
+        assert_eq!(terminated.get(), 1);
     }
 
     #[test]

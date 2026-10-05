@@ -84,18 +84,17 @@ mod imp {
         // installs (`install_chromium`, `.state(..)` chains) landed as
         // overlays on the clone it was handed, which the host env cannot
         // see — `insert` never propagates between clones.
-        // `mut` only serves the `webview` install below; without the port
-        // nothing borrows `app_env` mutably.
-        #[allow(unused_mut)]
         let mut app_env = parts.env;
         // The web view controller fills its slot late and only when the
         // `webview` port is enabled — an application bundling its own
         // engine installed it during `app(env)`.
         #[cfg(feature = "webview")]
         crate::components::webview::install_service(&mut app_env);
-        // The machine installs `Quit` into `app_env` before the menus and
-        // windows realize under it, so a declared `MenuItem::Quit` and a
-        // `|quit: Quit|` action find it.
+        // The machine installs the `Quit` service into `app_env` before the
+        // menus and windows realize under it, so a `|quit: Quit|` action
+        // finds it. A declared `MenuItem::Quit` does not use the service: it
+        // renders as the standard Quit item, whose `terminate:` reaches the
+        // machine through `applicationShouldTerminate:`.
         let session = Session::start(parts.termination, &mut app_env, parts.last_window, mtm);
         assert!(
             launch.termination.set(session).is_ok(),
