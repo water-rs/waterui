@@ -60,10 +60,6 @@ pub struct Engine<B: Backend> {
     memory_reply: RefCell<Option<SyncSender<MemoryReply>>>,
     memory_reply_rx: Receiver<MemoryReply>,
     commits: RefCell<Vec<(SurfaceId, ChangeSet<B>)>>,
-    /// The deadline map `finish_frame` fills: its buffer travels with
-    /// `Message::Render` and returns in the reply, so the per-surface
-    /// deadlines reuse one allocation across frames.
-    next_scratch: RefCell<rustc_hash::FxHashMap<SurfaceId, Next>>,
     /// The live surfaces' shared queues, drained into one `Render` message
     /// per frame.
     surfaces: RefCell<super::Surfaces<B>>,
@@ -132,7 +128,6 @@ impl<B: Backend> Engine<B> {
             memory_reply: RefCell::new(Some(memory_reply)),
             memory_reply_rx,
             commits: RefCell::new(Vec::new()),
-            next_scratch: RefCell::new(rustc_hash::FxHashMap::default()),
             surfaces: RefCell::new(Vec::new()),
             next_surface: Cell::new(0),
             next_font: Cell::new(1),
@@ -353,22 +348,13 @@ impl<B: Backend> Engine<B> {
         super::drain_visible(&mut self.surfaces.borrow_mut(), time, &mut commits);
         // Completions may arrive while render is in flight, before its reply.
         self.waker.arm();
-        let next_scratch = std::mem::take(&mut *self.next_scratch.borrow_mut());
         if let Err(error) = self.tx.send(Message::Render {
             time,
             commits,
-            next_scratch,
             reply: reply_sender,
         }) {
-            if let Message::Render {
-                commits,
-                next_scratch,
-                reply,
-                ..
-            } = error.0
-            {
+            if let Message::Render { commits, reply, .. } = error.0 {
                 *self.commits.borrow_mut() = commits;
-                *self.next_scratch.borrow_mut() = next_scratch;
                 *self.render_reply.borrow_mut() = Some(reply);
             }
             return Err(RenderError::Thread);
@@ -383,7 +369,6 @@ impl<B: Backend> Engine<B> {
         *self.commits.borrow_mut() = reply.commits;
         let (next, surface_next, stats) = reply.result?;
         super::publish_next(&self.surfaces.borrow(), &surface_next);
-        *self.next_scratch.borrow_mut() = surface_next;
         *self.stats.borrow_mut() = stats;
         Ok(next)
     }
