@@ -485,6 +485,14 @@ impl HostedRenderer for SceneRenderer {
     fn take_failure(&mut self) -> Option<HostedError> {
         self.part.take_failure().map(HostedError::Scene)
     }
+
+    /// The scene's submission evidence is its production generation
+    /// itself — retained by the in-flight submission so a late
+    /// completion checks that generation's immutable sealed outcome,
+    /// never the owner's mutable flag.
+    fn submission_evidence(&self) -> Option<Rc<EngineGeneration>> {
+        Some(Rc::clone(&self.generation))
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]

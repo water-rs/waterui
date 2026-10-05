@@ -252,6 +252,12 @@ impl EngineGeneration {
         failure
     }
 
+    /// The retained typed failure this generation was sealed with, if
+    /// any — immutable once set; a retained old generation stays failed.
+    pub fn failure(&self) -> Option<Rc<SceneError>> {
+        self.failure.borrow().clone()
+    }
+
     /// The one engine frame for `time`: on the first request at this exact
     /// timestamp every live participant applies its staged content,
     /// geometry and display changes and the engine renders once; later

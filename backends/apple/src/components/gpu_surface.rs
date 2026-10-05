@@ -37,7 +37,7 @@ use waterui_graphics::wgpu;
 
 use crate::contract::NativeLeaf;
 use crate::dispatch::Dispatcher;
-use crate::gpu_runtime::{SceneEngine, SceneError};
+use crate::gpu_runtime::{EngineGeneration, SceneEngine, SceneError};
 use crate::presentation_time::PresentationTime;
 
 #[cfg(target_os = "macos")]
@@ -139,6 +139,14 @@ trait HostedRenderer {
     /// so an idle or hidden owner's readiness still settles exactly once.
     /// Renderers that own no routed failure return `None`.
     fn take_failure(&mut self) -> Option<HostedError> {
+        None
+    }
+
+    /// The retained generation evidence a submission's completion checks:
+    /// the scene engine's production generation — whose sealed outcome is
+    /// immutable once set — or `None` for renderers whose exact validity
+    /// is the context generation alone (generic GPU content).
+    fn submission_evidence(&self) -> Option<Rc<EngineGeneration>> {
         None
     }
 }
@@ -549,7 +557,7 @@ impl SurfaceState {
         (width, height): (u32, u32),
         display: Display,
         target_time: FrameTime,
-    ) -> Result<bool, HostedError> {
+    ) -> Result<(bool, Option<Rc<EngineGeneration>>), HostedError> {
         self.dirty.set(false);
         self.view.borrow().before_frame();
         // A renderer bound to a context generation that has since been lost
@@ -578,7 +586,16 @@ impl SurfaceState {
         let Some(renderer) = slot.as_mut() else {
             return Err(HostedLayerError::MissingTexture.into());
         };
-        Ok(renderer.present(texture, display, target_time)? != Next::Idle || self.dirty.get())
+        let submitted = renderer.present(texture, display, target_time)?;
+        // The submission retains the generation evidence its completion
+        // checks: on the scene path the production generation itself —
+        // sealed outcome immutable — so a late completion can never be
+        // told productive readiness by a mutable owner flag alone.
+        let scene_generation = renderer.submission_evidence();
+        Ok((
+            submitted != Next::Idle || self.dirty.get(),
+            scene_generation,
+        ))
     }
 }
 
@@ -639,6 +656,12 @@ enum FrameRender {
     Submitted {
         /// Whether another frame should be scheduled.
         needs_redraw: bool,
+        /// The production generation's own sealed-outcome evidence,
+        /// retained until the completion runs: a scene batch's
+        /// [`EngineGeneration`] — `is_failed` is immutable once set — or
+        /// `None`, when the submission's validity is its exact context
+        /// generation alone.
+        scene_generation: Option<Rc<EngineGeneration>>,
     },
 }
 
@@ -685,14 +708,16 @@ fn render_to_metal_texture(
     };
     // The completion marker submitted by the caller orders the frame's work
     // ahead of the callback that presents it.
+    let (needs_redraw, scene_generation) = state.render_into(
+        context,
+        &wgpu_texture,
+        (width, height),
+        display,
+        target_time,
+    )?;
     Ok(FrameRender::Submitted {
-        needs_redraw: state.render_into(
-            context,
-            &wgpu_texture,
-            (width, height),
-            display,
-            target_time,
-        )?,
+        needs_redraw,
+        scene_generation,
     })
 }
 
@@ -1044,7 +1069,11 @@ fn render_frame(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>, force: b
             return;
         }
     };
-    let FrameRender::Submitted { needs_redraw } = outcome else {
+    let FrameRender::Submitted {
+        needs_redraw,
+        scene_generation,
+    } = outcome
+    else {
         // The lost context never receives work again; owe the frame and
         // park until the runtime publishes the rebuilt context, whose wake
         // replays it through `update_display_link_state` — the owed path
@@ -1062,6 +1091,7 @@ fn render_frame(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>, force: b
     let weak = Sendable(Rc::downgrade(state));
     let view = Sendable(view.clone());
     let pending = Sendable(pending);
+    let scene_generation = Sendable(scene_generation);
     let submitted_context = context.clone();
     let marker = context
         .device()
@@ -1077,42 +1107,142 @@ fn render_frame(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>, force: b
                 let Some(state) = weak.get().upgrade() else {
                     return;
                 };
-                state.frame_in_flight.set(false);
-                if state.failed.get() {
-                    // Another mounted participant sealed this engine
-                    // generation while the frame was in flight: the
-                    // completion settles the owned frame normally — the
-                    // slot drops — but a dead generation's pixels never
-                    // present and never declare productive readiness.
-                    return;
-                }
-                if submitted_context.device_lost_reason().is_some() {
-                    // The submitted generation died in flight — the slot
-                    // holds no ready pixels; park until publication replays
-                    // the owed frame on a live context.
-                    state.frame_owed.set(true);
-                    arm_context_watch(&state, view.get(), submitted_context.generation());
-                    return;
-                }
-                let presented = state
-                    .buffers
-                    .borrow_mut()
-                    .as_mut()
-                    .is_some_and(|buffers| buffers.present(pending.get()));
-                if presented {
-                    // A presented frame makes this generation productive —
-                    // the runtime's unproductive-loss detector keys on it.
-                    submitted_context.note_frame_presented();
-                    complete_ready(&state, true);
-                } else {
-                    // The buffers were replaced while this frame was in flight —
-                    // owe it again rather than reveal a hole.
-                    state.frame_owed.set(true);
-                }
-                update_display_link_state(&state, view.get());
+                settle_frame_completion(
+                    &state,
+                    view.get(),
+                    &pending,
+                    scene_generation.get().as_ref(),
+                    &submitted_context,
+                );
             });
         },
     );
+}
+
+/// What a still-open in-flight submission may do with the current epoch.
+enum CompletionValidity {
+    /// The submitted context generation is still current: the frame's
+    /// ownership, generation evidence and device health were all checked
+    /// and the completion may settle readiness normally.
+    Current,
+    /// A newer publication already landed: the completion is stale — it
+    /// releases only its own lease. It must never settle or overwrite a
+    /// newer epoch's failure flag, readiness or watch; the owed work
+    /// replays on the current generation.
+    Obsolete,
+    /// The still-current generation's own failure, settled through
+    /// `settle_failed` against the exact generation it belongs to.
+    Failed {
+        /// The generation the failure belongs to — the renderer's own
+        /// or the sealed production generation's context generation.
+        generation: u64,
+        /// The typed error to report once.
+        error: HostedError,
+    },
+    /// The still-current context generation's device died in flight.
+    DeviceLost,
+}
+
+/// The exact-generation validity check shared by the onscreen and
+/// external-capture completions, so neither can diverge: obsolescence
+/// first — a stale submission releases only its own lease — then, for a
+/// still-current generation only, the renderer's routed failure, the
+/// retained production generation's immutable sealed outcome, and the
+/// context's own device loss.
+fn submission_validity(
+    state: &Rc<SurfaceState>,
+    scene_generation: Option<&Rc<EngineGeneration>>,
+    submitted_context: &Arc<SharedGpuContext>,
+) -> CompletionValidity {
+    // A newer publication before this completion makes the submission
+    // obsolete — even when it still carries old failure evidence, that
+    // evidence belongs to the dead epoch and never marks the current
+    // owner failed, completes its readiness or replaces its watch.
+    if submitted_context.generation() != state.runtime.context().generation() {
+        return CompletionValidity::Obsolete;
+    }
+    // A failure routed to this renderer between submission and
+    // completion settles first — the failed generation's pixels
+    // never present and never declare productive readiness.
+    let routed = {
+        let mut slot = state.renderer.borrow_mut();
+        slot.as_mut().and_then(|renderer| {
+            renderer
+                .take_failure()
+                .map(|error| (renderer.generation(), error))
+        })
+    };
+    if let Some((generation, error)) = routed {
+        return CompletionValidity::Failed { generation, error };
+    }
+    // A sealed production generation rejects its own completion —
+    // immutable on the retained generation, not the owner's mutable
+    // `failed` flag.
+    if let Some(generation) = scene_generation
+        && let Some(failure) = generation.failure()
+    {
+        return CompletionValidity::Failed {
+            generation: generation.context().generation(),
+            error: HostedError::Scene(failure),
+        };
+    }
+    if submitted_context.device_lost_reason().is_some() {
+        return CompletionValidity::DeviceLost;
+    }
+    CompletionValidity::Current
+}
+
+/// A submitted onscreen frame's main-queue completion: releases the
+/// in-flight lease, then settles the owned frame's slot by the
+/// [`CompletionValidity`] contract — a stale completion only owes the
+/// work on the current generation, and a still-current one presents
+/// only after its failure and device evidence pass.
+fn settle_frame_completion(
+    state: &Rc<SurfaceState>,
+    view: &Retained<SurfaceView>,
+    pending: &Sendable<cocoa_ui::metal::PendingFrame>,
+    scene_generation: Option<&Rc<EngineGeneration>>,
+    submitted_context: &Arc<SharedGpuContext>,
+) {
+    state.frame_in_flight.set(false);
+    match submission_validity(state, scene_generation, submitted_context) {
+        CompletionValidity::Obsolete => {
+            // Stale: drop the slot — the owed frame replays on the
+            // current context; readiness, failure and watch untouched.
+            state.frame_owed.set(true);
+            update_display_link_state(state, view);
+            return;
+        }
+        CompletionValidity::Failed { generation, error } => {
+            settle_failed(state, view, generation, &error);
+            return;
+        }
+        CompletionValidity::DeviceLost => {
+            // The submitted generation died in flight — the slot
+            // holds no ready pixels; park until publication replays
+            // the owed frame on a live context.
+            state.frame_owed.set(true);
+            arm_context_watch(state, view, submitted_context.generation());
+            return;
+        }
+        CompletionValidity::Current => {}
+    }
+    let presented = state
+        .buffers
+        .borrow_mut()
+        .as_mut()
+        .is_some_and(|buffers| buffers.present(pending.get()));
+    if presented {
+        // A presented frame makes this generation productive —
+        // the runtime's unproductive-loss detector keys on it.
+        submitted_context.note_frame_presented();
+        complete_ready(state, true);
+    } else {
+        // The buffers were replaced while this frame was in flight —
+        // owe it again rather than reveal a hole.
+        state.frame_owed.set(true);
+    }
+    update_display_link_state(state, view);
 }
 
 /// Settles a typed [`HostedError`] as an explicit native rendering
@@ -1491,7 +1621,10 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
                 return;
             }
         };
-        let FrameRender::Submitted { .. } = outcome else {
+        let FrameRender::Submitted {
+            scene_generation, ..
+        } = outcome
+        else {
             complete_ready(&self.state, false);
             // The capture's deferred frame replays through the redraw
             // contract: publication resolves the watch, and an externally
@@ -1503,6 +1636,7 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
         };
         let weak = Sendable(Rc::downgrade(&self.state));
         let view = Sendable(self.view.clone());
+        let scene_generation = Sendable(scene_generation);
         let submitted_context = context.clone();
         let marker = context
             .device()
@@ -1519,32 +1653,45 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
                 // that maintains the device — hop to the main queue before
                 // touching the weak state handle.
                 cocoa_ui::main_queue::enqueue(move |_mtm| {
-                    // The generation that carried this frame was lost in
-                    // flight: the fence settles, but there are no usable
-                    // pixels to compose. Arm publication so the redraw
-                    // contract wakes the parent once a live context lands.
-                    if submitted_context.device_lost_reason().is_some() {
-                        if let Some(state) = weak.get().upgrade() {
+                    let Some(state) = weak.get().upgrade() else {
+                        completion(Ok(()));
+                        return;
+                    };
+                    // The same exact-generation contract as the onscreen
+                    // completion: a stale submission releases only its own
+                    // lease — its deferred result replays the capture on
+                    // the current context — and never touches a newer
+                    // epoch's readiness, failure flag or watch.
+                    match submission_validity(
+                        &state,
+                        scene_generation.get().as_ref(),
+                        &submitted_context,
+                    ) {
+                        CompletionValidity::Obsolete => {
+                            completion(Err(cocoa_ui::capture::CaptureDeferred));
+                        }
+                        CompletionValidity::Failed { generation, error } => {
+                            settle_failed(&state, view.get(), generation, &error);
+                            completion(Err(cocoa_ui::capture::CaptureDeferred));
+                        }
+                        CompletionValidity::DeviceLost => {
+                            // The generation that carried this frame died
+                            // in flight: the fence settles, but there are
+                            // no usable pixels to compose. Arm publication
+                            // so the redraw contract wakes the parent once
+                            // a live context lands.
                             complete_ready(&state, false);
                             arm_context_watch(&state, view.get(), submitted_context.generation());
-                        }
-                        completion(Err(cocoa_ui::capture::CaptureDeferred));
-                        return;
-                    }
-                    if let Some(state) = weak.get().upgrade() {
-                        if state.failed.get() {
-                            // Sealed while in flight: the deferred
-                            // capture settles normally, but a failed
-                            // generation never declares readiness.
                             completion(Err(cocoa_ui::capture::CaptureDeferred));
-                            return;
                         }
-                        complete_ready(&state, true);
+                        CompletionValidity::Current => {
+                            complete_ready(&state, true);
+                            // A composited capture is a presented frame for
+                            // the runtime's unproductive-loss detector.
+                            submitted_context.note_frame_presented();
+                            completion(Ok(()));
+                        }
                     }
-                    // A composited capture is a presented frame for the
-                    // runtime's unproductive-loss detector.
-                    submitted_context.note_frame_presented();
-                    completion(Ok(()));
                 });
             },
         );

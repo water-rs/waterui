@@ -284,6 +284,16 @@ pub struct SurfaceInfo {
     pub presents: bool,
 }
 
+/// The request map's copy-on-write storage, per the target's ownership
+/// model: `Arc` natively, where a returned result crosses the render
+/// thread's reply channel; `Rc` in the browser's single-threaded engine.
+#[cfg(not(target_arch = "wasm32"))]
+type SharedRequests =
+    std::sync::Arc<rustc_hash::FxHashMap<SurfaceId, crate::RefreshRange>>;
+#[cfg(target_arch = "wasm32")]
+type SharedRequests =
+    std::rc::Rc<rustc_hash::FxHashMap<SurfaceId, crate::RefreshRange>>;
+
 /// The per-surface refresh requests a backend reported for a frame.
 ///
 /// A backend-side source — a custom GPU content, an animated shader
@@ -299,36 +309,54 @@ pub struct SurfaceInfo {
 /// scheduling fix exists for quadratic.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FrameRedraw {
-    /// The unioned request per surface that asked for the next frame.
-    requests: rustc_hash::FxHashMap<SurfaceId, crate::RefreshRange>,
+    /// The unioned request per surface that asked for the next frame —
+    /// copy-on-write shared storage: a renderer retains this map as its
+    /// per-render scratch and hands out [`Clone`]s of the result, so the
+    /// steady state mutates uniquely owned storage — reset and request
+    /// need no fresh allocation — while a consumer that legitimately
+    /// retains or clones a result keeps that snapshot exactly. `None`
+    /// carries the empty collection without any allocation.
+    requests: Option<SharedRequests>,
 }
 
 impl FrameRedraw {
     /// Records that `surface` wants the next frame at `rate`, unioning
     /// repeated requests for the same surface into one entry.
     pub fn request(&mut self, surface: SurfaceId, rate: crate::RefreshRange) {
-        self.requests
+        let requests = self.requests.get_or_insert_with(SharedRequests::default);
+        // Mutating through make_mut is copy-on-write: a snapshot another
+        // owner still holds is never written into.
+        SharedRequests::make_mut(requests)
             .entry(surface)
             .and_modify(|kept| *kept = union_rate(kept.clone(), rate.clone()))
             .or_insert(rate);
     }
 
+    /// Empties the collection for the next render while keeping the
+    /// map's storage — the renderer-owned scratch this result clones
+    /// out of resets in place in the steady state.
+    pub fn clear(&mut self) {
+        if let Some(requests) = self.requests.as_mut() {
+            SharedRequests::make_mut(requests).clear();
+        }
+    }
+
     /// The request `surface` made, when it asked for the next frame.
     #[must_use]
     pub fn for_surface(&self, surface: SurfaceId) -> Option<&crate::RefreshRange> {
-        self.requests.get(&surface)
+        self.requests.as_ref()?.get(&surface)
     }
 
     /// The requests, one per surface — unordered.
     pub fn iter(&self) -> impl Iterator<Item = (&SurfaceId, &crate::RefreshRange)> {
-        self.requests.iter()
+        self.requests.iter().flat_map(|requests| requests.iter())
     }
 
     /// The union of every request's refresh range — the frame's aggregate
     /// backend demand.
     #[must_use]
     pub fn rate(&self) -> Option<crate::RefreshRange> {
-        self.requests.values().fold(None, |rate, next| {
+        self.requests.as_ref()?.values().fold(None, |rate, next| {
             Some(rate.map_or_else(|| next.clone(), |rate| union_rate(rate, next.clone())))
         })
     }
