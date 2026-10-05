@@ -287,7 +287,7 @@ fn a_retained_navigation_page_keeps_its_context_on_steady_frames(
 
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
-    let draft = waterui::binding(String::new());
+    let draft = Binding::container(waterui::Str::from(""));
     let mut app = ui
         .environment(env_with_keyboard(&container, &keyboard))
         .mount_offscreen(move || {
@@ -1621,6 +1621,10 @@ fn a_lazy_stack_outside_a_scroll_gives_items_a_context(
                     if *item == 3 {
                         AnyView::new(
                             vstack((
+                                // Fixed spacer standing in for `spacer()`:
+                                // a stretchy child in a lazy item panics
+                                // (water-rs/waterui#1930) — restore it once
+                                // that lands.
                                 spacer().size(390.0, 16.0),
                                 edge_probe(
                                     card("lazy 3"),
