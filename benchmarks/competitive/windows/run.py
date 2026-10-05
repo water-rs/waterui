@@ -9,7 +9,7 @@ workload, drives it identically, and measures:
   * frame rate        — per-frame submission timestamps from one ETW trace
                         per run (DXGI + DxgKrnl + Kernel-Process providers,
                         the same stream PresentMon consumes), parsed into
-                        frame intervals → fps, p50/p90/p99, dropped-frame proxy
+                        frame intervals → fps, p50/p90/p99, missed vsyncs
   * startup           — cold launch to first presented frame
 
 Every metric is the median of >= 5 runs with min/max and all samples kept.
@@ -87,6 +87,7 @@ import psutil
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import toolchain  # benchmarks/competitive/lib/toolchain.py
+import frame_stats as lib_frames  # benchmarks/competitive/lib/frame_stats.py
 
 ROOT = Path(__file__).resolve().parent
 # the shared cross-platform projects live under benchmarks/competitive/apps;
@@ -511,7 +512,7 @@ class OwnedApp:
             sa.bInheritHandle = True
             rpipe, wpipe = win32pipe.CreatePipe(sa, 0)
             win32api.SetHandleInformation(
-                rpipe, win32file.HANDLE_FLAG_INHERIT, 0)
+                rpipe, win32con.HANDLE_FLAG_INHERIT, 0)
             self._rpipe = rpipe
             si = win32process.STARTUPINFO()
             si.dwFlags = win32con.STARTF_USESTDHANDLES
@@ -587,9 +588,11 @@ class OwnedApp:
                 self.log.write(dec.decode(b"", final=True))
                 self.log.flush()
         except Exception as e:
-            # drain failures must reach the record, not vanish — the
-            # captured output IS the renderer-evidence channel
-            self._drain_errors.append(f"{type(e).__name__}: {e}")
+            # ERROR_BROKEN_PIPE means the write end closed — it is end
+            # of stream, not a drain failure. Everything else must reach
+            # the record: the captured output is an evidence channel.
+            if getattr(e, "winerror", None) != 109:
+                self._drain_errors.append(f"{type(e).__name__}: {e}")
         finally:
             try:
                 win32api.CloseHandle(rpipe)
@@ -965,29 +968,6 @@ def parse_frames(csv_path: Path, app_pids: set[int]) -> dict:
         "timestamps_100ns": [],
         "proc_starts": proc_starts,
         "app_pids": sorted(app_pids),
-    }
-
-
-def frame_stats(ts_100ns: list[int], vsync_ms: float, drop_ratio: float) -> dict:
-    if len(ts_100ns) < 2:
-        return {}
-    intervals_ms = [(b - a) / 10000.0 for a, b in zip(ts_100ns, ts_100ns[1:])]
-    duration_s = (ts_100ns[-1] - ts_100ns[0]) / 1e7
-    limit = vsync_ms * drop_ratio
-    dropped = sum(1 for d in intervals_ms if d > limit)
-    ordered = sorted(intervals_ms)
-
-    def pct(p: float) -> float:
-        k = min(len(ordered) - 1, max(0, int(round(p / 100 * (len(ordered) - 1)))))
-        return ordered[k]
-
-    return {
-        "fps": len(ts_100ns) / duration_s if duration_s else 0.0,
-        "frame_ms_p50": pct(50),
-        "frame_ms_p90": pct(90),
-        "frame_ms_p99": pct(99),
-        "dropped_pct": 100.0 * dropped / len(intervals_ms),
-        "frames": len(ts_100ns),
     }
 
 
@@ -1452,16 +1432,21 @@ def measure_run(c_key: str, workload: str, rep: int, cfg,
                 pin_topmost(hwnd_info[0])
             except Exception:
                 pass
-        # drive for capture + warmup + slack so the ETW trace fully
-        # covers the measurement window [first present + warmup,
-        # +capture] even when the first present lands after readiness
-        drive_s = capture_s + warmup_s + min(
-            cfg["runner"]["ready_timeout_seconds"], 5.0)
+        # The measurement window is [first owned present + warmup,
+        # +capture] and the drive program starts at window start
+        # (METHOD). An owned top-level window becoming visible IS the
+        # first composite of the contestant's first presented frame on
+        # Windows, so readiness approximates first-present to within a
+        # frame; the declared warmup then lands the fling program on the
+        # window start — every contestant receives the same program
+        # inside the window, not a different mid-program slice.
+        slack_s = min(cfg["runner"]["ready_timeout_seconds"], 5.0)
         if workload in SCROLL_WORKLOADS and hwnd_info:
-            fling_window(hwnd_info[0], hwnd_info[1], drive_s,
-                         cfg["runner"])
+            time.sleep(warmup_s)
+            fling_window(hwnd_info[0], hwnd_info[1],
+                         capture_s + slack_s, cfg["runner"])
         else:
-            time.sleep(drive_s)
+            time.sleep(capture_s + warmup_s + slack_s)
 
         # GPU-engine attribution while the app is still alive — the
         # counters only exist for active engines
@@ -1512,18 +1497,22 @@ def measure_run(c_key: str, workload: str, rep: int, cfg,
         adapter = renderer_evidence(
             c_key, c, owned, log_path,
             counter_samples=engine_samples)
-        stats = frame_stats(
-            frames["timestamps_100ns"],
-            cfg["measurement"]["vsync_budget_ms"],
-            cfg["measurement"]["dropped_threshold_ratio"],
+        # one frame-statistics definition for every leg (METHOD):
+        # windowed presents in ms; >100 ms gaps end a run (excluded);
+        # missed vsyncs = round(interval/period) - 1 over 1.5 periods
+        stats = lib_frames.frame_statistics(
+            [t / 10000.0 for t in windowed_ts],
+            window_start_ms=win_start / 10000.0,
+            capture_ms=capture_s * 1000.0,
+            refresh_ms=cfg["measurement"]["vsync_budget_ms"],
         )
 
+        # startup is launch→first owned present — never from windowed
+        # data (first_present anchors the window; it precedes it)
         startup_ms = None
-        if frames["timestamps_100ns"]:
-            create = frames["proc_starts"].get(root_pid, create_ft)
-            if create:
-                startup_ms = (
-                    frames["timestamps_100ns"][0] - create) / 10000.0
+        create = frames["proc_starts"].get(root_pid, create_ft)
+        if create:
+            startup_ms = (first_present - create) / 10000.0
 
         rec = {
             "run": rep,
@@ -1682,8 +1671,7 @@ def _self_test() -> None:
                                       "memory_sample_interval_ms": 10,
                    "fling_down": 8, "fling_up": 2, "fling_detents": 12,
                    "fling_duration_ms": 250, "fling_pause_ms": 350},
-        "measurement": {"vsync_budget_ms": 16.7,
-                        "dropped_threshold_ratio": 1.5},
+        "measurement": {"vsync_budget_ms": 16.7},
     }
 
     # per-rep ETW-clock (FILETIME 100ns) anchor — the measurement
@@ -1771,7 +1759,14 @@ def _self_test() -> None:
         # the measurement window trimmed the startup/warmup frames —
         # stats come from the windowed series, not all 6 presents
         assert rec["frame_rate"]["present_events"] == 6
-        assert rec["frame_rate"]["frames"] == 4
+        assert rec["frame_rate"]["presents"] == 4
+        # the windowed presents form one active run; 90/90/60 ms
+        # intervals each exceed 1.5 periods → missed-vsync counting
+        # follows lib/frame_stats.py (round(i/period)-1 each)
+        assert rec["frame_rate"]["runs"] == 1
+        assert rec["frame_rate"]["missed_vsyncs"] == \
+            round(90 / 16.7) - 1 + round(90 / 16.7) - 1 + \
+            round(60 / 16.7) - 1
         order = [e for e in events if e in (
             "minimize", "trace_start", "launch", "etl_csv",
             "trace_stop", "terminate", "restore[42]")]
@@ -2115,10 +2110,16 @@ def _self_test() -> None:
                 return "rp", "wp"
 
         class FakeWin32file:
-            HANDLE_FLAG_INHERIT = 0x1
+            # deliberately NO HANDLE_FLAG_INHERIT — the constant lives
+            # on win32con in real pywin32 (D1); keeping it here would
+            # let the regression pass under the fakes
+            class _WinError(Exception):
+                winerror = 109  # ERROR_BROKEN_PIPE
 
             def ReadFile(self, h, n):
-                return 0, b""
+                # the child's write end is already closed — end of
+                # stream arrives as a broken-pipe error, not b"" (D2)
+                raise self._WinError("broken pipe")
 
         class FakeWin32api:
             def SetHandleInformation(self, h, mask, flags):
@@ -2133,6 +2134,7 @@ def _self_test() -> None:
         class FakeWin32con:
             CREATE_SUSPENDED = 0x4
             STARTF_USESTDHANDLES = 0x100
+            HANDLE_FLAG_INHERIT = 0x1
 
         class FakeWin32security:
             class SECURITY_ATTRIBUTES:
@@ -2166,6 +2168,10 @@ def _self_test() -> None:
                                 "resume")]
                 assert seq == ["job", "setinfo", "spawn", "assign",
                                "resume"], seq
+                # the fake pipe ends as ERROR_BROKEN_PIPE — D2: the
+                # drain treats it as end of stream, not a drain error
+                app._reader.join(timeout=5)
+                assert app._drain_errors == [], app._drain_errors
                 app.terminate()
                 assert "job_kill" in _Bus.events
                 assert app.log is None
@@ -2236,9 +2242,9 @@ def _self_test() -> None:
             assert len(IDXGIFactory._methods_) == 5
             assert len(IDXGIAdapter._methods_) == 3
             assert len(IDXGIFactory1._methods_) == 2
-            names = [m.__name__ for m in IDXGIAdapter._methods_]
+            names = [m.name for m in IDXGIAdapter._methods_]
             assert names[1] == "GetDesc", names  # vtable slot 8
-            assert IDXGIFactory1._methods_[0].__name__ == \
+            assert IDXGIFactory1._methods_[0].name == \
                 "EnumAdapters1"  # vtable slot 12
 
         # -- GPU Engine instance names carry luid_0x<High>_0x<Low> —
@@ -2336,10 +2342,11 @@ def _native_check() -> int:
     # 1 — pywin32 attribute surface the runner calls
     def i1():
         for mod, names in (
-            (win32con, ["CREATE_SUSPENDED", "STARTF_USESTDHANDLES"]),
+            (win32con, ["CREATE_SUSPENDED", "STARTF_USESTDHANDLES",
+                        "HANDLE_FLAG_INHERIT"]),
             (win32event, ["WaitForInputIdle", "WaitForSingleObject",
                           "WAIT_TIMEOUT"]),
-            (win32file, ["ReadFile", "HANDLE_FLAG_INHERIT"]),
+            (win32file, ["ReadFile"]),
             (win32pipe, ["CreatePipe"]),
             (win32api, ["CloseHandle", "TerminateProcess",
                         "SetHandleInformation"]),
@@ -2436,24 +2443,79 @@ def _native_check() -> int:
                 pass
             spawn.kill()
 
-    # 3 — WaitForInputIdle on a GUI-subsystem executable (a console exe
-    #     legitimately returns WAIT_FAILED — documented behavior)
+    # 3 — WaitForInputIdle on an owned process that creates a real GUI
+    #     test window and pumps a message loop (input-idle is signalled
+    #     only once the process blocks in its message loop — a sleeping
+    #     process never reaches it). The console-subsystem case is kept
+    #     as an expected failure: WaitForInputIdle legitimately returns
+    #     WAIT_FAILED on a process with no message loop.
+    GUI_PUMP = """
+import ctypes
+import ctypes.wintypes as W
+
+u = ctypes.windll.user32
+k = ctypes.windll.kernel32
+WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_long, W.HWND, W.UINT,
+                             W.WPARAM, W.LPARAM)
+u.DefWindowProcW.restype = ctypes.c_long
+def _proc(hwnd, msg, wparam, lparam):
+    return u.DefWindowProcW(hwnd, msg, wparam, lparam)
+_proc_c = WNDPROC(_proc)
+class WNDCLASSW(ctypes.Structure):
+    _fields_ = [
+        ("style", W.UINT), ("lpfnWndProc", WNDPROC),
+        ("cbClsExtra", ctypes.c_int), ("cbWndExtra", ctypes.c_int),
+        ("hInstance", W.HINSTANCE), ("hIcon", W.HANDLE),
+        ("hCursor", W.HANDLE), ("hbrBackground", W.HANDLE),
+        ("lpszMenuName", W.LPCWSTR), ("lpszClassName", W.LPCWSTR),
+    ]
+cls = WNDCLASSW(0, _proc_c, 0, 0, k.GetModuleHandleW(None),
+                None, None, None, None, "BenchGuiProbe")
+u.RegisterClassW(ctypes.byref(cls))
+hwnd = u.CreateWindowExW(0, "BenchGuiProbe", "probe", 0xCF0000,
+                         0, 0, 100, 100, None, None, cls.hInstance, None)
+u.ShowWindow(hwnd, 5)
+u.UpdateWindow(hwnd)
+msg = W.MSG()
+while u.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
+    u.TranslateMessage(ctypes.byref(msg))
+    u.DispatchMessageW(ctypes.byref(msg))
+"""
+
     def i3():
-        pythonw = Path(sys.executable).with_name("pythonw.exe")
-        if not pythonw.exists():
-            raise Skip("no pythonw.exe for a GUI-subsystem probe")
+        script = td / "gui_pump.py"
+        script.write_text(GUI_PUMP)
         app = OwnedApp(
-            {"exe_dir": pythonw.parent, "exe": pythonw.name,
-             "args": '-c "import time;time.sleep(30)"', "env": {}},
+            {"exe_dir": Path(sys.executable).parent,
+             "exe": Path(sys.executable).name,
+             "args": f'"{script}"', "env": {}},
             "w1", td / "gui.log")
         try:
-            rc = win32event.WaitForInputIdle(app.hproc, 10000)
+            rc = win32event.WaitForInputIdle(app.hproc, 15000)
             if rc != 0:
                 raise AssertionError(
-                    f"WaitForInputIdle on GUI exe returned {rc}")
+                    "WaitForInputIdle on an owned message-loop process "
+                    f"returned {rc}")
         finally:
             app.terminate()
-        rec(3, "PASS", "WaitForInputIdle returned 0 on a GUI exe")
+        # console-subsystem expected failure: a process that never
+        # pumps a message loop must NOT report input-idle
+        sleeping = OwnedApp(
+            {"exe_dir": Path(sys.executable).parent,
+             "exe": Path(sys.executable).name,
+             "args": '-c "import time;time.sleep(20)"', "env": {}},
+            "w1", td / "console.log")
+        try:
+            rc2 = win32event.WaitForInputIdle(sleeping.hproc, 10000)
+            if rc2 != win32event.WAIT_FAILED:
+                raise AssertionError(
+                    "console-subsystem sleeper unexpectedly reported "
+                    f"input-idle (rc={rc2})")
+        finally:
+            sleeping.terminate()
+        rec(3, "PASS",
+            "WaitForInputIdle signalled on owned GUI test window; "
+            "console sleeper returned WAIT_FAILED as expected")
 
     # 4 — Electron renderer/GPU helpers inside the job + GPUINFO log
     def i4():
@@ -2610,10 +2672,11 @@ def main() -> None:
     # file is refused, not silently dropped — the run it came from was
     # evidence.
     previous_results = {}
+    previous_meta: dict = {}
     if args.out and out.exists():
         try:
-            previous_results = json.loads(out.read_text()).get(
-                "results", {})
+            previous_meta = json.loads(out.read_text())
+            previous_results = previous_meta.get("results", {})
         except Exception as e:
             raise SystemExit(
                 f"cannot resume from {out}: unreadable ({e}); fix or "
@@ -2621,6 +2684,17 @@ def main() -> None:
                 "evidence of the earlier run")
 
     machine = machine_spec()
+    if previous_meta:
+        # A resumed file merges cells into this run — they must carry
+        # the same machine and the same source identity, never an
+        # older HEAD's or another host's numbers
+        if previous_meta.get("machine") != machine or (
+                previous_meta.get("waterui_head")
+                != toolchain.checkout_head()):
+            raise SystemExit(
+                f"cannot merge {out}: it was measured on a different "
+                "machine or a different checkout HEAD — keep the files "
+                "separate or re-measure")
     if machine["gpu_software"]:
         # there is no software-GPU measurement route: WARP/SwiftShader/
         # Basic Render numbers are not evidence under any flag
@@ -2762,8 +2836,8 @@ def main() -> None:
                     "frame_ms_p99": stats_of(
                         [r["frame_rate"].get("frame_ms_p99") for r in runs]
                     ),
-                    "dropped_pct": stats_of(
-                        [r["frame_rate"].get("dropped_pct") for r in runs]
+                    "missed_vsyncs": stats_of(
+                        [r["frame_rate"].get("missed_vsyncs") for r in runs]
                     ),
                     "present_events": [
                         r["frame_rate"]["present_events"] for r in runs

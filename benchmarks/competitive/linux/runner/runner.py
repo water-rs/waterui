@@ -35,7 +35,8 @@ import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "lib"))
-import toolchain  # benchmarks/competitive/lib/toolchain.py
+import toolchain
+import frame_stats as lib_frames  # benchmarks/competitive/lib/toolchain.py
 
 ROOT = Path(__file__).resolve().parent.parent  # benchmarks/competitive/linux
 REPO = toolchain.repo_root()                  # waterui checkout root
@@ -97,8 +98,21 @@ def docker(*args: str, quiet: bool = False, **kw) -> subprocess.CompletedProcess
     return sh(cmd, **kw)
 
 
+def rust_channel() -> str:
+    """The toolchain channel the repository declares in rust-toolchain.toml
+    — the image builds exactly that toolchain, never a Dockerfile literal
+    or the ambient rustup default."""
+    doc = tomllib.loads((REPO / "rust-toolchain.toml").read_text())
+    ch = doc.get("toolchain", {}).get("channel")
+    if not ch:
+        raise RuntimeError(
+            "no toolchain.channel in the repository's rust-toolchain.toml")
+    return ch
+
+
 def build_image() -> None:
     docker("build", "-t", IMAGE, "-f", str(ROOT / "docker" / "Dockerfile"),
+           "--build-arg", f"RUST_CHANNEL={rust_channel()}",
            str(ROOT))
 
 
@@ -119,12 +133,13 @@ def _docker_run_cmd(inner: str, *, name: str = "",
         # mounted home only carries registry/git/target caches.
         "-e", "CARGO_HOME=/cargo-home",
     ]
-    if host_user and not privileged:
-        # Builds run as the host uid: files they write into the mounted
-        # checkout (target/, generated backends/, dist/) come out
-        # host-owned, never root-owned. Privileged measurement runs keep
-        # root — they need it for cgroup/device setup and write nothing
-        # into /repo.
+    if host_user:
+        # Build AND measurement containers run as the host uid: files
+        # they write into the mounted checkout (target/, generated
+        # backends/, dist/, out/*.jsonl) come out host-owned, never
+        # root-owned. --privileged still gives the measurement container
+        # cgroup/device reach — a host-uid process inside it can create
+        # and populate the benchapp cgroup.
         HOME_CACHE.mkdir(parents=True, exist_ok=True)
         cmd += [
             "-u", f"{os.getuid()}:{os.getgid()}",
@@ -244,7 +259,7 @@ set -e
 git config --global --add safe.directory /opt/flutter
 APP=/repo/benchmarks/competitive/apps/flutter
 TAG="flutter create --platforms linux --project-name bench_flutter --org dev.bench --template app | flutter_ver=''' \
-        + manifest["toolchain"]["flutter_version"] + r'''"
+        + manifest["contestants"]["flutter"]["flutter_version"] + r'''"
 STAMP="$APP/linux/.bench-generator"
 if [ ! -d "$APP/linux" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$TAG" ]; then
     rm -rf "$APP/linux"
@@ -287,8 +302,10 @@ def parse_events(path: Path) -> list[dict]:
                 continue
             try:
                 out.append(json.loads(line))
-            except json.JSONDecodeError:
-                pass
+            except json.JSONDecodeError as e:
+                raise RuntimeError(
+                    f"malformed benchcomp event line in {path}: "
+                    f"{line[:120]!r} ({e})") from e
     return out
 
 
@@ -301,7 +318,8 @@ def percentile(vals: list[float], p: float) -> float:
     return vals[lo] + (vals[hi] - vals[lo]) * (k - lo)
 
 
-def metrics_from_events(events: list[dict]) -> dict:
+def metrics_from_events(events: list[dict], warmup_ms: float = 0.0,
+                        capture_ms: float = 0.0) -> dict:
     spawn = next((e for e in events if e.get("ev") == "spawn"), None)
     presents = [e for e in events if e.get("ev") == "present"]
     commits = [e for e in events if e.get("ev") == "commit"]
@@ -316,22 +334,23 @@ def metrics_from_events(events: list[dict]) -> dict:
     if spawn and first_committed:
         m["launch_ms"] = (first_committed["t"] - spawn["t"]) / 1e6
 
-    # Frame pacing: intervals between consecutive presents that carried a
-    # freshly committed buffer (i.e. real content frames).
+    # Frame pacing over the declared window [first committed present +
+    # warmup, +capture_ms] — lib/frame_stats decides runs, gaps and
+    # missed vsyncs; the 2000 ms gap filter is gone (decision 1).
     committed_ts = [p["t"] for p in presents if p.get("committed")]
-    deltas = [(b - a) / 1e6 for a, b in zip(committed_ts, committed_ts[1:])]
-    deltas = [d for d in deltas if 0 < d < 2000]
-    if deltas:
-        m["frame_ms"] = {
-            "p50": percentile(deltas, 50),
-            "p90": percentile(deltas, 90),
-            "p99": percentile(deltas, 99),
-            "samples": [round(d, 3) for d in deltas],
-        }
-        m["dropped_pct"] = round(
-            100 * sum(1 for d in deltas if d > 1.5 * VSYNC_MS) / len(deltas), 2)
-        span = (committed_ts[-1] - committed_ts[0]) / 1e9 if len(committed_ts) > 1 else 0
-        m["fps"] = round((len(committed_ts) - 1) / span, 2) if span > 0 else 0
+    if committed_ts:
+        rel = [(t - committed_ts[0]) / 1e6 for t in committed_ts]
+        stats = lib_frames.frame_statistics(
+            rel, warmup_ms, capture_ms or (rel[-1] + 1), VSYNC_MS)
+        if stats["intervals_ms"]:
+            m["frame_ms"] = {
+                "p50": stats["frame_ms_p50"],
+                "p90": stats["frame_ms_p90"],
+                "p99": stats["frame_ms_p99"],
+                "samples": [round(d, 3) for d in stats["intervals_ms"]],
+            }
+            m["missed_vsyncs"] = stats["missed_vsyncs"]
+            m["fps"] = stats["fps"]
 
     if mems:
         currents = [e.get("current", 0) for e in mems]
@@ -342,11 +361,14 @@ def metrics_from_events(events: list[dict]) -> dict:
     return m
 
 
-def dri_nodes_in_use(cname: str) -> set[str]:
-    """Device nodes currently held open by the contestant's own
-    processes (the `benchapp` cgroup inside the container) — per-process
-    renderer evidence, not mount pinning. Empty set when the container
-    or cgroup is gone."""
+def dri_nodes_in_use(cname: str) -> dict[str, str]:
+    """Render nodes held open by the contestant's own processes (the
+    `benchapp` cgroup inside the container), each resolved to the driver
+    backing the fd — `readlink /sys/class/drm/<node>/device/driver`
+    names the kernel driver (amdgpu, i915, virtio_gpu, ...) and so the
+    hardware renderer the process actually holds. Opening a node alone
+    is not evidence; the map node -> driver is. Empty dict when the
+    container or cgroup is gone."""
     q = subprocess.run(
         ["docker", "exec", cname, "bash", "-c",
          "for p in $(cat /sys/fs/cgroup/benchapp/cgroup.procs "
@@ -354,8 +376,21 @@ def dri_nodes_in_use(cname: str) -> set[str]:
          "| grep -oE '/dev/[A-Za-z0-9_]+' | sort -u"],
         capture_output=True, text=True)
     if q.returncode != 0:
-        return set()
-    return {Path(n).name for n in q.stdout.split()}
+        return {}
+    nodes = {Path(n).name for n in q.stdout.split()}
+    drivers = subprocess.run(
+        ["docker", "exec", cname, "bash", "-c",
+         "for n in " + " ".join(sorted(nodes) or ["x-none"]) + "; do "
+         "d=$(basename \"$(readlink /sys/class/drm/$n/device/driver "
+         "2>/dev/null)\" 2>/dev/null); "
+         "echo \"$n ${d:-unknown}\"; done"],
+        capture_output=True, text=True)
+    out: dict[str, str] = {}
+    for line in drivers.stdout.splitlines():
+        parts = line.split()
+        if len(parts) == 2:
+            out[parts[0]] = parts[1]
+    return out
 
 
 def fling_script(fling: dict, duration_ms: int) -> str:
@@ -393,7 +428,9 @@ def workload_script(manifest: dict, wl: str, duration_ms: int) -> Path | None:
 
 def run_workload(contestant_cmd: str, wl: str, duration_ms: int,
                  script: Path | None, out_jsonl: Path,
-                 dri: list[str] | bool = True) -> tuple[dict, str, set[str]]:
+                 dri: list[str] | bool = True,
+                 warmup_ms: int = 0
+                 ) -> tuple[dict, str, dict[str, str]]:
     """One measurement rep. benchcomp writes straight to the run-scoped
     out path (unique per rep AND per invocation); the owned container is
     removed even when the run fails. Returns (metrics, log, dri_nodes)
@@ -411,17 +448,17 @@ def run_workload(contestant_cmd: str, wl: str, duration_ms: int,
         f"--out /bench/{out_jsonl.relative_to(ROOT)}"
     )
     cmd = _docker_run_cmd(inner, name=cname, privileged=True, dri=dri,
-                          host_user=False)
+                          host_user=True)
     print("+", " ".join(cmd), flush=True)
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True)
-    opened: set[str] = set()
+    opened: dict[str, str] = {}
     try:
         while proc.poll() is None:
-            opened |= dri_nodes_in_use(cname)
+            opened.update(dri_nodes_in_use(cname))
             time.sleep(0.3)
-        opened |= dri_nodes_in_use(cname)
+        opened.update(dri_nodes_in_use(cname))
         out, _ = proc.communicate()
     finally:
         subprocess.run(["docker", "rm", "-f", cname],
@@ -430,7 +467,9 @@ def run_workload(contestant_cmd: str, wl: str, duration_ms: int,
         raise subprocess.CalledProcessError(
             proc.returncode, cmd, output=out, stderr=out)
     sys.stdout.write(out or "")
-    return (metrics_from_events(parse_events(out_jsonl)),
+    return (metrics_from_events(
+                parse_events(out_jsonl), warmup_ms,
+                duration_ms - warmup_ms),
             out or "", opened)
 
 
@@ -448,8 +487,8 @@ def capacity_rep(contestant_cmd: str, spec: dict, dri,
                                      f"BENCH_STEP={n} BENCH_WORKLOAD", 1)
         s, run_log, opened = run_workload(
             cmd, "w5", spec["settle_ms"] + spec["hold_ms"], None,
-            out_jsonl, dri=dri)
-        out["dri_nodes"] = sorted(set(out["dri_nodes"]) | opened)
+            out_jsonl, dri=dri, warmup_ms=spec["settle_ms"])
+        out["dri_nodes"] = sorted(set(out["dri_nodes"]) | set(opened))
         rec = {"step": n, "metrics": s}
         frames = (s.get("frame_ms") or {}).get("samples", [])
         if len(frames) < 4:
@@ -992,12 +1031,13 @@ def main() -> int:
                         lad = capacity_rep(
                             cmd, spec, dri_mounts,
                             ROOT / "out", f"{name}-{wl}-{rep}")
-                        if expected_nodes and not (
-                                set(lad["dri_nodes"]) & expected_nodes):
+                        missing = expected_nodes - set(lad["dri_nodes"])
+                        if expected_nodes and missing:
                             raise RuntimeError(
                                 "no renderer evidence: the contestant's "
-                                "own processes opened no expected DRI "
-                                f"node ({sorted(lad['dri_nodes'])} vs "
+                                "own processes opened none of the "
+                                "expected DRI nodes "
+                                f"({sorted(lad['dri_nodes'])} vs "
                                 f"{sorted(expected_nodes)})")
                         ladders.append(lad)
                     except Exception as e:  # record, keep going
@@ -1035,17 +1075,33 @@ def main() -> int:
                         workload_script(
                             manifest, wl, durations.get(wl, 15000)),
                         out_jsonl,
-                        dri=dri_mounts)
+                        dri=dri_mounts,
+                        warmup_ms=(manifest["fling"]["warmup_ms"]
+                                   if wl in ("w2", "w4") else 0))
                     s["run"] = rep
                     s["dri_nodes"] = sorted(opened)
+                    s["dri_drivers"] = opened
                     # per-rep renderer evidence from the contestant's
-                    # own processes — missing evidence fails the attempt
-                    if expected_nodes and not (opened & expected_nodes):
-                        raise RuntimeError(
-                            "no renderer evidence: the contestant's own "
-                            "processes opened no expected DRI node "
-                            f"({sorted(opened)} vs "
-                            f"{sorted(expected_nodes)})")
+                    # own processes — the driver backing each held fd,
+                    # and a missing node list fails the attempt
+                    if expected_nodes:
+                        missing = expected_nodes - set(opened)
+                        if missing:
+                            raise RuntimeError(
+                                "no renderer evidence: the contestant's "
+                                "own processes opened none of the "
+                                "expected DRI nodes "
+                                f"({sorted(opened)} vs "
+                                f"{sorted(expected_nodes)})")
+                        unknown = {n: d for n, d in opened.items()
+                                   if n in expected_nodes
+                                   and d == "unknown"}
+                        if unknown:
+                            raise RuntimeError(
+                                "renderer evidence unresolved: held "
+                                f"nodes {sorted(unknown)} have no "
+                                "driver binding — opening a DRI node "
+                                "is not evidence")
                     if name == "waterui-hydrolysis":
                         used = selected_adapter(run_log)
                         s["adapter_used"] = used

@@ -46,6 +46,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "lib"))
 import toolchain  # benchmarks/competitive/lib/toolchain.py
+import frame_stats as lib_frames
 
 # backends/hydrolysis/bench/android metrics reuse assessment (reported
 # to the coordinator): metrics/size.py crashes on any non-empty archive
@@ -783,6 +784,22 @@ def launch(serial: str, pkg: str, activity: str, workload: str,
     return total
 
 
+def proc_mem(serial: str, pkg: str) -> dict:
+    """Pss/Rss from /proc/<pid>/smaps_rollup — the sample source inside a
+    capture window. `dumpsys meminfo` walks every VMA through a binder
+    call heavy enough to perturb the workload being measured; the kernel
+    rollup file is the same counters at negligible cost."""
+    pid = adb_shell(serial, f"pidof {pkg}").strip()
+    if not pid:
+        return {"pss_kb": None, "rss_kb": None}
+    out = adb_shell(serial, f"cat /proc/{pid.split()[0]}/smaps_rollup")
+    vals = {}
+    for key in ("Pss", "Rss"):
+        m = re.search(rf"^{key}:\s*(\d+) kB", out, re.M)
+        vals[key.lower() + "_kb"] = int(m.group(1)) if m else None
+    return vals
+
+
 def meminfo(serial: str, pkg: str) -> dict:
     out = adb_shell(serial, f"dumpsys meminfo {pkg}")
     pss = rss = None
@@ -828,25 +845,11 @@ data_sources { config { name: "linux.ftrace" ftrace_config {
 duration_ms: %d
 """
 
-PERFETTO_ATRACE_CFG = """\
-buffers { size_kb: 32768 fill_policy: RING_BUFFER }
-data_sources { config { name: "linux.ftrace" ftrace_config {
-  atrace_categories: "sf" atrace_categories: "view"
-  atrace_apps: "*" } } }
-duration_ms: %d
-"""
-
-# Frame source per contestant, decided once per measure run by
-# probe_frame_sources(). FrameTimeline is the issue-mandated source; a
-# contestant whose presents land in no frame-timeline table falls back to
-# SurfaceFlinger atrace events (`onFrameAvailable` per app surface), then to
-# per-layer `dumpsys` latency rings — degraded alone, never dragging the
-# other contestants down with it.
-FRAME_SOURCES: dict[str, str] = {}
-
-
-def frame_source_for(name: str) -> str:
-    return FRAME_SOURCES.get(name, "atrace")
+# Frame source, one for every contestant: Perfetto FrameTimeline presents
+# attributed to the contestant's owned process — actual_frame_timeline_
+# slice (Choreographer-attributed) and surface_frame_timeline_slice
+# (per-layer, which also sees SurfaceView/BLAST pipelines like Flutter's)
+# together cover every pipeline the contestants use.
 
 
 def _record_trace(serial: str, cfg: str, ms: int, drive) -> Path:
@@ -937,10 +940,11 @@ def assert_trace_populated(serial: str, path: Path,
         f"traced log:\n{log[-4000:]}")
 
 
-def perfetto_capture(serial: str, ms: int, drive, pkg: str) -> dict:
+def perfetto_capture(serial: str, ms: int, drive, pkg: str,
+                     refresh: float | None) -> dict:
     """Record FrameTimeline on-device while `drive()` runs, then analyze."""
     local = _record_trace(serial, PERFETTO_CFG % (ms + 30000), ms, drive)
-    return analyze_trace(local, pkg)
+    return analyze_trace(local, pkg, ms, refresh)
 
 
 def _pctl(xs, p):
@@ -975,54 +979,6 @@ class NoFramesError(RuntimeError):
     Distinct from a capture error: on a live app that still owns layers a
     zero-frame window is a real measurement (the collapse point); on a
     dead app or missing surfaces it stays an abort."""
-
-
-def analyze_atrace(path: Path, pkg: str, refresh: float | None,
-                   cap_ms: int = 20000) -> dict:
-    """Fallback analysis: count one frame per SurfaceFlinger frameTimelineInfo
-    (or onFrameAvailable) atrace slice in the capture window — a global stream,
-    so the workload under test is the only thing drawing. Report inter-frame
-    interval percentiles, missed-vsync share and fps.
-
-    Raises RuntimeError on empty/malformed traces — a capture miss aborts the
-    run, it is never stored as a per-run error."""
-    from perfetto.trace_processor import TraceProcessor
-    with TraceProcessor(trace=str(path)) as tp:
-        # SurfaceFlinger's FrameTimeline atrace writes one
-        # frameTimelineInfo(frameNumber=…, vsyncId=…) slice per produced
-        # frame — a global stream covering whichever app is on screen
-        # during the drive window (uniform across renderers).
-        rows = list(tp.query(
-            "SELECT s.ts AS ts FROM slice s "
-            "WHERE s.name GLOB 'frameTimelineInfo*' "
-            "OR s.name GLOB 'onFrameAvailable -*' "
-            "ORDER BY s.ts"))
-    ts = _clip_window([r.ts for r in rows], cap_ms)
-    if not ts:
-        raise NoFramesError(f"no frame events in trace for {pkg}")
-    ivals = [(b - a) / 1e6 for a, b in zip(ts, ts[1:]) if b > a]  # ms
-    # percentiles over active intervals only (>=500 ms gaps are drive idles)
-    active = [x for x in ivals if x < 500.0]
-    interval = 1000.0 / (refresh or 60.0)
-    # >1.5 vsync periods = a missed present; >=500 ms = an idle gap in the
-    # drive sequence (app genuinely produced no frames), not a drop.
-    janky = sum(1 for x in ivals if 1.5 * interval < x < 500.0)
-    span_s = (ts[-1] - ts[0]) / 1e9
-    return {
-        "frames": len(ts),
-        "frame_ms_p50": _r(_pctl(active, 0.50)),
-        "frame_ms_p90": _r(_pctl(active, 0.90)),
-        "frame_ms_p99": _r(_pctl(active, 0.99)),
-        "dropped_pct": round(100.0 * janky / len(ivals), 2) if ivals else None,
-        "fps": round(len(ivals) / span_s, 1) if span_s else None,
-        "ivals_ms": [round(x, 3) for x in ivals],
-    }
-
-
-def atrace_capture(serial: str, ms: int, drive, pkg: str,
-                   refresh: float | None) -> dict:
-    local = _record_trace(serial, PERFETTO_ATRACE_CFG % (ms + 30000), ms, drive)
-    return analyze_atrace(local, pkg, refresh, cap_ms=ms)
 
 
 # --- tier 2: SurfaceFlinger per-layer latency -------------------------------
@@ -1141,11 +1097,8 @@ def wait_first_frame(serial: str, pkg: str, timeout_ms: int = 20000) -> None:
         if gfx:
             return  # process-fresh counter >0 = presented since launch
         time.sleep(0.2)
-    # no present within the timeout: fall through to the capture — a
-    # zero-frame window records a collapsed step (live app with layers) or
-    # aborts (dead process / no surfaces); a late-starting app is still
-    # measured fairly. The inventory prints every queried name verbatim
-    # with valid/ring counts so the diagnosis is the raw truth.
+    # no present within the timeout is an abort — a fall-through used to
+    # let the capture close silently before a late app ever drew
     inv = {}
     for l in sf_layers(serial, pkg):
         try:
@@ -1164,8 +1117,9 @@ def wait_first_frame(serial: str, pkg: str, timeout_ms: int = 20000) -> None:
                 (x for x in raw[1:]
                  if len(re.split(r"[\s,;|]+", x.strip())) >= 2), "")
             inv[l[:60]] += f" raw[{first.strip()[:50]}]"
-    print(f"   ! {pkg}: no present within {timeout_ms} ms of launch "
-          f"(layers: {inv})", flush=True)
+    raise RuntimeError(
+        f"{pkg}: no present within {timeout_ms} ms of launch "
+        f"(layers: {inv})")
 
 
 def process_alive(serial: str, pkg: str) -> bool:
@@ -1244,78 +1198,6 @@ def zero_frame_result() -> dict:
         "dropped_pct": None,
         "fps": 0.0,
         "ivals_ms": [],
-    }
-
-
-def sflinger_capture(serial: str, ms: int, drive, pkg: str,
-                     refresh: float | None) -> dict:
-    layers = sf_layers(serial, pkg)
-    if not layers:
-        raise RuntimeError(f"no SurfaceFlinger layer for {pkg}")
-    # the ring keeps up to 128 PAST presents — snapshot each layer's newest
-    # timestamp before driving and keep only frames presented after that
-    base: dict[str, int] = {}
-    for l in layers:
-        try:
-            b = sf_latency(serial, l)
-            base[l] = max(b) if b else 0
-        except Exception:
-            base[l] = 0
-    seen: dict[str, set] = {l: set() for l in layers}
-    stop = [False]
-
-    def poll():
-        # layers churn (BLAST leashes, surface recreation on relaunch), so
-        # re-enumerate each pass and keep every layer that ever matches
-        while not stop[0]:
-            for l in sf_layers(serial, pkg):
-                if l not in seen:
-                    # first sighting: base at the current ring head so only
-                    # frames presented after this pass count
-                    try:
-                        b = sf_latency(serial, l)
-                        base[l] = max(b) if b else 0
-                    except Exception:
-                        base[l] = 0
-                    seen[l] = set()
-                try:
-                    seen[l].update(
-                        t for t in sf_latency(serial, l) if t > base[l])
-                except Exception:
-                    pass
-            time.sleep(0.25)
-
-    import threading
-    t = threading.Thread(target=poll, daemon=True)
-    t.start()
-    drive()
-    time.sleep(0.5)
-    stop[0] = True
-    t.join(timeout=5)
-    best = max(seen.values(), key=len)
-    ts = _clip_window(sorted(best), ms)
-    if not ts:
-        # zero presents: collapse measurement only when the app is alive
-        # and still owns layers; a dead process or vanished surfaces is a
-        # capture failure and must abort the run
-        if process_alive(serial, pkg) and sf_layers(serial, pkg):
-            return zero_frame_result()
-        raise RuntimeError(
-            f"no frames on SF layers for {pkg} "
-            f"({ {k: len(v) for k, v in seen.items()} })")
-    ivals = [(b - a) / 1e6 for a, b in zip(ts, ts[1:]) if b > a]
-    active = [x for x in ivals if x < 500.0]
-    interval = 1000.0 / (refresh or 60.0)
-    janky = sum(1 for x in ivals if 1.5 * interval < x < 500.0)
-    span_s = (ts[-1] - ts[0]) / 1e9
-    return {
-        "frames": len(ts),
-        "frame_ms_p50": _r(_pctl(active, 0.50)),
-        "frame_ms_p90": _r(_pctl(active, 0.90)),
-        "frame_ms_p99": _r(_pctl(active, 0.99)),
-        "dropped_pct": round(100.0 * janky / len(ivals), 2) if ivals else None,
-        "fps": round(len(ivals) / span_s, 1) if span_s else None,
-        "ivals_ms": [round(x, 3) for x in ivals],
     }
 
 
@@ -1558,107 +1440,15 @@ def assert_foreground(serial: str, pkg: str) -> None:
 
 
 def frame_capture(serial: str, ms: int, drive, pkg: str,
-                  refresh: float | None, src: str) -> dict:
-    def once():
-        wait_first_frame(serial, pkg)
-        assert_foreground(serial, pkg)
-        if src == "perfetto":
-            st = perfetto_capture(serial, ms, drive, pkg)
-        elif src == "sflinger":
-            st = sflinger_capture(serial, ms, drive, pkg, refresh)
-        else:
-            st = atrace_capture(serial, ms, drive, pkg, refresh)
-        assert_foreground(serial, pkg)
-        return st
-
+                  refresh: float | None) -> dict:
+    """One frame source for every contestant: Perfetto FrameTimeline while
+    the drive program runs; a capture error aborts the run."""
     assert_capture_ready(serial)
-    try:
-        return once()
-    except RuntimeError:
-        if src == "perfetto":
-            raise
-        # a capture miss (layer churn mid-drive etc.) gets one identical
-        # retry for every contestant; a second miss aborts the run
-        assert_capture_ready(serial)
-        return once()
-
-
-# The probe window, the floor below which a contestant is not yet animating
-# (a quarter of the pinned refresh — the W5 probe step animates every vsync
-# on any healthy contestant), and how many presents FrameTimeline must see
-# relative to SurfaceFlinger's own per-layer ring for perfetto to count.
-PROBE_WINDOW_MS = 3000
-PROBE_ANIMATING_FRAC = 0.25
-PROBE_AGREEMENT = 0.9
-PROBE_ATTEMPTS = 5
-
-
-def _presented_count(path: Path, pkg: str) -> int:
-    return sum(1 for r in _frame_rows(path, pkg)
-               if not (r[4] and "Dropped" in str(r[4])))
-
-
-def probe_contestant(serial: str, name: str, pkg: str) -> str:
-    """Pick the frame source that sees this contestant's presents.
-
-    Perfetto records while the SurfaceFlinger latency capture runs, so both
-    sources observe the same window of the same animation. SurfaceFlinger's
-    per-layer ring sees every present of every layer the app owns; perfetto
-    is chosen when FrameTimeline attributes at least PROBE_AGREEMENT of
-    them to the contestant. A window in which SurfaceFlinger itself sees
-    the app below the animating floor says nothing about either source (the
-    engine is still starting), so the probe captures again instead of
-    deciding on it."""
-    floor = PROBE_ANIMATING_FRAC * (PINNED_REFRESH or 60.0) \
-        * PROBE_WINDOW_MS / 1000
-    for attempt in range(1, PROBE_ATTEMPTS + 1):
-        wait_first_frame(serial, pkg)
-        assert_foreground(serial, pkg)
-        box: dict = {}
-
-        def drive():
-            box["sf"] = sflinger_capture(
-                serial, PROBE_WINDOW_MS,
-                lambda: time.sleep(PROBE_WINDOW_MS / 1000), pkg, None)
-
-        local = _record_trace(serial, PERFETTO_CFG % (PROBE_WINDOW_MS + 30000),
-                              PROBE_WINDOW_MS, drive)
-        assert_foreground(serial, pkg)
-        sf = box["sf"]["frames"] or 0
-        pf = _presented_count(local, pkg)
-        if sf < floor:
-            print(f"   probe ({name}) attempt {attempt}: SurfaceFlinger saw "
-                  f"{sf} presents (< {floor:.0f}) — not animating yet",
-                  flush=True)
-            continue
-        src = "perfetto" if pf >= PROBE_AGREEMENT * sf else "sflinger"
-        print(f"   probe ({name}): FrameTimeline {pf} / SurfaceFlinger {sf} "
-              f"presents — {src}", flush=True)
-        return src
-    raise RuntimeError(
-        f"{pkg} never reached {floor:.0f} presents in a "
-        f"{PROBE_WINDOW_MS} ms probe window over {PROBE_ATTEMPTS} attempts")
-
-
-def probe_frame_sources(man, serial: str, artifacts: Path) -> dict:
-    """Decide the frame source for EVERY contestant independently, on an
-    ANIMATING workload (the W5 probe step), by cross-checking FrameTimeline
-    against SurfaceFlinger over the same window (probe_contestant). A
-    contestant whose presents do not land in FrameTimeline — Flutter's
-    SurfaceView stream carries no vsync id — measures through
-    SurfaceFlinger alone; it never forces a different source on the rest."""
-    global FRAME_SOURCES
-    names = [n for n in man["contestants"]
-             if not (artifacts / n / "BUILD_ERROR.txt").exists()]
-    probe_step = man["workloads"]["w5"]["steps"][0]
-    srcs: dict[str, str] = {}
-    for n in names:
-        c = man["contestants"][n]
-        launch(serial, c["package"], c["activity"], "w5", c["kind"],
-               step=probe_step)
-        srcs[n] = probe_contestant(serial, n, c["package"])
-    FRAME_SOURCES = srcs
-    return srcs
+    wait_first_frame(serial, pkg)
+    assert_foreground(serial, pkg)
+    st = perfetto_capture(serial, ms, drive, pkg, refresh)
+    assert_foreground(serial, pkg)
+    return st
 
 
 def _timeline_tables(tp) -> list[str]:
@@ -1723,36 +1513,8 @@ def _frame_rows(path: Path, pkg: str):
     return rows
 
 
-def timeline_slice_counts(path: Path, pkg: str) -> tuple[int, int]:
-    """(total, matching) frame-timeline rows — probe diagnostics.
-
-    Runs the same package filter analyze_trace uses, so a probe fallback on
-    a FrameTimeline-capable device shows whether zero slices came from the
-    device emitting none or from the filter missing the contestant."""
-    from perfetto.trace_processor import TraceProcessor
-    total = matched = 0
-    with TraceProcessor(trace=str(path)) as tp:
-        for table in _timeline_tables(tp):
-            cols = _table_columns(tp, table)
-            if "layer_name" not in cols:
-                continue
-            total += int(next(iter(tp.query(
-                f"SELECT COUNT(*) AS c FROM {table}"))).c)
-            join = ""
-            cond = f"layer_name GLOB '*{pkg}*'"
-            if "upid" in cols:
-                join = " a LEFT JOIN process p ON a.upid = p.upid"
-                cond = (f"a.layer_name GLOB '*{pkg}*' OR "
-                        f"p.name GLOB '*{pkg}*'")
-            else:
-                join = " a"
-            matched += int(next(iter(tp.query(
-                f"SELECT COUNT(*) AS c FROM {table}{join} "
-                f"WHERE {cond}"))).c)
-    return total, matched
-
-
-def analyze_trace(path: Path, pkg: str) -> dict:
+def analyze_trace(path: Path, pkg: str, cap_ms: int,
+                  refresh: float | None) -> dict:
     """FrameTimeline slices for the app's layers: present interval
     percentiles and the jank share from the frame-timeline tables.
 
@@ -1770,25 +1532,21 @@ def analyze_trace(path: Path, pkg: str) -> dict:
             f"(frame_source=perfetto)")
     # 1-3 rows is a real result (a collapsed step presents barely anything);
     # measure_capacity folds frames<4 into collapsed_at
-    # present timestamp = slice end; present interval = gap between them
+    # present timestamp = slice end; the window is the capture itself (the
+    # drive program runs inside it; warmup happened before recording)
     pts = [r[0] + (r[1] or 0) for r in presented]
-    ivals = [(b - a) / 1e6 for a, b in zip(pts, pts[1:]) if b > a]
-    # percentiles over active intervals only — >=500 ms gaps are drive
-    # idles (the fling program's settles), the same rule dropped_pct uses
-    active = [x for x in ivals if x < 500.0]
+    stats = lib_frames.frame_statistics(
+        [(t - pts[0]) / 1e6 for t in pts], 0.0, cap_ms,
+        1000.0 / (refresh or 60.0))
+    # jank_type != None is perfetto's own drop classification — kept as
+    # evidence beside the unified interval rule
     janky = [r for r in rows
              if str(r[2]) not in ("None", "null", "None.None", "")]
-    span_s = (pts[-1] - pts[0]) / 1e9
-    return {
-        "frames": len(presented),
-        "frame_ms_p50": _r(_pctl(active, 0.50)),
-        "frame_ms_p90": _r(_pctl(active, 0.90)),
-        "frame_ms_p99": _r(_pctl(active, 0.99)),
-        "dropped_pct": round(100.0 * len(janky) / len(rows), 2)
-        if rows else None,
-        "fps": round(len(ivals) / span_s, 1) if span_s else None,
-        "ivals_ms": [round(x, 3) for x in ivals],
-    }
+    stats["dropped_pct"] = (round(100.0 * len(janky) / len(rows), 2)
+                            if rows else None)
+    stats["frames"] = stats.pop("presents")
+    stats["ivals_ms"] = stats.pop("intervals_ms")
+    return stats
 
 
 # Threads counted as "UI + render" for CPU ms/frame: the process main thread
@@ -1857,27 +1615,18 @@ def within_budget(ivals: list[float], budget_ms: float) -> float | None:
 
 
 def capacity_capture(serial: str, ms: int, drive, pkg: str,
-                     refresh: float | None, src: str) -> dict:
-    """Frame capture for one capacity step; adds CPU ms/frame on perfetto."""
+                     refresh: float | None) -> dict:
+    """Frame capture for one capacity step, Perfetto FrameTimeline like
+    every other capture; adds CPU ms/frame from sched_slice."""
     assert_capture_ready(serial)
-    if drive is None:
-        # undriven workloads present continuously from launch; driven ones
-        # stay idle until the capture's own drive program produces frames
-        wait_first_frame(serial, pkg)
     assert_foreground(serial, pkg)
     try:
-        if src == "perfetto":
-            local = _record_trace(
-                serial, PERFETTO_CAP_CFG % (ms + 30000), ms, drive)
-            st = analyze_trace(local, pkg)
-            st.update(cpu_ms_per_frame(local, pkg, st.get("frames")))
-            assert_foreground(serial, pkg)
-            return st
-        if src == "sflinger":
-            st = sflinger_capture(serial, ms, drive, pkg, refresh)
-        else:
-            st = atrace_capture(serial, ms, drive, pkg, refresh)
+        local = _record_trace(
+            serial, PERFETTO_CAP_CFG % (ms + 30000), ms, drive)
+        st = analyze_trace(local, pkg, ms, refresh)
+        st.update(cpu_ms_per_frame(local, pkg, st.get("frames")))
         assert_foreground(serial, pkg)
+        return st
     except NoFramesError:
         # live app, surfaces still present, zero presents in the window:
         # the collapse point is a measurement; a dead process or vanished
@@ -1893,9 +1642,11 @@ def capacity_capture(serial: str, ms: int, drive, pkg: str,
 
 
 def screen_dims(serial: str) -> tuple[int, int]:
-    screen = re.match(r"(\d+)x(\d+)",
-                      adb_shell(serial, "wm size").rsplit(":", 1)[-1].strip())
-    return (int(screen.group(1)), int(screen.group(2))) if screen else (1080, 2400)
+    out = adb_shell(serial, "wm size").rsplit(":", 1)[-1].strip()
+    screen = re.match(r"(\d+)x(\d+)", out)
+    if not screen:
+        raise RuntimeError(f"unparseable `wm size` output: {out!r}")
+    return int(screen.group(1)), int(screen.group(2))
 
 
 def measure_capacity(man, name: str, c: dict, serial: str, wl: str,
@@ -1923,8 +1674,7 @@ def measure_capacity(man, name: str, c: dict, serial: str, wl: str,
             else:
                 def drive():
                     time.sleep(hold / 1000.0)
-            st = capacity_capture(serial, hold, drive, pkg, refresh,
-                                  frame_source_for(name))
+            st = capacity_capture(serial, hold, drive, pkg, refresh)
         except AppNotRespondingError:
             # the step blocked the main thread past the ANR timeout: the
             # ladder's limit. Stopping the app dismisses the dialog before
@@ -1982,17 +1732,22 @@ def measure_capacity(man, name: str, c: dict, serial: str, wl: str,
 def drive_workload(serial: str, fling: dict, screen: tuple[int, int]):
     """The shared fling protocol (../WORKLOADS.md): OS-level `input swipe`
     outside the app — 8 down then 2 up, 75%→15% of the surface height,
-    250 ms gesture, 350 ms pause — identical for every contestant."""
+    250 ms gesture, 350 ms pause — identical for every contestant.
+
+    The whole program runs as one on-device process (a single `adb shell`
+    invocation), so gesture pacing is exact: no host round-trip lands
+    between swipes."""
     sw, shp = screen
     x = int(sw * fling["margin_x_frac"])
     y0, y1 = int(shp * fling["start_y_frac"]), int(shp * fling["end_y_frac"])
     dur, pause = fling["duration_ms"], fling["pause_between_ms"] / 1000.0
-    for _ in range(fling["down_swipes"]):
-        adb_shell(serial, "input swipe %d %d %d %d %d" % (x, y0, x, y1, dur))
-        time.sleep(pause)
-    for _ in range(fling["up_swipes"]):
-        adb_shell(serial, "input swipe %d %d %d %d %d" % (x, y1, x, y0, dur))
-        time.sleep(pause)
+    program = "".join(
+        f"input swipe {x} {y0} {x} {y1} {dur}; sleep {pause}; "
+        for _ in range(fling["down_swipes"]))
+    program += "".join(
+        f"input swipe {x} {y1} {x} {y0} {dur}; sleep {pause}; "
+        for _ in range(fling["up_swipes"]))
+    adb_shell(serial, program, timeout=120)
 
 
 ALL_WORKLOADS = ("w1", "w2", "w3", "w4", "w5", "w6")
@@ -2021,7 +1776,7 @@ def measure_rep(man, name: str, c: dict, serial: str,
 
         def sample_loop(stop):
             while not stop[0]:
-                s = meminfo(serial, pkg)
+                s = proc_mem(serial, pkg)
                 if s["pss_kb"]:
                     samples.append(s["pss_kb"])
                 time.sleep(0.5)
@@ -2040,8 +1795,7 @@ def measure_rep(man, name: str, c: dict, serial: str,
                 def drive():  # noqa: B023 — ms bound at call time
                     time.sleep(ms / 1000.0)
             wr["frames"] = frame_capture(
-                serial, ms, drive, pkg, rep["refresh_hz"],
-                frame_source_for(name))
+                serial, ms, drive, pkg, rep["refresh_hz"])
         else:
             time.sleep(5)
         stop[0] = True
@@ -2076,7 +1830,6 @@ def cmd_measure(man, serial: str, reps: int, locks_dir: Path | None,
     Each finished (rep, contestant) is saved at once, and a run started
     again under the same fingerprint continues after the last saved one,
     so stopping a run loses at most the contestant-rep in flight."""
-    global FRAME_SOURCES
     names = list(man["contestants"].keys())
     fp = harness_fingerprint(man, workloads, reps, artifacts)
     if results.get("fingerprint") != fp:
@@ -2105,15 +1858,14 @@ def cmd_measure(man, serial: str, reps: int, locks_dir: Path | None,
     if development:
         results["development_only"] = True
 
-    # Panel must stay awake at the pinned refresh rate for the whole run —
-    # including the frame-source probe, which needs a visible SurfaceFlinger
-    # composition to emit slices. Prior settings are restored at exit even
-    # when a capture aborts.
+    # Panel must stay awake at the pinned refresh rate for the whole run
+    # so Perfetto FrameTimeline emits slices under a uniform vsync. Prior
+    # settings are restored at exit even when a capture aborts.
     signal.signal(signal.SIGTERM, _exit_on_signal)
     signal.signal(signal.SIGHUP, _exit_on_signal)
     # the device is this run's from the first setting it pins to the last
-    # one it restores: preflight, install, probe and every rep happen under
-    # one lock, so no other session's work can land between two of them
+    # one it restores: preflight, install and every rep happen under one
+    # lock, so no other session's work can land between two of them
     lock = DeviceLock(locks_dir, serial) if locks_dir else _nullctx()
     with lock:
         _measure_locked(man, serial, reps, locks_dir, artifacts, results,
@@ -2123,67 +1875,20 @@ def cmd_measure(man, serial: str, reps: int, locks_dir: Path | None,
 def _measure_locked(man, serial: str, reps: int, locks_dir: Path | None,
                     artifacts: Path, results: dict, workloads, save,
                     names: list[str], res: dict, dev: dict) -> None:
-    global FRAME_SOURCES
     prev = device_preflight(serial)
     try:
         dev["vsync_hz"] = PINNED_REFRESH
         dev["vsync_hz_active"] = active_refresh(serial)
         abi = dev["abi"]
-        if dev.get("frame_source"):
-            # resumed run: keep the sources its saved reps were measured with
-            FRAME_SOURCES = srcs = dev["frame_source"]
-        else:
-            srcs = probe_frame_sources(man, serial, artifacts)
-            dev["frame_source"] = srcs
-            save()
+        dev["frame_source"] = "perfetto"
         model = dev.get("model", "this target")
-        # limitations describe this run's probe result — regenerate, never
-        # accumulate strings from earlier harness versions. Sources are
-        # per-contestant: group the contestants by what the probe picked.
-        lims: list[str] = []
+        lims: list[str] = [
+            f"{model}: frame metrics for every contestant use Perfetto "
+            "FrameTimeline (actual and surface frame_timeline_slice over "
+            "the contestant's layers), the issue-mandated single source; "
+            "CPU ms/frame from sched_slice on UI+render threads."
+        ]
         results["limitations"] = lims
-
-        def _lim(text: str) -> None:
-            if text not in lims:
-                lims.append(text)
-
-        perfetto_names = [n for n, s in srcs.items() if s == "perfetto"]
-        fallback = {s: [n for n, x in srcs.items() if x == s]
-                  for s in ("sflinger", "atrace")}
-        if perfetto_names:
-            _lim(
-                f"{model}: frame metrics for {', '.join(perfetto_names)} "
-                "use Perfetto FrameTimeline (actual and surface "
-                "frame_timeline_slice over the contestant's layers), the "
-                "issue-mandated source; CPU ms/frame from sched_slice on "
-                "UI+render threads."
-            )
-        for fb, fb_names in fallback.items():
-            if not fb_names:
-                continue
-            _lim(
-                f"{model}: FrameTimeline attributed fewer than "
-                f"{PROBE_AGREEMENT:.0%} of SurfaceFlinger's presents to "
-                f"{', '.join(fb_names)} in the probe, so their frame "
-                "metrics use the " + (
-                    "SurfaceFlinger per-layer `--latency` fallback — "
-                    "per-frame present timestamps of the app's busiest "
-                    "layer"
-                    if fb == "sflinger" else
-                    "SurfaceFlinger ftrace `frameTimelineInfo` fallback — "
-                    "one event per produced frame, global to the "
-                    "compositor"
-                ) + ". Reported: present-interval p50/p90/p99 over active "
-                "intervals, missed-vsync share, fps."
-            )
-        if any(w in workloads for w in ("w5", "w6")) and (
-                fallback["sflinger"] or fallback["atrace"]):
-            _lim(
-                "cpu_ms_per_frame comes from perfetto sched_slice "
-                "records, which the fallback sources do not produce; "
-                "it is null for the fallback contestants on this run."
-            )
-
         dev["limitations"] = lims
         for rep in range(reps):
             # interleaved order: rotate contestant order each rep so thermal

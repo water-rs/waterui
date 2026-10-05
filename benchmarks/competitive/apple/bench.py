@@ -39,6 +39,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import toolchain  # benchmarks/competitive/lib/toolchain.py
+import frame_stats as lib_frames  # benchmarks/competitive/lib/frame_stats.py
 
 ROOT = Path(__file__).resolve().parent
 MANIFEST = json.loads((ROOT / "manifest.json").read_text())
@@ -92,7 +93,7 @@ def resolve_sim_udid(requested: str | None = None) -> str:
     doc = json.loads(r.stdout)
     cands = []
     for runtime, devs in doc.get("devices", {}).items():
-        m = re.search(r"iOS[- ](\d+)\.(\d+)", runtime)
+        m = re.search(r"iOS[- ](\d+)[-.](\d+)", runtime)
         ver = (int(m.group(1)), int(m.group(2))) if m else (0, 0)
         for d in devs:
             if d.get("isAvailable", True) and "iPhone" in d.get("name", ""):
@@ -341,12 +342,45 @@ def cmd_bootstrap(args):
             ROOT / rn["dir"], t["react_native_cli"],
             t["react_native"], t["react_native_template_sha256"],
             env=os.environ.copy())
+    cp_ver = re.match(r"[\d.]+", MANIFEST["toolchain"]["cocoapods"])
     for cmd in (MANIFEST.get("bootstrap") or {}).get(args.platform, []):
         if "{SIM_UDID}" in cmd:
             cmd = cmd.replace("{SIM_UDID}",
                               resolve_sim_udid(args.sim_udid))
-        sh(cmd)
+        if "{COCOAPODS}" in cmd:
+            if not cp_ver:
+                raise SystemExit(
+                    "toolchain.cocoapods in manifest.json does not start "
+                    "with a version number")
+            cmd = cmd.replace("{COCOAPODS}", cp_ver.group(0))
+        if "pod install" in cmd:
+            m = re.search(r"--project-directory=([\w./-]+)", cmd)
+            pods = Path(m.group(1)) / "Pods" if m else None
+            try:
+                sh(cmd)
+            except Exception:
+                # a crashed pod install leaves half-written Pods/
+                # (missing modulemap links poison later xcodebuilds) —
+                # wipe and retry exactly once, then propagate
+                if pods:
+                    shutil.rmtree(ROOT / ".." / "apps" / "react-native" / pods,
+                                  ignore_errors=True)
+                sh(cmd)
+        else:
+            sh(cmd)
     print(f"bootstrap complete for {args.platform}")
+
+
+def app_binary(path: Path) -> Path | None:
+    """The executable inside a .app bundle: <stem> at top level for iOS,
+    Contents/MacOS/<stem> for macOS. None when either candidate is
+    absent — an Xcode stub after a failed build-for-testing carries
+    Info.plist + PkgInfo but no binary."""
+    for cand in (path / path.stem,
+                 path / "Contents" / "MacOS" / path.stem):
+        if cand.is_file() and cand.stat().st_size > 0:
+            return cand
+    return None
 
 
 def dir_sha256(path: Path) -> str:
@@ -366,12 +400,27 @@ def dir_sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def flutter_bin():
+    """Resolved flutter binary for this host, version-checked against the
+    manifest's declared toolchain — module scope so every consumer
+    (ensure_flutter_apple, build command substitution) shares it."""
+    root = os.path.expandvars(
+        MANIFEST["toolchain"].get(
+            "flutter_root", "$HOME/toolchains/flutter"))
+    b = Path(root) / "bin" / "flutter"
+    toolchain.require_version(
+        "flutter", [str(b), "--version"],
+        MANIFEST["toolchain"]["flutter"])
+    return str(b)
+
+
 def ensure_flutter_apple(d: Path, platforms: list[str], env: dict):
     """The flutter app's ios/ + macos/ directories are generated, not
     committed: produced by the pinned Flutter SDK's `flutter create` in a
     scratch dir, the authored override files then replace the template
     sources, and the iOS bundle id is rewritten to the manifest's
-    dev.bench.flutter (the generator can only emit dev.bench.<project>).
+    dev.bench.flutter (the generator emits dev.bench.<ProjectName>, i.e.
+    dev.bench.benchFlutter for project name bench_flutter).
     Reuses a stale generated dir only if .bench-generator records the same
     Flutter version — otherwise it is regenerated."""
     fb = flutter_bin()
@@ -405,7 +454,7 @@ def ensure_flutter_apple(d: Path, platforms: list[str], env: dict):
         if plat == "ios":
             pbx = dst / "Runner.xcodeproj" / "project.pbxproj"
             pbx.write_text(pbx.read_text().replace(
-                "dev.bench.bench_flutter", "dev.bench.flutter"))
+                "dev.bench.benchFlutter", "dev.bench.flutter"))
         stamp.write_text(tag + "\n")
 
 
@@ -426,17 +475,6 @@ def cmd_build(args):
         if not _wb:
             _wb["b"] = water_bin()
         return _wb["b"]
-
-    def flutter_bin():
-        root = os.path.expandvars(
-            MANIFEST["toolchain"].get(
-                "flutter_root", "$HOME/toolchains/flutter"))
-        b = Path(root) / "bin" / "flutter"
-        # declared version enforced on the resolved binary
-        toolchain.require_version(
-            "flutter", [str(b), "--version"],
-            MANIFEST["toolchain"]["flutter"])
-        return str(b)
 
     try:
         cmd_bootstrap(args)
@@ -473,6 +511,12 @@ def cmd_build(args):
             dst = staged / src.name
             shutil.rmtree(dst, ignore_errors=True)
             shutil.copytree(src, dst, symlinks=True)
+            if src.name.endswith(".app") and not app_binary(dst):
+                failures[c["id"]] = (
+                    f"staged artifact {art} carries no executable — the "
+                    "build left an empty Xcode stub, not a success")
+                shutil.rmtree(dst, ignore_errors=True)
+                continue
             if plat == "ios-device":
                 # water package aborts at signing before embedding the rust
                 # cdylib; every missing @rpath dep must resolve inside the
@@ -550,7 +594,8 @@ def cmd_build(args):
 def write_xctestrun(template: Path, out: Path, target_key: str,
                     products_subdir: str, app_name: str, bundle_id: str,
                     workload: str, drive: str, duration: int, runner_app: str,
-                    no_hitch: bool = False, only_test: str | None = None):
+                    no_hitch: bool = False, only_test: str | None = None,
+                    step: int | None = None):
     d = plistlib.loads(template.read_bytes())
     t = d[target_key]
     app_rel = f"__TESTROOT__/{products_subdir}/{app_name}"
@@ -570,10 +615,24 @@ def write_xctestrun(template: Path, out: Path, target_key: str,
         "BENCH_WORKLOAD": workload,
         "BENCH_DRIVE": drive,
         "BENCH_DURATION": str(duration),
+        # the fling program the XCTest's swipe branch executes — from the
+        # manifest, never Swift literals
+        "BENCH_FLING": json.dumps({
+            "flings_down": int(MANIFEST["harness"]["fling"]["down"]),
+            "flings_up": int(MANIFEST["harness"]["fling"]["up"]),
+            "distance_fraction":
+                float(MANIFEST["harness"]["fling"]["swipe_distance_fraction"]),
+            "pause_s":
+                float(MANIFEST["harness"]["fling"]["swipe_pause_s"]),
+            "hold_s":
+                float(MANIFEST["harness"]["fling"]["swipe_hold_s"]),
+        }),
     })
+    if step is not None:
+        env["BENCH_STEP"] = str(step)
     if no_hitch:
-        # XCTHitchMetric produced no measurements on this target; the
-        # runner drops it rather than reporting zeros.
+        # deterministic per-platform attachment (ios-sim has no GPU frame
+        # telemetry) — the row records the hitch metric as not collected
         env["BENCH_NO_HITCH"] = "1"
     out.write_bytes(plistlib.dumps(d))
 
@@ -611,19 +670,27 @@ def parse_xcresult(path: Path) -> dict:
     return out
 
 
+# Per-workload default drive when the manifest has no override: the
+# scroll workloads are fling-driven; w1 taps the counter; w3 and w5 are
+# self-animating (no drive).
+_DEFAULT_DRIVE = {"w1": "tap", "w3": "none", "w5": "none"}
+
+
 def drive_for(c: dict, plat: str, workload: str = "") -> str:
     """One drive per contestant per platform, recorded per row.
        Resolution order: contestant's own `drive` override (manifest),
-       then the platform-level `drive_overrides` for this workload,
-       then `swipe`. `auto` means the runner posts the dev.bench.begin
-       Darwin notification inside the measure block; the app then runs
-       the identical fling program and posts dev.bench.done."""
+       then the platform-level `drive_overrides` for this workload, then
+       the shared `*` overrides, then `swipe`. There is no `auto` drive —
+       the app never scrolls itself and never paces a ladder."""
     if (d := c.get("drive", {}).get(plat)) is not None:
         if isinstance(d, dict):
             return d.get(workload, d.get("*", "swipe"))
         return d
-    pov = MANIFEST.get("drive_overrides", {}).get(plat, {})
-    return pov.get(workload, pov.get("*", "swipe"))
+    ov = MANIFEST.get("drive_overrides", {})
+    pov = {**ov.get("*", {}), **ov.get(plat, {})}
+    pov.pop("note", None)
+    return pov.get(workload, pov.get("*",
+        _DEFAULT_DRIVE.get(workload, "swipe")))
 
 
 def sanitize_runs(state: dict) -> None:
@@ -694,6 +761,20 @@ def _host_pid(name: str) -> int | None:
     return None
 
 
+def _host_pid_path(exe_path: str) -> int | None:
+    """Pid of the process running exactly `exe_path` — the app binary
+    this run launched, not any process sharing its name. `ps comm` is
+    the executable path itself, so an exact string equality filters out
+    both name collisions and cmdline-substring matches."""
+    out = subprocess.run(["ps", "-axo", "pid=,comm="],
+                         capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        p = line.strip().split(None, 1)
+        if len(p) == 2 and p[0].isdigit() and p[1].strip() == exe_path:
+            return int(p[0])
+    return None
+
+
 def _children_of(pid: int) -> list[int]:
     """Direct children of a host pid (Electron's renderer/GPU helpers
     live here — its main process alone is not the memory footprint)."""
@@ -730,7 +811,9 @@ def cpu_pids_resolver(plat: str, udid: str, bundle_id: str, exe: str):
         return res
     if plat == "macos":
         def res():
-            app = _host_pid(exe)
+            # resolve by the launched executable path, not a name — a
+            # pid found by name could be a contestant from another run
+            app = _host_pid_path(exe)
             return {
                 "app": [app] if app else [],
                 "render_server":
@@ -839,16 +922,25 @@ class CpuSampler(threading.Thread):
         return round(max(vals) / 1024.0, 1)
 
 
-CAPACITY_WORKLOADS = ("W5", "W6")
-# W5/W6 exist only in the five iOS contestants — electron/appkit ship W1–W4.
+CAPACITY_WORKLOADS = ("w5", "w6")
+# w5/w6 cells exist only in the five iOS contestants (manifest declares
+# the platform+contestant sets per workload).
 CAPACITY_CONTESTANTS = {"waterui", "swiftui", "uikit", "flutter", "rn"}
-# Match the in-app ladders: settle 1 s + hold 4 s per step.
-STEP_TOTAL_S = 5.0          # settle + hold per ladder step
+# One launch renders one ladder step (WORKLOADS.md): settle 1 s + hold
+# 4 s inside the launch before the app posts done.
+STEP_TOTAL_S = 5.0          # settle + hold per capacity launch
 STEP_SETTLE_S = 1.0
 STEP_HOLD_S = STEP_TOTAL_S - STEP_SETTLE_S
-CAPACITY_STEPS = {"W5": [200, 400, 800, 1600, 3200, 6400, 12800, 25600],
-                  "W6": [1, 2, 4, 8, 16, 32, 64]}
 BENCH_NO_HITCH_ENV = "BENCH_NO_HITCH"
+
+
+def capacity_steps(workload: str) -> list[int]:
+    """Ladder for a capacity workload, from the manifest — a missing or
+    empty list fails instead of guessing a default."""
+    steps = MANIFEST["workloads"][workload].get("steps")
+    if not steps:
+        raise SystemExit(f"manifest workloads.{workload}.steps missing")
+    return [int(n) for n in steps]
 
 
 def capacity_cell(plat, cid, w) -> bool:
@@ -924,6 +1016,51 @@ def _epoch_map(raw_vals, lo, hi, trace: Path):
         if n > best_n:
             best, best_n = (s, b), n
     return best if best_n else None
+
+
+def trace_frame_stats(trace: Path, window_ms, device_rec: dict):
+    """lib/frame_stats over the presents inside the measurement window.
+
+    hitches-frame-lifetimes carries one row per presented surface; their
+    `start` engineering timestamps are epoch-mapped and kept as the
+    owned-present series. window_ms = (w0, w1) measured relative to
+    run_one's t_start — the METHOD window is applied by the caller's
+    warmup+capture bounds; returns None when no frame rows exist
+    (xctrace unsupported on the target)."""
+    frames, _err = _export_table(trace, "hitches-frame-lifetimes")
+    if not frames:
+        return None
+    raw = [_num(f.get("start")) for f in frames]
+    raw = [v for v in raw if v > 0]
+    if window_ms is not None:
+        lo, hi = (window_ms[0] / 1000.0 - 60, window_ms[1] / 1000.0 + 60)
+    else:
+        lo, hi = (0, float("inf"))
+    fmap = _epoch_map(raw, lo, hi, trace)
+    if fmap is None:
+        return None
+    sc, base = fmap
+    t0_epoch = time.time() - (window_ms[0] / 1000.0 if window_ms else 0)
+    presents = sorted(t * sc + base - t0_epoch for t in raw)  # s -> rel s
+    if not presents:
+        return None
+    pres_ms = [v * 1000.0 for v in presents]
+    maxfps = 60.0
+    if device_rec.get("maxFps"):
+        try:
+            maxfps = float(device_rec["maxFps"])
+        except (TypeError, ValueError):
+            pass
+    if window_ms is not None:
+        w0, w1 = window_ms
+        inside = [v for v in pres_ms if w0 <= v <= w1]
+        return lib_frames.frame_statistics(
+            inside, window_start_ms=w0, capture_ms=w1 - w0,
+            refresh_ms=1000.0 / maxfps)
+    return lib_frames.frame_statistics(
+        pres_ms, window_start_ms=pres_ms[0],
+        capture_ms=pres_ms[-1] - pres_ms[0] + 1.0,
+        refresh_ms=1000.0 / maxfps)
 
 
 def _proc_of_thread(fmt: str):
@@ -1062,201 +1199,6 @@ def collect_pins() -> dict:
             probes[name] = f"unavailable: {e.__class__.__name__}"
     out["observed_toolchain"] = probes
     return out
-
-
-def parse_capacity(trace: Path | None, steps_log: list, app_name: str,
-                   budget_ms=(8.33, 16.67), render_trace: Path | None = None,
-                   sampler: "CpuSampler | None" = None):
-    """Slice the trace's per-frame and CPU data by step boundaries.
-
-    `steps_log` = [(k, n, epoch_secs)]. Frames come from
-    hitches-frame-lifetimes (one row per presented surface lifetime);
-    consecutive `start` times on the app's display give presented-frame
-    intervals. CPU comes from time-sample rows whose thread belongs to
-    the app process and whose thread-state is Running; each row is one
-    profiler sample, and the effective sample interval is recovered from
-    the sample-time deltas themselves.
-
-    `render_trace` (Time Profiler attach to the render server) adds
-    render_cpu_ms per step. When no Animation Hitches trace exists
-    (iOS Simulator: the template is unsupported on the sim target) the
-    frame columns stay null and app CPU comes from the CpuSampler
-    (ps -o time deltas on the app and the sim's backboardd) — still
-    external, still identical for every contestant."""
-    frames, e1 = (_export_table(trace, "hitches-frame-lifetimes")
-                  if trace else ([], "no frame trace (xctrace could not "
-                                 "record Animation Hitches on this target)"))
-    cpu, e2 = (_export_table(trace, "time-sample") if trace else ([], None))
-    rcpu, e3 = (_export_table(render_trace, "time-sample")
-                if render_trace else ([], None))
-    out = {"steps": [],
-           "errors": [e for e in (e1, e2, e3) if e]}
-    if not steps_log:
-        out["errors"].append("no bench-steps.log rows pulled")
-        return out
-    windows = []
-    for i, (k, n, t) in enumerate(steps_log):
-        end = (steps_log[i + 1][2] if i + 1 < len(steps_log)
-               else t + STEP_SETTLE_S + STEP_HOLD_S)
-        windows.append((i, n, t + STEP_SETTLE_S,
-                        min(end, t + STEP_SETTLE_S + STEP_HOLD_S)))
-    lo = steps_log[0][2] - 20
-    hi = steps_log[-1][2] + STEP_SETTLE_S + STEP_HOLD_S + 30
-
-    # ---- presented-frame intervals (per display, consecutive starts) --
-    fmap = None
-    if frames:
-        raw = [_num(f.get("start")) for f in frames]
-        fmap = _epoch_map([v for v in raw if v > 0], lo, hi, trace)
-        if fmap is None:
-            out["errors"].append(
-                "hitches-frame-lifetimes timestamps do not land in the "
-                "step window (no epoch base matched)")
-    else:
-        out["errors"].append("hitches-frame-lifetimes: 0 rows")
-    intervals = []   # [(epoch_s, interval_ms)]
-    prev = {}
-    if fmap:
-        fs, fb = fmap
-        for f in frames:
-            t0 = _num(f.get("start"))
-            if t0 <= 0:
-                continue
-            t = t0 * fs + fb
-            disp = f.get("display") or "main"
-            if disp in prev:
-                intervals.append((t, (t - prev[disp]) * 1000.0))
-            prev[disp] = t
-        intervals.sort()
-
-    # ---- CPU: Running samples of the app's threads ------------------
-    def _running_times(rows, proc, src):
-        """Epoch times of Running samples for `proc` + calibrated tick."""
-        if not rows:
-            return [], 1.0
-        raw_t = [_num(r.get("sample-time")) for r in rows]
-        m = _epoch_map([v for v in raw_t if v > 0], lo, hi, src)
-        ts = sorted(v for v in raw_t if v > 0)
-        smp = 1.0
-        if len(ts) > 2:
-            dt = sorted(b - a for a, b in zip(ts, ts[1:]) if b > a)
-            if dt:
-                smp = dt[len(dt) // 2] * 1e-6  # ns → ms
-        if not m:
-            return None, smp
-        s, b0 = m
-        return [t0 * s + b0 for t0, r in
-                ((_num(r.get("sample-time")), r) for r in rows)
-                if t0 > 0 and r.get("thread-state") == "Running"
-                and _proc_of_thread(r.get("thread")) == proc], smp
-
-    cpu_ms = []
-    sample_ms = 1.0
-    if cpu:
-        cpu_ms, sample_ms = _running_times(cpu, app_name, trace)
-        if cpu_ms is None:
-            out["errors"].append(
-                "time-sample timestamps do not land in the step window")
-            cpu_ms = []
-    elif trace:
-        out["errors"].append("time-sample: 0 rows")
-
-    render_ms = []
-    render_sample_ms = 1.0
-    if rcpu:
-        render_ms, render_sample_ms = _running_times(
-            rcpu, RENDER_NAME.get("ios-device", "backboardd"),
-            render_trace)
-        if render_ms is None:
-            render_ms = []
-
-    for i, n, w0, w1 in windows:
-        row = {"step": i, "n": n, "window_s": [round(w0, 2), round(w1, 2)]}
-        iv = sorted(d for (t, d) in intervals if w0 <= t < w1)
-        ncpu = sum(1 for t in cpu_ms if w0 <= t < w1)
-        row["cpu_ms"] = round(ncpu * sample_ms, 1)
-        if sampler is not None:
-            # Sim path: app + render-server CPU from ps deltas.
-            a = sampler.delta("app", w0, w1)
-            if a is not None:
-                row["cpu_ms"] = round(a * 1000.0, 1)
-            r = sampler.delta("render_server", w0, w1)
-            if r is not None:
-                row["render_cpu_ms"] = round(r * 1000.0, 1)
-        elif render_ms:
-            row["render_cpu_ms"] = round(
-                sum(1 for t in render_ms if w0 <= t < w1)
-                * render_sample_ms, 1)
-        if iv:
-            row["frames"] = len(iv)
-            row["p50_ms"] = round(iv[len(iv) // 2], 2)
-            row["p99_ms"] = round(iv[min(len(iv) - 1,
-                                         int(len(iv) * 0.99))], 2)
-            for b in budget_ms:
-                row[f"in{b}ms_pct"] = round(
-                    100.0 * sum(1 for v in iv if v <= b) / len(iv), 1)
-            row["cpu_ms_per_frame"] = round(ncpu * sample_ms / len(iv), 3)
-        else:
-            # no frame source (sim: xctrace can't record Hitches) — null,
-            # not 0: a presented-frame count of 0 would read as a failure
-            # the probe simply cannot see.
-            row["frames"] = None
-        out["steps"].append(row)
-    cap = 0
-    for st in out["steps"]:
-        if st.get("frames") and st.get("in8.33ms_pct", 0) >= 99.0:
-            cap = st["n"]
-    out["capacity_120hz"] = cap
-    cap60 = 0
-    for st in out["steps"]:
-        if st.get("frames") and st.get("in16.67ms_pct", 0) >= 99.0:
-            cap60 = st["n"]
-    out["capacity_60hz"] = cap60
-    out["sample_ms"] = round(sample_ms, 3)
-    return out
-
-
-def pull_steps_log(plat: str, udid: str, bundle_id: str, out: Path):
-    """Fetch tmp/bench-steps.log from the app's container."""
-    if plat == "ios-sim":
-        r = subprocess.run(
-            ["xcrun", "simctl", "get_app_container", sim_udid(),
-             bundle_id, "data"], capture_output=True, text=True,
-            timeout=60)
-        if r.returncode == 0:
-            src = Path(r.stdout.strip()) / "tmp" / "bench-steps.log"
-            if src.exists():
-                shutil.copy2(src, out)
-                return
-        out.unlink(missing_ok=True)
-    elif plat == "ios-device":
-        sh(f"xcrun devicectl device copy from --device {udid} "
-           f"--domain-type appDataContainer --domain-identifier {bundle_id} "
-           f"--source tmp/bench-steps.log --destination '{out}'",
-           check=False, capture=True)
-    elif plat == "macos":
-        src = Path(os.environ.get("TMPDIR", "/tmp")) / "bench-steps.log"
-        if src.exists():
-            shutil.copy2(src, out)
-    if not out.exists():
-        out.write_text("")
-
-
-def read_steps_log(path: Path, since: float, workload: str):
-    """[(step, n, epoch_secs)] for rows at/after `since`, trimmed to this
-    workload's step count — the file persists between sim reps, so keep
-    only the trailing program."""
-    rows = []
-    if path.exists():
-        import re
-        for line in path.read_text().splitlines():
-            m = re.match(r"step\s+(\d+)\s+n=(\d+)\s+t=([0-9.]+)", line)
-            if m and float(m.group(3)) >= since:
-                rows.append((int(m.group(1)), int(m.group(2)),
-                             float(m.group(3))))
-    rows.sort(key=lambda r: r[2])
-    want = len(CAPACITY_STEPS.get(workload, []))
-    return rows[-want:] if want and len(rows) > want else rows
 
 
 def _xctrace_attach(out_path: Path, template: str, proc: str,
@@ -1461,16 +1403,16 @@ def _xctest_spawn(xr: Path, res: Path, dest: str, results_dir: Path,
     _ACTIVE_PROCS.append(xb)
     return xb, xbf, xblog
 
-def _window_center(owner_names: set[str]):
-    """Centre of the largest on-screen window owned by any named process,
-    from the Quartz window list (host view). For ios-sim the owner is the
-    Simulator process; for macos the contestant's own executable name."""
+def _window_center_for_pid(pid: int):
+    """Centre of the largest on-screen window owned by `pid`, from the
+    Quartz window list. The owner is resolved by process id — never by
+    name — so the drive can only land in a window this run launched."""
     import Quartz
     wl = Quartz.CGWindowListCopyWindowInfo(
         Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID)
     best = None
     for w in wl:
-        if w.get("kCGWindowOwnerName") not in owner_names:
+        if w.get("kCGWindowOwnerPID") != pid:
             continue
         b = w.get("kCGWindowBounds", {})
         area = (b.get("Width", 0) or 0) * (b.get("Height", 0) or 0)
@@ -1487,20 +1429,25 @@ class WheelDriver:
     """Host-side OS-level scroll drive for the `wheel` drive mode.
 
     The XCTest opens each measure window with a `dev.bench.begin` Darwin
-    notification; this driver — running in the bench.py process — parks
-    the pointer over the target window's centre and posts the shared
-    fling protocol (manifest `fling` block) as CGEvent scroll-wheel
-    detents, the same OS-level path a trackpad or mouse wheel takes.
-    It then posts `dev.bench.done` into the same notify namespace the
-    begin came from (the simulator's for ios-sim, the host's for macos).
-    The app never scrolls itself.
-    """
+    notification; this driver — running in the bench.py process — posts
+    the shared fling protocol (manifest `fling` block) as CGEvent
+    scroll-wheel detents DIRECTLY to the target process
+    (`CGEventPostToPid`): no cursor warp, no HID-tap broadcast, so the
+    drive cannot land under a stray cursor. It then posts
+    `dev.bench.done` into the same notify namespace the begin came from
+    (the simulator's for ios-sim, the host's for macos). The app never
+    scrolls itself.
+
+    The driver refuses to run anywhere but the declared measurement host
+    (`measurement_host.hw_model_contains` in the manifest — the Mac
+    mini): a wheel program that can post into any process is not a tool
+    to leave live on a development machine."""
 
     def __init__(self, plat: str, udid: str | None,
-                 owner_names: set[str], fling: dict):
+                 pid_resolver, fling: dict):
         self.plat = plat
         self.udid = udid
-        self.owner_names = owner_names
+        self.pid_resolver = pid_resolver
         self.fling = fling
         self.error = None
         self._listener = None
@@ -1513,7 +1460,24 @@ class WheelDriver:
                     *args]
         return ["notifyutil", *args]
 
+    def _confinement_ok(self) -> str | None:
+        mh = MANIFEST.get("measurement_host") or {}
+        want = mh.get("hw_model_contains")
+        ev = host_evidence()
+        vm = host_is_virtualized(ev)
+        if vm:
+            return f"wheel driver: virtualized host ({vm})"
+        if not want or want not in (ev.get("hw_model") or ""):
+            return ("wheel driver: host is not the declared measurement "
+                    f"host (hw_model={ev.get('hw_model')!r}, expected "
+                    f"{want!r} — {mh.get('kind', 'the Mac mini')})")
+        return None
+
     def start(self):
+        err = self._confinement_ok()
+        if err:
+            self.error = err
+            return
         # `notifyutil -1` prints one line per registration firing — it
         # is the same channel the contestant apps read begin on, so the
         # drive can only ever fire inside the measure block.
@@ -1547,24 +1511,34 @@ class WheelDriver:
             self.error = f"wheel driver: {e}"
 
     def _program(self):
-        center = _window_center(self.owner_names)
+        pid = None
+        deadline = time.time() + 30
+        while pid is None and time.time() < deadline:
+            pid = self.pid_resolver()
+            if pid is None:
+                time.sleep(0.5)
+        if pid is None:
+            raise RuntimeError("wheel driver: target pid never appeared")
+        center = _window_center_for_pid(pid)
         if center is None:
             raise RuntimeError(
-                "no on-screen window for "
-                + ", ".join(sorted(self.owner_names)))
+                f"no on-screen window owned by pid {pid}")
         import Quartz
-        cx, cy = center
-        Quartz.CGWarpMouseCursorPosition((cx, cy))
         f = self.fling
         seq = [1] * int(f["down"]) + [-1] * int(f["up"])
         step_ms = float(f["duration_ms"]) / int(f["detents"])
         px = int(f["detent_px"])
+        # Quartz wheel semantics: a POSITIVE wheel1 delta scrolls content
+        # toward the top (the "scroll up" direction); scrolling the feed
+        # DOWN is a negative delta. The earlier +px "down" ran the program
+        # inverted — direction verified against NSScrollView on the
+        # measurement host.
         for direction in seq:
             for _ in range(int(f["detents"])):
                 ev = Quartz.CGEventCreateScrollWheelEvent(
                     None, Quartz.kCGScrollEventUnitPixel, 1,
-                    px * direction)
-                Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev)
+                    -px * direction)
+                Quartz.CGEventPostToPid(pid, ev)
                 time.sleep(step_ms / 1000)
             time.sleep(float(f["pause_ms"]) / 1000)
 
@@ -1574,7 +1548,8 @@ def run_one(plat, contestant_id, app_path: Path, bundle_id, workload,
             template: Path, target_key: str, results_dir: Path,
             no_hitch: bool = False, device_udid: str | None = None,
             runner_bid: str | None = None, artifact_sha: str | None = None,
-            runner_log_since: float = 0.0) -> dict:
+            runner_log_since: float = 0.0,
+            step: int | None = None) -> dict:
     """Stage app + injected xctestrun, run two single-test invocations.
 
     One test per xcodebuild invocation: the launch test and the workload
@@ -1591,10 +1566,14 @@ def run_one(plat, contestant_id, app_path: Path, bundle_id, workload,
       and Logging on the app (marker channel) — all three armed BEFORE
       the runner's recorder-go gate releases the launch, identical for
       every contestant.
-    - W5/W6 additionally pull tmp/bench-steps.log and slice per step.
+    - capacity workloads (w5/w6) run one launch per ladder step: the
+      caller passes `step` and merges the per-step rows; the app posts
+      dev.bench.done from its own workload logic after settle+hold.
     """
-    tag = f"{contestant_id}-{workload}-r{rep}"
-    capacity = workload in CAPACITY_WORKLOADS
+    tag = f"{contestant_id}-{workload}"
+    if step is not None:
+        tag += f"-s{step}"
+    tag += f"-r{rep}"
     dst = products_dir / subdir / app_path.name
     shutil.rmtree(dst, ignore_errors=True)
     shutil.copytree(app_path, dst, symlinks=True)
@@ -1603,19 +1582,18 @@ def run_one(plat, contestant_id, app_path: Path, bundle_id, workload,
     write_xctestrun(template, xr_launch, target_key, subdir, app_path.name,
                     bundle_id, workload, drive, duration,
                     runner_app="", no_hitch=no_hitch,
-                    only_test="testLaunch")
+                    only_test="testLaunch", step=step)
     write_xctestrun(template, xr_work, target_key, subdir, app_path.name,
                     bundle_id, workload, drive, duration,
                     runner_app="", no_hitch=no_hitch,
-                    only_test="testWorkload")
+                    only_test="testWorkload", step=step)
     res_launch = results_dir / f"{tag}-launch.xcresult"
     res_work = results_dir / f"{tag}-work.xcresult"
     trace = results_dir / f"{tag}.trace"
     bb_trace = results_dir / f"{tag}-bb.trace"
     fp_trace = results_dir / f"{tag}-log.trace"
-    steps_file = results_dir / f"{tag}-steps.log"
     runner_log = results_dir / f"{tag}-runner.log"
-    for p in (res_launch, res_work, trace, bb_trace, fp_trace, steps_file,
+    for p in (res_launch, res_work, trace, bb_trace, fp_trace,
               runner_log):
         if p.is_dir():
             shutil.rmtree(p, ignore_errors=True)
@@ -1628,11 +1606,11 @@ def run_one(plat, contestant_id, app_path: Path, bundle_id, workload,
         # names it "Electron", not the app name
         plist_f = app_path / "Contents" / "Info.plist"
         if plist_f.exists():
-            try:
-                exe = plistlib.loads(plist_f.read_bytes()).get(
-                    "CFBundleExecutable", exe)
-            except Exception:
-                pass
+            exe = plistlib.loads(plist_f.read_bytes()).get(
+                "CFBundleExecutable", exe)
+            if not exe:
+                raise RuntimeError(
+                    f"{plist_f} has no CFBundleExecutable")
 
     rec = {}
     sampler = None
@@ -1663,16 +1641,21 @@ def run_one(plat, contestant_id, app_path: Path, bundle_id, workload,
         if sampler is None and plat in ("ios-sim", "macos"):
             sampler = CpuSampler(cpu_pids_resolver(
                 plat, device_udid or (sim_udid() if plat == "ios-sim"
-                                      else None), bundle_id, exe),
+                                      else None), bundle_id,
+                str(app_path / "Contents" / "MacOS" / exe)
+                if plat == "macos" else exe),
                 interval=0.5)
             sampler.start()
         wheel = None
         if drive == "wheel":
-            owners = ({"Simulator"} if plat == "ios-sim" else {exe})
+            exe_path = app_path / "Contents" / "MacOS" / exe
             wheel = WheelDriver(
                 plat,
                 device_udid or (sim_udid() if plat == "ios-sim" else ""),
-                owners, MANIFEST["harness"]["fling"])
+                (lambda: _host_pid("Simulator"))
+                if plat == "ios-sim"
+                else (lambda: _host_pid_path(str(exe_path))),
+                MANIFEST["harness"]["fling"])
             wheel.start()
         xb, xbf, xblog = _xctest_spawn(xr_work, res_work, dest,
                                      results_dir, tag + "-work")
@@ -1744,10 +1727,17 @@ def run_one(plat, contestant_id, app_path: Path, bundle_id, workload,
         if device_rec:
             rec["device_record"] = device_rec
         w0, w1 = window
+        # the runner log's measure-begin/measure-end pair is the only
+        # window CPU/memory deltas and frame stats may be sliced by — a
+        # missing pair fails the attempt; whole-invocation data is not
+        # evidence
+        if not (w0 and w1) and "error" not in rec:
+            raise RuntimeError(
+                "runner log has no measure-begin/measure-end pair — "
+                "the measurement window is unbounded")
         if sampler is not None:
             rec["renderserver"] = RENDER_NAME[plat]
-            rec["cpu_window_source"] = ("measure" if w0 and w1
-                                        else "whole-invocation")
+            rec["cpu_window_source"] = "measure"
             for label, key in (("app", "app_cpu_window_s"),
                                ("render_server", "renderserver_cpu_s"),
                                ("helpers", "helpers_cpu_s")):
@@ -1786,23 +1776,17 @@ def run_one(plat, contestant_id, app_path: Path, bundle_id, workload,
                 rec.setdefault("trace_errors", []).append(
                     f"xctrace backboardd: {bb_err}")
 
-        if capacity:
-            pull_steps_log(plat,
-                           device_udid or (sim_udid()
-                                           if plat == "ios-sim" else ""),
-                           bundle_id, steps_file)
-            steps = read_steps_log(steps_file, t_start - 5, workload)
-            cap = parse_capacity(
-                trace if plat == "ios-device" and trace.exists() else None,
-                steps, exe,
-                render_trace=bb_trace if bb_trace.exists() else None,
-                sampler=sampler)
-            if trace_err:
-                cap.setdefault("errors", []).append(f"xctrace: {trace_err}")
-            if bb_err:
-                cap.setdefault("errors", []).append(
-                    f"xctrace backboardd: {bb_err}")
-            rec["capacity"] = cap
+        # frame statistics over the measurement window (lib/frame_stats:
+        # [first owned present + warmup, +capture_s], gap >100 ms ends an
+        # active run, missed = round(i/period)-1 beyond 1.5 periods)
+        if plat == "ios-device" and trace.exists():
+            fstats = trace_frame_stats(
+                trace,
+                window_ms=((w0 - t_start) * 1000.0,
+                           (w1 - t_start) * 1000.0),
+                device_rec=device_rec)
+            if fstats is not None:
+                rec["frame_stats"] = fstats
 
         # apple-backend#281 baseline fields: app size on every row, and
         # waterui's first-paint marker where a readable channel exists.
@@ -1848,28 +1832,38 @@ def runner_bundle_id(staged: Path) -> str | None:
         if not plist_f.exists():
             plist_f = app / "Contents" / "Info.plist"
         if plist_f.exists():
-            try:
-                return plistlib.loads(
-                    plist_f.read_bytes())["CFBundleIdentifier"]
-            except Exception:
-                continue
+            # an unreadable or id-less plist is a broken staged runner —
+            # fail, never skip to the next glob or a silent None
+            return plistlib.loads(
+                plist_f.read_bytes())["CFBundleIdentifier"]
+        raise RuntimeError(f"{app} has no Info.plist")
     return None
 
 
 def mac_thermal_wait(budget_s: float = 600.0):
-    """macOS thermal gate: `pmset -g thermlog` reports CPU_Speed_Limit —
-    100 means un-throttled. Bounded poll, not a blind sleep: a throttled
-    host must not be timed, and an already-cool host proceeds at once.
-    Returns True when cool within budget."""
+    """macOS thermal gate: `pmset -g therm` reports the live thermal
+    pressure and CPU_Speed_Limit — 100 means un-throttled. Bounded poll,
+    not a blind sleep: a throttled host must not be timed, an
+    already-cool host proceeds at once, and a pmset that fails or
+    reports no limit fields counts as cool — Apple Silicon exposes the
+    limit only while throttling. Returns True when cool within budget."""
     deadline = time.time() + budget_s
     while True:
-        r = subprocess.run(["pmset", "-g", "thermlog"],
-                           capture_output=True, text=True, timeout=30)
-        # last CPU_Speed_Limit value in the log; absence of the field
-        # means no throttling has been recorded
+        r = subprocess.run(["pmset", "-g", "therm"],
+                           capture_output=True, text=True, timeout=10)
+        if r.returncode != 0:
+            raise RuntimeError(
+                f"pmset -g therm failed: {(r.stderr or r.stdout)[-200:]}")
         limits = re.findall(r"CPU_Speed_Limit\s*=\s*(\d+)",
                             r.stdout or "")
-        if not limits or int(limits[-1]) >= 100:
+        if not limits:
+            # absent on hosts that cannot report throttling — a gate
+            # that reads nothing is no gate; fail loudly rather than
+            # proceeding into an un-throttling-unverified measurement
+            raise RuntimeError(
+                "pmset -g therm reports no CPU_Speed_Limit — this host "
+                "cannot verify it is un-throttled")
+        if int(limits[-1]) >= 100:
             return True
         if time.time() > deadline:
             return False
@@ -1957,6 +1951,13 @@ def cmd_run_local(args):
     # an unrecorded binary
     sman_path = staged / "staging-manifest.json"
     artifact_shas = {}
+    staged_apps = ([d.name for d in staged.iterdir() if d.suffix == ".app"]
+                   if staged.is_dir() else [])
+    if staged_apps and not sman_path.exists():
+        raise SystemExit(
+            f"staged artifacts exist without a staging manifest at "
+            f"{sman_path} — build to re-establish provenance; a manifest-"
+            "less artifact is unverifiable")
     if sman_path.exists():
         sman = json.loads(sman_path.read_text())
         artifact_shas = sman.get("artifacts") or {}
@@ -1967,6 +1968,12 @@ def cmd_run_local(args):
                     f"staged artifact {name} no longer matches the "
                     "staging manifest — rebuild to re-establish "
                     "provenance")
+        missing = [n for n in staged_apps if n not in artifact_shas]
+        if missing:
+            raise SystemExit(
+                "staged artifact(s) absent from the staging manifest: "
+                + ", ".join(sorted(missing))
+                + " — rebuild to re-establish provenance")
     runner_bid = runner_bundle_id(staged)
     workloads = list(MANIFEST["workloads"].keys())
     if getattr(args, "workloads", None):
@@ -2027,7 +2034,11 @@ def cmd_run_local(args):
     # does not carry that failure. Persists across re-runs of the same
     # results file.
     warmed = set(state.get("warmed_up", []))
-    no_hitch = state.get("no_hitch", False)
+    # XCTHitchMetric is a platform capability (manifest
+    # measurement.hitch_metric): attached everywhere except ios-sim,
+    # which has no GPU frame telemetry. It is never learned mid-sweep —
+    # no run's outcome decides another contestant's metrics.
+    no_hitch = plat == "ios-sim"
 
     def _on_sig(sig, _frame):
         _kill_active_procs()
@@ -2050,9 +2061,9 @@ def cmd_run_local(args):
             bid = c["bundle_id"].get("ios" if plat != "macos" else "macos")
             if c["id"] not in warmed:
                 print(f"[{plat}] warm-up {c['id']} (discarded)", flush=True)
-                wd = drive_override or drive_for(c, plat, "W1")
-                run_one(plat, c["id"], app, bid, "W1", wd,
-                        MANIFEST["workloads"]["W1"]["duration_s"], rep,
+                wd = drive_override or drive_for(c, plat, "w1")
+                run_one(plat, c["id"], app, bid, "w1", wd,
+                        MANIFEST["workloads"]["w1"]["duration_s"], rep,
                         dest, products_dir, subdir, template, target_key,
                         results_path.parent / "xcresults",
                         no_hitch=True, device_udid=None,
@@ -2077,33 +2088,56 @@ def cmd_run_local(args):
                                  "still throttled after 600s"})
                     results_path.write_text(json.dumps(state, indent=1))
                     continue
-                print(f"[{plat}] rep {rep+1}/{repeats} {c['id']} {w} "
-                      f"drive={drive}", flush=True)
-                rec = run_one(plat, c["id"], app, bid, w, drive, duration,
-                              rep, dest, products_dir, subdir, template,
-                              target_key, results_path.parent / "xcresults",
-                              no_hitch=no_hitch, device_udid=None,
-                              runner_bid=runner_bid,
-                              artifact_sha=artifact_shas.get(app.name))
-                rec.update({"contestant": c["id"], "workload": w,
-                            "repeat": rep, "platform": plat, "drive": drive})
+                steps = (capacity_steps(w) if w in CAPACITY_WORKLOADS
+                         else [None])
+                rec = None
+                for si, n in enumerate(steps):
+                    print(f"[{plat}] rep {rep+1}/{repeats} {c['id']} {w}"
+                          + (f" step={n}" if n is not None else "")
+                          + f" drive={drive}", flush=True)
+                    rec = run_one(
+                        plat, c["id"], app, bid, w, drive, duration,
+                        rep, dest, products_dir, subdir, template,
+                        target_key, results_path.parent / "xcresults",
+                        no_hitch=no_hitch, device_udid=None,
+                        runner_bid=runner_bid,
+                        artifact_sha=artifact_shas.get(app.name),
+                        step=n)
+                    rec.update({"contestant": c["id"], "workload": w,
+                                "repeat": rep, "platform": plat,
+                                "drive": drive})
+                    if n is not None:
+                        rec.setdefault("capacity", {}).setdefault(
+                            "steps", []).append({
+                                "step": si, "n": n, **{
+                                    k: v for k, v in rec.items()
+                                    if k in ("metrics", "frame_stats",
+                                             "app_cpu_window_s",
+                                             "renderserver_cpu_s",
+                                             "helpers_cpu_s",
+                                             "app_mem_peak_mb",
+                                             "helpers_mem_peak_mb",
+                                             "cpu_ms_per_frame",
+                                             "frames", "error")}})
+                    if rec.get("error"):
+                        break
+                if rec is not None and rec.get("capacity", {}).get("steps"):
+                    cap120 = cap60 = 0
+                    for st in rec["capacity"]["steps"]:
+                        fs = st.get("frame_stats") or {}
+                        if fs.get("missed_vsyncs") == 0 and st.get("frames"):
+                            cap120 = cap60 = st["n"]
+                        elif (fs.get("frame_ms_p90") or 9e9) <= 16.67 * 1.5:
+                            cap60 = st["n"]
+                    rec["capacity"]["capacity_120hz"] = cap120
+                    rec["capacity"]["capacity_60hz"] = cap60
                 state["runs"].append(rec)
                 results_path.write_text(json.dumps(state, indent=1))
-                # Hitch evidence: if the metric emitted no measurements at
-                # all on this platform, drop it instead of reporting zeros.
-                if not no_hitch and "metrics" in rec:
-                    idents = [m.get("identifier", "")
-                              for mets in rec["metrics"].values()
-                              for m in mets.values()]
-                    # only a metric that emitted NO identifiers is dead;
-                    # emitted-but-all-zero rows are real zero-hitch data
-                    if not any("itch" in i.lower() for i in idents):
-                        no_hitch = True
-                        state["no_hitch"] = True
-                        state.setdefault("notes", []).append(
-                            "XCTHitchMetric emitted no measurements on "
-                            f"{plat} (first run of {c['id']} {w}); "
-                            "dropped via BENCH_NO_HITCH for remaining runs")
+                # Hitch evidence is per-row: a xcresult that emits no
+                # hitch identifiers is visible in flatten as missing
+                # metric, never silently rewritten or propagated — the
+                # platform's attachment declaration (no_hitch) does not
+                # change mid-sweep.
     finally:
         signal.signal(signal.SIGINT, _prev[0])
         signal.signal(signal.SIGTERM, _prev[1])
@@ -2503,10 +2537,11 @@ def cmd_device(args):
             x for x in state["runs"]
             if (x.get("platform"), x.get("contestant"), x.get("workload"),
                 x.get("drive"), x.get("repeat")) not in cells]
-        # XCTHitchMetric emitted zero-duration rows for every contestant on
-        # iOS 26 device (first iPad run) — dropped on ios-device; presented
-        # frames come from the xctrace Animation Hitches attach instead.
-        no_hitch = state.get("no_hitch", False)
+        # XCTHitchMetric attaches on ios-device per the platform
+        # declaration (measurement.hitch_metric); presented frames come
+        # from the xctrace Animation Hitches attach. The declaration
+        # never mutates mid-sweep.
+        no_hitch = False
         warmed = set(state.get("warmed_up", []))
         try:
             for rep in reps_run:
@@ -2542,8 +2577,8 @@ def cmd_device(args):
                             print("[ios-device] warm-up "
                                   f"{c['id']} (discarded)", flush=True)
                             run_one("ios-device", c["id"], app, bid,
-                                    "W1", drive_for(c, "ios-device", "W1"),
-                                    MANIFEST["workloads"]["W1"]["duration_s"],
+                                    "w1", drive_for(c, "ios-device", "w1"),
+                                    MANIFEST["workloads"]["w1"]["duration_s"],
                                     rep, f"platform=iOS,id={udid}",
                                     testroot, "Release-iphoneos", template,
                                     MANIFEST["harness"]["test_target_key"]["ios"],
@@ -2565,42 +2600,60 @@ def cmd_device(args):
                             # setUp — devicectl has no thermal channel
                             wspec = MANIFEST["workloads"][w]
                             drive = drive_for(c, "ios-device", w)
-                            rec = run_one(
-                                "ios-device", c["id"], app, bid, w,
-                                drive, wspec["duration_s"], rep,
-                                f"platform=iOS,id={udid}",
-                                testroot, "Release-iphoneos",
-                                template,
-                                MANIFEST["harness"]["test_target_key"]["ios"],
-                                artifacts / "xcresults-device",
-                                no_hitch=no_hitch, device_udid=udid,
-                                runner_bid=runner_bid,
-                                artifact_sha=artifact_shas.get(app.name))
-                            rec.update({"contestant": c["id"], "workload": w,
-                                        "repeat": rep,
-                                        "platform": "ios-device",
-                                        "drive": drive,
-                                        "device_state": st})
+                            steps = (capacity_steps(w)
+                                     if w in CAPACITY_WORKLOADS else [None])
+                            rec = None
+                            for si, n in enumerate(steps):
+                                rec = run_one(
+                                    "ios-device", c["id"], app, bid, w,
+                                    drive, wspec["duration_s"], rep,
+                                    f"platform=iOS,id={udid}",
+                                    testroot, "Release-iphoneos",
+                                    template,
+                                    MANIFEST["harness"]["test_target_key"]["ios"],
+                                    artifacts / "xcresults-device",
+                                    no_hitch=no_hitch, device_udid=udid,
+                                    runner_bid=runner_bid,
+                                    artifact_sha=artifact_shas.get(app.name),
+                                    step=n)
+                                rec.update({"contestant": c["id"], "workload": w,
+                                            "repeat": rep,
+                                            "platform": "ios-device",
+                                            "drive": drive,
+                                            "device_state": st})
+                                if n is not None:
+                                    rec.setdefault("capacity", {}).setdefault(
+                                        "steps", []).append({
+                                            "step": si, "n": n, **{
+                                                k: v for k, v in rec.items()
+                                                if k in ("metrics",
+                                                         "frame_stats",
+                                                         "app_cpu_window_s",
+                                                         "renderserver_cpu_s",
+                                                         "frames",
+                                                         "cpu_ms_per_frame",
+                                                         "error")}})
+                                if rec.get("error"):
+                                    break
+                            if (rec is not None
+                                    and rec.get("capacity", {}).get("steps")):
+                                cap120 = cap60 = 0
+                                for st in rec["capacity"]["steps"]:
+                                    fs = st.get("frame_stats") or {}
+                                    if (fs.get("missed_vsyncs") == 0
+                                            and st.get("frames")):
+                                        cap120 = cap60 = st["n"]
+                                    elif (fs.get("frame_ms_p90") or 9e9)                                             <= 16.67 * 1.5:
+                                        cap60 = st["n"]
+                                rec["capacity"]["capacity_120hz"] = cap120
+                                rec["capacity"]["capacity_60hz"] = cap60
                             state["runs"].append(rec)
                             results_path.write_text(
                                 json.dumps(state, indent=1))
-                            # Hitch evidence: if the metric emitted no
-                            # measurements at all on this device, drop it
-                            # for the remaining runs instead of zeros.
-                            if not no_hitch and "metrics" in rec:
-                                idents = [
-                                    m.get("identifier", "")
-                                    for mets in rec["metrics"].values()
-                                    for m in mets.values()]
-                                if not any("itch" in i.lower()
-                                           for i in idents):
-                                    no_hitch = True
-                                    state.setdefault("notes", []).append(
-                                        "XCTHitchMetric emitted no "
-                                        f"measurements on {udid} (first "
-                                        f"run of {c['id']} {w}); dropped "
-                                        "via BENCH_NO_HITCH for remaining "
-                                        "runs")
+                            # Hitch evidence is per-row: an xcresult
+                            # emitting no hitch identifiers shows as a
+                            # missing metric in flatten — attachment
+                            # never changes mid-sweep.
                     finally:
                         # uninstall only what this run installed — even
                         # when the contestant errored mid-run (free-team
@@ -2696,7 +2749,8 @@ def required_cells(plat: str) -> set:
         if not c.get("artifact", {}).get(plat):
             continue
         for w in MANIFEST["workloads"]:
-            if w in CAPACITY_WORKLOADS:
+            if w in CAPACITY_WORKLOADS and not capacity_cell(
+                    plat, c["id"], w):
                 continue
             reqs.add((c["id"], w, drive_for(c, plat, w)))
     return reqs
@@ -2892,9 +2946,9 @@ def cmd_report(args):
                     f"{r.get('frames', '—')} |")
             lines.append("")
 
-        # capacity ladders (W5/W6): per-contestant largest step inside the
-        # frame budget + per-step percentiles (the evidence lives in the
-        # .trace files; steps sliced by bench-steps.log timestamps)
+        # capacity workloads (W5/W6): per-contestant largest step inside the
+        # frame budget + per-step percentiles — one launch per pinned step,
+        # the evidence lives in the .trace files
         caps = [r for r in results["runs"]
                 if r.get("platform") == plat and r.get("capacity")]
         if caps:
@@ -3011,16 +3065,16 @@ def main():
     r = sub.add_parser("run-local")
     r.add_argument("--platform", choices=["ios-sim", "macos"], required=True)
     r.add_argument("--repeats", type=int, default=5)
-    r.add_argument("--drive", default=None, choices=["swipe", "wheel", "auto"],
+    r.add_argument("--drive", default=None,
+                   choices=["swipe", "wheel", "none", "tap"],
                    help="override the manifest's per-contestant drive for "
                         "every contestant (default: manifest decision — "
-                        "swipe on iOS devices, wheel on macOS/simulator, "
-                        "auto only pacing the W5/W6 capacity ladder)")
+                        "swipe on iOS devices, wheel on macOS/simulator)")
     r.add_argument("--only", default=None,
                    help="comma-separated contestant ids (default: all); "
                         "re-runs append to the existing results file")
     r.add_argument("--workloads", default=None,
-                   help="comma-separated workload ids (default: all W1-W4)")
+                   help="comma-separated workload ids (default: all w1-w6)")
     r.add_argument("--reps", default=None,
                    help="comma-separated rep indices to (re)measure "
                         "(default: --repeats reps starting at 0)")
@@ -3049,7 +3103,7 @@ def main():
                    help="comma-separated rep indices to (re)measure "
                         "(default: --repeats reps starting at 0)")
     d.add_argument("--workloads", default=None,
-                   help="comma-separated workload ids (default: all W1-W4)")
+                   help="comma-separated workload ids (default: all w1-w6)")
     d.add_argument("--out", default=None)
     d.set_defaults(f=cmd_device)
 

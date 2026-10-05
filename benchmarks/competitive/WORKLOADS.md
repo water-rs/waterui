@@ -22,11 +22,16 @@ floating-point seeds are spec violations.
 
 ## Workload selection
 
-`W1|W2|W3|W4|W5|W6`, matched case-insensitively. Apple legs pass
-`-bench-workload <id>` as a launch argument; desktop legs and Android
-pass `BENCH_WORKLOAD` in the environment (Android forwards it as the
-`waterui.env.BENCH_WORKLOAD` intent extra). Capacity steps arrive as
-`-bench-step <n>` / `BENCH_STEP`.
+Workload ids are the exact lowercase strings `w1|w2|w3|w4|w5|w6`. Any
+other value — including uppercase or missing — fails the contestant.
+Apple legs pass `-bench-workload <id>` as a launch argument; desktop
+legs and Android pass `BENCH_WORKLOAD` in the environment (Android
+forwards it as the `waterui.env.BENCH_WORKLOAD` intent extra). Capacity
+steps arrive as `-bench-step <n>` / `BENCH_STEP`.
+
+Every contestant implements every workload in this document; a leg
+selects the subset it measures, but a contestant missing a workload is a
+failed cell, never an excluded one.
 
 ## W1 Hello
 
@@ -42,8 +47,10 @@ Lazy list of 10,000 rows. Row `i` (0-based):
 - Avatar: 40×40 circle, `palette[i % 6]`, gap to text 12.
 - Title `Row title {i}`, font size 16.
 - Subtitle `Second line of subtitle for item {i}`, font size 13, muted.
+- Title-to-subtitle vertical spacing 4.
 - Trailing timestamp `{hh}:{mm}` zero-padded, `hh = (i / 60) % 24`,
-  `mm = i % 60`, font size 13, muted.
+  `mm = i % 60`, font size 13, muted. Title/subtitle column and
+  timestamp are separated by a horizontal gap of 12.
 - Row padding: horizontal 16, vertical 10.
 
 The list is lazily materialized by the framework (that is the point of
@@ -55,6 +62,9 @@ the workload); the contestant declares all 10,000 rows up front.
 
 - Rect: 40×40 rounded rectangle, corner radius 10 (as a ratio: 0.25 of
   size), fill `palette[i % 6]`.
+- Field placement: horizontally centred; on mobile layouts it is pinned
+  to the top of the content area with a 16-point inset, on desktop it is
+  centred vertically as well.
 - Channels animated per rect: position (x, y inside the field minus the
   rect), rotation 0–360°, opacity 0.3–1.0.
 - Per-rect RNG: two xorshift64 streams with unsigned 64-bit wraparound.
@@ -67,7 +77,12 @@ the workload); the contestant declares all 10,000 rows up front.
 - Schedule: the first retarget happens at t=0 (the rect eases from its
   init pose to the first drive target), then each rect retargets when its
   own animation completes, forever. Per-rect duration
-  `1200 + (i % 5) * 200` ms, ease-in-out, one duration for all channels.
+  `1200 + (i % 5) * 200` ms, one duration for all channels.
+- Easing: one curve for every retarget on every contestant —
+  `cubic-bezier(0.42, 0.0, 0.58, 1.0)` (the standard ease-in-out:
+  symmetric ease in, ease out; native equivalents: CAMediaTimingFunction
+  ease-in-ease-out, PathInterpolator(0.42, 0, 0.58, 1), CSS
+  `ease-in-out`).
   `*%` denotes wrapping multiplication.
 
 ## W4 Text
@@ -88,13 +103,12 @@ with `rect_count` stepped geometrically. One launch renders one step.
 
 Ladder: `200, 400, 800, 1600, 3200, 6400, 12800, 25600`.
 
-Pacing: Android/desktop legs measure one step per launch (`BENCH_STEP`,
-required — missing/malformed fails the contestant). The Apple leg walks
-the whole ladder inside the measure window, marking each step's start
-(`dev.bench.step` Darwin post plus `step k n=<n> t=<unix>` in
-`tmp/bench-steps.log`), settling 1 s and holding 4 s per step, ending with
-`dev.bench.done`. A step collapses when fewer than half its presents land
-inside two 60 Hz frame budgets (33.3 ms).
+Pacing — one model on every leg: one launch renders one step. The
+runner launches the contestant once per ladder step with `BENCH_STEP`
+(`-bench-step` on Apple) naming the step — required, missing or
+malformed fails the contestant — then measures per METHOD below. A
+step collapses when fewer than half its presents land inside two 60 Hz
+frame budgets (33.3 ms).
 
 ## W6 Feed capacity
 
@@ -103,8 +117,16 @@ whose every row additionally carries `complexity` cells appended after the
 text column. Cell `j` on row `i`: a 14×14 rounded square (radius ratio
 0.3) of `palette[(i + j) % 6]` over the text `c{j}`, font size 12.
 
-Ladder (`complexity`): `1, 2, 4, 8, 16, 32, 64`. Same pacing modes and
-step protocol as W5; the fling program below runs during each step's hold.
+Every row materializes its full cell count — no lazy per-cell
+containers that skip cells. Row-level view reuse/recycling is allowed
+(and idiomatic) as long as binding a row repopulates all of its cells.
+
+Ladder (`complexity`): `1, 2, 4, 8, 16, 32, 64`. Cells are separated by
+4 horizontally; the cell group keeps the row's standard 12 gap to the
+text column and to the trailing timestamp.
+Same pacing model and step protocol as W5; the fling program below runs
+during each step's hold. The scroll drive kind is identical for W2, W4
+and W6 on each platform (whatever OS-level injector that leg uses).
 
 ## Scroll drive — shared fling protocol
 
@@ -123,3 +145,26 @@ declared once in that platform's manifest:
 - 350 ms pause between flings.
 - Wheel-based injectors express one fling as ~12 detents (15 px each) over
   the 250 ms window; the burst and pause timings are identical.
+
+## METHOD — one frame-statistics definition for every leg
+
+Every leg reports frame statistics computed by
+`lib/frame_stats.py::frame_statistics`, with identical semantics:
+
+- Input: present timestamps attributable to the contestant's owned
+  processes, the measurement window, the display refresh period.
+- The measurement window is `[first owned present + declared warmup,
+  + capture_s]` on every platform. Startup frames sit before the window
+  and never enter the data.
+- The drive program starts at window start.
+- `startup_ms` is computed from launch to the first owned present, never
+  from windowed data.
+- A gap longer than 100 ms with no present ends an active run and is
+  excluded — it is neither a frame nor a drop.
+- Within active runs, frame time = present interval, and an interval
+  longer than 1.5 refresh periods contributes
+  `round(interval / period) − 1` missed vsyncs.
+
+A contestant's readiness/`done` signal is posted by the contestant's own
+workload logic on every framework — no native watchdog timers
+substitute for it.

@@ -111,13 +111,16 @@ def _parse_version_tuple(text: str) -> tuple[int, ...] | None:
 # files the committed app does not keep. The sha256 over
 # relpath+content-sha256 of exactly this set is the template lock —
 # re-resolution to different content fails loudly (M4).
-_RN_TEMPLATE_SKIP_DIRS = {".git", "android", "ios", "node_modules"}
+_RN_TEMPLATE_SKIP_DIRS = {".git", "android", "node_modules"}
 _RN_TEMPLATE_SKIP_FILES = {"App.tsx", "package.json", "package-lock.json"}
 
 
 def rn_template_digest(gen: Path) -> tuple[str, list[str]]:
     """sha256 over relpath+content of the generated RN template files the
-    app dir materializes (root files minus the authored set)."""
+    app dir materializes — root files AND the ios/ subtree (the init
+    template's own files), minus the authored set. Committed authored
+    files always win at materialization, so the digest may cover files
+    the checkout keeps (it only pins what the generator emits)."""
     gen = Path(gen)
     files = []
     digest = hashlib.sha256()
@@ -240,6 +243,22 @@ def checkout_head(root: Path | None = None, run=None) -> str:
     return out.stdout.strip()
 
 
+_GENERATED_CHURN = (
+    # CocoaPods rewrites these on every `pod install` (lockfile checksum
+    # normalization, project.pbxproj file-reference re-sort). They are
+    # committed for reproducibility but that generated churn does not
+    # change the source identity the checkout gate protects, so it does
+    # not count as an uncommitted change. Regenerate and commit them on
+    # macOS whenever the Podfile changes.
+    "benchmarks/competitive/apps/react-native/ios/Podfile.lock",
+    "benchmarks/competitive/apps/react-native/ios/RnBench.xcodeproj/"
+    "project.pbxproj",
+    "benchmarks/competitive/apps/react-native/macos/Podfile.lock",
+    "benchmarks/competitive/apps/react-native/macos/RnBench.xcodeproj/"
+    "project.pbxproj",
+)
+
+
 def require_clean_checkout(root: Path | None = None, run=None) -> Path:
     """Refuse to build the contestant/toolchain from a checkout with
     uncommitted tracked changes — HEAD sha would then mislabel the actual
@@ -253,7 +272,8 @@ def require_clean_checkout(root: Path | None = None, run=None) -> Path:
         raise RuntimeError(
             f"cannot check checkout cleanliness at {root}: "
             f"{(out.stderr or '').strip()[:200]}")
-    dirty = [ln for ln in out.stdout.splitlines() if ln.strip()]
+    dirty = [ln for ln in out.stdout.splitlines()
+             if ln.strip() and ln[3:] not in _GENERATED_CHURN]
     if dirty:
         shown = "\n  ".join(dirty[:20])
         raise RuntimeError(
@@ -292,11 +312,20 @@ def _build_lock(cache_dir: Path):
     try:
         if sys.platform.startswith("win"):
             import msvcrt
-            # LK_LOCK retries ~10 s then raises; only the held flag below
-            # unlocks — unlocking a byte never locked would raise again
-            # and mask the timeout error.
-            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
-            locked = True
+            # LK_LOCK gives up after ~10 s, far shorter than a CLI build;
+            # poll the non-blocking form on a build-sized deadline instead.
+            deadline = time.monotonic() + 900
+            while True:
+                try:
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                    locked = True
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            f"water-cli build lock still held after 900 s: "
+                            f"{cache_dir}") from None
+                    time.sleep(0.5)
         else:
             import fcntl
             fcntl.flock(fd, fcntl.LOCK_EX)
@@ -479,7 +508,7 @@ def _self_test() -> None:
         return Out()
 
     with tempfile.TemporaryDirectory() as td:
-        root = Path(td) / "checkout"
+        root = (Path(td) / "checkout").resolve()
         (root / "cli").mkdir(parents=True)
         (root / "Cargo.toml").write_text('android-backend-revision = "%s"' % ("c" * 40))
         exe = provision_water_cli(root, Path(td) / "cache", run=fake_run)
@@ -513,7 +542,7 @@ def _self_test() -> None:
         import fcntl
         import threading
         with tempfile.TemporaryDirectory() as td:
-            root = Path(td) / "checkout"
+            root = (Path(td) / "checkout").resolve()
             (root / "cli").mkdir(parents=True)
             (root / "Cargo.toml").write_text('x = 1')
             cache = Path(td) / "cache"
@@ -539,7 +568,7 @@ def _self_test() -> None:
             return Out(" M cli/main.rs\n")
         return fake_run(cmd, env)
     with tempfile.TemporaryDirectory() as td:
-        root = Path(td) / "checkout"
+        root = (Path(td) / "checkout").resolve()
         (root / "cli").mkdir(parents=True)
         try:
             provision_water_cli(root, Path(td) / "cache", run=dirty_run)

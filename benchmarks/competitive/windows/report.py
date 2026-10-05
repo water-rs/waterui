@@ -261,10 +261,10 @@ def generate(data: dict) -> str:
                     cell(fr.get("frame_ms_p50")),
                     cell(fr.get("frame_ms_p90")),
                     cell(fr.get("frame_ms_p99")),
-                    cell(fr.get("dropped_pct"), "%"),
+                    cell(fr.get("missed_vsyncs")),
                 ])
             a(table(["Contestant", "fps", "frame ms p50", "p90", "p99",
-                     "dropped %"], rows))
+                     "missed vsyncs"], rows))
             a("")
             a("Frame-timing event source per contestant:")
             a("")
