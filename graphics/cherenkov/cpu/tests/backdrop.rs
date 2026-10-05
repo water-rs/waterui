@@ -196,53 +196,145 @@ fn member_inside_clip_only_isolation_sees_the_surface() {
     assert_pixel(pixel(&readback, 16, 16), [1.0, 0.0, 0.0, 1.0], 1e-5);
 }
 
+/// A member layer's own opacity fades the member as a whole, its
+/// backdrop sample included: an unfiltered member's sample is its
+/// canvas's bottom-most content and attenuates with it; a filtered
+/// member's sample stays outside its isolation — the filter never
+/// covers it — and still fades by the member's opacity, once (#1974).
 #[test]
-fn member_sample_is_not_attenuated_by_layer_opacity() {
-    fn render(opacity: f32) -> cherenkov::Readback {
+fn member_sample_is_attenuated_by_layer_opacity() {
+    // A red|blue step under a red↔blue-swapping group: the captured
+    // sample differs from the sharp backdrop everywhere — at the clip's
+    // antialiased rim too — so attenuating the sample and the member
+    // clip's coverage are both observable. `filter` gives the member a
+    // red↔blue swap or an identity filter.
+    const SWAP: [f32; 12] = [
+        0.0, 0.0, 1.0, 0.0, //
+        0.0, 1.0, 0.0, 0.0, //
+        1.0, 0.0, 0.0, 0.0,
+    ];
+    fn render(
+        opacity: f32,
+        filter: Option<[f32; 12]>,
+        blend: cherenkov::BlendMode,
+    ) -> cherenkov::Readback {
         let engine = engine();
         let surface = engine
             .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32))
             .expect("surface");
-        let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
+        let group = surface.backdrop_group(
+            filtrate::filters::ColorMatrix(SWAP),
+            cherenkov::CaptureScale::FULL,
+        );
         let member = surface.layer();
         let child = surface.layer();
+        let member_filter = filter.map(|matrix| engine.filter(filtrate::filters::ColorMatrix(matrix)));
         surface.update(|tx| {
             tx[surface.root()].content(surface.record(|r| {
                 r.fill(
-                    Rect::new(0.0, 0.0, 32.0, 32.0),
+                    Rect::new(0.0, 0.0, 16.0, 32.0),
                     WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+                );
+                r.fill(
+                    Rect::new(16.0, 0.0, 32.0, 32.0),
+                    WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
                 );
             }));
             tx[surface.root()].push(&member);
             tx[&member]
                 .clip(RoundedRect::new(4.0, 4.0, 28.0, 28.0, 6.0))
                 .opacity(opacity)
+                .blend(blend)
                 .backdrop(group.sample());
+            if let Some(filter) = &member_filter {
+                tx[&member].filter(filter.id());
+            }
             tx[&member].push(&child);
+            // The member's content reaches past the step at x = 16, so
+            // covered pixels see the member's sample too.
             tx[&child].content(surface.record(|r| {
                 r.fill(
-                    Rect::new(16.0, 4.0, 28.0, 28.0),
-                    WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+                    Rect::new(12.0, 4.0, 28.0, 28.0),
+                    WorkingColor::new([0.0, 0.7, 0.0, 1.0]),
                 );
             }));
         });
         engine.render(FrameTime::now()).expect("render");
         surface.readback().expect("readback")
     }
+    const IDENTITY: [f32; 12] = [
+        1.0, 0.0, 0.0, 0.0, //
+        0.0, 1.0, 0.0, 0.0, //
+        0.0, 0.0, 1.0, 0.0,
+    ];
 
-    let half = render(0.5);
-    // Sample-only area (left half of the clip): the red backdrop at full
-    // strength, unaffected by the layer's 0.5 opacity.
-    assert_pixel(pixel(&half, 10, 16), [1.0, 0.0, 0.0, 1.0], 1e-5);
-    // Inside the child: 50% blue over the sampled red = [0.5, 0.0, 0.5].
-    assert_pixel(pixel(&half, 20, 16), [0.5, 0.0, 0.5, 1.0], 1e-5);
-    // Outside the clip: the surface is untouched.
+    // The member as a whole attenuates by its opacity once: inside its
+    // clip, `half` = 0.5·`full` + 0.5·`dst` where `dst` is the sharp
+    // backdrop pixel — true on the sample, on member content, and on
+    // the clip's antialiased edge alike.
+    let dst = |x: usize| {
+        if x < 16 {
+            [1.0, 0.0, 0.0, 1.0]
+        } else {
+            [0.0, 0.0, 1.0, 1.0]
+        }
+    };
+    let faded = |full: &cherenkov::Readback, x: usize, y: usize| {
+        std::array::from_fn(|c| 0.5f32.mul_add(pixel(full, x, y)[c], 0.5 * dst(x)[c]))
+    };
+    let normal = cherenkov::BlendMode::Normal;
+    let full = render(1.0, None, normal);
+    let half = render(0.5, None, normal);
+    // Sample-only over red, content-covered at the step, covered
+    // content, and the clip's corner edge.
+    for &(x, y) in &[(8, 16), (16, 16), (24, 16), (5, 5)] {
+        assert_pixel(pixel(&half, x, y), faded(&full, x, y), 1e-5);
+    }
+    // Outside the clip the surface is untouched.
     assert_pixel(pixel(&half, 1, 16), [1.0, 0.0, 0.0, 1.0], 1e-5);
-    // The clip edge is not squared: a corner pixel's coverage matches the
-    // same layer at full opacity.
-    let full = render(1.0);
-    assert_pixel(pixel(&half, 5, 5), pixel(&full, 5, 5), 1e-5);
-    assert_pixel(pixel(&half, 7, 7), pixel(&full, 7, 7), 1e-5);
+    // A filtered member at the same pixels: the sample is attenuated —
+    // never swapped — and fades with the member's content, so the rule
+    // holds at covered pixels too; the member scope compositing sample
+    // and content together is what keeps it true where content covers
+    // the step.
+    let filtered_full = render(1.0, Some(SWAP), normal);
+    let filtered_half = render(0.5, Some(SWAP), normal);
+    for &(x, y) in &[(8, 16), (16, 16), (24, 16), (5, 5)] {
+        assert_pixel(
+            pixel(&filtered_half, x, y),
+            faded(&filtered_full, x, y),
+            1e-5,
+        );
+    }
+    // An identity-filtered member equals the unfiltered member: the
+    // member scope's nested scopes change nothing — on the clip's rim,
+    // where the swapped sample differs from the sharp backdrop and any
+    // extra clip-edge coverage would show, and in the interior, where
+    // the assertion also pins that the filter never covers the sample.
+    let identity_full = render(1.0, Some(IDENTITY), normal);
+    let identity_half = render(0.5, Some(IDENTITY), normal);
+    for &(x, y) in &[(10, 4), (5, 5), (8, 16), (16, 16), (24, 16)] {
+        assert_pixel(pixel(&identity_full, x, y), pixel(&full, x, y), 1e-5);
+        assert_pixel(pixel(&identity_half, x, y), pixel(&half, x, y), 1e-5);
+    }
+    // A member's non-Normal blend applies to its sample, for both member
+    // kinds: `Multiply` blends the whole member — sample and content —
+    // against the backdrop, so only channels shared with the backdrop
+    // survive and covered content fades to black.
+    for filter in [None, Some(SWAP)] {
+        let multi = render(1.0, filter, cherenkov::BlendMode::Multiply);
+        let base = if filter.is_some() {
+            &filtered_full
+        } else {
+            &full
+        };
+        // Sample-only pixel over red: Multiply blends S as S·D — the
+        // swapped sample is blue over red, so only black survives.
+        let s = pixel(base, 8, 16);
+        assert_pixel(pixel(&multi, 8, 16), [s[0], 0.0, 0.0, 1.0], 1e-5);
+        // Covered content over the step: green × blue = black.
+        assert_pixel(pixel(&multi, 24, 16), [0.0, 0.0, 0.0, 1.0], 1e-5);
+    }
 }
 
 #[test]
