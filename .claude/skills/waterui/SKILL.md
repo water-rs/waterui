@@ -368,6 +368,7 @@ clearer than a long `when` chain.
 .a11y_label(..) / .a11y_value(..) / .a11y_id("settings.wifi") / .a11y_role(..)
 .on_appear(..) / .on_change(&signal, ..) / .on_tap(..) / .gesture(g, handler) / .context_menu(items)
 .cursor(style) / .ignore_safe_area(EdgeSet::ALL) / .floating()
+.ignore_safe_area(SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM))   // regions × edges
 ```
 
 Visual modifiers take signals — pass bindings straight in; the filter row works on *any*
