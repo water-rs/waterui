@@ -112,7 +112,7 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
                     // A non-IME animation (e.g. a system-bar hide/show)
                     // lands here too and pushes the persisted
                     // `lastRootInsets` on every progress frame, so its
-                    // metrics now jump at `onApplyWindowInsets` rather
+                    // metrics jump at `onApplyWindowInsets` rather
                     // than following the animation — outside §7.1's scope.
                     pushMetrics()
                 }

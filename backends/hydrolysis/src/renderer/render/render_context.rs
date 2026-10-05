@@ -108,7 +108,7 @@ impl<'a> WidgetRenderContext<'a> {
     }
 
     /// The §7.1 context for a retained sub-view the widget places at `rect`
-    /// in its own bounds space — a bar label, a popup's content: the
+    /// in its own bounds space — a bar label, a badge's content: the
     /// ambient boundaries, with the sub-view's frame recorded at its
     /// window-space position.
     pub(crate) fn safe_area_for(&self, rect: kurbo::Rect) -> Option<SafeAreaLayout> {
@@ -118,8 +118,8 @@ impl<'a> WidgetRenderContext<'a> {
     }
 
     /// The §7.1 context for retained *content* a chrome container places at
-    /// `rect` in its bounds space — `NavigationView`/`Tabs` content, a
-    /// popup's content: the hosted content inherits the widget's
+    /// `rect` in its bounds space — `NavigationView`/`Tabs` content: the
+    /// hosted content inherits the widget's
     /// boundaries and released regions; only the edges whose frame edge
     /// still touches a boundary stay reachable, so a scroll surface inside
     /// still extends and `.ignore_safe_area` inside still releases on the
