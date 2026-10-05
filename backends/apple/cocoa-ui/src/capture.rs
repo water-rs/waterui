@@ -4,12 +4,13 @@
 //! nested inside it — into a caller-owned texture for the filter and
 //! view-effect pipelines: the layer tree is rasterized synchronously by
 //! `CALayer.renderInContext` into a `CGContext` whose backing store is a
-//! shared `MTLBuffer`, a Metal texture view over that buffer lets the
-//! compositor sample the native pixels with no CPU→GPU upload, each
+//! shared `MTLBuffer`, a Metal blit transfer into a private 2D texture
+//! lets the compositor sample the native pixels with no CPU readback,
+//! each
 //! [`CapturableSurface`] gets its own private texture, and a final pass on
 //! a shared serial queue composites them under the captured overlay. The
-//! raster itself is still CPU work — sharing storage makes the upload
-//! free, not the drawing.
+//! raster itself is still CPU work — the transfer is a GPU blit, not
+//! the drawing.
 //!
 //! # Orientation and scale contract
 //!
@@ -45,13 +46,13 @@ use objc2_core_graphics::{
 };
 use objc2_foundation::NSString;
 use objc2_metal::{
-    MTLBlendFactor, MTLBlendOperation, MTLBuffer, MTLClearColor, MTLCommandBuffer,
-    MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue, MTLDevice, MTLLibrary,
-    MTLLoadAction, MTLOrigin, MTLPixelFormat, MTLPrimitiveType, MTLRenderCommandEncoder,
-    MTLRenderPassDescriptor, MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLResource,
-    MTLResourceOptions, MTLSamplerAddressMode, MTLSamplerDescriptor, MTLSamplerMinMagFilter,
-    MTLSamplerState, MTLScissorRect, MTLSize, MTLStorageMode, MTLStoreAction, MTLTexture,
-    MTLTextureDescriptor, MTLTextureUsage, MTLViewport,
+    MTLBlendFactor, MTLBlendOperation, MTLBlitCommandEncoder, MTLBuffer, MTLClearColor,
+    MTLCommandBuffer, MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue, MTLDevice,
+    MTLLibrary, MTLLoadAction, MTLOrigin, MTLPixelFormat, MTLPrimitiveType,
+    MTLRenderCommandEncoder, MTLRenderPassDescriptor, MTLRenderPipelineDescriptor,
+    MTLRenderPipelineState, MTLResource, MTLResourceOptions, MTLSamplerAddressMode,
+    MTLSamplerDescriptor, MTLSamplerMinMagFilter, MTLSamplerState, MTLScissorRect, MTLSize,
+    MTLStorageMode, MTLStoreAction, MTLTexture, MTLTextureDescriptor, MTLTextureUsage, MTLViewport,
 };
 use objc2_quartz_core::{CALayer, CATransaction};
 
@@ -728,16 +729,23 @@ impl CompositorGuard<'_> {
     }
 }
 
-/// One native raster destination: a shared `MTLBuffer` the CPU and GPU
-/// both address, the `CGContext` the layer tree draws into, and the
-/// Metal texture view over the same storage the compositor samples — so
-/// native pixels reach the composite pass with no upload.
+/// One native raster destination: a shared `MTLBuffer` the `CGContext`
+/// draws into, and a private 2D texture a Metal blit transfers the
+/// pixels into — the compositor only ever samples the private texture,
+/// so native pixels reach the composite pass with no CPU readback.
+///
+/// The simulator forbids render-target buffer-backed textures and
+/// requires private storage for them; a separate private texture is the
+/// one layout Apple documents for every device and simulator — Apple's
+/// `developing-metal-apps-that-run-in-simulator` texture limitations
+/// and `copying-data-to-a-private-resource` are the contract this
+/// follows.
 ///
 /// A frame is bound to its exact generation and geometry: the caller's
 /// context-generation token, the capture device, the destination pixel
 /// format, and the pixel size. Any change to those rebuilds it, because
-/// the buffer stride, the context's bitmap layout, and the texture view
-/// are baked at creation — and because storage issued under one context
+/// the buffer stride, the context's bitmap layout, and the texture are
+/// baked at creation — and because storage issued under one context
 /// generation is invalid for another even when the device object is
 /// identical.
 #[derive(Debug)]
@@ -746,9 +754,10 @@ struct NativeRasterFrame {
     /// teardown; device identity alone is NOT the generation key.
     _device: Retained<ProtocolObject<dyn MTLDevice>>,
     /// The shared pixel storage the context draws into — owned here so
-    /// the context's target memory stays valid for the frame's lifetime.
-    _buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
-    /// The texture view over the buffer the compositor samples.
+    /// the context's target memory stays valid for the frame's lifetime,
+    /// and the blit source on the composition command buffer.
+    buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
+    /// The private destination texture the compositor samples.
     texture: Retained<ProtocolObject<dyn MTLTexture>>,
     /// The raster context drawing into the buffer.
     context: CFRetained<CGContext>,
@@ -760,6 +769,8 @@ struct NativeRasterFrame {
     pixel_height: usize,
     /// The destination's pixel format.
     pixel_format: MTLPixelFormat,
+    /// The padded row stride the buffer and the blit source layout share.
+    row_bytes: usize,
 }
 
 /// The (bits per component, `CGBitmapInfo`, bytes per pixel) a capture
@@ -833,12 +844,15 @@ impl NativeRasterFrame {
                 false,
             )
         };
-        // The composite pass only samples the overlay — but keeping the
-        // render-target bit mirrors every other capture texture's usage.
-        descriptor.setUsage(MTLTextureUsage::ShaderRead | MTLTextureUsage::RenderTarget);
-        let texture = buffer
-            .newTextureWithDescriptor_offset_bytesPerRow(&descriptor, 0, row_bytes)
-            .expect("failed to create the buffer-backed native capture texture");
+        // Sample-only, private storage — the buffer-aliased texture this
+        // replaces violated both simulator rules (private storage for
+        // buffer-backed textures, no render-target usage); one private
+        // texture is correct on every Apple device.
+        descriptor.setStorageMode(MTLStorageMode::Private);
+        descriptor.setUsage(MTLTextureUsage::ShaderRead);
+        let texture = device
+            .newTextureWithDescriptor(&descriptor)
+            .expect("failed to create the private native capture texture");
         let color_space = crate::metal::color_space(pixel_format);
         // SAFETY: `buffer.contents()` is valid for the buffer's whole
         // length — `row_bytes * pixel_height` — for the context's entire
@@ -859,14 +873,51 @@ impl NativeRasterFrame {
         .expect("failed to create the native raster CGContext");
         Self {
             _device: device.retain(),
-            _buffer: buffer,
+            buffer,
             texture,
             context,
             generation,
             pixel_width,
             pixel_height,
             pixel_format,
+            row_bytes,
         }
+    }
+
+    /// Encodes the shared-buffer → private-texture transfer on the
+    /// command buffer the composite pass is encoded on, before the
+    /// render encoder — the GPU blit that makes the CPU-drawn pixels
+    /// samplable, per Apple's private-resource copy contract.
+    ///
+    /// # Panics
+    ///
+    /// When the blit encoder cannot be created.
+    fn encode_transfer(&self, command_buffer: &ProtocolObject<dyn MTLCommandBuffer>) {
+        let encoder = command_buffer
+            .blitCommandEncoder()
+            .expect("failed to create the native capture transfer encoder");
+        // SAFETY: the frame owns `buffer` and `texture` past command
+        // completion (the raster lease is held by the completed handler);
+        // offset 0 with the buffer's actual padded stride covers the
+        // whole image, one level, one slice.
+        unsafe {
+            encoder.copyFromBuffer_sourceOffset_sourceBytesPerRow_sourceBytesPerImage_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
+                &self.buffer,
+                0,
+                self.row_bytes,
+                self.row_bytes * self.pixel_height,
+                MTLSize {
+                    width: self.pixel_width,
+                    height: self.pixel_height,
+                    depth: 1,
+                },
+                &self.texture,
+                0,
+                0,
+                MTLOrigin { x: 0, y: 0, z: 0 },
+            );
+        }
+        encoder.endEncoding();
     }
 
     /// Rasterizes `layer`'s tree into the shared buffer at `geometry`'s
@@ -920,9 +971,19 @@ struct RasterLease {
 }
 
 impl RasterLease {
-    /// The texture the compositor samples.
+    /// The private texture the compositor samples — valid only after
+    /// `encode_transfer` has run on the same command buffer.
     fn texture(&self) -> &Retained<ProtocolObject<dyn MTLTexture>> {
         &self.frame.as_ref().expect("a lease owns its frame").texture
+    }
+
+    /// Encodes the blit transfer into the composition command buffer —
+    /// see [`NativeRasterFrame::encode_transfer`].
+    fn encode_transfer(&self, command_buffer: &ProtocolObject<dyn MTLCommandBuffer>) {
+        self.frame
+            .as_ref()
+            .expect("a lease owns its frame")
+            .encode_transfer(command_buffer);
     }
 
     /// Rasterizes `layer`'s tree into the leased destination — the draw
@@ -1572,6 +1633,10 @@ impl ViewCapture {
     ) {
         compositor.perform(move |guard| {
             let command_buffer = guard.make_command_buffer(&preparation.get().device);
+            // The CPU-drawn raster reaches the compositor's private
+            // texture through a blit on this same command buffer — the
+            // encoder is ended before the render pass samples it.
+            preparation.get().raster.encode_transfer(&command_buffer);
             guard.encode_composition(
                 rendered.get(),
                 Some(preparation.get().raster.texture()),
@@ -1580,7 +1645,8 @@ impl ViewCapture {
                 &preparation.get().device,
             );
             // The lease is held until this command buffer completes:
-            // only then has the GPU stopped sampling the shared buffer.
+            // only then has the GPU stopped sampling the private texture
+            // the blit filled from the shared buffer.
             // The completed handler's contract is once, on Metal's
             // completion queue — a single pre-existing `Mutex` slot
             // holds the whole capsule through it, and one `enqueue`
