@@ -16,7 +16,8 @@ pub use compositor::HydrolysisRenderTarget;
 pub(crate) use compositor::NativeViewLayer;
 pub use compositor::{
     ActiveSceneLayer, CapturedLayers, CherenkovWindow, Compositor, EngineFrame, ExternalFrameLayer,
-    FilteredLayer, FrameRenderTarget, GpuContentLayer, LayerShape, RenderLayer, SceneContentLayer,
+    FilteredLayer, FrameRenderTarget, GpuContentLayer, LayerShape, MaterialLayer, RenderLayer,
+    SceneContentLayer,
 };
 pub use measurement::*;
 pub use measurement_cache::{MeasurementCaches, MemoGate, NodeMeasureEntry};

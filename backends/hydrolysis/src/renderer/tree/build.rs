@@ -307,7 +307,22 @@ impl RenderNode {
             Err(view) => view,
         };
         let view = match view.downcast::<IgnorableMetadata<MaterialBackground>>() {
-            Ok(meta) => return Self::build(meta.content, env, renderer),
+            Ok(meta) => {
+                let IgnorableMetadata {
+                    content,
+                    value: MaterialBackground(material),
+                } = *meta;
+                let runtime = crate::renderer::material::MaterialRuntime::new(
+                    crate::renderer::material::WithinWindowLevel::of(material),
+                    &waterui::theme::current_color_scheme(env),
+                );
+                return Self::build_wrapper(
+                    WrapperEffect::Material(Rc::new(runtime)),
+                    content,
+                    env,
+                    renderer,
+                );
+            }
             Err(view) => view,
         };
         // Transparent metadata wrappers: each applies its visual/interaction

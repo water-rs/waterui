@@ -133,6 +133,23 @@ pub struct FilteredLayer {
     pub(crate) active_layers: Vec<ActiveSceneLayer>,
 }
 
+/// A `Material` background presenting this frame: a keyed member mount that
+/// samples the material's backdrop group inside the view's bounds. The
+/// content the view wraps draws in the layers after it.
+#[derive(Clone)]
+pub struct MaterialLayer {
+    /// The mount identity: which wrapper node presents this material.
+    pub(crate) key: crate::renderer::retained::RenderKey,
+    /// The node-owned colour stage and blur radius the backdrop group runs.
+    pub(crate) runtime: Rc<crate::renderer::material::MaterialRuntime>,
+    /// Placement transform mapping `bounds` into scene space.
+    pub(crate) transform: kurbo::Affine,
+    /// The view's rect in its own space: the member's clip.
+    pub(crate) bounds: kurbo::Rect,
+    /// The clip/opacity ancestry the material is shown under.
+    pub(crate) active_layers: Vec<ActiveSceneLayer>,
+}
+
 #[cfg(hydrolysis_macos_system_webview)]
 #[derive(Clone)]
 pub(crate) struct NativeViewLayer {
@@ -163,6 +180,8 @@ pub enum RenderLayer {
     /// A `FilteredView` wrapper: a keyed layer carrying a `Filter`, with its
     /// child layers mounted underneath.
     Filtered(FilteredLayer),
+    /// A `Material` background: a keyed layer sampling its backdrop group.
+    Material(MaterialLayer),
     #[cfg(hydrolysis_macos_system_webview)]
     NativeView(NativeViewLayer),
 }
@@ -334,6 +353,11 @@ impl RenderLayer {
                         ..
                     })
                     | Self::ExternalFrame(ExternalFrameLayer {
+                        transform: layer_transform,
+                        active_layers,
+                        ..
+                    })
+                    | Self::Material(MaterialLayer {
                         transform: layer_transform,
                         active_layers,
                         ..
@@ -662,6 +686,27 @@ impl FrameInstall<'_> {
                     let group_order =
                         self.install_scope(tx, &layer.children, InstallScope::Group(layer.key));
                     self.mounts.sync_group_order(tx, layer.key, &group_order);
+                }
+                RenderLayer::Material(layer) => {
+                    let slot = MountSlot::Keyed(layer.key);
+                    order.push(slot);
+                    self.live_keys.insert(layer.key);
+                    self.mounts.layer(self.surface, slot);
+                    let scopes = ancestry_scopes(&layer.active_layers);
+                    self.mounts
+                        .set_ancestry(self.surface, tx, layer.key, &scopes);
+                    let surface = self.surface;
+                    let display_scale = self.display_scale;
+                    self.mounts.set_backdrop(tx, layer.key, display_scale, || {
+                        surface.backdrop_group(
+                            layer.runtime.chain(display_scale),
+                            crate::renderer::material::capture_scale(),
+                        )
+                    });
+                    let target = slot_layer(self.mounts, self.surface, scope, slot);
+                    tx[target]
+                        .transform(layer.transform)
+                        .clip(waterui_graphics::draw::ShapeData::of(&layer.bounds));
                 }
                 #[cfg(hydrolysis_macos_system_webview)]
                 RenderLayer::NativeView(_) => {

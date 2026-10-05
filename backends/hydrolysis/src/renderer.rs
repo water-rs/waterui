@@ -29,6 +29,7 @@ mod identity;
 mod input;
 mod interaction_layers;
 mod lifecycle;
+mod material;
 mod metadata;
 mod native_measure;
 mod navigation;
