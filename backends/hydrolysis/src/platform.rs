@@ -5,11 +5,7 @@ use waterui::cursor::CursorStyle;
 use waterui::window::{Window as WuiWindow, WindowState};
 use waterui_graphics::gpu::RedrawHandle;
 
-#[cfg(any(
-    hydrolysis_winit,
-    all(target_arch = "wasm32", feature = "web"),
-    target_os = "android"
-))]
+#[cfg(any(hydrolysis_winit, target_os = "android"))]
 use waterui_graphics::gpu::preferred_surface_format;
 
 /// Releases the resources whose destruction `device` deferred.
@@ -723,11 +719,7 @@ impl SurfaceFrame {
     }
 }
 
-#[cfg(any(
-    hydrolysis_winit,
-    all(target_arch = "wasm32", feature = "web"),
-    target_os = "android"
-))]
+#[cfg(any(hydrolysis_winit, target_os = "android"))]
 pub fn select_hydrolysis_surface_format(caps: &wgpu::SurfaceCapabilities) -> wgpu::TextureFormat {
     let preferred = preferred_surface_format(caps, true);
     if supports_hydrolysis_surface_format(preferred) {
@@ -749,11 +741,7 @@ pub fn select_hydrolysis_surface_format(caps: &wgpu::SurfaceCapabilities) -> wgp
     );
 }
 
-#[cfg(any(
-    hydrolysis_winit,
-    all(target_arch = "wasm32", feature = "web"),
-    target_os = "android"
-))]
+#[cfg(any(hydrolysis_winit, target_os = "android"))]
 fn supports_hydrolysis_surface_format(format: wgpu::TextureFormat) -> bool {
     matches!(
         format.remove_srgb_suffix(),
@@ -764,11 +752,7 @@ fn supports_hydrolysis_surface_format(format: wgpu::TextureFormat) -> bool {
     )
 }
 
-#[cfg(any(
-    hydrolysis_winit,
-    all(target_arch = "wasm32", feature = "web"),
-    target_os = "android"
-))]
+#[cfg(any(hydrolysis_winit, target_os = "android"))]
 fn normalize_surface_format(
     caps: &wgpu::SurfaceCapabilities,
     format: wgpu::TextureFormat,
@@ -845,6 +829,13 @@ pub trait SurfaceProvider {
     /// the default is 1.0; an HDR presentation surface overrides it.
     fn display_headroom(&self) -> f32 {
         1.0
+    }
+    /// The colour encoding the present pass writes into this surface's
+    /// textures. A surface configured with `SurfaceColorSpace::Auto` derives
+    /// it from its format; one that negotiated its colour space reports that
+    /// space's encoding.
+    fn output_color(&self) -> cherenkov_gpu::interop::OutputColor {
+        crate::engine::format_output_color(self.format())
     }
 }
 
@@ -1962,6 +1953,7 @@ impl OffscreenSceneSurface {
             self.target.device(),
             self.target.queue(),
             &texture,
+            crate::engine::format_output_color(texture.format()),
             true,
             1.0,
         );

@@ -17,7 +17,7 @@ use web_sys::{
 use super::{
     CursorStyle, GpuSurfaceWindow, InputEvent, KeyCode, KeyState, Modifiers, PlatformWindow,
     PointerButton, PointerKind, SurfaceError, SurfaceFrame, SurfaceProvider, TextInputPurpose,
-    TextInputState, WindowState, WuiWindow, select_hydrolysis_surface_format,
+    TextInputState, WindowState, WuiWindow,
 };
 
 #[derive(Clone, Copy)]
@@ -38,6 +38,10 @@ pub struct BrowserSurface {
     /// Reports this device lost; taken when the device was opened.
     device_loss: crate::platform::DeviceLoss,
     config: wgpu::SurfaceConfiguration,
+    /// The encoding of the negotiated canvas colour space, which the present
+    /// pass writes: a WebGPU canvas interprets its values in its configured
+    /// `colorSpace`, so the format alone does not say what to write.
+    output_color: cherenkov_gpu::interop::OutputColor,
 }
 
 impl core::fmt::Debug for BrowserSurface {
@@ -86,15 +90,28 @@ impl BrowserSurface {
         };
         let device_loss = crate::platform::DeviceLoss::observe(shared_device, context_id);
 
+        // The canvas's (format, colour space) pair comes from the engine's
+        // output negotiation, so the configured `colorSpace` and the encoding
+        // the present pass writes always agree.
         let caps = surface.get_capabilities(&adapter);
+        let selection = cherenkov_gpu::interop::select_output(
+            &caps,
+            wgpu::Backend::BrowserWebGpu,
+            cherenkov_gpu::interop::OutputRequest {
+                transparent: false,
+                color_space: None,
+                sync: cherenkov_gpu::DisplaySync::Synchronized,
+            },
+        )
+        .expect("hydrolysis web surface: the canvas offers no presentable output");
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: select_hydrolysis_surface_format(&caps),
-            color_space: wgpu::SurfaceColorSpace::Auto,
+            format: selection.format,
+            color_space: selection.color_space,
             width: width.max(1),
             height: height.max(1),
-            present_mode: wgpu::PresentMode::AutoVsync,
-            alpha_mode: caps.alpha_modes[0],
+            present_mode: selection.present_mode,
+            alpha_mode: selection.alpha_mode,
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
@@ -109,6 +126,7 @@ impl BrowserSurface {
             queue,
             device_loss,
             config,
+            output_color: selection.output_color(),
         }
     }
 }
@@ -167,6 +185,10 @@ impl SurfaceProvider for BrowserSurface {
 
     fn gpu_context_id(&self) -> u64 {
         self.context_id
+    }
+
+    fn output_color(&self) -> cherenkov_gpu::interop::OutputColor {
+        self.output_color
     }
 
     fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice {

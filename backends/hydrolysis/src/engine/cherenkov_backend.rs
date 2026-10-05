@@ -87,6 +87,23 @@ macro_rules! cfg_async_fn {
 
 pub(crate) use cfg_async_fn;
 
+/// The output colour of a target whose colour space was not negotiated
+/// (`SurfaceColorSpace::Auto`, or an offscreen texture): a float format
+/// receives extended linear Display P3, every other format sRGB. A surface
+/// that negotiates its (format, colour space) pair presents the colour of
+/// that pair instead.
+#[must_use]
+pub fn format_output_color(format: wgpu::TextureFormat) -> cherenkov_gpu::interop::OutputColor {
+    if matches!(
+        format.remove_srgb_suffix(),
+        wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
+    ) {
+        cherenkov_gpu::interop::OutputColor::LinearDisplayP3
+    } else {
+        cherenkov_gpu::interop::OutputColor::Srgb
+    }
+}
+
 /// The production backend: the concrete wgpu engine, never a second
 /// rendering stack or a runtime-selected one.
 pub type GpuEngine = cherenkov::Engine<cherenkov_gpu::Gpu>;
@@ -334,6 +351,7 @@ impl CherenkovSurface {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         output: &wgpu::Texture,
+        color: cherenkov_gpu::interop::OutputColor,
         premultiplied: bool,
         headroom: f32,
     ) {
@@ -341,14 +359,6 @@ impl CherenkovSurface {
             .texture
             .as_ref()
             .expect("hydrolysis renderer: present before the engine produced a texture");
-        let color = if matches!(
-            output.format().remove_srgb_suffix(),
-            wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
-        ) {
-            cherenkov_gpu::interop::OutputColor::LinearDisplayP3
-        } else {
-            cherenkov_gpu::interop::OutputColor::Srgb
-        };
         let alpha = if premultiplied {
             cherenkov_gpu::interop::OutputAlpha::Premultiplied
         } else {

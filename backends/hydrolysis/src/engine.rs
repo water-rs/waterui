@@ -1,7 +1,9 @@
 #[path = "engine/cherenkov_backend.rs"]
 pub mod cherenkov;
 
-pub use cherenkov::{CherenkovSurface, GpuEngine, SharedEngineState, shared_engine_state};
+pub use cherenkov::{
+    CherenkovSurface, GpuEngine, SharedEngineState, format_output_color, shared_engine_state,
+};
 // `macro_rules!` re-exports cap at `pub(crate)` — see cherenkov_backend.
 pub(crate) use cherenkov::{cfg_async_fn, engine_await};
 

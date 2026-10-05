@@ -771,7 +771,14 @@ impl HydrolysisRenderer {
             let frame = crate::engine::engine_await!(
                 self.render_engine_frame(target, rasterize_scene_layers)
             );
-            self.present_engine_frame(frame, device, queue, texture, premultiply_alpha);
+            self.present_engine_frame(
+                frame,
+                device,
+                queue,
+                texture,
+                crate::engine::format_output_color(texture.format()),
+                premultiply_alpha,
+            );
         }
     }
 
@@ -786,6 +793,7 @@ impl HydrolysisRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         texture: &wgpu::Texture,
+        color: cherenkov_gpu::interop::OutputColor,
         premultiply_alpha: bool,
     ) {
         // The window map leaves `self` for the call, as in the render, so the
@@ -798,9 +806,14 @@ impl HydrolysisRenderer {
                 "hydrolysis renderer: the engine frame's window left the renderer before its present",
             ),
         };
-        window
-            .surface
-            .present_into(device, queue, texture, premultiply_alpha, frame.headroom);
+        window.surface.present_into(
+            device,
+            queue,
+            texture,
+            color,
+            premultiply_alpha,
+            frame.headroom,
+        );
 
         #[cfg(feature = "frame-profile")]
         self.gpu_profile_mark(window.gpu_profiler.as_ref(), device, queue, 2);

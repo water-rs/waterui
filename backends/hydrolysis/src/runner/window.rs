@@ -830,6 +830,7 @@ crate::engine::cfg_async_fn! {
         surface.device(),
         surface.queue(),
         frame.texture(),
+        surface.output_color(),
         premultiply_alpha,
     );
     let render = engine_render + copy_started_at.elapsed();
