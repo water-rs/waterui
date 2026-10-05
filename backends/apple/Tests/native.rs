@@ -1181,7 +1181,7 @@ mod window {
 #[cfg(all(target_os = "macos", feature = "native-test", feature = "gpu_surface"))]
 mod gpu_surface {
     use libtest_mimic::Trial;
-    use waterui_apple::native_test_support::gpu_surface::MountedSceneSurface;
+    use waterui_apple::native_test_support::{gpu_surface::MountedSceneSurface, pump_main_until};
 
     use super::mtm;
 
@@ -1198,23 +1198,6 @@ mod gpu_surface {
                 stale_completion_releases_only_its_lease,
             ),
         ]
-    }
-
-    /// Pumps the main run loop in small turns until `until` answers or
-    /// `seconds` elapse — how a synchronous case awaits the main-queue
-    /// work `request_redraw` enqueues. Bounded; a dead queue fails the
-    /// case instead of hanging it.
-    fn pump_main_until(seconds: f64, until: impl Fn() -> bool) -> bool {
-        use cocoa_ui::objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSRunLoop};
-        let deadline = NSDate::dateWithTimeIntervalSinceNow(seconds);
-        while !until() && deadline.timeIntervalSinceNow() > 0.0 {
-            // SAFETY: `NSDefaultRunLoopMode` is a system-owned run-loop mode.
-            NSRunLoop::currentRunLoop().runMode_beforeDate(
-                unsafe { NSDefaultRunLoopMode },
-                &NSDate::dateWithTimeIntervalSinceNow(0.02),
-            );
-        }
-        until()
     }
 
     /// A routed shared-generation failure reaches an owner that is idle
