@@ -115,10 +115,10 @@ pub fn install(dispatcher: &mut Dispatcher) {
         view::set_translates_autoresizing(&blur, true);
         view::set_translates_autoresizing(mounted.view(), true);
 
-        // `WuiSafeAreaManaging`: a material is chrome, not content — the
-        // blur runs behind the status bar and the home indicator while the
-        // content keeps its own safe-area insets.
-        host.set_manages_safe_area(true);
+        // A material's whole painted surface is the blur — one fill. The
+        // fill rule extends it into the safe-area bands its frame touches,
+        // while the content keeps its own safe-area insets.
+        host.set_is_fill(true);
 
         let state = Rc::new(MaterialBackgroundState {
             child: mounted,
@@ -152,8 +152,10 @@ pub fn install(dispatcher: &mut Dispatcher) {
                     f64::from(size.width),
                     f64::from(size.height),
                 );
+                // The content centers on its negotiated size; the blur is
+                // the fill surface and covers the whole extended frame.
                 view::set_frame(state.child.view(), rect);
-                view::set_frame(&state.blur, rect);
+                view::set_frame(&state.blur, bounds);
             }
         });
 

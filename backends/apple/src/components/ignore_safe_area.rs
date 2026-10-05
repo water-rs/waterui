@@ -88,13 +88,23 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         #[cfg(target_os = "ios")]
         {
-            let edges = metadata.value.edges;
-            host.set_ignored_safe_area_edges(cocoa_ui::geometry::Edges::new(
-                edges.top,
-                edges.leading,
-                edges.bottom,
-                edges.trailing,
-            ));
+            let value = metadata.value;
+            let region_edges = |enabled: bool| {
+                if enabled {
+                    cocoa_ui::geometry::Edges::new(
+                        value.edges.top,
+                        value.edges.leading,
+                        value.edges.bottom,
+                        value.edges.trailing,
+                    )
+                } else {
+                    cocoa_ui::geometry::Edges::new(false, false, false, false)
+                }
+            };
+            host.set_ignored_safe_area_edges(
+                region_edges(value.regions.container),
+                region_edges(value.regions.keyboard),
+            );
             // The wrapper manages the safe area itself; `UIKit`'s own margin
             // inset would double-count it.
             view::set_insets_layout_margins_from_safe_area(host_view, false);

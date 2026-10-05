@@ -19,13 +19,18 @@ use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_se
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSArray, NSMutableSet, NSObject, NSObjectProtocol};
 use objc2_ui_kit::{
-    UIEdgeInsets, UIEvent, UIGestureRecognizerState, UIHoverGestureRecognizer, UIPress,
-    UIPressesEvent, UITraitEnvironment, UIView,
+    UIEdgeInsets, UIEvent, UIGestureRecognizerState, UIHoverGestureRecognizer,
+    UIKeyboardWillChangeFrameNotification, UIKeyboardWillHideNotification,
+    UIKeyboardWillShowNotification, UIPress, UIPressesEvent, UITraitEnvironment, UIView,
+    UIViewAnimationOptions,
 };
+
+use block2::RcBlock;
 
 use crate::callback::guarded;
 use crate::geometry::{EdgeInsets, Edges, MeasureProposal, Point, Rect, Size};
 use crate::keys::{self, KeyEvent};
+use crate::notification::{NotificationName, NotificationObserver};
 use crate::pointer::{PointerEvent, PointerEvents};
 
 /// What a [`HostView`]'s hit-test handler decides for a point.
@@ -67,11 +72,23 @@ pub struct HostViewIvars {
     /// Whether the view's own content is laid out against its bounds — the
     /// answer to "does this view manage its own safe area".
     manages_safe_area: Cell<bool>,
-    /// The edges this view erases from the safe-area insets its subtree
-    /// sees — what `cocoaUiIgnoredSafeAreaEdges` reports: bits 0–3 the
-    /// `Edges` mask, bit 4 marking the view an ignore-safe-area wrapper so
-    /// a reader can tell "ignores nothing" from "not an ignorer".
-    ignored_safe_area_edges: Cell<u8>,
+    /// The region edges this view erases from the safe-area insets its
+    /// subtree sees — what `cocoaUiIgnoredSafeAreaEdges` reports: bits 0–3
+    /// the container region's `Edges` mask, bits 4–7 the keyboard region's,
+    /// bit 8 marking the view an ignore-safe-area wrapper so a reader can
+    /// tell "ignores nothing" from "not an ignorer".
+    ignored_safe_area_edges: Cell<isize>,
+    /// Whether the view's painted surface is one fill (a color, a gradient,
+    /// a material) — the answer `cocoaUiIsFill` gives the sibling backend's
+    /// fill rule, which extends a fill past its frame into the safe-area
+    /// bands it touches.
+    is_fill: Cell<bool>,
+    /// The software keyboard's frame in window coordinates, tracked by a
+    /// window root from `UIKit`'s keyboard notifications; `CGRect::ZERO`
+    /// everywhere else.
+    keyboard_frame: Cell<CGRect>,
+    /// The notification observers keeping `keyboard_frame` current.
+    keyboard_observers: RefCell<Vec<NotificationObserver>>,
     /// Whether the Auto Layout width is tracked for intrinsic size; see
     /// [`set_intrinsic_auto_layout`](HostView::set_intrinsic_auto_layout).
     intrinsic_auto_layout: Cell<bool>,
@@ -113,6 +130,8 @@ impl fmt::Debug for HostViewIvars {
                 "ignored_safe_area_edges",
                 &self.ignored_safe_area_edges.get(),
             )
+            .field("is_fill", &self.is_fill.get())
+            .field("keyboard_frame", &self.keyboard_frame.get())
             .field("last_auto_layout_width", &self.last_auto_layout_width.get())
             .field("manages_safe_area", &self.manages_safe_area.get())
             .field("intrinsic_auto_layout", &self.intrinsic_auto_layout.get())
@@ -297,11 +316,28 @@ define_class!(
 
         // SAFETY: see the module safety note. Exposed under a `cocoaUi`
         // selector for the sibling backend's safe-area erasure; it reads an
-        // ivar and performs no layout. Bits 0–3 are the `Edges` mask, bit 4
-        // marks the view an ignore-safe-area wrapper.
+        // ivar and performs no layout. Bits 0–3 are the container region's
+        // `Edges` mask, bits 4–7 the keyboard region's, bit 8 marks the view
+        // an ignore-safe-area wrapper.
         #[unsafe(method(cocoaUiIgnoredSafeAreaEdges))]
         fn ignored_safe_area_edges_override(&self) -> isize {
-            isize::from(self.ivars().ignored_safe_area_edges.get())
+            self.ivars().ignored_safe_area_edges.get()
+        }
+
+        // SAFETY: see the module safety note. Exposed under a `cocoaUi`
+        // selector for the sibling backend's fill rule; it reads an ivar and
+        // performs no layout.
+        #[unsafe(method(cocoaUiIsFill))]
+        fn is_fill_override(&self) -> bool {
+            self.ivars().is_fill.get()
+        }
+
+        // SAFETY: see the module safety note. Exposed under a `cocoaUi`
+        // selector for the sibling backend's keyboard-region inset; it reads
+        // an ivar and performs no layout.
+        #[unsafe(method(cocoaUiKeyboardFrame))]
+        fn keyboard_frame_override(&self) -> CGRect {
+            self.ivars().keyboard_frame.get()
         }
 
         // SAFETY: see the module safety note. Exposed under a `cocoaUi`
@@ -365,7 +401,9 @@ define_class!(
         ) -> Option<Retained<UIView>> {
             guarded("HostView hitTest:withEvent:", || {
                 let handler = self.ivars().hit_test.borrow().clone();
-                match handler.map_or(HitTest::Default, |handler| handler(self, point.into())) {
+                match handler.map_or(HitTest::Default, |handler| {
+                    handler(self, point.into())
+                }) {
                     HitTest::Default => self.default_hit_test(point, event),
                     HitTest::Pass => None,
                     HitTest::PassIfSelf => {
@@ -567,16 +605,107 @@ impl HostView {
         self.ivars().manages_safe_area.set(manages);
     }
 
-    /// The edges this view erases from the safe-area insets its subtree
-    /// sees — what an ignore-safe-area wrapper reports through the
+    /// The region edges this view erases from the safe-area insets its
+    /// subtree sees — what an ignore-safe-area wrapper reports through the
     /// `cocoaUiIgnoredSafeAreaEdges` selector the sibling backend's
-    /// safe-area rect consults on its ancestor walk. Setting the marks
-    /// bit 4, so a wrapper that ignores no edge still answers as an
-    /// ignorer.
-    pub fn set_ignored_safe_area_edges(&self, edges: Edges) {
+    /// safe-area rect consults on its ancestor walk. `container` is the
+    /// `Edges` mask the wrapper ignores in the container region, `keyboard`
+    /// in the keyboard region; the mark bit 8 is always set, so a wrapper
+    /// that ignores no edge still answers as an ignorer.
+    pub fn set_ignored_safe_area_edges(&self, container: Edges, keyboard: Edges) {
         self.ivars()
             .ignored_safe_area_edges
-            .set(edges.mask() | 0x10);
+            .set(isize::from(container.mask()) | (isize::from(keyboard.mask()) << 4) | 0x100);
+    }
+
+    /// Whether the view is a fill — its whole painted surface a color, a
+    /// gradient or a material — what `cocoaUiIsFill` reports to the sibling
+    /// backend's fill rule.
+    pub fn set_is_fill(&self, is_fill: bool) {
+        self.ivars().is_fill.set(is_fill);
+    }
+
+    /// The keyboard's frame in window coordinates the view last reported —
+    /// `CGRect::ZERO` unless this is a tracked window root.
+    #[must_use]
+    pub fn keyboard_frame(&self) -> CGRect {
+        self.ivars().keyboard_frame.get()
+    }
+
+    /// Starts the keyboard notifications that keep `keyboard_frame` and the
+    /// window's layout moving with the software keyboard — the update runs
+    /// inside a `UIView` animation carrying `UIKit`'s own duration and
+    /// curve, so the layout answers frame by frame.
+    fn track_keyboard(&self) {
+        let mtm = self.mtm();
+        let mut observers = self.ivars().keyboard_observers.borrow_mut();
+        // SAFETY: `UIKit` exports these notification names as constants
+        // for the process's lifetime.
+        for name in unsafe {
+            [
+                UIKeyboardWillShowNotification,
+                UIKeyboardWillChangeFrameNotification,
+                UIKeyboardWillHideNotification,
+            ]
+        } {
+            let weak = Weak::new(self);
+            observers.push(crate::notification::observe_with_notification(
+                mtm,
+                &NotificationName::framework(name),
+                move |note| {
+                    if let Some(host) = weak.load() {
+                        host.apply_keyboard_frame(note);
+                    }
+                },
+            ));
+        }
+    }
+
+    /// Reads the end frame out of a keyboard notification, converts it to
+    /// this window's coordinates and animates the stored frame — plus the
+    /// relayout it drives — with the notification's own animation.
+    fn apply_keyboard_frame(&self, note: &objc2_foundation::NSNotification) {
+        use objc2_ui_kit::UICoordinateSpace;
+
+        let Some(window) = self.window() else {
+            return;
+        };
+        let Some(change) = crate::uikit::keyboard::change(note) else {
+            return;
+        };
+        let space = window.screen().coordinateSpace();
+        let frame = window.convertRect_fromCoordinateSpace(change.frame, &space);
+        let options = UIViewAnimationOptions(
+            (change.curve << 16) | UIViewAnimationOptions::BeginFromCurrentState.0,
+        );
+        let block = RcBlock::new({
+            let host: Retained<Self> = Retained::from(self);
+            move || {
+                // The inset change does not move any frame on its own:
+                // `layoutIfNeeded` only visits views marked as needing
+                // layout, so every view in the window must re-run its layout
+                // pass for the new region insets to reach placed children.
+                fn mark_needs_layout(view: &UIView) {
+                    view.setNeedsLayout();
+                    for subview in &view.subviews() {
+                        mark_needs_layout(&subview);
+                    }
+                }
+                host.ivars().keyboard_frame.set(frame);
+                mark_needs_layout(&window);
+                window.layoutIfNeeded();
+            }
+        });
+        // `mtm` guarantees the `UIKit` call stays on the main thread; the
+        // options value is the documented `curve << 16` packing.
+        UIView::animateWithDuration_delay_options_animations_completion(
+            change.duration,
+            0.0,
+            options,
+            &block,
+            None,
+            self.mtm(),
+        );
     }
 
     /// The primary content the sibling backend's wrappers descend to — the
@@ -723,17 +852,20 @@ impl HostView {
 /// A host view for a controller at a window's root site.
 ///
 /// It always fills its
-/// window, reports its window's safe-area insets, and extends hit testing to
-/// subviews placed outside its bounds. Embedded sites use [`HostView::new`],
-/// which keeps the bounds its native parent assigns.
+/// window, reports its window's safe-area insets, extends hit testing to
+/// subviews placed outside its bounds, and tracks the software keyboard's
+/// frame through `cocoaUiKeyboardFrame`. Embedded sites use
+/// [`HostView::new`], which keeps the bounds its native parent assigns.
 #[must_use]
 pub fn window_root(mtm: MainThreadMarker) -> Retained<HostView> {
-    HostView::with_ivars(
+    let host = HostView::with_ivars(
         mtm,
         Rect::ZERO,
         HostViewIvars {
             fills_window: Cell::new(true),
             ..HostViewIvars::default()
         },
-    )
+    );
+    host.track_keyboard();
+    host
 }

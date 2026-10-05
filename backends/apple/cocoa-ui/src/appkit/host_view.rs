@@ -86,6 +86,9 @@ pub struct HostViewIvars {
     /// Whether the view's own content is laid out against its bounds — the
     /// answer to "does this view manage its own safe area".
     manages_safe_area: std::cell::Cell<bool>,
+    /// Whether the view's painted surface is one fill — kept for parity
+    /// with `UIKit`, where the sibling backend's fill rule consults it.
+    is_fill: std::cell::Cell<bool>,
     /// Whether the Auto Layout width is tracked for intrinsic size; see
     /// [`set_intrinsic_auto_layout`](HostView::set_intrinsic_auto_layout).
     intrinsic_auto_layout: std::cell::Cell<bool>,
@@ -114,6 +117,7 @@ impl fmt::Debug for HostViewIvars {
             .field("last_auto_layout_width", &self.last_auto_layout_width.get())
             .field("measure", &self.measure.borrow().is_some())
             .field("manages_safe_area", &self.manages_safe_area.get())
+            .field("is_fill", &self.is_fill.get())
             .field("intrinsic_auto_layout", &self.intrinsic_auto_layout.get())
             .field("pointer", &self.pointer.borrow().is_some())
             .field("pointer_events", &self.pointer_events.get())
@@ -222,6 +226,14 @@ define_class!(
         #[unsafe(method(cocoaUiManagesSafeArea))]
         fn manages_safe_area_override(&self) -> bool {
             self.ivars().manages_safe_area.get()
+        }
+
+        // SAFETY: see the module safety note. Exposed under a `cocoaUi`
+        // selector for the sibling backend's fill rule; it reads an ivar and
+        // performs no layout.
+        #[unsafe(method(cocoaUiIsFill))]
+        fn is_fill_override(&self) -> bool {
+            self.ivars().is_fill.get()
         }
 
         // SAFETY: see the module safety note. Exposed under a `cocoaUi`
@@ -639,6 +651,13 @@ impl HostView {
     /// `cocoaUiManagesSafeArea` selector.
     pub fn set_manages_safe_area(&self, manages: bool) {
         self.ivars().manages_safe_area.set(manages);
+    }
+
+    /// Whether the view is a fill — its whole painted surface a color, a
+    /// gradient or a material — what `cocoaUiIsFill` reports to the sibling
+    /// backend's fill rule.
+    pub fn set_is_fill(&self, is_fill: bool) {
+        self.ivars().is_fill.set(is_fill);
     }
 
     /// The primary content the sibling backend's wrappers descend to — the

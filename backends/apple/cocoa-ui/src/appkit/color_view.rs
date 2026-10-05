@@ -48,6 +48,14 @@ define_class!(
         fn is_flipped_override(&self) -> bool {
             true
         }
+
+        // SAFETY: see the module safety note. The sibling backend's
+        // `cocoaUiIsFill` query: a `ColorView` is a fill by definition, so
+        // its paint extends into the safe-area bands its frame touches.
+        #[unsafe(method(cocoaUiIsFill))]
+        fn is_fill_override(&self) -> bool {
+            true
+        }
     }
 );
 

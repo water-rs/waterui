@@ -41,6 +41,7 @@ mod context_menu;
 mod date_picker;
 pub mod drag_drop;
 pub mod gesture;
+pub(crate) mod keyboard;
 mod menu_panel;
 pub use color_well::ColorWell;
 pub use context_menu::{

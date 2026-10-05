@@ -113,7 +113,6 @@ fn perform_layout(state: &Rc<RefCell<FixedState>>) {
         placements.len(),
         state.children.len()
     );
-    let bounds: Rect = view::bounds(&host);
     for (index, (child, placement)) in state.children.iter().zip(placements.iter()).enumerate() {
         let mut frame = Rect::new(
             f64::from(placement.frame.x()),
@@ -125,8 +124,18 @@ fn perform_layout(state: &Rc<RefCell<FixedState>>) {
             frame.is_valid_for_layout(),
             "fixed container received an invalid layout rect for child {index}: {frame:?}"
         );
-        if crate::native_layout::manages_safe_area(child.view()) {
-            frame = frame.extended_through(safe_rect, bounds);
+        if crate::native_layout::extends_into_bands(child.view()) {
+            #[cfg(target_os = "ios")]
+            {
+                let mask = crate::native_layout::accumulated_mask(child.view());
+                let target = crate::native_layout::band_target(&host, mask);
+                frame = frame.extended_through(safe_rect, target);
+            }
+            #[cfg(target_os = "macos")]
+            {
+                let bounds: Rect = view::bounds(&host);
+                frame = frame.extended_through(safe_rect, bounds);
+            }
         }
         // The negotiated proposal lands before the frame: a container child
         // that lays out on the frame change already holds its selected
