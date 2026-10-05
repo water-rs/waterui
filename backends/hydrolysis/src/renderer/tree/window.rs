@@ -5,15 +5,15 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use crate::platform::WindowSafeArea;
+use crate::platform::{WindowKeyboardArea, WindowSafeArea};
 use waterui_layout::padding::EdgeInsets;
 
-/// The window's host-published safe-area insets in logical units, read through
-/// the renderer so the frame subscribes to them — a host write on the
+/// The window's container-region insets in logical units, read through the
+/// renderer so the frame subscribes to them — a host write on the
 /// [`WindowSafeArea`] binding re-lays out through the ordinary input path with
 /// no explicit refresh request. An environment that carries none reports zero
 /// insets, which is also what the whole window pipeline saw before.
-pub(super) fn window_safe_area_insets(
+pub(super) fn window_container_insets(
     renderer: &mut HydrolysisRenderer,
     env: &Environment,
 ) -> EdgeInsets {
@@ -22,15 +22,79 @@ pub(super) fn window_safe_area_insets(
         .unwrap_or_default()
 }
 
-/// `bounds` shrunk by the safe-area insets — the rect the window's root
-/// content lays out inside. Clamps per axis so insets larger than the window
+/// The window's keyboard-region insets in logical units — §7.1's keyboard
+/// region: the software keyboard's own cover of the window, tracked
+/// frame-by-frame as the host animates it, which never resizes the window
+/// or the rendering surface.
+pub(super) fn window_keyboard_insets(
+    renderer: &mut HydrolysisRenderer,
+    env: &Environment,
+) -> EdgeInsets {
+    env.get::<WindowKeyboardArea>()
+        .map(|area| renderer.read_signal(&area.0))
+        .unwrap_or_default()
+}
+
+/// `bounds` shrunk by the deeper of the two regions on each edge — §7.1's
+/// "a view is laid out clear of the regions it does not ignore", applied
+/// at the window root. Clamps per axis so insets larger than the window
 /// collapse to the origin rather than inverting the rect.
-fn window_content_rect(bounds: kurbo::Rect, insets: &EdgeInsets) -> kurbo::Rect {
-    let x0 = bounds.x0 + f64::from(insets.leading());
-    let y0 = bounds.y0 + f64::from(insets.top());
-    let x1 = (bounds.x1 - f64::from(insets.trailing())).max(x0);
-    let y1 = (bounds.y1 - f64::from(insets.bottom())).max(y0);
+/// [`ReleasedRegions::unreleased_depth`](safe_area::ReleasedRegions::unreleased_depth)
+/// owns the `max(container, keyboard)` resolution — the one place it lives.
+pub fn window_content_rect(
+    bounds: kurbo::Rect,
+    container: &EdgeInsets,
+    keyboard: &EdgeInsets,
+) -> kurbo::Rect {
+    let none = safe_area::ReleasedRegions::default();
+    let x0 = bounds.x0 + none.unreleased_depth(safe_area::Edge::Leading, container, keyboard);
+    let y0 = bounds.y0 + none.unreleased_depth(safe_area::Edge::Top, container, keyboard);
+    let x1 =
+        (bounds.x1 - none.unreleased_depth(safe_area::Edge::Trailing, container, keyboard)).max(x0);
+    let y1 =
+        (bounds.y1 - none.unreleased_depth(safe_area::Edge::Bottom, container, keyboard)).max(y0);
     kurbo::Rect::new(x0, y0, x1, y1)
+}
+
+/// The root layout inputs for one window frame: the laid-out content rect
+/// (the window shrunk by the deeper region on each edge), its `Size`, and
+/// the §7.1 [`safe_area::SafeAreaLayout`] context the tree's root node lays out
+/// against — computed once per frame so the root `RenderContext` and the
+/// context's frame agree exactly. `transform` places the window in device
+/// pixels: the touch tolerance derives from its per-axis scale, never a
+/// literal.
+pub fn window_root_layout(
+    renderer: &mut HydrolysisRenderer,
+    env: &Environment,
+    bounds: kurbo::Rect,
+    transform: kurbo::Affine,
+) -> (kurbo::Rect, Size, safe_area::SafeAreaLayout) {
+    let container = window_container_insets(renderer, env);
+    let keyboard = window_keyboard_insets(renderer, env);
+    let content = window_content_rect(bounds, &container, &keyboard);
+    let size = Size::new(
+        crate::num_cast::f64_as_f32(content.width()),
+        crate::num_cast::f64_as_f32(content.height()),
+    );
+    let frame = kurbo::Rect::new(
+        content.x0,
+        content.y0,
+        content.x0 + f64::from(size.width),
+        content.y0 + f64::from(size.height),
+    );
+    let [xx, yx, xy, yy, _, _] = transform.as_coeffs();
+    (
+        content,
+        size,
+        safe_area::SafeAreaLayout::root(
+            bounds,
+            container,
+            keyboard,
+            frame,
+            xx.hypot(yx),
+            xy.hypot(yy),
+        ),
+    )
 }
 
 /// The [`RenderContext`] the window tree flushes under: `bounds` inset to the
@@ -113,6 +177,8 @@ impl RenderNode {
             // descendants must keep patching, so the walk recurses into it
             // (the filter itself owns its runtime, with no structural patch).
             Self::Filtered(node) => node.child.patch(renderer),
+            // A paint marker only: its child patches as on its own.
+            Self::Fill(node) => node.child.patch(renderer),
             Self::Color(_)
             | Self::Text(_)
             | Self::SceneView(_)
@@ -166,6 +232,7 @@ impl RenderNode {
             }
             Self::Scroll(node) => node.child.collect_dynamic_identities_into(out),
             Self::Filtered(node) => node.child.collect_dynamic_identities_into(out),
+            Self::Fill(node) => node.child.collect_dynamic_identities_into(out),
             Self::Color(_)
             | Self::Text(_)
             | Self::SceneView(_)
@@ -211,6 +278,7 @@ impl RenderNode {
                 dirty
             }
             Self::Filtered(node) => node.child.take_layout_dirty(),
+            Self::Fill(node) => node.child.take_layout_dirty(),
             Self::Collection(node) => node
                 .entries
                 .iter_mut()
@@ -410,13 +478,22 @@ impl HydrolysisRenderer {
         transform: kurbo::Affine,
         hit_transform: kurbo::Affine,
     ) {
+        self.capture_window_tree_with_root(content, env, bounds, transform, hit_transform);
+    }
+
+    /// `capture_window_tree` returning the frame's root §7.1 context — the
+    /// runner needs it to present context menus against the window's released
+    /// regions, but `SafeAreaLayout` itself is not public surface.
+    pub(crate) fn capture_window_tree_with_root(
+        &mut self,
+        content: AnyView,
+        env: &Environment,
+        bounds: kurbo::Rect,
+        transform: kurbo::Affine,
+        hit_transform: kurbo::Affine,
+    ) -> SafeAreaLayout {
         let _flush_span = tracing::debug_span!("hydrolysis_capture_window_tree").entered();
-        let insets = window_safe_area_insets(self, env);
-        let content_rect = window_content_rect(bounds, &insets);
-        let size = Size::new(
-            crate::num_cast::f64_as_f32(content_rect.width()),
-            crate::num_cast::f64_as_f32(content_rect.height()),
-        );
+        let (content_rect, size, safe_area) = window_root_layout(self, env, bounds, transform);
         let proposal = ProposalSize::new(Some(size.width), Some(size.height));
         // The viewport is recorded here rather than by each caller: every host
         // that builds a window tree — the runner, and a `HydrolysisGpuView`
@@ -441,7 +518,7 @@ impl HydrolysisRenderer {
             #[cfg(feature = "frame-profile")]
             let layout_started_at = Instant::now();
             tree.prepare_for_measure(self);
-            tree.layout(self, env, proposal, size);
+            tree.layout(self, env, Some(safe_area.clone()), proposal, size);
             #[cfg(feature = "frame-profile")]
             {
                 self.frame_stage_times.layout += layout_started_at.elapsed();
@@ -450,13 +527,13 @@ impl HydrolysisRenderer {
             #[cfg(feature = "frame-profile")]
             let encode_started_at = Instant::now();
             tree.flush(self, ctx, env);
-            self.render_anchored_overlays(transform);
+            self.render_anchored_overlays(transform, &safe_area);
             #[cfg(feature = "frame-profile")]
             {
                 self.frame_stage_times.encode += encode_started_at.elapsed();
             }
             self.render_tree = Some(tree);
-            return;
+            return safe_area;
         }
         #[cfg(feature = "frame-profile")]
         {
@@ -467,7 +544,7 @@ impl HydrolysisRenderer {
         #[cfg(feature = "frame-profile")]
         let layout_started_at = Instant::now();
         node.prepare_for_measure(self);
-        node.layout(self, env, proposal, size);
+        node.layout(self, env, Some(safe_area.clone()), proposal, size);
         #[cfg(feature = "frame-profile")]
         {
             self.frame_stage_times.layout += layout_started_at.elapsed();
@@ -476,12 +553,13 @@ impl HydrolysisRenderer {
         #[cfg(feature = "frame-profile")]
         let encode_started_at = Instant::now();
         node.flush(self, ctx, env);
-        self.render_anchored_overlays(transform);
+        self.render_anchored_overlays(transform, &safe_area);
         #[cfg(feature = "frame-profile")]
         {
             self.frame_stage_times.encode += encode_started_at.elapsed();
         }
         self.render_tree = Some(node);
+        safe_area
     }
 
     /// Apply pending structural changes, run layout, and re-encode the retained
@@ -531,16 +609,13 @@ impl HydrolysisRenderer {
         self.reset_scene();
         self.begin_redraw_frame();
         // Layout runs every frame: geometry can never go stale against the
-        // scene encoded right after it.
-        let insets = window_safe_area_insets(self, env);
-        let content_rect = window_content_rect(bounds, &insets);
-        let size = Size::new(
-            crate::num_cast::f64_as_f32(content_rect.width()),
-            crate::num_cast::f64_as_f32(content_rect.height()),
-        );
+        // scene encoded right after it. The keyboard region feeds the same
+        // pass: a host write on `WindowKeyboardArea` re-lays the window out
+        // with the new cover, frame by frame through the host's animation.
+        let (content_rect, size, safe_area) = window_root_layout(self, env, bounds, transform);
         let proposal = ProposalSize::new(Some(size.width), Some(size.height));
         tree.prepare_for_measure(self);
-        tree.layout(self, env, proposal, size);
+        tree.layout(self, env, Some(safe_area.clone()), proposal, size);
         drop(layout_span);
         #[cfg(feature = "frame-profile")]
         {
@@ -559,11 +634,11 @@ impl HydrolysisRenderer {
         // Same for an open `.context_menu` presentation: its dim backdrop,
         // lifted preview and anchored accessory re-encode per frame and the
         // pass is where dismiss_requests/menu-close is observed.
-        self.render_context_menu_presentation(transform);
+        self.render_context_menu_presentation(transform, &safe_area);
         // Anchored overlays (`.anchored_overlay`) draw above all content: the
         // flush registered each anchor's live bounds, so the placement
         // contract re-runs per frame and the overlay follows moves/resizes.
-        self.render_anchored_overlays(transform);
+        self.render_anchored_overlays(transform, &safe_area);
         self.flush_scene_layer();
         drop(encode_span);
         #[cfg(feature = "frame-profile")]

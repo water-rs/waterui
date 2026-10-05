@@ -616,7 +616,7 @@ fn build_window_scene<P: PlatformWindow>(
     phases.build_content += build_content_started_at.elapsed();
     let _ = drain_local_tasks();
     let scene_dispatch_started_at = Instant::now();
-    runtime.renderer.capture_window_tree(
+    let safe_area = runtime.renderer.capture_window_tree_with_root(
         content,
         env,
         bounds,
@@ -630,7 +630,7 @@ fn build_window_scene<P: PlatformWindow>(
     // path is where its sub-views are first built and placed.
     runtime
         .renderer
-        .render_context_menu_presentation(root_transform);
+        .render_context_menu_presentation(root_transform, &safe_area);
     phases.scene_dispatch += scene_dispatch_started_at.elapsed();
     let scene_finish_started_at = Instant::now();
     runtime.renderer.finish_rebuild_frame();

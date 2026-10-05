@@ -118,7 +118,11 @@ impl HydrolysisRenderer {
         clippy::too_many_lines,
         reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
     )]
-    pub(crate) fn render_anchored_overlays(&mut self, transform: kurbo::Affine) {
+    pub(crate) fn render_anchored_overlays(
+        &mut self,
+        transform: kurbo::Affine,
+        safe_area: &crate::renderer::SafeAreaLayout,
+    ) {
         let registered = core::mem::take(&mut self.popup_menu.anchored_overlays);
         let last_presented = core::mem::take(&mut self.popup_menu.presented_anchored_overlays);
         let mut presented = Vec::with_capacity(last_presented.len());
@@ -244,6 +248,10 @@ impl HydrolysisRenderer {
                 &entry.env,
                 bounded_proposal(frame),
                 frame,
+                // §7.1: the overlay is chrome of its own placement — content
+                // inside inherits the window's boundaries, so it can only
+                // touch and release where its frame really sits on one.
+                Some(safe_area.with_frame(frame)),
             );
             self.animation_controller.end_animation_scope();
 

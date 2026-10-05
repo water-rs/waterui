@@ -977,9 +977,18 @@ fn flush_material_label(
     let size = LayoutSize::new(width as f32, height as f32);
     // The label's semantics are merged into the field's own text-input node, so
     // the floating label sub-view flushes visual-only.
+    let label_area =
+        ctx.safe_area_for(transform.transform_rect_bbox(kurbo::Rect::new(0.0, 0.0, width, height)));
     ctx.renderer_mut()
         .with_suppressed_accessibility(|renderer| {
-            label_view.flush_in_ctx(renderer, child, env, ProposalSize::UNSPECIFIED, size);
+            label_view.flush_in_ctx(
+                renderer,
+                child,
+                env,
+                ProposalSize::UNSPECIFIED,
+                size,
+                label_area,
+            );
         });
 }
 

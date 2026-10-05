@@ -15,8 +15,8 @@ import android.view.autofill.AutofillValue
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
-import androidx.core.graphics.Insets
 import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsAnimationCompat
 import androidx.core.view.WindowInsetsCompat
 
 /**
@@ -60,11 +60,75 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     private var lastFontScale = Float.NaN
     private var lastRefreshHz = Float.NaN
     private var lastInsets = intArrayOf(0, 0, 0, 0)
+    private var lastKeyboardInsets = intArrayOf(0, 0, 0, 0)
     private var lastTouchSlop = Float.NaN
     private var lastMinFlingVelocity = Float.NaN
     private var lastMaxFlingVelocity = Float.NaN
     private var lastScrollFriction = Float.NaN
     private var lastRootInsets: WindowInsetsCompat? = null
+
+    /**
+     * An IME `WindowInsetsAnimation` is running. While it is, the insets
+     * `onApplyWindowInsets` dispatches already carry the animation's *end*
+     * state — pushing them would jump the layout to the full keyboard
+     * height for one frame before `onProgress` pulls it back. The flag
+     * defers the keyboard region to `onProgress` (and `onEnd` for the
+     * settled value); the container region still tracks the dispatch.
+     */
+    private var imeAnimating = false
+
+    /**
+     * §7.1's keyboard-motion rule: the IME inset the session avoids by
+     * follows the platform's keyboard animation frame by frame, so every
+     * `onProgress` lands as its own metrics push instead of a single jump
+     * when the animation settles. The deferral described on [imeAnimating]
+     * covers the interactive swipe-dismiss path too — the same callbacks
+     * fire for an `InsetsController`-driven animation.
+     */
+    private val insetsAnimationCallback =
+        object : WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_CONTINUE_ON_SUBTREE) {
+            override fun onPrepare(animation: WindowInsetsAnimationCompat) {
+                if (animation.typeMask and WindowInsetsCompat.Type.ime() != 0) {
+                    imeAnimating = true
+                }
+            }
+
+            override fun onProgress(
+                insets: WindowInsetsCompat,
+                runningAnimations: MutableList<WindowInsetsAnimationCompat>,
+            ): WindowInsetsCompat {
+                // Only the IME component is mid-animation state — the
+                // container keeps coming from the persisted dispatches
+                // (`lastRootInsets`), so a concurrent `pushMetrics` never
+                // reads the animation frame's container insets back out.
+                val imeRunning =
+                    runningAnimations.any {
+                        it.typeMask and WindowInsetsCompat.Type.ime() != 0
+                    }
+                if (imeAnimating && imeRunning) {
+                    val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+                    pushMetrics(intArrayOf(ime.left, ime.top, ime.right, ime.bottom))
+                } else {
+                    // A non-IME animation (e.g. a system-bar hide/show)
+                    // lands here too and pushes the persisted
+                    // `lastRootInsets` on every progress frame, so its
+                    // metrics jump at `onApplyWindowInsets` rather
+                    // than following the animation — outside §7.1's scope.
+                    pushMetrics()
+                }
+                return insets
+            }
+
+            override fun onEnd(animation: WindowInsetsAnimationCompat) {
+                if (animation.typeMask and WindowInsetsCompat.Type.ime() != 0) {
+                    imeAnimating = false
+                    // The last progress frame is not guaranteed to carry
+                    // fraction 1.0 — publish the settled insets.
+                    lastRootInsets = ViewCompat.getRootWindowInsets(this@HydrolysisHostView)
+                    pushMetrics()
+                }
+            }
+        }
 
     /**
      * The live [HydrolysisInputConnection], if the IMM has bound one — the
@@ -88,6 +152,7 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_YES
         importantForAutofill = IMPORTANT_FOR_AUTOFILL_YES
         addView(platformViewRegistry.container)
+        ViewCompat.setWindowInsetsAnimationCallback(this, insetsAnimationCallback)
         session?.bind(this)
     }
 
@@ -118,29 +183,38 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         return super.onApplyWindowInsets(insets)
     }
 
-    private fun pushMetrics() {
+    private fun pushMetrics(keyboardEdgesOverride: IntArray? = null) {
         val session = session ?: return
         val metrics = resources.displayMetrics
         val configuration = resources.configuration
         val rootInsets = lastRootInsets ?: ViewCompat.getRootWindowInsets(this)
-        val edges =
-            if (rootInsets != null) {
-                val bars =
-                    rootInsets.getInsets(
-                        WindowInsetsCompat.Type.systemBars() or
-                            WindowInsetsCompat.Type.displayCutout()
-                    )
-                val ime =
-                    if (rootInsets.isVisible(WindowInsetsCompat.Type.ime())) {
-                        rootInsets.getInsets(WindowInsetsCompat.Type.ime())
+        val containerEdges: IntArray
+        val keyboardEdges: IntArray
+        if (rootInsets != null) {
+            val bars =
+                rootInsets.getInsets(
+                    WindowInsetsCompat.Type.systemBars() or
+                        WindowInsetsCompat.Type.displayCutout()
+                )
+            val ime = rootInsets.getInsets(WindowInsetsCompat.Type.ime())
+            // §7.1's two regions travel apart: the container band is the
+            // bars/cutout insets only, the keyboard band the IME insets
+            // only — no region ever absorbs the other. While an IME
+            // animation runs, the keyboard region comes only from
+            // `onProgress`/`onEnd`; a dispatch carrying the end state
+            // leaves the last pushed value in place.
+            containerEdges = intArrayOf(bars.left, bars.top, bars.right, bars.bottom)
+            keyboardEdges =
+                keyboardEdgesOverride
+                    ?: if (imeAnimating) {
+                        lastKeyboardInsets
                     } else {
-                        Insets.NONE
+                        intArrayOf(ime.left, ime.top, ime.right, ime.bottom)
                     }
-                val combined = Insets.max(bars, ime)
-                intArrayOf(combined.left, combined.top, combined.right, combined.bottom)
-            } else {
-                intArrayOf(0, 0, 0, 0)
-            }
+        } else {
+            containerEdges = intArrayOf(0, 0, 0, 0)
+            keyboardEdges = keyboardEdgesOverride ?: intArrayOf(0, 0, 0, 0)
+        }
         val refreshHz = display?.refreshRate ?: 0f
         val viewConfiguration = ViewConfiguration.get(context)
         val touchSlop = viewConfiguration.scaledTouchSlop.toFloat()
@@ -152,7 +226,8 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
             metrics.density == lastDensity &&
             configuration.fontScale == lastFontScale &&
             refreshHz == lastRefreshHz &&
-            edges.contentEquals(lastInsets) &&
+            containerEdges.contentEquals(lastInsets) &&
+            keyboardEdges.contentEquals(lastKeyboardInsets) &&
             touchSlop == lastTouchSlop &&
             minFlingVelocity == lastMinFlingVelocity &&
             maxFlingVelocity == lastMaxFlingVelocity &&
@@ -165,7 +240,8 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         lastDensity = metrics.density
         lastFontScale = configuration.fontScale
         lastRefreshHz = refreshHz
-        lastInsets = edges
+        lastInsets = containerEdges
+        lastKeyboardInsets = keyboardEdges
         lastTouchSlop = touchSlop
         lastMinFlingVelocity = minFlingVelocity
         lastMaxFlingVelocity = maxFlingVelocity
@@ -177,10 +253,14 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
             metrics.density,
             configuration.fontScale,
             refreshHz,
-            edges[0],
-            edges[1],
-            edges[2],
-            edges[3],
+            containerEdges[0],
+            containerEdges[1],
+            containerEdges[2],
+            containerEdges[3],
+            keyboardEdges[0],
+            keyboardEdges[1],
+            keyboardEdges[2],
+            keyboardEdges[3],
             touchSlop,
             minFlingVelocity,
             maxFlingVelocity,
