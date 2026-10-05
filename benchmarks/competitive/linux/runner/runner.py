@@ -978,8 +978,8 @@ def main() -> int:
                 spec = manifest["capacity"][wl]
                 if name not in spec.get(
                         "contestants", list(CONTESTANT_CMDS)):
-                    # the contestant implements no cell for this workload
-                    # (e.g. electron has no W5) — no row, not a failure
+                    # the manifest names no cell for this contestant —
+                    # no row, not a failure
                     continue
                 # canonical capacity ladder (W5): one launch per step with
                 # BENCH_STEP; per-rep ladders aggregate to a median capacity

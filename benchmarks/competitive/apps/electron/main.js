@@ -1,6 +1,6 @@
-// Competitive benchmark — shared Electron contestant, workloads W1–W4.
+// Competitive benchmark — shared Electron contestant, workloads W1–W5.
 // Workload selection accepts both channels a leg can deliver:
-// `-bench-workload W1|W2|W3|W4` on argv (Apple legs) or `BENCH_WORKLOAD`
+// `-bench-workload W1|W2|W3|W4|W5` on argv (Apple legs) or `BENCH_WORKLOAD`
 // in the environment (Linux, Windows). Missing or unrecognized workload
 // traps — never silently measure W1. Scrolling is the runner's OS-level
 // input; the app never scrolls itself. BENCH_READY on stdout marks the
@@ -28,12 +28,28 @@ function benchArg(name) {
 }
 
 const workload = benchArg('workload')?.toUpperCase();
-if (!['W1', 'W2', 'W3', 'W4'].includes(workload)) {
+if (!['W1', 'W2', 'W3', 'W4', 'W5'].includes(workload)) {
   console.error(
     `missing or unrecognized workload ` +
-      `(got ${workload === null ? 'nil' : workload}); expected W1|W2|W3|W4`,
+      `(got ${workload === null ? 'nil' : workload}); expected W1|W2|W3|W4|W5`,
   );
   process.exit(1);
+}
+// W5 is the canonical capacity ladder (../WORKLOADS.md): one ladder step
+// per launch, pinned by -bench-step / BENCH_STEP — a missing, malformed
+// or off-ladder step traps, never a default.
+const W5_STEPS = [200, 400, 800, 1600, 3200, 6400, 12800, 25600];
+let step = null;
+if (workload === 'W5') {
+  const raw = benchArg('step');
+  step = raw === null ? null : Number(raw);
+  if (step === null || !W5_STEPS.includes(step)) {
+    console.error(
+      `W5 requires -bench-step (or BENCH_STEP) naming a ladder member ` +
+        `(got ${raw === null ? 'nil' : raw}); expected one of ${W5_STEPS}`,
+    );
+    process.exit(1);
+  }
 }
 // BENCH_GPUINFO: the Windows leg's actual-renderer evidence — the GPU
 // info Electron itself selected for this process, emitted once ready so
@@ -97,7 +113,7 @@ app.whenReady().then(() => {
     process.stdout.write('BENCH_READY\n');
   });
   win.loadFile('index.html', {
-    query: { workload },
+    query: { workload, step },
   });
 });
 

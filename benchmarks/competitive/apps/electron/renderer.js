@@ -1,14 +1,24 @@
-// Competitive benchmark — Electron renderer, workloads W1–W4.
+// Competitive benchmark — Electron renderer, workloads W1–W5.
 // Same constants and animation program as every other contestant.
 
 const params = new URLSearchParams(location.search);
 const WORKLOAD = params.get('workload');
 // The main process traps on missing/unrecognized args before the window
 // loads; guard here too so a wrong page can never render silently.
-if (!['W1', 'W2', 'W3', 'W4'].includes(WORKLOAD)) {
+if (!['W1', 'W2', 'W3', 'W4', 'W5'].includes(WORKLOAD)) {
   throw new Error(
     `missing or unrecognized -bench-workload launch argument ` +
-      `(got ${WORKLOAD ?? 'null'}); expected W1|W2|W3|W4`,
+      `(got ${WORKLOAD ?? 'null'}); expected W1|W2|W3|W4|W5`,
+  );
+}
+// W5 capacity ladder: the pinned step is the rect count — missing,
+// malformed or off-ladder traps, same contract as every contestant.
+const W5_STEPS = [200, 400, 800, 1600, 3200, 6400, 12800, 25600];
+const STEP = params.get('step') === null ? null : Number(params.get('step'));
+if (WORKLOAD === 'W5' && !W5_STEPS.includes(STEP)) {
+  throw new Error(
+    `W5 requires -bench-step naming a ladder member ` +
+      `(got ${params.get('step')}); expected one of ${W5_STEPS}`,
   );
 }
 const ROW_COLORS = [
@@ -112,10 +122,10 @@ const FIELD_W = 720;
 const FIELD_H = 440;
 const RECT = 40;
 
-function renderMotion(root) {
+function renderMotion(root, count = 200) {
   root.innerHTML = '<div class="center"><div class="field" id="field"></div></div>';
   const field = root.querySelector('#field');
-  for (let i = 0; i < 200; i++) {
+  for (let i = 0; i < count; i++) {
     const init = makeXorShift(
       0xd1b54a32d192ed03n ^ BigInt(i) * 0x2545f4914f6cdd1dn,
     );
@@ -195,6 +205,7 @@ root.setAttribute('aria-label', `workload ${WORKLOAD}`);
 switch (WORKLOAD) {
   case 'W2': renderFeed(root); break;
   case 'W3': renderMotion(root); break;
+  case 'W5': renderMotion(root, STEP); break;
   case 'W4': renderText(root); break;
   default: renderHello(root);
 }
