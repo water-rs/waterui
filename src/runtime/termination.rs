@@ -101,7 +101,10 @@ impl TerminationHandle {
     /// application code runs while the machine is borrowed: the question's
     /// future is built from the hook after the borrow ends, and a superseded
     /// question is cancelled after it ends too, so a hook — or a future's
-    /// drop — may report into this handle itself.
+    /// drop — may report into this handle itself. A hook that does so
+    /// synchronously, with a `Required` request that moves the machine on,
+    /// leaves its question stale: it is dropped unasked and the request is
+    /// ignored.
     fn step(&self, kind: TerminationKind) -> Step {
         let (mut hook, env) = {
             let mut shared = self.inner.borrow_mut();
@@ -132,8 +135,18 @@ impl TerminationHandle {
             }
         };
         let question = hook(&env);
-        self.inner.borrow_mut().on_quit_request = Some(hook);
-        Step::Ask(question)
+        let still_asking = {
+            let mut shared = self.inner.borrow_mut();
+            shared.on_quit_request = Some(hook);
+            shared.state == State::Asking
+        };
+        if still_asking {
+            Step::Ask(question)
+        } else {
+            // Dropped after the borrow ends: the future is application code.
+            drop(question);
+            Step::Ignore
+        }
     }
 
     /// Whether the application declared either termination hook.
