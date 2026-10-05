@@ -4,9 +4,12 @@
 //! - `Menu` as a semantic popup menu surface
 //! - Nested menus built with normal `Menu::new(...)`
 //! - `ContextMenu` and popup rows built from ordinary buttons
+//! - A menu-bar command that decides whether the application may quit, and
+//!   the termination hooks it drives
 
-use waterui::app::App;
+use waterui::app::{App, QuitReply};
 use waterui::color::Srgb;
+use waterui::log::info;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::{Binding, binding};
@@ -401,9 +404,22 @@ pub fn demo() -> impl View {
     scene(Binding::container(String::from("No toolbar action yet")))
 }
 
+/// The application menu bar: a checked "Refuse Quit" command that makes
+/// `on_quit_request` cancel every quit until it is unchecked.
+fn quit_menu(refuse_quit: &Binding<bool>) -> Menu {
+    Menu::new(
+        "Quitting",
+        "Refuse Quit"
+            .action(|State(refuse): State<Binding<bool>>| refuse.toggle())
+            .state(refuse_quit)
+            .selected(refuse_quit.clone()),
+    )
+}
+
 pub fn app(env: Environment) -> App {
     let toolbar_status = Binding::container(String::from("No toolbar action yet"));
     let content_toolbar_status = toolbar_status.clone();
+    let refuse_quit = Binding::bool(false);
 
     App::new_with_windows(
         [
@@ -414,4 +430,17 @@ pub fn app(env: Environment) -> App {
         ],
         env,
     )
+    .menu_bar(quit_menu(&refuse_quit))
+    .on_quit_request(move || {
+        let reply = if refuse_quit.snapshot() {
+            QuitReply::Cancel
+        } else {
+            QuitReply::Quit
+        };
+        info!(?reply, "menu example: on_quit_request answered");
+        async move { reply }
+    })
+    .on_terminate(|| async {
+        info!("menu example: on_terminate ran");
+    })
 }
