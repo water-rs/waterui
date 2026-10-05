@@ -553,66 +553,18 @@ def build_gradle(man, dist_dir: Path, e: dict, rn: bool = False):
         rewrite_wrapper_pin(d / man["gradle_project"],
                             gradle_version_for(man))
     proj = d / man["gradle_project"]
-    # RN autolinking creates per-module builds whose project repositories are
-    # not covered by the Gradle init-script mirror. When the local maven proxy
-    # (runner/maven_proxy.py) is reachable we point RN at it via
-    # exclusiveEnterpriseRepository; that clears every project's repo list.
-    proxy = None
-    extra: list[str] = []
     if rn:
         # RN's signing config reads app/debug.keystore (module dir);
         # compose/views read rootProject.file at the project root.
         ensure_debug_keystore(proj / "app" / "debug.keystore")
-        proxy = maybe_start_maven_proxy()
-        if proxy:
-            extra = [f"-PexclusiveEnterpriseRepository={proxy}"]
     else:
         ensure_debug_keystore(proj / "debug.keystore")
     ensure_gradle_wrapper(proj, gradle_version_for(man), e)
-    try:
-        checked(["./gradlew", ":app:assembleRelease", "--console=plain",
-                 *extra], cwd=proj, env=e)
-        checked(["./gradlew", ":app:bundleRelease", "-PabiSplits=false",
-                 "--console=plain", *extra], cwd=proj, env=e)
-    finally:
-        if proxy:
-            stop_maven_proxy()
+    checked(["./gradlew", ":app:assembleRelease", "--console=plain"],
+            cwd=proj, env=e)
+    checked(["./gradlew", ":app:bundleRelease", "-PabiSplits=false",
+             "--console=plain"], cwd=proj, env=e)
     stage(man, proj / "app/build/outputs", dist_dir)
-
-
-_PROXY_PROC = None
-_PROXY_URL = "http://127.0.0.1:8765/m2"
-
-
-def maybe_start_maven_proxy() -> str | None:
-    """Return the proxy URL if the local maven mirror is/was reachable."""
-    global _PROXY_PROC
-    import urllib.request
-    try:
-        urllib.request.urlopen(_PROXY_URL + "/", timeout=1)
-        return _PROXY_URL
-    except Exception:
-        pass
-    script = Path(__file__).with_name("maven_proxy.py")
-    if not script.exists():
-        return None
-    _PROXY_PROC = subprocess.Popen(
-        [sys.executable, str(script)],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    for _ in range(20):
-        try:
-            urllib.request.urlopen(_PROXY_URL + "/", timeout=1)
-            return _PROXY_URL
-        except Exception:
-            time.sleep(0.25)
-    return None
-
-
-def stop_maven_proxy():
-    global _PROXY_PROC
-    if _PROXY_PROC:
-        _PROXY_PROC.terminate()
-        _PROXY_PROC = None
 
 
 def stage(man, outputs: Path, dist_dir: Path):
