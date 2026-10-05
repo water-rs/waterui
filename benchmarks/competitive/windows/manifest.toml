@@ -77,9 +77,9 @@ fling_pause_ms = 350
 #   3. DxgKrnl "DxgkCddDrvBitBlt" pairs      — per-frame canonical-display-
 #      driver blits; the path Chromium/Electron takes when the only adapter
 #      is the Basic Render Driver (WARP-class), emitting no DXGI presents.
-# dropped_pct is the share of frame intervals longer than 1.5x the 60 Hz
-# budget (25 ms): display-finalisation timestamps are not available on an
-# indirect-display VM, so true "presented but not displayed" drops cannot be
-# observed; this is the closest uniformly-computable proxy.
+# Frame statistics follow lib/frame_stats.py (../WORKLOADS.md METHOD):
+# the window is [first owned present + warmup, +capture_s]; a >100 ms
+# present gap ends an active run and is excluded; within a run an
+# interval over 1.5 vsync periods contributes round(i/period)-1 missed
+# vsyncs. vsync_budget_ms is the 60 Hz refresh period used by that rule.
 vsync_budget_ms = 16.667
-dropped_threshold_ratio = 1.5

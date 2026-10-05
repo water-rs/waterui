@@ -6,6 +6,15 @@ cd "$(dirname "$0")/.."
 APP_DIR="../apps/electron"
 DIST="$APP_DIR/node_modules/electron/dist/Electron.app"
 OUT="$APP_DIR/build/BenchElectron.app"
+# npm ci skips the electron postinstall when every package is cache-hit —
+# node_modules exists but dist/ was never fetched; pull it explicitly
+if [ ! -d "$DIST" ]; then
+  node "$APP_DIR/node_modules/electron/install.js"
+fi
+if [ ! -d "$DIST" ]; then
+  echo "electron dist/ still missing after install.js" >&2
+  exit 1
+fi
 rm -rf "$OUT"
 mkdir -p "$APP_DIR/build"
 cp -R "$DIST" "$OUT"

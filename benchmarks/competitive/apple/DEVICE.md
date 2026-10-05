@@ -46,14 +46,13 @@ them.
 
 ## Capacity workloads (W5/W6)
 
-`--workloads W5,W6` runs the capacity ladders (manifest `platforms`:
-ios-sim + ios-device, all five contestants). Each step logs
-`step k n=<param> t=<unix>` into the app's `tmp/bench-steps.log` and posts
-`dev.bench.step`; `bench.py` pulls that file back through
-`devicectl device copy from --domain-type appDataContainer` after the run
-and slices an `xctrace record --template 'Animation Hitches' --attach
-<process>` recording taken during the measure window (the runner holds a
-14 s `BENCH_SETTLE_S` pause so the attach lands before the first step).
+`--workloads w5,w6` runs the capacity ladders (manifest `platforms`:
+ios-sim + ios-device, all five contestants). One launch renders one step —
+`bench.py` iterates the manifest's `steps` ladder, passing `-bench-step N`
+per launch, and each launch's `xctrace record --template 'Animation
+Hitches' --attach <process>` recording covers that step's settle + hold
+window; the runner holds a bounded pause so the attach lands before the
+first frame.
 
 Per-row results carry `capacity.steps[]` (frames, p50/p99 frame interval,
 % inside the 8.33 ms / 16.67 ms budgets, CPU ms and CPU ms/frame) plus

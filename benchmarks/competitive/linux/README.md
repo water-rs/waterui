@@ -98,9 +98,10 @@ Filed upstream; this tree carries no patches or workarounds for them.
    Fixed upstream by cli#206; the run needs a CLI at or after that merge
    (release 0.4.3 predates it).
 2. **water-rs/hydrolysis#233 — `scroll()` ignored wheel input**: fixed by
-   hydrolysis#234 (`ba6db6b`); verified working once the channel pin advanced
-   to `06003fd` (waterui#1279). W4 now scrolls and is measured normally.
-2. **Harness fix (r3)** — `benchcomp` passed the wheel detent count as
+   hydrolysis#234 (`ba6db6b`). Scrolling is now driven from outside the
+   app by the compositor's virtual pointer (WORKLOADS.md fling program),
+   so the fixed wheel-input path is what the drive actually exercises.
+3. **Harness fix (r3)** — `benchcomp` passed the wheel detent count as
    `wlr_seat_pointer_notify_axis`'s `value_discrete`, but wlroots reads that
    argument in value120 units (`WLR_POINTER_AXIS_DISCRETE_STEP` = 120,
    `types/seat/wlr_seat_pointer.c` ~L351): for clients whose `wl_seat` is

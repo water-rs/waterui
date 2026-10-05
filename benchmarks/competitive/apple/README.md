@@ -65,14 +65,12 @@ XCUITest runner (6 App IDs total: 5 contestant apps + 1 shared
 - W4 Text: 50 mixed Latin/CJK/emoji paragraphs scrolling, 12 s, same
   corpus from `shared/paragraphs.txt`
 - W5 Motion capacity: the W3 scene with the rect count doubled per step
-  (200 → 25600), 1 s settle + 4 s hold per step, self-paced inside the
-  measure window on `dev.bench.begin`. iOS contestants only.
+  (200 → 25600), 1 s settle + 4 s hold per step — one launch renders one
+  step, pinned by `-bench-step N`. iOS contestants only.
 - W6 Feed capacity: the W2 fling program over rows with 1 → 64 nested
   text+shape children per row, same step cadence as W5. iOS only.
 
-W5/W6 step boundaries are recorded by the app itself: `step k n=<param>
-t=<unix>` appended to `tmp/bench-steps.log` plus a `dev.bench.step`
-Darwin post — identical in every contestant. Frame timing is external:
+Frame timing is external:
 `bench.py` attaches `xctrace record` (Animation Hitches + Time Profiler
 + Logging) to the app process during the measure window — launch is
 gated on the `dev.bench.recorder` handshake so the attach binds at the
@@ -86,10 +84,10 @@ same way. Report per step: frames, p50/p99 frame interval, % inside the
 8.33 ms (120 Hz) and 16.67 ms (60 Hz) budgets, CPU ms/frame; the
 capacity number is the largest step sustaining ≥ 99% in budget.
 
-Every app reads `--bench-workload W1..W6` from launch arguments and marks
-first frame with `BENCH_READY`; W1's button is `increment-button` for
-accessibility. Values are byte-identical across contestants via the
-shared corpus.
+Every app reads `-bench-workload w1..w6` from launch arguments and posts
+`dev.bench.ready.<bundle-id>.<w>` at first frame; W1's button is
+`increment-button` for accessibility. Values are byte-identical across
+contestants via the shared corpus.
 
 ## Metrics
 
@@ -129,14 +127,10 @@ measured rep.
   overrides). Coordinate drags emit touch events without any AX query.
   `run_one` uses one 900 s cap for every contestant; cells that still
   time out are recorded with the exact xcodebuild error.
-- Uniform auto-drive fallback (`--drive auto`): where the snapshot cost
-  exceeds the cap for a contestant, the *same* fallback applies to every
-  contestant — the runner sleeps while the app under test scrolls itself
-  through the identical program (8 down-steps + 2 up-steps on the same
-  content). `--drive` is recorded per row; report renders per-drive
-  subsections. Programmatic scrolling emits no UIKit deceleration
-  signposts for *any* contestant, so the auto cells carry memory /
-  launch / CPU but no OSSignpost-Scroll data.
+- There is no in-app scroll fallback: every scrolling cell is driven by
+  OS-level input only (swipe on iOS device, host-side CGEvent wheel on
+  macOS and the simulator). A contestant that cannot be driven fails the
+  cell — it is never silently measured scrolling itself.
 - `XCTHitchMetric` produces no samples for any contestant on the iOS
   Simulator (no GPU frame telemetry); hitch/fps data belongs to the
   physical-device leg on the M1 host.
@@ -165,12 +159,10 @@ measured rep.
    locked-dependency change; the shared `../apps/waterui` workspace
    member resolves against the checkout's own `Cargo.lock`, so no
    per-app lock or pins exist.
-3. **water CLI** shared build cache: after `target/package` was removed
-   between platform builds, the ios-device xcodebuild's "Build Rust
-   Library" step failed with "Cargo still reports a shared dylib unit
+3. **water CLI** shared build cache: a `target/package` clean between
+   platform builds once broke the ios-device xcodebuild's "Build Rust
+   Library" step with "Cargo still reports a shared dylib unit
    as fresh … `deps/waterui_dylib.d` names no source under this unit's
-   manifest root". Only `water gc build-cache --shared-target` (wipes
-   `~/.water/build_cache/target/shared`, ~8 GB rebuild) recovered it.
-   Whether the entry-owning objc2 packaging still exposes this is open —
-   the current contestant builds once per platform with no cache
-   surgery.
+   manifest root" (recoverable only via `water gc build-cache
+   --shared-target`, an ~8 GB rebuild). The leg builds once per platform
+   and does not clean `target/package` between builds.

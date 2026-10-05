@@ -522,6 +522,8 @@ class TestMacThermalGate(unittest.TestCase):
     def test_cool_passes_throttled_waits(self):
         import subprocess as _sp
         class R:
+            returncode = 0
+            stderr = ""
             def __init__(self, out):
                 self.stdout = out
         seq = [R("CPU_Speed_Limit = 80\n"), R("CPU_Speed_Limit = 100\n")]
@@ -541,6 +543,8 @@ class TestMacThermalGate(unittest.TestCase):
     def test_throttled_past_budget_fails(self):
         import subprocess as _sp
         class R:
+            returncode = 0
+            stderr = ""
             stdout = "CPU_Speed_Limit = 50\n"
         orig_run, orig_sleep = _sp.run, bench.time.sleep
         orig_time = bench.time.time
@@ -560,6 +564,35 @@ class TestMacThermalGate(unittest.TestCase):
             _sp.run = orig_run
             bench.time.sleep = orig_sleep
             bench.time.time = orig_time
+
+
+class TestGitFixture(unittest.TestCase):
+    """Decision 9: source-identity checks run against a real temporary
+    git repo built inside the test — nothing here assumes the export
+    the tests were copied into is itself a checkout."""
+
+    def test_checkout_head_and_clean_gate(self):
+        import subprocess
+        tmp = Path(tempfile.mkdtemp(prefix="bench-git-"))
+        try:
+            def git(*a):
+                subprocess.run(["git", "-C", str(tmp), *a],
+                               capture_output=True, text=True, check=True)
+            git("init", "-q", "-b", "main")
+            git("config", "user.email", "bench@test")
+            git("config", "user.name", "bench")
+            (tmp / "f").write_text("x")
+            git("add", "f")
+            git("commit", "-qm", "init")
+            head = bench.toolchain.checkout_head(root=tmp)
+            self.assertRegex(head, r"^[0-9a-f]{40}$")
+            bench.toolchain.require_clean_checkout(root=tmp)
+            # a dirty tracked file makes the gate refuse
+            (tmp / "f").write_text("y")
+            with self.assertRaises(RuntimeError):
+                bench.toolchain.require_clean_checkout(root=tmp)
+        finally:
+            shutil.rmtree(tmp)
 
 
 if __name__ == "__main__":

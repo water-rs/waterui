@@ -17,55 +17,56 @@
   "uv": ">=0.8",
   "flutter_root": "$HOME/toolchains/flutter",
   "react_native_cli": "20.0.0",
-  "react_native_template_sha256": "29b1ccee1d2054aabfff8792cd35782a65753a026c38d25d9ab8199d2a10c10f"
+  "react_native_template_sha256": "340c4e329b6d60a5856387347577fa56aa7cd2229959e07ef8d83c40ad227fe5"
  },
  "bootstrap": {
   "ios-sim": [
    "cd ../apps/react-native && npm ci",
    "cd ../apps/react-native && bundle install",
-   "cd ../apps/react-native && LANG=en_US.UTF-8 bundle exec pod install --project-directory=ios",
+   "cd ../apps/react-native && LANG=en_US.UTF-8 pod _{COCOAPODS}_ install --project-directory=ios",
    "cd native-bench && xcodegen"
   ],
   "ios-device": [
    "cd ../apps/react-native && npm ci",
    "cd ../apps/react-native && bundle install",
-   "cd ../apps/react-native && LANG=en_US.UTF-8 bundle exec pod install --project-directory=ios",
+   "cd ../apps/react-native && LANG=en_US.UTF-8 pod _{COCOAPODS}_ install --project-directory=ios",
    "cd native-bench && xcodegen"
   ],
   "macos": [
    "cd ../apps/electron && npm ci",
    "cd ../apps/react-native && npm ci",
    "cd ../apps/react-native && bundle install",
-   "cd ../apps/react-native && LANG=en_US.UTF-8 bundle exec pod install --project-directory=macos",
+   "cd ../apps/react-native && printf 'export NODE_BINARY=$(command -v node)\\n' > macos/.xcode.env",
+   "cd ../apps/react-native && LANG=en_US.UTF-8 pod _{COCOAPODS}_ install --project-directory=macos",
    "cd native-bench && xcodegen"
   ],
-  "note": "fresh-clone dependency install, pinned to committed lockfiles: npm ci installs exactly package-lock.json (the lock is npm-generated, so npm is the declared toolchain); bundle install honors Gemfile.lock, pod install honors Podfile.lock; xcodegen regenerates NativeBench.xcodeproj from the committed project.yml so the checked-in project cannot drift. Any failure aborts the build — no silent retry. Run standalone with `bench.py bootstrap --platform <plat>`; `build` runs it first."
+  "note": "fresh-clone dependency install, pinned to committed lockfiles: npm ci installs exactly package-lock.json; bundle install honors Gemfile.lock; pod install runs as `pod _<version>_ install` with the toolchain.cocoapods pin (the generated RN Gemfile caps CocoaPods at 1.15.2 via xcodeproj < 1.26.0, so `bundle exec pod` can never reach the pinned 1.17.0); a crashed pod install wipes Pods/ and retries once — mid-generation residue (missing modulemap links) poisons later xcodebuilds; xcodegen regenerates NativeBench.xcodeproj from the committed project.yml so the checked-in project cannot drift. Per-contestant build failures are recorded and reported; the sweep continues for the remaining contestants. Run standalone with `bench.py bootstrap --platform <plat>`; `build` runs it first."
  },
  "workloads": {
-  "W1": {
+  "w1": {
    "name": "Hello",
    "duration_s": 8,
-   "drive": "tap increment-button x20 (auto drive: app self-taps)"
+   "drive": "tap increment-button x20"
   },
-  "W2": {
+  "w2": {
    "name": "Feed 10k rows",
    "duration_s": 12,
-   "drive": "8 down-flings + 2 up-flings"
+   "drive": "fling program (harness.fling)"
   },
-  "W3": {
+  "w3": {
    "name": "Motion 200 rects",
    "duration_s": 12,
    "drive": "no input; continuous animation"
   },
-  "W4": {
+  "w4": {
    "name": "Text 50 paragraphs",
    "duration_s": 12,
-   "drive": "same fling program as W2"
+   "drive": "fling program (harness.fling) — same as w2"
   },
-  "W5": {
+  "w5": {
    "name": "Motion capacity: W3 scene, rects 200→25600 doubling",
-   "duration_s": 50,
-   "drive": "auto ladder — 8 steps × (settle 1s + hold 4s); step boundaries in tmp/bench-steps.log + dev.bench.step posts; xctrace slices frames per step",
+   "duration_s": 12,
+   "drive": "no input; continuous animation — one launch renders one step of the ladder, pinned by -bench-step",
    "platforms": [
     "ios-sim",
     "ios-device"
@@ -76,12 +77,22 @@
     "uikit",
     "flutter",
     "rn"
+   ],
+   "steps": [
+    200,
+    400,
+    800,
+    1600,
+    3200,
+    6400,
+    12800,
+    25600
    ]
   },
-  "W6": {
+  "w6": {
    "name": "Feed capacity: W2 fling over rows ×1→64 nested children",
-   "duration_s": 45,
-   "drive": "auto ladder — 7 steps × (settle 1s + two-sweep hold)",
+   "duration_s": 12,
+   "drive": "fling program (harness.fling) — same drive kind as w2/w4; one launch renders one step of the ladder, pinned by -bench-step",
    "platforms": [
     "ios-sim",
     "ios-device"
@@ -92,6 +103,15 @@
     "uikit",
     "flutter",
     "rn"
+   ],
+   "steps": [
+    1,
+    2,
+    4,
+    8,
+    16,
+    32,
+    64
    ]
   }
  },
@@ -99,9 +119,9 @@
   "method": "shared XCUITest runner (dev.bench.runner / dev.bench.runner.mac) + XCTest metrics: XCTApplicationLaunchMetric, XCTMemoryMetric, XCTCPUMetric, XCTHitchMetric, XCTOSSignpostMetric.scrollingAndDecelerationMetric",
   "repeats": 5,
   "order": "contestants interleaved across repeats",
-  "launch_arg": "-bench-workload W1|W2|W3|W4|W5|W6 -bench-step N (W5/W6 on pinned legs) -bench-drive swipe|wheel|auto (single dash; NSArgumentDomain/UserDefaults on Apple platforms, argv elsewhere). Missing or unrecognized workload traps naming the argument; the app surfaces bench-workload-<id> as an accessibility identifier which the runner asserts after launch — a wrong page fails instead of silently measuring W1.",
-  "drive_contract": "one drive per contestant per platform per workload, recorded per row, always from outside the app: swipe = real XCUITest gestures inside the measure block (iOS device); wheel = host-side CGEvent scroll-wheel detents posted by bench.py into the target window (macOS, and iOS simulator W2/W4 for every contestant — gesture synthesis needs an AX query and a timed-out query fails the test there); auto = the dev.bench.begin/done Darwin-notification pair pacing the W5/W6 capacity ladder only. The app never scrolls itself; `auto` never self-starts at appear.",
-  "hitch_metric": "XCTHitchMetric attached on every platform; if it emits no measurements at all on a physical device run (evidence: zero hitch identifiers in the xcresult), the runner sets BENCH_NO_HITCH and drops it rather than reporting zeros.",
+  "launch_arg": "-bench-workload w1|w2|w3|w4|w5|w6 -bench-step N (w5/w6; one launch renders one step) — single dash; NSArgumentDomain/UserDefaults on Apple platforms, argv elsewhere. Workload ids are exact lowercase strings; a missing or unrecognized value traps naming the argument, and the app posts dev.bench.ready.<bundle-id>.<w> after the first frame.",
+  "drive_contract": "one drive per contestant per platform per workload, recorded per row, always from outside the app: swipe = real XCUITest coordinate drags inside the measure block (iOS device), driven by the manifest fling program via BENCH_FLING; wheel = host-side CGEvent scroll-wheel detents posted by bench.py into the contestant's process by pid (ios-sim + macos); tap = a single XCUITest tap (w1); none = no drive (w3 self-animates; w5 is motion-only). w6 uses the same drive kind as w2/w4. Capacity workloads are paced one launch per step (-bench-step N), never an in-app ladder. The app never scrolls itself; `auto` does not exist.",
+  "hitch_metric": "XCTHitchMetric attached for every contestant on ios-device and macos; never attached on ios-sim — the simulator has no GPU frame telemetry and every xcresult emits zero hitch measurements there. Attachment is a platform declaration, not learned per run: the metric never disappears mid-sweep for one contestant and not another.",
   "package_size": "app bundle bytes on disk (arm64); .ipa thinning needs signing not present on this VM — recorded as limitation",
   "known_limitations": [
    "iOS Simulator has no true vsync pacing — hitch/signpost numbers are directional",
@@ -282,8 +302,7 @@
    "ios": "BenchRunner",
    "macos": "BenchRunnerMac"
   },
-  "launch_arg": "-bench-workload W1|W2|W3|W4|W5|W6 (single dash; NSArgumentDomain/UserDefaults on Apple platforms, argv elsewhere). Missing or unrecognized workload traps naming the argument; the app surfaces bench-workload-<id> as an accessibility identifier which the runner asserts after launch — a wrong page fails instead of silently measuring W1. There is no -bench-drive argument: scroll is always driven from outside the app.",
-  "drive_contract": "one drive per contestant per platform per workload, recorded per row: swipe = real XCUITest gestures inside the measure block (iOS device); wheel = host-side CGEvent scroll-wheel detents posted by bench.py into the target window (macOS, and iOS simulator W2/W4 for every contestant — gesture synthesis needs an AX query and a timed-out query fails the test there); auto = the dev.bench.begin/done Darwin-notification pair pacing the W5/W6 capacity ladder only. The app never scrolls itself; `auto` never self-starts at appear.",
+  "launch_arg": "-bench-workload w1|w2|w3|w4|w5|w6 -bench-step N (w5/w6; one launch renders one step) — single dash; NSArgumentDomain/UserDefaults on Apple platforms, argv elsewhere. Workload ids are exact lowercase strings; a missing or unrecognized value traps naming the argument, and the app posts dev.bench.ready.<bundle-id>.<w> after the first frame.",
   "fling": {
    "down": 8,
    "up": 2,
@@ -291,7 +310,10 @@
    "detent_px": 15,
    "duration_ms": 250,
    "pause_ms": 350,
-   "wheel": "each `down`/`up` fires `detents` CGEvent wheel detents of `detent_px` over `duration_ms`, then `pause_ms`"
+   "wheel": "each `down`/`up` fires `detents` CGEvent wheel detents of `detent_px` over `duration_ms`, then `pause_ms`",
+   "swipe_distance_fraction": 0.6,
+   "swipe_hold_s": 0.02,
+   "swipe_pause_s": 0.35
   }
  },
  "notes": [
@@ -309,27 +331,40 @@
   "flutter ios-sim is a --debug (JIT) build: Flutter ships no release mode for the iOS Simulator, so its sim numbers (incl. the five W6 timeouts) are not comparable to the release builds of every other contestant and are excluded from sim ranking/ratio rows. Flutter's comparable iOS numbers come from the device leg (not run: no device toolchain). macOS flutter is a release build and stays comparable. Sim rows carry build=debug-jit for flutter, build=release for the rest.",
   "objc2 migration note (historical, pre-restructure): earlier scaffolds tripped the Water.lock guard when a per-app lock existed; the shared workspace member resolves against the checkout's own Cargo.lock so no per-app lock exists to conflict.",
   "thermal gate: devicectl cannot report thermalState — the on-device runner waits bounded on ProcessInfo.thermalStateDidChangeNotification for nominal in setUp and fails the row past the budget; thermal + screen maxFps are recorded per row from the runner log (device-record), there is no spec-sheet fallback.",
-  "environment gate: run-local refuses to measure on virtualized/paravirtual hosts (kern.hv_vmm_present, virtualized CPU/model identity, paravirtual GPU); every results file records a host fingerprint (hw.model + CPU brand + vmm + GPU names) and resume refuses to merge rows from a different host — no VM or software-GPU timings are admitted."
+  "environment gate: run-local refuses to measure on virtualized/paravirtual hosts (kern.hv_vmm_present, virtualized CPU/model identity, paravirtual GPU); every results file records a host fingerprint (hw.model + CPU brand + vmm + GPU names) and resume refuses to merge rows from a different host — no VM or software-GPU timings are admitted.",
+  "RnBench ios: only authored files are committed (AppDelegate.swift, BenchNotify.mm, bridging header, Info.plist, project.pbxproj, Podfile, Podfile.lock); every template file the pinned @react-native-community/cli init emits is materialized by toolchain.ensure_rn_template at bootstrap and sha256-locked. RnBench macos: react-native-macos has no pinned template generator, so its project tree is committed as authored; the pod xcworkspace and .xcode.env are regenerated at bootstrap, never committed."
  ],
  "drive_overrides": {
   "ios-sim": {
-   "W2": "wheel",
-   "W4": "wheel",
-   "W5": "auto",
-   "W6": "auto",
-   "note": "uniform per contestant: on the iOS Simulator a W2/W4 swipe gesture cannot be synthesized — the gesture's wait-for-idle/query resolution exceeds the ~31 s XCUITest cap on every contestant measured (10k-row feed keeps the app non-idle). bench.py's wheel driver posts CGEvent scroll-wheel detents into the Simulator window on each dev.bench.begin; W5/W6 keep `auto` as capacity-ladder pacing. Physical devices (ios-device) drive real swipes for W2/W4."
+   "w2": "wheel",
+   "w4": "wheel",
+   "w6": "wheel",
+   "w5": "none",
+   "note": "uniform per contestant: on the iOS Simulator a swipe gesture cannot be synthesized — the gesture's wait-for-idle/query resolution exceeds the ~31 s XCUITest cap on every contestant measured. bench.py's wheel driver posts CGEvent scroll-wheel detents into the Simulator's window by pid on each dev.bench.begin; w6 takes the same wheel drive as w2/w4."
   },
   "macos": {
-   "W2": "wheel",
-   "W4": "wheel",
-   "note": "uniform per contestant: bench.py posts CGEvent scroll-wheel detents into the contestant's window — AppKit's content window has no swipeable hit target, and one mechanism keeps every contestant identical."
+   "w2": "wheel",
+   "w4": "wheel",
+   "w6": "wheel",
+   "w5": "none",
+   "w1": "tap",
+   "w3": "none",
+   "note": "uniform per contestant: bench.py posts CGEvent scroll-wheel detents to the contestant's process by pid (CGEventPostToPid) — AppKit's content window has no swipeable hit target, and one mechanism keeps every contestant identical."
   },
   "ios-device": {
-   "W5": "auto",
-   "W6": "auto",
-   "note": "capacity ladders self-pace inside the measure window — there is no per-step gesture to synthesize; the XCTest performs the coordinate drags during W6 holds"
+   "w5": "none",
+   "note": "w5 is motion-only — no scroll drive. w6 is driven by the same swipe gestures as w2/w4 from the manifest fling program."
+  },
+  "*": {
+   "w1": "tap",
+   "w3": "none",
+   "w5": "none"
   }
  },
- "drive_contract": "one drive per contestant per platform per workload, recorded per row: swipe = real XCUITest gestures inside the measure block (iOS device); wheel = host-side CGEvent scroll-wheel detents posted by bench.py into the target window (macOS, and iOS simulator W2/W4 for every contestant — gesture synthesis needs an AX query and a timed-out query fails the test there); auto = the dev.bench.begin/done Darwin-notification pair pacing the W5/W6 capacity ladder only. The app never scrolls itself; `auto` never self-starts at appear.",
- "cli_model": "in-tree: bench.py provisions `water` from this checkout (lib/toolchain.provision_water_cli) and substitutes {WATER} in build commands; a dirty tracked checkout is refused so the HEAD sha stays the true source identity"
+ "cli_model": "in-tree: bench.py provisions `water` from this checkout (lib/toolchain.provision_water_cli) and substitutes {WATER} in build commands; a dirty tracked checkout is refused so the HEAD sha stays the true source identity",
+ "measurement_host": {
+  "kind": "Apple Silicon Mac mini (physical measurement host)",
+  "hw_model_contains": "Macmini",
+  "note": "bench.py's WheelDriver and run-local refuse to measure unless host_evidence().hw_model contains this string AND the host is not virtualized — the host-side CGEvent drive only ever runs on the declared measurement host, never on a developer laptop."
+ }
 }
