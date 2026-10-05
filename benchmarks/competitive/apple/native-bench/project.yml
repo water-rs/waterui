@@ -67,7 +67,7 @@ targets:
     type: bundle.ui-testing
     platform: iOS
     deploymentTarget: "17.0"
-    sources: [../../xctest/Sources/Runner]
+    sources: [../xctest/Sources/Runner]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.bench.runner
@@ -78,7 +78,7 @@ targets:
     type: bundle.ui-testing
     platform: macOS
     deploymentTarget: "14.0"
-    sources: [../../xctest/Sources/Runner]
+    sources: [../xctest/Sources/Runner]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.bench.runner.mac

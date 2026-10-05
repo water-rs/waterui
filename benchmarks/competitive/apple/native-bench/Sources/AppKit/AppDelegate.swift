@@ -26,15 +26,14 @@ func rowColor(_ i: Int) -> NSColor {
 func timestamp(_ i: Int) -> String { String(format: "%02d:%02d", (i / 60) % 24, i % 60) }
 
 enum Bench {
-    /// `-bench-workload W1|W2|W3|W4`, read through NSUserDefaults'
-    /// NSArgumentDomain. Missing or unrecognized values trap — a wrong
-    /// page must fail, never silently measure W1.
+    /// `-bench-workload w1|w2|w3|w4` — workload ids are exact lowercase
+    /// strings; any other value traps, never silently measure w1.
     static let workload: String = {
         let raw = UserDefaults.standard.string(forKey: "bench-workload")
-        guard let raw, ["W1", "W2", "W3", "W4"].contains(raw) else {
+        guard let raw, ["w1", "w2", "w3", "w4"].contains(raw) else {
             fatalError(
                 "missing or unrecognized -bench-workload launch argument "
-                    + "(got \(raw ?? "nil")); expected W1|W2|W3|W4")
+                    + "(got \(raw ?? "nil")); expected w1|w2|w3|w4")
         }
         BenchNotify.postReady(raw)
         return raw
@@ -46,8 +45,6 @@ enum Bench {
 /// it. Scrolling is driven from outside the app by OS-level input (the
 /// host posts CGEvent scroll-wheel detents into the window).
 enum BenchNotify {
-    private static var token: Int32 = 0
-    private static var armed = false
 
     /// Debug trail for the handshake: XCUITest's launch context once left a
     /// check-token poll permanently asleep (register returned OK, posts
@@ -65,33 +62,6 @@ enum BenchNotify {
         }
     }
 
-    /// Runs `block` on the main queue on each `dev.bench.begin` post.
-    /// notify_register_dispatch delivers the post as a real mach wake —
-    /// a check-token `notify_check` poll on the main queue can starve under
-    /// XCUITest's launch context while `notify_post` still works.
-    static func onBegin(_ block: @escaping () -> Void) {
-        guard !armed else { return }
-        armed = true
-        let st = notify_register_dispatch("dev.bench.begin", &token,
-                                          DispatchQueue.main) { _ in
-            dbg("begin heard")
-            notify_post("dev.bench.ack")  // stops the runner's reposts
-            // Every observed post is a drive request — measure() invokes
-            // its block once per iteration plus a warm-up, each needing a
-            // real program. Overlap is prevented by the `driving` guard
-            // in drive(), and the runner stops posting after the ack, so
-            // a backlog is bounded to one in-flight repost.
-            block()
-        }
-        dbg("onBegin armed status=\(st)")
-        guard st == UInt32(NOTIFY_STATUS_OK) else {
-            // Dispatch registration failing is not survivable: no mach wake
-            // means no program ever starts — surface it instead of stalling.
-            dbg("onBegin dispatch registration FAILED status=\(st)")
-            return
-        }
-    }
-
     static func postDone() { notify_post("dev.bench.done") }
 
     /// Posts `dev.bench.ready.<bundle-id>.<W>` once the workload argument
@@ -103,10 +73,6 @@ enum BenchNotify {
         notify_post("dev.bench.ready.\(bid).\(workload)")
     }
 
-    /// Dispatch tokens carry no latched flag to consume — a begin that
-    /// raced the ack arrives as an ordinary post and is filtered by the
-    /// `driving` guard in `drive()`. Kept for call-site symmetry.
-    static func discardLatchedBegin() {}
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -119,14 +85,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         BenchNotify.dbg("didFinishLaunching start")
         window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 960, height: 640),
+            contentRect: NSRect(x: 0, y: 0, width: 1280, height: 800),
             styleMask: [.titled, .closable, .resizable],
             backing: .buffered, defer: false)
         window.title = "Bench AppKit"
         switch Bench.workload {
-        case "W2": window.contentViewController = FeedViewController()
-        case "W3": window.contentViewController = MotionViewController()
-        case "W4": window.contentViewController = TextBenchViewController()
+        case "w2": window.contentViewController = FeedViewController()
+        case "w3": window.contentViewController = MotionViewController()
+        case "w4": window.contentViewController = TextBenchViewController()
         default: window.contentViewController = HelloViewController()
         }
         BenchNotify.dbg("vc assigned viewLoaded=\(window.contentView != nil)")
@@ -141,7 +107,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.center()
         window.makeKeyAndOrderFront(nil)
         BenchNotify.dbg("window ordered, windows=\(NSApp.windows.count)")
-        DispatchQueue.main.async { print("BENCH_READY") }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { true }
@@ -154,7 +119,7 @@ final class HelloViewController: NSViewController {
     private let label = NSTextField(labelWithString: "Count: 0")
 
     override func loadView() {
-        view = NSView(frame: NSRect(x: 0, y: 0, width: 960, height: 640))
+        view = NSView(frame: NSRect(x: 0, y: 0, width: 1280, height: 800))
     }
 
     override func viewDidLoad() {
@@ -187,7 +152,7 @@ final class FeedViewController: NSViewController, NSTableViewDataSource, NSTable
     private let scrollView = NSScrollView()
 
     override func loadView() {
-        view = NSView(frame: NSRect(x: 0, y: 0, width: 960, height: 640))
+        view = NSView(frame: NSRect(x: 0, y: 0, width: 1280, height: 800))
     }
 
     override func viewDidLoad() {
@@ -245,6 +210,7 @@ final class FeedCellView: NSTableCellView {
         let lines = NSStackView(views: [title, subtitle])
         lines.orientation = .vertical
         lines.alignment = .leading
+        lines.spacing = 4
         let row = NSStackView(views: [avatar, lines, NSView(), time])
         row.orientation = .horizontal
         row.spacing = 12
@@ -279,10 +245,22 @@ final class FeedCellView: NSTableCellView {
 final class MotionViewController: NSViewController {
     private let fieldW: CGFloat = 720
     private let fieldH: CGFloat = 440
+    private var field: NSView!
 
     override func loadView() {
-        view = NSView(frame: NSRect(x: 0, y: 0, width: fieldW, height: fieldH))
+        // The window is the spec's 1280×800; the 720×440 field is a
+        // subview centred in it (desktop placement, WORKLOADS.md) — it
+        // does not shrink the window or hug a corner.
+        view = NSView(frame: NSRect(x: 0, y: 0, width: 1280, height: 800))
         view.wantsLayer = true
+        field = NSView(
+            frame: NSRect(
+                x: (1280 - fieldW) / 2, y: (800 - fieldH) / 2,
+                width: fieldW, height: fieldH))
+        field.autoresizingMask = [
+            .minXMargin, .maxXMargin, .minYMargin, .maxYMargin,
+        ]
+        view.addSubview(field)
     }
 
     override func viewDidLoad() {
@@ -296,10 +274,16 @@ final class MotionViewController: NSViewController {
             v.wantsLayer = true
             v.layer?.backgroundColor = rowColor(i).cgColor
             v.layer?.cornerRadius = 10
+            // Rotation must pivot on the rect centre: a layer-backed
+            // NSView anchors its layer at the lower-left corner, so the
+            // anchor and position are set explicitly before transforms.
+            v.layer?.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+            v.layer?.position = CGPoint(
+                x: v.frame.midX, y: v.frame.midY)
             v.layer?.setAffineTransform(
                 CGAffineTransform(rotationAngle: rng.next() * .pi * 2))
             v.alphaValue = 0.3 + rng.next() * 0.7
-            view.addSubview(v)
+            field.addSubview(v)
             animate(v, index: i)
         }
     }
@@ -314,10 +298,12 @@ final class MotionViewController: NSViewController {
                 ctx.allowsImplicitAnimation = true
                 v.animator().frame.origin = NSPoint(
                     x: rng.next() * (self.fieldW - 40), y: rng.next() * (self.fieldH - 40))
+                v.animator().alphaValue = 0.3 + rng.next() * 0.7
             }, completionHandler: {
                 DispatchQueue.main.async { step() }
             })
-            // Rotation via layer transform (kept off animator for simplicity).
+            // Rotation via layer transform — the anchor point is the
+            // layer centre, so the rect spins about its middle.
             let rot = CABasicAnimation(keyPath: "transform.rotation.z")
             rot.toValue = rng.next() * .pi * 2
             rot.duration = duration
@@ -325,7 +311,6 @@ final class MotionViewController: NSViewController {
             rot.isRemovedOnCompletion = false
             rot.fillMode = .forwards
             v.layer?.add(rot, forKey: "spin")
-            v.animator().alphaValue = 0.3 + rng.next() * 0.7
         }
         step()
     }
@@ -351,7 +336,7 @@ final class TextBenchViewController: NSViewController {
     private let scrollView = NSScrollView()
 
     override func loadView() {
-        view = NSView(frame: NSRect(x: 0, y: 0, width: 960, height: 640))
+        view = NSView(frame: NSRect(x: 0, y: 0, width: 1280, height: 800))
     }
 
     override func viewDidLoad() {
@@ -366,11 +351,17 @@ final class TextBenchViewController: NSViewController {
             let l = NSTextField(wrappingLabelWithString: paragraphs[i % paragraphs.count])
             l.maximumNumberOfLines = 0
             l.font = .systemFont(ofSize: 16)
-            stack.addArrangedSubview(l)
-            l.leadingAnchor.constraint(equalTo: stack.leadingAnchor, constant: 16)
-                .isActive = true
-            l.trailingAnchor.constraint(equalTo: stack.trailingAnchor, constant: -16)
-                .isActive = true
+            l.translatesAutoresizingMaskIntoConstraints = false
+            // paragraph padding horizontal 16, vertical 10 (spec)
+            let wrap = NSView()
+            wrap.addSubview(l)
+            NSLayoutConstraint.activate([
+                l.leadingAnchor.constraint(equalTo: wrap.leadingAnchor, constant: 16),
+                l.trailingAnchor.constraint(equalTo: wrap.trailingAnchor, constant: -16),
+                l.topAnchor.constraint(equalTo: wrap.topAnchor, constant: 10),
+                l.bottomAnchor.constraint(equalTo: wrap.bottomAnchor, constant: -10),
+            ])
+            stack.addArrangedSubview(wrap)
         }
         let doc = NSView()
         doc.addSubview(stack)
@@ -391,4 +382,5 @@ final class TextBenchViewController: NSViewController {
             scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             doc.widthAnchor.constraint(equalTo: scrollView.widthAnchor),
         ])
+}
 }

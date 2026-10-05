@@ -1,24 +1,31 @@
-// Competitive benchmark — Electron renderer, workloads W1–W5.
+// Competitive benchmark — Electron renderer, workloads w1–w6 (exact
+// lowercase ids).
 // Same constants and animation program as every other contestant.
 
 const params = new URLSearchParams(location.search);
 const WORKLOAD = params.get('workload');
 // The main process traps on missing/unrecognized args before the window
 // loads; guard here too so a wrong page can never render silently.
-if (!['W1', 'W2', 'W3', 'W4', 'W5'].includes(WORKLOAD)) {
+if (!['w1', 'w2', 'w3', 'w4', 'w5', 'w6'].includes(WORKLOAD)) {
   throw new Error(
     `missing or unrecognized -bench-workload launch argument ` +
-      `(got ${WORKLOAD ?? 'null'}); expected W1|W2|W3|W4|W5`,
+      `(got ${WORKLOAD ?? 'null'}); expected w1|w2|w3|w4|w5|w6`,
   );
 }
-// W5 capacity ladder: the pinned step is the rect count — missing,
+// Capacity ladders: the pinned step is the parameter — missing,
 // malformed or off-ladder traps, same contract as every contestant.
-const W5_STEPS = [200, 400, 800, 1600, 3200, 6400, 12800, 25600];
+const STEPS = {
+  w5: [200, 400, 800, 1600, 3200, 6400, 12800, 25600],
+  w6: [1, 2, 4, 8, 16, 32, 64],
+};
 const STEP = params.get('step') === null ? null : Number(params.get('step'));
-if (WORKLOAD === 'W5' && !W5_STEPS.includes(STEP)) {
+if (
+  (WORKLOAD === 'w5' || WORKLOAD === 'w6') &&
+  !STEPS[WORKLOAD].includes(STEP)
+) {
   throw new Error(
-    `W5 requires -bench-step naming a ladder member ` +
-      `(got ${params.get('step')}); expected one of ${W5_STEPS}`,
+    `${WORKLOAD} requires -bench-step naming a ladder member ` +
+      `(got ${params.get('step')}); expected one of ${STEPS[WORKLOAD]}`,
   );
 }
 const ROW_COLORS = [
@@ -57,7 +64,7 @@ function makeXorShift(seed) {
 function renderHello(root) {
   root.innerHTML = `
     <div class="center">
-      <div id="count">Count: 0</div>
+      <div id="count" style="font-size: 20px">Count: 0</div>
       <button class="btn" id="increment-button" aria-label="Increment">Increment</button>
     </div>`;
   let n = 0;
@@ -109,6 +116,65 @@ function renderFeed(root) {
       el.children[1].children[1].textContent =
         `Second line of subtitle for item ${i}`;
       el.children[2].textContent = timestamp(i);
+    }
+    for (let k = need; k < pool.length; k++) pool[k].style.display = 'none';
+  };
+  feed.addEventListener('scroll', render);
+  render();
+}
+
+// MARK: - W6 Feed capacity
+
+// W2's windowed feed with `complexity` extra text+shape cells per row —
+// every rendered row materializes all of its cells eagerly (the row pool
+// is the idiomatic DOM analogue of cell reuse; bind repopulates them).
+function renderFeedCapacity(root, complexity) {
+  root.innerHTML = '<div class="scroller" id="feed"></div>';
+  const feed = root.querySelector('#feed');
+  const ROW_H = 60, COUNT = 10000, OVERSCAN = 6;
+  const inner = document.createElement('div');
+  inner.className = 'vscroll';
+  inner.style.height = `${COUNT * ROW_H}px`;
+  feed.appendChild(inner);
+  const pool = [];
+  let lo = -1;
+  const cellHtml = [];
+  for (let j = 0; j < complexity; j++) {
+    cellHtml.push('<div class="cell"><div class="cell-sq"></div>' +
+      '<div class="cell-txt"></div></div>');
+  }
+  const render = () => {
+    const first = Math.max(0, Math.floor(feed.scrollTop / ROW_H) - OVERSCAN);
+    const vis = Math.ceil(feed.clientHeight / ROW_H) + 2 * OVERSCAN;
+    const last = Math.min(COUNT, first + vis);
+    if (first === lo) return;
+    lo = first;
+    const need = last - first;
+    while (pool.length < need) {
+      const el = document.createElement('div');
+      el.className = 'row';
+      el.innerHTML = '<div class="avatar"></div><div class="row-lines">' +
+        '<div class="row-title"></div><div class="row-sub"></div></div>' +
+        '<div class="cells">' + cellHtml.join('') + '</div>' +
+        '<div class="row-time"></div>';
+      inner.appendChild(el);
+      pool.push(el);
+    }
+    for (let k = 0; k < need; k++) {
+      const i = first + k;
+      const el = pool[k];
+      el.style.display = '';
+      el.style.transform = `translateY(${i * ROW_H}px)`;
+      el.children[0].style.background = ROW_COLORS[i % 6];
+      el.children[1].children[0].textContent = `Row title ${i}`;
+      el.children[1].children[1].textContent =
+        `Second line of subtitle for item ${i}`;
+      const cells = el.children[2].children;
+      for (let j = 0; j < cells.length; j++) {
+        cells[j].children[0].style.background = ROW_COLORS[(i + j) % 6];
+        cells[j].children[1].textContent = `c${j}`;
+      }
+      el.children[3].textContent = timestamp(i);
     }
     for (let k = need; k < pool.length; k++) pool[k].style.display = 'none';
   };
@@ -203,9 +269,24 @@ root.setAttribute('data-workload', WORKLOAD);
 root.setAttribute('role', 'main');
 root.setAttribute('aria-label', `workload ${WORKLOAD}`);
 switch (WORKLOAD) {
-  case 'W2': renderFeed(root); break;
-  case 'W3': renderMotion(root); break;
-  case 'W5': renderMotion(root, STEP); break;
-  case 'W4': renderText(root); break;
-  default: renderHello(root);
+  case 'w1': renderHello(root); break;
+  case 'w2': renderFeed(root); break;
+  case 'w3': renderMotion(root); break;
+  case 'w4': renderText(root); break;
+  case 'w5': renderMotion(root, STEP); break;
+  case 'w6': renderFeedCapacity(root, STEP); break;
+  default:
+    throw new Error(`unreachable: workload validated as w1..w6`);
+}
+
+// One capacity launch holds its pinned step for the declared settle+hold
+// (1 s + 4 s, WORKLOADS.md) after the first frame, then the app's own
+// workload logic posts `dev.bench.done` through the main process.
+if (WORKLOAD === 'w5' || WORKLOAD === 'w6') {
+  const { ipcRenderer } = require('electron');
+  requestAnimationFrame(() =>
+    requestAnimationFrame(() =>
+      setTimeout(() => ipcRenderer.send('bench-done'), 5000),
+    ),
+  );
 }

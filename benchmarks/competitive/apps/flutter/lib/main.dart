@@ -1,12 +1,12 @@
-// Competitive benchmark — Flutter contestant, workloads W1–W6, per
-// benchmarks/competitive/WORKLOADS.md. Workload selection:
-// `-bench-workload W1|W2|W3|W4|W5|W6` (and `-bench-step N` for W5/W6),
+// Competitive benchmark — Flutter contestant, workloads w1–w6 (exact
+// lowercase ids), per benchmarks/competitive/WORKLOADS.md. Selection:
+// `-bench-workload w1|w2|w3|w4|w5|w6` (and `-bench-step N` for w5/w6),
 // read through NSUserDefaults' NSArgumentDomain via the bench/config
-// channel. Scrolling is driven from outside the app by OS-level input —
-// the app never scrolls itself. On Apple the W5/W6 ladder waits for the
-// runner's `dev.bench.begin` Darwin post inside the measure block (polled
-// through bench/config; AX cannot carry the signal because a timed-out
-// AX query fails the test) and posts `dev.bench.done` at the end.
+// channel. One pacing model on every leg: one launch renders one ladder
+// step. Scrolling is driven from outside the app by OS-level input —
+// the app never scrolls itself. Each capacity launch posts
+// `dev.bench.done` from the app's own workload logic after the
+// declared hold ends.
 
 import 'dart:async';
 import 'dart:io';
@@ -18,31 +18,30 @@ const _configChannel = MethodChannel('bench/config');
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  final workload = (await _readConfig('workload'))?.toUpperCase();
-  if (!const ['W1', 'W2', 'W3', 'W4', 'W5', 'W6'].contains(workload)) {
+  final workload = await _readConfig('workload');
+  if (!const ['w1', 'w2', 'w3', 'w4', 'w5', 'w6'].contains(workload)) {
     throw StateError(
         'missing or unrecognized -bench-workload launch argument '
-        '(got ${workload ?? 'null'}); expected W1..=W6');
+        '(got ${workload ?? 'null'}); expected w1..=w6');
   }
   final stepStr = await _readConfig('step');
   final pinnedStep = stepStr == null ? null : int.tryParse(stepStr);
   if (stepStr != null && pinnedStep == null) {
     throw StateError('malformed -bench-step value $stepStr; expected integer');
   }
-  final selfPaced = Platform.isIOS || Platform.isMacOS;
-  if (const ['W5', 'W6'].contains(workload)) {
-    final ladder = workload == 'W5'
+  if (const ['w5', 'w6'].contains(workload)) {
+    final ladder = workload == 'w5'
         ? MotionCapacityPage.steps
         : FeedCapacityPage.steps;
-    if (pinnedStep != null && !ladder.contains(pinnedStep)) {
+    if (pinnedStep == null) {
+      throw StateError(
+          '$workload requires -bench-step (or BENCH_STEP); every leg '
+          'measures one ladder step per launch');
+    }
+    if (!ladder.contains(pinnedStep)) {
       throw StateError(
           'unrecognized -bench-step value $pinnedStep for $workload; '
           'expected one of $ladder');
-    }
-    if (pinnedStep == null && !selfPaced) {
-      throw StateError(
-          '$workload requires -bench-step (or BENCH_STEP); this leg '
-          'measures one ladder step per launch');
     }
   }
   runApp(BenchApp(workload: workload!, pinnedStep: pinnedStep));
@@ -52,26 +51,26 @@ Future<void> main() async {
 /// serves it from NSUserDefaults' NSArgumentDomain (launch arguments);
 /// on Android the override MainActivity serves the same channel from
 /// intent extras; desktop legs pass `BENCH_<NAME>` in the environment.
-/// A missing or unrecognized value traps — never a silent fallback.
+/// A missing channel key falls through to the environment; any other
+/// error propagates — never a silent fallback.
 Future<String?> _readConfig(String name) async {
   try {
     final v = await _configChannel.invokeMethod<String>(name);
-    if (v != null && v.isNotEmpty) return v;
-  } catch (_) {}
-  try {
-    final v = Platform.environment['BENCH_${name.toUpperCase()}'];
-    if (v != null && v.isNotEmpty) return v;
-  } catch (_) {}
-  return null;
+    if (v != null) return v;
+  } on MissingPluginException {
+    // No native bench/config channel on this platform — fall through to
+    // the environment.
+  }
+  return Platform.environment['BENCH_${name.toUpperCase()}'];
 }
 
 class BenchApp extends StatelessWidget {
   const BenchApp({super.key, required this.workload, this.pinnedStep});
   final String workload;
 
-  /// The per-launch capacity protocol: one ladder step per app start on
-  /// Android/desktop, arriving as the `step` config value. Null on Apple =
-  /// the self-paced in-app ladder driven by the bench handshake.
+  /// The per-launch capacity protocol: one ladder step per app start,
+  /// arriving as the `step` config value. Null for non-capacity
+  /// workloads; a capacity launch always carries one on every platform.
   final int? pinnedStep;
 
   @override
@@ -82,12 +81,13 @@ class BenchApp extends StatelessWidget {
       home: Semantics(
         identifier: 'bench-workload-$workload',
         child: switch (workload) {
-          'W2' => const FeedPage(),
-          'W3' => const MotionPage(),
-          'W4' => const TextPage(),
-          'W5' => MotionCapacityPage(pinnedStep: pinnedStep),
-          'W6' => FeedCapacityPage(pinnedStep: pinnedStep),
-          _ => const HelloPage(),
+          'w1' => const HelloPage(),
+          'w2' => const FeedPage(),
+          'w3' => const MotionPage(),
+          'w4' => const TextPage(),
+          'w5' => MotionCapacityPage(pinnedStep: pinnedStep),
+          'w6' => FeedCapacityPage(pinnedStep: pinnedStep),
+          _ => throw StateError('unreachable: workload() yields w1..=w6'),
         },
       ),
     );
@@ -98,6 +98,15 @@ void _ready() {
   // BENCH_READY on stdout is the runner's launch-timing signal.
   // ignore: avoid_print
   SchedulerBinding.instance.addPostFrameCallback((_) => print('BENCH_READY'));
+}
+
+/// One capacity launch holds its pinned step for the declared
+/// settle+hold after the first frame (WORKLOADS.md: 1 s + 4 s), then the
+/// app posts `dev.bench.done` itself — no native-side timer.
+Future<void> _postDoneAfterHold() async {
+  await SchedulerBinding.instance.endOfFrame;
+  await Future.delayed(const Duration(milliseconds: 5000));
+  await _configChannel.invokeMethod('postDone');
 }
 
 // MARK: - Shared constants (identical across contestants)
@@ -164,7 +173,7 @@ class _HelloPageState extends State<HelloPage> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text('Count: $counter'),
+            Text('Count: $counter', style: const TextStyle(fontSize: 20)),
             const SizedBox(height: 16),
             Semantics(
               identifier: 'increment-button',
@@ -179,39 +188,6 @@ class _HelloPageState extends State<HelloPage> {
       ),
     );
   }
-}
-
-// MARK: - Apple capacity-ladder handshake (measurement pacing, not a scroll drive)
-
-/// Waits for the runner's `dev.bench.begin` post, forwarded by the native
-/// side of bench/config. The ladder must not start before the measure
-/// block signals it.
-Future<void> _awaitBegin() async {
-  while (true) {
-    try {
-      if (await _configChannel.invokeMethod<bool>('beginObserved') == true) {
-        return;
-      }
-    } catch (_) {}
-    await Future.delayed(const Duration(milliseconds: 50));
-  }
-}
-
-/// Posts `dev.bench.done` back to the runner when the program finishes.
-Future<void> _postDone() async {
-  try {
-    await _configChannel.invokeMethod('postDone');
-  } catch (_) {}
-}
-
-/// Logs `step k n=<param> t=<unix>` to tmp/bench-steps.log and posts
-/// `dev.bench.step` — the runner slices its xctrace recording by the
-/// logged times. Identical on every contestant.
-Future<void> _logStep(int step, int n) async {
-  try {
-    await _configChannel
-        .invokeMethod('logStep', {'step': step, 'n': n});
-  } catch (_) {}
 }
 
 // MARK: - W2 Feed
@@ -236,13 +212,19 @@ Widget feedRow(int i, [List<Widget> extra = const []]) {
             children: [
               Text('Row title $i',
                   style: const TextStyle(fontSize: 16)),
+              const SizedBox(height: 4),
               Text('Second line of subtitle for item $i',
                   style: TextStyle(
                       fontSize: 13, color: Colors.grey.shade600)),
             ],
           ),
         ),
-        ...extra,
+        if (extra.isNotEmpty) const SizedBox(width: 12),
+        for (var k = 0; k < extra.length; k++) ...[
+          extra[k],
+          if (k + 1 < extra.length) const SizedBox(width: 4),
+        ],
+        const SizedBox(width: 12),
         Text(timestamp(i),
             style: TextStyle(fontSize: 13, color: Colors.grey.shade600)),
       ],
@@ -310,7 +292,7 @@ class MotionRect extends StatefulWidget {
 }
 
 class _MotionRectState extends State<MotionRect> {
-  late double x, y, rot, op;
+  late double x, y, rot, prevRot, op;
   late final XorShift _rng;
   late final Duration _duration;
   Timer? _timer;
@@ -323,35 +305,30 @@ class _MotionRectState extends State<MotionRect> {
     x = initRng.next() * (_fieldW - _rectSize);
     y = initRng.next() * (_fieldH - _rectSize);
     rot = initRng.next() * 360;
+    prevRot = rot;
     op = 0.3 + initRng.next() * 0.7;
     _rng = XorShift(0x9E3779B97F4A7C15 ^ i * 0xBF58476D1CE4E5B9);
     _duration = Duration(milliseconds: 1200 + (i % 5) * 200);
-    // Retarget at t=0, then each time this rect's animation completes.
-    _step(init: true);
-    _timer = Timer.periodic(_duration, (_) => _step());
+    // Retarget at t=0 — the first setState lands in the frame AFTER the
+    // init pose is drawn, so the rect eases init → first target like every
+    // other contestant (no replaced first pose, no discarded draws).
+    _timer = Timer(_duration * 0, () {
+      if (!mounted) return;
+      _step();
+      _timer = Timer.periodic(_duration, (_) => _step());
+    });
   }
 
-  /// Pulls the next drive-stream target. In initState the rect's fields are
-  /// assigned directly (the first build animates init pose → first target);
-  /// after that a setState retargets.
-  void _step({bool init = false}) {
-    final nx = _rng.next() * (_fieldW - _rectSize);
-    final ny = _rng.next() * (_fieldH - _rectSize);
-    final nrot = _rng.next() * 360;
-    final nop = 0.3 + _rng.next() * 0.7;
-    if (init) {
-      x = nx;
-      y = ny;
-      rot = nrot;
-      op = nop;
-    } else {
-      setState(() {
-        x = nx;
-        y = ny;
-        rot = nrot;
-        op = nop;
-      });
-    }
+  /// Pulls the next drive-stream target; every retarget goes through
+  /// setState so the implicit animation plays the transition.
+  void _step() {
+    setState(() {
+      x = _rng.next() * (_fieldW - _rectSize);
+      y = _rng.next() * (_fieldH - _rectSize);
+      prevRot = rot;
+      rot = _rng.next() * 360;
+      op = 0.3 + _rng.next() * 0.7;
+    });
   }
 
   @override
@@ -372,7 +349,9 @@ class _MotionRectState extends State<MotionRect> {
         curve: Curves.easeInOut,
         opacity: op,
         child: TweenAnimationBuilder<double>(
-          tween: Tween(begin: 0, end: rot),
+          // previous target -> current target: the first build draws
+          // the init pose (prevRot == rot), the t=0 retarget animates it
+          tween: Tween(begin: prevRot, end: rot),
           duration: _duration,
           curve: Curves.easeInOut,
           builder: (context, r, child) =>
@@ -415,13 +394,15 @@ class _TextPageState extends State<TextPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            for (var i = 0; i < 50; i++)
+            for (var i = 0; i < 50; i++) ...[
               Padding(
                 padding: const EdgeInsets.symmetric(
                     horizontal: 16, vertical: 10),
                 child: Text(paragraphs[i % paragraphs.length],
                     style: const TextStyle(fontSize: 16)),
               ),
+              const SizedBox(height: 6),
+            ],
           ],
         ),
       ),
@@ -431,9 +412,8 @@ class _TextPageState extends State<TextPage> {
 
 // MARK: - W5 Motion capacity
 
-/// W3's scene with the rect count doubled per step (200…25600): after
-/// `dev.bench.begin`, each step logs its boundary, holds 5 s, advances;
-/// `dev.bench.done` ends the program.
+/// W3's scene with the rect count pinned per launch (200…25600); the
+/// app posts `dev.bench.done` when the step's hold ends.
 class MotionCapacityPage extends StatefulWidget {
   const MotionCapacityPage({super.key, this.pinnedStep});
   final int? pinnedStep;
@@ -443,28 +423,13 @@ class MotionCapacityPage extends StatefulWidget {
 }
 
 class _MotionCapacityPageState extends State<MotionCapacityPage> {
-  late int _count = widget.pinnedStep ?? MotionCapacityPage.steps.first;
+  late final int _count = widget.pinnedStep!;
 
   @override
   void initState() {
     super.initState();
     _ready();
-    // Apple leg: the in-app ladder is driven by the begin/done handshake;
-    // other legs pin one step per launch (main() already traps if absent).
-    if (widget.pinnedStep == null) {
-      () async {
-        while (true) {
-          await _awaitBegin();
-          for (var i = 0; i < MotionCapacityPage.steps.length; i++) {
-            setState(() => _count = MotionCapacityPage.steps[i]);
-            await _logStep(i, _count);
-            await Future.delayed(const Duration(seconds: 5));
-          }
-          await _postDone();
-          await _configChannel.invokeMethod('discardBegins');
-        }
-      }();
-    }
+    _postDoneAfterHold();
   }
 
   @override
@@ -501,29 +466,13 @@ class FeedCapacityPage extends StatefulWidget {
 }
 
 class _FeedCapacityPageState extends State<FeedCapacityPage> {
-  late int _complexity = widget.pinnedStep ?? FeedCapacityPage.steps.first;
+  late final int _complexity = widget.pinnedStep!;
 
   @override
   void initState() {
     super.initState();
     _ready();
-    // Apple leg: the in-app ladder is driven by the begin/done handshake;
-    // other legs pin one step per launch (main() already traps if absent).
-    if (widget.pinnedStep == null) {
-      () async {
-        while (true) {
-          await _awaitBegin();
-          for (var i = 0; i < FeedCapacityPage.steps.length; i++) {
-            setState(() => _complexity = FeedCapacityPage.steps[i]);
-            await _logStep(i, _complexity);
-            // settle 1 s + hold 4 s; the runner drives the flings.
-            await Future.delayed(const Duration(seconds: 5));
-          }
-          await _postDone();
-          await _configChannel.invokeMethod('discardBegins');
-        }
-      }();
-    }
+    _postDoneAfterHold();
   }
 
   @override

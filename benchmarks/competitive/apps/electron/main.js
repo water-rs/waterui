@@ -1,10 +1,12 @@
-// Competitive benchmark — shared Electron contestant, workloads W1–W5.
-// Workload selection accepts both channels a leg can deliver:
-// `-bench-workload W1|W2|W3|W4|W5` on argv (Apple legs) or `BENCH_WORKLOAD`
-// in the environment (Linux, Windows). Missing or unrecognized workload
-// traps — never silently measure W1. Scrolling is the runner's OS-level
-// input; the app never scrolls itself. BENCH_READY on stdout marks the
-// first committed frame.
+// Competitive benchmark — shared Electron contestant, workloads w1–w6
+// (exact lowercase ids). Selection accepts both channels a leg can
+// deliver: `-bench-workload w1|w2|w3|w4|w5|w6` on argv (Apple legs) or
+// BENCH_WORKLOAD in the environment (Linux, Windows). Missing or
+// unrecognized workload traps — never silently measure w1. Scrolling is
+// the runner's OS-level input; the app never scrolls itself. BENCH_READY
+// on stdout marks the first committed frame. Each capacity launch posts
+// `dev.bench.done` after its declared hold — sent by the renderer's own
+// workload logic, no native-side timer.
 
 const { app, BrowserWindow } = require('electron');
 const { execFile, execFileSync } = require('child_process');
@@ -12,14 +14,21 @@ const { execFile, execFileSync } = require('child_process');
 // A persistent user-data-dir serves index.html/renderer.js from the disk
 // cache — a stale renderer once ran after a rebuild. Fresh userData per
 // launch also makes every measured cell a cold start.
+let benchUserData;
 {
   const os = require('os');
   const fs = require('fs');
   const path = require('path');
-  app.setPath(
-    'userData',
-    fs.mkdtempSync(path.join(os.tmpdir(), 'electron-bench-')),
-  );
+  benchUserData = fs.mkdtempSync(path.join(os.tmpdir(), 'electron-bench-'));
+  app.setPath('userData', benchUserData);
+  // The per-launch userData dir is thrown away on exit — no leak.
+  app.on('quit', () => {
+    try {
+      fs.rmSync(benchUserData, { recursive: true, force: true });
+    } catch (e) {
+      process.stderr.write(`userData cleanup failed: ${e}\n`);
+    }
+  });
 }
 function benchArg(name) {
   const i = process.argv.indexOf(`-bench-${name}`);
@@ -27,26 +36,30 @@ function benchArg(name) {
   return process.env[`BENCH_${name.toUpperCase()}`] || null;
 }
 
-const workload = benchArg('workload')?.toUpperCase();
-if (!['W1', 'W2', 'W3', 'W4', 'W5'].includes(workload)) {
+const workload = benchArg('workload');
+if (!['w1', 'w2', 'w3', 'w4', 'w5', 'w6'].includes(workload)) {
   console.error(
     `missing or unrecognized workload ` +
-      `(got ${workload === null ? 'nil' : workload}); expected W1|W2|W3|W4|W5`,
+      `(got ${workload === null ? 'nil' : workload}); expected w1|w2|w3|w4|w5|w6`,
   );
   process.exit(1);
 }
-// W5 is the canonical capacity ladder (../WORKLOADS.md): one ladder step
-// per launch, pinned by -bench-step / BENCH_STEP — a missing, malformed
-// or off-ladder step traps, never a default.
-const W5_STEPS = [200, 400, 800, 1600, 3200, 6400, 12800, 25600];
+// Capacity ladders (../WORKLOADS.md): one ladder step per launch, pinned
+// by -bench-step / BENCH_STEP — a missing, malformed or off-ladder step
+// traps, never a default.
+const STEPS = {
+  w5: [200, 400, 800, 1600, 3200, 6400, 12800, 25600],
+  w6: [1, 2, 4, 8, 16, 32, 64],
+};
 let step = null;
-if (workload === 'W5') {
+if (workload === 'w5' || workload === 'w6') {
   const raw = benchArg('step');
   step = raw === null ? null : Number(raw);
-  if (step === null || !W5_STEPS.includes(step)) {
+  if (step === null || !STEPS[workload].includes(step)) {
     console.error(
-      `W5 requires -bench-step (or BENCH_STEP) naming a ladder member ` +
-        `(got ${raw === null ? 'nil' : raw}); expected one of ${W5_STEPS}`,
+      `${workload} requires -bench-step (or BENCH_STEP) naming a ` +
+        `ladder member (got ${raw === null ? 'nil' : raw}); ` +
+        `expected one of ${STEPS[workload]}`,
     );
     process.exit(1);
   }
@@ -63,28 +76,41 @@ app.whenReady().then(async () => {
   }
 });
 
-// Apple legs wait for `dev.bench.ready.<bundle-id>.<W>` to confirm the
+// Apple legs wait for `dev.bench.ready.<bundle-id>.<w>` to confirm the
 // workload argument arrived — a deep AX query on the 10k-row feed stalls
 // for minutes, so a Darwin notification carries the assertion. Node has
 // no notify binding; `/usr/bin/notifyutil -p` posts the same token.
-const notify =
+const notifyPost =
   process.platform === 'darwin'
     ? name => execFile('/usr/bin/notifyutil', ['-p', name], () => {})
     : () => {};
 if (process.platform === 'darwin') {
+  // The ready post carries the packaged bundle id — there is no default:
+  // if the plist cannot be read the launch fails, never a wrong token.
   const path = require('path');
-  let bundleID = 'dev.bench.electron';
+  let bundleID;
   try {
     const plist = path.join(__dirname, '..', '..', 'Info.plist');
     bundleID = execFileSync(
       '/usr/libexec/PlistBuddy',
       ['-c', 'Print:CFBundleIdentifier', plist],
-    ).toString().trim() || bundleID;
-  } catch { /* keep the packaged bundle id */ }
-  execFileSync('/usr/bin/notifyutil', [
-    '-p', `dev.bench.ready.${bundleID}.${workload}`,
-  ]);
+    ).toString().trim();
+  } catch (e) {
+    console.error(`cannot read CFBundleIdentifier from Info.plist: ${e}`);
+    process.exit(1);
+  }
+  if (!bundleID) {
+    console.error('Info.plist has an empty CFBundleIdentifier');
+    process.exit(1);
+  }
+  notifyPost(`dev.bench.ready.${bundleID}.${workload}`);
 }
+
+// The renderer's own workload logic ends each capacity hold by sending
+// `bench-done`; the Darwin post lives here because only the main process
+// can spawn notifyutil.
+const { ipcMain } = require('electron');
+ipcMain.on('bench-done', () => notifyPost('dev.bench.done'));
 
 let win = null;
 
@@ -106,9 +132,9 @@ app.whenReady().then(() => {
     },
   });
   win.removeMenu();
-  // did-frame-finish-load fires when the first frame is committed —
-  // the closest Electron equivalent of "first frame on screen".
-  win.webContents.once('did-frame-finish-load', () => {
+  // ready-to-show fires when the initial frame is rendered and the
+  // window can be presented — the readiness signal, not a guessed paint.
+  win.once('ready-to-show', () => {
     win.show();
     process.stdout.write('BENCH_READY\n');
   });

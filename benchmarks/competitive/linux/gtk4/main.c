@@ -1,7 +1,7 @@
 // Competitive benchmark contestant — GTK 4 (water-rs/waterui#1262).
 // Implements the canonical workload spec (benchmarks/competitive/README.md):
 // the same constants the shared apps/* contestants render. Workload selected
-// by BENCH_WORKLOAD (w1..w5); a missing or unrecognized value traps.
+// by BENCH_WORKLOAD (w1..w6); a missing or unrecognized value traps.
 
 #include <gtk/gtk.h>
 #include <math.h>
@@ -72,7 +72,7 @@ static GtkWidget *w1_build(void) {
     gtk_widget_add_css_class(button, "suggested-action");
     gtk_widget_add_css_class(button, "pill");
     g_signal_connect(button, "clicked", G_CALLBACK(w1_clicked), label);
-    GtkWidget *col = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+    GtkWidget *col = gtk_box_new(GTK_ORIENTATION_VERTICAL, 16);
     gtk_widget_set_halign(col, GTK_ALIGN_CENTER);
     gtk_widget_set_valign(col, GTK_ALIGN_CENTER);
     gtk_box_append(GTK_BOX(col), label);
@@ -83,6 +83,12 @@ static GtkWidget *w1_build(void) {
 // ---------------------------------------------------------------------------
 // W2 — lazy list of 10,000 rows (canonical row content)
 // ---------------------------------------------------------------------------
+
+// w6: cells per row — 0 for w2. Palette classes carry each square's color.
+static const char *const cell_palette_classes[6] = {
+    "cell-c0", "cell-c1", "cell-c2", "cell-c3", "cell-c4", "cell-c5",
+};
+static uint32_t w6_cells;
 
 static void draw_circle(GtkDrawingArea *da, cairo_t *cr, int w, int h,
                         gpointer data) {
@@ -111,11 +117,25 @@ static void w2_setup(GtkSignalListItemFactory *f, GtkListItem *item,
     gtk_label_set_xalign(GTK_LABEL(subtitle), 0);
     gtk_widget_add_css_class(subtitle, "dim-label");
     gtk_widget_add_css_class(subtitle, "row-subtitle");
-    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
     gtk_widget_set_valign(vbox, GTK_ALIGN_CENTER);
     gtk_widget_set_hexpand(vbox, TRUE);
     gtk_box_append(GTK_BOX(vbox), title);
     gtk_box_append(GTK_BOX(vbox), subtitle);
+
+    GtkWidget *cells = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+    gtk_widget_set_valign(cells, GTK_ALIGN_CENTER);
+    for (uint32_t j = 0; j < w6_cells; j++) {
+        GtkWidget *sq = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+        gtk_widget_set_size_request(sq, 14, 14);
+        gtk_widget_add_css_class(sq, "cell-sq");
+        GtkWidget *txt = gtk_label_new("");
+        gtk_widget_add_css_class(txt, "cell-txt");
+        GtkWidget *c = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+        gtk_box_append(GTK_BOX(c), sq);
+        gtk_box_append(GTK_BOX(c), txt);
+        gtk_box_append(GTK_BOX(cells), c);
+    }
 
     GtkWidget *ts = gtk_label_new("");
     gtk_widget_add_css_class(ts, "dim-label");
@@ -129,6 +149,7 @@ static void w2_setup(GtkSignalListItemFactory *f, GtkListItem *item,
     gtk_widget_set_margin_end(row, 16);
     gtk_box_append(GTK_BOX(row), circle);
     gtk_box_append(GTK_BOX(row), vbox);
+    gtk_box_append(GTK_BOX(row), cells);
     gtk_box_append(GTK_BOX(row), ts);
 
     gtk_list_item_set_child(item, row);
@@ -142,9 +163,10 @@ static void w2_bind(GtkSignalListItemFactory *f, GtkListItem *item,
     GtkWidget *row = gtk_list_item_get_child(item);
     GtkWidget *circle = gtk_widget_get_first_child(row);
     GtkWidget *vbox = gtk_widget_get_next_sibling(circle);
+    GtkWidget *cells = gtk_widget_get_next_sibling(vbox);
+    GtkWidget *ts = gtk_widget_get_next_sibling(cells);
     GtkWidget *title = gtk_widget_get_first_child(vbox);
     GtkWidget *subtitle = gtk_widget_get_next_sibling(title);
-    GtkWidget *ts = gtk_widget_get_next_sibling(vbox);
 
     gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(circle), draw_circle,
                                    (gpointer)(uintptr_t)i, NULL);
@@ -154,6 +176,21 @@ static void w2_bind(GtkSignalListItemFactory *f, GtkListItem *item,
     gtk_label_set_text(GTK_LABEL(title), buf);
     snprintf(buf, sizeof buf, "Second line of subtitle for item %u", i);
     gtk_label_set_text(GTK_LABEL(subtitle), buf);
+
+    // W6 cells: the row's cell count is fixed for the launch, so rebinds
+    // repaint each retained cell rather than rebuild it.
+    GtkWidget *cell = gtk_widget_get_first_child(cells);
+    for (uint32_t j = 0; cell && j < w6_cells; j++) {
+        GtkWidget *sq = gtk_widget_get_first_child(cell);
+        GtkWidget *txt = gtk_widget_get_next_sibling(sq);
+        for (int k = 0; k < 6; k++)
+            gtk_widget_remove_css_class(sq, cell_palette_classes[k]);
+        gtk_widget_add_css_class(sq, cell_palette_classes[(i + j) % 6]);
+        snprintf(buf, sizeof buf, "c%u", j);
+        gtk_label_set_text(GTK_LABEL(txt), buf);
+        cell = gtk_widget_get_next_sibling(cell);
+    }
+
     snprintf(buf, sizeof buf, "%02u:%02u", (i / 60) % 24, i % 60);
     gtk_label_set_text(GTK_LABEL(ts), buf);
 }
@@ -183,7 +220,6 @@ static GtkWidget *w2_build(void) {
 #define MAX_RECTS 25601
 
 struct w3_rect {
-    GtkWidget *widget;
     uint64_t rng;
     int dur_ms;
     gint64 tick_us;        // start of the current waypoint animation
@@ -195,28 +231,67 @@ struct w3_rect {
 static struct w3_rect w3_rects[MAX_RECTS];
 static int w3_count;
 static gint64 w3_start_us;
+static GdkRGBA w3_palette[6];
 
-// ease-in-out over the tick's progress (canonical: cubic in/out).
-static double ease_in_out(double f) {
-    return f < 0.5 ? 4.0 * f * f * f
-                   : 1.0 - pow(-2.0 * f + 2.0, 3.0) / 2.0;
+// One retained widget paints the whole rect field as GSK render nodes —
+// transform + rounded-clip + color per rect — rather than per-frame cairo
+// redraws of per-rect drawing areas.
+#define W3_FIELD_TYPE (w3_field_get_type())
+G_DECLARE_FINAL_TYPE(W3Field, w3_field, W3, FIELD, GtkWidget)
+struct _W3Field { GtkWidget parent_instance; };
+G_DEFINE_TYPE(W3Field, w3_field, GTK_TYPE_WIDGET)
+
+static void w3_field_snapshot(GtkWidget *w, GtkSnapshot *snapshot) {
+    (void)w;
+    GskRoundedRect clip;
+    gsk_rounded_rect_init(
+        &clip,
+        &GRAPHENE_RECT_INIT(0, 0, (float)RECT_SIDE, (float)RECT_SIDE),
+        &GRAPHENE_SIZE_INIT(10, 10),
+        &GRAPHENE_SIZE_INIT(10, 10),
+        &GRAPHENE_SIZE_INIT(10, 10),
+        &GRAPHENE_SIZE_INIT(10, 10));
+    const graphene_rect_t area =
+        GRAPHENE_RECT_INIT(0, 0, (float)RECT_SIDE, (float)RECT_SIDE);
+    for (int i = 0; i < w3_count; i++) {
+        struct w3_rect *r = &w3_rects[i];
+        gtk_snapshot_save(snapshot);
+        // rotation about the rect's centre
+        GskTransform *t = gsk_transform_translate(
+            NULL, &GRAPHENE_POINT_INIT(r->cx + RECT_SIDE / 2.0,
+                                       r->cy + RECT_SIDE / 2.0));
+        t = gsk_transform_rotate(t, r->cr);
+        t = gsk_transform_translate(
+            t, &GRAPHENE_POINT_INIT(-RECT_SIDE / 2.0, -RECT_SIDE / 2.0));
+        gtk_snapshot_transform(snapshot, t);
+        gtk_snapshot_push_rounded_clip(snapshot, &clip);
+        GdkRGBA color = w3_palette[i % 6];
+        color.alpha *= (float)r->co;
+        gtk_snapshot_append_color(snapshot, &color, &area);
+        gtk_snapshot_pop(snapshot);
+        gtk_snapshot_restore(snapshot);
+    }
 }
 
-static void draw_rect(GtkDrawingArea *da, cairo_t *cr, int w, int h,
-                      gpointer data) {
-    intptr_t i = (intptr_t)data;
-    double r = 10.0, rot = w3_rects[i].cr, op = w3_rects[i].co;
-    cairo_translate(cr, w / 2.0, h / 2.0);
-    cairo_rotate(cr, rot * M_PI / 180.0);
-    cairo_translate(cr, -w / 2.0, -h / 2.0);
-    cairo_new_sub_path(cr);
-    cairo_arc(cr, w - r, r, r, -M_PI / 2, 0);
-    cairo_arc(cr, w - r, h - r, r, 0, M_PI / 2);
-    cairo_arc(cr, r, h - r, r, M_PI / 2, M_PI);
-    cairo_arc(cr, r, r, r, M_PI, 3 * M_PI / 2);
-    cairo_close_path(cr);
-    set_rgba(cr, (uint32_t)i, op);
-    cairo_fill(cr);
+static void w3_field_init(W3Field *self) { (void)self; }
+static void w3_field_class_init(W3FieldClass *klass) {
+    GtkWidgetClass *wc = GTK_WIDGET_CLASS(klass);
+    gtk_widget_class_set_layout_manager_type(wc, GTK_TYPE_BIN_LAYOUT);
+    wc->snapshot = w3_field_snapshot;
+}
+
+// ease over the tick's progress: the spec's cubic-bezier(0.42, 0, 0.58, 1)
+// — solve t for x = f by bisection, then evaluate the y channel.
+static double ease_bezier(double f) {
+    double lo = 0.0, hi = 1.0, t = f;
+    for (int it = 0; it < 24; it++) {
+        double x = 3 * (1 - t) * (1 - t) * t * 0.42 +
+                   3 * (1 - t) * t * t * 0.58 + t * t * t;
+        if (fabs(x - f) < 1e-7) break;
+        if (x < f) lo = t; else hi = t;
+        t = (lo + hi) / 2.0;
+    }
+    return 3 * (1 - t) * t * t + t * t * t;
 }
 
 static void w3_retarget(struct w3_rect *r) {
@@ -228,9 +303,8 @@ static void w3_retarget(struct w3_rect *r) {
 }
 
 static gboolean w3_tick(GtkWidget *w, GdkFrameClock *fc, gpointer data) {
-    (void)w;
     (void)fc;
-    GtkFixed *fixed = data;
+    (void)data;
     gint64 now = g_get_monotonic_time();
     for (int i = 0; i < w3_count; i++) {
         struct w3_rect *r = &w3_rects[i];
@@ -241,23 +315,24 @@ static gboolean w3_tick(GtkWidget *w, GdkFrameClock *fc, gpointer data) {
         }
         double f = (now - r->tick_us) / (r->dur_ms * 1000.0);
         if (f > 1.0) f = 1.0;
-        double e = ease_in_out(f);
+        double e = ease_bezier(f);
         r->cx = r->fx + (r->tx - r->fx) * e;
         r->cy = r->fy + (r->ty - r->fy) * e;
         r->cr = r->fr + (r->tr - r->fr) * e;
         r->co = r->fo + (r->to - r->fo) * e;
-        gtk_fixed_move(fixed, r->widget, r->cx, r->cy);
-        gtk_widget_queue_draw(r->widget);
     }
+    gtk_widget_queue_draw(w);
     return G_SOURCE_CONTINUE;
 }
 
 static GtkWidget *w3_build(int count) {
     w3_count = count;
-    GtkWidget *fixed = gtk_fixed_new();
-    gtk_widget_set_size_request(fixed, (int)FIELD_W, (int)FIELD_H);
-    gtk_widget_set_halign(fixed, GTK_ALIGN_CENTER);
-    gtk_widget_set_valign(fixed, GTK_ALIGN_CENTER);
+    GtkWidget *field = g_object_new(W3_FIELD_TYPE, NULL);
+    gtk_widget_set_size_request(field, (int)FIELD_W, (int)FIELD_H);
+    gtk_widget_set_halign(field, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(field, GTK_ALIGN_CENTER);
+    for (int k = 0; k < 6; k++)
+        gdk_rgba_parse(&w3_palette[k], PALETTE[k]);
     w3_start_us = g_get_monotonic_time();
     for (int i = 0; i < count; i++) {
         struct w3_rect *r = &w3_rects[i];
@@ -270,17 +345,12 @@ static GtkWidget *w3_build(int count) {
         r->rng = 0x9E3779B97F4A7C15ULL ^ (uint64_t)i * 0xBF58476D1CE4E5B9ULL;
         r->dur_ms = 1200 + (i % 5) * 200;
         r->tick_us = w3_start_us;
-        r->widget = gtk_drawing_area_new();
-        gtk_widget_set_size_request(r->widget, RECT_SIDE, RECT_SIDE);
-        gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(r->widget),
-                                       draw_rect, (gpointer)(intptr_t)i, NULL);
-        gtk_fixed_put(GTK_FIXED(fixed), r->widget, r->cx, r->cy);
         w3_retarget(r);
         r->tick_us = w3_start_us;
     }
-    gtk_widget_add_tick_callback(fixed, w3_tick, fixed, NULL);
+    gtk_widget_add_tick_callback(field, w3_tick, NULL, NULL);
     GtkWidget *center = gtk_center_box_new();
-    gtk_center_box_set_center_widget(GTK_CENTER_BOX(center), fixed);
+    gtk_center_box_set_center_widget(GTK_CENTER_BOX(center), field);
     return center;
 }
 
@@ -290,14 +360,14 @@ static GtkWidget *w3_build(int count) {
 
 static GtkWidget *w4_build(void) {
     GtkWidget *col = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
-    gtk_widget_set_margin_top(col, 10);
-    gtk_widget_set_margin_bottom(col, 10);
-    gtk_widget_set_margin_start(col, 16);
-    gtk_widget_set_margin_end(col, 16);
     for (int i = 0; i < 50; i++) {
         GtkWidget *p = gtk_label_new(PARAGRAPHS[i % 10]);
         gtk_label_set_xalign(GTK_LABEL(p), 0);
         gtk_label_set_wrap(GTK_LABEL(p), TRUE);
+        gtk_widget_set_margin_top(p, 10);
+        gtk_widget_set_margin_bottom(p, 10);
+        gtk_widget_set_margin_start(p, 16);
+        gtk_widget_set_margin_end(p, 16);
         gtk_box_append(GTK_BOX(col), p);
     }
     GtkWidget *scroll = gtk_scrolled_window_new();
@@ -311,25 +381,36 @@ static GtkWidget *w4_build(void) {
 // step is a hard failure, never a silent default (M9/WORKLOADS.md).
 static const int W5_LADDER[8] = {200, 400, 800, 1600, 3200, 6400, 12800,
                                  25600};
-static int w5_step(void) {
+static const int W6_LADDER[7] = {1, 2, 4, 8, 16, 32, 64};
+static const char *w5_wl;
+static int ladder_step(void) {
+    const int *ladder = !strcmp(w5_wl, "w6") ? W6_LADDER : W5_LADDER;
+    size_t len = !strcmp(w5_wl, "w6")
+        ? sizeof(W6_LADDER) / sizeof(W6_LADDER[0])
+        : sizeof(W5_LADDER) / sizeof(W5_LADDER[0]);
     const char *s = getenv("BENCH_STEP");
     if (!s || !*s) {
-        g_critical("missing BENCH_STEP for w5; expected one of "
-                   "200..25600 ladder members");
-        g_assert_not_reached();
+        g_critical("missing BENCH_STEP for %s; expected one of "
+                   "the declared ladder members", w5_wl);
+        abort();
     }
     char *end = NULL;
     long n = strtol(s, &end, 10);
     if (!end || *end != '\0') {
         g_critical("malformed BENCH_STEP '%s'; expected an integer", s);
-        g_assert_not_reached();
+        abort();
     }
-    for (size_t k = 0; k < sizeof(W5_LADDER) / sizeof(W5_LADDER[0]); k++)
-        if (W5_LADDER[k] == n)
+    for (size_t k = 0; k < len; k++)
+        if (ladder[k] == n)
             return (int)n;
-    g_critical("unrecognized BENCH_STEP %ld; expected one of the W5 ladder",
-               n);
-    g_assert_not_reached();
+    g_critical("unrecognized BENCH_STEP %ld; expected one of the %s ladder",
+               n, w5_wl);
+    abort();
+}
+
+static GtkWidget *w6_build(uint32_t cells) {
+    w6_cells = cells;
+    return w2_build();
 }
 
 static void activate(GtkApplication *app, gpointer data) {
@@ -341,9 +422,17 @@ static void activate(GtkApplication *app, gpointer data) {
     GtkCssProvider *css = gtk_css_provider_new();
     gtk_css_provider_load_from_string(
         css,
-        ".w1-count { font-size: 24pt; }\n"
-        ".row-title { font-weight: 600; }\n"
-        ".row-subtitle { opacity: 0.7; }\n");
+        ".w1-count { font-size: 20px; }\n"
+        ".row-title { font-size: 16px; }\n"
+        ".row-subtitle { font-size: 13px; opacity: 0.7; }\n"
+        ".cell-sq { border-radius: 4px; }\n"
+        ".cell-txt { font-size: 12px; opacity: 0.7; }\n"
+        ".cell-c0 { background: #3B82F6; }\n"
+        ".cell-c1 { background: #10B981; }\n"
+        ".cell-c2 { background: #F59E0B; }\n"
+        ".cell-c3 { background: #EF4444; }\n"
+        ".cell-c4 { background: #8B5CF6; }\n"
+        ".cell-c5 { background: #EC4899; }\n");
     gtk_style_context_add_provider_for_display(
         gdk_display_get_default(), GTK_STYLE_PROVIDER(css),
         GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
@@ -359,11 +448,13 @@ static void activate(GtkApplication *app, gpointer data) {
     else if (wl && !strcmp(wl, "w4"))
         child = w4_build();
     else if (wl && !strcmp(wl, "w5"))
-        child = w3_build(w5_step());
+        child = w3_build(({ w5_wl = "w5"; ladder_step(); }));
+    else if (wl && !strcmp(wl, "w6"))
+        child = w6_build(({ w5_wl = "w6"; ladder_step(); }));
     else {
         g_critical("missing or unrecognized BENCH_WORKLOAD (%s); "
-                   "expected w1..w5", wl ? wl : "<unset>");
-        g_assert_not_reached();
+                   "expected w1..w6", wl ? wl : "<unset>");
+        abort();
     }
     gtk_window_set_child(GTK_WINDOW(win), child);
     gtk_window_present(GTK_WINDOW(win));

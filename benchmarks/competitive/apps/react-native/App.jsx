@@ -1,9 +1,11 @@
-// Competitive benchmark — React Native contestant, workloads W1–W6, per
-// benchmarks/competitive/WORKLOADS.md. The workload (and capacity `step`
-// on Android/desktop) arrive as initial props from the native side, which
-// reads `-bench-workload` launch arguments from NSUserDefaults'
-// NSArgumentDomain (Apple) or intent extras (Android). Scrolling is driven
-// from outside the app by OS-level input — the app never scrolls itself.
+// Competitive benchmark — React Native contestant, workloads w1–w6
+// (exact lowercase ids), per benchmarks/competitive/WORKLOADS.md. The
+// workload and the capacity `step` arrive as initial props from the
+// native side, which reads `-bench-workload` launch arguments from
+// NSUserDefaults' NSArgumentDomain (Apple) or intent extras (Android).
+// One pacing model on every leg: one launch renders one ladder step.
+// Scrolling is driven from outside the app by OS-level input — the app
+// never scrolls itself.
 
 import React, { useEffect, useRef, useState } from 'react';
 import {
@@ -55,7 +57,7 @@ function Hello() {
   const [count, setCount] = useState(0);
   return (
     <View style={styles.center}>
-      <Text>{`Count: ${count}`}</Text>
+      <Text style={{ fontSize: 20 }}>{`Count: ${count}`}</Text>
       <View style={{ height: 16 }} />
       <Pressable
         accessibilityIdentifier="increment-button"
@@ -84,12 +86,14 @@ const FeedRow = React.memo(function FeedRow({ i, extra }) {
       />
       <View style={{ flex: 1, marginLeft: 12 }}>
         <Text style={styles.rowTitle}>{`Row title ${i}`}</Text>
+        <View style={{ height: 4 }} />
         <Text
           style={
             styles.rowSub
           }>{`Second line of subtitle for item ${i}`}</Text>
       </View>
       {extra}
+      <View style={{ width: 12 }} />
       <Text style={styles.rowTime}>{timestamp(i)}</Text>
     </View>
   );
@@ -110,58 +114,26 @@ function Feed() {
 
 // MARK: - W5/W6 Capacity ladders
 
-// Waits for one `dev.bench.begin` cycle through the native module — the
-// runner's Apple-side measure handshake; measurement pacing, not a scroll
-// drive (the flings themselves are the runner's OS-level input).
-function useCapacityDrive(selfPaced, runLadder) {
-  const armedRef = useRef(false);
-  const runRef = useRef(runLadder);
-  runRef.current = runLadder;
+// One pacing model on every leg: one launch renders one step, pinned by
+// the `step` prop. After the first frame each launch holds the step for
+// the declared settle+hold (1 s + 4 s), then the app posts
+// `dev.bench.done` itself through BenchNotify — no native-side timer.
+function useStepHoldDone() {
   useEffect(() => {
-    if (!selfPaced) return;
-    let cancelled = false;
-    const sleep = ms => new Promise(r => setTimeout(r, ms));
-    (async () => {
-      while (!cancelled) {
-        try {
-          if (await NativeModules.BenchNotify.beginObserved()) {
-            await runRef.current();
-            NativeModules.BenchNotify.postDone();
-            // Drop ack-race backlog before re-arming.
-            NativeModules.BenchNotify.discardBegins();
-          }
-        } catch {}
-        await sleep(50);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selfPaced]);
+    const t = setTimeout(
+      () => NativeModules.BenchNotify.postDone(),
+      5000,
+    );
+    return () => clearTimeout(t);
+  }, []);
 }
 
-// `step k n=<param> t=<unix>` → bench-steps.log + dev.bench.step post —
-// the runner slices its xctrace recording by these timestamps.
-const logStep = (step, n) =>
-  NativeModules.BenchNotify.logStep(step, n);
-
-// W5: W3's scene with the rect count doubled per step (200…25600);
-// 5 s per step once the runner posts `dev.bench.begin`.
+// W5: W3's scene with the rect count pinned per launch (200…25600).
 const W5_STEPS = [200, 400, 800, 1600, 3200, 6400, 12800, 25600];
 
 function MotionCapacity({ step }) {
-  // step pinned by the launch (Android/desktop) or self-paced ladder
-  // (Apple: begins on the runner's `dev.bench.begin` post).
-  const [count, setCount] = useState(step ?? W5_STEPS[0]);
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
-  useCapacityDrive(step == null, async () => {
-    for (let i = 0; i < W5_STEPS.length; i++) {
-      setCount(W5_STEPS[i]);
-      logStep(i, W5_STEPS[i]);
-      await sleep(5000);
-    }
-  });
+  const [count] = useState(step);
+  useStepHoldDone();
   return (
     <View style={styles.center}>
       <View style={{ width: FIELD_W, height: FIELD_H }}>
@@ -178,16 +150,8 @@ function MotionCapacity({ step }) {
 const W6_STEPS = [1, 2, 4, 8, 16, 32, 64];
 
 function FeedCapacity({ step }) {
-  const [complexity, setComplexity] = useState(step ?? W6_STEPS[0]);
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
-  useCapacityDrive(step == null, async () => {
-    for (let i = 0; i < W6_STEPS.length; i++) {
-      setComplexity(W6_STEPS[i]);
-      logStep(i, W6_STEPS[i]);
-      // settle 1 s + hold 4 s; the runner drives the flings.
-      await sleep(5000);
-    }
-  });
+  const [complexity] = useState(step);
+  useStepHoldDone();
   return (
     <View style={styles.fill}>
       <Animated.FlatList
@@ -356,49 +320,36 @@ function TextBench() {
 
 // MARK: - Root
 
-export default function App({ workload: rawWorkload, step }) {
-  // Legs deliver the id case-insensitively (`-bench-workload W2` on
-  // Apple, `--es workload w2` on Android) — normalize before matching.
-  const workload = (rawWorkload ?? '').toUpperCase();
-  // The native side traps on a missing/unrecognized -bench-workload; this
-  // guard keeps the same contract if JS ever runs without it.
-  if (!['W1', 'W2', 'W3', 'W4', 'W5', 'W6'].includes(workload)) {
+export default function App({ workload, step }) {
+  // Workload ids are the exact lowercase strings w1..=w6 — any other
+  // value (including uppercase) fails.
+  if (!['w1', 'w2', 'w3', 'w4', 'w5', 'w6'].includes(workload)) {
     throw new Error(
       `missing or unrecognized -bench-workload launch argument ` +
-        `(got ${workload ?? 'null'}); expected W1..=W6`,
+        `(got ${workload ?? 'null'}); expected w1..=w6`,
     );
   }
-  // W5/W6: a `step` prop pins one ladder step per launch; without one only
-  // the Apple self-paced ladder is valid — every other leg must pass it.
-  const ladder = workload === 'W5' ? W5_STEPS : W6_STEPS;
-  if (workload === 'W5' || workload === 'W6') {
-    if (step != null && !ladder.includes(step)) {
+  // W5/W6: a `step` prop pins one ladder step per launch on every leg —
+  // missing or malformed fails.
+  const ladder = workload === 'w5' ? W5_STEPS : W6_STEPS;
+  if (workload === 'w5' || workload === 'w6') {
+    if (step == null || !ladder.includes(step)) {
       throw new Error(
-        `unrecognized -bench-step value ${step} for ${workload}; ` +
-          `expected one of ${ladder}`,
-      );
-    }
-    if (
-      step == null &&
-      Platform.OS !== 'ios' &&
-      Platform.OS !== 'macos'
-    ) {
-      throw new Error(
-        `${workload} requires -bench-step (or BENCH_STEP); this leg ` +
-          'measures one ladder step per launch',
+        `missing or unrecognized -bench-step value ${step} for ` +
+          `${workload}; expected one of ${ladder}`,
       );
     }
   }
   const page =
-    workload === 'W2' ? (
+    workload === 'w2' ? (
       <Feed />
-    ) : workload === 'W3' ? (
+    ) : workload === 'w3' ? (
       <Motion />
-    ) : workload === 'W4' ? (
+    ) : workload === 'w4' ? (
       <TextBench />
-    ) : workload === 'W5' ? (
+    ) : workload === 'w5' ? (
       <MotionCapacity step={step} />
-    ) : workload === 'W6' ? (
+    ) : workload === 'w6' ? (
       <FeedCapacity step={step} />
     ) : (
       <Hello />

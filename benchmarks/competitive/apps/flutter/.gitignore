@@ -7,3 +7,7 @@
 build/
 .dart_tool/
 .packages
+
+# generated platform dirs (flutter create, .bench-generator-stamped)
+ios/
+macos/

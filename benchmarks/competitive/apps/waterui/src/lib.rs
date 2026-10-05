@@ -15,33 +15,30 @@
 //!   stepped 1→64.
 //!
 //! Workload selection accepts either channel a leg can deliver:
-//! `-bench-workload W1|W2|W3|W4|W5|W6` in argv (Apple legs, the
+//! `-bench-workload w1|w2|w3|w4|w5|w6` in argv (Apple legs, the
 //! NSArgumentDomain convention) or `BENCH_WORKLOAD` in the environment
 //! (desktop legs and Android's `waterui.env.*` intent-extra forwarding);
-//! values match case-insensitively. A missing or unrecognized workload
-//! traps; there is no fallback. Scrolling is driven from outside the app
-//! by OS-level input on every platform — the app never scrolls itself.
+//! ids are the exact lowercase strings `w1`–`w6` — anything else traps;
+//! there is no fallback. Scrolling is driven from outside the app by
+//! OS-level input on every platform — the app never scrolls itself.
 //! On Apple targets the selected id also posts
-//! `dev.bench.ready.<bundle>.<W>` and rides the accessibility identifier
-//! `bench-workload-<id>` so the runner can assert it.
+//! `dev.bench.ready.<bundle>.<w>` when the view first appears and rides
+//! the accessibility identifier `bench-workload-<id>` so the runner can
+//! assert it.
 //!
-//! W5/W6 have two pacing modes: `BENCH_STEP` in the environment pins one
-//! ladder step per launch (the Android/desktop protocol, which measures
-//! each step as a separate launch — a missing or malformed step traps);
-//! on Apple targets the runner walks the whole ladder inside the measure
-//! window: `dev.bench.begin` starts it, `dev.bench.step` posts and a
-//! bench-steps.log mark step boundaries, `dev.bench.done` ends it.
+//! W5/W6 pacing is one model on every leg: one launch renders one
+//! ladder step, pinned by `BENCH_STEP` (or `-bench-step N`) — a missing
+//! or malformed step traps.
 
 use std::time::Duration;
 use waterui::Identifiable;
 use waterui::animation::Animation;
 use waterui::app::App;
-use waterui::component::lazy::Lazy;
 use waterui::component::list::List;
 use waterui::id::SelfId;
 use waterui::layout::{AbsoluteLayout, LazyContainer};
 use waterui::prelude::*;
-use waterui::reactive::collection::{List as ReactiveList, SignalCollection};
+use waterui::reactive::collection::List as ReactiveList;
 use waterui::shape::{Circle, RoundedRectangle, ShapeExt};
 use waterui::task::sleep;
 use waterui::views::ForEach;
@@ -71,28 +68,24 @@ fn bench_arg(name: &str) -> Option<String> {
 }
 
 fn workload() -> &'static str {
-    match bench_arg("workload")
-        .map(|v| v.to_ascii_uppercase())
-        .as_deref()
-    {
-        Some("W1") => "W1",
-        Some("W2") => "W2",
-        Some("W3") => "W3",
-        Some("W4") => "W4",
-        Some("W5") => "W5",
-        Some("W6") => "W6",
+    match bench_arg("workload").as_deref() {
+        Some("w1") => "w1",
+        Some("w2") => "w2",
+        Some("w3") => "w3",
+        Some("w4") => "w4",
+        Some("w5") => "w5",
+        Some("w6") => "w6",
         Some(other) => {
-            panic!("unrecognized bench workload value {other:?}; expected W1..=W6")
+            panic!("unrecognized bench workload value {other:?}; expected w1..=w6")
         }
         None => panic!("missing bench workload (expected -bench-workload or BENCH_WORKLOAD)"),
     }
 }
 
-/// The capacity protocol on platforms that measure one ladder step per
-/// launch: `BENCH_STEP` (or `-bench-step N`) must be present, parse as an
-/// integer and name a member of the workload's ladder — a missing or
-/// malformed step traps rather than defaulting.
-#[cfg(not(any(target_os = "ios", target_os = "macos")))]
+/// The capacity protocol on every leg: `BENCH_STEP` (or `-bench-step N`)
+/// must be present, parse as an integer and name a member of the
+/// workload's ladder — a missing or malformed step traps rather than
+/// defaulting.
 fn capacity_step(ladder: &[u32], workload: &str) -> u32 {
     match bench_arg("step").as_deref() {
         None => panic!("{workload}: missing bench step (expected -bench-step or BENCH_STEP)"),
@@ -103,157 +96,24 @@ fn capacity_step(ladder: &[u32], workload: &str) -> u32 {
     }
 }
 
-/// Darwin-notification handshake for capacity-ladder pacing (W5/W6). The
-/// runner posts `dev.bench.begin` inside its `measure` block and waits
-/// for the app to post `dev.bench.done` after the ladder finishes.
-/// Scrolling itself is always driven from outside the app.
+/// Darwin-notification readiness signal: the Apple runner waits for
+/// `dev.bench.ready.dev.waterui.bench.<w>` instead of querying the
+/// accessibility tree (materializing the 10k-row feed's tree blocks an
+/// AX query for minutes).
 #[cfg(any(target_os = "ios", target_os = "macos"))]
 mod bench_notify {
     use std::ffi::c_char;
     #[link(name = "System")]
     unsafe extern "C" {
         fn notify_post(name: *const c_char) -> u32;
-        fn notify_register_check(name: *const c_char, out_token: *mut i32) -> u32;
-        fn notify_check(token: i32, check: *mut i32) -> u32;
     }
-    const BEGIN: &[u8] = b"dev.bench.begin\0";
-    const DONE: &[u8] = b"dev.bench.done\0";
-    const ACK: &[u8] = b"dev.bench.ack\0";
-
-    /// Registers for `dev.bench.begin`. None = registration failed (the
-    /// drive never fires and the runner's wait times out loudly). The first
-    /// `notify_check` reports the flag's CURRENT state, so a stale post from
-    /// a previous run would look like a fresh signal — consume it here so
-    /// only a begin posted after registration counts.
-    pub fn register_begin() -> Option<i32> {
-        let mut token = 0i32;
-        unsafe {
-            if notify_register_check(BEGIN.as_ptr() as _, &mut token) != 0 {
-                return None;
-            }
-            let mut stale = 0i32;
-            notify_check(token, &mut stale);
-            Some(token)
-        }
-    }
-    /// True once the runner has posted `dev.bench.begin`.
-    pub fn begin_posted(token: i32) -> bool {
-        let mut fired = 0i32;
-        unsafe { notify_check(token, &mut fired) == 0 && fired != 0 }
-    }
-    /// Consumes a `begin` that latched while a program was running (a repost
-    /// that raced the ack). The runner stops posting once it sees `done`, so
-    /// anything already latched at re-arm time is backlog, not a new signal.
-    pub fn discard_latched_begin(token: i32) {
-        let mut fired = 0i32;
-        unsafe { notify_check(token, &mut fired) };
-        if fired != 0 {
-            crate::drive_log("discarded stale begin at re-arm");
-        }
-    }
-    /// Signals `dev.bench.done` to the runner.
-    pub fn post_done() {
-        unsafe {
-            notify_post(DONE.as_ptr() as _);
-        }
-    }
-    /// Signals `dev.bench.ack` — the program has started, stop reposting.
-    pub fn post_ack() {
-        unsafe {
-            notify_post(ACK.as_ptr() as _);
-        }
-    }
-    /// Signals `dev.bench.step` — posted at each capacity-ladder step start.
-    pub fn post_step() {
-        unsafe {
-            notify_post(b"dev.bench.step\0".as_ptr() as _);
-        }
-    }
-    /// Signals `dev.bench.ready.dev.waterui.bench.<W>` — posted once the
-    /// bench workload has resolved. The runner waits for this post instead
-    /// of querying the accessibility tree (materializing the 10k-row feed's
-    /// tree blocks an AX query for minutes).
+    /// Signals `dev.bench.ready.dev.waterui.bench.<w>` — posted once the
+    /// bench workload's view first appears.
     pub fn post_ready(workload: &str) {
         let name = format!("dev.bench.ready.dev.waterui.bench.{workload}\0");
-        unsafe {
-            notify_post(name.as_ptr() as _);
-        }
+        let status = unsafe { notify_post(name.as_ptr() as _) };
+        assert_eq!(status, 0, "notify_post({name:?}) failed with {status}");
     }
-}
-
-/// Appends `step <k> n=<param> t=<unix-seconds>` to tmp/bench-steps.log —
-/// the runner pulls this file and slices the xctrace frame recording by
-/// these timestamps, so every contestant reports step boundaries the same
-/// way on simulator, device and macOS.
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-fn step_log(step: usize, param: u64) {
-    use std::io::Write;
-    let p = std::env::temp_dir().join("bench-steps.log");
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(p)
-    {
-        let secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs_f64())
-            .unwrap_or(0.0);
-        let _ = writeln!(f, "step {step} n={param} t={secs:.3}");
-    }
-    #[cfg(any(target_os = "ios", target_os = "macos"))]
-    bench_notify::post_step();
-}
-
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-fn drive_log(line: &str) {
-    use std::io::Write;
-    let p = std::env::temp_dir().join("bench-drive.log");
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(p)
-    {
-        let _ = writeln!(f, "{:?} {}", std::time::Instant::now(), line);
-    }
-}
-
-/// Waits for the runner's `dev.bench.begin` on a long-lived check token.
-/// Each `notify_post` re-fires a consumed token, so one registration serves
-/// every measured iteration of a run (XCTest may invoke the measure block
-/// more than once).
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-async fn await_begin_cycle(token: i32) {
-    while !bench_notify::begin_posted(token) {
-        sleep(Duration::from_millis(50)).await;
-    }
-    drive_log("begin seen — running program");
-    // Stop the runner's reposts so no begin backlog piles up on the token.
-    bench_notify::post_ack();
-}
-
-/// Registers `dev.bench.begin` once per launch; `None` leaves the task dead.
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-fn bench_begin_token() -> Option<i32> {
-    let token = bench_notify::register_begin();
-    drive_log(if token.is_some() {
-        "registered dev.bench.begin"
-    } else {
-        "notify_register_check failed"
-    });
-    token
-}
-
-/// Posts `dev.bench.done` after the capacity ladder finishes.
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-fn post_done() {
-    drive_log("posting dev.bench.done");
-    bench_notify::post_done();
-}
-
-/// Drops a begin backlog post latched while the ladder ran.
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-fn discard_stale(token: i32) {
-    bench_notify::discard_latched_begin(token);
 }
 
 // ---------------------------------------------------------------------------
@@ -309,7 +169,8 @@ fn feed_row(row: FeedRow) -> ListItem {
                     .size(13.0)
                     .muted(),
             ))
-            .leading(),
+            .leading()
+            .spacing(4.0),
             spacer(),
             text(timestamp(n)).size(13.0).muted(),
         ))
@@ -433,81 +294,38 @@ fn text_bench() -> impl View {
 
 /// W5 motion steps: W3's scene with the rect count doubled to collapse.
 /// W6 feed steps: W2's feed rows whose nested text+shape cell count
-/// doubles. Two pacing modes exist: `BENCH_STEP` pins one step per launch
-/// (Android/desktop — missing or malformed traps); on Apple targets the
-/// ladder walks itself inside the measure window — after
-/// `dev.bench.begin` each step logs `step k n=<param> t=<unix>` to
-/// tmp/bench-steps.log and posts `dev.bench.step`, settles 1 s, holds 4 s;
-/// `dev.bench.done` ends it. The runner's trace is sliced by the logged
-/// step times — identical on every contestant.
+/// doubles. One pacing model on every leg: one launch renders one step,
+/// pinned by BENCH_STEP — the runner measures each step as its own
+/// launch and slices its frame record per METHOD.
 const CAPACITY_STEPS_W5: [u32; 8] = [200, 400, 800, 1600, 3200, 6400, 12800, 25600];
 const CAPACITY_STEPS_W6: [u32; 7] = [1, 2, 4, 8, 16, 32, 64];
-/// Seconds a step settles before its hold begins (step start -> settle end).
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-const STEP_SETTLE_S: u64 = 1;
-/// Seconds a step is held for the frame/CPU slice (settle end -> next step).
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-const STEP_HOLD_S: u64 = 4;
 
-/// One `dev.bench.begin` cycle of a capacity ladder: drives `param` through
-/// every step with step markers and a hold each, then posts `done`.
-/// Runs only where the Darwin handshake exists.
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-async fn capacity_ladder(param: Binding<u32>, ladder: &[u32]) {
-    let Some(token) = bench_begin_token() else {
-        return;
-    };
-    loop {
-        await_begin_cycle(token).await;
-        for (i, n) in ladder.iter().enumerate() {
-            param.set(*n);
-            step_log(i, *n as u64);
-            sleep(Duration::from_secs(STEP_SETTLE_S + STEP_HOLD_S)).await;
-        }
-        post_done();
-        discard_stale(token);
-    }
-}
-
-/// W5 — the rect count is a signal; `ForEach` diffs by identity so a rect's
-/// view (and its per-rect animation) lives as long as the rect exists. The
-/// collection is `SignalCollection` over the count — no `Dynamic::watch`,
-/// no generation counters: a rect the ladder drops loses its view and its
-/// drive task dies with the view.
+/// W5 — W3's scene at the step's rect count; `ForEach` keys each rect by
+/// identity so a rect's view (and its per-rect animation) lives as long
+/// as the rect exists — no `Dynamic::watch`, no generation counters.
 fn motion_capacity() -> impl View {
-    #[cfg(any(target_os = "ios", target_os = "macos"))]
-    let count = Binding::u32(CAPACITY_STEPS_W5[0]);
-    #[cfg(not(any(target_os = "ios", target_os = "macos")))]
-    let count = Binding::u32(capacity_step(&CAPACITY_STEPS_W5, "W5"));
-    let rects = SignalCollection::new(
-        count
-            .map(|n| (0..n as usize).map(SelfId::new).collect::<Vec<_>>())
-            .computed(),
-    );
-    let scene = motion_scene(ForEach::new(rects, |id: SelfId<usize>| motion_rect(*id)));
-    #[cfg(any(target_os = "ios", target_os = "macos"))]
-    let scene = scene.task(capacity_ladder(count, &CAPACITY_STEPS_W5));
-    scene
+    let count = capacity_step(&CAPACITY_STEPS_W5, "w5");
+    motion_scene(ForEach::new(
+        (0..count as usize).map(SelfId::new).collect::<Vec<_>>(),
+        |id: SelfId<usize>| motion_rect(*id),
+    ))
 }
 
-/// W2 row with `complexity` extra nested text+shape cells — a signal of
-/// cells per row so the ladder adds/drops cells in place.
-fn feed_row_complex(row: FeedRow, complexity: Binding<u32>) -> ListItem {
+/// W2 row with `complexity` extra nested text+shape cells. One launch
+/// pins one step, so the cell count is fixed for the launch and every
+/// cell is laid out eagerly (a `Vec` of views — no lazy cell container).
+fn feed_row_complex(row: FeedRow, complexity: u32) -> ListItem {
     let n = row.id;
-    let cells = SignalCollection::new(
-        complexity
-            .map(|k| (0..k).map(SelfId::new).collect::<Vec<_>>())
-            .computed(),
-    );
-    let extra = ForEach::new(cells, move |j: SelfId<u32>| {
-        let j = *j;
-        vstack((
-            RoundedRectangle::new(0.3)
-                .fill(avatar_color(n.wrapping_add(j as u64)))
-                .size(14.0, 14.0),
-            text(Str::from(format!("c{j}"))).size(13.0),
-        ))
-    });
+    let cells: Vec<_> = (0..complexity)
+        .map(|j| {
+            vstack((
+                RoundedRectangle::new(0.3)
+                    .fill(avatar_color(n.wrapping_add(j as u64)))
+                    .size(14.0, 14.0),
+                text(Str::from(format!("c{j}"))).size(12.0),
+            ))
+        })
+        .collect();
     ListItem::new(
         hstack((
             Circle.fill(avatar_color(n)).size(40.0, 40.0),
@@ -517,9 +335,10 @@ fn feed_row_complex(row: FeedRow, complexity: Binding<u32>) -> ListItem {
                     .size(13.0)
                     .muted(),
             ))
-            .leading(),
+            .leading()
+            .spacing(4.0),
             spacer(),
-            Lazy::hstack(extra),
+            hstack(cells).spacing(4.0),
             text(timestamp(n)).size(13.0).muted(),
         ))
         .spacing(12.0)
@@ -527,20 +346,13 @@ fn feed_row_complex(row: FeedRow, complexity: Binding<u32>) -> ListItem {
     )
 }
 
-fn feed_scene(complexity: Binding<u32>) -> impl View {
+fn feed_scene(complexity: u32) -> impl View {
     let records = ReactiveList::from((0..FEED_ROWS).map(|id| FeedRow { id }).collect::<Vec<_>>());
-    List::for_each(records, move |r| feed_row_complex(r, complexity.clone()))
+    List::for_each(records, move |r| feed_row_complex(r, complexity))
 }
 
 fn feed_capacity() -> impl View {
-    #[cfg(any(target_os = "ios", target_os = "macos"))]
-    let complexity = Binding::u32(CAPACITY_STEPS_W6[0]);
-    #[cfg(not(any(target_os = "ios", target_os = "macos")))]
-    let complexity = Binding::u32(capacity_step(&CAPACITY_STEPS_W6, "W6"));
-    let list = feed_scene(complexity.clone());
-    #[cfg(any(target_os = "ios", target_os = "macos"))]
-    let list = list.task(capacity_ladder(complexity, &CAPACITY_STEPS_W6));
-    list
+    feed_scene(capacity_step(&CAPACITY_STEPS_W6, "w6"))
 }
 
 // ---------------------------------------------------------------------------
@@ -548,15 +360,14 @@ fn feed_capacity() -> impl View {
 #[preview]
 fn main() -> impl View {
     let w = workload();
-    #[cfg(any(target_os = "ios", target_os = "macos"))]
-    bench_notify::post_ready(w);
     let content: AnyView = match w {
-        "W2" => AnyView::new(feed()),
-        "W3" => AnyView::new(motion()),
-        "W4" => AnyView::new(text_bench()),
-        "W5" => AnyView::new(motion_capacity()),
-        "W6" => AnyView::new(feed_capacity()),
-        _ => AnyView::new(hello()),
+        "w1" => AnyView::new(hello()),
+        "w2" => AnyView::new(feed()),
+        "w3" => AnyView::new(motion()),
+        "w4" => AnyView::new(text_bench()),
+        "w5" => AnyView::new(motion_capacity()),
+        "w6" => AnyView::new(feed_capacity()),
+        _ => unreachable!("workload() only yields w1..=w6"),
     };
     // The selected workload id rides on a 1x1 text element as its
     // accessibility identifier — the runner asserts `bench-workload-<id>`
@@ -566,12 +377,17 @@ fn main() -> impl View {
     // it out of the rendered frame. The text comes FIRST so the
     // accessibility resolver reaches it before descending into the
     // content's subtree (the 10k-row list exposes every row to AX).
-    zstack((
+    let root = zstack((
         text(format!("bench-workload-{w}"))
             .a11y_id(Str::from(format!("bench-workload-{w}")))
             .size(1.0, 1.0),
         content,
-    ))
+    ));
+    // `ready` fires when the workload view first appears — the earliest
+    // rendered frame — never at view construction.
+    #[cfg(any(target_os = "ios", target_os = "macos"))]
+    let root = root.on_appear(move || bench_notify::post_ready(w));
+    root
 }
 
 pub fn app(env: Environment) -> App {

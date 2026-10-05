@@ -23,17 +23,17 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     window = UIWindow(frame: UIScreen.main.bounds)
 
-    // Launch argument `-bench-workload W2` lands in NSUserDefaults'
+    // Launch argument `-bench-workload w2` lands in NSUserDefaults'
     // NSArgumentDomain. Missing or unrecognized workload traps — a wrong
     // page must fail, never silently measure W1. Scrolling is the
     // runner's OS-level input; no drive argument exists anymore.
     let rawWorkload = UserDefaults.standard.string(forKey: "bench-workload")
     guard let workload = rawWorkload,
-      ["W1", "W2", "W3", "W4", "W5", "W6"].contains(workload)
+      ["w1", "w2", "w3", "w4", "w5", "w6"].contains(workload)
     else {
       fatalError(
         "missing or unrecognized -bench-workload launch argument "
-          + "(got \(rawWorkload ?? "nil")); expected W1..=W6")
+          + "(got \(rawWorkload ?? "nil")); expected w1..=w6")
     }
 
     // The runner waits for `dev.bench.ready.<bundle-id>.<W>` to confirm
@@ -41,9 +41,14 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     // for minutes, so notify carries the assertion.
     notify_post("dev.bench.ready.\(Bundle.main.bundleIdentifier ?? "unknown").\(workload)")
 
-    let initialProps: [String: Any] = [
+    var initialProps: [String: Any] = [
       "workload": workload
     ]
+    if let step = UserDefaults.standard.string(forKey: "bench-step"),
+      let n = Int(step)
+    {
+      initialProps["step"] = n
+    }
 
     factory.startReactNative(
       withModuleName: "RnBench",

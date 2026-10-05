@@ -22,7 +22,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -41,10 +40,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
@@ -94,10 +92,13 @@ class XorShift64(private var s: Long) {
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Missing or unrecognized workload traps — never silently render W1.
-        val workload = intent.getStringExtra("workload")?.uppercase()
+        // Workload ids are exact lowercase strings — anything else traps.
+        val workload = intent.getStringExtra("workload")
             ?: throw IllegalStateException(
-                "missing 'workload' intent extra; expected W1..W6")
+                "missing 'workload' intent extra; expected w1..w6")
+        if (workload !in setOf("w1", "w2", "w3", "w4", "w5", "w6"))
+            throw IllegalStateException(
+                "unrecognized workload extra '$workload'; expected w1..w6")
         // W5/W6 pin one ladder step per launch — a missing or
         // out-of-ladder step traps, never silently a wrong count.
         val step = if (intent.hasExtra("step")) intent.getIntExtra("step", -1) else null
@@ -105,14 +106,14 @@ class MainActivity : ComponentActivity() {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     when (workload) {
-                        "W1" -> W1Hello()
-                        "W2" -> W2Feed()
-                        "W3" -> W3Motion(200)
-                        "W4" -> W4Text()
-                        "W5" -> W3Motion(ladderStep("W5", step, W5_STEPS))
-                        "W6" -> W6FeedCapacity(ladderStep("W6", step, W6_STEPS))
+                        "w1" -> W1Hello()
+                        "w2" -> W2Feed()
+                        "w3" -> W3Motion(200)
+                        "w4" -> W4Text()
+                        "w5" -> W3Motion(ladderStep("w5", step, W5_STEPS))
+                        "w6" -> W6FeedCapacity(ladderStep("w6", step, W6_STEPS))
                         else -> throw IllegalStateException(
-                            "unrecognized workload extra '$workload'")
+                            "unreachable: workload validated as w1..w6")
                     }
                 }
             }
@@ -151,7 +152,10 @@ fun FeedRow(i: Int, complexity: Int = 0) {
                 .clip(CircleShape)
                 .background(palette[i % palette.size])
         )
-        Column(modifier = Modifier.weight(1f)) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
             Text("Row title $i", fontSize = 16.sp)
             Text(
                 "Second line of subtitle for item $i",
@@ -161,16 +165,18 @@ fun FeedRow(i: Int, complexity: Int = 0) {
         }
         // W6's per-row load: `complexity` sibling cells of a small rounded
         // rect plus a "c{j}" caption, between the text column and the
-        // timestamp — same placement as every other contestant.
-        for (j in 0 until complexity) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Box(
-                    modifier = Modifier
-                        .size(14.dp)
-                        .clip(RoundedCornerShape(4.dp))
-                        .background(palette[(i + j) % palette.size])
-                )
-                Text("c$j", fontSize = 12.sp)
+        // timestamp — cells separated by 4, the group by the row's 12.
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            for (j in 0 until complexity) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Box(
+                        modifier = Modifier
+                            .size(14.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(palette[(i + j) % palette.size])
+                    )
+                    Text("c$j", fontSize = 12.sp)
+                }
             }
         }
         Text(timestamp(i), fontSize = 13.sp)
@@ -231,10 +237,16 @@ fun WanderRect(i: Int) {
     }
     Box(
         modifier = Modifier
-            .offset(x.value.dp, y.value.dp)
-            .rotate(rot.value)
-            .alpha(opa.value)
             .size(RECT.dp)
+            .graphicsLayer {
+                // Reading the Animatables inside the layer block defers the
+                // reads to the draw/layout phase — value changes re-run only
+                // the block, not composition.
+                translationX = x.value * density
+                translationY = y.value * density
+                rotationZ = rot.value
+                alpha = opa.value
+            }
             .clip(RoundedCornerShape(10.dp))
             .background(palette[i % palette.size])
     )
@@ -270,12 +282,15 @@ fun W4Text() {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         for (i in 0 until 50) {
-            Text(paragraphs[i % paragraphs.size], fontSize = 16.sp)
+            Text(
+                paragraphs[i % paragraphs.size],
+                fontSize = 16.sp,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+            )
         }
     }
 }

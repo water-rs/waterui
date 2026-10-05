@@ -26,78 +26,48 @@ func rowColor(_ i: Int) -> UIColor {
 func timestamp(_ i: Int) -> String { String(format: "%02d:%02d", (i / 60) % 24, i % 60) }
 
 enum Bench {
-    /// `-bench-workload W1..=W6`, read through NSUserDefaults'
-    /// NSArgumentDomain. Missing or unrecognized values trap — a wrong
-    /// page must fail, never silently measure W1.
+    /// `-bench-workload w1..=w6` — workload ids are exact lowercase
+    /// strings; any other value traps, never silently measure w1.
     static let workload: String = {
         let raw = UserDefaults.standard.string(forKey: "bench-workload")
-        guard let raw, ["W1", "W2", "W3", "W4", "W5", "W6"].contains(raw) else {
+        guard let raw, ["w1", "w2", "w3", "w4", "w5", "w6"].contains(raw) else {
             fatalError(
                 "missing or unrecognized -bench-workload launch argument "
-                    + "(got \(raw ?? "nil")); expected W1..=W6")
+                    + "(got \(raw ?? "nil")); expected w1..=w6")
         }
         BenchNotify.postReady(raw)
         return raw
     }()
+
+    /// `-bench-step N` — one launch renders one capacity step; a
+    /// missing, malformed or off-ladder step traps (w5/w6 only).
+    static let capacityStep: Int? = {
+        let raw = UserDefaults.standard.integer(forKey: "bench-step")
+        return raw == 0 ? nil : raw
+    }()
+
+    static func step(_ ladder: [Int]) -> Int {
+        guard let step = capacityStep, ladder.contains(step) else {
+            fatalError(
+                "missing or off-ladder -bench-step (got "
+                    + "\(capacityStep.map(String.init) ?? "nil")); "
+                    + "expected one of \(ladder)")
+        }
+        return step
+    }
 }
 
-/// Darwin-notification handshake for capacity-ladder pacing (W5/W6). AX
-/// queries cannot carry the signal: a workload can stall the app's
-/// accessibility server for tens of seconds while it materializes, and a
-/// timed-out query fails the test instead of driving it. The runner
-/// posts `dev.bench.begin` inside its `measure` block; the app posts
-/// `dev.bench.done` when the ladder finishes. Scrolling is driven from
-/// outside the app by OS-level input — the app never scrolls itself.
+/// Darwin-notification readiness handshake. AX queries cannot
+/// carry the signal: a workload can stall the app's accessibility
+/// server for tens of seconds while it materializes, and a timed-out
+/// query fails the test instead of driving it. The app posts
+/// `dev.bench.done` from its own workload logic after the declared
+/// settle+hold following the first frame — no native timer substitutes.
 enum BenchNotify {
-    private static var token: Int32 = 0
-    private static var armed = false
-
-    /// Debug trail for the handshake: a check-token poll once went
-    /// permanently dead in an XCUITest launch context while notify_post
-    /// still worked — arm/fire/ack are logged to tmp/bench-app.log so a
-    /// failure report reads the file instead of reproducing a deadlock.
-    static func dbg(_ msg: String) {
-        let line = "\(Date().timeIntervalSince1970) \(msg)\n"
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("bench-app.log")
-        if let h = try? FileHandle(forWritingTo: url) {
-            h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close()
-        } else {
-            try? Data(line.utf8).write(to: url)
-        }
-    }
-
-    /// Runs `block` on the main queue on each `dev.bench.begin` post.
-    /// notify_register_dispatch delivers the post as a real mach wake —
-    /// a check-token `notify_check` poll on the main queue can starve under
-    /// XCUITest's launch context while `notify_post` still works.
-    static func onBegin(_ block: @escaping () -> Void) {
-        guard !armed else { return }
-        armed = true
-        let st = notify_register_dispatch("dev.bench.begin", &token,
-                                          DispatchQueue.main) { _ in
-            dbg("begin heard")
-            notify_post("dev.bench.ack")  // stops the runner's reposts
-            // Every observed post is a drive request — measure() invokes
-            // its block once per iteration plus a warm-up, each needing a
-            // real program. Overlap is prevented by the `driving` guard
-            // in drive(), and the runner stops posting after the ack, so
-            // a backlog is bounded to one in-flight repost.
-            block()
-        }
-        dbg("onBegin armed status=\(st)")
-        guard st == UInt32(NOTIFY_STATUS_OK) else {
-            dbg("onBegin dispatch registration FAILED status=\(st)")
-            return
-        }
-    }
-
+    /// Posts `dev.bench.done` — a capacity launch's measurement ends.
     static func postDone() { notify_post("dev.bench.done") }
 
-    /// Signals `dev.bench.step` — a capacity-ladder step started.
-    static func postStep() { notify_post("dev.bench.step") }
-
-    /// Posts `dev.bench.ready.<bundle-id>.<W>` once the workload argument
+    /// Posts `dev.bench.ready.<bundle-id>.<w>` once the workload argument
     /// has resolved — the runner waits for this post to confirm the
     /// argument arrived, instead of a deep AX query (the 10k-row feed's
     /// accessibility tree takes minutes to materialize).
@@ -106,29 +76,14 @@ enum BenchNotify {
         notify_post("dev.bench.ready.\(bid).\(workload)")
     }
 
-    /// Dispatch tokens carry no latched flag to consume — a begin that
-    /// raced the ack arrives as an ordinary post and is filtered by the
-    /// `didRun`/`driving` guards. Kept for call-site symmetry.
-    static func discardLatchedBegin() {}
-}
-
-/// Capacity-ladder step record: `step <k> n=<param> t=<unix-seconds>`
-/// appended to tmp/bench-steps.log plus a `dev.bench.step` post — the
-/// runner pulls the file and slices its xctrace recording by `t`.
-func logBenchStep(_ step: Int, param: Int) {
-    let line = String(
-        format: "step %d n=%d t=%.3f\n", step, param,
-        Date().timeIntervalSince1970)
-    let path = NSTemporaryDirectory() + "bench-steps.log"
-    if !FileManager.default.fileExists(atPath: path) {
-        FileManager.default.createFile(atPath: path, contents: nil)
+    /// Capacity launches post `done` settle 1 s + hold 4 s after the
+    /// first frame (viewDidAppear is the first-frame boundary for a
+    /// pinned step launch — METHOD, WORKLOADS.md).
+    static func armDoneAfterHold() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
+            BenchNotify.postDone()
+        }
     }
-    if let h = FileHandle(forWritingAtPath: path) {
-        h.seekToEndOfFile()
-        h.write(Data(line.utf8))
-        try? h.close()
-    }
-    BenchNotify.postStep()
 }
 
 final class RootViewController: UIViewController {
@@ -137,11 +92,11 @@ final class RootViewController: UIViewController {
         view.backgroundColor = .systemBackground
         let child: UIViewController
         switch Bench.workload {
-        case "W2": child = FeedViewController()
-        case "W3": child = MotionViewController()
-        case "W4": child = TextBenchViewController()
-        case "W5": child = MotionCapacityViewController()
-        case "W6": child = FeedCapacityViewController()
+        case "w2": child = FeedViewController()
+        case "w3": child = MotionViewController()
+        case "w4": child = TextBenchViewController()
+        case "w5": child = MotionCapacityViewController()
+        case "w6": child = FeedCapacityViewController()
         default: child = HelloViewController()
         }
         // The runner asserts this identifier after launch. A plain container
@@ -211,6 +166,7 @@ final class FeedCell: UITableViewCell {
         let lines = UIStackView(arrangedSubviews: [title, subtitle])
         lines.axis = .vertical
         lines.alignment = .leading
+        lines.spacing = 4
         let row = UIStackView(arrangedSubviews: [avatar, lines, time])
         row.spacing = 12
         row.alignment = .center
@@ -260,6 +216,21 @@ final class MotionViewController: UIViewController {
     private let fieldW: CGFloat = 720
     private let fieldH: CGFloat = 440
 
+    private lazy var field: UIView = {
+        let f = UIView(frame: CGRect(x: 0, y: 0, width: fieldW, height: fieldH))
+        f.clipsToBounds = true
+        f.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(f)
+        NSLayoutConstraint.activate([
+            f.widthAnchor.constraint(equalToConstant: fieldW),
+            f.heightAnchor.constraint(equalToConstant: fieldH),
+            f.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            f.topAnchor.constraint(
+                equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 16),
+        ])
+        return f
+    }()
+
     override func viewDidLoad() {
         super.viewDidLoad()
         for i in 0..<200 {
@@ -272,7 +243,7 @@ final class MotionViewController: UIViewController {
             v.layer.cornerRadius = 10
             v.transform = CGAffineTransform(rotationAngle: rng.next() * .pi * 2)
             v.alpha = 0.3 + rng.next() * 0.7
-            view.addSubview(v)
+            field.addSubview(v)
             animate(v, index: i)
         }
     }
@@ -284,8 +255,9 @@ final class MotionViewController: UIViewController {
             UIView.animate(
                 withDuration: duration, delay: 0, options: [.curveEaseInOut, .allowUserInteraction]
             ) {
-                v.frame.origin = CGPoint(
-                    x: rng.next() * (self.fieldW - 40), y: rng.next() * (self.fieldH - 40))
+                v.center = CGPoint(
+                    x: rng.next() * (self.fieldW - 40) + 20,
+                    y: rng.next() * (self.fieldH - 40) + 20)
                 v.transform = CGAffineTransform(rotationAngle: rng.next() * .pi * 2)
                 v.alpha = 0.3 + rng.next() * 0.7
             } completion: { _ in step() }
@@ -357,24 +329,39 @@ final class TextBenchViewController: UIViewController {
 
 // MARK: - W5 Motion capacity
 
-/// W3's scene with the rect count doubled per step (200…25600). The ladder
-/// self-paces on `dev.bench.begin`: set count → logBenchStep → 5 s hold.
+/// W3's scene at one pinned ladder step (200…25600) — one launch renders
+/// one step; `done` is posted from workload logic after the declared
+/// settle+hold following the first frame.
 final class MotionCapacityViewController: UIViewController {
     private let fieldW: CGFloat = 720
     private let fieldH: CGFloat = 440
+
+    private lazy var field: UIView = {
+        let f = UIView(frame: CGRect(x: 0, y: 0, width: fieldW, height: fieldH))
+        f.clipsToBounds = true
+        f.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(f)
+        NSLayoutConstraint.activate([
+            f.widthAnchor.constraint(equalToConstant: fieldW),
+            f.heightAnchor.constraint(equalToConstant: fieldH),
+            f.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            f.topAnchor.constraint(
+                equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 16),
+        ])
+        return f
+    }()
+
     private let steps = [200, 400, 800, 1600, 3200, 6400, 12800, 25600]
     private var rects: [UIView] = []
-    private var count = 0
-    private var driving = false
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        setCount(steps[0])
+        setCount(Bench.step(steps))
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        BenchNotify.onBegin { [weak self] in self?.drive() }
+        BenchNotify.armDoneAfterHold()
     }
 
     private func setCount(_ n: Int) {
@@ -394,7 +381,7 @@ final class MotionCapacityViewController: UIViewController {
             v.layer.cornerRadius = 10
             v.transform = CGAffineTransform(rotationAngle: rng.next() * .pi * 2)
             v.alpha = 0.3 + rng.next() * 0.7
-            view.addSubview(v)
+            field.addSubview(v)
             rects.append(v)
             animate(v, index: i)
         }
@@ -410,9 +397,9 @@ final class MotionCapacityViewController: UIViewController {
                 withDuration: duration, delay: 0,
                 options: [.curveEaseInOut, .allowUserInteraction]
             ) {
-                v.frame.origin = CGPoint(
-                    x: rng.next() * (self.fieldW - 40),
-                    y: rng.next() * (self.fieldH - 40))
+                v.center = CGPoint(
+                    x: rng.next() * (self.fieldW - 40) + 20,
+                    y: rng.next() * (self.fieldH - 40) + 20)
                 v.transform = CGAffineTransform(rotationAngle: rng.next() * .pi * 2)
                 v.alpha = 0.3 + rng.next() * 0.7
             } completion: { [weak v] _ in
@@ -423,24 +410,6 @@ final class MotionCapacityViewController: UIViewController {
         step()
     }
 
-    private func drive() {
-        guard !driving else { return }
-        driving = true
-        var delay: TimeInterval = 0
-        for (i, n) in steps.enumerated() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                [weak self] in
-                self?.setCount(n)
-                logBenchStep(i, param: n)
-            }
-            delay += 5.0
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            self?.driving = false
-            BenchNotify.discardLatchedBegin()
-            BenchNotify.postDone()
-        }
-    }
 }
 
 // MARK: - W6 Feed capacity
@@ -468,6 +437,7 @@ final class FeedCapacityCell: UITableViewCell {
         let lines = UIStackView(arrangedSubviews: [title, subtitle])
         lines.axis = .vertical
         lines.alignment = .leading
+        lines.spacing = 4
         let row = UIStackView(arrangedSubviews: [avatar, lines, extras, time])
         row.spacing = 12
         row.alignment = .center
@@ -490,39 +460,49 @@ final class FeedCapacityCell: UITableViewCell {
 
     required init?(coder: NSCoder) { fatalError() }
 
+    private var cells: [UIView] = []
+
     func configure(_ i: Int, complexity: Int) {
         avatar.backgroundColor = rowColor(i)
         title.text = "Row title \(i)"
         subtitle.text = "Second line of subtitle for item \(i)"
         time.text = timestamp(i)
-        extras.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        for j in 0..<complexity {
+        // Cells are reused on bind — the count is fixed for the launch,
+        // so rebinds repaint each cell rather than rebuild it.
+        while cells.count < complexity {
             let shape = UIView(
                 frame: CGRect(x: 0, y: 0, width: 14, height: 14))
-            shape.backgroundColor = rowColor(i + j)
             shape.layer.cornerRadius = 4
             shape.widthAnchor.constraint(equalToConstant: 14).isActive = true
             shape.heightAnchor.constraint(equalToConstant: 14).isActive = true
             let cap = UILabel()
-            cap.text = "c\(j)"
             cap.font = .systemFont(ofSize: 12)
             let pair = UIStackView(arrangedSubviews: [shape, cap])
             pair.axis = .vertical
             pair.alignment = .center
+            cells.append(pair)
             extras.addArrangedSubview(pair)
+        }
+        while cells.count > complexity {
+            extras.removeArrangedSubview(cells.removeLast())
+        }
+        for (j, pair) in cells.enumerated() {
+            (pair.arrangedSubviews[0]).backgroundColor = rowColor(i + j)
+            (pair.arrangedSubviews[1] as! UILabel).text = "c\(j)"
         }
     }
 }
 
-/// W2's rows of doubling complexity (1…64); the ladder self-paces on the
-/// begin/done handshake while the runner drives flings during each hold.
+/// W2's rows at one pinned complexity (1…64) — one launch renders one
+/// step; `done` is posted from workload logic after the declared
+/// settle+hold following the first frame.
 final class FeedCapacityViewController: UITableViewController {
     private let steps = [1, 2, 4, 8, 16, 32, 64]
     private var complexity = 1
-    private var driving = false
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        complexity = Bench.step(steps)
         tableView.register(
             FeedCapacityCell.self,
             forCellReuseIdentifier: FeedCapacityCell.reuseID)
@@ -530,7 +510,7 @@ final class FeedCapacityViewController: UITableViewController {
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        BenchNotify.onBegin { [weak self] in self?.drive() }
+        BenchNotify.armDoneAfterHold()
     }
 
     override func tableView(_ tv: UITableView, numberOfRowsInSection section: Int)
@@ -543,28 +523,6 @@ final class FeedCapacityViewController: UITableViewController {
             for: indexPath) as! FeedCapacityCell
         cell.configure(indexPath.row, complexity: complexity)
         return cell
-    }
-
-    private func drive() {
-        guard !driving else { return }
-        driving = true
-        var delay: TimeInterval = 0
-        for (i, k) in steps.enumerated() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                [weak self] in
-                guard let self else { return }
-                self.complexity = k
-                logBenchStep(i, param: k)
-                self.tableView.reloadData()
-            }
-            // 5 s hold: the runner drives the fling protocol from outside.
-            delay += 5.0
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            self?.driving = false
-            BenchNotify.discardLatchedBegin()
-            BenchNotify.postDone()
-        }
     }
 
 }

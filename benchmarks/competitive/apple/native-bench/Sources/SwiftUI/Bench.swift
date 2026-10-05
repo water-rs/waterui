@@ -4,51 +4,20 @@
 // argument `-bench-workload W1|W2|W3|W4|W5|W6`, read through
 // NSUserDefaults' NSArgumentDomain. Missing or unrecognized values trap.
 // Scrolling is driven from outside the app by OS-level input — the app
-// never scrolls itself. The `dev.bench.begin/ack/step/done` handshake is
-// capacity-ladder pacing only (W5/W6).
+// never scrolls itself. Capacity workloads are paced one launch per step
+// (`-bench-step N`); each app posts `dev.bench.done` after its own
+// settle+hold completes.
 
 import SwiftUI
 
-/// Darwin-notification handshake for capacity-ladder pacing (W5/W6). AX
-/// queries cannot carry it: a workload can stall the app's accessibility
-/// server for tens of seconds while it materializes (the 10k-row feed),
-/// and a timed-out query fails the test instead of driving it. The
-/// runner posts `dev.bench.begin` inside its `measure` block and waits
-/// for the app to post `dev.bench.done` when the ladder finishes.
+/// Darwin-notification readiness handshake. AX queries cannot carry
+/// it: a workload can stall the app's accessibility server for tens of
+/// seconds while it materializes (the 10k-row feed), and a timed-out
+/// query fails the test instead of driving it.
 enum BenchNotify {
-    private static var token: Int32 = 0
-    private static var armed = false
-
-    /// Suspends until the runner posts `dev.bench.begin` (50 ms poll). The
-    /// check token is kept alive: each `notify_post` re-fires it, so XCTest
-    /// may invoke the measure block more than once per run.
-    static func awaitBegin() async {
-        if !armed {
-            guard notify_register_check("dev.bench.begin", &token)
-                    == UInt32(NOTIFY_STATUS_OK)
-            else { return }
-            var stale: Int32 = 0
-            // The first check reports the flag's current state — consume any
-            // stale post left over from a previous run.
-            notify_check(token, &stale)
-            armed = true
-        }
-        var fired: Int32 = 0
-        while fired == 0 {
-            notify_check(token, &fired)
-            try? await Task.sleep(nanoseconds: 50_000_000)
-        }
-        notify_post("dev.bench.ack")  // stops the runner's reposts
-    }
-
     static func postDone() { notify_post("dev.bench.done") }
 
-    /// Signals `dev.bench.step` — a capacity-ladder step started. The step
-    /// log is what the runner actually slices on; the post is a live
-    /// signal for the XCTest driver.
-    static func postStep() { notify_post("dev.bench.step") }
-
-    /// Posts `dev.bench.ready.<bundle-id>.<W>` once the workload argument
+    /// Posts `dev.bench.ready.<bundle-id>.<w>` once the workload argument
     /// has resolved — the runner waits for this post to confirm the
     /// argument arrived, instead of a deep AX query (the 10k-row feed's
     /// accessibility tree takes minutes to materialize).
@@ -56,38 +25,11 @@ enum BenchNotify {
         let bid = Bundle.main.bundleIdentifier ?? "unknown"
         notify_post("dev.bench.ready.\(bid).\(workload)")
     }
-
-    /// Consumes a begin that latched while a program ran (a repost that
-    /// raced the ack). The runner stops posting once it sees done, so a flag
-    /// already set at re-arm time is backlog, not a new signal.
-    static func discardLatchedBegin() {
-        guard armed else { return }
-        var fired: Int32 = 0
-        notify_check(token, &fired)
-    }
-}
-
-/// Capacity-ladder step record: `step <k> n=<param> t=<unix-seconds>`
-/// appended to tmp/bench-steps.log plus a `dev.bench.step` post — the
-/// runner pulls the file and slices its xctrace recording by `t`.
-func logBenchStep(_ step: Int, param: Int) {
-    let line = String(
-        format: "step %d n=%d t=%.3f\n",
-        step, param, Date().timeIntervalSince1970)
-    let path = NSTemporaryDirectory() + "bench-steps.log"
-    if let h = FileHandle(forWritingAtPath: path)
-        ?? (FileManager.default.createFile(atPath: path, contents: nil)
-            ? FileHandle(forWritingAtPath: path) : nil) {
-        h.seekToEndOfFile()
-        h.write(Data(line.utf8))
-        try? h.close()
-    }
-    BenchNotify.postStep()
 }
 
 enum Workload: String {
-    case hello = "W1", feed = "W2", motion = "W3", text = "W4"
-    case motionCapacity = "W5", feedCapacity = "W6"
+    case hello = "w1", feed = "w2", motion = "w3", text = "w4"
+    case motionCapacity = "w5", feedCapacity = "w6"
 
     static func current() -> Workload {
         let raw = UserDefaults.standard.string(forKey: "bench-workload")
@@ -129,6 +71,26 @@ extension Color {
     }
 }
 
+/// `-bench-step N` — one launch renders one capacity step; a missing,
+/// malformed or off-ladder step traps (w5/w6 only).
+func benchStep(_ ladder: [Int]) -> Int {
+    let raw = UserDefaults.standard.integer(forKey: "bench-step")
+    guard raw != 0, ladder.contains(raw) else {
+        fatalError(
+            "missing or off-ladder -bench-step (got \(raw)); "
+                + "expected one of \(ladder)")
+    }
+    return raw
+}
+
+/// Capacity launches post `done` from their own workload logic: settle
+/// 1 s + hold 4 s after the view appears (METHOD, WORKLOADS.md).
+func postDoneAfterHold() {
+    DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
+        BenchNotify.postDone()
+    }
+}
+
 func timestamp(for index: Int) -> String {
     String(format: "%02d:%02d", (index / 60) % 24, index % 60)
 }
@@ -138,10 +100,6 @@ struct BenchApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .onAppear {
-                    // First-frame marker for the external launch measurement.
-                    DispatchQueue.main.async { print("BENCH_READY") }
-                }
         }
     }
 }
@@ -185,7 +143,7 @@ struct FeedView: View {
         List(0..<10_000, id: \.self) { i in
             HStack(spacing: 12) {
                 Circle().fill(rowColors[i % 6]).frame(width: 40, height: 40)
-                VStack(alignment: .leading) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text("Row title \(i)").font(.system(size: 16))
                     Text("Second line of subtitle for item \(i)")
                         .font(.system(size: 13)).foregroundStyle(.secondary)
@@ -296,46 +254,34 @@ struct TextBenchView: View {
 
 // MARK: - W5 Motion capacity
 
-/// W3's scene with the rect count doubled per step (200…25600). After
-/// `dev.bench.begin` the ladder sets `@State count`, logs the step, holds
-/// 5 s, advances; `dev.bench.done` ends it. Same cadence as every other
-/// contestant — step boundaries come from bench-steps.log.
+/// W3's scene at one pinned ladder step (200…25600) — one launch renders
+/// one step; `done` is posted from workload logic after the declared
+/// settle+hold following the first frame.
 struct MotionCapacityView: View {
     private static let steps = [200, 400, 800, 1600, 3200, 6400, 12800, 25600]
-    @State private var count = 200
+    private let count = benchStep(Self.steps)
     var body: some View {
         ZStack(alignment: .topLeading) {
             ForEach(0..<count, id: \.self) { MotionRect(index: $0) }
         }
         .frame(width: fieldW, height: fieldH)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .task {
-            while true {
-                await BenchNotify.awaitBegin()
-                for (i, n) in Self.steps.enumerated() {
-                    count = n
-                    logBenchStep(i, param: n)
-                    try? await Task.sleep(nanoseconds: 5_000_000_000)
-                }
-                BenchNotify.postDone()
-                BenchNotify.discardLatchedBegin()
-            }
-        }
+        .onAppear { postDoneAfterHold() }
     }
 }
 
 // MARK: - W6 Feed capacity
 
-/// W2's fling program over rows with `complexity` nested text+shape
-/// children per row (1…64). Two full sweeps per step inside the 5 s hold.
+/// W2's fling program over rows at one pinned complexity (1…64) — one
+/// launch renders one step.
 struct FeedCapacityView: View {
     private static let steps = [1, 2, 4, 8, 16, 32, 64]
-    @State private var complexity = 1
+    private let complexity = benchStep(Self.steps)
     var body: some View {
         List(0..<10_000, id: \.self) { i in
             HStack(spacing: 12) {
                 Circle().fill(rowColors[i % 6]).frame(width: 40, height: 40)
-                VStack(alignment: .leading) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text("Row title \(i)").font(.system(size: 16))
                     Text("Second line of subtitle for item \(i)")
                         .font(.system(size: 13)).foregroundStyle(.secondary)
@@ -349,23 +295,12 @@ struct FeedCapacityView: View {
                         Text("c\(j)").font(.system(size: 12))
                     }
                 }
-                Text(timestamp(for: i)).font(.caption).foregroundStyle(.secondary)
+                Text(timestamp(for: i))
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 16).padding(.vertical, 10)
         }
-        .task {
-            // Ladder pacing only: step the complexity, hold 5 s while the
-            // runner drives the fling protocol from outside the app.
-            while true {
-                await BenchNotify.awaitBegin()
-                for (i, k) in Self.steps.enumerated() {
-                    complexity = k
-                    logBenchStep(i, param: k)
-                    try? await Task.sleep(nanoseconds: 5_000_000_000)
-                }
-                BenchNotify.postDone()
-                BenchNotify.discardLatchedBegin()
-            }
-        }
+        .onAppear { postDoneAfterHold() }
     }
 }

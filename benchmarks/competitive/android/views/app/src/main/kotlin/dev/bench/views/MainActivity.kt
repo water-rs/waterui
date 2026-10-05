@@ -34,16 +34,16 @@ fun timestamp(i: Int): String = "%02d:%02d".format((i / 60) % 24, i % 60)
 // Canonical W4 text — benchmarks/competitive/lib/paragraphs.txt, embedded
 // (an app cannot read the suite's file at runtime).
 val paragraphs = arrayOf(
-    "The quick brown fox jumps over the lazy dog. 。🦊🐶 Packing my box with five dozen liquor jugs.",
-    "WaterUI renders native widgets from a single Rust view tree. 。🌊 Fine-grained reactivity updates only the widgets that read the value.",
-    "Almost all programming can be viewed as state management. ，。📚 Signals flow through the graph and wake the views that observe them.",
-    "Sphinx of black quartz, judge my vow. のテキストもぜます。🗻 Typography is the visual component of the written word.",
-    "How vexingly quick daft zebras jump! ，。🦓 The first principle is that you must not fool yourself.",
-    "Bright vixens jump; dozy fowl quack. ，。🐦 Rendering pipelines measure progress in milliseconds per frame.",
-    "。Benchmarks that are honest make optimisation honest. 📏",
-    "Two driven jocks help fax my big quiz. ，。🌲 Lazily built lists keep memory flat while content grows without bound.",
-    "The five boxing wizards jump quickly. ，。🧙 Every frame has a budget of 8.33 milliseconds at 120 Hz.",
-    "Jackdaws love my big sphinx of quartz. ，。🐦‍⬛ Measure, then optimise; never optimise on faith alone.",
+    "The quick brown fox jumps over the lazy dog. 敏捷的棕色狐狸跳過懶惰的狗。🦊🐶 Packing my box with five dozen liquor jugs.",
+    "WaterUI renders native widgets from a single Rust view tree. 水のインターフェースはネイティブウィジェットを描画する。🌊",
+    "Almost all programming can be viewed as state management. 几乎所有的编程都可以视为状态管理。📚 Signals flow through the graph.",
+    "Sphinx of black quartz, judge my vow. 黒い水晶のスフィンクス、私の誓いを裁け。🗻 Typography is the visual component of the written word.",
+    "How vexingly quick daft zebras jump! 빠른 얼룩말이 얼마나 성가시게 뛰는가! 🦓 The first principle is that you must not fool yourself.",
+    "Bright vixens jump; dozy fowl quack. 밝은 여우가 뛰고 졸린 새가 꽥꽥 운다. 🐦 Rendering pipelines measure progress in milliseconds per frame.",
+    "ベンチマークが正直であれば最適化も正直になる。Benchmarks that are honest make optimisation honest. 📏",
+    "Two driven jocks help fax my big quiz. 두 명의 조키가 내 큰 퀴즈를 팩스로 보내는 것을 돕는다. 🌲 Lazily built lists keep memory flat.",
+    "The five boxing wizards jump quickly. 五個拳擊巫師跳得很快。🧙 Every frame has a budget of 8.33 milliseconds at 120 Hz.",
+    "Jackdaws love my big sphinx of quartz. 寒鸦喜欢我巨大的石英斯芬克斯。🐦‍⬛ Measure, then optimise; never optimise on faith alone.",
 )
 
 // Canonical W3/W5 geometry: rects wander a fixed 720x440 logical field.
@@ -85,22 +85,25 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Missing or unrecognized workload traps — never silently render W1.
-        val workload = intent.getStringExtra("workload")?.uppercase()
+        // Workload ids are exact lowercase strings — anything else traps.
+        val workload = intent.getStringExtra("workload")
             ?: throw IllegalStateException(
-                "missing 'workload' intent extra; expected W1..W6")
+                "missing 'workload' intent extra; expected w1..w6")
+        if (workload !in setOf("w1", "w2", "w3", "w4", "w5", "w6"))
+            throw IllegalStateException(
+                "unrecognized workload extra '$workload'; expected w1..w6")
         // W5/W6 pin one ladder step per launch — a missing or
         // out-of-ladder step traps, never silently a wrong count.
         val step = if (intent.hasExtra("step")) intent.getIntExtra("step", -1) else null
         when (workload) {
-            "W1" -> w1()
-            "W2" -> w2()
-            "W3" -> w3(200)
-            "W4" -> w4()
-            "W5" -> w3(ladderStep("W5", step, W5_STEPS))
-            "W6" -> w6(ladderStep("W6", step, W6_STEPS))
+            "w1" -> w1()
+            "w2" -> w2()
+            "w3" -> w3(200)
+            "w4" -> w4()
+            "w5" -> w3(ladderStep("w5", step, W5_STEPS))
+            "w6" -> w6(ladderStep("w6", step, W6_STEPS))
             else -> throw IllegalStateException(
-                "unrecognized workload extra '$workload'")
+                "unreachable: workload validated as w1..w6")
         }
     }
 
@@ -142,7 +145,10 @@ class MainActivity : Activity() {
                 tag = "subtitle"; textSize = 13f
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
-            })
+            }, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { topMargin = 4.dp() })
         }
         val extras = LinearLayout(this).apply {
             tag = "extras"; orientation = LinearLayout.HORIZONTAL
@@ -154,7 +160,10 @@ class MainActivity : Activity() {
             setPadding(16.dp(), 10.dp(), 16.dp(), 10.dp())
             addView(avatar)
             addView(texts)
-            addView(extras)
+            addView(extras, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { marginStart = 8.dp(); marginEnd = 12.dp() })
             addView(ts)
         }
     }
@@ -168,30 +177,33 @@ class MainActivity : Activity() {
         texts.findViewWithTag<TextView>("title").text = "Row title $i"
         texts.findViewWithTag<TextView>("subtitle").text =
             "Second line of subtitle for item $i"
-        // W6 extras are per-position (labels embed i and j), so they are
-        // rebuilt on bind rather than created in onCreateViewHolder.
+        // W6 cells are reused on bind — the count is fixed for the
+        // launch, so rebinds repaint each cell rather than rebuild it.
         val extras = row.findViewWithTag<LinearLayout>("extras")
-        extras.removeAllViews()
-        for (j in 0 until complexity) {
+        while (extras.childCount < complexity) {
             val cell = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER_HORIZONTAL
-                val sq = View(this@MainActivity).apply {
-                    background = GradientDrawable().apply {
-                        cornerRadius = 4 * resources.displayMetrics.density
-                        setColor(palette[(i + j) % palette.size])
-                    }
-                }
-                addView(sq, LinearLayout.LayoutParams(14.dp(), 14.dp()))
-                addView(TextView(this@MainActivity).apply {
-                    textSize = 12f
-                    text = "c$j"
-                })
+                tag = "cell"
+                addView(View(this@MainActivity), LinearLayout.LayoutParams(
+                    14.dp(), 14.dp()))
+                addView(TextView(this@MainActivity).apply { textSize = 12f })
             }
             extras.addView(cell, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { marginStart = 12.dp() })
+            ).apply { marginStart = 4.dp() })
+        }
+        while (extras.childCount > complexity) {
+            extras.removeViewAt(extras.childCount - 1)
+        }
+        for (j in 0 until complexity) {
+            val cell = extras.getChildAt(j) as LinearLayout
+            cell.getChildAt(0).background = GradientDrawable().apply {
+                cornerRadius = 4 * resources.displayMetrics.density
+                setColor(palette[(i + j) % palette.size])
+            }
+            (cell.getChildAt(1) as TextView).text = "c$j"
         }
         row.findViewWithTag<TextView>("ts").text = timestamp(i)
     }
@@ -310,11 +322,11 @@ class MainActivity : Activity() {
     private fun w4() {
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(16.dp(), 10.dp(), 16.dp(), 10.dp())
         }
         for (i in 0 until 50) {
             col.addView(TextView(this).apply {
                 textSize = 16f
+                setPadding(16.dp(), 10.dp(), 16.dp(), 10.dp())
                 text = paragraphs[i % paragraphs.size]
             }, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,

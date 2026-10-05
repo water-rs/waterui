@@ -6,11 +6,15 @@ public partial class App : Application
 {
     private Window? _window;
 
+    private static readonly string ErrorLog =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(),
+            "bench_winui3_err.log");
+
     public App()
     {
         InitializeComponent();
         UnhandledException += (_, e) =>
-            System.IO.File.AppendAllText("C:\\bench_winui3_err.log",
+            System.IO.File.AppendAllText(ErrorLog,
                 $"UNHANDLED: {e.Exception}\n");
     }
 
@@ -24,7 +28,7 @@ public partial class App : Application
         }
         catch (System.Exception ex)
         {
-            System.IO.File.AppendAllText("C:\\bench_winui3_err.log",
+            System.IO.File.AppendAllText(ErrorLog,
                 $"LAUNCH FAIL: {ex}\n");
             throw;
         }

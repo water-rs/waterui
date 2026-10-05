@@ -115,7 +115,7 @@ public sealed partial class MainWindow : Window
                     </Grid.ColumnDefinitions>
                     <Ellipse Width="40" Height="40" Fill="{Binding AvatarBrush}"
                              VerticalAlignment="Center"/>
-                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="12,0,0,0">
+                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="12,0,0,0" Spacing="4">
                         <TextBlock Text="{Binding Title}" FontSize="16"/>
                         <TextBlock Text="{Binding Subtitle}" FontSize="13" Foreground="#666666"/>
                     </StackPanel>
@@ -158,8 +158,21 @@ public sealed partial class MainWindow : Window
         public double Cx, Cy, Cr, Co;
     }
 
-    private static double EaseInOut(double f) =>
-        f < 0.5 ? 4.0 * f * f * f : 1.0 - Math.Pow(-2.0 * f + 2.0, 3.0) / 2.0;
+    // Spec curve cubic-bezier(0.42, 0, 0.58, 1): solve t for x = f by
+    // bisection, then evaluate the y channel.
+    private static double EaseInOut(double f)
+    {
+        double lo = 0, hi = 1, t = f;
+        for (var i = 0; i < 24; i++)
+        {
+            var x = 3 * (1 - t) * (1 - t) * t * 0.42 +
+                    3 * (1 - t) * t * t * 0.58 + t * t * t;
+            if (Math.Abs(x - f) < 1e-7) break;
+            if (x < f) lo = t; else hi = t;
+            t = (lo + hi) / 2;
+        }
+        return 3 * (1 - t) * t * t + t * t * t;
+    }
 
     private UIElement BuildMotion()
     {
@@ -193,8 +206,8 @@ public sealed partial class MainWindow : Window
                 RenderTransform = new CompositeTransform(),
             };
             Retarget(w);
-            Canvas.SetLeft(w.Wall, w.Cx);
-            Canvas.SetTop(w.Wall, w.Cy);
+            ((CompositeTransform)w.Wall.RenderTransform).TranslateX = w.Cx;
+            ((CompositeTransform)w.Wall.RenderTransform).TranslateY = w.Cy;
             canvas.Children.Add(w.Wall);
             ws[i] = w;
         }
@@ -215,9 +228,10 @@ public sealed partial class MainWindow : Window
                 w.Cy = w.Fy + (w.Ty - w.Fy) * e;
                 w.Cr = w.Fr + (w.Tr - w.Fr) * e;
                 w.Co = w.Fo + (w.To - w.Fo) * e;
-                Canvas.SetLeft(w.Wall, w.Cx);
-                Canvas.SetTop(w.Wall, w.Cy);
-                ((CompositeTransform)w.Wall.RenderTransform).Rotation = w.Cr;
+                var xf = (CompositeTransform)w.Wall.RenderTransform;
+                xf.TranslateX = w.Cx;
+                xf.TranslateY = w.Cy;
+                xf.Rotation = w.Cr;
                 w.Wall.Opacity = w.Co;
             }
         };

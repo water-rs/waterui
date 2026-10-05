@@ -27,6 +27,5 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         w.rootViewController = RootViewController()
         w.makeKeyAndVisible()
         window = w
-        DispatchQueue.main.async { print("BENCH_READY") }
     }
 }

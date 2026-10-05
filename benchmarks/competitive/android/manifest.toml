@@ -30,7 +30,7 @@ cli_version = "20.0.0"      # @react-native-community/cli — generates android/
 # sha256 over the generated template files the app materializes (root files
 # minus the authored set — relpath+content digest, lib/toolchain.py
 # rn_template_digest): `init` re-resolving to different content fails loudly.
-template_sha256 = "29b1ccee1d2054aabfff8792cd35782a65753a026c38d25d9ab8199d2a10c10f"
+template_sha256 = "340c4e329b6d60a5856387347577fa56aa7cd2229959e07ef8d83c40ad227fe5"
 node_version = "24.21.0"
 node_root = "~/node"         # <node_root>/bin/node must report v<node_version>
 
@@ -134,8 +134,9 @@ gradle_project = "."
 # this leg's runner consumes.
 #
 # w1..w4 are captured by measure_rep (fixed windows in bench.py); w5/w6
-# step geometrically — ONE step per `am start` (`--es workload w5 --es
-# step <n>`; WaterUI reads waterui.env.BENCH_STEP), settle then hold.
+# step geometrically — ONE step per `am start` (`--es workload w5` plus
+# `--ei step <n>`; WaterUI reads --es waterui.env.BENCH_STEP), settle
+# then hold.
 # A step "collapses" (runner stops stepping) when fewer than
 # collapse_frac of its presents fall inside TWO 60 Hz budgets (33.3 ms) —
 # drawing slower than ~30 fps — or the capture errors.

@@ -9,16 +9,16 @@
 - (void)applicationDidFinishLaunching:(NSNotification *)notification
 {
   self.moduleName = @"RnBench";
-  // Launch argument `-bench-workload W2` lands in NSUserDefaults'
+  // Launch argument `-bench-workload w2` lands in NSUserDefaults'
   // NSArgumentDomain. Missing or unrecognized workload traps — a wrong
-  // page must fail, never silently measure W1. Scrolling is the runner's
+  // page must fail, never silently measure w1. Scrolling is the runner's
   // OS-level input; no drive argument exists anymore.
   NSString *workload = [[NSUserDefaults standardUserDefaults] stringForKey:@"bench-workload"];
   if (workload == nil ||
-      ![@[@"W1", @"W2", @"W3", @"W4", @"W5", @"W6"] containsObject:workload]) {
+      ![@[@"w1", @"w2", @"w3", @"w4", @"w5", @"w6"] containsObject:workload]) {
     fprintf(stderr,
             "missing or unrecognized -bench-workload launch argument "
-            "(got %s); expected W1..=W6\n",
+            "(got %s); expected w1..=w6\n",
             workload ? workload.UTF8String : "nil");
     abort();
   }
@@ -30,7 +30,12 @@
                         bid, workload]
                   .UTF8String);
 
-  self.initialProps = @{@"workload": workload};
+  NSString *step = [[NSUserDefaults standardUserDefaults] stringForKey:@"bench-step"];
+  NSMutableDictionary *props = [@{@"workload": workload} mutableCopy];
+  if (step != nil) {
+    props[@"step"] = @(step.integerValue);
+  }
+  self.initialProps = props;
 
   // The runner asserts this accessibility identifier after launch; retry
   // until a window's content view exists.

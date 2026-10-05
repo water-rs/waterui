@@ -1,3 +1,5 @@
 # Build outputs — never committed.
 dist/
 node_modules/
+
+build/

@@ -92,3 +92,15 @@ yarn-error.log
 /README.md
 /__tests__/
 /.bench-generator
+
+# bench: template files materialized by the pinned RN init generator
+# (lib/toolchain.ensure_rn_template) and pod-install artifacts — never
+# committed
+ios/.xcode.env
+ios/RnBench.xcworkspace/
+ios/RnBench/Images.xcassets/
+ios/RnBench/LaunchScreen.storyboard
+ios/RnBench/PrivacyInfo.xcprivacy
+ios/RnBench.xcodeproj/xcshareddata/
+macos/.xcode.env
+macos/RnBench.xcworkspace/
