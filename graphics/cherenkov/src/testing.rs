@@ -12,7 +12,7 @@ use rustc_hash::FxHashMap;
 
 use kurbo::{Affine, Vec2};
 
-use crate::backend::{Backend, Display, Frame, Redraw, Renderer, SurfaceInfo, Visibility};
+use crate::backend::{Backend, Display, Frame, FrameRedraw, Renderer, SurfaceInfo, Visibility};
 use crate::capability::{ShaderPaint, ShaderSource};
 use crate::config::MemoryUsage;
 use crate::error::{EngineError, RenderError, ResourceError, SurfaceError};
@@ -421,7 +421,7 @@ impl Renderer for NullRenderer {
         &mut self,
         frame: &Frame<'_>,
         _stats: &mut crate::FrameStats,
-    ) -> Result<Redraw, RenderError> {
+    ) -> Result<FrameRedraw, RenderError> {
         self.assert_frame_contract(frame);
         for surface in frame.surfaces {
             let layers = surface
@@ -449,15 +449,24 @@ impl Renderer for NullRenderer {
                 layers,
             }));
         }
-        Ok(Redraw::None)
+        Ok(FrameRedraw::default())
     }
 
+    /// The wasm render path shares the CPU-side contract of returning the
+    /// owned `FrameRedraw`, whose request storage is `Rc` on this target —
+    /// the engine is single-threaded on the page, so the future is
+    /// deliberately not `Send`, matching `NullRenderer::init` and the
+    /// browser engine's own futures.
     #[cfg(target_arch = "wasm32")]
+    #[expect(
+        clippy::future_not_send,
+        reason = "the engine is single-threaded on wasm — FrameRedraw's shared request storage is Rc there"
+    )]
     fn render(
         &mut self,
         frame: &Frame<'_>,
         _stats: &mut crate::FrameStats,
-    ) -> impl core::future::Future<Output = Result<Redraw, RenderError>> {
+    ) -> impl core::future::Future<Output = Result<FrameRedraw, RenderError>> {
         self.assert_frame_contract(frame);
         for surface in frame.surfaces {
             let layers = surface
@@ -485,7 +494,7 @@ impl Renderer for NullRenderer {
                 layers,
             }));
         }
-        core::future::ready(Ok(Redraw::None))
+        core::future::ready(Ok(FrameRedraw::default()))
     }
 
     #[cfg(not(target_arch = "wasm32"))]

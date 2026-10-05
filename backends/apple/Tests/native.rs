@@ -32,6 +32,11 @@ fn main() {
     // `AppKit`/`UIKit` objects may only be built on the real main thread;
     // `run` executes sequentially in the calling thread at one thread.
     args.test_threads = Some(1);
+    // Process-global startup (executors, tracing dispatcher) installs
+    // once here on the same true main thread the trials run on — the
+    // gpu-surface fixture mounts through it.
+    #[cfg(all(target_os = "macos", feature = "native-test", feature = "gpu_surface"))]
+    waterui_apple::native_test_support::gpu_surface::initialize_process();
     libtest_mimic::run(&args, trials()).exit();
 }
 
@@ -120,6 +125,8 @@ fn trials() -> Vec<Trial> {
                 Ok(())
             }),
         ]);
+        #[cfg(feature = "gpu_surface")]
+        tests.extend(gpu_surface::trials());
         tests
     };
     #[cfg(target_os = "ios")]
@@ -1162,6 +1169,171 @@ mod window {
     pub use waterui_apple::native_test_support::{
         bind_root_window_wires_a_live_window, manager_installs_into_the_environment,
     };
+}
+
+/// GPU-surface ownership regression coverage (#1725): a real mounted
+/// `SceneView` — production `build_surface`, `SurfaceState`,
+/// `SceneRenderer`/`SceneEngine` — driven through the failure drain and
+/// the completion settlement seam. The ordering the GPU's own timing
+/// cannot pin down is delivered by a direct call of the actual
+/// `settle_frame_completion` body — reported as a deterministic seam
+/// call, not a physical cadence or real GPU submission claim.
+#[cfg(all(target_os = "macos", feature = "native-test", feature = "gpu_surface"))]
+mod gpu_surface {
+    use libtest_mimic::Trial;
+    use waterui_apple::native_test_support::gpu_surface::MountedSceneSurface;
+
+    use super::mtm;
+
+    /// The registered trials — the completion/failure seam coverage for
+    /// the mounted-surface ownership contract.
+    pub fn trials() -> Vec<Trial> {
+        vec![
+            Trial::test(
+                "gpu_surface::routed_failure_drains_idle_owner_once",
+                routed_failure_drains_idle_owner_once,
+            ),
+            Trial::test(
+                "gpu_surface::stale_completion_releases_only_its_lease",
+                stale_completion_releases_only_its_lease,
+            ),
+        ]
+    }
+
+    /// Pumps the main run loop in small turns until `until` answers or
+    /// `seconds` elapse — how a synchronous case awaits the main-queue
+    /// work `request_redraw` enqueues. Bounded; a dead queue fails the
+    /// case instead of hanging it.
+    fn pump_main_until(seconds: f64, until: impl Fn() -> bool) -> bool {
+        use cocoa_ui::objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSRunLoop};
+        let deadline = NSDate::dateWithTimeIntervalSinceNow(seconds);
+        while !until() && deadline.timeIntervalSinceNow() > 0.0 {
+            // SAFETY: `NSDefaultRunLoopMode` is a system-owned run-loop mode.
+            NSRunLoop::currentRunLoop().runMode_beforeDate(
+                unsafe { NSDefaultRunLoopMode },
+                &NSDate::dateWithTimeIntervalSinceNow(0.02),
+            );
+        }
+        until()
+    }
+
+    /// A routed shared-generation failure reaches an owner that is idle
+    /// — never attached, never presented, with a readiness waiter
+    /// registered — through the production path: `ScenePart::note_failure`
+    /// stores it and `RedrawHandle::request_redraw` enqueues
+    /// `handle_redraw_request`, which drains it before the visibility,
+    /// in-flight and external gates and settles through `settle_failed`:
+    /// the owner is marked failed, the readiness waiter fires exactly
+    /// once, the frame is owed, and the recovery watch on the failed
+    /// generation arms. Re-producing the sealed generation answers the
+    /// retained failure unchanged.
+    pub fn routed_failure_drains_idle_owner_once() -> Result<(), libtest_mimic::Failed> {
+        let mtm = mtm();
+        let mounted = pollster::block_on(MountedSceneSurface::mount(mtm))
+            .map_err(|error| format!("a mounted SceneView surface: {error}"))?;
+        mounted
+            .install_scene_renderer()
+            .map_err(|error| format!("the production renderer install: {error}"))?;
+        let probe = mounted.readiness_probe();
+        assert!(!mounted.owner_failed() && !mounted.frame_owed());
+
+        // Route the failure: the generation seals, the participant's
+        // owner wake lands on the main queue — the callback itself.
+        mounted.fail_scene_generation();
+        assert!(mounted.scene_generation_sealed());
+        assert!(
+            !mounted.owner_failed(),
+            "the routed failure sits queued until the owner drains it"
+        );
+
+        assert!(
+            pump_main_until(2.0, || mounted.owner_failed()),
+            "the enqueued handle_redraw_request never drained the routed failure"
+        );
+        assert!(mounted.frame_owed(), "the failed frame stays owed");
+        assert_eq!(
+            probe.wakes(),
+            1,
+            "the registered readiness waiter settles exactly once"
+        );
+        assert!(
+            mounted.context_watch_armed(),
+            "the recovery watch arms on the failed generation"
+        );
+        assert!(
+            mounted.sealed_produce_is_cached_error(),
+            "the sealed generation never re-produces"
+        );
+        Ok(())
+    }
+
+    /// A stale completion after a genuinely newer publication: the
+    /// retained old-generation submission releases only its own lease —
+    /// `frame_owed`, `frame_in_flight` — and neither presents nor touches
+    /// the newer epoch's readiness, failure flag or watch. The current
+    /// generation still settles a completion normally.
+    ///
+    /// The seam is called directly for deterministic ordering — the real
+    /// `settle_frame_completion` body, not a simulated path; no physical
+    /// GPU submission/cadence is claimed.
+    pub fn stale_completion_releases_only_its_lease() -> Result<(), libtest_mimic::Failed> {
+        let mtm = mtm();
+        let mounted = pollster::block_on(MountedSceneSurface::mount(mtm))
+            .map_err(|error| format!("a mounted SceneView surface: {error}"))?;
+        mounted
+            .install_scene_renderer()
+            .map_err(|error| format!("the production renderer install: {error}"))?;
+        let probe = mounted.readiness_probe();
+        assert!(
+            mounted.begin_in_flight_frame(),
+            "the surface ring yields a real PendingFrame"
+        );
+
+        assert!(
+            pollster::block_on(mounted.publish_newer_context()),
+            "the runtime must publish a genuinely newer context generation"
+        );
+
+        // The stale submission's completion runs the real seam: obsolete
+        // first — it releases its lease and owes the work, nothing more.
+        mounted.settle_submitted_completion();
+        assert!(
+            !mounted.frame_in_flight(),
+            "the stale completion released its PendingFrame lease"
+        );
+        assert!(mounted.frame_owed(), "the work is owed on the live epoch");
+        assert!(
+            !mounted.owner_failed(),
+            "a stale completion never marks the newer epoch failed"
+        );
+        assert_eq!(
+            probe.wakes(),
+            0,
+            "a stale completion never settles the newer epoch's readiness"
+        );
+        assert!(
+            !mounted.context_watch_armed(),
+            "a stale completion never installs a watch"
+        );
+        assert!(
+            !mounted.frame_presented(),
+            "a stale completion never presents"
+        );
+
+        // The current epoch still completes through the same seam.
+        assert!(
+            mounted.begin_in_flight_frame(),
+            "the ring yields a fresh frame for the live epoch"
+        );
+        mounted.settle_current_completion();
+        assert!(
+            mounted.frame_presented(),
+            "the live epoch presents and reports readiness"
+        );
+        assert_eq!(probe.wakes(), 1, "readiness resolves once");
+        assert!(!mounted.owner_failed());
+        Ok(())
+    }
 }
 
 /// `ViewController` boundary semantics (#1689): under real `UIKit`

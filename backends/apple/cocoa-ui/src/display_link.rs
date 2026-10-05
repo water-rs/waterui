@@ -31,6 +31,10 @@ use crate::callback::guarded;
 /// The ivars of a [`ClockTarget`].
 struct ClockTargetIvars {
     on_frame: RefCell<Option<Rc<dyn Fn()>>>,
+    /// The ticking link's `targetTimestamp` while the frame callback runs
+    /// — the exact presentation timestamp the current callback is
+    /// producing, shared with the owning [`FrameClock`].
+    current_target: Rc<Cell<Option<f64>>>,
 }
 
 define_class!(
@@ -52,20 +56,34 @@ define_class!(
         // `CADisplayLink` posts; it fires only on the run loop the link was
         // added to, which is the main one.
         #[unsafe(method(tick:))]
-        fn tick(&self, _link: &CADisplayLink) {
+        fn tick(&self, link: &CADisplayLink) {
             let handler = self.ivars().on_frame.borrow().clone();
             if let Some(handler) = handler {
+                // The exact frame this tick is producing, readable through
+                // `FrameClock::current_target_timestamp` for the callback's
+                // duration — never an approximation from another clock.
+                self.ivars()
+                    .current_target
+                    .set(Some(link.targetTimestamp()));
                 guarded("display link frame", move || handler());
+                self.ivars().current_target.set(None);
             }
         }
     }
 );
 
 impl ClockTarget {
-    /// A target that posts its frame callback to `on_frame`.
-    fn new(mtm: MainThreadMarker, on_frame: Rc<dyn Fn()>) -> Retained<Self> {
+    /// A target that posts its frame callback to `on_frame`, recording the
+    /// ticking link's target timestamp into `current_target` for the
+    /// callback's duration.
+    fn new(
+        mtm: MainThreadMarker,
+        on_frame: Rc<dyn Fn()>,
+        current_target: Rc<Cell<Option<f64>>>,
+    ) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(ClockTargetIvars {
             on_frame: RefCell::new(Some(on_frame)),
+            current_target,
         });
         // SAFETY: `init` is `NSObject`'s designated initializer.
         let this: Retained<Self> = unsafe { msg_send![super(this), init] };
@@ -90,6 +108,9 @@ pub struct FrameClock {
     mtm: MainThreadMarker,
     on_frame: Rc<dyn Fn()>,
     active: Cell<bool>,
+    /// The exact `targetTimestamp` of the tick whose callback is running,
+    /// `None` between ticks — the clock's own record of the current frame.
+    current_target: Rc<Cell<Option<f64>>>,
     state: RefCell<State>,
 }
 
@@ -110,6 +131,7 @@ impl FrameClock {
             mtm,
             on_frame: Rc::new(on_frame),
             active: Cell::new(false),
+            current_target: Rc::new(Cell::new(None)),
             state: RefCell::new(State {
                 link: None,
                 target: None,
@@ -136,6 +158,17 @@ impl FrameClock {
     #[must_use]
     pub fn is_running(&self) -> bool {
         self.state.borrow().link.is_some()
+    }
+
+    /// The `CACurrentMediaTime` target timestamp of the tick whose frame
+    /// callback is currently running — `Some` only for that callback's
+    /// duration, `None` anywhere else. This is the exact presentation time
+    /// the current frame targets; there is deliberately no approximate
+    /// now/window accessor, so callers outside the callback must use the
+    /// shared presentation anchor's own capture time instead.
+    #[must_use]
+    pub fn current_target_timestamp(&self) -> Option<f64> {
+        self.current_target.get()
     }
 
     /// Re-picks the clock for `view`'s current attachment.
@@ -171,7 +204,7 @@ impl FrameClock {
         window: &PlatformWindow,
         screen: &PlatformScreen,
     ) -> Retained<CADisplayLink> {
-        let target = ClockTarget::new(self.mtm, self.on_frame.clone());
+        let target = ClockTarget::new(self.mtm, self.on_frame.clone(), self.current_target.clone());
         // SAFETY: `displayLinkWithTarget:selector:` retains the pair until
         // the link invalidates; the ivars own the target.
         let link: Retained<CADisplayLink> = unsafe {

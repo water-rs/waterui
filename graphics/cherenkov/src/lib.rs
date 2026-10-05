@@ -57,7 +57,7 @@ pub use crate::backdrop::{
     BackdropEffect, BackdropShaderEffect, BackdropShaderSource, ColorMatrix, Refraction, Rim,
 };
 pub use crate::backend::{
-    Backend, Display, Frame, Redraw, Renderer, SurfaceFrame, SurfaceInfo, Visibility,
+    Backend, Display, Frame, FrameRedraw, Renderer, SurfaceFrame, SurfaceInfo, Visibility,
 };
 pub use crate::capability::{
     Backdrop, BackdropChain, BackdropRuns, BackdropShaders, DrainedProducer, Effects, Filters,

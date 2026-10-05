@@ -294,8 +294,11 @@ pub struct ChangeSet<B: Backend> {
 /// The render result and drained buffers returned to the UI thread.
 #[derive(Debug)]
 pub struct RenderReply<B: Backend> {
-    /// The result of rendering the frame.
-    pub result: Result<(Next, FrameStats), RenderError>,
+    /// The result of rendering the frame: the aggregate [`Next`] and,
+    /// per surface the frame listed, that surface's own deadline —
+    /// the values the engine publishes through
+    /// [`Surface::next_frame`](crate::Surface::next_frame).
+    pub result: Result<(Next, rustc_hash::FxHashMap<SurfaceId, Next>, FrameStats), RenderError>,
     /// The drained commits, including their reusable empty op vectors.
     pub commits: Vec<(SurfaceId, ChangeSet<B>)>,
     /// The persistent reply sender, returned so a disconnected render thread
@@ -324,7 +327,7 @@ pub enum Message<B: Backend> {
         /// What it renders into.
         target: B::Target,
         /// The surface's host wake-up, shared with its UI-thread handle.
-        waker: Arc<crate::engine::SurfaceWaker>,
+        waker: crate::engine::SharedWaker<crate::engine::SurfaceWaker>,
         /// Result of the creation.
         reply: Sender<Result<SurfaceInfo, SurfaceError>>,
     },
@@ -423,6 +426,9 @@ pub enum Message<B: Backend> {
         time: FrameTime,
         /// The surfaces' queued change sets, one entry per dirty surface.
         commits: Vec<(SurfaceId, ChangeSet<B>)>,
+        /// The deadline map the frame fills — the last frame's storage,
+        /// handed back instead of allocating a fresh map every render.
+        next_scratch: rustc_hash::FxHashMap<SurfaceId, Next>,
         /// The render result and the buffers returned to the UI thread.
         reply: FrameReplySender<RenderReply<B>>,
     },
