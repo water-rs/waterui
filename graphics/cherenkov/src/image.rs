@@ -122,6 +122,20 @@ pub struct ImageData<F: Format> {
     format: std::marker::PhantomData<F>,
 }
 
+// Not derived: a derive would require `F: Clone`, but `F` is only a tag.
+impl<F: Format> Clone for ImageData<F> {
+    fn clone(&self) -> Self {
+        Self {
+            width: self.width,
+            height: self.height,
+            data: Arc::clone(&self.data),
+            color_space: self.color_space,
+            premultiplied: self.premultiplied,
+            format: std::marker::PhantomData,
+        }
+    }
+}
+
 impl<F: Format> std::fmt::Debug for ImageData<F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ImageData")

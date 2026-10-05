@@ -13,9 +13,9 @@ use crossbeam_channel::Receiver;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::backend::{
-    Backend, Display, Frame, Redraw, Renderer, SurfaceFrame, SurfaceInfo, Visibility,
+    Backend, Display, Frame, FrameRedraw, Renderer, SurfaceFrame, SurfaceInfo, Visibility,
 };
-use crate::engine::{CompletionWaker, SurfaceWaker};
+use crate::engine::{CompletionWaker, SharedWaker, SurfaceWaker};
 use crate::error::{EngineError, RenderError, ResourceError, SurfaceError};
 use crate::frame::{FrameId, FrameStats, Next, RefreshRange};
 use crate::image::ImageUpload;
@@ -90,7 +90,7 @@ struct SurfaceState {
     /// and its per-frame state waits for the frame that shows it.
     visibility: Visibility,
     /// The surface's host wake-up, shared with its UI-thread handle.
-    waker: Arc<SurfaceWaker>,
+    waker: SharedWaker<SurfaceWaker>,
 }
 
 impl SurfaceState {
@@ -441,11 +441,21 @@ fn apply_message<B: Backend>(
         Message::Render {
             time,
             mut commits,
+            mut next_scratch,
             reply,
         } => {
             let id = FrameId(*next_frame);
             *next_frame += 1;
-            let result = render::<B>(renderer, surfaces, resources, id, time.0, &mut commits);
+            let result = render::<B>(
+                renderer,
+                surfaces,
+                resources,
+                id,
+                time.0,
+                &mut commits,
+                &mut next_scratch,
+            )
+            .map(|(next, stats)| (next, next_scratch, stats));
             // This frame's queued retirements belong to its batch.
             drain_retire::<B>(retire_rx, renderer);
             let sender = reply.clone();
@@ -512,7 +522,7 @@ fn create_surface<B: Backend>(
     surfaces: &mut FxHashMap<SurfaceId, SurfaceState>,
     id: SurfaceId,
     target: B::Target,
-    waker: Arc<SurfaceWaker>,
+    waker: SharedWaker<SurfaceWaker>,
 ) -> Result<SurfaceInfo, SurfaceError> {
     let info = renderer.create_surface(id, target, CompletionWaker::new(&waker))?;
     surfaces.insert(
@@ -699,9 +709,8 @@ fn commit<B: Backend>(
         match op {
             Op::Layer(LayerOp::Remove(layer)) => {
                 state.commits = Commits::Other;
-                for removed in state.tree.remove(layer) {
-                    renderer.remove_layer(surface, removed);
-                }
+                state.tree.remove(layer);
+                renderer.remove_layer(surface, layer);
             }
             Op::Layer(LayerOp::Content(layer, content)) => {
                 state.commits = Commits::Other;
@@ -836,16 +845,34 @@ fn sample_frames(
     frames
 }
 
-/// Consumes the per-frame state of every surface the frame listed, and
-/// answers when the next frame is needed: the animations' refresh class
-/// combined with the backend's.
+/// Consumes the per-frame state of every surface the frame listed and
+/// answers two schedules: each surface's own deadline — its animation
+/// refresh class combined with the backend's request for that surface
+/// alone, published through [`Surface::next_frame`] — and the aggregate
+/// answer `Engine::render` returns to hosts that keep one presentation
+/// loop.
+///
+/// [`Surface::next_frame`]: crate::Surface::next_frame
 fn finish_frame<B: Backend>(
     renderer: &B::Renderer,
     surfaces: &mut FxHashMap<SurfaceId, SurfaceState>,
     time: crate::Instant,
-    redraw: Redraw,
+    redraw: &FrameRedraw,
+    surface_next: &mut FxHashMap<SurfaceId, Next>,
 ) -> Next {
     let mut rate = None;
+    // Keyed by surface: one entry per visible surface, so publication
+    // stays linear in the surface count instead of rescanning a Vec. The
+    // map is the engine's scratch — retained across frames: an entry
+    // survives only while its surface is still present and visible, and
+    // the loop below writes every current deadline in place (inserting
+    // new surfaces), so no stale deadline survives and the steady frame
+    // pays no bulk re-init.
+    surface_next.retain(|id, _| {
+        surfaces
+            .get(id)
+            .is_some_and(|state| state.visibility == Visibility::Visible)
+    });
     for (id, state) in surfaces
         .iter_mut()
         .filter(|(_, state)| state.visibility == Visibility::Visible)
@@ -858,6 +885,17 @@ fn finish_frame<B: Backend>(
         } else {
             state.tree.animation_rate(|layer| owned.contains(&layer))
         };
+        // The surface's own deadline unions its animation demand with
+        // only the backend requests that name it.
+        let mine = match (running.clone(), redraw.for_surface(*id)) {
+            (None, None) => None,
+            (Some(running), None) => Some(running),
+            (None, Some(request)) => Some(request.clone()),
+            (Some(running), Some(request)) => {
+                Some(crate::backend::union_rate(running, request.clone()))
+            }
+        };
+        surface_next.insert(*id, mine.map_or(Next::Idle, |rate| next_at(time, rate)));
         match running {
             Some(r) if r == crate::tree::RATE_FAST => rate = Some(crate::tree::RATE_FAST),
             Some(r) => rate = rate.or(Some(r)),
@@ -868,17 +906,23 @@ fn finish_frame<B: Backend>(
         state.display_moved = false;
         state.presented();
     }
-    let rate = match redraw {
-        Redraw::None => rate,
-        Redraw::Wanted { rate: backend_rate } => Some(rate.map_or_else(
-            || backend_rate.clone(),
-            |r| (*r.start()).min(*backend_rate.start())..=(*r.end()).max(*backend_rate.end()),
-        )),
+    let rate = match redraw.rate() {
+        None => rate,
+        Some(backend_rate) => Some(match rate {
+            None => backend_rate,
+            Some(rate) => crate::backend::union_rate(rate, backend_rate),
+        }),
     };
-    rate.map_or(Next::Idle, |rate| Next::At {
+    rate.map_or(Next::Idle, |rate| next_at(time, rate))
+}
+
+/// The next frame time for a refresh class: one interval of its fastest
+/// end after `time`.
+fn next_at(time: crate::Instant, rate: RefreshRange) -> Next {
+    Next::At {
         time: time + Duration::from_secs_f64(1.0 / f64::from(*rate.end())),
         rate,
-    })
+    }
 }
 
 /// One frame: apply every commit, sample, render, answer.
@@ -890,6 +934,7 @@ fn render<B: Backend>(
     id: FrameId,
     time: crate::Instant,
     commits: &mut [(SurfaceId, ChangeSet<B>)],
+    surface_next: &mut FxHashMap<SurfaceId, Next>,
 ) -> Result<(Next, FrameStats), RenderError> {
     sample_owned::<B>(renderer, surfaces, time);
     apply_commits(renderer, surfaces, resources, commits)?;
@@ -904,7 +949,8 @@ fn render<B: Backend>(
         &mut stats,
     )?;
     drop(frames);
-    Ok((finish_frame::<B>(renderer, surfaces, time, redraw), stats))
+    let next = finish_frame::<B>(renderer, surfaces, time, &redraw, surface_next);
+    Ok((next, stats))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -919,6 +965,7 @@ async fn render_local<B: Backend>(
     id: FrameId,
     time: crate::Instant,
     commits: &mut [(SurfaceId, ChangeSet<B>)],
+    surface_next: &mut FxHashMap<SurfaceId, Next>,
 ) -> Result<(Next, FrameStats), RenderError> {
     sample_owned::<B>(renderer, surfaces, time);
     apply_commits(renderer, surfaces, resources, commits)?;
@@ -935,7 +982,8 @@ async fn render_local<B: Backend>(
         )
         .await?;
     drop(frames);
-    Ok((finish_frame::<B>(renderer, surfaces, time, redraw), stats))
+    let next = finish_frame::<B>(renderer, surfaces, time, &redraw, surface_next);
+    Ok((next, stats))
 }
 
 #[cfg(all(test, feature = "testing", not(target_arch = "wasm32")))]
@@ -1004,6 +1052,27 @@ mod tests {
 
         assert_eq!(second.recycled, []);
         assert_eq!(caller_picture.display_list().len(), 1);
+    }
+
+    #[test]
+    fn redraw_equality_is_logical_and_snapshots_stay_independent() {
+        use crate::backend::FrameRedraw;
+
+        let surface = SurfaceId::new(1);
+        let mut redraw = FrameRedraw::default();
+        redraw.request(surface, 30..=60);
+        let snapshot = redraw.clone();
+        redraw.clear();
+
+        // A cleared previously-nonempty collection and a fresh default
+        // are the same empty collection — equality ignores whether the
+        // copy-on-write map was ever allocated.
+        assert_eq!(redraw, FrameRedraw::default());
+        // The retained snapshot keeps its requests through the clear —
+        // and through the next render's refill — exactly.
+        assert!(snapshot.for_surface(surface).is_some());
+        redraw.request(surface, 5..=10);
+        assert_eq!(snapshot.for_surface(surface), Some(&(30..=60)));
     }
 }
 
@@ -1092,13 +1161,22 @@ impl<B: Backend> LocalState<B> {
             Message::Render {
                 time,
                 mut commits,
+                mut next_scratch,
                 reply,
             } => {
                 let id = FrameId(*next_frame);
                 *next_frame += 1;
-                let result =
-                    render_local::<B>(renderer, surfaces, resources, id, time.0, &mut commits)
-                        .await;
+                let result = render_local::<B>(
+                    renderer,
+                    surfaces,
+                    resources,
+                    id,
+                    time.0,
+                    &mut commits,
+                    &mut next_scratch,
+                )
+                .await
+                .map(|(next, stats)| (next, next_scratch, stats));
                 let _ = reply.send(crate::message::RenderReply { result, commits });
             }
             Message::FinishTimings { reply } => {

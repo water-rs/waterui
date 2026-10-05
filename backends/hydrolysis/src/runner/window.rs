@@ -777,7 +777,10 @@ crate::engine::cfg_async_fn! {
         clear_color: peniko::Color,
         display_scale: f64,
         capture_snapshot: bool,
-        render: impl FnOnce(&mut HydrolysisRenderer, crate::renderer::FrameRenderTarget<'_>, bool),
+        render: impl FnOnce(
+            &mut HydrolysisRenderer,
+            crate::renderer::FrameRenderTarget<'_>,
+        ) -> crate::renderer::EngineFrame,
     } {
         renderer: &mut HydrolysisRenderer,
         surface: &mut dyn crate::platform::SurfaceProvider,
@@ -787,18 +790,19 @@ crate::engine::cfg_async_fn! {
         render: impl AsyncFnOnce(
             &mut HydrolysisRenderer,
             crate::renderer::FrameRenderTarget<'_>,
-            bool,
-        ),
+        ) -> crate::renderer::EngineFrame,
     } -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
     let (width, height) = surface.size();
     let format = surface.format();
     let premultiply_alpha = surface.premultiply_alpha();
     let context = surface.device_loss().gpu_context();
-    let acquire_started_at = Instant::now();
-    let frame = acquire_surface_frame(surface)?;
-    let acquire = acquire_started_at.elapsed();
+    // The engine renders into its own retained output before the swapchain
+    // image is acquired: the render awaits the GPU device on wasm32, and a
+    // browser expires a canvas texture when the task that acquired it ends,
+    // so the image must be acquired, filled and presented without an await
+    // in between.
     let render_started_at = Instant::now();
-    crate::engine::engine_await!(render(
+    let engine_frame = crate::engine::engine_await!(render(
         renderer,
         crate::renderer::FrameRenderTarget {
             adapter: surface.adapter(),
@@ -810,15 +814,25 @@ crate::engine::cfg_async_fn! {
             display_scale,
             headroom: surface.display_headroom(),
             persistent: true,
-            texture: Some(frame.texture()),
             format,
             width,
             height,
             base_color: crate::renderer::working_color(clear_color),
         },
-        premultiply_alpha,
     ));
-    let render = render_started_at.elapsed();
+    let engine_render = render_started_at.elapsed();
+    let acquire_started_at = Instant::now();
+    let frame = acquire_surface_frame(surface)?;
+    let acquire = acquire_started_at.elapsed();
+    let copy_started_at = Instant::now();
+    renderer.present_engine_frame(
+        engine_frame,
+        surface.device(),
+        surface.queue(),
+        frame.texture(),
+        premultiply_alpha,
+    );
+    let render = engine_render + copy_started_at.elapsed();
     #[cfg(feature = "frame-profile")]
     {
         // The timestamp resolve blocks until the frame's submits finish — the
@@ -1008,13 +1022,8 @@ crate::engine::cfg_async_fn! {
                     segment_clear_color,
                     scale_factor,
                     false,
-                    |renderer, target, premultiply_alpha| {
-                        renderer.render_hybrid_segment_to_surface(
-                            segment,
-                            transient_scene,
-                            target,
-                            premultiply_alpha,
-                        );
+                    |renderer, target| {
+                        renderer.render_hybrid_segment(segment, transient_scene, target)
                     },
                 ) {
                     Ok(rendered) => {
@@ -1044,22 +1053,12 @@ crate::engine::cfg_async_fn! {
                 scale_factor,
                 capture_snapshot,
                 #[cfg(not(target_arch = "wasm32"))]
-                |renderer, target, premultiply_alpha| {
-                    renderer.render_scene_to_surface_with_alpha_mode(
-                        target,
-                        premultiply_alpha,
-                        reader.rasterizes(),
-                    );
+                |renderer, target| {
+                    renderer.render_engine_frame(target, reader.rasterizes())
                 },
                 #[cfg(target_arch = "wasm32")]
-                async |renderer, target, premultiply_alpha| {
-                    renderer
-                        .render_scene_to_surface_with_alpha_mode(
-                            target,
-                            premultiply_alpha,
-                            reader.rasterizes(),
-                        )
-                        .await;
+                async |renderer, target| {
+                    renderer.render_engine_frame(target, reader.rasterizes()).await
                 },
             ))
         };
@@ -1074,22 +1073,12 @@ crate::engine::cfg_async_fn! {
                 scale_factor,
                 capture_snapshot,
                 #[cfg(not(target_arch = "wasm32"))]
-                |renderer, target, premultiply_alpha| {
-                    renderer.render_scene_to_surface_with_alpha_mode(
-                        target,
-                        premultiply_alpha,
-                        reader.rasterizes(),
-                    );
+                |renderer, target| {
+                    renderer.render_engine_frame(target, reader.rasterizes())
                 },
                 #[cfg(target_arch = "wasm32")]
-                async |renderer, target, premultiply_alpha| {
-                    renderer
-                        .render_scene_to_surface_with_alpha_mode(
-                            target,
-                            premultiply_alpha,
-                            reader.rasterizes(),
-                        )
-                        .await;
+                async |renderer, target| {
+                    renderer.render_engine_frame(target, reader.rasterizes()).await
                 },
             ))
         };

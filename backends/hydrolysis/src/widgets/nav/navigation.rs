@@ -5,8 +5,8 @@ use crate::renderer::ROOT_NAVIGATION_IDENTITY;
 use crate::renderer::Recording;
 use crate::renderer::bounded_proposal;
 use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
-    WidgetRenderContext, measure_navigation_view_intrinsic,
+    CapturedScenePlacement, HydroNativeView, HydroState, HydrolysisRenderer, RenderContext,
+    RetainedSubview, WidgetRenderContext, measure_navigation_view_intrinsic,
     measure_owned_navigation_view_with_proposal, measure_transient_view_with_proposal,
     navigation_back_button_rect, navigation_base_bar_height_for_display_mode,
     normalize_layout_view, split_compact_threshold, transformed_rect,
@@ -1666,18 +1666,21 @@ fn render_navigation_page_scene(
     slot_key: &crate::renderer::NavigationKey,
     identity: u64,
     env: &Environment,
-    size: LayoutSize,
+    placement: CapturedScenePlacement,
     inactive: bool,
 ) -> crate::renderer::navigation_state::NavigationCapturedScene {
+    let size = placement.size;
     let background = state.borrow().background();
     let mut captured = if identity == 0 {
         let mut state = state.borrow_mut();
         if inactive {
             state
                 .root_mut()
-                .render_built_navigation_scene_inactive(renderer, env, size)
+                .render_built_navigation_scene_inactive(renderer, env, placement)
         } else {
-            state.root_mut().render_built_scene(renderer, env, size)
+            state
+                .root_mut()
+                .render_built_scene(renderer, env, placement)
         }
     } else {
         let (entries, pending_removed) = {
@@ -1703,9 +1706,9 @@ fn render_navigation_page_scene(
         if inactive {
             entry
                 .content
-                .render_built_navigation_scene_inactive(renderer, env, size)
+                .render_built_navigation_scene_inactive(renderer, env, placement)
         } else {
-            entry.content.render_built_scene(renderer, env, size)
+            entry.content.render_built_scene(renderer, env, placement)
         }
     };
     let mut scene = Recording::new();
@@ -1935,8 +1938,16 @@ pub fn render_navigation_stack_parts(
     };
     let local_env = presented_page_env(&stack_env, active_identity, &ctx.theme());
 
-    #[allow(clippy::cast_possible_truncation)]
-    let scene_size = LayoutSize::new(ctx.bounds.width() as f32, ctx.bounds.height() as f32);
+    // Pages are recorded in their own local space and replayed at the stack's
+    // transform; the hit targets and accessibility bounds a page registers
+    // while it records are live, so they take the stack's hit placement.
+    let page_placement = CapturedScenePlacement {
+        size: LayoutSize::new(
+            crate::num_cast::f64_as_f32(ctx.bounds.width()),
+            crate::num_cast::f64_as_f32(ctx.bounds.height()),
+        ),
+        hit_transform: ctx.hit_transform,
+    };
     let background = state.borrow().background();
     let background = Paint::Solid(ctx.renderer_mut().read_signal(&background));
     let transform = ctx.transform;
@@ -1983,7 +1994,7 @@ pub fn render_navigation_stack_parts(
                 &slot_key,
                 previous_identity,
                 &departing_env,
-                scene_size,
+                page_placement,
                 true,
             );
             ctx.renderer_mut()
@@ -2002,7 +2013,7 @@ pub fn render_navigation_stack_parts(
         &slot_key,
         active_identity,
         &local_env,
-        scene_size,
+        page_placement,
         false,
     );
 
@@ -2191,7 +2202,7 @@ pub fn render_navigation_stack_parts(
             &slot_key,
             previous_identity,
             &landing_env,
-            scene_size,
+            page_placement,
             true,
         );
         ctx.renderer_mut()

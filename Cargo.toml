@@ -629,8 +629,8 @@ block = { git = "https://github.com/Dicklesworthstone/rust-block", rev = "b39ae8
 # Both nami crates this workspace names ride the same rev so the graph carries
 # a single `Signal` trait; `nami-derive` needs no entry because the rename
 # touched only its docs. Drop these once a nami release contains the rename.
-nami = { git = "https://github.com/water-rs/nami", rev = "f1db5017f5d64cb45b9b304c74ff420377258476" }
-nami-core = { git = "https://github.com/water-rs/nami", rev = "f1db5017f5d64cb45b9b304c74ff420377258476" }
+nami = { git = "https://github.com/water-rs/nami", rev = "c706e272247d92796eedac6180eb6a1ce0c03609" }
+nami-core = { git = "https://github.com/water-rs/nami", rev = "c706e272247d92796eedac6180eb6a1ce0c03609" }
 
 # The `cherenkov`/`filtrate` families live in this repository under
 # `graphics/` (water-rs/waterui#1449). Components pinned from sibling

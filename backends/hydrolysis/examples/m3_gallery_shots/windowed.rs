@@ -1,6 +1,4 @@
-//! Material 3 interaction-state showcase: selected, hovered and pressed list
-//! rows, a FAB, and a keyboard-focusable button. Runs a real winit window for
-//! screenshot capture on the X display. Not committed.
+//! The example program, compiled where `hydrolysis::run` exists.
 
 use hydrolysis::run;
 use hydrolysis_m3::{Material3, fab, material_card, material_list, material_list_item};
@@ -36,7 +34,7 @@ fn gallery_view() -> impl View {
     .background(Color::srgb_hex("#FFFBFE"))
 }
 
-fn main() {
+pub fn main() {
     run(
         App::new(gallery_view, Environment::new()),
         Material3::defaults(),

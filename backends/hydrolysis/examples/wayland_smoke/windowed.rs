@@ -1,5 +1,4 @@
-//! Wayland smoke run: opens a window under a compositor and stays alive long
-//! enough to eyeball that the first frame presents.
+//! The example program, compiled where `hydrolysis::run` exists.
 
 use std::thread;
 use std::time::Duration;
@@ -61,7 +60,7 @@ fn smoke_lifetime() -> Duration {
     Duration::from_secs(seconds)
 }
 
-fn main() {
+pub fn main() {
     thread::spawn(|| {
         thread::sleep(smoke_lifetime());
         std::process::exit(0);

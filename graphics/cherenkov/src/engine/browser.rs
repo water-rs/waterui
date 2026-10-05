@@ -44,6 +44,10 @@ pub struct Engine<B: Backend> {
     info: B::Info,
     stats: RefCell<FrameStats>,
     commits: RefCell<Vec<(SurfaceId, ChangeSet<B>)>>,
+    /// The deadline map `finish_frame` fills: its buffer travels with
+    /// `Message::Render` and returns in the reply, so the per-surface
+    /// deadlines reuse one allocation across frames.
+    next_scratch: RefCell<rustc_hash::FxHashMap<SurfaceId, Next>>,
     /// The live surfaces' shared queues, drained into one `Render` message
     /// per frame.
     surfaces: RefCell<Vec<std::rc::Weak<RefCell<Shared<B>>>>>,
@@ -59,7 +63,7 @@ pub struct Engine<B: Backend> {
     post: Rc<dyn Fn(Message<B>)>,
     /// The `Message::ReplaceImage` sender every image handle shares.
     replace_image: ReplaceImage,
-    waker: Arc<Waker>,
+    waker: Rc<Waker>,
     // `!Send`: the engine lives on the UI thread.
     _not_send: PhantomData<Rc<()>>,
 }
@@ -105,16 +109,10 @@ impl<B: Backend> Engine<B> {
     /// # Errors
     /// [`EngineError`] when the backend fails to initialize or the render
     /// thread cannot start.
-    #[expect(
-        clippy::arc_with_non_send_sync,
-        reason = "everything here is single-threaded; `Arc` matches the \
-            shared surface/record field types, and the callback never \
-            leaves this thread"
-    )]
     pub async fn new(config: B::Config) -> Result<Self, EngineError> {
         let (tx, info) = thread::local::<B>(config).await?;
         let post_tx = tx.clone();
-        let waker = Arc::new(Waker::new());
+        let waker = Rc::new(Waker::new());
         let replace_image = {
             let tx = tx.clone();
             // The executor wakes the host through every visible surface
@@ -129,6 +127,7 @@ impl<B: Backend> Engine<B> {
             info,
             stats: RefCell::new(FrameStats::default()),
             commits: RefCell::new(Vec::new()),
+            next_scratch: RefCell::new(rustc_hash::FxHashMap::default()),
             surfaces: RefCell::new(Vec::new()),
             next_surface: Cell::new(0),
             next_font: Cell::new(1),
@@ -216,10 +215,13 @@ impl<B: Backend> Engine<B> {
     /// visible surface, and once when a surface becomes visible (see
     /// [`Surface::visibility`]). A hidden surface never calls it.
     ///
-    /// # Panics
-    /// Panics if the engine's callback slot is poisoned by a prior panic.
+    /// This is the aggregate-host model: one callback behind every
+    /// visible surface's wake. A surface whose host keeps its own
+    /// presentation loop installs
+    /// [`Surface::set_waker`](crate::Surface::set_waker) instead; its
+    /// changes, completions and reveals then reach that callback alone.
     pub fn set_waker(&self, f: impl Fn() + 'static) {
-        *self.waker.callback.lock().expect("waker poisoned") = Some(Arc::new(f));
+        self.waker.set(Rc::new(f));
     }
 
     fn alloc(cell: &Cell<u64>) -> u64 {
@@ -296,15 +298,9 @@ impl<B: Backend> Engine<B> {
         clippy::future_not_send,
         reason = "the browser engine is single-threaded and its futures run on the page's event loop"
     )]
-    #[expect(
-        clippy::arc_with_non_send_sync,
-        reason = "everything here is single-threaded; `Arc` matches the native \
-            surface waker the render loop shares, and the callback never \
-            leaves this thread"
-    )]
     pub async fn surface(&self, target: impl Into<B::Target>) -> Result<Surface<B>, SurfaceError> {
         let id = SurfaceId::new(Self::alloc(&self.next_surface));
-        let waker = Arc::new(SurfaceWaker::new(Arc::clone(&self.waker)));
+        let waker = Rc::new(SurfaceWaker::new(Rc::clone(&self.waker)));
         let (reply, rx) = crate::local::channel();
         // The guard owns the surface id from the enqueue on: dropping the
         // future still destroys what `create_surface` committed (#150).
@@ -318,7 +314,7 @@ impl<B: Backend> Engine<B> {
             .send(Message::CreateSurface {
                 id,
                 target: target.into(),
-                waker: Arc::clone(&waker),
+                waker: Rc::clone(&waker),
                 reply,
             })
             .map_err(|_| SurfaceError::Lost)?;
@@ -376,6 +372,7 @@ impl<B: Backend> Engine<B> {
             .send(Message::Render {
                 time,
                 commits,
+                next_scratch: std::mem::take(&mut *self.next_scratch.borrow_mut()),
                 reply,
             })
             .map_err(|_| RenderError::Thread)?;
@@ -383,7 +380,9 @@ impl<B: Backend> Engine<B> {
         self.recycle_commits(&mut reply.commits);
         reply.commits.clear();
         *self.commits.borrow_mut() = reply.commits;
-        let (next, stats) = reply.result?;
+        let (next, surface_next, stats) = reply.result?;
+        super::publish_next(&self.surfaces.borrow(), &surface_next);
+        *self.next_scratch.borrow_mut() = surface_next;
         *self.stats.borrow_mut() = stats;
         Ok(next)
     }
@@ -565,7 +564,7 @@ impl<B: GpuContent> Engine<B> {
                 B::add_frame_producer(r, id, dirty, gate);
             }
         })));
-        let engine_waker = Arc::clone(&self.waker);
+        let engine_waker = Rc::clone(&self.waker);
         (
             GpuProducer::new(id, self.tx.clone()),
             FrameSink::new(

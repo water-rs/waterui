@@ -7,7 +7,11 @@ use crate::Instant;
 use std::ops::RangeInclusive;
 
 /// The presentation timestamp handed to [`Engine::render`](crate::Engine::render).
-#[derive(Clone, Copy, Debug)]
+///
+/// Two timestamps are equal when they name the same instant — a host that
+/// batches one engine frame per production target timestamp deduplicates on
+/// this, not on an approximation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FrameTime(pub Instant);
 
 impl FrameTime {

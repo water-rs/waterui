@@ -1,5 +1,4 @@
-//! Probe for the runtime window API: asserts the window handle, scale factor,
-//! and title plumbing through the platform runner.
+//! The example program, compiled where `hydrolysis::run` exists.
 
 use std::time::Duration;
 
@@ -16,7 +15,7 @@ use waterui::window::{UserAttention, Window, WindowHandle, WindowLevel, WindowSt
 /// beat, then raises a critical attention request. On X11 `xprop` against the
 /// window shows `_NET_WM_STATE_ABOVE`, `_NET_WM_STATE_MAXIMIZED_*`,
 /// `_NET_WM_STATE_DEMANDS_ATTENTION`, and the increment in `WM_NORMAL_HINTS`.
-fn main() {
+pub fn main() {
     let mut window = Window::new(
         "window-api-probe",
         waterui::reactive::binding(WindowState::Normal),

@@ -1,7 +1,7 @@
 //! The recording boundary's contract: constant and signal operands, engine
 //! resource handles, and what a rasterizer draws for each.
 //!
-//! These tests draw into `cherenkov::Recorder`, mount the result on a real
+//! These tests draw into `waterui_graphics::draw::Recorder`, mount the result on a real
 //! `cherenkov_cpu` engine through [`waterui_graphics::raster::Rasterizer`]
 //! and read pixels back, because the signature is only half the contract —
 //! the other half is that what was recorded is what the engine draws.

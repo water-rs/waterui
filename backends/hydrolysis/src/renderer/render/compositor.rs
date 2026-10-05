@@ -193,9 +193,8 @@ pub struct HydrolysisRenderTarget<'a> {
     /// Reports this device lost; taken when the device was opened. Carries
     /// the device-creation chain the engine pool keys on.
     pub device_loss: crate::platform::DeviceLoss,
-    /// The presentation attachment, `None` for a render whose output is read
-    /// back from a pooled texture instead.
-    pub texture: Option<&'a wgpu::Texture>,
+    /// The presentation attachment the frame is copied into.
+    pub texture: &'a wgpu::Texture,
     /// The attachment's format: `Rgba8`/`Bgra8` unorm or an `Rgba` float
     /// format.
     pub format: wgpu::TextureFormat,
@@ -204,7 +203,7 @@ pub struct HydrolysisRenderTarget<'a> {
     /// The render target's height in pixels.
     pub height: u32,
     /// The colour under the scene's content.
-    pub base_color: cherenkov::WorkingColor,
+    pub base_color: waterui_graphics::draw::WorkingColor,
 }
 
 /// The full frame description [`HydrolysisRenderer::render_scene_to_texture`]
@@ -232,11 +231,10 @@ pub struct FrameRenderTarget<'a> {
     /// `false` for a transient target (a subtree capture): it renders through
     /// a short-lived engine surface whose mounts die with the call.
     pub persistent: bool,
-    pub texture: Option<&'a wgpu::Texture>,
     pub format: wgpu::TextureFormat,
     pub width: u32,
     pub height: u32,
-    pub base_color: cherenkov::WorkingColor,
+    pub base_color: waterui_graphics::draw::WorkingColor,
 }
 
 impl<'a> HydrolysisRenderTarget<'a> {
@@ -255,7 +253,6 @@ impl<'a> HydrolysisRenderTarget<'a> {
             display_scale: 1.0,
             headroom: 1.0,
             persistent: false,
-            texture: self.texture,
             format: self.format,
             width: self.width,
             height: self.height,
@@ -622,9 +619,10 @@ impl HydrolysisRenderer {
         /// Async on wasm32, where the surface render inside awaits the browser
         /// device.
         pub fn render_scene_to_texture(&mut self, target: HydrolysisRenderTarget<'_>) {
+            let texture = target.texture;
             crate::engine::engine_await!(
                 self.render_scene_to_surface_with_alpha_mode(
-                    target.into_frame_target(), false, true
+                    target.into_frame_target(), texture, false, true
                 )
             );
         }
@@ -636,9 +634,10 @@ impl HydrolysisRenderer {
         /// Async on wasm32, where the surface render inside awaits the browser
         /// device.
         pub fn render_scene_to_surface(&mut self, target: HydrolysisRenderTarget<'_>) {
+            let texture = target.texture;
             crate::engine::engine_await!(
                 self.render_scene_to_surface_with_alpha_mode(
-                    target.into_frame_target(), false, true
+                    target.into_frame_target(), texture, false, true
                 )
             );
         }
@@ -685,17 +684,17 @@ impl HydrolysisRenderer {
         })
     }
 
-    /// Renders one hybrid segment into its own surface: the segment's layers
-    /// become the frame's render layers for the call and return to the
-    /// segment afterwards.
+    /// Renders one hybrid segment through the engine for its own surface:
+    /// the segment's layers become the frame's render layers for the call and
+    /// return to the segment afterwards. The caller presents the returned
+    /// frame.
     #[cfg(hydrolysis_macos_system_webview)]
-    pub(crate) fn render_hybrid_segment_to_surface(
+    pub(crate) fn render_hybrid_segment(
         &mut self,
         segment: &mut HybridRenderSegment,
         transient_scene: Option<Recording>,
         target: FrameRenderTarget<'_>,
-        premultiply_alpha: bool,
-    ) {
+    ) -> EngineFrame {
         assert!(
             self.compositor.render_layers.is_empty(),
             "Hydrolysis hybrid composition cannot render over retained layers"
@@ -706,12 +705,13 @@ impl HydrolysisRenderer {
         );
         self.compositor.render_layers = core::mem::take(&mut segment.layers);
         self.transient_scene = transient_scene;
-        self.render_scene_to_surface_with_alpha_mode(target, premultiply_alpha, true);
+        let frame = self.render_engine_frame(target, true);
         segment.layers = core::mem::take(&mut self.compositor.render_layers);
         assert!(
             self.transient_scene.is_none(),
             "Hydrolysis hybrid segment left a transient scene unconsumed"
         );
+        frame
     }
 
     /// Reassembles the render layers a hybrid composition split, checking the
@@ -750,13 +750,71 @@ impl HydrolysisRenderer {
     }
 
     crate::engine::cfg_async_fn! {
-        // one continuous frame-build sequence; splitting it would only mirror the pipeline stages artificially
-        #[allow(clippy::too_many_lines)]
         /// [`Self::render_scene_to_surface`] with the target's composite alpha
         /// convention made explicit: `premultiply_alpha` selects the alpha
-        /// mode the presenter writes into the acquired frame — premultiplied
-        /// for an OS surface configured `CompositeAlphaMode::PreMultiplied`,
-        /// straight for offscreen/readback targets.
+        /// mode the presenter writes into `texture` — premultiplied for an OS
+        /// surface configured `CompositeAlphaMode::PreMultiplied`, straight
+        /// for offscreen/readback targets.
+        ///
+        /// `rasterize_scene_layers` is [`Self::render_engine_frame`]'s.
+        ///
+        /// Async on wasm32, where the engine calls inside await the browser
+        /// device.
+        pub(crate) fn render_scene_to_surface_with_alpha_mode(
+            &mut self,
+            target: FrameRenderTarget<'_>,
+            texture: &wgpu::Texture,
+            premultiply_alpha: bool,
+            rasterize_scene_layers: bool,
+        ) {
+            let (device, queue) = (target.device, target.queue);
+            let frame = crate::engine::engine_await!(
+                self.render_engine_frame(target, rasterize_scene_layers)
+            );
+            self.present_engine_frame(frame, device, queue, texture, premultiply_alpha);
+        }
+    }
+
+    /// Copies the frame [`Self::render_engine_frame`] rendered into
+    /// `texture`. Synchronous on every target, so a host presenting a
+    /// swapchain image acquires it only after the engine render, and the
+    /// image is never held across an await: a browser expires its canvas
+    /// texture when the task that acquired it ends.
+    pub(crate) fn present_engine_frame(
+        &mut self,
+        frame: EngineFrame,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        texture: &wgpu::Texture,
+        premultiply_alpha: bool,
+    ) {
+        // The window map leaves `self` for the call, as in the render, so the
+        // profiler mark may borrow the renderer.
+        let mut windows = core::mem::take(&mut self.cherenkov_windows);
+        let mut transient = frame.transient;
+        let window = match &mut transient {
+            Some(window) => window,
+            None => windows.get_mut(&frame.context_id).expect(
+                "hydrolysis renderer: the engine frame's window left the renderer before its present",
+            ),
+        };
+        window
+            .surface
+            .present_into(device, queue, texture, premultiply_alpha, frame.headroom);
+
+        #[cfg(feature = "frame-profile")]
+        self.gpu_profile_mark(window.gpu_profiler.as_ref(), device, queue, 2);
+
+        self.cherenkov_windows = windows;
+    }
+
+    crate::engine::cfg_async_fn! {
+        // one continuous frame-build sequence; splitting it would only mirror the pipeline stages artificially
+        #[allow(clippy::too_many_lines)]
+        /// Installs the frame's layers into the engine surface for
+        /// `target`'s GPU context and renders it into the engine's retained
+        /// output. [`Self::present_engine_frame`] then copies that output into
+        /// the presentation attachment.
         ///
         /// `rasterize_scene_layers` skips only re-installing segment content:
         /// a frame whose pixels no consumer can read still mounts every layer
@@ -766,12 +824,11 @@ impl HydrolysisRenderer {
         ///
         /// Async on wasm32, where the engine calls inside await the browser
         /// device.
-        pub(crate) fn render_scene_to_surface_with_alpha_mode(
+        pub(crate) fn render_engine_frame(
             &mut self,
             target: FrameRenderTarget<'_>,
-            premultiply_alpha: bool,
             rasterize_scene_layers: bool,
-        ) {
+        ) -> EngineFrame {
         assert!(
             matches!(
                 target.format.remove_srgb_suffix(),
@@ -921,27 +978,30 @@ impl HydrolysisRenderer {
             self.frame_applied_filter_effect,
         ) = self.applied_filter_metrics.snapshot();
         self.engine_next = Some(next);
-        let texture = target
-            .texture
-            .expect("hydrolysis renderer: surface presentation requires the acquired texture");
-        window.surface.present_into(
-            target.device,
-            target.queue,
-            texture,
-            premultiply_alpha,
-            target.headroom,
-        );
-
-        #[cfg(feature = "frame-profile")]
-        self.gpu_profile_mark(window.gpu_profiler.as_ref(), target.device, target.queue, 2);
 
         self.compositor.render_layers = render_layers;
         self.cherenkov_windows = windows;
         if needs_redraw {
             self.request_redraw();
         }
+        EngineFrame {
+            context_id,
+            headroom: target.headroom,
+            transient: transient_window,
+        }
     }
     }
+}
+
+/// A frame [`HydrolysisRenderer::render_engine_frame`] rendered and
+/// [`HydrolysisRenderer::present_engine_frame`] has yet to copy out: the GPU
+/// context whose window holds the output, and the window itself when the
+/// target was transient and owns no persistent entry.
+#[must_use = "an engine frame is shown only once present_engine_frame copies it out"]
+pub struct EngineFrame {
+    context_id: u64,
+    headroom: f32,
+    transient: Option<CherenkovWindow>,
 }
 
 /// One window surface's engine-side state: the `TextureTarget` surface, the
@@ -1032,12 +1092,12 @@ fn ancestry_scopes(
         .iter()
         .map(|layer| {
             let mut path = match &layer.shape {
-                LayerShape::Rect(rect) => rect.to_path(cherenkov::PATH_TOLERANCE),
+                LayerShape::Rect(rect) => rect.to_path(waterui_graphics::draw::PATH_TOLERANCE),
                 LayerShape::RoundedRect { path, .. } | LayerShape::Path(path) => path.clone(),
             };
             path.apply_affine(layer.transform);
             crate::renderer::retained::mount::AncestryScope {
-                clip: Some(cherenkov::ShapeData::of(&path)),
+                clip: Some(waterui_graphics::draw::ShapeData::of(&path)),
                 opacity: layer.alpha,
             }
         })
