@@ -31,6 +31,31 @@ pub fn pump_main_until(seconds: f64, until: impl Fn() -> bool) -> bool {
     until()
 }
 
+/// The bound a case gives deferred main-queue work before it fails.
+///
+/// Reached only when the awaited work never arrives; a healthy queue
+/// answers within a few run-loop turns.
+pub const MAIN_QUEUE_DEADLINE: f64 = 5.0;
+
+/// Pumps the main run loop until every block already on the main queue has run.
+///
+/// The backend applies a list emission as a block on the main dispatch
+/// queue, so a case asserting that the newest state is never overwritten
+/// cannot stop the moment that state first appears: an older emission
+/// still queued would land in a later turn. This enqueues a sentinel
+/// block and pumps until it runs; the main queue is FIFO, so every block
+/// enqueued before it has run too. Answers whether the sentinel ran
+/// within [`MAIN_QUEUE_DEADLINE`].
+#[must_use = "a queue that never drains must fail the case"]
+pub fn drain_main_queue(mtm: MainThreadMarker) -> bool {
+    let drained = alloc::rc::Rc::new(core::cell::Cell::new(false));
+    cocoa_ui::main_queue::enqueue_local(mtm, {
+        let drained = alloc::rc::Rc::clone(&drained);
+        move |_mtm| drained.set(true)
+    });
+    pump_main_until(MAIN_QUEUE_DEADLINE, || drained.get())
+}
+
 /// A real controller/window lifetime around the production mounting path.
 #[cfg(target_os = "ios")]
 #[derive(Debug)]

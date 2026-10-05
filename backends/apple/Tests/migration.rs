@@ -323,7 +323,9 @@ mod uikit_surface {
     use waterui::prelude::*;
     use waterui::reactive::binding;
     use waterui::shape::Circle;
-    use waterui_apple::native_test_support::pump_main_until;
+    use waterui_apple::native_test_support::{
+        MAIN_QUEUE_DEADLINE, drain_main_queue, pump_main_until,
+    };
     use waterui_backend_core::AnyView;
 
     use crate::{PlatformView, Retained, mtm};
@@ -676,7 +678,8 @@ mod uikit_surface {
         let table = table(mount.content.view());
         let first_row = NSIndexPath::indexPathForRow_inSection(0, 0);
         assert!(
-            pump_main_until(5.0, || cell_height(&table, &first_row).is_some()),
+            pump_main_until(MAIN_QUEUE_DEADLINE, || cell_height(&table, &first_row)
+                .is_some()),
             "the first row materializes once deferred work drains"
         );
         let first = table
@@ -687,7 +690,7 @@ mod uikit_surface {
         let _ = items.set(0, ProbeRow { id: 1, tall: true });
         mount.window.layoutIfNeeded();
         assert!(
-            pump_main_until(5.0, || {
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
                 cell_height(&table, &first_row).is_some_and(|height| height > short + 10.0)
                     && cell_shows(&table, &first_row, "updated tall row")
             }),
@@ -716,7 +719,7 @@ mod uikit_surface {
         items.insert(0, ProbeRow { id: 1, tall: false });
         mount.window.layoutIfNeeded();
         assert!(
-            pump_main_until(5.0, || {
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
                 cell_height(&table, &first_row).is_some_and(|height| (height - short).abs() < 1.0)
                     && !cell_shows(&table, &first_row, "updated tall row")
             }),
@@ -755,13 +758,21 @@ mod uikit_surface {
         mount.window.layoutIfNeeded();
         let pushed_row = NSIndexPath::indexPathForRow_inSection(1, 0);
         assert!(
-            pump_main_until(5.0, || {
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
                 cell_height(table, first_row).is_some_and(|height| height > short + 10.0)
                     && cell_height(table, &pushed_row)
                         .is_some_and(|height| (height - short).abs() < 1.0)
             }),
             "the moved and pushed rows land on their own contracts"
         );
+        // The newest state has landed; an older queued flush would apply
+        // after it. Drain the main queue past every queued emission and lay
+        // out again so such an overwrite would show in the cells below.
+        assert!(
+            drain_main_queue(mtm()),
+            "the queued emissions drain off the main queue"
+        );
+        mount.window.layoutIfNeeded();
         let moved = table
             .cellForRowAtIndexPath(first_row)
             .expect("the moved row stays mounted");
@@ -820,8 +831,11 @@ mod uikit_surface {
         let sectioned_table = table(mount.content.view());
         let untouched_row = NSIndexPath::indexPathForRow_inSection(1, 0);
         assert!(
-            pump_main_until(5.0, || cell_height(&sectioned_table, &untouched_row)
-                .is_some()),
+            pump_main_until(MAIN_QUEUE_DEADLINE, || cell_height(
+                &sectioned_table,
+                &untouched_row
+            )
+            .is_some()),
             "the sectioned rows materialize once deferred work drains"
         );
         // The marker labels the group id 10 starts; id 11 has no marker and
@@ -842,7 +856,7 @@ mod uikit_surface {
         mount.window.layoutIfNeeded();
         let replaced_row = NSIndexPath::indexPathForRow_inSection(0, 0);
         assert!(
-            pump_main_until(5.0, || {
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
                 cell_height(&sectioned_table, &replaced_row)
                     .is_some_and(|height| (height - short).abs() < 1.0)
                     && sectioned_table
@@ -917,7 +931,7 @@ mod uikit_surface {
         // then unambiguously newer, and an older queued snapshot may never
         // overwrite it.
         assert!(
-            pump_main_until(5.0, || {
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
                 cell_shows(&reentrant_table, &first_row, "updated tall row")
                     && cell_height(&reentrant_table, &untouched_row).is_some()
             }),
@@ -941,7 +955,7 @@ mod uikit_surface {
         let _ = items.set(1, ProbeRow { id: 21, tall: true });
         mount.window.layoutIfNeeded();
         assert!(
-            pump_main_until(5.0, || {
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
                 cell_height(&reentrant_table, &first_row)
                     .is_some_and(|height| (height - short).abs() < 1.0)
                     && cell_shows(&reentrant_table, &first_row, "reentrant row")
@@ -950,6 +964,15 @@ mod uikit_surface {
             }),
             "the newest emission wins over the queued reentrant one"
         );
+        // The newest state has landed; the queued reentrant flush would
+        // apply after it. Drain the main queue past every queued emission
+        // and lay out again so such an overwrite would show in the cells
+        // below.
+        assert!(
+            drain_main_queue(mtm()),
+            "the queued emissions drain off the main queue"
+        );
+        mount.window.layoutIfNeeded();
         let cell = reentrant_table
             .cellForRowAtIndexPath(&first_row)
             .expect("the reentrant row stays mounted");
@@ -1028,7 +1051,7 @@ mod uikit_surface {
         // position (id 30 while live is `[31, 32]`), which a live read
         // could never produce.
         assert!(
-            pump_main_until(5.0, || {
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
                 if remove_table.numberOfRowsInSection(0) != 2 {
                     return false;
                 }
@@ -1154,7 +1177,7 @@ mod uikit_surface {
             cocoa_ui::Rect::new(0.0, 0.0, 393.0, 852.0),
         );
         assert!(
-            pump_main_until(5.0, || {
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
                 row_labels(mount.content.view()) == ["row 41", "row 42"]
             }),
             "the reentrant emission applies once the borrow releases"
@@ -1216,7 +1239,7 @@ mod uikit_surface {
             cocoa_ui::Rect::new(0.0, 0.0, 393.0, 852.0),
         );
         assert!(
-            pump_main_until(5.0, || {
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
                 row_labels(mount.content.view()) == ["row 50", "row 51", "row 52"]
             }),
             "the first reentrant rows emission applies once the borrow releases"
@@ -1228,7 +1251,7 @@ mod uikit_surface {
             tall: false,
         });
         assert!(
-            pump_main_until(5.0, || {
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
                 row_labels(mount.content.view())
                     == ["row 50", "row 51", "row 52", "row 53", "row 54"]
             }),
@@ -1318,7 +1341,9 @@ mod uikit_surface {
             cocoa_ui::Rect::new(0.0, 0.0, 393.0, 852.0),
         );
         assert!(
-            pump_main_until(5.0, || { row_labels(mount.content.view()) == ["row 60"] }),
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                row_labels(mount.content.view()) == ["row 60"]
+            }),
             "the initial column rows materialize"
         );
         // The post-mount apply runs under the table borrow; the row-61
@@ -1329,7 +1354,7 @@ mod uikit_surface {
             tall: false,
         });
         assert!(
-            pump_main_until(5.0, || {
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
                 row_labels(mount.content.view()) == ["row 60", "row 61", "row 62", "row 70"]
             }),
             "the recorded emissions deliver at the boundary"
