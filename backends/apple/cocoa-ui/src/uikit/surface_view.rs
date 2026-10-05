@@ -516,10 +516,12 @@ impl SurfaceView {
     }
 
     fn emit(&self, interaction: PointerInteraction) {
-        let handler = self.ivars().on_interaction.borrow().clone();
-        if let Some(handler) = handler {
-            guarded("SurfaceView pointer interaction", || handler(interaction));
-        }
+        guarded("SurfaceView pointer interaction", || {
+            let handler = self.ivars().on_interaction.borrow().clone();
+            if let Some(handler) = handler {
+                handler(interaction);
+            }
+        });
     }
 
     /// The first touch's position in logical, surface-local points.
