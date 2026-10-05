@@ -192,7 +192,8 @@ pub enum ContentOp {
 pub enum LayerOp {
     /// Create a detached layer node.
     Create(LayerId),
-    /// Remove a layer node and its descendants.
+    /// Remove a layer node — only it. Its children stay in the tree,
+    /// detached and undrawn, until their own `Remove` or re-attachment.
     Remove(LayerId),
     /// Set the local transform.
     Transform(LayerId, Prop<Affine>),
