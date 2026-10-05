@@ -354,11 +354,14 @@ impl SurfaceState {
         });
         // The redraw waker: external capture intercepts while it owns
         // rendering; otherwise the request is handled on the main queue.
-        // The handle fires on arbitrary producer threads, so the weak and
-        // the view travel in a `MainThreadBound` — the clone and upgrade
-        // happen only once the work item lands on the main queue.
-        let redraw_weak = Arc::new(dispatch2::MainThreadBound::new(weak.clone(), mtm));
-        let redraw_view = Arc::new(dispatch2::MainThreadBound::new(platform_view.clone(), mtm));
+        // The handle fires on arbitrary producer threads and its last
+        // drop can land on the cherenkov render thread, so the weak and
+        // the view travel in a `MainQueueOwned` — the clone and upgrade
+        // happen only once the work item lands on the main queue, and an
+        // off-main release enqueues the payload's drop instead of
+        // blocking on `exec_sync` (#1776).
+        let redraw_weak = crate::main_queue_owned::shared(weak.clone(), mtm);
+        let redraw_view = crate::main_queue_owned::shared(platform_view.clone(), mtm);
         let redraw_handle = RedrawHandle::new(move || {
             let weak = Arc::clone(&redraw_weak);
             let view = Arc::clone(&redraw_view);
