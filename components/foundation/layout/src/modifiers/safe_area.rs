@@ -18,9 +18,10 @@
 //! material) extends past its frame to the window edge on every edge it
 //! touches, without moving the content it backs; an `IgnoreSafeArea` on the
 //! fill replaces that default with the regions and edges it names. A scroll
-//! surface or chrome container extends under the regions of the edges it
-//! touches, insets its content by them, and scrolls the minimum distance that
-//! brings a focused text field clear of the keyboard region.
+//! surface extends under the regions of the edges it touches, insets its
+//! content by them, and scrolls the minimum distance that brings a focused
+//! text field clear of the keyboard region; a chrome container extends its
+//! bars under the regions they touch.
 //! `docs/layout-spec.md` §7.1 is the normative statement.
 //!
 //! Nothing `WaterUI` lays out itself — the window's snackbar and overlay

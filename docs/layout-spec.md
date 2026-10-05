@@ -419,13 +419,18 @@ transforms, ends on that boundary.
   regions and edges it names. A background whose content is any other view,
   and a fill that is not a background, extends only where it ignores the
   safe area.
-- **Scroll surfaces.** A scroll surface or chrome container touching an edge
-  extends under that edge's regions and insets its content by them; its
-  content is not laid out against the safe area, so nothing inside it
-  touches an edge. When a text field inside a scroll surface gains focus, or
-  the keyboard inset grows while one is focused, the surface scrolls the
-  minimum distance that brings the field's frame clear of the keyboard
-  region and inside the surface's own frame.
+- **Scroll surfaces.** A scroll surface touching an edge extends under that
+  edge's regions and insets its content by them; its content is not laid
+  out against the safe area, so nothing inside it touches an edge. When a
+  text field inside a scroll surface gains focus, or the keyboard inset
+  grows while one is focused, the surface scrolls the minimum distance that
+  brings the field's frame clear of the keyboard region and inside the
+  surface's own frame.
+- **Chrome.** A chrome container (a navigation, tool or tab bar host)
+  extends each bar it draws under the regions of the edge the bar touches.
+  Its content touches no edge where a bar sits; on the edges where it draws
+  no bar, the content is laid out against the safe area like any other
+  view.
 - **Keyboard motion.** A change of the keyboard inset follows the platform's
   keyboard animation frame by frame. A backend never avoids the keyboard by
   resizing the window or its rendering surface.
