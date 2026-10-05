@@ -987,6 +987,22 @@ impl SceneResources {
         self.table.backend.image_limits()
     }
 
+    /// `Err` naming the limits when `data` exceeds them — checked before
+    /// the source is hashed for [`intern`](Self::intern), so an oversized
+    /// image is rejected without hashing it at all.
+    fn admit_image<F: Format>(&self, data: &ImageData<F>) -> Result<(), ResourceError> {
+        let limits = self.image_limits();
+        if limits.admits(data.width(), data.height()) {
+            Ok(())
+        } else {
+            Err(ResourceError::TooLarge {
+                width: data.width(),
+                height: data.height(),
+                limits,
+            })
+        }
+    }
+
     /// The live registration of `bytes` in `shape`, or a new one from
     /// `register` listed while it lives.
     ///
@@ -1091,14 +1107,7 @@ impl SceneResources {
     /// upload for another cause, [`ResourceError::Lost`] when the render
     /// thread is gone.
     pub fn image(&self, data: ImageData<Rgba8>) -> Result<Registered<ImageId>, ResourceError> {
-        let limits = self.image_limits();
-        if !limits.admits(data.width, data.height) {
-            return Err(ResourceError::TooLarge {
-                width: data.width,
-                height: data.height,
-                limits,
-            });
-        }
+        self.admit_image(&data)?;
         self.intern(
             |table| &table.images_rgba8,
             ImageShape::of(&data),
@@ -1122,14 +1131,7 @@ impl SceneResources {
     /// upload for another cause, [`ResourceError::Lost`] when the render
     /// thread is gone.
     pub fn image16f(&self, data: ImageData<Rgba16F>) -> Result<Registered<ImageId>, ResourceError> {
-        let limits = self.image_limits();
-        if !limits.admits(data.width, data.height) {
-            return Err(ResourceError::TooLarge {
-                width: data.width,
-                height: data.height,
-                limits,
-            });
-        }
+        self.admit_image(&data)?;
         self.intern(
             |table| &table.images_rgba16f,
             ImageShape::of(&data),

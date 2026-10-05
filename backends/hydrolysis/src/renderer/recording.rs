@@ -181,10 +181,12 @@ fn fit_image_to_limits(
     limits: waterui_graphics::draw::ImageLimits,
 ) -> (u32, u32, Arc<[u8]>) {
     let (width, height) = limits.fit(image.width, image.height);
-    if (width, height) == (0, 0) || (width, height) == (image.width, image.height) {
-        // `(0, 0)` admits nothing at all — the registration's own error
-        // reports that broken engine invariant.
-        return (image.width, image.height, Arc::from(image.data.data()));
+    assert!(
+        (width, height) != (0, 0),
+        "hydrolysis renderer: engine image limits admit no image at all"
+    );
+    if (width, height) == (image.width, image.height) {
+        return (width, height, Arc::from(image.data.data()));
     }
     let source = image::RgbaImage::from_raw(image.width, image.height, image.data.data().to_vec())
         .expect("hydrolysis renderer: a well-formed image fits RgbaImage::from_raw");

@@ -304,7 +304,7 @@ impl<B: Backend> Engine<B> {
     where
         B: Uploads<F>,
     {
-        crate::error::admit(self.image_limits, image.width, image.height)?;
+        crate::error::admit(self.image_limits, image.width(), image.height())?;
         let id = ImageId::new(Self::alloc(&self.next_image));
         let upload = image.into_upload();
         let resource = ResourceId::Image(id);
