@@ -208,11 +208,11 @@ def build_contestants(manifest: dict, only: set[str] | None) -> dict[str, str]:
 
     if not only or "waterui-hydrolysis" in only:
         # The shared WaterUI app is a workspace member: `water package`
-        # scaffolds backends/hydrolysis inside the project, builds the
-        # shared-runtime release binary and stages binary + resources +
-        # libwaterui_dylib into backends/hydrolysis/dist/linux/release —
-        # exactly what gets shipped. waterui_path = "../../.." resolves to
-        # /repo inside the container.
+        # builds the shared-runtime release binary and stages it at
+        # target/package/<name>-<backend> — a single statically-pie ELF
+        # (hydrolysis ships no separate resources tree on Linux).
+        # waterui_path = "../../.." resolves to /repo inside the
+        # container.
         inner = r'''
 set -e
 cd /repo/benchmarks/competitive/apps/waterui
@@ -221,11 +221,9 @@ water package --platform linux --backend hydrolysis --release -y
 D=/bench/dist/waterui-hydrolysis
 rm -rf "$D"
 mkdir -p "$D"
-cp -a backends/hydrolysis/dist/linux/release/. "$D/"
-# the shipped binary sits beside resources/ under the crate name
-BIN="$D/waterui-bench"
-[ -f "$BIN" ] || { echo "hydrolysis binary not found at $BIN"; ls -la "$D"; exit 1; }
-mv "$BIN" "$D/app"
+BIN=target/package/waterui-bench-hydrolysis
+[ -f "$BIN" ] || { echo "hydrolysis binary not found at $BIN"; ls -la target/package; exit 1; }
+cp "$BIN" "$D/app"
 ls -la "$D"
 '''
         docker_run_bash(inner)
