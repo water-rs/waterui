@@ -263,4 +263,61 @@ mod tests {
         // σ = 29.5 pt at 2 px/pt, captured at a quarter: 14.75 texels.
         assert!((runtime.chain(2.0).second.0 - 14.75).abs() <= f32::EPSILON);
     }
+
+    /// The interiors measured on water-rs/waterui#1854 through each
+    /// within-window level, over black, grey 0.5 and white: 8-bit encoded
+    /// sRGB on the device.
+    const MEASURED_INTERIORS: [(WithinWindowLevel, ColorScheme, [u8; 3]); 6] = [
+        (
+            WithinWindowLevel::Regular,
+            ColorScheme::Light,
+            [197, 225, 245],
+        ),
+        (WithinWindowLevel::Regular, ColorScheme::Dark, [31, 64, 83]),
+        (
+            WithinWindowLevel::Thick,
+            ColorScheme::Light,
+            [233, 243, 245],
+        ),
+        (WithinWindowLevel::Thick, ColorScheme::Dark, [31, 42, 37]),
+        (
+            WithinWindowLevel::UltraThick,
+            ColorScheme::Light,
+            [178, 240, 247],
+        ),
+        (
+            WithinWindowLevel::UltraThick,
+            ColorScheme::Dark,
+            [18, 75, 87],
+        ),
+    ];
+
+    /// Each level's colour stage maps a uniform grey backdrop to the measured
+    /// interior within 2 levels; the blur after it leaves a uniform image
+    /// alone. On grey the chroma term vanishes and the stage is
+    /// `(1 − amount)·Y + amount·bezier(Y) + offset`, the formula filtrate
+    /// checks the `LumaCurve` shader against.
+    #[test]
+    fn the_table_reproduces_the_measured_interiors() {
+        for (level, scheme, interiors) in MEASURED_INTERIORS {
+            let runtime = MaterialRuntime::new(level, &Computed::constant(scheme));
+            let [v0, v1, v2, v3, amount, _, offset] = runtime.tone.params();
+            for (grey, interior) in [0.0_f32, 0.5, 1.0].into_iter().zip(interiors) {
+                let u = 1.0 - grey;
+                let bezier = (u * u * u).mul_add(
+                    v0,
+                    (3.0 * grey * u * u).mul_add(
+                        v1,
+                        (3.0 * grey * grey * u).mul_add(v2, grey * grey * grey * v3),
+                    ),
+                );
+                let out = amount.mul_add(bezier - grey, grey) + offset;
+                let level8 = out.clamp(0.0, 1.0) * 255.0;
+                assert!(
+                    (level8 - f32::from(interior)).abs() <= 2.0,
+                    "{level:?} {scheme:?} over {grey}: {level8} against the measured {interior}"
+                );
+            }
+        }
+    }
 }
