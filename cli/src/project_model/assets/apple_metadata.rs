@@ -29,6 +29,7 @@ use std::fmt;
 
 use serde::Deserialize;
 
+use super::app_values::{AppValueKey, AppValuesConfig, RequiredAppValues};
 use crate::platform::TargetPlatform;
 
 /// Entitlements the signing path derives from the provisioning profile; a
@@ -39,6 +40,10 @@ const PROFILE_ENTITLEMENTS: &[&str] = &[
     "com.apple.developer.team-identifier",
     "get-task-allow",
 ];
+
+/// The Apple Pay entitlement, whose merchant IDs only the app knows: a crate
+/// requests the `apple_pay_merchant_ids` app value instead of declaring it.
+const IN_APP_PAYMENTS: &str = "com.apple.developer.in-app-payments";
 
 /// How the app is signed, which decides the APNs and App Attest environment
 /// the signature claims.
@@ -102,6 +107,11 @@ impl TryFrom<String> for EntitlementKey {
         if PROFILE_ENTITLEMENTS.contains(&key.as_str()) {
             return Err(format!(
                 "entitlement `{key}` comes from the provisioning profile and cannot be declared"
+            ));
+        }
+        if key == IN_APP_PAYMENTS {
+            return Err(format!(
+                "entitlement `{key}` carries the app's merchant IDs; request the `apple_pay_merchant_ids` app value with `[[package.metadata.waterui.app-value]]` instead"
             ));
         }
         if let Some(environment) = EnvironmentEntitlement::ALL.into_iter().find(|environment| {
@@ -226,9 +236,39 @@ pub struct AppleDeclarations {
     entitlements: BTreeMap<String, Declared>,
     environment: BTreeMap<EnvironmentEntitlement, Vec<String>>,
     info_plist: BTreeMap<String, Declared>,
+    /// Values the graph requests from the app's `Water.toml`.
+    pub(super) app_values: RequiredAppValues,
 }
 
 impl AppleDeclarations {
+    /// Places the Apple values the graph requests from the app's `config`:
+    /// the Apple Pay merchant IDs become the `in-app-payments` entitlement.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming the key and the requesting crates when a
+    /// requested value is missing from `Water.toml`.
+    pub fn supply_app_values(&mut self, config: &AppValuesConfig) -> eyre::Result<()> {
+        if let Some(ids) = self.app_values.resolve(
+            AppValueKey::ApplePayMerchantIds,
+            config.apple_pay_merchant_ids.as_ref(),
+        )? {
+            let crates = self
+                .app_values
+                .requesters(AppValueKey::ApplePayMerchantIds)
+                .unwrap_or_default()
+                .to_vec();
+            self.entitlements.insert(
+                IN_APP_PAYMENTS.to_owned(),
+                Declared {
+                    crates,
+                    value: ids.to_plist(),
+                },
+            );
+        }
+        Ok(())
+    }
+
     /// Merges `crate_name`'s table.
     ///
     /// # Errors
@@ -593,6 +633,59 @@ mod tests {
     }
 
     #[test]
+    fn requested_merchant_ids_come_from_water_toml() {
+        let mut declarations = AppleDeclarations::default();
+        declarations
+            .app_values
+            .request("waterkit-pay", AppValueKey::ApplePayMerchantIds);
+        let message = declarations
+            .supply_app_values(&AppValuesConfig::default())
+            .expect_err("a requested value the app omits must fail")
+            .to_string();
+        assert!(message.contains("apple_pay_merchant_ids"), "{message}");
+        assert!(message.contains("`waterkit-pay`"), "{message}");
+
+        let config: AppValuesConfig =
+            toml::from_str("apple_pay_merchant_ids = [\"merchant.com.example\"]\n")
+                .expect("[app_values] parses");
+        declarations
+            .supply_app_values(&config)
+            .expect("supplied merchant IDs");
+        let mut entitlements = plist::Dictionary::new();
+        declarations
+            .merge_into_entitlements(
+                &mut entitlements,
+                TargetPlatform::IOS,
+                SigningEnvironment::Development,
+            )
+            .expect("merge entitlements");
+        assert_eq!(
+            entitlements.get(IN_APP_PAYMENTS),
+            Some(&strings(&["merchant.com.example"]))
+        );
+    }
+
+    #[test]
+    fn unrequested_merchant_ids_stay_out_of_the_signature() {
+        let mut declarations = AppleDeclarations::default();
+        let config: AppValuesConfig =
+            toml::from_str("apple_pay_merchant_ids = [\"merchant.com.example\"]\n")
+                .expect("[app_values] parses");
+        declarations
+            .supply_app_values(&config)
+            .expect("nothing is requested");
+        let mut entitlements = plist::Dictionary::new();
+        declarations
+            .merge_into_entitlements(
+                &mut entitlements,
+                TargetPlatform::IOS,
+                SigningEnvironment::Development,
+            )
+            .expect("merge entitlements");
+        assert!(entitlements.is_empty(), "{entitlements:?}");
+    }
+
+    #[test]
     fn malformed_tables_fail_to_parse() {
         for text in [
             // An unknown key.
@@ -600,6 +693,8 @@ mod tests {
             // A profile-derived entitlement.
             "[entitlements]\n\"get-task-allow\" = true\n",
             "[entitlements]\n\"application-identifier\" = \"X.dev.app\"\n",
+            // The merchant IDs only the app knows.
+            "[entitlements]\n\"com.apple.developer.in-app-payments\" = [\"merchant.com.example\"]\n",
             // An environment entitlement as a literal.
             "[entitlements]\n\"aps-environment\" = \"development\"\n",
             "[entitlements]\n\"com.apple.developer.aps-environment\" = \"production\"\n",

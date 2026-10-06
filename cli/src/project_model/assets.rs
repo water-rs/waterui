@@ -27,6 +27,7 @@ use crate::project::Project;
 use crate::project_model::project_types::PermissionKey;
 
 mod android_manifest;
+mod app_values;
 mod apple_metadata;
 mod gradle_plugins;
 pub mod icon;
@@ -36,6 +37,7 @@ mod web;
 pub use android_manifest::ManifestComponents;
 #[cfg(test)]
 pub use android_manifest::assert_component_markers_inside_application;
+pub use app_values::{AppValuesConfig, RequiredAppValues};
 pub use apple_metadata::{AppleDeclarations, SigningEnvironment};
 pub use gradle_plugins::GradlePlugins;
 #[cfg(test)]
@@ -168,6 +170,10 @@ struct WaterUIMetadata {
     /// `[package.metadata.waterui.apple]`.
     #[serde(default)]
     apple: apple_metadata::AppleMetadata,
+    /// Values the app supplies in `Water.toml`, from
+    /// `[[package.metadata.waterui.app-value]]`.
+    #[serde(default, rename = "app-value")]
+    app_value: Vec<app_values::AppValueRequest>,
 }
 
 /// One crate's `[package.metadata.waterui.android]` table.
@@ -581,6 +587,8 @@ pub struct AndroidDeclarations {
     pub manifest: ManifestComponents,
     /// Gradle plugins for the application module and the project settings.
     pub gradle_plugins: GradlePlugins,
+    /// Values the graph requests from the app's `Water.toml`.
+    pub app_values: RequiredAppValues,
 }
 
 /// Kotlin sources and Maven coordinates the dependency graph asks to place on
@@ -651,6 +659,12 @@ fn collect_android_declarations(
         let Some(parsed) = parse_waterui_metadata(package)? else {
             continue;
         };
+        request_app_values(
+            &mut declarations.app_values,
+            &enabled_features,
+            package,
+            parsed.app_value,
+        );
         let android = parsed.android;
         let components = android_manifest::DeclaredComponents {
             providers: android.provider,
@@ -747,6 +761,12 @@ fn collect_apple_declarations(
         let Some(parsed) = parse_waterui_metadata(package)? else {
             continue;
         };
+        request_app_values(
+            &mut declarations.app_values,
+            &enabled_features,
+            package,
+            parsed.app_value,
+        );
         let apple = parsed.apple;
         if apple.is_empty() {
             continue;
@@ -763,6 +783,28 @@ fn collect_apple_declarations(
         declarations.merge(package.name.as_str(), apple)?;
     }
     Ok(declarations)
+}
+
+/// Records the app values `package` requests whose `required-feature` cargo
+/// resolved.
+fn request_app_values(
+    required: &mut RequiredAppValues,
+    enabled_features: &HashMap<&PackageId, HashSet<&str>>,
+    package: &cargo_metadata::Package,
+    requests: Vec<app_values::AppValueRequest>,
+) {
+    for request in requests {
+        if let Some(gate) = &request.required_feature
+            && !feature_enabled(enabled_features, package, gate)
+        {
+            debug!(
+                "Skipping app value `{:?}` requested by {}: feature `{gate}` is not enabled",
+                request.key, package.name
+            );
+            continue;
+        }
+        required.request(package.name.as_str(), request.key);
+    }
 }
 
 /// Markers bracketing the R8 keep block [`stage_android_declarations`] maintains
@@ -804,6 +846,14 @@ pub async fn stage_android_declarations(
     let declarations = scan_android_declarations(project, build_manifest, features).await?;
     stage_classpath_files(&declarations.classpath, module_dir, scope).await?;
     android_manifest::write_manifest_components(module_dir, &declarations.manifest).await?;
+    app_values::stage_android_app_values(
+        module_dir,
+        project.root(),
+        &declarations.app_values,
+        &project.manifest().app_values,
+        scope,
+    )
+    .await?;
     match scope {
         AndroidDependencyScope::Implementation => {
             let project_dir = module_dir
@@ -3456,6 +3506,62 @@ mod permission_audit_tests {
             .to_string();
         assert!(message.contains("`push`"), "{message}");
         assert!(message.contains("`other-push`"), "{message}");
+    }
+
+    /// App-value requests are collected across the resolved graph and gated
+    /// per entry: a request behind a disabled `required-feature` asks the
+    /// app for nothing.
+    #[test]
+    fn app_value_requests_are_collected_across_the_graph() {
+        let project = tempdir().expect("temp project");
+        write_crate(
+            &project.path().join("push"),
+            "push",
+            "[features]\nremote = []\n\n\
+             [[package.metadata.waterui.app-value]]\n\
+             key = \"firebase_config\"\n\
+             required-feature = \"remote\"\n\n\
+             [[package.metadata.waterui.app-value]]\n\
+             key = \"cast_receiver_app_id\"\n",
+        );
+        let gated = write_crate(
+            &project.path().join("gated"),
+            "app-gated",
+            "[dependencies]\npush = { path = \"../push\" }\n",
+        );
+        let enabled = write_crate(
+            &project.path().join("enabled"),
+            "app-enabled",
+            "[dependencies]\npush = { path = \"../push\", features = [\"remote\"] }\n",
+        );
+        let collect = |manifest: &Path| {
+            let metadata =
+                smol::block_on(crate_metadata(manifest, &[])).expect("resolve the fixture graph");
+            collect_android_declarations(&metadata).expect("collect the graph")
+        };
+        let push = ["push".to_owned()];
+
+        let gated = collect(&gated);
+        assert_eq!(
+            gated
+                .app_values
+                .requesters(app_values::AppValueKey::FirebaseConfig),
+            None
+        );
+        assert_eq!(
+            gated
+                .app_values
+                .requesters(app_values::AppValueKey::CastReceiverAppId),
+            Some(&push[..])
+        );
+
+        let enabled = collect(&enabled);
+        assert_eq!(
+            enabled
+                .app_values
+                .requesters(app_values::AppValueKey::FirebaseConfig),
+            Some(&push[..])
+        );
     }
 
     /// An unknown key in `[package.metadata.waterui.apple]` fails the

@@ -1408,6 +1408,7 @@ impl Project {
             }),
             signing: SigningConfig::default(),
             assets: None,
+            app_values: crate::assets::AppValuesConfig::default(),
         };
 
         // Save Water.toml
@@ -2072,6 +2073,13 @@ pub struct Manifest {
     /// Distribution signing configuration (`[signing]`).
     #[serde(default, skip_serializing_if = "SigningConfig::is_empty")]
     pub signing: SigningConfig,
+    /// Values dependency crates request from the app (`[app_values]`):
+    /// the Firebase configuration, Apple Pay merchant IDs, the Cast receiver.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::assets::AppValuesConfig::is_empty"
+    )]
+    pub app_values: crate::assets::AppValuesConfig,
 }
 
 /// Distribution signing configuration (`[signing]`).
@@ -2232,6 +2240,7 @@ impl Manifest {
             web: None,
             assets: None,
             signing: SigningConfig::default(),
+            app_values: crate::assets::AppValuesConfig::default(),
         }
     }
 }
