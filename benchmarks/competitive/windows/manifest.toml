@@ -16,7 +16,7 @@ windows_sdk = "10.0.26100"
 dotnet_sdk = "10.0.401"
 node = "22.20.0"
 flutter = "3.47.5"
-dxc = "1.8.2505.32"           # exact `dxc --version` string of the v1.8.2505.1 asset
+dxc = "1.8.2505.32"           # file version of the dxcompiler.dll/dxil.dll `water package` stages
 # The water CLI is compiled from THIS checkout (`cargo install --locked
 # --path cli` — cli/ is a workspace member). Framework, CLI and backend
 # identity is the checkout's HEAD sha, recorded by the runner.
@@ -25,7 +25,6 @@ dxc = "1.8.2505.32"           # exact `dxc --version` string of the v1.8.2505.1 
 dotnet_root = "~/dotnet"
 node_root = "~/tools/node22"
 flutter_root = "~/tools/flutter"
-dxc_root = "~/.water/tools/dxc/1.8.2505.1/bin/x64"
 # PresentMon is the reference consumer for the ETW present stream; the runner
 # reads the same DXGI/DxgKrnl events directly so contestants that submit
 # frames via DirectComposition or CDD blits are still timed identically.

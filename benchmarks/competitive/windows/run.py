@@ -111,14 +111,21 @@ TRACE_DIR = ROOT / "out"
 # Contestant table — everything launch-specific lives here.
 # ---------------------------------------------------------------------------
 
-def dxc_dir(manifest: dict) -> Path:
-    """Manifest-declared DXC tool dir (version recorded, dir verified)."""
-    t = manifest["toolchain"]
-    root = toolchain.require_dir("toolchain.dxc_root", t["dxc_root"])
-    toolchain.require_file("dxc", root / "dxc.exe")
-    toolchain.require_version("dxc", [str(root / "dxc.exe"), "--version"],
-                              t["dxc"])
-    return root
+def staged_dxc_dll(manifest: dict, packaged_dir: Path, dll: str) -> Path:
+    """The DXC runtime DLL `water package` staged beside its artifact.
+
+    The CLI owns which DXC a WaterUI build ships, so the harness takes
+    the DLL from the packaged output, never from a second tool dir, and
+    verifies its file version against the manifest pin."""
+    path = toolchain.require_file(f"packaged {dll}", packaged_dir / dll)
+    info = win32api.GetFileVersionInfo(str(path), "\\")
+    ms, ls = info["FileVersionMS"], info["FileVersionLS"]
+    version = f"{ms >> 16}.{ms & 0xFFFF}.{ls >> 16}.{ls & 0xFFFF}"
+    if version != manifest["toolchain"]["dxc"]:
+        raise RuntimeError(
+            f"water package staged {dll} {version}, the manifest pins dxc "
+            f"{manifest['toolchain']['dxc']}")
+    return path
 
 CONTESTANTS = {
     "waterui": {
@@ -258,7 +265,7 @@ def build_waterui(manifest: dict) -> None:
         shutil.copytree(res_src, dst)
     for dll in ("dxil.dll", "dxcompiler.dll"):
         # vello's shader pipeline hard-requires DXC beside the binary.
-        shutil.copy2(dxc_dir(manifest) / dll, dist / dll)
+        shutil.copy2(staged_dxc_dll(manifest, exe.parent, dll), dist / dll)
 
 
 def build_flutter(manifest: dict) -> None:
@@ -744,8 +751,15 @@ SPI_PRIVATE_BYTES = 0xC8
 
 def filetime_now() -> int:
     """Current time as FILETIME ticks (100ns since 1601-01-01 UTC) —
-    the clock ETW rows, GetProcessTimes and the memory sampler share."""
-    return int((time.time() + 11644473600) * 10_000_000)
+    the clock ETW rows, GetProcessTimes and the memory sampler share.
+
+    GetSystemTimePreciseAsFileTime, the clock those sources stamp with:
+    `time.time()` reads the coarse system tick on CPython < 3.13 and
+    trails it by up to a tick, which would schedule the drive late
+    against the first-present anchor."""
+    ft = ctypes.c_ulonglong()
+    kernel32.GetSystemTimePreciseAsFileTime(ctypes.byref(ft))
+    return ft.value
 
 
 def process_memory_snapshot(
@@ -2121,14 +2135,20 @@ def _self_test() -> None:
     # window is derived from the first present, and memory samples
     # stamp filetime_now(), so the fixture clock is reset at each
     # launch to keep the sampler inside the window
-    ts = {"t0": filetime_now()}
+    # the fixture clock stands in for GetSystemTimePreciseAsFileTime so
+    # the self-test runs on any host; it is installed as filetime_now
+    # below for the whole rep
+    def fixture_filetime() -> int:
+        return int((time.time() + 11644473600) * 10_000_000)
+
+    ts = {"t0": fixture_filetime()}
 
     class FakeApp:
         """Same contract as OwnedApp: pid, pids(), create_filetime(),
         terminate(), log."""
         def __init__(self, c, workload, log_path):
             events.append("launch")
-            ts["t0"] = filetime_now()
+            ts["t0"] = fixture_filetime()
             self.pid = os.getpid()
             self.hproc = None
             self.terminated = False
@@ -2161,8 +2181,9 @@ def _self_test() -> None:
         "stop_trace", "etl_to_csv", "parse_frames", "window_for_pids",
         "process_memory_snapshot", "adapter_from_log",
         "renderer_evidence", "bring_to_foreground", "wait_for_ready",
-        "FirstPresentConsumer")}
+        "FirstPresentConsumer", "filetime_now")}
     try:
+        globals()["filetime_now"] = fixture_filetime
         globals()["FirstPresentConsumer"] = FakeFirstPresent
         globals()["wait_for_ready"] = \
             lambda app, budget: (42, (10, 10, 800, 600))
@@ -2994,9 +3015,11 @@ while u.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
     def i3():
         script = td / "gui_pump.py"
         script.write_text(GUI_PUMP)
+        # pythonw.exe is the GUI-subsystem interpreter: WaitForInputIdle
+        # refuses (1471) any console-subsystem image, message loop or not
         app = OwnedApp(
             {"exe_dir": Path(sys.executable).parent,
-             "exe": Path(sys.executable).name,
+             "exe": "pythonw.exe",
              "args": f'"{script}"', "env": {}},
             "w1", td / "gui.log")
         try:

@@ -62,7 +62,8 @@ uv run report.py                 # newest results/*.json -> report.md
 ```
 
 Prereqs: Windows host, `uv`, the pinned toolchain from `manifest.toml`
-(dxc, PresentMon for reference, dotnet SDK, node, flutter). The `water`
+(PresentMon for reference, dotnet SDK, node, flutter; the DXC runtime
+comes from `water package` and is checked against the `dxc` pin). The `water`
 CLI is provisioned from this checkout (`cli/` is a workspace member —
 `cargo install --locked --path cli` into the suite-shared cache) and the
 checkout HEAD sha is recorded as the framework+CLI+backend identity. Python deps are pinned
