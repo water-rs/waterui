@@ -102,6 +102,11 @@ def _kill_active_procs():
         _kill_proc(p)
 
 
+# the cell in progress's InstrumentsScratch — a signal handler reaches it
+# here so an interrupted run still sweeps the recording's ktrace scratch
+_ACTIVE_SCRATCH: list = []
+
+
 class CommandTimeout(RuntimeError):
     """A command outlived its declared bound; its process group was
     killed."""
@@ -175,12 +180,14 @@ MAX_INSTALLED_APPS = 2
 UNINSTALL_S = 2 * DEVICECTL_QUERY_S + DEVICECTL_UNINSTALL_S
 # What a SIGTERM can still cost, in the order it is paid:
 #   on_signal: kill this run's tracked processes (SIGKILL, immediate),
+#     sweep the in-progress cell's instruments scratch
+#       LSOF_S + HUB_EXIT_S,
 #     then uninstall and verify every installed app
 #       MAX_INSTALLED_APPS × UNINSTALL_S
 #   run_one's finally: stop the one recorder
 #       RECORDER_STOP_S + RECORDER_DRAIN_S
-#     then sweep the cell's scratch
-#       LSOF_S + HUB_EXIT_S
+#     — its scratch sweep already ran in on_signal; the finally's own
+#     sweep then finds nothing left
 #   the remaining finally blocks: run_device's per-contestant uninstall
 #     finds nothing installed (on_signal's cleanup emptied the list),
 #     then trace/xcresult removal and status.json
@@ -968,23 +975,29 @@ def classify_display_frames(frames: list[dict], updates: list[dict],
     the client updates its swap carried — owned only, owned and
     foreign, foreign only, or none (a frame the render server produced
     without any client commit, e.g. a Core Animation animation it
-    interpolates). Foreign updaters are counted per process cell, by
-    the number of those frames they put an update in. Frames without a
-    client update are also counted when their surface-id is one an
-    owned update landed on — whether surface ids can attribute
-    render-server frames is part of what this evidence settles."""
+    interpolates). A frame carrying no swap-id at all cannot join any
+    update and is counted apart under `no-swap-id`. Foreign updaters
+    are counted per process cell, by the number of those frames they
+    put an update in. Frames without a client update are also counted
+    when their surface-id is one an owned update landed on — whether
+    surface ids can attribute render-server frames is part of what
+    this evidence settles."""
     by_swap, _ = _updates_by_swap(updates)
     owned_surfaces = {(u["display"], u.get("surface-id")) for u in updates
                       if _pid_of_process(u["process"]) in owned
                       and u.get("surface-id") is not None}
     counts = {"owned": 0, "owned+foreign": 0, "foreign": 0,
               "no-client-update": 0,
-              "no-client-update-on-owned-surface": 0}
+              "no-client-update-on-owned-surface": 0,
+              "no-swap-id": 0}
     foreign_pids: dict[int, int] = {}
     for f in frames:
         t = _present_ns(f)
-        if (t is None or f["display"] != display or f["swap-id"] is None
+        if (t is None or f["display"] != display
                 or not lo_ns <= t <= hi_ns):
+            continue
+        if f["swap-id"] is None:
+            counts["no-swap-id"] += 1
             continue
         pids = set(by_swap.get(
             (display, _int(f["swap-id"], f"{FRAMES_SCHEMA} swap-id")), []))
@@ -1021,7 +1034,15 @@ def require_client_updates(classified: dict) -> None:
     animation it interpolates, as UIKit's UIView.animate and SwiftUI
     animations may be) joins nothing, so a window holding one would
     under-count that contestant's frames. Such a rep fails until the
-    rule is decided; its classification is on the row as evidence."""
+    rule is decided; its classification is on the row as evidence. A
+    frame carrying no swap-id at all (`no-swap-id`) fails the same way:
+    nothing can join it to the client updates."""
+    n = classified["no-swap-id"]
+    if n:
+        raise TraceAttributionError(
+            f"{n} frame(s) on display {classified['display']} inside the "
+            "window carried no swap id — the owned-update join cannot "
+            "count a frame it cannot key on")
     n = classified["no-client-update"]
     if n:
         raise TraceAttributionError(
@@ -1347,40 +1368,55 @@ class InstrumentsScratch:
         errs = []
         hub_pids = set()
         lsof_deadline = time.monotonic() + LSOF_S
-        for f in sorted(leaked):
-            held = self._holders(f, lsof_deadline)
-            self.removed.append({"path": str(f), "bytes": f.stat().st_size,
-                                 "holders": held})
-            f.unlink()
-            if len(held) > 1:
-                errs.append(f"{f.name} is held open by {len(held)} "
-                            f"processes {held}")
-            for pid, cmd in held.items():
-                if cmd == self.HOLDER:
-                    hub_pids.add(pid)
-                else:
-                    errs.append(f"{f.name} is held open by {cmd} "
-                                f"(pid {pid}), not {self.HOLDER}")
-        if len(hub_pids) > 1:
-            errs.append(f"the cell's scratch is held by {len(hub_pids)} "
-                        f"{self.HOLDER} pids {sorted(hub_pids)}; the runner "
-                        "terminates at most one")
-        if not errs and hub_pids:
-            pid = hub_pids.pop()
-            print(f"instruments scratch: SIGTERM {self.HOLDER} pid {pid} "
-                  "(lsof: holds the cell's removed ktrace)", flush=True)
-            self.terminated = pid
-            try:
-                if not self._terminate(pid, bound_s):
-                    errs.append(f"{self.HOLDER} (pid {pid}) still holds a "
-                                f"removed ktrace {bound_s:.0f}s after "
-                                "SIGTERM")
-            except PermissionError:
-                errs.append(f"{self.HOLDER} (pid {pid}) holds a removed "
-                            "ktrace and is not this user's to terminate")
-        for d in self.dirs:
-            shutil.rmtree(d)
-        self.dirs = []
+        try:
+            for f in sorted(leaked):
+                try:
+                    held = self._holders(f, lsof_deadline)
+                except (RuntimeError, subprocess.TimeoutExpired) as e:
+                    # a failed lsof is this file's holder evidence lost —
+                    # the error fails the cell, nothing is terminated
+                    # for it, and the rest of the files are still swept
+                    errs.append(f"{f.name}: cannot list its holders: {e}")
+                    held = None
+                self.removed.append({"path": str(f),
+                                     "bytes": f.stat().st_size,
+                                     "holders": held})
+                f.unlink()
+                if held is None:
+                    continue
+                if len(held) > 1:
+                    errs.append(f"{f.name} is held open by {len(held)} "
+                                f"processes {held}")
+                for pid, cmd in held.items():
+                    if cmd == self.HOLDER:
+                        hub_pids.add(pid)
+                    else:
+                        errs.append(f"{f.name} is held open by {cmd} "
+                                    f"(pid {pid}), not {self.HOLDER}")
+            if len(hub_pids) > 1:
+                errs.append(f"the cell's scratch is held by "
+                            f"{len(hub_pids)} {self.HOLDER} pids "
+                            f"{sorted(hub_pids)}; the runner terminates "
+                            "at most one")
+            if not errs and hub_pids:
+                pid = hub_pids.pop()
+                print(f"instruments scratch: SIGTERM {self.HOLDER} pid "
+                      f"{pid} (lsof: holds the cell's removed ktrace)",
+                      flush=True)
+                self.terminated = pid
+                try:
+                    if not self._terminate(pid, bound_s):
+                        errs.append(f"{self.HOLDER} (pid {pid}) still "
+                                    f"holds a removed ktrace "
+                                    f"{bound_s:.0f}s after SIGTERM")
+                except PermissionError:
+                    errs.append(f"{self.HOLDER} (pid {pid}) holds a "
+                                "removed ktrace and is not this user's "
+                                "to terminate")
+        finally:
+            for d in self.dirs:
+                shutil.rmtree(d)
+            self.dirs = []
         return "; ".join(errs) or None
 
 
@@ -1936,6 +1972,7 @@ def run_one(ctx: DeviceCtx, cid: str, app: Path, workload: str, rep: int,
         # --- invocation 2: workload test, the recorder armed first ---
         scratch = InstrumentsScratch(ctx.results_dir,
                                      InstrumentsScratch.user_temp_dir())
+        _ACTIVE_SCRATCH.append(scratch)  # on_signal sweeps it on a signal
         xb, xbf, xblog = _xcodebuild_test(xr_work, res_work, ctx,
                                           tag + "-work")
         try:
@@ -1969,11 +2006,15 @@ def run_one(ctx: DeviceCtx, cid: str, app: Path, workload: str, rep: int,
                 if recorder is not None and (e := recorder.stop()):
                     rec["trace_error"] = e
             finally:
-                if (e := scratch.sweep()) is not None:
-                    rec.setdefault("error", f"instruments scratch: {e}")
-                rec["instruments_scratch_removed"] = scratch.removed
-                rec["instruments_scratch_terminated_pid"] = \
-                    scratch.terminated
+                try:
+                    if (e := scratch.sweep()) is not None:
+                        rec.setdefault("error",
+                                       f"instruments scratch: {e}")
+                    rec["instruments_scratch_removed"] = scratch.removed
+                    rec["instruments_scratch_terminated_pid"] = \
+                        scratch.terminated
+                finally:
+                    _ACTIVE_SCRATCH.remove(scratch)
         if "error" in rec:
             return rec
         if "trace_error" in rec:
@@ -2425,8 +2466,12 @@ def run_device(run_dir: Path, opts: argparse.Namespace) -> None:
     measures the contestant's cells with that evidence on every row, and
     uninstalls the id again after them."""
     # the staged set is the one `start` verified: re-checked here, before
-    # anything else, since the tarball could change while the job waited
-    verify_stage(Path(opts.stage), opts.stage_sha256)
+    # anything else, since the tarball could change while the job waited —
+    # the run dir's copy is the one verified and the only one unpacked;
+    # the original path is never read again after the copy
+    stage_tar = run_dir / Path(opts.stage).name
+    shutil.copy2(opts.stage, stage_tar)
+    verify_stage(stage_tar, opts.stage_sha256)
     udid = MANIFEST["device"]["udid"]
     lock = device_lock(udid, {
         "pid": os.getpid(), "run_dir": str(run_dir),
@@ -2453,13 +2498,29 @@ def run_device(run_dir: Path, opts: argparse.Namespace) -> None:
 
     def on_signal(sig, _frame):
         _kill_active_procs()   # only PIDs this run spawned
+        # the in-progress cell's scratch sweep, before the uninstalls:
+        # the recording's ktrace is gigabytes held open by an agent the
+        # kill doesn't reach. Its result joins the status this exit
+        # produces (a SystemExit message becomes status["error"]).
+        errs = []
+        for s in list(_ACTIVE_SCRATCH):
+            try:
+                e = s.sweep()
+            except Exception as ex:
+                errs.append(str(ex))
+            else:
+                if e is not None:
+                    errs.append(e)
         cleanup()
+        if errs:
+            raise SystemExit(f"stopped by signal {sig}; instruments "
+                             "scratch: " + "; ".join(errs))
         raise SystemExit(128 + sig)
 
     prev = (signal.signal(signal.SIGINT, on_signal),
             signal.signal(signal.SIGTERM, on_signal))
     try:
-        stage, staging = unpack_stage(Path(opts.stage), run_dir)
+        stage, staging = unpack_stage(stage_tar, run_dir)
         machine = host_evidence()
         xcode = xcode_identity()
         device = device_state(udid)
@@ -2499,13 +2560,12 @@ def run_device(run_dir: Path, opts: argparse.Namespace) -> None:
                      b: {"uuid": p.uuid, "name": p.name, "team": p.team,
                          "expires_utc": p.expires.isoformat()}
                      for b, p in profiles.items()}},
-                 "runs": [], "sizes": {}, "warmed_up": []}
+                 "runs": [], "sizes": {}}
         if results_path.exists():
             prior = json.loads(results_path.read_text())
             check_resume(prior, staging, machine, udid)
             state = {**prior, **{k: v for k, v in state.items()
-                                 if k not in ("runs", "sizes",
-                                              "warmed_up")}}
+                                 if k not in ("runs", "sizes")}}
         sanitize_runs(state)
         reps = (sorted({int(i) for i in opts.reps.split(",")})
                 if opts.reps else list(range(opts.repeats)))
@@ -2551,18 +2611,20 @@ def run_device(run_dir: Path, opts: argparse.Namespace) -> None:
                     state["sizes"][c["id"]] = size
                     save()
                 # every row of this install carries the same cycle dict:
-                # the pre-install clear + verification, the install, and
-                # (once the cells are done) the post-cells uninstall
+                # the pre-install clear + verification, the install, the
+                # warm-up launch, and (once the cells are done) the
+                # post-cells uninstall
                 print(f"install {c['id']} as {bid}", flush=True)
                 cycle = install_cycle(dev, bid, app, installed)
                 try:
-                    if ("error" not in cycle
-                            and c["id"] not in state["warmed_up"]):
+                    # the warm-up launch follows EVERY install: the
+                    # first XCUITest attach after an install is the
+                    # flaky one, and every install is a fresh first
+                    # attach — its result lands on this install's rows
+                    if "error" not in cycle:
                         print(f"warm-up {c['id']} (discarded)", flush=True)
-                        err = warm_up(ctx, c["id"], app, f"{c['id']}-r{rep}")
-                        state.setdefault("warmups", []).append(
-                            {"contestant": c["id"], "error": err})
-                        state["warmed_up"].append(c["id"])
+                        cycle["warm_up"] = warm_up(
+                            ctx, c["id"], app, f"{c['id']}-r{rep}")
                         save()
                     for w in workloads:
                         print(f"rep {rep + 1}/{len(reps)} {c['id']} {w} "

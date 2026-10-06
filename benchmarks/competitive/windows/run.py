@@ -1612,16 +1612,67 @@ def kproc_field(rec_p, name_buf, name: str) -> int:
 @dataclass(frozen=True)
 class JobSnapshot:
     """One read of the Job's pid list, bracketed by the rep-clock readings
-    taken just before and just after it."""
+    taken just before and just after it — plus, for every listed pid, the
+    runner's own probe at read time: `exited` (GetExitCodeProcess !=
+    STILL_ACTIVE) and `create_time` (GetProcessTimes CreationTime, the
+    same 100 ns ticks OwnedApp.create_time reports and the trace's
+    Kernel-Process ProcessStart records). The Job keeps a terminated
+    process listed while a handle references it, so a listed pid whose
+    owned lifetime already ended stands only when this read verified it
+    exited as that very instance — pid reuse counterfeits the number,
+    never the CreateTime."""
     before: int
     after: int
     pids: frozenset[int]
+    status: dict[int, dict]
+
+
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+STILL_ACTIVE = 259
+
+if kernel32 is not None:
+    # a 64-bit HANDLE — the default int restype would truncate it
+    kernel32.OpenProcess.restype = c_void_p
+
+
+def _job_pid_status(pid: int) -> dict:
+    """{exited, create_time} of one Job-listed pid, probed through a
+    fresh limited-information handle. A pid the Job lists but OpenProcess
+    cannot open fails the rep: the Job's own list says the process
+    exists, so a failed open is evidence lost, never a skipped check."""
+    kernel32.SetLastError(0)
+    h = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,
+                             False, pid)
+    if not h:
+        raise RuntimeError(
+            f"Job-listed pid {pid}: OpenProcess failed: winerror "
+            f"{kernel32.GetLastError()}")
+    hp = c_void_p(h)
+    try:
+        code = _u32(0)
+        if not kernel32.GetExitCodeProcess(hp, byref(code)):
+            raise RuntimeError(
+                f"Job-listed pid {pid}: GetExitCodeProcess failed: "
+                f"winerror {kernel32.GetLastError()}")
+        times = [_u64() for _ in range(4)]
+        if not kernel32.GetProcessTimes(hp, *map(byref, times)):
+            raise RuntimeError(
+                f"Job-listed pid {pid}: GetProcessTimes failed: "
+                f"winerror {kernel32.GetLastError()}")
+        return {"exited": code.value != STILL_ACTIVE,
+                "create_time": times[0].value}
+    finally:
+        kernel32.CloseHandle(hp)
 
 
 def job_snapshot(clock, job_pids) -> JobSnapshot:
     before = clock.now()
     pids = frozenset(job_pids())
-    return JobSnapshot(before, clock.now(), pids)
+    after = clock.now()
+    # verify every listed pid at the read: an exited-but-referenced one
+    # is accepted against the trace only on this probe's say-so
+    return JobSnapshot(before, after, pids,
+                       {pid: _job_pid_status(pid) for pid in pids})
 
 
 def check_job_agreement(tree: list[TraceProcess],
@@ -1634,23 +1685,34 @@ def check_job_agreement(tree: list[TraceProcess],
     when it was alive across the whole bracket. Any other difference is a
     contradiction and fails the rep: an owned-per-trace process the Job
     did not hold (it broke away, or the ParentProcessID link is not the
-    Job's), or a Job pid with no owned ProcessStart in the trace."""
+    Job's), or a Job pid with no owned ProcessStart in the trace. The one
+    exception is a listed pid whose owned lifetime ended before the read:
+    the Job still lists an exited process while a handle references it,
+    and such a pid stands only when the snapshot's own probe recorded it
+    exited with the CreateTime the trace's ProcessStart carries."""
     if not snapshots:
         raise RuntimeError("no Job snapshot to cross-check the trace with")
     # lifetimes on the rep clock, the snapshots' timebase
-    spans = [(p.pid, from_qpc(p.start),
+    spans = [(p.pid, p.create_time, from_qpc(p.start),
               None if p.stop is None else from_qpc(p.stop)) for p in tree]
     for snap in snapshots:
-        overlapping = {pid for pid, start, stop in spans
+        overlapping = {pid for pid, _ct, start, stop in spans
                        if start <= snap.after
                        and (stop is None or stop >= snap.before)}
-        unexplained = sorted(snap.pids - overlapping)
+        unexplained = []
+        for pid in sorted(snap.pids - overlapping):
+            st = snap.status.get(pid)
+            if not (st is not None and st["exited"] and any(
+                    pid == p_pid and ct == st["create_time"]
+                    and stop is not None and stop < snap.before
+                    for p_pid, ct, _start, stop in spans)):
+                unexplained.append(pid)
         if unexplained:
             raise RuntimeError(
                 f"the Job held pid(s) {unexplained} at rep tick "
                 f"{snap.before} with no owned Kernel-Process start in the "
                 "trace — the trace's owned tree and the Job disagree")
-        across = {pid for pid, start, stop in spans
+        across = {pid for pid, _ct, start, stop in spans
                   if start < snap.before
                   and (stop is None or stop > snap.after)}
         missing = sorted(across - snap.pids)
@@ -2397,6 +2459,14 @@ def measure_run(c_key: str, workload: str, rep: int, cfg,
         launch = clock.from_qpc(tree[0].start)
         startup_ms = (first_present - launch) / 10000.0
 
+        # the first Job read that listed each pid — the gap from the
+        # trace's ProcessStart to it is how late the process joined the
+        # Job's own view; a pid no read listed has no gap
+        first_listed: dict[int, int] = {}
+        for snap in job_snapshots:
+            for pid in snap.pids:
+                first_listed.setdefault(pid, snap.before)
+
         rec = {
             "run": rep,
             "startup_ms": startup_ms,
@@ -2405,7 +2475,10 @@ def measure_run(c_key: str, workload: str, rep: int, cfg,
                 {"pid": p.pid, "parent_pid": p.parent_pid,
                  "start_ms": (clock.from_qpc(p.start) - launch) / 10000.0,
                  "stop_ms": None if p.stop is None
-                 else (clock.from_qpc(p.stop) - launch) / 10000.0}
+                 else (clock.from_qpc(p.stop) - launch) / 10000.0,
+                 "job_join_gap_ms": None if p.pid not in first_listed
+                 else (first_listed[p.pid] - clock.from_qpc(p.start))
+                      / 10000.0}
                 for p in tree],
             "job_snapshots": len(job_snapshots),
             "adapter_detected": adapter,
@@ -2680,7 +2753,7 @@ def _self_test() -> None:
         "minimize_other_windows", "restore_windows", "read_etl",
         "window_for_pids", "process_memory_snapshot",
         "adapter_from_log", "renderer_evidence", "bring_to_foreground",
-        "wait_for_ready")}
+        "wait_for_ready", "_job_pid_status")}
     try:
         globals()["wait_for_ready"] = \
             lambda app, budget: (42, (10, 10, 800, 600))
@@ -2705,6 +2778,13 @@ def _self_test() -> None:
         # root never presents)
         trace_cfg = {"tree": "root"}
         RUNNER, FOREIGN, CHILD = 4000, 4900, 4245
+
+        # the per-pid probe job_snapshot runs at the OS boundary: the
+        # fixtures' pids are never opened for real — each answers with
+        # the CreateTime its fixture ProcessStart stamps it with
+        pid_ct = {os.getpid(): ROOT_CT, CHILD: 7}
+        globals()["_job_pid_status"] = lambda pid: {
+            "exited": False, "create_time": pid_ct.get(pid, 0)}
 
         def _fixture_frames(etl, source, root, qpc_freq):
             # raw events at the OS boundary, decoded by the real
@@ -2775,9 +2855,12 @@ def _self_test() -> None:
         # (pid, CreateTime), never the earlier holder of its pid — on the
         # rep clock: 100_000 ticks = 10 ms
         assert rec["startup_ms"] == 10.0, rec["startup_ms"]
+        # the root's ProcessStart (t0 − 10 ms) reached the Job list by
+        # the rep's first read (at t0): a 10 ms join gap
         assert rec["process_tree"] == [
             {"pid": os.getpid(), "parent_pid": RUNNER, "start_ms": 0.0,
-             "stop_ms": None}], rec["process_tree"]
+             "stop_ms": None, "job_join_gap_ms": 10.0}], \
+            rec["process_tree"]
         # the Job was read at the first present, by each of the 41
         # sampler ticks over [t0, t0 + 4 s], and at the window's end — and
         # every read agreed with the trace's owned tree
@@ -3146,21 +3229,44 @@ def _self_test() -> None:
         # the tree agrees with Job snapshots that saw it; a start or exit
         # inside a snapshot's bracket may land on either side of the read
         ident = lambda t: t
+        js_ct = {7: 70, 9: 90, 11: 110}
+        js = lambda before, after, pids, status=None: JobSnapshot(
+            before, after, frozenset(pids),
+            status if status is not None else
+            {p: {"exited": False, "create_time": js_ct[p]}
+             for p in pids})
         check_job_agreement(owned_tree, [
-            JobSnapshot(1000, 1001, frozenset({7})),
-            JobSnapshot(1025, 1030, frozenset({7, 9, 11})),
-            JobSnapshot(1100, 1101, frozenset({7, 11})),
-            JobSnapshot(1005, 1015, frozenset({7})),
-            JobSnapshot(1005, 1015, frozenset({7, 9})),
-            JobSnapshot(1035, 1045, frozenset({7, 11})),
-            JobSnapshot(1035, 1045, frozenset({7, 9, 11}))], ident)
+            js(1000, 1001, {7}),
+            js(1025, 1030, {7, 9, 11}),
+            js(1100, 1101, {7, 11}),
+            js(1005, 1015, {7}),
+            js(1005, 1015, {7, 9}),
+            js(1035, 1045, {7, 11}),
+            js(1035, 1045, {7, 9, 11})], ident)
+        # a pid still Job-listed after its owned lifetime ended (the Job
+        # holds an exited process while a handle references it) stands
+        # only when that read verified it exited, as the same instance —
+        # exited with the trace's CreateTime: accepted; not exited, or
+        # exited with another CreateTime: contradiction
+        check_job_agreement(owned_tree, [
+            js(1100, 1101, {7, 9, 11},
+               {9: {"exited": True, "create_time": 90}})], ident)
         for snaps, msg in (
                 # 9 alive across the read, the Job without it
-                ([JobSnapshot(1025, 1030, frozenset({7, 11}))],
+                ([js(1025, 1030, {7, 11})],
                  "the Job did not hold them"),
-                # the owned 9 exited at 1040: a Job pid 9 at 1100 has no
-                # owned ProcessStart behind it
-                ([JobSnapshot(1100, 1101, frozenset({7, 9, 11}))],
+                # the owned 9 exited at 1040 and the read still listed
+                # it, but the probe said it had not exited
+                ([js(1100, 1101, {7, 9, 11},
+                     {9: {"exited": False, "create_time": 90}})],
+                 "with no owned Kernel-Process start"),
+                # exited, but not the instance the trace owns — a
+                # foreign process that reused 9 after its exit
+                ([js(1100, 1101, {7, 9, 11},
+                     {9: {"exited": True, "create_time": 91}})],
+                 "with no owned Kernel-Process start"),
+                # no probe record at all is not a verification either
+                ([js(1100, 1101, {7, 9, 11}, {})],
                  "with no owned Kernel-Process start"),
                 ([], "no Job snapshot")):
             try:
@@ -3834,16 +3940,26 @@ while u.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
     #     and the test app's Kernel-Process start — found by its pid and
     #     GetProcessTimes CreationTime — lands in it between two rep-clock
     #     readings taken around its launch. The test app runs a child to
-    #     completion, then starts a sleeping one and signals a named
-    #     event; the Job is read on that event. The owned tree the trace
-    #     yields (ProcessID / ParentProcessID / CreateTime read through
-    #     TDH, starts paired with stops) holds the exited child, which
-    #     no Job read saw, and agrees with the Job read.
+    #     completion while keeping its handle open, then starts a
+    #     sleeping one and signals a named event; the Job is read on that
+    #     event. The owned tree the trace yields (ProcessID /
+    #     ParentProcessID / CreateTime read through TDH, starts paired
+    #     with stops) holds the exited child, the Job read may still list
+    #     it (a referenced process stays listed after exit), and the read
+    #     verified it exited as the same instance.
     TREE_APP = """
 import ctypes, subprocess, sys, time
-subprocess.run([sys.executable, '-c', 'pass'], check=True)
-subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)'])
 k = ctypes.windll.kernel32
+# the child that will have exited by the Job read: its Popen object —
+# and so the process handle, and the Job's pid entry — stays open past
+# its exit; it must be neither waited nor garbage-collected away.
+# WaitForSingleObject on the raw handle observes the exit without
+# closing the handle (Popen.wait/poll would not close it either, but
+# __del__ would)
+exited = subprocess.Popen([sys.executable, '-c', 'pass'])
+if k.WaitForSingleObject(exited._handle, 30000) != 0:
+    raise SystemExit('the short-lived test child never exited')
+subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)'])
 h = k.OpenEventW(0x0002, False, sys.argv[1])  # EVENT_MODIFY_STATE
 if not h or not k.SetEvent(h):
     raise SystemExit(f'cannot signal {sys.argv[1]}: {k.GetLastError()}')
@@ -3888,20 +4004,28 @@ time.sleep(300)
             f"root start {launch} outside the rep-clock launch span "
             f"[{before}, {after}]")
         # the short-lived child: started and stopped (paired by pid +
-        # CreateTime) before the Job was read, so only the trace has it
+        # CreateTime) before the Job was read; its handle stays open, so
+        # the Job may still list it — the read's own probe says whether
+        # that listing is the exited instance
         exited = [p for p in tree[1:] if p.stop is not None
                   and clock.from_qpc(p.stop) < snap.before]
         assert exited, f"no exited descendant in the owned tree: {tree}"
         assert snap.pids - {app.pid}, (
             f"the Job holds no live descendant: {sorted(snap.pids)}")
+        exited_pid = exited[0].pid
+        listed = exited_pid in snap.pids
+        st = snap.status.get(exited_pid)
         check_job_agreement(tree, [snap], clock.from_qpc)
         rec(7, "PASS",
             f"file + real-time session lossless; .etl decodes on a "
             f"{clock.qpc_freq} Hz QPC clock; the root's start (pid + "
             "CreateTime) lies inside its rep-clock launch span; the owned "
             f"tree {[(p.pid, p.parent_pid) for p in tree]} (TDH-decoded "
-            f"ProcessStart/Stop, {len(exited)} exited before the Job read) "
-            f"agrees with the Job's {sorted(snap.pids)}")
+            f"ProcessStart/Stop, {len(exited)} exited before the Job "
+            f"read) agrees with the Job's {sorted(snap.pids)}; exited "
+            f"child pid {exited_pid} in Job list: {listed}, "
+            f"exited={st['exited'] if st else None}, "
+            f"create_time={st['create_time'] if st else None}")
 
     # 8 — process_memory_snapshot NTSTATUS/buffer handling vs psutil
     def i8():

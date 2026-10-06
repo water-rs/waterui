@@ -795,6 +795,33 @@ class TestFrameAttribution(unittest.TestCase):
         bench.require_client_updates(bench.classify_display_frames(
             frames, updates, {700}, "1", 1_000, 3_500))
 
+    def test_frame_without_swap_id_fails_the_rep(self):
+        """A presented frame carrying no swap-id cannot join the client
+        updates at all: on the contestant's display inside the window it
+        is counted `no-swap-id` and fails the rep; outside the window it
+        is not counted."""
+        frames = [self.frame(1_000, 10, 1),                  # owned
+                  dict(self.frame(2_000, 10, 0),
+                       **{"swap-id": None}),                 # no swap-id
+                  dict(self.frame(9_000, 10, 0),
+                       **{"swap-id": None})]                 # outside
+        updates = [self.update(700, 1)]
+        c = bench.classify_display_frames(frames, updates, {700}, "1",
+                                          500, 5_000)
+        self.assertEqual(c["no-swap-id"], 1)
+        self.assertEqual(c["owned"], 1)
+        with self.assertRaises(bench.TraceAttributionError) as cm:
+            bench.require_client_updates(c)
+        self.assertIn("1 frame(s)", str(cm.exception))
+        # the swap-id-less frame outside the window is not counted
+        c = bench.classify_display_frames(frames, updates, {700}, "1",
+                                          5_000, 10_000)
+        self.assertEqual(c["no-swap-id"], 1)
+        self.assertEqual(c["owned"], 0)
+        # a window holding none of them passes
+        bench.require_client_updates(bench.classify_display_frames(
+            frames, updates, {700}, "1", 500, 1_500))
+
     def test_runner_marks(self):
         rows = [{"time": "100", "name": "drive-begin",
                  "subsystem": "dev.bench"},
@@ -1049,6 +1076,53 @@ class TestStageTarball(unittest.TestCase):
             with self.assertRaises(SystemExit) as cm:
                 bench.verify_stage(tar, "0" * 64)
             self.assertIn(good, str(cm.exception))
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_unpack_reads_the_run_dir_copy(self):
+        """device-run hashes and extracts the copy it made into the run
+        dir — the original path is never read again (here: deleted)."""
+        import tarfile
+        tmp = Path(tempfile.mkdtemp(prefix="bench-tar-"))
+        try:
+            # a minimal staged set: the manifest's contestants, distinct
+            # .app names, real dir hashes
+            src = tmp / "src" / "stage"
+            artifacts = {}
+            for c in bench.MANIFEST["contestants"]:
+                app = src / f"{c['id']}-app.app"
+                app.mkdir(parents=True)
+                (app / "bin").write_bytes(c["id"].encode())
+                artifacts[c["id"]] = {"app": app.name,
+                                      "sha256": bench.dir_sha256(app)}
+            (src / "staging-manifest.json").write_text(json.dumps(
+                {"checkout_head": "c" * 40, "artifacts": artifacts}))
+            tar = tmp / "ios-stage-x.tar"
+            with tarfile.open(tar, "w") as tf:
+                tf.add(src, arcname="stage")
+            run_dir = tmp / "run"
+            run_dir.mkdir()
+            # the run's flow: copy in, hash and verify the copy
+            copy = run_dir / tar.name
+            shutil.copy2(tar, copy)
+            bench.verify_stage(copy, bench.toolchain.sha256_file(copy))
+            # the checkout identity gates are environment checks, not
+            # the copy's — pinned to the fixture manifest's values
+            saved = (bench.toolchain.require_clean_checkout,
+                     bench.toolchain.checkout_head)
+            bench.toolchain.require_clean_checkout = lambda: bench.ROOT
+            bench.toolchain.checkout_head = lambda: "c" * 40
+            try:
+                tar.unlink()   # the original is never read again
+                stage, staging = bench.unpack_stage(copy, run_dir)
+            finally:
+                (bench.toolchain.require_clean_checkout,
+                 bench.toolchain.checkout_head) = saved
+            self.assertEqual(staging["checkout_head"], "c" * 40)
+            self.assertTrue((stage / "staging-manifest.json").is_file())
+            for c in bench.MANIFEST["contestants"]:
+                self.assertTrue(
+                    (stage / artifacts[c["id"]]["app"] / "bin").is_file())
         finally:
             shutil.rmtree(tmp)
 
