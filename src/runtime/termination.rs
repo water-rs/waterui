@@ -393,7 +393,7 @@ impl Quit {
         };
         label
             .action(move || quit.request())
-            .shortcut(Shortcut::new("q").command())
+            .shortcut(Shortcut::new('q').command())
             .resolve(env)
     }
 }
@@ -531,7 +531,7 @@ mod tests {
             "Quit"
         };
         assert_eq!(command.label.content.snapshot().to_plain().as_str(), label);
-        assert_eq!(command.shortcut, Some(Shortcut::new("q").command()));
+        assert_eq!(command.shortcut, Some(Shortcut::new('q').command()));
 
         command.action.call(&env);
         drain();

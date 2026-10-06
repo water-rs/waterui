@@ -421,7 +421,7 @@ pub fn components_block_14() -> impl View {
 // builder chain. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn components_command_builder_prose() {
-    use waterui::component::menu::{Shortcut, ShortcutModifiers};
+    use waterui::component::menu::{NamedKey, Shortcut, ShortcutModifiers};
 
     let flag = Binding::bool(true);
     let value = Binding::i32(0);
@@ -432,7 +432,9 @@ pub fn components_command_builder_prose() {
         .state(&value)
         .disabled(flag.clone())
         .selected(flag)
-        .shortcut(Shortcut::new("c").command());
+        .shortcut(Shortcut::new('c').command());
+    let _ = Shortcut::new('s').command();
+    let _ = Shortcut::new(NamedKey::Delete);
 }
 
 // ---------------------------------------------------------------------------

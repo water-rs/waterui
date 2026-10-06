@@ -122,7 +122,7 @@ fn shortcut_parts(shortcut: &Shortcut) -> (String, cocoa_ui::menu::KeyModifiers)
     .into_iter()
     .filter(|(held, _)| *held)
     .fold(KeyModifiers::empty(), |flags, (_, native)| flags | native);
-    (String::from(shortcut.key.as_str()), modifiers)
+    (crate::menus::key_equivalent_for(&shortcut.key), modifiers)
 }
 
 /// A `ResolvedCommand` as a kit `Command` — every presentation field

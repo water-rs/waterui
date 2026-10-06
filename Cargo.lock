@@ -13077,6 +13077,7 @@ version = "0.5.1"
 dependencies = [
  "executor-core",
  "nami",
+ "thiserror 2.0.21",
  "waterui",
  "waterui-core",
  "waterui-icon",
