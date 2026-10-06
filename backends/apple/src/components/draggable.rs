@@ -178,11 +178,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // The content always fills the wrapper — `contentView.frame = bounds`.
         host.set_layout_handler({
-            let state = Rc::downgrade(&state);
+            let state = Rc::clone(&state);
             move |host| {
-                let Some(state) = state.upgrade() else {
-                    return;
-                };
                 let state = state.borrow();
                 view::set_frame(state.child.view(), view::bounds(host));
             }
@@ -201,11 +198,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
             // `mouseDown:` stores where the drag might start — and ends any
             // outstanding snapshot's press generation.
             host.set_mouse_down_handler({
-                let state = Rc::downgrade(&state);
+                let state = Rc::clone(&state);
                 move |_view, event| {
-                    let Some(state) = state.upgrade() else {
-                        return;
-                    };
                     let mut state = state.borrow_mut();
                     state.drag_origin = Some(event.locationInWindow().into());
                     #[cfg(feature = "gpu_surface")]
@@ -217,13 +211,10 @@ pub fn install(dispatcher: &mut Dispatcher) {
             });
             // `mouseDragged:` beyond 3pt begins the dragging session.
             host.set_mouse_dragged_handler({
-                let state = Rc::downgrade(&state);
+                let state = Rc::clone(&state);
                 #[cfg(feature = "gpu_surface")]
                 let env = ctx.env().clone();
                 move |view, event| {
-                    let Some(state) = state.upgrade() else {
-                        return;
-                    };
                     let origin = state.borrow().drag_origin;
                     let Some(origin) = origin else { return };
                     let current: Point = event.locationInWindow().into();

@@ -396,9 +396,47 @@ the content inside the slot.
 The root proposal is the window's (or scene's) content size, both axes
 finite; the root is placed at its answer to that proposal, stretched to the
 window on the axes it declares. Safe-area insets are a backend concern applied
-outside the protocol (`IgnoresSafeArea` opts out); they never change a
+outside the protocol (§7.1); they never change a
 proposal a Rust container sees. Layout is single-threaded; a backend that
 measures on another thread is outside the contract.
+
+### 7.1 Safe area
+
+The safe area has two regions on each edge: *container* (system bars,
+display cutouts, the home indicator, window chrome) and *keyboard* (the
+software keyboard and other input-method surfaces). On each edge the area a
+view is laid out in ends at the deepest region it does not ignore; a view
+*touches* an edge when its laid-out frame, before scroll offsets and visual
+transforms, ends on that boundary.
+
+- **Layout avoids.** A view is laid out clear of every region it does not
+  ignore. `IgnoreSafeArea` names the regions and edges a view ignores; a
+  stack lays its children out inside what remains.
+- **Paint extends for fills.** A background whose content is a fill (a solid
+  color, a gradient or a material) extends past its frame to the window edge
+  on every edge it touches, through both regions, without moving the content
+  it backs. An `IgnoreSafeArea` on the fill replaces that default with the
+  regions and edges it names. A background whose content is any other view,
+  and a fill that is not a background, extends only where it ignores the
+  safe area.
+- **Scroll surfaces.** A scroll surface touching an edge extends under that
+  edge's regions and insets its content by them; its content is not laid
+  out against the safe area, so nothing inside it touches an edge. When a
+  text field inside a scroll surface gains focus, or the keyboard inset
+  grows while one is focused, the surface scrolls the minimum distance that
+  brings the field's frame clear of the keyboard region and inside the
+  surface's own frame.
+- **Chrome.** A chrome container (a navigation, tool or tab bar host)
+  extends each bar it draws under the regions of the edge the bar touches.
+  Its content touches no edge where a bar sits; on the edges where it draws
+  no bar, the content is laid out against the safe area like any other
+  view. A bar stays docked to its edge: it is laid out clear of that edge's
+  container region only, so the keyboard region covers it instead of
+  lifting it, while the content the chrome container hosts is laid out
+  clear of both regions.
+- **Keyboard motion.** A change of the keyboard inset follows the platform's
+  keyboard animation frame by frame. A backend never avoids the keyboard by
+  resizing the window or its rendering surface.
 
 ## 8. Divergence register
 

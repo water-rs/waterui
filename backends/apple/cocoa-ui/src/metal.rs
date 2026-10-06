@@ -3,9 +3,7 @@
 //! [`metal_to_wgpu_format`], [`wgpu_to_metal_format`], [`color_space`] and
 //! [`import_texture`] are the bridge a renderer living in wgpu uses to draw
 //! into a Metal texture it does not own. Presentation lives in
-//! [`crate::metal_presenter`]; the retired `IOSurface`/`CALayer.contents`
-//! double buffer that used to sit here is gone with `CAMetalDisplayLink`
-//! pacing.
+//! [`crate::metal_presenter`].
 //!
 //! # Safety
 //!

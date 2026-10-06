@@ -57,6 +57,10 @@ pub fn trials() -> Vec<Trial> {
             "appkit::metal_presenter",
             an_armed_presenter_constructs_pauses_and_invalidates_cleanly
         ),
+        case!(
+            "appkit::metal_presenter",
+            a_presenter_on_a_screenless_window_delivers_nothing
+        ),
         case!("appkit::label", a_factory_label_survives_debug_ivar_checks),
         case!(
             "appkit::label",
@@ -211,17 +215,12 @@ fn valid_attributes_for_marked_text_returns_attribute_names() {
     assert!(attributes.count() >= 3);
 }
 
-/// The screenless safety the retired `FrameClock` documented is verified
-/// for the presenter positively: an armed `CAMetalDisplayLink` on a real
-/// screen delivers updates, and `invalidate` leaves nothing queued.
-///
-/// The negative half is not testable in-process: constructing a
-/// `MetalPresenter` on a `CAMetalLayer` hosted by a window outside every
-/// screen throws an uncatchable Objective-C exception at
-/// `setMaximumDrawableCount` on this runner (`AppleParavirt`), aborting the
-/// whole suite — the same call is safe on a bare layer, so the trap is the
-/// screenless hosting, not the setter. That screenless-window construction
-/// risk stays unresolved on this runner and needs a device-verified answer.
+/// Checks the presenter's arm lifecycle on an on-screen host: it
+/// constructs paused, `set_paused` toggles the link's arm state,
+/// `invalidate` stops delivery for good, and nothing arrives afterwards.
+/// Actual `CAMetalDisplayLink` delivery is never observed on this runner
+/// (the paravirtual display paces nothing), so the link's delivery count
+/// is asserted silent rather than counted.
 fn an_armed_presenter_constructs_pauses_and_invalidates_cleanly() {
     use cocoa_ui::metal_presenter::MetalPresenter;
     use cocoa_ui::objc2_app_kit::{NSScreen, NSView};
@@ -258,15 +257,66 @@ fn an_armed_presenter_constructs_pauses_and_invalidates_cleanly() {
     // main run loop. Delivery itself cannot be asserted on this runner —
     // the paravirtual display paces `CAMetalDisplayLink` for nothing, not
     // even a plain Swift window — so the check is contract-level only:
-    // arming and re-pausing are accepted, and `invalidate` stays silent.
+    // arming and re-pausing are accepted, and drop stays silent.
     assert!(presenter.is_paused());
     presenter.set_paused(false);
     assert!(!presenter.is_paused());
     presenter.set_paused(true);
     presenter.set_paused(false);
-    presenter.invalidate();
-    assert!(presenter.is_paused());
-    let _ = updates.get();
+    drop(presenter);
+    crate::harness::pump_main_until(0.3, || false);
+    assert_eq!(updates.get(), 0, "a dropped link delivered a frame");
+    window.close();
+}
+
+/// Checks a `MetalPresenter` on a `CAMetalLayer`-backed view in a window
+/// outside every screen: construction is safe, an armed link delivers no
+/// frame within a bounded run-loop window, and drop leaves nothing
+/// queued.
+fn a_presenter_on_a_screenless_window_delivers_nothing() {
+    use cocoa_ui::metal_presenter::MetalPresenter;
+    use cocoa_ui::objc2_app_kit::{NSScreen, NSView};
+    use cocoa_ui::objc2_foundation::{NSPoint, NSRect, NSSize};
+    use cocoa_ui::objc2_quartz_core::CAMetalLayer;
+
+    let mtm = marker();
+    // A frame whose origin lies to the right of every screen's extent.
+    let offscreen = NSScreen::screens(mtm)
+        .iter()
+        .fold(0.0_f64, |right, screen| {
+            let frame = screen.frame();
+            right.max(frame.origin.x + frame.size.width)
+        })
+        + 10_000.0;
+    let window = Window::new(
+        mtm,
+        Rect::new(offscreen, 0.0, 200.0, 200.0),
+        WindowStyle::empty(),
+    );
+    let view = NSView::new(mtm);
+    view.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(200.0, 200.0)));
+    let layer = CAMetalLayer::new();
+    layer.setDrawableSize(cocoa_ui::objc2_core_foundation::CGSize::new(200.0, 200.0));
+    view.setLayer(Some(&layer));
+    view.setWantsLayer(true);
+    window.native().setContentView(Some(&view));
+
+    let updates = Rc::new(Cell::new(0u32));
+    let presenter = MetalPresenter::new(layer, {
+        let updates = Rc::clone(&updates);
+        Rc::new(move |_| updates.set(updates.get() + 1))
+    });
+
+    presenter.set_paused(false);
+    crate::harness::pump_main_until(0.5, || false);
+    assert_eq!(
+        updates.get(),
+        0,
+        "a link hosted outside every screen delivered a frame"
+    );
+    drop(presenter);
+    crate::harness::pump_main_until(0.3, || false);
+    assert_eq!(updates.get(), 0, "a dropped link delivered a frame");
     window.close();
 }
 
@@ -778,9 +828,9 @@ fn a_capture_preserves_containment_and_survives_release() {
     let child_frame = child.frame();
 
     let target = crate::harness::capture_target();
-    let content_capture = Rc::new(ViewCapture::new(mtm, content.clone(), |_| None));
+    let content_capture = Rc::new(ViewCapture::new(mtm, content.clone()));
     content_capture.set_on_redraw(|| {});
-    let child_capture = Rc::new(ViewCapture::new(mtm, child.clone(), |_| None));
+    let child_capture = Rc::new(ViewCapture::new(mtm, child.clone()));
     child_capture.set_on_redraw(|| {});
 
     // Everything the tree must keep through a capture: superview and
@@ -940,7 +990,7 @@ fn a_detached_capture_renders_and_teardown_stays_clean() {
     assert!(cocoa_ui::view::superview(&content).is_none());
 
     let target = crate::harness::capture_target();
-    let capture = Rc::new(ViewCapture::new(mtm, content.clone(), |_| None));
+    let capture = Rc::new(ViewCapture::new(mtm, content.clone()));
     capture.set_on_redraw(|| {});
     let (flag, complete) = crate::harness::fence_flag();
     capture.capture(&target, 0, complete);
@@ -1039,7 +1089,7 @@ fn a_hidden_capture_renders_without_revealing() {
     content.setHidden(true);
 
     let target = crate::harness::capture_target();
-    let capture = Rc::new(ViewCapture::new(mtm, content.clone(), |_| None));
+    let capture = Rc::new(ViewCapture::new(mtm, content.clone()));
     capture.set_on_redraw(|| {});
     let (flag, complete) = crate::harness::fence_flag();
     capture.capture(&target, 0, complete);

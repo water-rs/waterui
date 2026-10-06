@@ -116,7 +116,7 @@ pub fn progress_accessibility(
 pub fn measure_progress_node(
     render_state: &ProgressRenderState,
     _proposal: ProposalSize,
-    _state: &mut HydroState,
+    state: &mut HydroState,
     env: &Environment,
     theme: &Rc<dyn crate::engine::WidgetTheme>,
 ) -> ViewDimensions {
@@ -130,7 +130,7 @@ pub fn measure_progress_node(
                     .size,
             )
             .max(metrics.label_height);
-            let value_label_height = if render_state.value.snapshot().is_finite() {
+            let value_label_height = if state.measure_signal(&render_state.value).is_finite() {
                 metrics.value_label_top_spacing + label_height
             } else {
                 0.0
@@ -231,6 +231,7 @@ pub fn render_progress_parts(
                 // The label's semantics are merged into the indicator's own node by
                 // `progress_accessibility`, so the sub-view flushes visual-only.
                 let render_ctx = ctx.render_context();
+                let label_area = ctx.safe_area_for(label_rect);
                 let label = &mut progress.label;
                 ctx.renderer_mut()
                     .with_suppressed_accessibility(|renderer| {
@@ -240,6 +241,7 @@ pub fn render_progress_parts(
                             env,
                             ProposalSize::UNSPECIFIED,
                             label_rect,
+                            label_area,
                         );
                     });
             }
@@ -310,6 +312,7 @@ pub fn render_progress_parts(
                     // The formatted value text duplicates the numeric value the
                     // indicator's node already carries, so it flushes visual-only.
                     let render_ctx = ctx.render_context();
+                    let value_label_area = ctx.safe_area_for(value_label_rect);
                     let value_label = &mut progress.value_label;
                     ctx.renderer_mut()
                         .with_suppressed_accessibility(|renderer| {
@@ -319,6 +322,7 @@ pub fn render_progress_parts(
                                 env,
                                 ProposalSize::UNSPECIFIED,
                                 value_label_rect,
+                                value_label_area,
                             );
                         });
                 }

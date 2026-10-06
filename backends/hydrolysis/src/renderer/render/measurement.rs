@@ -2,9 +2,9 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::engine::WidgetTheme;
+use crate::text::TextLayout as _;
 use crate::widgets::nav::tabs::{tabs_decide_layout, tabs_item_natural_width};
 use std::rc::Rc;
-use std::sync::Arc;
 use waterui::navigation::tab::TabIcon;
 use waterui_core::handler::BoxedAction;
 use waterui_core::views::ViewSnapshot;
@@ -52,8 +52,12 @@ pub fn table_data_cell_rect(
     )
 }
 
-fn navigation_bar_height(view: &NavigationView, theme: &Rc<dyn WidgetTheme>) -> f64 {
-    if view.bar.hidden.snapshot() {
+fn navigation_bar_height(
+    view: &NavigationView,
+    state: &mut HydroState,
+    theme: &Rc<dyn WidgetTheme>,
+) -> f64 {
+    if state.measure_signal(&view.bar.hidden) {
         0.0
     } else {
         let metrics = theme.navigation_metrics();
@@ -274,10 +278,12 @@ fn measure_view_dimensions_with_proposal_with_budget(
     }
     if let Some(text) = view.downcast_ref::<Text>() {
         let resolved = text.resolve(&scoped_env);
+        let content = state.measure_signal(&resolved.content);
+        let alignment = state.measure_signal(&resolved.paragraph_alignment);
         return HydrolysisRenderer::measure_text_dimensions(
             state,
-            resolved.content.snapshot(),
-            resolved.paragraph_alignment.snapshot(),
+            content,
+            alignment,
             &scoped_env,
             proposal.width,
             resolved.line_limit.map(core::num::NonZeroUsize::get),
@@ -303,6 +309,25 @@ fn measure_view_dimensions_with_proposal_with_budget(
             theme,
         ));
     }
+    // Normalization keeps a `FixedContainer` plain (its `body` runs at
+    // build); the estimator measures it like the body-produced Native form —
+    // `body` wraps the layout in `DirectionalLayout`, which mirrors the
+    // placements under RTL before explicit guides resolve against them.
+    if let Some(container) = view.downcast_ref::<FixedContainer>() {
+        let (layout, children) = container.as_parts();
+        return measure_layout_dimensions_mirrored(
+            layout,
+            children.iter(),
+            proposal,
+            state,
+            &scoped_env,
+            theme,
+            waterui_core::layout::layout_direction(&scoped_env)
+                .snapshot()
+                .is_right_to_left(),
+        );
+    }
+
     if let Some(dimensions) =
         dimensions_for_known_native_views(view, proposal, state, &scoped_env, theme)
     {
@@ -327,6 +352,23 @@ pub fn measure_layout_dimensions<'a>(
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> ViewDimensions {
+    measure_layout_dimensions_mirrored(layout, children, proposal, state, env, theme, false)
+}
+
+/// `measure_layout_dimensions` with the `DirectionalLayout` mirror applied
+/// to the placements: a layout that never went through `body` (the plain
+/// `FixedContainer` normalization keeps) must still resolve its explicit
+/// horizontal guides against the frames the built tree sees, which
+/// `DirectionalLayout` mirrors under RTL.
+fn measure_layout_dimensions_mirrored<'a>(
+    layout: &dyn Layout,
+    children: impl IntoIterator<Item = &'a AnyView>,
+    proposal: ProposalSize,
+    state: &mut HydroState,
+    env: &Environment,
+    theme: &Rc<dyn WidgetTheme>,
+    mirror_placements: bool,
+) -> ViewDimensions {
     let state = RefCell::new(state);
     let children: Vec<&AnyView> = children.into_iter().collect();
     let mut subviews = Vec::new();
@@ -344,6 +386,25 @@ pub fn measure_layout_dimensions<'a>(
 
     let bounds = LayoutRect::from_size(size);
     let placements = layout.place(bounds, proposal, &refs);
+    let placements: Vec<SubviewPlacement> = if mirror_placements {
+        placements
+            .into_iter()
+            .map(|placement| {
+                SubviewPlacement::new(
+                    LayoutRect::new(
+                        LayoutPoint::new(
+                            bounds.min_x() + bounds.max_x() - placement.frame.max_x(),
+                            placement.frame.y(),
+                        ),
+                        *placement.frame.size(),
+                    ),
+                    placement.proposal,
+                )
+            })
+            .collect()
+    } else {
+        placements
+    };
     let placed_subviews: Vec<PlacedSubview<'_>> = subviews
         .iter()
         .zip(placements)
@@ -408,8 +469,14 @@ fn view_has_plain_alignment_dimensions(view: &AnyView) -> bool {
     if let Some(content) = passthrough_content(view) {
         return view_has_plain_alignment_dimensions(content);
     }
-    if let Some(container) = view.downcast_ref::<Native<FixedContainer>>() {
-        let (layout, children) = container.as_inner().as_parts();
+    // Normalization keeps a `FixedContainer` plain (its `body` runs at
+    // build), so both the modifier-time and the body-produced (Native) forms
+    // reach here.
+    if let Some(container) = view.downcast_ref::<FixedContainer>().or_else(|| {
+        view.downcast_ref::<Native<FixedContainer>>()
+            .map(Native::as_inner)
+    }) {
+        let (layout, children) = container.as_parts();
         return layout.explicit_horizontal_alignments().is_empty()
             && layout.explicit_vertical_alignments().is_empty()
             && children.iter().all(view_has_plain_alignment_dimensions);
@@ -450,20 +517,11 @@ impl HydrolysisRenderer {
         tail: TailMark,
     ) {
         let input = resolve_text_layout_input(&styled, alignment, env);
-        let fragment = state.text.glyph_scene_with(
+        let fragment = state.text.record(
             &input,
             Some(crate::num_cast::f64_as_f32(ctx.bounds.width())),
             tail,
-            |layout, effective, fragment| {
-                Self::encode_text_layout(
-                    state.text.as_ref(),
-                    &mut state.counters,
-                    fragment,
-                    layout,
-                    effective,
-                    tail.parts().0,
-                );
-            },
+            &mut state.counters,
         );
         scene.append(
             &fragment,
@@ -484,159 +542,23 @@ impl HydrolysisRenderer {
     ) {
         let input = resolve_text_layout_input(&styled, HorizontalAlignment::Leading, env);
         let layout = state.text.shape(&input, None);
-        let Some(line) = layout.lines().next() else {
+        if layout.line_count() == 0 {
             return;
-        };
-        let metrics = line.metrics();
+        }
+        let metrics = layout.line_metrics(0);
         // Center the measured frame — advance widened to cover overhanging
-        // ink — matching what `text_dimensions_from_layout` reports for it.
-        let width = layout_ink_extent(state.text.as_ref(), &layout, Some(1)).map_or_else(
+        // ink — matching what `dimensions` reports for it.
+        let width = state.text.ink_extent(&layout, Some(1)).map_or_else(
             || f64::from(metrics.advance),
             |(ink_min, ink_max)| f64::from(metrics.advance.max(ink_max) - ink_min.min(0.0)),
         );
         let height = f64::from(metrics.line_height);
         let x = ((ctx.bounds.width() - width) * 0.5).max(0.0);
         let y = ((ctx.bounds.height() - height) * 0.5).max(0.0);
-        let fragment = state.text.glyph_scene_with(
-            &input,
-            None,
-            TailMark::Clip(1),
-            |layout, effective, fragment| {
-                Self::encode_text_layout(
-                    state.text.as_ref(),
-                    &mut state.counters,
-                    fragment,
-                    layout,
-                    effective,
-                    Some(1),
-                );
-            },
-        );
+        let fragment = state
+            .text
+            .record(&input, None, TailMark::Clip(1), &mut state.counters);
         scene.append(&fragment, ctx.transform * kurbo::Affine::translate((x, y)));
-    }
-
-    /// Encode `layout`'s glyph runs into `scene` at the local origin. The
-    /// caller positions the result by appending it under a transform, which is
-    /// what makes the encoded fragment reusable across frames.
-    fn encode_text_layout(
-        service: &TextMeasureService,
-        counters: &mut FrameWorkCounters,
-        scene: &mut Recording,
-        layout: &Arc<parley::Layout<[u8; 4]>>,
-        input: &ResolvedTextLayoutInput,
-        max_lines: Option<usize>,
-    ) {
-        if layout.is_empty() {
-            return;
-        }
-        // `text_dimensions_from_layout` widens the measured frame so it covers
-        // glyph ink that overhangs the pen advance (`layout_ink_extent`); the
-        // same left-edge correction shifts the encoded glyphs so that ink
-        // starts at the frame origin instead of painting left of it.
-        let ink_shift = layout_ink_extent(service, layout, max_lines)
-            .map_or(0.0, |(ink_min, _)| -ink_min.min(0.0));
-        let paint_backgrounds = input.has_background();
-        for (index, line) in layout.lines().enumerate() {
-            if max_lines.is_some_and(|limit| index >= limit) {
-                break;
-            }
-            if paint_backgrounds {
-                Self::encode_line_backgrounds(scene, &line, input, ink_shift);
-            }
-            for item in line.items() {
-                if let parley::PositionedLayoutItem::GlyphRun(glyph_run) = item {
-                    let run = glyph_run.run();
-                    let style = glyph_run.style();
-                    let brush = rgba8_to_peniko(style.brush);
-                    let normalized_coords = run.normalized_coords();
-
-                    let mut run_x = glyph_run.offset() + ink_shift;
-                    let run_y = glyph_run.baseline();
-                    let glyphs: Vec<crate::renderer::Glyph> = glyph_run
-                        .glyphs()
-                        .map(move |glyph| {
-                            let x = run_x + glyph.x;
-                            let y = run_y - glyph.y;
-                            run_x += glyph.advance;
-                            crate::renderer::Glyph { id: glyph.id, x, y }
-                        })
-                        .collect();
-
-                    counters.font_registrations += 1;
-                    scene.glyphs(&crate::renderer::GlyphRun {
-                        font: run.font(),
-                        font_size: run.font_size(),
-                        normalized_coords,
-                        transform: kurbo::Affine::IDENTITY,
-                        brush: &peniko::Brush::Solid(brush),
-                        brush_alpha: 1.0,
-                        style: peniko::StyleRef::Fill(peniko::Fill::NonZero),
-                        glyphs: &glyphs,
-                    });
-                }
-            }
-        }
-    }
-
-    /// Fill each backgrounded span's glyph extent on `line` — the full line
-    /// box (`block_min_coord..block_max_coord`) tall — under the text.
-    ///
-    /// The horizontal cursor accumulates cluster advances over `runs()` in
-    /// display order, the same sequence parley's own glyph-run iterator places
-    /// left-to-right (both are driven by `Run::visual_clusters`). These layouts
-    /// come from a ranged builder, which emits no inline boxes, so runs are
-    /// the whole item sequence.
-    fn encode_line_backgrounds(
-        scene: &mut Recording,
-        line: &parley::Line<'_, [u8; 4]>,
-        input: &ResolvedTextLayoutInput,
-        ink_shift: f32,
-    ) {
-        let metrics = line.metrics();
-        let (top, bottom) = (
-            f64::from(metrics.block_min_coord),
-            f64::from(metrics.block_max_coord),
-        );
-        let mut cursor = metrics.inline_min_coord + metrics.offset + ink_shift;
-        // Adjacent clusters with the same background merge into one fill.
-        let mut open: Option<(f32, [u8; 4])> = None;
-        for run in line.runs() {
-            for cluster in run.visual_clusters() {
-                let end = cursor + cluster.advance();
-                let background = input.span_background(cluster.text_range().start);
-                let extends = matches!(
-                    (open, background),
-                    (Some((_, open_colour)), Some(colour)) if open_colour == colour
-                );
-                if !extends {
-                    if let Some((start, colour)) = open.take() {
-                        Self::fill_span_background(scene, start, cursor, top, bottom, colour);
-                    }
-                    open = background.map(|colour| (cursor, colour));
-                }
-                cursor = end;
-            }
-        }
-        if let Some((start, colour)) = open {
-            Self::fill_span_background(scene, start, cursor, top, bottom, colour);
-        }
-    }
-
-    fn fill_span_background(
-        scene: &mut Recording,
-        start: f32,
-        end: f32,
-        top: f64,
-        bottom: f64,
-        colour: [u8; 4],
-    ) {
-        scene.fill(
-            peniko::Fill::NonZero,
-            kurbo::Affine::IDENTITY,
-            &peniko::Brush::Solid(rgba8_to_peniko(colour)),
-            None,
-            &kurbo::Rect::new(f64::from(start), top, f64::from(end), bottom),
-        );
     }
 
     #[expect(
@@ -653,7 +575,7 @@ impl HydrolysisRenderer {
         alignment: HorizontalAlignment,
         env: &Environment,
         max_width: Option<f32>,
-    ) -> Arc<parley::Layout<[u8; 4]>> {
+    ) -> SessionTextLayout {
         let input = resolve_text_layout_input(&styled, alignment, env);
         state.text.shape(&input, max_width)
     }
@@ -676,7 +598,7 @@ impl HydrolysisRenderer {
     ) -> ViewDimensions {
         let input = resolve_text_layout_input(&styled, alignment, env);
         let layout = state.text.shape_limited(&input, max_width, max_lines);
-        text_dimensions_from_layout(state.text.as_ref(), &layout, max_lines)
+        state.text.dimensions(&layout, max_lines)
     }
 
     pub(crate) fn measure_text_intrinsic_size(
@@ -716,7 +638,7 @@ pub fn measure_navigation_view_intrinsic(
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
-    let bar_height = navigation_bar_height(navigation, theme);
+    let bar_height = navigation_bar_height(navigation, state, theme);
     let mut principal_width = 0.0_f64;
     let mut principal_height = 0.0_f64;
     let mut leading_width = 0.0_f64;
@@ -911,10 +833,14 @@ pub fn measure_tabs_layout(
     )
 }
 
-/// The proposal the rendered content rect hands a tab's content: the pane
-/// minus the tab bar — a bottom strip for `Automatic`/`TabBar`, a leading
-/// strip for `Sidebar` (see [`tabs_bar_and_content_rect`]). Bounded axes echo
-/// the offer; an axis the container left open stays open.
+/// The proposal a tab's content measures at: the pane minus the tab bar — a
+/// bottom strip for `Automatic`/`TabBar`, a leading strip for `Sidebar`.
+/// This is a *measurement* proposal, not the rendered content rect: the §7.1
+/// chrome split at render time carves the band out of the laid-out frame,
+/// and the rendered content rect keeps the whole frame once the keyboard
+/// covers the band outright (keyboard deeper than container inset plus bar
+/// height). Bounded axes echo the offer; an axis the container left open
+/// stays open.
 pub fn tabs_content_proposal(
     proposal: ProposalSize,
     style: NativeTabStyle,
@@ -933,39 +859,6 @@ pub fn tabs_content_proposal(
                 .map(|width| crate::num_cast::f64_as_f32((f64::from(width) - bar_extent).max(0.0))),
             proposal.height,
         ),
-    }
-}
-
-pub fn tabs_bar_and_content_rect(
-    bounds: kurbo::Rect,
-    style: NativeTabStyle,
-    bar_extent: f64,
-) -> (kurbo::Rect, kurbo::Rect) {
-    match style {
-        NativeTabStyle::Automatic | NativeTabStyle::TabBar => {
-            let bar_height = bar_extent.min(bounds.height());
-            (
-                kurbo::Rect::new(
-                    bounds.x0,
-                    (bounds.y1 - bar_height).max(bounds.y0),
-                    bounds.x1,
-                    bounds.y1,
-                ),
-                kurbo::Rect::new(
-                    bounds.x0,
-                    bounds.y0,
-                    bounds.x1,
-                    (bounds.y1 - bar_height).max(bounds.y0),
-                ),
-            )
-        }
-        NativeTabStyle::Sidebar => {
-            let bar_width = bar_extent.min(bounds.width());
-            (
-                kurbo::Rect::new(bounds.x0, bounds.y0, bounds.x0 + bar_width, bounds.y1),
-                kurbo::Rect::new(bounds.x0 + bar_width, bounds.y0, bounds.x1, bounds.y1),
-            )
-        }
     }
 }
 
@@ -1014,7 +907,7 @@ pub fn measure_list_intrinsic(
     if row_count == 0 {
         return LayoutSize::zero();
     }
-    let editing = list.editing.snapshot();
+    let editing = state.measure_signal(&list.editing);
     let mut first_item = contents
         .get_view(0)
         .unwrap_or_else(|| panic!("ListConfig failed to materialize item at index 0"));
@@ -1100,7 +993,7 @@ pub fn list_row_height_for_content(
 
 pub fn measure_progress_intrinsic(
     progress: &ProgressConfig,
-    _state: &mut HydroState,
+    state: &mut HydroState,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
@@ -1115,7 +1008,7 @@ pub fn measure_progress_intrinsic(
                     .size,
             )
             .max(metrics.label_height);
-            let value_label_height = if progress.value.snapshot().is_finite() {
+            let value_label_height = if state.measure_signal(&progress.value).is_finite() {
                 metrics.value_label_top_spacing + label_height
             } else {
                 0.0
@@ -1188,8 +1081,8 @@ pub fn measure_text_field_size_with_label_size(
 ) -> LayoutSize {
     let metrics = theme.input_field_metrics();
     let line_limit = text_field.line_limit.map(NonZeroUsize::get);
-    let prompt = text_field.prompt.content.snapshot();
-    let value = text_field.value.snapshot();
+    let prompt = state.measure_signal(&text_field.prompt.content);
+    let value = state.measure_signal(&text_field.value);
     let prompt_size = HydrolysisRenderer::measure_text_intrinsic_size_with_line_limit(
         state, prompt, env, line_limit,
     );
@@ -1272,7 +1165,11 @@ pub fn measure_secure_field_size_with_label_size(
     proposal: ProposalSize,
 ) -> LayoutSize {
     let metrics = theme.input_field_metrics();
-    let secure_len = secure_field.value.snapshot().expose().chars().count();
+    let secure_len = state
+        .measure_signal(&secure_field.value)
+        .expose()
+        .chars()
+        .count();
     let masked = if secure_len == 0 {
         StyledStr::plain("")
     } else {
@@ -1336,7 +1233,7 @@ pub fn measure_table_metrics(
         width = width.max(f64::from(label_size.width) + metrics.cell_horizontal_padding);
 
         let rows = column.rows();
-        max_rows = max_rows.max(rows.len().snapshot());
+        max_rows = max_rows.max(state.measure_signal(&rows.len()));
         column_widths.push(width);
     }
 
@@ -1441,8 +1338,9 @@ pub fn measure_slider_intrinsic(
     )
 }
 
-fn resolved_text_styled(text: &Text, env: &Environment) -> StyledStr {
-    text.resolve(env).content.snapshot()
+fn resolved_text_styled(text: &Text, env: &Environment, state: &mut HydroState) -> StyledStr {
+    let resolved = text.resolve(env);
+    state.measure_signal(&resolved.content)
 }
 
 pub fn measure_date_picker_intrinsic(
@@ -1460,9 +1358,8 @@ pub fn measure_date_picker_intrinsic(
     } else {
         0.0
     };
-    let current = date_picker
-        .value
-        .snapshot()
+    let current = state
+        .measure_signal(&date_picker.value)
         .clamp(*date_picker.range.start(), *date_picker.range.end());
     let candidates = [
         date_picker.ty.format_value(*date_picker.range.start()),
@@ -1552,7 +1449,7 @@ pub fn measure_picker_intrinsic_with_label_size(
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
-    let items = picker.items.snapshot();
+    let items = state.measure_signal(&picker.items);
     assert!(
         !(items.is_empty()),
         "hydrolysis picker requires at least one item"
@@ -1565,7 +1462,7 @@ pub fn measure_picker_intrinsic_with_label_size(
             let mut max_item_width: f64 = 0.0;
             let mut max_item_height: f64 = 0.0;
             for item in &items {
-                let styled = resolved_text_styled(&item.content, env);
+                let styled = resolved_text_styled(&item.content, env, state);
                 let size = HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env);
                 max_item_width = max_item_width.max(f64::from(size.width));
                 max_item_height = max_item_height.max(f64::from(size.height));
@@ -1605,7 +1502,7 @@ pub fn measure_picker_intrinsic_with_label_size(
             let mut max_item_width: f64 = 0.0;
             let mut total_height = 0.0;
             for (index, item) in items.iter().enumerate() {
-                let styled = resolved_text_styled(&item.content, env);
+                let styled = resolved_text_styled(&item.content, env, state);
                 let size = HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env);
                 max_item_width = max_item_width.max(f64::from(size.width));
                 total_height += f64::from(size.height).max(metrics.radio_indicator_size);
@@ -1647,7 +1544,7 @@ pub fn measure_picker_intrinsic_with_label_size(
             let mut total_width: f64 = 0.0;
             let mut max_item_height: f64 = 0.0;
             for item in &items {
-                let styled = resolved_text_styled(&item.content, env);
+                let styled = resolved_text_styled(&item.content, env, state);
                 let size = HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env);
                 total_width += metrics
                     .horizontal_inset
@@ -1723,7 +1620,7 @@ mod background_tests {
 
     fn rendered_fill_colours(styled: StyledStr, width: f64) -> Vec<u32> {
         let env = test_environment();
-        let mut state = HydroState::new(FontFamilyResolution::Strict);
+        let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
         let mut scene = Recording::new();
         let ctx = RenderContext::with_transforms(
             kurbo::Rect::new(0.0, 0.0, width, 200.0),

@@ -32,7 +32,7 @@ use objc2_ui_kit::{
     UITapGestureRecognizer, UITouch, UITraitCollection, UIView,
 };
 
-use crate::callback::guarded;
+use crate::callback::{emit, forward, guarded};
 use crate::input::{EventPhase, GesturePhase, PointerInteraction};
 
 /// Receives lifecycle events of the view — layout, attachment.
@@ -53,6 +53,8 @@ pub struct SurfaceViewIvars {
     presentation_layer: RefCell<Option<Retained<CAMetalLayer>>>,
     gesture_target: RefCell<Option<Retained<GestureTarget>>>,
     recognizers: RefCell<Vec<Retained<UIGestureRecognizer>>>,
+    /// The capturable surface the mounted leaf stored on this view.
+    capturable: crate::capture::CapturableSlot,
 }
 
 impl fmt::Debug for SurfaceViewIvars {
@@ -209,25 +211,34 @@ define_class!(
             gesture_recognizer: &UIGestureRecognizer,
             other_gesture_recognizer: &UIGestureRecognizer,
         ) -> bool {
-            let this_scroll = gesture_recognizer
-                .view()
-                .is_some_and(|view| view.downcast_ref::<UIScrollView>().is_some());
-            let other_scroll = other_gesture_recognizer
-                .view()
-                .is_some_and(|view| view.downcast_ref::<UIScrollView>().is_some());
-            if this_scroll || other_scroll {
-                return true.into();
-            }
-            // Pinch and pan fire together; anything else is exclusive.
-            let is_pinch = gesture_recognizer.downcast_ref::<UIPinchGestureRecognizer>().is_some()
-                || other_gesture_recognizer
-                    .downcast_ref::<UIPinchGestureRecognizer>()
-                    .is_some();
-            let is_pan = gesture_recognizer.downcast_ref::<UIPanGestureRecognizer>().is_some()
-                || other_gesture_recognizer
-                    .downcast_ref::<UIPanGestureRecognizer>()
-                    .is_some();
-            is_pinch && is_pan
+            guarded(
+                "SurfaceView gestureRecognizer:shouldRecognizeSimultaneouslyWithGestureRecognizer:",
+                || {
+                    let this_scroll = gesture_recognizer
+                        .view()
+                        .is_some_and(|view| view.downcast_ref::<UIScrollView>().is_some());
+                    let other_scroll = other_gesture_recognizer
+                        .view()
+                        .is_some_and(|view| view.downcast_ref::<UIScrollView>().is_some());
+                    if this_scroll || other_scroll {
+                        return true;
+                    }
+                    // Pinch and pan fire together; anything else is exclusive.
+                    let is_pinch = gesture_recognizer
+                        .downcast_ref::<UIPinchGestureRecognizer>()
+                        .is_some()
+                        || other_gesture_recognizer
+                            .downcast_ref::<UIPinchGestureRecognizer>()
+                            .is_some();
+                    let is_pan = gesture_recognizer
+                        .downcast_ref::<UIPanGestureRecognizer>()
+                        .is_some()
+                        || other_gesture_recognizer
+                            .downcast_ref::<UIPanGestureRecognizer>()
+                            .is_some();
+                    is_pinch && is_pan
+                },
+            )
         }
     }
 
@@ -235,82 +246,110 @@ define_class!(
         // SAFETY: see the module safety note.
         #[unsafe(method(layoutSubviews))]
         fn layout_subviews_override(&self) {
-            // SAFETY: see the module safety note.
-            let _: () = unsafe { msg_send![super(self), layoutSubviews] };
-            let handler = self.ivars().on_layout.borrow().clone();
-            if let Some(handler) = handler {
-                handler();
-            }
+            forward(
+                "SurfaceView layoutSubviews",
+                || {
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), layoutSubviews] };
+                },
+                &self.ivars().on_layout,
+            );
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(didMoveToWindow))]
         fn did_move_to_window_override(&self) {
-            // SAFETY: see the module safety note.
-            let _: () = unsafe { msg_send![super(self), didMoveToWindow] };
-            let handler = self.ivars().on_window_changed.borrow().clone();
-            if let Some(handler) = handler {
-                handler();
-            }
+            forward(
+                "SurfaceView didMoveToWindow",
+                || {
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), didMoveToWindow] };
+                },
+                &self.ivars().on_window_changed,
+            );
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(didMoveToSuperview))]
         fn did_move_to_superview_override(&self) {
-            // SAFETY: see the module safety note.
-            let _: () = unsafe { msg_send![super(self), didMoveToSuperview] };
-            let handler = self.ivars().on_visibility_changed.borrow().clone();
-            if let Some(handler) = handler {
-                handler();
-            }
+            forward(
+                "SurfaceView didMoveToSuperview",
+                || {
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), didMoveToSuperview] };
+                },
+                &self.ivars().on_visibility_changed,
+            );
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(traitCollectionDidChange:))]
         fn trait_collection_did_change(&self, previous: Option<&UITraitCollection>) {
-            // SAFETY: see the module safety note.
-            let _: () = unsafe { msg_send![super(self), traitCollectionDidChange: previous] };
-            let handler = self.ivars().on_backing_changed.borrow().clone();
-            if let Some(handler) = handler {
-                handler();
-            }
+            forward(
+                "SurfaceView traitCollectionDidChange:",
+                || {
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), traitCollectionDidChange: previous] };
+                },
+                &self.ivars().on_backing_changed,
+            );
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(touchesBegan:withEvent:))]
         fn touches_began(&self, touches: &NSSet<UITouch>, event: Option<&objc2_ui_kit::UIEvent>) {
-            let _ = event;
-            if let Some(position) = self.touch_point(touches) {
-                self.emit(PointerInteraction::PrimaryDown {
-                    position,
-                    click_count: 1,
-                });
-            }
+            guarded("SurfaceView touchesBegan:withEvent:", || {
+                let _ = event;
+                if let Some(position) = self.touch_point(touches) {
+                    emit(
+                        &self.ivars().on_interaction,
+                        PointerInteraction::PrimaryDown {
+                            position,
+                            click_count: 1,
+                        },
+                    );
+                }
+            });
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(touchesMoved:withEvent:))]
         fn touches_moved(&self, touches: &NSSet<UITouch>, event: Option<&objc2_ui_kit::UIEvent>) {
-            let _ = event;
-            if let Some(position) = self.touch_point(touches) {
-                self.emit(PointerInteraction::Moved(Some(position)));
-            }
+            guarded("SurfaceView touchesMoved:withEvent:", || {
+                let _ = event;
+                if let Some(position) = self.touch_point(touches) {
+                    emit(
+                        &self.ivars().on_interaction,
+                        PointerInteraction::Moved(Some(position)),
+                    );
+                }
+            });
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(touchesEnded:withEvent:))]
         fn touches_ended(&self, touches: &NSSet<UITouch>, event: Option<&objc2_ui_kit::UIEvent>) {
-            let _ = touches;
-            let _ = event;
-            self.emit(PointerInteraction::PrimaryUp);
+            guarded("SurfaceView touchesEnded:withEvent:", || {
+                let _ = touches;
+                let _ = event;
+                emit(
+                    &self.ivars().on_interaction,
+                    PointerInteraction::PrimaryUp,
+                );
+            });
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(touchesCancelled:withEvent:))]
         fn touches_cancelled(&self, touches: &NSSet<UITouch>, event: Option<&objc2_ui_kit::UIEvent>) {
-            let _ = touches;
-            let _ = event;
-            self.emit(PointerInteraction::PrimaryUp);
+            guarded("SurfaceView touchesCancelled:withEvent:", || {
+                let _ = touches;
+                let _ = event;
+                emit(
+                    &self.ivars().on_interaction,
+                    PointerInteraction::PrimaryUp,
+                );
+            });
         }
     }
 );
@@ -450,6 +489,17 @@ impl SurfaceView {
         self
     }
 
+    /// The capturable surface a mounted leaf stored on this view, if any.
+    #[must_use]
+    pub fn capturable(&self) -> Option<Rc<dyn crate::capture::CapturableSurface>> {
+        self.ivars().capturable.get()
+    }
+
+    /// The view's capturable slot — install once, clear on unmount.
+    pub fn capturable_slot(&self) -> &crate::capture::CapturableSlot {
+        &self.ivars().capturable
+    }
+
     /// Calls `handler` after every layout pass.
     pub fn set_layout_handler(&self, handler: impl Fn() + 'static) {
         self.ivars().on_layout.replace(Some(Rc::new(handler)));
@@ -505,13 +555,6 @@ impl SurfaceView {
             })));
         }
         self.ivars().on_interaction.replace(Some(handler));
-    }
-
-    fn emit(&self, interaction: PointerInteraction) {
-        let handler = self.ivars().on_interaction.borrow().clone();
-        if let Some(handler) = handler {
-            handler(interaction);
-        }
     }
 
     /// The first touch's position in logical, surface-local points.

@@ -85,32 +85,39 @@ fn kit_command_fields(
     }
 }
 
-/// Resolved items as the kit's shared `MenuTreeNode` list, with each
-/// command's action bound to fire under `env`. The menu-tree conversion's
-/// semantic owner: every caller that renders resolved menu content — app
-/// menus and `Native<ResolvedMenu>` alike — goes through this.
+/// The declared menu bar's resolved items as the kit's shared
+/// `MenuTreeNode` list, with each command's action bound to fire under
+/// `env` — the content both the macOS and the iOS menu bar build from.
+/// On macOS each command is checked against the chords the standard
+/// application menu reserves.
 pub fn menu_tree(
     items: &[ResolvedMenuItem],
     env: &Environment,
 ) -> Vec<cocoa_ui::menu::MenuTreeNode> {
     items
         .iter()
-        .map(|item| match item {
-            ResolvedMenuItem::Divider => cocoa_ui::menu::MenuTreeNode::Divider,
+        .filter_map(|item| match item {
+            ResolvedMenuItem::Divider => Some(cocoa_ui::menu::MenuTreeNode::Divider),
             ResolvedMenuItem::Command(command) => {
+                #[cfg(target_os = "macos")]
+                command.assert_allowed_in_macos_menu_bar();
                 let action = command.action.clone();
                 let env = env.clone();
-                cocoa_ui::menu::MenuTreeNode::Command(
+                Some(cocoa_ui::menu::MenuTreeNode::Command(
                     kit_command(command),
                     Rc::new(move || {
                         action.call(&env);
                     }),
-                )
+                ))
             }
-            ResolvedMenuItem::Menu(menu) => cocoa_ui::menu::MenuTreeNode::Submenu(
+            ResolvedMenuItem::Menu(menu) => Some(cocoa_ui::menu::MenuTreeNode::Submenu(
                 kit_command_for_menu(menu),
                 menu_tree(&menu.items.snapshot(), env),
-            ),
+            )),
+            // macOS: the standard application menu already ends with Quit
+            // (`build_default`), so a declared one is dropped rather than
+            // shown twice. iOS has no application quit, so it is omitted.
+            ResolvedMenuItem::Quit => None,
         })
         .collect()
 }
@@ -141,6 +148,38 @@ mod imp {
         cocoa_ui::bundle::info_string("CFBundleDisplayName")
             .or_else(|| cocoa_ui::bundle::info_string("CFBundleName"))
             .unwrap_or_else(cocoa_ui::process::name)
+    }
+
+    /// The standard Quit item's title.
+    fn quit_title() -> String {
+        alloc::format!("Quit {}", app_name())
+    }
+
+    /// The standard Quit item — ⌘Q sending `terminate:` to the application —
+    /// that ends the application menu. A declared `MenuItem::Quit` in a menu
+    /// a window mounts renders as this same item.
+    pub fn standard_quit_item(mtm: MainThreadMarker) -> MenuItem {
+        MenuItem::new(mtm, &quit_title(), Some(MenuAction::Quit), "q")
+    }
+
+    /// The standard Quit item as a kit menu-tree node, for the menus built
+    /// from `MenuTreeNode`s (context menus): the same title and chord, its
+    /// action the same `terminate:` the application menu's item sends.
+    #[cfg(all(target_os = "macos", feature = "context_menu"))]
+    pub fn standard_quit_node() -> cocoa_ui::menu::MenuTreeNode {
+        cocoa_ui::menu::MenuTreeNode::Command(
+            cocoa_ui::menu::Command {
+                label: quit_title(),
+                enabled: true,
+                key_equivalent: String::from("q"),
+                modifiers: KeyModifiers::COMMAND,
+                ..cocoa_ui::menu::Command::default()
+            },
+            Rc::new(|| {
+                let mtm = MainThreadMarker::new().expect("menu actions run on the main thread");
+                Application::shared(mtm).terminate();
+            }),
+        )
     }
 
     /// The standard menu bar's content: App, Edit, Window — the same menus
@@ -183,12 +222,7 @@ mod imp {
             "",
         ));
         app_menu.add_separator();
-        app_menu.add_item(MenuItem::new(
-            mtm,
-            &alloc::format!("Quit {name}"),
-            Some(MenuAction::Quit),
-            "q",
-        ));
+        app_menu.add_item(standard_quit_item(mtm));
         main.add_item(MenuItem::new(mtm, "", None, "").with_submenu(&app_menu));
 
         // Edit menu: the responder-chain commands that make ⌘C/⌘V/⌘X/⌘A work

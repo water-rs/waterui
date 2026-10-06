@@ -10,7 +10,7 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::OnceLock;
 
-use jni::objects::{JClass, JObject, JString};
+use jni::objects::{GlobalRef, JClass, JObject, JString};
 use jni::sys::{jboolean, jdouble, jfloat, jint, jlong, jstring};
 use jni::{JNIEnv, JavaVM};
 
@@ -39,8 +39,11 @@ use super::host::{AndroidSession, MetricsSnapshot};
 /// `nativeCreateSession` drops `sdkInt`. The API floor is 31, so
 /// `ANativeWindow_setFrameRate` is linked directly; 9 = `nativeBackEvent`
 /// and `onNativeBackAvailable` carry system back into the navigation stack
-/// and report whether a back target is registered.
-pub const JNI_SCHEMA: jint = 9;
+/// and report whether a back target is registered; 10 = `nativeSetMetrics`
+/// splits the window insets into the container and keyboard regions of
+/// layout-spec.md §7.1, and the host's `WindowInsetsAnimationCompat` progress
+/// pushes each IME animation frame.
+pub const JNI_SCHEMA: jint = 10;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -62,6 +65,70 @@ impl From<super::gpu::GpuError> for JniError {
 /// back into Kotlin (redraw requests, IME state, accessibility publishes)
 /// attach envs through it.
 static JAVA_VM: OnceLock<JavaVM> = OnceLock::new();
+
+/// The `Application` published to `ndk_context`, held as a JNI global
+/// reference for the life of the process.
+///
+/// `ndk_context` stores the context pointer process-wide and hands it to
+/// every service crate that resolves it at use time (waterkit-clipboard's
+/// Android backend reads it through `ndk_context::android_context`), so the
+/// reference it points at must outlive every such use: this slot owns it and
+/// is never cleared. It holds the `Application`, never an `Activity`, so
+/// nothing keeps a destroyed activity alive.
+static APPLICATION_CONTEXT: OnceLock<GlobalRef> = OnceLock::new();
+
+/// Publishes the `Application` of `context` to `ndk_context`, exactly once
+/// per process.
+///
+/// The first session publishes it; every later session — an activity
+/// finished and relaunched in the same process — must carry the same
+/// `Application` and leaves the published one in place. The `Application`
+/// is a per-process singleton, so a different one is a broken contract and
+/// fails the session instead of replacing (and leaking) the published
+/// reference. Sessions are created only on the UI thread, so the check and
+/// the publish do not race.
+fn publish_application_context(
+    env: &mut JNIEnv,
+    vm: &JavaVM,
+    context: &JObject,
+) -> Result<(), JniError> {
+    let application = env
+        .call_method(
+            context,
+            "getApplicationContext",
+            "()Landroid/content/Context;",
+            &[],
+        )?
+        .l()?;
+    if let Some(published) = APPLICATION_CONTEXT.get() {
+        return if env.is_same_object(published, &application)? {
+            Ok(())
+        } else {
+            Err(JniError(
+                "hydrolysis android: a session was created with an Application \
+                 other than the one already published to ndk_context; the \
+                 Application is a per-process singleton"
+                    .to_owned(),
+            ))
+        };
+    }
+    let application = env.new_global_ref(&application)?;
+    let raw = application.as_obj().as_raw();
+    APPLICATION_CONTEXT
+        .set(application)
+        .expect("hydrolysis android: sessions are created only on the UI thread");
+    // SAFETY: `ndk_context` keeps both pointers for the rest of the process.
+    // `vm` is the process's single JavaVM, which lives as long as the
+    // process. `raw` is the global reference now owned by
+    // `APPLICATION_CONTEXT`, which is never cleared, so it stays valid on
+    // every thread for the rest of the process. This is the only call to
+    // `initialize_android_context`, guarded by that slot being empty, so
+    // `ndk_context`'s at-most-once precondition holds.
+    unsafe {
+        ndk_context::initialize_android_context(vm.get_java_vm_pointer().cast(), raw.cast());
+    }
+    Ok(())
+}
 
 /// Decodes a session pointer. The host passes exactly what
 /// `nativeCreateSession` returned; anything else is a programming error.
@@ -179,18 +246,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
     guard_val(&mut env, 0, |env| {
         let vm = env.get_java_vm()?;
         let _ = JAVA_VM.set(env.get_java_vm()?);
-        // Publish the application context for the service crates that resolve
-        // it at use time (waterkit-clipboard's Android backend reads it
-        // through `ndk_context::android_context`). Idempotent — the retained
-        // session only ever initializes it once.
-        // SAFETY: `vm` is this thread's live JavaVM and `context` a live
-        // jobject for the duration of the call.
-        unsafe {
-            ndk_context::initialize_android_context(
-                vm.get_java_vm_pointer().cast(),
-                context.as_raw().cast(),
-            );
-        }
+        publish_application_context(env, &vm, &context)?;
         let host_view = env.new_global_ref(&host_view)?;
         // Metrics arrive through `nativeSetMetrics` on the first layout —
         // the session starts zero-sized and the Resize event moves it.
@@ -200,7 +256,8 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
             density: 1.0,
             font_scale: 1.0,
             refresh_hz: None,
-            insets_px: [0; 4],
+            container_insets_px: [0; 4],
+            keyboard_insets_px: [0; 4],
             touch_slop_px: 0.0,
             min_fling_velocity_px: 0.0,
             max_fling_velocity_px: 0.0,
@@ -241,6 +298,10 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetMetrics
     inset_t: jint,
     inset_r: jint,
     inset_b: jint,
+    ime_l: jint,
+    ime_t: jint,
+    ime_r: jint,
+    ime_b: jint,
     touch_slop: jfloat,
     min_fling_velocity: jfloat,
     max_fling_velocity: jfloat,
@@ -253,7 +314,8 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetMetrics
             density: f64::from(density).max(f64::EPSILON),
             font_scale: f64::from(font_scale).max(f64::EPSILON),
             refresh_hz: (refresh_hz > 0.0).then_some(f64::from(refresh_hz)),
-            insets_px: [inset_l, inset_t, inset_r, inset_b],
+            container_insets_px: [inset_l, inset_t, inset_r, inset_b],
+            keyboard_insets_px: [ime_l, ime_t, ime_r, ime_b],
             touch_slop_px: touch_slop,
             min_fling_velocity_px: min_fling_velocity,
             max_fling_velocity_px: max_fling_velocity,

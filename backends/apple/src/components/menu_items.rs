@@ -104,7 +104,7 @@ pub(super) fn collect_item_watchers(
                 })));
                 collect_item_watchers(&submenu.items.snapshot(), resync, watchers);
             }
-            ResolvedMenuItem::Divider => {}
+            ResolvedMenuItem::Divider | ResolvedMenuItem::Quit => {}
         }
     }
 }
@@ -148,24 +148,30 @@ fn kit_command(command: &ResolvedCommand) -> KitCommand {
 }
 
 /// A `ResolvedMenuItem` list as a kit menu tree — commands, separators,
-/// nested menus — the input both platform menu builders take.
+/// nested menus — the input both platform menu builders take. A declared
+/// Quit is the standard Quit item on macOS and is omitted on iOS, which has
+/// no application quit.
 #[cfg(feature = "context_menu")]
 pub(super) fn tree_nodes(items: &[ResolvedMenuItem], env: &Environment) -> Vec<MenuTreeNode> {
-    items
-        .iter()
-        .map(|item| match item {
-            ResolvedMenuItem::Divider => MenuTreeNode::Divider,
+    let mut nodes = Vec::with_capacity(items.len());
+    for item in items {
+        match item {
+            ResolvedMenuItem::Divider => nodes.push(MenuTreeNode::Divider),
             ResolvedMenuItem::Command(command) => {
                 let action = command.action.clone();
                 let env = env.clone();
-                MenuTreeNode::Command(
+                nodes.push(MenuTreeNode::Command(
                     kit_command(command),
                     Rc::new(move || {
                         action.call(&env);
                     }),
-                )
+                ));
             }
-            ResolvedMenuItem::Menu(submenu) => MenuTreeNode::Submenu(
+            ResolvedMenuItem::Quit => {
+                #[cfg(target_os = "macos")]
+                nodes.push(crate::menus::standard_quit_node());
+            }
+            ResolvedMenuItem::Menu(submenu) => nodes.push(MenuTreeNode::Submenu(
                 KitCommand {
                     label: item_title(&submenu.label.content.snapshot()),
                     symbol: submenu
@@ -178,9 +184,10 @@ pub(super) fn tree_nodes(items: &[ResolvedMenuItem], env: &Environment) -> Vec<M
                     ..KitCommand::default()
                 },
                 tree_nodes(&submenu.items.snapshot(), env),
-            ),
-        })
-        .collect()
+            )),
+        }
+    }
+    nodes
 }
 
 /// `wuiApplyCommandPresentation`: title, key equivalent, enabled, checked
@@ -229,6 +236,7 @@ pub(super) fn append_items(
             ResolvedMenuItem::Command(command) => {
                 menu.add_item(command_item(mtm, command, env));
             }
+            ResolvedMenuItem::Quit => menu.add_item(crate::menus::standard_quit_item(mtm)),
             ResolvedMenuItem::Menu(submenu) => {
                 let title = item_title(&submenu.label.content.snapshot());
                 let nested = platform::Menu::new(mtm, &title);
@@ -293,7 +301,8 @@ fn menu_elements(
     items
         .iter()
         .filter_map(|item| match item {
-            ResolvedMenuItem::Divider => None,
+            // iOS has no application quit, so a declared Quit is omitted.
+            ResolvedMenuItem::Divider | ResolvedMenuItem::Quit => None,
             ResolvedMenuItem::Command(command) => {
                 let kit = kit_command(command);
                 let action = command.action.clone();

@@ -21,7 +21,7 @@
 //!
 //! What is the same on both platforms lives at the crate root: geometry,
 //! notifications, locale, the main queue, font registration, the unified
-//! log, the application bundle, and process timing.
+//! log, the application bundle, process timing, and termination signals.
 //!
 //! # Safety model
 //!
@@ -95,6 +95,7 @@ pub mod process;
 pub mod progress;
 pub mod scroll;
 pub mod shape;
+pub mod signal;
 pub mod slider;
 pub mod system_font;
 pub mod text;

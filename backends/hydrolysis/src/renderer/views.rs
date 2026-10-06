@@ -14,62 +14,22 @@ pub fn call_action_discarding_result<T: 'static>(action: &SharedAction<T>, env: 
     let _ = action.call(env);
 }
 
-pub fn popup_menu_nodes(items: &[ResolvedMenuItem]) -> Vec<PopupMenuNode> {
-    items.iter().cloned().map(popup_menu_node).collect()
+/// Resolved menu items as popup-menu nodes. A declared `MenuItem::Quit`
+/// becomes the row of the quit command [`quit_command`] builds, and is
+/// omitted where `env` carries no application quit.
+pub fn popup_menu_nodes(items: &[ResolvedMenuItem], env: &Environment) -> Vec<PopupMenuNode> {
+    items
+        .iter()
+        .cloned()
+        .filter_map(|item| popup_menu_node(item, env))
+        .collect()
 }
 
-#[expect(
-    clippy::option_if_let_else,
-    reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
-)]
-pub fn popup_menu_node(item: ResolvedMenuItem) -> PopupMenuNode {
+fn popup_menu_node(item: ResolvedMenuItem, env: &Environment) -> Option<PopupMenuNode> {
     match item {
-        ResolvedMenuItem::Command(command) => {
-            let mut styled = command.label.content.snapshot();
-            if command.selected.snapshot() {
-                styled = StyledStr::plain("✓ ") + styled;
-            }
-            // The destructive role lives in the styled label itself: an explicit
-            // span colour survives the button's environment-level foreground,
-            // so the theme's error colour wins (water-rs/hydrolysis#200).
-            if command.role == CommandRole::Destructive {
-                styled = styled.foreground(waterui::Color::new(waterui::theme::color::Error));
-            }
-            let plain_label = styled.to_plain().to_string();
-            // `Label::new` keeps the semantic text for accessibility while the
-            // custom content fills the row's label slot and aligns it leading —
-            // plain and subtitled rows share one leading edge.
-            let semantic_text = command.semantic_label.semantic_text().clone();
-            let subtitle = command.subtitle.clone();
-            let shortcut = command.shortcut.clone();
-            let label = SemanticLabel::new(semantic_text, move || {
-                let leading = match subtitle.clone() {
-                    Some(subtitle) => AnyView::new(
-                        waterui_layout::stack::vstack((
-                            Text::new(styled.clone()),
-                            waterui_text::text(subtitle).caption().muted(),
-                        ))
-                        .alignment(HorizontalAlignment::Leading)
-                        .spacing(0.0),
-                    ),
-                    None => AnyView::new(Text::new(styled.clone())),
-                };
-                AnyView::new(
-                    waterui_layout::frame::Frame::new(leading)
-                        .alignment(waterui_layout::alignment::Leading)
-                        .max_width(f32::INFINITY),
-                )
-            });
-            PopupMenuNode::Command {
-                label,
-                plain_label,
-                action: command.action,
-                disabled: command.disabled,
-                shortcut,
-                subtitle: command.subtitle,
-            }
-        }
-        ResolvedMenuItem::Divider => PopupMenuNode::Divider,
+        ResolvedMenuItem::Command(command) => Some(command_node(command)),
+        ResolvedMenuItem::Quit => quit_command(env).map(command_node),
+        ResolvedMenuItem::Divider => Some(PopupMenuNode::Divider),
         ResolvedMenuItem::Menu(menu) => {
             let styled = menu.label.content.snapshot() + StyledStr::plain(" ›");
             let plain_label = styled.to_plain().to_string();
@@ -81,12 +41,62 @@ pub fn popup_menu_node(item: ResolvedMenuItem) -> PopupMenuNode {
                         .max_width(f32::INFINITY),
                 )
             });
-            PopupMenuNode::Menu {
+            Some(PopupMenuNode::Menu {
                 label,
                 plain_label,
-                items: popup_menu_nodes(&menu.items.snapshot()),
-            }
+                items: popup_menu_nodes(&menu.items.snapshot(), env),
+            })
         }
+    }
+}
+
+#[expect(
+    clippy::option_if_let_else,
+    reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
+)]
+fn command_node(command: ResolvedCommand) -> PopupMenuNode {
+    let mut styled = command.label.content.snapshot();
+    if command.selected.snapshot() {
+        styled = StyledStr::plain("✓ ") + styled;
+    }
+    // The destructive role lives in the styled label itself: an explicit
+    // span colour survives the button's environment-level foreground,
+    // so the theme's error colour wins (water-rs/hydrolysis#200).
+    if command.role == CommandRole::Destructive {
+        styled = styled.foreground(waterui::Color::new(waterui::theme::color::Error));
+    }
+    let plain_label = styled.to_plain().to_string();
+    // `Label::new` keeps the semantic text for accessibility while the
+    // custom content fills the row's label slot and aligns it leading —
+    // plain and subtitled rows share one leading edge.
+    let semantic_text = command.semantic_label.semantic_text().clone();
+    let subtitle = command.subtitle.clone();
+    let shortcut = command.shortcut.clone();
+    let label = SemanticLabel::new(semantic_text, move || {
+        let leading = match subtitle.clone() {
+            Some(subtitle) => AnyView::new(
+                waterui_layout::stack::vstack((
+                    Text::new(styled.clone()),
+                    waterui_text::text(subtitle).caption().muted(),
+                ))
+                .alignment(HorizontalAlignment::Leading)
+                .spacing(0.0),
+            ),
+            None => AnyView::new(Text::new(styled.clone())),
+        };
+        AnyView::new(
+            waterui_layout::frame::Frame::new(leading)
+                .alignment(waterui_layout::alignment::Leading)
+                .max_width(f32::INFINITY),
+        )
+    });
+    PopupMenuNode::Command {
+        label,
+        plain_label,
+        action: command.action,
+        disabled: command.disabled,
+        shortcut,
+        subtitle: command.subtitle,
     }
 }
 
@@ -240,7 +250,7 @@ pub fn render_shape_parts(
             resolved.fill.clone(),
         )
     };
-    let fill = cherenkov::Paint::Solid(ctx.renderer_mut().read_signal(&fill_signal));
+    let fill = waterui_graphics::draw::Paint::Solid(ctx.renderer_mut().read_signal(&fill_signal));
     let transform = ctx.transform;
     ctx.renderer_mut()
         .scene
@@ -300,7 +310,7 @@ pub fn render_morph_shape_parts(
         let fill = renderer.read_signal(&resolved.fill);
         (
             resolved_morph_shape_to_path(&resolved, progress, bounds),
-            cherenkov::Paint::Solid(fill),
+            waterui_graphics::draw::Paint::Solid(fill),
         )
     };
     renderer

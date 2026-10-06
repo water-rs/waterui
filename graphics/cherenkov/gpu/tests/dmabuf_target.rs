@@ -348,7 +348,7 @@ fn exported_frame_roundtrips_through_import() -> Result<(), Box<dyn std::error::
     };
     let (instance, device, queue, family) = raw(&shared);
     let (target, frames) = target((SIZE, SIZE));
-    let surface = engine.surface(target.pool(1))?;
+    let surface = engine.surface(target.pool(1), || {})?;
     draw(&surface);
     let frame = presented(&engine, &frames)?;
 
@@ -379,11 +379,17 @@ fn exported_frame_roundtrips_through_import() -> Result<(), Box<dyn std::error::
     let (imported, frame) = reimport(&import, family, frame)?;
     let exported = render_frame(
         &engine,
-        &engine.surface(Offscreen::new((SIZE, SIZE), OffscreenFormat::LinearF16))?,
+        &engine.surface(
+            Offscreen::new((SIZE, SIZE), OffscreenFormat::LinearF16),
+            || {},
+        )?,
         imported.clone(),
     )?;
 
-    let reference = engine.surface(Offscreen::new((SIZE, SIZE), OffscreenFormat::LinearF16))?;
+    let reference = engine.surface(
+        Offscreen::new((SIZE, SIZE), OffscreenFormat::LinearF16),
+        || {},
+    )?;
     draw(&reference);
     engine.render(FrameTime::now())?;
     let expected = reference.readback()?.pixels;
@@ -417,7 +423,7 @@ fn pool_exhaustion_waits_for_release() -> Result<(), Box<dyn std::error::Error>>
     };
     let (instance, device, queue, _) = raw(&shared);
     let (target, frames) = target((SIZE, SIZE));
-    let surface = engine.surface(target.pool(2))?;
+    let surface = engine.surface(target.pool(2), || {})?;
 
     draw(&surface);
     let first = presented(&engine, &frames)?;
@@ -448,7 +454,7 @@ fn release_fence_gates_reuse() -> Result<(), Box<dyn std::error::Error>> {
     };
     let (instance, device, queue, family) = raw(&shared);
     let (target, frames) = target((SIZE, SIZE));
-    let surface = engine.surface(target.pool(1))?;
+    let surface = engine.surface(target.pool(1), || {})?;
 
     draw(&surface);
     let frame = presented(&engine, &frames)?;
@@ -492,7 +498,7 @@ fn no_declared_format_fails() -> Result<(), Box<dyn std::error::Error>> {
     };
     let (empty, _) = DmabufTarget::new((SIZE, SIZE));
     assert!(matches!(
-        engine.surface(empty),
+        engine.surface(empty, || {}),
         Err(cherenkov::SurfaceError::UnsupportedTarget(_))
     ));
     let (bogus, _) = DmabufTarget::new((SIZE, SIZE));
@@ -503,7 +509,7 @@ fn no_declared_format_fails() -> Result<(), Box<dyn std::error::Error>> {
         OutputAlpha::Opaque,
     )]);
     assert!(matches!(
-        engine.surface(bogus),
+        engine.surface(bogus, || {}),
         Err(cherenkov::SurfaceError::UnsupportedTarget(_))
     ));
     Ok(())

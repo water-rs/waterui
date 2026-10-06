@@ -18,7 +18,7 @@
 //! Reactive parameters are [`Reactive`] slots: a nami signal on the UI side
 //! feeds a `Send` value slot the render side samples, and a change carrying
 //! a public [`Animation`] in its metadata hands an interpolator to every
-//! watcher. The engine consumes its own `cherenkov::Animation`, so the
+//! watcher. The engine consumes its own `crate::draw::Animation`, so the
 //! metadata type is mapped through the public `curve()`/`duration()`
 //! contract at the watcher boundary.
 
@@ -806,8 +806,15 @@ impl FilteredView {
 
 waterui_core::raw_view!(FilteredView);
 
+/// Generates the inherent method appending a single-parameter filter.
+///
+/// The filter is built by `$constructor` from the bound parameter; without
+/// one, by the filter's tuple constructor.
 macro_rules! inherent_single_param_filter {
     ($method:ident, $filter:ident) => {
+        inherent_single_param_filter!($method, $filter, filtrate::filters::$filter);
+    };
+    ($method:ident, $filter:ident, $constructor:path) => {
         #[doc = concat!("Append a `", stringify!($filter), "` filter to the chain.")]
         #[must_use]
         pub fn $method<P: IntoSignalF32>(
@@ -815,7 +822,7 @@ macro_rules! inherent_single_param_filter {
             value: P,
         ) -> Filtered<V, Chain<F, filtrate::filters::$filter<Reactive>>> {
             let mut guards = ParamGuards::default();
-            let filter = filtrate::filters::$filter(guards.bind(value));
+            let filter = $constructor(guards.bind(value));
             self.then_bound(filter, guards)
         }
     };
@@ -828,7 +835,11 @@ impl<V: View, F: Filter + RenderTransfer> Filtered<V, F> {
     inherent_single_param_filter!(crystallize, Crystallize);
     inherent_single_param_filter!(exposure, Exposure);
     inherent_single_param_filter!(gamma, Gamma);
-    inherent_single_param_filter!(gaussian_blur, GaussianBlur);
+    inherent_single_param_filter!(
+        gaussian_blur,
+        GaussianBlur,
+        filtrate::filters::GaussianBlur::new
+    );
     inherent_single_param_filter!(grayscale, Grayscale);
     inherent_single_param_filter!(hue_rotation, HueRotation);
     inherent_single_param_filter!(pixellate, Pixellate);
@@ -1305,7 +1316,7 @@ pub trait FilterViewExt: View + Sized {
         let mut guards = ParamGuards::default();
         Filtered::bound(
             self,
-            filtrate::filters::GaussianBlur(guards.bind(sigma)),
+            filtrate::filters::GaussianBlur::new(guards.bind(sigma)),
             guards,
         )
     }

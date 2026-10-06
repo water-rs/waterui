@@ -12,19 +12,22 @@ use crossbeam_channel::Receiver;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use cherenkov_record::Realize;
+
 use crate::backend::{
     Backend, Display, Frame, FrameRedraw, Renderer, SurfaceFrame, SurfaceInfo, Visibility,
 };
-use crate::engine::{CompletionWaker, SharedWaker, SurfaceWaker};
+use crate::engine::{CompletionWaker, SurfaceWaker};
 use crate::error::{EngineError, RenderError, ResourceError, SurfaceError};
-use crate::frame::{FrameId, FrameStats, Next, RefreshRange};
+use cherenkov_record::RefreshRange;
+
+use crate::frame::{FrameId, FrameStats, Next};
 use crate::image::ImageUpload;
-use crate::message::{
-    BackdropShaderId, ChangeSet, LayerId, LayerOp, Message, Op, ResOp, SurfaceId,
-};
+use cherenkov_record::ResourceId;
+use cherenkov_record::{BackdropShaderId, ChangeSet, LayerId, SurfaceId, SurfaceTree};
+
+use crate::message::{Message, ResOp};
 use crate::paint::ImageId;
-use crate::resource::ResourceId;
-use crate::tree::SurfaceTree;
 use crate::{BackdropEffect, WorkingColor};
 
 /// Whether a surface's frames can ask the backend to present, and the
@@ -90,7 +93,7 @@ struct SurfaceState {
     /// and its per-frame state waits for the frame that shows it.
     visibility: Visibility,
     /// The surface's host wake-up, shared with its UI-thread handle.
-    waker: SharedWaker<SurfaceWaker>,
+    waker: Arc<SurfaceWaker>,
 }
 
 impl SurfaceState {
@@ -347,7 +350,7 @@ pub fn run<B: Backend>(
     config: B::Config,
     rx: &Receiver<Message<B>>,
     retire_rx: &Receiver<crate::message::ResOp<B>>,
-    init_reply: &Sender<Result<B::Info, EngineError>>,
+    init_reply: &Sender<Result<(B::Info, crate::ImageLimits), EngineError>>,
 ) {
     let (mut renderer, info) = match B::init(config) {
         Ok(pair) => pair,
@@ -356,7 +359,7 @@ pub fn run<B: Backend>(
             return;
         }
     };
-    let _ = init_reply.send(Ok(info));
+    let _ = init_reply.send(Ok((info, renderer.image_limits())));
     let mut surfaces: FxHashMap<SurfaceId, SurfaceState> = FxHashMap::default();
     let mut resources = Resources::<B>::default();
     let mut next_frame = 0u64;
@@ -441,21 +444,11 @@ fn apply_message<B: Backend>(
         Message::Render {
             time,
             mut commits,
-            mut next_scratch,
             reply,
         } => {
             let id = FrameId(*next_frame);
             *next_frame += 1;
-            let result = render::<B>(
-                renderer,
-                surfaces,
-                resources,
-                id,
-                time.0,
-                &mut commits,
-                &mut next_scratch,
-            )
-            .map(|(next, stats)| (next, next_scratch, stats));
+            let result = render::<B>(renderer, surfaces, resources, id, time.0, &mut commits);
             // This frame's queued retirements belong to its batch.
             drain_retire::<B>(retire_rx, renderer);
             let sender = reply.clone();
@@ -501,6 +494,11 @@ fn drain_retire<B: Backend>(rx: &Receiver<crate::message::ResOp<B>>, renderer: &
 /// on; each gets the frame's declared alpha contract noted and counts as
 /// a frame swap — a planes-capable backend presents those alone when they
 /// are the surface's only change (#90).
+///
+/// Each of those surfaces then wakes its host, from here: the frame has
+/// landed, so the render the wake asks for draws it, whether or not a
+/// render was in flight when the frame was submitted. A hidden surface
+/// wakes nothing; the frame that shows it draws the frame.
 fn producer_frame<B: Backend>(
     renderer: &mut B::Renderer,
     surfaces: &mut FxHashMap<SurfaceId, SurfaceState>,
@@ -512,6 +510,7 @@ fn producer_frame<B: Backend>(
             state.tree.note_installed(layer, opaque);
             state.commits = state.commits.max(Commits::Installs);
             state.plane_frames.insert(layer);
+            state.waker.wake();
         }
     }
 }
@@ -522,7 +521,7 @@ fn create_surface<B: Backend>(
     surfaces: &mut FxHashMap<SurfaceId, SurfaceState>,
     id: SurfaceId,
     target: B::Target,
-    waker: SharedWaker<SurfaceWaker>,
+    waker: Arc<SurfaceWaker>,
 ) -> Result<SurfaceInfo, SurfaceError> {
     let info = renderer.create_surface(id, target, CompletionWaker::new(&waker))?;
     surfaces.insert(
@@ -706,35 +705,25 @@ fn commit<B: Backend>(
     }
     state.content_animating = *animating;
     for op in ops.drain(..) {
-        match op {
-            Op::Layer(LayerOp::Remove(layer)) => {
-                state.commits = Commits::Other;
-                for removed in state.tree.remove(layer) {
-                    renderer.remove_layer(surface, removed);
-                }
-            }
-            Op::Layer(LayerOp::Content(layer, content)) => {
-                state.commits = Commits::Other;
-                state.tree.apply(LayerOp::Content(layer, None));
-                state.tree.note_content(layer, content.as_ref());
+        state.commits = Commits::Other;
+        match state.tree.apply_op(op) {
+            Realize::Remove(layer) => renderer.remove_layer(surface, layer),
+            Realize::Content(layer, content) => {
                 if let Some(mut old) = renderer.set_content(surface, layer, content)
                     && old.try_recycle()
                 {
                     recycled.push((layer, old));
                 }
             }
-            Op::Layer(op) => {
-                state.commits = Commits::Other;
-                state.tree.apply(op);
-            }
-            Op::Install(layer, install) => {
-                state.commits = Commits::Other;
+            Realize::Install(layer, install) => {
                 // The install reports its content's declared alpha —
                 // `None` before its first frame — noted on the layer.
-                state
-                    .tree
-                    .note_installed(layer, install(&mut *renderer).unwrap_or(false));
+                state.tree.note_installed(
+                    layer,
+                    install.into_inner()(&mut *renderer, surface, layer).unwrap_or(false),
+                );
             }
+            Realize::Applied => {}
         }
     }
 }
@@ -822,7 +811,7 @@ fn sample_frames(
         .iter_mut()
         .filter(|(_, state)| state.visibility == Visibility::Visible)
     {
-        let sampling = state.tree.sample(time, state.display);
+        let sampling = state.tree.sample(time, state.display.scale);
         let changed = state.commits != Commits::Clean || sampling.stepped;
         state.sampled_rate = sampling.rate;
         frames.push(SurfaceFrame {
@@ -859,28 +848,18 @@ fn finish_frame<B: Backend>(
     surfaces: &mut FxHashMap<SurfaceId, SurfaceState>,
     time: crate::Instant,
     redraw: &FrameRedraw,
-    surface_next: &mut FxHashMap<SurfaceId, Next>,
-) -> Next {
+) -> (Next, FxHashMap<SurfaceId, Next>) {
     let mut rate = None;
     // Keyed by surface: one entry per visible surface, so publication
-    // stays linear in the surface count instead of rescanning a Vec. The
-    // map is the engine's scratch — retained across frames: an entry
-    // survives only while its surface is still present and visible, and
-    // the loop below writes every current deadline in place (inserting
-    // new surfaces), so no stale deadline survives and the steady frame
-    // pays no bulk re-init.
-    surface_next.retain(|id, _| {
-        surfaces
-            .get(id)
-            .is_some_and(|state| state.visibility == Visibility::Visible)
-    });
+    // stays linear in the surface count instead of rescanning a Vec.
+    let mut surface_next = FxHashMap::default();
     for (id, state) in surfaces
         .iter_mut()
         .filter(|(_, state)| state.visibility == Visibility::Visible)
     {
         let owned = renderer.owned_animations(*id);
         let running = if state.content_animating {
-            Some(crate::tree::RATE_FAST)
+            Some(cherenkov_record::tree::RATE_FAST)
         } else if owned.is_empty() {
             state.sampled_rate.take()
         } else {
@@ -898,7 +877,9 @@ fn finish_frame<B: Backend>(
         };
         surface_next.insert(*id, mine.map_or(Next::Idle, |rate| next_at(time, rate)));
         match running {
-            Some(r) if r == crate::tree::RATE_FAST => rate = Some(crate::tree::RATE_FAST),
+            Some(r) if r == cherenkov_record::tree::RATE_FAST => {
+                rate = Some(cherenkov_record::tree::RATE_FAST);
+            }
             Some(r) => rate = rate.or(Some(r)),
             None => {}
         }
@@ -914,7 +895,10 @@ fn finish_frame<B: Backend>(
             Some(rate) => crate::backend::union_rate(rate, backend_rate),
         }),
     };
-    rate.map_or(Next::Idle, |rate| next_at(time, rate))
+    (
+        rate.map_or(Next::Idle, |rate| next_at(time, rate)),
+        surface_next,
+    )
 }
 
 /// The next frame time for a refresh class: one interval of its fastest
@@ -935,8 +919,7 @@ fn render<B: Backend>(
     id: FrameId,
     time: crate::Instant,
     commits: &mut [(SurfaceId, ChangeSet<B>)],
-    surface_next: &mut FxHashMap<SurfaceId, Next>,
-) -> Result<(Next, FrameStats), RenderError> {
+) -> Result<(Next, FxHashMap<SurfaceId, Next>, FrameStats), RenderError> {
     sample_owned::<B>(renderer, surfaces, time);
     apply_commits(renderer, surfaces, resources, commits)?;
     let frames = sample_frames(surfaces, time);
@@ -950,8 +933,8 @@ fn render<B: Backend>(
         &mut stats,
     )?;
     drop(frames);
-    let next = finish_frame::<B>(renderer, surfaces, time, &redraw, surface_next);
-    Ok((next, stats))
+    let (next, surface_next) = finish_frame::<B>(renderer, surfaces, time, &redraw);
+    Ok((next, surface_next, stats))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -966,8 +949,7 @@ async fn render_local<B: Backend>(
     id: FrameId,
     time: crate::Instant,
     commits: &mut [(SurfaceId, ChangeSet<B>)],
-    surface_next: &mut FxHashMap<SurfaceId, Next>,
-) -> Result<(Next, FrameStats), RenderError> {
+) -> Result<(Next, FxHashMap<SurfaceId, Next>, FrameStats), RenderError> {
     sample_owned::<B>(renderer, surfaces, time);
     apply_commits(renderer, surfaces, resources, commits)?;
     let frames = sample_frames(surfaces, time);
@@ -983,8 +965,8 @@ async fn render_local<B: Backend>(
         )
         .await?;
     drop(frames);
-    let next = finish_frame::<B>(renderer, surfaces, time, &redraw, surface_next);
-    Ok((next, stats))
+    let (next, surface_next) = finish_frame::<B>(renderer, surfaces, time, &redraw);
+    Ok((next, surface_next, stats))
 }
 
 #[cfg(all(test, feature = "testing", not(target_arch = "wasm32")))]
@@ -993,11 +975,11 @@ mod tests {
     use crate::backend::Visibility;
     use crate::backend::{Backend, Display};
     use crate::display_list::{DisplayList, Picture};
-    use crate::engine::{SurfaceWaker, Waker};
-    use crate::message::{ChangeSet, ContentOp, LayerId, LayerOp, Op, SurfaceId};
-    use crate::testing::{Null, NullConfig};
-    use crate::tree::SurfaceTree;
-    use crate::{Draw, WorkingColor};
+    use crate::engine::SurfaceWaker;
+    use cherenkov_record::{ChangeSet, ContentOp, LayerId, LayerOp, Op, SurfaceId, SurfaceTree};
+
+    use crate::testing::{Event, Null, NullConfig};
+    use crate::{Draw, Engine, FrameTime, Offscreen, OffscreenFormat, WorkingColor};
 
     #[test]
     fn caller_shared_picture_is_not_recycled() {
@@ -1005,6 +987,7 @@ mod tests {
         let (mut renderer, ()) = <Null as Backend>::init(NullConfig {
             events,
             reject: std::collections::HashSet::new(),
+            image_limits: crate::ImageLimits::UNLIMITED,
         })
         .expect("null backend");
         let surface = SurfaceId::new(1);
@@ -1024,7 +1007,7 @@ mod tests {
             content_animating: false,
             sampled_rate: None,
             visibility: Visibility::Visible,
-            waker: std::sync::Arc::new(SurfaceWaker::new(std::sync::Arc::new(Waker::new()))),
+            waker: std::sync::Arc::new(SurfaceWaker::new(|| {})),
         };
 
         let mut first = ChangeSet::<Null> {
@@ -1055,35 +1038,64 @@ mod tests {
         assert_eq!(caller_picture.display_list().len(), 1);
     }
 
+    /// The commit → reply → `Shared::recycle` round trip hands the stored
+    /// picture's storage back to the UI thread two frames later, so the
+    /// picture `set_content` stores alternates between the same two
+    /// buffers every other frame.
     #[test]
-    fn redraw_equality_is_logical_and_snapshots_stay_independent() {
-        use crate::backend::FrameRedraw;
+    fn render_reuses_picture_storage_every_other_frame() {
+        let (events, rx) = std::sync::mpsc::channel();
+        let engine = Engine::<Null>::new(NullConfig {
+            events,
+            reject: std::collections::HashSet::new(),
+            image_limits: crate::ImageLimits::UNLIMITED,
+        })
+        .expect("init");
+        let surface = engine
+            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {})
+            .expect("surface");
+        let layer = surface.layer();
+        let mut pointers = Vec::new();
+        for _ in 0..7 {
+            surface.update(|tx| {
+                tx[&layer].record(|_| {});
+            });
+            engine.render(FrameTime::now()).expect("render");
+            while let Ok(event) = rx.try_recv() {
+                if let Event::SetContent(s, l, pointer) = event
+                    && s == surface.id()
+                    && l == layer.id()
+                {
+                    pointers.push(pointer);
+                }
+            }
+        }
 
-        let surface = SurfaceId::new(1);
-        let mut redraw = FrameRedraw::default();
-        redraw.request(surface, 30..=60);
-        let snapshot = redraw.clone();
-        redraw.clear();
-
-        // A cleared previously-nonempty collection and a fresh default
-        // are the same empty collection — equality ignores whether the
-        // copy-on-write map was ever allocated.
-        assert_eq!(redraw, FrameRedraw::default());
-        // The retained snapshot keeps its requests through the clear —
-        // and through the next render's refill — exactly.
-        assert!(snapshot.for_surface(surface).is_some());
-        redraw.request(surface, 5..=10);
-        assert_eq!(snapshot.for_surface(surface), Some(&(30..=60)));
+        assert_eq!(pointers.len(), 7, "every frame stored a picture");
+        assert_eq!(pointers[0], pointers[2]);
+        assert_eq!(pointers[1], pointers[3]);
+        assert_eq!(pointers[2], pointers[4]);
+        assert_eq!(pointers[3], pointers[5]);
+        assert_eq!(pointers[4], pointers[6]);
+        assert_ne!(pointers[0], pointers[1]);
     }
 }
 
 #[cfg(target_arch = "wasm32")]
 pub(super) async fn local<B: Backend>(
     config: B::Config,
-) -> Result<(crate::local::Sender<Message<B>>, B::Info), EngineError> {
+) -> Result<
+    (
+        crate::local::Sender<Message<B>>,
+        B::Info,
+        crate::ImageLimits,
+    ),
+    EngineError,
+> {
     use std::cell::RefCell;
     use std::rc::Rc;
     let (renderer, info) = B::init(config).await?;
+    let image_limits = renderer.image_limits();
     let state = Rc::new(RefCell::new(Some(LocalState::<B> {
         renderer,
         surfaces: FxHashMap::default(),
@@ -1099,7 +1111,7 @@ pub(super) async fn local<B: Backend>(
             live
         })
     });
-    Ok((tx, info))
+    Ok((tx, info, image_limits))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1162,22 +1174,13 @@ impl<B: Backend> LocalState<B> {
             Message::Render {
                 time,
                 mut commits,
-                mut next_scratch,
                 reply,
             } => {
                 let id = FrameId(*next_frame);
                 *next_frame += 1;
-                let result = render_local::<B>(
-                    renderer,
-                    surfaces,
-                    resources,
-                    id,
-                    time.0,
-                    &mut commits,
-                    &mut next_scratch,
-                )
-                .await
-                .map(|(next, stats)| (next, next_scratch, stats));
+                let result =
+                    render_local::<B>(renderer, surfaces, resources, id, time.0, &mut commits)
+                        .await;
                 let _ = reply.send(crate::message::RenderReply { result, commits });
             }
             Message::FinishTimings { reply } => {

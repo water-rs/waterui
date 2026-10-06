@@ -163,6 +163,7 @@ native-test = ["cocoa-ui/native-test"]
 [dependencies]
 waterui = { workspace = true, features = ["inspector", "gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
 waterui-core = { workspace = true }
+thiserror.workspace = true
 waterui-backend-core = { workspace = true, default-features = true, features = [
     "overlay",
 ] }
@@ -239,6 +240,8 @@ criterion = "0.8.2"
 pollster = { workspace = true }
 libtest-mimic = "0.8"
 serde_json = { workspace = true }
+# The termination tests park the hook futures on an `async-task` executor.
+executor-core = { workspace = true, features = ["async-task"] }
 # The native tests create real `AppKit`/`UIKit` objects, which are only
 # legal on the process's actual main thread — libtest's worker threads can
 # never hold a `MainThreadMarker`. The custom harness pins execution to

@@ -40,7 +40,7 @@ use dispatch2::{DispatchQoS, DispatchQueue, GlobalQueueIdentifier, MainThreadBou
 use objc2::Message;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use objc2_core_foundation::CFRetained;
+use objc2_core_foundation::{CFRetained, CGAffineTransform};
 use objc2_core_graphics::{
     CGBitmapContextCreate, CGContext, CGImageAlphaInfo, CGImageByteOrderInfo, CGImageComponentInfo,
 };
@@ -92,21 +92,30 @@ impl<T> QueueSend<T> {
 /// How a captured view's point-space bounds map onto the pixel destination.
 #[derive(Clone, Copy, Debug)]
 pub struct CaptureGeometry {
+    /// The captured view's bounds in its own points — the space the
+    /// raster maps. Its height is the span a bottom-up source flips
+    /// around.
+    pub source: Rect,
     /// Horizontal point-to-pixel scale.
     pub scale_x: f64,
     /// Vertical point-to-pixel scale.
     pub scale_y: f64,
+    /// Whether the source's y axis grows downward: `UIKit`'s top-left
+    /// origin and `AppKit`'s flipped views are y-down; a plain `NSView`
+    /// measures its min y from the bottom.
+    pub y_down: bool,
 }
 
 impl CaptureGeometry {
     /// The geometry mapping `bounds` (non-empty, in points) onto a
-    /// `width` × `height` pixel destination.
+    /// `width` × `height` pixel destination, `y_down` naming whether the
+    /// source's y axis already points down the destination.
     ///
     /// # Panics
     ///
     /// When `bounds` is empty.
     #[must_use]
-    pub fn new(bounds: Rect, width: usize, height: usize) -> Self {
+    pub fn new(bounds: Rect, width: usize, height: usize, y_down: bool) -> Self {
         assert!(
             bounds.size.width > 0.0 && bounds.size.height > 0.0,
             "capture content must have non-zero bounds"
@@ -116,28 +125,74 @@ impl CaptureGeometry {
             reason = "a capture texture is at most a few thousand pixels on a side"
         )]
         Self {
+            source: bounds,
             scale_x: width as f64 / bounds.size.width,
             scale_y: height as f64 / bounds.size.height,
+            y_down,
         }
     }
 }
 
 /// Where a GPU surface's own texture lands inside a capture.
+///
+/// `full_size` is the producer texture's pixel size — the surface's whole
+/// mapped rect. `clip` is the visible destination rect inside the capture
+/// target, and the `uv_*` pair selects the window of the producer texture
+/// that visible rect samples: `uv = uv_origin + unit * uv_scale` over the
+/// clipped region. Clipping therefore crops the destination and the UV
+/// window without ever resizing or re-laying out the producer.
 #[derive(Clone, Copy, Debug)]
 pub struct SurfaceSpec {
     /// The capture's identity for the surface — the surface view's address.
     pub surface_id: usize,
-    /// Pixel-space origin inside the destination texture.
-    pub origin: MTLOrigin,
-    /// Pixel-space size inside the destination texture.
-    pub size: MTLSize,
+    /// The producer texture's pixel size — the surface's full mapped rect.
+    /// Allocates the private texture and is the size
+    /// [`CapturableSurface::render_prepared_external_texture`] renders at.
+    pub full_size: MTLSize,
+    /// The visible destination rect inside the capture target — the
+    /// composition pass's viewport *and* scissor: non-negative and inside
+    /// the target by construction, so no Metal viewport bound is exercised.
+    pub clip: MTLScissorRect,
+    /// Origin of the window the visible rect samples in the producer
+    /// texture.
+    pub uv_origin: [f32; 2],
+    /// Size of the sampled window — see `uv_origin`.
+    pub uv_scale: [f32; 2],
     /// The format the surface renders at.
     pub pixel_format: MTLPixelFormat,
 }
 
-/// The rect `bounds` (already in the capture's content space) maps to in a
-/// `width` × `height` pixel destination: floored origin, ceiled size,
-/// clamped to the target. `None` when it lands entirely outside.
+/// The UV window handed to the composite vertex shader — mirrors
+/// `CaptureCompositeRegion` in `capture_composite.metal`. `float2` fields
+/// are `f32` pairs at matching offsets, so `repr(C)` preserves the Metal
+/// ABI.
+#[repr(C)]
+struct CompositeRegion {
+    uv_origin: [f32; 2],
+    uv_scale: [f32; 2],
+}
+
+/// The window the native overlay draws through — the whole texture.
+const IDENTITY_UV: CompositeRegion = CompositeRegion {
+    uv_origin: [0.0, 0.0],
+    uv_scale: [1.0, 1.0],
+};
+
+/// A pixel extent as the `f64` Metal viewports and bounds take.
+fn pixel_extent(value: usize) -> f64 {
+    f64::from(u32::try_from(value).expect("a pixel extent fits in u32"))
+}
+
+/// The spec `bounds` (already in the capture's content space) maps to in a
+/// `width` × `height` pixel destination.
+///
+/// The full rect is mapped through the source's origin and y convention
+/// *before* any clipping — endpoints quantize independently (floor the low
+/// edge, ceil the high edge) so the producer texture keeps every texel its
+/// content touches. Only the visible destination rect is clipped against
+/// the target; a surface partially outside keeps its full producer size
+/// and crops through `uv_origin`/`uv_scale` instead. `None` when the rect
+/// is empty or lands entirely outside.
 #[must_use]
 pub fn surface_spec(
     surface_id: usize,
@@ -147,65 +202,160 @@ pub fn surface_spec(
     target_width: usize,
     target_height: usize,
 ) -> Option<SurfaceSpec> {
+    let source_min_x = geometry.source.origin.x;
+    let source_min_y = geometry.source.origin.y;
+    let source_max_y = source_min_y + geometry.source.size.height;
+    let child_min_x = bounds.origin.x;
+    let child_min_y = bounds.origin.y;
+    let child_max_x = child_min_x + bounds.size.width;
+    let child_max_y = child_min_y + bounds.size.height;
+
+    // An empty rect touches no texels — quantizing its zero-area span
+    // would still produce a 1-pixel producer for nothing.
+    if !(bounds.size.width > 0.0 && bounds.size.height > 0.0) {
+        return None;
+    }
+
+    let low_x = (child_min_x - source_min_x) * geometry.scale_x;
+    let high_x = (child_max_x - source_min_x) * geometry.scale_x;
+    let (low_y, high_y) = if geometry.y_down {
+        (
+            (child_min_y - source_min_y) * geometry.scale_y,
+            (child_max_y - source_min_y) * geometry.scale_y,
+        )
+    } else {
+        // A bottom-up source measures `min_y` from the bottom: the child's
+        // top edge `child_max_y` lands on the destination's upper rows.
+        (
+            (source_max_y - child_max_y) * geometry.scale_y,
+            (source_max_y - child_min_y) * geometry.scale_y,
+        )
+    };
+
+    // The mapped full rect: `floor` the low edge, `ceil` the high edge so
+    // every touched texel survives — independent endpoints, not a floored
+    // origin plus a ceiled size.
+    let full_left = low_x.floor();
+    let full_top = low_y.floor();
+    let full_w = high_x.ceil() - full_left;
+    let full_h = high_y.ceil() - full_top;
+
+    // Only the destination region clips against the target.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a capture texture is at most a few thousand pixels on a side"
+    )]
+    let (target_width, target_height) = (target_width as f64, target_height as f64);
+    let clip_x = full_left.max(0.0);
+    let clip_y = full_top.max(0.0);
+    let clip_w = (full_left + full_w).min(target_width) - clip_x;
+    let clip_h = (full_top + full_h).min(target_height) - clip_y;
+    if !(full_w > 0.0 && full_h > 0.0 && clip_w > 0.0 && clip_h > 0.0) {
+        return None;
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "UV fractions stay inside [0, 1] — f32 precision is ample"
+    )]
+    let (uv_origin, uv_scale) = (
+        [
+            ((clip_x - full_left) / full_w) as f32,
+            ((clip_y - full_top) / full_h) as f32,
+        ],
+        [(clip_w / full_w) as f32, (clip_h / full_h) as f32],
+    );
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        reason = "captured rects are small, finite, and clamped to the target"
+        reason = "full extents are positive and clip extents are bounded by the non-negative target"
     )]
-    let origin_x = (bounds.origin.x * geometry.scale_x).floor().max(0.0) as usize;
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "captured rects are small, finite, and clamped to the target"
-    )]
-    let origin_y = (bounds.origin.y * geometry.scale_y).floor().max(0.0) as usize;
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "captured rects are small, finite, and clamped to the target"
-    )]
-    let width = (bounds.size.width * geometry.scale_x).ceil() as usize;
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "captured rects are small, finite, and clamped to the target"
-    )]
-    let height = (bounds.size.height * geometry.scale_y).ceil() as usize;
-    let width = width.min(target_width.saturating_sub(origin_x.min(target_width)));
-    let height = height.min(target_height.saturating_sub(origin_y.min(target_height)));
-    (width > 0 && height > 0).then_some(SurfaceSpec {
+    let (full_width, full_height, clip_x, clip_y, clip_w, clip_h) = (
+        full_w as usize,
+        full_h as usize,
+        clip_x as usize,
+        clip_y as usize,
+        clip_w as usize,
+        clip_h as usize,
+    );
+    Some(SurfaceSpec {
         surface_id,
-        origin: MTLOrigin {
-            x: origin_x,
-            y: origin_y,
-            z: 0,
-        },
-        size: MTLSize {
-            width,
-            height,
+        full_size: MTLSize {
+            width: full_width,
+            height: full_height,
             depth: 1,
         },
+        clip: MTLScissorRect {
+            x: clip_x,
+            y: clip_y,
+            width: clip_w,
+            height: clip_h,
+        },
+        uv_origin,
+        uv_scale,
         pixel_format,
     })
+}
+
+/// The affine transform the native raster draws a layer-space point
+/// through: the destination's texel (0,0) holds the content at the
+/// source's bounds origin, each axis scales by the capture's pixel ratio,
+/// and a y-down source mirrors about the visible window so the raster's
+/// bottom-up draw lands top-down.
+fn raster_transform(geometry: CaptureGeometry, height: f64) -> CGAffineTransform {
+    let sx = geometry.scale_x;
+    let sy = geometry.scale_y;
+    let origin = geometry.source.origin;
+    let (d, ty) = if geometry.y_down {
+        // The mirrored draw maps the visible window's layer-space top
+        // edge onto destination row 0: the bounds height enters the
+        // destination height in unscaled space.
+        (-sy, origin.y.mul_add(sy, height))
+    } else {
+        (sy, -origin.y * sy)
+    };
+    CGAffineTransform {
+        a: sx,
+        b: 0.0,
+        c: 0.0,
+        d,
+        tx: -origin.x * sx,
+        ty,
+    }
 }
 
 /// The signal that a prepared surface frame produced no usable pixels:
 /// its texture must not be sampled.
 ///
-/// Reported when the frame was never submitted — a lost context between
-/// preparation and submission — and when an in-flight submission was
-/// lost to device failure. Every fence in the batch still settles, and
-/// nothing composes the missing frame; fatal programming errors still
-/// fail fast rather than reporting through this outcome.
-#[derive(Clone, Copy, Debug)]
-pub struct CaptureDeferred;
+/// [`Deferred`](CaptureError::Deferred) is the retryable outcome — the
+/// frame was never submitted (a lost context between preparation and
+/// submission, a stale lease, a parked wait) or its in-flight submission
+/// was lost to device failure; the surface's redraw contract replays it
+/// on the next publication. [`Failed`](CaptureError::Failed) is terminal
+/// on this context: it carries the surface's typed failure, or a
+/// [`CompositionFailed`] when the native-view composition command buffer
+/// ended in any status other than `Completed` — a later redraw on the same
+/// generation cannot produce the frame, so a capture must stop instead of
+/// waiting forever. Every fence in the batch still
+/// settles, and nothing composes the missing frame; fatal programming
+/// errors still fail fast rather than reporting through this outcome.
+#[derive(Debug)]
+pub enum CaptureError {
+    /// No usable pixels this attempt — the capture retries on the
+    /// surface's next redraw wake.
+    Deferred,
+    /// The surface settled a typed failure, or the native-view composition
+    /// did not complete ([`CompositionFailed`]) — the frame can never land
+    /// on this context generation.
+    Failed(Arc<dyn std::error::Error + Send + Sync + 'static>),
+}
 
 /// The callback a surface render request answers with — run on the main
 /// thread, exactly once per accepted request.
 ///
 /// `Ok(())` means the frame's texture carries usable pixels;
-/// `Err(CaptureDeferred)` means it produced none.
-pub type SurfaceCaptureCompletion = Box<dyn FnOnce(Result<(), CaptureDeferred>) + Send>;
+/// `Err(CaptureError)` says why it produced none.
+pub type SurfaceCaptureCompletion = Box<dyn FnOnce(Result<(), CaptureError>) + Send>;
 
 /// A GPU surface a [`ViewCapture`] can capture.
 ///
@@ -264,11 +414,18 @@ impl fmt::Debug for dyn CapturableSurface {
 }
 
 /// Counts down surface submissions; `completion` runs when the last one
-/// settles — `Err(CaptureDeferred)` when any fence reported no usable
-/// pixels. Completed on the main thread.
+/// settles. Completed on the main thread.
+///
+/// The last fence answers `Err(CaptureError::Failed)` when a fence
+/// settled a terminal failure, `Err(CaptureError::Deferred)` when one
+/// reported only a retryable miss.
 pub struct FenceBatch {
     remaining: AtomicUsize,
     failed: AtomicBool,
+    /// The first terminal failure a fence reported — it wins over a
+    /// deferred outcome, because a settled failure is never recovered by
+    /// a retry this generation.
+    terminal: Mutex<Option<Arc<dyn std::error::Error + Send + Sync>>>,
     completion: Mutex<Option<SurfaceCaptureCompletion>>,
 }
 
@@ -289,7 +446,7 @@ impl FenceBatch {
     #[must_use]
     pub fn new(
         count: usize,
-        completion: impl FnOnce(Result<(), CaptureDeferred>) + Send + 'static,
+        completion: impl FnOnce(Result<(), CaptureError>) + Send + 'static,
     ) -> Self {
         assert!(
             count > 0,
@@ -298,21 +455,34 @@ impl FenceBatch {
         Self {
             remaining: AtomicUsize::new(count),
             failed: AtomicBool::new(false),
+            terminal: Mutex::new(None),
             completion: Mutex::new(Some(Box::new(completion))),
         }
     }
 
     /// One fence settled: `Ok` when its frame's pixels are usable,
-    /// `Err(CaptureDeferred)` when the surface never submitted it. Either
-    /// way the batch waits on every outstanding fence — a deferred frame
-    /// never releases the submissions still in flight.
+    /// `Err(CaptureError)` when the surface never submitted it — the
+    /// terminal kind is retained so the batch answers the first
+    /// `Failed`, not the last fence's outcome. Either way the batch waits
+    /// on every outstanding fence — a deferred frame never releases the
+    /// submissions still in flight.
     ///
     /// # Panics
     ///
     /// When more fences land than the batch was built with.
-    pub fn complete_one(&self, outcome: Result<(), CaptureDeferred>) {
-        if outcome.is_err() {
-            self.failed.store(true, Ordering::Relaxed);
+    pub fn complete_one(&self, outcome: Result<(), CaptureError>) {
+        match outcome {
+            Ok(()) => {}
+            Err(CaptureError::Deferred) => {
+                self.failed.store(true, Ordering::Relaxed);
+            }
+            Err(CaptureError::Failed(error)) => {
+                self.failed.store(true, Ordering::Relaxed);
+                let mut terminal = self.terminal.lock().expect("fence batch error lock");
+                if terminal.is_none() {
+                    *terminal = Some(error);
+                }
+            }
         }
         // The store above is ordered before this release decrement, so the
         // fence that observes `remaining == 1` sees every reported failure.
@@ -321,10 +491,11 @@ impl FenceBatch {
         if remaining == 1
             && let Some(completion) = self.completion.lock().expect("fence batch lock").take()
         {
-            completion(if self.failed.load(Ordering::Relaxed) {
-                Err(CaptureDeferred)
-            } else {
-                Ok(())
+            let terminal = self.terminal.lock().expect("fence batch error lock").take();
+            completion(match terminal {
+                Some(error) => Err(CaptureError::Failed(error)),
+                None if self.failed.load(Ordering::Relaxed) => Err(CaptureError::Deferred),
+                None => Ok(()),
             });
         }
     }
@@ -382,8 +553,8 @@ impl DeviceResources {
     /// When the device cannot allocate a texture.
     fn surface_texture(&mut self, spec: SurfaceSpec) -> Retained<ProtocolObject<dyn MTLTexture>> {
         if let Some(texture) = self.surface_textures.get(&spec.surface_id) {
-            let matches = texture.width() == spec.size.width
-                && texture.height() == spec.size.height
+            let matches = texture.width() == spec.full_size.width
+                && texture.height() == spec.full_size.height
                 && texture.pixelFormat() == spec.pixel_format;
             if matches {
                 return texture.clone();
@@ -393,8 +564,8 @@ impl DeviceResources {
         let descriptor = unsafe {
             MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
                 spec.pixel_format,
-                spec.size.width,
-                spec.size.height,
+                spec.full_size.width,
+                spec.full_size.height,
                 false,
             )
         };
@@ -684,22 +855,27 @@ impl CompositorGuard<'_> {
         for surface in surfaces {
             let spec = surface.spec;
             encoder.setViewport(MTLViewport {
-                originX: f64::from(u32::try_from(spec.origin.x).unwrap_or(u32::MAX)),
-                originY: f64::from(u32::try_from(spec.origin.y).unwrap_or(u32::MAX)),
-                width: f64::from(u32::try_from(spec.size.width).unwrap_or(u32::MAX)),
-                height: f64::from(u32::try_from(spec.size.height).unwrap_or(u32::MAX)),
+                originX: pixel_extent(spec.clip.x),
+                originY: pixel_extent(spec.clip.y),
+                width: pixel_extent(spec.clip.width),
+                height: pixel_extent(spec.clip.height),
                 znear: 0.0,
                 zfar: 1.0,
             });
-            encoder.setScissorRect(MTLScissorRect {
-                x: spec.origin.x,
-                y: spec.origin.y,
-                width: spec.size.width,
-                height: spec.size.height,
-            });
-            // SAFETY: `encoder` is a live render encoder and index 0 is the
-            // texture slot the shader binds.
+            encoder.setScissorRect(spec.clip);
+            let region = CompositeRegion {
+                uv_origin: spec.uv_origin,
+                uv_scale: spec.uv_scale,
+            };
+            // SAFETY: `encoder` is a live render encoder, index 0 is the
+            // vertex-constant and texture slots the shader binds, and
+            // `setVertexBytes` copies `region`'s bytes into the command.
             unsafe {
+                encoder.setVertexBytes_length_atIndex(
+                    std::ptr::NonNull::from(&region).cast::<core::ffi::c_void>(),
+                    core::mem::size_of::<CompositeRegion>(),
+                    0,
+                );
                 encoder.setFragmentTexture_atIndex(Some(&surface.texture), 0);
                 encoder.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::Triangle, 0, 3);
             }
@@ -708,8 +884,8 @@ impl CompositorGuard<'_> {
             encoder.setViewport(MTLViewport {
                 originX: 0.0,
                 originY: 0.0,
-                width: f64::from(u32::try_from(target.width()).unwrap_or(u32::MAX)),
-                height: f64::from(u32::try_from(target.height()).unwrap_or(u32::MAX)),
+                width: pixel_extent(target.width()),
+                height: pixel_extent(target.height()),
                 znear: 0.0,
                 zfar: 1.0,
             });
@@ -719,8 +895,14 @@ impl CompositorGuard<'_> {
                 width: target.width(),
                 height: target.height(),
             });
-            // SAFETY: same encoder/slot contract as above.
+            // SAFETY: same encoder/slot contract as above; the overlay
+            // samples its whole texture — identity window.
             unsafe {
+                encoder.setVertexBytes_length_atIndex(
+                    std::ptr::NonNull::from(&IDENTITY_UV).cast::<core::ffi::c_void>(),
+                    core::mem::size_of::<CompositeRegion>(),
+                    0,
+                );
                 encoder.setFragmentTexture_atIndex(Some(overlay), 0);
                 encoder.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::Triangle, 0, 3);
             }
@@ -844,10 +1026,9 @@ impl NativeRasterFrame {
                 false,
             )
         };
-        // Sample-only, private storage — the buffer-aliased texture this
-        // replaces violated both simulator rules (private storage for
-        // buffer-backed textures, no render-target usage); one private
-        // texture is correct on every Apple device.
+        // Sample-only, private storage — the readback texture is written by
+        // the capture's GPU pass and only ever sampled, so private storage
+        // with no render-target usage is correct on every Apple device.
         descriptor.setStorageMode(MTLStorageMode::Private);
         descriptor.setUsage(MTLTextureUsage::ShaderRead);
         let texture = device
@@ -926,14 +1107,20 @@ impl NativeRasterFrame {
     /// Geometry is expressed through the context's CTM alone: the live
     /// layer tree is never transformed or reparented. The CTM is applied
     /// after clearing and restored before returning, so a reused context
-    /// carries no state across frames. The output obeys the composite
-    /// pass's contract — texel row 0 is the view's top edge: a bitmap
-    /// context is bottom-left-origin like `AppKit`'s layer space, so on
-    /// macOS a plain scale lands each layer row on its matching texel
-    /// row (the kit's flipped views already compensate the y-up draw,
-    /// and mirroring again would count the flip twice); `UIKit`'s layer
-    /// space is top-left-origin, so the iOS CTM translates then flips to
-    /// put the view's top on row 0.
+    /// carries no state across frames. `raster_transform` also anchors
+    /// the layer's bounds origin to texel (0,0) — content at the bounds
+    /// origin lands on the texture's first row and column — so a layer
+    /// whose bounds start at a non-zero origin still fills the buffer
+    /// from the corner. The output obeys the composite pass's contract —
+    /// texel row 0 is the view's top edge: a bitmap context is
+    /// bottom-left-origin like `AppKit`'s layer space, so a bottom-up
+    /// source's plain-scale draw already lands each layer row on its
+    /// matching texel row; a y-down source's draw must be mirrored
+    /// about the destination midline inside the same transform —
+    /// `renderInContext` draws the committed layer model in the layer's
+    /// own space and does not apply a flipped view's geometry-flip on
+    /// macOS, matching `UIKit`'s top-left-origin layer space, which is
+    /// why both flip the same way.
     fn draw(&self, layer: &CALayer, geometry: CaptureGeometry) {
         let context: &CGContext = &self.context;
         // SAFETY: the casts stay representable — a capture destination is
@@ -945,13 +1132,7 @@ impl NativeRasterFrame {
         let (width, height) = (self.pixel_width as f64, self.pixel_height as f64);
         CGContext::clear_rect(Some(context), Rect::new(0.0, 0.0, width, height).into());
         CGContext::save_g_state(Some(context));
-        #[cfg(target_os = "ios")]
-        {
-            CGContext::translate_ctm(Some(context), 0.0, height);
-            CGContext::scale_ctm(Some(context), geometry.scale_x, -geometry.scale_y);
-        }
-        #[cfg(target_os = "macos")]
-        CGContext::scale_ctm(Some(context), geometry.scale_x, geometry.scale_y);
+        CGContext::concat_ctm(Some(context), raster_transform(geometry, height));
         layer.renderInContext(context);
         CGContext::restore_g_state(Some(context));
         CGContext::flush(Some(context));
@@ -1224,18 +1405,115 @@ impl Drop for SuppressionGuard<'_> {
 struct Settle {
     preparation: QueueSend<Preparation>,
     return_to: MainThreadBound<Weak<ViewCapture>>,
-    completion: Box<dyn Fn(bool) + Send>,
+    completion: Box<dyn Fn(Result<(), CaptureError>) + Send>,
 }
 
-/// Answers the capturable GPU surface `view` presents, if any — the leaf-side
-/// registry.
-type SurfaceResolver = Rc<dyn Fn(&PlatformView) -> Option<Rc<dyn CapturableSurface>>>;
+/// A view's capturable-surface slot: the mounted leaf installs its
+/// surface once and unmount clears it.
+///
+/// Weak — the leaf retains both the surface and the view, so a strong
+/// slot would keep the pair alive forever. One type serves every view
+/// class the capture walk visits.
+#[derive(Default)]
+pub struct CapturableSlot(RefCell<Option<Weak<dyn CapturableSurface>>>);
+
+impl CapturableSlot {
+    /// The capturable surface installed on the slot, if any.
+    #[must_use]
+    pub fn get(&self) -> Option<Rc<dyn CapturableSurface>> {
+        self.0.borrow().as_ref().and_then(Weak::upgrade)
+    }
+
+    /// Installs the leaf's capturable surface.
+    ///
+    /// # Panics
+    ///
+    /// When the slot is already occupied — a leaf installs its
+    /// capturable exactly once between clears.
+    pub fn install(&self, surface: &Rc<dyn CapturableSurface>) {
+        let mut slot = self.0.borrow_mut();
+        assert!(
+            slot.is_none(),
+            "a capturable surface is already installed on this view"
+        );
+        *slot = Some(Rc::downgrade(surface));
+    }
+
+    /// Removes the installed capturable surface.
+    pub fn clear(&self) {
+        *self.0.borrow_mut() = None;
+    }
+}
+
+impl fmt::Debug for CapturableSlot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CapturableSlot")
+            .field("occupied", &self.0.borrow().is_some())
+            .finish()
+    }
+}
+
+/// The capturable surface `view` itself presents, if any.
+///
+/// A mounted leaf stores it on its own view — GPU surfaces on their
+/// [`SurfaceView`], filtered outputs on their [`HostView`] — and the
+/// capture walk finds it by downcasting the views it visits.
+///
+/// [`SurfaceView`]: crate::appkit::surface_view::SurfaceView
+/// [`HostView`]: crate::appkit::HostView
+#[must_use]
+pub fn resolve_capturable(view: &PlatformView) -> Option<Rc<dyn CapturableSurface>> {
+    #[cfg(target_os = "macos")]
+    {
+        use crate::appkit::{HostView, surface_view::SurfaceView};
+        if let Some(view) = view.downcast_ref::<SurfaceView>() {
+            return view.capturable();
+        }
+        if let Some(view) = view.downcast_ref::<HostView>() {
+            return view.capturable();
+        }
+    }
+    #[cfg(target_os = "ios")]
+    {
+        use crate::uikit::{HostView, surface_view::SurfaceView};
+        if let Some(view) = view.downcast_ref::<SurfaceView>() {
+            return view.capturable();
+        }
+        if let Some(view) = view.downcast_ref::<HostView>() {
+            return view.capturable();
+        }
+    }
+    let _ = view;
+    None
+}
+
+/// The one subtree walk the capture paths share: `visit` receives each
+/// resolved capturable surface and the view carrying it; a resolved
+/// view stops the descent — its own subtree renders through its
+/// producer, and its readiness covers them.
+fn walk_capturables(
+    view: &PlatformView,
+    visit: &mut impl FnMut(&PlatformView, &Rc<dyn CapturableSurface>),
+) {
+    if let Some(surface) = resolve_capturable(view) {
+        visit(view, &surface);
+        return;
+    }
+    for subview in crate::view::subviews(view) {
+        walk_capturables(&subview, visit);
+    }
+}
+
+/// Every capturable surface inside `root`'s subtree — `f` receives each
+/// live surface.
+pub fn collect_capturables(root: &PlatformView, f: &mut impl FnMut(&Rc<dyn CapturableSurface>)) {
+    walk_capturables(root, &mut |_, surface| f(surface));
+}
 
 /// Captures `content`'s subtree into Metal textures. Main-thread only;
 /// created once per effect view and shut down before the view drops.
 pub struct ViewCapture {
     content: Retained<PlatformView>,
-    resolve: SurfaceResolver,
     compositor: Compositor,
     on_redraw: RefCell<Option<Rc<dyn Fn()>>>,
     renderer: RefCell<NativeRenderer>,
@@ -1251,16 +1529,13 @@ impl fmt::Debug for ViewCapture {
 }
 
 impl ViewCapture {
-    /// A capture for `content`. `resolve` answers the capturable GPU surface
-    /// `view` presents, if any — the leaf-side registry.
-    pub fn new(
-        _mtm: objc2::MainThreadMarker,
-        content: Retained<PlatformView>,
-        resolve: impl Fn(&PlatformView) -> Option<Rc<dyn CapturableSurface>> + 'static,
-    ) -> Self {
+    /// A capture for `content`. Capturable GPU surfaces resolve through
+    /// [`resolve_capturable`] — the slot each mounted leaf stores on its
+    /// own view.
+    #[must_use]
+    pub fn new(_mtm: objc2::MainThreadMarker, content: Retained<PlatformView>) -> Self {
         Self {
             content,
-            resolve: Rc::new(resolve),
             compositor: Compositor::new(),
             on_redraw: RefCell::new(None),
             renderer: RefCell::new(NativeRenderer::default()),
@@ -1288,7 +1563,7 @@ impl ViewCapture {
         self: &Rc<Self>,
         target: &ProtocolObject<dyn MTLTexture>,
         generation: u64,
-        completion: impl Fn(bool) + Send + 'static,
+        completion: impl Fn(Result<(), CaptureError>) + Send + 'static,
     ) {
         let mtm = objc2::MainThreadMarker::new().expect("capture runs on the main thread");
         let (preparation, specs) = self.prepare(target, generation);
@@ -1306,7 +1581,8 @@ impl ViewCapture {
         let compositor = self.compositor.clone();
         let this = MainThreadBound::new(Rc::downgrade(self), mtm);
         let preparation = QueueSend(preparation);
-        let mut completion = Some(Box::new(completion) as Box<dyn Fn(bool) + Send>);
+        let mut completion =
+            Some(Box::new(completion) as Box<dyn Fn(Result<(), CaptureError>) + Send>);
 
         compositor.perform(move |guard| {
             let rendered =
@@ -1327,7 +1603,9 @@ impl ViewCapture {
                     Some(capture) => {
                         capture.submit_surfaces(&rendered.0, preparation.0, completion);
                     }
-                    None => completion(false),
+                    // The owner is gone: teardown mid-capture is a
+                    // deferral, never a silent drop.
+                    None => completion(Err(CaptureError::Deferred)),
                 }
             });
         });
@@ -1400,6 +1678,7 @@ impl ViewCapture {
                 crate::view::bounds(content),
                 target.width(),
                 target.height(),
+                crate::view::is_flipped(content),
             );
             let snapshots = self.collect_snapshots(target, geometry);
             self.update_external_surfaces(&snapshots);
@@ -1480,8 +1759,8 @@ impl ViewCapture {
         snapshots
     }
 
-    /// Recursion over `view`'s subviews: a resolved surface snapshots and
-    /// stops the descent.
+    /// Recursion over `view`'s subviews through [`walk_capturables`]:
+    /// a resolved surface snapshots and stops the descent.
     fn collect_into(
         &self,
         view: &PlatformView,
@@ -1490,7 +1769,7 @@ impl ViewCapture {
         target_width: usize,
         target_height: usize,
     ) {
-        if let Some(surface) = (self.resolve)(view) {
+        walk_capturables(view, &mut |view, surface| {
             let bounds = surface.content_bounds(&self.content);
             if let Some(spec) = surface_spec(
                 view_key(view),
@@ -1500,13 +1779,12 @@ impl ViewCapture {
                 target_width,
                 target_height,
             ) {
-                snapshots.push(CapturedSnapshot { spec, surface });
+                snapshots.push(CapturedSnapshot {
+                    spec,
+                    surface: surface.clone(),
+                });
             }
-            return;
-        }
-        for subview in crate::view::subviews(view) {
-            self.collect_into(&subview, snapshots, geometry, target_width, target_height);
-        }
+        });
     }
 
     /// Joins and parts external surfaces against this capture's snapshot
@@ -1550,7 +1828,7 @@ impl ViewCapture {
         self: &Rc<Self>,
         rendered: &[RenderedSurface],
         preparation: Preparation,
-        completion: Box<dyn Fn(bool) + Send>,
+        completion: Box<dyn Fn(Result<(), CaptureError>) + Send>,
     ) {
         let mtm = objc2::MainThreadMarker::new().expect("capture flow runs on the main thread");
         let return_to = MainThreadBound::new(Rc::downgrade(self), mtm);
@@ -1583,7 +1861,7 @@ impl ViewCapture {
         for (item, registration) in rendered.iter().zip(&surfaces) {
             if !registration.surface.prepare_external_render(&item.texture) {
                 // Setup still pending: the frame defers.
-                completion(false);
+                completion(Err(CaptureError::Deferred));
                 return;
             }
         }
@@ -1593,19 +1871,24 @@ impl ViewCapture {
             let rendered = QueueSend(rendered.to_owned());
             let preparation = QueueSend(preparation);
             move |outcome| {
-                if outcome.is_ok() {
-                    Self::compose(&compositor, preparation, rendered, completion, return_to);
-                } else {
-                    // No usable pixels: the frame never submitted —
-                    // release its lease unreturned. Destruction AND the
-                    // failure report both happen on the main queue, in
-                    // that order: the completion contract is main-thread,
-                    // and the caller settles only after the leased
-                    // cleanup it owns has run.
-                    enqueue(move |_| {
-                        drop(preparation);
-                        completion(false);
-                    });
+                match outcome {
+                    Ok(()) => {
+                        Self::compose(&compositor, preparation, rendered, completion, return_to);
+                    }
+                    Err(error) => {
+                        // No usable pixels: the frame never submitted —
+                        // release its lease unreturned. Destruction AND the
+                        // failure report both happen on the main queue, in
+                        // that order: the completion contract is main-thread,
+                        // and the caller settles only after the leased
+                        // cleanup it owns has run. A terminal `Failed`
+                        // forwards as-is — a settled surface failure does
+                        // not retry.
+                        enqueue(move |_| {
+                            drop(preparation);
+                            completion(Err(error));
+                        });
+                    }
                 }
             }
         }));
@@ -1613,8 +1896,8 @@ impl ViewCapture {
             let batch = Arc::clone(&batch);
             registration.surface.render_prepared_external_texture(
                 &item.texture,
-                u32::try_from(item.spec.size.width).expect("a surface is smaller than u32"),
-                u32::try_from(item.spec.size.height).expect("a surface is smaller than u32"),
+                u32::try_from(item.spec.full_size.width).expect("a surface is smaller than u32"),
+                u32::try_from(item.spec.full_size.height).expect("a surface is smaller than u32"),
                 Box::new(move |outcome| batch.complete_one(outcome)),
             );
         }
@@ -1628,7 +1911,7 @@ impl ViewCapture {
         compositor: &Compositor,
         preparation: QueueSend<Preparation>,
         rendered: QueueSend<Vec<RenderedSurface>>,
-        completion: Box<dyn Fn(bool) + Send>,
+        completion: Box<dyn Fn(Result<(), CaptureError>) + Send>,
         return_to: MainThreadBound<Weak<Self>>,
     ) {
         compositor.perform(move |guard| {
@@ -1669,18 +1952,12 @@ impl ViewCapture {
                     // either result; only a completed frame may return
                     // to the pool, and an error frame is reported and
                     // dropped, never pretended to have submitted.
-                    let status = buffer.status();
-                    let completed = status == MTLCommandBufferStatus::Completed;
                     // Status is the authoritative outcome; the `NSError`
-                    // payload is optional. A non-completed buffer always
-                    // reports — with the error's description when there
-                    // is one, with the status itself when there isn't.
-                    let error = (!completed).then(|| {
-                        buffer.error().map_or_else(
-                            || format!("command buffer ended with status {status:?}"),
-                            |error| error.localizedDescription().to_string(),
-                        )
-                    });
+                    // payload is optional and rides along when present.
+                    let status = buffer.status();
+                    let error = buffer
+                        .error()
+                        .map(|error| error.localizedDescription().to_string());
                     let settle = settle.lock().expect("capture lock").take();
                     if let Some(settle) = settle {
                         enqueue(move |mtm| {
@@ -1690,21 +1967,19 @@ impl ViewCapture {
                                 completion,
                             } = settle;
                             let preparation = preparation.0;
-                            if completed && let Some(capture) = return_to.get(mtm).upgrade() {
+                            let outcome = composition_outcome(status, error);
+                            if outcome.is_ok()
+                                && let Some(capture) = return_to.get(mtm).upgrade()
+                            {
                                 capture
                                     .renderer
                                     .borrow_mut()
                                     .return_frame(preparation.raster.into_frame());
-                            } else if let Some(error) = error {
-                                tracing::error!(
-                                    error = %error,
-                                    "native view composition command buffer failed"
-                                );
                             }
                             // Whatever `preparation` still holds drops
                             // here on the main thread on every outcome —
                             // a failed frame's lease releases unreturned.
-                            completion(completed);
+                            completion(outcome);
                         });
                     }
                 },
@@ -1715,6 +1990,50 @@ impl ViewCapture {
             }
             command_buffer.commit();
         });
+    }
+}
+
+/// A composition command buffer that ended without completing: the
+/// capture's pixels never landed on its target.
+#[derive(Debug)]
+pub struct CompositionFailed {
+    /// The status the command buffer ended with.
+    pub status: MTLCommandBufferStatus,
+    /// The command buffer's error description, when Metal attached one.
+    pub error: Option<String>,
+}
+
+impl fmt::Display for CompositionFailed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "native view composition command buffer ended with status {:?}",
+            self.status
+        )?;
+        if let Some(error) = &self.error {
+            write!(f, ": {error}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for CompositionFailed {}
+
+/// The capture outcome a composition command buffer's final `status`
+/// answers. Only a completed buffer landed its pixels; any other status is
+/// a failed capture carrying that status and `error`, never a deferral —
+/// no redraw is owed for a buffer that already ended.
+fn composition_outcome(
+    status: MTLCommandBufferStatus,
+    error: Option<String>,
+) -> Result<(), CaptureError> {
+    if status == MTLCommandBufferStatus::Completed {
+        Ok(())
+    } else {
+        Err(CaptureError::Failed(Arc::new(CompositionFailed {
+            status,
+            error,
+        })))
     }
 }
 
@@ -1739,13 +2058,46 @@ impl Drop for HiddenRestore<'_> {
 mod tests {
     use objc2::rc::Retained;
     use objc2_metal::{
-        MTLCopyAllDevices, MTLCreateSystemDefaultDevice, MTLOrigin, MTLPixelFormat, MTLResource,
-        MTLSize, MTLTexture,
+        MTLCommandBufferStatus, MTLCopyAllDevices, MTLCreateSystemDefaultDevice, MTLPixelFormat,
+        MTLResource, MTLScissorRect, MTLSize, MTLTexture,
     };
 
-    use super::{CaptureDeferred, CompositorState, FenceBatch, NativeRenderer, SurfaceSpec};
+    use super::{
+        CaptureError, CompositionFailed, CompositorState, FenceBatch, NativeRenderer, SurfaceSpec,
+        composition_outcome,
+    };
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
+
+    /// A composition command buffer's final status alone decides the
+    /// capture: a completed buffer lands, and every other status fails the
+    /// capture carrying that status and the buffer's error — never a
+    /// deferral waiting on a redraw nothing issues.
+    #[test]
+    fn a_non_completed_composition_fails_with_its_status() {
+        assert!(
+            composition_outcome(MTLCommandBufferStatus::Completed, None).is_ok(),
+            "a completed composition lands"
+        );
+        for status in [
+            MTLCommandBufferStatus::NotEnqueued,
+            MTLCommandBufferStatus::Enqueued,
+            MTLCommandBufferStatus::Committed,
+            MTLCommandBufferStatus::Scheduled,
+            MTLCommandBufferStatus::Error,
+        ] {
+            match composition_outcome(status, Some("device hung".to_owned())) {
+                Err(CaptureError::Failed(error)) => {
+                    let failed = error
+                        .downcast_ref::<CompositionFailed>()
+                        .expect("the failure carries the composition's status");
+                    assert_eq!(failed.status, status, "the failure carries its own status");
+                    assert_eq!(failed.error.as_deref(), Some("device hung"));
+                }
+                other => panic!("status {status:?} must fail the capture, got {other:?}"),
+            }
+        }
+    }
 
     /// The lease contract, exercised behaviorally: while a frame's lease
     /// is outstanding the pool issues *different* storage — so the CPU
@@ -1822,13 +2174,13 @@ mod tests {
         let batch = FenceBatch::new(3, {
             let calls = Arc::clone(&calls);
             let outcome = Arc::clone(&outcome);
-            move |result: Result<(), CaptureDeferred>| {
+            move |result: Result<(), CaptureError>| {
                 calls.fetch_add(1, Ordering::Relaxed);
                 *outcome.lock().expect("outcome lock") = Some(result);
             }
         });
         batch.complete_one(Ok(()));
-        batch.complete_one(Err(CaptureDeferred));
+        batch.complete_one(Err(CaptureError::Deferred));
         // The deferred fence does not end the batch — the third
         // submission is still in flight.
         assert_eq!(calls.load(Ordering::Relaxed), 0);
@@ -1836,7 +2188,7 @@ mod tests {
         assert_eq!(calls.load(Ordering::Relaxed), 1);
         let result = outcome.lock().expect("outcome lock").take();
         assert!(
-            matches!(result, Some(Err(CaptureDeferred))),
+            matches!(result, Some(Err(CaptureError::Deferred))),
             "a batch with a deferred surface must not report success"
         );
 
@@ -1844,7 +2196,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let batch = FenceBatch::new(2, {
             let calls = Arc::clone(&calls);
-            move |result: Result<(), CaptureDeferred>| {
+            move |result: Result<(), CaptureError>| {
                 assert!(result.is_ok());
                 calls.fetch_add(1, Ordering::Relaxed);
             }
@@ -1853,6 +2205,42 @@ mod tests {
         assert_eq!(calls.load(Ordering::Relaxed), 0);
         batch.complete_one(Ok(()));
         assert_eq!(calls.load(Ordering::Relaxed), 1);
+
+        // A terminal `Failed` wins over a `Deferred` whichever fence
+        // settles first: `Deferred` first, then `Failed`…
+        let outcome = Arc::new(Mutex::new(None));
+        let batch = FenceBatch::new(2, {
+            let outcome = Arc::clone(&outcome);
+            move |result: Result<(), CaptureError>| {
+                *outcome.lock().expect("outcome lock") = Some(result);
+            }
+        });
+        let error: Arc<dyn std::error::Error + Send + Sync> =
+            Arc::new(std::io::Error::other("surface rejected"));
+        batch.complete_one(Err(CaptureError::Deferred));
+        batch.complete_one(Err(CaptureError::Failed(error.clone())));
+        let result = outcome.lock().expect("outcome lock").take();
+        assert!(
+            matches!(&result, Some(Err(CaptureError::Failed(failed))) if Arc::ptr_eq(failed, &error)),
+            "a terminal failure answered even after the deferral landed first: {result:?}"
+        );
+
+        // …and `Failed` first, then `Deferred` — the same terminal
+        // outcome.
+        let outcome = Arc::new(Mutex::new(None));
+        let batch = FenceBatch::new(2, {
+            let outcome = Arc::clone(&outcome);
+            move |result: Result<(), CaptureError>| {
+                *outcome.lock().expect("outcome lock") = Some(result);
+            }
+        });
+        batch.complete_one(Err(CaptureError::Failed(error.clone())));
+        batch.complete_one(Err(CaptureError::Deferred));
+        let result = outcome.lock().expect("outcome lock").take();
+        assert!(
+            matches!(&result, Some(Err(CaptureError::Failed(failed))) if Arc::ptr_eq(failed, &error)),
+            "a terminal failure answered even with the deferral landing last: {result:?}"
+        );
     }
 
     /// The device-bound cache invariant: while the bound `MTLDevice` is
@@ -1869,12 +2257,19 @@ mod tests {
         };
         let spec = SurfaceSpec {
             surface_id: 1,
-            origin: MTLOrigin { x: 0, y: 0, z: 0 },
-            size: MTLSize {
+            full_size: MTLSize {
                 width: 8,
                 height: 8,
                 depth: 1,
             },
+            clip: MTLScissorRect {
+                x: 0,
+                y: 0,
+                width: 8,
+                height: 8,
+            },
+            uv_origin: [0.0, 0.0],
+            uv_scale: [1.0, 1.0],
             pixel_format: MTLPixelFormat::BGRA8Unorm,
         };
         let mut state = CompositorState { resources: None };
@@ -1951,7 +2346,277 @@ mod tests {
                 Retained::as_ptr(&device),
                 "a handed-out texture keeps its original device across a rebind",
             );
-            assert_eq!(texture.width(), spec.size.width);
+            assert_eq!(texture.width(), spec.full_size.width);
+        }
+    }
+
+    /// `surface_spec` placements: the mapped full rect keeps every texel
+    /// its content touches while the clip and UV window select what the
+    /// destination samples.
+    mod spec {
+        use objc2_metal::{MTLPixelFormat, MTLScissorRect};
+
+        use crate::geometry::Rect;
+
+        use super::super::{CaptureGeometry, SurfaceSpec, surface_spec};
+
+        /// The 2× geometry a 200×200 source draws on a 400×400 target.
+        fn down(source: Rect) -> CaptureGeometry {
+            CaptureGeometry::new(source, 400, 400, true)
+        }
+
+        /// The same scale under an unflipped (bottom-up) source.
+        fn up(source: Rect) -> CaptureGeometry {
+            CaptureGeometry::new(source, 400, 400, false)
+        }
+
+        fn spec_for(geometry: CaptureGeometry, child: Rect) -> SurfaceSpec {
+            surface_spec(0, child, geometry, MTLPixelFormat::BGRA8Unorm, 400, 400)
+                .expect("the child intersects the target")
+        }
+
+        /// (x, y, width, height) of the spec's clip rect.
+        fn clip(spec: &SurfaceSpec) -> (usize, usize, usize, usize) {
+            let MTLScissorRect {
+                x,
+                y,
+                width,
+                height,
+            } = spec.clip;
+            (x, y, width, height)
+        }
+
+        /// The UV window as a whole value so a single `assert_eq!` asserts
+        /// the mapping — every expected component is exact by construction
+        /// (integer pixel ratios through floor/ceil endpoints), and
+        /// comparing the derived `PartialEq` value needs no
+        /// float-comparison lint exception.
+        #[derive(Debug, PartialEq)]
+        struct UvWindow {
+            origin: [f32; 2],
+            scale: [f32; 2],
+        }
+
+        fn uv(spec: &SurfaceSpec) -> UvWindow {
+            UvWindow {
+                origin: spec.uv_origin,
+                scale: spec.uv_scale,
+            }
+        }
+
+        #[test]
+        fn a_top_down_source_maps_straight_through() {
+            let spec = spec_for(
+                down(Rect::new(0.0, 0.0, 200.0, 200.0)),
+                Rect::new(40.0, 20.0, 100.0, 100.0),
+            );
+            assert_eq!(clip(&spec), (80, 40, 200, 200));
+            assert_eq!((spec.full_size.width, spec.full_size.height), (200, 200));
+            assert_eq!(
+                uv(&spec),
+                UvWindow {
+                    origin: [0.0, 0.0],
+                    scale: [1.0, 1.0],
+                }
+            );
+        }
+
+        #[test]
+        fn a_bottom_up_source_mirrors_against_its_own_height() {
+            let spec = spec_for(
+                up(Rect::new(0.0, 0.0, 200.0, 200.0)),
+                Rect::new(40.0, 20.0, 100.0, 100.0),
+            );
+            assert_eq!(clip(&spec), (80, 160, 200, 200));
+            assert_eq!((spec.full_size.width, spec.full_size.height), (200, 200));
+            assert_eq!(
+                uv(&spec),
+                UvWindow {
+                    origin: [0.0, 0.0],
+                    scale: [1.0, 1.0],
+                }
+            );
+        }
+
+        #[test]
+        fn a_non_zero_source_origin_offsets_the_child() {
+            // The bounds' origin is where texel (0,0) samples: a child
+            // sitting 40pt right and 20pt down of it lands at (80,40),
+            // not at its own coordinates scaled.
+            let spec = spec_for(
+                down(Rect::new(50.0, 30.0, 200.0, 200.0)),
+                Rect::new(90.0, 50.0, 100.0, 100.0),
+            );
+            assert_eq!(clip(&spec), (80, 40, 200, 200));
+            let spec = spec_for(
+                up(Rect::new(50.0, 30.0, 200.0, 200.0)),
+                Rect::new(90.0, 50.0, 100.0, 100.0),
+            );
+            assert_eq!(clip(&spec), (80, 160, 200, 200));
+        }
+
+        #[test]
+        fn a_surface_past_the_top_left_keeps_its_full_texture() {
+            let spec = spec_for(
+                down(Rect::new(0.0, 0.0, 200.0, 200.0)),
+                Rect::new(-40.0, -20.0, 100.0, 100.0),
+            );
+            // The producer renders its whole 200×200 texture; only the
+            // destination scissor and the sampled UV window shrink.
+            assert_eq!((spec.full_size.width, spec.full_size.height), (200, 200));
+            assert_eq!(clip(&spec), (0, 0, 120, 160));
+            assert_eq!(
+                uv(&spec),
+                UvWindow {
+                    origin: [0.4, 0.2],
+                    scale: [0.6, 0.8],
+                }
+            );
+        }
+
+        #[test]
+        fn an_empty_child_rect_maps_to_none() {
+            let geometry = down(Rect::new(0.0, 0.0, 200.0, 200.0));
+            for rect in [
+                // Zero extent at a fractional position must not quantize
+                // into a 1-pixel producer.
+                Rect::new(0.9, 0.9, 0.0, 10.0),
+                Rect::new(0.9, 0.9, 10.0, 0.0),
+                Rect::new(0.9, 0.9, -10.0, 10.0),
+                Rect::new(0.9, 0.9, 10.0, -10.0),
+            ] {
+                assert!(
+                    surface_spec(0, rect, geometry, MTLPixelFormat::BGRA8Unorm, 400, 400).is_none(),
+                    "an empty child rect maps to None: {rect:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn a_surface_past_the_bottom_right_keeps_its_full_texture() {
+            let spec = spec_for(
+                down(Rect::new(0.0, 0.0, 200.0, 200.0)),
+                Rect::new(160.0, 180.0, 100.0, 100.0),
+            );
+            // The producer covers the whole mapped rect; only the
+            // destination scissor and the sampled UV window shrink.
+            assert_eq!((spec.full_size.width, spec.full_size.height), (200, 200));
+            assert_eq!(clip(&spec), (320, 360, 80, 40));
+            assert_eq!(
+                uv(&spec),
+                UvWindow {
+                    origin: [0.0, 0.0],
+                    scale: [0.4, 0.2],
+                }
+            );
+        }
+
+        #[test]
+        fn a_bottom_up_source_crops_through_the_same_uv_window() {
+            // Bottom-up source, child hanging off the bottom-left: the full
+            // producer is preserved while clip and UV window describe the
+            // visible corner — mirroring against the source height lands
+            // the rect on the target's lower rows.
+            let spec = spec_for(
+                up(Rect::new(0.0, 0.0, 200.0, 200.0)),
+                Rect::new(-40.0, -20.0, 100.0, 100.0),
+            );
+            assert_eq!((spec.full_size.width, spec.full_size.height), (200, 200));
+            assert_eq!(clip(&spec), (0, 240, 120, 160));
+            assert_eq!(
+                uv(&spec),
+                UvWindow {
+                    origin: [0.4, 0.0],
+                    scale: [0.6, 0.8],
+                }
+            );
+        }
+
+        #[test]
+        fn a_surface_entirely_outside_maps_to_none() {
+            let geometry = down(Rect::new(0.0, 0.0, 200.0, 200.0));
+            for child in [
+                Rect::new(500.0, 0.0, 100.0, 100.0),
+                Rect::new(-500.0, 0.0, 100.0, 100.0),
+            ] {
+                assert!(
+                    surface_spec(0, child, geometry, MTLPixelFormat::BGRA8Unorm, 400, 400)
+                        .is_none(),
+                    "a surface entirely outside maps to None: {child:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn anisotropic_scaling_uses_each_axiss_own_scale() {
+            // 200×200 points into 400×800 pixels: 2× horizontal, 4× vertical.
+            let geometry = CaptureGeometry::new(Rect::new(0.0, 0.0, 200.0, 200.0), 400, 800, true);
+            let spec = surface_spec(
+                0,
+                Rect::new(40.0, 20.0, 100.0, 100.0),
+                geometry,
+                MTLPixelFormat::BGRA8Unorm,
+                400,
+                800,
+            )
+            .expect("the child intersects the target");
+            assert_eq!(clip(&spec), (80, 80, 200, 400));
+            assert_eq!((spec.full_size.width, spec.full_size.height), (200, 400));
+        }
+
+        #[test]
+        fn fractional_endpoints_size_from_ceil_high_minus_floor_low() {
+            // A 1× geometry: (0.9, 0.9)–(1.4, 1.4) touches pixels 0 and 1,
+            // so the size is 2 — not floor(0.9) + ceil(0.5) = 1.
+            let spec = spec_for(
+                CaptureGeometry::new(Rect::new(0.0, 0.0, 400.0, 400.0), 400, 400, true),
+                Rect::new(0.9, 0.9, 0.5, 0.5),
+            );
+            assert_eq!(clip(&spec), (0, 0, 2, 2));
+            assert_eq!((spec.full_size.width, spec.full_size.height), (2, 2));
+        }
+    }
+
+    /// The raster's draw transform, mapped point by point.
+    mod raster_transform {
+        use objc2_core_foundation::CGAffineTransform;
+
+        use crate::geometry::Rect;
+
+        use super::super::{CaptureGeometry, raster_transform};
+
+        /// A layer-space point through the transform.
+        fn rendered(transform: CGAffineTransform, point: (f64, f64)) -> (f64, f64) {
+            let CGAffineTransform { a, b, c, d, tx, ty } = transform;
+            (
+                point.1.mul_add(c, point.0 * a) + tx,
+                point.1.mul_add(d, point.0 * b) + ty,
+            )
+        }
+
+        #[test]
+        fn the_raster_transform_scales_about_the_bounds_origin() {
+            // The content at the bounds origin lands on texel (0,0); every
+            // other point scales by the pixel ratio about it.
+            let geometry =
+                CaptureGeometry::new(Rect::new(50.0, 30.0, 200.0, 200.0), 400, 400, false);
+            let transform = raster_transform(geometry, 400.0);
+            assert_eq!(rendered(transform, (50.0, 30.0)), (0.0, 0.0));
+            assert_eq!(rendered(transform, (90.0, 80.0)), (80.0, 100.0));
+        }
+
+        #[test]
+        fn the_raster_transform_mirrors_a_y_down_source_about_the_window() {
+            // A y-down source mirrors about the visible window: its
+            // layer-space top edge lands on destination row 0 and its
+            // bottom edge on the last row, anchored at the bounds origin,
+            // not the destination's own origin.
+            let geometry =
+                CaptureGeometry::new(Rect::new(50.0, 30.0, 200.0, 200.0), 400, 400, true);
+            let transform = raster_transform(geometry, 400.0);
+            assert_eq!(rendered(transform, (50.0, 230.0)), (0.0, 0.0));
+            assert_eq!(rendered(transform, (50.0, 30.0)), (0.0, 400.0));
+            assert_eq!(rendered(transform, (150.0, 130.0)), (200.0, 200.0));
         }
     }
 }

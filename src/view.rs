@@ -33,8 +33,8 @@ pub use waterui_graphics::filter_view::FilterViewExt;
 
 use suiteki::Str;
 use waterui_layout::{
-    AspectRatio, ContentMode, EdgeSet, HorizontalAlignmentGuide, IgnoreSafeArea, LayoutPriority,
-    Overlay, VerticalAlignmentGuide,
+    AspectRatio, ContentMode, HorizontalAlignmentGuide, IgnoreSafeArea, LayoutPriority, Overlay,
+    VerticalAlignmentGuide,
     frame::Frame,
     padding::{EdgeInsets, Padding},
     stack::Alignment,
@@ -259,7 +259,7 @@ pub trait ViewExt: View + Sized {
     /// // Color background
     /// text!("Hello").background(Color::red());
     ///
-    /// // Material background (platform backend best-effort)
+    /// // Material background: a frosted treatment of the content behind the view
     /// text!("Hello").background(Material::Regular);
     ///
     /// // Any view as background
@@ -1179,14 +1179,18 @@ pub trait ViewExt: View + Sized {
         waterui_core::env::with(self, crate::component::list::ListMinRowHeight(height))
     }
 
-    /// Extends this view's bounds to ignore safe area insets on the specified edges.
+    /// Extends this view's bounds to ignore safe area insets on the specified
+    /// regions and edges.
     ///
-    /// This allows backgrounds, images, and other visual elements to extend edge-to-edge
-    /// while content remains in the safe area. The native renderer will expand the
-    /// view's frame to include the unsafe regions on the specified edges.
+    /// This allows backgrounds, images, and other visual elements to extend
+    /// edge-to-edge while content remains in the safe area. The native renderer
+    /// lays the view out clear of every region it does not ignore.
     ///
     /// # Arguments
-    /// * `edges` - The edges on which to ignore safe area insets
+    /// * `ignore` - The regions and edges to ignore: an
+    ///   [`EdgeSet`](waterui_layout::EdgeSet) ignores every region on its
+    ///   edges, and [`SafeAreaRegions::on`](waterui_layout::SafeAreaRegions::on)
+    ///   names one region.
     ///
     /// # Example
     ///
@@ -1200,9 +1204,13 @@ pub trait ViewExt: View + Sized {
     /// // Only extend to top (under status bar)
     /// let header = text!("Title")
     ///     .ignore_safe_area(EdgeSet::TOP);
+    ///
+    /// // Lay an editor under the keyboard but still above the container inset
+    /// let editor = text!("editor")
+    ///     .ignore_safe_area(SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM));
     /// ```
-    fn ignore_safe_area(self, edges: EdgeSet) -> Metadata<IgnoreSafeArea> {
-        Metadata::new(self, IgnoreSafeArea::new(edges))
+    fn ignore_safe_area(self, ignore: impl Into<IgnoreSafeArea>) -> Metadata<IgnoreSafeArea> {
+        Metadata::new(self, ignore.into())
     }
 
     /// Installs a plugin into the environment.

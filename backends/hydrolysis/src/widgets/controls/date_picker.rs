@@ -8,7 +8,6 @@ use crate::renderer::{
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
-use nami::Signal;
 use std::cell::RefCell;
 use std::rc::Rc;
 use waterui_core::layout::{HorizontalAlignment, ProposalSize, Size as LayoutSize, ViewDimensions};
@@ -156,9 +155,8 @@ pub fn measure_date_picker_node(
     } else {
         0.0
     };
-    let current = config
-        .value
-        .snapshot()
+    let current = state
+        .measure_signal(&config.value)
         .clamp(*config.range.start(), *config.range.end());
     let candidates = [
         config.ty.format_value(*config.range.start()),
@@ -251,12 +249,14 @@ pub fn render_date_picker_parts(
             (ctx.bounds.y0 + label_height).min(ctx.bounds.y1),
         );
         let render_ctx = ctx.render_context();
+        let label_area = ctx.safe_area_for(label_bounds);
         state.label_view.flush_in_rect(
             ctx.renderer_mut(),
             render_ctx,
             env,
             ProposalSize::UNSPECIFIED,
             label_bounds,
+            label_area,
         );
     }
 

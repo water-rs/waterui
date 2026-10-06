@@ -46,7 +46,7 @@ pub mod android;
     any(target_os = "android", all(test, not(target_arch = "wasm32")))
 ))]
 pub mod android_accessibility;
-// Bare wasm has no window pump to drive these modules' diagnostics, fonts
+// Bare wasm has no window pump to drive these modules' diagnostics
 // and menu-bar plumbing.
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
 mod diagnostics;
@@ -55,8 +55,6 @@ mod diagnostics;
 #[cfg(any(target_os = "android", all(test, not(target_arch = "wasm32"))))]
 pub mod editing;
 mod executor;
-#[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
-mod fonts;
 #[cfg(not(target_arch = "wasm32"))]
 mod headless;
 pub mod ime;
@@ -84,8 +82,6 @@ use diagnostics::{RenderDiagnostics, RenderDiagnosticsConfig, RenderPhaseSample,
 #[cfg(not(target_arch = "wasm32"))]
 use executor::{DrainExecutorOnDrop, HeadlessMainThreadExecutor};
 #[cfg(not(target_arch = "wasm32"))]
-use fonts::native_resource_fonts;
-use fonts::seed_core;
 #[cfg(not(target_arch = "wasm32"))]
 pub use headless::{HeadlessPumpResult, HeadlessRuntime};
 pub use semantic::{SemanticPumpResult, SemanticRuntime};
@@ -121,8 +117,9 @@ use window::pump_window_semantics;
 // unconditional import so non-test builds report no unused names.
 #[cfg(all(test, any(not(target_arch = "wasm32"), feature = "web")))]
 use window::{
-    FrameMode, acquire_surface_frame, clamp_window_size, reports_ui_idle,
-    schedule_animation_update, schedule_redraw_or_refresh, surface_error_requires_reconfigure,
+    FrameMode, acquire_surface_frame, axes_whose_limits_changed, clamp_window_size,
+    reports_ui_idle, schedule_animation_update, schedule_redraw_or_refresh,
+    surface_error_requires_reconfigure,
 };
 // Frame and tree profiles are published to the inspector endpoint, which exists
 // only where `waterui::inspector` does.
@@ -145,6 +142,7 @@ use crate::renderer::{
     FontFamilyResolution, HydrolysisRenderer, HydrolysisWindowOrigin, KeyDelivery, KeyPressOutcome,
 };
 use crate::renderer::{HydrolysisTextContextMenuMode, MenuShortcutRegistry, PopupWindowManager};
+use crate::text::SessionTextEngine;
 use crate::time::Instant;
 
 /// The global executor every runner installs before anything can spawn.
@@ -269,12 +267,15 @@ pub fn run(app: App, style: impl crate::Style) {
     // executor installed just above.
     waterui_locale::start_system_locale_listener();
     // This host renders each window once and returns, so no window's closing
-    // ends it and the last-window policy has nothing to decide.
+    // ends it and the last-window policy has nothing to decide. Its lifetime
+    // is the pump's, not the app's, so the termination machine is never
+    // started.
     let AppParts {
         windows,
         menu_bar,
         env,
         last_window: _,
+        termination: _,
     } = app.into_parts();
     let mut env = env.extending(waterui_graphics::scene_view::SceneViewMergeToParent);
     waterui_core::install_application_resources(&mut env);
@@ -296,9 +297,9 @@ pub fn run(app: App, style: impl crate::Style) {
     // seeded from this collection, and a self-drawn component that typesets
     // text itself reads it out of the environment instead of enumerating the
     // system's fonts for itself.
-    let fonts = FontCollection::new(native_resource_fonts(
+    let fonts = crate::text::fonts::native_collection(
         waterui_core::ResourceContext::from_environment(&env),
-    ));
+    );
     fonts.clone().install(&mut env);
     let shortcuts = env
         .get::<MenuShortcutRegistry>()
@@ -312,9 +313,10 @@ pub fn run(app: App, style: impl crate::Style) {
         let mut platform = OffscreenWindow::new(width, height, wgpu::TextureFormat::Rgba8Unorm)
             .with_scale_factor(offscreen_scale_factor());
         platform.apply_properties(&window);
-        let mut renderer =
-            HydrolysisRenderer::new(Rc::clone(&theme), FontFamilyResolution::Lenient);
-        seed_core(&mut renderer, &fonts);
+        let mut renderer = HydrolysisRenderer::with_engine(
+            Rc::clone(&theme),
+            SessionTextEngine::from_collection(&fonts, FontFamilyResolution::Lenient),
+        );
         renderer.set_window_id(shortcuts.mint_window_id());
         let mut runtime = RuntimeWindow::new(window, platform, renderer, render_diagnostics_config);
         render_window(&mut runtime, &env, &mut || local_executor.drain());

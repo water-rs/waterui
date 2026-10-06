@@ -154,14 +154,14 @@ pub fn count_pixels(bytes: &[u8], min: [u8; 4], max: [u8; 4]) -> usize {
 /// unsuccessful completion as a fence that never arrived.
 pub fn fence_flag() -> (
     std::sync::Arc<std::sync::atomic::AtomicU8>,
-    impl Fn(bool) + Send + 'static,
+    impl Fn(Result<(), cocoa_ui::capture::CaptureError>) + Send + 'static,
 ) {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU8, Ordering};
     let flag = Arc::new(AtomicU8::new(0));
     let f = Arc::clone(&flag);
-    (flag, move |ok| {
-        f.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
+    (flag, move |result| {
+        f.store(if result.is_ok() { 1 } else { 2 }, Ordering::Relaxed);
     })
 }
 

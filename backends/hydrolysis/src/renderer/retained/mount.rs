@@ -23,10 +23,10 @@
 //! layer rather than the surface root — so the same `RenderKey` identity
 //! works at any depth.
 //!
-//! Wrapper layers are never destroyed while their mount lives: dropping a
-//! [`cherenkov::Layer`] removes its whole subtree at the next commit, so a
+//! Wrapper layers are never destroyed while their mount lives: a
 //! shrinking ancestry detaches its excess wrappers and parks them for
-//! reuse instead. A shrunken chain's handles stay alive under the mount.
+//! reuse instead of dropping them. A shrunken chain's handles stay alive
+//! under the mount.
 //!
 //! One persistent overlay layer sits above every other child for the
 //! frame's transient scene (popups, menus and capture/transition content).
@@ -52,7 +52,7 @@ pub enum MountSlot {
 /// coordinates; `opacity` is the scope's alpha.
 pub struct AncestryScope {
     /// The scope's clip shape in root coordinates, when it clips.
-    pub(crate) clip: Option<cherenkov::ShapeData>,
+    pub(crate) clip: Option<waterui_graphics::draw::ShapeData>,
     /// The scope's alpha.
     pub(crate) opacity: f32,
 }
@@ -81,9 +81,8 @@ struct KeyedMount {
     /// Attached ancestry wrappers, outermost first — `wrappers.len()` is
     /// the committed scope count.
     wrappers: Vec<cherenkov::Layer>,
-    /// Detached wrappers kept alive for reuse. Destroying a layer removes
-    /// its subtree at the next commit, so a shrinking ancestry parks its
-    /// excess instead.
+    /// Detached wrappers kept alive for reuse: a shrinking ancestry parks
+    /// its excess wrappers instead of destroying layers it may need again.
     parked: Vec<cherenkov::Layer>,
     /// The content layer: the frame's produced texture, drawing or filter
     /// attaches here, innermost under the wrapper chain. A filtered mount's
@@ -95,6 +94,18 @@ struct KeyedMount {
     /// The group's segment layers and committed order, allocated when the
     /// first filtered child mounts under `content`.
     group: Option<GroupBody>,
+    /// The backdrop group `content` samples, for a material mount.
+    backdrop: Option<MountedBackdrop>,
+}
+
+/// A backdrop group a keyed mount's content layer is a member of, with the
+/// display scale its chain was built for.
+struct MountedBackdrop {
+    /// Held for its lifetime: dropping it unregisters the group.
+    _group: cherenkov::BackdropGroup,
+    /// `f64::to_bits` of the display scale: a scale change rebuilds the
+    /// group, since its chain's parameters are in capture texels.
+    display_scale: u64,
 }
 
 impl KeyedMount {
@@ -107,9 +118,9 @@ impl KeyedMount {
 
 /// The persistent engine layers a window presents through.
 ///
-/// Handles are `Layer`s: dropping one removes it and its descendants at the
-/// next commit, so pruning an absent keyed mount is a map removal and
-/// nothing else.
+/// Handles are `Layer`s: dropping one removes only it — its children stay
+/// in the tree, detached — at the next commit, so pruning an absent keyed
+/// mount is a map removal and nothing else.
 pub struct Mounts {
     /// Positional segment layers, grown to the frame's segment count and
     /// shrunk — truncated — when it falls. Segment layers never carry
@@ -199,6 +210,7 @@ impl Mounts {
                             content: surface.layer(),
                             held: None,
                             group: None,
+                            backdrop: None,
                         }
                     })
                     .content
@@ -255,8 +267,8 @@ impl Mounts {
             }
             if mount.wrappers.len() > scopes.len() {
                 // Detach the top excess wrapper, then park the chain below
-                // it: destroying the handles would take the content layer's
-                // subtree with them at the next commit.
+                // it: the parked handles keep their layers alive and
+                // reusable for the next growth.
                 let parent = mount
                     .wrappers
                     .get(scopes.len().wrapping_sub(1))
@@ -287,6 +299,72 @@ impl Mounts {
             }
             tx[wrapper].opacity(scope.opacity);
         }
+    }
+
+    /// Makes `key`'s content layer a member of the backdrop group `group`
+    /// builds for a surface at `display_scale` device pixels per point.
+    ///
+    /// The group is built on the mount's first call and rebuilt when the
+    /// display scale changes; it lives until the mount drops or
+    /// [`Self::clear_backdrop`] releases it, on the surface the mount
+    /// belongs to. A replaced group is released here, before the commit
+    /// that moves the member to its successor is applied — the engine
+    /// applies a frame's commits before it renders, so no frame samples
+    /// the released group.
+    pub(crate) fn set_backdrop(
+        &mut self,
+        tx: &mut cherenkov::Transaction<'_, cherenkov_gpu::Gpu>,
+        key: RenderKey,
+        display_scale: f64,
+        group: impl FnOnce() -> cherenkov::BackdropGroup,
+    ) {
+        let mount = self
+            .keyed
+            .get_mut(&key)
+            .expect("hydrolysis mounts: backdrop for an uncreated mount");
+        let display_scale = display_scale.to_bits();
+        if mount
+            .backdrop
+            .as_ref()
+            .is_some_and(|backdrop| backdrop.display_scale == display_scale)
+        {
+            return;
+        }
+        let group = group();
+        tx[&mount.content].backdrop(group.sample());
+        mount.backdrop = Some(MountedBackdrop {
+            _group: group,
+            display_scale,
+        });
+    }
+
+    /// Releases `key`'s backdrop group, if it holds one, and clears its
+    /// content layer's membership, so the engine neither captures nor
+    /// filters for it until [`Self::set_backdrop`] builds a new one.
+    pub(crate) fn clear_backdrop(
+        &mut self,
+        tx: &mut cherenkov::Transaction<'_, cherenkov_gpu::Gpu>,
+        key: RenderKey,
+    ) {
+        let mount = self
+            .keyed
+            .get_mut(&key)
+            .expect("hydrolysis mounts: backdrop for an uncreated mount");
+        if mount.backdrop.take().is_some() {
+            tx[&mount.content].clear_backdrop();
+        }
+    }
+
+    /// The display scale `key`'s held backdrop group was built for, `None`
+    /// while the mount holds none.
+    #[cfg(test)]
+    pub(crate) fn backdrop_display_scale(&self, key: RenderKey) -> Option<f64> {
+        self.keyed
+            .get(&key)
+            .expect("hydrolysis mounts: backdrop for an uncreated mount")
+            .backdrop
+            .as_ref()
+            .map(|backdrop| f64::from_bits(backdrop.display_scale))
     }
 
     /// The segment layer `key`'s group orders group child `index` under,

@@ -28,14 +28,25 @@ use crate::error::{EngineError, RenderError, ResourceError, SurfaceError};
 use crate::frame::{FrameId, FrameStats, FrameTime, FrameTiming, Readback};
 use crate::glyph::FontId;
 use crate::image::ImageUpload;
-use crate::message::{ContentOp, FontData, LayerId, SurfaceId};
+use crate::message::FontData;
 use crate::paint::ImageId;
-use crate::resource::ResourceId;
-use crate::tree::SurfaceTree;
+use cherenkov_record::{ContentOp, LayerId, SurfaceId};
+use cherenkov_record::{ResourceId, SurfaceTree};
 
-/// The render-thread contract. Implemented by a zero-sized marker type
-/// (`Gpu`, `Vello`, `Raster`).
-pub trait Backend: Sized + 'static {
+/// The render-thread contract, a zero-sized marker type (`Gpu`, `Raster`).
+///
+/// The [`cherenkov_record::Target`] the layer tree is generic over: an
+/// engine backend's queue is the engine's
+/// [`EngineQueue`](crate::EngineQueue) and its install payload the
+/// render-side [`InstallOp`](crate::message::InstallOp), which is
+/// render-thread transferable like every other render op.
+pub trait Backend:
+    Sized
+    + cherenkov_record::Target<
+        Queue = crate::surface::EngineQueue<Self>,
+        Install = crate::message::InstallOp<Self>,
+    > + 'static
+{
     /// The backend's configuration type.
     type Config: RenderTransfer + 'static;
     /// Provenance for reports.
@@ -73,14 +84,12 @@ pub trait Renderer: 'static {
     type Font: RenderTransfer + 'static;
 
     /// Creates the render-side state for surface `id`. `waker` is the
-    /// surface's host wake-up for render-side completions that land after
-    /// a render (a promoted plane's attach on the main queue); it wakes
-    /// nothing while the surface is hidden. A source the backend drives on
-    /// its own that wakes the host through another callback (a GPU
-    /// producer, a filter) gates that wake with a
-    /// [`WakeGate`](crate::WakeGate) over the
-    /// [`visibility`](crate::CompletionWaker::visibility) of the surfaces
-    /// it draws into.
+    /// surface's host wake-up: for render-side completions that land after
+    /// a render (a promoted plane's attach on the main queue), and for the
+    /// redraw requests of the sources the backend drives on its own (a GPU
+    /// producer, a filter), which keep the wakers of the surfaces they draw
+    /// into in a [`SurfaceWakes`](crate::SurfaceWakes). It wakes nothing
+    /// while the surface is hidden.
     ///
     /// # Errors
     /// [`SurfaceError`] when the target cannot be drawn.
@@ -100,8 +109,8 @@ pub trait Renderer: 'static {
     /// While a surface is hidden the render loop leaves it out of every
     /// [`Frame`], and [`FrameRedraw`] counts only visible surfaces: custom
     /// GPU content and filters on a hidden surface want no redraw. Their
-    /// host wakes stop earlier, through their [`WakeGate`](crate::WakeGate),
-    /// the moment the host hides the surface. Content ops, installs and
+    /// host wakes stop earlier, through the surface's own waker, the moment
+    /// the host hides the surface. Content ops, installs and
     /// resource changes still arrive while it is hidden. When it becomes
     /// visible again the next frame lists it, and a producer or filter
     /// that asked for a redraw while it was hidden is drawn then.
@@ -123,6 +132,16 @@ pub trait Renderer: 'static {
 
     /// Unregisters a font no installed content draws any more.
     fn remove_font(&mut self, id: FontId);
+
+    /// The largest image this renderer admits, in each dimension and in
+    /// total texels: the device's texture limit, or the per-image share
+    /// of the backend's memory budget. The engine reads it once, right
+    /// after [`Backend::init`] returns the renderer, and it must not
+    /// change afterwards: [`Engine::image`](crate::Engine::image) and
+    /// [`Image::replace`](crate::Image::replace) check it on the calling
+    /// thread and reject what it does not admit before anything is
+    /// queued.
+    fn image_limits(&self) -> crate::ImageLimits;
 
     /// Registers an image. A rejection fails every later render that
     /// draws the image with [`RenderError::Rejected`].
@@ -284,14 +303,6 @@ pub struct SurfaceInfo {
     pub presents: bool,
 }
 
-/// The request map's copy-on-write storage, per the target's ownership
-/// model: `Arc` natively, where a returned result crosses the render
-/// thread's reply channel; `Rc` in the browser's single-threaded engine.
-#[cfg(not(target_arch = "wasm32"))]
-type SharedRequests = std::sync::Arc<rustc_hash::FxHashMap<SurfaceId, crate::RefreshRange>>;
-#[cfg(target_arch = "wasm32")]
-type SharedRequests = std::rc::Rc<rustc_hash::FxHashMap<SurfaceId, crate::RefreshRange>>;
-
 /// The per-surface refresh requests a backend reported for a frame.
 ///
 /// A backend-side source — a custom GPU content, an animated shader
@@ -303,74 +314,45 @@ type SharedRequests = std::rc::Rc<rustc_hash::FxHashMap<SurfaceId, crate::Refres
 ///
 /// Backed by a keyed map: recording, combining and reading back a
 /// surface's request all stay O(1), so per-frame bookkeeping is linear in
-/// the surface count — linear scans would make the 200-surface path this
-/// scheduling fix exists for quadratic.
-#[derive(Clone, Debug, Default)]
+/// the surface count. A renderer builds a fresh collection for every
+/// render.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FrameRedraw {
-    /// The unioned request per surface that asked for the next frame —
-    /// copy-on-write shared storage: a renderer retains this map as its
-    /// per-render scratch and hands out [`Clone`]s of the result, so the
-    /// steady state mutates uniquely owned storage — reset and request
-    /// need no fresh allocation — while a consumer that legitimately
-    /// retains or clones a result keeps that snapshot exactly. `None`
-    /// carries the empty collection without any allocation.
-    requests: Option<SharedRequests>,
+    /// The unioned request per surface that asked for the next frame.
+    requests: rustc_hash::FxHashMap<SurfaceId, crate::RefreshRange>,
 }
-
-impl PartialEq for FrameRedraw {
-    /// Logical collection equality — keyed map contents only, never
-    /// storage allocation state or iteration order: a default (`None`)
-    /// and a cleared previously-nonempty collection (`Some` empty map)
-    /// both represent exactly no requests and compare equal.
-    fn eq(&self, other: &Self) -> bool {
-        match (&self.requests, &other.requests) {
-            (None, None) => true,
-            (Some(a), Some(b)) => **a == **b,
-            (Some(map), None) | (None, Some(map)) => map.is_empty(),
-        }
-    }
-}
-
-impl Eq for FrameRedraw {}
 
 impl FrameRedraw {
     /// Records that `surface` wants the next frame at `rate`, unioning
     /// repeated requests for the same surface into one entry.
     pub fn request(&mut self, surface: SurfaceId, rate: crate::RefreshRange) {
-        let requests = self.requests.get_or_insert_with(SharedRequests::default);
-        // Mutating through make_mut is copy-on-write: a snapshot another
-        // owner still holds is never written into.
-        SharedRequests::make_mut(requests)
+        self.requests
             .entry(surface)
             .and_modify(|kept| *kept = union_rate(kept.clone(), rate.clone()))
             .or_insert(rate);
     }
 
-    /// Empties the collection for the next render while keeping the
-    /// map's storage — the renderer-owned scratch this result clones
-    /// out of resets in place in the steady state.
+    /// Removes every request.
     pub fn clear(&mut self) {
-        if let Some(requests) = self.requests.as_mut() {
-            SharedRequests::make_mut(requests).clear();
-        }
+        self.requests.clear();
     }
 
     /// The request `surface` made, when it asked for the next frame.
     #[must_use]
     pub fn for_surface(&self, surface: SurfaceId) -> Option<&crate::RefreshRange> {
-        self.requests.as_ref()?.get(&surface)
+        self.requests.get(&surface)
     }
 
     /// The requests, one per surface — unordered.
     pub fn iter(&self) -> impl Iterator<Item = (&SurfaceId, &crate::RefreshRange)> {
-        self.requests.iter().flat_map(|requests| requests.iter())
+        self.requests.iter()
     }
 
     /// The union of every request's refresh range — the frame's aggregate
     /// backend demand.
     #[must_use]
     pub fn rate(&self) -> Option<crate::RefreshRange> {
-        self.requests.as_ref()?.values().fold(None, |rate, next| {
+        self.requests.values().fold(None, |rate, next| {
             Some(rate.map_or_else(|| next.clone(), |rate| union_rate(rate, next.clone())))
         })
     }

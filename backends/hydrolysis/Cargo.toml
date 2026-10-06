@@ -13,6 +13,7 @@ categories = ["gui", "graphics"]
 
 [dependencies]
 waterui-core.workspace = true
+thiserror.workspace = true
 waterui-assets.workspace = true
 # Decodes the CLI-staged window icon (always written as 8-bit RGBA PNG).
 png = "0.18"
@@ -41,6 +42,10 @@ cherenkov.workspace = true
 cherenkov-gpu.workspace = true
 kurbo.workspace = true
 peniko = "0.6"
+# `imageops::resize` fits a decoded image to the engine's image limits
+# before registration (water-rs/waterui#1806): the decode-quality resample
+# belongs to the ingest path, not the engine. Pixel ops only — no codecs.
+image = { version = "0.25", default-features = false }
 # `complex-scripts` ships the ICU4X segmentation dictionaries (CJ plus the
 # Southeast-Asian scripts) inside the one parley build: this runner owns the
 # `LayoutContext`, and without them its word segmenter logs `No segmentation
@@ -182,6 +187,10 @@ windows-sys = { version = "0.52", optional = true, features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
+    "Win32_System_Console",
+    "Win32_System_Shutdown",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
 

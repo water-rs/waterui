@@ -30,13 +30,17 @@
 //! capture is taken when its first member layer (in paint order: a layer's
 //! items in order, depth-first) is reached — a full-canvas copy of the
 //! compositing canvas the member is drawn into at that moment, meaning the
-//! nearest enclosing layer isolated for opacity `< 1` or a non-Normal blend
-//! (clips never isolate). Every child layer composites into a fresh
-//! canvas, so a member sitting inside clip-only ancestors sees the
-//! semantic level's canvas composited with each ancestor's partial
-//! contents in order (see [`flattened`]); a member that is itself
-//! isolated sees the parent canvas, since the capture happens before its
-//! own isolation begins. The group's filters then run over the copy: `GaussianBlur` is a
+//! nearest enclosing layer isolated for a filter or a non-Normal blend
+//! (clips and translucency never isolate). Every child layer composites
+//! into a fresh canvas, so a member sitting inside pass-through or
+//! `opacity < 1` ancestors sees the semantic level's canvas composited
+//! with each ancestor's partial contents in order, at each ancestor's
+//! full opacity (see [`flattened`]): the sample is what lies behind
+//! them. Every looked-through ancestor's opacity still applies to the
+//! whole result when that ancestor composites, so a fading material
+//! panel fades rather than disappearing. A member that
+//! is itself isolated sees the parent canvas, since the capture happens
+//! before its own isolation begins. The group's filters then run over the copy: `GaussianBlur` is a
 //! separable true Gaussian `w(o) = exp(-o² / 2σ²)` normalized over
 //! `⌈3σ⌉` taps, clamp-to-edge; `ColorMatrix` applies its three rows to
 //! the premultiplied `[r, g, b, a]` pixel, alpha untouched. Every member
@@ -194,10 +198,12 @@ impl Canvas {
 /// One compositing level: a canvas plus the opacity and blend mode it
 /// composites into the level below it with. `semantic` marks the canvases
 /// a backdrop capture sees as its compositing target: the surface canvas
-/// and every layer isolated for a filter, `opacity < 1` or a non-Normal
-/// blend. `space` is the canvas's storage space — an isolated level's own
-/// `blend_space`, or the enclosing level's for a transparent (clip-only)
-/// level, which inherits the space it composites into.
+/// and every layer isolated for a filter or a non-Normal blend. An
+/// `opacity < 1` level is not a root: a capture looks through it exactly
+/// as it looks through a pass-through level. `space` is the canvas's
+/// storage space — an isolated or translucent level's own `blend_space`,
+/// or the enclosing level's for a pass-through level, which inherits
+/// the space it composites into.
 struct Level {
     canvas: Canvas,
     opacity: f64,
@@ -213,8 +219,12 @@ const fn top(chain: &mut [Level]) -> &mut Canvas {
 
 /// What has been painted so far into the top level's compositing target:
 /// the nearest semantic level's canvas, composited with the partial
-/// contents of every clip-only level above it in order — exactly what the
-/// chain would produce if every pending level composited right now.
+/// contents of every looked-through level above it in order — what the
+/// chain would produce if every pending level composited right now at
+/// full opacity. A looked-through level is provably `Normal`-blended (a
+/// non-Normal level is a root) and stored in the root's linear space —
+/// layers never sit inside an encoded group scope — so each composites
+/// source-over as its pop would at opacity 1.
 fn flattened(chain: &[Level]) -> Canvas {
     let sem = chain
         .iter()
@@ -223,23 +233,25 @@ fn flattened(chain: &[Level]) -> Canvas {
     let mut acc = chain[sem].canvas.clone();
     for level in &chain[sem + 1..] {
         for (dst, &src) in acc.pixels.iter_mut().zip(&level.canvas.pixels) {
-            let s = src.map(|v| v * level.opacity);
-            *dst = if level.blend == BlendMode::Normal {
-                src_over(*dst, s)
-            } else {
-                blend(level.blend, *dst, s)
-            };
+            *dst = src_over(*dst, src);
         }
     }
     acc
 }
 
+/// One group's filtered capture: the capture grid's pixels, the space
+/// they were captured in and the grid's scale against device pixels.
+struct Capture {
+    space: BlendSpace,
+    canvas: Canvas,
+    scale: f64,
+}
+
 /// Backdrop-group render state: the scene's declared groups plus each
-/// group's filtered capture — the canvas's pixels and the space they were
-/// captured in — taken at its first member's paint point.
+/// group's filtered capture, taken at its first member's paint point.
 struct Backdrops<'a> {
     groups: &'a [BackdropGroup],
-    captures: HashMap<u32, (BlendSpace, Canvas)>,
+    captures: HashMap<u32, Capture>,
     /// The composition space being painted: 0 for the surface, a fresh
     /// number for each projective layer's local image.
     space: usize,
@@ -399,19 +411,29 @@ impl Renderer {
                         // painter order: what has been painted so far into
                         // the member's compositing canvas — the nearest
                         // semantic level's canvas plus, in order, the
-                        // partial contents of every clip-only level the
-                        // member sits inside — filtered once and shared by
+                        // partial contents of every looked-through level
+                        // the member sits inside — filtered once and shared by
                         // all members.
                         let group = backdrops.group(gid)?;
                         let space = chain
                             .iter()
                             .rposition(|level| level.semantic)
                             .map_or(BlendSpace::Linear, |i| chain[i].space);
-                        let mut capture = flattened(chain);
+                        let scale = group.scale;
+                        let flat = flattened(chain);
+                        let mut capture = if scale < 1.0 {
+                            downsample(&flat, scale)
+                        } else {
+                            flat
+                        };
                         for filter in &group.filters {
                             apply_backdrop_filter(&mut capture, filter);
                         }
-                        backdrops.captures.entry(gid).or_insert((space, capture));
+                        backdrops.captures.entry(gid).or_insert(Capture {
+                            space,
+                            canvas: capture,
+                            scale,
+                        });
                     }
                     self.render_child_layer(child, tf, clips, chain, resources, backdrops)?;
                 }
@@ -427,9 +449,9 @@ impl Renderer {
     /// under the accumulated clips plus the child's own clip, then
     /// composites with opacity and blend mode: a `Normal`-blend child sees
     /// (and blends against) only what painted into its own canvas, never
-    /// the parent's. Clip-only levels are not semantic isolations — a
-    /// backdrop capture looks through them to the nearest `opacity < 1` or
-    /// `blend != Normal` level (see `flattened`).
+    /// the parent's. Clip-only and `opacity < 1` levels are not semantic
+    /// isolations — a backdrop capture looks through them to the nearest
+    /// filtered or `blend != Normal` level (see `flattened`).
     #[expect(
         clippy::many_single_char_names,
         reason = "w/h/dst/s/b/c name geometry and pixel values"
@@ -468,17 +490,19 @@ impl Renderer {
         }
         // A filtered layer is a semantic isolation too: a backdrop capture
         // inside it reads this canvas, matching `isolate` in
-        // gpu/src/render/lower.rs.
-        let semantic =
-            child.filter.is_some() || child.opacity < 1.0 || child.blend != BlendMode::Normal;
-        // A transparent level shares the space it composites into; an
-        // isolated level stores its declared space (layers always linear).
+        // gpu/src/render/lower.rs. Translucency is not an isolation:
+        // `opacity < 1` levels are looked through like pass-through levels.
+        let semantic = child.filter.is_some() || child.blend != BlendMode::Normal;
+        // A level that composites in isolation — isolated or translucent —
+        // stores its declared space (layers always linear); a
+        // pass-through level shares the space it composites into, and a
+        // member inside it composites in that space too.
         let parent_space = chain.last().map_or(BlendSpace::Linear, |l| l.space);
         chain.push(Level {
             canvas: Canvas::new(w, h, [0.0; 4]),
             opacity: child.opacity,
             blend: child.blend,
-            space: if semantic {
+            space: if semantic || child.opacity < 1.0 {
                 BlendSpace::Linear
             } else {
                 parent_space
@@ -731,9 +755,8 @@ impl Renderer {
     /// A display-list group: members composite with each other in the
     /// group's `blend_space` (the level's canvas stores premultiplied
     /// values in that space), then the group composites onto the level
-    /// below with `opacity` and `blend`. A fully transparent group
-    /// (`opacity` 1, `Normal`, `Linear`) shares the enclosing level's
-    /// space and passes through.
+    /// below with `opacity` and `blend`. A pass-through group (`opacity`
+    /// 1, `Normal`, `Linear`) shares the enclosing level's space.
     fn render_group(
         &self,
         group: &cherenkov_scene::Group,
@@ -744,10 +767,10 @@ impl Renderer {
         backdrops: &mut Backdrops<'_>,
     ) -> Result<(), RenderError> {
         let parent_space = chain.last().map_or(BlendSpace::Linear, |l| l.space);
-        let semantic = group.opacity < 1.0
-            || group.blend != BlendMode::Normal
-            || group.blend_space != BlendSpace::Linear;
-        let space = if semantic {
+        let semantic = group.blend != BlendMode::Normal || group.blend_space != BlendSpace::Linear;
+        // A translucent or isolated group keeps its declared `blend_space`;
+        // a pass-through group shares the space it composites into.
+        let space = if semantic || group.opacity < 1.0 {
             group.blend_space
         } else {
             parent_space
@@ -824,7 +847,12 @@ impl Renderer {
             RenderError::Backdrop(format!("backdrop group {gid} member layer has no clip"))
         })?;
         let coverage = self.shape_coverage(clip, FillRule::NonZero, tf, clips);
-        if let Some((cap_space, capture)) = backdrops.captures.get(&gid) {
+        if let Some(Capture {
+            space: cap_space,
+            canvas: capture,
+            scale,
+        }) = backdrops.captures.get(&gid)
+        {
             // SDF effects need the member clip's analytic box (the GPU
             // errors the same name for a mask or path clip).
             let sdf_clip = match &child.backdrop_effect {
@@ -838,6 +866,7 @@ impl Renderer {
                 ),
             };
             let (w, h) = (capture.width, capture.height);
+            let cw = canvas.width;
             #[expect(
                 clippy::cast_precision_loss,
                 reason = "pixel indices are far below 2^53"
@@ -849,10 +878,8 @@ impl Renderer {
                 }
                 let src = sample_backdrop(
                     child,
-                    &capture.pixels,
-                    w,
-                    h,
-                    [(i % w) as f64 + 0.5, (i / w) as f64 + 0.5],
+                    (&capture.pixels, w, h, *scale),
+                    [(i % cw) as f64 + 0.5, (i / cw) as f64 + 0.5],
                     sdf_clip.as_ref(),
                 );
                 *dst = src_over(*dst, move_space(src.map(|v| v * c), *cap_space, space));
@@ -1120,8 +1147,10 @@ impl Renderer {
 
 /// The member's backdrop composite at device pixel centre `p`: the
 /// per-member effect's sample of the filtered capture, before coverage and
-/// opacity. `sdf_clip` is the member clip's box shape and box →
-/// box-local inverse, `Some` whenever the effect reads the clip's SDF.
+/// opacity. The capture is `width × height` texels at `scale` against
+/// device pixels: a device point `q` samples it bilinearly at `q · scale`.
+/// `sdf_clip` is the member clip's box shape and box → box-local inverse,
+/// `Some` whenever the effect reads the clip's SDF.
 #[allow(clippy::many_single_char_names)] // p/q/c/t/d/n name points and pixel values
 #[expect(
     clippy::cast_possible_truncation,
@@ -1130,24 +1159,25 @@ impl Renderer {
 )]
 fn sample_backdrop(
     layer: &Layer,
-    capture: &[[f64; 4]],
-    width: usize,
-    height: usize,
+    (capture, width, height, scale): (&[[f64; 4]], usize, usize, f64),
     p: [f64; 2],
     sdf_clip: Option<&(crate::sdf::BoxShape, Affine)>,
 ) -> [f64; 4] {
     use cherenkov_scene::BackdropEffectSpec as E;
+    let at =
+        |q: [f64; 2]| crate::sdf::bilinear(capture, width, height, [q[0] * scale, q[1] * scale]);
     match &layer.backdrop_effect {
-        None => {
-            // `bilinear` at a texel centre is the texel: keep the exact
-            // pre-effect read.
+        // `bilinear` at a texel centre is the texel: a 1:1 capture keeps
+        // the exact pre-effect read.
+        None if scale >= 1.0 => {
             capture[usize::min(p[1] as usize, height - 1) * width
                 + usize::min(p[0] as usize, width - 1)]
         }
+        None => at(p),
         Some(E::ColorMatrix { matrix }) => {
             // 3x4 on the premultiplied sample, filtrate layout: the fourth
             // column is a bias that scales with alpha; alpha passes through.
-            let c = crate::sdf::bilinear(capture, width, height, p);
+            let c = at(p);
             [
                 matrix[0].mul_add(
                     c[0],
@@ -1172,7 +1202,7 @@ fn sample_backdrop(
                 (-n[0] * strength).mul_add(t * t, p[0]),
                 (-n[1] * strength).mul_add(t * t, p[1]),
             ];
-            crate::sdf::bilinear(capture, width, height, q)
+            at(q)
         }
         Some(E::RimLight {
             width: rim_w,
@@ -1182,7 +1212,7 @@ fn sample_backdrop(
             let (shape, clip_tf) = sdf_clip.expect("SDF effects carry a box clip");
             let (d, _) = crate::sdf::distance_and_normal(shape, clip_tf, p);
             let t = (1.0 + d / rim_w).clamp(0.0, 1.0);
-            let mut c = crate::sdf::bilinear(capture, width, height, p);
+            let mut c = at(p);
             let k = color[3] * gain * t * t;
             c[0] = color[0].mul_add(k, c[0]);
             c[1] = color[1].mul_add(k, c[1]);
@@ -1190,6 +1220,89 @@ fn sample_backdrop(
             c
         }
     }
+}
+
+/// The capture grid of `canvas` at `scale` (`0 < s < 1`): texel `(i, j)`
+/// holds the area-weighted mean of `canvas` over the device rect
+/// `[i/s, (i+1)/s) × [j/s, (j+1)/s)` clipped to the canvas, so the grid is
+/// `⌈w·s⌉ × ⌈h·s⌉` texels anchored at the device origin.
+fn downsample(canvas: &Canvas, scale: f64) -> Canvas {
+    let (cw, ch) = (
+        grid_len(canvas.width, scale),
+        grid_len(canvas.height, scale),
+    );
+    let wx = box_weights(canvas.width, cw, scale);
+    let wy = box_weights(canvas.height, ch, scale);
+    // Rows first, then columns: the box is separable and its weights are
+    // normalized per axis.
+    let mut rows = vec![[0.0; 4]; cw * canvas.height];
+    for y in 0..canvas.height {
+        for (i, taps) in wx.iter().enumerate() {
+            let mut acc = [0.0; 4];
+            for &(k, w) in taps {
+                let s = canvas.pixels[y * canvas.width + k];
+                for (a, &c) in acc.iter_mut().zip(&s) {
+                    *a = w.mul_add(c, *a);
+                }
+            }
+            rows[y * cw + i] = acc;
+        }
+    }
+    let mut pixels = vec![[0.0; 4]; cw * ch];
+    for (j, taps) in wy.iter().enumerate() {
+        for i in 0..cw {
+            let mut acc = [0.0; 4];
+            for &(k, w) in taps {
+                let s = rows[k * cw + i];
+                for (a, &c) in acc.iter_mut().zip(&s) {
+                    *a = w.mul_add(c, *a);
+                }
+            }
+            pixels[j * cw + i] = acc;
+        }
+    }
+    Canvas {
+        pixels,
+        width: cw,
+        height: ch,
+    }
+}
+
+/// `⌈len · scale⌉`: the capture grid's texel count over `len` device pixels.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "canvas sizes are small positive integers"
+)]
+fn grid_len(len: usize, scale: f64) -> usize {
+    (len as f64 * scale).ceil() as usize
+}
+
+/// Per capture texel along one axis, the device pixels it covers and
+/// their weights: texel `i` spans `[i/s, (i+1)/s)` clipped to `[0, len)`,
+/// and pixel `k` weighs its overlap with that span over the span's length.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "spans are clipped to the canvas before indexing"
+)]
+fn box_weights(len: usize, texels: usize, scale: f64) -> Vec<Vec<(usize, f64)>> {
+    let end = len as f64;
+    (0..texels)
+        .map(|i| {
+            let lo = i as f64 / scale;
+            let hi = ((i + 1) as f64 / scale).min(end);
+            let span = hi - lo;
+            (lo.floor() as usize..hi.ceil() as usize)
+                .map(|k| {
+                    let k0 = k as f64;
+                    (k, ((k0 + 1.0).min(hi) - k0.max(lo)) / span)
+                })
+                .collect()
+        })
+        .collect()
 }
 
 /// Apply one backdrop-group filter to a captured canvas, in place.

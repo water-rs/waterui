@@ -220,25 +220,52 @@ pub(super) fn apply_window_size_limits<P: PlatformWindow>(
     // A limit apply never moves the window onto the content's size — installing
     // or re-installing limits only constrains the sizes it can take. The size
     // the user settled on survives a re-measure: the window is clamped into
-    // the new limits only when the applied limits themselves changed, and only
-    // on the axes that fell outside them. The first apply installs limits on
-    // the geometry the window was created with, untouched.
+    // the new limits only on the axes whose applied limits themselves changed
+    // and that fall outside them. The first apply installs limits on the
+    // geometry the window was created with, untouched — with nothing applied
+    // before, no axis has changed yet.
     let limits = (min, max);
-    let limits_changed = runtime
-        .applied_size_limits
-        .is_some_and(|applied| applied != limits);
-    runtime.applied_size_limits = Some(limits);
+    let moved = axes_whose_limits_changed(runtime.applied_size_limits.replace(limits), limits);
     runtime.platform.set_size_limits(min, max);
-    if limits_changed {
+    if moved != (false, false) {
         let frame = crate::platform::validated_window_frame(runtime.window.frame.snapshot());
-        let clamped = clamp_window_size(*frame.size(), min, max);
-        if clamped != *frame.size() {
+        let size = *frame.size();
+        let clamped = clamp_window_size(size, min, max, moved);
+        if clamped != size {
             runtime
                 .window
                 .frame
                 .set(waterui_core::layout::Rect::new(frame.origin(), clamped));
         }
     }
+}
+
+/// The axes whose applied limits differ between `previous` and `next` — the
+/// only axes a re-apply may clamp, so a width-only move never snaps the
+/// height. `None` means the first apply: limits install on the created
+/// geometry untouched, so a launch frame below the content minimum keeps its
+/// size until that axis's own limit changes, exactly as a re-apply with
+/// unchanged limits leaves it.
+pub(super) fn axes_whose_limits_changed(
+    previous: Option<(
+        Option<waterui_core::layout::Size>,
+        Option<waterui_core::layout::Size>,
+    )>,
+    next: (
+        Option<waterui_core::layout::Size>,
+        Option<waterui_core::layout::Size>,
+    ),
+) -> (bool, bool) {
+    let Some((previous_min, previous_max)) = previous else {
+        return (false, false);
+    };
+    let (min, max) = next;
+    (
+        previous_min.map(|size| size.width) != min.map(|size| size.width)
+            || previous_max.map(|size| size.width) != max.map(|size| size.width),
+        previous_min.map(|size| size.height) != min.map(|size| size.height)
+            || previous_max.map(|size| size.height) != max.map(|size| size.height),
+    )
 }
 
 /// Asserts an app-pinned `Window::min_size` is finite on both axes — a NaN
@@ -266,17 +293,30 @@ fn validated_max_size(size: waterui_core::layout::Size) -> waterui_core::layout:
     size
 }
 
-/// Clamps a window size into the new limits, axis by axis. A size already
-/// inside the limits passes through untouched — a re-measure keeps the size
-/// the user set — and only an out-of-bounds axis moves, to the nearer bound.
+/// Clamps a window size into the new limits, axis by axis — but only on
+/// `moved`, the axes whose applied limits changed: an axis whose limits did
+/// not move keeps its size even outside them, so a launch geometry below
+/// the content minimum stays the user's until that axis's own limit moves.
+/// A size inside the limits passes through untouched — a re-measure keeps
+/// the size the user set — and an out-of-bounds axis moves to the nearer
+/// bound.
 pub(super) fn clamp_window_size(
     size: waterui_core::layout::Size,
     min: Option<waterui_core::layout::Size>,
     max: Option<waterui_core::layout::Size>,
+    moved: (bool, bool),
 ) -> waterui_core::layout::Size {
     waterui_core::layout::Size::new(
-        clamp_axis(size.width, min.map(|s| s.width), max.map(|s| s.width)),
-        clamp_axis(size.height, min.map(|s| s.height), max.map(|s| s.height)),
+        if moved.0 {
+            clamp_axis(size.width, min.map(|s| s.width), max.map(|s| s.width))
+        } else {
+            size.width
+        },
+        if moved.1 {
+            clamp_axis(size.height, min.map(|s| s.height), max.map(|s| s.height))
+        } else {
+            size.height
+        },
     )
 }
 
@@ -576,7 +616,7 @@ fn build_window_scene<P: PlatformWindow>(
     phases.build_content += build_content_started_at.elapsed();
     let _ = drain_local_tasks();
     let scene_dispatch_started_at = Instant::now();
-    runtime.renderer.capture_window_tree(
+    let safe_area = runtime.renderer.capture_window_tree_with_root(
         content,
         env,
         bounds,
@@ -590,7 +630,7 @@ fn build_window_scene<P: PlatformWindow>(
     // path is where its sub-views are first built and placed.
     runtime
         .renderer
-        .render_context_menu_presentation(root_transform);
+        .render_context_menu_presentation(root_transform, &safe_area);
     phases.scene_dispatch += scene_dispatch_started_at.elapsed();
     let scene_finish_started_at = Instant::now();
     runtime.renderer.finish_rebuild_frame();
@@ -777,7 +817,10 @@ crate::engine::cfg_async_fn! {
         clear_color: peniko::Color,
         display_scale: f64,
         capture_snapshot: bool,
-        render: impl FnOnce(&mut HydrolysisRenderer, crate::renderer::FrameRenderTarget<'_>, bool),
+        render: impl FnOnce(
+            &mut HydrolysisRenderer,
+            crate::renderer::FrameRenderTarget<'_>,
+        ) -> Result<crate::renderer::EngineFrame, cherenkov::RenderError>,
     } {
         renderer: &mut HydrolysisRenderer,
         surface: &mut dyn crate::platform::SurfaceProvider,
@@ -787,18 +830,19 @@ crate::engine::cfg_async_fn! {
         render: impl AsyncFnOnce(
             &mut HydrolysisRenderer,
             crate::renderer::FrameRenderTarget<'_>,
-            bool,
-        ),
+        ) -> Result<crate::renderer::EngineFrame, cherenkov::RenderError>,
     } -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
     let (width, height) = surface.size();
     let format = surface.format();
-    let premultiply_alpha = surface.premultiply_alpha();
+    let output_alpha = surface.output_alpha();
     let context = surface.device_loss().gpu_context();
-    let acquire_started_at = Instant::now();
-    let frame = acquire_surface_frame(surface)?;
-    let acquire = acquire_started_at.elapsed();
+    // The engine renders into its own retained output before the swapchain
+    // image is acquired: the render awaits the GPU device on wasm32, and a
+    // browser expires a canvas texture when the task that acquired it ends,
+    // so the image must be acquired, filled and presented without an await
+    // in between.
     let render_started_at = Instant::now();
-    crate::engine::engine_await!(render(
+    let engine_frame = crate::engine::engine_await!(render(
         renderer,
         crate::renderer::FrameRenderTarget {
             adapter: surface.adapter(),
@@ -810,15 +854,29 @@ crate::engine::cfg_async_fn! {
             display_scale,
             headroom: surface.display_headroom(),
             persistent: true,
-            texture: Some(frame.texture()),
             format,
             width,
             height,
             base_color: crate::renderer::working_color(clear_color),
         },
-        premultiply_alpha,
-    ));
-    let render = render_started_at.elapsed();
+    ))
+    .unwrap_or_else(|error| {
+        panic!("hydrolysis renderer: engine render failed: {error:#}")
+    });
+    let engine_render = render_started_at.elapsed();
+    let acquire_started_at = Instant::now();
+    let frame = acquire_surface_frame(surface)?;
+    let acquire = acquire_started_at.elapsed();
+    let copy_started_at = Instant::now();
+    renderer.present_engine_frame(
+        engine_frame,
+        surface.device(),
+        surface.queue(),
+        frame.texture(),
+        surface.output_color(),
+        output_alpha,
+    );
+    let render = engine_render + copy_started_at.elapsed();
     #[cfg(feature = "frame-profile")]
     {
         // The timestamp resolve blocks until the frame's submits finish — the
@@ -835,13 +893,13 @@ crate::engine::cfg_async_fn! {
             HeadlessSnapshot {
                 width,
                 height,
-                rgba8: readback_texture_rgba8(
-                    surface.device(),
-                    surface.queue(),
-                    frame.texture(),
-                    width,
-                    height,
-                ),
+                rgba8: readback_texture_rgba8(&*surface, frame.texture(), width, height)
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "hydrolysis headless snapshot readback failed: {:#}",
+                            waterui_core::Error::from(error)
+                        )
+                    }),
             }
         });
         #[cfg(feature = "frame-profile")]
@@ -1008,13 +1066,8 @@ crate::engine::cfg_async_fn! {
                     segment_clear_color,
                     scale_factor,
                     false,
-                    |renderer, target, premultiply_alpha| {
-                        renderer.render_hybrid_segment_to_surface(
-                            segment,
-                            transient_scene,
-                            target,
-                            premultiply_alpha,
-                        );
+                    |renderer, target| {
+                        renderer.render_hybrid_segment(segment, transient_scene, target)
                     },
                 ) {
                     Ok(rendered) => {
@@ -1044,22 +1097,12 @@ crate::engine::cfg_async_fn! {
                 scale_factor,
                 capture_snapshot,
                 #[cfg(not(target_arch = "wasm32"))]
-                |renderer, target, premultiply_alpha| {
-                    renderer.render_scene_to_surface_with_alpha_mode(
-                        target,
-                        premultiply_alpha,
-                        reader.rasterizes(),
-                    );
-                },
+                |renderer, target| renderer.render_engine_frame(target, reader.rasterizes()),
                 #[cfg(target_arch = "wasm32")]
-                async |renderer, target, premultiply_alpha| {
+                async |renderer, target| {
                     renderer
-                        .render_scene_to_surface_with_alpha_mode(
-                            target,
-                            premultiply_alpha,
-                            reader.rasterizes(),
-                        )
-                        .await;
+                        .render_engine_frame(target, reader.rasterizes())
+                        .await
                 },
             ))
         };
@@ -1074,22 +1117,12 @@ crate::engine::cfg_async_fn! {
                 scale_factor,
                 capture_snapshot,
                 #[cfg(not(target_arch = "wasm32"))]
-                |renderer, target, premultiply_alpha| {
-                    renderer.render_scene_to_surface_with_alpha_mode(
-                        target,
-                        premultiply_alpha,
-                        reader.rasterizes(),
-                    );
-                },
+                |renderer, target| renderer.render_engine_frame(target, reader.rasterizes()),
                 #[cfg(target_arch = "wasm32")]
-                async |renderer, target, premultiply_alpha| {
+                async |renderer, target| {
                     renderer
-                        .render_scene_to_surface_with_alpha_mode(
-                            target,
-                            premultiply_alpha,
-                            reader.rasterizes(),
-                        )
-                        .await;
+                        .render_engine_frame(target, reader.rasterizes())
+                        .await
                 },
             ))
         };
@@ -1233,8 +1266,8 @@ crate::engine::cfg_async_fn! {
         runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
     }
     // The engine's own scheduling answer: an in-flight animation asks for its
-    // next frame through `Next::At` (its `RedrawCallback` already woke the
-    // host too — the request is idempotent).
+    // next frame through `Next::At` (the surface's wake may already have woken
+    // the host too — the request is idempotent).
     if matches!(
         runtime.renderer.take_engine_next(),
         Some(cherenkov::Next::At { .. })

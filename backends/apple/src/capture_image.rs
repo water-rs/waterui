@@ -1,5 +1,5 @@
-//! Owned snapshot rendering for the GPU-bearing icon/drag/cache consumers
-//! (#1683): the same native-plus-output compositor `ViewCapture` runs for
+//! Owned snapshot rendering for the GPU-bearing icon/drag/cache consumers:
+//! the same native-plus-output compositor `ViewCapture` runs for
 //! effect views, pointed at an owned Metal texture, with one final RGBA8
 //! readback at the end.
 //!
@@ -11,10 +11,12 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
 #[cfg(target_os = "macos")]
 use cocoa_ui::objc2::AnyThread;
+use cocoa_ui::objc2::MainThreadOnly;
 use cocoa_ui::objc2::rc::Retained;
 use cocoa_ui::objc2::runtime::ProtocolObject;
 #[cfg(target_os = "macos")]
@@ -24,8 +26,6 @@ use cocoa_ui::objc2_metal::{
     MTLTextureDescriptor, MTLTextureUsage,
 };
 use waterui_backend_core::Environment;
-
-use crate::capture_registry::CaptureRegistry;
 
 /// The platform's native image object — `NSImage` on macOS, `UIImage` on
 /// iOS — the type icon and drag endpoints publish.
@@ -44,6 +44,74 @@ pub struct CapturedRgba {
     pub width: u32,
     /// Raster height in pixels.
     pub height: u32,
+}
+
+/// Why [`capture_rgba`] produced no raster.
+#[derive(Debug)]
+pub enum CaptureFailure {
+    /// A GPU surface inside the captured subtree reported a terminal
+    /// failure — no recapture on its context generation can produce the
+    /// frame. Carries the surface's own `Arc`'d cause.
+    GpuSurfaceFailed(Arc<dyn std::error::Error + Send + Sync>),
+    /// The native-view composition command buffer ended in a status other
+    /// than `Completed`, so the composited frame never landed.
+    CompositionFailed {
+        /// The status the command buffer ended with.
+        status: cocoa_ui::objc2_metal::MTLCommandBufferStatus,
+        /// Metal's description of the command buffer's error, when it
+        /// attached one.
+        error: Option<String>,
+    },
+    /// No connected window scene can host a detached view's capture window.
+    #[cfg(target_os = "ios")]
+    NoWindowScene,
+    /// The Metal device refused the capture's readback texture.
+    TargetAllocation {
+        /// The requested target width in pixels.
+        width: u32,
+        /// The requested target height in pixels.
+        height: u32,
+    },
+}
+
+impl core::fmt::Display for CaptureFailure {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::GpuSurfaceFailed(_) => {
+                f.write_str("a GPU surface in the captured subtree failed")
+            }
+            Self::CompositionFailed { status, error } => {
+                write!(
+                    f,
+                    "the native view composition command buffer ended with status {status:?}"
+                )?;
+                if let Some(error) = error {
+                    write!(f, ": {error}")?;
+                }
+                Ok(())
+            }
+            #[cfg(target_os = "ios")]
+            Self::NoWindowScene => {
+                f.write_str("no UIWindowScene is connected to host the capture window")
+            }
+            Self::TargetAllocation { width, height } => write!(
+                f,
+                "the device could not allocate a {width}x{height} capture target"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CaptureFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::GpuSurfaceFailed(cause) => Some(&**cause),
+            Self::CompositionFailed { .. } => None,
+            #[cfg(target_os = "ios")]
+            Self::NoWindowScene => None,
+            Self::TargetAllocation { .. } => None,
+        }
+    }
 }
 
 /// A one-shot main-thread signal a completion or redraw callback fires
@@ -70,7 +138,10 @@ impl Signal {
     }
 
     /// Consumes one signal edge; pends until `fire` runs.
-    #[allow(clippy::future_not_send)]
+    #[expect(
+        clippy::future_not_send,
+        reason = "the signal is a main-thread `Rc` the capture's callbacks share"
+    )]
     async fn wait(self_shared: &Rc<RefCell<Self>>) {
         core::future::poll_fn(|cx: &mut Context<'_>| {
             let mut this = self_shared.borrow_mut();
@@ -115,12 +186,26 @@ struct WindowHost {
 
 impl WindowHost {
     /// Re-hosts `view` iff it has no window — native controls need one to
-    /// render their chrome.
-    fn attach_if_windowless(view: &Retained<cocoa_ui::PlatformView>) -> Option<Self> {
+    /// render their chrome. `Ok(None)` while the view already has one.
+    ///
+    /// # Errors
+    ///
+    /// [`CaptureFailure::NoWindowScene`] on iOS when no connected
+    /// `UIWindowScene` can host the offscreen window.
+    #[cfg_attr(
+        target_os = "macos",
+        expect(
+            clippy::unnecessary_wraps,
+            reason = "only UIKit's window-scene lookup can fail; AppKit's offscreen window always attaches"
+        )
+    )]
+    fn attach_if_windowless(
+        view: &Retained<cocoa_ui::PlatformView>,
+        mtm: cocoa_ui::MainThreadMarker,
+    ) -> Result<Option<Self>, CaptureFailure> {
         if cocoa_ui::view::window(view).is_some() {
-            return None;
+            return Ok(None);
         }
-        let mtm = cocoa_ui::MainThreadMarker::new().expect("capture runs on the main thread");
         let bounds = cocoa_ui::view::bounds(view);
         let size = cocoa_ui::Size::new(bounds.size.width.max(1.0), bounds.size.height.max(1.0));
         let frame = cocoa_ui::view::frame(view);
@@ -155,8 +240,8 @@ impl WindowHost {
         };
         #[cfg(target_os = "ios")]
         let window = {
-            let scene = cocoa_ui::bitmap::any_window_scene()
-                .expect("a detached capture needs a connected UIWindowScene");
+            let scene =
+                cocoa_ui::bitmap::any_window_scene().ok_or(CaptureFailure::NoWindowScene)?;
             let window = cocoa_ui::bitmap::make_offscreen_window(mtm, &scene, size);
             // The `UIViewController` containment + unhide + layout is the
             // only correct UIKit mount — a bare `addSubview` leaves the
@@ -164,7 +249,7 @@ impl WindowHost {
             cocoa_ui::bitmap::show_capture_window(&window, view, size);
             window
         };
-        Some(Self {
+        Ok(Some(Self {
             window,
             superview,
             #[cfg(target_os = "macos")]
@@ -173,7 +258,7 @@ impl WindowHost {
             index,
             frame,
             view: view.clone(),
-        })
+        }))
     }
 }
 
@@ -240,11 +325,15 @@ impl Drop for CaptureGuard {
 
 /// The shared `RGBA8Unorm` readback target — `.shared` storage so the one
 /// `getBytes` the API permits can run without a blit.
+///
+/// # Errors
+///
+/// [`CaptureFailure::TargetAllocation`] when the device refuses the texture.
 fn rgba_target(
     device: &ProtocolObject<dyn MTLDevice>,
     width: u32,
     height: u32,
-) -> Retained<ProtocolObject<dyn MTLTexture>> {
+) -> Result<Retained<ProtocolObject<dyn MTLTexture>>, CaptureFailure> {
     // SAFETY: a 2D descriptor is always valid to construct.
     let descriptor = unsafe {
         MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
@@ -258,7 +347,7 @@ fn rgba_target(
     descriptor.setStorageMode(MTLStorageMode::Shared);
     device
         .newTextureWithDescriptor(&descriptor)
-        .expect("capture target texture")
+        .ok_or(CaptureFailure::TargetAllocation { width, height })
 }
 
 /// `view`'s subtree rendered into an owned `RGBA8` raster at `scale`
@@ -271,20 +360,33 @@ fn rgba_target(
 /// had no current content, or a context lost mid-capture — is honored by
 /// waiting on the surfaces' own redraw wake and recapturing; the future
 /// only completes once a frame really landed, so no bogus-ready blank
-/// ships.
-#[allow(clippy::future_not_send)]
+/// ships. A terminal surface failure ends the loop instead: no redraw
+/// can produce the frame on the failed context, so waiting would never
+/// return — the typed error propagates to the caller.
+///
+/// # Errors
+///
+/// [`CaptureFailure::GpuSurfaceFailed`] with the `Arc`'d cause a
+/// surface's terminal `CaptureError::Failed` reported,
+/// [`CaptureFailure::CompositionFailed`] when the native-view composition
+/// command buffer did not complete,
+/// [`CaptureFailure::NoWindowScene`] when a detached view has no window
+/// scene to host it, and [`CaptureFailure::TargetAllocation`] when the
+/// readback target cannot be allocated. `render_to_rgba` maps them onto
+/// its `RenderError`; [`template_image`] and [`drag_image`] fail fast
+/// through [`terminal_capture_failure`].
 #[expect(
-    clippy::too_many_lines,
-    reason = "the deferred-retry loop, generation parking and the single readback stay in one pass"
+    clippy::future_not_send,
+    reason = "capture runs on the main thread; the future holds the main-thread capture and window host"
 )]
 pub async fn capture_rgba(
     view: &cocoa_ui::PlatformView,
     env: &Environment,
     scale: f64,
-) -> CapturedRgba {
-    let mtm = cocoa_ui::MainThreadMarker::new().expect("capture runs on the main thread");
+    mtm: cocoa_ui::MainThreadMarker,
+) -> Result<CapturedRgba, CaptureFailure> {
     let view = cocoa_ui::view::retain_base(view);
-    let host = WindowHost::attach_if_windowless(&view);
+    let host = WindowHost::attach_if_windowless(&view, mtm)?;
     if host.is_some() {
         // A re-hosted view lays out against the offscreen window before the
         // capture reads its actual bounds.
@@ -293,11 +395,11 @@ pub async fn capture_rgba(
 
     let bounds = cocoa_ui::view::bounds(&view);
     if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
-        return CapturedRgba {
+        return Ok(CapturedRgba {
             pixels: Vec::new(),
             width: 0,
             height: 0,
-        };
+        });
     }
     #[expect(
         clippy::cast_possible_truncation,
@@ -309,12 +411,7 @@ pub async fn capture_rgba(
         (bounds.size.height * scale).ceil() as u32,
     );
 
-    let registry = CaptureRegistry::get(env);
-    let capture = Rc::new(cocoa_ui::capture::ViewCapture::new(
-        mtm,
-        view.clone(),
-        registry.resolver(),
-    ));
+    let capture = Rc::new(cocoa_ui::capture::ViewCapture::new(mtm, view.clone()));
     // `shutdown` is owed even if the awaiting task is cancelled.
     let guard = CaptureGuard {
         capture: Some(capture),
@@ -333,57 +430,7 @@ pub async fn capture_rgba(
     // replacement mid-wait makes the old-generation target obsolete, and
     // the readback must come from the successfully fenced current one.
     let runtime = crate::gpu_runtime::runtime(env);
-    let target = loop {
-        let context = runtime.context();
-        // A lost context cannot produce pixels: park on the next
-        // publication before allocating anything against it — the
-        // destination must never be allocated on a dead device.
-        if context.device_lost_reason().is_some() {
-            runtime.context_after(context.generation()).await;
-            continue;
-        }
-        let device = crate::gpu_runtime::raw_metal_device(&context);
-        let target = rgba_target(&device, width, height);
-
-        let completion = Rc::new(RefCell::new(Signal::default()));
-        let landed = Rc::new(RefCell::new(false));
-        // The completion is `Send` — it parks on Metal's own queue before
-        // hopping to the main queue — so the slots ride `MainThreadBound`.
-        let slot = dispatch2::MainThreadBound::new((completion.clone(), landed.clone()), mtm);
-        guard
-            .capture()
-            .capture(&target, context.generation(), move |ok| {
-                let mtm = cocoa_ui::MainThreadMarker::new()
-                    .expect("the capture completion runs on the main thread");
-                let (completion, landed) = slot.get(mtm);
-                *landed.borrow_mut() = ok;
-                Signal::fire(completion);
-            });
-        Signal::wait(&completion).await;
-        // A `true` completion from a context that lost or was superseded
-        // mid-flight settles stale pixels — never the current target.
-        if *landed.borrow()
-            && context.device_lost_reason().is_none()
-            && runtime.context().generation() == context.generation()
-        {
-            break target;
-        }
-        // Deferred. If the context was replaced mid-attempt the loop's top
-        // already re-resolves it; otherwise park on the next real signal —
-        // a surfaces' redraw wake or the rebuilt context's publication,
-        // whichever lands first (both forward into `redraw`).
-        if runtime.context().generation() != context.generation() {
-            continue;
-        }
-        let generation = context.generation();
-        let forward = redraw.clone();
-        let forward_runtime = runtime.clone();
-        let _watch = executor_core::spawn_local(async move {
-            forward_runtime.context_after(generation).await;
-            Signal::fire(&forward);
-        });
-        Signal::wait(&redraw).await;
-    };
+    let target = capture_attempts(&runtime, guard.capture(), &redraw, width, height, mtm).await?;
     drop(guard);
     drop(host);
 
@@ -406,11 +453,126 @@ pub async fn capture_rgba(
             0,
         );
     }
-    CapturedRgba {
+    Ok(CapturedRgba {
         pixels,
         width,
         height,
+    })
+}
+
+/// The recapture loop behind [`capture_rgba`]: context, device and
+/// destination resolve per attempt — a context replacement mid-wait
+/// makes the old-generation target obsolete, and the readback must come
+/// from the successfully fenced current one. A deferred capture waits on
+/// the surfaces' redraw wake or the next context publication, whichever
+/// lands first; a terminal surface failure stops the loop, because no
+/// retry on the failed generation can produce the frame.
+///
+/// # Errors
+///
+/// [`CaptureFailure::GpuSurfaceFailed`] with the `Arc`'d cause a
+/// surface's terminal `CaptureError::Failed` reported,
+/// [`CaptureFailure::CompositionFailed`] when the native-view composition
+/// command buffer did not complete, or
+/// [`CaptureFailure::TargetAllocation`] when the attempt's readback
+/// target cannot be allocated — [`capture_rgba`] propagates all three.
+#[expect(
+    clippy::future_not_send,
+    reason = "the recapture loop awaits main-thread signals shared through `Rc`"
+)]
+async fn capture_attempts(
+    runtime: &waterui_graphics::gpu::GpuRuntime,
+    capture: &Rc<cocoa_ui::capture::ViewCapture>,
+    redraw: &Rc<RefCell<Signal>>,
+    width: u32,
+    height: u32,
+    mtm: cocoa_ui::MainThreadMarker,
+) -> Result<Retained<ProtocolObject<dyn MTLTexture>>, CaptureFailure> {
+    let target = loop {
+        let context = runtime.context();
+        // A lost context cannot produce pixels: park on the next
+        // publication before allocating anything against it — the
+        // destination must never be allocated on a dead device.
+        if context.device_lost_reason().is_some() {
+            runtime.context_after(context.generation()).await;
+            continue;
+        }
+        let device = crate::gpu_runtime::raw_metal_device(&context);
+        let target = rgba_target(&device, width, height)?;
+
+        let completion = Rc::new(RefCell::new(Signal::default()));
+        let outcome = Rc::new(RefCell::new(None));
+        // The completion is `Send` — it parks on Metal's own queue before
+        // hopping to the main queue — so the slots ride `MainThreadBound`.
+        let slot = dispatch2::MainThreadBound::new((completion.clone(), outcome.clone()), mtm);
+        capture.capture(&target, context.generation(), move |result| {
+            let mtm = cocoa_ui::MainThreadMarker::new()
+                .expect("the capture completion runs on the main thread");
+            let (completion, outcome) = slot.get(mtm);
+            *outcome.borrow_mut() = Some(result);
+            Signal::fire(completion);
+        });
+        Signal::wait(&completion).await;
+        let result = outcome.borrow_mut().take();
+        // A terminal surface failure settles the capture — no retry on
+        // this generation can produce the frame, and no redraw wake ever
+        // lands: the loop exits here.
+        if let Some(Err(cocoa_ui::capture::CaptureError::Failed(error))) = &result {
+            return Err(error
+                .downcast_ref::<cocoa_ui::capture::CompositionFailed>()
+                .map_or_else(
+                    || CaptureFailure::GpuSurfaceFailed(error.clone()),
+                    |composition| CaptureFailure::CompositionFailed {
+                        status: composition.status,
+                        error: composition.error.clone(),
+                    },
+                ));
+        }
+        // A `true` completion from a context that lost or was superseded
+        // mid-flight settles stale pixels — never the current target.
+        if matches!(result, Some(Ok(())))
+            && context.device_lost_reason().is_none()
+            && runtime.context().generation() == context.generation()
+        {
+            break target;
+        }
+        // Deferred. If the context was replaced mid-attempt the loop's top
+        // already re-resolves it; otherwise park on the next real signal —
+        // a surfaces' redraw wake or the rebuilt context's publication,
+        // whichever lands first (both forward into `redraw`).
+        if runtime.context().generation() != context.generation() {
+            continue;
+        }
+        let generation = context.generation();
+        let forward = redraw.clone();
+        let forward_runtime = runtime.clone();
+        let _watch = executor_core::spawn_local(async move {
+            forward_runtime.context_after(generation).await;
+            Signal::fire(&forward);
+        });
+        Signal::wait(redraw).await;
+    };
+    Ok(target)
+}
+
+/// Where a capture failure meets a caller with no error channel.
+///
+/// `render_to_rgba` returns its typed [`RenderError`](waterui_core::view_renderer::RenderError)
+/// instead; [`template_image`] and [`drag_image`] remain here because
+/// `AppKit` and `UIKit` give their icon/drag paths no error channel at all —
+/// so they fail fast with the cause rather than ship an empty image.
+/// Never produces an empty raster: the typed failure aborts here, its
+/// whole `source()` chain in the message.
+#[cold]
+pub fn terminal_capture_failure(error: &dyn std::error::Error) -> ! {
+    let mut message = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        message.push_str(": ");
+        message.push_str(&cause.to_string());
+        source = cause.source();
     }
+    panic!("view capture failed: {message}")
 }
 
 /// `view` rasterized as a template image, capped at `max_side` points —
@@ -418,7 +580,10 @@ pub async fn capture_rgba(
 ///
 /// Reuses [`capture_rgba`]; the `CGImage` conversion and `max_side` shrink
 /// conventions match `cocoa_ui::bitmap::view_template_image`.
-#[allow(clippy::future_not_send)]
+#[expect(
+    clippy::future_not_send,
+    reason = "the icon capture awaits the main-thread capture of a main-thread view"
+)]
 pub async fn template_image(
     view: &cocoa_ui::PlatformView,
     env: &Environment,
@@ -426,7 +591,9 @@ pub async fn template_image(
 ) -> Retained<PlatformImage> {
     let bounds = cocoa_ui::view::bounds(view);
     let scale = cocoa_ui::view::backing_scale_factor(view);
-    let captured = capture_rgba(view, env, scale.max(1.0)).await;
+    let captured = capture_rgba(view, env, scale.max(1.0), view.mtm())
+        .await
+        .unwrap_or_else(|error| terminal_capture_failure(&error));
     if captured.width == 0 || captured.height == 0 {
         // A genuinely empty view bounds is the only empty-image contract —
         // never a masked conversion failure.
@@ -461,14 +628,19 @@ pub async fn template_image(
 /// wraps the top-down raster unflipped, preserving the capture
 /// orientation.
 #[cfg(target_os = "macos")]
-#[allow(clippy::future_not_send)]
+#[expect(
+    clippy::future_not_send,
+    reason = "the drag capture awaits the main-thread capture of a main-thread view"
+)]
 pub async fn drag_image(
     view: &cocoa_ui::PlatformView,
     env: &Environment,
 ) -> Retained<cocoa_ui::objc2_app_kit::NSImage> {
     let bounds = cocoa_ui::view::bounds(view);
     let scale = cocoa_ui::view::backing_scale_factor(view);
-    let captured = capture_rgba(view, env, scale.max(1.0)).await;
+    let captured = capture_rgba(view, env, scale.max(1.0), view.mtm())
+        .await
+        .unwrap_or_else(|error| terminal_capture_failure(&error));
     if captured.width == 0 || captured.height == 0 {
         return cocoa_ui::objc2_app_kit::NSImage::new();
     }

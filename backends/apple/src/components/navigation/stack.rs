@@ -754,23 +754,17 @@ mod platform {
         /// handlers wired.
         pub(super) fn build(self: &Rc<Self>, root: NavigationView) -> NativeLeaf {
             let _ = self.self_weak.set(Rc::downgrade(self));
-            let driver = Rc::downgrade(self);
+            let driver = Rc::clone(self);
             self.host.set_layout_handler(move |host| {
-                if let Some(driver) = driver.upgrade() {
-                    driver.layout(host);
-                }
+                driver.layout(host);
             });
-            let driver = Rc::downgrade(self);
+            let driver = Rc::clone(self);
             self.host.set_window_handler(move |host| {
-                if let Some(driver) = driver.upgrade() {
-                    driver.window_changed(host);
-                }
+                driver.window_changed(host);
             });
-            let driver = Rc::downgrade(self);
+            let driver = Rc::clone(self);
             self.host.set_hidden_handler(move |_host, hidden| {
-                if let Some(driver) = driver.upgrade() {
-                    driver.set_chrome_active(!hidden);
-                }
+                driver.set_chrome_active(!hidden);
             });
             let entry = self.make_entry(root);
             self.entries.borrow_mut().push(Rc::new(entry));

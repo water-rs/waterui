@@ -92,6 +92,8 @@ pub struct HostViewIvars {
     intrinsic_auto_layout: std::cell::Cell<bool>,
     /// The width the intrinsic-content-size query was last invalidated for.
     last_auto_layout_width: std::cell::Cell<f64>,
+    /// The capturable surface the mounted leaf stored on this view.
+    capturable: crate::capture::CapturableSlot,
 }
 
 impl fmt::Debug for HostViewIvars {
@@ -123,6 +125,7 @@ impl fmt::Debug for HostViewIvars {
             .field("tracking_area", &self.tracking_area.borrow().is_some())
             .field("key", &self.key.borrow().is_some())
             .field("right_mouse", &self.right_mouse.borrow().is_some())
+            .field("capturable", &self.capturable.get().is_some())
             .finish()
     }
 }
@@ -550,6 +553,17 @@ impl HostView {
         self.ivars().layout.replace(Some(Rc::new(handler)));
     }
 
+    /// The capturable surface a mounted leaf stored on this view, if any.
+    #[must_use]
+    pub fn capturable(&self) -> Option<Rc<dyn crate::capture::CapturableSurface>> {
+        self.ivars().capturable.get()
+    }
+
+    /// The view's capturable slot — install once, clear on unmount.
+    pub fn capturable_slot(&self) -> &crate::capture::CapturableSlot {
+        &self.ivars().capturable
+    }
+
     /// Calls `handler` with the new size every time the view's size changes,
     /// replacing any handler set before.
     pub fn set_resize_handler(&self, handler: impl Fn(&Self, Size) + 'static) {
@@ -638,10 +652,44 @@ impl HostView {
         self.ivars().measure.replace(Some(Rc::new(handler)));
     }
 
-    /// Drops the installed measure handler — the leaf's detach boundary,
-    /// after which measurements fall back to `NSView`'s own intrinsic size.
+    /// Drops the installed measure handler, after which measurements fall
+    /// back to `NSView`'s own intrinsic size.
     pub fn clear_measure_handler(&self) {
         self.ivars().measure.replace(None);
+    }
+
+    /// Drops every installed handler — the release boundary of the
+    /// view's owner.
+    ///
+    /// Each `set_*_handler` slot answers `None` afterwards, so a callback
+    /// `AppKit` delivers to this view does nothing by construction rather
+    /// than reaching state the owner released, and the handlers no longer
+    /// keep that state alive: layout, resize, hit-test, backing-changed,
+    /// window, superview, measure, primary content, scroll surface,
+    /// hidden, mouse, drop, pointer, key and right-mouse. The pointer
+    /// tracking area is removed as well, since it exists only to serve the
+    /// pointer handler.
+    pub fn clear_handlers(&self) {
+        let ivars = self.ivars();
+        ivars.layout.replace(None);
+        ivars.resize.replace(None);
+        ivars.hit_test.replace(None);
+        ivars.window.replace(None);
+        ivars.superview.replace(None);
+        ivars.measure.replace(None);
+        ivars.primary_content.replace(None);
+        ivars.scroll_surface_candidates.replace(None);
+        ivars.hidden.replace(None);
+        ivars.mouse_down.replace(None);
+        ivars.mouse_dragged.replace(None);
+        self.set_drop_handlers(&[], None);
+        ivars.pointer.replace(None);
+        ivars.pointer_events.set(PointerEvents::NONE);
+        ivars.pointer_inside.set(false);
+        self.updateTrackingAreas();
+        ivars.key.replace(None);
+        ivars.right_mouse.replace(None);
+        ivars.backing_changed.replace(None);
     }
 
     /// Whether the intrinsic content size reports the height the current

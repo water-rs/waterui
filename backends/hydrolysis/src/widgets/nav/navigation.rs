@@ -1,8 +1,9 @@
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
+use crate::renderer::Edge;
 #[cfg(feature = "accessibility")]
 use crate::renderer::ROOT_NAVIGATION_IDENTITY;
-use crate::renderer::Recording;
+use crate::renderer::SafeAreaLayout;
 use crate::renderer::bounded_proposal;
 use crate::renderer::{
     CapturedScenePlacement, HydroNativeView, HydroState, HydrolysisRenderer, RenderContext,
@@ -397,7 +398,7 @@ pub fn measure_navigation_view_node(
     if let (Some(width), Some(height)) = (proposal.width, proposal.height) {
         return ViewDimensions::new(LayoutSize::new(width, height));
     }
-    let bar_hidden = state.hidden.snapshot();
+    let bar_hidden = hydro.measure_signal(&state.hidden);
     let metrics = theme.navigation_metrics();
     let bar_height = if bar_hidden {
         0.0
@@ -563,29 +564,43 @@ pub fn render_navigation_view_parts(
         };
         base + search_extra
     };
+    // The span clamp in `Edge::split_band` covers a band that outgrows
+    // bounds — the extent is not clamped to `bounds.height()` here (a bar
+    // the keyboard covers past `bounds` still keeps its height).
     let bottom_bar_height = if has_bottom {
-        metrics.inline_bar_height.min(ctx.bounds.height())
+        metrics.inline_bar_height
     } else {
         0.0
     };
 
+    // §7.1's multi-edge chrome split — one derivation for both bars:
+    // each bar docks to its edge clear of the container region only, so
+    // the keyboard covers it instead of lifting it, while the hosted
+    // content keeps the laid-out frame minus both bands — clear of both
+    // regions — with each bar's edge docked on its band's inner edge.
+    let chrome = ctx.chrome_splits([
+        (Edge::Top, top_bar_height),
+        (Edge::Bottom, bottom_bar_height),
+    ]);
+    let [top, bottom] = &chrome.bars;
+    let (bar_rect, bottom_rect) = (top.band, bottom.band);
+
     if top_bar_height > 0.0 {
         let base_bar_height = navigation_base_bar_height_for_display_mode(display_mode, &theme);
-        let bar_rect = kurbo::Rect::new(
-            ctx.bounds.x0,
-            ctx.bounds.y0,
-            ctx.bounds.x1,
-            (ctx.bounds.y0 + top_bar_height).min(ctx.bounds.y1),
-        );
         let bar_color = Paint::Solid(ctx.renderer_mut().read_signal(&color_signal));
+        // §7.1 "Chrome": the bar's surface extends through the regions of
+        // the edges a top bar can touch — top, leading, trailing — to the
+        // window edge; the separator stays at the bar's inner edge and
+        // everything else keeps `bar_rect`.
+        let bar_surface = top.surface(Edge::Top);
         {
             let theme = ctx.theme();
             ctx.draw_context(|draw| {
-                theme.draw_navigation_bar(&mut *draw, bar_rect, &bar_color);
+                theme.draw_navigation_bar(&mut *draw, bar_surface, &bar_color);
                 let separator = kurbo::Rect::new(
-                    bar_rect.x0,
+                    bar_surface.x0,
                     (bar_rect.y1 - 1.0).max(bar_rect.y0),
-                    bar_rect.x1,
+                    bar_surface.x1,
                     bar_rect.y1,
                 );
                 theme.draw_navigation_bar_separator(&mut *draw, separator);
@@ -630,6 +645,7 @@ pub fn render_navigation_view_parts(
                 env,
                 leading_rect,
                 ToolbarAlignment::Leading,
+                top,
             );
             flush_toolbar_group(
                 ctx,
@@ -637,6 +653,7 @@ pub fn render_navigation_view_parts(
                 env,
                 trailing_rect,
                 ToolbarAlignment::Trailing,
+                top,
             );
         }
 
@@ -678,7 +695,7 @@ pub fn render_navigation_view_parts(
                 // (buttons, menus) emit like the other toolbar groups.
                 #[cfg(feature = "accessibility")]
                 ctx.renderer_mut().push_accessibility_suppression();
-                flush_title_and_subtitle(ctx, &mut state, env, title_rect);
+                flush_title_and_subtitle(ctx, &mut state, env, title_rect, top);
                 #[cfg(feature = "accessibility")]
                 ctx.renderer_mut().pop_accessibility_suppression();
             } else {
@@ -688,6 +705,7 @@ pub fn render_navigation_view_parts(
                     env,
                     title_rect,
                     ToolbarAlignment::Center,
+                    top,
                 );
             }
         }
@@ -705,6 +723,7 @@ pub fn render_navigation_view_parts(
             );
             if search_rect.width() > 0.0 && search_rect.height() > 0.0 {
                 let render_ctx = ctx.render_context();
+                let field_area = top.area_for(search_rect);
                 if let Some(field) = state.borrow_mut().search_field.as_mut() {
                     field.flush_in_rect(
                         ctx.renderer_mut(),
@@ -712,41 +731,41 @@ pub fn render_navigation_view_parts(
                         env,
                         ProposalSize::UNSPECIFIED,
                         search_rect,
+                        field_area,
                     );
                 }
             }
         }
     }
 
-    let content_rect = kurbo::Rect::new(
-        ctx.bounds.x0,
-        (ctx.bounds.y0 + top_bar_height).min(ctx.bounds.y1),
-        ctx.bounds.x1,
-        (ctx.bounds.y1 - bottom_bar_height).max(ctx.bounds.y0),
-    );
+    let content_rect = chrome.content;
     if content_rect.width() > 0.0 && content_rect.height() > 0.0 {
         let render_ctx = ctx.render_context();
+        // §7.1: navigation content is chrome-hosted — it inherits the
+        // widget's boundaries, so a scroll surface inside still extends
+        // and clears on the edges the bars leave reachable, and an
+        // `.ignore_safe_area` inside still releases there; each bar's
+        // edge docks on its band's inner edge.
         state.borrow_mut().content.flush_in_rect(
             ctx.renderer_mut(),
             render_ctx,
             env,
             bounded_proposal(content_rect),
             content_rect,
+            chrome.content_area,
         );
     }
 
     if bottom_bar_height > 0.0 {
-        let bottom_rect = kurbo::Rect::new(
-            ctx.bounds.x0,
-            (ctx.bounds.y1 - bottom_bar_height).max(ctx.bounds.y0),
-            ctx.bounds.x1,
-            ctx.bounds.y1,
-        );
         let bar_color = Paint::Solid(ctx.renderer_mut().read_signal(&color_signal));
+        // §7.1 "Chrome": the bottom bar's surface extends through the
+        // regions of the edges a bottom bar can touch — bottom, leading,
+        // trailing — to the window edge.
+        let bottom_surface = bottom.surface(Edge::Bottom);
         {
             let theme = ctx.theme();
             ctx.draw_context(|draw| {
-                theme.draw_navigation_bar(&mut *draw, bottom_rect, &bar_color);
+                theme.draw_navigation_bar(&mut *draw, bottom_surface, &bar_color);
             });
         }
         flush_toolbar_group(
@@ -755,6 +774,7 @@ pub fn render_navigation_view_parts(
             env,
             bottom_rect,
             ToolbarAlignment::Center,
+            bottom,
         );
     }
 }
@@ -795,6 +815,7 @@ fn flush_toolbar_group(
     env: &Environment,
     bounds: kurbo::Rect,
     alignment: ToolbarAlignment,
+    bar: &crate::renderer::ChromeBar,
 ) {
     if group.is_empty() || bounds.width() <= 0.0 || bounds.height() <= 0.0 {
         return;
@@ -821,12 +842,14 @@ fn flush_toolbar_group(
         let rect = kurbo::Rect::new(x, y, x + width, y + height);
         if rect.width() > 0.0 && rect.height() > 0.0 {
             let render_ctx = ctx.render_context();
+            let item_area = bar.area_for(rect);
             item.flush_in_rect(
                 ctx.renderer_mut(),
                 render_ctx,
                 env,
                 ProposalSize::UNSPECIFIED,
                 rect,
+                item_area,
             );
         }
         x += width + metrics.item_spacing;
@@ -857,6 +880,7 @@ fn flush_title_and_subtitle(
     state: &mut NavigationViewRenderState,
     env: &Environment,
     bounds: kurbo::Rect,
+    bar: &crate::renderer::ChromeBar,
 ) {
     let title_size = state.title.measure_intrinsic(ctx.renderer_mut(), env);
     let subtitle_size = if state.subtitle_present {
@@ -867,22 +891,26 @@ fn flush_title_and_subtitle(
     let (title_rect, subtitle_rect) = title_and_subtitle_rects(bounds, title_size, subtitle_size);
     if title_rect.height() > 0.0 {
         let render_ctx = ctx.render_context();
+        let title_area = bar.area_for(title_rect);
         state.title.flush_in_rect(
             ctx.renderer_mut(),
             render_ctx,
             env,
             ProposalSize::UNSPECIFIED,
             title_rect,
+            title_area,
         );
     }
     if state.subtitle_present && subtitle_rect.height() > 0.0 {
         let render_ctx = ctx.render_context();
+        let subtitle_area = bar.area_for(subtitle_rect);
         state.subtitle.flush_in_rect(
             ctx.renderer_mut(),
             render_ctx,
             env,
             ProposalSize::UNSPECIFIED,
             subtitle_rect,
+            subtitle_area,
         );
     }
 }
@@ -1138,15 +1166,17 @@ fn measure_navigation_split_layout(
     env: &Environment,
     theme: &Rc<dyn crate::engine::WidgetTheme>,
 ) -> LayoutSize {
-    let primary_selection = split.primary_selection().snapshot();
+    let primary_selection = state.measure_signal(split.primary_selection());
     let detail_selection = split
         .secondary_selection()
-        .map_or(primary_selection, Signal::snapshot);
+        .map_or(primary_selection, |selection| {
+            state.measure_signal(selection)
+        });
     let plan = split_measure_plan(
         split.content_builder().is_some(),
         split.sidebar_width_constraints(),
         split.native_style(),
-        split.column_visibility_signal().snapshot(),
+        state.measure_signal(split.column_visibility_signal()),
         proposal,
     );
 
@@ -1255,16 +1285,18 @@ pub fn measure_navigation_split_node(
     env: &Environment,
     theme: &Rc<dyn crate::engine::WidgetTheme>,
 ) -> ViewDimensions {
-    let primary_selection = split.primary_selection.snapshot();
+    let primary_selection = state.measure_signal(&split.primary_selection);
     let detail_selection = split
         .secondary_selection
         .as_ref()
-        .map_or(primary_selection, Signal::snapshot);
+        .map_or(primary_selection, |selection| {
+            state.measure_signal(selection)
+        });
     let plan = split_measure_plan(
         split.is_three_column(),
         split.column_width,
         split.style,
-        split.visibility.snapshot(),
+        state.measure_signal(&split.visibility),
         proposal,
     );
 
@@ -1428,12 +1460,16 @@ pub fn render_navigation_split_parts(
 
     if let Some(primary_rect) = primary_rect {
         let render_ctx = ctx.render_context();
+        // A split column is chrome-hosted content, like navigation content:
+        // it inherits the widget's boundaries edge by edge.
+        let primary_area = ctx.content_area_for(primary_rect);
         state.borrow_mut().primary.flush_in_rect(
             ctx.renderer_mut(),
             render_ctx,
             env,
             bounded_proposal(primary_rect),
             primary_rect,
+            primary_area,
         );
     }
     if let Some(content_rect) = content_rect {
@@ -1483,12 +1519,14 @@ fn render_compact_split(
             back_selection = Some(selection.primary_binding);
         } else {
             let render_ctx = ctx.render_context();
+            let pane_area = ctx.content_area_for(bounds);
             state.borrow_mut().primary.flush_in_rect(
                 ctx.renderer_mut(),
                 render_ctx,
                 env,
                 bounded_proposal(bounds),
                 bounds,
+                pane_area,
             );
         }
     } else if selection.primary.is_some() {
@@ -1496,12 +1534,14 @@ fn render_compact_split(
         back_selection = Some(selection.primary_binding);
     } else {
         let render_ctx = ctx.render_context();
+        let pane_area = ctx.content_area_for(bounds);
         state.borrow_mut().primary.flush_in_rect(
             ctx.renderer_mut(),
             render_ctx,
             env,
             bounded_proposal(bounds),
             bounds,
+            pane_area,
         );
     }
 
@@ -1536,6 +1576,7 @@ fn render_split_content(
         let mut state = state.borrow_mut();
         state.ensure_content(selected, compact, ctx.renderer_mut(), env);
         let render_ctx = ctx.render_context();
+        let pane_area = ctx.content_area_for(bounds);
         state
             .content
             .as_mut()
@@ -1547,15 +1588,18 @@ fn render_split_content(
                 env,
                 bounded_proposal(bounds),
                 bounds,
+                pane_area,
             );
     } else {
         let render_ctx = ctx.render_context();
+        let pane_area = ctx.content_area_for(bounds);
         state.borrow_mut().placeholder.flush_in_rect(
             ctx.renderer_mut(),
             render_ctx,
             env,
             bounded_proposal(bounds),
             bounds,
+            pane_area,
         );
     }
 }
@@ -1572,6 +1616,7 @@ fn render_split_detail(
         let mut state = state.borrow_mut();
         state.ensure_detail(selected, compact, ctx.renderer_mut(), env);
         let render_ctx = ctx.render_context();
+        let pane_area = ctx.content_area_for(bounds);
         state
             .detail
             .as_mut()
@@ -1583,15 +1628,18 @@ fn render_split_detail(
                 env,
                 bounded_proposal(bounds),
                 bounds,
+                pane_area,
             );
     } else {
         let render_ctx = ctx.render_context();
+        let pane_area = ctx.content_area_for(bounds);
         state.borrow_mut().placeholder.flush_in_rect(
             ctx.renderer_mut(),
             render_ctx,
             env,
             bounded_proposal(bounds),
             bounds,
+            pane_area,
         );
     }
 }
@@ -1660,6 +1708,10 @@ fn navigation_entry_identity(
         .identity
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the call carries the page render's inputs; the safe-area context is the §7.1 addition that tips the count"
+)]
 fn render_navigation_page_scene(
     renderer: &mut HydrolysisRenderer,
     state: &Rc<RefCell<NavigationStackRenderState>>,
@@ -1668,6 +1720,7 @@ fn render_navigation_page_scene(
     env: &Environment,
     placement: CapturedScenePlacement,
     inactive: bool,
+    safe_area: Option<SafeAreaLayout>,
 ) -> crate::renderer::navigation_state::NavigationCapturedScene {
     let size = placement.size;
     let background = state.borrow().background();
@@ -1676,11 +1729,11 @@ fn render_navigation_page_scene(
         if inactive {
             state
                 .root_mut()
-                .render_built_navigation_scene_inactive(renderer, env, placement)
+                .render_built_navigation_scene_inactive(renderer, env, placement, safe_area)
         } else {
             state
                 .root_mut()
-                .render_built_scene(renderer, env, placement)
+                .render_built_scene(renderer, env, placement, safe_area)
         }
     } else {
         let (entries, pending_removed) = {
@@ -1706,28 +1759,32 @@ fn render_navigation_page_scene(
         if inactive {
             entry
                 .content
-                .render_built_navigation_scene_inactive(renderer, env, placement)
+                .render_built_navigation_scene_inactive(renderer, env, placement, safe_area)
         } else {
-            entry.content.render_built_scene(renderer, env, placement)
+            entry
+                .content
+                .render_built_scene(renderer, env, placement, safe_area)
         }
     };
-    let mut scene = Recording::new();
     let bounds = kurbo::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height));
-    scene.fill_paint(
-        peniko::Fill::NonZero,
-        kurbo::Affine::IDENTITY,
-        Paint::Solid(renderer.read_signal(&background)),
-        &bounds,
-    );
-    scene.append(&captured.scene, kurbo::Affine::IDENTITY);
-    if identity != 0 {
-        core::mem::swap(renderer.scene_mut(), &mut scene);
-        let context = RenderContext::with_transforms(
-            bounds,
+    let background = Paint::Solid(renderer.read_signal(&background));
+    let page_layers = core::mem::take(&mut captured.layers);
+    // The page as the stack presents it: its background, the page's own
+    // layers above it, and the back chevron on top of a pushed page.
+    captured.layers = renderer.capture_layers(|renderer| {
+        renderer.scene_mut().fill_paint(
+            peniko::Fill::NonZero,
             kurbo::Affine::IDENTITY,
-            kurbo::Affine::IDENTITY,
+            background,
+            &bounds,
         );
-        {
+        renderer.present_layers(&page_layers, kurbo::Affine::IDENTITY);
+        if identity != 0 {
+            let context = RenderContext::with_transforms(
+                bounds,
+                kurbo::Affine::IDENTITY,
+                kurbo::Affine::IDENTITY,
+            );
             let theme = renderer.theme();
             renderer.draw_context(context, |draw| {
                 theme.draw_navigation_back_button(
@@ -1736,9 +1793,7 @@ fn render_navigation_page_scene(
                 );
             });
         }
-        core::mem::swap(renderer.scene_mut(), &mut scene);
-    }
-    captured.scene = scene;
+    });
     captured.leading_reserve = navigation_leading_reserve(env);
     captured
 }
@@ -1948,15 +2003,24 @@ pub fn render_navigation_stack_parts(
         ),
         hit_transform: ctx.hit_transform,
     };
+    // A captured page is chrome-hosted content: it inherits the stack's
+    // boundaries, so a scroll surface inside a page extends to the window
+    // edge on the edges it touches and `.ignore_safe_area` inside releases
+    // there.
+    let page_area = ctx.content_area_for(ctx.bounds);
     let background = state.borrow().background();
     let background = Paint::Solid(ctx.renderer_mut().read_signal(&background));
     let transform = ctx.transform;
-    let bounds = ctx.bounds;
+    // §7.1 "Chrome": the stack's backdrop paints what the pages paint —
+    // `chrome_paint_bounds`, the same reach the transition page clips
+    // cover — so a bar surface extended to the window edge never lands on
+    // the window background.
+    let paint_bounds = ctx.chrome_paint_bounds();
     ctx.renderer_mut().scene_mut().fill_paint(
         peniko::Fill::NonZero,
         transform,
         background,
-        &bounds,
+        &paint_bounds,
     );
 
     let navigation_change =
@@ -1996,6 +2060,7 @@ pub fn render_navigation_stack_parts(
                 &departing_env,
                 page_placement,
                 true,
+                page_area.clone(),
             );
             ctx.renderer_mut()
                 .navigation
@@ -2015,6 +2080,7 @@ pub fn render_navigation_stack_parts(
         &local_env,
         page_placement,
         false,
+        page_area.clone(),
     );
 
     let now = ctx.renderer_mut().frame_instant();
@@ -2169,7 +2235,7 @@ pub fn render_navigation_stack_parts(
             &to_scene,
         );
     } else {
-        ctx.append_scene(&active_scene.composed());
+        ctx.present_layers(&active_scene.composed());
     }
 
     if depth == 0 {
@@ -2204,6 +2270,7 @@ pub fn render_navigation_stack_parts(
             &landing_env,
             page_placement,
             true,
+            page_area,
         );
         ctx.renderer_mut()
             .navigation

@@ -426,9 +426,9 @@ fn a_capture_preserves_containment_and_survives_release() {
     let child_bounds = child.bounds();
 
     let target = capture_target();
-    let content_capture = Rc::new(ViewCapture::new(mtm, content.clone(), |_| None));
+    let content_capture = Rc::new(ViewCapture::new(mtm, content.clone()));
     content_capture.set_on_redraw(|| {});
-    let child_capture = Rc::new(ViewCapture::new(mtm, child.clone(), |_| None));
+    let child_capture = Rc::new(ViewCapture::new(mtm, child.clone()));
     child_capture.set_on_redraw(|| {});
 
     // Everything the tree must keep through a capture, checked after
@@ -587,7 +587,7 @@ fn a_detached_capture_renders_and_teardown_stays_clean() {
     assert!(content.superview().is_none());
 
     let target = capture_target();
-    let capture = Rc::new(ViewCapture::new(mtm, content.clone(), |_| None));
+    let capture = Rc::new(ViewCapture::new(mtm, content.clone()));
     capture.set_on_redraw(|| {});
     let (flag, complete) = crate::harness::fence_flag();
     capture.capture(&target, 0, complete);

@@ -10,9 +10,10 @@
 //! by the framework in Rust via `BackgroundView`.
 //!
 //! `Material` and `Glass` are different: they become `MaterialBackground` and
-//! `GlassBackground` metadata delegated to platform backends on a best-effort
-//! basis, because true backdrop blur requires native compositor APIs that are
-//! not uniformly available from the Rust layer.
+//! `GlassBackground` metadata that each backend realizes, because they treat
+//! the content behind the view rather than drawing a view of their own. Every
+//! backend realizes `Material` (see its contract); `Glass` is an asymmetric
+//! primitive.
 //!
 //! ```rust
 //! use waterui::prelude::*;
@@ -34,13 +35,8 @@ use waterui_graphics::gradient::Gradient;
 use waterui_layout::BackgroundView;
 use waterui_shape::{Capsule, Shape, ShapeKind};
 
-/// A material background metadata for native blur effects.
-///
-/// This is an ignorable metadata delegated to native backends. Backends should
-/// provide the best material effect they can (real blur, approximation, or no-op).
-///
-/// This metadata remains ignorable because full material/backdrop effects depend
-/// on platform compositor capabilities and cannot be implemented uniformly in Rust.
+/// A material background metadata: the [`Material`] a backend realizes
+/// behind the wrapped content, following the contract [`Material`] states.
 ///
 /// # Usage
 ///
@@ -135,9 +131,32 @@ pub enum Background {
 /// Materials create translucent blur effects that allow content behind the view
 /// to show through with varying degrees of blur and vibrancy.
 ///
-/// Material rendering is backend-defined and best-effort.
-/// - On Apple platforms, this typically maps to native material/visual effect APIs.
-/// - Other platforms may provide approximations or ignore the metadata.
+/// The mainline backends, Apple and Hydrolysis, realize `Material`. It travels
+/// as ignorable metadata, so a backend that does not realize it, such as an
+/// experimental one, draws the content without it. The levels fall in two
+/// groups:
+///
+/// - **Within-window levels** — [`Regular`](Self::Regular),
+///   [`Thick`](Self::Thick) and [`UltraThick`](Self::UltraThick) — are a
+///   backdrop treatment of the window's own content behind the view, clipped
+///   to the view's shape: that content passes through the level's colour stage
+///   (a luminance curve, a chroma gain and a brightness offset) and is then
+///   blurred, with no tint layer on top. Apple platforms project them onto the
+///   native visual-effect views; self-drawn backends draw the treatment
+///   themselves, Hydrolysis through Cherenkov on every platform, Android
+///   included. Hydrolysis's HWUI render target (water-rs/waterui#1899) must
+///   realize the same treatment when it lands.
+/// - **Behind-window levels** — [`UltraThin`](Self::UltraThin) and
+///   [`Thin`](Self::Thin) — blur what lies behind the window, which needs the
+///   compositor's blur-behind protocol and is therefore defined per platform.
+///   Apple platforms realize them natively: macOS blends them behind the
+///   window, and iOS, with nothing behind its windows, over the app's own
+///   content. On X11 the compositor's KDE blur-behind region, on Wayland
+///   `ext-background-effect-v1`, and on Windows the DWM system backdrop carry
+///   them. On a compositor with none of these protocols the backend does not
+///   ignore the level or substitute another: it fails fast with a panic that
+///   names the level and the platform. Hydrolysis does not realize these
+///   levels yet and panics when one reaches it (water-rs/waterui#1855).
 ///
 /// # Examples
 ///
@@ -151,8 +170,8 @@ pub enum Background {
 ///     .background(Material::Regular)
 ///     .clip(RoundedRectangle::new(0.1));
 ///
-/// // Subtle blur for overlays
-/// let overlay = text!("Overlay").background(Material::UltraThin);
+/// // A heavier frost for an overlay over busy content
+/// let overlay = text!("Overlay").background(Material::Thick);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Material {

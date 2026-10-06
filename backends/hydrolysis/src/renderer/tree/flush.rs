@@ -3,7 +3,6 @@
 
 #[cfg(feature = "accessibility")]
 use super::layout::kurbo_rect;
-use super::window::window_safe_area_insets;
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
@@ -26,16 +25,24 @@ impl RenderNode {
         env: &Environment,
     ) {
         match self {
-            Self::Color(color) => {
+            Self::Color(node) => {
                 renderer.state.counters.recorded_view_contents += 1;
-                let color =
-                    waterui_graphics::draw::Paint::Solid(renderer.read_signal(&color.color));
+                let color = waterui_graphics::draw::Paint::Solid(renderer.read_signal(&node.color));
                 renderer.scene_mut().fill_paint(
                     peniko::Fill::NonZero,
                     ctx.transform,
                     color,
                     &ctx.bounds,
                 );
+            }
+            // §7.1's fill rule, paint side: the extension layout recorded
+            // grows the child's paint rect — nothing else moves.
+            Self::Fill(node) => {
+                let ctx = node
+                    .extension
+                    .get()
+                    .map_or(ctx, |extension| safe_area::fill_paint_ctx(ctx, extension));
+                node.child.flush(renderer, ctx, env);
             }
             Self::Text(text) => {
                 renderer.state.counters.recorded_view_contents += 1;
@@ -170,9 +177,10 @@ impl RenderNode {
                     #[allow(clippy::cast_possible_truncation)]
                     let size = Size::new(ctx.bounds.width() as f32, ctx.bounds.height() as f32);
                     let proposal = ProposalSize::new(Some(size.width), Some(size.height));
+                    let safe_area = node.safe_area.as_deref().cloned();
                     node.child
                         .borrow_mut()
-                        .layout(renderer, &node.env, proposal, size);
+                        .layout(renderer, &node.env, safe_area, proposal, size);
                 }
                 node.child.borrow().flush(renderer, ctx, env);
             }
@@ -224,6 +232,27 @@ impl RenderNode {
                             node.child.flush(r, ctx, child_env);
                         });
                     }
+                    WrapperEffect::Material(runtime) => {
+                        // Everything painted so far is the material's
+                        // backdrop: close that segment, present the keyed
+                        // member mount, and flush the content above it.
+                        renderer.flush_scene_layer();
+                        renderer
+                            .compositor
+                            .render_layers
+                            .push(RenderLayer::Material(MaterialLayer {
+                                key: crate::renderer::retained::RenderKey {
+                                    render: node.render_id,
+                                    presentation:
+                                        crate::renderer::retained::PresentationId::ORDINARY,
+                                },
+                                runtime: Rc::clone(runtime),
+                                transform: ctx.transform,
+                                bounds: ctx.bounds,
+                                active_layers: renderer.compositor.active_scene_layers.clone(),
+                            }));
+                        node.child.flush(renderer, ctx, child_env);
+                    }
                     WrapperEffect::PopupMenuSurface => {
                         HydrolysisRenderer::apply_popup_menu_surface(renderer, ctx, |r| {
                             node.child.flush(r, ctx, child_env);
@@ -244,41 +273,15 @@ impl RenderNode {
                         // Layout-only: nothing to apply while drawing.
                         node.child.flush(renderer, ctx, child_env);
                     }
-                    WrapperEffect::IgnoreSafeArea(edges) => {
-                        // The mirror of the layout arm: on each flagged edge
-                        // the child's frame reaches the window edge — the
-                        // transform carries the leading/top overhang so
-                        // descendants place from the shifted origin too.
-                        let insets = window_safe_area_insets(renderer, env);
-                        let leading = if edges.leading {
-                            f64::from(insets.leading())
-                        } else {
-                            0.0
-                        };
-                        let top = if edges.top {
-                            f64::from(insets.top())
-                        } else {
-                            0.0
-                        };
-                        let trailing = if edges.trailing {
-                            f64::from(insets.trailing())
-                        } else {
-                            0.0
-                        };
-                        let bottom = if edges.bottom {
-                            f64::from(insets.bottom())
-                        } else {
-                            0.0
-                        };
-                        let bounds = kurbo::Rect::new(
-                            0.0,
-                            0.0,
-                            ctx.bounds.width() + leading + trailing,
-                            ctx.bounds.height() + top + bottom,
-                        );
+                    WrapperEffect::IgnoreSafeArea(_) => {
+                        // The mirror of the layout arm: the release layout
+                        // computed lands the child where the grown frame
+                        // put it — the transform carries the leading/top
+                        // overhang so descendants place from the shifted
+                        // origin too.
                         node.child.flush(
                             renderer,
-                            ctx.child(kurbo::Affine::translate((-leading, -top)), bounds),
+                            safe_area::released_ctx(ctx, node.released_offsets.get()),
                             child_env,
                         );
                     }
@@ -547,16 +550,22 @@ impl RenderNode {
                     }));
             }
             Self::Scroll(node) => {
+                // §7.1's scroll surface: the viewport is the laid-out frame
+                // grown by the extension layout computed — the surface
+                // paints through the bands its frame touched, clips its
+                // content there, and its own subtree owns the inset.
+                let viewport_rect = safe_area::grow_rect(ctx.bounds, node.surface.extension());
                 let Some(handle) = node.handle.borrow().clone() else {
                     return;
                 };
+                // The keyboard-moving clearance runs before the content
+                // paints and before metrics are read: while the host's
+                // keyboard animation is in flight the offset follows it
+                // frame by frame, so this flush paints the field already
+                // clear — `begin_flush` first, metrics after (the order
+                // `List`/`Table` use).
+                let targets_start = node.surface.begin_flush(renderer, &handle);
                 let metrics = handle.metrics();
-                let viewport_rect = kurbo::Rect::new(
-                    0.0,
-                    0.0,
-                    f64::from(node.viewport.width),
-                    f64::from(node.viewport.height),
-                );
                 renderer.with_clip_rect_scope(
                     1.0,
                     LayerTransforms {
@@ -578,13 +587,19 @@ impl RenderNode {
                             ctx.transform * scroll_offset,
                             ctx.hit_transform * scroll_offset,
                         );
-                        // Publish the visible window (in content coordinates) so a
-                        // virtualized `LazyStack` child only builds the rows on screen.
+                        // Publish the visible window (in content coordinates) —
+                        // the viewport window grown by the same extension —
+                        // so a virtualized `LazyStack` child builds the rows
+                        // painted inside the extended clip, not just the ones
+                        // inside the laid-out frame.
+                        let horizontal =
+                            node.surface.visible_span(&metrics, ScrollAxis::Horizontal);
+                        let vertical = node.surface.visible_span(&metrics, ScrollAxis::Vertical);
                         let lazy_viewport = kurbo::Rect::new(
-                            metrics.offset_x,
-                            metrics.offset_y,
-                            metrics.offset_x + f64::from(node.viewport.width),
-                            metrics.offset_y + f64::from(node.viewport.height),
+                            horizontal.start,
+                            vertical.start,
+                            horizontal.end,
+                            vertical.end,
                         );
                         // Registered before the content so the content can be parented
                         // to it: a scroll region owns what it scrolls, and a label on
@@ -630,16 +645,22 @@ impl RenderNode {
                         }
                     },
                 );
+                // The focused-field clearance reads this frame's input
+                // targets — the child's flush above just emitted them.
+                node.surface.end_flush(renderer, &handle, targets_start);
+                // The indicators ride the surface's own frame, not the
+                // extended clip: they stay visible at the avoided edge.
                 let scroll_ctx =
-                    RenderContext::with_transforms(viewport_rect, ctx.transform, ctx.hit_transform);
-                let mut widget_ctx = WidgetRenderContext::new(renderer, scroll_ctx);
+                    RenderContext::with_transforms(ctx.bounds, ctx.transform, ctx.hit_transform);
+                let mut widget_ctx = WidgetRenderContext::new(renderer, scroll_ctx, None);
                 crate::widgets::draw_scroll_indicators(
                     &mut widget_ctx,
                     &node.env,
-                    viewport_rect,
+                    ctx.bounds,
                     metrics,
                     node.axis,
                     &handle,
+                    node.surface.extension(),
                 );
             }
             Self::LazyStack(node) => node.flush(renderer, ctx, env),
@@ -661,7 +682,8 @@ impl RenderNode {
                     merged = node.env.layered_on(env);
                     &merged
                 };
-                Rc::clone(&node.behavior).render(renderer, ctx, env);
+                let safe_area = node.safe_area.as_deref().cloned();
+                Rc::clone(&node.behavior).render(renderer, ctx, env, safe_area);
                 renderer.pop_render_owner();
             }
         }
@@ -873,6 +895,8 @@ impl RenderNode {
             Self::Filtered(node) => {
                 node.child.emit_accessibility(renderer, &node.env);
             }
+            // The slot fill is a paint marker: the semantic tree keeps the child.
+            Self::Fill(node) => node.child.emit_accessibility(renderer, env),
             Self::Scroll(node) => {
                 // The semantic scroll domain is unbounded — there is no layout
                 // to measure content against — so scroll actions move the
@@ -947,14 +971,11 @@ fn flush_navigation_transition_element(
         child.flush(renderer, ctx, env);
         return;
     }
-    let mut scene = Recording::new();
-    core::mem::swap(renderer.scene_mut(), &mut scene);
-    child.flush(renderer, ctx, env);
-    core::mem::swap(renderer.scene_mut(), &mut scene);
+    let layers = renderer.capture_layers(|renderer| child.flush(renderer, ctx, env));
     renderer.finish_navigation_element_capture(
         source,
         id,
         transformed_rect(ctx.transform, ctx.bounds),
-        scene,
+        layers,
     );
 }

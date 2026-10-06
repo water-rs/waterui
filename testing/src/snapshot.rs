@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use hydrolysis::{
     FontFamilyResolution, HydrolysisRenderer, OffscreenGpuContext, OffscreenWindow, Style,
-    WidgetTheme,
+    WidgetTheme, readback_texture_rgba8,
 };
 use waterui::graphics::SceneViewMergeToParent;
 use waterui::graphics::WorkingColor;
@@ -92,7 +92,8 @@ impl TestHost {
     ///
     /// # Panics
     ///
-    /// Panics if the offscreen Hydrolysis surface cannot acquire a frame.
+    /// Panics with the cause if the offscreen Hydrolysis surface cannot
+    /// acquire a frame, the frame fails to render, or its readback fails.
     pub fn render<V: View>(&self, view: V) -> Snapshot {
         let mut platform = OffscreenWindow::on_context(
             self.gpu.clone(),
@@ -124,25 +125,27 @@ impl TestHost {
 
         let frame = surface
             .acquire()
-            .expect("waterui-testing failed to acquire offscreen frame");
-        renderer.render_scene_to_texture(hydrolysis::HydrolysisRenderTarget {
-            adapter: surface.adapter(),
-            device: surface.device(),
-            queue: surface.queue(),
-            device_loss: surface.device_loss().clone(),
-            texture: Some(frame.texture()),
-            format: surface.format(),
-            width: self.width.max(1),
-            height: self.height.max(1),
-            base_color: WorkingColor::TRANSPARENT,
-        });
+            .unwrap_or_else(|error| snapshot_failed("acquiring the offscreen frame", error));
+        renderer
+            .render_scene_to_texture(hydrolysis::HydrolysisRenderTarget {
+                adapter: surface.adapter(),
+                device: surface.device(),
+                queue: surface.queue(),
+                device_loss: surface.device_loss().clone(),
+                texture: frame.texture(),
+                format: surface.format(),
+                width: self.width.max(1),
+                height: self.height.max(1),
+                base_color: WorkingColor::TRANSPARENT,
+            })
+            .unwrap_or_else(|error| snapshot_failed("rendering the frame", error));
         let rgba8 = readback_texture_rgba8(
-            surface.device(),
-            surface.queue(),
+            &*surface,
             frame.texture(),
             self.width.max(1),
             self.height.max(1),
-        );
+        )
+        .unwrap_or_else(|error| snapshot_failed("reading back the frame", error));
         surface.present(frame);
         drop(renderer);
         drop(platform);
@@ -186,78 +189,10 @@ impl TestHost {
     }
 }
 
-pub fn readback_texture_rgba8(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    texture: &wgpu::Texture,
-    width: u32,
-    height: u32,
-) -> Vec<u8> {
-    const BYTES_PER_PIXEL: u32 = 4;
-    const COPY_ALIGNMENT: u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-    let unpadded_bytes_per_row = width * BYTES_PER_PIXEL;
-    let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(COPY_ALIGNMENT) * COPY_ALIGNMENT;
-
-    let readback = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("waterui-testing-readback"),
-        size: u64::from(padded_bytes_per_row) * u64::from(height),
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("waterui-testing-readback-encoder"),
-    });
-    encoder.copy_texture_to_buffer(
-        wgpu::TexelCopyTextureInfo {
-            texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        wgpu::TexelCopyBufferInfo {
-            buffer: &readback,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(padded_bytes_per_row),
-                rows_per_image: Some(height),
-            },
-        },
-        wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-    );
-    queue.submit([encoder.finish()]);
-
-    let slice = readback.slice(..);
-    let (sender, receiver) = std::sync::mpsc::channel();
-    slice.map_async(wgpu::MapMode::Read, move |result| {
-        sender
-            .send(result)
-            .expect("waterui-testing readback channel receiver dropped");
-    });
-
-    let _ = device.poll(wgpu::PollType::wait_indefinitely());
-    receiver
-        .recv()
-        .expect("waterui-testing readback callback dropped")
-        .expect("waterui-testing failed to map readback buffer");
-
-    let mapped = slice
-        .get_mapped_range()
-        .expect("waterui-testing readback slice must be mappable");
-    let mut pixels = vec![0_u8; (width * height * BYTES_PER_PIXEL) as usize];
-    for row in 0..height as usize {
-        let source_start = row * padded_bytes_per_row as usize;
-        let source_end = source_start + unpadded_bytes_per_row as usize;
-        let destination_start = row * unpadded_bytes_per_row as usize;
-        let destination_end = destination_start + unpadded_bytes_per_row as usize;
-        pixels[destination_start..destination_end]
-            .copy_from_slice(&mapped[source_start..source_end]);
-    }
-    drop(mapped);
-    readback.unmap();
-    pixels
+/// Fails the snapshot with `error` and its whole source chain.
+fn snapshot_failed(stage: &str, error: impl core::error::Error + Send + Sync + 'static) -> ! {
+    panic!(
+        "waterui-testing snapshot failed {stage}: {:#}",
+        waterui_core::Error::from(error)
+    )
 }

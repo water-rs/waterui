@@ -1,5 +1,5 @@
 //! `CAMetalLayer` presentation driven by a `CAMetalDisplayLink` — the
-//! platform's own presentation primitive for Metal content (#1683).
+//! platform's own presentation primitive for Metal content.
 //!
 //! A [`MetalPresenter`] owns the presentation `CAMetalLayer` and one
 //! `CAMetalDisplayLink` on the main run loop. Drawables arrive only through
@@ -11,18 +11,17 @@
 //! while a [`DrawableFrame`] lives drops the delivered drawable unpresented
 //! and keeps demand; dropping the frame releases the lease without
 //! presenting. `present` consumes a frame only while its generation is
-//! current, its recorded drawable size still matches the layer's, and the
-//! frame came from this presenter — everything else settles the lease and
-//! shows nothing.
+//! current and its recorded drawable size still matches the layer's —
+//! everything else settles the lease and shows nothing.
 //!
 //! # Safety
 //!
 //! All types here are main-thread only (`MainThreadOnly`, !Send/!Sync via
-//! `Rc`/`Cell`/`RefCell`): `CAMetalLayer`, `CAMetalDisplayLink` and the
+//! `Rc`/`Cell`): `CAMetalLayer`, `CAMetalDisplayLink` and the
 //! delegate are used on the main thread, and the link posts updates on the
 //! run loop it was added to — the main one.
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::fmt;
 use std::marker::PhantomData;
 use std::rc::{Rc, Weak};
@@ -44,7 +43,7 @@ use crate::callback::guarded;
 /// The link's delegate; holds the presenter state weakly so an update
 /// landing after the owner dropped the presenter fires nothing.
 struct LinkDelegateIvars {
-    inner: RefCell<Weak<PresenterInner>>,
+    inner: Weak<PresenterInner>,
 }
 
 define_class!(
@@ -66,23 +65,12 @@ define_class!(
         #[unsafe(method(metalDisplayLink:needsUpdate:))]
         fn metal_display_link_needs_update(
             &self,
-            link: &CAMetalDisplayLink,
+            _link: &CAMetalDisplayLink,
             update: &CAMetalDisplayLinkUpdate,
         ) {
-            let Some(inner) = self.ivars().inner.borrow().upgrade() else {
+            let Some(inner) = self.ivars().inner.upgrade() else {
                 return;
             };
-            // A queued update from a retired link must not mint a frame under
-            // the current generation: bind the callback to the link the
-            // presenter owns now.
-            let current = inner
-                .link
-                .borrow()
-                .as_ref()
-                .is_some_and(|current| std::ptr::eq(Retained::as_ptr(current), link));
-            if !current {
-                return;
-            }
             guarded("metal display link update", move || {
                 inner.deliver_update(update);
             });
@@ -94,7 +82,7 @@ impl LinkDelegate {
     /// A delegate targeting `inner`, upgraded per update.
     fn new(mtm: MainThreadMarker, inner: &Rc<PresenterInner>) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(LinkDelegateIvars {
-            inner: RefCell::new(Rc::downgrade(inner)),
+            inner: Rc::downgrade(inner),
         });
         // SAFETY: `init` is `NSObject`'s designated initializer.
         let this: Retained<Self> = unsafe { msg_send![super(this), init] };
@@ -106,7 +94,7 @@ impl LinkDelegate {
 ///
 /// Dropping it releases the lease without presenting — a stale or
 /// superseded frame never reaches the screen and never blocks the next one.
-/// Only [`MetalPresenter::present`] turns a frame into a
+/// Only [`DrawableFrame::present`] turns a frame into a
 /// [`PresentedFrame`].
 pub struct DrawableFrame {
     /// The drawable this frame renders into.
@@ -148,9 +136,56 @@ impl DrawableFrame {
     )]
     pub const fn drawable_size(&self) -> (u32, u32) {
         (
-            self.drawable_size.width.max(0.0) as u32,
-            self.drawable_size.height.max(0.0) as u32,
+            self.drawable_size.width as u32,
+            self.drawable_size.height as u32,
         )
+    }
+
+    /// Test seam: a frame around a drawable the caller checked out from
+    /// its own layer — `owner` is empty, so `present` can never mint a
+    /// receipt and `Drop` settles no lease on any presenter. Exists only
+    /// under `native-test`; production code cannot mint an ownerless
+    /// frame.
+    #[cfg(feature = "native-test")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn unowned_for_test(
+        drawable: Retained<ProtocolObject<dyn CAMetalDrawable>>,
+        target_time: f64,
+    ) -> Self {
+        let texture = drawable.texture();
+        Self {
+            drawable,
+            target_time,
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "a drawable texture fits well inside f64's mantissa"
+            )]
+            drawable_size: CGSize::new(texture.width() as f64, texture.height() as f64),
+            generation: u64::MAX,
+            owner: Weak::new(),
+        }
+    }
+
+    /// Presents the frame through its issuing presenter — only while the
+    /// frame's generation is still current and its recorded drawable size
+    /// still matches the layer's. Returns the [`PresentedFrame`] receipt;
+    /// any other frame is dropped, which settles its lease without
+    /// presenting.
+    #[must_use]
+    pub fn present(self) -> Option<PresentedFrame> {
+        let inner = self.owner.upgrade()?;
+        if self.generation != inner.generation.get()
+            || self.drawable_size != inner.drawable_size.get()
+        {
+            return None;
+        }
+        self.drawable.present();
+        Some(PresentedFrame {
+            target_time: self.target_time,
+            generation: self.generation,
+            main_thread: PhantomData,
+        })
     }
 }
 
@@ -174,7 +209,7 @@ impl Drop for DrawableFrame {
     }
 }
 
-/// The receipt [`MetalPresenter::present`] returns.
+/// The receipt [`DrawableFrame::present`] returns.
 ///
 /// Only ever minted by an actual `[CAMetalDrawable present]`. Readiness
 /// waiters and the runtime's productive-generation accounting consume this
@@ -219,10 +254,6 @@ impl PresentedFrame {
 struct PresenterInner {
     /// The presentation layer the link is bound to.
     layer: Retained<CAMetalLayer>,
-    /// The display link; `None` only after the inner is torn down.
-    link: RefCell<Option<Retained<CAMetalDisplayLink>>>,
-    /// The link's delegate, retained for the link's lifetime.
-    delegate: RefCell<Option<Retained<LinkDelegate>>>,
     /// The issuing generation — advanced on drawable-size/format/colour
     /// changes, context replacement, detach and drop. A frame issued by an
     /// older generation can never present.
@@ -232,9 +263,9 @@ struct PresenterInner {
     /// The drawable size `configure` last established.
     drawable_size: Cell<CGSize>,
     /// The frame sink — the surface's render body, invoked per issued frame.
-    on_frame: RefCell<Rc<dyn Fn(DrawableFrame)>>,
+    on_frame: Rc<dyn Fn(DrawableFrame)>,
     /// Self-reference for lease ownership.
-    this: RefCell<Weak<Self>>,
+    this: Weak<Self>,
 }
 
 impl PresenterInner {
@@ -259,10 +290,9 @@ impl PresenterInner {
             drawable,
             target_time: update.targetPresentationTimestamp(),
             generation: self.generation.get(),
-            owner: self.this.borrow().clone(),
+            owner: self.this.clone(),
         };
-        let on_frame = self.on_frame.borrow().clone();
-        on_frame(frame);
+        (self.on_frame)(frame);
     }
 }
 
@@ -271,7 +301,19 @@ impl PresenterInner {
 ///
 /// Not `Clone`; main-thread only.
 pub struct MetalPresenter {
+    /// The owned state the delegate reaches weakly — `layer`, the
+    /// issuing generation, the lease and the frame sink.
     inner: Rc<PresenterInner>,
+    /// The display link scheduled on the main run loop — never absent:
+    /// `Drop` invalidates it, and nothing else may run it down earlier.
+    link: Retained<CAMetalDisplayLink>,
+    /// The link's delegate — `CAMetalDisplayLink` keeps it weak, so the
+    /// presenter retains it for the link's lifetime.
+    #[expect(
+        dead_code,
+        reason = "the delegate is kept for the link's lifetime, never read"
+    )]
+    delegate: Retained<LinkDelegate>,
 }
 
 impl fmt::Debug for MetalPresenter {
@@ -301,24 +343,19 @@ impl MetalPresenter {
         let mtm = MainThreadMarker::new().expect("MetalPresenter is created on the main thread");
         let inner = Rc::new_cyclic(|this| PresenterInner {
             layer,
-            link: RefCell::new(None),
-            delegate: RefCell::new(None),
             generation: Cell::new(0),
             lease: Cell::new(false),
             drawable_size: Cell::new(CGSize::ZERO),
-            on_frame: RefCell::new(on_frame),
-            this: RefCell::new(this.clone()),
+            on_frame,
+            this: this.clone(),
         });
-        let delegate = LinkDelegate::new(mtm, &inner);
         // The presenter owns the layer's static contract: drawables are
         // render-targets only, the pool is bounded at two, presenting never
         // blocks on the transaction, and until a new-size frame lands the
-        // last frame scales — the `IOSurface` path's exact semantics. These
-        // setters must run BEFORE the link exists: once a
-        // `CAMetalDisplayLink` is bound to the layer, mutating
+        // last frame scales. These setters must run BEFORE the link exists:
+        // once a `CAMetalDisplayLink` is bound to the layer, mutating
         // `maximumDrawableCount` raises `CAMetalLayerInvalidOperation`
-        // ("should not be called when using CAMetalDisplayLink") — verified
-        // on real hardware.
+        // ("should not be called when using CAMetalDisplayLink").
         inner.layer.setFramebufferOnly(true);
         inner.layer.setMaximumDrawableCount(2);
         inner.layer.setPresentsWithTransaction(false);
@@ -330,6 +367,7 @@ impl MetalPresenter {
         // initializer, binding the link to `inner`'s layer.
         let link =
             CAMetalDisplayLink::initWithMetalLayer(CAMetalDisplayLink::alloc(), &inner.layer);
+        let delegate = LinkDelegate::new(mtm, &inner);
         // The delegate is a plain `NSObject` protocol adoption;
         // `CAMetalDisplayLink` keeps it weak, the presenter retains it.
         link.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
@@ -339,9 +377,11 @@ impl MetalPresenter {
         unsafe {
             link.addToRunLoop_forMode(&NSRunLoop::mainRunLoop(), NSRunLoopCommonModes);
         }
-        *inner.link.borrow_mut() = Some(link);
-        *inner.delegate.borrow_mut() = Some(delegate);
-        Self { inner }
+        Self {
+            inner,
+            link,
+            delegate,
+        }
     }
 
     /// The presentation layer — frame, hidden state and colours are applied
@@ -371,46 +411,24 @@ impl MetalPresenter {
     /// Whether the link is paused — a paused link delivers no updates.
     #[must_use]
     pub fn is_paused(&self) -> bool {
-        self.inner
-            .link
-            .borrow()
-            .as_ref()
-            .is_none_or(|link| link.isPaused())
+        self.link.isPaused()
     }
 
     /// Unpauses or pauses the link. The owner unpauses only while the view
     /// is attached, effectively visible, in an active scene and has demand;
     /// everything else pauses.
     pub fn set_paused(&self, paused: bool) {
-        if let Some(link) = self.inner.link.borrow().as_ref() {
-            link.setPaused(paused);
-        }
+        self.link.setPaused(paused);
     }
 
     /// Arms the link for the display's cadence: `preferredFrameRateRange`
-    /// asks for the screen's maximum, matching what the retired `FrameClock`
-    /// requested (`min 60..=max preferred max`).
+    /// asks for the screen's real maximum.
     pub fn set_display_rate(&self, maximum_frames_per_second: f32) {
-        let maximum = maximum_frames_per_second.max(1.0);
-        if let Some(link) = self.inner.link.borrow().as_ref() {
-            link.setPreferredFrameRateRange(CAFrameRateRange::new(
-                maximum.min(60.0),
-                maximum,
-                maximum,
-            ));
-        }
-    }
-
-    /// The live `preferredFrameLatency` when a link is attached — the
-    /// platform's own value, `None` while the presenter has no link. Kept
-    /// at the platform default until #1564 measurements say otherwise.
-    #[must_use]
-    pub fn preferred_frame_latency(&self) -> Option<f32> {
-        self.inner
-            .link
-            .borrow()
-            .as_ref()
-            .map(|link| link.preferredFrameLatency())
+        self.link.setPreferredFrameRateRange(CAFrameRateRange::new(
+            maximum_frames_per_second.min(60.0),
+            maximum_frames_per_second,
+            maximum_frames_per_second,
+        ));
     }
 
     /// Swaps the device the drawable pool renders for — context
@@ -431,51 +449,18 @@ impl MetalPresenter {
         }
     }
 
-    /// Whether a [`DrawableFrame`] lease is outstanding.
-    #[must_use]
-    pub fn frame_in_flight(&self) -> bool {
-        self.inner.lease.get()
-    }
-
-    /// Presents `frame` — only while it is this presenter's current
-    /// generation and its recorded drawable size still matches the layer's.
-    /// Returns the [`PresentedFrame`] receipt; any other frame is dropped,
-    /// which settles its lease without presenting.
-    #[must_use]
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "the caller hands over the lease; by-value is the contract"
-    )]
-    pub fn present(&self, frame: DrawableFrame) -> Option<PresentedFrame> {
-        let current = frame.generation == self.inner.generation.get()
-            && frame
-                .owner
-                .upgrade()
-                .is_some_and(|owner| Rc::ptr_eq(&owner, &self.inner))
-            && frame.drawable_size == self.inner.drawable_size.get();
-        if !current {
-            return None;
+    /// Retires the link and advances the generation: no further updates
+    /// arrive, every outstanding frame becomes unpresentable, and the
+    /// delegate's weak target makes a queued update after teardown inert.
+    /// `Drop` runs this; nothing else may — teardown has one owner.
+    fn invalidate(&self) {
+        // SAFETY: the link was added to the main run loop; removing it
+        // and invalidating is main-thread work by contract.
+        unsafe {
+            self.link
+                .removeFromRunLoop_forMode(&NSRunLoop::mainRunLoop(), NSRunLoopCommonModes);
         }
-        self.inner.lease.set(false);
-        frame.drawable.present();
-        Some(PresentedFrame {
-            target_time: frame.target_time,
-            generation: frame.generation,
-            main_thread: PhantomData,
-        })
-    }
-
-    /// Invalidates the link: no further updates arrive, and the delegate's
-    /// weak target means a queued update after teardown is inert.
-    pub fn invalidate(&self) {
-        if let Some(link) = self.inner.link.borrow_mut().take() {
-            // SAFETY: the link was added to the main run loop; removing it
-            // and invalidating is main-thread work by contract.
-            unsafe {
-                link.removeFromRunLoop_forMode(&NSRunLoop::mainRunLoop(), NSRunLoopCommonModes);
-            }
-            link.invalidate();
-        }
+        self.link.invalidate();
         self.advance_generation();
     }
 }

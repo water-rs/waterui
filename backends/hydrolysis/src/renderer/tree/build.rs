@@ -7,7 +7,31 @@
 use super::*;
 use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use crate::platform_view::PlatformView;
+use core::any::Any;
 use waterui_core::views::ViewSnapshot;
+use waterui_layout::BackgroundLayout;
+
+/// A retained node's layout-dirty mark and the callback its input
+/// subscriptions fire: the callback sets the mark, which an enclosing
+/// `RetainedSubview` consumes through [`RenderNode::take_layout_dirty`], and
+/// schedules the refresh that lets it.
+fn layout_invalidation(
+    signals: &crate::renderer::FrameSignals,
+) -> (
+    Rc<Cell<bool>>,
+    waterui_core::layout::LayoutInvalidationCallback,
+) {
+    let layout_dirty = Rc::new(Cell::new(false));
+    let invalidate = {
+        let layout_dirty = Rc::clone(&layout_dirty);
+        let signals = signals.clone();
+        Rc::new(move || {
+            layout_dirty.set(true);
+            signals.request_refresh();
+        })
+    };
+    (layout_dirty, invalidate)
+}
 
 impl RenderNode {
     /// Build a node from a view, capturing live reactive inputs. Native leaves
@@ -31,6 +55,14 @@ impl RenderNode {
         let view = match view.downcast::<Native<TextConfig>>() {
             Ok(text) => {
                 let config = (*text).into_inner();
+                let (layout_dirty, invalidate) = layout_invalidation(&renderer.signals);
+                let guards = [
+                    config.content.watch({
+                        let invalidate = Rc::clone(&invalidate);
+                        move |_| invalidate()
+                    }),
+                    config.paragraph_alignment.watch(move |_| invalidate()),
+                ];
                 return Self::Text(Box::new(TextNode {
                     memo_gate: Cell::default(),
                     memo_slots: RefCell::default(),
@@ -39,49 +71,32 @@ impl RenderNode {
                     content: config.content,
                     alignment: config.paragraph_alignment,
                     line_limit: config.line_limit.map(core::num::NonZeroUsize::get),
+                    layout_dirty,
+                    _guards: guards,
                 }));
+            }
+            Err(view) => view,
+        };
+        // A plain `FixedContainer` has not run `body()` yet: its layout
+        // object is still the one the modifier built — the only moment
+        // `BackgroundLayout` is identifiable, before `body` wraps it in
+        // `DirectionalLayout`. `FixedContainer::body` is what produces the
+        // `Native<FixedContainer>` the next arm rebuilds.
+        let view = match view.downcast::<FixedContainer>() {
+            Ok(container) => {
+                let background_slot = (container.as_parts().0 as &dyn Any)
+                    .is::<BackgroundLayout>()
+                    .then_some(0);
+                let container = *AnyView::new(container.body(env))
+                    .downcast::<Native<FixedContainer>>()
+                    .expect("FixedContainer::body produces Native<FixedContainer>");
+                return Self::build_fixed_container(container, env, renderer, background_slot);
             }
             Err(view) => view,
         };
         let view = match view.downcast::<Native<FixedContainer>>() {
             Ok(container) => {
-                let (layout, children) = (*container).into_inner().into_inner();
-                let layout_dirty = Rc::new(Cell::new(false));
-                let signals = renderer.signals.clone();
-                let guards = layout.watch_invalidation({
-                    let layout_dirty = Rc::clone(&layout_dirty);
-                    Rc::new(move || {
-                        layout_dirty.set(true);
-                        signals.request_refresh();
-                    })
-                });
-                #[cfg(feature = "accessibility")]
-                let accessibility_child_env = accessibility_container_child_environment(env);
-                #[cfg(feature = "accessibility")]
-                let child_env = accessibility_child_env.as_ref().unwrap_or(env);
-                #[cfg(not(feature = "accessibility"))]
-                let child_env = env;
-                let children = children
-                    .into_iter()
-                    .map(|child| {
-                        Self::build(normalize_layout_view(child, child_env), child_env, renderer)
-                    })
-                    .collect();
-                return Self::Container(Box::new(ContainerNode {
-                    memo_gate: Cell::default(),
-                    memo_slots: RefCell::default(),
-                    accessibility_identity: Rc::new(()),
-                    render_id: RenderId::next(),
-                    layout,
-                    children,
-                    #[cfg(feature = "accessibility")]
-                    accessibility_child_env,
-                    placed: Vec::new(),
-                    #[cfg(feature = "accessibility")]
-                    resolved: Rect::from_size(Size::zero()),
-                    layout_dirty,
-                    _guards: guards,
-                }));
+                return Self::build_fixed_container(*container, env, renderer, None);
             }
             Err(view) => view,
         };
@@ -266,7 +281,7 @@ impl RenderNode {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
                 return Self::build_wrapper(
-                    WrapperEffect::IgnoreSafeArea(value.edges),
+                    WrapperEffect::IgnoreSafeArea(value),
                     content,
                     env,
                     renderer,
@@ -307,7 +322,22 @@ impl RenderNode {
             Err(view) => view,
         };
         let view = match view.downcast::<IgnorableMetadata<MaterialBackground>>() {
-            Ok(meta) => return Self::build(meta.content, env, renderer),
+            Ok(meta) => {
+                let IgnorableMetadata {
+                    content,
+                    value: MaterialBackground(material),
+                } = *meta;
+                let runtime = crate::renderer::material::MaterialRuntime::new(
+                    crate::renderer::material::WithinWindowLevel::of(material),
+                    &waterui::theme::current_color_scheme(env),
+                );
+                return Self::build_wrapper(
+                    WrapperEffect::Material(Rc::new(runtime)),
+                    content,
+                    env,
+                    renderer,
+                );
+            }
             Err(view) => view,
         };
         // Transparent metadata wrappers: each applies its visual/interaction
@@ -520,6 +550,10 @@ impl RenderNode {
                     ..
                 } = (*scroll).into_inner().into_inner();
                 let content = normalize_layout_view(content, env);
+                // A scroll surface owns §7.1 for its subtree: the layout
+                // pass hands the surface its facts and the child lays out
+                // with no safe-area context — the surface insets and
+                // scrolls its own content instead.
                 return Self::Scroll(Box::new(ScrollNode {
                     memo_gate: Cell::default(),
                     memo_slots: RefCell::default(),
@@ -535,6 +569,7 @@ impl RenderNode {
                     viewport: Size::zero(),
                     non_scrolling_minimum: Cell::new(None),
                     env: env.clone(),
+                    surface: safe_area::ScrollSurfaceArea::default(),
                 }));
             }
             Err(view) => view,
@@ -773,6 +808,7 @@ impl RenderNode {
             render_id: RenderId::next(),
             effect,
             env,
+            released_offsets: Cell::default(),
             child,
         }))
     }
@@ -827,6 +863,7 @@ impl RenderNode {
             render_id: RenderId::next(),
             effect: WrapperEffect::LifeCycle(effect),
             env,
+            released_offsets: Cell::default(),
             child,
         }))
     }
@@ -897,7 +934,7 @@ impl RenderNode {
                 )
             })
             .collect();
-        let transition = collection_transition_runtime(env, layout.as_ref());
+        let transition = collection_transition_runtime(env, layout.as_ref(), &mut renderer.state);
         Self::Collection(Box::new(CollectionNode {
             memo_gate: Cell::default(),
             memo_slots: RefCell::default(),
@@ -981,6 +1018,7 @@ impl RenderNode {
             env: env.clone(),
             accessibility_identity: Rc::new(()),
             render_id: RenderId::next(),
+            safe_area: None,
             #[cfg(feature = "accessibility")]
             accessibility_container_env,
             extent_index: RefCell::new(VirtualExtentIndex::default()),
@@ -1106,11 +1144,102 @@ impl RenderNode {
             .register_dynamic_node(identity, &child);
         Self::Dynamic(Box::new(DynamicHostNode {
             render_id: RenderId::next(),
+            safe_area: None,
             source,
             pending,
             env: env.clone(),
             child,
             layout_dirty: Cell::new(false),
         }))
+    }
+}
+impl RenderNode {
+    /// Builds the [`RenderNode::Container`] for a `Native<FixedContainer>`
+    /// whose background slot was already identified — `Some(slot)` wraps the
+    /// slot's fill in [`RenderNode::Fill`], the type §7.1's paint extension
+    /// records on. The identification happens once here, while the layout
+    /// type is still concrete (normalization rebuilds the `FixedContainer`
+    /// from its parts instead of running `body` early); a declaration
+    /// wrapping the fill (`.ignore_safe_area` on the fill itself) stops the
+    /// predicate, so it replaces the default rather than stacking with it.
+    fn build_fixed_container(
+        container: Native<FixedContainer>,
+        env: &Environment,
+        renderer: &mut SemanticCore,
+        background_slot: Option<usize>,
+    ) -> Self {
+        let (layout, children) = container.into_inner().into_inner();
+        let (layout_dirty, invalidate) = layout_invalidation(&renderer.signals);
+        let guards = layout.watch_invalidation(invalidate);
+        #[cfg(feature = "accessibility")]
+        let accessibility_child_env = accessibility_container_child_environment(env);
+        #[cfg(feature = "accessibility")]
+        let child_env = accessibility_child_env.as_ref().unwrap_or(env);
+        #[cfg(not(feature = "accessibility"))]
+        let child_env = env;
+        let children: Vec<Self> = children
+            .into_iter()
+            .enumerate()
+            .map(|(index, child)| {
+                let node =
+                    Self::build(normalize_layout_view(child, child_env), child_env, renderer);
+                if Some(index) == background_slot && is_background_fill_leaf(&node) {
+                    Self::Fill(Box::new(FillNode::new(node)))
+                } else {
+                    node
+                }
+            })
+            .collect();
+        Self::Container(Box::new(ContainerNode {
+            memo_gate: Cell::default(),
+            memo_slots: RefCell::default(),
+            accessibility_identity: Rc::new(()),
+            render_id: RenderId::next(),
+            layout,
+            children,
+            #[cfg(feature = "accessibility")]
+            accessibility_child_env,
+            placed: Vec::new(),
+            #[cfg(feature = "accessibility")]
+            resolved: Rect::from_size(Size::zero()),
+            layout_dirty,
+            _guards: guards,
+        }))
+    }
+}
+
+/// Whether the node a [`BackgroundLayout`] slot holds paints a fill §7.1
+/// extends: a `Color` leaf, or the gradient's fill-widget leaf — read only
+/// through wrappers that never read their bounds, so the extended rect
+/// reaches nothing that draws or registers against it: `Opacity`,
+/// `Env` (accessibility and other scoped metadata), `Retain`, and the
+/// `Wrapper` effects with no geometry — `LayoutPriority`, `LifeCycle`,
+/// `Focused` and `OnKeyPress`. So `Color.opacity(..)` or an
+/// accessibility-scoped env in the slot is still a fill, while a clipped,
+/// bordered, scaled or hit-registered color is just another background
+/// view and never extends (§7.1's fill is a solid color, a gradient or a
+/// material).
+///
+/// An `.ignore_safe_area` wrapper on the fill is NOT transparent to this:
+/// a declaration on the fill replaces the default extension — the
+/// wrapper's own release (§7.1 rule 3) is the whole extension, so the node
+/// is not a fill and gets no [`RenderNode::Fill`].
+fn is_background_fill_leaf(node: &RenderNode) -> bool {
+    match node {
+        RenderNode::Color(_) => true,
+        RenderNode::Widget(widget) => widget.fill_leaf,
+        RenderNode::Opacity(node) => is_background_fill_leaf(&node.child),
+        RenderNode::Retain(node) => is_background_fill_leaf(&node.child),
+        RenderNode::Env(node) => is_background_fill_leaf(&node.child),
+        RenderNode::Wrapper(node) => {
+            matches!(
+                node.effect,
+                WrapperEffect::LayoutPriority(_)
+                    | WrapperEffect::LifeCycle(_)
+                    | WrapperEffect::Focused(_)
+                    | WrapperEffect::OnKeyPress(_)
+            ) && is_background_fill_leaf(&node.child)
+        }
+        _ => false,
     }
 }

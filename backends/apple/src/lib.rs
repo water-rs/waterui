@@ -16,8 +16,6 @@ pub mod resources;
 
 #[cfg(feature = "gpu_surface")]
 pub(crate) mod capture_image;
-#[cfg(feature = "gpu_surface")]
-pub(crate) mod capture_registry;
 pub(crate) mod components;
 pub(crate) mod first_paint;
 pub(crate) mod fonts;
@@ -48,6 +46,8 @@ mod registry;
 #[cfg(any(target_os = "ios", test))]
 mod scene_registry;
 pub(crate) mod startup;
+#[cfg(target_os = "macos")]
+mod termination;
 pub(crate) mod theme;
 #[cfg(target_os = "macos")]
 mod toolbar;

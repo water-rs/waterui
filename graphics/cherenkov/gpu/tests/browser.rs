@@ -17,6 +17,8 @@ use cherenkov_gpu::{
 };
 use std::cell::Cell;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use wasm_bindgen::JsCast;
 use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
 
@@ -95,8 +97,15 @@ async fn local_producers_share_device_and_preserve_wakes_during_await() {
     })
     .await
     .expect("engine");
+    let wakes = Arc::new(AtomicU32::new(0));
+    let counter = wakes.clone();
     let surface = engine
-        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16))
+        .surface(
+            Offscreen::new((16, 16), OffscreenFormat::LinearF16),
+            move || {
+                counter.fetch_add(1, Ordering::Relaxed);
+            },
+        )
         .await
         .expect("surface");
     let color = nami::binding(WorkingColor::WHITE);
@@ -105,24 +114,21 @@ async fn local_producers_share_device_and_preserve_wakes_during_await() {
             .content(surface.record(|r| r.fill(Rect::new(0., 0., 8., 16.), color.clone())));
     });
     engine.render(FrameTime::now()).await.expect("first frame");
-    let wakes = Rc::new(Cell::new(0));
-    let counter = wakes.clone();
-    engine.set_waker(move || counter.set(counter.get() + 1));
+    // Count only the wakes from here on: the first frame's content woke
+    // the host.
+    wakes.store(0, Ordering::Relaxed);
     let setups = Rc::new(Cell::new(0));
     let frames = Rc::new(Cell::new(0));
     let drops = Rc::new(Cell::new(0));
-    let producer = GpuContentBox::new(
-        LocalProducer {
-            setups: setups.clone(),
-            frames: frames.clone(),
-            drops: drops.clone(),
-            device,
-            during_setup: Some(Box::new(move || {
-                color.set(WorkingColor::new([0., 1., 0., 1.]));
-            })),
-        },
-        || {},
-    );
+    let producer = GpuContentBox::new(LocalProducer {
+        setups: setups.clone(),
+        frames: frames.clone(),
+        drops: drops.clone(),
+        device,
+        during_setup: Some(Box::new(move || {
+            color.set(WorkingColor::new([0., 1., 0., 1.]));
+        })),
+    });
     let layer = surface.layer();
     surface.update(|tx| {
         tx[surface.root()].push(&layer);
@@ -130,13 +136,13 @@ async fn local_producers_share_device_and_preserve_wakes_during_await() {
             .transform(cherenkov::kurbo::Affine::translate((8., 0.)))
             .content(engine.gpu_producer(producer).at((8, 16)));
     });
-    let before = wakes.get();
+    let before = wakes.load(Ordering::Relaxed);
     engine
         .render(FrameTime::now())
         .await
         .expect("producer setup");
     assert_eq!(
-        wakes.get(),
+        wakes.load(Ordering::Relaxed),
         before + 1,
         "signal during setup requests next frame"
     );
@@ -176,7 +182,7 @@ async fn shader_validation_returns_errors_before_queueing() {
     ));
     let shader = engine.shader(ShaderSource::wgsl(BLUE)).expect("shader");
     let surface = engine
-        .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16))
+        .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {})
         .await
         .expect("surface");
     surface.update(|tx| {
@@ -218,7 +224,7 @@ async fn resources_registered_while_recording_draw_in_the_same_frame() {
         .await
         .expect("engine");
     let surface = engine
-        .surface(Offscreen::new((48, 16), OffscreenFormat::LinearF16))
+        .surface(Offscreen::new((48, 16), OffscreenFormat::LinearF16), || {})
         .await
         .expect("surface");
     let font = engine
@@ -336,12 +342,12 @@ async fn filters_keep_redraw_requests_made_during_async_setup() {
         frames: frames.clone(),
     }));
     let surface = engine
-        .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16))
+        .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {})
         .await
         .expect("surface");
     surface.update(|tx| {
         tx[surface.root()]
-            .filter(&filter)
+            .filter(filter.id())
             .content(surface.record(|r| r.fill(Rect::new(0., 0., 8., 8.), WorkingColor::WHITE)));
     });
     assert!(matches!(
@@ -550,7 +556,7 @@ async fn web_rgb_formats_sample_in_place() {
     let (device, queue, engine) = shared_engine().await;
     let releases = Rc::new(Cell::new(0));
     let surface = engine
-        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16))
+        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {})
         .await
         .expect("surface");
 
@@ -629,7 +635,7 @@ async fn web_rgb_alpha_modes() {
     let (device, queue, engine) = shared_engine().await;
     let releases = Rc::new(Cell::new(0));
     let surface = engine
-        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16))
+        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {})
         .await
         .expect("surface");
     let plane = foreign_plane(
@@ -695,7 +701,7 @@ async fn web_rgb_colour_metadata() {
     let (device, queue, engine) = shared_engine().await;
     let releases = Rc::new(Cell::new(0));
     let surface = engine
-        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16))
+        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {})
         .await
         .expect("surface");
     let layer = surface.layer();
@@ -768,7 +774,7 @@ async fn web_rgb_primaries_convert_to_working_space() {
     let (device, queue, engine) = shared_engine().await;
     let releases = Rc::new(Cell::new(0));
     let surface = engine
-        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16))
+        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {})
         .await
         .expect("surface");
     let layer = surface.layer();
@@ -845,7 +851,7 @@ async fn web_frame_shared_across_layers_and_retires_once() {
     let (device, queue, engine) = shared_engine().await;
     let releases = Rc::new(Cell::new(0));
     let surface = engine
-        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16))
+        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {})
         .await
         .expect("surface");
     let plane = foreign_plane(
@@ -906,7 +912,7 @@ async fn web_frame_replacement_mid_flight_and_teardown() {
     let (device, queue, engine) = shared_engine().await;
     let releases = Rc::new(Cell::new(0));
     let surface = engine
-        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16))
+        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {})
         .await
         .expect("surface");
     let plane = |texel: [u8; 4]| {
@@ -980,7 +986,7 @@ async fn web_frame_replacement_mid_flight_and_teardown() {
 
     // Engine teardown does the same for a surviving surface.
     let surface = engine
-        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16))
+        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {})
         .await
         .expect("surface");
     let imported_red = cherenkov_gpu::interop::web::import_texture(
@@ -1194,7 +1200,7 @@ async fn web_import_copies_no_pixels() {
     let (device, queue, engine) = shared_engine().await;
     let releases = Rc::new(Cell::new(0));
     let surface = engine
-        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16))
+        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {})
         .await
         .expect("surface");
     // A quarter-megabyte plane: any import-side copy or conversion target
@@ -1244,8 +1250,15 @@ async fn web_import_copies_no_pixels() {
 async fn web_frame_idle_and_coalesced_wake() {
     let (device, queue, engine) = shared_engine().await;
     let releases = Rc::new(Cell::new(0));
+    let wakes = Arc::new(AtomicU32::new(0));
+    let counter = wakes.clone();
     let surface = engine
-        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16))
+        .surface(
+            Offscreen::new((16, 16), OffscreenFormat::LinearF16),
+            move || {
+                counter.fetch_add(1, Ordering::Relaxed);
+            },
+        )
         .await
         .expect("surface");
     let plane = foreign_plane(
@@ -1267,9 +1280,6 @@ async fn web_frame_idle_and_coalesced_wake() {
     )
     .await
     .expect("import");
-    let wakes = Rc::new(Cell::new(0));
-    let counter = wakes.clone();
-    engine.set_waker(move || counter.set(counter.get() + 1));
     let layer = show_frame(
         &surface,
         &engine,
@@ -1288,7 +1298,11 @@ async fn web_frame_idle_and_coalesced_wake() {
         RgbAlpha::Opaque,
         FrameColor::SRGB,
     );
-    assert_eq!(wakes.get(), 1, "queued installs coalesce to one wake");
+    assert_eq!(
+        wakes.load(Ordering::Relaxed),
+        1,
+        "queued installs coalesce to one wake"
+    );
     assert_eq!(
         engine.render(FrameTime::now()).await.expect("render"),
         Next::Idle
@@ -1298,7 +1312,11 @@ async fn web_frame_idle_and_coalesced_wake() {
         engine.render(FrameTime::now()).await.expect("steady"),
         Next::Idle
     );
-    assert_eq!(wakes.get(), 1, "no wake without a new frame");
+    assert_eq!(
+        wakes.load(Ordering::Relaxed),
+        1,
+        "no wake without a new frame"
+    );
     assert_eq!(engine.stats().commands_lowered, 0, "nothing re-lowered");
     replace_frame(
         &surface,
@@ -1308,7 +1326,11 @@ async fn web_frame_idle_and_coalesced_wake() {
         RgbAlpha::Opaque,
         FrameColor::SRGB,
     );
-    assert_eq!(wakes.get(), 2, "a new frame wakes once more");
+    assert_eq!(
+        wakes.load(Ordering::Relaxed),
+        2,
+        "a new frame wakes once more"
+    );
     assert_eq!(
         engine.render(FrameTime::now()).await.expect("render"),
         Next::Idle

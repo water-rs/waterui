@@ -1,7 +1,7 @@
 //! The engine: owns the render thread and every resource's identity.
 //! `!Send`, lives on the UI thread.
 
-use super::{SurfaceWaker, Waker, thread};
+use super::{SurfaceWaker, thread};
 
 use crate::local::Sender;
 use std::cell::{Cell, RefCell};
@@ -18,16 +18,18 @@ use crate::config::{MemoryUsage, Pressure};
 use crate::error::{EngineError, RenderError, ResourceError, SurfaceError};
 use crate::frame::{FrameStats, FrameTime, FrameTiming, Next};
 use crate::glyph::FontId;
-use crate::image::{Format, ImageData};
-use crate::message::{
-    ChangeSet, FontData, Message, ProducerId, RegisterOp, RenderReply, SurfaceId,
-};
+use crate::image::{Format, ImageData, ImageUpload};
+use cherenkov_record::{ChangeSet, SurfaceId};
+
+use crate::message::{FontData, Message, ProducerId, RegisterOp, RenderReply};
 use crate::paint::ImageId;
+use cherenkov_record::ResourceId;
+
 use crate::resource::{
-    Filter, Font, FontSource, FrameSink, GpuProducer, Image, ReplaceImage, ResourceId, Shader,
+    Filter, Font, FontSource, FrameSink, GpuProducer, Image, ReplaceImage, Shader,
 };
 use crate::style::FilterId;
-use crate::surface::{Shared, Surface};
+use crate::surface::Surface;
 
 /// Owns the device and a serial executor on the creating JS thread.
 ///
@@ -42,15 +44,13 @@ use crate::surface::{Shared, Surface};
 pub struct Engine<B: Backend> {
     tx: Sender<Message<B>>,
     info: B::Info,
+    /// The largest image the backend admits, read once after init.
+    image_limits: crate::ImageLimits,
     stats: RefCell<FrameStats>,
     commits: RefCell<Vec<(SurfaceId, ChangeSet<B>)>>,
-    /// The deadline map `finish_frame` fills: its buffer travels with
-    /// `Message::Render` and returns in the reply, so the per-surface
-    /// deadlines reuse one allocation across frames.
-    next_scratch: RefCell<rustc_hash::FxHashMap<SurfaceId, Next>>,
     /// The live surfaces' shared queues, drained into one `Render` message
     /// per frame.
-    surfaces: RefCell<Vec<std::rc::Weak<RefCell<Shared<B>>>>>,
+    surfaces: RefCell<super::Surfaces<B>>,
     next_surface: Cell<u64>,
     next_font: Cell<u64>,
     next_image: Cell<u64>,
@@ -63,7 +63,6 @@ pub struct Engine<B: Backend> {
     post: Rc<dyn Fn(Message<B>)>,
     /// The `Message::ReplaceImage` sender every image handle shares.
     replace_image: ReplaceImage,
-    waker: Rc<Waker>,
     // `!Send`: the engine lives on the UI thread.
     _not_send: PhantomData<Rc<()>>,
 }
@@ -110,14 +109,14 @@ impl<B: Backend> Engine<B> {
     /// [`EngineError`] when the backend fails to initialize or the render
     /// thread cannot start.
     pub async fn new(config: B::Config) -> Result<Self, EngineError> {
-        let (tx, info) = thread::local::<B>(config).await?;
+        let (tx, info, image_limits) = thread::local::<B>(config).await?;
         let post_tx = tx.clone();
-        let waker = Rc::new(Waker::new());
         let replace_image = {
             let tx = tx.clone();
             // The executor wakes the host through every visible surface
             // that draws the image, once it knows which surfaces do.
-            Rc::new(move |id, image| {
+            Rc::new(move |id: ImageId, image: ImageUpload| {
+                image_limits.check(image.width, image.height)?;
                 tx.send(Message::ReplaceImage { id, image })
                     .map_err(|_| ResourceError::Lost)
             }) as ReplaceImage
@@ -125,9 +124,9 @@ impl<B: Backend> Engine<B> {
         Ok(Self {
             tx,
             info,
+            image_limits,
             stats: RefCell::new(FrameStats::default()),
             commits: RefCell::new(Vec::new()),
-            next_scratch: RefCell::new(rustc_hash::FxHashMap::default()),
             surfaces: RefCell::new(Vec::new()),
             next_surface: Cell::new(0),
             next_font: Cell::new(1),
@@ -140,7 +139,6 @@ impl<B: Backend> Engine<B> {
                 let _ = post_tx.send(message);
             }),
             replace_image,
-            waker,
             _not_send: PhantomData,
         })
     }
@@ -149,6 +147,20 @@ impl<B: Backend> Engine<B> {
     #[must_use]
     pub const fn info(&self) -> &B::Info {
         &self.info
+    }
+
+    /// The largest image the backend admits, in each dimension and in
+    /// total texels: the device's texture limit, or the per-image share
+    /// of the backend's memory budget. Read once off the live device and
+    /// budget when the engine is created; it never changes.
+    ///
+    /// [`Engine::image`] and [`Image::replace`] check it on the calling
+    /// thread before anything is queued, so an image the device cannot
+    /// hold fails at registration with [`ResourceError::TooLarge`]
+    /// instead of failing every render that draws it.
+    #[must_use]
+    pub const fn image_limits(&self) -> crate::ImageLimits {
+        self.image_limits
     }
 
     /// Statistics of the last [`Engine::render`]. GPU timings are kept by
@@ -205,25 +217,6 @@ impl<B: Backend> Engine<B> {
         let _ = self.tx.send(Message::Trim(pressure));
     }
 
-    /// Registers the host wake-up callback.
-    ///
-    /// Changes made outside a frame (a `surface.update`, a layer drop, a
-    /// bound signal firing) are queued, not sent. When the display link is
-    /// paused after `Next::Idle`, the host must learn that a frame is
-    /// needed: the engine calls `f` at most once between two
-    /// [`Engine::render`]s, the first time something is queued on a
-    /// visible surface, and once when a surface becomes visible (see
-    /// [`Surface::visibility`]). A hidden surface never calls it.
-    ///
-    /// This is the aggregate-host model: one callback behind every
-    /// visible surface's wake. A surface whose host keeps its own
-    /// presentation loop installs
-    /// [`Surface::set_waker`](crate::Surface::set_waker) instead; its
-    /// changes, completions and reveals then reach that callback alone.
-    pub fn set_waker(&self, f: impl Fn() + 'static) {
-        self.waker.set(Rc::new(f));
-    }
-
     fn alloc(cell: &Cell<u64>) -> u64 {
         let id = cell.get();
         cell.set(id + 1);
@@ -260,18 +253,24 @@ impl<B: Backend> Engine<B> {
     /// Registers an image. [`Image::replace`] later swaps its pixels
     /// behind the same id.
     ///
-    /// `image` is validated by [`ImageData::new`] before it is passed here.
-    /// The upload is queued in order with every render and does not wait
-    /// for the backend. A rejection only the backend can detect (a device
-    /// limit) fails every render that draws the image with
-    /// [`RenderError::Rejected`].
+    /// `image` is validated by [`ImageData::new`] before it is passed here,
+    /// and its size is checked against [`Engine::image_limits`] on the
+    /// calling thread: an image the device cannot hold fails at
+    /// registration instead of failing every render that draws it. The
+    /// upload is queued in order with every render and does not wait for
+    /// the backend. A rejection only the backend can detect (a residency
+    /// budget across every registered image) fails every render that
+    /// draws the image with [`RenderError::Rejected`].
     ///
     /// # Errors
-    /// [`ResourceError::Lost`] when the executor is gone.
+    /// [`ResourceError::TooLarge`] when the image exceeds
+    /// [`Engine::image_limits`], [`ResourceError::Lost`] when the executor
+    /// is gone.
     pub fn image<F: Format>(&self, image: ImageData<F>) -> Result<Image<F>, ResourceError>
     where
         B: Uploads<F>,
     {
+        self.image_limits.check(image.width(), image.height())?;
         let id = ImageId::new(Self::alloc(&self.next_image));
         let upload = image.into_upload();
         let resource = ResourceId::Image(id);
@@ -289,7 +288,27 @@ impl<B: Backend> Engine<B> {
     }
 
     /// Creates a surface over `target`: an [`Offscreen`](crate::Offscreen)
-    /// texture or an interop window target.
+    /// texture or an interop window target. `wake` is the surface's host
+    /// wake-up, fixed for the surface's life.
+    ///
+    /// Changes made outside a frame (a `surface.update`, a layer drop, a
+    /// bound signal firing) are queued, not sent. When the display link is
+    /// paused after `Next::Idle`, the host must learn that a frame is
+    /// needed: the engine calls `wake` at most once between two
+    /// [`Engine::render`]s the surface participates in — the first time
+    /// something is queued on it, a backend completion lands for it, an
+    /// image or a producer frame it draws lands, or a producer or filter
+    /// it draws asks for a redraw — and once when the surface becomes
+    /// visible (see [`Surface::visibility`]). A hidden surface never calls
+    /// it. A producer or filter parameter may ask for a redraw from a
+    /// handle that is [`Send`] and [`Sync`] on every target, and its wake
+    /// reaches `wake` through the surface, so `wake` is too.
+    ///
+    /// A host that keeps one presentation loop behind several surfaces
+    /// passes each of them the same request-redraw callback. A host that
+    /// drives its own frames opens each with [`Surface::begin_frame`] and
+    /// holds the scope across the frame's render, so the edits it makes
+    /// for that frame do not ask for another.
     ///
     /// # Errors
     /// [`SurfaceError`] when the backend cannot draw the target, or
@@ -298,9 +317,13 @@ impl<B: Backend> Engine<B> {
         clippy::future_not_send,
         reason = "the browser engine is single-threaded and its futures run on the page's event loop"
     )]
-    pub async fn surface(&self, target: impl Into<B::Target>) -> Result<Surface<B>, SurfaceError> {
+    pub async fn surface(
+        &self,
+        target: impl Into<B::Target>,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Result<Surface<B>, SurfaceError> {
         let id = SurfaceId::new(Self::alloc(&self.next_surface));
-        let waker = Rc::new(SurfaceWaker::new(Rc::clone(&self.waker)));
+        let waker = Arc::new(SurfaceWaker::new(wake));
         let (reply, rx) = crate::local::channel();
         // The guard owns the surface id from the enqueue on: dropping the
         // future still destroys what `create_surface` committed (#150).
@@ -314,7 +337,7 @@ impl<B: Backend> Engine<B> {
             .send(Message::CreateSurface {
                 id,
                 target: target.into(),
-                waker: Rc::clone(&waker),
+                waker: Arc::clone(&waker),
                 reply,
             })
             .map_err(|_| SurfaceError::Lost)?;
@@ -322,9 +345,11 @@ impl<B: Backend> Engine<B> {
             Ok(Ok(info)) => {
                 registration.disarm();
                 let surface = Surface::new(id, info, self.tx.clone(), waker);
-                self.surfaces
-                    .borrow_mut()
-                    .push(Rc::downgrade(&surface.shared));
+                self.surfaces.borrow_mut().push(super::SurfaceEntry {
+                    shared: Rc::downgrade(&surface.shared),
+                    waker: Arc::clone(&surface.waker),
+                    next_frame: Rc::downgrade(&surface.next_frame),
+                });
                 Ok(surface)
             }
             Ok(Err(error)) => {
@@ -339,7 +364,7 @@ impl<B: Backend> Engine<B> {
     #[doc(hidden)]
     pub fn live_surfaces(&self) -> usize {
         let mut surfaces = self.surfaces.borrow_mut();
-        surfaces.retain(|weak| weak.strong_count() > 0);
+        surfaces.retain(|entry| entry.shared.strong_count() > 0);
         surfaces.len()
     }
 
@@ -363,16 +388,15 @@ impl<B: Backend> Engine<B> {
         }
         let mut commits = std::mem::take(&mut *self.commits.borrow_mut());
         commits.clear();
+        // Re-arms each drained surface's wake before yielding: a signal
+        // fired during browser work must request the next frame, even if
+        // the current frame returns Idle.
         super::drain_visible(&mut self.surfaces.borrow_mut(), time, &mut commits);
-        // Re-arm before yielding: a signal fired during browser work must
-        // request the next frame, even if the current frame returns Idle.
-        self.waker.arm();
         let (reply, rx) = crate::local::channel::<RenderReply<B>>();
         self.tx
             .send(Message::Render {
                 time,
                 commits,
-                next_scratch: std::mem::take(&mut *self.next_scratch.borrow_mut()),
                 reply,
             })
             .map_err(|_| RenderError::Thread)?;
@@ -382,7 +406,6 @@ impl<B: Backend> Engine<B> {
         *self.commits.borrow_mut() = reply.commits;
         let (next, surface_next, stats) = reply.result?;
         super::publish_next(&self.surfaces.borrow(), &surface_next);
-        *self.next_scratch.borrow_mut() = surface_next;
         *self.stats.borrow_mut() = stats;
         Ok(next)
     }
@@ -400,7 +423,7 @@ impl<B: Backend> Engine<B> {
         for (id, changes) in commits {
             let Some(shared) = surfaces
                 .iter()
-                .filter_map(std::rc::Weak::upgrade)
+                .filter_map(|entry| entry.shared.upgrade())
                 .find(|shared| shared.borrow().id == *id)
             else {
                 continue;
@@ -555,25 +578,12 @@ impl<B: GpuContent> Engine<B> {
     #[must_use]
     pub fn frame_producer(&self) -> (GpuProducer<B>, FrameSink<B>) {
         let id = ProducerId::new(Self::alloc(&self.next_producer));
-        let dirty = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let gate = Arc::new(crate::WakeGate::default());
-        (self.post)(Message::Resource(Box::new({
-            let dirty = Arc::clone(&dirty);
-            let gate = Arc::clone(&gate);
-            move |r: &mut B::Renderer| {
-                B::add_frame_producer(r, id, dirty, gate);
-            }
+        (self.post)(Message::Resource(Box::new(move |r: &mut B::Renderer| {
+            B::add_frame_producer(r, id);
         })));
-        let engine_waker = Rc::clone(&self.waker);
         (
             GpuProducer::new(id, self.tx.clone()),
-            FrameSink::new(
-                id,
-                self.tx.clone(),
-                dirty,
-                gate,
-                Rc::new(move || engine_waker.wake()),
-            ),
+            FrameSink::new(id, self.tx.clone()),
         )
     }
 

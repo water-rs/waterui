@@ -16,6 +16,16 @@ use cherenkov::{
     OffscreenFormat, ShapeData, WorkingColor,
 };
 
+#[cfg_attr(
+    target_os = "android",
+    expect(
+        clippy::missing_const_for_thread_local,
+        reason = "every initializer is already `const {}`; the lint fires on \
+                  Android because that target's `thread_local!` expansion routes \
+                  const initializers through a generated non-const `__init` fn \
+                  (rust-lang/rust-clippy#13422)"
+    )
+)]
 mod counters {
     use std::cell::Cell;
 
@@ -137,10 +147,11 @@ fn recording_and_rendering_reuse_ui_thread_allocations() {
     let engine = Engine::<Null>::new(NullConfig {
         events,
         reject: HashSet::new(),
+        image_limits: cherenkov::ImageLimits::UNLIMITED,
     })
     .expect("init");
     let surface = engine
-        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16))
+        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {})
         .expect("surface");
     let layer = surface.layer();
     let path = ShapeData::Path {

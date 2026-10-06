@@ -11,6 +11,96 @@ use cocoa_ui::MainThreadMarker;
 use waterui::window::WindowManager;
 use waterui_backend_core::Environment;
 
+/// Pumps the main run loop until `until` answers or `seconds` elapse.
+///
+/// A synchronous case awaits work enqueued on the main queue — a deferred
+/// emission apply, an enqueued drop — in small turns rather than one
+/// fixed wait. Answers whether `until` was reached; callers assert with
+/// the condition's name so a dead queue fails the case instead of
+/// hanging it.
+pub fn pump_main_until(seconds: f64, until: impl Fn() -> bool) -> bool {
+    use cocoa_ui::objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSRunLoop};
+    let deadline = NSDate::dateWithTimeIntervalSinceNow(seconds);
+    while !until() && deadline.timeIntervalSinceNow() > 0.0 {
+        // SAFETY: `NSDefaultRunLoopMode` is a system-owned run-loop mode.
+        NSRunLoop::currentRunLoop().runMode_beforeDate(
+            unsafe { NSDefaultRunLoopMode },
+            &NSDate::dateWithTimeIntervalSinceNow(0.02),
+        );
+    }
+    until()
+}
+
+/// The bound a case gives deferred main-queue work before it fails.
+///
+/// Reached only when the awaited work never arrives; a healthy queue
+/// answers within a few run-loop turns.
+pub const MAIN_QUEUE_DEADLINE: f64 = 5.0;
+
+/// Drives a `!Send` future to completion on the main thread while
+/// pumping the run loop.
+///
+/// A bare `block_on` parks the thread it polls on; the central
+/// capture's completions and wakes land on `DispatchQueue::main()`,
+/// which only a turning run loop services — so the future's polls
+/// interleave with short `pump_main_until` turns, re-polling on the
+/// wake flag as soon as a callback delivers. Bounded at `seconds`
+/// overall: a future that never settles panics naming the bound
+/// instead of hanging the case.
+///
+/// # Panics
+///
+/// When `future` is not ready within `seconds`.
+pub fn block_on_main<F: core::future::Future>(seconds: f64, future: F) -> F::Output {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::task::{Context, Poll, Wake, Waker};
+    use std::time::Instant;
+
+    struct Flag(Arc<AtomicBool>);
+    impl Wake for Flag {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    let woken = Arc::new(AtomicBool::new(false));
+    let waker = Waker::from(Arc::new(Flag(Arc::clone(&woken))));
+    let mut cx = Context::from_waker(&waker);
+    let mut future = core::pin::pin!(future);
+    let start = Instant::now();
+    loop {
+        woken.store(false, Ordering::Release);
+        if let Poll::Ready(output) = future.as_mut().poll(&mut cx) {
+            return output;
+        }
+        assert!(
+            start.elapsed().as_secs_f64() < seconds,
+            "a main-thread future did not settle within {seconds}s"
+        );
+        pump_main_until(0.05, || woken.load(Ordering::Acquire));
+    }
+}
+
+/// Pumps the main run loop until every block already on the main queue has run.
+///
+/// The backend applies a list emission as a block on the main dispatch
+/// queue, so a case asserting that the newest state is never overwritten
+/// cannot stop the moment that state first appears: an older emission
+/// still queued would land in a later turn. This enqueues a sentinel
+/// block and pumps until it runs; the main queue is FIFO, so every block
+/// enqueued before it has run too. Answers whether the sentinel ran
+/// within [`MAIN_QUEUE_DEADLINE`].
+#[must_use = "a queue that never drains must fail the case"]
+pub fn drain_main_queue(mtm: MainThreadMarker) -> bool {
+    let drained = alloc::rc::Rc::new(core::cell::Cell::new(false));
+    cocoa_ui::main_queue::enqueue_local(mtm, {
+        let drained = alloc::rc::Rc::clone(&drained);
+        move |_mtm| drained.set(true)
+    });
+    pump_main_until(MAIN_QUEUE_DEADLINE, || drained.get())
+}
+
 /// A real controller/window lifetime around the production mounting path.
 #[cfg(target_os = "ios")]
 #[derive(Debug)]
@@ -190,14 +280,16 @@ pub fn bind_root_window_wires_a_live_window(mtm: MainThreadMarker) {
     drop(binding);
 }
 
-/// GPU-surface mounted-scene reach.
+/// Re-exports the GPU-surface mounted-scene fixtures.
 ///
 /// The `native_test` module inside `components::gpu_surface` builds a real
-/// `SceneView` mount and drives the production failure drain and completion
-/// settlement paths on it.
+/// `SceneView` mount and drives the production failure drain and
+/// completion settlement paths on it.
 #[cfg(all(target_os = "macos", feature = "gpu_surface"))]
 pub mod gpu_surface {
-    pub use crate::components::gpu_surface::native_test::{MountedSceneSurface, WakeProbe};
+    pub use crate::components::gpu_surface::native_test::{
+        MountedSceneSurface, WakeProbe, fixture_env, fixture_scene_view,
+    };
 
     /// Performs the once-per-process `startup::initialize` — called
     /// once from the `Tests/native.rs` harness's true main thread
@@ -206,4 +298,81 @@ pub mod gpu_surface {
     pub fn initialize_process() {
         let _ = crate::startup::initialize();
     }
+}
+
+/// Re-exports the pieces a `ViewRenderer::render` trial needs.
+///
+/// The service installer, the shared-runtime handles a sealed generation
+/// is reached through, and the failure carriers the cause chain asserts
+/// on.
+#[cfg(all(target_os = "macos", feature = "gpu_surface"))]
+pub mod view_renderer {
+    pub use crate::components::view_renderer::install_service;
+    pub use crate::gpu_runtime::{EngineGeneration, SceneEngine, scene_engine};
+    pub use waterui_graphics::gpu::GpuRuntime;
+    pub use waterui_graphics::gpu::runtime::HostedLayerError;
+}
+
+/// Re-exports the filtered mounted-surface fixtures.
+///
+/// The `native_test` module inside `components::filtered` mounts a filtered
+/// leaf over a real `SceneView` GPU-surface child through the production
+/// `build_filtered_parts` construction, for the settle-contract trials.
+#[cfg(all(target_os = "macos", feature = "gpu_surface"))]
+pub mod filtered {
+    pub use crate::components::filtered::native_test::{MountedFilteredSurface, WakeProbe};
+}
+
+/// Counts `tracing` ERROR events one module emits — a settle contract
+/// that must log exactly once per failure asserts on the count.
+///
+/// Used as a `tracing::Subscriber` inside `with_default`, so only the
+/// events the wrapped closure raises are observed.
+#[cfg(all(target_os = "macos", feature = "gpu_surface"))]
+#[derive(Debug)]
+pub struct ErrorLog {
+    target: &'static str,
+    count: alloc::sync::Arc<core::sync::atomic::AtomicU32>,
+}
+
+#[cfg(all(target_os = "macos", feature = "gpu_surface"))]
+impl ErrorLog {
+    /// An ERROR counter for events whose target is `target` (the
+    /// emitting module path, e.g.
+    /// `"waterui_apple::components::gpu_surface"`).
+    #[must_use]
+    pub fn new(target: &'static str) -> (Self, alloc::sync::Arc<core::sync::atomic::AtomicU32>) {
+        let count = alloc::sync::Arc::new(core::sync::atomic::AtomicU32::new(0));
+        (
+            Self {
+                target,
+                count: count.clone(),
+            },
+            count,
+        )
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "gpu_surface"))]
+impl tracing::Subscriber for ErrorLog {
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+        *metadata.level() == tracing::Level::ERROR && metadata.target() == self.target
+    }
+    fn new_span(&self, _attrs: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+    fn register_callsite(
+        &self,
+        _meta: &'static tracing::Metadata<'static>,
+    ) -> tracing::subscriber::Interest {
+        tracing::subscriber::Interest::always()
+    }
+    fn event(&self, _event: &tracing::Event<'_>) {
+        self.count
+            .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+    }
+    fn enter(&self, _span: &tracing::span::Id) {}
+    fn exit(&self, _span: &tracing::span::Id) {}
 }

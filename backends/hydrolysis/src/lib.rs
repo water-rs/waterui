@@ -17,6 +17,7 @@ mod renderer;
 mod runner;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
+mod text;
 pub mod theme;
 mod view_renderer;
 mod widgets;
@@ -64,19 +65,19 @@ pub use platform::BrowserWindow;
 #[cfg(hydrolysis_winit)]
 pub use platform::WinitWindow;
 pub use platform::{
-    BackEdge, BackNavigation, GpuSurfaceWindow, InputEvent, KeyCode, KeyState, Modifiers,
-    OffscreenGpuContext, OffscreenSceneSurface, OffscreenSurface, OffscreenWindow, PlatformWindow,
-    PointerButton, PointerKind, SurfaceError, SurfaceFrame, SurfaceProvider, TextInputPurpose,
-    TextInputState, TouchPhase, WindowSafeArea,
+    BackEdge, BackNavigation, FlingDeceleration, GpuSurfaceWindow, InputEvent, KeyCode, KeyState,
+    Modifiers, OffscreenGpuContext, OffscreenSceneSurface, OffscreenSurface, OffscreenWindow,
+    PlatformWindow, PointerButton, PointerKind, SurfaceError, SurfaceFrame, SurfaceProvider,
+    TextInputPurpose, TextInputState, TouchPhase, TouchScrollConfig, WindowKeyboardArea,
+    WindowSafeArea,
 };
 pub use platform_view::{PlatformView, PlatformViewPlacement, PlatformViewSink};
+pub use readback::{ReadbackError, readback_texture_rgba8};
 #[cfg(feature = "accessibility")]
 pub use renderer::accessibility::AccessibilityActivationPointError;
-pub use renderer::{
-    FontFamilyResolution, HydroState, HydrolysisRenderTarget, HydrolysisRenderer, RenderContext,
-};
 #[cfg(feature = "frame-profile")]
 pub use renderer::{FrameStageTimes, GpuIdentity};
+pub use renderer::{HydroState, HydrolysisRenderTarget, HydrolysisRenderer, RenderContext};
 #[cfg(target_os = "android")]
 pub use runner::android;
 #[cfg(hydrolysis_run)]
@@ -84,6 +85,7 @@ pub use runner::run;
 pub use runner::{FrameCounters, FramePhases, FrameProfile, SemanticPumpResult, SemanticRuntime};
 #[cfg(not(target_arch = "wasm32"))]
 pub use runner::{HeadlessPumpResult, HeadlessRuntime, HeadlessSnapshot};
+pub use text::FontFamilyResolution;
 pub use view_renderer::HydrolysisViewRenderer;
 #[cfg(hydrolysis_macos_system_webview)]
 pub use widgets::platform::webview::MacSystemWebViewController;

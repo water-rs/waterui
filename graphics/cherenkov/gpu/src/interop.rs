@@ -2,8 +2,9 @@
 
 pub use crate::render::filter::EffectBox;
 pub use crate::render::present::{
-    DestinationPrimaries, DisplayProbe, OutputAlpha, OutputColor, OutputSelection, Presenter,
-    SelectionReason, TextureOutput, TransferEncoding,
+    DestinationPrimaries, DisplayProbe, OutputAlpha, OutputColor, OutputRequest, OutputSelection,
+    Presenter, SelectionReason, TextureOutput, TransferEncoding, select_output,
+    surface_output_alpha,
 };
 pub use crate::render::shaders::{ShaderDelivery, delivery as shader_delivery};
 use std::future::Future;
@@ -90,17 +91,16 @@ impl std::fmt::Debug for GpuContentBox {
 }
 
 impl GpuContentBox {
-    /// Creates a producer with the host's event-loop wake callback.
-    /// The callback must be safe to invoke from a producer thread, including
-    /// while the engine is idle (for example, a window event-loop proxy).
+    /// Boxes a producer. Its redraw requests wake the hosts of the
+    /// surfaces that draw it, each through the wake the surface was
+    /// created with.
     #[must_use]
-    pub fn new(content: impl GpuContent, wake: impl Fn() + Send + Sync + 'static) -> Self {
+    pub fn new(content: impl GpuContent) -> Self {
         Self {
             content: Box::new(content),
             redraw: RedrawHandle {
                 dirty: Arc::new(AtomicBool::new(true)),
-                gate: Arc::new(cherenkov::WakeGate::default()),
-                wake: Arc::new(wake),
+                wakes: Arc::new(cherenkov::SurfaceWakes::default()),
             },
         }
     }
@@ -116,9 +116,8 @@ impl GpuContentBox {
 #[derive(Clone)]
 pub struct RedrawHandle {
     pub(crate) dirty: Arc<AtomicBool>,
-    /// Open while the content is composed on a visible surface.
-    pub(crate) gate: Arc<cherenkov::WakeGate>,
-    wake: Arc<dyn Fn() + Send + Sync>,
+    /// The wakes of the surfaces whose frames draw the content.
+    pub(crate) wakes: Arc<cherenkov::SurfaceWakes>,
 }
 
 impl std::fmt::Debug for RedrawHandle {
@@ -130,13 +129,15 @@ impl std::fmt::Debug for RedrawHandle {
 }
 
 impl RedrawHandle {
-    /// Marks the producer's output stale. Requests coalesce until consumed.
-    /// Detached or removed content, and content on a surface the host has
-    /// announced hidden, retains the request without waking the host; the
-    /// frame that draws it again draws its latest state.
+    /// Marks the producer's output stale and wakes the host of each
+    /// surface whose frames draw it, through the surface's own wake.
+    /// Requests coalesce until a frame consumes them. Detached or removed
+    /// content, and content on a surface the host has announced hidden,
+    /// retains the request without waking the host; the frame that draws
+    /// it again draws its latest state.
     pub fn request_redraw(&self) {
-        if !self.dirty.swap(true, Ordering::AcqRel) && self.gate.is_open() {
-            (self.wake)();
+        if !self.dirty.swap(true, Ordering::AcqRel) {
+            self.wakes.wake();
         }
     }
 
@@ -174,28 +175,6 @@ impl<C: GpuContent> Content for C {
 
     fn render(&mut self, frame: &mut wgpu::Frame<'_>) {
         GpuContent::render(self, frame);
-    }
-}
-
-/// A host event-loop callback callable from the engine or producer threads.
-#[derive(Clone)]
-pub struct RedrawCallback(Arc<dyn Fn() + Send + Sync>);
-
-impl RedrawCallback {
-    /// Wraps the host's display-link or event-loop wake operation.
-    pub fn new(wake: impl Fn() + Send + Sync + 'static) -> Self {
-        Self(Arc::new(wake))
-    }
-
-    /// Asks the host to schedule an engine frame.
-    pub fn wake(&self) {
-        (self.0)();
-    }
-}
-
-impl std::fmt::Debug for RedrawCallback {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RedrawCallback").finish_non_exhaustive()
     }
 }
 
@@ -759,38 +738,40 @@ impl ExternalFrame {
 
 /// Native external-frame import on Vulkan (issue #166).
 ///
-/// [`Device`] imports a producer [`FrameSource`] — a Linux [`DmaBuf`] or an
-/// Android `AHardwareBuffer` — as a [`Frame`] on the engine's shared
-/// `VkDevice`, synchronised through a Vulkan semaphore on the GPU. Install
-/// the frame on a layer through [`ExternalFrame::native`].
+/// [`Device`](vulkan::Device) imports a producer
+/// [`FrameSource`](vulkan::FrameSource) — a Linux [`DmaBuf`](vulkan::DmaBuf)
+/// or an Android `AHardwareBuffer` — as a [`Frame`](vulkan::Frame) on the
+/// engine's shared `VkDevice`, synchronised through a Vulkan semaphore on
+/// the GPU. Install the frame on a layer through [`ExternalFrame::native`].
 #[cfg(all(unix, not(target_vendor = "apple")))]
 pub mod vulkan {
     #[cfg(target_os = "android")]
     pub use crate::render::external::vulkan::Ahb;
     // The producer-facing surface: import descriptors, the imported frame,
-    // its capability record and the sync contract. The encode-side
+    // its capability record, the per-device context `Device::shared` and
+    // `Native::new` carry, and the sync contract. The encode-side
     // machinery (`Release`, `Views`, `submit_waits`, `mark_submitted`,
     // `drain_releases`, `create_pool`, `KIND_*`) stays `pub(crate)`;
     // `Generation`/`State` and the staging pair remain public for the
     // standalone Android device-test binary, recorded in docs/api.md.
     pub use crate::render::external::vulkan::{
         Caps, Device, DmaBuf, DmaBufPlane, Frame, FrameSource, Generation, Native, NativeError,
-        PendingAcquire, PendingWait, QueueFamily, ReleaseSync, Repr, State, Wait, cancel_staged,
-        stage_acquire,
+        PendingAcquire, PendingWait, QueueFamily, ReleaseSync, Repr, Shared, State, Wait,
+        cancel_staged, stage_acquire,
     };
 }
 
 /// Linux interop: presenting through exported DMA-BUFs (#1687).
 ///
-/// [`DmabufTarget`] is the zero-copy present target for hosts that can
-/// import Linux dma-bufs (e.g. `GdkDmabufTexture`, a Wayland compositor,
-/// GStreamer): the engine renders each frame into one image of a small
-/// pool of exportable Vulkan images and hands the host the image's
-/// planes, an explicit DRM format modifier and a sync-file acquire
-/// fence. The host returns each image with a release sync file; an image
-/// is reused only after that release has signalled, and a surface with
-/// no free image waits for a release rather than allocating — never a
-/// CPU wait on the render thread.
+/// [`DmabufTarget`](dmabuf::DmabufTarget) is the zero-copy present target
+/// for hosts that can import Linux dma-bufs (e.g. `GdkDmabufTexture`, a
+/// Wayland compositor, GStreamer): the engine renders each frame into one
+/// image of a small pool of exportable Vulkan images and hands the host the
+/// image's planes, an explicit DRM format modifier and a sync-file acquire
+/// fence. The host returns each image with a release sync file; an image is
+/// reused only after that release has signalled, and a surface with no free
+/// image waits for a release rather than allocating — never a CPU wait on
+/// the render thread.
 #[cfg(target_os = "linux")]
 pub mod dmabuf {
     use std::os::fd::OwnedFd;

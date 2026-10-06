@@ -12,11 +12,12 @@ use crate::ShaderId;
 use crate::error::ResourceError;
 use crate::glyph::FontId;
 use crate::image::{Format, ImageData, ImageUpload};
-use crate::message::{BackdropId, BackdropShaderId};
+use cherenkov_record::{
+    BackdropEffect, BackdropId, BackdropSample, BackdropShaderId, LayerContent,
+};
+
 use crate::paint::ImageId;
 use crate::style::FilterId;
-
-pub use cherenkov_record::ResourceId;
 
 /// The data of a font to register with the engine.
 #[derive(Clone)]
@@ -183,15 +184,22 @@ impl<F: Format> Image<F> {
     /// frame samples a partly written image. The same dimensions reuse the
     /// backing storage; different dimensions reallocate it behind the same
     /// id. The next render redraws the surfaces whose content draws this
-    /// image, and the engine's waker fires to request that render.
+    /// image, and each of those surfaces wakes its host to request that
+    /// render.
     ///
-    /// `image` is validated by [`ImageData::new`]. A rejection only the
-    /// backend can detect keeps the previous pixels and fails every render
-    /// that draws the image with [`RenderError::Rejected`], until a later
-    /// replacement succeeds, as for [`Engine::image`](crate::Engine::image).
+    /// `image` is validated by [`ImageData::new`], and its size is checked
+    /// against the engine's [`ImageLimits`](crate::ImageLimits) on the
+    /// calling thread: an image the device cannot hold fails here with
+    /// [`ResourceError::TooLarge`] and keeps the previous pixels. A
+    /// rejection only the backend can detect keeps the previous pixels
+    /// too, and fails every render that draws the image with
+    /// [`RenderError::Rejected`], until a later replacement succeeds, as
+    /// for [`Engine::image`](crate::Engine::image).
     ///
     /// # Errors
-    /// [`ResourceError::Lost`] when the render thread is gone.
+    /// [`ResourceError::TooLarge`] when the image exceeds the engine's
+    /// image limits, [`ResourceError::Lost`] when the render thread is
+    /// gone.
     ///
     /// [`RenderError::Rejected`]: crate::RenderError::Rejected
     pub fn replace(&self, image: ImageData<F>) -> Result<(), ResourceError> {
@@ -282,45 +290,14 @@ impl BackdropGroup {
     /// A sample of this group for [`LayerEdit::backdrop`](crate::LayerEdit::backdrop).
     #[must_use]
     pub fn sample(&self) -> BackdropSample {
-        BackdropSample {
-            group: self.id(),
-            effect: None,
-        }
+        BackdropSample::new(self.id())
     }
 
     /// A sample of this group with a per-member effect, evaluated in the
     /// member's composite against the shared filtered capture.
     #[must_use]
-    pub fn sample_with(&self, effect: impl Into<crate::BackdropEffect>) -> BackdropSample {
-        BackdropSample {
-            group: self.id(),
-            effect: Some(effect.into()),
-        }
-    }
-}
-
-/// A sample of a [`BackdropGroup`], attached to a layer by
-/// [`LayerEdit::backdrop`](crate::LayerEdit::backdrop).
-#[derive(Clone, Debug, PartialEq)]
-pub struct BackdropSample {
-    /// The sampled group.
-    group: BackdropId,
-    /// The per-member effect applied in the member's composite.
-    effect: Option<crate::BackdropEffect>,
-}
-
-impl BackdropSample {
-    /// The sampled group.
-    #[must_use]
-    pub const fn group(&self) -> BackdropId {
-        self.group
-    }
-
-    /// The per-member effect, when the sample was made with
-    /// [`BackdropGroup::sample_with`].
-    #[must_use]
-    pub const fn effect(&self) -> Option<&crate::BackdropEffect> {
-        self.effect.as_ref()
+    pub fn sample_with(&self, effect: impl Into<BackdropEffect>) -> BackdropSample {
+        BackdropSample::with_effect(self.id(), effect)
     }
 }
 
@@ -362,11 +339,7 @@ impl BackdropShader {
     /// declared order (at most 64 finite values, packed four per `vec4`).
     #[must_use]
     pub fn effect(&self, uniforms: Vec<f32>) -> crate::BackdropShaderEffect {
-        crate::BackdropShaderEffect {
-            shader: self.id(),
-            uniforms,
-            reach: self.reach,
-        }
+        crate::BackdropShaderEffect::new(self.id(), uniforms, self.reach)
     }
 }
 
@@ -394,13 +367,6 @@ type ProducerChannel<B> = crate::local::Sender<crate::message::Message<B>>;
 type RetireChannel<B> = crossbeam_channel::Sender<crate::message::ResOp<B>>;
 #[cfg(target_arch = "wasm32")]
 type RetireChannel<B> = crate::local::Sender<crate::message::Message<B>>;
-
-/// The wake callback a [`FrameSink`] fires: thread-safe on native, on the
-/// owning JS thread on wasm32.
-#[cfg(not(target_arch = "wasm32"))]
-type SinkWake = Arc<dyn Fn() + Send + Sync>;
-#[cfg(target_arch = "wasm32")]
-type SinkWake = std::rc::Rc<dyn Fn()>;
 
 /// What a [`GpuProducer`] shares with the copies its binding holds on the
 /// render thread: the last `Arc` drop — handle or binding — retires the
@@ -478,18 +444,22 @@ impl<B: crate::GpuContent> GpuProducer<B> {
 
     /// Binds the producer to a layer at `size` pixels — the pixel size
     /// that layer needs. Returns the layer content
-    /// [`LayerEdit::content`](crate::LayerEdit::content) installs; binding
-    /// the layer again is a new binding.
+    /// [`LayerEdit::content`](crate::LayerEdit::content) installs, the
+    /// sealed [`LayerContent::install`] payload naming this producer at
+    /// `size`; the `GpuInstalls` bound `GpuContent` carries is what keeps
+    /// a target without GPU installs — the engine-free consumer — from
+    /// ever requesting one. Binding the layer again is a new binding.
     ///
     /// # Panics
     /// At apply time, when the producer is bound on an engine other than
     /// the one that made it.
     #[must_use]
-    pub fn at(&self, size: (u32, u32)) -> crate::surface::LayerContent<B> {
+    pub fn at(&self, size: (u32, u32)) -> cherenkov_record::LayerContent<B> {
         let producer = self.clone();
-        crate::surface::LayerContent::Install(Box::new(move |r, surface, layer| {
+        let install: crate::message::InstallOp<B> = Box::new(move |r, surface, layer| {
             B::bind_gpu_producer(r, surface, layer, &producer, size)
-        }))
+        });
+        LayerContent::install(install)
     }
 }
 
@@ -498,9 +468,9 @@ impl<B: crate::GpuContent> GpuProducer<B> {
 /// its [`GpuProducer`].
 ///
 /// [`submit`](Self::submit) installs the frame as the producer's current
-/// frame — the one every binding samples — and wakes the host while any
-/// binding is drawn on a visible surface. The sink is `Send`: a decoder
-/// thread may submit while the bindings stay on the engine's surfaces.
+/// frame — the one every binding samples — and wakes the host of every
+/// visible surface a binding is on. The sink is `Send`: a decoder thread
+/// may submit while the bindings stay on the engine's surfaces.
 ///
 /// A frame producer has no setup: a device replacement drops its frame
 /// with the old renderer, and the next `submit` supplies the first frame
@@ -510,13 +480,6 @@ impl<B: crate::GpuContent> GpuProducer<B> {
 pub struct FrameSink<B: crate::GpuContent> {
     tx: ProducerChannel<B>,
     id: crate::message::ProducerId,
-    /// Set on each submit; the render loop clears it once a frame draws
-    /// the producer.
-    dirty: Arc<std::sync::atomic::AtomicBool>,
-    /// Open while any binding is drawn on a visible surface.
-    gate: Arc<crate::WakeGate>,
-    /// The engine's host wake-up.
-    wake: SinkWake,
 }
 
 impl<B: crate::GpuContent> std::fmt::Debug for FrameSink<B> {
@@ -528,27 +491,17 @@ impl<B: crate::GpuContent> std::fmt::Debug for FrameSink<B> {
 }
 
 impl<B: crate::GpuContent> FrameSink<B> {
-    pub(crate) fn new(
-        id: crate::message::ProducerId,
-        tx: ProducerChannel<B>,
-        dirty: Arc<std::sync::atomic::AtomicBool>,
-        gate: Arc<crate::WakeGate>,
-        wake: SinkWake,
-    ) -> Self {
-        Self {
-            tx,
-            id,
-            dirty,
-            gate,
-            wake,
-        }
+    pub(crate) const fn new(id: crate::message::ProducerId, tx: ProducerChannel<B>) -> Self {
+        Self { tx, id }
     }
 
     /// Installs `frame` as the producer's current frame. The submit
     /// travels in order with the engine's messages; each surface a
-    /// binding of the producer is drawn on treats it as the layer's frame
-    /// swap. Wakes the host once per new frame while the producer is on a
-    /// visible surface — submits coalesce like a producer's redraw.
+    /// binding of the producer is on treats it as the layer's frame swap.
+    /// Once the frame lands on the render loop, each of those surfaces
+    /// wakes its host through its own wake — every frame, whenever it
+    /// lands relative to a render in flight — coalesced per surface until
+    /// the surface next renders; a hidden surface wakes nothing.
     pub fn submit(&self, frame: impl Into<B::Frame>) {
         let frame = frame.into();
         let opaque = B::frame_opaque(&frame);
@@ -558,8 +511,5 @@ impl<B: crate::GpuContent> FrameSink<B> {
             opaque,
             apply: Box::new(move |r| B::submit_frame(r, id, frame)),
         });
-        if !self.dirty.swap(true, std::sync::atomic::Ordering::AcqRel) && self.gate.is_open() {
-            (self.wake)();
-        }
     }
 }

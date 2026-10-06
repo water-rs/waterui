@@ -29,6 +29,7 @@ mod identity;
 mod input;
 mod interaction_layers;
 mod lifecycle;
+mod material;
 mod metadata;
 mod native_measure;
 mod navigation;
@@ -55,6 +56,9 @@ pub use native_measure::*;
 pub use recording::assert_well_formed_image;
 pub use recording::{Glyph, GlyphRun, Recording, working_color};
 pub use retained::*;
+pub use tree::safe_area::{
+    ChromeBar, Edge, EdgeOffsets, SafeAreaLayout, ScrollSurfaceArea, grow_rect,
+};
 pub use tree::*;
 pub use views::*;
 pub use waterui_backend_core::frame_signals::FrameSignals;
@@ -81,6 +85,7 @@ pub use render::{
     resolved_morph_shape_to_path, resolved_shape_to_path, transformed_rect,
 };
 use rustc_hash::FxHashSet;
+use signals::LayoutDependencies;
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -127,12 +132,11 @@ use waterui::navigation::{
     NavigationTransitionSource, NavigationView,
 };
 use waterui::style::{Offset, Rotation, Scale, Shadow};
-use waterui::theme;
 use waterui::widget::Divider;
 use waterui::window::{Window, WindowState, WindowStyle};
 use waterui_controls::button::{Button, ButtonConfig};
 use waterui_controls::label::Label as SemanticLabel;
-use waterui_controls::menu::{CommandRole, ResolvedMenu, ResolvedMenuItem};
+use waterui_controls::menu::{CommandRole, ResolvedCommand, ResolvedMenu, ResolvedMenuItem};
 use waterui_controls::slider::SliderConfig;
 use waterui_controls::stepper::StepperConfig;
 use waterui_controls::text_field::{ResolvedTextFieldConfig, TextField};
@@ -143,8 +147,8 @@ use waterui_core::handler::{AnyViewBuilder, BoxedAction, SharedAction};
 use waterui_core::key::{KeyHandling, KeyPress, OnKeyPress};
 use waterui_core::layout::{
     HorizontalAlignment, Layout, PlacedSubview, Point as LayoutPoint, ProposalSize,
-    Rect as LayoutRect, Size as LayoutSize, StretchAxis, SubView, VerticalAlignment,
-    ViewDimensions,
+    Rect as LayoutRect, Size as LayoutSize, StretchAxis, SubView, SubviewPlacement,
+    VerticalAlignment, ViewDimensions,
 };
 #[cfg(feature = "accessibility")]
 use waterui_core::metadata::MetadataKey;
@@ -171,8 +175,7 @@ use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
 use waterui_map::MapConfig;
 use waterui_shape::{ClipShape, PathCommand, ResolvedMorphShape, ResolvedShape, ShapeKind};
-use waterui_text::font::FontWeight as TextFontWeight;
-use waterui_text::styled::{Style as TextStyle, StyledStr};
+use waterui_text::styled::StyledStr;
 use waterui_text::{Text, TextConfig};
 use waterui_webview::WebView;
 
@@ -186,6 +189,7 @@ use crate::platform::{
 };
 #[cfg(feature = "accessibility")]
 use crate::scroll::ScrollHandle;
+use crate::text::SessionTextEngine;
 use crate::time::Instant;
 use crate::widgets::inset_rect;
 
@@ -326,6 +330,10 @@ pub struct HydrolysisRenderer {
     engine_next: Option<cherenkov::Next>,
     frame_clip_layers: u32,
     frame_max_clip_depth: u32,
+    /// The clip/opacity scopes the captures in progress set aside: content a
+    /// capture records is presented under them, so they count toward its
+    /// clip depth.
+    captured_clip_depth: usize,
     frame_filtered_count: u32,
     /// Per-frame applied-filter telemetry the render thread's `EngineEffect`
     /// calls accumulate into; reset before each `Engine::render` and read back
@@ -396,9 +404,9 @@ impl SemanticCore {
             .and_then(|link| link.parent.clone());
     }
 
-    pub(crate) fn new(frame_instant: Instant, family_resolution: FontFamilyResolution) -> Self {
+    pub(crate) fn new(frame_instant: Instant, text: SessionTextEngine) -> Self {
         Self {
-            state: HydroState::new(family_resolution),
+            state: HydroState::new(text),
             hit_test: HitTestState::default(),
             gesture_engine: GestureEngine::default(),
             gesture_group_ids: BTreeMap::new(),
@@ -463,18 +471,25 @@ impl SemanticCore {
 }
 
 impl HydrolysisRenderer {
-    /// A renderer drawing with `theme`. `family_resolution` decides whether a
-    /// named font family the collection cannot resolve is skipped
-    /// ([`FontFamilyResolution::Lenient`], applications) or fails the shape
-    /// naming it ([`FontFamilyResolution::Strict`], test hosts).
+    /// A renderer drawing with `theme`, shaping text against the system font
+    /// collection under `family_resolution`.
     #[must_use]
     pub fn new(
         theme: Rc<dyn crate::engine::WidgetTheme>,
         family_resolution: FontFamilyResolution,
     ) -> Self {
+        Self::with_engine(theme, SessionTextEngine::system(family_resolution))
+    }
+
+    /// A renderer drawing with `theme`, shaping through `text` — the
+    /// session's text engine the runner built it with.
+    pub(crate) fn with_engine(
+        theme: Rc<dyn crate::engine::WidgetTheme>,
+        text: SessionTextEngine,
+    ) -> Self {
         let frame_instant = Instant::now();
         Self {
-            core: SemanticCore::new(frame_instant, family_resolution),
+            core: SemanticCore::new(frame_instant, text),
             theme,
             scene: Recording::new(),
             transient_scene: None,
@@ -487,6 +502,7 @@ impl HydrolysisRenderer {
             engine_next: None,
             frame_clip_layers: 0,
             frame_max_clip_depth: 0,
+            captured_clip_depth: 0,
             frame_filtered_count: 0,
             applied_filter_metrics: Arc::default(),
             frame_applied_filter_count: 0,

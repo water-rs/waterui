@@ -6,12 +6,21 @@ use waterui::navigation::{
 use waterui_backend_core::widget::NavigationMotion;
 
 use super::{NavigationCapturedScene, NavigationMatchedElement};
-use crate::renderer::Recording;
+use crate::renderer::{CapturedLayers, HydrolysisRenderer, LayerTransforms};
 
 pub struct NavigationTransitionFrame<'a> {
-    pub(crate) scene: &'a mut Recording,
-    pub(crate) transform: kurbo::Affine,
+    pub(crate) renderer: &'a mut HydrolysisRenderer,
+    /// The stack's paint and hit-test placement.
+    pub(crate) transforms: LayerTransforms,
+    /// The stack's bounds — the scale-centre reference.
     pub(crate) bounds: kurbo::Rect,
+    /// `bounds` grown by the page area's touched-edge offsets: what the
+    /// pages actually paint, since their bar surfaces reach the window edge
+    /// (§7.1). The clip rect and the slide-offset space use it — a clip on
+    /// `bounds` would cut the extended surfaces, and an offset counted
+    /// against `bounds` would leave part of an off-screen page inside the
+    /// window.
+    pub(crate) paint_bounds: kurbo::Rect,
     pub(crate) style: AnyNavigationTransition,
     pub(crate) motion: NavigationMotion,
     pub(crate) direction: NavigationTransitionDirection,
@@ -36,7 +45,7 @@ pub fn draw_navigation_transition(frame: NavigationTransitionFrame<'_>) {
             progress,
             frame.direction,
             frame.motion.shared_axis_slide_distance,
-            frame.bounds.width(),
+            frame.paint_bounds.width(),
             frame.motion.fade_through_threshold,
         ),
         RetainedNavigationTransition::None => ResolvedNavigationTransitionFrame::IDENTITY,
@@ -51,7 +60,14 @@ pub fn draw_navigation_transition(frame: NavigationTransitionFrame<'_>) {
         NavigationTransitionDirection::Pop => [incoming, outgoing],
     };
     for (scene, layer) in layers {
-        append_scene_layer(frame.scene, frame.transform, frame.bounds, scene, layer);
+        append_scene_layer(
+            frame.renderer,
+            frame.transforms,
+            frame.bounds,
+            frame.paint_bounds,
+            scene,
+            layer,
+        );
     }
 }
 
@@ -136,31 +152,33 @@ fn draw_matched_navigation_transition(
     let from_page = frame.from_scene.composed_without(from_is_source, id);
     let to_page = frame.to_scene.composed_without(to_is_source, id);
     append_scene_with_opacity(
-        frame.scene,
-        frame.transform,
+        frame.renderer,
+        frame.transforms,
         frame.bounds,
+        frame.paint_bounds,
         &from_page,
         1.0 - crate::num_cast::f64_as_f32(frame.progress),
     );
     append_scene_with_opacity(
-        frame.scene,
-        frame.transform,
+        frame.renderer,
+        frame.transforms,
         frame.bounds,
+        frame.paint_bounds,
         &to_page,
         crate::num_cast::f64_as_f32(frame.progress),
     );
 
     let bounds = interpolate_rect(from_element.bounds, to_element.bounds, frame.progress);
     append_matched_element(
-        frame.scene,
-        frame.transform,
+        frame.renderer,
+        frame.transforms,
         from_element,
         bounds,
         1.0 - crate::num_cast::f64_as_f32(frame.progress),
     );
     append_matched_element(
-        frame.scene,
-        frame.transform,
+        frame.renderer,
+        frame.transforms,
         to_element,
         bounds,
         crate::num_cast::f64_as_f32(frame.progress),
@@ -178,8 +196,8 @@ fn interpolate_rect(from: kurbo::Rect, to: kurbo::Rect, progress: f64) -> kurbo:
 }
 
 fn append_matched_element(
-    scene: &mut Recording,
-    transform: kurbo::Affine,
+    renderer: &mut HydrolysisRenderer,
+    transforms: LayerTransforms,
     element: &NavigationMatchedElement,
     target: kurbo::Rect,
     opacity: f32,
@@ -193,27 +211,24 @@ fn append_matched_element(
             target.height() / element.bounds.height(),
         )
         * kurbo::Affine::translate((-element.bounds.x0, -element.bounds.y0));
-    scene.with_group(
-        peniko::Fill::NonZero,
-        peniko::BlendMode::default(),
-        opacity,
-        transform,
-        &target,
-        |scene| scene.append(&element.scene, transform * local),
-    );
+    renderer.with_clip_rect_scope(opacity, transforms, target, |renderer| {
+        renderer.present_layers(&element.layers, transforms.paint * local);
+    });
 }
 
 fn append_scene_with_opacity(
-    scene: &mut Recording,
-    transform: kurbo::Affine,
-    clip_bounds: kurbo::Rect,
-    content: &Recording,
+    renderer: &mut HydrolysisRenderer,
+    transforms: LayerTransforms,
+    bounds: kurbo::Rect,
+    paint_bounds: kurbo::Rect,
+    content: &CapturedLayers,
     opacity: f32,
 ) {
     append_scene_layer(
-        scene,
-        transform,
-        clip_bounds,
+        renderer,
+        transforms,
+        bounds,
+        paint_bounds,
         content,
         NavigationTransitionLayer {
             opacity,
@@ -223,31 +238,40 @@ fn append_scene_with_opacity(
 }
 
 fn append_scene_layer(
-    scene: &mut Recording,
-    transform: kurbo::Affine,
-    clip_bounds: kurbo::Rect,
-    content: &Recording,
+    renderer: &mut HydrolysisRenderer,
+    transforms: LayerTransforms,
+    bounds: kurbo::Rect,
+    paint_bounds: kurbo::Rect,
+    content: &CapturedLayers,
     layer: NavigationTransitionLayer,
 ) {
     if layer.opacity <= 0.0 {
         return;
     }
-    let center = clip_bounds.center();
+    // `NavigationTransitionLayer` offsets are fractions of the painted
+    // viewport, not of `bounds`: an offset of 1 must move the page's whole
+    // painted reach — extended surfaces included — off the window, and the
+    // default slide divides by the same width to keep its absolute
+    // distance. The scale centre is `bounds`'s centre either way.
+    let center = bounds.center();
     let local = kurbo::Affine::translate((
-        f64::from(layer.offset_x) * clip_bounds.width(),
-        f64::from(layer.offset_y) * clip_bounds.height(),
+        f64::from(layer.offset_x) * paint_bounds.width(),
+        f64::from(layer.offset_y) * paint_bounds.height(),
     )) * kurbo::Affine::translate((center.x, center.y))
         * kurbo::Affine::scale(f64::from(layer.scale))
         * kurbo::Affine::translate((-center.x, -center.y));
-    let transformed_bounds = local.transform_rect_bbox(clip_bounds);
-    scene.with_group(
-        peniko::Fill::NonZero,
-        peniko::BlendMode::default(),
-        layer.opacity,
-        transform,
-        &transformed_bounds,
-        |scene| scene.append(content, transform * local),
-    );
+    // The clip covers the page's painted reach — its bar surfaces extend
+    // past `bounds` to the window edge (§7.1) — and follows the page's
+    // slide and scale.
+    let transformed_bounds = local.transform_rect_bbox(paint_bounds);
+    // The scope's opacity reaches every layer the page presents, but each
+    // keyed layer and each run of drawing between them is faded on its own
+    // engine layer rather than as one flattened group, so translucent
+    // content that overlaps across those layers blends slightly differently
+    // mid-transition than it would flattened.
+    renderer.with_clip_rect_scope(layer.opacity, transforms, transformed_bounds, |renderer| {
+        renderer.present_layers(content, transforms.paint * local);
+    });
 }
 
 #[cfg(test)]

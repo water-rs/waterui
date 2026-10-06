@@ -3,7 +3,9 @@
 //! This module re-exports the `ViewRenderer` from `waterui-core` and adds
 //! PNG encoding functionality for the preview system.
 
-pub use waterui_core::view_renderer::{CustomViewRenderer, RenderResult, RenderSize, ViewRenderer};
+pub use waterui_core::view_renderer::{
+    CustomViewRenderer, RenderError, RenderResult, RenderSize, ViewRenderer,
+};
 
 /// Extension trait for `RenderResult` to add PNG encoding.
 pub trait RenderResultExt {

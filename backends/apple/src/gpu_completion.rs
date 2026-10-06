@@ -7,11 +7,12 @@
 //! completion, a single nonblocking `device.poll(PollType::Poll)` on the main
 //! queue fires every callback whose submission finished.
 //!
-//! The same helper serves the normal frame path (a marker encoder carrying
-//! only the completion ordering the previous `queue.submit([])` provided),
-//! filtered rendering (the real frame encoder), and external capture (a
-//! marker encoder after the render submissions).
+//! The same helper serves every consumer: the onscreen frame path passes a
+//! marker encoder whose whole job is ordering the frame's already-submitted
+//! work, filtered rendering passes the real frame encoder, and external
+//! capture passes a marker encoder after the render submissions.
 
+use std::fmt;
 use std::ptr::NonNull;
 use std::sync::Arc;
 
@@ -23,6 +24,37 @@ use objc2_metal::{MTLCommandBuffer, MTLCommandBufferHandler};
 use waterui_graphics::gpu::SharedGpuContext;
 use waterui_graphics::wgpu;
 use wgpu_hal::api::Metal as MetalApi;
+
+/// The submission's pixels were never vouched for: the context generation
+/// that owned the queue was reported lost before the submission's
+/// `on_submitted_work_done` callback ran. Whatever landed belongs to the
+/// dead generation — the work must be re-encoded on the replacement
+/// context, never trusted.
+pub struct SubmissionFailed {
+    /// The reason the driver reported through the context's `DeviceLoss`.
+    reason: String,
+}
+
+impl fmt::Debug for SubmissionFailed {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SubmissionFailed")
+            .field("reason", &self.reason)
+            .finish()
+    }
+}
+
+impl fmt::Display for SubmissionFailed {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "the GPU device was lost before the submission completed: {}",
+            self.reason
+        )
+    }
+}
+
+impl std::error::Error for SubmissionFailed {}
 
 /// Submits `encoder` through `context`'s queue exactly once, registers
 /// `completion` via `Queue::on_submitted_work_done` for that submission, and
@@ -51,11 +83,17 @@ use wgpu_hal::api::Metal as MetalApi;
 ///
 /// `context` is retained across the asynchronous completion so the poll runs
 /// against the exact device generation that submitted the work.
+///
+/// `completion` runs with `Ok(())` only when the callback fired while the
+/// context's `DeviceLoss` stood unannounced; a loss reported first settles
+/// the submission as `Err(SubmissionFailed)` — the pixels belong to the
+/// dead generation and the consumer goes through explicit context
+/// recovery instead.
 pub fn submit_with_completion(
     _mtm: MainThreadMarker,
     encoder: wgpu::CommandEncoder,
     context: &Arc<SharedGpuContext>,
-    completion: impl FnOnce() + Send + 'static,
+    completion: impl FnOnce(Result<(), SubmissionFailed>) + Send + 'static,
 ) {
     let mut marker = context
         .device()
@@ -101,5 +139,14 @@ pub fn submit_with_completion(
     // One ordered batch: the caller's work commits before the marker, so the
     // marker's completion implies the work completed.
     context.queue().submit([encoder.finish(), marker.finish()]);
-    context.queue().on_submitted_work_done(completion);
+    // A loss announced before the callback ran fails the submission — its
+    // pixels, if any, belong to the dead generation.
+    let device_loss = context.device_loss();
+    context.queue().on_submitted_work_done(move || {
+        completion(
+            device_loss
+                .reason()
+                .map_or(Ok(()), |reason| Err(SubmissionFailed { reason })),
+        );
+    });
 }

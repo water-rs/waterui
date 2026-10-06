@@ -51,11 +51,20 @@ mod imp {
 
     /// What an open window owns: the platform object, its host view, and
     /// every subscription and child leaf the window keeps alive. Dropping a
-    /// host closes the window and stops the watchers.
+    /// host clears the root host's handlers, closes the window and stops
+    /// the watchers.
     pub struct WindowHost {
         _window: Rc<cocoa_ui::appkit::Window>,
-        _host: Retained<HostView>,
+        host: Retained<HostView>,
         _keepalive: KeepAlive,
+    }
+
+    impl Drop for WindowHost {
+        fn drop(&mut self) {
+            // The content view outlives this host inside `AppKit`; clearing
+            // its handlers first releases what they own with the keepalive.
+            self.host.clear_handlers();
+        }
     }
 
     thread_local! {
@@ -304,9 +313,8 @@ mod imp {
             // the handle cancels it — and holds the window weakly: a task
             // must never retain the window that owns it.
             let window = Rc::downgrade(&window);
-            let env = env.clone();
             keepalive.keep(executor_core::spawn_local(async move {
-                crate::components::gpu_surface::wait_for_first_frames(&reveal_view, &env).await;
+                crate::components::gpu_surface::wait_for_first_frames(&reveal_view).await;
                 if let Some(window) = window.upgrade() {
                     window.fade_in(0.12);
                 }
@@ -317,7 +325,7 @@ mod imp {
 
         WindowHost {
             _window: window,
-            _host: host,
+            host,
             _keepalive: keepalive,
         }
     }
@@ -803,10 +811,20 @@ mod imp {
 
     /// What a connected scene owns: its root controller and every
     /// subscription and leaf the window keeps alive. The platform window
-    /// itself is retained by the kit's scene delegate.
+    /// itself is retained by the kit's scene delegate. Dropping a host
+    /// clears the root host's handlers before the watchers stop.
     pub struct WindowHost {
-        _controller: Retained<ViewController>,
+        controller: Retained<ViewController>,
         _keepalive: KeepAlive,
+    }
+
+    impl Drop for WindowHost {
+        fn drop(&mut self) {
+            // The controller's host view outlives this host inside `UIKit`;
+            // clearing its handlers first releases what they own with the
+            // keepalive.
+            self.controller.host_view().clear_handlers();
+        }
     }
 
     #[cfg(feature = "gpu_surface")]
@@ -1094,9 +1112,8 @@ mod imp {
             // Owned by the scene `KeepAlive` (drop cancels); the window edge
             // is weak for the same reason as the macOS reveal.
             let window = Weak::from_retained(&pending.window);
-            let env = env.clone();
             keepalive.keep(executor_core::spawn_local(async move {
-                crate::components::gpu_surface::wait_for_first_frames(&reveal_view, &env).await;
+                crate::components::gpu_surface::wait_for_first_frames(&reveal_view).await;
                 if let Some(window) = window.load() {
                     window.setAlpha(1.0);
                 }
@@ -1117,7 +1134,7 @@ mod imp {
         keepalive.keep(env.clone());
 
         WindowHost {
-            _controller: pending.controller,
+            controller: pending.controller,
             _keepalive: keepalive,
         }
     }

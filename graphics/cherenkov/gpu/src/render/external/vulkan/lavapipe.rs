@@ -816,7 +816,7 @@ fn read_pixels(
     source: &wgpu::Texture,
 ) -> Result<Vec<[f32; 4]>, Box<dyn std::error::Error>> {
     let (target, destinations) = TextureTarget::new((16, 16));
-    let destination = engine.surface(target)?;
+    let destination = engine.surface(target, || {})?;
     let destination_texture = destinations.try_recv()?;
     let delivery =
         crate::interop::shader_delivery(shared.adapter.get_info().backend, &shared.device)?;
@@ -900,7 +900,7 @@ fn nv12_plane_views_decode_in_place() {
     })
     .expect("engine");
     let (target, textures) = TextureTarget::new((16, 16));
-    let surface = engine.surface(target).expect("surface");
+    let surface = engine.surface(target, || {}).expect("surface");
     let output = textures.try_recv().expect("output texture");
     let layer = surface.layer();
     let (video, sink) = engine.frame_producer();
@@ -940,7 +940,7 @@ fn same_device_rgb_wrap_decodes_in_place() {
     })
     .expect("engine");
     let (target, textures) = TextureTarget::new((16, 16));
-    let surface = engine.surface(target).expect("surface");
+    let surface = engine.surface(target, || {}).expect("surface");
     let output = textures.try_recv().expect("output texture");
     let layer = surface.layer();
     let (video, sink) = engine.frame_producer();
@@ -984,7 +984,7 @@ fn shared_acquisition_state_dedup_and_retention() {
     })
     .expect("engine");
     let (target, _) = TextureTarget::new((16, 16));
-    let surface = engine.surface(target).expect("surface");
+    let surface = engine.surface(target, || {}).expect("surface");
     let (a, b) = (surface.layer(), surface.layer());
     let (pa, sa) = engine.frame_producer();
     sa.submit(external_a);
@@ -1096,7 +1096,7 @@ fn delayed_timeline_signal_stays_on_gpu() {
     })
     .expect("engine");
     let (target, _) = TextureTarget::new((16, 16));
-    let surface = engine.surface(target).expect("surface");
+    let surface = engine.surface(target, || {}).expect("surface");
     let layer = surface.layer();
     let (video, sink) = engine.frame_producer();
     sink.submit(external);
@@ -1215,7 +1215,7 @@ fn idle_retirement_submits_native_release() {
     })
     .expect("engine");
     let (target, _) = TextureTarget::new((16, 16));
-    let surface = engine.surface(target).expect("surface");
+    let surface = engine.surface(target, || {}).expect("surface");
     let layer = surface.layer();
     let (video, sink) = engine.frame_producer();
     sink.submit(external);

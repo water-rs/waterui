@@ -339,6 +339,7 @@ impl SemanticCore {
             interaction_key: data.target.interaction_key,
             modal: data.target.modal,
             bounds: self.hit_test.clip_hit_bounds(data.target.bounds),
+            frame: data.target.bounds,
             cursor_area: data.target.cursor_area,
             text_bounds: data.target.text_bounds,
             text_clip_bounds: data.target.text_clip_bounds,

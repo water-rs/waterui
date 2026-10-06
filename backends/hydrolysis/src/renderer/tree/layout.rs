@@ -4,7 +4,6 @@
 
 #[cfg(test)]
 use super::ContainerNode;
-use super::window::window_safe_area_insets;
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
@@ -30,6 +29,7 @@ impl RenderNode {
             Self::Env(node) => node.child.priority(),
             Self::Dynamic(node) => node.child.borrow().priority(),
             Self::Filtered(node) => node.child.priority(),
+            Self::Fill(node) => node.child.priority(),
             Self::Widget(node) => node.behavior.priority(),
             _ => 0,
         }
@@ -54,6 +54,7 @@ impl RenderNode {
             Self::Env(node) => node.child.is_empty(),
             Self::Dynamic(node) => node.child.borrow().is_empty(),
             Self::Wrapper(node) => node.child.is_empty(),
+            Self::Fill(node) => node.child.is_empty(),
             // A filter over a child that draws nothing draws nothing itself.
             Self::Filtered(node) => node.child.is_empty(),
             // A container is always a member — even a frame wrapping `()`
@@ -104,6 +105,7 @@ impl RenderNode {
                 node.layout.stretch_axis(&[])
             }
             Self::Wrapper(node) => node.child.stretch(),
+            Self::Fill(node) => node.child.stretch(),
             Self::Widget(node) => node.stretch,
         }
     }
@@ -180,14 +182,18 @@ impl RenderNode {
                 proposal.width.unwrap_or(0.0),
                 proposal.height.unwrap_or(0.0),
             )),
-            Self::Text(text) => HydrolysisRenderer::measure_text_dimensions(
-                state,
-                text.content.snapshot(),
-                text.alignment.snapshot(),
-                env,
-                proposal.width,
-                text.line_limit,
-            ),
+            Self::Text(text) => {
+                let content = state.measure_signal(&text.content);
+                let alignment = state.measure_signal(&text.alignment);
+                HydrolysisRenderer::measure_text_dimensions(
+                    state,
+                    content,
+                    alignment,
+                    env,
+                    proposal.width,
+                    text.line_limit,
+                )
+            }
             Self::Container(container) => {
                 let cell = RefCell::new(state);
                 let subs: Vec<NodeSubView> = container
@@ -316,6 +322,7 @@ impl RenderNode {
             // Layout-transparent: the wrapper measures its child under the node's
             // scoped environment (effect colors/a11y read env every frame).
             Self::Wrapper(node) => node.child.measure(state, &node.env, theme, proposal),
+            Self::Fill(node) => node.child.measure(state, env, theme, proposal),
             Self::Widget(node) => node.behavior.measure(state, proposal, &node.env, theme),
         }
     }
@@ -337,6 +344,7 @@ impl RenderNode {
                 Self::Rotation(inner) => node = &inner.child,
                 Self::Offset(inner) => node = &inner.child,
                 Self::Filtered(inner) => node = &inner.child,
+                Self::Fill(inner) => node = &inner.child,
                 _ => return None,
             }
         }
@@ -369,6 +377,7 @@ impl RenderNode {
             Self::Env(node) => node.child.prepare_for_measure(renderer),
             Self::Wrapper(node) => node.child.prepare_for_measure(renderer),
             Self::Filtered(node) => node.child.prepare_for_measure(renderer),
+            Self::Fill(node) => node.child.prepare_for_measure(renderer),
             Self::Container(node) => {
                 for child in &mut node.children {
                     child.prepare_for_measure(renderer);
@@ -393,6 +402,12 @@ impl RenderNode {
 
     /// Re-measure and re-place this subtree, caching each container's child
     /// frames. Run on build and whenever a geometry-affecting input changes.
+    ///
+    /// `safe_area` is the §7.1 context this node lays out against — its
+    /// laid-out frame in window space plus, per edge, the boundary the
+    /// subtree's area ends at — or `None` where there is none: inside a
+    /// scroll surface's content and inside widget-owned retained
+    /// sub-views.
     #[expect(
         clippy::too_many_lines,
         reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
@@ -401,6 +416,7 @@ impl RenderNode {
         &mut self,
         renderer: &mut HydrolysisRenderer,
         env: &Environment,
+        safe_area: Option<safe_area::SafeAreaLayout>,
         proposal: ProposalSize,
         size: Size,
     ) {
@@ -433,7 +449,14 @@ impl RenderNode {
                         .place(Rect::from_size(size), proposal, &refs)
                 };
                 for (child, placement) in container.children.iter_mut().zip(&placements) {
-                    child.layout(renderer, env, placement.proposal, *placement.frame.size());
+                    let child_area = safe_area.as_ref().map(|area| area.child(placement.frame));
+                    child.layout(
+                        renderer,
+                        env,
+                        child_area,
+                        placement.proposal,
+                        *placement.frame.size(),
+                    );
                 }
                 container.placed = placements
                     .into_iter()
@@ -441,51 +464,59 @@ impl RenderNode {
                     .collect();
             }
             // Transform/opacity wrappers are layout-transparent: the child lays out
-            // at the same concrete size as the wrapper.
-            Self::Opacity(node) => node.child.layout(renderer, env, proposal, size),
-            Self::Scale(node) => node.child.layout(renderer, env, proposal, size),
-            Self::Rotation(node) => node.child.layout(renderer, env, proposal, size),
-            Self::Offset(node) => node.child.layout(renderer, env, proposal, size),
-            Self::Retain(node) => node.child.layout(renderer, env, proposal, size),
+            // at the same concrete size as the wrapper, inside the same
+            // laid-out frame — visual transforms are not part of §7.1's
+            // "laid-out frame" and never change the touch test.
+            Self::Opacity(node) => node.child.layout(renderer, env, safe_area, proposal, size),
+            Self::Scale(node) => node.child.layout(renderer, env, safe_area, proposal, size),
+            Self::Rotation(node) => node.child.layout(renderer, env, safe_area, proposal, size),
+            Self::Offset(node) => node.child.layout(renderer, env, safe_area, proposal, size),
+            Self::Retain(node) => node.child.layout(renderer, env, safe_area, proposal, size),
             Self::Env(node) => {
                 let node_env = node.env.clone();
-                node.child.layout(renderer, &node_env, proposal, size);
+                node.child
+                    .layout(renderer, &node_env, safe_area, proposal, size);
             }
             // Layout-transparent: the child lays out at the same concrete size,
             // under the wrapper's scoped environment — except `.ignore_safe_area`,
-            // which releases the window's safe-area insets on its flagged edges.
+            // which moves the subtree's boundary out on each named edge the
+            // wrapper's laid-out frame touches, stopping at the deepest region
+            // the declaration does not name (§7.1's "layout avoids"). An edge
+            // the frame does not touch releases nothing, and released regions
+            // accumulate, so nested declarations cannot double-release.
             Self::Wrapper(node) => {
                 let node_env = node.env.clone();
-                if let WrapperEffect::IgnoreSafeArea(edges) = &node.effect {
-                    let insets = window_safe_area_insets(renderer, env);
-                    let width = size.width
-                        + if edges.leading { insets.leading() } else { 0.0 }
-                        + if edges.trailing {
-                            insets.trailing()
-                        } else {
-                            0.0
-                        };
-                    let height = size.height
-                        + if edges.top { insets.top() } else { 0.0 }
-                        + if edges.bottom { insets.bottom() } else { 0.0 };
+                if let WrapperEffect::IgnoreSafeArea(ignore) = &node.effect {
+                    let Some(area) = safe_area else {
+                        node.released_offsets.set(safe_area::EdgeOffsets::default());
+                        node.child.layout(renderer, &node_env, None, proposal, size);
+                        return;
+                    };
+                    let (child_area, released, child_size) = area.release(*ignore, size);
+                    node.released_offsets.set(released);
                     let child_proposal = ProposalSize::new(
-                        proposal.width.map(|_| width),
-                        proposal.height.map(|_| height),
+                        proposal.width.map(|_| child_size.width),
+                        proposal.height.map(|_| child_size.height),
                     );
                     node.child.layout(
                         renderer,
                         &node_env,
+                        Some(child_area),
                         child_proposal,
-                        Size::new(width, height),
+                        child_size,
                     );
                 } else {
-                    node.child.layout(renderer, &node_env, proposal, size);
+                    node.child
+                        .layout(renderer, &node_env, safe_area, proposal, size);
                 }
             }
             Self::Dynamic(node) => {
+                // The context stays on the host: the flush's mid-pass layout
+                // for a child that applied its pending then reuses it.
+                store_safe_area(&mut node.safe_area, safe_area.clone());
                 node.child
                     .borrow_mut()
-                    .layout(renderer, env, proposal, size);
+                    .layout(renderer, env, safe_area, proposal, size);
             }
             Self::Scroll(node) => {
                 let child_proposal = match node.axis {
@@ -511,15 +542,34 @@ impl RenderNode {
                     ),
                     _ => panic!("hydrolysis render tree: unsupported scroll axis"),
                 };
-                node.child
-                    .layout(renderer, env, child_proposal, content_size);
+                // §7.1's scroll surface: the extension is computed once
+                // here — the edges whose laid-out frame touches the
+                // subtree boundary reach the window edge — and the handle
+                // is rebound exactly once, with the extended viewport and
+                // content, so an input closure captured mid-frame never
+                // meets a second generation bump at flush.
+                let facts = safe_area
+                    .as_ref()
+                    .map(safe_area::SafeAreaLayout::surface_facts);
+                node.surface.facts.set(facts);
+                let (viewport, content) = node.surface.extended(
+                    kurbo::Size::new(f64::from(size.width), f64::from(size.height)),
+                    kurbo::Size::new(
+                        f64::from(content_size.width),
+                        f64::from(content_size.height),
+                    ),
+                );
+                let viewport_width = viewport.width;
+                let viewport_height = viewport.height;
+                let content_width = content.width;
+                let content_height = content.height;
                 let handle = if let Some(handle) = node.handle.borrow_mut().as_mut() {
                     handle.rebind(
                         node.axis,
-                        f64::from(size.width),
-                        f64::from(size.height),
-                        f64::from(content_size.width),
-                        f64::from(content_size.height),
+                        viewport_width,
+                        viewport_height,
+                        content_width,
+                        content_height,
                     )
                 } else {
                     // `report_offset`: the handle writes the content offset
@@ -527,10 +577,10 @@ impl RenderNode {
                     // included, from here on.
                     ScrollHandle::new(
                         node.axis,
-                        f64::from(size.width),
-                        f64::from(size.height),
-                        f64::from(content_size.width),
-                        f64::from(content_size.height),
+                        viewport_width,
+                        viewport_height,
+                        content_width,
+                        content_height,
                         node.offset.clone(),
                     )
                 };
@@ -545,22 +595,53 @@ impl RenderNode {
                 *node.handle.borrow_mut() = Some(handle);
                 node.content_size = content_size;
                 node.viewport = size;
+                // The content sees no safe-area context: the surface
+                // insets and clears its own subtree, so nothing inside
+                // touches an edge (§7.1).
+                node.child
+                    .layout(renderer, env, None, child_proposal, content_size);
             }
-            Self::Collection(node) => node.layout(renderer, proposal, size),
+            Self::Collection(node) => node.layout(renderer, safe_area.as_ref(), proposal, size),
             Self::Filtered(node) => {
                 let node_env = node.env.clone();
-                node.child.layout(renderer, &node_env, proposal, size);
+                node.child
+                    .layout(renderer, &node_env, safe_area, proposal, size);
             }
-            // A lazy stack places its items lazily at flush (offset-dependent); a
-            // widget leaf or GPU content view renders itself at flush from
-            // `ctx.bounds`. Nothing to pre-lay-out for any of these.
+            // §7.1's fill rule, layout side: the slot fill records the
+            // paint extension its laid-out frame earns (extension is a
+            // paint fact — layout sees the frame, flush grows the paint
+            // rect by exactly this) — then lays its child out at the
+            // unchanged frame.
+            Self::Fill(node) => {
+                node.extension.set(
+                    safe_area
+                        .as_ref()
+                        .map(safe_area::SafeAreaLayout::touched_edge_offsets),
+                );
+                node.child.layout(renderer, env, safe_area, proposal, size);
+            }
+            Self::Widget(node) => {
+                node.behavior.update_scroll_surface(
+                    safe_area
+                        .as_ref()
+                        .map(safe_area::SafeAreaLayout::surface_facts),
+                );
+                // The context the widget's retained sub-views read through
+                // `safe_area_for`/`content_area_for` at flush.
+                store_safe_area(&mut node.safe_area, safe_area);
+            }
+            // The context a lazy stack's flush-time item placements read —
+            // its items inherit the context it laid out against, like a
+            // collection's placed children do.
+            Self::LazyStack(node) => {
+                store_safe_area(&mut node.safe_area, safe_area);
+            }
+            // Text, color and GPU leaves render at flush from `ctx.bounds`.
             Self::Color(_)
             | Self::Text(_)
             | Self::SceneView(_)
             | Self::GpuContent(_)
-            | Self::ExternalFrame(_)
-            | Self::LazyStack(_)
-            | Self::Widget(_) => {}
+            | Self::ExternalFrame(_) => {}
         }
     }
 }
@@ -698,6 +779,7 @@ impl RenderNode {
             Self::Wrapper(node) => node.child.signature_into(frame, hasher),
             Self::Dynamic(node) => node.child.borrow().signature_into(frame, hasher),
             Self::Filtered(node) => node.child.signature_into(frame, hasher),
+            Self::Fill(node) => node.child.signature_into(frame, hasher),
             Self::Container(node) => {
                 node.placed.len().hash(hasher);
                 for (child, rect) in node.children.iter().zip(&node.placed) {

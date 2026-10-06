@@ -125,11 +125,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // The content always fills the wrapper.
         host.set_layout_handler({
-            let state = Rc::downgrade(&state);
+            let state = Rc::clone(&state);
             move |host_view| {
-                let Some(state) = state.upgrade() else {
-                    return;
-                };
                 view::set_frame(state.child.view(), view::bounds(host_view));
             }
         });

@@ -258,6 +258,7 @@ pub fn measure_button_node(
         subview.measure_built(state, env, theme)
     } else {
         let styled = styled_button_title(
+            state,
             theme,
             render_state.config.style,
             &render_state.config.label,
@@ -312,7 +313,7 @@ enum MenuLabel {
     /// each frame (cloneable, like a button title).
     Title(Label),
     /// Any other view: re-flushed from a retained sub-view each frame.
-    View(RetainedSubview),
+    View(Box<RetainedSubview>),
 }
 
 impl MenuRenderState {
@@ -330,8 +331,8 @@ impl MenuRenderState {
             .is_some_and(|label| label_resolves_icon_only(label, env));
         let label = match label.downcast::<Label>() {
             Ok(label) if renders_as_plain_title(&label) => MenuLabel::Title(*label),
-            Ok(label) => MenuLabel::View(RetainedSubview::new(AnyView::new(*label))),
-            Err(view) => MenuLabel::View(RetainedSubview::new(view)),
+            Ok(label) => MenuLabel::View(Box::new(RetainedSubview::new(AnyView::new(*label)))),
+            Err(view) => MenuLabel::View(Box::new(RetainedSubview::new(view))),
         };
         Self {
             label,
@@ -433,8 +434,8 @@ pub fn menu_accessibility(
         let activation = AccessibilityActionTarget::Activate {
             action: Rc::new(RefCell::new(
                 move |renderer: &mut crate::renderer::SemanticCore, env: &Environment| {
-                    let nodes = popup_menu_nodes(&items.snapshot());
                     let env = menu_env.layered_on(env);
+                    let nodes = popup_menu_nodes(&items.snapshot(), &env);
                     match &request {
                         Some((anchor, metrics, theme)) => {
                             renderer.show_popup_menu_nodes(nodes, *anchor, *metrics, &env, theme);
@@ -485,7 +486,7 @@ pub fn measure_menu_node(
     );
     let label_size = match &state.label {
         MenuLabel::Title(label) => {
-            let styled = styled_button_title(theme, MENU_TRIGGER_STYLE, label, env);
+            let styled = styled_button_title(hydro, theme, MENU_TRIGGER_STYLE, label, env);
             HydrolysisRenderer::measure_text_intrinsic_size(hydro, styled, env)
         }
         MenuLabel::View(subview) => subview.measure_built(hydro, env, theme),
@@ -606,6 +607,7 @@ pub fn render_button_parts(
             let (label_size, _) = subview.patch_and_measure(ctx.renderer_mut(), env, proposal);
             let label_target = centered_label_rect(label_target, label_size);
             let render_ctx = ctx.render_context();
+            let label_area = ctx.safe_area_for(label_target);
             ctx.renderer_mut()
                 .with_suppressed_accessibility(|renderer| {
                     subview.flush_in_rect(
@@ -614,12 +616,14 @@ pub fn render_button_parts(
                         env,
                         ProposalSize::UNSPECIFIED,
                         label_target,
+                        label_area,
                     );
                 });
         } else if label_target.width() > 0.0 && label_target.height() > 0.0 {
             // Title label: centered styled text rendered fresh each frame,
             // picking the enabled or disabled label color for this frame.
-            let mut styled = styled_button_title(&theme, style, &state_mut.config.label, env);
+            let mut styled =
+                styled_button_title(ctx.state_mut(), &theme, style, &state_mut.config.label, env);
             let title_color = if env.get::<ListRowChrome>().is_some() {
                 Some(Color::new(waterui::theme::color::Foreground))
             } else {
@@ -748,7 +752,7 @@ pub fn render_menu_parts(
             MenuLabel::Title(label)
                 if label_bounds.width() > 0.0 && label_bounds.height() > 0.0 =>
             {
-                let mut styled = styled_button_title(&theme, style, label, env);
+                let mut styled = styled_button_title(ctx.state_mut(), &theme, style, label, env);
                 if let Some(color) = theme.button_label_color(style, false) {
                     styled = styled_with_default_foreground(styled, color);
                 }
@@ -766,6 +770,7 @@ pub fn render_menu_parts(
                 let (label_size, _) = subview.patch_and_measure(ctx.renderer_mut(), env, proposal);
                 let label_bounds = centered_label_rect(label_bounds, label_size);
                 let render_ctx = ctx.render_context();
+                let label_area = ctx.safe_area_for(label_bounds);
                 ctx.renderer_mut()
                     .with_suppressed_accessibility(|renderer| {
                         subview.flush_in_rect(
@@ -774,6 +779,7 @@ pub fn render_menu_parts(
                             env,
                             ProposalSize::UNSPECIFIED,
                             label_bounds,
+                            label_area,
                         );
                     });
             }
@@ -811,7 +817,7 @@ pub fn render_menu_parts(
         move |renderer, _point, env| {
             let env = menu_env.layered_on(env);
             renderer.show_popup_menu_nodes(
-                popup_menu_nodes(&items.snapshot()),
+                popup_menu_nodes(&items.snapshot(), &env),
                 anchor,
                 menu_metrics,
                 &env,
@@ -860,7 +866,7 @@ pub fn measure_menu_intrinsic(
     let label_size = if let Some(label) = menu.label.downcast_ref::<Label>()
         && renders_as_plain_title(label)
     {
-        let styled = styled_button_title(theme, MENU_TRIGGER_STYLE, label, env);
+        let styled = styled_button_title(state, theme, MENU_TRIGGER_STYLE, label, env);
         HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env)
     } else {
         measure_view_intrinsic(&menu.label, state, env, theme)
@@ -1008,7 +1014,7 @@ fn measure_button_label_intrinsic(
     env: &Environment,
 ) -> LayoutSize {
     if renders_as_plain_title(label) {
-        let styled = styled_button_title(theme, style, label, env);
+        let styled = styled_button_title(state, theme, style, label, env);
         HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env)
     } else {
         let label = styled_button_label(theme, style, label.clone());
@@ -1041,6 +1047,7 @@ pub fn label_resolves_icon_only(label: &Label, env: &Environment) -> bool {
 }
 
 fn styled_button_title(
+    state: &mut HydroState,
     theme: &Rc<dyn crate::engine::WidgetTheme>,
     style: ButtonStyle,
     label: &Label,
@@ -1052,7 +1059,8 @@ fn styled_button_title(
     } else {
         title
     };
-    title.resolve(env).content.snapshot()
+    let resolved = title.resolve(env);
+    state.measure_signal(&resolved.content)
 }
 
 /// Subscribes to a label's reactive title content so a change schedules a frame

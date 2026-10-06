@@ -22,7 +22,6 @@
 //! the Kotlin side never touches this module's internals directly.
 
 mod accessibility;
-mod fonts;
 mod gpu;
 mod host;
 mod ime;

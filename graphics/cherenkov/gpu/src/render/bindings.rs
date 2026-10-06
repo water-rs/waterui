@@ -172,6 +172,17 @@ pub const PROJECTIVE_GROUP1: &[Entry] = &[
 /// The mip pipeline's single group (`mip.wgsl`): the previous level.
 pub const MIP_GROUP0: &[Entry] = &[Entry::texture(0)];
 
+/// `min_size` of the resolve pipeline's uniform: a pass's `Globals` slot
+/// (32 bytes) followed by the resolve parameters (`resolve.wgsl`).
+pub const RESOLVE_PARAMS_SIZE: u64 = 64;
+
+/// The backdrop capture resolve pipeline's single group (`resolve.wgsl`):
+/// the pass's globals slot with the resolve parameters, and the source.
+pub const RESOLVE_GROUP0: &[Entry] = &[
+    Entry::uniform(0, FRAGMENT, true, RESOLVE_PARAMS_SIZE),
+    Entry::texture(1),
+];
+
 /// The engine pipelines' two groups, in declaration order.
 ///
 /// Used by `build.rs`; the crate addresses the groups directly.
@@ -202,6 +213,12 @@ pub const PROJECTIVE_GROUPS: &[&[Entry]] = &[ENGINE_GROUP0, PROJECTIVE_GROUP1];
 /// Used by `build.rs`; the crate addresses the group directly.
 #[allow(dead_code)]
 pub const MIP_GROUPS: &[&[Entry]] = &[MIP_GROUP0];
+
+/// The resolve pipeline's group list.
+///
+/// Used by `build.rs`; the crate addresses the group directly.
+#[allow(dead_code)]
+pub const RESOLVE_GROUPS: &[&[Entry]] = &[RESOLVE_GROUP0];
 
 /// Group 1 of the Vulkan native external-frame module: `EXTERNAL_GROUP1`
 /// plus the designated texture/sampler pair at bindings 5–6 that the

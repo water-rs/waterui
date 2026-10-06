@@ -38,16 +38,17 @@ mod imp {
     use alloc::boxed::Box;
     use alloc::rc::Rc;
     use core::any::Any;
-    use core::cell::Cell;
+    use core::cell::OnceCell;
     use core::ffi::c_void;
 
     use cocoa_ui::MainThreadMarker;
     use cocoa_ui::appkit::{
-        ActivationPolicy, Application, ApplicationHandlers, ColorSchemeObservation,
+        ActivationPolicy, Application, ApplicationHandlers, ColorSchemeObservation, TerminateReply,
     };
-    use waterui::app::{App, LastWindowPolicy};
+    use waterui::app::App;
     use waterui_backend_core::Environment;
 
+    use crate::termination::Session;
     use crate::theme::ThemeSignals;
 
     /// What GPU preparation finishes the launch with — everything alive at
@@ -59,7 +60,9 @@ mod imp {
         _theme: Rc<ThemeSignals>,
         _appearance: ColorSchemeObservation,
         _locale: Box<dyn Any>,
-        quit_on_last: Rc<Cell<bool>>,
+        /// Filled once `app(env)` declared its termination hooks; the
+        /// application delegate's quit questions go through it.
+        termination: Rc<OnceCell<Session>>,
     }
 
     /// GPU preparation has installed native services; `app(env)` now declares
@@ -81,15 +84,26 @@ mod imp {
         // installs (`install_chromium`, `.state(..)` chains) landed as
         // overlays on the clone it was handed, which the host env cannot
         // see — `insert` never propagates between clones.
-        // `mut` only serves the `webview` install below; without the port
-        // nothing borrows `app_env` mutably.
-        #[allow(unused_mut)]
         let mut app_env = parts.env;
         // The web view controller fills its slot late and only when the
         // `webview` port is enabled — an application bundling its own
         // engine installed it during `app(env)`.
         #[cfg(feature = "webview")]
         crate::components::webview::install_service(&mut app_env);
+        // The machine installs the `Quit` service into `app_env` before the
+        // menus and windows realize under it, so a `|quit: Quit|` action
+        // finds it. A declared `MenuItem::Quit` does not use the service: it
+        // renders as the standard Quit item, whose `terminate:` reaches the
+        // machine through `applicationShouldTerminate:`.
+        let session = Session::start(parts.termination, &mut app_env, parts.last_window, mtm);
+        assert!(
+            launch.termination.set(session).is_ok(),
+            "the termination machine starts once"
+        );
+        let session = launch
+            .termination
+            .get()
+            .expect("the termination machine was just started");
         // `installMenuBar`: the declared menus resolve and rebuild under the
         // environment `app` returned, exactly as windows do. The guard lives
         // for the process.
@@ -99,15 +113,9 @@ mod imp {
             &parts.menu_bar,
             &app_env,
         ));
-        launch
-            .quit_on_last
-            .set(matches!(parts.last_window, LastWindowPolicy::Quit));
         if parts.windows.is_empty() {
-            // A zero-window application acts on its policy at launch:
-            // `Quit` terminates, `StayResident` keeps the process.
-            if matches!(parts.last_window, LastWindowPolicy::Quit) {
-                Application::shared(mtm).terminate();
-            }
+            // A zero-window application acts on its policy at launch.
+            session.no_window_left();
         } else {
             for window in parts.windows {
                 let host = crate::windows::realize(window, &app_env, mtm);
@@ -142,17 +150,14 @@ mod imp {
         });
         let locale = crate::locale::install(env, mtm);
 
-        // Until `app(env)` reports its policy the answer is `Quit`'s: an
-        // application that declares no window terminates at launch, which is
-        // the default policy's prescription.
-        let quit_on_last = Rc::new(Cell::new(true));
+        let termination = Rc::new(OnceCell::new());
         let launch = Box::new(Launch {
             app: Some(Box::new(app)),
             env: core::ptr::from_mut(env),
             _theme: theme,
             _appearance: appearance,
             _locale: Box::new(locale),
-            quit_on_last: Rc::clone(&quit_on_last),
+            termination: Rc::clone(&termination),
         });
 
         let handlers = ApplicationHandlers::new()
@@ -169,7 +174,24 @@ mod imp {
                     });
                 }
             })
-            .should_terminate_after_last_window_closed(move |_| quit_on_last.get());
+            .should_terminate({
+                let termination = Rc::clone(&termination);
+                // A quit before `app(env)` ran has no hook to ask.
+                move |_| {
+                    termination
+                        .get()
+                        .map_or(TerminateReply::Now, Session::should_terminate)
+                }
+            })
+            .should_terminate_after_last_window_closed(move |_| {
+                termination
+                    .get()
+                    .expect("windows are realized after the termination machine starts")
+                    .no_window_left();
+                // `AppKit`'s own `terminate:` would arrive as a cancellable
+                // quit; the session filed a required request instead.
+                false
+            });
         application.run(handlers);
         std::process::exit(0);
     }
@@ -220,6 +242,10 @@ mod imp {
             !parts.windows.is_empty(),
             "an iOS application must declare at least one window"
         );
+        // iOS ends the process without notice, so `on_quit_request` and
+        // `on_terminate` are never called: the machine is never started and
+        // no `Quit` is installed, so extracting `Quit` fails here.
+        let _ = parts.termination;
         // Same hand-off as macOS: content renders under the env `app`
         // returned — its installs are invisible to the host env.
         // `mut` only serves the `webview` install below; without the port

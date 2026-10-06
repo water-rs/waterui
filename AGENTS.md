@@ -112,7 +112,7 @@ These are the target architecture and acceptance criteria for repository changes
 
 ## Cross-platform behaviour
 
-Layout and gestures behave identically on every backend. Layout is specified in [`docs/layout-spec.md`](docs/layout-spec.md) (below). For gestures, which input a `Gesture` recognizes, its thresholds and timing, how composed and competing gestures resolve, and the event it delivers are the same everywhere. A backend whose native recognizer differs is non-conforming and is fixed in the backend, not documented as a platform difference.
+Layout and gestures behave identically on every backend. Layout is specified in [`docs/layout-spec.md`](docs/layout-spec.md) (below). For gestures, which input a `Gesture` recognizes, its thresholds and timing, how composed and competing gestures resolve, and the event it delivers are the same everywhere. A backend whose native recognizer differs is non-conforming and is fixed in the backend, not documented as a platform difference. Typesetting — shaping, line breaking, line metrics — belongs to the text leaf and each platform decides it; layout places the leaf at the size it reports.
 
 ## Layout Is Frozen
 

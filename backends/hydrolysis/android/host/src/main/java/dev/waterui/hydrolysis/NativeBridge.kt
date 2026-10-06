@@ -28,9 +28,12 @@ object NativeBridge {
      * friction); 8 = [nativeCreateSession] drops `sdkInt`. The API floor is
      * 31, so `ANativeWindow_setFrameRate` is linked directly; 9 =
      * [nativeBackEvent] and `onNativeBackAvailable` carry system back into
-     * the navigation stack and report whether a back target is registered.
+     * the navigation stack and report whether a back target is registered;
+     * 10 = `nativeSetMetrics` splits the window insets into the container
+     * and keyboard regions of layout-spec.md §7.1, and the host's
+     * `WindowInsetsAnimationCompat` progress pushes each IME animation frame.
      */
-    private const val SCHEMA: Int = 9
+    private const val SCHEMA: Int = 10
 
     /** [nativeBackEvent] phase: a predictive gesture began. */
     const val BACK_STARTED: Int = 0
@@ -67,8 +70,9 @@ object NativeBridge {
     @JvmStatic private external fun nativeInit(schema: Int, logLevel: String?): Int
 
     /**
-     * `context` is the application context — the native side publishes it
-     * through `ndk_context` so service backends (clipboard) can resolve it.
+     * `context` is any `Context` of the app — the native side resolves its
+     * `Application` and publishes that, once per process, through
+     * `ndk_context` so service backends (clipboard) can resolve it.
      */
     @JvmStatic
     external fun nativeCreateSession(
@@ -90,6 +94,10 @@ object NativeBridge {
         insetTop: Int,
         insetRight: Int,
         insetBottom: Int,
+        imeLeft: Int,
+        imeTop: Int,
+        imeRight: Int,
+        imeBottom: Int,
         touchSlopPx: Float,
         minFlingVelocityPx: Float,
         maxFlingVelocityPx: Float,

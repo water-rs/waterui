@@ -1157,13 +1157,15 @@ impl HydrolysisRenderer {
                     surface.local_bounds.size(),
                 ));
                 self.topmost_context_menu_target_enclosing(point, surface_bounds)
-                    .is_some_and(|target| !popup_menu_nodes(&target.items.snapshot()).is_empty())
+                    .is_some_and(|target| {
+                        !popup_menu_nodes(&target.items.snapshot(), &target.env).is_empty()
+                    })
             } else {
                 (focus_wins && focused.is_some())
                     || self
                         .topmost_context_menu_target_at_point(point)
                         .is_some_and(|target| {
-                            !popup_menu_nodes(&target.items.snapshot()).is_empty()
+                            !popup_menu_nodes(&target.items.snapshot(), &target.env).is_empty()
                         })
             };
         let gesture_changed = gesture_button(button).is_some_and(|mapped| {
@@ -1230,7 +1232,8 @@ impl HydrolysisRenderer {
                 if let Some(menu_target) =
                     self.topmost_context_menu_target_enclosing(point, surface_bounds)
                 {
-                    let mut items = popup_menu_nodes(&menu_target.items.snapshot());
+                    let mut items =
+                        popup_menu_nodes(&menu_target.items.snapshot(), &menu_target.env);
                     if !items.is_empty() {
                         // The debug inspect entry extends a menu, it does not
                         // create one — an empty `.context_menu` must behave
@@ -1332,7 +1335,7 @@ impl HydrolysisRenderer {
                 let menu_target = self.topmost_context_menu_target_at_point(point);
                 let mut items = menu_target
                     .as_ref()
-                    .map(|target| popup_menu_nodes(&target.items.snapshot()))
+                    .map(|target| popup_menu_nodes(&target.items.snapshot(), &target.env))
                     .unwrap_or_default();
                 if !items.is_empty() {
                     // The debug inspect entry extends a menu, it does not
@@ -2849,7 +2852,7 @@ impl HydrolysisRenderer {
         };
         let mut items = menu_target
             .as_ref()
-            .map(|target| popup_menu_nodes(&target.items.snapshot()))
+            .map(|target| popup_menu_nodes(&target.items.snapshot(), &target.env))
             .unwrap_or_default();
         self.append_inspect_element_item(&mut items, point);
         if items.is_empty() {

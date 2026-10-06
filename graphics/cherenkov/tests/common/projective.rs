@@ -5,9 +5,9 @@ use std::time::{Duration, Instant};
 
 use cherenkov::kurbo::{Affine, Circle, Rect, Vec2};
 use cherenkov::{
-    Backdrop, BlendMode, Draw, Engine, FrameTime, ImageData, Layer, Offscreen, OffscreenFormat,
-    Picture, Projective, ProjectiveLayers, RenderError, Rgba8, Sampling, Surface, Uploads,
-    WorkingColor,
+    Backdrop, Backend, BlendMode, Draw, Engine, FrameTime, ImageData, Layer, Offscreen,
+    OffscreenFormat, Picture, Projective, ProjectiveLayers, RenderError, Rgba8, Sampling, Surface,
+    Uploads, WorkingColor,
 };
 
 const SIZE: (u32, u32) = (64, 64);
@@ -30,7 +30,7 @@ fn card() -> Picture {
 
 const CLIP: Rect = Rect::new(0.0, 0.0, 32.0, 32.0);
 
-struct Scene<'e, B: ProjectiveLayers> {
+struct Scene<'e, B: Backend + ProjectiveLayers> {
     engine: &'e Engine<B>,
     surface: Surface<B>,
     layer: Layer,
@@ -38,7 +38,7 @@ struct Scene<'e, B: ProjectiveLayers> {
     start: Instant,
 }
 
-impl<'e, B: ProjectiveLayers> Scene<'e, B> {
+impl<'e, B: Backend + ProjectiveLayers> Scene<'e, B> {
     /// One scene per surface setup, all on the caller's engine: engine
     /// construction (device + core pipelines) dominates these tests'
     /// runtimes, so a test shares one engine across its scenes. The
@@ -46,7 +46,7 @@ impl<'e, B: ProjectiveLayers> Scene<'e, B> {
     /// independent scene tree, same as a fresh engine's surface.
     fn new(engine: &'e Engine<B>, setup: impl FnOnce(&mut cherenkov::LayerEdit<B>)) -> Self {
         let surface = engine
-            .surface(Offscreen::new(SIZE, OffscreenFormat::LinearF32))
+            .surface(Offscreen::new(SIZE, OffscreenFormat::LinearF32), || {})
             .expect("surface");
         let layer = surface.layer();
         surface.update(|tx| {
@@ -82,7 +82,7 @@ impl<'e, B: ProjectiveLayers> Scene<'e, B> {
 
 /// The backend's own rendering of the clear colour alone, in its storage
 /// precision: what an untouched pixel reads back as.
-fn clear_pixel<B: ProjectiveLayers>(engine: &Engine<B>) -> [f32; 4] {
+fn clear_pixel<B: Backend + ProjectiveLayers>(engine: &Engine<B>) -> [f32; 4] {
     let mut scene = Scene::<B>::new(engine, |e| {
         e.content(Picture::record(|_| {}));
     });
@@ -113,7 +113,7 @@ fn close(a: &[[f32; 4]], b: &[[f32; 4]], tolerance: f32, what: &str) {
 
 /// An identity projection composes exactly like the affine layer, up to
 /// the local image's `f16` storage.
-pub fn identity_matches_affine<B: ProjectiveLayers>(config: impl Fn() -> B::Config) {
+pub fn identity_matches_affine<B: Backend + ProjectiveLayers>(config: impl Fn() -> B::Config) {
     let engine = Engine::<B>::new(config()).expect("backend required");
     let mut projected = Scene::<B>::new(&engine, |e| {
         e.projection(Projective::IDENTITY);
@@ -128,7 +128,9 @@ pub fn identity_matches_affine<B: ProjectiveLayers>(config: impl Fn() -> B::Conf
 
 /// A card entirely behind the viewer, or seen exactly edge-on, draws
 /// nothing: the surface keeps its clear colour bit for bit.
-pub fn hidden_and_edge_on_contribute_nothing<B: ProjectiveLayers>(config: impl Fn() -> B::Config) {
+pub fn hidden_and_edge_on_contribute_nothing<B: Backend + ProjectiveLayers>(
+    config: impl Fn() -> B::Config,
+) {
     let engine = Engine::<B>::new(config()).expect("backend required");
     let clear = clear_pixel::<B>(&engine);
     for (what, edit) in [
@@ -159,7 +161,9 @@ pub fn hidden_and_edge_on_contribute_nothing<B: ProjectiveLayers>(config: impl F
 
 /// Half a turn about Y shows the back side mirrored about the pivot; a
 /// full turn is the untilted card. There is no backface culling.
-pub fn turns_keep_winding_and_show_both_sides<B: ProjectiveLayers>(config: impl Fn() -> B::Config) {
+pub fn turns_keep_winding_and_show_both_sides<B: Backend + ProjectiveLayers>(
+    config: impl Fn() -> B::Config,
+) {
     let pivot = Vec2::new(16.0, 16.0);
     let engine = Engine::<B>::new(config()).expect("backend required");
     let mut flat = Scene::<B>::new(&engine, |e| {
@@ -186,7 +190,7 @@ pub fn turns_keep_winding_and_show_both_sides<B: ProjectiveLayers>(config: impl 
 
 /// A retained realization and a fresh one of the same state are
 /// identical, and a warm matrix-only frame realizes nothing.
-pub fn cached_and_fresh_realizations_are_identical<B: ProjectiveLayers>(
+pub fn cached_and_fresh_realizations_are_identical<B: Backend + ProjectiveLayers>(
     config: impl Fn() -> B::Config,
 ) {
     let camera = Projective::perspective(120.0).unwrap();
@@ -232,7 +236,7 @@ pub fn cached_and_fresh_realizations_are_identical<B: ProjectiveLayers>(
 /// A destructive blend keeps its operator domain — the projected layer
 /// clip — where the image is transparent: `Src` clears the parent inside
 /// the clip and leaves it untouched outside.
-pub fn destructive_blend_keeps_its_operator_domain<B: ProjectiveLayers>(
+pub fn destructive_blend_keeps_its_operator_domain<B: Backend + ProjectiveLayers>(
     config: impl Fn() -> B::Config,
 ) {
     let engine = Engine::<B>::new(config()).expect("backend required");
@@ -255,7 +259,9 @@ pub fn destructive_blend_keeps_its_operator_domain<B: ProjectiveLayers>(
 
 /// An invalid composed pose, and a projective layer without a clip, are
 /// render errors, never an identity or a transparent layer.
-pub fn invalid_poses_are_errors<B: ProjectiveLayers>(mut config: impl FnMut() -> B::Config) {
+pub fn invalid_poses_are_errors<B: Backend + ProjectiveLayers>(
+    mut config: impl FnMut() -> B::Config,
+) {
     // Each scene gets its own engine: a surface that fails to render
     // keeps its changes and stays live, so a shared engine's next render
     // would re-fail on the earlier scene's input instead of reaching the
@@ -285,7 +291,7 @@ pub fn invalid_poses_are_errors<B: ProjectiveLayers>(mut config: impl FnMut() ->
 
 /// A visible image beyond the backend's dimension limit or byte budget is
 /// an explicit error naming the required size, never a capped density.
-pub fn limits_are_explicit_errors<B: ProjectiveLayers>(config: impl Fn() -> B::Config) {
+pub fn limits_are_explicit_errors<B: Backend + ProjectiveLayers>(config: impl Fn() -> B::Config) {
     let engine = Engine::<B>::new(config()).expect("backend required");
     for (clip, what) in [
         (Rect::new(0.0, 0.0, 40_000.0, 32.0), "dimension limit"),
@@ -304,7 +310,7 @@ pub fn limits_are_explicit_errors<B: ProjectiveLayers>(config: impl Fn() -> B::C
 }
 
 /// Every byte the engine holds, on the device and on the host.
-fn resident<B: ProjectiveLayers>(engine: &Engine<B>) -> u64 {
+fn resident<B: Backend + ProjectiveLayers>(engine: &Engine<B>) -> u64 {
     let memory = engine.memory();
     memory.gpu.0 + memory.cpu.0
 }
@@ -317,7 +323,7 @@ fn solid(rgba: [u8; 4]) -> ImageData<Rgba8> {
 /// A local image that sampled a replaced image is realized again: the
 /// replacement changes its pixels without a tree edit, and a replacement
 /// of the same size is uploaded in place.
-pub fn image_replacement_reaches_local_images<B: ProjectiveLayers + Uploads<Rgba8>>(
+pub fn image_replacement_reaches_local_images<B: Backend + ProjectiveLayers + Uploads<Rgba8>>(
     config: impl Fn() -> B::Config,
 ) {
     let (red, green) = ([230, 20, 20, 255], [20, 200, 40, 255]);
@@ -349,7 +355,7 @@ pub fn image_replacement_reaches_local_images<B: ProjectiveLayers + Uploads<Rgba
 /// retained local image, even though the layer is not realized again. An
 /// affine twin running the same steps accounts for everything else the
 /// release frees.
-pub fn released_resources_leave_no_local_image<B: ProjectiveLayers + Uploads<Rgba8>>(
+pub fn released_resources_leave_no_local_image<B: Backend + ProjectiveLayers + Uploads<Rgba8>>(
     config: impl Fn() -> B::Config,
 ) {
     let freed = |engine: &Engine<B>, projective: bool| {
@@ -395,7 +401,7 @@ pub fn released_resources_leave_no_local_image<B: ProjectiveLayers + Uploads<Rgb
 /// A projective layer cannot be a backdrop member, and one backdrop group
 /// cannot span the surface and a projective layer's local space: both are
 /// explicit `Unsupported` errors.
-pub fn backdrop_spaces_are_checked<B: ProjectiveLayers + Backdrop>(
+pub fn backdrop_spaces_are_checked<B: Backend + ProjectiveLayers + Backdrop>(
     mut config: impl FnMut() -> B::Config,
 ) {
     // Each scene gets its own engine: a surface that fails to render
@@ -404,7 +410,9 @@ pub fn backdrop_spaces_are_checked<B: ProjectiveLayers + Backdrop>(
     // error under test.
     let member_engine = Engine::<B>::new(config()).expect("backend required");
     let mut member = Scene::<B>::new(&member_engine, |_| {});
-    let group = member.surface.backdrop_group_unfiltered();
+    let group = member
+        .surface
+        .backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     member.edit(|e| {
         e.projection(Projective::IDENTITY).backdrop(group.sample());
     });
@@ -419,7 +427,9 @@ pub fn backdrop_spaces_are_checked<B: ProjectiveLayers + Backdrop>(
     let mut spanning = Scene::<B>::new(&spanning_engine, |e| {
         e.projection(Projective::IDENTITY);
     });
-    let group = spanning.surface.backdrop_group_unfiltered();
+    let group = spanning
+        .surface
+        .backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     let (inside, outside) = (spanning.surface.layer(), spanning.surface.layer());
     spanning.surface.update(|tx| {
         tx[&spanning.layer].push(&inside);
@@ -441,7 +451,7 @@ pub fn backdrop_spaces_are_checked<B: ProjectiveLayers + Backdrop>(
 
 /// A tilt animation keeps the engine awake and reuses the recorded
 /// content; after `clear_projection` the layer is affine again.
-pub fn tilt_animates_and_clears<B: ProjectiveLayers>(config: impl Fn() -> B::Config) {
+pub fn tilt_animates_and_clears<B: Backend + ProjectiveLayers>(config: impl Fn() -> B::Config) {
     let engine = Engine::<B>::new(config()).expect("backend required");
     let mut scene = Scene::<B>::new(&engine, |e| {
         e.projection(Projective::perspective(200.0).unwrap())
@@ -476,7 +486,7 @@ pub fn tilt_animates_and_clears<B: ProjectiveLayers>(config: impl Fn() -> B::Con
 /// A card crossing the horizon: pixels whose ray meets the card's plane
 /// behind the viewer keep the clear colour exactly, the front part draws,
 /// and nothing is NaN.
-pub fn horizon_crossing_excludes_the_back_half_space<B: ProjectiveLayers>(
+pub fn horizon_crossing_excludes_the_back_half_space<B: Backend + ProjectiveLayers>(
     config: impl Fn() -> B::Config,
 ) {
     // A 32 × 64 card turned about both axes so its far corner lies

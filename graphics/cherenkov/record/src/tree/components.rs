@@ -18,7 +18,7 @@ pub(super) struct Components {
 }
 
 impl Components {
-    pub(super) fn translation_animation(&self) -> Option<crate::AnimationTrack<Affine>> {
+    pub(super) fn translation_animation(&self) -> Option<crate::animation::AnimationTrack<Affine>> {
         if self.rotation_track.is_some()
             || self.scale_track.is_some()
             || self.skew_track.is_some()
@@ -35,7 +35,7 @@ impl Components {
         };
         let velocity = self.base * Vec2::from_lanes(track.velocity).to_point()
             - self.base * kurbo::Point::ORIGIN;
-        Some(crate::AnimationTrack {
+        Some(crate::animation::AnimationTrack {
             from: map(track.from),
             velocity: [0., 0., 0., 0., velocity.x, velocity.y],
             target: map(track.target),
@@ -72,7 +72,7 @@ impl Components {
     /// The component values a projective pose composes, with the base.
     pub(super) const fn pose(
         &self,
-        projection: crate::Projective,
+        projection: crate::projective::Projective,
         tilt: Vec2,
         depth: f64,
     ) -> crate::projective::Pose {
@@ -159,8 +159,8 @@ impl LayerNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::LayerOp;
-    use crate::{Curve, Display, LayerId, SurfaceTree};
+    use crate::ops::LayerOp;
+    use crate::{Curve, LayerId, SurfaceTree};
     use std::f64::consts::{PI, TAU};
     use std::time::Duration;
 
@@ -182,7 +182,7 @@ mod tests {
             rotation(&mut tree, angle);
             for step in 0..=8 {
                 let elapsed = Duration::from_millis(step * 125);
-                let sample = tree.sample(start + elapsed, Display::default());
+                let sample = tree.sample(start + elapsed, 1.0);
                 let matrix = tree.layer(tree.root()).transform;
                 assert!((matrix.determinant() - 1.).abs() < 1e-12);
                 let expected = Affine::rotate(angle * elapsed.as_secs_f64());
@@ -197,11 +197,7 @@ mod tests {
                 }
                 assert_eq!(sample.rate.is_some(), step < 8);
             }
-            assert!(
-                !tree
-                    .sample(start + Duration::from_secs(2), Display::default())
-                    .stepped
-            );
+            assert!(!tree.sample(start + Duration::from_secs(2), 1.0).stepped);
         }
     }
 
@@ -298,10 +294,5 @@ mod tests {
             },
         ));
         assert!(tree.layer(LayerId::new(1)).components.is_none());
-        tracing::debug!(
-            component_bytes = std::mem::size_of::<Components>(),
-            layer_bytes = std::mem::size_of::<LayerNode>(),
-            "tree node sizes",
-        );
     }
 }

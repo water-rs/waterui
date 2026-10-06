@@ -134,6 +134,7 @@ impl CollectionEntry {
 pub(super) fn collection_transition_runtime(
     env: &Environment,
     layout: &dyn Layout,
+    state: &mut HydroState,
 ) -> Option<CollectionTransitionRuntime> {
     let transition = env.get::<CollectionTransition>()?;
     let axis = lazy_stack_axis_config(
@@ -143,11 +144,11 @@ pub(super) fn collection_transition_runtime(
     .map(|config| match config {
         LazyStackAxisConfig::Vertical { spacing, .. } => TransitionAxis {
             vertical: true,
-            spacing: f64::from(spacing.snapshot()),
+            spacing: f64::from(state.measure_signal(&spacing)),
         },
         LazyStackAxisConfig::Horizontal { spacing, .. } => TransitionAxis {
             vertical: false,
-            spacing: f64::from(spacing.snapshot()),
+            spacing: f64::from(state.measure_signal(&spacing)),
         },
     });
     Some(CollectionTransitionRuntime {
@@ -264,6 +265,10 @@ pub struct LazyStackNode {
     /// Consumed by the retained-update mount path in H3.
     #[allow(dead_code)]
     pub(crate) render_id: RenderId,
+    /// The §7.1 context the stack was last laid out against — node-lifetime
+    /// storage, so a stack inside an unchanged retained sub-view still hands
+    /// each materialized item its context at flush.
+    pub(super) safe_area: Option<Box<safe_area::SafeAreaLayout>>,
     /// The unshielded environment when this stack carries accessibility naming
     /// metadata: `Some` means it emits the node naming itself.
     #[cfg(feature = "accessibility")]
@@ -433,6 +438,7 @@ impl CollectionNode {
     pub(super) fn layout(
         &mut self,
         renderer: &mut HydrolysisRenderer,
+        safe_area: Option<&safe_area::SafeAreaLayout>,
         proposal: ProposalSize,
         size: Size,
     ) {
@@ -491,9 +497,14 @@ impl CollectionNode {
             }
         }
         for (entry, placement) in self.entries.iter_mut().zip(&placements) {
-            entry
-                .node
-                .layout(renderer, &env, placement.proposal, *placement.frame.size());
+            let child_area = safe_area.map(|area| area.child(placement.frame));
+            entry.node.layout(
+                renderer,
+                &env,
+                child_area,
+                placement.proposal,
+                *placement.frame.size(),
+            );
         }
         self.placed = placements
             .into_iter()
@@ -799,7 +810,7 @@ impl LazyStackNode {
             && let Some((visible_start, visible_end)) = self.visible_span.get()
         {
             let estimate = self.estimate.get();
-            let spacing = self.spacing();
+            let spacing = self.spacing(&mut renderer.state);
             {
                 let mut extent_index = self.extent_index.borrow_mut();
                 if estimate > 0.0 && !extent_index.matches(count, estimate, spacing) {
@@ -840,10 +851,12 @@ impl LazyStackNode {
         changed | materialized
     }
 
-    fn spacing(&self) -> f64 {
+    fn spacing(&self, state: &mut HydroState) -> f64 {
         match &self.axis {
             LazyStackAxisConfig::Vertical { spacing, .. }
-            | LazyStackAxisConfig::Horizontal { spacing, .. } => f64::from(spacing.snapshot()),
+            | LazyStackAxisConfig::Horizontal { spacing, .. } => {
+                f64::from(state.measure_signal(spacing))
+            }
         }
     }
 
@@ -949,17 +962,17 @@ impl LazyStackNode {
         self.estimate_sample.set(Some((cross, size)));
         self.floor_sample.set(None);
         self.dirty.set(true);
-        self.prepare_extent_index(snapshot.len());
+        self.prepare_extent_index(state, snapshot.len());
         self.extent_index.borrow_mut().set_measured(0, extent);
         size
     }
 
-    fn prepare_extent_index(&self, count: usize) {
+    fn prepare_extent_index(&self, state: &mut HydroState, count: usize) {
         let estimate = self.estimate.get();
         if count == 0 || estimate <= 0.0 {
             return;
         }
-        let spacing = self.spacing();
+        let spacing = self.spacing(state);
         let dirty = self.dirty.replace(false);
         if dirty || !self.extent_index.borrow().matches(count, estimate, spacing) {
             self.extent_index
@@ -1014,7 +1027,7 @@ impl LazyStackNode {
             LazyStackAxisConfig::Horizontal { .. } => (proposal.height, proposal.width),
         };
         let sample = self.ensure_estimate(&snapshot, state, theme, cross);
-        self.prepare_extent_index(count);
+        self.prepare_extent_index(state, count);
         self.refresh_visible_extents(&snapshot, state, theme, count, cross);
         // The extent index holds the items' intrinsic main extents, so the
         // unclamped total is the stack's ideal, not its minimum: a lazy
@@ -1024,7 +1037,7 @@ impl LazyStackNode {
         // that cannot shrink keeps its extent, as the eager stack's
         // `minima_overflow` answer does.
         let extent = self.extent_index.borrow().total_extent();
-        let floor = self.spacing().mul_add(
+        let floor = self.spacing(state).mul_add(
             crate::num_cast::usize_as_f64(count - 1),
             self.ensure_floor(&snapshot, state, theme, cross)
                 * crate::num_cast::usize_as_f64(count),
@@ -1084,7 +1097,7 @@ impl LazyStackNode {
         };
         let theme = renderer.theme();
         self.ensure_estimate(&snapshot, &mut renderer.state, &theme, cross);
-        self.prepare_extent_index(count);
+        self.prepare_extent_index(&mut renderer.state, count);
         let total_extent_before = self.extent_index.borrow().total_extent();
         self.item_cache.borrow_mut().begin_frame();
         let visible = renderer
@@ -1111,13 +1124,16 @@ impl LazyStackNode {
             }
         };
         self.visible_span.set(Some((visible_start, visible_end)));
-        let spacing = self.spacing();
+        let spacing = self.spacing(&mut renderer.state);
         let window = self
             .extent_index
             .borrow()
             .visible_window(visible_start, visible_end);
         *self.visible_range.borrow_mut() = window.start..window.end;
         let mut cursor = window.leading_offset;
+        // The context the stack laid out against: one borrow for the whole
+        // visible window — every item derives its hosted frame from it.
+        let stack_area = self.safe_area.as_deref();
         for index in window.start..window.end {
             let id = snapshot
                 .get_id(index)
@@ -1152,7 +1168,14 @@ impl LazyStackNode {
                     });
                     normalize_layout_view(view, env)
                 });
-                subview.flush_in_rect(renderer, ctx, env, proposal, child_rect);
+                // The item's frame in the context the stack recorded at
+                // layout: `child_rect` resolves in `ctx.bounds` space — the
+                // same layout-fact mapping `WidgetRenderContext` and the
+                // collection layout loop share through
+                // `SafeAreaLayout::hosted_frame`.
+                let item_area = stack_area
+                    .map(|area| area.with_frame(area.hosted_frame(ctx.bounds, child_rect)));
+                subview.flush_in_rect(renderer, ctx, env, proposal, child_rect, item_area);
             }
             cursor += extent;
             if index + 1 < count {
