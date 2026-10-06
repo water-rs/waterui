@@ -909,6 +909,10 @@ class TestPtyLines(unittest.TestCase):
         os.close(w)
 
 
+# real kqueue process events, lsof and codesign: the Apple hosts this leg
+# runs on (build host and device host) are macOS
+@unittest.skipUnless(sys.platform == "darwin",
+                     "exercises macOS kqueue, lsof and codesign")
 class TestInstrumentsScratch(unittest.TestCase):
     """The cell owns the raw ktrace scratch its recording leaves: what
     appeared in the user temp dir or the recorder's scratch dir during
