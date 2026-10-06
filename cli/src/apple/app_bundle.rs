@@ -14,6 +14,7 @@ use crate::{
     apple::backend::AppleBackend,
     platform::{DeviceSigning, PackageOptions, TargetPlatform},
     project::Project,
+    project_model::assets::{AppleDeclarations, SigningEnvironment},
     project_model::templates::TemplateContext,
     project_types::AppleBundleIdentifier,
     utils::{copy_file, run_command_os},
@@ -482,9 +483,20 @@ pub(crate) async fn copy_dir_contents(from: &Path, to: &Path) -> eyre::Result<()
 /// the resolved development identity for devices, nothing for an unsigned
 /// device package.
 ///
+/// A signature that carries entitlements — a device build, a macOS
+/// distribution — claims the project's `.entitlements` file merged with the
+/// entitlements the dependency graph `declarations` carry, their
+/// environment entitlements set from the signing kind.
+///
 /// # Errors
-/// Returns an error when signing fails, or when a device build's identity or
-/// provisioning profile cannot be resolved.
+/// Returns an error when signing fails, when a declared entitlement
+/// conflicts with the project's, or when a device build's identity or
+/// provisioning profile cannot be resolved — including a profile that does
+/// not grant a declared entitlement.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct input of the signing step; bundling them would only rename the list"
+)]
 pub async fn sign_apple_app(
     layout: &AppleAppLayout,
     platform: TargetPlatform,
@@ -493,6 +505,7 @@ pub async fn sign_apple_app(
     backend_root: &Path,
     project: &Project,
     deployment_target: &str,
+    declarations: &AppleDeclarations,
 ) -> eyre::Result<()> {
     let bundle_id = project
         .bundle_identifier()
@@ -512,13 +525,26 @@ pub async fn sign_apple_app(
                     requires_stable_identity,
                 },
                 PackageAudience::Distribution => {
-                    let entitlements = backend_root
-                        .join(&backend.scheme)
-                        .join(format!("{}.entitlements", backend.scheme));
+                    let entitlements = signing_entitlements(
+                        &project_entitlements_path(backend, backend_root),
+                        declarations,
+                        platform,
+                        SigningEnvironment::Production,
+                    )
+                    .await?;
+                    let entitlements = if entitlements.is_empty() {
+                        None
+                    } else {
+                        let path = backend_root
+                            .join("DerivedData/Signing")
+                            .join(format!("{}.entitlements", backend.scheme));
+                        write_entitlements(&path, entitlements).await?;
+                        Some(path)
+                    };
                     crate::macos_bundle::MacOsSigning::Distribution(
                         crate::macos_bundle::DistributionSigning::from_manifest(
                             project.manifest().signing.macos.as_ref(),
-                            entitlements.is_file().then_some(entitlements),
+                            entitlements,
                         )?,
                     )
                 }
@@ -543,19 +569,84 @@ pub async fn sign_apple_app(
         return Ok(());
     }
 
-    let entitlements = backend_root
-        .join(&backend.scheme)
-        .join(format!("{}.entitlements", backend.scheme));
+    // Device signing selects development provisioning profiles only, so the
+    // signature claims the development environments.
+    let entitlements = signing_entitlements(
+        &project_entitlements_path(backend, backend_root),
+        declarations,
+        platform,
+        SigningEnvironment::Development,
+    )
+    .await?;
     sign_device_app(
         layout,
         &bundle_id,
         options,
         platform,
-        &entitlements,
+        entitlements,
         backend_root,
         deployment_target,
     )
     .await
+}
+
+/// The project's generated `<scheme>.entitlements` file.
+fn project_entitlements_path(backend: &AppleBackend, backend_root: &Path) -> PathBuf {
+    backend_root
+        .join(&backend.scheme)
+        .join(format!("{}.entitlements", backend.scheme))
+}
+
+/// The entitlements a signature of kind `environment` for `platform` claims:
+/// the project's entitlements file — empty when it does not exist — merged
+/// with the graph's `declarations`.
+async fn signing_entitlements(
+    project_entitlements: &Path,
+    declarations: &AppleDeclarations,
+    platform: TargetPlatform,
+    environment: SigningEnvironment,
+) -> eyre::Result<plist::Dictionary> {
+    let mut entitlements = match fs::read(project_entitlements).await {
+        Ok(bytes) => {
+            match plist::Value::from_reader(std::io::Cursor::new(bytes)).wrap_err_with(|| {
+                format!(
+                    "Failed to read entitlements {}",
+                    project_entitlements.display()
+                )
+            })? {
+                plist::Value::Dictionary(dict) => dict,
+                _ => bail!(
+                    "entitlements {} is not a plist dictionary",
+                    project_entitlements.display()
+                ),
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => plist::Dictionary::new(),
+        Err(error) => {
+            return Err(error).wrap_err_with(|| {
+                format!(
+                    "Failed to read entitlements {}",
+                    project_entitlements.display()
+                )
+            });
+        }
+    };
+    declarations.merge_into_entitlements(&mut entitlements, platform, environment)?;
+    Ok(entitlements)
+}
+
+/// Serializes `entitlements` as an XML plist at `path`.
+#[cfg(target_os = "macos")]
+async fn write_entitlements(path: &Path, entitlements: plist::Dictionary) -> eyre::Result<()> {
+    let mut serialized = Vec::new();
+    plist::Value::Dictionary(entitlements)
+        .to_writer_xml(&mut serialized)
+        .wrap_err("failed to serialize signing entitlements")?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).await?;
+    }
+    fs::write(path, serialized).await?;
+    Ok(())
 }
 
 /// Run `codesign` over every member of `frameworks_dir`, then the bundle
@@ -634,38 +725,12 @@ async fn sign_device_app(
     bundle_id: &AppleBundleIdentifier,
     options: &PackageOptions,
     platform: TargetPlatform,
-    entitlements_path: &Path,
+    project_entitlements: plist::Dictionary,
     backend_root: &Path,
     deployment_target: &str,
 ) -> eyre::Result<()> {
     let host = Host::current();
     let team = crate::apple::toolchain::development_team_id(&host).await?;
-
-    let project_entitlements = match fs::read(entitlements_path).await {
-        Ok(bytes) => {
-            match plist::Value::from_reader(std::io::Cursor::new(bytes)).wrap_err_with(|| {
-                format!(
-                    "Failed to read entitlements {}",
-                    entitlements_path.display()
-                )
-            })? {
-                plist::Value::Dictionary(dict) => dict,
-                _ => bail!(
-                    "entitlements {} is not a plist dictionary",
-                    entitlements_path.display()
-                ),
-            }
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => plist::Dictionary::new(),
-        Err(error) => {
-            return Err(error).wrap_err_with(|| {
-                format!(
-                    "Failed to read entitlements {}",
-                    entitlements_path.display()
-                )
-            });
-        }
-    };
 
     let request = provisioning::SigningRequest {
         team: &team,
@@ -715,11 +780,7 @@ async fn sign_device_app(
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
     let merged = layout.app_path.with_file_name(format!("{app_name}.xcent"));
-    let mut serialized = Vec::new();
-    plist::Value::Dictionary(entitlements)
-        .to_writer_xml(&mut serialized)
-        .wrap_err("failed to serialize signing entitlements")?;
-    fs::write(&merged, serialized).await?;
+    write_entitlements(&merged, entitlements).await?;
 
     codesign_bundle(
         &layout.app_path,
@@ -747,7 +808,7 @@ async fn sign_device_app(
     _bundle_id: &AppleBundleIdentifier,
     _options: &PackageOptions,
     _platform: TargetPlatform,
-    _entitlements_path: &Path,
+    _project_entitlements: plist::Dictionary,
     _backend_root: &Path,
     _deployment_target: &str,
 ) -> eyre::Result<()> {
