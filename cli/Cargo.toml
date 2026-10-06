@@ -192,6 +192,10 @@ der = "0.7"
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 rcgen = "=0.14.8"
+tracing-oslog = "0.3"
+
+[target.'cfg(unix)'.dev-dependencies]
+nix = { version = "0.31", features = ["fs", "process", "signal"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
@@ -218,5 +222,4 @@ syn = { version = "2", features = ["full"] }
 
 [package.metadata.cargo-machete]
 ignored = ["roxmltree"]
-
 

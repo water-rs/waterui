@@ -317,6 +317,9 @@ xcrun)
         "simctl delete unavailable" | "simctl create "*)
             exit 0
             ;;
+        "devicectl device info processes "*)
+            respond XCRUN_DEVICE_INFO_PROCESSES
+            ;;
         *)
             exit 1
             ;;

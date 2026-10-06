@@ -7,7 +7,7 @@ use eyre::{Context as _, Result, bail};
 use tracing::info;
 
 use crate::build::{BuildOptions, BuildProfile, BuildProgress};
-use crate::device::{Device, Local, RunOptions, Running};
+use crate::device::{Device, Local, RunOptions, Running, StopRequest};
 use crate::platform::TargetPlatform;
 use crate::project::{ManagedBackends, Project};
 use crate::runtime_compat::runtime_profile_tag;
@@ -60,9 +60,11 @@ impl InspectorSession {
     ///
     /// # Errors
     /// This method currently does not return an operational error.
-    pub fn shutdown(&mut self) -> Result<()> {
-        if self.owns_app {
-            self.running.take();
+    pub async fn shutdown(&mut self) -> Result<()> {
+        if self.owns_app
+            && let Some(running) = self.running.take()
+        {
+            Pin::into_inner(running).shutdown(StopRequest::Kill).await;
         }
         Ok(())
     }
