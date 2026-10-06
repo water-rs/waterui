@@ -140,6 +140,28 @@ pub fn manager_installs_into_the_environment(_mtm: MainThreadMarker) {
     assert!(env.get::<WindowManager>().is_some());
 }
 
+/// The environment `embedding` prepares for a window's mount on macOS.
+///
+/// `create_root` installs the dispatcher and the embedding services and
+/// then the platform theme, resolved from the shared application's
+/// current scheme — a window background resolves the theme's
+/// `Background` token through the environment, so a bare
+/// `Environment::new()` cannot drive a window binding. Answers the
+/// environment plus the theme signals: keep them alive for the window's
+/// lifetime, the way a real mount's keepalive does.
+#[cfg(target_os = "macos")]
+#[must_use]
+pub fn window_environment(mtm: MainThreadMarker) -> (Environment, crate::theme::ThemeSignals) {
+    let mut env = Environment::new();
+    crate::dispatch::install(&mut env);
+    crate::embedding::install_services(&mut env);
+    let theme = crate::theme::install(
+        &mut env,
+        cocoa_ui::appkit::Application::shared(mtm).color_scheme(),
+    );
+    (env, theme)
+}
+
 /// Checks two-way bindings on a real native root window.
 ///
 /// `bind_root_window` adopts a window the host already created: the
@@ -158,9 +180,7 @@ pub fn bind_root_window_wires_a_live_window(mtm: MainThreadMarker) {
         cocoa_ui::appkit::WindowStyle::TITLED,
     );
 
-    let mut env = Environment::new();
-    crate::dispatch::install(&mut env);
-    crate::embedding::install_services(&mut env);
+    let (env, _theme) = window_environment(mtm);
     let title: Computed<Str> = binding(Str::from("Bind Root")).computed();
     let frame: Binding<Rect> = binding(Rect::new(Point::new(0.0, 0.0), Size::new(0.0, 0.0)));
     let state: Binding<WindowState> = binding(WindowState::Normal);
