@@ -369,11 +369,14 @@ impl ScrollFlight {
     }
 
     /// The jump every `AppKit` scroll surface shares: supersede whatever
-    /// is in flight, write the clip, reflect it.
+    /// is in flight, write the clip, reflect it. The point clamps through
+    /// [`constrained`](Self::constrained) first — `scrollToPoint` applies
+    /// its argument verbatim — so the jump lands on the same offset a
+    /// flight's clamped writes already aim at (#2110).
     pub fn jump_to(&self, scroll_view: &objc2_app_kit::NSScrollView, point: Point) {
         self.cancel();
         let clip = scroll_view.contentView();
-        clip.scrollToPoint(point.into());
+        clip.scrollToPoint(Self::constrained(&clip, point).into());
         scroll_view.reflectScrolledClipView(&clip);
     }
 

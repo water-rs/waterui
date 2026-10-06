@@ -2484,6 +2484,20 @@ mod scroll {
         );
     }
 
+    /// A bare request past the document's end lands at the constrained
+    /// offset — the same end the animated paths aim at (#2110). `AppKit`'s
+    /// `scrollToPoint:` applies its argument verbatim, so the shared jump
+    /// clamps the point through `ScrollFlight::constrained` first.
+    fn a_bare_request_past_the_end_lands_at_the_clamped_offset() {
+        let fixture = mounted();
+        fixture.controller.scroll_to(Point::new(0.0, 1.0e6));
+        assert_offset_eq(
+            fixture.surface.content_offset().y,
+            end_offset(&fixture),
+            "a bare jump past the end lands at the scrollable end",
+        );
+    }
+
     /// A second request during a flight replaces it: the offset settles
     /// on the later target, and the superseded flight never lands.
     fn a_later_request_takes_over_an_in_flight_animation() {
@@ -2770,6 +2784,10 @@ mod scroll {
         named.push((
             "scroll::an_animation_past_the_end_lands_at_the_clamped_offset".to_owned(),
             Box::new(an_animation_past_the_end_lands_at_the_clamped_offset),
+        ));
+        named.push((
+            "scroll::a_bare_request_past_the_end_lands_at_the_clamped_offset".to_owned(),
+            Box::new(a_bare_request_past_the_end_lands_at_the_clamped_offset),
         ));
         named.push((
             "scroll::a_later_request_takes_over_an_in_flight_animation".to_owned(),

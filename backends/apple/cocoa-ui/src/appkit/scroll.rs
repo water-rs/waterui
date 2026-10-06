@@ -288,7 +288,9 @@ impl ScrollView {
     }
 
     /// Jumps the scroll position to `point`, top-left origin — superseding
-    /// any scroll animation in flight.
+    /// any scroll animation in flight. The shared jump clamps `point` to
+    /// the clip's scrollable bounds first, so a target past the end lands
+    /// on the constrained offset the clocked writes already use (#2110).
     pub fn scroll_to(&self, point: Point) {
         self.ivars().flight.jump_to(self, point);
     }
