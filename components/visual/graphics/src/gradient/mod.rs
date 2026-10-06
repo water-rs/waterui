@@ -2,6 +2,9 @@
 //!
 //! Every gradient is authored in unit space — `[0, 1]` on both axes, `(0, 0)`
 //! the top-left of the view — and fills the bounds it is laid out at.
+//! A radial gradient's radii are the exception to per-axis scaling: they are
+//! fractions of the box's shorter side, so a radial gradient stays circular
+//! on a non-square box (see [`Gradient::radial`]).
 //!
 //! - [`Gradient`] — a linear, radial, angular or mesh gradient with fixed
 //!   colours, rendered by the backend as a native gradient where it has one.

@@ -407,9 +407,12 @@ impl RetainedSubview {
     /// zero-area rect renders nothing, matching the dispatch path's empty-rect
     /// guard. `safe_area` is the context the sub-view lays out against — the
     /// ambient context of where it is placed for an ordinary sub-view, the
-    /// host's context inherited with `Covered` edges where its chrome sits for
-    /// chrome content (`NavigationView`, `Tabs`), `None` for a scroll
-    /// surface's context-free content.
+    /// host's context inherited with `Covered` edges where its chrome sits —
+    /// `Docked` on every edge the chrome draws a bar on (any bar with
+    /// extent > 0, keyboard or not), so the edge stays untouchable while
+    /// carrying the bar's inner edge as the dock a nested bar on it lands
+    /// on — for chrome content (`NavigationView`, `Tabs`), `None` for a
+    /// scroll surface's context-free content.
     pub(crate) fn flush_in_rect(
         &mut self,
         renderer: &mut HydrolysisRenderer,
@@ -687,7 +690,8 @@ impl<K: Eq + core::hash::Hash + Clone> VisibleSubviewCache<K> {
 pub struct WrapperNode {
     pub(super) accessibility_identity: Rc<()>,
     /// The node's render identity; a `Material` wrapper keys its engine
-    /// mount by it.
+    /// mount by it, a `MaterialGroup` wrapper keys its backdrop-group
+    /// scope by it.
     pub(crate) render_id: RenderId,
     pub(super) effect: WrapperEffect,
     pub(super) env: Environment,
@@ -871,10 +875,16 @@ pub(super) enum WrapperEffect {
     PopupMenuSurface,
     /// A within-window `Material` background (water-rs/waterui#1854): every
     /// flush closes the scene segment painted so far — the content behind
-    /// the view — and presents a keyed mount that samples the material's
-    /// backdrop group inside the view's bounds, then flushes the child on
-    /// top. The runtime is shared with the mount the compositor installs.
-    Material(Rc<crate::renderer::material::MaterialRuntime>),
+    /// the view — and presents a keyed mount that samples a backdrop group
+    /// inside the view's bounds, then flushes the child on top. The level is
+    /// part of the member's backdrop-group key.
+    Material(crate::renderer::material::WithinWindowLevel),
+    /// A `.material_group()` scope (water-rs/waterui#1999): the wrapper
+    /// carries no parameters — its `render_id` is the group-scope identity
+    /// the flush pushes while the child flushes, so the members of one
+    /// modifier instance join one shared backdrop group and two instances
+    /// are two groups.
+    MaterialGroup,
     /// An `.anchored_overlay(...)` (water-rs/waterui#1275): every flush the
     /// wrapper registers the anchor's live bounds plus the effect's handles
     /// for the post-flush `render_anchored_overlays` pass, which measures,

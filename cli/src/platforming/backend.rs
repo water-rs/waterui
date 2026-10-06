@@ -83,8 +83,8 @@ pub enum FailToInitBackend {
     Io(#[from] std::io::Error),
     /// Invalid backend configuration prevented scaffolding (e.g. an
     /// unsupported chip in `[esp32]`).
-    #[error("Invalid backend configuration: {0}")]
-    Config(#[source] eyre::Error),
+    #[error("Invalid backend configuration: {0:#}")]
+    Config(eyre::Error),
 }
 
 /// Trait for backends in a `WaterUI` project.

@@ -166,7 +166,10 @@ impl<'a> Frame<'a> {
 pub trait GpuContent: Send + 'static {
     /// Creates pipelines and resources against the engine's device.
     ///
-    /// Called once, on the render thread, before the first [`render`](Self::render).
+    /// Called on the render thread before the first [`render`](Self::render),
+    /// and again on each new device after the GPU runtime replaces a lost one.
+    /// Each call replaces every device resource the previous call created:
+    /// resources from the old device must not be used after it.
     fn setup(&mut self, gpu: &Context<'_>);
 
     /// Draws one frame into `frame`'s texture.

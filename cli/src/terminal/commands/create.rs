@@ -8,11 +8,11 @@ use eyre::{Result, bail, eyre};
 use heck::ToKebabCase;
 
 use crate::shell::Shell;
-use crate::{header, line, success, warn};
-use waterui_cli::FetchOutcome;
+use crate::{header, line, success};
 use waterui_cli::framework::FrameworkChannel;
-use waterui_cli::project::{CreateOptions, Project, WebScaffold};
+use waterui_cli::project::{CreateOptions, Project, ProjectDraft, WebScaffold};
 use waterui_cli::project_types::{BundleIdentifier, default_bundle_identifier};
+use waterui_cli::toolchain::Host;
 use waterui_cli::web::PackageManager;
 
 /// Arguments for the create command.
@@ -86,61 +86,22 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         super::web::ensure_installed(plan.package_manager).await?;
     }
     header!(shell, "Creating WaterUI project: {}", plan.name);
-    let project = create_project(shell, &plan).await?;
-    if plan.template == CreateTemplate::Web {
-        super::web::create_vite(
-            shell,
-            project.root(),
-            "web",
-            plan.package_manager,
-            plan.vite_template.as_deref(),
-        )
-        .await?;
-        super::web::brand_overlay(shell, &project.root().join("web"), &plan.name)?;
-        super::web::install_dependencies(shell, plan.package_manager, &project.root().join("web"))
-            .await?;
+    let draft = create_project(shell, &plan).await?;
+    if plan.template == CreateTemplate::Web
+        && let Err(error) = scaffold_web_frontend(shell, &plan, draft.project()).await
+    {
+        return Err(draft.discard(error).await);
     }
-    // Seed the font cache while `create` is already on the network for the
-    // framework resolution, so the first build never meets an uncached font.
-    // It must not fail the scaffold — the project is valid either way, and
-    // `water fetch` repeats the seeding.
-    seed_declared_fonts(shell, &project).await;
-    print_create_summary(shell, &plan);
-    Ok(())
-}
-
-/// Fetches the new project's declared fonts into the font cache, reporting
-/// rather than failing when seeding cannot finish or a declaration is one
-/// fetching cannot fix — those are reported the same way a build reports
-/// them.
-async fn seed_declared_fonts(shell: &Shell, project: &Project) {
-    let spinner = shell.spinner("Fetching declared fonts...");
-    let outcomes = waterui_cli::seed_font_cache(project).await;
+    let spinner = shell.spinner("Scaffolding generated crates and fetching declared fonts...");
+    let fetched = draft.finish().await;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
-    match outcomes {
-        Ok(outcomes) => {
-            for outcome in outcomes {
-                match outcome {
-                    FetchOutcome::Satisfied { .. } => {}
-                    FetchOutcome::Fetched { name, path } => {
-                        success!(shell, "Fetched font '{name}' to {}", path.display());
-                    }
-                    FetchOutcome::Unsatisfiable { error, .. } => {
-                        warn!(shell, "{error:#}");
-                    }
-                }
-            }
-        }
-        Err(error) => {
-            warn!(
-                shell,
-                "Declared fonts could not be fetched ({error:#}) — run `water fetch` inside \
-                 the project before building"
-            );
-        }
+    for (name, path) in fetched? {
+        success!(shell, "Fetched font '{name}' to {}", path.display());
     }
+    print_create_summary(shell, &plan);
+    Ok(())
 }
 
 fn resolve_create_plan(shell: &Shell, args: &Args) -> Result<CreatePlan> {
@@ -200,9 +161,10 @@ fn resolve_bundle_id(args: &Args, interactive: bool, name: &str) -> Result<Strin
     }
 }
 
-async fn create_project(shell: &Shell, plan: &CreatePlan) -> Result<Project> {
+async fn create_project(shell: &Shell, plan: &CreatePlan) -> Result<ProjectDraft> {
     let spinner = shell.spinner("Creating project files...");
-    let project = Project::create(
+    let draft = ProjectDraft::create(
+        &Host::current(),
         &plan.project_path,
         CreateOptions {
             name: plan.name.clone(),
@@ -228,10 +190,23 @@ async fn create_project(shell: &Shell, plan: &CreatePlan) -> Result<Project> {
     success!(shell, "Created Cargo.toml and src/lib.rs");
     // The channel resolution is the one fact of a `create` a user cannot
     // see in the files it wrote without opening Water.toml.
-    if let Some(framework) = &project.manifest().framework {
+    if let Some(framework) = &draft.project().manifest().framework {
         success!(shell, "Resolved framework: {framework}");
     }
-    Ok(project)
+    Ok(draft)
+}
+
+async fn scaffold_web_frontend(shell: &Shell, plan: &CreatePlan, project: &Project) -> Result<()> {
+    super::web::create_vite(
+        shell,
+        project.root(),
+        "web",
+        plan.package_manager,
+        plan.vite_template.as_deref(),
+    )
+    .await?;
+    super::web::brand_overlay(shell, &project.root().join("web"), &plan.name)?;
+    super::web::install_dependencies(shell, plan.package_manager, &project.root().join("web")).await
 }
 
 fn print_create_summary(shell: &Shell, plan: &CreatePlan) {
