@@ -220,7 +220,7 @@ waterui-core = { version = "0.5.1", path = "core" }
 suiteki = { version = "0.1", features = ["nami"] }
 waterui-url = { version = "0.5.1", path = "utils/url" }
 waterui-watcher-set = { version = "0.5.1", path = "utils/watcher-set" }
-waterui-text = { version = "0.5.1", path = "components/foundation/text" }
+waterui-text = { version = "0.5.1", path = "components/foundation/text", default-features = false }
 waterui-media = { version = "0.5.1", path = "components/multimedia/media" }
 waterui-image = "0.5.0"
 waterui-video = { version = "0.5.1", path = "components/multimedia/video" }
