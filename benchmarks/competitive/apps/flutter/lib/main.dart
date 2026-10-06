@@ -15,7 +15,7 @@ import 'package:flutter/services.dart';
 
 const _configChannel = MethodChannel('bench/config');
 
-/// iOS only: the native side posts `dev.bench.ready.<bundle>.<w>`
+/// iOS only: the native side posts `dev.bench.ready.flutter.<w>`
 /// over Darwin notify when Dart reports the workload page's first frame.
 const _readyChannel = MethodChannel('bench/ready');
 

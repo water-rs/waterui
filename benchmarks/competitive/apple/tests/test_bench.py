@@ -3,7 +3,10 @@
 
 Covers: devicectl JSON parse, xcresult-error row marking, the report's
 completeness gates, the resume gate, profile selection, capacity
-summaries, the device cleanup path with injected cleanup failures,
+summaries, the shared-bundle-id install cycle (uninstall, on-device
+verification, install, installed-bundle check and their evidence) on an
+in-memory device that answers through the real devicectl listing parser,
+the staged set's contestant entries,
 xctrace export parsing and frame attribution (with the render-server
 frame gate), the pty line reader, the Instruments scratch sweep and its
 SIGTERM path (real processes: copies of /bin/sleep), the device lock,
@@ -23,11 +26,14 @@ if sys.version_info < (3, 10):
         "runs under the uv-managed interpreter (`uv run`)")
 
 import argparse
+import datetime
 import importlib.util
 import json
+import plistlib
 import shutil
 import tempfile
 import unittest
+import urllib.parse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -226,32 +232,6 @@ class TestResumeGate(unittest.TestCase):
 
 
 class TestDeviceCleanup(unittest.TestCase):
-    """Real control flow: injected cleanup failures must not suppress
-    other cleanup actions or the original failure."""
-
-    def test_cleanup_step_isolates_failures(self):
-        tmp = Path(tempfile.mkdtemp(prefix="bench-clean-"))
-        (tmp / "a").mkdir()
-        (tmp / "b").mkdir()
-        diags = []
-        calls = []
-        def rm(p):
-            shutil.rmtree(p)
-            calls.append(p)
-        for p in (tmp / "a", tmp / "b"):
-            d = bench._cleanup_step(f"rm {p}", lambda q=p: rm(q))
-            if d:
-                diags.append(d)
-        d = bench._cleanup_step("fail", lambda: 1 / 0)
-        if d:
-            diags.append(d)
-        self.assertFalse((tmp / "a").exists())
-        self.assertFalse((tmp / "b").exists())
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(len(diags), 1)
-        self.assertIn("fail", diags[0])
-        shutil.rmtree(tmp)
-
     def test_sh_real_failure_and_timeout(self):
         with self.assertRaises(RuntimeError):
             bench.sh("exit 7")
@@ -259,6 +239,186 @@ class TestDeviceCleanup(unittest.TestCase):
         with self.assertRaises(bench.CommandTimeout) as cm:
             bench.sh("sleep 5", timeout=1)
         self.assertIn("timed out after 1s", str(cm.exception))
+
+
+CONTESTANT_BID = bench.MANIFEST["harness"]["contestant_bundle_id"]
+RUNNER_BID = bench.MANIFEST["runner"]["bundle_id"] + ".xctrunner"
+
+
+class AppStore:
+    """An in-memory iPhone for the install cycle: the apps it holds per
+    bundle id, answered as a `devicectl device info apps` document parsed
+    by the real bench.listed_apps. Installing reads the bundle id from
+    the app's own Info.plist and lists the app at a percent-encoded file
+    URL, the way devicectl does. Failures are the device's behaviour:
+    `sticky` keeps an app listed after its uninstall, `list_fails` makes
+    every listing fail, `installs_as` names the .app the device ends up
+    holding instead of the one installed."""
+
+    def __init__(self, sticky=False, list_fails=False, installs_as=None):
+        self.apps: dict[str, list[dict]] = {}
+        self.calls: list[tuple[str, str]] = []
+        self.sticky = sticky
+        self.list_fails = list_fails
+        self.installs_as = installs_as
+
+    @staticmethod
+    def entry(bundle_id, app_name):
+        return {"bundleIdentifier": bundle_id,
+                "name": app_name.removesuffix(".app"),
+                "url": "file:///private/var/containers/Bundle/Application/"
+                       "0F1E2D3C-4B5A-6978-8796-A5B4C3D2E1F0/"
+                       + urllib.parse.quote(app_name) + "/",
+                "version": "1.0", "bundleVersion": "1",
+                "removable": True, "builtByDeveloper": True}
+
+    def listed(self, bundle_id):
+        self.calls.append(("listed", bundle_id))
+        if self.list_fails:
+            raise RuntimeError("command failed (1): xcrun devicectl device "
+                               "info apps")
+        return bench.listed_apps(
+            {"info": {"arguments": ["device", "info", "apps"]},
+             "result": {"apps": [e for es in self.apps.values()
+                                 for e in es]}},
+            bundle_id)
+
+    def uninstall(self, bundle_id):
+        self.calls.append(("uninstall", bundle_id))
+        if not self.sticky:
+            self.apps.pop(bundle_id, None)
+
+    def install(self, app):
+        self.calls.append(("install", app.name))
+        bid = plistlib.loads((app / "Info.plist").read_bytes())[
+            "CFBundleIdentifier"]
+        self.apps[bid] = [self.entry(bid, self.installs_as or app.name)]
+
+
+class TestSharedBundleInstall(unittest.TestCase):
+    """Every contestant installs under one bundle id: before each install
+    the id is cleared and verified absent on the device, the installed
+    app must be the stage entry's, and every step is recorded."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="bench-install-"))
+        # a signed copy as run_device makes it: the stage entry's .app
+        # name, the shared id
+        self.app = self.tmp / "WaterUI Bench.app"
+        self.app.mkdir()
+        (self.app / "Info.plist").write_bytes(plistlib.dumps(
+            {"CFBundleIdentifier": CONTESTANT_BID}))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def device(self, **kw):
+        dev = AppStore(**kw)
+        # the runner is installed throughout and never matches the id
+        dev.apps[RUNNER_BID] = [AppStore.entry(RUNNER_BID,
+                                               "BenchRunner-Runner.app")]
+        return dev
+
+    def assertUtc(self, value):
+        t = datetime.datetime.fromisoformat(value)
+        self.assertEqual(t.utcoffset(), datetime.timedelta(0))
+
+    def test_manifest_declares_two_app_ids(self):
+        self.assertEqual(CONTESTANT_BID, "dev.bench.contestant")
+        self.assertNotEqual(CONTESTANT_BID, RUNNER_BID)
+        for c in bench.MANIFEST["contestants"]:
+            self.assertNotIn("bundle_id", c)
+
+    def test_clean_device(self):
+        dev, installed = self.device(), []
+        cycle = bench.install_cycle(dev, CONTESTANT_BID, self.app,
+                                    installed)
+        self.assertNotIn("error", cycle)
+        pre = cycle["pre_install"]
+        self.assertEqual((pre["bundle_id"], pre["listed_before"],
+                          pre["uninstall"], pre["listed_after"],
+                          pre["verified_absent"]),
+                         (CONTESTANT_BID, [], "not installed", [], True))
+        for k in ("started_utc", "uninstall_finished_utc", "verified_utc"):
+            self.assertUtc(pre[k])
+        ins = cycle["install"]
+        for k in ("started_utc", "finished_utc", "verified_utc"):
+            self.assertUtc(ins[k])
+        self.assertEqual([bench.installed_bundle_name(a)
+                          for a in ins["listed"]], ["WaterUI Bench.app"])
+        # verified absent before the install, checked after it
+        self.assertEqual(dev.calls, [("listed", CONTESTANT_BID),
+                                     ("listed", CONTESTANT_BID),
+                                     ("install", self.app.name),
+                                     ("listed", CONTESTANT_BID)])
+        self.assertEqual(installed, [CONTESTANT_BID])
+        # the post-cells uninstall: removed and verified, the runner kept
+        post = bench.clear_bundle_id(dev, CONTESTANT_BID)
+        self.assertEqual((post["uninstall"], post["verified_absent"]),
+                         ("uninstalled", True))
+        self.assertEqual(list(dev.apps), [RUNNER_BID])
+
+    def test_previous_contestant_removed_before_install(self):
+        dev, installed = self.device(), []
+        dev.apps[CONTESTANT_BID] = [AppStore.entry(CONTESTANT_BID,
+                                                   "Runner.app")]
+        cycle = bench.install_cycle(dev, CONTESTANT_BID, self.app,
+                                    installed)
+        self.assertNotIn("error", cycle)
+        pre = cycle["pre_install"]
+        self.assertEqual(pre["uninstall"], "uninstalled")
+        self.assertEqual([bench.installed_bundle_name(a)
+                          for a in pre["listed_before"]], ["Runner.app"])
+        self.assertTrue(pre["verified_absent"])
+        self.assertEqual([c[0] for c in dev.calls],
+                         ["listed", "uninstall", "listed", "install",
+                          "listed"])
+
+    def test_failed_verification_installs_nothing(self):
+        dev, installed = self.device(sticky=True), []
+        dev.apps[CONTESTANT_BID] = [AppStore.entry(CONTESTANT_BID,
+                                                   "Runner.app")]
+        cycle = bench.install_cycle(dev, CONTESTANT_BID, self.app,
+                                    installed)
+        self.assertIn("still installed", cycle["error"])
+        self.assertFalse(cycle["pre_install"]["verified_absent"])
+        self.assertUtc(cycle["pre_install"]["verified_utc"])
+        self.assertNotIn("install", cycle)
+        self.assertNotIn(("install", self.app.name), dev.calls)
+        self.assertEqual(installed, [])
+
+    def test_listing_failure_installs_nothing(self):
+        dev, installed = self.device(list_fails=True), []
+        cycle = bench.install_cycle(dev, CONTESTANT_BID, self.app,
+                                    installed)
+        self.assertIn("devicectl device info apps", cycle["error"])
+        self.assertNotIn("verified_absent", cycle["pre_install"])
+        self.assertNotIn("install", cycle)
+        self.assertEqual(installed, [])
+
+    def test_installed_app_must_be_the_stage_entry(self):
+        dev, installed = self.device(installs_as="RnBench.app"), []
+        cycle = bench.install_cycle(dev, CONTESTANT_BID, self.app,
+                                    installed)
+        self.assertIn("RnBench.app", cycle["error"])
+        # it was installed: the caller still uninstalls it
+        self.assertEqual(installed, [CONTESTANT_BID])
+
+    def test_listing_without_apps_is_not_empty(self):
+        for doc in ({"result": {}}, {"result": {"apps": None}}, []):
+            with self.assertRaises(RuntimeError):
+                bench.listed_apps(doc, CONTESTANT_BID)
+
+    def test_stage_entries(self):
+        arts = {c["id"]: {"app": Path(c["artifact"]).name}
+                for c in bench.MANIFEST["contestants"]}
+        bench.check_stage_entries(arts)
+        with self.assertRaises(SystemExit):
+            bench.check_stage_entries(
+                {k: v for k, v in arts.items() if k != "rn"})
+        with self.assertRaises(SystemExit) as cm:
+            bench.check_stage_entries({**arts, "rn": arts["flutter"]})
+        self.assertIn("not distinct", str(cm.exception))
 
 
 class TestSanitizeKeepsErrors(unittest.TestCase):
@@ -351,14 +511,15 @@ class TestProfileSelection(unittest.TestCase):
         self.now = bench.datetime.datetime(2026, 10, 5)
         self.doc = {"TeamIdentifier": ["4AZ53N9R83"],
                     "Entitlements": {"application-identifier":
-                                     "4AZ53N9R83.dev.bench.rn"},
+                                     "4AZ53N9R83.dev.bench.contestant"},
                     "DeveloperCertificates": [self.CERT],
                     "ProvisionedDevices": ["UDID"],
                     "ExpirationDate": bench.datetime.datetime(2026, 10, 9)}
 
     def why(self, **over):
-        return bench.profile_rejection({**self.doc, **over}, "dev.bench.rn",
-                                       self.ident, "UDID", self.now)
+        return bench.profile_rejection({**self.doc, **over},
+                                       "dev.bench.contestant", self.ident,
+                                       "UDID", self.now)
 
     def test_exact_profile_accepted(self):
         self.assertIsNone(self.why())
@@ -906,8 +1067,9 @@ class TestStageTarball(unittest.TestCase):
 
 
 class TestXctestrunInjection(unittest.TestCase):
-    """The run nonce, the ladder value and the manifest's fling program
-    reach the runner's environment."""
+    """The run nonce, the ladder value, the manifest's fling program and
+    the installed contestant's identity reach the runner's
+    environment."""
 
     def test_nonce_and_step(self):
         import plistlib
@@ -918,10 +1080,14 @@ class TestXctestrunInjection(unittest.TestCase):
                 "DependentProductPaths": []}}))
             out = tmp / "o.xctestrun"
             bench.write_xctestrun(tmpl, out, "BenchRunner",
-                                  "Release-iphoneos", "X.app", "dev.bench.x",
+                                  "Release-iphoneos", "X.app",
+                                  "dev.bench.contestant", "flutter",
                                   "w5", "none", 12, nonce=12345, step=800)
             t = plistlib.loads(out.read_bytes())["BenchRunner"]
             env = t["EnvironmentVariables"]
+            # launched by the shared id, readied by the stage entry's id
+            self.assertEqual(env["BENCH_BUNDLE_ID"], "dev.bench.contestant")
+            self.assertEqual(env["BENCH_CONTESTANT"], "flutter")
             self.assertEqual(env["BENCH_RUN_NONCE"], "12345")
             self.assertEqual(env["BENCH_STEP"], "800")
             self.assertEqual(env["BENCH_DURATION"], "12")

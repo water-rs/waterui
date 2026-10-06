@@ -3,7 +3,12 @@
 // platform). Drives one workload of one contestant per test run,
 // configured through environment variables injected into the .xctestrun
 // EnvironmentVariables:
-//   BENCH_BUNDLE_ID  — bundle identifier of the app under test
+//   BENCH_BUNDLE_ID  — bundle identifier the app under test is installed
+//                      as: the one id every contestant shares
+//   BENCH_CONTESTANT — the contestant id of the stage entry installed
+//                      under it (waterui | swiftui | uikit | flutter |
+//                      rn); the ready post names it, so an installed app
+//                      that is not this contestant never readies the test
 //   BENCH_WORKLOAD   — w1 | w2 | w3 | w4 | w5 | w6 (exact lowercase; any
 //                      other value fails)
 //   BENCH_STEP       — capacity step for w5/w6 (one launch = one step)
@@ -49,9 +54,9 @@
 // which lands in NSUserDefaults' NSArgumentDomain (and argv); N is the
 // ladder value itself (200…25600 for w5, 1…64 for w6). Apps trap when
 // the workload is missing or unrecognized and post
-// `dev.bench.ready.<bundle-id>.<W>` over Darwin notify when the workload
-// view first appears — a wrong page fails the test instead of measuring
-// the Hello page. The assertion goes over notify (not an AX query)
+// `dev.bench.ready.<contestant>.<W>` over Darwin notify when the workload
+// view first appears, with the contestant id compiled into each app — a
+// wrong page or a wrong app fails the test instead of measuring. The assertion goes over notify (not an AX query)
 // because materializing the accessibility tree of the 10k-row feed
 // blocks a descendants query for minutes.
 //
@@ -90,6 +95,7 @@ final class BenchTests: XCTestCase {
         }
     }
     private var bundleID: String = ""
+    private var contestant: String = ""
     private var workload: String = ""
     private var drive: String = ""
 
@@ -111,6 +117,10 @@ final class BenchTests: XCTestCase {
         bundleID = env["BENCH_BUNDLE_ID"] ?? ""
         guard !bundleID.isEmpty else {
             throw HarnessError(description: "BENCH_BUNDLE_ID not set")
+        }
+        contestant = env["BENCH_CONTESTANT"] ?? ""
+        guard !contestant.isEmpty else {
+            throw HarnessError(description: "BENCH_CONTESTANT not set")
         }
         workload = env["BENCH_WORKLOAD"] ?? ""
         drive = env["BENCH_DRIVE"] ?? ""
@@ -211,7 +221,7 @@ final class BenchTests: XCTestCase {
     private var readyToken: Int32 = 0
     private var readyRegistered = false
 
-    /// Registers `dev.bench.ready.<bundle-id>.<W>` BEFORE app.launch as a
+    /// Registers `dev.bench.ready.<contestant>.<W>` BEFORE app.launch as a
     /// notify file descriptor: only posts after registration are
     /// delivered, so a stale flag from an earlier cell's identical post
     /// can never satisfy the wait — an app whose delegate never runs
@@ -219,7 +229,7 @@ final class BenchTests: XCTestCase {
     /// itself: assertWorkloadReady blocks on poll(2), never on
     /// notify_check + sleep polling.
     private func registerWorkloadReady() {
-        let name = "dev.bench.ready.\(bundleID).\(workload)"
+        let name = "dev.bench.ready.\(contestant).\(workload)"
         guard notify_register_file_descriptor(name, &readyFd, 0,
                                               &readyToken)
                 == UInt32(NOTIFY_STATUS_OK)
@@ -230,12 +240,13 @@ final class BenchTests: XCTestCase {
         readyRegistered = true
     }
 
-    /// The app posts `dev.bench.ready.<bundle-id>.<W>` over Darwin notify
+    /// The app posts `dev.bench.ready.<contestant>.<W>` over Darwin notify
     /// once it has resolved its -bench-workload argument; absence of the
-    /// post means the harness args never reached it and the run is invalid
+    /// post means the harness args never reached it, or the app installed
+    /// under the shared id is not this contestant, and the run is invalid
     /// rather than a W1 measurement. The wait blocks on the fd itself.
     private func assertWorkloadReady() {
-        let name = "dev.bench.ready.\(bundleID).\(workload)"
+        let name = "dev.bench.ready.\(contestant).\(workload)"
         guard readyRegistered else { XCTFail("ready token unregistered"); return }
         defer {
             notify_cancel(readyToken)
@@ -253,7 +264,8 @@ final class BenchTests: XCTestCase {
         XCTAssertTrue(
             fired,
             "app never posted '\(name)' — wrong or missing "
-                + "-bench-workload handling")
+                + "-bench-workload handling, or not contestant "
+                + "\(contestant)")
     }
 
     // MARK: - Tests
@@ -279,7 +291,8 @@ final class BenchTests: XCTestCase {
         let duration = try positive("BENCH_DURATION")
         let toleranceMs = try positive("BENCH_ANCHOR_TOLERANCE_MS")
         let hold = duration + toleranceMs / 1000.0
-        dbg("testWorkload: launching \(bundleID) w=\(workload) drive=\(drive)")
+        dbg("testWorkload: launching \(contestant) as \(bundleID) "
+            + "w=\(workload) drive=\(drive)")
         registerWorkloadReady()
         // The host arms its recorder, then latches recorder-go — launch
         // is gated on that handshake so the recording covers the app

@@ -29,7 +29,7 @@ import UIKit
 
     // Dart reports the workload page's first frame — the readiness point
     // every contestant shares; the runner waits for
-    // `dev.bench.ready.<bundle-id>.<w>` instead of a deep AX query (the
+    // `dev.bench.ready.<contestant>.<w>` instead of a deep AX query (the
     // 10k-row feed's accessibility tree takes minutes to materialize).
     let ready = FlutterMethodChannel(name: "bench/ready", binaryMessenger: messenger)
     ready.setMethodCallHandler { call, result in
@@ -37,17 +37,17 @@ import UIKit
         result(FlutterMethodNotImplemented)
         return
       }
-      // The runner waits for exactly this bundle's name; a bundle
-      // without an identifier can never be waited for, so it traps.
-      guard let bid = Bundle.main.bundleIdentifier else {
-        fatalError("the app bundle has no CFBundleIdentifier; "
-          + "dev.bench.ready.<bundle-id>.<w> cannot be posted")
-      }
-      notify_post("dev.bench.ready.\(bid).\(benchWorkload())")
+      notify_post("dev.bench.ready.\(benchContestant).\(benchWorkload())")
       result(nil)
     }
   }
 }
+
+/// This app's contestant id in benchmarks/competitive/apple/manifest.json.
+/// Every iOS contestant is installed under one shared bundle id, so the
+/// ready post names the contestant itself; the runner waits for the id of
+/// the stage entry it installed.
+private let benchContestant = "flutter"
 
 /// `-bench-workload w1..=w6`; traps on a missing or unrecognized id.
 private func benchWorkload() -> String {

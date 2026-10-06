@@ -57,7 +57,6 @@
    "label": "WaterUI — Rust/objc2 apple backend",
    "framework_version": "waterui @ checkout HEAD — framework, cli, apple backend and hydrolysis are all workspace members of this checkout",
    "dir": "../apps/waterui",
-   "bundle_id": "dev.waterui.bench",
    "build": [
     "cd ../apps/waterui && {WATER} package --platform ios --backend apple --release --unsigned"
    ],
@@ -68,7 +67,6 @@
    "label": "SwiftUI",
    "framework_version": "iOS SDK of the build host's Xcode (system; recorded in the staging manifest)",
    "dir": "native-bench",
-   "bundle_id": "dev.bench.swiftui",
    "build": [
     "cd native-bench && xcodebuild -project NativeBench.xcodeproj -scheme BenchApps -configuration Release -destination 'generic/platform=iOS' -derivedDataPath build/dd CODE_SIGNING_ALLOWED=NO build"
    ],
@@ -79,7 +77,6 @@
    "label": "UIKit",
    "framework_version": "iOS SDK of the build host's Xcode (system; recorded in the staging manifest)",
    "dir": "native-bench",
-   "bundle_id": "dev.bench.native",
    "build": [],
    "artifact": "native-bench/build/dd/Build/Products/Release-iphoneos/BenchUIKit.app"
   },
@@ -88,7 +85,6 @@
    "label": "Flutter",
    "framework_version": "Flutter 3.47.5 stable",
    "dir": "../apps/flutter",
-   "bundle_id": "dev.bench.flutter",
    "build": [
     "cd ../apps/flutter && {FLUTTER} build ios --release --no-codesign"
    ],
@@ -99,7 +95,6 @@
    "label": "React Native",
    "framework_version": "react-native 0.81.6 (Hermes, New Arch)",
    "dir": "../apps/react-native",
-   "bundle_id": "dev.bench.rn",
    "build": [
     "cd ../apps/react-native && LANG=en_US.UTF-8 xcodebuild -workspace ios/RnBench.xcworkspace -scheme RnBench -configuration Release -destination 'generic/platform=iOS' -derivedDataPath build/dd CODE_SIGNING_ALLOWED=NO build"
    ],
@@ -115,9 +110,11 @@
   "identity_kind": "Apple Development",
   "profile_dir": "~/Library/Developer/Xcode/UserData/Provisioning Profiles",
   "profile_min_validity_h": 24,
-  "note": "device host only. Each contestant's `bundle_id` above is the id the device host signs it as (CFBundleIdentifier is set on the signed copy; the staged artifact keeps its built id): distinct ids per contestant, or one id shared by several contestants — the device host installs one contestant at a time and uninstalls it before the next, so a shared id never has two apps installed. Every id needs a profile on the device host whose App ID is exactly <team>.<id> (never a wildcard), that includes the host's one Apple Development certificate and the device, valid for profile_min_validity_h; a missing one fails the run naming the id and how to create it (Xcode automatic signing for that id). A free personal team's profiles are per id and expire after 7 days; the team may register 10 App IDs per 7 days and have 3 of its apps installed on a device at once (here: the runner + the contestant under measurement)."
+  "note": "device host only. The device host signs exactly two App IDs: every contestant as harness.contestant_bundle_id (CFBundleIdentifier is set on the signed copy; the staged artifact keeps the id it was built with) and the runner as <runner.bundle_id>.xctrunner. Each needs a profile on the device host whose App ID is exactly <team>.<id> (never a wildcard), that includes the host's one Apple Development certificate and the device, valid for profile_min_validity_h; a missing one fails the run naming the id and how to create it (Xcode automatic signing for that id). A free personal team's profiles are per id and expire after 7 days; the team may register 10 App IDs per 7 days and have 3 of its apps installed on a device at once (here: the runner + the contestant under measurement)."
  },
  "harness": {
+  "contestant_bundle_id": "dev.bench.contestant",
+  "contestant_bundle_note": "the one bundle id every contestant is signed and installed under on the device, one contestant at a time. Before every install the runner removes this id from the device and verifies through devicectl's installed-apps listing that no app carries it; a failed verification fails that contestant's cells before anything installs. The evidence (what was listed, the uninstall, the verification, the install and the installed bundle, each timestamped) is the `install_cycle` of every row, and the id is uninstalled again after the contestant's cells. A contestant is identified by its stage entry, never by this id: the runner expects the ready post `dev.bench.ready.<contestant id>.<w>` with the stage entry's contestant id, and each app posts its own compiled-in id.",
   "warmup_ms": 3000,
   "warmup_note": "declared warmup, never 0 — METHOD (../WORKLOADS.md): the window is [first owned present + harness.warmup_ms, + duration_s], computed on the all-process Animation Hitches device trace, where a present is owned when the frame's (display, swap) composited an update from a process inside the contestant's bundle; readiness is that first owned present. The trace is readable only after the recording stops, so dev.bench.ready is the live signal a drive starts on: the runner starts the drive at ready + warmup and marks it with a dev.bench drive-begin Points of Interest signpost in the same trace.",
   "anchor_tolerance_ms": 100,
@@ -141,7 +138,7 @@
   "method": "shared XCUITest runner + XCTest metrics (XCTApplicationLaunchMetric, XCTMemoryMetric, XCTCPUMetric, XCTHitchMetric, XCTOSSignpostMetric.scrollingAndDecelerationMetric on w2/w4/w6) + one all-process xctrace recording per launch on the device (Animation Hitches + Points of Interest + os_log: frames, the runner's marks, time-sample CPU of the app and backboardd, and the WaterUI first-paint marker)",
   "repeats": 5,
   "order": "contestants interleaved across repeats; one discarded launch-test warm-up per contestant per results file",
-  "launch_arg": "-bench-workload w1|w2|w3|w4|w5|w6 -bench-step N (w5/w6; N is the ladder value; one launch renders one step) — single dash; NSArgumentDomain/UserDefaults. Workload ids are exact lowercase strings; a missing or unrecognized value traps naming the argument, and the app posts dev.bench.ready.<its CFBundleIdentifier>.<w> when the workload view first appears (SwiftUI onAppear, UIKit viewDidAppear, WaterUI on_appear, Flutter's first frame of the workload page, React Native's first content appearance).",
+  "launch_arg": "-bench-workload w1|w2|w3|w4|w5|w6 -bench-step N (w5/w6; N is the ladder value; one launch renders one step) — single dash; NSArgumentDomain/UserDefaults. Workload ids are exact lowercase strings; a missing or unrecognized value traps naming the argument, and the app posts dev.bench.ready.<its contestant id>.<w> (the id is compiled into each app and equals its `contestants[].id`) when the workload view first appears (SwiftUI onAppear, UIKit viewDidAppear, WaterUI on_appear, Flutter's first frame of the workload page, React Native's first content appearance).",
   "package_size": "build host: the unsigned arm64 .app bytes on disk and the deflated Payload/ zip of it (the unsigned .ipa); device host: the thinned .ipa for the measured device's variant (xcodebuild -exportArchive with exportOptions thinning = the device product type) — its bytes (download, compressed) and the sum of its entries (installed, uncompressed), with Xcode's App Thinning Size Report line as evidence"
  },
  "notes": [

@@ -63,13 +63,18 @@ enum Bench {
 /// completion: the host driver owns the end of every cell from the
 /// declared program and duration.
 enum BenchNotify {
-    /// Posts `dev.bench.ready.<bundle-id>.<w>` when the workload view
+    /// This app's contestant id in benchmarks/competitive/apple/manifest.json.
+    /// Every iOS contestant is installed under one shared bundle id, so
+    /// the ready post names the contestant itself; the runner waits for
+    /// the id of the stage entry it installed.
+    static let contestant = "uikit"
+
+    /// Posts `dev.bench.ready.<contestant>.<w>` when the workload view
     /// first appears — the readiness point every contestant shares. The
     /// runner waits for this post instead of a deep AX query (the 10k-row
     /// feed's accessibility tree takes minutes to materialize).
     static func postReady(_ workload: String) {
-        let bid = Bundle.main.bundleIdentifier ?? "unknown"
-        notify_post("dev.bench.ready.\(bid).\(workload)")
+        notify_post("dev.bench.ready.\(contestant).\(workload)")
     }
 }
 

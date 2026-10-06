@@ -62,6 +62,7 @@ import tempfile
 import threading
 import time
 import traceback
+import urllib.parse
 import zipfile
 from pathlib import Path
 
@@ -170,10 +171,11 @@ LOCAL_FS_S = 60
 # apps a run ever has installed at once: the runner and the contestant
 # under measurement
 MAX_INSTALLED_APPS = 2
-UNINSTALL_S = DEVICECTL_QUERY_S + DEVICECTL_UNINSTALL_S  # uninstall_app
+# clear_bundle_id: list, uninstall, list again to verify
+UNINSTALL_S = 2 * DEVICECTL_QUERY_S + DEVICECTL_UNINSTALL_S
 # What a SIGTERM can still cost, in the order it is paid:
 #   on_signal: kill this run's tracked processes (SIGKILL, immediate),
-#     then uninstall every installed app
+#     then uninstall and verify every installed app
 #       MAX_INSTALLED_APPS × UNINSTALL_S
 #   run_one's finally: stop the one recorder
 #       RECORDER_STOP_S + RECORDER_DRAIN_S
@@ -183,7 +185,7 @@ UNINSTALL_S = DEVICECTL_QUERY_S + DEVICECTL_UNINSTALL_S  # uninstall_app
 #     finds nothing installed (on_signal's cleanup emptied the list),
 #     then trace/xcresult removal and status.json
 #       LOCAL_FS_S
-# = 2 × 180 + 310 + 120 + 60 = 850 s.
+# = 2 × 240 + 310 + 120 + 60 = 970 s.
 JOB_EXIT_TIMEOUT_S = (MAX_INSTALLED_APPS * UNINSTALL_S
                       + RECORDER_STOP_S + RECORDER_DRAIN_S
                       + LSOF_S + HUB_EXIT_S
@@ -393,9 +395,10 @@ def ensure_flutter_ios(d: Path):
     produced by the pinned Flutter SDK's `flutter create` in a scratch
     dir, the authored ios-override files then replace the template
     sources. The generator's bundle id (dev.bench.benchFlutter) is left
-    as built — the device host signs every contestant with the bundle id
-    the manifest declares. Reuses a generated dir only if .bench-generator
-    records the same Flutter version — otherwise it is regenerated."""
+    as built — the device host signs every contestant as the one
+    harness.contestant_bundle_id. Reuses a generated dir only if
+    .bench-generator records the same Flutter version — otherwise it is
+    regenerated."""
     fb = flutter_bin()
     ver = subprocess.run([fb, "--version", "--machine"],
                          capture_output=True, text=True)
@@ -542,9 +545,14 @@ def cmd_build(args):
 
 def write_xctestrun(template: Path, out: Path, target_key: str,
                     products_subdir: str, app_name: str, bundle_id: str,
-                    workload: str, drive: str, duration: int,
-                    nonce: int, only_test: str | None = None,
+                    contestant: str, workload: str, drive: str,
+                    duration: int, nonce: int, only_test: str | None = None,
                     step: int | None = None):
+    """The runner's .xctestrun for one invocation. `bundle_id` is the id
+    the app is installed under (the shared contestant id, which
+    XCUIApplication launches); `contestant` is the stage entry being
+    measured — the runner waits for that contestant's own ready post, so
+    an installed app that is not the stage entry never satisfies it."""
     d = plistlib.loads(template.read_bytes())
     t = d[target_key]
     app_rel = f"__TESTROOT__/{products_subdir}/{app_name}"
@@ -572,6 +580,7 @@ def write_xctestrun(template: Path, out: Path, target_key: str,
     f = h["fling"]
     env.update({
         "BENCH_BUNDLE_ID": bundle_id,
+        "BENCH_CONTESTANT": contestant,
         "BENCH_WORKLOAD": workload,
         "BENCH_DRIVE": drive,
         "BENCH_DURATION": str(duration),
@@ -1556,8 +1565,9 @@ def _trace_proc_cpu(trace: Path, pid: int, window_ms):
 #
 # The device host signs every app itself, with the one "Apple
 # Development" identity its login keychain holds and the provisioning
-# profile Xcode's automatic signing created on that host for the exact
-# bundle id the manifest declares. The keychain is reachable from the
+# profile Xcode's automatic signing created on that host for each of the
+# two exact bundle ids the manifest declares (the runner's and the one
+# every contestant shares). The keychain is reachable from the
 # user's GUI session, where the device-run job runs.
 
 @dataclasses.dataclass(frozen=True)
@@ -1687,9 +1697,9 @@ def sign_bundle(app: Path, identity: Identity, profile: Profile) -> None:
 
 def signed_copy(src: Path, dst: Path, bundle_id: str, identity: Identity,
                 profile: Profile) -> None:
-    """Copy a verified staged artifact to `dst`, give it the manifest's
-    bundle id (CFBundleIdentifier) and sign it — the staged artifact
-    itself stays as built."""
+    """Copy a verified staged artifact to `dst`, give it the bundle id it
+    is installed as (CFBundleIdentifier) and sign it — the staged
+    artifact itself stays as built."""
     shutil.rmtree(dst, ignore_errors=True)
     shutil.copytree(src, dst, symlinks=True)
     info = app_info(dst)
@@ -1785,6 +1795,7 @@ class DeviceCtx:
     template: Path      # the runner build's .xctestrun
     target_key: str     # the test target's key in the .xctestrun
     runner_bid: str     # the runner app's bundle id (log, recorder-go)
+    contestant_bid: str  # harness.contestant_bundle_id: every contestant
     results_dir: Path   # per-cell xcresults, traces and logs
     keep_traces: bool
     disk_floor: int     # harness.disk.recording_floor_bytes
@@ -1830,7 +1841,7 @@ def _xcodebuild_error(what: str, rc, out: str) -> str | None:
     return None
 
 
-def warm_up(ctx: DeviceCtx, app: Path, bundle_id: str, tag: str) -> str | None:
+def warm_up(ctx: DeviceCtx, cid: str, app: Path, tag: str) -> str | None:
     """One discarded launch test: the first XCUITest attach after an
     install can fail inside the framework ("Failed to initialize for UI
     testing: XCTFuture") and must not land on a measured rep. Returns
@@ -1839,7 +1850,7 @@ def warm_up(ctx: DeviceCtx, app: Path, bundle_id: str, tag: str) -> str | None:
     res = ctx.results_dir / f"{tag}-warmup.xcresult"
     shutil.rmtree(res, ignore_errors=True)
     write_xctestrun(ctx.template, xr, ctx.target_key, SUBDIR, app.name,
-                    bundle_id, "w1", drive_for("w1"),
+                    ctx.contestant_bid, cid, "w1", drive_for("w1"),
                     MANIFEST["workloads"]["w1"]["duration_s"],
                     nonce=run_nonce(), only_test="testLaunch")
     try:
@@ -1851,8 +1862,8 @@ def warm_up(ctx: DeviceCtx, app: Path, bundle_id: str, tag: str) -> str | None:
         xr.unlink()
 
 
-def run_one(ctx: DeviceCtx, cid: str, app: Path, bundle_id: str,
-            workload: str, rep: int, step: int | None = None) -> dict:
+def run_one(ctx: DeviceCtx, cid: str, app: Path, workload: str, rep: int,
+            step: int | None = None) -> dict:
     """One measured launch: two single-test xcodebuild invocations and
     one recording.
 
@@ -1897,8 +1908,8 @@ def run_one(ctx: DeviceCtx, cid: str, app: Path, bundle_id: str,
     xr_work = ctx.testroot / f"{tag}-work.xctestrun"
     for xr, only in ((xr_launch, "testLaunch"), (xr_work, "testWorkload")):
         write_xctestrun(ctx.template, xr, ctx.target_key, SUBDIR, app.name,
-                        bundle_id, workload, drive, duration, nonce=nonce,
-                        only_test=only, step=step)
+                        ctx.contestant_bid, cid, workload, drive, duration,
+                        nonce=nonce, only_test=only, step=step)
     res_launch = ctx.results_dir / f"{tag}-launch.xcresult"
     res_work = ctx.results_dir / f"{tag}-work.xcresult"
     trace = ctx.results_dir / f"{tag}.trace"
@@ -2066,18 +2077,18 @@ STEP_KEYS = ("metrics", "frame_stats", "frames", "app_cpu_window_s",
              "trace_bytes", "disk_free_bytes", "first_paint_ms")
 
 
-def measure_cell(ctx: DeviceCtx, cid: str, app: Path, bundle_id: str,
-                 workload: str, rep: int) -> dict:
+def measure_cell(ctx: DeviceCtx, cid: str, app: Path, workload: str,
+                 rep: int) -> dict:
     """One (contestant, workload, rep) row. A capacity workload runs one
     launch per ladder step and stops at the first collapsed step (or a
     failed one, which fails the row); its row carries every step and the
     ladder's capacities."""
     if not capacity_workload(workload):
-        return run_one(ctx, cid, app, bundle_id, workload, rep)
+        return run_one(ctx, cid, app, workload, rep)
     steps = []
     for n in MANIFEST["workloads"][workload]["steps"]:
         print(f"  step {n}", flush=True)
-        r = run_one(ctx, cid, app, bundle_id, workload, rep, step=n)
+        r = run_one(ctx, cid, app, workload, rep, step=n)
         if "error" in r:
             return {**r, "capacity": {"steps": steps, "failed_step": n}}
         steps.append({"n": n, **{k: r[k] for k in STEP_KEYS if k in r}})
@@ -2171,29 +2182,127 @@ def device_state(udid: str) -> dict:
     return st
 
 
-def uninstall_app(udid: str, bundle_id: str):
-    """Removes one app from the device; an app that is not installed is
-    fine."""
-    with tempfile.TemporaryDirectory() as td:
-        out = Path(td) / "apps.json"
-        sh(f"xcrun devicectl device info apps --device {udid} "
-           f"--bundle-id {bundle_id} --json-output '{out}'",
-           capture=True, timeout=DEVICECTL_QUERY_S)
-        if bundle_id not in out.read_text():
-            return
-    sh(f"xcrun devicectl device uninstall app --device {udid} {bundle_id}",
-       capture=True, timeout=DEVICECTL_UNINSTALL_S)
+def _utc() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(
+        timespec="milliseconds")
 
 
-def _cleanup_step(label: str, fn) -> str | None:
-    """Run one cleanup action; failures are returned as diagnostics,
-    never raised — one broken cleanup must not suppress the rest."""
+# the fields of a devicectl installed-app entry a row keeps as evidence
+_APP_FIELDS = ("bundleIdentifier", "name", "url", "version", "bundleVersion")
+
+
+def listed_apps(doc: dict, bundle_id: str) -> list[dict]:
+    """The entries of one `devicectl device info apps --json-output`
+    document whose bundleIdentifier is exactly `bundle_id`, reduced to
+    _APP_FIELDS. A document without `result.apps` is not a listing: it
+    raises naming what it holds, never reads as "nothing installed"."""
+    apps = (doc.get("result") or {}).get("apps") \
+        if isinstance(doc, dict) else None
+    if not isinstance(apps, list):
+        raise RuntimeError("devicectl info apps reported no result.apps: "
+                           f"{json.dumps(doc)[:400]}")
+    return [{k: a.get(k) for k in _APP_FIELDS} for a in apps
+            if a.get("bundleIdentifier") == bundle_id]
+
+
+def installed_bundle_name(entry: dict) -> str:
+    """The .app directory name of an installed app, from the file URL
+    devicectl lists it at (…/Bundle/Application/<UUID>/<name>.app/)."""
+    path = urllib.parse.unquote(urllib.parse.urlparse(entry["url"] or "").path)
+    return Path(path).name
+
+
+class Devicectl:
+    """The device's apps through `xcrun devicectl` — the one channel the
+    run lists, installs and uninstalls apps with. Every call carries its
+    declared bound; a failure or timeout raises (sh)."""
+
+    def __init__(self, udid: str):
+        self.udid = udid
+
+    def listed(self, bundle_id: str) -> list[dict]:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td) / "apps.json"
+            sh(f"xcrun devicectl device info apps --device {self.udid} "
+               f"--bundle-id {bundle_id} --json-output '{out}'",
+               capture=True, timeout=DEVICECTL_QUERY_S)
+            return listed_apps(json.loads(out.read_text()), bundle_id)
+
+    def uninstall(self, bundle_id: str) -> None:
+        sh(f"xcrun devicectl device uninstall app --device {self.udid} "
+           f"{bundle_id}", capture=True, timeout=DEVICECTL_UNINSTALL_S)
+
+    def install(self, app: Path) -> None:
+        sh(f"xcrun devicectl device install app --device {self.udid} "
+           f"'{app}'", capture=True, timeout=DEVICECTL_INSTALL_S)
+
+
+# what a devicectl step can raise: a failed or timed-out command
+# (RuntimeError, CommandTimeout), an unreadable or misshapen listing
+_DEVICECTL_ERRORS = (RuntimeError, ValueError, OSError)
+
+
+def clear_bundle_id(dev, bundle_id: str) -> dict:
+    """Remove every app carrying `bundle_id` from the device and verify
+    that devicectl's installed-apps listing no longer shows one. Returns
+    the evidence — what was listed before, the uninstall, what was
+    listed after, each timestamped — with an `error` when the listing or
+    the uninstall failed or the id is still installed; it never raises
+    for the device, so the caller records the evidence either way."""
+    ev: dict = {"bundle_id": bundle_id, "started_utc": _utc()}
     try:
-        fn()
-        return None
-    except Exception as e:  # noqa: BLE001 — a diagnostic per action
-        print(f"cleanup failed ({label}): {e}", flush=True)
-        return f"{label}: {e}"
+        ev["listed_before"] = dev.listed(bundle_id)
+        if ev["listed_before"]:
+            dev.uninstall(bundle_id)
+            ev["uninstall"] = "uninstalled"
+        else:
+            ev["uninstall"] = "not installed"
+        ev["uninstall_finished_utc"] = _utc()
+        ev["listed_after"] = dev.listed(bundle_id)
+        ev["verified_utc"] = _utc()
+    except _DEVICECTL_ERRORS as e:
+        ev["error"] = f"uninstall {bundle_id}: {e}"
+        return ev
+    ev["verified_absent"] = not ev["listed_after"]
+    if ev["listed_after"]:
+        ev["error"] = (f"{bundle_id} is still installed after its "
+                       f"uninstall: {ev['listed_after']}")
+    return ev
+
+
+def install_cycle(dev, bundle_id: str, app: Path,
+                  installed: list[str]) -> dict:
+    """Install one contestant under the shared `bundle_id`: clear the id
+    and verify the device carries no app with it (clear_bundle_id), then
+    install `app` and verify the one app listed under the id is this
+    stage entry's bundle (its .app name). A failed verification returns
+    before anything installs. `bundle_id` joins `installed` before the
+    install starts, so an install that fails or is interrupted midway is
+    still uninstalled by the caller. The returned evidence goes on every
+    row of the contestant's cells; `error` fails them all."""
+    cycle: dict = {"bundle_id": bundle_id, "app": app.name,
+                   "pre_install": clear_bundle_id(dev, bundle_id)}
+    if "error" in cycle["pre_install"]:
+        cycle["error"] = ("no install: the pre-install verification "
+                          f"failed: {cycle['pre_install']['error']}")
+        return cycle
+    installed.append(bundle_id)
+    ev: dict = {"started_utc": _utc()}
+    cycle["install"] = ev
+    try:
+        dev.install(app)
+        ev["finished_utc"] = _utc()
+        ev["listed"] = dev.listed(bundle_id)
+        ev["verified_utc"] = _utc()
+    except _DEVICECTL_ERRORS as e:
+        cycle["error"] = f"install {app.name}: {e}"
+        return cycle
+    names = [installed_bundle_name(a) for a in ev["listed"]]
+    if names != [app.name]:
+        cycle["error"] = (f"after installing {app.name}, devicectl lists "
+                          f"{bundle_id} as {names or 'nothing'}: "
+                          f"{ev['listed']}")
+    return cycle
 
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -2224,11 +2333,29 @@ def unpack_stage(tar: Path, run_dir: Path) -> tuple[Path, dict]:
             f"staged set was built at {staging['checkout_head']}, this "
             f"checkout is at {head} — check out the build's HEAD on the "
             "device host")
+    check_stage_entries(staging["artifacts"])
     for cid, a in staging["artifacts"].items():
         if dir_sha256(stage / a["app"]) != a["sha256"]:
             raise SystemExit(f"staged {a['app']} ({cid}) does not match "
                              "the staging manifest")
     return stage, staging
+
+
+def check_stage_entries(artifacts: dict) -> None:
+    """Every contestant installs under one shared bundle id, so a
+    contestant on the device is told apart only by its stage entry: the
+    staged set holds exactly the manifest's contestants, and their .app
+    names (what the installed-app check and the trace's owned-process
+    match key on) are pairwise distinct."""
+    want = {c["id"] for c in MANIFEST["contestants"]}
+    if set(artifacts) != want:
+        raise SystemExit(f"staged set holds contestants {sorted(artifacts)}; "
+                         f"the manifest declares {sorted(want)}")
+    names = [a["app"] for a in artifacts.values()]
+    if len(set(names)) != len(names):
+        raise SystemExit(f"staged .app names are not distinct: {names} — "
+                         "contestants sharing one bundle id are identified "
+                         "by their .app name")
 
 
 def build_runner(run_dir: Path) -> dict:
@@ -2290,10 +2417,13 @@ def check_resume(state: dict, staging: dict, machine: dict,
 
 def run_device(run_dir: Path, opts: argparse.Namespace) -> None:
     """One measurement run on the device host (inside the GUI-session
-    job). Builds the runner, signs and installs one contestant at a time
-    (free provisioning allows three apps installed at once: the runner
-    and the contestant under measurement), measures its cells, and
-    uninstalls it before the next."""
+    job). Builds the runner, then installs one contestant at a time
+    under the one shared harness.contestant_bundle_id (free provisioning
+    allows three apps installed at once: the runner and the contestant
+    under measurement): before every install it clears the id and
+    verifies on the device that no app carries it (install_cycle),
+    measures the contestant's cells with that evidence on every row, and
+    uninstalls the id again after them."""
     # the staged set is the one `start` verified: re-checked here, before
     # anything else, since the tarball could change while the job waited
     verify_stage(Path(opts.stage), opts.stage_sha256)
@@ -2303,14 +2433,22 @@ def run_device(run_dir: Path, opts: argparse.Namespace) -> None:
         "label": _job_label(run_dir),
         "acquired_utc": datetime.datetime.now(
             datetime.timezone.utc).isoformat(timespec="seconds")})
+    dev = Devicectl(udid)
     installed: list[str] = []
     diags: list[str] = []
 
+    def uninstall(bid: str) -> dict:
+        """clear_bundle_id after use; a failure becomes a diagnostic so
+        it never suppresses the rest of the cleanup."""
+        ev = clear_bundle_id(dev, bid)
+        if "error" in ev:
+            print(f"cleanup failed: {ev['error']}", flush=True)
+            diags.append(ev["error"])
+        return ev
+
     def cleanup():
         for bid in reversed(installed):
-            if d := _cleanup_step(f"uninstall {bid}",
-                                  lambda b=bid: uninstall_app(udid, b)):
-                diags.append(d)
+            uninstall(bid)
         installed.clear()
 
     def on_signal(sig, _frame):
@@ -2331,10 +2469,13 @@ def run_device(run_dir: Path, opts: argparse.Namespace) -> None:
         workloads = [w for w in MANIFEST["workloads"]
                      if not opts.workloads or w in opts.workloads]
         runner_bid = MANIFEST["runner"]["bundle_id"] + ".xctrunner"
+        bid = MANIFEST["harness"]["contestant_bundle_id"]
+        # exactly two App IDs: the runner's and the one every contestant
+        # is signed and installed as
         profiles, missing = {}, []
-        for bid in [runner_bid, *{c["bundle_id"] for c in contestants}]:
+        for b in (runner_bid, bid):
             try:
-                profiles[bid] = find_profile(bid, identity, udid)
+                profiles[b] = find_profile(b, identity, udid)
             except LookupError as e:
                 missing.append(str(e))
         if missing:
@@ -2377,7 +2518,8 @@ def run_device(run_dir: Path, opts: argparse.Namespace) -> None:
         results_dir.mkdir(exist_ok=True)
         ctx = DeviceCtx(udid=udid, testroot=testroot, template=template,
                         target_key=MANIFEST["runner"]["test_target"],
-                        runner_bid=runner_bid, results_dir=results_dir,
+                        runner_bid=runner_bid, contestant_bid=bid,
+                        results_dir=results_dir,
                         keep_traces=opts.keep_traces,
                         disk_floor=int(MANIFEST["harness"]["disk"]
                                        ["recording_floor_bytes"]))
@@ -2385,16 +2527,12 @@ def run_device(run_dir: Path, opts: argparse.Namespace) -> None:
         def save():
             results_path.write_text(json.dumps(state, indent=1))
 
-        # this benchmark's own leftovers from an interrupted run
-        for bid in {c["bundle_id"] for c in contestants}:
-            uninstall_app(udid, bid)
         installed.append(runner_bid)  # xcodebuild installs it per run
         signed = set()
         for rep in reps:
             # interleave: rotate order so no contestant gets the same slot
             k = rep % len(contestants)
             for c in contestants[k:] + contestants[:k]:
-                bid = c["bundle_id"]
                 art = staging["artifacts"][c["id"]]
                 app = prod / art["app"]
                 if c["id"] not in signed:
@@ -2412,13 +2550,16 @@ def run_device(run_dir: Path, opts: argparse.Namespace) -> None:
                         size["error"] = f"thinning: {e!r}"
                     state["sizes"][c["id"]] = size
                     save()
-                sh(f"xcrun devicectl device install app --device {udid} "
-                   f"'{app}'", capture=True, timeout=DEVICECTL_INSTALL_S)
-                installed.append(bid)
+                # every row of this install carries the same cycle dict:
+                # the pre-install clear + verification, the install, and
+                # (once the cells are done) the post-cells uninstall
+                print(f"install {c['id']} as {bid}", flush=True)
+                cycle = install_cycle(dev, bid, app, installed)
                 try:
-                    if c["id"] not in state["warmed_up"]:
+                    if ("error" not in cycle
+                            and c["id"] not in state["warmed_up"]):
                         print(f"warm-up {c['id']} (discarded)", flush=True)
-                        err = warm_up(ctx, app, bid, f"{c['id']}-r{rep}")
+                        err = warm_up(ctx, c["id"], app, f"{c['id']}-r{rep}")
                         state.setdefault("warmups", []).append(
                             {"contestant": c["id"], "error": err})
                         state["warmed_up"].append(c["id"])
@@ -2426,22 +2567,23 @@ def run_device(run_dir: Path, opts: argparse.Namespace) -> None:
                     for w in workloads:
                         print(f"rep {rep + 1}/{len(reps)} {c['id']} {w} "
                               f"drive={drive_for(w)}", flush=True)
-                        rec = measure_cell(ctx, c["id"], app, bid, w, rep)
+                        # a failed cycle fails the cell; nothing measures
+                        rec = ({"error": f"install cycle: {cycle['error']}"}
+                               if "error" in cycle else
+                               measure_cell(ctx, c["id"], app, w, rep))
                         rec.update({"contestant": c["id"], "workload": w,
                                     "repeat": rep, "drive": drive_for(w),
-                                    "bundle_id": bid,
-                                    "artifact_sha256": art["sha256"]})
+                                    "artifact_sha256": art["sha256"],
+                                    "install_cycle": cycle})
                         state["runs"].append(rec)
                         save()
                 finally:
                     # uninstall what this run installed, even when a cell
                     # errored — the free team caps installed apps at three
                     if bid in installed:
-                        if d := _cleanup_step(
-                                f"uninstall {bid}",
-                                lambda b=bid: uninstall_app(udid, b)):
-                            diags.append(d)
+                        cycle["post_uninstall"] = uninstall(bid)
                         installed.remove(bid)
+                        save()
         print(f"device results → {results_path}")
     finally:
         cleanup()

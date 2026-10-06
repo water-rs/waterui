@@ -10,8 +10,9 @@ Simulator are not benchmark platforms.
 ## Layout
 
 ```
-manifest.json      device, per-host toolchain, contestants (bundle id,
-                   build command, artifact), runner, signing, harness
+manifest.json      device, per-host toolchain, contestants (build
+                   command, artifact), runner, signing, harness (with
+                   the one contestant bundle id)
 bench.py           the single entry point (uv run, stdlib only)
 native-bench/      project.yml for the SwiftUI and UIKit contestants
 xctest/            project.yml + BenchTests.swift: the shared UI runner
@@ -95,13 +96,17 @@ The job:
 
 1. Checks the tarball against the sha256 `start` verified, then
    extracts it into the run dir. It refuses a staged set built
-   at another HEAD than the device host's clean checkout, and any
-   artifact whose sha256 differs from the staging manifest.
+   at another HEAD than the device host's clean checkout, one that does
+   not hold exactly the manifest's contestants or whose `.app` names
+   repeat, and any artifact whose sha256 differs from the staging
+   manifest.
 2. Reads the device (`devicectl device info details`), which must be
    the declared product type.
 3. Finds the keychain's one `Apple Development` identity.
-4. Finds a provisioning profile for every bundle id it will sign: the
-   runner and each selected contestant. Each profile must have the
+4. Finds a provisioning profile for each of the two bundle ids it
+   signs: the runner's `dev.bench.runner.xctrunner` and
+   `harness.contestant_bundle_id` (`dev.bench.contestant`), which every
+   contestant is signed as. Each profile must have the
    exact App ID `<team>.<bundle id>` (a wildcard is never assumed),
    contain the identity's certificate and the device, and be valid for
    `signing.profile_min_validity_h`. A missing one fails the run before
@@ -109,21 +114,71 @@ The job:
    create the profile: Xcode automatic signing for that id with the
    personal team, one build to the attached iPhone.
 5. Builds and signs the runner.
-6. For each contestant, makes a copy with the manifest's bundle id
-   (`CFBundleIdentifier`). It embeds the profile and signs the copy
+6. For each contestant, makes a copy with the shared contestant bundle
+   id (`CFBundleIdentifier`). It embeds the profile and signs the copy
    inside-out: frameworks, dylibs and test bundles first, then the app
-   with the profile's entitlements. It measures the thinned package
-   size, installs the copy, measures every cell, and uninstalls it
-   before the next contestant. Free provisioning allows three installed
-   apps, and only two (the runner and the contestant) are ever
-   installed.
+   with the profile's entitlements, and measures the thinned package
+   size.
+7. Installs one contestant at a time, in a rotated order per rep. Before
+   every install it clears the shared id and verifies it is gone (see
+   below), then installs the copy and checks that the one app
+   `devicectl` lists under the id is this contestant's `.app`. It
+   measures every cell of the contestant and uninstalls the id again.
+   Free provisioning allows three installed apps, and only two (the
+   runner and the contestant) are ever installed.
 
-The bundle id of each contestant is a manifest field. Distinct ids need
-5 App IDs plus the runner's `dev.bench.runner.xctrunner`, which is 6 in
-total. One id shared by all contestants needs 2. A free team registers
-at most 10 App IDs per 7 days. Contestants read their bundle id at run
-time (`dev.bench.ready.<CFBundleIdentifier>.<w>`), so a shared id works
-unchanged.
+### One bundle id for every contestant
+
+All five contestants are signed and installed as
+`dev.bench.contestant`, one at a time. The device host then needs
+exactly two App IDs, which a free personal team can always register
+(it may register 10 per 7 days), and every contestant enters the device
+through the same id, so none is advantaged by system state the others
+lack.
+
+What can carry over between contestants is the state iOS keys by bundle
+id: the app's data container (preferences, caches, launch snapshots,
+tmp) and its system registrations, which an uninstall removes, and
+keychain items, which can survive an uninstall and which no contestant
+writes. The runner therefore guarantees, before every install, that no
+app with the id is on the device. It lists the id with `devicectl
+device info apps`, uninstalls it when listed, and lists it again. When
+the second listing still shows an app, or a listing or the uninstall
+fails, the contestant's cells fail with that evidence and nothing is
+installed. Every row records the cycle as `install_cycle`: what was
+listed before, whether an uninstall ran, what was listed after, the
+install and the app listed after it, each with a UTC timestamp, and the
+uninstall after the contestant's cells (`post_uninstall`). Within one
+install the contestant's own cells share its container, as they would
+under an id of its own.
+
+The bundle id never identifies a contestant. The stage entry being
+installed does: its `.app` name is checked against the installed app,
+the trace's owned processes are the ones inside that `.app`, and the
+runner waits for `dev.bench.ready.<contestant>.<w>` with the stage
+entry's contestant id. Each app posts its own compiled-in id, so an app
+that is not the stage entry never satisfies the wait.
+
+### Device host signing setup
+
+Create the two profiles once on the device host, and again whenever one
+is within `signing.profile_min_validity_h` of its expiry (free-team
+profiles last 7 days):
+
+1. Sign in to Xcode with the personal team, with the iPhone attached
+   and trusted.
+2. Create (or reuse) a throwaway iOS App project, select the attached
+   iPhone as the run destination, set the bundle identifier to
+   `dev.bench.contestant`, enable "Automatically manage signing" with
+   the personal team, and build once.
+3. Change the bundle identifier to `dev.bench.runner.xctrunner` and
+   build once more.
+4. Remove any app an earlier harness installed on the iPhone under
+   another id, so the free team's three-app limit holds the runner and
+   the contestant.
+
+When either profile is missing, `device-run` fails before anything is
+installed, and its error names the id and these steps.
 
 ## A cell
 

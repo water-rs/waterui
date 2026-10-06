@@ -1,7 +1,8 @@
 name: NativeBench
 # The native iOS contestants. Built on the build host for the iphoneos SDK,
-# unsigned (`bench.py build`); the device host signs each with the bundle
-# id manifest.json declares. NativeBench.xcodeproj is generated from this
+# unsigned (`bench.py build`); the device host signs each as the one
+# harness.contestant_bundle_id every contestant shares (the ids below are
+# only the built ids). NativeBench.xcodeproj is generated from this
 # spec by xcodegen at bootstrap and never committed. The XCTest UI runner
 # is a separate project (../xctest/project.yml) built on the device host.
 options:
