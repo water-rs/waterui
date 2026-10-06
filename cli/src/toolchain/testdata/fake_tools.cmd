@@ -285,6 +285,8 @@ exit /b 2
 :cargo
 if not defined WATERUI_FAKE_CARGO_VERSION set "WATERUI_FAKE_CARGO_VERSION=1.95.0"
 if "%1"=="--version" (echo cargo %WATERUI_FAKE_CARGO_VERSION% ^(waterui-test^) & exit /b 0)
+rem `cargo metadata` prints the staged CARGO_METADATA JSON and fails when none is staged.
+if "%1"=="metadata" (call :respond CARGO_METADATA & exit /b !errorlevel!)
 if "%1"=="install" goto :cargo_install
 if "%1"=="binstall" goto :cargo_install
 exit /b 0
