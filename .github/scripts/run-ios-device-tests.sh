@@ -11,12 +11,16 @@
 #     `@_extern(c)` — asserted on the archive's symbol table so a broken
 #     packaging leg cannot turn the check green — and the packaged `.app`
 #     installs and launches on the simulator; and
-#   * the `native` libtest-mimic suite (Tests/native.rs, behind the
-#     `native-test` feature) runs inside the same booted device:
-#     `cargo nextest run --target aarch64-apple-ios-sim` hands every test
-#     binary to the `nextest-ios-sim.sh` target runner
-#     (`.cargo/config.toml`), which `simctl spawn`s it, so UIKit-touching
-#     assertions execute natively on the platform rather than the host.
+#   * the `native` and `native_app` libtest-mimic suites (Tests/native.rs
+#     and Tests/native_app.rs, behind the `native-test` feature) run inside
+#     the same booted device: `cargo nextest run --target
+#     aarch64-apple-ios-sim` hands every test binary to the
+#     `nextest-ios-sim.sh` target runner (`.cargo/config.toml`), so
+#     UIKit-touching assertions execute natively on the platform rather
+#     than the host. Plain binaries are `simctl spawn`ed bare; the
+#     `native_app` harnesses are wrapped in a generated `.app` and launched
+#     into a real `UIApplication` with a connected scene, one case per
+#     launch.
 #
 # Usage:
 #   WATERUI_DIR=<staged waterui checkout> run-ios-device-tests.sh [example] [simulator-udid]
@@ -129,7 +133,7 @@ fi
 # The reference host runs once on the same simulator and leaves its
 # measured values as JSON; the suite's native-layout assertions compare
 # against them through WATERUI_REFERENCE_METRICS, which the target runner
-# forwards into every spawned test process as SIMCTL_CHILD_*.
+# forwards into every test process, spawned or launched, as SIMCTL_CHILD_*.
 # Assigned before exporting: `export X="$(...)"` would mask the
 # substitution's exit status, so a failing reference build must fail here.
 export WATERUI_IOS_SIM_UDID="${simulator_udid}"
@@ -138,7 +142,8 @@ reference_metrics="$("${repo_root}/.github/scripts/prepare-native-reference.sh" 
 export WATERUI_REFERENCE_METRICS="${reference_metrics}"
 
 # The native assertions run inside the same simulator through the target
-# runner — every test binary is spawned on the device itself. cocoa-ui
+# runner — plain test binaries are spawned bare on the device, the
+# `native_app` harnesses launched there as a `UIApplication`. cocoa-ui
 # joins the same invocation: its standalone iOS-sim nextest coverage
 # transfers 1:1 onto the backend's graph, and waterui-apple's
 # `native-test` forwards to cocoa-ui's so one flag selects both suites.

@@ -87,6 +87,9 @@ pub mod map;
 pub mod material;
 pub mod menu;
 pub mod metal;
+#[cfg(feature = "native-test")]
+#[doc(hidden)]
+pub mod native_test;
 pub mod notification;
 pub mod path;
 pub mod picker;
