@@ -328,7 +328,7 @@ impl BackdropShader {
         }
     }
 
-    /// The identifier [`BackdropShaderEffect`] references.
+    /// The identifier [`BackdropShaderEffect`](crate::BackdropShaderEffect) references.
     #[must_use]
     pub fn id(&self) -> BackdropShaderId {
         self.inner.id

@@ -248,7 +248,7 @@ impl Drop for FrameScope {
     }
 }
 
-/// A transferable handle to one surface's [`SurfaceWaker`], handed to the
+/// A transferable handle to one surface's `SurfaceWaker`, handed to the
 /// backend when the surface is created
 /// ([`Renderer::create_surface`](crate::Renderer::create_surface)).
 ///
@@ -285,7 +285,7 @@ impl Eq for CompletionWaker {}
 /// The source is one the backend drives on its own — a rendered GPU
 /// producer, a filter. A redraw request it makes off the render path
 /// reaches each of those surfaces' hosts through the surface's own
-/// [`SurfaceWaker`]: coalesced per surface until it next renders, silent
+/// `SurfaceWaker`: coalesced per surface until it next renders, silent
 /// while it is hidden and after it is dropped.
 ///
 /// The render loop sets the surfaces from its frames, so the membership
