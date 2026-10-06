@@ -272,9 +272,9 @@ pub trait ViewExt: View + Sized {
 
     /// Groups the backdrop materials in this view's subtree.
     ///
-    /// The materials inside share one capture of what lies behind the
-    /// group, and the style may merge them into one shape where they come
-    /// close, as a toolbar's glass controls do. The style decides whether
+    /// Materials of the same kind inside share one capture of what lies
+    /// behind the group, and the style may merge them into one shape where
+    /// they come close, as a toolbar's glass controls do. The style decides whether
     /// and how they merge; the nearest enclosing group wins. See
     /// [`MaterialGroup`](crate::background::MaterialGroup) for the contract.
     ///
