@@ -360,7 +360,7 @@ const MAX_CONSECUTIVE_UNPRODUCTIVE_REBUILDS: usize = 3;
 /// Recovery is bounded: a recreation only counts as recovery when the device
 /// it replaced presented at least one frame. Consecutive losses of devices
 /// that never presented — the signature of a driver that loses every device
-/// it hands out — are capped at [`MAX_CONSECUTIVE_UNPRODUCTIVE_REBUILDS`],
+/// it hands out — are capped at `MAX_CONSECUTIVE_UNPRODUCTIVE_REBUILDS`,
 /// after which [`GpuRuntime::context`] panics with the collected loss reasons
 /// instead of paying for another stillborn device.
 #[derive(Clone)]
@@ -485,7 +485,7 @@ impl GpuRuntime {
     ///
     /// # Panics
     ///
-    /// Panics once [`MAX_CONSECUTIVE_UNPRODUCTIVE_REBUILDS`] devices in a row
+    /// Panics once `MAX_CONSECUTIVE_UNPRODUCTIVE_REBUILDS` devices in a row
     /// were each lost before presenting a frame — a driver that loses every
     /// device it hands out is not recoverable — and reports the collected
     /// loss reasons.
