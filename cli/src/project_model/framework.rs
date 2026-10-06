@@ -357,17 +357,20 @@ impl ResolvedFramework {
     /// explicit channel selection creates the record.
     ///
     /// # Errors
-    /// Returns an error when the manifest records no framework source, or the
-    /// local checkout's framework facts cannot be read.
+    /// Returns an error when the manifest records no framework source, its
+    /// saved selection is incompatible with this CLI, or the local checkout's
+    /// framework facts cannot be read.
     pub(crate) async fn for_manifest(
         manifest: &crate::project::Manifest,
         project_root: &Path,
     ) -> Result<Self> {
         if let Some(framework) = &manifest.framework {
-            return framework.clone().validated().wrap_err(
-                "the recorded framework selection predates a metadata key this CLI \
-                 requires; re-run `water channel` to resolve it again",
-            );
+            return framework.clone().validated().map_err(|error| {
+                eyre!(
+                    "Water.toml records a framework selection waterui-cli {} cannot scaffold: {error:#}",
+                    env!("CARGO_PKG_VERSION")
+                )
+            });
         }
         let Some(waterui_path) = &manifest.waterui_path else {
             bail!(
@@ -4133,6 +4136,36 @@ mod tests {
         invalid.metadata["android-min-api-level"] = toml::Value::String("31".to_owned());
         let error = invalid.android_min_api_level().unwrap_err().to_string();
         assert!(error.contains("android-min-api-level"), "{error}");
+    }
+
+    #[test]
+    fn a_rejected_recorded_selection_reports_the_inner_error() {
+        let mut framework = stable_framework();
+        framework.metadata.remove("android-min-api-level");
+        let mut manifest = crate::project::Manifest::new(crate::project::Package {
+            name: "Water Example".to_string(),
+            bundle_identifier: crate::project_types::BundleIdentifier::try_from(
+                "dev.waterui.waterexample",
+            )
+            .expect("bundle identifier"),
+            assets_path: "assets".to_string(),
+            accessory: false,
+            embedded: false,
+        });
+        manifest.framework = Some(framework);
+
+        let error = smol::block_on(ResolvedFramework::for_manifest(&manifest, Path::new(".")))
+            .expect_err("the saved framework record is missing required metadata");
+        let message = error.to_string();
+        assert!(
+            message.contains("does not declare package.metadata.waterui.android-min-api-level"),
+            "{message}"
+        );
+        assert!(
+            message.contains("Water.toml records a framework selection"),
+            "{message}"
+        );
+        assert!(!message.contains("re-run `water channel`"), "{message}");
     }
 
     #[test]

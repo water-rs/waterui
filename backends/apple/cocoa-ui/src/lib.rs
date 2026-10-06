@@ -98,6 +98,7 @@ pub mod shape;
 pub mod signal;
 pub mod slider;
 pub mod system_font;
+pub mod teardown;
 pub mod text;
 #[cfg(target_os = "ios")]
 pub mod uikit;
@@ -149,3 +150,4 @@ pub use objc2_ui_kit;
 #[cfg(feature = "webview")]
 pub use objc2_web_kit;
 pub use system_font::{FontMetrics, TextStyle};
+pub use teardown::{HandlerSlots, HandlerTeardown};
