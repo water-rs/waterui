@@ -234,34 +234,26 @@ impl RenderNode {
                     }
                     WrapperEffect::Material(level) => {
                         // Everything painted so far is the material's
-                        // backdrop: close that segment, present the keyed
-                        // member mount, and flush the content above it.
-                        // The member's scope is the stack's top — the nearest
-                        // enclosing `.material_group()` — or none.
-                        renderer.flush_scene_layer();
-                        // The resolved scheme keys the backdrop group — a
-                        // subtree-installed appearance must not share a
+                        // backdrop. The member's scope is the stack's top —
+                        // the nearest enclosing `.material_group()` — or
+                        // none. The resolved scheme keys the backdrop group —
+                        // a subtree-installed appearance must not share a
                         // capture. `read_signal` subscribes the flush, so an
                         // appearance flip requests a refresh and re-keys the
                         // member.
                         let scheme =
                             renderer.read_signal(&waterui::theme::current_color_scheme(child_env));
-                        renderer
-                            .compositor
-                            .render_layers
-                            .push(RenderLayer::Material(MaterialLayer {
-                                key: crate::renderer::retained::RenderKey {
-                                    render: node.render_id,
-                                    presentation:
-                                        crate::renderer::retained::PresentationId::ORDINARY,
-                                },
-                                scope: renderer.compositor.material_scopes.last().copied(),
-                                scheme,
-                                level: *level,
-                                transform: ctx.transform,
-                                bounds: ctx.bounds,
-                                active_layers: renderer.compositor.active_scene_layers.clone(),
-                            }));
+                        renderer.present_material(
+                            crate::renderer::retained::RenderKey {
+                                render: node.render_id,
+                                presentation: crate::renderer::retained::PresentationId::ORDINARY,
+                            },
+                            renderer.compositor.material_scopes.last().copied(),
+                            scheme,
+                            *level,
+                            ctx.transform,
+                            ctx.bounds,
+                        );
                         node.child.flush(renderer, ctx, child_env);
                     }
                     WrapperEffect::MaterialGroup => {

@@ -42,7 +42,6 @@ default = [
     "hittable",
     "gesture",
     "image",
-    "layer_transform",
     "layout_priority",
     "lifecycle_hook",
     "material_background",
@@ -106,7 +105,6 @@ gesture = []
 layout_priority = []
 image = []
 lifecycle_hook = []
-layer_transform = []
 list = []
 # `cocoa-ui/map` brings `MKMapView`, the `MapKit` framework link and the
 # `CoreLocation` types; an app that never uses the leaf gets none of it.
@@ -127,8 +125,8 @@ resolved_color = []
 resolved_gradient = []
 resolved_shape = []
 retain = []
-rotation = ["layer_transform"]
-scale = ["layer_transform"]
+rotation = []
+scale = []
 scroll = []
 secure = []
 secure_field = []

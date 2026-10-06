@@ -27,7 +27,9 @@ use crate::build::BuildProgress;
 
 use crate::apple::dynamic_runtime;
 use crate::build::{BuildOptions, BuildProfile, BuiltTarget, RustBuild, RustLinkage};
-use crate::device::{Device, DeviceEvent, Local, LogLevel, RunOptions, Running};
+use crate::device::{
+    Crash, Device, DeviceEvent, Local, LogLevel, RunOptions, Running, StopRequest,
+};
 use crate::framework::ResolvedFramework;
 use crate::platform::TargetPlatform;
 use crate::project::{ManagedBackends, Project};
@@ -209,8 +211,9 @@ impl PreviewSession {
     pub async fn shutdown(&mut self) -> Result<()> {
         if self.owns_app {
             let result = self.client.shutdown().await;
-            // Dropping `running` will terminate the app if still alive.
-            self.running.take();
+            if let Some(running) = self.running.take() {
+                Pin::into_inner(running).shutdown(StopRequest::Kill).await;
+            }
             self.owns_app = false;
             result?;
         }
@@ -958,7 +961,7 @@ async fn build_preview_session_from_launch(
 ) -> Result<PreviewSession> {
     info!("Preview app launched, waiting for TCP connection...");
     let mut running = Box::pin(running);
-    match wait_for_connection_or_crash(
+    let failure = match wait_for_connection_or_crash(
         &mut running,
         platform,
         tcp_config,
@@ -967,45 +970,47 @@ async fn build_preview_session_from_launch(
     )
     .await
     {
-        ConnectionWaitResult::Ready(client) => Ok(PreviewSession {
-            client,
-            platform,
-            dylib_path: None,
-            running: Some(running),
-            owns_app: true,
-            sccache_path,
-            runtime_fingerprint: expected_fingerprint,
-        }),
-        ConnectionWaitResult::Crashed(message) => {
-            bail!(
+        ConnectionWaitResult::Ready(client) => {
+            return Ok(PreviewSession {
+                client,
+                platform,
+                dylib_path: None,
+                running: Some(running),
+                owns_app: true,
+                sccache_path,
+                runtime_fingerprint: expected_fingerprint,
+            });
+        }
+        ConnectionWaitResult::Crashed(crash) => {
+            eyre::eyre!(
                 "Preview app crashed:
-{message}"
-            );
+{crash}"
+            )
         }
         ConnectionWaitResult::Exited => {
-            bail!(
+            eyre::eyre!(
                 "Preview app exited unexpectedly.
 Check the app logs for more information."
-            );
+            )
         }
         ConnectionWaitResult::Rejected(rejection) => {
-            bail!(
+            eyre::eyre!(
                 "The preview app this run just launched rejected the protocol handshake:
 {rejection}"
-            );
+            )
         }
         // An app that answered and was turned away is not a connection problem,
         // and listing connection problems in front of it is how this timeout
         // once sent two debugging sessions at the network.
         ConnectionWaitResult::Timeout(Some(rejection)) => {
-            bail!(
+            eyre::eyre!(
                 "Preview app started but no compatible app ever answered within {} seconds.
 {rejection}",
                 STARTUP_DEADLINE.as_secs()
-            );
+            )
         }
         ConnectionWaitResult::Timeout(None) => {
-            bail!(
+            eyre::eyre!(
                 "Preview app is still running after {} seconds but never accepted a connection.
 Possible causes:
 - The TCP server failed to start
@@ -1016,17 +1021,19 @@ Try running with WATERUI_CRASH_DEBUG=1 for more details.",
                 STARTUP_DEADLINE.as_secs(),
                 tcp_config.port_start,
                 tcp_config.ports().end()
-            );
+            )
         }
-    }
+    };
+    Pin::into_inner(running).shutdown(StopRequest::Kill).await;
+    Err(failure)
 }
 
 /// Result of waiting for preview-app readiness.
 enum ConnectionWaitResult {
     /// Preview app accepted a connection and completed the protocol handshake.
     Ready(PreviewAppClient),
-    /// App crashed with error message.
-    Crashed(String),
+    /// App crashed.
+    Crashed(Crash),
     /// App exited without crash.
     Exited,
     /// The app stayed alive but never became reachable before the hang backstop.
@@ -1340,6 +1347,10 @@ async fn preview_connection_result_from_device_event(
             info!("App exited after {}ms", start.elapsed().as_millis());
             Some(ConnectionWaitResult::Exited)
         }
+        DeviceEvent::MonitorError { message } => {
+            error!("{message}");
+            None
+        }
         DeviceEvent::Log { level, message } => {
             info!("Preview app log event: {message}");
             if level == tracing::Level::ERROR {
@@ -1395,6 +1406,7 @@ async fn drain_terminal_preview_event(
         match event {
             DeviceEvent::Crashed(message) => return ConnectionWaitResult::Crashed(message),
             DeviceEvent::Exited(_) => return ConnectionWaitResult::Exited,
+            DeviceEvent::MonitorError { message } => error!("{message}"),
             _ => {}
         }
     }

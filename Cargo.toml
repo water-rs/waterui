@@ -239,10 +239,7 @@ waterui-webview = { version = "0.5.1", path = "components/platform/webview" }
 waterui-chromium = { version = "0.5.1", path = "components/platform/chromium" }
 waterui-browser-cef = { version = "0.5.1", path = "components/platform/browser-cef", default-features = false }
 waterui-browser-wpe = { version = "0.5.1", path = "components/platform/browser-wpe", default-features = false }
-# Zero-copy import of an externally produced GPU frame into a wgpu texture.
-# Deliberately free of every waterui dependency: it is a general interop layer
-# and lives in its own repository at water-rs/wgpu-external-frame.
-wgpu-external-frame = { git = "https://github.com/water-rs/wgpu-external-frame", rev = "d047b57e6fd8930f95c78b3e4fba7b06cd056b68" }
+wgpu-external-frame = "0.3.0"
 waterui-icon = { version = "0.5.1", path = "components/foundation/icon" }
 waterui-icons-sf-symbol = { version = "0.5.1", path = "components/icon/sf_symbol" }
 waterui-icons-material-icon = { version = "0.5.1", path = "components/icon/material" }

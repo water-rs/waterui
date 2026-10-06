@@ -855,6 +855,13 @@ impl HeadlessRuntime {
         self.runtime.platform.set_touch_scroll_config(config);
     }
 
+    /// The environment the runtime renders its windows in, for tests that
+    /// read what a frame resolved against — its colour scheme, say.
+    #[cfg(test)]
+    pub(crate) const fn env(&self) -> &Environment {
+        &self.env
+    }
+
     /// The main window's renderer, for tests that assert on frame internals.
     #[cfg(test)]
     pub(crate) const fn renderer(&self) -> &HydrolysisRenderer {

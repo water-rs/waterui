@@ -17,7 +17,7 @@ use waterui::style::Rotation;
 use waterui_core::Metadata;
 use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
 
-#[cfg(target_os = "macos")]
+#[cfg(macos_layer_transform)]
 use crate::components::layer_transform;
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;

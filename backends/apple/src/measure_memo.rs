@@ -44,7 +44,7 @@ static GENERATION: AtomicU64 = AtomicU64::new(0);
     feature = "menu",
     feature = "picker",
     feature = "plain",
-    feature = "scroll",
+    all(feature = "scroll", target_os = "macos"),
     feature = "table",
     feature = "text",
     feature = "text_field"

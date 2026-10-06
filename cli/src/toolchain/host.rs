@@ -243,6 +243,27 @@ impl Host {
         command
     }
 
+    /// A [`Command`] that spawns `program` as the leader of a new process
+    /// group.
+    ///
+    /// Same environment and working directory as [`Host::command`]. A child
+    /// in its own process group cannot receive the `SIGINT` a terminal sends
+    /// its foreground group: `Ctrl-C` reaches this process alone, and the
+    /// parent forwards one termination signal itself. Sharing a group would
+    /// let the terminal signal the child directly — a second, unsupervised
+    /// termination path the supervisor cannot order or count. The group
+    /// boundary exists only on Unix, where `std` lowers `process_group(0)`
+    /// to `setpgid` in the child before `exec`.
+    #[cfg(unix)]
+    #[must_use]
+    pub fn command_in_own_process_group(&self, program: impl AsRef<OsStr>) -> Command {
+        use std::os::unix::process::CommandExt as _;
+
+        let mut command = self.std_command(program);
+        command.process_group(0);
+        Command::from(command)
+    }
+
     /// Spawn `program` with `args` under this host, capturing output.
     ///
     /// stdout and stderr are piped and always collected for the returned
@@ -612,6 +633,37 @@ mod tests {
         let output = smol::block_on(host.run("cargo", ["--version"]))
             .expect("fake cargo must run under the declared host");
         assert!(output.contains("9.9.9-waterui-test"));
+    }
+
+    /// A child spawned through [`Host::command_in_own_process_group`] leads
+    /// its own process group — `getpgid` answers the child's pid — so a
+    /// terminal `SIGINT` addressed to this process's group cannot reach it.
+    #[cfg(unix)]
+    #[test]
+    fn spawned_child_leads_its_own_process_group() {
+        let machine = TestMachine::new();
+        let host = machine.host(Vec::<(String, String)>::new());
+        smol::block_on(async {
+            let mut child = host
+                .command_in_own_process_group("/bin/sh")
+                .arg("-c")
+                .arg("/bin/sleep 60")
+                .kill_on_drop(true)
+                .spawn()
+                .expect("spawn a child through the process-group seam");
+            let pid = nix::unistd::Pid::from_raw(
+                i32::try_from(child.id()).expect("a child's pid fits in i32"),
+            );
+            let group = nix::unistd::getpgid(Some(pid)).expect("read the child's group");
+            assert_eq!(group, pid, "the child must lead its own process group");
+            assert_ne!(
+                group,
+                nix::unistd::getpgrp(),
+                "the child's group must differ from the supervisor's"
+            );
+            let _ = child.kill();
+            let _ = child.status().await;
+        });
     }
 
     #[test]
