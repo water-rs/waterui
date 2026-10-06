@@ -19,6 +19,64 @@ pub use cocoa_ui::native_test::pump_main_until;
 /// answers within a few run-loop turns.
 pub const MAIN_QUEUE_DEADLINE: f64 = 5.0;
 
+/// The least wall-clock time a platform `Animation::Default` scroll
+/// takes from its request to its landing — well under `AppKit`'s 0.25 s
+/// group and `UIKit`'s own scroll animation. A jump lands at once; a
+/// starved main thread only lengthens a native animation.
+pub const NATIVE_SCROLL_MIN_DURATION: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// Asserts that `request` starts a platform-timed scroll, not a jump.
+///
+/// Right after `request` returns, before any run-loop turn, `offset`
+/// still reads the start. Pumping the main run loop then lands it within
+/// one device pixel of `landing` — read on every pass, so a target the
+/// layout resolves during the scroll is compared as it stands when the
+/// offset lands — no sooner than [`NATIVE_SCROLL_MIN_DURATION`] after the
+/// request. The platform runs the animation on its wall clock, so no
+/// intermediate sample is required: a starved main thread may see none,
+/// and can only lengthen the measured duration.
+pub fn assert_native_scroll(
+    what: &str,
+    request: impl FnOnce(),
+    offset: impl Fn() -> cocoa_ui::Point,
+    landing: impl Fn() -> cocoa_ui::Point,
+) {
+    #[cfg(target_os = "macos")]
+    let pixel = 1.0 / cocoa_ui::appkit::main_screen_scale();
+    #[cfg(target_os = "ios")]
+    let pixel = 1.0 / cocoa_ui::uikit::main_screen_scale();
+    let distance =
+        |a: cocoa_ui::Point, b: cocoa_ui::Point| (a.x - b.x).abs().max((a.y - b.y).abs());
+    let start = offset();
+    assert!(
+        distance(start, landing()) >= pixel,
+        "{what}: the start {start:?} is already at the landing {:?}",
+        landing()
+    );
+    let requested = std::time::Instant::now();
+    request();
+    let after_request = offset();
+    assert!(
+        after_request.x.to_bits() == start.x.to_bits()
+            && after_request.y.to_bits() == start.y.to_bits(),
+        "{what}: the request jumped from {start:?} to {after_request:?} before any run-loop turn"
+    );
+    let landed = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+        distance(offset(), landing()) < pixel
+    });
+    let took = requested.elapsed();
+    assert!(
+        landed,
+        "{what}: the offset never reached {:?} from {start:?}; it stayed at {:?}",
+        landing(),
+        offset()
+    );
+    assert!(
+        took >= NATIVE_SCROLL_MIN_DURATION,
+        "{what}: landed {took:?} after the request, under the {NATIVE_SCROLL_MIN_DURATION:?} a native animation takes"
+    );
+}
+
 /// Pumps the main run loop until every block already on the main queue has run.
 ///
 /// The backend applies a list emission as a block on the main dispatch
@@ -233,4 +291,117 @@ pub mod gpu_surface {
     pub fn initialize_process() {
         let _ = crate::startup::initialize();
     }
+}
+
+/// The minimum environment a real render needs: `dispatch::install`
+/// performs the backend's half of the embedding contract (dispatcher,
+/// window manager, realizations); the theme slots text resolves
+/// through are the framework's. Shared by the `native` and `native_app`
+/// harnesses.
+#[must_use]
+pub fn render_environment() -> Environment {
+    use waterui::graphics::color::WorkingColor;
+    use waterui::reactive::{SignalExt, binding};
+    use waterui::text::font::{Body, Caption, FontSlot, Subheadline};
+
+    let mut env = Environment::new();
+    crate::dispatch::install(&mut env);
+    waterui::theme::install_color_scheme(
+        &mut env,
+        binding(waterui::theme::ColorScheme::Light).computed(),
+    );
+    let black = || binding(WorkingColor::BLACK).computed();
+    waterui::theme::install_color_signal::<waterui::theme::color::Foreground>(&mut env, black());
+    // The richer fixtures (list rows, stacked text) resolve muted and
+    // accent roles plus the caption/subheadline slots — install them so
+    // a theme miss can't masquerade as a render failure.
+    waterui::theme::install_color_signal::<waterui::theme::color::MutedForeground>(
+        &mut env,
+        black(),
+    );
+    waterui::theme::install_color_signal::<waterui::theme::color::Accent>(&mut env, black());
+    waterui::theme::install_font_signal::<Body>(&mut env, binding(Body::DEFAULT).computed());
+    waterui::theme::install_font_signal::<Caption>(&mut env, binding(Caption::DEFAULT).computed());
+    waterui::theme::install_font_signal::<Subheadline>(
+        &mut env,
+        binding(Subheadline::DEFAULT).computed(),
+    );
+    env
+}
+
+/// Renders `view` against [`render_environment`] through the typed
+/// dispatch entry point.
+#[must_use]
+pub fn render(view: impl waterui_backend_core::View) -> crate::contract::NativeLeaf {
+    crate::dispatch::render(
+        waterui_backend_core::AnyView::new(view),
+        &render_environment(),
+    )
+}
+
+/// The kit view a `ScrollView` renders into.
+#[cfg(target_os = "macos")]
+pub type ScrollSurface = cocoa_ui::appkit::ScrollView;
+/// The kit view a `ScrollView` renders into.
+#[cfg(target_os = "ios")]
+pub type ScrollSurface = cocoa_ui::uikit::ScrollView;
+/// The kit view a `List` renders into.
+#[cfg(target_os = "macos")]
+pub type ListSurface = cocoa_ui::appkit::ListTableView;
+/// The kit view a `List` renders into.
+#[cfg(target_os = "ios")]
+pub type ListSurface = cocoa_ui::uikit::TableView;
+
+/// The scroll suites' surface, rendered but not mounted: a vertical
+/// scroll over a 2000pt document, driven by `controller` and reporting its
+/// offset into `offset` — with the leaf that owns its watchers.
+#[must_use]
+pub fn scroll_surface(
+    controller: &waterui::layout::scroll::ScrollController<waterui_core::layout::Point>,
+    offset: &waterui::reactive::Binding<waterui_core::layout::Point>,
+) -> (
+    crate::contract::NativeLeaf,
+    cocoa_ui::Retained<ScrollSurface>,
+) {
+    use objc2::Message;
+    use waterui::layout::frame::Frame;
+    use waterui::layout::scroll::scroll;
+    use waterui::prelude::text;
+
+    let leaf = render(
+        scroll(Frame::new(text("document")).height(2000.0))
+            .scroll_controller(controller)
+            .report_offset(offset),
+    );
+    let surface = leaf
+        .view()
+        .downcast_ref::<ScrollSurface>()
+        .expect("a ScrollView renders the kit's scroll surface")
+        .retain();
+    (leaf, surface)
+}
+
+/// The list suites' row body — identical one-line rows; the cases assert
+/// positions, not labels.
+#[must_use]
+pub fn row_item() -> waterui::component::list::ListItem {
+    waterui::component::list::ListItem::new(waterui::prelude::text("row"))
+}
+
+/// The list suites' table, rendered but not mounted: `rows` in a list
+/// driven by `controller`, with the leaf that owns its wiring.
+#[must_use]
+pub fn row_list(
+    rows: Vec<fn() -> waterui::component::list::ListItem>,
+    controller: &waterui::layout::scroll::ScrollController<usize>,
+) -> (crate::contract::NativeLeaf, cocoa_ui::Retained<ListSurface>) {
+    use objc2::Message;
+
+    let leaf = render(waterui::component::list::List::content(rows).scroll_controller(controller));
+    let table = leaf
+        .view()
+        .downcast_ref::<ListSurface>()
+        .expect("a List renders the kit's table surface")
+        .retain();
+    (leaf, table)
 }

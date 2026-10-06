@@ -92,8 +92,9 @@ pub struct ScrollFlight {
     /// origin the group lands on, while one runs.
     #[cfg(target_os = "macos")]
     context_clip: RefCell<Option<(objc2::rc::Weak<objc2_app_kit::NSClipView>, Point)>>,
-    /// Set while a clocked flight writes the clip, so the kit clip view's
-    /// `scrollToPoint:` tells the flight's own writes from every other.
+    /// Set inside [`own_writes`](Self::own_writes) — the flight's clip
+    /// writes and the kit scroll views' `-layout` — so the clip view's
+    /// `scrollToPoint:` tells those from every other write.
     #[cfg(target_os = "macos")]
     writing: Cell<bool>,
     /// The context group's generation, or 0 while none runs.
@@ -305,11 +306,16 @@ impl ScrollFlight {
     /// `-[NSScrollView scrollClipView:toPoint:]` → `scrollToPoint:`,
     /// which the kit clip view overrides to call
     /// [`clip_will_scroll`](Self::clip_will_scroll). `AppKit`'s own
-    /// corrections are not the user's: a window resize rewrites the clip
-    /// from `-[NSScrollView layout]`'s content-inset update, which the
-    /// kit scroll views run inside [`own_writes`](Self::own_writes); a
-    /// growing document and the clip's frame changes reach no unflagged
-    /// `scrollToPoint:` (verified by the native correction cases). Overriding
+    /// corrections are not the user's: on the kit scroll surface a window
+    /// resize rewrites the clip from `-[NSScrollView layout]` →
+    /// `_updateTitlebarAdjacencyState` → `setContentInsets:` (traced
+    /// from the surface's native correction case), which its `-layout`
+    /// runs inside [`own_writes`](Self::own_writes). The list turns
+    /// automatic content insets off, so its resize reaches no unflagged
+    /// `scrollToPoint:` even without the wrapper; its `-layout` keeps the
+    /// wrapper for the same exemption. A growing document and the clip's
+    /// frame changes reach no unflagged `scrollToPoint:` on either
+    /// (verified by the native correction cases). Overriding
     /// `scrollToPoint:` on the clip keeps the scroll view
     /// responsive-scrolling compatible (`+isCompatibleWithResponsiveScrolling`
     /// stays `YES`, as it does for responder-action overrides; a
@@ -394,11 +400,14 @@ impl ScrollFlight {
     }
 
     /// Runs `body` with every clip write it makes counted as the flight's
-    /// own: the flight's [`clip_write`](Self::clip_write), and the scroll
-    /// view's `-[NSScrollView layout]`, whose content-inset update
-    /// (`_updateTitlebarAdjacencyState` → `setContentInsets:`) rewrites
-    /// the clip through `scrollToPoint:` when the window resizes —
-    /// `AppKit`'s own correction, not the user's scroll.
+    /// own: the flight's [`clip_write`](Self::clip_write), and the kit
+    /// scroll views' `-[NSScrollView layout]`. On the scroll surface that
+    /// layout's content-inset update (`_updateTitlebarAdjacencyState` →
+    /// `setContentInsets:`) rewrites the clip through `scrollToPoint:`
+    /// when the window resizes — `AppKit`'s own correction, not the
+    /// user's scroll. The list sets its insets itself, so that path
+    /// stays quiet there; its layout runs inside this all the same, for
+    /// the same exemption.
     pub fn own_writes(&self, body: impl FnOnce()) {
         let outer = self.writing.replace(true);
         body();

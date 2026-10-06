@@ -31,68 +31,152 @@ fn main() {
 }
 
 /// `UIKit`-driven animation (#2000): `setContentOffset(_:animated: true)`
-/// advances the model `contentOffset` on the application's update cycle,
-/// so it only moves inside a running `UIApplication` with a connected
-/// scene. The offset must pass through intermediate values and land on the
-/// target; a process outside the application never moves it.
+/// and `scrollToRow(_:at:animated: true)` advance the model
+/// `contentOffset` on the application's update cycle, so they only move
+/// inside a running `UIApplication` with a connected scene. Each runs on
+/// the platform's wall clock: the offset is still at its start when the
+/// request returns, and it lands on the target no sooner than a native
+/// animation takes; a process outside the application never moves it. This is where the
+/// `UIKit` `Animation::Default` arm of the `native` scroll suites lives.
 #[cfg(target_os = "ios")]
 mod scroll_animation {
-    use std::cell::Cell;
-
     use cocoa_ui::geometry::{Point, Size};
-    use cocoa_ui::uikit::{ScrollView, main_screen_scale, native_test};
-    use cocoa_ui::{MainThreadMarker, Rect, view};
-    use waterui_apple::native_test_support::pump_main_until;
+    use cocoa_ui::objc2_foundation::NSIndexPath;
+    use cocoa_ui::objc2_ui_kit::{NSIndexPathUIKitAdditions, UIWindow};
+    use cocoa_ui::uikit::{ScrollView, native_test};
+    use cocoa_ui::{MainThreadMarker, PlatformView, Rect, Retained, view};
+    use waterui::animation::Animation;
+    use waterui::component::list::ListItem;
+    use waterui::layout::scroll::ScrollController;
+    use waterui::reactive::binding;
+    use waterui_apple::native_test_support::{
+        assert_native_scroll, row_item, row_list, scroll_surface,
+    };
+    use waterui_core::layout::Point as LayoutPoint;
 
-    /// The bound an animated scroll gets to land before the case fails;
-    /// `UIKit`'s scroll animation finishes in well under a second.
-    const ANIMATION_DEADLINE: f64 = 5.0;
+    /// The list's rows — far taller than the window.
+    const ROWS: usize = 200;
+    /// The row the list case aims at: below the fold, far from the end.
+    const TARGET_ROW: usize = 40;
 
     /// The `scroll_animation::` trials.
     pub fn trials() -> Vec<libtest_mimic::Trial> {
-        vec![libtest_mimic::Trial::test(
-            "scroll_animation::animated_content_offset_passes_through_intermediate_offsets",
-            || {
-                animated_content_offset_passes_through_intermediate_offsets();
-                Ok(())
-            },
-        )]
+        let cases: [(&str, fn()); 3] = [
+            (
+                "animated_content_offset_lands_after_a_native_animation",
+                animated_content_offset_lands_after_a_native_animation,
+            ),
+            (
+                "a_default_surface_request_lands_after_a_native_animation",
+                a_default_surface_request_lands_after_a_native_animation,
+            ),
+            (
+                "a_default_list_request_lands_after_a_native_animation",
+                a_default_list_request_lands_after_a_native_animation,
+            ),
+        ];
+        cases
+            .into_iter()
+            .map(|(name, case)| {
+                libtest_mimic::Trial::test(format!("scroll_animation::{name}"), move || {
+                    case();
+                    Ok(())
+                })
+            })
+            .collect()
     }
 
-    fn animated_content_offset_passes_through_intermediate_offsets() {
-        let mtm = MainThreadMarker::new().expect("native_app cases run on the main thread");
-        let scroll = ScrollView::new(mtm, true, false);
+    fn mtm() -> MainThreadMarker {
+        MainThreadMarker::new().expect("native_app cases run on the main thread")
+    }
+
+    /// A key, visible window in the application's scene with `content`
+    /// filling it, laid out.
+    fn scene_window(mtm: MainThreadMarker, content: &PlatformView) -> Retained<UIWindow> {
         let window = native_test::window(mtm, Rect::new(0.0, 0.0, 390.0, 844.0));
-        window.addSubview(&scroll);
-        view::set_frame(&scroll, view::bounds(&window));
+        window.addSubview(content);
+        view::set_frame(content, view::bounds(&window));
         window.makeKeyAndVisible();
         window.layoutIfNeeded();
+        window
+    }
+
+    fn animated_content_offset_lands_after_a_native_animation() {
+        let mtm = mtm();
+        let scroll = ScrollView::new(mtm, true, false);
+        let window = scene_window(mtm, &scroll);
         let viewport = scroll.viewport_size();
         scroll.set_content_extent(Size::new(viewport.width, viewport.height * 10.0));
         scroll.layout_if_needed();
 
         let start = scroll.content_offset();
         let target = Point::new(start.x, viewport.height.mul_add(3.0, start.y));
-        // Offsets land on the device's pixel grid, so "at" means within one.
-        let pixel = 1.0 / main_screen_scale();
-        let distance = |offset: Point| (target.x - offset.x).abs().max((target.y - offset.y).abs());
-        scroll.set_content_offset(target, true);
-        let intermediate = Cell::new(None);
-        let landed = pump_main_until(ANIMATION_DEADLINE, || {
-            let offset = scroll.content_offset();
-            if offset.y - start.y >= pixel && distance(offset) >= pixel {
-                intermediate.set(Some(offset));
-            }
-            distance(offset) < pixel
-        });
-        assert!(
-            landed,
-            "the animated content offset never reached {target:?} from {start:?}; it stayed at {:?}",
-            scroll.content_offset()
+        assert_native_scroll(
+            "setContentOffset(_:animated: true)",
+            || scroll.set_content_offset(target, true),
+            || scroll.content_offset(),
+            || target,
         );
-        assert!(
-            intermediate.get().is_some(),
-            "the content offset jumped from {start:?} to {target:?} without an intermediate frame"
+        window.setHidden(true);
+    }
+
+    /// `Animation::Default` on a scroll surface is `UIKit`'s own
+    /// `setContentOffset(_:animated: true)`: driven through the
+    /// controller, it does not jump, and it lands where the jump to the
+    /// same target lands no sooner than a native animation takes.
+    fn a_default_surface_request_lands_after_a_native_animation() {
+        let mtm = mtm();
+        let origin = LayoutPoint::new(0.0, 0.0);
+        let target = LayoutPoint::new(0.0, 800.0);
+        let controller = ScrollController::new(origin);
+        let reported = binding(origin);
+        let (leaf, surface) = scroll_surface(&controller, &reported);
+        let window = scene_window(mtm, leaf.view());
+        surface.set_needs_layout();
+        surface.layout_if_needed();
+
+        controller.scroll_to(target);
+        let landing = surface.content_offset();
+        controller.scroll_to(origin);
+        assert_native_scroll(
+            "a Default surface request",
+            || controller.animate_to(target, Animation::Default),
+            || surface.content_offset(),
+            || landing,
+        );
+        window.setHidden(true);
+    }
+
+    /// `Animation::Default` on a list is `UIKit`'s own
+    /// `scrollToRow(_:at:animated: true)`: driven through the controller
+    /// on a cold table, it does not jump, and it lands with the row's top
+    /// at the viewport's top no sooner than a native animation takes. Rows `UIKit` has not
+    /// shown are sized by estimate, and the scroll measures them on the
+    /// way, so the row's top is read as it stands when the offset lands —
+    /// not taken from an earlier jump, which resolves against estimates.
+    fn a_default_list_request_lands_after_a_native_animation() {
+        let mtm = mtm();
+        let controller = ScrollController::new(0usize);
+        let (leaf, table) = row_list(vec![row_item as fn() -> ListItem; ROWS], &controller);
+        let window = scene_window(mtm, leaf.view());
+        table.layout_if_needed();
+        let offset = || Point::from(table.contentOffset());
+        let row = NSIndexPath::indexPathForRow_inSection(
+            isize::try_from(TARGET_ROW).expect("the target row fits an NSInteger"),
+            0,
+        );
+        let row_top = || {
+            Point::new(
+                0.0,
+                table.rectForRowAtIndexPath(&row).origin.y - table.adjustedContentInset().top,
+            )
+        };
+
+        assert_native_scroll(
+            "a Default list request",
+            || controller.animate_to(TARGET_ROW, Animation::Default),
+            offset,
+            row_top,
         );
         window.setHidden(true);
     }

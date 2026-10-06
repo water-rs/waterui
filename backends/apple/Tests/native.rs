@@ -211,11 +211,12 @@ fn distinct_offsets(samples: &[f64]) -> usize {
 /// platform's own smooth scroll, the explicit curves ride the frame
 /// clock.
 ///
-/// There is deliberately no `UIKit` `Default` arm: the libtest harness
+/// The `UIKit` `Default` arm lives in the `native_app` harness: this one
 /// mounts a window with no scene and no `UIApplication`, where the
-/// platform's animated scroll never advances the offset, so nothing
-/// asserts. The explicit curves write the offset themselves every frame
-/// clock tick, so they observe on both kits.
+/// platform's animated scroll never advances the offset, while
+/// `native_app` runs its cases inside a launched application. The
+/// explicit curves write the offset themselves every frame clock tick, so
+/// they observe here on both kits.
 fn animation_cases() -> Vec<(&'static str, waterui::animation::Animation)> {
     use std::time::Duration;
 
@@ -669,9 +670,8 @@ mod leaf {
 mod resolve {
     use waterui::filter::Opacity;
     use waterui::layout::Spacer;
-    use waterui::reactive::{SignalExt, binding};
     use waterui_apple::contract::NativeLeaf;
-    use waterui_backend_core::{AnyView, Environment, View};
+    use waterui_backend_core::{AnyView, View};
     use waterui_core::layout::{ProposalSize, Size, StretchAxis};
     use waterui_core::metadata::MetadataKey;
     use waterui_core::{IgnorableMetadata, Metadata, Native, NativeView};
@@ -689,44 +689,9 @@ mod resolve {
 
     impl NativeView for UnclaimedNative {}
 
-    /// The minimum environment a real render needs: `dispatch::install`
-    /// performs the backend's half of the embedding contract (dispatcher,
-    /// window manager, realizations); the theme slots text resolves
-    /// through are the framework's.
-    pub fn env() -> Environment {
-        use waterui::graphics::color::WorkingColor;
-        use waterui::text::font::{Body, Caption, FontSlot, Subheadline};
-
-        let mut env = Environment::new();
-        waterui_apple::dispatch::install(&mut env);
-        waterui::theme::install_color_scheme(
-            &mut env,
-            binding(waterui::theme::ColorScheme::Light).computed(),
-        );
-        let black = || binding(WorkingColor::BLACK).computed();
-        waterui::theme::install_color_signal::<waterui::theme::color::Foreground>(
-            &mut env,
-            black(),
-        );
-        // The richer fixtures (list rows, stacked text) resolve muted and
-        // accent roles plus the caption/subheadline slots — install them so
-        // a theme miss can't masquerade as a render failure.
-        waterui::theme::install_color_signal::<waterui::theme::color::MutedForeground>(
-            &mut env,
-            black(),
-        );
-        waterui::theme::install_color_signal::<waterui::theme::color::Accent>(&mut env, black());
-        waterui::theme::install_font_signal::<Body>(&mut env, binding(Body::DEFAULT).computed());
-        waterui::theme::install_font_signal::<Caption>(
-            &mut env,
-            binding(Caption::DEFAULT).computed(),
-        );
-        waterui::theme::install_font_signal::<Subheadline>(
-            &mut env,
-            binding(Subheadline::DEFAULT).computed(),
-        );
-        env
-    }
+    /// The minimum environment a real render needs — shared with the
+    /// `native_app` harness.
+    pub use waterui_apple::native_test_support::render_environment as env;
 
     /// Renders `view` through the typed dispatch entry point, main thread,
     /// fresh env. Panics when nothing claims the view — the typed
@@ -2317,24 +2282,18 @@ mod owner_lifetimes {
 mod scroll {
     use std::time::Duration;
 
-    use objc2::Message;
     use waterui::animation::Animation;
-    use waterui::layout::frame::Frame;
-    use waterui::layout::scroll::{ScrollController, scroll};
-    use waterui::prelude::text;
+    use waterui::layout::scroll::ScrollController;
     use waterui::reactive::{Binding, Signal, binding};
     use waterui_apple::contract::NativeLeaf;
     use waterui_core::layout::Point;
 
     use super::{
         AttachedWindow, Retained, animation_cases, assert_offset_eq, distinct_offsets,
-        mount_and_order_front, pump_flight, resolve::render, trial_each,
+        mount_and_order_front, pump_flight, trial_each,
     };
 
-    #[cfg(target_os = "macos")]
-    use cocoa_ui::appkit::ScrollView as ScrollSurface;
-    #[cfg(target_os = "ios")]
-    use cocoa_ui::uikit::ScrollView as ScrollSurface;
+    use waterui_apple::native_test_support::{ScrollSurface, assert_native_scroll, scroll_surface};
 
     /// A scroll surface mounted in the harness window with a 2000pt
     /// document — the controller and report binding the suite drives,
@@ -2417,15 +2376,7 @@ mod scroll {
     fn mounted() -> Fixture {
         let controller = ScrollController::new(Point::new(0.0, 0.0));
         let offset = binding(Point::new(0.0, 0.0));
-        let view = scroll(Frame::new(text("document")).height(2000.0))
-            .scroll_controller(&controller)
-            .report_offset(&offset);
-        let leaf = render(view);
-        let surface = leaf
-            .view()
-            .downcast_ref::<ScrollSurface>()
-            .expect("a ScrollView renders the kit's scroll surface")
-            .retain();
+        let (leaf, surface) = scroll_surface(&controller, &offset);
         let window = mount_and_order_front(leaf.view());
         surface.set_needs_layout();
         surface.layout_if_needed();
@@ -2462,27 +2413,45 @@ mod scroll {
         );
     }
 
-    /// An animated request moves the reported offset through
-    /// intermediate values — every write lands on the model, so
-    /// `report_offset` publishes the ramp — and ends on the target a
-    /// jump would have taken.
+    /// An animated request ends on the target a jump would have taken.
+    /// An explicit curve moves the reported offset through intermediate
+    /// values — every clocked write lands on the model, so
+    /// `report_offset` publishes the ramp. `Default` is the platform's
+    /// wall-clock animation: it does not jump, and it takes time to land.
     fn an_animation_scrolls_to_the_target(name: &'static str, animation: Animation) {
         let fixture = mounted();
-        fixture
-            .controller
-            .animate_to(Point::new(0.0, 800.0), animation);
-        assert!(
-            fixture.surface.scroll_animation_in_flight(),
-            "the {name} flight must be in progress after the request"
-        );
-        let samples = pump_flight(
-            || fixture.surface.scroll_animation_in_flight(),
-            || reported_y(&fixture),
-        );
-        assert!(
-            distinct_offsets(&samples) >= 3,
-            "the {name} flight must move the reported offset through intermediate values: {samples:?}"
-        );
+        let native = matches!(animation, Animation::Default);
+        let request = || {
+            fixture
+                .controller
+                .animate_to(Point::new(0.0, 800.0), animation);
+            assert!(
+                fixture.surface.scroll_animation_in_flight(),
+                "the {name} flight must be in progress after the request"
+            );
+        };
+        if native {
+            assert_native_scroll(
+                &format!("the {name} flight"),
+                request,
+                || fixture.surface.content_offset(),
+                || cocoa_ui::Point::new(0.0, raw_target_y(&fixture, 800.0)),
+            );
+            pump_flight(
+                || fixture.surface.scroll_animation_in_flight(),
+                || reported_y(&fixture),
+            );
+        } else {
+            request();
+            let samples = pump_flight(
+                || fixture.surface.scroll_animation_in_flight(),
+                || reported_y(&fixture),
+            );
+            assert!(
+                distinct_offsets(&samples) >= 3,
+                "the {name} flight must move the reported offset through intermediate values: {samples:?}"
+            );
+        }
         assert_offset_eq(
             fixture.surface.content_offset().y,
             raw_target_y(&fixture, 800.0),
@@ -2712,7 +2681,9 @@ mod scroll {
 
     /// `AppKit`'s own clip corrections — the document growing, the
     /// window resizing — leave a flight running, and it lands on its
-    /// target re-clamped to the final geometry.
+    /// target. The 1000pt target stays inside the travel throughout (the
+    /// end offset never drops below it), so the landing checks the
+    /// flight, not a clamp.
     #[cfg(target_os = "macos")]
     fn appkit_corrections_keep_an_in_flight_animation() {
         use cocoa_ui::objc2_foundation::NSSize;
@@ -2745,8 +2716,8 @@ mod scroll {
         );
         assert_offset_eq(
             fixture.surface.content_offset().y,
-            raw_target_y(&fixture, 1000.0).min(end_offset(&fixture)),
-            "the flight lands on its re-clamped target",
+            raw_target_y(&fixture, 1000.0),
+            "the flight lands on its target",
         );
     }
 
@@ -2841,23 +2812,19 @@ mod scroll {
 mod list_scroll {
     use std::time::Duration;
 
-    use objc2::Message;
     use waterui::ViewExt;
     use waterui::animation::Animation;
-    use waterui::component::list::{List, ListItem};
+    use waterui::component::list::ListItem;
     use waterui::layout::scroll::ScrollController;
     use waterui::prelude::text;
     use waterui_apple::contract::NativeLeaf;
 
     use super::{
         AttachedWindow, Retained, animation_cases, assert_offset_eq, distinct_offsets,
-        mount_and_order_front, pump_flight, resolve::render, trial_each,
+        mount_and_order_front, pump_flight, trial_each,
     };
 
-    #[cfg(target_os = "macos")]
-    use cocoa_ui::appkit::ListTableView as TableSurface;
-    #[cfg(target_os = "ios")]
-    use cocoa_ui::uikit::TableView as TableSurface;
+    use waterui_apple::native_test_support::{ListSurface as TableSurface, row_item, row_list};
 
     /// A list taller than the window by far — row targets past the fold.
     const ROWS: usize = 200;
@@ -2940,12 +2907,6 @@ mod list_scroll {
         }
     }
 
-    /// The row body — identical one-line rows; the cases assert
-    /// positions, not labels.
-    fn row_item() -> ListItem {
-        ListItem::new(text("row"))
-    }
-
     /// A row taller than the rest — mixed heights keep the last row's
     /// offset an honest measure instead of a multiple of the first.
     fn tall_row_item() -> ListItem {
@@ -2955,13 +2916,7 @@ mod list_scroll {
     /// Mounts `rows` in a list driven by a fresh `usize` controller.
     fn mounted_with(rows: Vec<fn() -> ListItem>) -> Fixture {
         let controller = ScrollController::new(0usize);
-        let view = List::content(rows).scroll_controller(&controller);
-        let leaf = render(view);
-        let table = leaf
-            .view()
-            .downcast_ref::<TableSurface>()
-            .expect("a List renders the kit's table surface")
-            .retain();
+        let (leaf, table) = row_list(rows, &controller);
         let window = mount_and_order_front(leaf.view());
         table.layout_if_needed();
         #[cfg(target_os = "macos")]
@@ -3012,24 +2967,43 @@ mod list_scroll {
         );
     }
 
-    /// An animated request moves the clip through intermediate offsets —
-    /// the model follows each tick, so lazily built rows materialize as
-    /// the flight passes them — and ends exactly where the jump lands.
+    /// An animated request ends exactly where the jump lands. An
+    /// explicit curve moves the clip through intermediate offsets — the
+    /// model follows each tick, so lazily built rows materialize as the
+    /// flight passes them. `Default` is the platform's wall-clock
+    /// animation: it does not jump, and it takes time to land.
     fn an_animation_scrolls_the_row_to_the_top(name: &'static str, animation: Animation) {
         let fixture = mounted();
-        fixture.controller.animate_to(TARGET, animation);
-        assert!(
-            fixture.table.scroll_animation_in_flight(),
-            "the {name} row flight must be in progress after the request"
-        );
-        let samples = pump_flight(
-            || fixture.table.scroll_animation_in_flight(),
-            || offset_y(&fixture),
-        );
-        assert!(
-            distinct_offsets(&samples) >= 3,
-            "the {name} row flight must move through intermediate offsets: {samples:?}"
-        );
+        let native = matches!(animation, Animation::Default);
+        let request = || {
+            fixture.controller.animate_to(TARGET, animation);
+            assert!(
+                fixture.table.scroll_animation_in_flight(),
+                "the {name} row flight must be in progress after the request"
+            );
+        };
+        if native {
+            waterui_apple::native_test_support::assert_native_scroll(
+                &format!("the {name} row flight"),
+                request,
+                || cocoa_ui::Point::new(0.0, offset_y(&fixture)),
+                || cocoa_ui::Point::new(0.0, row_top_offset(&fixture, TARGET)),
+            );
+            pump_flight(
+                || fixture.table.scroll_animation_in_flight(),
+                || offset_y(&fixture),
+            );
+        } else {
+            request();
+            let samples = pump_flight(
+                || fixture.table.scroll_animation_in_flight(),
+                || offset_y(&fixture),
+            );
+            assert!(
+                distinct_offsets(&samples) >= 3,
+                "the {name} row flight must move through intermediate offsets: {samples:?}"
+            );
+        }
         assert_offset_eq(
             offset_y(&fixture),
             row_top_offset(&fixture, TARGET),
@@ -3217,7 +3191,8 @@ mod list_scroll {
 
     /// `AppKit`'s own clip corrections — the table growing, the window
     /// resizing — leave a row flight running, and it lands on the row's
-    /// top re-clamped to the final geometry.
+    /// top as the final geometry places it. Row 40 sits far from the end,
+    /// so no clamp is involved.
     #[cfg(target_os = "macos")]
     fn appkit_corrections_keep_an_in_flight_animation() {
         let fixture = mounted();
@@ -3243,8 +3218,8 @@ mod list_scroll {
         );
         assert_offset_eq(
             offset_y(&fixture),
-            row_top_offset(&fixture, TARGET).min(end_offset(&fixture)),
-            "the row flight lands on its re-clamped target",
+            row_top_offset(&fixture, TARGET),
+            "the row flight lands on the row's top",
         );
     }
 
