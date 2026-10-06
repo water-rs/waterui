@@ -166,7 +166,10 @@ impl<'a> Frame<'a> {
 pub trait GpuContent: Send + 'static {
     /// Creates pipelines and resources against the engine's device.
     ///
-    /// Called once, on the render thread, before the first [`render`](Self::render).
+    /// Called on the render thread before the first [`render`](Self::render),
+    /// and again on each new device after the GPU runtime replaces a lost one.
+    /// Each call replaces every device resource the previous call created:
+    /// resources from the old device must not be used after it.
     fn setup(&mut self, gpu: &Context<'_>);
 
     /// Draws one frame into `frame`'s texture.
@@ -441,17 +444,15 @@ impl GpuContentView {
 
     /// Transfers this producer to a Cherenkov GPU layer.
     ///
-    /// `wake` schedules the host's display link or event loop when asynchronous
-    /// producer work finishes. The UI hooks and input handlers stay in this view.
+    /// Asynchronous producer work wakes the host through the wake of each
+    /// engine surface that draws the layer. The UI hooks and input handlers
+    /// stay in this view.
     ///
     /// # Panics
     /// Panics if the content has already been transferred.
     #[must_use]
-    pub fn take_engine_content(
-        &mut self,
-        wake: impl Fn() + Send + Sync + 'static,
-    ) -> cherenkov_gpu::interop::GpuContentBox {
-        cherenkov_gpu::interop::GpuContentBox::new(self.engine_content(), wake)
+    pub fn take_engine_content(&mut self) -> cherenkov_gpu::interop::GpuContentBox {
+        cherenkov_gpu::interop::GpuContentBox::new(self.engine_content())
     }
 
     /// A shareable handle to this view's content for the engine.

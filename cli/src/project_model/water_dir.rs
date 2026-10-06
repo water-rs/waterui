@@ -596,8 +596,29 @@ async fn require_exclusive_shared_target_lease(target_dir: &Path) -> eyre::Resul
 /// # Errors
 /// Returns an error if the project root cannot be canonicalized or the global cache root cannot be resolved.
 pub async fn project_build_cache_dir(project_root: &Path) -> eyre::Result<PathBuf> {
+    let water_home = water_home_dir()?;
+    project_build_cache_dir_from_home(project_root, &water_home).await
+}
+
+/// Return the managed build-cache directory for a project under `host`'s Water home.
+///
+/// # Errors
+/// Returns an error if the host has no home directory, the project root cannot
+/// be canonicalized, or the global cache root cannot be resolved.
+pub async fn project_build_cache_dir_on(
+    host: &crate::toolchain::Host,
+    project_root: &Path,
+) -> eyre::Result<PathBuf> {
+    let water_home = water_home_dir_in(host)?;
+    project_build_cache_dir_from_home(project_root, &water_home).await
+}
+
+async fn project_build_cache_dir_from_home(
+    project_root: &Path,
+    water_home: &Path,
+) -> eyre::Result<PathBuf> {
     let project_root = canonicalize_project_root(project_root)?;
-    let cache_root = build_cache_root().await?;
+    let (_, cache_root) = resolved_build_cache_root_in(water_home).await?;
     Ok(project_build_cache_dir_in(&project_root, &cache_root))
 }
 
@@ -614,6 +635,27 @@ pub async fn project_build_cache_dir(project_root: &Path) -> eyre::Result<PathBu
 /// Returns an error if no ancestor of `project_root` can be canonicalized or the
 /// global cache root cannot be resolved.
 pub async fn build_cache_container_for(project_root: &Path) -> eyre::Result<PathBuf> {
+    let cache_root = build_cache_root().await?;
+    build_cache_container_for_in(project_root, &cache_root)
+}
+
+/// Resolve the managed cache container path for a project under `host`'s Water home.
+///
+/// This resolves the path only; it creates nothing.
+///
+/// # Errors
+/// Returns an error if the host has no home directory or no ancestor of
+/// `project_root` can be canonicalized.
+pub fn build_cache_container_for_on(
+    host: &crate::toolchain::Host,
+    project_root: &Path,
+) -> eyre::Result<PathBuf> {
+    let water_home = water_home_dir_in(host)?;
+    let cache_root = water_home.join(BUILD_CACHE_DIR_NAME);
+    build_cache_container_for_in(project_root, &cache_root)
+}
+
+fn build_cache_container_for_in(project_root: &Path, cache_root: &Path) -> eyre::Result<PathBuf> {
     let mut trailing = Vec::new();
     let mut existing = project_root.to_path_buf();
     let resolved = loop {
@@ -635,8 +677,7 @@ pub async fn build_cache_container_for(project_root: &Path) -> eyre::Result<Path
     for name in trailing.iter().rev() {
         project_root.push(name);
     }
-    let cache_root = build_cache_root().await?;
-    Ok(project_cache_container_in(&project_root, &cache_root))
+    Ok(project_cache_container_in(&project_root, cache_root))
 }
 
 /// Ensure the managed build-cache directory exists for a project and return it.

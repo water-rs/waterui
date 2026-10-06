@@ -11,6 +11,7 @@ use crate::platform::{
 };
 use crate::renderer::tests::MinimalTestTheme;
 use crate::renderer::{FontFamilyResolution, HydrolysisRenderer, InteractionKey};
+use crate::text::SessionTextEngine;
 use core::time::Duration;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -885,9 +886,9 @@ fn runtime_window_sized(
     let mut platform =
         HeadlessPlatformWindow::new_for_tests(width, height, wgpu::TextureFormat::Rgba8Unorm);
     platform.apply_properties(&window);
-    let renderer = HydrolysisRenderer::new(
+    let renderer = HydrolysisRenderer::with_engine(
         Rc::new(MinimalTestTheme::default()),
-        FontFamilyResolution::Strict,
+        SessionTextEngine::system(FontFamilyResolution::Strict),
     );
     RuntimeWindow::new(
         window,
@@ -990,9 +991,9 @@ fn test_runtime_window() -> RuntimeWindow<HeadlessPlatformWindow> {
     let mut platform =
         HeadlessPlatformWindow::new_for_tests(16, 16, wgpu::TextureFormat::Rgba8Unorm);
     platform.apply_properties(&window);
-    let renderer = HydrolysisRenderer::new(
+    let renderer = HydrolysisRenderer::with_engine(
         Rc::new(MinimalTestTheme::default()),
-        FontFamilyResolution::Strict,
+        SessionTextEngine::system(FontFamilyResolution::Strict),
     );
     RuntimeWindow::new(
         window,

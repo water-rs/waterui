@@ -104,13 +104,6 @@ fn trials() -> Vec<Trial> {
                 Ok(())
             },
         ),
-        Trial::test(
-            "owner_lifetimes::a_dropped_mounted_hierarchy_releases_views_and_remounts",
-            || {
-                owner_lifetimes::a_dropped_mounted_hierarchy_releases_views_and_remounts();
-                Ok(())
-            },
-        ),
     ];
     #[cfg(all(target_os = "macos", feature = "native-test"))]
     let tests = {
@@ -138,6 +131,7 @@ fn trials() -> Vec<Trial> {
     };
     let mut tests = tests;
     tests.extend(migration::trials());
+    tests.extend(owner_lifetimes::trials());
     tests.extend(scroll::trials());
     tests.extend(list_scroll::trials());
     tests
@@ -1850,6 +1844,9 @@ mod controller_bounds {
 /// queued work drains, post-owner writes cease naturally, and a remount
 /// of the same view still measures, binds and recycles membership.
 mod owner_lifetimes {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
     use waterui::Identifiable;
     use waterui::component::lazy::Lazy;
     use waterui::prelude::*;
@@ -1857,8 +1854,6 @@ mod owner_lifetimes {
     use waterui::reactive::collection::List as ReactiveList;
     use waterui::views::ForEach;
     use waterui_core::layout::ProposalSize;
-
-    use cocoa_ui::objc2_foundation::{NSDate, NSRunLoop};
 
     use super::{HostView, Label, MainThreadMarker, PlatformView, Retained, leaf, mtm, resolve};
 
@@ -1870,9 +1865,14 @@ mod owner_lifetimes {
     }
 
     /// Drains queued main-queue work — binding flushes and enqueued drops
-    /// alike land at a real run-loop boundary.
+    /// alike land at a real run-loop boundary. A sentinel block enqueued
+    /// behind everything already queued bounds the wait: the main queue is
+    /// FIFO, so the sentinel running means the work ahead of it ran.
     fn pump() {
-        NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.2));
+        assert!(
+            waterui_apple::native_test_support::drain_main_queue(mtm()),
+            "the main queue must drain inside its deadline"
+        );
     }
 
     /// Every `Label` payload in the subtree, depth-first — the observable
@@ -2130,6 +2130,181 @@ mod owner_lifetimes {
             survivors.is_empty(),
             "the remounted hierarchy must release the same way: {survivors:?}"
         );
+    }
+
+    /// The views a scroll surface hosts as mounted content — the document's
+    /// subviews on `AppKit`; the `HostView`-topped subviews on `UIKit`.
+    /// The kit's own chrome (clip/document views, scroll indicators) is
+    /// the scroll view's own property and legitimately survives with it.
+    #[cfg(target_os = "macos")]
+    fn scroll_content_subviews(scroll: &PlatformView) -> Vec<Retained<PlatformView>> {
+        scroll
+            .downcast_ref::<cocoa_ui::appkit::ScrollView>()
+            .and_then(cocoa_ui::appkit::ScrollView::document_view)
+            .map(|document| cocoa_ui::view::subviews(&document))
+            .unwrap_or_default()
+    }
+
+    /// The `UIKit` scroll surface mounts the child on the scroll view
+    /// itself; scroll indicators are not `HostView`s.
+    #[cfg(target_os = "ios")]
+    fn scroll_content_subviews(scroll: &PlatformView) -> Vec<Retained<PlatformView>> {
+        cocoa_ui::view::subviews(scroll)
+            .into_iter()
+            .filter(|sub| sub.downcast_ref::<HostView>().is_some())
+            .collect()
+    }
+
+    /// The trials this module registers — the same submodule-registry
+    /// shape `migration`/`tabs`/`controller_bounds` use.
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            libtest_mimic::Trial::test(
+                "owner_lifetimes::a_dropped_mounted_hierarchy_releases_views_and_remounts",
+                || {
+                    a_dropped_mounted_hierarchy_releases_views_and_remounts();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "owner_lifetimes::a_released_scroll_leaf_frees_its_content",
+                || {
+                    a_released_scroll_leaf_frees_its_content();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "owner_lifetimes::a_scroll_leaf_dropped_inside_its_own_layout_handler_does_not_abort",
+                || {
+                    a_scroll_leaf_dropped_inside_its_own_layout_handler_does_not_abort();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    /// The leaf's scroll surface as the kit type the handler API lives on,
+    /// retained so the borrow the `Mounted` would tie up is released.
+    #[cfg(target_os = "macos")]
+    fn kit_scroll_view(view: &PlatformView) -> Retained<cocoa_ui::appkit::ScrollView> {
+        cocoa_ui::view::retain_base(view)
+            .downcast::<cocoa_ui::appkit::ScrollView>()
+            .expect("a scroll leaf's view is the kit ScrollView")
+    }
+    /// The leaf's scroll surface as the kit type the handler API lives on,
+    /// retained so the borrow the `Mounted` would tie up is released.
+    #[cfg(target_os = "ios")]
+    fn kit_scroll_view(view: &PlatformView) -> Retained<cocoa_ui::uikit::ScrollView> {
+        cocoa_ui::view::retain_base(view)
+            .downcast::<cocoa_ui::uikit::ScrollView>()
+            .expect("a scroll leaf's view is the kit ScrollView")
+    }
+
+    /// #1908: a released scroll leaf frees its content. The scroll view's
+    /// handler slots hold `ScrollContent` — which owns the mounted child
+    /// leaf — so while the leaf lives, the scroll view retains the whole
+    /// content subtree through its handlers. The `HandlerTeardown` guard
+    /// in the leaf's keepalive clears the slots at the leaf's release
+    /// boundary, the same teardown mounted `HostView` handlers get since
+    /// #1860. Retaining the scroll view past the drop proves the slots,
+    /// not the view's deallocation, do the release: everything the
+    /// handlers pinned dies even though the view they belong to lives.
+    pub fn a_released_scroll_leaf_frees_its_content() {
+        let mtm = mtm();
+        let env = resolve::env();
+
+        let (_scroll_view, content_weaks) = objc2::rc::autoreleasepool(|_| {
+            let leaf_inst = waterui_apple::dispatch::render(
+                waterui_backend_core::AnyView::new(scroll(vstack((text!("top"), text!("bottom"))))),
+                &env,
+            );
+            let (parent, mounted) = mount_hosted(mtm, leaf_inst);
+            let _window = leaf::attach(mtm, &parent);
+            parent.set_needs_layout();
+            parent.layout_if_needed();
+
+            // While alive the layout handler framed the mounted content.
+            let content = scroll_content_subviews(mounted.view());
+            assert_eq!(content.len(), 1, "the scroll mounts one child view");
+            let frame = cocoa_ui::view::frame(&content[0]);
+            assert!(
+                frame.size.width > 0.0 && frame.size.height > 0.0,
+                "the layout handler must frame the mounted content while alive"
+            );
+
+            // Retain the scroll view itself past the leaf's drop, then take
+            // weak handles into the mounted content subtree.
+            let scroll_view = cocoa_ui::view::retain_base(mounted.view());
+            let mut content_weaks = Vec::new();
+            for sub in content {
+                weak_views(&sub, &mut content_weaks);
+            }
+            assert!(
+                content_weaks.iter().all(|weak| weak.load().is_some()),
+                "the mounted content must be alive before the drop"
+            );
+
+            drop(mounted);
+            (scroll_view, content_weaks)
+        });
+
+        // The scroll view lives — this test retains it — but every view
+        // its handlers kept in the content subtree died with the leaf.
+        let survivors = surviving_classes(&content_weaks);
+        assert!(
+            survivors.is_empty(),
+            "scroll content views survived the leaf drop: {survivors:?}"
+        );
+    }
+
+    /// A `clear_handlers` reached while its own handler is running — the
+    /// re-entrant teardown `callback::emit`'s borrow release makes legal.
+    /// The layout handler takes the mounted leaf out of a cell and drops
+    /// it: the leaf's `HandlerTeardown` guard clears this same slot
+    /// mid-callback. Borrowing the slot across the call would hit a live
+    /// borrow here and `guarded` would abort the process; the surviving
+    /// asserts are the proof it did not.
+    pub fn a_scroll_leaf_dropped_inside_its_own_layout_handler_does_not_abort() {
+        let mtm = mtm();
+        let env = resolve::env();
+
+        objc2::rc::autoreleasepool(|_| {
+            let leaf_inst = waterui_apple::dispatch::render(
+                waterui_backend_core::AnyView::new(scroll(text!("body"))),
+                &env,
+            );
+            let (parent, mounted) = mount_hosted(mtm, leaf_inst);
+            let _window = leaf::attach(mtm, &parent);
+
+            let scroll_view = kit_scroll_view(mounted.view());
+            // The leaf is the handler's to drop, in a cell it can empty
+            // on its first run.
+            let leaf_cell = Rc::new(RefCell::new(Some(mounted)));
+            let runs = Rc::new(Cell::new(0u32));
+            scroll_view.set_layout_handler({
+                let leaf_cell = Rc::clone(&leaf_cell);
+                let runs = Rc::clone(&runs);
+                move |_| {
+                    runs.set(runs.get() + 1);
+                    drop(leaf_cell.borrow_mut().take());
+                }
+            });
+
+            scroll_view.set_needs_layout();
+            scroll_view.layout_if_needed();
+            assert!(runs.get() >= 1, "the layout handler must run");
+            assert!(
+                leaf_cell.borrow().is_none(),
+                "the handler must have dropped the leaf"
+            );
+
+            // The clear the drop performed is observable: a later layout
+            // pass reaches an empty slot and runs nothing more.
+            let observed = runs.get();
+            scroll_view.set_needs_layout();
+            scroll_view.layout_if_needed();
+            assert_eq!(runs.get(), observed, "a cleared slot must not run again");
+        });
     }
 }
 

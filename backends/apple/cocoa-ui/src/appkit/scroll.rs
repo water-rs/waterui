@@ -85,7 +85,11 @@ define_class!(
             guarded("ScrollView tile", || {
                 // SAFETY: see the module safety note.
                 let _: () = unsafe { msg_send![super(self), tile] };
-                if let Some(handler) = self.ivars().tile.borrow().as_ref().cloned() {
+                // The borrow ends with this statement, so a handler that
+                // reaches `clear_handlers` — dropping the leaf that owns
+                // it — never hits a live `RefCell` borrow and aborts.
+                let handler = self.ivars().tile.borrow().clone();
+                if let Some(handler) = handler {
                     handler(self);
                 }
             });
@@ -100,7 +104,11 @@ define_class!(
                     // SAFETY: see the module safety note.
                     let _: () = unsafe { msg_send![super(self), layout] };
                 });
-                if let Some(handler) = self.ivars().layout.borrow().as_ref().cloned() {
+                // The borrow ends with this statement, so a handler that
+                // reaches `clear_handlers` — dropping the leaf that owns
+                // it — never hits a live `RefCell` borrow and aborts.
+                let handler = self.ivars().layout.borrow().clone();
+                if let Some(handler) = handler {
                     handler(self);
                 }
             });
@@ -350,5 +358,21 @@ impl ScrollView {
     /// Runs any pending layout immediately.
     pub fn layout_if_needed(&self) {
         self.layoutSubtreeIfNeeded();
+    }
+}
+
+impl crate::teardown::HandlerSlots for ScrollView {
+    /// Drops every installed handler — the release boundary of the view's
+    /// owner, which reaches it through a [`crate::HandlerTeardown`] guard
+    /// the owner keeps.
+    ///
+    /// Each `set_*_handler` slot answers `None` afterwards, so a callback
+    /// `AppKit` delivers to this view does nothing by construction rather
+    /// than reaching state the owner released, and the handlers no longer
+    /// keep that state alive: layout and tile.
+    fn clear_handlers(&self) {
+        let ivars = self.ivars();
+        ivars.layout.replace(None);
+        ivars.tile.replace(None);
     }
 }

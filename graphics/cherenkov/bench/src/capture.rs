@@ -220,6 +220,11 @@ impl State<'_> {
                     }));
                     i += 1;
                 }
+                Command::Text { .. } => {
+                    return Err(CaptureError::Unsupported(
+                        "a text layout the target drew itself; scenes carry glyph runs",
+                    ));
+                }
                 Command::Picture { picture, transform } => {
                     let list = picture.display_list();
                     let body = self.items(

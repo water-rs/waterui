@@ -31,6 +31,7 @@ use core::future::Future;
 use core::pin::Pin;
 
 use executor_core::AnyLocalExecutorTask;
+use waterui_controls::menu::{CommandExt as _, ResolvedCommand, Shortcut};
 use waterui_core::{Environment, impl_extractor};
 
 use crate::app::QuitReply;
@@ -366,6 +367,35 @@ impl Quit {
             .expect("Quit::request called after the runner's termination machine ended");
         TerminationHandle { inner }.request(TerminationKind::Cancellable);
     }
+
+    /// The command a declared `MenuItem::Quit` stands for — how a backend
+    /// that draws it as an ordinary command row (a popup-menu row, a chord in
+    /// its shortcut table, a native menu-bar item) builds that row: the
+    /// platform's word for quitting, the quit chord (⌘Q on macOS, Ctrl+Q
+    /// where the backend maps the command modifier to control) and an action
+    /// that files a cancellable [`request`](Self::request), so
+    /// [`App::on_quit_request`](crate::app::App::on_quit_request) still
+    /// decides.
+    ///
+    /// A backend reaches it through `env.get::<Quit>()`, which is absent when
+    /// the host has no application quit — only a runner that starts the
+    /// termination machine installs one — and the item is then omitted.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn command(&self, env: &Environment) -> ResolvedCommand {
+        let quit = self.clone();
+        // "Exit" is the Windows menu convention; "Quit" is macOS's and what
+        // Linux desktops (GTK/Qt) use.
+        let label = if cfg!(target_os = "windows") {
+            "Exit"
+        } else {
+            "Quit"
+        };
+        label
+            .action(move || quit.request())
+            .shortcut(Shortcut::new("q").command())
+            .resolve(env)
+    }
 }
 
 impl_extractor!(Quit);
@@ -378,6 +408,7 @@ mod tests {
 
     use executor_core::LocalExecutor;
     use executor_core::async_task::{self, AsyncTask, Runnable};
+    use nami::Signal as _;
 
     use super::*;
     use crate::app::{App, QuitReply};
@@ -476,6 +507,37 @@ mod tests {
             .request();
         drain();
         assert_eq!(log.calls(), ["refuse", "refuse"]);
+    }
+
+    #[test]
+    fn the_quit_command_files_a_cancellable_request() {
+        install_executor();
+        let log = Log::default();
+        let asked = log.clone();
+        let app =
+            App::new_with_windows(Vec::new(), Environment::new()).on_quit_request(move || {
+                asked.calls.borrow_mut().push("asked".into());
+                async { QuitReply::Cancel }
+            });
+        let (_handle, env) = start(app, &log);
+        let command = env
+            .get::<Quit>()
+            .expect("start installs Quit into the runner's environment")
+            .command(&env);
+
+        let label = if cfg!(target_os = "windows") {
+            "Exit"
+        } else {
+            "Quit"
+        };
+        assert_eq!(command.label.content.snapshot().to_plain().as_str(), label);
+        assert_eq!(command.shortcut, Some(Shortcut::new("q").command()));
+
+        command.action.call(&env);
+        drain();
+        // Only a cancellable request asks `on_quit_request`; a required one
+        // would skip straight to terminating.
+        assert_eq!(log.calls(), ["asked", "refuse"]);
     }
 
     #[test]

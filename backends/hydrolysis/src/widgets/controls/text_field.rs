@@ -7,6 +7,7 @@ use crate::renderer::{
     measure_secure_field_size_with_label_size, measure_text_field_intrinsic,
     measure_text_field_size_with_label_size, transformed_rect,
 };
+use crate::text::{TextLayout as _, TextPosition};
 use core::num::NonZeroUsize;
 use nami::Signal;
 use std::cell::RefCell;
@@ -484,23 +485,12 @@ pub fn render_text_field_parts(
         let mut slot = selection_slot.borrow_mut();
         let anchor_layout = input_model.layout_index_from_plain_index(slot.anchor);
         let focus_layout = input_model.layout_index_from_plain_index(slot.focus);
-        let anchor_affinity = if anchor_layout >= value.len() {
-            parley::Affinity::Upstream
-        } else {
-            parley::Affinity::Downstream
-        };
-        let focus_affinity = if focus_layout >= value.len() {
-            parley::Affinity::Upstream
-        } else {
-            parley::Affinity::Downstream
-        };
-        let selection = parley::Selection::new(
-            parley::Cursor::from_byte_index(&committed_layout, anchor_layout, anchor_affinity),
-            parley::Cursor::from_byte_index(&committed_layout, focus_layout, focus_affinity),
-        )
-        .refresh(&committed_layout);
-        slot.anchor = input_model.plain_index_from_layout_index(selection.anchor().index());
-        slot.focus = input_model.plain_index_from_layout_index(selection.focus().index());
+        let selection = committed_layout.selection(
+            TextPosition::in_text(anchor_layout, value.len()),
+            TextPosition::in_text(focus_layout, value.len()),
+        );
+        slot.anchor = input_model.plain_index_from_layout_index(selection.anchor.index);
+        slot.focus = input_model.plain_index_from_layout_index(selection.focus.index);
         selection
     };
     if content_alpha > 0.0 {
@@ -519,30 +509,18 @@ pub fn render_text_field_parts(
     // layout — never the committed text's caret, which makes the candidate
     // window refuse to follow the composition (#25).
     let cursor_geometry = if preedit.is_empty() {
-        selection.focus().geometry(&committed_layout, 1.0)
+        committed_layout.caret_rect(selection.focus)
     } else {
         let caret = preedit_caret.map_or(preedit.len(), |caret| {
             clamp_to_char_boundary(preedit.as_str(), caret.min(preedit.len()))
         });
         let caret_index = selection_start + caret;
-        let affinity = if caret_index >= committed_with_preedit.len() {
-            parley::Affinity::Upstream
-        } else {
-            parley::Affinity::Downstream
-        };
-        parley::Cursor::from_byte_index(&display_layout, caret_index, affinity)
-            .geometry(&display_layout, 1.0)
+        display_layout.caret_rect(TextPosition::in_text(
+            caret_index,
+            committed_with_preedit.len(),
+        ))
     };
-    let cursor_area = material_input_cursor_rect(
-        field_rect,
-        text_bounds,
-        kurbo::Rect::new(
-            cursor_geometry.x0,
-            cursor_geometry.y0,
-            cursor_geometry.x1,
-            cursor_geometry.y1,
-        ),
-    );
+    let cursor_area = material_input_cursor_rect(field_rect, text_bounds, cursor_geometry);
     let hit_transform = ctx.hit_transform;
     if !disabled {
         ctx.renderer_mut().register_cursor_target(
@@ -793,23 +771,12 @@ pub fn render_secure_field_parts(
         let text_len = plain_value.chars().count();
         let anchor_layout = input_model.layout_index_from_plain_index(slot.anchor);
         let focus_layout = input_model.layout_index_from_plain_index(slot.focus);
-        let anchor_affinity = if anchor_layout >= text_len {
-            parley::Affinity::Upstream
-        } else {
-            parley::Affinity::Downstream
-        };
-        let focus_affinity = if focus_layout >= text_len {
-            parley::Affinity::Upstream
-        } else {
-            parley::Affinity::Downstream
-        };
-        let selection = parley::Selection::new(
-            parley::Cursor::from_byte_index(&committed_layout, anchor_layout, anchor_affinity),
-            parley::Cursor::from_byte_index(&committed_layout, focus_layout, focus_affinity),
-        )
-        .refresh(&committed_layout);
-        slot.anchor = input_model.plain_index_from_layout_index(selection.anchor().index());
-        slot.focus = input_model.plain_index_from_layout_index(selection.focus().index());
+        let selection = committed_layout.selection(
+            TextPosition::in_text(anchor_layout, text_len),
+            TextPosition::in_text(focus_layout, text_len),
+        );
+        slot.anchor = input_model.plain_index_from_layout_index(selection.anchor.index);
+        slot.focus = input_model.plain_index_from_layout_index(selection.focus.index);
         selection
     };
     if content_alpha > 0.0 {
@@ -823,17 +790,8 @@ pub fn render_secure_field_parts(
             );
         });
     }
-    let cursor_geometry = selection.focus().geometry(&committed_layout, 1.0);
-    let cursor_area = material_input_cursor_rect(
-        field_rect,
-        text_bounds,
-        kurbo::Rect::new(
-            cursor_geometry.x0,
-            cursor_geometry.y0,
-            cursor_geometry.x1,
-            cursor_geometry.y1,
-        ),
-    );
+    let cursor_geometry = committed_layout.caret_rect(selection.focus);
+    let cursor_area = material_input_cursor_rect(field_rect, text_bounds, cursor_geometry);
     let hit_transform = ctx.hit_transform;
     if !disabled {
         ctx.renderer_mut().register_cursor_target(

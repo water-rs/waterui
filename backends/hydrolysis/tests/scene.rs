@@ -222,7 +222,7 @@ fn a_naturally_sized_scene_does_not_eat_the_row() {
 /// Origin: waterui `testing/src/tests.rs`
 /// (`smoke_scene_view_snapshot_runs_build_scene_and_returns_buffer`), exercised
 /// through `HeadlessRuntime`'s public pump — the same `capture_window_tree` →
-/// `render_scene_to_texture` → readback chain, instead of the crate-private
+/// `render_scene_to_texture` → readback chain, instead of the public
 /// `readback_texture_rgba8` helper the origin called directly.
 #[test]
 fn smoke_scene_view_snapshot_runs_build_scene_and_returns_buffer() {

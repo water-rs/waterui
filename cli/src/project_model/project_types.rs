@@ -516,6 +516,22 @@ pub fn default_bundle_identifier(display_name: &str) -> Result<BundleIdentifier,
     Ok(identifier)
 }
 
+/// A fully qualified Android manifest permission name, such as
+/// `android.permission.INTERNET`.
+///
+/// Only [`PermissionKey::android_permission_name`] builds one, so the value
+/// always carries its `android.permission.` qualification. It renders as is:
+/// a manifest template writes it into `android:name` verbatim and never adds
+/// a prefix of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AndroidPermissionName(&'static str);
+
+impl fmt::Display for AndroidPermissionName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
 /// Logical permission keys that scaffold platform-specific manifest entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -553,21 +569,22 @@ pub enum PermissionKey {
 impl PermissionKey {
     /// Returns the Android manifest permission name for this logical permission when one exists.
     #[must_use]
-    pub const fn android_permission_name(self) -> Option<&'static str> {
-        match self {
-            Self::Internet => Some("android.permission.INTERNET"),
-            Self::Camera => Some("android.permission.CAMERA"),
-            Self::Microphone => Some("android.permission.RECORD_AUDIO"),
-            Self::Location => Some("android.permission.ACCESS_FINE_LOCATION"),
-            Self::CoarseLocation => Some("android.permission.ACCESS_COARSE_LOCATION"),
-            Self::Storage => Some("android.permission.READ_EXTERNAL_STORAGE"),
-            Self::WriteStorage => Some("android.permission.WRITE_EXTERNAL_STORAGE"),
-            Self::Bluetooth => Some("android.permission.BLUETOOTH"),
-            Self::BluetoothAdmin => Some("android.permission.BLUETOOTH_ADMIN"),
-            Self::Vibrate => Some("android.permission.VIBRATE"),
-            Self::WakeLock => Some("android.permission.WAKE_LOCK"),
-            Self::PhotoLibrary | Self::Contacts | Self::Calendars => None,
-        }
+    pub const fn android_permission_name(self) -> Option<AndroidPermissionName> {
+        let name = match self {
+            Self::Internet => "android.permission.INTERNET",
+            Self::Camera => "android.permission.CAMERA",
+            Self::Microphone => "android.permission.RECORD_AUDIO",
+            Self::Location => "android.permission.ACCESS_FINE_LOCATION",
+            Self::CoarseLocation => "android.permission.ACCESS_COARSE_LOCATION",
+            Self::Storage => "android.permission.READ_EXTERNAL_STORAGE",
+            Self::WriteStorage => "android.permission.WRITE_EXTERNAL_STORAGE",
+            Self::Bluetooth => "android.permission.BLUETOOTH",
+            Self::BluetoothAdmin => "android.permission.BLUETOOTH_ADMIN",
+            Self::Vibrate => "android.permission.VIBRATE",
+            Self::WakeLock => "android.permission.WAKE_LOCK",
+            Self::PhotoLibrary | Self::Contacts | Self::Calendars => return None,
+        };
+        Some(AndroidPermissionName(name))
     }
 
     /// Returns the generated Info.plist usage-description key for this permission when iOS requires one.

@@ -309,10 +309,10 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
     ) -> Result<OffscreenImage, OffscreenError> {
         let width = pixels_to_points(size.width(), scale);
         let height = pixels_to_points(size.height(), scale);
-        let surface = self.engine.surface(Offscreen::new(
-            (size.width(), size.height()),
-            OffscreenFormat::LinearF16,
-        ))?;
+        let surface = self.engine.surface(
+            Offscreen::new((size.width(), size.height()), OffscreenFormat::LinearF16),
+            || {},
+        )?;
         let mut resources = self.resources.recording();
         let recorded = surface.record(|recorder: &mut Recorder| {
             recorder.transform(Affine::scale(f64::from(scale)), |recorder| {
@@ -352,10 +352,10 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
         let height = pixels_to_points(size.height(), scale);
         let surface = self
             .engine
-            .surface(Offscreen::new(
-                (size.width(), size.height()),
-                OffscreenFormat::LinearF16,
-            ))
+            .surface(
+                Offscreen::new((size.width(), size.height()), OffscreenFormat::LinearF16),
+                || {},
+            )
             .await?;
         let mut resources = self.resources.recording();
         let recorded = surface.record(|recorder: &mut Recorder| {
@@ -390,10 +390,10 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
         size: OffscreenSize,
         transform: Affine,
     ) -> Result<OffscreenImage, OffscreenError> {
-        let surface = self.engine.surface(Offscreen::new(
-            (size.width(), size.height()),
-            OffscreenFormat::LinearF16,
-        ))?;
+        let surface = self.engine.surface(
+            Offscreen::new((size.width(), size.height()), OffscreenFormat::LinearF16),
+            || {},
+        )?;
         let picture = picture.rebuild_for_engine(&self.resources);
         let mut resources = self.resources.recording();
         resources.hold(picture.held());
@@ -436,10 +436,10 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
     ) -> Result<OffscreenImage, OffscreenError> {
         let surface = self
             .engine
-            .surface(Offscreen::new(
-                (size.width(), size.height()),
-                OffscreenFormat::LinearF16,
-            ))
+            .surface(
+                Offscreen::new((size.width(), size.height()), OffscreenFormat::LinearF16),
+                || {},
+            )
             .await?;
         let picture = picture.rebuild_for_engine(&self.resources);
         let mut resources = self.resources.recording();

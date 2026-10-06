@@ -36,7 +36,8 @@ pub type ResOp<B> = Box<dyn FnOnce(&mut <B as Backend>::Renderer)>;
 /// It installs on the render side, learns the surface and layer it is
 /// installed on, and reports the installed content's declared alpha —
 /// `Some(opaque)` from the producer's current frame, `None` before one
-/// has landed — which the [`Op::Install`] arm notes on the layer.
+/// has landed — which the [`Op::Install`](cherenkov_record::ops::Op::Install)
+/// arm notes on the layer.
 #[cfg(not(target_arch = "wasm32"))]
 pub type InstallOp<B> =
     Box<dyn FnOnce(&mut <B as Backend>::Renderer, SurfaceId, LayerId) -> Option<bool> + Send>;
@@ -144,7 +145,7 @@ pub enum Message<B: Backend> {
         /// What it renders into.
         target: B::Target,
         /// The surface's host wake-up, shared with its UI-thread handle.
-        waker: crate::engine::SharedWaker<crate::engine::SurfaceWaker>,
+        waker: Arc<crate::engine::SurfaceWaker>,
         /// Result of the creation.
         reply: Sender<Result<SurfaceInfo, SurfaceError>>,
     },

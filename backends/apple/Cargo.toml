@@ -163,6 +163,7 @@ native-test = ["cocoa-ui/native-test"]
 [dependencies]
 waterui = { workspace = true, features = ["inspector", "gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
 waterui-core = { workspace = true }
+thiserror.workspace = true
 waterui-backend-core = { workspace = true, default-features = true, features = [
     "overlay",
 ] }
@@ -270,6 +271,16 @@ path = "Tests/native.rs"
 harness = false
 # The suite links `native_test_support`, which only exists behind the
 # non-default feature; lanes that want it pass it explicitly.
+required-features = ["native-test"]
+
+# The cases that need a running `UIApplication` with a connected window
+# scene (iOS only; the binary lists no trials on macOS). The iOS target
+# runner launches it as an application, one case per launch — far costlier
+# than `native`'s bare spawn — so it carries only those cases.
+[[test]]
+name = "native_app"
+path = "Tests/native_app.rs"
+harness = false
 required-features = ["native-test"]
 
 [[bench]]

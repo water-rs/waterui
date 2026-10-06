@@ -182,14 +182,18 @@ impl RenderNode {
                 proposal.width.unwrap_or(0.0),
                 proposal.height.unwrap_or(0.0),
             )),
-            Self::Text(text) => HydrolysisRenderer::measure_text_dimensions(
-                state,
-                text.content.snapshot(),
-                text.alignment.snapshot(),
-                env,
-                proposal.width,
-                text.line_limit,
-            ),
+            Self::Text(text) => {
+                let content = state.measure_signal(&text.content);
+                let alignment = state.measure_signal(&text.alignment);
+                HydrolysisRenderer::measure_text_dimensions(
+                    state,
+                    content,
+                    alignment,
+                    env,
+                    proposal.width,
+                    text.line_limit,
+                )
+            }
             Self::Container(container) => {
                 let cell = RefCell::new(state);
                 let subs: Vec<NodeSubView> = container

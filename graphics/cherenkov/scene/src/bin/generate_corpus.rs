@@ -6085,6 +6085,37 @@ fn run() -> Result<(), SceneError> {
         });
     });
 
+    // A blurred member under a `0.5`-opacity ancestor: the capture looks
+    // through the translucent level — the busy background plus the green
+    // block the level painted before the member are blurred at full
+    // strength — then the whole panel composites at half opacity, so the
+    // panel fades instead of sampling the ancestor's fresh canvas.
+    corpus.scene_setup("backdrop-opacity", 256, 256, white, |b| {
+        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 6.0 }], 1.0);
+        let l = &mut b.root();
+        backdrop_background(l);
+        l.layer(|t| {
+            t.opacity(0.5);
+            // Painted inside the translucent level before the member: the
+            // capture sees it at full opacity, straddling the member's
+            // left edge so the difference is readable.
+            t.fill(
+                Shape::rect(28.0, 100.0, 84.0, 156.0),
+                solid(srgb(0.05, 0.80, 0.35)),
+            );
+            t.layer(|m| {
+                m.clip(Shape::RoundedRect(RoundedRect::new(
+                    36.0, 52.0, 220.0, 204.0, 20.0,
+                )));
+                m.backdrop(1);
+                m.fill(
+                    Shape::rect(38.0, 54.0, 218.0, 202.0),
+                    solid(srgba(1.0, 1.0, 1.0, 0.18)),
+                );
+            });
+        });
+    });
+
     // The #211 dense city map: a 1600×1200 frame whose live coverage
     // exceeds one atlas page. Its output is generated — never committed.
     {

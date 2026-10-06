@@ -295,6 +295,99 @@ fn a_line_limit_caps_the_reserved_height(ui: UiBuilder<Styled<hydrolysis_m3::Mat
     );
 }
 
+/// A text whose string changes after mount is measured again inside a
+/// retained sub-view, so the box layout gives it, and the place of the view
+/// beside it, follow the new string. Before waterui#1872 the sub-view kept the
+/// box the first string measured, and the flush wrapped the new string inside
+/// it, over the next view. Covered where a sub-view retains its tree: a
+/// navigation page and a split view's detail column, and a lazy row inside a
+/// page, which its own flush places after the page's layout at a rect the new
+/// string does not change.
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (900, 600))]
+fn a_changed_text_is_measured_again_inside_a_retained_sub_view(
+    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
+) {
+    use waterui::id::SelfId;
+    use waterui::navigation::{NavigationSplitView, NavigationStack, NavigationView};
+
+    fn status_column(status: &Binding<String>) -> impl View {
+        vstack((
+            text(status.clone()).a11y_label("status").width(150.0),
+            text("next").a11y_label("next"),
+        ))
+    }
+
+    /// Mounts the status column in one kind of retained sub-view.
+    type Mount = fn(&Binding<String>) -> AnyView;
+
+    fn page(status: &Binding<String>) -> AnyView {
+        AnyView::new(NavigationStack::new(NavigationView::new(
+            "Status",
+            status_column(status),
+        )))
+    }
+
+    fn split_detail(status: &Binding<String>) -> AnyView {
+        let status = status.clone();
+        let selection = Binding::container(Some(1_i32));
+        AnyView::new(NavigationSplitView::new(
+            &selection,
+            || text("sidebar"),
+            move |_| NavigationView::new("Detail", status_column(&status)),
+        ))
+    }
+
+    fn lazy_row(status: &Binding<String>) -> AnyView {
+        let status = status.clone();
+        AnyView::new(NavigationStack::new(NavigationView::new(
+            "Status",
+            VStack::for_each(vec![SelfId::new(0_usize)], move |_| {
+                hstack((
+                    text(status.clone()).a11y_label("status"),
+                    spacer(),
+                    text("next").a11y_label("next"),
+                ))
+            }),
+        )))
+    }
+
+    let cases: [(&str, Mount); 3] = [
+        ("navigation page", page),
+        ("split detail", split_detail),
+        ("lazy row in a page", lazy_row),
+    ];
+    for (case, mount) in cases {
+        let mut settled = ui
+            .clone()
+            .mount_offscreen(move || mount(&Binding::container(LONG.to_owned())));
+        let expected = settled.query().label("status").single().bounds();
+
+        let status = Binding::container(String::from("Al"));
+        let mut app = ui.clone().mount_offscreen({
+            let status = status.clone();
+            move || mount(&status)
+        });
+        status.set(LONG.to_owned());
+        app.settle();
+
+        let measured = app.query().label("status").single().bounds();
+        let next = app.query().label("next").single().bounds();
+        assert!(
+            (measured.width() - expected.width()).abs() < 0.5
+                && (measured.height() - expected.height()).abs() < 0.5,
+            "{case}: the changed text keeps the box it measured before the change: \
+             {measured:?}, while the same string mounted directly measures {expected:?}"
+        );
+        let apart = next.y() >= measured.y() + measured.height() - 0.5
+            || next.x() >= measured.x() + measured.width() - 0.5;
+        assert!(
+            apart,
+            "{case}: the next view must be placed clear of the re-measured text: \
+             {next:?} vs {measured:?}"
+        );
+    }
+}
+
 /// Compressed buttons keep their labels on one line instead of folding them
 /// into paragraphs — the webview example's toolbar rendered "Back" as
 /// "Bac / k" before button labels defaulted to a single truncated line.

@@ -192,15 +192,12 @@ fn default_android_project_path() -> PathBuf {
 /// and the Hydrolysis host alike.
 pub(crate) fn manifest_permissions(
     manifest: &crate::project::Manifest,
-) -> Vec<templates::AndroidPermissionTemplateEntry> {
+) -> Vec<crate::project_types::AndroidPermissionName> {
     manifest
         .permissions
         .iter()
         .filter(|(_, entry)| entry.is_enabled())
-        .filter_map(|(key, _)| {
-            key.android_permission_name()
-                .map(|name| templates::AndroidPermissionTemplateEntry { name })
-        })
+        .filter_map(|(key, _)| key.android_permission_name())
         .collect()
 }
 

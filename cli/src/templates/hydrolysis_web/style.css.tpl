@@ -1,9 +1,13 @@
 /* Page geometry and background are set inline in index.html so the launch
    screen paints before this stylesheet arrives. */
+/* The layout viewport exactly: `100vh` is taller than the visible area on
+   mobile browsers, which makes the page itself pannable under the canvas. */
 #waterui-canvas {
   display: block;
-  width: 100vw;
-  height: 100vh;
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
 }
 
 #waterui-ime {

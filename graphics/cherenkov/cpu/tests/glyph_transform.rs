@@ -50,7 +50,7 @@ fn surface_with(
     run: GlyphRun,
 ) -> (cherenkov::Surface<Gpu>, Binding<GlyphRun>) {
     let surface = engine
-        .surface(Offscreen::new((96, 72), OffscreenFormat::LinearF16))
+        .surface(Offscreen::new((96, 72), OffscreenFormat::LinearF16), || {})
         .expect("surface");
     let value = Binding::container(run);
     let content = surface.record(|c| {

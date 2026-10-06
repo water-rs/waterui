@@ -407,17 +407,16 @@ fn render(config: ScrollView, ctx: &RenderContext<'_>) -> NativeLeaf {
     });
 
     scroll.set_layout_handler({
-        // The scroll view owns this handler, and `ScrollContent` reaches
-        // the scroll view again through `child`'s mounted subtree and the
-        // `UIKit` scroll-observation token — a strong capture closes a
-        // retain cycle (water-rs/waterui#1575). The leaf and
-        // `ScrollSubView` keep the content strong for live updates, so a
-        // dead upgrade means the owner ended legitimately.
-        let content = Rc::downgrade(&content);
+        // Strong capture, the way mounted `HostView` handlers capture
+        // their state since water-rs/waterui#1860: the scroll view's
+        // handler slot holds `ScrollContent`, which holds the mounted
+        // child leaf — so while the leaf lives, the scroll view retains
+        // the whole content subtree through the handler. The
+        // `HandlerTeardown` guard kept below clears the slot at the
+        // leaf's release boundary; a layout pass the platform delivers
+        // to a view that outlives the leaf finds `None`.
+        let content = Rc::clone(&content);
         move |scroll| {
-            let Some(content) = content.upgrade() else {
-                return;
-            };
             content.laid_out_viewport.set(layout_viewport(scroll));
             place_child(&content, scroll);
         }
@@ -427,13 +426,10 @@ fn render(config: ScrollView, ctx: &RenderContext<'_>) -> NativeLeaf {
     // the content has not been laid out against asks for another pass.
     #[cfg(target_os = "macos")]
     scroll.set_tile_handler({
-        // Borrow the same explicitly leaf-owned content from this native
-        // callback, as the layout handler does (water-rs/waterui#1575).
-        let content = Rc::downgrade(&content);
+        // The same strong capture and the same release boundary as the
+        // layout handler above.
+        let content = Rc::clone(&content);
         move |scroll| {
-            let Some(content) = content.upgrade() else {
-                return;
-            };
             if layout_viewport(scroll) != content.laid_out_viewport.get() {
                 scroll.set_needs_layout();
                 crate::measure_memo::invalidate();
@@ -447,7 +443,12 @@ fn render(config: ScrollView, ctx: &RenderContext<'_>) -> NativeLeaf {
             content: Rc::clone(&content),
         },
     );
-    leaf.keep(content);
+    // The scroll view's handler slots hold `content` (and the mounted
+    // child inside it) while the leaf lives; the guard clears those
+    // slots when the leaf's keepalive drops — the leaf's release
+    // boundary — so a scroll view retained past the leaf cannot keep the
+    // content subtree alive.
+    leaf.keep(cocoa_ui::HandlerTeardown::new(Retained::clone(&scroll)));
 
     if let Some(controller) = parts.controller {
         wire_controller(&mut leaf, &scroll, &controller);

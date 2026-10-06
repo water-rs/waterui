@@ -487,9 +487,11 @@ impl SurfaceProvider for AndroidSurface {
         }
     }
 
-    fn premultiply_alpha(&self) -> bool {
+    fn output_alpha(&self) -> cherenkov_gpu::interop::OutputAlpha {
         self.config
             .as_ref()
-            .is_some_and(|config| config.alpha_mode == wgpu::CompositeAlphaMode::PreMultiplied)
+            .map_or(cherenkov_gpu::interop::OutputAlpha::Straight, |config| {
+                cherenkov_gpu::interop::surface_output_alpha(config.alpha_mode)
+            })
     }
 }

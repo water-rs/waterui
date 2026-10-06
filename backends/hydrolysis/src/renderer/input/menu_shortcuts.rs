@@ -20,7 +20,7 @@ use std::rc::{Rc, Weak};
 use nami::{Computed, Signal as _};
 use waterui::app::Quit;
 use waterui::window::WindowState;
-use waterui_controls::menu::{CommandExt as _, ResolvedCommand, ResolvedMenuItem, Shortcut};
+use waterui_controls::menu::{ResolvedCommand, ResolvedMenuItem, Shortcut};
 use waterui_core::Environment;
 use waterui_core::Str;
 use waterui_core::handler::SharedAction;
@@ -154,33 +154,6 @@ pub const MISSING_MENU_SHORTCUT_REGISTRY: &str = "menu shortcuts require the run
      environment — the winit runner, headless run and HeadlessRuntime, SemanticRuntime and \
      the web runner all install one; a renderer built outside a runner seeds its own";
 
-/// The command a declared `MenuItem::Quit` stands for wherever Hydrolysis
-/// renders it — a popup-menu row, a chord in the shortcut table, an item in
-/// the Windows menu bar: the platform's word for quitting, its quit chord
-/// (⌘Q on macOS; Ctrl+Q elsewhere through [`ChordModifiers`]'
-/// command→control mapping) and a cancellable termination request filed
-/// through the `Quit` service, so `App::on_quit_request` still decides.
-///
-/// `None` when `env` carries no `Quit`: the host has no application quit —
-/// only a runner that starts the termination machine installs one — and the
-/// item is omitted.
-pub fn quit_command(env: &Environment) -> Option<ResolvedCommand> {
-    let quit = env.get::<Quit>()?.clone();
-    // "Exit" is the Windows menu convention; "Quit" is macOS's and what
-    // Linux desktops (GTK/Qt) use.
-    let label = if cfg!(target_os = "windows") {
-        "Exit"
-    } else {
-        "Quit"
-    };
-    Some(
-        label
-            .action(move || quit.request())
-            .shortcut(Shortcut::new("q").command())
-            .resolve(env),
-    )
-}
-
 /// A window's identity for menu-chord dispatch: the runner assigns one when it
 /// creates the window and hands it to the window's renderer, so the shared
 /// [`MenuShortcutRegistry`] can scope a mounted `Menu`'s chords to the window
@@ -225,7 +198,7 @@ impl HydrolysisRenderer {
 /// The commands of a `Menu` resolve into shortcut entries through the items
 /// signal, so a menu whose items change mounts its new chords on the next
 /// lookup without any registration churn. A declared Quit arms the chord of
-/// [`quit_command`], and nothing where `env` has no application quit.
+/// [`Quit::command`], and nothing where `env` has no application quit.
 fn collect_menu_shortcuts(
     items: &[ResolvedMenuItem],
     env: &Environment,
@@ -235,7 +208,7 @@ fn collect_menu_shortcuts(
         match item {
             ResolvedMenuItem::Command(command) => collect_command_shortcut(command, out),
             ResolvedMenuItem::Quit => {
-                if let Some(command) = quit_command(env) {
+                if let Some(command) = env.get::<Quit>().map(|quit| quit.command(env)) {
                     collect_command_shortcut(&command, out);
                 }
             }

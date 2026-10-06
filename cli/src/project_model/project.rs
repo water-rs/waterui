@@ -1,6 +1,7 @@
 //! Project management and build utilities for `WaterUI` CLI.
 
 use cargo_toml::Manifest as CargoManifest;
+use eyre::WrapErr as _;
 use futures_util::FutureExt as _;
 use futures_util::future::{BoxFuture, Shared};
 use tracing::info;
@@ -9,6 +10,7 @@ use crate::build::{BuildProgress, RustLinkage};
 use crate::framework::{
     FrameworkChannel, ResolvedFramework, validate_local_cli, validate_resolved_cli,
 };
+use crate::toolchain::Host;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpenMode {
@@ -111,10 +113,12 @@ enum CargoResolution {
 }
 
 fn spawn_cargo_layout_resolution(
+    host: &Host,
     current_dir: &Path,
     framework: Option<ResolvedFramework>,
     local: bool,
 ) -> Shared<BoxFuture<'static, Result<CargoLayout, String>>> {
+    let host = host.clone();
     let current_dir = current_dir.to_path_buf();
     let mode = if local {
         CargoResolution::Local
@@ -124,7 +128,7 @@ fn spawn_cargo_layout_resolution(
         CargoResolution::Update
     };
     smol::spawn(async move {
-        resolve_cargo_layout(&current_dir, framework, mode)
+        resolve_cargo_layout(&host, &current_dir, framework, mode)
             .await
             .map_err(|error| error.to_string())
     })
@@ -135,6 +139,7 @@ fn spawn_cargo_layout_resolution(
 /// Represents a `WaterUI` project with its manifest and crate information.
 #[derive(Debug, Clone)]
 pub struct Project {
+    host: Host,
     root: PathBuf,
     manifest: Manifest,
     crate_name: CrateName,
@@ -643,8 +648,9 @@ impl Project {
     ///
     /// # Errors
     ///
-    /// Returns an error when the manifest records no framework source, or the
-    /// local checkout's framework facts cannot be read.
+    /// Returns an error when the manifest records no framework source, its
+    /// saved selection is invalid, or the local checkout's framework facts
+    /// cannot be read.
     pub async fn resolved_framework(&self) -> eyre::Result<ResolvedFramework> {
         ResolvedFramework::for_manifest(self.manifest(), &self.root).await
     }
@@ -690,13 +696,14 @@ impl Project {
     /// Returns an error when Cargo cannot resolve the application graph or
     /// omits a package referenced by that graph.
     pub async fn links_runtime_package(&self, package_name: &str) -> eyre::Result<bool> {
+        let host = self.host.clone();
         let project_root = self.root.clone();
         let cargo_layout = self.cargo_layout.clone();
         let packages = self
             .linked_packages
             .get_or_init(|| async move {
                 cargo_layout.await?;
-                resolve_linked_runtime_packages(project_root, false)
+                resolve_linked_runtime_packages(&host, project_root, false)
                     .await
                     .map_err(|error| error.to_string())
             })
@@ -722,13 +729,14 @@ impl Project {
     /// Returns an error when Cargo cannot resolve the application graph or
     /// omits a package referenced by that graph.
     pub async fn uses_standard_webview(&self) -> eyre::Result<bool> {
+        let host = self.host.clone();
         let project_root = self.root.clone();
         let cargo_layout = self.cargo_layout.clone();
         let features = self
             .enabled_features
             .get_or_init(|| async move {
                 cargo_layout.await?;
-                resolve_enabled_features(project_root, false)
+                resolve_enabled_features(&host, project_root, false)
                     .await
                     .map_err(|error| error.to_string())
             })
@@ -1058,6 +1066,43 @@ pub enum FailToCreateProject {
     /// Failed to check git repository status.
     #[error("Failed to check git repository status: {0}")]
     GitStatus(std::io::Error),
+    /// A generated crate a build compiles could not be scaffolded.
+    #[error("Failed to scaffold the project's generated crates: {0:#}")]
+    ScaffoldGeneratedCrates(eyre::Report),
+    /// The project's declared fonts could not be read or fetched.
+    #[error("Failed to fetch the project's declared fonts: {0:#}")]
+    FetchFonts(eyre::Report),
+    /// Declared fonts could not be satisfied by fetching.
+    #[error(
+        "{} declared font(s) cannot be satisfied by fetching — the build reports them the same way:{}",
+        .0.len(),
+        bullet_list(.0)
+    )]
+    UnsatisfiableFonts(
+        /// Reports for every declaration that cannot be satisfied.
+        Vec<eyre::Report>,
+    ),
+    /// Creation failed and its partial output could not be removed.
+    #[error(
+        "{error:#}; removing the partially created project at {} also failed: {cleanup:#}",
+        root.display()
+    )]
+    Rollback {
+        /// The error that caused creation to fail.
+        error: eyre::Report,
+        /// The partially created project root.
+        root: PathBuf,
+        /// The error encountered while removing partial output.
+        cleanup: eyre::Report,
+    },
+}
+
+fn bullet_list(errors: &[eyre::Report]) -> String {
+    let mut bullets = String::new();
+    for error in errors {
+        write!(bullets, "\n  - {error:#}").expect("writing to a string cannot fail");
+    }
+    bullets
 }
 
 /// Options for creating a new `WaterUI` project.
@@ -1099,6 +1144,131 @@ pub struct WebScaffold {
     /// The `include_web!` argument: `"web"` for the conventional layout, or a
     /// path relative to the project root for a frontend referenced in place.
     pub include_arg: String,
+}
+
+/// A project `water create` has written but not finished: its directory and
+/// build-cache container belong to this create, so any failure before
+/// [`ProjectDraft::finish`] succeeds removes both.
+#[must_use = "a draft is finished or discarded; dropping it keeps a half-created project"]
+#[derive(Debug)]
+pub struct ProjectDraft {
+    project: Project,
+}
+
+impl ProjectDraft {
+    /// Create a draft using the given host.
+    ///
+    /// # Errors
+    /// Returns an error if project scaffolding fails. Any partial project and
+    /// its managed build-cache container are removed before returning.
+    pub async fn create(
+        host: &Host,
+        path: impl AsRef<Path>,
+        options: CreateOptions,
+    ) -> Result<Self, FailToCreateProject> {
+        Project::create_on(host, path, options)
+            .await
+            .map(|project| Self { project })
+    }
+
+    /// The project being created.
+    #[must_use]
+    pub const fn project(&self) -> &Project {
+        &self.project
+    }
+
+    /// Scaffold every generated crate a build compiles and seed declared fonts.
+    ///
+    /// # Errors
+    /// Returns an error if generated-crate scaffolding, font declaration
+    /// scanning, font fetching, or cleanup fails. A failure removes the
+    /// project and its managed build-cache container.
+    pub async fn finish(self) -> Result<Vec<(String, PathBuf)>, FailToCreateProject> {
+        let outcomes = match crate::seed_font_cache(&self.project).await {
+            Ok(outcomes) => outcomes,
+            Err(crate::SeedFontCacheError::Scaffold(error)) => {
+                return Err(self
+                    .fail(FailToCreateProject::ScaffoldGeneratedCrates(error))
+                    .await);
+            }
+            Err(crate::SeedFontCacheError::Fonts(error)) => {
+                return Err(self.fail(FailToCreateProject::FetchFonts(error)).await);
+            }
+        };
+
+        let mut fetched = Vec::new();
+        let mut unsatisfiable = Vec::new();
+        for outcome in outcomes {
+            match outcome {
+                crate::FetchOutcome::Satisfied { .. } => {}
+                crate::FetchOutcome::Fetched { name, path } => fetched.push((name, path)),
+                crate::FetchOutcome::Unsatisfiable { error, .. } => unsatisfiable.push(error),
+            }
+        }
+        if !unsatisfiable.is_empty() {
+            return Err(self
+                .fail(FailToCreateProject::UnsatisfiableFonts(unsatisfiable))
+                .await);
+        }
+        Ok(fetched)
+    }
+
+    /// Remove this draft after a failure outside it and return that error.
+    ///
+    /// # Errors
+    /// The returned report wraps `error` in a rollback error if removing the
+    /// project or its managed build-cache container fails.
+    pub async fn discard(self, error: eyre::Report) -> eyre::Report {
+        let root = self.project.root.clone();
+        match remove_project_and_cache(&self.project.host, &root).await {
+            Ok(()) => error,
+            Err(cleanup) => eyre::Report::new(FailToCreateProject::Rollback {
+                error,
+                root,
+                cleanup,
+            }),
+        }
+    }
+
+    async fn fail(self, error: FailToCreateProject) -> FailToCreateProject {
+        let root = self.project.root.clone();
+        roll_back(&self.project.host, root, error).await
+    }
+}
+
+async fn remove_project_and_cache(host: &Host, root: &Path) -> eyre::Result<()> {
+    let cache_container = crate::water_dir::build_cache_container_for_on(host, root)?;
+    if root.exists() {
+        smol::fs::remove_dir_all(root).await.wrap_err_with(|| {
+            format!(
+                "failed to remove the partially created project at {}",
+                root.display()
+            )
+        })?;
+    }
+    if cache_container.exists() {
+        smol::fs::remove_dir_all(&cache_container)
+            .await
+            .wrap_err_with(|| {
+                format!(
+                    "failed to remove the managed build-cache container at {}",
+                    cache_container.display()
+                )
+            })?;
+    }
+
+    Ok(())
+}
+
+async fn roll_back(host: &Host, root: PathBuf, error: FailToCreateProject) -> FailToCreateProject {
+    match remove_project_and_cache(host, &root).await {
+        Ok(()) => error,
+        Err(cleanup) => FailToCreateProject::Rollback {
+            error: error.into(),
+            root,
+            cleanup,
+        },
+    }
 }
 
 impl CreateOptions {
@@ -1280,18 +1450,31 @@ impl Project {
     /// - `FailToCreateProject::CreateDir`: If creating the directory fails.
     /// - `FailToCreateProject::Scaffold`: If scaffolding files fails.
     /// - `FailToCreateProject::SaveManifest`: If saving the manifest fails.
+    /// - `FailToCreateProject::Rollback`: If the partial project cannot be removed after failure.
     pub async fn create(
+        path: impl AsRef<Path>,
+        options: CreateOptions,
+    ) -> Result<Self, FailToCreateProject> {
+        let host = Host::current();
+        Self::create_on(&host, path, options).await
+    }
+
+    async fn create_on(
+        host: &Host,
         path: impl AsRef<Path>,
         options: CreateOptions,
     ) -> Result<Self, FailToCreateProject> {
         let path = path.as_ref().to_path_buf();
 
-        // Check if directory already exists
         if path.exists() {
             return Err(FailToCreateProject::DirectoryExists(path));
         }
 
-        Self::scaffold_project(path, options).await
+        match Self::scaffold_project(host, path.clone(), options).await {
+            Ok(project) => Ok(project),
+            Err(error) if path.exists() => Err(roll_back(host, path, error).await),
+            Err(error) => Err(error),
+        }
     }
 
     /// Initialize a `WaterUI` project inside an existing directory
@@ -1307,6 +1490,7 @@ impl Project {
         path: impl AsRef<Path>,
         options: CreateOptions,
     ) -> Result<Self, FailToCreateProject> {
+        let host = Host::current();
         let path = path.as_ref().to_path_buf();
         if path.join("Water.toml").exists() {
             return Err(FailToCreateProject::AlreadyProject(path));
@@ -1314,10 +1498,11 @@ impl Project {
         if path.join("Cargo.toml").exists() {
             return Err(FailToCreateProject::CargoManifestExists(path));
         }
-        Self::scaffold_project(path, options).await
+        Self::scaffold_project(&host, path, options).await
     }
 
     async fn scaffold_project(
+        host: &Host,
         path: PathBuf,
         mut options: CreateOptions,
     ) -> Result<Self, FailToCreateProject> {
@@ -1393,6 +1578,9 @@ impl Project {
                 .waterui_path
                 .as_ref()
                 .map(|p| p.display().to_string()),
+            // The scaffold's copy of the checkout's tables is identical to the
+            // checkout's, which the first open adopts and records.
+            waterui_patches: cargo_toml::PatchSet::new(),
             // A local checkout's framework is a filesystem source — never
             // persisted; `waterui_path` above is the record.
             framework: framework.channel().is_some().then_some(framework),
@@ -1411,24 +1599,29 @@ impl Project {
         manifest.save(&path).await?;
 
         // Initialize git repository if not already in one
-        Self::ensure_git_init(&path).await?;
+        Self::ensure_git_init(host, &path).await?;
 
-        let managed_backends_root = crate::water_dir::project_build_cache_dir(&path)
+        let managed_backends_root = crate::water_dir::project_build_cache_dir_on(host, &path)
             .await
             .map_err(FailToCreateProject::BuildCache)?;
 
         let cargo_layout = if let Some(framework) = &manifest.framework {
-            let layout =
-                resolve_cargo_layout(&path, Some(framework.clone()), CargoResolution::Update)
-                    .await
-                    .map_err(FailToCreateProject::Framework)?;
+            let layout = resolve_cargo_layout(
+                host,
+                &path,
+                Some(framework.clone()),
+                CargoResolution::Update,
+            )
+            .await
+            .map_err(FailToCreateProject::Framework)?;
             futures_util::future::ready(Ok::<CargoLayout, String>(layout))
                 .boxed()
                 .shared()
         } else {
-            spawn_cargo_layout_resolution(&path, None, true)
+            spawn_cargo_layout_resolution(host, &path, None, true)
         };
         Ok(Self {
+            host: host.clone(),
             root: path,
             manifest,
             crate_name,
@@ -1446,10 +1639,10 @@ impl Project {
     ///
     /// Checks if the project directory is already part of a git repository.
     /// If not, initializes a new git repository.
-    async fn ensure_git_init(path: &Path) -> Result<(), FailToCreateProject> {
+    async fn ensure_git_init(host: &Host, path: &Path) -> Result<(), FailToCreateProject> {
         // Check if already in a git repository
 
-        let mut cmd = Command::new("git");
+        let mut cmd = host.command("git");
 
         let is_in_git = command(&mut cmd)
             .args(["rev-parse", "--git-dir"])
@@ -1462,7 +1655,7 @@ impl Project {
 
         if !is_in_git {
             // Initialize a new git repository
-            let mut cmd = Command::new("git");
+            let mut cmd = host.command("git");
             command(&mut cmd)
                 .args(["init"])
                 .current_dir(path)
@@ -1527,23 +1720,36 @@ impl Project {
         Self::open_with_mode(path, OpenMode::PreviewBuild, ManagedBackends::NONE).await
     }
 
-    /// Make a local-checkout project's `[patch]` tables the checkout's.
+    /// Keep the checkout's entries in a local-checkout project's `[patch]`
+    /// tables current, beside the project's own.
     ///
     /// Cargo applies `[patch]` only from the workspace it builds, so a project
     /// on a `waterui_path` carries a copy of the checkout's tables, and the
     /// copy has to follow the checkout: a fork pin moves, an entry is added or
     /// dropped, and a project scaffolded earlier would otherwise build a graph
-    /// the checkout no longer produces, silently. The manifest is rewritten
-    /// only when the tables differ, so an up-to-date project stays untouched.
+    /// the checkout no longer produces, silently. `Water.toml` records the
+    /// copy last written under `waterui_patches`, so the entries the CLI owns
+    /// are known exactly: they are replaced with the checkout's current set,
+    /// and every other entry is the project's own and stays (#1997). An entry
+    /// identical to the checkout's is the checkout's. A project entry for a
+    /// crate the checkout patches differently overrides it, as Cargo's root
+    /// `[patch]` does: the checkout's entry is not written beside it, and the
+    /// override is logged. The manifests are rewritten only when they change,
+    /// so an up-to-date project stays untouched.
     ///
     /// A project that is itself a member of the checkout's workspace — every
     /// example in this repository — needs no copy, because the
     /// tables Cargo reads are the checkout's own. Writing one anyway put a
     /// `[patch.crates-io]` table into a member manifest, where Cargo ignores it
     /// and says so on every single build.
-    async fn refresh_local_patches(project_root: &Path, waterui_path: &Path) -> eyre::Result<()> {
+    async fn refresh_local_patches(
+        project_root: &Path,
+        waterui_path: &Path,
+        written: &cargo_toml::PatchSet,
+    ) -> eyre::Result<()> {
         let project_root = project_root.to_path_buf();
         let waterui_path = waterui_path.to_path_buf();
+        let written = written.clone();
         unblock(move || {
             let checkout = project_root.join(&waterui_path);
             let patch_root = templates::patch_manifest_dir(&project_root)?;
@@ -1569,16 +1775,39 @@ impl Project {
             let text = std::fs::read_to_string(&cargo_path)?;
             let current = CargoManifest::from_slice(text.as_bytes())?.patch;
             let next = templates::local_framework_patches(&project_root, &waterui_path)?;
-            if current == next {
-                return Ok(());
+            let own = crate::patch_tables::beyond(&current, &written);
+            let own = crate::patch_tables::beyond(&own, &next);
+            // The checkout's entries the project does not override: exactly
+            // what this refresh writes, and so what it records.
+            let copy = crate::patch_tables::without(&next, &own);
+            let tables = crate::patch_tables::merge(next, own.clone());
+            if current != tables {
+                // Only the checkout's entries are rewritten; the project's own
+                // keep their spelling.
+                let mut document: toml_edit::DocumentMut = text.parse()?;
+                let copied = crate::patch_tables::beyond(&current, &own);
+                crate::framework::rewrite_patch_tables(&mut document, &copied, &copy)?;
+                std::fs::write(&cargo_path, document.to_string())?;
+                info!(
+                    path = %cargo_path.display(),
+                    "Refreshed the [patch] tables from the local checkout"
+                );
             }
-            let mut document: toml_edit::DocumentMut = text.parse()?;
-            crate::framework::rewrite_patch_tables(&mut document, &current, &next)?;
-            std::fs::write(&cargo_path, document.to_string())?;
-            info!(
-                path = %cargo_path.display(),
-                "Refreshed the [patch] tables from the local checkout"
-            );
+            if written != copy {
+                let water_path = project_root.join("Water.toml");
+                let mut water: toml_edit::DocumentMut =
+                    std::fs::read_to_string(&water_path)?.parse()?;
+                water.remove(WATERUI_PATCHES_KEY);
+                // Rendered the way `Manifest::save` renders the whole file —
+                // one `[waterui_patches.<source>.<crate>]` table per entry —
+                // then spliced in, so the rest of the file keeps its spelling.
+                let mut rendered: toml_edit::DocumentMut =
+                    toml::to_string_pretty(&WateruiPatchesRecord { patches: &copy })?.parse()?;
+                if let Some(record) = rendered.remove(WATERUI_PATCHES_KEY) {
+                    water[WATERUI_PATCHES_KEY] = record;
+                }
+                std::fs::write(&water_path, water.to_string())?;
+            }
             Ok(())
         })
         .await
@@ -1595,6 +1824,7 @@ impl Project {
     ) -> Result<Self, FailToOpenProject> {
         use crate::backend::Backend;
 
+        let host = Host::current();
         let total_start = std::time::Instant::now();
         let path = path.as_ref().to_path_buf();
 
@@ -1617,7 +1847,7 @@ impl Project {
             validate_local_cli(&path.join(local))
                 .await
                 .map_err(FailToOpenProject::Framework)?;
-            Self::refresh_local_patches(&path, Path::new(local))
+            Self::refresh_local_patches(&path, Path::new(local), &manifest.waterui_patches)
                 .await
                 .map_err(FailToOpenProject::LocalPatches)?;
         }
@@ -1649,6 +1879,7 @@ impl Project {
             })?;
 
         let cargo_layout = spawn_cargo_layout_resolution(
+            &host,
             &path,
             manifest.framework.clone(),
             manifest.waterui_path.is_some(),
@@ -1670,6 +1901,7 @@ impl Project {
         );
 
         let mut project = Self {
+            host,
             root: path,
             manifest,
             crate_name,
@@ -1781,7 +2013,8 @@ async fn apply_channel_selection(
         for (file, contents) in &updates {
             write_channel_file(file, contents.as_deref()).await?;
         }
-        resolve_cargo_layout(root, Some(framework), CargoResolution::Update).await?;
+        let host = Host::current();
+        resolve_cargo_layout(&host, root, Some(framework), CargoResolution::Update).await?;
         Ok(())
     }
     .await;
@@ -1809,11 +2042,13 @@ async fn write_channel_file(path: &Path, contents: Option<&[u8]>) -> std::io::Re
 }
 
 async fn resolve_cargo_layout(
+    host: &Host,
     current_dir: &Path,
     framework: Option<ResolvedFramework>,
     mode: CargoResolution,
 ) -> eyre::Result<CargoLayout> {
     let root = current_dir.to_path_buf();
+    let host = host.clone();
     let metadata = unblock(move || {
         let mut command = cargo_metadata::MetadataCommand::new();
         command.current_dir(root);
@@ -1826,7 +2061,7 @@ async fn resolve_cargo_layout(
             }
             CargoResolution::Update => {}
         }
-        command.exec()
+        metadata_on(&host, &command)
     })
     .await?;
     validate_resolved_cli(&metadata)?;
@@ -1843,13 +2078,45 @@ async fn resolve_cargo_layout(
     })
 }
 
+/// `cargo metadata` as `command` configures it, run on `host` — its `PATH`,
+/// environment and working directory, the command's own `current_dir`
+/// taking precedence — with [`cargo_metadata::MetadataCommand::exec`]'s
+/// error semantics.
+fn metadata_on(
+    host: &Host,
+    command: &cargo_metadata::MetadataCommand,
+) -> Result<cargo_metadata::Metadata, cargo_metadata::Error> {
+    let spec = command.cargo_command();
+    let mut cargo = host.std_command("cargo");
+    cargo.args(spec.get_args());
+    if let Some(dir) = spec.get_current_dir() {
+        cargo.current_dir(dir);
+    }
+    let output = cargo.output()?;
+    if !output.status.success() {
+        return Err(cargo_metadata::Error::CargoMetadata {
+            stderr: String::from_utf8(output.stderr)?,
+        });
+    }
+    let stdout = std::str::from_utf8(&output.stdout)?
+        .lines()
+        .find(|line| line.starts_with('{'))
+        .ok_or(cargo_metadata::Error::NoJson)?;
+    cargo_metadata::MetadataCommand::parse(stdout)
+}
+
 /// Run `cargo tree` for the application package rooted at `project_root`'s
 /// manifest, over the given edge kinds, and return the `{p}`-formatted tree.
 ///
 /// `locked` passes `--locked` to the resolve: trees that are read-only input —
 /// the shared pinned-framework checkout — must fail loudly on a stale
 /// committed lockfile instead of letting cargo rewrite it in place.
-async fn cargo_tree(project_root: &Path, edges: &str, locked: bool) -> eyre::Result<String> {
+async fn cargo_tree(
+    host: &Host,
+    project_root: &Path,
+    edges: &str,
+    locked: bool,
+) -> eyre::Result<String> {
     // `dunce`, not `std::fs::canonicalize`: on Windows the standard one returns
     // an extended-length path (`\\?\D:\...`), while `cargo metadata` reports the
     // plain one, so comparing the two never matched and the package below was
@@ -1859,13 +2126,14 @@ async fn cargo_tree(project_root: &Path, edges: &str, locked: bool) -> eyre::Res
     // a non-canonical input can never match what metadata reports.
     let application_manifest = dunce::canonicalize(project_root.join("Cargo.toml"))?;
     let metadata_manifest = application_manifest.clone();
+    let host_for_metadata = host.clone();
     let metadata = unblock(move || {
         let mut command = cargo_metadata::MetadataCommand::new();
         command.no_deps().manifest_path(metadata_manifest);
         if locked {
             command.other_options(vec!["--locked".to_string()]);
         }
-        command.exec()
+        metadata_on(&host_for_metadata, &command)
     })
     .await?;
     let root = metadata
@@ -1879,7 +2147,7 @@ async fn cargo_tree(project_root: &Path, edges: &str, locked: bool) -> eyre::Res
             )
         })?;
     let package_spec = root.id.to_string();
-    let mut tree = Command::new("cargo");
+    let mut tree = host.command("cargo");
     tree.arg("tree")
         .arg("--manifest-path")
         .arg(&application_manifest)
@@ -1909,10 +2177,11 @@ async fn cargo_tree(project_root: &Path, edges: &str, locked: bool) -> eyre::Res
 }
 
 async fn resolve_linked_runtime_packages(
+    host: &Host,
     project_root: PathBuf,
     locked: bool,
 ) -> eyre::Result<BTreeMap<String, String>> {
-    let tree = cargo_tree(&project_root, "normal", locked).await?;
+    let tree = cargo_tree(host, &project_root, "normal", locked).await?;
     let mut linked = BTreeMap::new();
     for package in tree.lines() {
         let name = package
@@ -1930,10 +2199,11 @@ async fn resolve_linked_runtime_packages(
 /// `<package> feature "<name>"` node; only the names are kept, since the
 /// question asked of this set is always "is a feature named X enabled".
 async fn resolve_enabled_features(
+    host: &Host,
     project_root: PathBuf,
     locked: bool,
 ) -> eyre::Result<BTreeSet<String>> {
-    let tree = cargo_tree(&project_root, "features", locked).await?;
+    let tree = cargo_tree(host, &project_root, "features", locked).await?;
     let mut features = BTreeSet::new();
     for node in tree.lines() {
         if let Some(feature) = node
@@ -1948,12 +2218,13 @@ async fn resolve_enabled_features(
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fmt::Write as _,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use serde::{Deserialize, Serialize};
-use smol::{fs::read_to_string, process::Command, unblock};
+use smol::{fs::read_to_string, unblock};
 use waterui_assets_planner::{LaunchConfig, ThemeConfig};
 
 use crate::{
@@ -1972,6 +2243,20 @@ use crate::{
     web,
 };
 
+/// The `Water.toml` key of [`Manifest::waterui_patches`].
+const WATERUI_PATCHES_KEY: &str = "waterui_patches";
+
+/// [`Manifest::waterui_patches`] alone, serialized to splice into an existing
+/// `Water.toml`.
+#[derive(Serialize)]
+struct WateruiPatchesRecord<'a> {
+    #[serde(
+        rename = "waterui_patches",
+        skip_serializing_if = "cargo_toml::PatchSet::is_empty"
+    )]
+    patches: &'a cargo_toml::PatchSet,
+}
+
 /// Configuration for a `WaterUI` project persisted to `Water.toml`.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Manifest {
@@ -1988,6 +2273,12 @@ pub struct Manifest {
     /// When set, all backends will use this path instead of the published versions.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub waterui_path: Option<String>,
+    /// The `[patch]` entries the CLI last copied from the `waterui_path`
+    /// checkout into the project's `Cargo.toml`. Every other entry there is
+    /// the project's own — an override of a checkout entry included — which
+    /// the next copy keeps.
+    #[serde(default, skip_serializing_if = "cargo_toml::PatchSet::is_empty")]
+    pub waterui_patches: cargo_toml::PatchSet,
     /// Exact framework and backend selection, resolved only by explicit version operations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub framework: Option<ResolvedFramework>,
@@ -2164,6 +2455,7 @@ impl Manifest {
             esp32: None,
             hydrolysis: None,
             waterui_path: None,
+            waterui_patches: cargo_toml::PatchSet::new(),
             framework: None,
             permissions: BTreeMap::default(),
             app: None,
@@ -2596,6 +2888,8 @@ mod channel_tests {
 
 #[cfg(test)]
 mod webview_backend_tests {
+    use crate::toolchain::Host;
+
     use super::{
         ResolvedWebViewBackend, TargetBackend, TargetPlatform, resolve_enabled_features,
         resolve_linked_runtime_packages,
@@ -2711,6 +3005,7 @@ mod webview_backend_tests {
     fn runtime_graph_is_scoped_to_the_selected_application() {
         let repository = crate::pinned_framework::checkout();
         let chromium = smol::block_on(resolve_linked_runtime_packages(
+            &Host::current(),
             repository.join("examples/chromium"),
             true,
         ))
@@ -2740,6 +3035,7 @@ mod webview_backend_tests {
             "waterui-chromium shares the webview asset-server types: {chromium:#?}"
         );
         let chromium_features = smol::block_on(resolve_enabled_features(
+            &Host::current(),
             repository.join("examples/chromium"),
             true,
         ))
@@ -2751,6 +3047,7 @@ mod webview_backend_tests {
         );
 
         let webview = smol::block_on(resolve_linked_runtime_packages(
+            &Host::current(),
             repository.join("examples/webview"),
             true,
         ))
@@ -2760,6 +3057,7 @@ mod webview_backend_tests {
             "WebView example graph: {webview:#?}"
         );
         let webview_features = smol::block_on(resolve_enabled_features(
+            &Host::current(),
             repository.join("examples/webview"),
             true,
         ))
@@ -2778,6 +3076,7 @@ mod webview_backend_tests {
         );
 
         let cef_webview = smol::block_on(resolve_linked_runtime_packages(
+            &Host::current(),
             repository.join("examples/webview-cef"),
             true,
         ))
@@ -2805,6 +3104,7 @@ mod webview_backend_tests {
         let repository = crate::pinned_framework::checkout();
 
         let map = smol::block_on(resolve_linked_runtime_packages(
+            &Host::current(),
             repository.join("examples/map"),
             true,
         ))
@@ -2815,6 +3115,7 @@ mod webview_backend_tests {
         );
 
         let webview = smol::block_on(resolve_linked_runtime_packages(
+            &Host::current(),
             repository.join("examples/webview"),
             true,
         ))
@@ -3318,35 +3619,59 @@ mod scaffold_tests {
 
 #[cfg(test)]
 mod local_patch_tests {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
-    use super::Project;
+    use super::{BundleIdentifier, CreateOptions, FailToCreateProject, Project, ProjectDraft};
+    use crate::{framework::test_fixtures::write_local_checkout, toolchain::testing::TestMachine};
 
-    /// A project on a `waterui_path` mirrors the checkout's `[patch]` tables
-    /// every time it opens: entries the checkout dropped disappear, moved ones
-    /// follow, and a project already in line is left byte-for-byte alone.
-    #[test]
-    fn a_local_checkout_project_follows_the_checkouts_patch_tables() {
-        let directory = tempfile::tempdir().expect("temp dir");
-        let checkout = directory.path().join("waterui");
+    const WATER_TOML: &str = "waterui_path = \"../waterui\"\n\n[package]\nname = \"App\"\nbundle_identifier = \"dev.waterui.app\"\n";
+
+    /// A checkout beside a project directory `app`, returning the project.
+    fn checkout_and_project(directory: &Path) -> std::path::PathBuf {
+        let checkout = directory.join("waterui");
         std::fs::create_dir_all(&checkout).expect("checkout dir");
         std::fs::write(
             checkout.join("Cargo.toml"),
             include_str!("../../tests/fixtures/local_checkout_patches.toml"),
         )
         .expect("checkout manifest");
-        let app = directory.path().join("app");
+        let app = directory.join("app");
         std::fs::create_dir_all(&app).expect("project dir");
+        app
+    }
+
+    /// A project on a `waterui_path` keeps the checkout's entries in its
+    /// `[patch]` tables current every time it opens — the entries recorded as
+    /// copied earlier are replaced, so a dropped one disappears and a moved one
+    /// follows — while the project's own entries stay as written, and a
+    /// project already in line is left byte-for-byte alone.
+    #[test]
+    fn a_local_checkout_project_follows_the_checkout_and_keeps_its_own_patches() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let app = checkout_and_project(directory.path());
         let cargo_path = app.join("Cargo.toml");
         std::fs::write(
             &cargo_path,
-            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nwaterui = { path = \"../waterui\" }\n\n[patch.crates-io]\nwaterui-core = { path = \"../elsewhere/core\" }\nstale = { path = \"../elsewhere/stale\" }\n",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nwaterui = { path = \"../waterui\" }\n\n[patch.crates-io]\nwaterui-core = { path = \"../elsewhere/core\" }\nstale = { path = \"../elsewhere/stale\" }\nnami-derive = { git = \"https://github.com/water-rs/nami\", rev = \"1ffe641ad7e18d341a7cb6d8bcb326d76fb7cf03\" }\n",
         )
         .expect("project manifest");
+        let water_path = app.join("Water.toml");
+        std::fs::write(
+            &water_path,
+            format!(
+                "{WATER_TOML}\n[waterui_patches.crates-io.waterui-core]\npath = \"../elsewhere/core\"\n\n[waterui_patches.crates-io.stale]\npath = \"../elsewhere/stale\"\n"
+            ),
+        )
+        .expect("water manifest");
+        let written = super::Manifest::open(&water_path);
+        let written = smol::block_on(written)
+            .expect("water manifest parses")
+            .waterui_patches;
 
         smol::block_on(Project::refresh_local_patches(
             &app,
             Path::new("../waterui"),
+            &written,
         ))
         .expect("tables refresh");
         let refreshed = std::fs::read_to_string(&cargo_path).expect("refreshed manifest");
@@ -3358,16 +3683,110 @@ mod local_patch_tests {
         assert_eq!(core.path.as_deref(), Some("../waterui/core"));
         assert!(!crates_io.contains_key("stale"));
         assert!(crates_io.contains_key("vello"));
+        assert!(
+            refreshed.contains(
+                "nami-derive = { git = \"https://github.com/water-rs/nami\", rev = \"1ffe641ad7e18d341a7cb6d8bcb326d76fb7cf03\" }"
+            ),
+            "the project's own entry keeps its spelling:\n{refreshed}"
+        );
         assert!(refreshed.starts_with("[package]"));
+        let recorded = smol::block_on(super::Manifest::open(&water_path))
+            .expect("water manifest parses")
+            .waterui_patches;
+        assert_eq!(
+            recorded,
+            crate::templates::local_framework_patches(&app, Path::new("../waterui"))
+                .expect("checkout tables"),
+            "Water.toml records exactly the checkout's copy"
+        );
+        let recorded_text = std::fs::read_to_string(&water_path).expect("water manifest");
+        assert!(
+            recorded_text.starts_with(WATER_TOML)
+                && recorded_text.contains("\n[waterui_patches.crates-io.waterui-core]\npath = "),
+            "the record is spliced in as one table per entry:\n{recorded_text}"
+        );
 
         smol::block_on(Project::refresh_local_patches(
             &app,
             Path::new("../waterui"),
+            &recorded,
         ))
         .expect("second refresh");
         assert_eq!(
             std::fs::read_to_string(&cargo_path).expect("manifest after the second refresh"),
             refreshed
+        );
+        assert_eq!(
+            std::fs::read_to_string(&water_path).expect("water manifest after the second refresh"),
+            recorded_text
+        );
+    }
+
+    /// A project entry for a crate the checkout patches to somewhere else
+    /// overrides the checkout's: it stays as written, the checkout's entry is
+    /// not copied beside it nor recorded, and dropping the override later
+    /// brings the checkout's entry back.
+    #[test]
+    fn a_project_entry_overrides_the_checkouts_for_the_same_crate() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let app = checkout_and_project(directory.path());
+        let cargo_path = app.join("Cargo.toml");
+        let header = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n";
+        let manifest = format!(
+            "{header}\n[patch.crates-io]\nvello = {{ git = \"https://github.com/linebender/vello\", rev = \"project-rev\" }}\n"
+        );
+        std::fs::write(&cargo_path, &manifest).expect("project manifest");
+        let water_path = app.join("Water.toml");
+        std::fs::write(&water_path, WATER_TOML).expect("water manifest");
+
+        smol::block_on(Project::refresh_local_patches(
+            &app,
+            Path::new("../waterui"),
+            &cargo_toml::PatchSet::new(),
+        ))
+        .expect("an override refreshes");
+
+        let refreshed = std::fs::read_to_string(&cargo_path).expect("refreshed manifest");
+        let crates_io = &cargo_toml::Manifest::from_str(&refreshed)
+            .expect("manifest parses")
+            .patch["crates-io"];
+        let cargo_toml::Dependency::Detailed(vello) = &crates_io["vello"] else {
+            panic!("the vello patch is a git dependency");
+        };
+        assert_eq!(vello.rev.as_deref(), Some("project-rev"));
+        assert!(crates_io.contains_key("waterui-core"), "the rest is copied");
+        let recorded = smol::block_on(super::Manifest::open(&water_path))
+            .expect("water manifest parses")
+            .waterui_patches;
+        assert!(
+            !recorded["crates-io"].contains_key("vello"),
+            "the overridden entry was not copied, so it is not recorded"
+        );
+
+        // Dropping the override hands the crate back to the checkout.
+        let mut document: toml_edit::DocumentMut = refreshed.parse().expect("manifest parses");
+        document["patch"]["crates-io"]
+            .as_table_like_mut()
+            .expect("crates-io table")
+            .remove("vello");
+        std::fs::write(&cargo_path, document.to_string()).expect("override dropped");
+        smol::block_on(Project::refresh_local_patches(
+            &app,
+            Path::new("../waterui"),
+            &recorded,
+        ))
+        .expect("second refresh");
+        let crates_io = cargo_toml::Manifest::from_path(&cargo_path)
+            .expect("manifest parses")
+            .patch
+            .remove("crates-io")
+            .expect("crates-io table");
+        let cargo_toml::Dependency::Detailed(vello) = &crates_io["vello"] else {
+            panic!("the vello patch is a git dependency");
+        };
+        assert_eq!(
+            vello.git.as_deref(),
+            Some("https://github.com/lexoliu/vello")
         );
     }
 
@@ -3390,8 +3809,12 @@ mod local_patch_tests {
         let cargo_path = app.join("Cargo.toml");
         std::fs::write(&cargo_path, manifest).expect("project manifest");
 
-        smol::block_on(Project::refresh_local_patches(&app, Path::new("../..")))
-            .expect("tables refresh");
+        smol::block_on(Project::refresh_local_patches(
+            &app,
+            Path::new("../.."),
+            &cargo_toml::PatchSet::new(),
+        ))
+        .expect("tables refresh");
 
         assert_eq!(
             std::fs::read_to_string(&cargo_path).expect("manifest after the refresh"),
@@ -3427,6 +3850,7 @@ mod local_patch_tests {
         let error = smol::block_on(Project::refresh_local_patches(
             &app,
             Path::new("../../waterui"),
+            &cargo_toml::PatchSet::new(),
         ))
         .expect_err("a copy here would be ignored");
 
@@ -3435,6 +3859,140 @@ mod local_patch_tests {
         assert_eq!(
             std::fs::read_to_string(&cargo_path).expect("manifest after the refusal"),
             manifest
+        );
+    }
+
+    fn local_create_options(waterui_path: PathBuf) -> CreateOptions {
+        CreateOptions {
+            name: "Water Example".to_string(),
+            bundle_identifier: BundleIdentifier::try_from("dev.waterui.waterexample")
+                .expect("bundle identifier"),
+            waterui_path: Some(waterui_path),
+            channel: None,
+            framework_manifest: None,
+            framework: None,
+            framework_lock: None,
+            author: "water test".to_string(),
+            web: None,
+        }
+    }
+
+    fn local_checkout(machine: &TestMachine) -> PathBuf {
+        let checkout = machine.root().join("waterui");
+        write_local_checkout(&checkout);
+        checkout
+    }
+
+    #[test]
+    fn a_failing_ffi_scaffold_fails_create_and_leaves_nothing_behind() {
+        let machine = TestMachine::new();
+        machine.install("cargo");
+        machine.install("git");
+        let host = machine.host::<&str, &str>([]);
+        let checkout = local_checkout(&machine);
+        let root = machine.root().join("water-example");
+
+        let draft = smol::block_on(ProjectDraft::create(
+            &host,
+            &root,
+            local_create_options(checkout),
+        ))
+        .expect("the initial project scaffold succeeds");
+        assert!(root.join("Water.toml").is_file());
+        let cache = crate::water_dir::build_cache_container_for_on(&host, &root)
+            .expect("cache container path");
+        assert!(
+            cache.starts_with(machine.home()),
+            "managed cache must use the test host's home: {}",
+            cache.display()
+        );
+
+        let error = smol::block_on(draft.finish()).expect_err("the FFI scaffold must fail");
+        assert!(
+            matches!(error, FailToCreateProject::ScaffoldGeneratedCrates(_)),
+            "{error}"
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("Failed to scaffold the project's generated crates"),
+            "{message}"
+        );
+        assert!(
+            message.contains("could not scaffold the Apple/Android FFI companion crate"),
+            "{message}"
+        );
+        assert!(
+            message.contains("`cargo metadata` exited with an error"),
+            "{message}"
+        );
+        assert!(
+            !root.exists(),
+            "failed project root remains: {}",
+            root.display()
+        );
+        assert!(
+            !cache.exists(),
+            "failed project cache remains: {}",
+            cache.display()
+        );
+    }
+
+    #[test]
+    fn create_removes_what_it_wrote_when_a_later_step_fails() {
+        let machine = TestMachine::new();
+        machine.install("cargo");
+        machine.install("git");
+        let host = machine.host::<&str, &str>([]);
+        let checkout = local_checkout(&machine);
+        let root = machine.root().join("water-example");
+        std::fs::write(machine.home().join(".water"), "not a directory")
+            .expect("block the Water home directory");
+
+        let error = smol::block_on(ProjectDraft::create(
+            &host,
+            &root,
+            local_create_options(checkout),
+        ))
+        .expect_err("the build-cache setup must fail");
+        assert!(
+            matches!(error, FailToCreateProject::BuildCache(_)),
+            "{error}"
+        );
+        assert!(
+            !root.exists(),
+            "partial project root remains: {}",
+            root.display()
+        );
+    }
+
+    #[test]
+    fn discarding_a_draft_removes_the_project_and_returns_the_error() {
+        let machine = TestMachine::new();
+        machine.install("cargo");
+        machine.install("git");
+        let host = machine.host::<&str, &str>([]);
+        let checkout = local_checkout(&machine);
+        let root = machine.root().join("water-example");
+
+        let draft = smol::block_on(ProjectDraft::create(
+            &host,
+            &root,
+            local_create_options(checkout),
+        ))
+        .expect("project draft creation");
+        let cache = crate::water_dir::build_cache_container_for_on(&host, &root)
+            .expect("cache container path");
+        let error = smol::block_on(draft.discard(eyre::eyre!("frontend failed")));
+        assert_eq!(error.to_string(), "frontend failed");
+        assert!(
+            !root.exists(),
+            "discarded project root remains: {}",
+            root.display()
+        );
+        assert!(
+            !cache.exists(),
+            "discarded project cache remains: {}",
+            cache.display()
         );
     }
 }
