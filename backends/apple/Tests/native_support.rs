@@ -10,6 +10,7 @@
 use cocoa_ui::MainThreadMarker;
 use waterui::window::WindowManager;
 use waterui_backend_core::Environment;
+use waterui_backend_core::scroll::ANIMATED_ROW_SCROLL_APPROACH;
 
 pub use cocoa_ui::native_test::pump_main_until;
 
@@ -25,19 +26,47 @@ pub const MAIN_QUEUE_DEADLINE: f64 = 5.0;
 /// starved main thread only lengthens a native animation.
 pub const NATIVE_SCROLL_MIN_DURATION: std::time::Duration = std::time::Duration::from_millis(150);
 
+/// Rows in the list the approach cases scroll — well over the
+/// [`ANIMATED_ROW_SCROLL_APPROACH`] bound.
+pub const APPROACH_LIST_ROWS: usize = 400;
+
+/// The row the approach cases animate to from the top — further than
+/// the bound, so the request first jumps to [`APPROACH_ROW`].
+pub const APPROACH_TARGET_ROW: usize = 180;
+
+/// The row an animated request toward [`APPROACH_TARGET_ROW`] from the
+/// top jumps to before it animates.
+pub const APPROACH_ROW: usize = APPROACH_TARGET_ROW - ANIMATED_ROW_SCROLL_APPROACH;
+
 /// Asserts that `request` starts a platform-timed scroll, not a jump.
 ///
-/// Right after `request` returns, before any run-loop turn, `offset`
-/// still reads the start. Pumping the main run loop then lands it within
-/// one device pixel of `landing` — read on every pass, so a target the
-/// layout resolves during the scroll is compared as it stands when the
-/// offset lands — no sooner than [`NATIVE_SCROLL_MIN_DURATION`] after the
-/// request. The platform runs the animation on its wall clock, so no
-/// intermediate sample is required: a starved main thread may see none,
-/// and can only lengthen the measured duration.
+/// [`assert_native_scroll_from`] with the offset before the request as
+/// the start: the request itself must not move it.
 pub fn assert_native_scroll(
     what: &str,
     request: impl FnOnce(),
+    offset: impl Fn() -> cocoa_ui::Point,
+    landing: impl Fn() -> cocoa_ui::Point,
+) {
+    let start = offset();
+    assert_native_scroll_from(what, request, || start, offset, landing);
+}
+
+/// Asserts that `request` starts a platform-timed scroll from `from`.
+///
+/// Right after `request` returns, before any run-loop turn, `offset`
+/// reads `from` exactly — the start itself, or where a list's approach
+/// jump put it. Pumping the main run loop then lands it within one device
+/// pixel of `landing` — read on every pass, so a target the layout
+/// resolves during the scroll is compared as it stands when the offset
+/// lands — no sooner than [`NATIVE_SCROLL_MIN_DURATION`] after the
+/// request. The platform runs the animation on its wall clock, so no
+/// intermediate sample is required: a starved main thread may see none,
+/// and can only lengthen the measured duration.
+pub fn assert_native_scroll_from(
+    what: &str,
+    request: impl FnOnce(),
+    from: impl Fn() -> cocoa_ui::Point,
     offset: impl Fn() -> cocoa_ui::Point,
     landing: impl Fn() -> cocoa_ui::Point,
 ) {
@@ -47,19 +76,19 @@ pub fn assert_native_scroll(
     let pixel = 1.0 / cocoa_ui::uikit::main_screen_scale();
     let distance =
         |a: cocoa_ui::Point, b: cocoa_ui::Point| (a.x - b.x).abs().max((a.y - b.y).abs());
-    let start = offset();
+    let requested = std::time::Instant::now();
+    request();
+    let after_request = offset();
+    let start = from();
+    assert!(
+        after_request.x.to_bits() == start.x.to_bits()
+            && after_request.y.to_bits() == start.y.to_bits(),
+        "{what}: the request left the offset at {after_request:?} before any run-loop turn, not at the start {start:?}"
+    );
     assert!(
         distance(start, landing()) >= pixel,
         "{what}: the start {start:?} is already at the landing {:?}",
         landing()
-    );
-    let requested = std::time::Instant::now();
-    request();
-    let after_request = offset();
-    assert!(
-        after_request.x.to_bits() == start.x.to_bits()
-            && after_request.y.to_bits() == start.y.to_bits(),
-        "{what}: the request jumped from {start:?} to {after_request:?} before any run-loop turn"
     );
     let landed = pump_main_until(MAIN_QUEUE_DEADLINE, || {
         distance(offset(), landing()) < pixel

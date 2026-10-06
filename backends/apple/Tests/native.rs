@@ -2824,7 +2824,10 @@ mod list_scroll {
         mount_and_order_front, pump_flight, trial_each,
     };
 
-    use waterui_apple::native_test_support::{ListSurface as TableSurface, row_item, row_list};
+    use waterui_apple::native_test_support::{
+        APPROACH_LIST_ROWS, APPROACH_ROW, APPROACH_TARGET_ROW, ListSurface as TableSurface,
+        row_item, row_list,
+    };
 
     /// A list taller than the window by far — row targets past the fold.
     const ROWS: usize = 200;
@@ -3008,6 +3011,104 @@ mod list_scroll {
             offset_y(&fixture),
             row_top_offset(&fixture, TARGET),
             "the row flight lands on the jump's position",
+        );
+    }
+
+    /// A target further than the approach bound animates only the final
+    /// stretch: the request jumps unanimated to the approach row's top
+    /// first — the first offset seen after it — and the animation then
+    /// lands on the target row's top. An explicit curve moves the clip
+    /// through intermediate offsets from there; `Default` is the
+    /// platform's wall-clock animation from the approach row.
+    fn a_far_animation_jumps_to_the_approach_row_first(name: &'static str, animation: Animation) {
+        let fixture = mounted_with(vec![row_item as fn() -> ListItem; APPROACH_LIST_ROWS]);
+        let native = matches!(animation, Animation::Default);
+        let request = || {
+            fixture
+                .controller
+                .animate_to(APPROACH_TARGET_ROW, animation);
+            assert!(
+                fixture.table.scroll_animation_in_flight(),
+                "the far {name} row flight must be in progress after the request"
+            );
+        };
+        if native {
+            waterui_apple::native_test_support::assert_native_scroll_from(
+                &format!("the far {name} row flight"),
+                request,
+                || cocoa_ui::Point::new(0.0, row_top_offset(&fixture, APPROACH_ROW)),
+                || cocoa_ui::Point::new(0.0, offset_y(&fixture)),
+                || cocoa_ui::Point::new(0.0, row_top_offset(&fixture, APPROACH_TARGET_ROW)),
+            );
+            pump_flight(
+                || fixture.table.scroll_animation_in_flight(),
+                || offset_y(&fixture),
+            );
+        } else {
+            request();
+            assert_offset_eq(
+                offset_y(&fixture),
+                row_top_offset(&fixture, APPROACH_ROW),
+                "the far request jumps to the approach row's top before it animates",
+            );
+            let samples = pump_flight(
+                || fixture.table.scroll_animation_in_flight(),
+                || offset_y(&fixture),
+            );
+            assert!(
+                distinct_offsets(&samples) >= 3,
+                "the far {name} row flight must move through intermediate offsets: {samples:?}"
+            );
+        }
+        assert_offset_eq(
+            offset_y(&fixture),
+            row_top_offset(&fixture, APPROACH_TARGET_ROW),
+            "the far row flight lands on the target row's top",
+        );
+    }
+
+    /// An overshooting spring toward the last row holds at the scrollable
+    /// end: the curve passes 1 — unclamped, it would carry the clip more
+    /// than a point into the blank space past the last row — yet every
+    /// frame's write is clamped, so no sample passes the end as it
+    /// stands at that frame, and the flight lands on it.
+    fn an_overshooting_spring_toward_the_last_rows_never_passes_the_end() {
+        /// Slack for sub-point rounding: `UIKit`'s own row scroll lands a
+        /// fraction of a thousandth of a point short of the end its
+        /// `contentSize` implies.
+        const EPSILON: f64 = 1.0e-3;
+
+        let spring = Animation::Spring {
+            stiffness: 300.0,
+            damping: 6.0,
+        };
+        let fixture = mounted_mixed_heights();
+        fixture.controller.animate_to(ROWS - 1, spring.clone());
+        let from = offset_y(&fixture);
+        let past_end = pump_flight(
+            || fixture.table.scroll_animation_in_flight(),
+            || offset_y(&fixture) - end_offset(&fixture),
+        );
+        let end = end_offset(&fixture);
+        let peak = (0..=spring.duration().as_millis())
+            .map(|ms| {
+                spring.progress(Duration::from_millis(
+                    u64::try_from(ms).expect("the spring's duration fits u64 milliseconds"),
+                ))
+            })
+            .fold(f32::MIN, f32::max);
+        assert!(
+            (f64::from(peak) - 1.0) * (end - from) > 1.0,
+            "the spring must overshoot the end by more than a point unclamped: peak progress {peak} from {from} to {end}"
+        );
+        assert!(
+            past_end.iter().all(|&beyond| beyond <= EPSILON),
+            "no sample may pass the scrollable end; offsets past it: {past_end:?}"
+        );
+        let landed = offset_y(&fixture);
+        assert!(
+            (landed - end).abs() <= EPSILON,
+            "the overshooting spring lands on the scrollable end: landed {landed}, end {end}"
         );
     }
 
@@ -3261,6 +3362,14 @@ mod list_scroll {
         }));
         named.extend(animation_cases().into_iter().map(|(name, animation)| {
             let case: Box<dyn FnOnce() + Send> =
+                Box::new(move || a_far_animation_jumps_to_the_approach_row_first(name, animation));
+            (
+                format!("list_scroll::a_far_{name}_animation_jumps_to_the_approach_row_first"),
+                case,
+            )
+        }));
+        named.extend(animation_cases().into_iter().map(|(name, animation)| {
+            let case: Box<dyn FnOnce() + Send> =
                 Box::new(move || leaving_the_window_lands_an_in_flight_animation(name, animation));
             (
                 format!("list_scroll::leaving_the_window_lands_an_in_flight_{name}_animation"),
@@ -3296,6 +3405,11 @@ mod list_scroll {
         named.push((
             "list_scroll::the_last_rows_animation_lands_where_the_jump_lands".to_owned(),
             Box::new(the_last_rows_animation_lands_where_the_jump_lands),
+        ));
+        named.push((
+            "list_scroll::an_overshooting_spring_toward_the_last_rows_never_passes_the_end"
+                .to_owned(),
+            Box::new(an_overshooting_spring_toward_the_last_rows_never_passes_the_end),
         ));
         named.push((
             "list_scroll::a_later_request_takes_over_an_in_flight_animation".to_owned(),

@@ -37,6 +37,7 @@ use waterui::resolve::Resolvable;
 use waterui::text::{StyledStr, Text};
 use waterui::views::{AnyViewsSnapshot, SharedAnyViews, ViewSnapshot, Views};
 use waterui_backend_core::Environment;
+use waterui_backend_core::scroll::ANIMATED_ROW_SCROLL_APPROACH;
 use waterui_core::Computed;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
 
@@ -1665,11 +1666,84 @@ const fn platform_weight(weight: waterui::text::font::FontWeight) -> f64 {
     }
 }
 
+/// The item an animated request toward `target` first jumps to from
+/// `current`, the first visible item: [`ANIMATED_ROW_SCROLL_APPROACH`]
+/// items short of `target` on `current`'s side, or `None` when `target`
+/// is already that close.
+const fn approach_item(current: usize, target: usize) -> Option<usize> {
+    if target.abs_diff(current) <= ANIMATED_ROW_SCROLL_APPROACH {
+        return None;
+    }
+    Some(if target > current {
+        target - ANIMATED_ROW_SCROLL_APPROACH
+    } else {
+        target + ANIMATED_ROW_SCROLL_APPROACH
+    })
+}
+
+/// Closes an animated request's distance to the approach bound before
+/// the animation starts: a `target` item further than
+/// [`ANIMATED_ROW_SCROLL_APPROACH`] from the first visible item is
+/// jumped to within the bound through the unanimated row jump — which
+/// also ends any flight in progress — so the animation glides over the
+/// final stretch only. A viewport showing no row has nothing to glide
+/// over and is left as it is.
+fn approach(state: &Rc<RefCell<Shared>>, table: &TableView, target: usize) {
+    let Some(first_visible) = table.first_visible_row() else {
+        return;
+    };
+    // Flatten and resolve under short borrows, released before the jump —
+    // the scroll call can measure rows, which borrows `state` mutably.
+    #[cfg(target_os = "ios")]
+    let current = state.borrow().groups[..first_visible.section]
+        .iter()
+        .map(|group| group.count)
+        .sum::<usize>()
+        + first_visible.row;
+    // A visible header or footer stands for the nearest item row: the
+    // first one after it, or — past the last item — the last one before.
+    #[cfg(target_os = "macos")]
+    let current = {
+        let item = |entry: &FlatEntry| match *entry {
+            FlatEntry::Row(item) => Some(item),
+            FlatEntry::Header(_) | FlatEntry::Footer(_) => None,
+        };
+        let state = state.borrow();
+        let (before, from) = state.flat_layout.split_at(first_visible);
+        from.iter()
+            .find_map(item)
+            .or_else(|| before.iter().rev().find_map(item))
+            .expect("the request's target resolved, so the table holds an item row")
+    };
+    let Some(item) = approach_item(current, target) else {
+        return;
+    };
+    #[cfg(target_os = "ios")]
+    {
+        let (section, row) = index_path_for_flat(&state.borrow().groups, item)
+            .expect("the approach item lies between the visible item and the target");
+        table.scroll_to_row(IndexPath { section, row }, false);
+        table.layout_if_needed();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let row = state
+            .borrow()
+            .flat_layout
+            .iter()
+            .position(|entry| *entry == FlatEntry::Row(item))
+            .expect("the approach item lies between the visible item and the target");
+        table.scroll_row_to_top(row);
+    }
+}
+
 /// Wires a `ScrollController<usize>` into the table: a generation bump
 /// scrolls the target row to the top — with the request's animation, if
 /// it carries one: `Animation::Default` is the native animated row
 /// scroll, and an explicit animation drives the offset on the frame
-/// clock along the core curve, landing where the jump would have.
+/// clock along the core curve, landing where the jump would have. An
+/// animated request first closes in through [`approach`], so a far
+/// target animates only its final stretch.
 fn wire_controller(
     leaf: &mut NativeLeaf,
     table: &Retained<TableView>,
@@ -1697,6 +1771,9 @@ fn wire_controller(
         };
         #[cfg(target_os = "ios")]
         table.layout_if_needed();
+        if request.animation.is_some() {
+            approach(state, table, request.target);
+        }
         match request.animation.as_ref() {
             #[cfg(target_os = "ios")]
             None => table.scroll_to_row(target, false),
@@ -1939,6 +2016,25 @@ mod tests {
     fn single_section_row_diff_rejects_duplicates() {
         let a = SelfId::new(RawId::try_from(1).unwrap());
         assert!(single_section_row_diff(&[a, a], &[a]).is_none());
+    }
+
+    #[test]
+    fn approach_item_stops_the_bound_short_of_a_far_target() {
+        assert_eq!(
+            approach_item(0, 180),
+            Some(180 - ANIMATED_ROW_SCROLL_APPROACH)
+        );
+        assert_eq!(
+            approach_item(400, 20),
+            Some(20 + ANIMATED_ROW_SCROLL_APPROACH)
+        );
+    }
+
+    #[test]
+    fn approach_item_leaves_a_target_within_the_bound() {
+        assert_eq!(approach_item(0, ANIMATED_ROW_SCROLL_APPROACH), None);
+        assert_eq!(approach_item(ANIMATED_ROW_SCROLL_APPROACH, 0), None);
+        assert_eq!(approach_item(7, 7), None);
     }
 
     #[test]

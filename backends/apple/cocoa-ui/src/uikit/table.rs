@@ -643,10 +643,19 @@ impl TableView {
         );
     }
 
+    /// The first row the visible rect shows, in section-then-row order,
+    /// or `None` while it shows none.
+    #[must_use]
+    pub fn first_visible_row(&self) -> Option<IndexPath> {
+        self.indexPathsForVisibleRows()?
+            .iter()
+            .map(|index_path| table_index(&index_path))
+            .min_by_key(|index| (index.section, index.row))
+    }
+
     /// The content offset that puts `index`'s row top edge at the adjusted
-    /// inset top, clamped inside the scrollable range — the flight's raw
-    /// `setContentOffset` writes do not clamp, so a row in the last
-    /// screenful resolves to the document's end, matching the range
+    /// inset top, clamped inside the scrollable range, so a row in the
+    /// last screenful resolves to the document's end, matching the range
     /// `scrollToRowAtIndexPath` would clamp to.
     fn row_top_offset(&self, index: IndexPath) -> Point {
         self.layoutIfNeeded();

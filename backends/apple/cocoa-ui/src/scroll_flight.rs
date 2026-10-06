@@ -379,7 +379,10 @@ impl ScrollFlight {
 
     /// The write a clocked `AppKit` flight performs each tick —
     /// `scrollToPoint` plus the `reflectScrolledClipView` that keeps the
-    /// scrollers honest — flagged as the flight's own so the kit clip
+    /// scrollers honest — clamped through [`constrained`](Self::constrained)
+    /// first, since `scrollToPoint` itself does not constrain, so an
+    /// overshooting curve holds at the edge instead of pulling the clip
+    /// past the document; flagged as the flight's own so the kit clip
     /// view lets it through, and weak to the scroll view and this state
     /// so a parked flight never keeps its surface alive.
     pub fn clip_write(
@@ -393,6 +396,7 @@ impl ScrollFlight {
                 && let Some(flight) = flight.upgrade()
             {
                 let clip = this.contentView();
+                let point = Self::constrained(&clip, point);
                 flight.own_writes(|| clip.scrollToPoint(point.into()));
                 this.reflectScrolledClipView(&clip);
             }
@@ -570,13 +574,16 @@ impl ScrollFlight {
     }
 
     /// The write a clocked `UIKit` flight performs each tick — the raw
-    /// `setContentOffset`, never the cancelling wrapper — weak to the
-    /// scroll view so a parked flight never keeps its surface alive.
+    /// `setContentOffset`, never the cancelling wrapper — clamped to the
+    /// scrollable range through [`uikit_clamped`](Self::uikit_clamped) so
+    /// an overshooting curve holds at the edge instead of pulling the view
+    /// into its bounce region, and weak to the scroll view so a parked
+    /// flight never keeps its surface alive.
     pub fn uikit_write(scroll_view: &objc2_ui_kit::UIScrollView) -> Rc<dyn Fn(Point)> {
         let weak = objc2::rc::Weak::new(scroll_view);
         Rc::new(move |point| {
             if let Some(this) = weak.load() {
-                this.setContentOffset(point.into());
+                this.setContentOffset(Self::uikit_clamped(&this, point).into());
             }
         })
     }

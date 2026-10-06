@@ -50,7 +50,8 @@ mod scroll_animation {
     use waterui::layout::scroll::ScrollController;
     use waterui::reactive::binding;
     use waterui_apple::native_test_support::{
-        assert_native_scroll, row_item, row_list, scroll_surface,
+        APPROACH_LIST_ROWS, APPROACH_ROW, APPROACH_TARGET_ROW, assert_native_scroll,
+        assert_native_scroll_from, row_item, row_list, scroll_surface,
     };
     use waterui_core::layout::Point as LayoutPoint;
 
@@ -61,7 +62,7 @@ mod scroll_animation {
 
     /// The `scroll_animation::` trials.
     pub fn trials() -> Vec<libtest_mimic::Trial> {
-        let cases: [(&str, fn()); 3] = [
+        let cases: [(&str, fn()); 4] = [
             (
                 "animated_content_offset_lands_after_a_native_animation",
                 animated_content_offset_lands_after_a_native_animation,
@@ -73,6 +74,10 @@ mod scroll_animation {
             (
                 "a_default_list_request_lands_after_a_native_animation",
                 a_default_list_request_lands_after_a_native_animation,
+            ),
+            (
+                "a_far_default_list_request_jumps_to_the_approach_row_first",
+                a_far_default_list_request_jumps_to_the_approach_row_first,
             ),
         ];
         cases
@@ -177,6 +182,42 @@ mod scroll_animation {
             || controller.animate_to(TARGET_ROW, Animation::Default),
             offset,
             row_top,
+        );
+        window.setHidden(true);
+    }
+
+    /// A far `Animation::Default` list request animates only the final
+    /// stretch: `UIKit`'s native row scroll toward a target further than
+    /// the approach bound first jumps unanimated to the approach row's
+    /// top — the offset right after the request — and lands from there
+    /// with the target row's top at the viewport's top, read as it
+    /// stands at landing since unseen rows are sized by estimate.
+    fn a_far_default_list_request_jumps_to_the_approach_row_first() {
+        let mtm = mtm();
+        let controller = ScrollController::new(0usize);
+        let (leaf, table) = row_list(
+            vec![row_item as fn() -> ListItem; APPROACH_LIST_ROWS],
+            &controller,
+        );
+        let window = scene_window(mtm, leaf.view());
+        table.layout_if_needed();
+        let row_top = |row: usize| {
+            let index = NSIndexPath::indexPathForRow_inSection(
+                isize::try_from(row).expect("the row fits an NSInteger"),
+                0,
+            );
+            Point::new(
+                0.0,
+                table.rectForRowAtIndexPath(&index).origin.y - table.adjustedContentInset().top,
+            )
+        };
+
+        assert_native_scroll_from(
+            "a far Default list request",
+            || controller.animate_to(APPROACH_TARGET_ROW, Animation::Default),
+            || row_top(APPROACH_ROW),
+            || Point::from(table.contentOffset()),
+            || row_top(APPROACH_TARGET_ROW),
         );
         window.setHidden(true);
     }

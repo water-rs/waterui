@@ -23,6 +23,7 @@ use accesskit::{
 use waterui::accessibility::{AccessibilityHidden, AccessibilityStateSignal};
 use waterui::component::list::{ListConfig, ListItem, ListSelection, Move};
 use waterui::gesture::{DragEvent, DragGesture, Gesture, GesturePhase};
+use waterui_backend_core::scroll::ANIMATED_ROW_SCROLL_APPROACH;
 use waterui_core::animation::Animation;
 use waterui_core::handler::{BoxedAction, boxed_action};
 use waterui_core::id::{Id as RawId, SelfId};
@@ -101,13 +102,6 @@ const SWIPE_SETTLE_EPSILON: f64 = 0.5;
 /// Elevation handed to the theme while a row is lifted for reordering. Material
 /// raises a dragged list item to level 3.
 const REORDER_LIFT_ELEVATION: f64 = 3.0;
-
-/// Rows an animated programmatic scroll glides over. A target further away
-/// than this is closed instantly first and only the last stretch animates, so
-/// the motion stays legible and cannot drag the list through a whole dataset.
-/// This is Compose's `NumberOfItemsToTeleport`, the same bound
-/// `animateScrollToItem` applies.
-const ROWS_BEFORE_JUMP_TELEPORT: usize = 100;
 
 /// Distance the pointer must travel before a row drag is recognized, matching
 /// Android's `ViewConfiguration` touch slop. Without it a row could not be
@@ -759,17 +753,16 @@ impl ListRenderState {
                             metrics.offset_y + metrics.viewport_height,
                         )
                         .start;
-                    if pending.index.abs_diff(current) > ROWS_BEFORE_JUMP_TELEPORT {
-                        // Animating the whole way across a 100k-row dataset would
+                    if pending.index.abs_diff(current) > ANIMATED_ROW_SCROLL_APPROACH {
+                        // Animating the whole way across a large dataset would
                         // drag the list through every viewport between here and
-                        // there, and read as a blur regardless. Compose solves
-                        // this the same way: its `animateScrollToItem` snaps to
-                        // within `NumberOfItemsToTeleport` items of the target
-                        // and animates only that final stretch.
+                        // there, and read as a blur regardless: jump to within
+                        // the approach bound of the target and animate only
+                        // that final stretch.
                         let approach_index = if pending.index > current {
-                            pending.index - ROWS_BEFORE_JUMP_TELEPORT
+                            pending.index - ANIMATED_ROW_SCROLL_APPROACH
                         } else {
-                            pending.index + ROWS_BEFORE_JUMP_TELEPORT
+                            pending.index + ANIMATED_ROW_SCROLL_APPROACH
                         };
                         let approach = self.extent_index.borrow().offset_of(approach_index);
                         let _ = handle.scroll_to(0.0, approach);

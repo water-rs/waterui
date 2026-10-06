@@ -899,6 +899,15 @@ impl TableView {
         )
     }
 
+    /// The first table row the clip's visible rect shows, or `None` while
+    /// it shows none.
+    #[must_use]
+    pub fn first_visible_row(&self) -> Option<usize> {
+        let table = self.table_view();
+        let rows = table.rowsInRect(table.visibleRect());
+        (rows.length > 0).then_some(rows.location)
+    }
+
     /// Scrolls `row`'s top edge to the clip's top, unanimated.
     pub fn scroll_row_to_top(&self, row: usize) {
         let top = self.row_top(row);

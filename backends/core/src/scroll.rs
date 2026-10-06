@@ -18,6 +18,13 @@ use crate::time::Instant;
 const SCROLL_EPSILON: f64 = 0.000_01;
 /// Logical pixels one wheel/accessibility "line" scrolls.
 pub const SCROLL_LINE_STEP: f64 = 40.0;
+/// Rows an animated programmatic list scroll glides over.
+///
+/// A target further than this from the first visible row is jumped to
+/// within this many rows first, and only that final stretch animates — the
+/// motion stays legible and never drags the list through every row in
+/// between.
+pub const ANIMATED_ROW_SCROLL_APPROACH: usize = 100;
 /// Time constant (seconds) of the exponential approach that eases the offset
 /// toward a smooth-scroll target: ~63% of the remaining gap per τ, visually
 /// settled (>95%) after ~3τ ≈ 180ms — the smooth-wheel feel of browsers and
