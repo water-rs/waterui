@@ -51,6 +51,11 @@ struct ListViewportAnchor {
     id: ListItemId,
     index: usize,
     offset_within_row: f64,
+    /// The offset the moment this anchor was recorded. The next frame's
+    /// glide/fling tick moves the offset before the membership rebase runs,
+    /// so the rebase must translate from this recording — not the live
+    /// offset — to keep the tick's motion.
+    recorded_offset: f64,
 }
 
 /// A pending programmatic scroll to a row: the request's generation, row
@@ -309,8 +314,11 @@ pub struct ListRenderState {
     /// Membership changes use this anchor so delete/move operations do not
     /// visibly jump the viewport.
     viewport_anchor: Cell<Option<ListViewportAnchor>>,
-    /// Concrete offset resolved from `viewport_anchor` after an extent reset.
-    pending_membership_offset: Cell<Option<f64>>,
+    /// The anchor's target offset under the new membership plus the offset
+    /// it was recorded at: `(rebased, recorded)` — the rebase's pure
+    /// translation is `rebased - recorded` regardless of how far this
+    /// frame's tick already moved the offset.
+    pending_membership_offset: Cell<Option<(f64, f64)>>,
     /// A backend move action keeps the viewport's index fixed for the next
     /// membership reconcile so the moved row visibly changes position.
     preserve_anchor_index_once: Cell<bool>,
@@ -600,10 +608,11 @@ impl ListRenderState {
                         .find(|index| snapshot.get_id(*index) == Some(anchor.id))
                         .unwrap_or_else(|| anchor.index.min(len - 1))
                 };
-                Some(
+                Some((
                     self.extent_index.borrow().offset_of(index)
                         + anchor.offset_within_row.min(estimate),
-                )
+                    anchor.recorded_offset,
+                ))
             });
             self.pending_membership_offset.set(membership_offset);
         }
@@ -698,13 +707,13 @@ impl ListRenderState {
         let offset = self.extent_index.borrow().offset_of(pending.index);
         match pending.animation.clone() {
             Some(animation) if animate => match pending.state {
-                PendingScrollState::Armed { run } => match handle.scroll_run_outcome(run) {
+                PendingScrollState::Armed { run } => match handle.scroll_run_outcome(&run) {
                     ScrollRunOutcome::Running => {
                         // Already gliding: refine the destination without
                         // restarting the run's clock. Only the run this
                         // request armed answers — a different owner's
                         // animation on the same surface is never steered.
-                        let _ = handle.retarget_animated_scroll(run, 0.0, offset);
+                        let _ = handle.retarget_animated_scroll(&run, 0.0, offset);
                     }
                     ScrollRunOutcome::Landed => {
                         // The motion is over; settling the final position
@@ -791,12 +800,13 @@ impl ListRenderState {
         }
     }
 
-    /// The ordered settle-anchor-request step both rendered paths run:
-    /// settle the pending request's outcome first — a request the user
-    /// interrupted between frames, or one naming a row the list does not
-    /// have yet, is not live and must not swallow the anchor — then apply
-    /// the membership anchor unless a live request remains, then apply the
-    /// request itself.
+    /// The ordered anchor-then-request step both rendered paths run: the
+    /// membership anchor always applies — `prepare_rows`' extent reset
+    /// discarded measured heights, so skipping it leaves the offset in the
+    /// old coordinates and the viewport jumps — and since `rebase` does not
+    /// claim the offset it cannot disturb a live run or fling underneath
+    /// it; then the request applies, re-issuing `offset_of(index)` under
+    /// the new membership.
     fn apply_membership_anchor_then_request(
         &self,
         renderer: &mut crate::renderer::SemanticCore,
@@ -804,57 +814,20 @@ impl ListRenderState {
         row_count: usize,
         animate: bool,
     ) {
-        if self.settle_pending_scroll_outcome(handle, row_count) {
-            // A live request re-issues `offset_of(index)` under the new
-            // membership anyway — the anchor is dropped, not deferred:
-            // replaying it once the request completes would yank the
-            // viewport back to where it no longer belongs.
-            let _ = self.pending_membership_offset.take();
-        } else {
-            self.apply_membership_anchor(handle);
-        }
+        self.apply_membership_anchor(handle);
         self.apply_scroll_request(renderer, handle, row_count, animate);
     }
 
-    /// Drops a pending request that stopped being live — an armed run the
-    /// user interrupted — and reports whether one still is: `Armed` with
-    /// `Running`/`Landed`, or `Unarmed` — and in range either way. A request
-    /// for a row the collection does not have yet waits without owning the
-    /// offset, so membership changes under it still anchor.
-    fn settle_pending_scroll_outcome(&self, handle: &ScrollHandle, row_count: usize) -> bool {
-        let (live, dead_generation) = {
-            let borrowed = self.pending_scroll.borrow();
-            match borrowed.as_ref() {
-                Some(pending) if pending.index >= row_count => (false, None),
-                Some(pending) => match &pending.state {
-                    PendingScrollState::Armed { run } => {
-                        match handle.scroll_run_outcome(*run) {
-                            ScrollRunOutcome::Running | ScrollRunOutcome::Landed => (true, None),
-                            // Something else claimed the offset — user
-                            // input, a jump, another owner's run — between
-                            // frames; `apply_scroll_request` no longer sees
-                            // it, so it is settled here.
-                            ScrollRunOutcome::Interrupted => (false, Some(pending.generation)),
-                        }
-                    }
-                    PendingScrollState::Unarmed => (true, None),
-                },
-                None => (false, None),
-            }
-        };
-        if let Some(generation) = dead_generation {
-            self.applied_scroll_generation.set(generation);
-            self.pending_scroll.take();
-        }
-        live
-    }
-
     fn apply_membership_anchor(&self, handle: &ScrollHandle) {
-        if let Some(offset) = self.pending_membership_offset.take() {
+        if let Some((rebased, recorded)) = self.pending_membership_offset.take() {
             // Re-anchoring after a delete or move shifts the coordinate
             // system — it does not claim the offset, so `rebase` keeps a
-            // live run or user fling driving through it.
-            let _ = handle.rebase(0.0, offset - handle.metrics().offset_y);
+            // live run or user fling driving through it. The translation is
+            // measured from the recorded offset: this frame's tick already
+            // moved the live offset, and measuring against it would erase
+            // the tick's motion and shift the fling's origin and the glide
+            // target by as much.
+            let _ = handle.rebase(0.0, rebased - recorded);
         }
     }
 
@@ -876,6 +849,7 @@ impl ListRenderState {
             id,
             index: window.start,
             offset_within_row: (metrics.offset_y - window.leading_offset).max(0.0),
+            recorded_offset: metrics.offset_y,
         }));
     }
 }

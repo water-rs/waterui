@@ -139,11 +139,12 @@ impl VelocityTracker {
 #[derive(Debug)]
 pub struct TouchFling {
     handle: crate::scroll::ScrollHandle,
-    /// The claim the fling holds on the offset: it keeps writing while it
-    /// is still the newest claim, and its first refused write — a request,
-    /// a jump, user input — ends it rather than overwriting its successor.
-    /// A membership anchor's `rebase` does not claim the offset, so a live
-    /// list cannot stop a fling by inserting rows.
+    /// The claim the fling holds on the offset — the ownership record: its
+    /// mint already claimed the offset from any live run or wheel glide, it
+    /// keeps writing while it is still the newest claim, and its first
+    /// refused write — a request, a jump, user input — ends it rather than
+    /// overwriting its successor. Neither an anchor's `rebase` nor a
+    /// `rebind` for rows measured mid-fling touches it.
     claim: crate::scroll::FlingClaim,
     x: Option<SplineFling>,
     y: Option<SplineFling>,
@@ -189,10 +190,11 @@ impl TouchFling {
         let y = matches!(handle.axis(), Axis::Vertical | Axis::All)
             .then(|| axis_fling(finger_velocity.y, metrics.offset_y, metrics.max_y))
             .flatten();
-        let claim = handle.begin_fling();
-        (x.is_some() || y.is_some()).then_some(Self {
+        // The mint itself claims the offset — ending a live run or wheel
+        // glide — so it must wait until a fling is known to exist.
+        (x.is_some() || y.is_some()).then(|| Self {
+            claim: handle.begin_fling(),
             handle,
-            claim,
             x,
             y,
         })

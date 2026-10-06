@@ -6,7 +6,7 @@
 //! There is deliberately no renderer slot registry or body-order identity.
 
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use nami::Binding;
 use waterui_core::animation::Animation;
@@ -71,11 +71,14 @@ pub struct ScrollMetrics {
 /// The token carries the issuing scroll view's identity: tokens are minted
 /// from the state's own claim counter, so two scroll views hand out
 /// colliding values — a run queried or retargeted on another view's handle
-/// is a programming error and panics, as is a token the state never issued.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// is a programming error and panics, as is a token beyond the claim
+/// counter.
+#[derive(Clone, Debug)]
 pub struct ScrollRun {
-    /// The issuing scroll view's [`ScrollHandle::cache_key`].
-    state: usize,
+    /// The issuing scroll view's state: the `Weak` pins its allocation, so
+    /// the address cannot be recycled into a false match — a run minted by
+    /// another scroll view always fails the handle assert.
+    state: Weak<RefCell<ScrollState>>,
     /// The claim-counter value the run took at arming.
     token: u64,
 }
@@ -88,12 +91,13 @@ pub enum ScrollRunOutcome {
     /// The run completed and landed on its target.
     Landed,
     /// The run ended early: user input claimed the offset (pixel deltas,
-    /// line deltas, touch drags, scrollbar jumps), a jump landed, or a
-    /// newer programmatic request replaced it. Also reported for a run
-    /// whose single outcome slot a later run already took, and for a
-    /// recorded `Landed` a later user scroll ended — the request is spent
-    /// once the user takes the offset. A token the state never issued is
-    /// a programming error and panics instead of answering here.
+    /// line deltas, touch drags, the scrollbar's drag, an accessibility
+    /// scroll-into-view), a jump landed, or a newer programmatic request
+    /// replaced it. Also reported for a run whose single outcome slot a
+    /// later run already took, and for a recorded `Landed` a later user
+    /// scroll ended — the request is spent once the user takes the offset.
+    /// A token beyond the claim counter is a programming error and panics
+    /// instead of answering here.
     Interrupted,
 }
 
@@ -107,12 +111,13 @@ pub enum ScrollRunOutcome {
 /// `rebase` does not claim the offset, so a fling survives the coordinate
 /// shift: the shift it accumulated applies to the fling's next positions —
 /// the fling's origin moved with the content. Like [`ScrollRun`], the
-/// claim carries the issuing scroll view's identity and applying it on
-/// another view's handle panics.
-#[derive(Clone, Copy, Debug)]
+/// claim carries the issuing scroll view's identity — a `Weak` pinning its
+/// state's allocation — and applying it on another view's handle panics.
+#[derive(Clone, Debug)]
 pub struct FlingClaim {
-    /// The issuing scroll view's [`ScrollHandle::cache_key`].
-    state: usize,
+    /// The issuing scroll view's state, kept alive enough that its address
+    /// can never be recycled into a false match.
+    state: Weak<RefCell<ScrollState>>,
     /// The claim counter's value at `begin_fling`: the fling owns the
     /// offset exactly while it is still the newest claim.
     offset_epoch: u64,
@@ -361,6 +366,24 @@ impl ScrollHandle {
         changed
     }
 
+    /// Jumps to an absolute content offset on the user's behalf — the
+    /// scrollbar's drag and accessibility scroll-into-view route here rather
+    /// than through [`Self::scroll_to`]: like any user input the write claims
+    /// the offset and spends a recorded run outcome, so a pending request's
+    /// post-landing correction cannot jump back over the user's scroll.
+    #[must_use]
+    pub fn user_scroll_to(&self, x: f64, y: f64) -> bool {
+        let changed = {
+            let mut state = self.state.borrow_mut();
+            if state.generation != self.generation {
+                return false;
+            }
+            state.user_scroll_to(x, y)
+        };
+        self.flush_offset_report();
+        changed
+    }
+
     /// Starts a programmatic scroll toward an absolute content offset along
     /// `animation`'s curve and duration, and returns the token identifying
     /// the run — `None` only for a stale handle, which is inert. `now` is the
@@ -388,7 +411,7 @@ impl ScrollHandle {
         };
         self.flush_offset_report();
         Some(ScrollRun {
-            state: self.cache_key(),
+            state: Rc::downgrade(&self.state),
             token,
         })
     }
@@ -397,20 +420,16 @@ impl ScrollHandle {
     /// offset. The token itself scopes the query: a handle from an earlier
     /// generation still answers for the run it armed — a previous frame's
     /// handle must not report a live run as `Interrupted` — while a token
-    /// the state never issued, or one another scroll view issued, is a
+    /// beyond the claim counter, or one another scroll view issued, is a
     /// programming error and panics.
     ///
     /// # Panics
     ///
     /// When `run` was issued by a different scroll view's handle, or names a
-    /// claim this state never handed out.
+    /// claim beyond the state's counter.
     #[must_use]
-    pub fn scroll_run_outcome(&self, run: ScrollRun) -> ScrollRunOutcome {
-        assert_eq!(
-            run.state,
-            self.cache_key(),
-            "a scroll run may only be queried on the handle that issued it"
-        );
+    pub fn scroll_run_outcome(&self, run: &ScrollRun) -> ScrollRunOutcome {
+        self.assert_same_state(&run.state, "scroll run");
         self.state.borrow().scroll_run_outcome(run)
     }
 
@@ -425,30 +444,34 @@ impl ScrollHandle {
     /// # Panics
     ///
     /// When `run` was issued by a different scroll view's handle, or names a
-    /// claim this state never handed out.
+    /// claim beyond the state's counter.
     #[must_use]
-    pub fn retarget_animated_scroll(&self, run: ScrollRun, x: f64, y: f64) -> bool {
-        assert_eq!(
-            run.state,
-            self.cache_key(),
-            "a scroll run may only be retargeted on the handle that issued it"
-        );
+    pub fn retarget_animated_scroll(&self, run: &ScrollRun, x: f64, y: f64) -> bool {
+        self.assert_same_state(&run.state, "scroll run");
         self.state.borrow_mut().retarget_animated_scroll(run, x, y)
     }
 
-    /// Mints the claim a touch fling holds on the offset: the fling feeds it
-    /// back to [`Self::apply_fling_offset`] each tick and keeps writing while
-    /// it is still the newest claim — a programmatic request or user input
-    /// claims the offset instead and ends the fling. [`Self::rebase`]
-    /// translates the fling's coordinate system without claiming it, so a
-    /// membership anchor cannot stop a fling.
+    /// Mints the claim a touch fling holds on the offset: the fling takes the
+    /// offset for itself — a live run ends here, a wheel glide's targets are
+    /// dropped, and the fling's recorded outcome is spent — then keeps
+    /// writing while it feeds the claim back to [`Self::apply_fling_offset`]
+    /// each tick, until a newer claim — a request, a jump, user input — owns
+    /// the offset instead and the refused write ends the fling.
+    /// [`Self::rebase`] translates the fling's coordinate system without
+    /// claiming it, so a membership anchor cannot stop a fling. Call it only
+    /// when a fling actually starts: the mint itself claims the offset.
     #[must_use]
     pub fn begin_fling(&self) -> FlingClaim {
         let mut state = self.state.borrow_mut();
+        state.claim();
+        state.spend_recorded_outcome();
+        state.smooth_target_x = None;
+        state.smooth_target_y = None;
+        state.smooth_last_tick = None;
         state.fling_shift_x = 0.0;
         state.fling_shift_y = 0.0;
         FlingClaim {
-            state: self.cache_key(),
+            state: Rc::downgrade(&self.state),
             offset_epoch: state.offset_epoch,
         }
     }
@@ -456,21 +479,20 @@ impl ScrollHandle {
     /// Applies a running touch fling's offset for this tick while `claim`
     /// still owns the offset. Refuses (returns `false`) once a programmatic
     /// request or user input has claimed the offset since `claim` was minted,
-    /// so the fling ends instead of writing over its successor.
+    /// so the fling ends instead of writing over its successor. The claim is
+    /// the ownership record — not the handle's generation: a `rebind` for
+    /// rows measured mid-fling does not end it, and the write clamps to the
+    /// extents live at that frame.
     ///
     /// # Panics
     ///
     /// When `claim` was minted by a different scroll view's handle.
     #[must_use]
     pub fn apply_fling_offset(&self, claim: &FlingClaim, x: f64, y: f64) -> bool {
-        assert_eq!(
-            claim.state,
-            self.cache_key(),
-            "a fling claim may only drive the handle that issued it"
-        );
+        self.assert_same_state(&claim.state, "fling claim");
         let changed = {
             let mut state = self.state.borrow_mut();
-            if state.generation != self.generation || state.offset_epoch != claim.offset_epoch {
+            if state.offset_epoch != claim.offset_epoch {
                 return false;
             }
             state.apply_fling_offset(x, y)
@@ -496,6 +518,16 @@ impl ScrollHandle {
         };
         self.flush_offset_report();
         changed
+    }
+
+    /// Asserts `issuer` names this handle's state. Runs and fling claims
+    /// carry the issuing state's `Weak`, which pins its allocation, so an
+    /// `Rc` address can never be recycled into a false match.
+    fn assert_same_state(&self, issuer: &Weak<RefCell<ScrollState>>, what: &str) {
+        assert!(
+            core::ptr::eq(issuer.as_ptr(), Rc::as_ptr(&self.state)),
+            "a {what} may only act on the handle that issued it"
+        );
     }
 }
 
@@ -598,17 +630,32 @@ impl ScrollState {
         self.offset_epoch
     }
 
+    /// Spends the recorded run outcome, if any: user input after a run ended
+    /// flips a remembered `Landed` to `Interrupted`, so a pending request
+    /// cannot use the landing to correct back over the user's scroll.
+    const fn spend_recorded_outcome(&mut self) {
+        if let Some((_, outcome)) = &mut self.last_run_outcome {
+            *outcome = ScrollRunOutcome::Interrupted;
+        }
+    }
+
+    /// The axes this state scrolls, as `(x, y)` flags — the pair the
+    /// per-axis matches all reduce to.
+    const fn scrolled_axes(&self) -> (bool, bool) {
+        match self.axis {
+            Axis::Horizontal => (true, false),
+            Axis::Vertical => (false, true),
+            Axis::All => (true, true),
+            _ => panic!("scroll axis variant is not supported by hydrolysis"),
+        }
+    }
+
     /// Clamps `(x, y)` to the current scrollable extents on the axes this
     /// state scrolls; a non-scrolled axis keeps its offset, so callers write
     /// the returned pair unconditionally.
     fn clamped(&self, x: f64, y: f64) -> (f64, f64) {
         let metrics = self.metrics();
-        let (scroll_x, scroll_y) = match self.axis {
-            Axis::Horizontal => (true, false),
-            Axis::Vertical => (false, true),
-            Axis::All => (true, true),
-            _ => panic!("scroll axis variant is not supported by hydrolysis"),
-        };
+        let (scroll_x, scroll_y) = self.scrolled_axes();
         (
             if scroll_x {
                 clamp_scroll_offset(x, metrics.max_x)
@@ -623,33 +670,41 @@ impl ScrollState {
         )
     }
 
+    /// Asserts `token` is within the claim counter: a value beyond it was
+    /// never handed out by this scroll view, so naming one is a programming
+    /// error, not a dead run to report `Interrupted`.
+    fn assert_issued_token(&self, token: u64) {
+        assert!(
+            token > 0 && token <= self.offset_epoch,
+            "scroll run token {token} is beyond the claim counter — never issued by this scroll view"
+        );
+    }
+
     fn apply_scroll_delta(&mut self, dx: f64, dy: f64, is_line_delta: bool) -> bool {
-        // User input claims the offset — a fling comparing epochs ends
-        // itself — and spends any request that already ended: a recorded
-        // `Landed` left standing would let the owner's post-landing
-        // correction jump back over this scroll, so user input reports it
-        // `Interrupted` too.
-        self.claim();
-        if let Some((_, outcome)) = &mut self.last_run_outcome {
-            *outcome = ScrollRunOutcome::Interrupted;
+        if is_line_delta {
+            return self.retarget_smooth_scroll(dx * SCROLL_LINE_STEP, dy * SCROLL_LINE_STEP);
         }
-        let changed = if is_line_delta {
-            self.retarget_smooth_scroll(dx * SCROLL_LINE_STEP, dy * SCROLL_LINE_STEP)
-        } else {
-            // Pixel deltas are direct manipulation (trackpads deliver their own
-            // OS momentum stream); they cancel any in-flight smooth-wheel
-            // target or programmatic animation.
-            self.smooth_target_x = None;
-            self.smooth_target_y = None;
-            let (offset_x, offset_y) = self.clamped(self.offset_x - dx, self.offset_y - dy);
-            let changed =
-                value_changed(self.offset_x, offset_x) || value_changed(self.offset_y, offset_y);
-            self.offset_x = offset_x;
-            self.offset_y = offset_y;
-            changed
-        };
+        // Pixel deltas are direct manipulation (trackpads deliver their own
+        // OS momentum stream). The claim comes after the move is known: a
+        // zero delta, a dead-axis delta or a push at an extent changes
+        // nothing, falls through to the enclosing view, and must not end
+        // the run or fling that owns the offset.
+        let (offset_x, offset_y) = self.clamped(self.offset_x - dx, self.offset_y - dy);
+        if !value_changed(self.offset_x, offset_x) && !value_changed(self.offset_y, offset_y) {
+            return false;
+        }
+        // The input moved something, so it claims the offset — a live run
+        // ends, a fling's next write is refused, and a recorded `Landed`
+        // left standing is spent rather than letting the request's
+        // post-landing correction jump back over this scroll.
+        self.claim();
+        self.spend_recorded_outcome();
+        self.smooth_target_x = None;
+        self.smooth_target_y = None;
+        self.offset_x = offset_x;
+        self.offset_y = offset_y;
         self.report_offset();
-        changed
+        true
     }
 
     fn scroll_to(&mut self, x: f64, y: f64) -> bool {
@@ -666,6 +721,16 @@ impl ScrollState {
         changed
     }
 
+    /// An absolute offset write driven by the user — the scrollbar's drag or
+    /// an accessibility scroll-into-view: the same jump as [`Self::scroll_to`]
+    /// plus the user-input spend, so a recorded `Landed` cannot let a pending
+    /// request correct its post-landing position back over the user's scroll.
+    fn user_scroll_to(&mut self, x: f64, y: f64) -> bool {
+        let changed = self.scroll_to(x, y);
+        self.spend_recorded_outcome();
+        changed
+    }
+
     /// Translates the coordinate system by `(dx, dy)` without claiming the
     /// offset: the offset, the wheel-glide targets, a live run's origin and
     /// destination, and the fling's accumulated origin shift all move
@@ -673,12 +738,7 @@ impl ScrollState {
     /// keeps owning it. A membership anchor uses this where `scroll_to`
     /// would end the motion in flight.
     fn rebase(&mut self, dx: f64, dy: f64) -> bool {
-        let (scroll_x, scroll_y) = match self.axis {
-            Axis::Horizontal => (true, false),
-            Axis::Vertical => (false, true),
-            Axis::All => (true, true),
-            _ => panic!("scroll axis variant is not supported by hydrolysis"),
-        };
+        let (scroll_x, scroll_y) = self.scrolled_axes();
         let dx = if scroll_x { dx } else { 0.0 };
         let dy = if scroll_y { dy } else { 0.0 };
         if dx == 0.0 && dy == 0.0 {
@@ -752,14 +812,10 @@ impl ScrollState {
 
     /// How the run `run` identifies ended — or whether it still drives the
     /// offset. Only a single outcome slot is kept, so an earlier run reports
-    /// `Interrupted` once a newer one has ended; a token the state never
-    /// issued is a programming error and panics.
-    fn scroll_run_outcome(&self, run: ScrollRun) -> ScrollRunOutcome {
-        assert!(
-            run.token > 0 && run.token <= self.offset_epoch,
-            "scroll run token {} was never issued by this scroll view",
-            run.token
-        );
+    /// `Interrupted` once a newer one has ended; a token beyond the claim
+    /// counter is a programming error and panics.
+    fn scroll_run_outcome(&self, run: &ScrollRun) -> ScrollRunOutcome {
+        self.assert_issued_token(run.token);
         if self
             .programmatic
             .as_ref()
@@ -791,12 +847,8 @@ impl ScrollState {
     /// Moves the destination of the in-flight programmatic animation without
     /// touching its clock; reports whether `run` names the live run — the
     /// only one a requester may steer.
-    fn retarget_animated_scroll(&mut self, run: ScrollRun, x: f64, y: f64) -> bool {
-        assert!(
-            run.token > 0 && run.token <= self.offset_epoch,
-            "scroll run token {} was never issued by this scroll view",
-            run.token
-        );
+    fn retarget_animated_scroll(&mut self, run: &ScrollRun, x: f64, y: f64) -> bool {
+        self.assert_issued_token(run.token);
         let (target_x, target_y) = self.clamped(x, y);
         let Some(live) = &mut self.programmatic else {
             return false;
@@ -812,33 +864,36 @@ impl ScrollState {
     /// Accumulates a discrete wheel tick into the smooth-scroll targets and
     /// reports whether an animation toward them is (still) needed. Successive
     /// ticks retarget the same animation, so fast wheel spins add up instead
-    /// of restarting.
+    /// of restarting. A tick that changes no target — a zero delta, a
+    /// dead-axis delta, or a push at an extent — claims nothing and reports
+    /// `false`, so it falls through to the enclosing scroll view without
+    /// ending what owns the offset.
     #[allow(
         clippy::similar_names,
         reason = "`scaled_dx`/`scaled_dy` are conventional 2D scroll-delta names"
     )]
     fn retarget_smooth_scroll(&mut self, scaled_dx: f64, scaled_dy: f64) -> bool {
         let metrics = self.metrics();
-        // A wheel glide replaces a programmatic animation in flight.
-        self.end_programmatic(ScrollRunOutcome::Interrupted);
-        match self.axis {
-            Axis::Horizontal => {
-                let target = self.smooth_target_x.unwrap_or(self.offset_x);
-                self.smooth_target_x = Some(clamp_scroll_offset(target - scaled_dx, metrics.max_x));
-            }
-            Axis::Vertical => {
-                let target = self.smooth_target_y.unwrap_or(self.offset_y);
-                self.smooth_target_y = Some(clamp_scroll_offset(target - scaled_dy, metrics.max_y));
-            }
-            Axis::All => {
-                let target_x = self.smooth_target_x.unwrap_or(self.offset_x);
-                self.smooth_target_x =
-                    Some(clamp_scroll_offset(target_x - scaled_dx, metrics.max_x));
-                let target_y = self.smooth_target_y.unwrap_or(self.offset_y);
-                self.smooth_target_y =
-                    Some(clamp_scroll_offset(target_y - scaled_dy, metrics.max_y));
-            }
-            _ => panic!("scroll axis variant is not supported by hydrolysis"),
+        let (scroll_x, scroll_y) = self.scrolled_axes();
+        let base_x = self.smooth_target_x.unwrap_or(self.offset_x);
+        let base_y = self.smooth_target_y.unwrap_or(self.offset_y);
+        let target_x = clamp_scroll_offset(base_x - scaled_dx, metrics.max_x);
+        let target_y = clamp_scroll_offset(base_y - scaled_dy, metrics.max_y);
+        let changed_x = scroll_x && value_changed(base_x, target_x);
+        let changed_y = scroll_y && value_changed(base_y, target_y);
+        if !changed_x && !changed_y {
+            return false;
+        }
+        // The wheel tick moves the glide, so it claims the offset: a
+        // programmatic run ends — a wheel glide replaces it — and a
+        // recorded `Landed` is spent with the other user input.
+        self.claim();
+        self.spend_recorded_outcome();
+        if changed_x {
+            self.smooth_target_x = Some(target_x);
+        }
+        if changed_y {
+            self.smooth_target_y = Some(target_y);
         }
         self.settle_reached_smooth_targets();
         self.report_offset();
@@ -1120,17 +1175,19 @@ mod tests {
                 start,
             )
             .expect("the run must arm");
-        assert_eq!(handle.scroll_run_outcome(run), ScrollRunOutcome::Running);
+        assert_eq!(handle.scroll_run_outcome(&run), ScrollRunOutcome::Running);
         assert!(!handle.tick_smooth_scroll(start + Duration::from_millis(100)));
-        assert_eq!(handle.scroll_run_outcome(run), ScrollRunOutcome::Landed);
+        assert_eq!(handle.scroll_run_outcome(&run), ScrollRunOutcome::Landed);
 
-        // A run cancelled by user input reports Interrupted.
+        // A run cancelled by user input reports Interrupted — the delta has
+        // to move the offset: a push at the extent changes nothing and
+        // claims nothing.
         let cancelled = handle
             .scroll_to_animated(0.0, 0.0, Animation::default(), start)
             .expect("the run must arm");
-        let _ = handle.apply_scroll_delta(0.0, -10.0, false);
+        let _ = handle.apply_scroll_delta(0.0, 10.0, false);
         assert_eq!(
-            handle.scroll_run_outcome(cancelled),
+            handle.scroll_run_outcome(&cancelled),
             ScrollRunOutcome::Interrupted
         );
 
@@ -1144,7 +1201,7 @@ mod tests {
                 .is_some()
         );
         assert_eq!(
-            handle.scroll_run_outcome(replaced),
+            handle.scroll_run_outcome(&replaced),
             ScrollRunOutcome::Interrupted
         );
     }
@@ -1194,23 +1251,37 @@ mod tests {
         assert!(handle.apply_fling_offset(&claim, 0.0, 60.0));
         assert_eq!(handle.metrics().offset_y, 100.0);
 
-        // Same for a programmatic run: the run keeps driving and its
-        // destination moves with the rows.
+        // Same for a programmatic run: the run keeps driving, and its origin
+        // and destination moved with the rows — the sampled offset advances
+        // from the rebased origin toward the rebased target.
+        let start = Instant::now();
         let run = handle
             .scroll_to_animated(
                 0.0,
-                200.0,
+                160.0,
                 Animation::linear(Duration::from_millis(100)),
-                Instant::now(),
+                start,
             )
             .expect("the run must arm");
         assert!(handle.rebase(0.0, 40.0));
-        assert_eq!(handle.scroll_run_outcome(run), ScrollRunOutcome::Running);
+        assert_eq!(handle.scroll_run_outcome(&run), ScrollRunOutcome::Running);
+        assert!(handle.tick_smooth_scroll(start + Duration::from_millis(50)));
+        assert_eq!(
+            handle.metrics().offset_y,
+            170.0,
+            "the rebase must move the run's sampled offset: origin 140, target 200"
+        );
 
         // A wheel-glide target translates too: a glide in flight keeps
         // converging on the row it was heading for, not a stale offset.
         assert!(handle.apply_scroll_delta(0.0, -2.0, true));
+        let glide = handle.state.borrow().smooth_target_y;
         assert!(handle.rebase(0.0, 40.0));
+        assert_eq!(
+            handle.state.borrow().smooth_target_y,
+            glide.map(|target| target + 40.0),
+            "the rebase must translate the live wheel-glide target"
+        );
     }
 
     #[test]
@@ -1226,30 +1297,30 @@ mod tests {
             )
             .expect("the run must arm");
         assert!(!handle.tick_smooth_scroll(start + Duration::from_millis(50)));
-        assert_eq!(handle.scroll_run_outcome(run), ScrollRunOutcome::Landed);
+        assert_eq!(handle.scroll_run_outcome(&run), ScrollRunOutcome::Landed);
 
         // The user scrolls after the run landed: the request is spent — its
         // owner must not correct over a user scroll — so it reports
         // Interrupted from here on.
         assert!(handle.apply_scroll_delta(0.0, 10.0, false));
         assert_eq!(
-            handle.scroll_run_outcome(run),
+            handle.scroll_run_outcome(&run),
             ScrollRunOutcome::Interrupted
         );
     }
 
     #[test]
-    #[should_panic(expected = "never issued")]
+    #[should_panic(expected = "beyond the claim counter")]
     fn a_token_the_state_never_issued_panics_instead_of_reporting_interrupted() {
         let handle = vertical_handle();
         // Token 1 may exist or not — either way the claim counter has not
-        // reached 5, so this token was never issued and the query is a
-        // programming error, not a dead run.
+        // reached 5, so this token is beyond the claim counter and the query
+        // is a programming error, not a dead run.
         let forged = ScrollRun {
-            state: handle.cache_key(),
+            state: Rc::downgrade(&handle.state),
             token: 5,
         };
-        let _ = handle.scroll_run_outcome(forged);
+        let _ = handle.scroll_run_outcome(&forged);
     }
 
     #[test]
@@ -1260,7 +1331,7 @@ mod tests {
         let foreign = other
             .scroll_to_animated(0.0, 50.0, Animation::default(), Instant::now())
             .expect("the run must arm");
-        let _ = handle.scroll_run_outcome(foreign);
+        let _ = handle.scroll_run_outcome(&foreign);
     }
 
     #[test]
@@ -1362,7 +1433,7 @@ mod tests {
         // Refining the destination keeps the run's clock: at 60ms the offset
         // is 60% of the way to the refined target — a restart would sit at
         // the 100.0 it had already reached.
-        assert!(handle.retarget_animated_scroll(run, 0.0, 150.0));
+        assert!(handle.retarget_animated_scroll(&run, 0.0, 150.0));
         assert!(handle.tick_smooth_scroll(start + Duration::from_millis(60)));
         let offset = handle.metrics().offset_y;
         assert!(
@@ -1376,12 +1447,12 @@ mod tests {
 
         // A token whose run already ended — or names a different live run —
         // cannot steer anything: a second owner's animation stays untouched.
-        assert!(!handle.retarget_animated_scroll(run, 0.0, 75.0));
+        assert!(!handle.retarget_animated_scroll(&run, 0.0, 75.0));
         let other = handle
             .scroll_to_animated(0.0, 100.0, Animation::default(), start)
             .expect("the second run must arm");
-        assert!(!handle.retarget_animated_scroll(run, 0.0, 75.0));
-        assert_eq!(handle.scroll_run_outcome(other), ScrollRunOutcome::Running);
+        assert!(!handle.retarget_animated_scroll(&run, 0.0, 75.0));
+        assert_eq!(handle.scroll_run_outcome(&other), ScrollRunOutcome::Running);
     }
 
     #[test]

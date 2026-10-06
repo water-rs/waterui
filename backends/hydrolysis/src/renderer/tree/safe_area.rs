@@ -744,7 +744,7 @@ impl ScrollSurfaceArea {
                     Animation::default(),
                     renderer.frame_instant(),
                 )
-                .is_some_and(|run| handle.scroll_run_outcome(run) == ScrollRunOutcome::Running)
+                .is_some_and(|run| handle.scroll_run_outcome(&run) == ScrollRunOutcome::Running)
         } else {
             handle.scroll_to(metrics.offset_x, target_y)
         };

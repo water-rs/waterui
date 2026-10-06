@@ -28,7 +28,7 @@ use waterui::id::SelfId;
 use waterui::layout::scroll::ScrollController;
 use waterui::{Binding, View, ViewExt};
 use waterui_core::dynamic::watch;
-use waterui_testing::{Role, ui};
+use waterui_testing::{DragOptions, Role, ui};
 
 /// Material's one-line list row: a scroll request landing on row `N` reports a
 /// `scroll_y` of `N * ROW_HEIGHT` on the rendered runtime.
@@ -183,9 +183,10 @@ fn animate_to_a_row_glides_and_lands_where_the_jump_would_offscreen() {
 
 /// A membership change mid-flight must not kill an animated scroll: a chat
 /// that calls `animate_to(last)` while messages keep arriving keeps its run
-/// live, so the insertion does not re-anchor — the request re-issues its
-/// target under the new membership and still lands on its row
-/// (water-rs/waterui#1901).
+/// live — the membership re-anchor applies under it as a pure translation
+/// (appending below leaves the anchor's coordinate unchanged) and the
+/// request re-issues its target under the new membership, still landing on
+/// its row (water-rs/waterui#1901).
 #[test]
 fn animate_to_survives_rows_inserted_during_the_flight_offscreen() {
     let items = ReactiveList::<SelfId<usize>>::new();
@@ -204,8 +205,9 @@ fn animate_to_survives_rows_inserted_during_the_flight_offscreen() {
     controller.animate_to(29, waterui::animation::Animation::default());
     app.pump_for(std::time::Duration::from_millis(100));
 
-    // Messages arriving while the scroll is in flight: the live request
-    // keeps the anchor from shifting the viewport, and the run must not read
+    // Messages arriving while the scroll is in flight: the membership
+    // re-anchor is a pure translation under the run — the appended rows
+    // leave the anchor's coordinate unchanged — and the run must not read
     // the membership change as the user scrolling.
     let _ = items.replace((0..34).map(SelfId::new).collect());
     app.settle();
@@ -231,10 +233,10 @@ fn animate_to_survives_rows_inserted_during_the_flight_offscreen() {
 }
 
 /// The interrupt race: user input ends the run between frames, and rows
-/// changing in that window must still re-anchor the viewport — the flush
-/// settles the request's outcome first instead of dropping the anchor on a
-/// dead request, so content does not jump under the user's finger
-/// (water-rs/waterui#1901).
+/// changing in that window must still re-anchor the viewport — the anchor
+/// applies unconditionally (its `rebase` cannot disturb whatever now owns
+/// the offset) before the dead request drops, so content does not jump
+/// under the user's finger (water-rs/waterui#1901).
 #[test]
 fn animate_to_interrupted_then_rows_change_still_anchors_offscreen() {
     let items = ReactiveList::<SelfId<usize>>::new();
@@ -702,4 +704,202 @@ fn for_each_same_id_item_update_rematerializes_row_offscreen() {
         .role(Role::LABEL)
         .label("badge-z")
         .assert_exists();
+}
+
+/// A membership change mid-fling must not stop the fling: the anchor
+/// shifts the coordinate system — it does not claim the offset — and the
+/// rebind a row insert triggers must not stale the claim the fling's
+/// gesture-start handle holds, so the gesture keeps owning the offset
+/// through the insertion (water-rs/waterui#1901).
+#[test]
+fn a_fling_survives_rows_inserted_above_the_viewport_offscreen() {
+    let items = ReactiveList::<SelfId<usize>>::new();
+    let _ = items.replace((0..40).map(SelfId::new).collect());
+    let controller = ScrollController::new(0);
+    let mut app = ui()
+        .viewport(320, 320)
+        .theme(Material3::defaults())
+        .mount_offscreen({
+            let items = items.clone();
+            let controller = controller.clone();
+            move || pending_scroll_list(items.clone(), controller.clone())
+        });
+    app.settle();
+    // A touch drag is what claims a scroll view on a real device; the host
+    // reports its gesture constants through `touch_scroll_config`.
+    app.set_touch_scroll_config(hydrolysis::TouchScrollConfig::android_default());
+
+    let scroll_y = |app: &mut waterui_testing::OffscreenApp| -> f64 {
+        app.query()
+            .role(Role::LIST)
+            .label("messages")
+            .single()
+            .node()
+            .scroll_y()
+            .expect("the list reports a scroll offset")
+    };
+
+    controller.scroll_to(20);
+    app.settle();
+
+    // A fast downward drag: the release velocity earns a fling that keeps
+    // easing the offset back toward the top on its own spline.
+    app.queue_drag_from_to_with(
+        160.0,
+        80.0,
+        160.0,
+        320.0,
+        DragOptions {
+            steps: 5,
+            frame_per_step: true,
+            pointer: hydrolysis::PointerKind::Touch,
+        },
+    );
+    app.pump_for(std::time::Duration::from_millis(32));
+    let fling_start = scroll_y(&mut app);
+    app.pump_for(std::time::Duration::from_millis(32));
+    let flinging = scroll_y(&mut app);
+    assert!(
+        flinging < fling_start - 5.0,
+        "the release must produce a live fling before the insertion: {fling_start} → {flinging}"
+    );
+
+    // Three rows land above the viewport mid-fling.
+    let _ = items.replace((100..103).chain(0..40).map(SelfId::new).collect());
+    app.pump_for(std::time::Duration::from_millis(16));
+    let at_insert = scroll_y(&mut app);
+    app.pump_for(std::time::Duration::from_millis(48));
+    let after_insert = scroll_y(&mut app);
+    assert!(
+        after_insert < at_insert - 10.0,
+        "the fling must keep moving the offset through the membership change: \
+         {at_insert} → {after_insert}"
+    );
+}
+
+/// The membership anchor is a pure translation applied unconditionally —
+/// applied while a run is `Running` it keeps the same content under the
+/// viewport: the offset on the insertion frame is the in-flight offset
+/// plus the inserted height — and the run still lands on its re-issued
+/// target (water-rs/waterui#1901).
+#[test]
+fn animate_to_running_reanchors_rows_inserted_above_offscreen() {
+    let items = ReactiveList::<SelfId<usize>>::new();
+    let _ = items.replace((0..40).map(SelfId::new).collect());
+    let controller = ScrollController::new(0);
+    let mut app = ui()
+        .viewport(320, 320)
+        .theme(Material3::defaults())
+        .mount_offscreen({
+            let items = items.clone();
+            let controller = controller.clone();
+            move || pending_scroll_list(items.clone(), controller.clone())
+        });
+    app.settle();
+
+    let scroll_y = |app: &mut waterui_testing::OffscreenApp| -> f64 {
+        app.query()
+            .role(Role::LIST)
+            .label("messages")
+            .single()
+            .node()
+            .scroll_y()
+            .expect("the list reports a scroll offset")
+    };
+
+    controller.scroll_to(20);
+    app.settle();
+    // A slow run so a few heavy flush frames still leave it in flight.
+    controller.animate_to(
+        38,
+        waterui::animation::Animation::linear(std::time::Duration::from_millis(2000)),
+    );
+    app.pump_for(std::time::Duration::from_millis(48));
+    let in_flight = scroll_y(&mut app);
+    assert!(
+        in_flight > 20.0 * ROW_HEIGHT && in_flight < 2088.0,
+        "the run must be mid-flight heading for row 38 when the rows land: {in_flight}"
+    );
+
+    let _ = items.replace((100..103).chain(0..40).map(SelfId::new).collect());
+    app.pump_for(std::time::Duration::from_millis(16));
+    let at_insert = scroll_y(&mut app);
+    // The three prepended rows re-anchor the viewport on the same content:
+    // the offset grows by the inserted height (168) plus one tick of run
+    // progress — an un-anchored insertion would leave the shift at that
+    // tick's motion alone, far below a row's height.
+    let shift = at_insert - in_flight;
+    assert!(
+        shift > 3.0f64.mul_add(ROW_HEIGHT, -1.0),
+        "the insertion frame must re-anchor by the three prepended rows: expected scroll_y shift ≥≈168, got {shift} ({in_flight} → {at_insert})"
+    );
+
+    // `settle` caps at ~1s of virtual time — pump past the 2000ms run
+    // duration instead so the landing is deterministic.
+    app.pump_for(std::time::Duration::from_millis(2100));
+    app.settle();
+    let landed = scroll_y(&mut app);
+    assert!(
+        (landed - 2088.0).abs() < 1.0,
+        "the run must still land on its target's clamped offset (43 rows − viewport): {landed}"
+    );
+}
+
+/// The anchor translates the recorded offset — `new_anchor − recorded`,
+/// never `new_anchor − current` — so the frame's own tick motion is not
+/// cancelled: a run in flight moves one tick's worth on the insertion
+/// frame and lands strictly above `in_flight + shift`, where snapping to
+/// the absolute anchor would land exactly on it (water-rs/waterui#1901).
+#[test]
+fn animate_to_insert_frame_keeps_the_ticks_motion_offscreen() {
+    let items = ReactiveList::<SelfId<usize>>::new();
+    let _ = items.replace((0..40).map(SelfId::new).collect());
+    let controller = ScrollController::new(0);
+    let mut app = ui()
+        .viewport(320, 320)
+        .theme(Material3::defaults())
+        .mount_offscreen({
+            let items = items.clone();
+            let controller = controller.clone();
+            move || pending_scroll_list(items.clone(), controller.clone())
+        });
+    app.settle();
+
+    let scroll_y = |app: &mut waterui_testing::OffscreenApp| -> f64 {
+        app.query()
+            .role(Role::LIST)
+            .label("messages")
+            .single()
+            .node()
+            .scroll_y()
+            .expect("the list reports a scroll offset")
+    };
+
+    controller.scroll_to(20);
+    app.settle();
+    // A slow run: the tween samples the wall clock, so a short duration
+    // could land inside one heavy materialization pump and hide the tick's
+    // motion the invariant checks.
+    controller.animate_to(
+        38,
+        waterui::animation::Animation::linear(std::time::Duration::from_millis(2000)),
+    );
+    app.pump_for(std::time::Duration::from_millis(48));
+    let in_flight = scroll_y(&mut app);
+    assert!(
+        in_flight > 20.0 * ROW_HEIGHT && in_flight < 2088.0,
+        "the run must be mid-flight heading for row 38 when the rows land: {in_flight}"
+    );
+
+    let _ = items.replace((100..103).chain(0..40).map(SelfId::new).collect());
+    app.pump_for(std::time::Duration::from_millis(16));
+    let at_insert = scroll_y(&mut app);
+    // The tick on this frame already moved the offset past `recorded`, so
+    // translating `recorded` by the shift leaves `in_flight + tick + shift`
+    // — strictly above the absolute anchor's `in_flight + shift`.
+    let floor = 3.0f64.mul_add(ROW_HEIGHT, in_flight);
+    assert!(
+        at_insert > floor,
+        "the insertion frame must keep the tick's motion on top of the shift: expected scroll_y > {floor}, got {at_insert}"
+    );
 }
