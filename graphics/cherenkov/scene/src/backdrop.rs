@@ -36,6 +36,13 @@ use serde::{Deserialize, Serialize};
 /// `[i/s, (i+1)/s) × [j/s, (j+1)/s)` clipped to the canvas, `filters` run on
 /// that grid with their parameters in capture texels, and members sample
 /// it bilinearly at device point `p · s`. `1.0` is the 1:1 capture.
+///
+/// A `levels` count above one reduces the filtered capture (level 0) into
+/// a pyramid: level `k` texel `(i, j)` is the mean of level `k−1` texels
+/// `(2i..=2i+1, 2j..=2j+1)`, a partial box at the grid's edge averaging the
+/// texels present. Members read deeper levels through
+/// [`BackdropEffectSpec::Level`]'s trilinear sample, which a variable-blur
+/// material needs; `1` is the single-level capture.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BackdropGroup {
     /// The id member layers reference.
@@ -46,6 +53,29 @@ pub struct BackdropGroup {
     /// The capture scale `s`, `0 < s ≤ 1` ([`crate::Scene::load`]
     /// validates it).
     pub scale: f64,
+    /// The pyramid's level count, from `1` to [`Self::MAX_LEVELS`]
+    /// ([`crate::Scene::load`] validates it); `1` is the single-level
+    /// capture.
+    #[serde(default = "default_levels", skip_serializing_if = "is_default_levels")]
+    pub levels: u32,
+}
+
+impl BackdropGroup {
+    /// The most pyramid levels a group declares; [`crate::Scene::load`]
+    /// rejects a scene file asking for more.
+    pub const MAX_LEVELS: u32 = 8;
+}
+
+const fn default_levels() -> u32 {
+    1
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if takes a reference"
+)]
+const fn is_default_levels(levels: &u32) -> bool {
+    *levels == 1
 }
 
 /// One filter in a backdrop group's capture chain.
@@ -106,5 +136,20 @@ pub enum BackdropEffectSpec {
         /// The highlight's gain; values above 1 push the rim above SDR
         /// white.
         gain: f64,
+    },
+    /// A trilinear pyramid read at a per-pixel level: `c =
+    /// sample_level(p, interior_level + (edge_level −
+    /// interior_level)·t)` with `t = clamp(1 + d / depth, 0, 1)` — a
+    /// blur that fades from `edge_level` at the clip's edge to
+    /// `interior_level` deep inside. SDF-required like
+    /// `Refraction`.
+    #[serde(rename_all = "kebab-case")]
+    Level {
+        /// How deep inside the clip the level fades out, in pixels.
+        depth: f64,
+        /// The pyramid level at the clip's edge (`t = 1`).
+        edge_level: f64,
+        /// The pyramid level deep inside the clip (`t = 0`).
+        interior_level: f64,
     },
 }

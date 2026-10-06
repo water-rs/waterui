@@ -154,6 +154,9 @@ pub struct Capture {
     pub copy_from: Target,
     /// A reduced-scale capture's resolve; `None` copies the region 1:1.
     pub resolve: Option<Resolve>,
+    /// The group's capture level count `n`: the pass reduces its region
+    /// into `n − 1` deeper levels after its draws and filter.
+    pub levels: u32,
 }
 
 /// A reduced-scale capture (`resolve.wgsl`): the pass's `region` is on the
@@ -193,6 +196,10 @@ pub struct Frame {
     /// Local images whose mip chains build after the pass at the index:
     /// the last pass of their realization.
     pub mips: Vec<(usize, LocalKey)>,
+    /// Capture passes of groups keeping more than one level, with the
+    /// group's level count `n`: the pass at the index reduces its region
+    /// into `n − 1` pyramid levels, one globals slot each.
+    pub reduces: Vec<(usize, u32)>,
     open: Option<OpenPass>,
 }
 
@@ -243,6 +250,7 @@ impl Frame {
         self.instances.truncate(snap.instances);
         self.stops.truncate(snap.stops);
         self.passes.truncate(snap.passes);
+        self.reduces.retain(|&(pass, _)| pass < snap.passes);
         self.filters.truncate(snap.filters);
         self.shadows.truncate(snap.shadows);
         self.open = snap.open;
@@ -266,6 +274,13 @@ impl Frame {
         shift(&mut self.shadows, i);
         shift(&mut self.filters, i);
         shift(&mut self.mips, i);
+        shift(&mut self.reduces, i);
+    }
+
+    /// This frame's pyramid reduce count: one globals slot per level
+    /// step of every levelled capture pass.
+    pub fn reduce_slots(&self) -> u32 {
+        self.reduces.iter().map(|&(_, levels)| levels - 1).sum()
     }
 }
 
@@ -280,6 +295,7 @@ impl Frame {
         self.filters.clear();
         self.shadows.clear();
         self.mips.clear();
+        self.reduces.clear();
         self.open = None;
     }
 }
@@ -840,8 +856,8 @@ pub struct BackdropGroupInfo {
     /// The filter chain's footprint bound; `None` only when the registry
     /// lost the entry (an internal error a sampled group reports).
     pub footprint: Option<filtrate_core::Footprint>,
-    /// The group's capture scale.
-    pub scale: cherenkov::CaptureScale,
+    /// The group's capture spec (scale and level count).
+    pub spec: cherenkov::BackdropSpec,
 }
 
 /// The per-region capture overhead in captured pixels: a separated pair
@@ -951,9 +967,10 @@ fn cluster(rects: &[[u32; 4]], overhead: u64) -> Vec<Cluster> {
 struct BackdropPlan {
     /// The first member layer in paint order — its entry emits the capture.
     first: LayerId,
-    /// The capture scale `s`: regions are on the capture grid, whose
-    /// texel `i` covers the device interval `[i/s, (i+1)/s)`.
-    scale: cherenkov::CaptureScale,
+    /// The capture spec: regions are on the capture grid, whose texel `i`
+    /// covers the device interval `[i/s, (i+1)/s)`, and aligned to the
+    /// deepest level's grid when the group keeps levels.
+    spec: cherenkov::BackdropSpec,
     /// The union of members' clip bounds before the footprint apron.
     union: Rect,
     /// Each member's aproned rect (`A_i`) in paint order — the
@@ -1129,7 +1146,9 @@ impl<'a> Lowering<'a> {
     /// member's device-space clip bounds, then the capture regions — each
     /// member's aproned rect `A_i` (bounds ∪ reach on the capture grid,
     /// inflated by the filter footprint's apron in capture texels, plus
-    /// one texel for the bilinear taps of a reduced capture)
+    /// one texel for the bilinear taps of a reduced capture; on a
+    /// levelled group, every deeper level's read footprint inflated by
+    /// the filter's apron)
     /// integer-rounded and clipped to the grid's extent, clustered by the
     /// `cluster` cost model into one or more regions. A group that ends up
     /// with one region produces exactly the union rect this planning
@@ -1147,16 +1166,57 @@ impl<'a> Lowering<'a> {
         self.plan_layer(self.start(tree), tree, groups, Affine::IDENTITY)?;
         let (width, height) = (f64::from(self.width), f64::from(self.height));
         for (gid, plan) in &mut self.backdrops {
-            let s = f64::from(plan.scale.get());
+            let s = f64::from(plan.spec.scale().get());
+            let levels = plan.spec.levels().get();
             // The capture grid's extent in texels: `⌈len · s⌉`.
             let (w, h) = ((width * s).ceil(), (height * s).ceil());
+            // A reduced capture is sampled bilinearly at `p · s`: an edge
+            // pixel's second tap lies one texel past the member's rect on
+            // the grid, so level 0's footprint covers that texel too.
+            let taps = if plan.spec.scale().is_full() {
+                0.0
+            } else {
+                1.0
+            };
             // A member's device rect aproned on the capture grid in whole
-            // texels, `None` when it is empty or clipped fully off it.
-            let aproned = |r: Rect, a: f64| -> Option<[u32; 4]> {
-                let x0 = r.x0.mul_add(s, -a).floor().max(0.0);
-                let y0 = r.y0.mul_add(s, -a).floor().max(0.0);
-                let x1 = r.x1.mul_add(s, a).ceil().min(w);
-                let y1 = r.y1.mul_add(s, a).ceil().min(h);
+            // texels, `None` when it is empty or clipped fully off it:
+            // every level's read footprint, in level-0 texels, inflated
+            // by the filter's `apron` so each filtered texel any level
+            // reads is computed from uncut filter input — a member's
+            // result never depends on the other members.
+            let aproned = |r: Rect, apron: f64| -> Option<[u32; 4]> {
+                // Level 0: the member rect plus the bilinear taps.
+                let a = apron + taps;
+                let mut x0 = r.x0.mul_add(s, -a).floor().max(0.0);
+                let mut y0 = r.y0.mul_add(s, -a).floor().max(0.0);
+                let mut x1 = r.x1.mul_add(s, a).ceil().min(w);
+                let mut y1 = r.y1.mul_add(s, a).ceil().min(h);
+                // Levels 1..n: a bilinear read at level `k` taps level-k
+                // texels `floor(q·s/2^k − 0.5)` through `+1`, and level-k
+                // texel `t` reduces capture texels `[2^k·t, 2^k·(t+1))`.
+                for k in 1..levels {
+                    let div = f64::from(1u32 << k);
+                    x0 = x0
+                        .min((r.x0 * s / div - 0.5).floor().mul_add(div, -apron))
+                        .max(0.0);
+                    y0 = y0
+                        .min((r.y0 * s / div - 0.5).floor().mul_add(div, -apron))
+                        .max(0.0);
+                    x1 = x1
+                        .max(((r.x1 * s / div - 0.5).floor() + 2.0).mul_add(div, apron))
+                        .min(w);
+                    y1 = y1
+                        .max(((r.y1 * s / div - 0.5).floor() + 2.0).mul_add(div, apron))
+                        .min(h);
+                }
+                // The region's origin sits on the deepest level's grid so
+                // level `k` texel `(i, j)` covers capture texels
+                // `[2^k·i, 2^k·(i+1))`; its far edge stays grid-clipped.
+                let grid = f64::from(1u32 << (levels - 1));
+                x0 = (x0 / grid).floor() * grid;
+                y0 = (y0 / grid).floor() * grid;
+                x1 = ((x1 / grid).ceil() * grid).min(w);
+                y1 = ((y1 / grid).ceil() * grid).min(h);
                 (x1 > x0 && y1 > y0).then_some([
                     x0 as u32,
                     y0 as u32,
@@ -1180,16 +1240,12 @@ impl<'a> Lowering<'a> {
                 plan.regions = Vec::new();
                 continue;
             }
-            // The footprint resolves against the capture's size in texels.
+            // The footprint resolves against the capture's size in texels;
+            // the filter's apron, in capture texels.
             let extent = uw.max(uh) * s;
-            // A reduced capture is sampled bilinearly at `p · s`: an edge
-            // pixel's second tap lies one texel past the member's rect on
-            // the grid, so the apron covers that texel too.
-            let taps = if plan.scale.is_full() { 0.0 } else { 1.0 };
             let a = (f64::from(footprint.extent).mul_add(extent, f64::from(footprint.pixels))
                 / 2.0f64.mul_add(-f64::from(footprint.extent), 1.0))
-            .ceil()
-                + taps;
+            .ceil();
             // Relative-extent filters make the apron depend on the region
             // size, so per-cluster regions are not guaranteed identical:
             // they stay a single union region (a rule, not an error).
@@ -1262,10 +1318,10 @@ impl<'a> Lowering<'a> {
                 f64::from(reach.unwrap_or(0.0)),
                 f64::from(reach.unwrap_or(0.0)),
             );
-            let scale = groups[&g].scale;
+            let spec = groups[&g].spec;
             let plan = self.backdrops.entry(g).or_insert_with(|| BackdropPlan {
                 first: id,
-                scale,
+                spec,
                 union: footprint,
                 aproned: Vec::new(),
                 regions: Vec::new(),
@@ -1626,6 +1682,13 @@ impl<'a> Lowering<'a> {
                     .copied()
                     .unwrap_or([0, 0, 0, 0]),
             };
+            if let Some(capture) = open.capture
+                && capture.levels > 1
+            {
+                self.frame
+                    .reduces
+                    .push((self.frame.passes.len(), capture.levels));
+            }
             self.frame.passes.push(Pass {
                 target: open.target,
                 clear: open.clear,
@@ -2122,7 +2185,8 @@ impl<'a> Lowering<'a> {
     fn emit_capture(&mut self, gid: u64) {
         let plan = &self.backdrops[&gid];
         let regions = plan.regions.clone();
-        let scale = plan.scale;
+        let scale = plan.spec.scale();
+        let levels = plan.spec.levels().get();
         let copy_from = self.semantic_target;
         let current = self.current_target();
         // The capture texture stores the semantic target's space, and
@@ -2148,6 +2212,7 @@ impl<'a> Lowering<'a> {
                     region: r,
                     copy_from,
                     resolve,
+                    levels,
                 });
             }
             let covered = resolve.map_or(*region, |resolve| resolve.device);
@@ -2225,7 +2290,8 @@ impl<'a> Lowering<'a> {
         if region[2] == 0 || region[3] == 0 {
             return Ok(());
         }
-        let scale = plan.scale;
+        let spec = plan.spec;
+        let scale = spec.scale();
         let s = f64::from(scale.get());
         let (rx, ry, rw, rh) = (
             region[0] as f32,
@@ -2260,6 +2326,8 @@ impl<'a> Lowering<'a> {
             inst.meta[1] = super::instance::PAINT_BACKDROP;
             // `grad.z` maps device points onto the capture grid.
             inst.grad[2] = scale.get();
+            // `grad.w` is the group's level count for `backdrop_sample_level`.
+            inst.grad[3] = spec.levels().get() as f32;
             // `grad2.xy` is the region's size in texels; `grad2.zw` the
             // member's device size for effect shaders: the unclipped
             // bounds, not the visible intersection.
@@ -4336,6 +4404,8 @@ fn effect_reach(effect: &cherenkov::BackdropEffect) -> Result<f32, RenderError> 
                 ))
             }
         }
+        // `LevelRamp`'s constructor validates its parameters.
+        cherenkov::BackdropEffect::Level(_) => Ok(0.0),
         cherenkov::BackdropEffect::Shader(s) => {
             if s.uniforms.len() <= 64
                 && s.uniforms.iter().all(|v| v.is_finite())
@@ -4355,9 +4425,12 @@ fn effect_reach(effect: &cherenkov::BackdropEffect) -> Result<f32, RenderError> 
 /// `(kind, stop count)`: `Color` packs three row stops (the row's
 /// `[r, g, b, bias]` in `color`), `Refraction` one stop (`depth`,
 /// `strength` in `color.xy`), `Rim` two stops (`(width, r, g, b)` and
-/// `(a, gain)`), `Shader` the uniforms packed four per stop, zero-filled.
+/// `(a, gain)`), `Level` one stop (`(depth, edge, interior)`),
+/// `Shader` the uniforms packed four per stop, zero-filled.
 fn push_effect_stops(stops: &mut Vec<Stop>, effect: &cherenkov::BackdropEffect) -> (u32, u32) {
-    use super::instance::{EFFECT_COLOR, EFFECT_REFRACTION, EFFECT_RIM, EFFECT_SHADER};
+    use super::instance::{
+        EFFECT_COLOR, EFFECT_LEVEL, EFFECT_REFRACTION, EFFECT_RIM, EFFECT_SHADER,
+    };
     let push = |stops: &mut Vec<Stop>, v: [f32; 4]| {
         stops.push(Stop {
             color: v,
@@ -4380,6 +4453,10 @@ fn push_effect_stops(stops: &mut Vec<Stop>, effect: &cherenkov::BackdropEffect) 
             push(stops, [r.width, r.color[0], r.color[1], r.color[2]]);
             push(stops, [r.color[3], r.gain, 0.0, 0.0]);
             (EFFECT_RIM, 2)
+        }
+        cherenkov::BackdropEffect::Level(r) => {
+            push(stops, [r.depth(), r.edge(), r.interior(), 0.0]);
+            (EFFECT_LEVEL, 1)
         }
         cherenkov::BackdropEffect::Shader(s) => {
             let mut count = 0;
