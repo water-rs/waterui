@@ -945,7 +945,7 @@ class TestInstrumentsScratch(unittest.TestCase):
         exe = self.tmp / "bin" / name
         if not exe.exists():
             exe.parent.mkdir(exist_ok=True)
-            shutil.copy2("/bin/sleep", exe)
+            shutil.copy("/bin/sleep", exe)
         child = subprocess.Popen(
             ["/bin/sh", "-c", 'exec 3<"$1"; read go; exec "$0" 600',
              str(exe), str(f)], stdin=subprocess.PIPE)
