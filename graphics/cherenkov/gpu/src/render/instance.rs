@@ -56,6 +56,9 @@ pub const EFFECT_RIM: u32 = 4;
 /// No effect on a reduced-scale capture: the plain bilinear sample at
 /// `p · s`, which a texel read cannot express.
 pub const EFFECT_SAMPLE: u32 = 5;
+/// A blur-level ramp over the clip's signed distance: the trilinear
+/// `backdrop_sample_level` at `interior + (edge − interior)·t`.
+pub const EFFECT_LEVEL: u32 = 6;
 /// Smooth colour weights; low 16 bits still identify the mesh paint kind.
 pub const PAINT_MESH_SMOOTH: u32 = 1 << 17;
 
@@ -180,9 +183,11 @@ pub struct Instance {
     /// Linear: start.xy, end.xy. Radial: start centre.xy, end centre.xy.
     /// Sweep: centre.xy. Image: local→image affine `[a, b, c, d]`.
     /// `PAINT_TEXTURE`: source region origin.xy. `PAINT_BACKDROP`: the
-    /// capture region's texel origin.xy and the capture scale in z.
+    /// capture region's texel origin.xy, the capture scale in z and the
+    /// capture's level count in w.
     pub grad: [f32; 4],
-    /// Radial: start radius, end radius. Sweep: start angle, end angle.
+    /// Radial: start radius, end radius, identical-circles flag (1 or 0).
+    /// Sweep: start angle, end angle.
     /// Image: local→image affine `[e, f]` and image `[w, h]`.
     pub grad2: [f32; 4],
     /// Glyph/cell: atlas cell origin in texels. zw: mask atlas cell origin.

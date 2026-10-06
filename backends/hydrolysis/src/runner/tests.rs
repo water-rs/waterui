@@ -11,6 +11,7 @@ use crate::platform::{
 };
 use crate::renderer::tests::MinimalTestTheme;
 use crate::renderer::{FontFamilyResolution, HydrolysisRenderer, InteractionKey};
+use crate::text::SessionTextEngine;
 use core::time::Duration;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -740,10 +741,11 @@ fn zero_layout_minimum_is_not_replaced_by_ideal_size() {
         .applied_size_limits()
         .expect("runner must apply size limits on the pump");
 
-    assert_eq!(
+    assert!(
+        approx::relative_eq!(min.expect("content-derived minimum must exist").width, 0.0),
+        "a valid zero minimum must not fall back to the content's ideal width: left {:?}, right {:?}",
         min.expect("content-derived minimum must exist").width,
-        0.0,
-        "a valid zero minimum must not fall back to the content's ideal width"
+        0.0
     );
 }
 
@@ -818,8 +820,8 @@ fn rapid_resize_events_keep_the_retained_tree_at_the_latest_size() {
         "resize must retain the existing view tree"
     );
     assert_eq!(runtime.platform.surface().size(), (640, 480));
-    assert_eq!(runtime.window.frame.snapshot().width(), 640.0);
-    assert_eq!(runtime.window.frame.snapshot().height(), 480.0);
+    approx::assert_relative_eq!(runtime.window.frame.snapshot().width(), 640.0);
+    approx::assert_relative_eq!(runtime.window.frame.snapshot().height(), 480.0);
 }
 
 #[test]
@@ -884,9 +886,9 @@ fn runtime_window_sized(
     let mut platform =
         HeadlessPlatformWindow::new_for_tests(width, height, wgpu::TextureFormat::Rgba8Unorm);
     platform.apply_properties(&window);
-    let renderer = HydrolysisRenderer::new(
+    let renderer = HydrolysisRenderer::with_engine(
         Rc::new(MinimalTestTheme::default()),
-        FontFamilyResolution::Strict,
+        SessionTextEngine::system(FontFamilyResolution::Strict),
     );
     RuntimeWindow::new(
         window,
@@ -989,9 +991,9 @@ fn test_runtime_window() -> RuntimeWindow<HeadlessPlatformWindow> {
     let mut platform =
         HeadlessPlatformWindow::new_for_tests(16, 16, wgpu::TextureFormat::Rgba8Unorm);
     platform.apply_properties(&window);
-    let renderer = HydrolysisRenderer::new(
+    let renderer = HydrolysisRenderer::with_engine(
         Rc::new(MinimalTestTheme::default()),
-        FontFamilyResolution::Strict,
+        SessionTextEngine::system(FontFamilyResolution::Strict),
     );
     RuntimeWindow::new(
         window,

@@ -56,9 +56,11 @@ impl SemanticWindow {
         window_id: WindowId,
         family_resolution: FontFamilyResolution,
     ) -> Self {
-        let mut core = SemanticCore::new(Instant::now(), family_resolution);
+        let mut core = SemanticCore::new(
+            Instant::now(),
+            SessionTextEngine::from_collection(fonts, family_resolution),
+        );
         core.set_window_id(window_id);
-        seed_core(&mut core, fonts);
         #[cfg(feature = "accessibility")]
         {
             core.use_semantic_keyboard_activation();
@@ -131,11 +133,13 @@ impl SemanticRuntime {
         // runtime there shapes with the default collection alone.
         #[cfg(not(target_arch = "wasm32"))]
         return Self::on_env(env, content, width, height, family_resolution, |env| {
-            native_resource_fonts(waterui_core::ResourceContext::from_environment(env))
+            crate::text::fonts::native_collection(waterui_core::ResourceContext::from_environment(
+                env,
+            ))
         });
         #[cfg(target_arch = "wasm32")]
         Self::on_env(env, content, width, height, family_resolution, |_| {
-            parley::FontContext::new()
+            crate::text::fonts::system_collection()
         })
     }
 
@@ -149,7 +153,7 @@ impl SemanticRuntime {
         width: u32,
         height: u32,
         family_resolution: FontFamilyResolution,
-        build_fonts: fn(&Environment) -> parley::FontContext,
+        build_fonts: fn(&Environment) -> FontCollection,
     ) -> Self {
         // The inspector endpoint is a TCP server a browser page cannot host —
         // on wasm32 the executor installs alone, with no probe to report to.
@@ -177,7 +181,7 @@ impl SemanticRuntime {
         // style-package tokens ever install — widget structure, roles, labels
         // and actions do not depend on one.
         crate::theme::install_theme_tokens(&mut env, None);
-        let fonts = FontCollection::new(build_fonts(&env));
+        let fonts = build_fonts(&env);
         fonts.clone().install(&mut env);
 
         // Semantic test binaries have no platform runner to install a tracing

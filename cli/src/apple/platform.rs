@@ -692,10 +692,19 @@ pub async fn package_apple(
         .bundle_identifier()
         .apple_bundle_identifier()
         .map_err(|error| eyre::eyre!("{error}"))?;
-    #[cfg(target_os = "macos")]
     let browser_runtime_plan = project
         .browser_runtime_plan(platform, TargetBackend::Apple)
         .await?;
+    // Crate-declared entitlements and `Info.plist` keys, collected from the
+    // graph the companion compiles with — a conflict fails before any
+    // bundle work.
+    let mut apple_declarations = crate::assets::scan_apple_declarations(
+        project,
+        &project.ffi_crate_path().join("Cargo.toml"),
+        &apple_dependency_features(project, browser_runtime_plan).await?,
+    )
+    .await?;
+    apple_declarations.supply_app_values(&project.manifest().app_values)?;
 
     let project_path = project.backend_path::<AppleBackend>();
 
@@ -747,7 +756,7 @@ pub async fn package_apple(
     let layout = app_bundle::AppleAppLayout::for_app(&app_path, sdk_name);
 
     let executable = built.profile_dir.join(APPLE_ENTRY_BINARY_NAME);
-    let info_plist = app_bundle::apple_info_plist(
+    let mut info_plist = app_bundle::apple_info_plist(
         &ctx,
         project,
         platform,
@@ -755,6 +764,7 @@ pub async fn package_apple(
         &product_name,
         &bundle_id,
     );
+    apple_declarations.merge_into_info_plist(&mut info_plist)?;
 
     app_bundle::assemble_app_bundle(
         &layout,
@@ -824,6 +834,7 @@ pub async fn package_apple(
         project_path.as_path(),
         project,
         &deployment_target,
+        &apple_declarations,
     )
     .await?;
 

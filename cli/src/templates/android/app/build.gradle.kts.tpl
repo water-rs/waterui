@@ -1,5 +1,7 @@
 plugins {
     id("com.android.application")
+    // --- begin waterui gradle plugins ---
+    // --- end waterui gradle plugins ---
 }
 
 // =============================================================================

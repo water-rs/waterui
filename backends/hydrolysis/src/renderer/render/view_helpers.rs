@@ -979,8 +979,8 @@ pub fn anchor_point(bounds: kurbo::Rect, anchor: waterui::style::Anchor) -> kurb
     )
 }
 
-/// The sRGB8 encoding of a resolved working colour — the form parley's text
-/// layout takes for its brush.
+/// The sRGB8 encoding of a resolved working colour — the brush form text
+/// shaping takes.
 pub fn working_color_to_rgba8(color: waterui_graphics::draw::WorkingColor) -> [u8; 4] {
     let srgb = waterui_graphics::color::working::to_srgb(color);
     [
@@ -998,35 +998,6 @@ pub fn rgba8_to_peniko(color: [u8; 4]) -> peniko::Color {
         f32::from(color[2]) / 255.0,
         f32::from(color[3]) / 255.0,
     ])
-}
-
-pub const fn parley_font_weight(weight: TextFontWeight) -> parley::FontWeight {
-    let value = match weight {
-        TextFontWeight::Thin => 100.0,
-        TextFontWeight::UltraLight => 200.0,
-        TextFontWeight::Light => 300.0,
-        TextFontWeight::Normal => 400.0,
-        TextFontWeight::Medium => 500.0,
-        TextFontWeight::SemiBold => 600.0,
-        TextFontWeight::Bold => 700.0,
-        TextFontWeight::UltraBold => 800.0,
-        TextFontWeight::Black => 900.0,
-    };
-    parley::FontWeight::new(value)
-}
-
-pub fn parley_alignment(alignment: HorizontalAlignment, right_to_left: bool) -> parley::Alignment {
-    if alignment == HorizontalAlignment::Leading && right_to_left
-        || alignment == HorizontalAlignment::Trailing && !right_to_left
-    {
-        parley::Alignment::Right
-    } else if alignment == HorizontalAlignment::Leading
-        || alignment == HorizontalAlignment::Trailing
-    {
-        parley::Alignment::Left
-    } else {
-        parley::Alignment::Center
-    }
 }
 
 pub fn transformed_rect(transform: kurbo::Affine, rect: kurbo::Rect) -> kurbo::Rect {
@@ -1076,25 +1047,4 @@ pub fn circle_arc_path(
         ));
     }
     path
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn logical_text_alignment_follows_environment_direction() {
-        assert_eq!(
-            parley_alignment(HorizontalAlignment::Leading, false),
-            parley::Alignment::Left
-        );
-        assert_eq!(
-            parley_alignment(HorizontalAlignment::Leading, true),
-            parley::Alignment::Right
-        );
-        assert_eq!(
-            parley_alignment(HorizontalAlignment::Trailing, true),
-            parley::Alignment::Left
-        );
-    }
 }

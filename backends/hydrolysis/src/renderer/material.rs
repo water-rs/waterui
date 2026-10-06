@@ -239,6 +239,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "the tone parameters are the treatment's literal table bound through untouched"
+    )]
     fn each_appearance_resolves_its_colour_stage() {
         assert_eq!(
             MaterialRuntime::new(WithinWindowLevel::Regular, ColorScheme::Light)

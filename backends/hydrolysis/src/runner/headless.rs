@@ -454,9 +454,9 @@ impl HeadlessRuntime {
         // Every window's renderer is seeded from this collection, and a
         // self-drawn component that typesets text itself reads it out of the
         // environment instead of enumerating the system's fonts for itself.
-        let fonts = FontCollection::new(native_resource_fonts(
+        let fonts = crate::text::fonts::native_collection(
             waterui_core::ResourceContext::from_environment(&env),
-        ));
+        );
         fonts.clone().install(&mut env);
 
         // Headless binaries (preview, tests) have no platform runner to install
@@ -489,8 +489,10 @@ impl HeadlessRuntime {
             wgpu::TextureFormat::Rgba8Unorm,
         );
         platform.apply_properties(&window);
-        let mut renderer = HydrolysisRenderer::new(Rc::clone(&theme), family_resolution);
-        super::seed_core(&mut renderer, &fonts);
+        let mut renderer = HydrolysisRenderer::with_engine(
+            Rc::clone(&theme),
+            SessionTextEngine::from_collection(&fonts, family_resolution),
+        );
         renderer.set_window_id(
             env.get::<MenuShortcutRegistry>()
                 .expect("install_headless_window_managers seeds MenuShortcutRegistry")
@@ -532,8 +534,10 @@ impl HeadlessRuntime {
             wgpu::TextureFormat::Rgba8Unorm,
         );
         platform.apply_properties(&window);
-        let mut renderer = HydrolysisRenderer::new(Rc::clone(&self.theme), self.family_resolution);
-        super::seed_core(&mut renderer, &self.fonts);
+        let mut renderer = HydrolysisRenderer::with_engine(
+            Rc::clone(&self.theme),
+            SessionTextEngine::from_collection(&self.fonts, self.family_resolution),
+        );
         renderer.set_window_id(
             self.env
                 .get::<MenuShortcutRegistry>()
@@ -1307,9 +1311,9 @@ mod generation_tests {
             if self.font.is_none() {
                 self.font = Some(
                     resources
-                        .font(FontSource::bytes(
-                            crate::renderer::tests::installed_font_bytes("Roboto"),
-                        ))
+                        .font(FontSource::bytes(crate::text::fonts::installed_font_bytes(
+                            "Roboto",
+                        )))
                         .expect("test font registers on the engine's resource table"),
                 );
             }

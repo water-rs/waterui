@@ -46,14 +46,14 @@ use nami::Computed;
 use nami::Signal as _;
 use nami::watcher::BoxWatcherGuard;
 use waterui::Environment;
+#[cfg(not(target_os = "macos"))]
+use waterui::app::Quit;
 #[cfg(target_os = "macos")]
 use waterui_controls::menu::ResolvedNestedMenu;
 use waterui_controls::menu::{ResolvedCommand, ResolvedMenuItem, Shortcut};
 use waterui_core::handler::SharedAction;
 
 use crate::renderer::call_action_discarding_result;
-#[cfg(not(target_os = "macos"))]
-use crate::renderer::quit_command;
 
 /// One built native menu bar: the muda `Menu` tree, the `MenuId → action`
 /// table the event pump dispatches through, and the live watches.
@@ -244,7 +244,7 @@ fn append_items(
                 // alone: the command's label is also a self-drawn popup
                 // row, which would print the `&`.
                 #[cfg(not(target_os = "macos"))]
-                if let Some(command) = quit_command(env) {
+                if let Some(command) = env.get::<Quit>().map(|quit| quit.command(env)) {
                     parent(&build_command(
                         &format!("&{}", command_title(&command)),
                         &command,

@@ -804,7 +804,24 @@ impl FilteredView {
     }
 }
 
-waterui_core::raw_view!(FilteredView);
+// `raw_view!` only takes a constant axis; an effect never changes how its
+// subtree stretches, so both impls report the content's axis, as `Filtered`
+// does.
+impl waterui_core::NativeView for FilteredView {
+    fn stretch_axis(&self) -> StretchAxis {
+        self.content.stretch_axis()
+    }
+}
+
+impl View for FilteredView {
+    fn body(self, _env: &Environment) -> impl View {
+        waterui_core::Native::new(self)
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        self.content.stretch_axis()
+    }
+}
 
 /// Generates the inherent method appending a single-parameter filter.
 ///
@@ -1921,6 +1938,8 @@ mod tests {
     #[cfg(feature = "gpu")]
     use waterui_core::AnyView;
     use waterui_core::animation::Animation;
+    use waterui_core::layout::StretchAxis;
+    use waterui_core::{Native, NativeView, View};
 
     /// Records each stage's kind, name and parameter offset, and checks that
     /// it carries its shader source.
@@ -2074,6 +2093,32 @@ mod tests {
 
         assert_eq!(effect.output_size(10, 20), (1920, 1080));
         drop(guards);
+    }
+
+    /// Content that stretches horizontally only.
+    struct HorizontalRule;
+    waterui_core::raw_view!(HorizontalRule, StretchAxis::Horizontal);
+
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn effect_view_reports_its_content_stretch_axis() {
+        let effected = HorizontalRule.effect(NoopEffect);
+        assert_eq!(View::stretch_axis(&effected), StretchAxis::Horizontal);
+        assert_eq!(NativeView::stretch_axis(&effected), StretchAxis::Horizontal);
+    }
+
+    #[test]
+    fn output_sized_view_reports_its_content_stretch_axis() {
+        let sized = HorizontalRule
+            .brightness(0.25_f32)
+            .erase()
+            .output_size(OutputSize::Scale(2.0));
+        assert_eq!(View::stretch_axis(&sized), StretchAxis::Horizontal);
+        assert_eq!(NativeView::stretch_axis(&sized), StretchAxis::Horizontal);
+        assert_eq!(
+            View::stretch_axis(&Native::new(sized)),
+            StretchAxis::Horizontal
+        );
     }
 
     #[cfg(feature = "gpu")]

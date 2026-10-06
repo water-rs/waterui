@@ -406,14 +406,14 @@ fn scrolls_carry_their_unit_and_the_end_of_the_gesture() {
             SurfaceInputEvent::Scroll {
                 position: kurbo::Point::new(60.0, 40.0),
                 delta_x: 0.0,
-                delta_y: -3.0,
+                delta_y: 3.0,
                 unit: ScrollUnit::Line,
                 finished: true,
             },
             SurfaceInputEvent::Scroll {
                 position: kurbo::Point::new(60.0, 40.0),
-                delta_x: 1.0,
-                delta_y: -12.0,
+                delta_x: -1.0,
+                delta_y: 12.0,
                 unit: ScrollUnit::Pixel,
                 finished: false,
             },
@@ -427,6 +427,54 @@ fn scrolls_carry_their_unit_and_the_end_of_the_gesture() {
         ],
         "a wheel notch is a complete line-unit gesture; a trackpad glide is \
          pixel-unit and only its last event finishes"
+    );
+}
+
+#[test]
+fn a_wheel_turned_down_or_right_scrolls_surface_content_up_or_left() {
+    let log = ProbeLog::default();
+    let mut runtime = runtime_with(probe_view(log.clone(), None));
+    let start = Instant::now();
+    settled(&mut runtime, start);
+    let _ = log.drain();
+
+    let (x, y) = window_point(60.0, 40.0);
+    // With winit's positive-right/down convention, these wheel turns arrive negative.
+    runtime.push_input_event(InputEvent::Scroll {
+        x,
+        y,
+        dx: 0.0,
+        dy: -1.0,
+        is_line_delta: true,
+    });
+    runtime.push_input_event(InputEvent::Scroll {
+        x,
+        y,
+        dx: -1.0,
+        dy: 0.0,
+        is_line_delta: true,
+    });
+    let _ = runtime.pump_at(false, start + Duration::from_millis(100));
+
+    assert_eq!(
+        log.drain(),
+        vec![
+            SurfaceInputEvent::Scroll {
+                position: kurbo::Point::new(60.0, 40.0),
+                delta_x: 0.0,
+                delta_y: 1.0,
+                unit: ScrollUnit::Line,
+                finished: true,
+            },
+            SurfaceInputEvent::Scroll {
+                position: kurbo::Point::new(60.0, 40.0),
+                delta_x: 1.0,
+                delta_y: 0.0,
+                unit: ScrollUnit::Line,
+                finished: true,
+            },
+        ],
+        "surface deltas must follow the W3C WheelEvent sign"
     );
 }
 
