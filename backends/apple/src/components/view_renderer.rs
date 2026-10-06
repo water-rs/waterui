@@ -39,35 +39,10 @@ impl CustomViewRenderer for AppleViewRenderer {
         size: RenderSize,
     ) -> Result<RenderResult, RenderError> {
         let leaf = self.renderer.render(view);
-        let (pixels, width, height) = capture_leaf_to_rgba(&leaf, size, self.mtm)
+        capture_leaf_to_rgba(&leaf, size, self.mtm)
             .await
-            .map_err(|error| RenderError::Capture(Box::new(error)))?;
-        Ok(RenderResult {
-            rgba_data: pixels,
-            width,
-            height,
-        })
+            .map_err(|error| RenderError::Capture(Box::new(error)))
     }
-}
-
-/// Why the platform capture produced no bitmap.
-#[derive(Debug, thiserror::Error)]
-enum CaptureError {
-    /// Core Graphics refused the destination bitmap context.
-    #[error("could not create a {width}x{height} RGBA bitmap context")]
-    BitmapContext { width: usize, height: usize },
-    /// `AppKit` gave the view no bitmap to cache its display into.
-    #[cfg(target_os = "macos")]
-    #[error("the view provided no bitmap representation to cache its display into")]
-    NoBitmapRep,
-    /// The cached display bitmap could not be read as an image.
-    #[cfg(target_os = "macos")]
-    #[error("the cached display bitmap has no CGImage")]
-    NoImage,
-    /// No connected window scene can host the offscreen capture window.
-    #[cfg(target_os = "ios")]
-    #[error("no UIWindowScene is connected to host the capture window")]
-    NoWindowScene,
 }
 
 /// The environment's `ViewRenderer`, replacing
@@ -85,7 +60,6 @@ pub fn install_service(env: &mut Environment) {
 /// `captureViewToRGBA`.
 #[allow(
     clippy::future_not_send,
-    clippy::unused_async,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss
 )]
@@ -93,7 +67,7 @@ async fn capture_leaf_to_rgba(
     leaf: &NativeLeaf,
     size: RenderSize,
     mtm: cocoa_ui::MainThreadMarker,
-) -> Result<(alloc::vec::Vec<u8>, u32, u32), CaptureError> {
+) -> Result<RenderResult, crate::capture::CaptureError> {
     let view = leaf.view();
     let proposed = cocoa_ui::Size::new(f64::from(size.width), f64::from(size.height));
 
@@ -133,65 +107,28 @@ async fn capture_leaf_to_rgba(
     );
     cocoa_ui::view::layout_immediately(view);
 
-    let scale = cocoa_ui::view::backing_scale_factor(view);
-    let pixel_width = usize::try_from((actual.width * scale).ceil().max(1.0) as u64)
-        .unwrap_or(usize::MAX)
-        .min((usize::MAX - 3) / 4);
-    let pixel_height = usize::try_from((actual.height * scale).ceil().max(1.0) as u64)
-        .unwrap_or(usize::MAX)
-        .min((usize::MAX - 3) / 4);
-
-    #[cfg(feature = "gpu_surface")]
-    wait_for_surfaces(view).await;
-    capture::capture(view, actual, scale, pixel_width, pixel_height, mtm)
+    capture::capture(view, actual, mtm).await
 }
 
 #[cfg(target_os = "macos")]
 mod capture {
-    use alloc::vec::Vec;
+    use waterui_core::view_renderer::RenderResult;
 
-    use super::CaptureError;
+    use crate::capture::CaptureError;
 
-    /// `AppKit`: offscreen borderless window, `cacheDisplay` bitmap — the
+    /// `AppKit`: a window that never orders in hosts the measured leaf;
+    /// `crate::capture` drives and rasterizes the presented subtree — the
     /// `AppKit` half of `captureViewToRGBA`.
-    #[allow(clippy::cast_possible_truncation)]
-    pub fn capture(
+    #[expect(
+        clippy::future_not_send,
+        reason = "the capture runs on the main thread; the Retained AppKit objects it holds across the wait are not Send"
+    )]
+    pub async fn capture(
         view: &cocoa_ui::PlatformView,
         actual: cocoa_ui::Size,
-        scale: f64,
-        pixel_width: usize,
-        pixel_height: usize,
         mtm: cocoa_ui::MainThreadMarker,
-    ) -> Result<(Vec<u8>, u32, u32), CaptureError> {
-        let mut pixels = alloc::vec![0u8; pixel_width * pixel_height * 4];
-        let context = cocoa_ui::bitmap::bitmap_context(&mut pixels, pixel_width, pixel_height)
-            .ok_or(CaptureError::BitmapContext {
-                width: pixel_width,
-                height: pixel_height,
-            })?;
-        cocoa_ui::bitmap::scale_to_pixels(&context, scale);
-
-        let window = cocoa_ui::bitmap::make_offscreen_window(mtm, actual);
-        cocoa_ui::view::ensure_layer_backed(view);
-        let content_view = window.contentView().expect("offscreen window content");
-        cocoa_ui::view::add_subview(&content_view, view);
-        cocoa_ui::bitmap::show_capture_window(&window);
-        cocoa_ui::bitmap::force_text_fields_display(view);
-        let drawn = cocoa_ui::view::bitmap_rep_for_caching_display(view)
-            .ok_or(CaptureError::NoBitmapRep)
-            .and_then(|rep| {
-                cocoa_ui::view::cache_display(view, &rep);
-                let image = rep.CGImage().ok_or(CaptureError::NoImage)?;
-                cocoa_ui::bitmap::draw_image(
-                    &context,
-                    &image,
-                    cocoa_ui::Rect::new(0.0, 0.0, actual.width, actual.height),
-                );
-                Ok(())
-            });
-        cocoa_ui::bitmap::close_capture_window(&window);
-        drawn?;
-        Ok((pixels, pixel_width as u32, pixel_height as u32))
+    ) -> Result<RenderResult, CaptureError> {
+        crate::capture::capture_view(view, actual, mtm).await
     }
 }
 
@@ -199,19 +136,42 @@ mod capture {
 mod capture {
     use alloc::vec::Vec;
 
-    use super::CaptureError;
+    use waterui_core::view_renderer::RenderResult;
+
+    use crate::capture::CaptureError;
 
     /// `UIKit`: offscreen `UIWindow`, `layer.render` into the context — the
     /// `UIKit` half of `captureViewToRGBA`.
     #[allow(clippy::cast_possible_truncation)]
-    pub fn capture(
+    #[expect(
+        clippy::future_not_send,
+        reason = "the capture runs on the main thread; the Retained UIKit objects it holds across the wait are not Send"
+    )]
+    #[cfg_attr(
+        not(feature = "gpu_surface"),
+        expect(
+            clippy::unused_async,
+            reason = "the surface wait is the only await; without gpu_surface the UIKit capture is synchronous"
+        )
+    )]
+    pub async fn capture(
         view: &cocoa_ui::PlatformView,
         actual: cocoa_ui::Size,
-        scale: f64,
-        pixel_width: usize,
-        pixel_height: usize,
         mtm: cocoa_ui::MainThreadMarker,
-    ) -> Result<(Vec<u8>, u32, u32), CaptureError> {
+    ) -> Result<RenderResult, CaptureError> {
+        let scale = cocoa_ui::view::backing_scale_factor(view);
+        let pixel_width = usize::try_from((actual.width * scale).ceil().max(1.0) as u64)
+            .unwrap_or(usize::MAX)
+            .min((usize::MAX - 3) / 4);
+        let pixel_height = usize::try_from((actual.height * scale).ceil().max(1.0) as u64)
+            .unwrap_or(usize::MAX)
+            .min((usize::MAX - 3) / 4);
+
+        // The surfaces present through `IOSurface` contents, which
+        // `layer.render` draws like any other layer content.
+        #[cfg(feature = "gpu_surface")]
+        crate::components::gpu_surface::wait_for_first_frames(view).await;
+
         let mut pixels = alloc::vec![0u8; pixel_width * pixel_height * 4];
         let context = cocoa_ui::bitmap::bitmap_context(&mut pixels, pixel_width, pixel_height)
             .ok_or(CaptureError::BitmapContext {
@@ -231,16 +191,10 @@ mod capture {
         });
         cocoa_ui::bitmap::end_layer_flip(&context);
         cocoa_ui::bitmap::close_capture_window(&window);
-        Ok((pixels, pixel_width as u32, pixel_height as u32))
+        Ok(RenderResult {
+            rgba_data: pixels,
+            width: pixel_width as u32,
+            height: pixel_height as u32,
+        })
     }
-}
-
-/// Waits until every mounted GPU surface inside `view`'s subtree has
-/// presented a frame — `view.ready()`: the surfaces present through
-/// `IOSurface` contents, which the layer-capture paths draw like any other
-/// layer content.
-#[cfg(feature = "gpu_surface")]
-#[allow(clippy::future_not_send)]
-async fn wait_for_surfaces(view: &cocoa_ui::PlatformView) {
-    crate::components::gpu_surface::wait_for_first_frames(view).await;
 }

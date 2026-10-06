@@ -6,12 +6,15 @@
 
 extern crate alloc;
 
+pub(crate) mod capture;
 pub mod contract;
 pub mod dispatch;
 pub mod embedding;
 pub mod entry;
 mod native_layout;
 mod native_log;
+#[cfg(target_os = "macos")]
+pub mod preview;
 pub mod resources;
 
 #[cfg(any(platform_timing, frame_progress))]

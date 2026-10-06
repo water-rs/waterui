@@ -350,7 +350,8 @@ fn a_label_at_a_fractional_origin_rasters_text_on_pixel_bounds() {
     let host = window
         .contentView()
         .expect("the offscreen window's content");
-    bitmap::show_capture_window(&window);
+    // The window never orders in — `cacheDisplay` rasterizes the tree
+    // without any on-screen presence.
     let scale = window.backingScaleFactor();
     assert!(scale > 0.0, "the fixture requires a positive backing scale");
     // Exactly half a device pixel: the worst raster phase at any scale.
@@ -443,8 +444,7 @@ fn a_label_at_a_fractional_origin_rasters_text_on_pixel_bounds() {
         "a rotated label must still raster ink"
     );
     fields.label_frac.setFrameRotation(0.0);
-
-    bitmap::close_capture_window(&window);
+    window.close();
 }
 
 /// The frame size every fixture field shares.

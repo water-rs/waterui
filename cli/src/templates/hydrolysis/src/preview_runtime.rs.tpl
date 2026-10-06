@@ -9,14 +9,14 @@ use std::{
 use crate::preview_symbol;
 use hydrolysis::{FontFamilyResolution, HeadlessRuntime, InputEvent, PointerButton, PointerKind};
 use waterui_core::handler::AnyViewBuilder;
-use waterui_preview::{RenderResult, RenderResultExt as _};
-use waterui_preview_protocol::hydrolysis::{
-    PREVIEW_RUN_CONFIG_ENV, PreviewRunConfig, PreviewRunMode, ScenarioEvent, ScenarioEventKind,
-    ScenarioPointerButton,
+use waterui_preview_protocol::run::{
+    Alpha, PreviewRunConfig, PreviewRunMode, ScenarioEvent, ScenarioEventKind,
+    ScenarioPointerButton, write_png,
 };
 
 pub(crate) fn run() {
-    let config = crate::run_config::load_run_config::<PreviewRunConfig>(PREVIEW_RUN_CONFIG_ENV, "preview");
+    let config = PreviewRunConfig::load_from_env()
+        .unwrap_or_else(|error| panic!("hydrolysis preview: {error}"));
     match config.mode {
         PreviewRunMode::Image { ref output } => {
             run_image(output, config.width, config.height);
@@ -175,29 +175,17 @@ fn run_scenario(
 }
 
 fn write_snapshot_png(snapshot: hydrolysis::HeadlessSnapshot, path: &Path) {
-    let mut render = RenderResult {
-        width: snapshot.width,
-        height: snapshot.height,
-        rgba_data: snapshot.rgba8,
-    };
-    flatten_alpha_over_white(&mut render);
-    let png_data = render
-        .into_png()
-        .unwrap_or_else(|error| panic!("hydrolysis preview: failed to encode PNG: {error}"));
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).unwrap_or_else(|error| {
-            panic!(
-                "hydrolysis preview: failed to create output directory `{}`: {error}",
-                parent.display()
-            )
-        });
-    }
-    fs::write(path, png_data).unwrap_or_else(|error| {
-        panic!(
-            "hydrolysis preview: failed to write `{}`: {error}",
-            path.display()
-        )
-    });
+    // `readback_rgba8` presents into the offscreen target with
+    // `OutputAlpha::Premultiplied` — the convention the writer declares
+    // for this capture.
+    write_png(
+        path,
+        snapshot.width,
+        snapshot.height,
+        snapshot.rgba8,
+        Alpha::Premultiplied,
+    )
+    .unwrap_or_else(|error| panic!("hydrolysis preview: {error}"));
 }
 
 fn input_event(event: ScenarioEvent) -> InputEvent {
@@ -247,24 +235,4 @@ fn dimension_to_u32(value: f32) -> u32 {
         "hydrolysis preview dimension must be finite and positive"
     );
     value.round() as u32
-}
-
-fn flatten_alpha_over_white(render: &mut RenderResult) {
-    for pixel in render.rgba_data.chunks_exact_mut(4) {
-        let alpha = u16::from(pixel[3]);
-        let inv_alpha = 255_u16
-            .checked_sub(alpha)
-            .expect("preview alpha channel must be <= 255");
-        for channel in &mut pixel[..3] {
-            let source = u16::from(*channel);
-            let blended = source
-                .checked_mul(alpha)
-                .and_then(|value| value.checked_add(255_u16.checked_mul(inv_alpha)?))
-                .and_then(|value| value.checked_add(127))
-                .map(|value| value / 255)
-                .expect("preview RGB blending overflowed");
-            *channel = u8::try_from(blended).expect("preview RGB channel must fit into u8");
-        }
-        pixel[3] = 255;
-    }
 }

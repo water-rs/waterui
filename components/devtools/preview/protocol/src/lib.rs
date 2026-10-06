@@ -2,6 +2,7 @@
 
 pub mod bench;
 pub mod hydrolysis;
+pub mod run;
 
 use serde::de::{Error as DeError, Visitor as DeVisitor};
 use serde::{Deserialize, Serialize};

@@ -18,10 +18,8 @@ use crate::utils::command;
 const HYDROLYSIS_PREVIEW_FEATURE: &str = "waterui-preview-mode";
 const HYDROLYSIS_PREVIEW_TEST_FEATURE: &str = "waterui-preview-test-mode";
 
-use waterui_preview_protocol::hydrolysis::{
-    PREVIEW_RUN_CONFIG_ENV, PreviewRunConfig, PreviewRunMode,
-};
-pub use waterui_preview_protocol::hydrolysis::{
+use waterui_preview_protocol::run::{PREVIEW_RUN_CONFIG_ENV, PreviewRunConfig, PreviewRunMode};
+pub use waterui_preview_protocol::run::{
     ScenarioEvent as HydrolysisPreviewScenarioEvent,
     ScenarioEventKind as HydrolysisPreviewEventKind,
     ScenarioPointerButton as HydrolysisPreviewPointerButton,

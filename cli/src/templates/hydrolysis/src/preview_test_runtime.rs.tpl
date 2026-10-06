@@ -3,16 +3,12 @@
 use std::io::Write as _;
 
 use crate::preview_test;
-use waterui_preview_protocol::hydrolysis::{
-    PREVIEW_RUN_CONFIG_ENV, PreviewRunConfig, PreviewRunMode,
-};
+use waterui_preview_protocol::run::{PreviewRunConfig, PreviewRunMode};
 use waterui_testing::ui;
 
 pub(crate) fn run() {
-    let config = crate::run_config::load_run_config::<PreviewRunConfig>(
-        PREVIEW_RUN_CONFIG_ENV,
-        "preview test",
-    );
+    let config = PreviewRunConfig::load_from_env()
+        .unwrap_or_else(|error| panic!("hydrolysis preview test: {error}"));
     match config.mode {
         PreviewRunMode::Semantic => run_semantic(config.width, config.height),
         PreviewRunMode::Image { .. } | PreviewRunMode::Scenario { .. } => panic!(

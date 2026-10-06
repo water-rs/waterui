@@ -826,15 +826,34 @@ fn update_presentation_frame(state: &SurfaceState, view: &Retained<SurfaceView>)
 }
 
 /// Geometry + deferred allocation — `initializeGpuIfNeeded`.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn initialize_gpu(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
-    let bounds = view.bounds_size();
-    if bounds.width <= 0.0 || bounds.height <= 0.0 {
-        return;
-    }
     let Some(scale) = view.backing_scale() else {
         return;
     };
+    if !prepare_presentation(state, view, scale) {
+        return;
+    }
+    // The surfaces are allocated where a frame could actually be shown:
+    // laying out a covered window bought pairs for frames that never came.
+    if !can_present_now(view) {
+        return;
+    }
+    attach_presentation(state, view);
+}
+
+/// The geometry and dynamic-range half of `initialize_gpu` — the part the
+/// capture drive shares. `scale` is the scale the presentation renders at:
+/// the window's backing scale on screen, the capture's off it.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn prepare_presentation(
+    state: &Rc<SurfaceState>,
+    view: &Retained<SurfaceView>,
+    scale: f64,
+) -> bool {
+    let bounds = view.bounds_size();
+    if bounds.width <= 0.0 || bounds.height <= 0.0 {
+        return false;
+    }
 
     let requested = state
         .explicit_range
@@ -862,16 +881,20 @@ fn initialize_gpu(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
         state.keep_redrawing.set(true);
     }
     update_presentation_frame(state, view);
+    true
+}
 
-    // The surfaces are allocated where a frame could actually be shown:
-    // laying out a covered window bought pairs for frames that never came.
-    if !can_present_now(view) {
-        return;
-    }
+/// The attach the `can_present_now` gate defers: ring configure, the ring's
+/// first frame, and the forced render that presents it.
+fn attach_presentation(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
     if let Some(format) = state.presentation_format.get()
         && let Some(buffers) = state.buffers.borrow_mut().as_mut()
     {
-        buffers.configure(width, height, format);
+        buffers.configure(
+            state.current_width.get(),
+            state.current_height.get(),
+            format,
+        );
     }
     if state.attached.get() {
         return;
@@ -1840,7 +1863,28 @@ pub async fn wait_for_first_frames(view: &cocoa_ui::PlatformView) {
     .await;
 }
 
+/// Drives every registered surface inside `view`'s subtree to present its
+/// first frame — the drive half of [`wait_for_first_frames`] under a window
+/// that never orders in. `scale` is the capture's pixel scale.
+pub fn present_first_frames(view: &cocoa_ui::PlatformView, scale: f64) {
+    collect_unpresented(view, &mut |capturable| {
+        capturable.present_for_capture(scale);
+    });
+}
+
 impl Capturable {
+    /// `presentForCapture` — the presentation `initialize_gpu` only ever
+    /// gates behind a window that can show it, driven anyway because the
+    /// capture is the only presentation a never-ordered window gets.
+    /// `scale` is the capture's pixel scale — the caller's bitmap decides
+    /// it, not the window.
+    fn present_for_capture(&self, scale: f64) {
+        if !prepare_presentation(&self.state, &self.view, scale) {
+            return;
+        }
+        attach_presentation(&self.state, &self.view);
+    }
+
     fn buffers_presented(&self) -> bool {
         self.state
             .buffers

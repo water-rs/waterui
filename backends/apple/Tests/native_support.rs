@@ -313,13 +313,234 @@ pub fn bind_root_window_wires_a_live_window(mtm: MainThreadMarker) {
 #[cfg(all(target_os = "macos", feature = "gpu_surface"))]
 pub mod gpu_surface {
     pub use crate::components::gpu_surface::native_test::{MountedSceneSurface, WakeProbe};
+}
 
-    /// Performs the once-per-process `startup::initialize` — called
-    /// once from the `Tests/native.rs` harness's true main thread
-    /// before any trial runs; fixture mounts rely on that explicit
-    /// harness setup.
-    pub fn initialize_process() {
-        let _ = crate::startup::initialize();
+/// Performs the once-per-process `startup::initialize`.
+///
+/// Called once from the `Tests/native.rs` harness's true main thread
+/// before any trial runs; fixture mounts and the preview environment
+/// rely on that explicit harness setup.
+#[cfg(target_os = "macos")]
+pub fn initialize_process() {
+    let _ = crate::startup::initialize();
+}
+
+/// The windowless preview capture path, end-to-end.
+///
+/// One lazily-built environment serves every trial — the shared
+/// `crate::preview` bring-up, a never-ordered window, the `cacheDisplay`
+/// capture and the shared PNG writer — plus the `CGWindowList`,
+/// activation and focus assertions the entry contract requires on every
+/// run.
+#[cfg(target_os = "macos")]
+pub mod preview {
+    use alloc::rc::Rc;
+    use core::cell::{Cell, RefCell};
+
+    use cocoa_ui::{MainThreadMarker, Size};
+    use waterui::AnyView;
+    use waterui_backend_core::Environment;
+
+    use super::{MAIN_QUEUE_DEADLINE, pump_main_until};
+
+    /// The directory harness PNGs land in — under `target`, so the run's
+    /// own build output is all it leaves behind.
+    fn output_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/native-test-preview")
+    }
+
+    /// The once-per-process preview environment — the same bring-up
+    /// `crate::preview::run` performs, minus its `compose` step: startup,
+    /// fonts, resources, dispatch, the prohibited activation policy,
+    /// theme, locale, the GPU runtime and native services.
+    ///
+    /// Keepers and environment both outlive the process — leaked, the way
+    /// `run` pins them to a frame that never returns.
+    fn environment() -> Result<&'static Environment, String> {
+        // Trials all run on the main thread, so the cached environment is
+        // a main-thread local — `Environment` is `Rc`-backed and stays
+        // on the thread that built it.
+        thread_local! {
+            static ENV: RefCell<Option<Result<&'static Environment, String>>> =
+                const { RefCell::new(None) };
+        }
+        if let Some(built) = ENV.with(|cell| cell.borrow().clone()) {
+            return built;
+        }
+        let built = build_environment();
+        ENV.with(|cell| *cell.borrow_mut() = Some(built.clone()));
+        built
+    }
+
+    /// The one-time build `environment` caches.
+    fn build_environment() -> Result<&'static Environment, String> {
+        let mtm = MainThreadMarker::new().expect("trials run on the main thread");
+        let keepers = Box::leak(Box::new(crate::contract::KeepAlive::default()));
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Tests");
+        let resources = waterui_core::ResourceContext::new(root.join("assets"), root.join("fonts"));
+        // `initialize_process` already ran `startup::initialize` and
+        // inspector-less runs answer `None`, the same value `run` would
+        // carry here.
+        let env = crate::preview::environment(mtm, resources, keepers, None);
+        let env: &'static mut Environment = Box::leak(Box::new(env));
+        let env_ptr = &raw mut *env;
+        let ready = Rc::new(Cell::new(false));
+        // SAFETY: `env` is leaked for the process, and `then` runs once
+        // on the main executor — the same thread the trials pump.
+        unsafe {
+            crate::gpu_runtime::prepare(env_ptr, {
+                let ready = Rc::clone(&ready);
+                move || {
+                    let env = &mut *env_ptr;
+                    crate::embedding::install_services(env);
+                    ready.set(true);
+                }
+            });
+        }
+        if !pump_main_until(MAIN_QUEUE_DEADLINE, || ready.get()) {
+            return Err("the GPU runtime never finished preparing".into());
+        }
+        Ok(&*env)
+    }
+
+    /// Renders `view` through `crate::preview::render` and writes
+    /// `<name>.png`.
+    ///
+    /// The render mounts into a never-ordered window sized `size`; the
+    /// premultiplied capture flattens over white inside the writer and
+    /// lands in [`output_dir`], then [`assert_windowless`] proves the
+    /// process never ordered a window on screen, activated or took
+    /// focus.
+    ///
+    /// # Errors
+    ///
+    /// A string describing the failed stage — the trial maps it to
+    /// [`libtest_mimic::Failed`].
+    pub fn capture(
+        mtm: MainThreadMarker,
+        name: &str,
+        size: Size,
+        view: impl FnOnce() -> AnyView + 'static,
+    ) -> Result<(), String> {
+        let env = environment()?;
+        let outcome = Rc::new(RefCell::new(None));
+        executor_core::spawn_local({
+            let outcome = Rc::clone(&outcome);
+            async move {
+                *outcome.borrow_mut() = Some(crate::preview::render(env, mtm, view, size).await);
+            }
+        })
+        .detach();
+        // The GPU first-frame wait can take a few cold frames after the
+        // runtime settles, so the capture gets a wider bound than a plain
+        // queue drain.
+        if !pump_main_until(MAIN_QUEUE_DEADLINE * 4.0, || outcome.borrow().is_some()) {
+            return Err("the preview render never settled".into());
+        }
+        let result = outcome
+            .borrow_mut()
+            .take()
+            .expect("a settled render stores its result")
+            .map_err(|error| format!("preview capture failed: {error}"))?;
+        let output = output_dir().join(format!("{name}.png"));
+        // Apple's bitmap context reads premultiplied RGBA8 — the
+        // convention the writer declares for the Apple capture.
+        waterui_preview_protocol::run::write_png(
+            &output,
+            result.width,
+            result.height,
+            result.rgba_data,
+            waterui_preview_protocol::run::Alpha::Premultiplied,
+        )
+        .map_err(|error| format!("preview could not write {}: {error}", output.display()))?;
+        assert_windowless(mtm);
+        Ok(())
+    }
+
+    /// The `CGWindowList` / activation / focus proof the contract
+    /// requires: no window owned by this pid is on screen, the policy is
+    /// `Prohibited`, and `AppKit` never became the active application.
+    ///
+    /// # Panics
+    ///
+    /// On any violation — each assert names the evidence it found.
+    fn assert_windowless(mtm: MainThreadMarker) {
+        use std::ffi::c_void;
+
+        use cocoa_ui::objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+        use cocoa_ui::objc2_core_foundation::{CFBoolean, CFDictionary};
+        use cocoa_ui::objc2_core_graphics::{
+            CGWindowListCopyWindowInfo, CGWindowListOption, kCGNullWindowID, kCGWindowIsOnscreen,
+            kCGWindowNumber, kCGWindowOwnerPID,
+        };
+
+        let windows = CGWindowListCopyWindowInfo(
+            CGWindowListOption(
+                CGWindowListOption::OptionAll.0 | CGWindowListOption::ExcludeDesktopElements.0,
+            ),
+            kCGNullWindowID,
+        )
+        .expect("the window server answers the window list");
+        let pid = i64::from(std::process::id().cast_signed());
+        for index in 0..windows.count() {
+            // SAFETY: the window list holds CFDictionary entries.
+            let info = unsafe { &*windows.value_at_index(index).cast::<CFDictionary>() };
+            // SAFETY: `kCGWindowOwnerPID`/`kCGWindowNumber` are extern
+            // CFString constants the window server owns.
+            if window_entry_i64(info, unsafe { kCGWindowOwnerPID }) != Some(pid) {
+                continue;
+            }
+            // SAFETY: `kCGWindowIsOnscreen` is an extern CFString the
+            // window server owns; the entry, when present, is a
+            // CFBoolean.
+            let onscreen =
+                unsafe { info.value(std::ptr::from_ref(kCGWindowIsOnscreen).cast::<c_void>()) };
+            // SAFETY: a present entry is a CFBoolean.
+            let onscreen =
+                !onscreen.is_null() && unsafe { (*onscreen.cast::<CFBoolean>()).value() };
+            // SAFETY: `kCGWindowNumber` is an extern CFString the
+            // window server owns.
+            let number = window_entry_i64(info, unsafe { kCGWindowNumber });
+            assert!(
+                !onscreen,
+                "the capture must never order a window on screen; window {} of this process is on screen",
+                number.unwrap_or_default()
+            );
+        }
+        let application = NSApplication::sharedApplication(mtm);
+        assert_eq!(
+            application.activationPolicy(),
+            NSApplicationActivationPolicy::Prohibited,
+            "the capture process must hold the Prohibited activation policy"
+        );
+        assert!(
+            !application.isActive(),
+            "the capture process must never take focus"
+        );
+    }
+
+    /// A `CFNumber` entry of a window-list dictionary, or `None` when
+    /// absent — `kCGWindowOwnerPID`, `kCGWindowLayer`,
+    /// `kCGWindowNumber`-style numeric values.
+    fn window_entry_i64(
+        info: &cocoa_ui::objc2_core_foundation::CFDictionary,
+        key: &'static cocoa_ui::objc2_core_foundation::CFString,
+    ) -> Option<i64> {
+        use std::ffi::c_void;
+
+        use cocoa_ui::objc2_core_foundation::{CFNumber, CFNumberType};
+        // SAFETY: `key` is a live CFString constant.
+        let value = unsafe { info.value(std::ptr::from_ref(key).cast::<c_void>()) };
+        if value.is_null() {
+            return None;
+        }
+        let mut number = 0i64;
+        // SAFETY: the entry is a CFNumber and `number` is a live i64.
+        let read = unsafe {
+            (*value.cast::<CFNumber>())
+                .value(CFNumberType::SInt64Type, (&raw mut number).cast::<c_void>())
+        };
+        read.then_some(number)
     }
 }
 

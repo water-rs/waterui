@@ -168,6 +168,9 @@ waterui-backend-core = { workspace = true, default-features = true, features = [
     "overlay",
 ] }
 waterui-locale = { workspace = true }
+# The backend-neutral run contract (`PreviewRunConfig`, `write_png`) the
+# preview entry consumes — `components/devtools/preview/protocol`.
+waterui-preview-protocol = { workspace = true }
 waterui-map = { workspace = true, optional = true }
 # The GPU components the backend owns (`gpu_surface`, `view_effect`,
 # `picture`, `resolved_gradient`) are Rust semantic types here, not FFI
@@ -222,10 +225,16 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
 ] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = [
     "std",
+    "CFArray",
+    "CFDictionary",
+    "CFNumber",
+    "CFRunLoop",
+    "CFString",
 ] }
 objc2-core-graphics = { version = "0.3", default-features = false, features = [
     "std",
     "CGPath",
+    "CGWindow",
 ] }
 objc2-quartz-core = { version = "0.3", default-features = false, features = [
     "std",

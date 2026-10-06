@@ -279,20 +279,6 @@ pub fn force_text_fields_display(view: &crate::PlatformView) {
     }
 }
 
-/// Sends a macOS capture window front without activating the app — the
-/// ordering `orderFrontRegardless` implies.
-#[cfg(target_os = "macos")]
-pub fn show_capture_window(window: &objc2_app_kit::NSWindow) {
-    window.orderFrontRegardless();
-    window.display();
-}
-
-/// Closes a capture window after the bitmap lands.
-#[cfg(target_os = "macos")]
-pub fn close_capture_window(window: &objc2_app_kit::NSWindow) {
-    window.orderOut(None);
-}
-
 /// Mounts `view` in `window` through a plain `UIViewController`, unhides the
 /// window and lays everything out — the `UIKit` analogue of
 /// `orderFrontRegardless`.

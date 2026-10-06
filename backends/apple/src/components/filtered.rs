@@ -145,6 +145,10 @@ pub struct FilteredState {
     needs_render: Cell<bool>,
     /// `outputRevealed`/`filteredOutputRevealed`.
     output_revealed: Cell<bool>,
+    /// Whether this filter presents for a capture instead of a visible
+    /// window: the occlusion gates never open offscreen, so the capture
+    /// drives `render_frame` directly where the clock would tick.
+    capture_presenting: Cell<bool>,
     /// `currentScaleFactor`.
     current_scale: Cell<f64>,
     /// `laidOutGeometry`: a layout pass only requests a frame when the
@@ -389,35 +393,61 @@ fn ensure_capture_texture(
     texture
 }
 
+/// The window's backing scale — `None` while the view is off-window.
+fn window_scale(view: &PlatformView) -> Option<f64> {
+    let window = cocoa_ui::view::window(view)?;
+    #[cfg(target_os = "macos")]
+    {
+        Some(window.backingScaleFactor())
+    }
+    #[cfg(target_os = "ios")]
+    {
+        Some(window.screen().scale())
+    }
+}
+
 /// `initializeGpuIfNeeded`.
 fn initialize_gpu(state: &Rc<FilteredState>) {
-    let bounds = cocoa_ui::view::bounds(&state.view);
-    if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
-        return;
-    }
-    let Some(window) = cocoa_ui::view::window(&state.view) else {
+    let Some(scale) = window_scale(&state.view) else {
         return;
     };
-    let dynamic_range = cocoa_ui::dynamic_range::require_inherited(&state.view);
-    if !prepare_dynamic_range(state, dynamic_range) {
+    if !prepare_presentation(state, scale) {
         return;
     }
-    #[cfg(target_os = "macos")]
-    let scale = window.backingScaleFactor();
-    #[cfg(target_os = "ios")]
-    let scale = window.screen().scale();
-    state.current_scale.set(scale);
-    update_output_frame(state);
-
     // Attaching waits for a window that can present: a filter in a covered
     // window never captures anything, so the capture texture is only bought
     // once `schedule_frame_if_needed` could arm the clock (#576).
     if !can_attach_now(&state.view) {
         return;
     }
-    // One explicit live context for everything below: on loss the whole
-    // initialization parks before attach or any native allocation, and the
-    // publication watch re-runs `initialize_gpu` on the rebuilt context.
+    attach(state);
+}
+
+/// The geometry and dynamic-range half of `initialize_gpu` — the part the
+/// capture drive shares. `scale` is the scale the presentation renders at:
+/// the window's backing scale on screen, the capture's off it.
+fn prepare_presentation(state: &Rc<FilteredState>, scale: f64) -> bool {
+    let bounds = cocoa_ui::view::bounds(&state.view);
+    if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
+        return false;
+    }
+    if cocoa_ui::view::window(&state.view).is_none() {
+        return false;
+    }
+    let dynamic_range = cocoa_ui::dynamic_range::require_inherited(&state.view);
+    if !prepare_dynamic_range(state, dynamic_range) {
+        return false;
+    }
+    state.current_scale.set(scale);
+    update_output_frame(state);
+    true
+}
+
+/// The attach the `can_attach_now` gate defers: one explicit live context
+/// for everything below — on loss the whole initialization parks before
+/// attach or any native allocation, and the publication watch re-runs
+/// `initialize_gpu` on the rebuilt context.
+fn attach(state: &Rc<FilteredState>) {
     let context = state.runtime.context();
     if context.device_lost_reason().is_some() {
         arm_filtered_context_watch(state, context.generation());
@@ -427,9 +457,22 @@ fn initialize_gpu(state: &Rc<FilteredState>) {
     // when the view is already attached — so nothing later allocates on a
     // stale device.
     ensure_filtered_generation(state, &context);
-    let (width, height) = pixel_size(&state.view, scale);
+    let (width, height) = pixel_size(&state.view, state.current_scale.get());
     attach_if_needed(state, &context, width, height);
     let _ = ensure_capture_texture(state, &context, width, height);
+}
+
+/// `presentForCapture` — the presentation `initialize_gpu` only ever gates
+/// behind a window that can show it, driven anyway because the capture is
+/// the only presentation a never-ordered window gets. `scale` is the
+/// capture's pixel scale — the caller's bitmap decides it, not the window.
+pub fn present_for_capture(state: &Rc<FilteredState>, scale: f64) {
+    state.capture_presenting.set(true);
+    if !prepare_presentation(state, scale) {
+        return;
+    }
+    attach(state);
+    request_render(state);
 }
 
 /// `updateOutputLayerFrame`.
@@ -446,15 +489,23 @@ fn update_output_frame(state: &FilteredState) {
 
 /// `scheduleFrameIfNeeded`.
 fn schedule_frame_if_needed(state: &Rc<FilteredState>) {
+    let capture_driven = state.capture_presenting.get();
     if state.attached.get()
         && effects_ready(state)
         && cocoa_ui::view::window(&state.view).is_some()
         && state.needs_render.get()
         && !state.render_in_flight.get()
         && !state.frame_presentation_in_flight.get()
-        && !presentation_occluded(&state.view)
+        && (capture_driven || !presentation_occluded(&state.view))
     {
-        state.clock.start(&state.view);
+        if capture_driven {
+            // A capture-presenting filter has no frame clock to arm — its
+            // window never ticks — so the scheduling wake renders the frame
+            // the capture waits on directly.
+            render_frame(state);
+        } else {
+            state.clock.start(&state.view);
+        }
     } else {
         state.clock.stop();
         // In-flight work still produces frames; only a chain with nothing
@@ -1155,6 +1206,40 @@ pub fn filter_needs_frame(state: &Rc<FilteredState>, waker: std::task::Waker) ->
     !state.output_revealed.get()
 }
 
+/// Drives every registered filter inside `view`'s subtree through one
+/// presented frame — the drive half of [`wait_for_capture_frames`] under a
+/// window that never orders in. `scale` is the capture's pixel scale.
+pub fn present_first_frames(view: &PlatformView, scale: f64) {
+    collect_filters(view, &mut |state| present_for_capture(state, scale));
+}
+
+/// Waits until every registered filter inside `view`'s subtree has revealed
+/// its first presented frame — the capture half of
+/// `gpu_surface::wait_for_first_frames` under a window that never orders in,
+/// where `filter_needs_frame`'s visible-window participation gate never
+/// answers.
+#[expect(
+    clippy::future_not_send,
+    reason = "the wait runs on the main thread; the Retained view it borrows is not Sync"
+)]
+pub async fn wait_for_capture_frames(view: &PlatformView) {
+    core::future::poll_fn(|cx| {
+        let mut pending = false;
+        collect_filters(view, &mut |state| {
+            if !state.output_revealed.get() {
+                state.ready_waiters.borrow_mut().push(cx.waker().clone());
+                pending = true;
+            }
+        });
+        if pending {
+            core::task::Poll::Pending
+        } else {
+            core::task::Poll::Ready(())
+        }
+    })
+    .await;
+}
+
 /// Dropping clears the filter's registrations and shuts the capture and
 /// render state down — `deinit`.
 struct FilteredGuard {
@@ -1313,6 +1398,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
                 configured_range: Cell::new(None),
                 needs_render: Cell::new(false),
                 output_revealed: Cell::new(false),
+                capture_presenting: Cell::new(false),
                 current_scale: Cell::new(1.0),
                 laid_out_geometry: RefCell::new(None),
                 content_changed_since_capture: Cell::new(false),
