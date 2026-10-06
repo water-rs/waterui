@@ -269,8 +269,8 @@ The `Window` builder, precisely:
   not on the content: `Regular`, `Thick` and `UltraThick` frost the window's own opaque
   background behind the content; `UltraThin` and `Thin` make the window translucent so
   the desktop shows through — blurred on macOS, tinted with the level's colour but not
-  yet blurred on Hydrolysis desktops. The Kotlin Android runtime cannot realize a
-  material window background and panics naming the level. The background is reactive:
+  yet blurred on Hydrolysis desktops. The Kotlin Android runtime realizes no material
+  and draws a material window background as the opaque theme background. The background is reactive:
   setting the binding (or `window.handle().set_background(..)`) re-applies it to the
   open window, e.g. to switch between opaque, a translucent colour and a material.
 - `.resizable(bool)` — plain bool, default `true`. `.min_size(..)`/`.max_size(..)` each
