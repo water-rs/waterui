@@ -11,7 +11,9 @@ use std::sync::Arc;
 
 use parley::fontique::{Blob, Collection, CollectionOptions};
 
-use crate::runner::fonts::ResourceFontFamilies;
+use waterui_text::FontCollection;
+
+use super::fonts::ResourceFontFamilies;
 
 /// The font directories AOSP documents and OEMs ship — `/system/fonts` is
 /// always present; the rest are partition overlays that may not exist.
@@ -52,7 +54,7 @@ fn scan_dir(root: &Path, out: &mut Vec<PathBuf>) {
 /// platform font directories, classified into the generic/script
 /// fallbacks. `system_fonts` stays off — `fontique` knows no Android
 /// source and would only double-register the same faces.
-pub fn android_fonts() -> parley::FontContext {
+pub fn android_collection() -> FontCollection {
     let mut font_cx = parley::FontContext {
         collection: Collection::new(CollectionOptions {
             system_fonts: false,
@@ -85,5 +87,5 @@ pub fn android_fonts() -> parley::FontContext {
         }
     }
     resource_fonts.install(&mut font_cx.collection);
-    font_cx
+    FontCollection::new(font_cx)
 }

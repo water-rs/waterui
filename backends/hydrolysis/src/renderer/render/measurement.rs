@@ -2,9 +2,9 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::engine::WidgetTheme;
+use crate::text::TextLayout as _;
 use crate::widgets::nav::tabs::{tabs_decide_layout, tabs_item_natural_width};
 use std::rc::Rc;
-use std::sync::Arc;
 use waterui::navigation::tab::TabIcon;
 use waterui_core::handler::BoxedAction;
 use waterui_core::views::ViewSnapshot;
@@ -517,20 +517,11 @@ impl HydrolysisRenderer {
         tail: TailMark,
     ) {
         let input = resolve_text_layout_input(&styled, alignment, env);
-        let fragment = state.text.glyph_scene_with(
+        let fragment = state.text.record(
             &input,
             Some(crate::num_cast::f64_as_f32(ctx.bounds.width())),
             tail,
-            |layout, effective, fragment| {
-                Self::encode_text_layout(
-                    state.text.as_ref(),
-                    &mut state.counters,
-                    fragment,
-                    layout,
-                    effective,
-                    tail.parts().0,
-                );
-            },
+            &mut state.counters,
         );
         scene.append(
             &fragment,
@@ -551,159 +542,23 @@ impl HydrolysisRenderer {
     ) {
         let input = resolve_text_layout_input(&styled, HorizontalAlignment::Leading, env);
         let layout = state.text.shape(&input, None);
-        let Some(line) = layout.lines().next() else {
+        if layout.line_count() == 0 {
             return;
-        };
-        let metrics = line.metrics();
+        }
+        let metrics = layout.line_metrics(0);
         // Center the measured frame — advance widened to cover overhanging
-        // ink — matching what `text_dimensions_from_layout` reports for it.
-        let width = layout_ink_extent(state.text.as_ref(), &layout, Some(1)).map_or_else(
+        // ink — matching what `dimensions` reports for it.
+        let width = state.text.ink_extent(&layout, Some(1)).map_or_else(
             || f64::from(metrics.advance),
             |(ink_min, ink_max)| f64::from(metrics.advance.max(ink_max) - ink_min.min(0.0)),
         );
         let height = f64::from(metrics.line_height);
         let x = ((ctx.bounds.width() - width) * 0.5).max(0.0);
         let y = ((ctx.bounds.height() - height) * 0.5).max(0.0);
-        let fragment = state.text.glyph_scene_with(
-            &input,
-            None,
-            TailMark::Clip(1),
-            |layout, effective, fragment| {
-                Self::encode_text_layout(
-                    state.text.as_ref(),
-                    &mut state.counters,
-                    fragment,
-                    layout,
-                    effective,
-                    Some(1),
-                );
-            },
-        );
+        let fragment = state
+            .text
+            .record(&input, None, TailMark::Clip(1), &mut state.counters);
         scene.append(&fragment, ctx.transform * kurbo::Affine::translate((x, y)));
-    }
-
-    /// Encode `layout`'s glyph runs into `scene` at the local origin. The
-    /// caller positions the result by appending it under a transform, which is
-    /// what makes the encoded fragment reusable across frames.
-    fn encode_text_layout(
-        service: &TextMeasureService,
-        counters: &mut FrameWorkCounters,
-        scene: &mut Recording,
-        layout: &Arc<parley::Layout<[u8; 4]>>,
-        input: &ResolvedTextLayoutInput,
-        max_lines: Option<usize>,
-    ) {
-        if layout.is_empty() {
-            return;
-        }
-        // `text_dimensions_from_layout` widens the measured frame so it covers
-        // glyph ink that overhangs the pen advance (`layout_ink_extent`); the
-        // same left-edge correction shifts the encoded glyphs so that ink
-        // starts at the frame origin instead of painting left of it.
-        let ink_shift = layout_ink_extent(service, layout, max_lines)
-            .map_or(0.0, |(ink_min, _)| -ink_min.min(0.0));
-        let paint_backgrounds = input.has_background();
-        for (index, line) in layout.lines().enumerate() {
-            if max_lines.is_some_and(|limit| index >= limit) {
-                break;
-            }
-            if paint_backgrounds {
-                Self::encode_line_backgrounds(scene, &line, input, ink_shift);
-            }
-            for item in line.items() {
-                if let parley::PositionedLayoutItem::GlyphRun(glyph_run) = item {
-                    let run = glyph_run.run();
-                    let style = glyph_run.style();
-                    let brush = rgba8_to_peniko(style.brush);
-                    let normalized_coords = run.normalized_coords();
-
-                    let mut run_x = glyph_run.offset() + ink_shift;
-                    let run_y = glyph_run.baseline();
-                    let glyphs: Vec<crate::renderer::Glyph> = glyph_run
-                        .glyphs()
-                        .map(move |glyph| {
-                            let x = run_x + glyph.x;
-                            let y = run_y - glyph.y;
-                            run_x += glyph.advance;
-                            crate::renderer::Glyph { id: glyph.id, x, y }
-                        })
-                        .collect();
-
-                    counters.font_registrations += 1;
-                    scene.glyphs(&crate::renderer::GlyphRun {
-                        font: run.font(),
-                        font_size: run.font_size(),
-                        normalized_coords,
-                        transform: kurbo::Affine::IDENTITY,
-                        brush: &peniko::Brush::Solid(brush),
-                        brush_alpha: 1.0,
-                        style: peniko::StyleRef::Fill(peniko::Fill::NonZero),
-                        glyphs: &glyphs,
-                    });
-                }
-            }
-        }
-    }
-
-    /// Fill each backgrounded span's glyph extent on `line` — the full line
-    /// box (`block_min_coord..block_max_coord`) tall — under the text.
-    ///
-    /// The horizontal cursor accumulates cluster advances over `runs()` in
-    /// display order, the same sequence parley's own glyph-run iterator places
-    /// left-to-right (both are driven by `Run::visual_clusters`). These layouts
-    /// come from a ranged builder, which emits no inline boxes, so runs are
-    /// the whole item sequence.
-    fn encode_line_backgrounds(
-        scene: &mut Recording,
-        line: &parley::Line<'_, [u8; 4]>,
-        input: &ResolvedTextLayoutInput,
-        ink_shift: f32,
-    ) {
-        let metrics = line.metrics();
-        let (top, bottom) = (
-            f64::from(metrics.block_min_coord),
-            f64::from(metrics.block_max_coord),
-        );
-        let mut cursor = metrics.inline_min_coord + metrics.offset + ink_shift;
-        // Adjacent clusters with the same background merge into one fill.
-        let mut open: Option<(f32, [u8; 4])> = None;
-        for run in line.runs() {
-            for cluster in run.visual_clusters() {
-                let end = cursor + cluster.advance();
-                let background = input.span_background(cluster.text_range().start);
-                let extends = matches!(
-                    (open, background),
-                    (Some((_, open_colour)), Some(colour)) if open_colour == colour
-                );
-                if !extends {
-                    if let Some((start, colour)) = open.take() {
-                        Self::fill_span_background(scene, start, cursor, top, bottom, colour);
-                    }
-                    open = background.map(|colour| (cursor, colour));
-                }
-                cursor = end;
-            }
-        }
-        if let Some((start, colour)) = open {
-            Self::fill_span_background(scene, start, cursor, top, bottom, colour);
-        }
-    }
-
-    fn fill_span_background(
-        scene: &mut Recording,
-        start: f32,
-        end: f32,
-        top: f64,
-        bottom: f64,
-        colour: [u8; 4],
-    ) {
-        scene.fill(
-            peniko::Fill::NonZero,
-            kurbo::Affine::IDENTITY,
-            &peniko::Brush::Solid(rgba8_to_peniko(colour)),
-            None,
-            &kurbo::Rect::new(f64::from(start), top, f64::from(end), bottom),
-        );
     }
 
     #[expect(
@@ -720,7 +575,7 @@ impl HydrolysisRenderer {
         alignment: HorizontalAlignment,
         env: &Environment,
         max_width: Option<f32>,
-    ) -> Arc<parley::Layout<[u8; 4]>> {
+    ) -> SessionTextLayout {
         let input = resolve_text_layout_input(&styled, alignment, env);
         state.text.shape(&input, max_width)
     }
@@ -743,7 +598,7 @@ impl HydrolysisRenderer {
     ) -> ViewDimensions {
         let input = resolve_text_layout_input(&styled, alignment, env);
         let layout = state.text.shape_limited(&input, max_width, max_lines);
-        text_dimensions_from_layout(state.text.as_ref(), &layout, max_lines)
+        state.text.dimensions(&layout, max_lines)
     }
 
     pub(crate) fn measure_text_intrinsic_size(
@@ -1794,7 +1649,7 @@ mod background_tests {
 
     fn rendered_fill_colours(styled: StyledStr, width: f64) -> Vec<u32> {
         let env = test_environment();
-        let mut state = HydroState::new(FontFamilyResolution::Strict);
+        let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
         let mut scene = Recording::new();
         let ctx = RenderContext::with_transforms(
             kurbo::Rect::new(0.0, 0.0, width, 200.0),
