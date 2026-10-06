@@ -946,6 +946,12 @@ class TestInstrumentsScratch(unittest.TestCase):
         if not exe.exists():
             exe.parent.mkdir(exist_ok=True)
             shutil.copy("/bin/sleep", exe)
+            # a copy of a platform binary outside the system paths is
+            # killed at exec unless it carries its own (ad hoc) signature
+            subprocess.run(["codesign", "--remove-signature", str(exe)],
+                           check=True, capture_output=True)
+            subprocess.run(["codesign", "--force", "--sign", "-", str(exe)],
+                           check=True, capture_output=True)
         child = subprocess.Popen(
             ["/bin/sh", "-c", 'exec 3<"$1"; read go; exec "$0" 600',
              str(exe), str(f)], stdin=subprocess.PIPE)
