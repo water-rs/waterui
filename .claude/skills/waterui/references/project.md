@@ -150,9 +150,10 @@ level so backends resolve locally instead of from the registry.
 
 Permission keys: `internet`, `camera`, `microphone`, `location`, `coarse_location`,
 `storage`, `write_storage`, `photo_library`, `contacts`, `calendars`, `bluetooth`,
-`bluetooth_admin`, `vibrate`, `wake_lock`. The CLI translates each into the right platform
-declaration (`AndroidManifest` entries, Info.plist usage strings), so the `description`
-is what the user actually reads in the system prompt — write it for them.
+`bluetooth_admin`, `vibrate`, `wake_lock`, `activity_recognition`, `nearby_wifi_devices`.
+The CLI translates each into the right platform declaration (`AndroidManifest` entries,
+Info.plist usage strings), so the `description` is what the user actually reads in the
+system prompt — write it for them.
 
 Missing `internet` is a common and confusing failure: Android denies DNS outright, so every
 request fails with a resolution error rather than a permission error.
