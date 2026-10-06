@@ -110,6 +110,10 @@ fn lazy_view_path_answers_what_its_item_answers() {
 /// lazy stack must report the offered cross extent — the content's intrinsic
 /// is what the viewport clips, not what the scroll is.
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the scroll shell must echo its offered width unchanged, not recompute it"
+)]
 fn scroll_shell_answers_its_proposal() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
@@ -129,8 +133,10 @@ fn scroll_shell_answers_its_proposal() {
         &theme,
     )
     .size;
-    assert_eq!(
-        answer.width, 308.0,
-        "scroll wrapping a lazy stack answered {answer:?} under (308, None)"
+    assert!(
+        answer.width == 308.0,
+        "scroll wrapping a lazy stack answered {answer:?} under (308, None): left {:?}, right {:?}",
+        answer.width,
+        308.0
     );
 }

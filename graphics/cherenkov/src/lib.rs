@@ -52,7 +52,10 @@ pub use crate::animation::{
     Animatable, Animation, AnimationTrack, Curve, Decay, Lanes, Spring, curve_value, decay_step,
     settled, spring_step,
 };
-pub use crate::backdrop::{BackdropShaderSource, CaptureScale, CaptureScaleError};
+pub use crate::backdrop::{
+    BackdropShaderSource, BackdropSpec, CaptureLevels, CaptureLevelsError, CaptureScale,
+    CaptureScaleError,
+};
 pub use crate::backend::{
     Backend, Display, Frame, FrameRedraw, Renderer, SurfaceFrame, SurfaceInfo, Visibility,
 };
@@ -107,8 +110,9 @@ pub use crate::text::{TextLayout, draw_text};
 pub use cherenkov_record::{
     BackdropEffect, BackdropId, BackdropSample, BackdropSampling, BackdropShaderEffect,
     BackdropShaderId, ColorMatrix, ContentOp, GpuInstalls, ImageLimits, Install, Layer,
-    LayerAnimations, LayerContent, LayerEdit, LayerId, LayerNode, LayerOwner, Projective,
-    ProjectiveError, ProjectiveLayers, Prop, Queue, Realize, Refraction, RefreshRange, ResourceId,
-    Rim, Shared, SurfaceId, SurfaceTree, Target, Transaction, snap_animating,
+    LayerAnimations, LayerContent, LayerEdit, LayerId, LayerNode, LayerOwner, LevelRamp,
+    LevelRampError, Projective, ProjectiveError, ProjectiveLayers, Prop, Queue, Realize,
+    Refraction, RefreshRange, ResourceId, Rim, Shared, SurfaceId, SurfaceTree, Target, Transaction,
+    snap_animating,
 };
 pub use kurbo::Stroke;

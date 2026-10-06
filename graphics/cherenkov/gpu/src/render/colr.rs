@@ -138,6 +138,27 @@ const fn extend(e: skrifa::color::Extend) -> Option<Extend> {
     }
 }
 
+/// `COLRv1` `PaintRadialGradient`, rendering algorithm step 1: "If c0 = c1
+/// and r0 = r1 then paint nothing and return." Font data keeps its own
+/// semantics, so such a brush never reaches the record contract, where
+/// identical circles are a hard edge or an invalid paint; it is tested with
+/// that contract's own predicate. Step 1 precedes any use of the colour
+/// line, so this runs before the extend mode is decoded. The COLR decoding
+/// is triplicated (oracle `glyphs.rs`, CPU and GPU `render/colr.rs`); keep
+/// the three in step.
+fn paints_nothing(brush: &Brush<'_>) -> bool {
+    let Brush::RadialGradient { c0, r0, c1, r1, .. } = brush else {
+        return false;
+    };
+    RadialGradient::two_point(
+        (f64::from(c0.x), f64::from(c0.y)),
+        f64::from(*r0),
+        (f64::from(c1.x), f64::from(c1.y)),
+        f64::from(*r1),
+    )
+    .has_identical_circles()
+}
+
 /// Hashes a paint by value — every field's bits, never a
 /// `format!("{paint:?}")` allocation on the per-glyph-per-frame path.
 fn hash_paint(hasher: &mut impl Hasher, paint: &Paint) {
@@ -437,6 +458,9 @@ impl ColorPainter for ColrPainter<'_> {
     }
 
     fn fill(&mut self, brush: Brush<'_>) {
+        if paints_nothing(&brush) {
+            return;
+        }
         let paint = self.brush_paint(&brush, self.cur());
         self.emit(
             Some(self.cur() * self.fill_rect_font.clone()),
@@ -451,7 +475,7 @@ impl ColorPainter for ColrPainter<'_> {
         brush_transform: Option<skrifa::color::Transform>,
         brush: Brush<'_>,
     ) {
-        if self.err.is_some() {
+        if self.err.is_some() || paints_nothing(&brush) {
             return;
         }
         let cur = self.cur();

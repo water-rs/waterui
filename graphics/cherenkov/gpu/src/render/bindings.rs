@@ -183,6 +183,17 @@ pub const RESOLVE_GROUP0: &[Entry] = &[
     Entry::texture(1),
 ];
 
+/// `min_size` of the reduce pipeline's uniform: a pass's `Globals` slot
+/// (32 bytes) followed by the reduce parameters (`reduce.wgsl`).
+pub const REDUCE_PARAMS_SIZE: u64 = 64;
+
+/// The capture pyramid reduce pipeline's single group (`reduce.wgsl`):
+/// the globals slot with the reduce parameters, and the source level.
+pub const REDUCE_GROUP0: &[Entry] = &[
+    Entry::uniform(0, FRAGMENT, true, REDUCE_PARAMS_SIZE),
+    Entry::texture(1),
+];
+
 /// The engine pipelines' two groups, in declaration order.
 ///
 /// Used by `build.rs`; the crate addresses the groups directly.
@@ -219,6 +230,12 @@ pub const MIP_GROUPS: &[&[Entry]] = &[MIP_GROUP0];
 /// Used by `build.rs`; the crate addresses the group directly.
 #[allow(dead_code)]
 pub const RESOLVE_GROUPS: &[&[Entry]] = &[RESOLVE_GROUP0];
+
+/// The reduce pipeline's group list.
+///
+/// Used by `build.rs`; the crate addresses the group directly.
+#[allow(dead_code)]
+pub const REDUCE_GROUPS: &[&[Entry]] = &[REDUCE_GROUP0];
 
 /// Group 1 of the Vulkan native external-frame module: `EXTERNAL_GROUP1`
 /// plus the designated texture/sampler pair at bindings 5–6 that the

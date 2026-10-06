@@ -253,6 +253,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "the tone parameters are the treatment's literal table bound through untouched"
+    )]
     fn the_colour_stage_follows_the_appearance() {
         let scheme = waterui_core::binding(ColorScheme::Light);
         let runtime = MaterialRuntime::new(WithinWindowLevel::Regular, &scheme.computed());

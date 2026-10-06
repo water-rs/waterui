@@ -112,9 +112,11 @@ fn a_row_straddling_the_viewport_edge_cannot_be_tapped_above_the_clip() {
         .renderer()
         .scroll_metrics_at(200.0, BAND_HEIGHT + 100.0)
         .expect("the scroll view registers a scroll target");
-    assert_eq!(
-        metrics.offset_y, 60.0,
-        "the scroll offset must reach 60pt before the taps: {metrics:?}"
+    assert!(
+        approx::relative_eq!(metrics.offset_y, 60.0),
+        "the scroll offset must reach 60pt before the taps: {metrics:?}: left {:?}, right {:?}",
+        metrics.offset_y,
+        60.0
     );
 
     taps.borrow_mut().clear();

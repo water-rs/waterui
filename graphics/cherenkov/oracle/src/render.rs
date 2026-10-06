@@ -46,10 +46,18 @@
 //! the premultiplied `[r, g, b, a]` pixel, alpha untouched. Every member
 //! composites the filtered capture under its own clip's exact coverage,
 //! source-over, as its bottom-most content; its items and children draw
-//! after. Nested groups follow naturally: an inner group's capture is taken
-//! at its first member's paint time and so includes an enclosing member's
-//! sample and earlier content. A member without a clip or referencing an
-//! undeclared group id is a render error.
+//! after. The member — its backdrop sample and its content — composites
+//! as a whole with its own opacity and blend: a filter covers the
+//! member's items, never the sample. An unfiltered member's sample
+//! lands in its own canvas; a filtered member's sample lands in an
+//! outer member scope that composites at the member's opacity and
+//! blend, holding the sample beside a nested filter scope over the
+//! items — or in the enclosing canvas when opacity and blend are
+//! no-ops. The member's blend applies to the sample for both member
+//! kinds. Nested groups follow naturally: an inner group's capture is
+//! taken at its first member's paint time and so includes an enclosing
+//! member's sample and earlier content. A member without a clip or
+//! referencing an undeclared group id is a render error.
 
 use std::collections::HashMap;
 
@@ -240,10 +248,13 @@ fn flattened(chain: &[Level]) -> Canvas {
 }
 
 /// One group's filtered capture: the capture grid's pixels, the space
-/// they were captured in and the grid's scale against device pixels.
+/// they were captured in, the grid's scale against device pixels, and
+/// the pyramid's deeper levels (`levels[k − 1]` is level `k`,
+/// `k` in `1..n`; empty on a one-level capture).
 struct Capture {
     space: BlendSpace,
     canvas: Canvas,
+    levels: Vec<Canvas>,
     scale: f64,
 }
 
@@ -429,9 +440,24 @@ impl Renderer {
                         for filter in &group.filters {
                             apply_backdrop_filter(&mut capture, filter);
                         }
+                        // The blur pyramid: level `k` is the exact 2×2
+                        // box reduction of level `k − 1` (the filtered
+                        // capture), matching the GPU's mip chain.
+                        let deeper = group
+                            .levels
+                            .checked_sub(1)
+                            .expect("a scene's backdrop group has at least one level");
+                        let deeper =
+                            usize::try_from(deeper).expect("a validated level count fits usize");
+                        let mut levels = Vec::with_capacity(deeper);
+                        for _ in 1..group.levels {
+                            let src = levels.last().unwrap_or(&capture);
+                            levels.push(reduce_level(src));
+                        }
                         backdrops.captures.entry(gid).or_insert(Capture {
                             space,
                             canvas: capture,
+                            levels,
                             scale,
                         });
                     }
@@ -452,10 +478,6 @@ impl Renderer {
     /// the parent's. Clip-only and `opacity < 1` levels are not semantic
     /// isolations — a backdrop capture looks through them to the nearest
     /// filtered or `blend != Normal` level (see `flattened`).
-    #[expect(
-        clippy::many_single_char_names,
-        reason = "w/h/dst/s/b/c name geometry and pixel values"
-    )]
     fn render_child_layer(
         &self,
         child: &Layer,
@@ -479,14 +501,29 @@ impl Renderer {
         let content_tf = tf * Affine::translate((-child.scroll_offset.x, -child.scroll_offset.y));
 
         let (w, h) = (top(chain).width, top(chain).height);
-        // A member that is itself filtered draws its backdrop sample into
-        // the enclosing canvas first: `layer` in gpu/src/render/lower.rs
-        // emits the sample to the current target before and outside the
-        // layer's isolation, so the layer's filter covers the member's
-        // items but never the sample.
-        if child.filter.is_some() && child.backdrop.is_some() {
+        // A filtered member composites as a whole — its sample and its
+        // filtered content — with the member's opacity and blend. When
+        // neither is a no-op an outer member scope holds the sample at
+        // full strength, outside the filter, beside a nested filter
+        // scope over the items. An opaque `Normal`-blended member needs
+        // no scope: its sample lands in the enclosing canvas before the
+        // isolation, so the filter never covers it either.
+        let filtered_member = child.filter.is_some() && child.backdrop.is_some();
+        let member_scope =
+            filtered_member && (child.opacity < 1.0 || child.blend != BlendMode::Normal);
+        if filtered_member && !member_scope {
             let space = chain.last().map_or(BlendSpace::Linear, |l| l.space);
             self.backdrop_sample(child, tf, clips, top(chain), space, backdrops)?;
+        }
+        if member_scope {
+            chain.push(Level {
+                canvas: Canvas::new(w, h, [0.0; 4]),
+                opacity: child.opacity,
+                blend: child.blend,
+                space: BlendSpace::Linear,
+                semantic: child.blend != BlendMode::Normal,
+            });
+            self.backdrop_sample(child, tf, clips, top(chain), BlendSpace::Linear, backdrops)?;
         }
         // A filtered layer is a semantic isolation too: a backdrop capture
         // inside it reads this canvas, matching `isolate` in
@@ -500,8 +537,12 @@ impl Renderer {
         let parent_space = chain.last().map_or(BlendSpace::Linear, |l| l.space);
         chain.push(Level {
             canvas: Canvas::new(w, h, [0.0; 4]),
-            opacity: child.opacity,
-            blend: child.blend,
+            opacity: if member_scope { 1.0 } else { child.opacity },
+            blend: if member_scope {
+                BlendMode::Normal
+            } else {
+                child.blend
+            },
             space: if semantic || child.opacity < 1.0 {
                 BlendSpace::Linear
             } else {
@@ -519,6 +560,31 @@ impl Renderer {
             resources,
             backdrops,
         )?;
+        self.pop_level(&child_clips, child.filter.as_deref(), chain, resources)?;
+        if member_scope {
+            // The member scope composites the whole — sample and
+            // filtered content — at the member's opacity and blend,
+            // with the member clip bounding a destructive operator.
+            self.pop_level(&child_clips, None, chain, resources)?;
+        }
+        Ok(())
+    }
+
+    /// Pops the level on top of `chain` and composites it into the level
+    /// beneath: applies `filter` — the child's layer filter — to the
+    /// level's pixels and masks the result by `child_clips`, then
+    /// composites with the level's own opacity and blend. A destructive
+    /// operator is bounded by the `child_clips` coverage: outside it the
+    /// destination is untouched, and the clip edge is antialiased between
+    /// the backdrop and the blended result; unclipped it covers the whole
+    /// parent.
+    fn pop_level(
+        &self,
+        child_clips: &[Vec<Segment>],
+        filter: Option<&LayerFilter>,
+        chain: &mut Vec<Level>,
+        resources: &mut Resources,
+    ) -> Result<(), RenderError> {
         let Level {
             canvas: mut sub,
             opacity,
@@ -526,7 +592,7 @@ impl Renderer {
             space,
             ..
         } = chain.pop().expect("the child level is pushed above");
-        if let Some(filter) = child.filter.as_deref() {
+        if let Some(filter) = filter {
             let texels = match filter {
                 LayerFilter::BlendImage { image, .. } => {
                     Some(resources.texels(*image).map_err(RenderError::Resource)?)
@@ -540,7 +606,7 @@ impl Renderer {
                     &Shape::Rect(self.scene_rect),
                     FillRule::NonZero,
                     Affine::IDENTITY,
-                    &child_clips,
+                    child_clips,
                 );
                 for (px, m) in sub.pixels.iter_mut().zip(mask) {
                     *px = px.map(|v| v * m);
@@ -548,10 +614,6 @@ impl Renderer {
             }
         }
 
-        // A destructive operator is bounded by the effective clip: outside
-        // it the destination is untouched, and the clip edge is antialiased
-        // between the backdrop and the blended result. Unclipped it covers
-        // the whole parent.
         let clip_cov: Option<Vec<f64>> = if Self::is_destructive(mode) && !child_clips.is_empty() {
             let mut segs = child_clips[0].clone();
             for c in &child_clips[1..] {
@@ -828,8 +890,10 @@ impl Renderer {
     }
 
     /// Draw the member's shared group capture into `canvas` under the
-    /// member clip's exact coverage, source-over. `clips` is the enclosing
-    /// clip stack; the member's own clip is the sampled shape.
+    /// member clip's exact coverage, source-over, at full strength —
+    /// the member's own scope attenuates it at composite. `clips` is
+    /// the enclosing clip stack; the member's own clip is the sampled
+    /// shape.
     ///
     /// # Errors
     /// `RenderError::Backdrop` when the member has no clip.
@@ -847,12 +911,8 @@ impl Renderer {
             RenderError::Backdrop(format!("backdrop group {gid} member layer has no clip"))
         })?;
         let coverage = self.shape_coverage(clip, FillRule::NonZero, tf, clips);
-        if let Some(Capture {
-            space: cap_space,
-            canvas: capture,
-            scale,
-        }) = backdrops.captures.get(&gid)
-        {
+        if let Some(capture) = backdrops.captures.get(&gid) {
+            let cap_space = capture.space;
             // SDF effects need the member clip's analytic box (the GPU
             // errors the same name for a mask or path clip).
             let sdf_clip = match &child.backdrop_effect {
@@ -865,7 +925,6 @@ impl Renderer {
                         })?,
                 ),
             };
-            let (w, h) = (capture.width, capture.height);
             let cw = canvas.width;
             #[expect(
                 clippy::cast_precision_loss,
@@ -878,11 +937,11 @@ impl Renderer {
                 }
                 let src = sample_backdrop(
                     child,
-                    (&capture.pixels, w, h, *scale),
+                    capture,
                     [(i % cw) as f64 + 0.5, (i / cw) as f64 + 0.5],
                     sdf_clip.as_ref(),
                 );
-                *dst = src_over(*dst, move_space(src.map(|v| v * c), *cap_space, space));
+                *dst = src_over(*dst, move_space(src.map(|v| v * c), cap_space, space));
             }
         }
         Ok(())
@@ -911,9 +970,10 @@ impl Renderer {
         if let Some(gid) = child.backdrop {
             // The capture was taken when this member (or an earlier one)
             // was reached; sample it under the member clip's coverage as
-            // the layer's bottom-most content. A filtered member already
-            // drew its sample into the enclosing canvas — its isolation
-            // does not cover the sample — so only the clip check applies.
+            // the layer's bottom-most content — the level's opacity
+            // attenuates it at composite. A filtered member already drew
+            // its sample outside the filter's reach — into the enclosing
+            // canvas or its member scope — so only the clip check applies.
             if child.filter.is_none() {
                 let space = target.last().map_or(BlendSpace::Linear, |l| l.space);
                 self.backdrop_sample(child, tf, clips, top(target), space, backdrops)?;
@@ -1159,18 +1219,44 @@ impl Renderer {
 )]
 fn sample_backdrop(
     layer: &Layer,
-    (capture, width, height, scale): (&[[f64; 4]], usize, usize, f64),
+    capture: &Capture,
     p: [f64; 2],
     sdf_clip: Option<&(crate::sdf::BoxShape, Affine)>,
 ) -> [f64; 4] {
     use cherenkov_scene::BackdropEffectSpec as E;
+    let (base, levels, scale) = (&capture.canvas, &capture.levels, capture.scale);
+    let (width, height) = (base.width, base.height);
+    let pixels = &base.pixels;
     let at =
-        |q: [f64; 2]| crate::sdf::bilinear(capture, width, height, [q[0] * scale, q[1] * scale]);
+        |q: [f64; 2]| crate::sdf::bilinear(pixels, width, height, [q[0] * scale, q[1] * scale]);
+    // `backdrop_sample_level(q, level)`: `level` clamped to `[0, n−1]`,
+    // bilinear at `floor`/`ceil` mixed by `fract`, at level-k texel
+    // coordinate `q · s / 2^k`.
+    let at_level = |q: [f64; 2], level: f64| {
+        let n = f64::from(u32::try_from(levels.len()).expect("levels ≤ 8")) + 1.0;
+        let lc = level.clamp(0.0, n - 1.0);
+        let k0 = lc.floor();
+        let k1 = (k0 + 1.0).min(n - 1.0);
+        let read = |k: f64| {
+            let k = k as usize;
+            let c = if k == 0 { base } else { &levels[k - 1] };
+            let div = f64::from(1u32 << k);
+            crate::sdf::bilinear(
+                &c.pixels,
+                c.width,
+                c.height,
+                [q[0] * scale / div, q[1] * scale / div],
+            )
+        };
+        let (lo, hi) = (read(k0), read(k1));
+        let t = lc - k0;
+        std::array::from_fn(|i| (hi[i] - lo[i]).mul_add(t, lo[i]))
+    };
     match &layer.backdrop_effect {
         // `bilinear` at a texel centre is the texel: a 1:1 capture keeps
         // the exact pre-effect read.
         None if scale >= 1.0 => {
-            capture[usize::min(p[1] as usize, height - 1) * width
+            pixels[usize::min(p[1] as usize, height - 1) * width
                 + usize::min(p[0] as usize, width - 1)]
         }
         None => at(p),
@@ -1219,6 +1305,16 @@ fn sample_backdrop(
             c[2] = color[2].mul_add(k, c[2]);
             c
         }
+        Some(E::Level {
+            depth,
+            edge_level,
+            interior_level,
+        }) => {
+            let (shape, clip_tf) = sdf_clip.expect("SDF effects carry a box clip");
+            let (d, _) = crate::sdf::distance_and_normal(shape, clip_tf, p);
+            let t = (1.0 + d / depth).clamp(0.0, 1.0);
+            at_level(p, (edge_level - interior_level).mul_add(t, *interior_level))
+        }
     }
 }
 
@@ -1265,6 +1361,39 @@ fn downsample(canvas: &Canvas, scale: f64) -> Canvas {
         pixels,
         width: cw,
         height: ch,
+    }
+}
+
+/// The next pyramid level: texel `(i, j)` is the mean of `src` texels
+/// `(2i..=2i+1, 2j..=2j+1)` — a partial box at the grid's edge averages
+/// the texels present, matching the GPU's reduce pass.
+fn reduce_level(src: &Canvas) -> Canvas {
+    let (w, h) = (src.width.div_ceil(2), src.height.div_ceil(2));
+    let mut pixels = vec![[0.0; 4]; w * h];
+    for j in 0..h {
+        let (y0, y1) = (2 * j, (2 * j + 1).min(src.height - 1));
+        for i in 0..w {
+            let (x0, x1) = (2 * i, (2 * i + 1).min(src.width - 1));
+            let mut acc = [0.0; 4];
+            for y in y0..=y1 {
+                for x in x0..=x1 {
+                    let c = src.pixels[y * src.width + x];
+                    for (a, &v) in acc.iter_mut().zip(&c) {
+                        *a += v;
+                    }
+                }
+            }
+            let n = f64::from(
+                u32::try_from(y1 - y0 + 1).expect("box ≤ 2 rows")
+                    * u32::try_from(x1 - x0 + 1).expect("box ≤ 2 columns"),
+            );
+            pixels[j * w + i] = acc.map(|v| v / n);
+        }
+    }
+    Canvas {
+        pixels,
+        width: w,
+        height: h,
     }
 }
 
@@ -1403,4 +1532,57 @@ fn scene_clip_stack(layer: &Layer, tf: Affine, _w: usize, _h: usize) -> Vec<Vec<
         .as_ref()
         .map(|c| vec![shape_edges(c, tf)])
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Canvas, reduce_level};
+
+    /// Texel `(x, y)` of the source level: every channel varies, alpha
+    /// included.
+    fn texel(x: u8, y: u8) -> [f64; 4] {
+        [
+            f64::from(x),
+            f64::from(y).mul_add(0.5, 0.25),
+            f64::from(x * y),
+            f64::from(x + 3 * y).mul_add(0.05, 0.1),
+        ]
+    }
+
+    /// The mean of the listed source texels.
+    fn mean(texels: &[(u8, u8)]) -> [f64; 4] {
+        let n = f64::from(u8::try_from(texels.len()).expect("a box holds at most 4 texels"));
+        std::array::from_fn(|c| texels.iter().map(|&(x, y)| texel(x, y)[c]).sum::<f64>() / n)
+    }
+
+    fn assert_texel(actual: [f64; 4], expected: [f64; 4]) {
+        for (a, e) in actual.iter().zip(expected) {
+            assert!(
+                (a - e).abs() <= 1e-12,
+                "texel {actual:?}, expected {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn pyramid_partial_boxes_average_the_texels_present() {
+        let src = Canvas {
+            pixels: (0..5)
+                .flat_map(|y| (0..5).map(move |x| texel(x, y)))
+                .collect(),
+            width: 5,
+            height: 5,
+        };
+        let level = reduce_level(&src);
+        assert_eq!((level.width, level.height), (3, 3));
+        let at = |x: usize, y: usize| level.pixels[y * 3 + x];
+        // A full box.
+        assert_texel(at(1, 1), mean(&[(2, 2), (3, 2), (2, 3), (3, 3)]));
+        // The right edge's partial box: column 4 alone, two rows.
+        assert_texel(at(2, 1), mean(&[(4, 2), (4, 3)]));
+        // The bottom edge's partial box: row 4 alone, two columns.
+        assert_texel(at(1, 2), mean(&[(2, 4), (3, 4)]));
+        // The corner: the single texel present.
+        assert_texel(at(2, 2), texel(4, 4));
+    }
 }

@@ -12,7 +12,7 @@ use std::sync::Arc;
 pub use cherenkov_record::ResourceError;
 
 use crate::frame::OffscreenFormat;
-use cherenkov_record::ResourceId;
+use cherenkov_record::{Extend, ResourceId};
 
 /// Engine initialization or engine-wide failure.
 #[derive(Debug, thiserror::Error)]
@@ -98,6 +98,10 @@ pub enum RenderError {
     /// A render pass failed.
     #[error("render: {0}")]
     Render(String),
+    /// A radial gradient with identical circles uses [`Extend::Repeat`] or
+    /// [`Extend::Reflect`], which have no limit there.
+    #[error("radial gradient with identical circles cannot use extend {0:?}")]
+    IdenticalRadialCircles(Extend),
     /// A glyph run references a font that is not registered.
     #[error("font: {0}")]
     Font(String),

@@ -148,6 +148,9 @@ pub enum PaintData {
         centres: [f32; 4],
         /// Radii: `r0, r1`.
         radii: [f32; 2],
+        /// The circles are identical: the parameter is `-∞` inside `r0` and
+        /// `+∞` outside.
+        identical: bool,
         /// Sorted stops.
         stops: std::sync::Arc<[Stop]>,
         /// The continuation mode.
@@ -318,19 +321,26 @@ pub fn paint_data(
             extend: g.extend,
             interpolation: g.interpolation,
         },
-        Paint::Radial(g) => PaintData::Radial {
-            inv: affine_f32(inv),
-            centres: [
-                f32_f64(g.start_center.x),
-                f32_f64(g.start_center.y),
-                f32_f64(g.end_center.x),
-                f32_f64(g.end_center.y),
-            ],
-            radii: [f32_f64(g.start_radius), f32_f64(g.end_radius)],
-            stops: stops(&g.stops, g.interpolation),
-            extend: g.extend,
-            interpolation: g.interpolation,
-        },
+        Paint::Radial(g) => {
+            let identical = g.has_identical_circles();
+            if identical && matches!(g.extend, Extend::Repeat | Extend::Reflect) {
+                return Err(RenderError::IdenticalRadialCircles(g.extend));
+            }
+            PaintData::Radial {
+                inv: affine_f32(inv),
+                centres: [
+                    f32_f64(g.start_center.x),
+                    f32_f64(g.start_center.y),
+                    f32_f64(g.end_center.x),
+                    f32_f64(g.end_center.y),
+                ],
+                radii: [f32_f64(g.start_radius), f32_f64(g.end_radius)],
+                identical,
+                stops: stops(&g.stops, g.interpolation),
+                extend: g.extend,
+                interpolation: g.interpolation,
+            }
+        }
         _ => return extra_paint(paint, inv, images),
     })
 }
@@ -472,24 +482,31 @@ fn eval_stops(stops: &[Stop], t: f32, interpolation: Interpolation) -> [f32; 4] 
 }
 
 /// `t` along the two-point radial gradient for point `(px, py)` in content
-/// space; the larger real root, `NaN` when there is none.
+/// space: the largest root whose radius `r0 + t·dr` is non-negative, `NaN`
+/// when there is none. Identical circles give `-∞` on and inside the circle
+/// and `+∞` outside, as the oracle's `radial_t` does.
 #[allow(clippy::many_single_char_names)] // quadratic notation mirrors the spec
-fn radial_t(px: f32, py: f32, centres: [f32; 4], radii: [f32; 2]) -> f32 {
+fn radial_t(px: f32, py: f32, centres: [f32; 4], radii: [f32; 2], identical: bool) -> f32 {
     let (px, py) = (px - centres[0], py - centres[1]);
-    let (dcx, dcy) = (centres[2] - centres[0], centres[3] - centres[1]);
     let (r0, dr) = (radii[0], radii[1] - radii[0]);
+    if identical {
+        return if px.hypot(py) <= r0 {
+            f32::NEG_INFINITY
+        } else {
+            f32::INFINITY
+        };
+    }
+    let (dcx, dcy) = (centres[2] - centres[0], centres[3] - centres[1]);
+    let radius_ok = |t: f32| t.mul_add(dr, r0) >= 0.0;
     let a = dr.mul_add(-dr, dcy.mul_add(dcy, dcx * dcx));
     let b = -2.0 * r0.mul_add(dr, dcy.mul_add(py, dcx * px));
     let c = r0.mul_add(-r0, py.mul_add(py, px * px));
     if a.abs() < 1e-12 {
         if b.abs() < 1e-12 {
-            return if r0.abs() < 1e-12 {
-                0.0
-            } else {
-                (px.hypot(py) - r0) / r0.abs()
-            };
+            return f32::NAN;
         }
-        return -c / b;
+        let t = -c / b;
+        return if radius_ok(t) { t } else { f32::NAN };
     }
     let disc = (4.0 * a).mul_add(-c, b * b);
     if disc < 0.0 {
@@ -497,7 +514,14 @@ fn radial_t(px: f32, py: f32, centres: [f32; 4], radii: [f32; 2]) -> f32 {
     }
     let sq = disc.sqrt();
     let (r1, r2) = ((-b + sq) / (2.0 * a), (-b - sq) / (2.0 * a));
-    r1.max(r2)
+    let (hi, lo) = (r1.max(r2), r1.min(r2));
+    if radius_ok(hi) {
+        hi
+    } else if radius_ok(lo) {
+        lo
+    } else {
+        f32::NAN
+    }
 }
 
 impl PaintData {
@@ -590,16 +614,17 @@ impl PaintData {
                 inv,
                 centres,
                 radii,
+                identical,
                 stops,
                 extend,
                 interpolation,
             } => {
                 let (px, py) = apply(*inv, dx, dy);
-                let t = radial_t(px, py, *centres, *radii);
-                if t.is_finite() {
-                    extend_t(t, *extend).map_or([0.0; 4], |t| eval_stops(stops, t, *interpolation))
-                } else {
+                let t = radial_t(px, py, *centres, *radii, *identical);
+                if t.is_nan() {
                     [0.0; 4]
+                } else {
+                    extend_t(t, *extend).map_or([0.0; 4], |t| eval_stops(stops, t, *interpolation))
                 }
             }
         }
