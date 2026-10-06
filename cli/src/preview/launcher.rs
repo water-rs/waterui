@@ -1508,6 +1508,7 @@ async fn scaffold_preview_module(project: &Project, platform: PreviewPlatform) -
         // root now — the managed manifest replaces it once the support
         // project scaffolds — or `cargo metadata` on the module resolves
         // without any `[patch]` and picks registry `waterui-*` copies (#197).
+        let framework = project.resolved_framework().await?;
         let patches = match runtime_path.as_deref() {
             Some(root) => {
                 let root = root.to_path_buf();
@@ -1516,13 +1517,13 @@ async fn scaffold_preview_module(project: &Project, platform: PreviewPlatform) -
                 })
                 .await?
             }
-            None => project.resolved_framework().await?.patches(),
+            None => framework.patches(),
         };
         crate::project_model::templates::ffi::write_workspace_root_manifest(
             &workspace_root,
             patches,
             Some(project.root()),
-            Some(&project.project_packages().await?),
+            Some(&project.project_packages(&framework).await?),
         )
         .await?;
     }
@@ -1835,7 +1836,7 @@ async fn resolve_preview_metadata(
         .join("Cargo.toml");
     let app_crate_name = project.crate_name().clone();
     let app_path = project.root().to_path_buf();
-    let project_packages = project.project_packages().await?;
+    let project_packages = project.project_packages(&framework).await?;
     let metadata_start = Instant::now();
     let metadata_manifest_path = manifest_path.clone();
     let abi_feature = PreviewLinkMode::for_platform(platform)

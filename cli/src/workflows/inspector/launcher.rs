@@ -234,24 +234,12 @@ async fn ensure_inspector_support_app(
 }
 
 async fn scaffold_inspector_app(path: &Path, requirements: &InspectorRequirements) -> Result<()> {
-    use crate::project::{CreateOptions, Manifest as WaterManifest};
+    use crate::project::Manifest as WaterManifest;
 
     let waterui_path = requirements.waterui_path.clone();
 
-    let options = CreateOptions {
-        name: "WaterUI Inspector".to_string(),
-        bundle_identifier: crate::project_types::BundleIdentifier::try_from(
-            "dev.waterui.inspector",
-        )
-        .expect("inspector support bundle identifier must be valid"),
-        waterui_path: waterui_path.clone(),
-        channel: None,
-        framework_manifest: None,
-        framework: None,
-        framework_lock: None,
-        author: String::new(),
-        web: None,
-    };
+    let options = inspector_create_options(waterui_path.clone());
+    let expected_packages = inspector_project_packages(&options);
 
     let project = Project::create(path, options)
         .await
@@ -261,6 +249,16 @@ async fn scaffold_inspector_app(path: &Path, requirements: &InspectorRequirement
     manifest.package.accessory = false;
     manifest.save(project.root()).await?;
 
+    let framework = project.resolved_framework().await?;
+    let project_packages = project.project_packages(&framework).await?;
+    // `inspector_signature` fingerprints the set derived from the display
+    // name before the project exists; the manifest must carry that same set,
+    // or the stored signature would describe a manifest that was not written.
+    eyre::ensure!(
+        project_packages == expected_packages,
+        "the inspector support app resolved its own packages as {project_packages:?}, \
+         but its signature fingerprints {expected_packages:?}"
+    );
     let ctx = TemplateContext::for_support_app(
         crate::templates::SupportAppIdentity {
             display_name: "WaterUI Inspector".to_string(),
@@ -271,12 +269,12 @@ async fn scaffold_inspector_app(path: &Path, requirements: &InspectorRequirement
             .expect("inspector support bundle identifier must be valid"),
         },
         waterui_path,
-        &project.resolved_framework().await?,
+        &framework,
         false,
         None,
         project.local_sources(),
     )
-    .with_project_packages(project.project_packages().await?);
+    .with_project_packages(project_packages);
 
     crate::templates::inspector::scaffold(project.root(), &ctx)
         .await
@@ -284,6 +282,34 @@ async fn scaffold_inspector_app(path: &Path, requirements: &InspectorRequirement
 
     info!("Inspector app scaffolded at {}", path.display());
     Ok(())
+}
+
+/// The `water create` options the inspector support app is scaffolded from.
+fn inspector_create_options(waterui_path: Option<PathBuf>) -> crate::project::CreateOptions {
+    crate::project::CreateOptions {
+        name: "WaterUI Inspector".to_string(),
+        bundle_identifier: crate::project_types::BundleIdentifier::try_from(
+            "dev.waterui.inspector",
+        )
+        .expect("inspector support bundle identifier must be valid"),
+        waterui_path,
+        channel: None,
+        framework_manifest: None,
+        framework: None,
+        framework_lock: None,
+        author: String::new(),
+        web: None,
+    }
+}
+
+/// The inspector support app's own packages: its graph is its app crate plus
+/// the framework, so the set is the crate `water create` derives from the
+/// display name. `scaffold_inspector_app` checks the written set against it.
+fn inspector_project_packages(options: &crate::project::CreateOptions) -> BTreeSet<String> {
+    BTreeSet::from([options
+        .crate_name()
+        .expect("the inspector display name derives a valid crate name")
+        .to_string()])
 }
 
 fn inspector_signature(requirements: &InspectorRequirements) -> String {
@@ -294,12 +320,9 @@ fn inspector_signature(requirements: &InspectorRequirements) -> String {
             |path| path.display().to_string()
         ),
         requirements.runtime_fingerprint,
-        // The support manifest's own crate is the only project package its
-        // graph carries — the name `scaffold_inspector_app`'s "WaterUI
-        // Inspector" identity derives — so its override set is this one entry.
-        crate::templates::inspector::template_fingerprint(&BTreeSet::from([
-            "waterui_inspector".to_string(),
-        ])),
+        crate::templates::inspector::template_fingerprint(&inspector_project_packages(
+            &inspector_create_options(requirements.waterui_path.clone())
+        )),
     )
 }
 
