@@ -89,7 +89,7 @@ pub struct NativeMenuBar {
 /// would claim the wrong key or none, so it carries no accelerator for either
 /// there; the registry still fires both chords.
 #[cfg(target_os = "macos")]
-fn native_item_arms(shortcut: &Shortcut) -> bool {
+const fn native_item_arms(shortcut: &Shortcut) -> bool {
     !matches!(
         shortcut.key,
         ShortcutKey::Named(NamedKey::Delete | NamedKey::Backspace)
