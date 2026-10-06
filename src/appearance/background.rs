@@ -103,12 +103,10 @@ impl IntoBackground for Glass {
 /// A material group metadata: the backdrop materials in the wrapped subtree
 /// form one group.
 ///
-/// Members of one group that use the same material in the same
-/// appearance share one capture of what lies behind the group, so such a
-/// member does not see another. Members with different materials, or in a
-/// different appearance, are captured separately: each material's capture
-/// is filtered on its own terms. Where the realization's style supports
-/// it, members may also merge into one shape where they come close. Whether and how they merge, and the distance
+/// The members of one group share one capture of what lies behind the
+/// group, so a member does not see another member of its group. Where the
+/// realization's style supports it, members may also merge into one shape
+/// where they come close. Whether and how they merge, and the distance
 /// over which they do, belong to the style and its theme tokens, never to
 /// the view.
 ///
