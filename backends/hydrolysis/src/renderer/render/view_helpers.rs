@@ -222,10 +222,13 @@ pub fn a11y_scoped_env_for_view(
 /// leaf inside its content — claims the content's explicit label, role, or
 /// identifier; the subtree then emits under the container-child environment
 /// that strips that naming ([`accessibility_container_child_environment`]).
-/// `Metadata<Environment>` snapshots are transparent to hoisting: every row's
-/// content arrives wrapped in the selection theme's `use_env` snapshot, which
-/// is not a view the user named — it stays on the returned view while the
-/// metadata inside it lifts. Any other `Metadata<T>` (a `.padding()` between
+/// `Metadata<Environment>` snapshots and `IgnorableMetadata<MaterialGroup>`
+/// scope markers are transparent to hoisting. A snapshot stays on the
+/// returned view while the naming metadata inside it lifts, because every
+/// row's content arrives wrapped in the selection theme's `use_env`
+/// snapshot, which is not a view the user named. A group marker stays the
+/// same way — a pure scope marker is not a view the user named either.
+/// Any other `Metadata<T>` (a `.padding()` between
 /// the modifier and the named view) still belongs to the subtree's own build,
 /// so hoisting stops at one.
 #[cfg(feature = "accessibility")]
@@ -242,6 +245,17 @@ fn hoist_accessibility_metadata_inner(mut view: AnyView, scoped: &mut Environmen
             let Metadata { content, value } = *metadata;
             let content = hoist_accessibility_metadata_inner(content, scoped);
             return AnyView::new(Metadata { content, value });
+        }
+        Err(view) => view,
+    };
+    // A `.material_group()` is a pure scope marker, like the
+    // `Metadata<Environment>` snapshot above: it stays on the returned
+    // view while the naming metadata inside it lifts.
+    view = match view.downcast::<IgnorableMetadata<MaterialGroup>>() {
+        Ok(metadata) => {
+            let IgnorableMetadata { content, value } = *metadata;
+            let content = hoist_accessibility_metadata_inner(content, scoped);
+            return AnyView::new(IgnorableMetadata { content, value });
         }
         Err(view) => view,
     };
@@ -324,6 +338,9 @@ pub fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
     );
     passthrough_ignorable_metadata_content!(
         MaterialBackground,
+        // `.material_group()` marks a scope for backdrop capture only:
+        // every measure/identity/label lookup sees the content it wraps.
+        MaterialGroup,
         AccessibilityIdentifier,
         AccessibilityLabel,
         AccessibilityValue,
@@ -495,6 +512,10 @@ fn normalize_layout_view_with_budget(
     // then relabel every descendant leaf).
     normalize_passthrough_ignorable_metadata!(
         MaterialBackground,
+        // `.material_group()` is a scope marker with no environment effect:
+        // its wrapper must reach the tree build so the flush can push the
+        // scope its member materials join (water-rs/waterui#1999).
+        MaterialGroup,
         AccessibilityIdentifier,
         AccessibilityLabel,
         AccessibilityValue,

@@ -232,11 +232,20 @@ impl RenderNode {
                             node.child.flush(r, ctx, child_env);
                         });
                     }
-                    WrapperEffect::Material(runtime) => {
+                    WrapperEffect::Material(level) => {
                         // Everything painted so far is the material's
                         // backdrop: close that segment, present the keyed
                         // member mount, and flush the content above it.
+                        // The member's scope is the stack's top — the nearest
+                        // enclosing `.material_group()` — or none.
                         renderer.flush_scene_layer();
+                        // The resolved scheme keys the backdrop group — a
+                        // subtree-installed appearance must not share a
+                        // capture. `read_signal` subscribes the flush, so an
+                        // appearance flip requests a refresh and re-keys the
+                        // member.
+                        let scheme =
+                            renderer.read_signal(&waterui::theme::current_color_scheme(child_env));
                         renderer
                             .compositor
                             .render_layers
@@ -246,12 +255,22 @@ impl RenderNode {
                                     presentation:
                                         crate::renderer::retained::PresentationId::ORDINARY,
                                 },
-                                runtime: Rc::clone(runtime),
+                                scope: renderer.compositor.material_scopes.last().copied(),
+                                scheme,
+                                level: *level,
                                 transform: ctx.transform,
                                 bounds: ctx.bounds,
                                 active_layers: renderer.compositor.active_scene_layers.clone(),
                             }));
                         node.child.flush(renderer, ctx, child_env);
+                    }
+                    WrapperEffect::MaterialGroup => {
+                        // The node's render identity is the group scope:
+                        // push it while the child flushes, then pop, so the
+                        // members inside join its shared backdrop group.
+                        renderer.compositor.material_scopes.push(node.render_id);
+                        node.child.flush(renderer, ctx, child_env);
+                        renderer.compositor.material_scopes.pop();
                     }
                     WrapperEffect::PopupMenuSurface => {
                         HydrolysisRenderer::apply_popup_menu_surface(renderer, ctx, |r| {

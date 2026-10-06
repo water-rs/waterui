@@ -1,11 +1,15 @@
 //! `Material` backgrounds as a backdrop treatment (water-rs/waterui#1854).
 //!
-//! A within-window material level realizes as one backdrop group per
-//! material surface. The content painted behind the view is captured at
-//! [`CAPTURE_SCALE`] of device resolution, passed through the level's colour
-//! stage — a [`LumaCurve`] in encoded sRGB — and then blurred with the
-//! level's Gaussian σ; the view's mount samples the result inside its clip.
-//! The colour stage runs before the blur, and there is no tint layer.
+//! A within-window material level realizes as a backdrop group its members
+//! share — the members under one `.material_group()` scope at one level,
+//! under one resolved colour scheme and on one install canvas sample one
+//! group, one capture and one chain (water-rs/waterui#1999); a member
+//! outside every group is a group of its own. The content painted behind
+//! the members is captured at [`CAPTURE_SCALE`] of device resolution,
+//! passed through the level's colour stage — a [`LumaCurve`] in encoded
+//! sRGB — and then blurred with the level's Gaussian σ; each member's
+//! mount samples the result inside its clip. The colour stage runs before
+//! the blur, and there is no tint layer.
 //!
 //! The blur averages encoded sRGB too, as the reference platform's does:
 //! across an edge between dark and light content, an encoded-sRGB average
@@ -17,12 +21,10 @@
 //! of the window's own content; Hydrolysis does not realize them yet
 //! (water-rs/waterui#1855), and [`WithinWindowLevel::of`] rejects them.
 
-use nami::{Computed, SignalExt as _};
 use waterui::background::Material;
 use waterui::theme::ColorScheme;
 use waterui_graphics::filtrate::filters::{GaussianBlur, LumaCurve};
 use waterui_graphics::filtrate::{Chain, FilterExt as _, OperatingSpace};
-use waterui_graphics::{ParamGuards, Reactive};
 
 /// The fraction of device resolution a material's backdrop is captured at.
 ///
@@ -37,7 +39,7 @@ pub fn capture_scale() -> cherenkov::CaptureScale {
 
 /// A material level the reference platform blends within the window: the
 /// levels a backdrop of the window's own content realizes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WithinWindowLevel {
     /// `Material::Regular`.
     Regular,
@@ -173,57 +175,42 @@ const ULTRA_THICK: Treatment = Treatment {
 
 /// The backdrop chain a material group runs: the colour stage, then the
 /// blur.
-pub type MaterialChain = Chain<LumaCurve<Reactive>, GaussianBlur<f32>>;
+pub type MaterialChain = Chain<LumaCurve<f32>, GaussianBlur<f32>>;
 
-/// The UI-side state of one material surface: its colour stage, whose
-/// parameters follow the environment's colour scheme, and its blur radius.
+/// The resolved treatment of one `(level, colour scheme)` backdrop-group
+/// key: its colour stage and blur radius as plain values.
 ///
-/// The parameters are [`Reactive`] slots fed by the subscriptions in
-/// `guards`, so an appearance change reaches the engine's filter without a
-/// rebuild of the subtree or the backdrop group.
+/// An appearance change re-keys the member's backdrop group, so the scheme
+/// reaches the filter through a new group and the colour stage snaps to
+/// the new appearance — it does not animate.
+#[derive(Clone, Copy, Debug)]
 pub struct MaterialRuntime {
-    tone: LumaCurve<Reactive>,
+    tone: LumaCurve<f32>,
     /// The Gaussian σ, in points.
     sigma: f32,
-    _guards: ParamGuards,
-}
-
-impl core::fmt::Debug for MaterialRuntime {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("MaterialRuntime")
-            .field("sigma", &self.sigma)
-            .finish_non_exhaustive()
-    }
 }
 
 impl MaterialRuntime {
-    /// The treatment of `level` under the appearance `scheme` follows.
-    pub(crate) fn new(level: WithinWindowLevel, scheme: &Computed<ColorScheme>) -> Self {
+    /// The treatment of `level` under `scheme`, resolved once.
+    pub(crate) fn new(level: WithinWindowLevel, scheme: ColorScheme) -> Self {
         let treatment = level.treatment();
-        let mut guards = ParamGuards::default();
-        let mut bind = |pick: fn(Tone) -> f32| {
-            guards.bind(
-                scheme
-                    .clone()
-                    .map(move |scheme| pick(treatment.tone(scheme))),
-            )
-        };
-        let tone = LumaCurve {
-            curve: [
-                bind(|tone| tone.curve[0]),
-                bind(|tone| tone.curve[1]),
-                bind(|tone| tone.curve[2]),
-                bind(|tone| tone.curve[3]),
-            ],
-            amount: bind(|tone| tone.amount),
-            chroma: bind(Tone::chroma),
-            offset: bind(|tone| tone.brightness),
-        };
+        let tone = treatment.tone(scheme);
         Self {
-            tone,
+            tone: LumaCurve {
+                curve: tone.curve,
+                amount: tone.amount,
+                chroma: tone.chroma(),
+                offset: tone.brightness,
+            },
             sigma: treatment.sigma,
-            _guards: guards,
         }
+    }
+
+    /// The colour stage's resolved parameters — a test-facing answer.
+    #[cfg(test)]
+    pub(crate) fn tone_params(&self) -> [f32; 7] {
+        use waterui_graphics::filtrate::Filter as _;
+        self.tone.params()
     }
 
     /// The backdrop chain for a surface at `display_scale` device pixels per
@@ -236,7 +223,6 @@ impl MaterialRuntime {
         )]
         let texels_per_point = (display_scale * f64::from(CAPTURE_SCALE)) as f32;
         self.tone
-            .clone()
             .then(GaussianBlur::new(self.sigma * texels_per_point).in_space(OperatingSpace::Srgb))
     }
 }
@@ -253,19 +239,21 @@ mod tests {
     }
 
     #[test]
-    fn the_colour_stage_follows_the_appearance() {
-        let scheme = waterui_core::binding(ColorScheme::Light);
-        let runtime = MaterialRuntime::new(WithinWindowLevel::Regular, &scheme.computed());
+    fn each_appearance_resolves_its_colour_stage() {
         assert_eq!(
-            runtime.tone.params(),
+            MaterialRuntime::new(WithinWindowLevel::Regular, ColorScheme::Light)
+                .tone
+                .params(),
             [0.9, 0.83, 0.925, 0.815, 0.75, 0.375, 0.1]
         );
-        scheme.set(ColorScheme::Dark);
         assert_eq!(
-            runtime.tone.params(),
+            MaterialRuntime::new(WithinWindowLevel::Regular, ColorScheme::Dark)
+                .tone
+                .params(),
             [0.16, 0.26, 0.1, 0.1, 0.75, 0.375, 0.0]
         );
         // σ = 29.5 pt at 2 px/pt, captured at a quarter: 14.75 texels.
+        let runtime = MaterialRuntime::new(WithinWindowLevel::Regular, ColorScheme::Light);
         assert!((runtime.chain(2.0).second.sigma - 14.75).abs() <= f32::EPSILON);
     }
 
@@ -305,7 +293,7 @@ mod tests {
     #[test]
     fn the_table_reproduces_the_measured_interiors() {
         for (level, scheme, interiors) in MEASURED_INTERIORS {
-            let runtime = MaterialRuntime::new(level, &Computed::constant(scheme));
+            let runtime = MaterialRuntime::new(level, scheme);
             let [v0, v1, v2, v3, amount, _, offset] = runtime.tone.params();
             for (grey, interior) in [0.0_f32, 0.5, 1.0].into_iter().zip(interiors) {
                 let u = 1.0 - grey;
