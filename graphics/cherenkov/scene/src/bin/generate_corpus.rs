@@ -2718,6 +2718,80 @@ fn run() -> Result<(), SceneError> {
         }
     }
 
+    // A start radius at or above the end radius (#2049): concentric reversed
+    // radii run inward, identical circles are a hard edge under pad, and an
+    // off-centre reversed pair needs the non-negative radius filter, here
+    // with P3-only and above-SDR-white stops.
+    corpus.scene("grad-radial-reversed-pad", 128, 128, white, |l| {
+        l.fill(
+            gradient_rect.clone(),
+            Paint::Radial(RadialGradient {
+                center0: Point::new(64.0, 64.0),
+                r0: 40.0,
+                center1: Point::new(64.0, 64.0),
+                r1: 16.0,
+                stops: stops2(),
+                extend: Extend::Pad,
+                interpolation: ColorSpace::Srgb,
+            }),
+        );
+    });
+    corpus.scene("grad-radial-identical-pad", 128, 128, white, |l| {
+        l.fill(
+            gradient_rect.clone(),
+            Paint::Radial(RadialGradient {
+                center0: Point::new(64.0, 64.0),
+                r0: 24.0,
+                center1: Point::new(64.0, 64.0),
+                r1: 24.0,
+                stops: stops2(),
+                extend: Extend::Pad,
+                interpolation: ColorSpace::Srgb,
+            }),
+        );
+    });
+    corpus.scene("grad-radial-identical-none", 128, 128, white, |l| {
+        l.fill(
+            gradient_rect.clone(),
+            Paint::Radial(RadialGradient {
+                center0: Point::new(64.0, 64.0),
+                r0: 24.0,
+                center1: Point::new(64.0, 64.0),
+                r1: 24.0,
+                stops: stops2(),
+                extend: Extend::None,
+                interpolation: ColorSpace::Srgb,
+            }),
+        );
+    });
+    corpus.scene("grad-radial-reversed-offset-pad", 128, 128, white, |l| {
+        l.fill(
+            gradient_rect.clone(),
+            Paint::Radial(RadialGradient {
+                center0: Point::new(52.0, 60.0),
+                r0: 40.0,
+                center1: Point::new(82.0, 68.0),
+                r1: 16.0,
+                stops: vec![
+                    GradientStop {
+                        offset: 0.0,
+                        color: p3(0.0, 1.0, 0.0),
+                    },
+                    GradientStop {
+                        offset: 0.5,
+                        color: p3(1.0, 0.0, 0.6),
+                    },
+                    GradientStop {
+                        offset: 1.0,
+                        color: hdr(4.0, 2.0, 0.5),
+                    },
+                ],
+                extend: Extend::Pad,
+                interpolation: ColorSpace::LinearP3,
+            }),
+        );
+    });
+
     // ---- Images ------------------------------------------------------------
 
     let checker = checker_png();
@@ -4275,6 +4349,27 @@ fn run() -> Result<(), SceneError> {
         corpus.scene_with_blobs(
             "colr-clip-nested",
             320,
+            64,
+            white,
+            |l| {
+                for run in &runs {
+                    l.glyphs(run.clone());
+                }
+            },
+            blobs,
+        );
+    }
+
+    {
+        // Identical-circle radials under pad, repeat and reflect over a
+        // green disc: COLRv1 paints nothing for them, so only the discs
+        // show.
+        let text = "\u{e700} \u{e701} \u{e702}";
+        let runs = ctx.shape(colr_font, text, 44.0, FontWeight::NORMAL, &solid(dark));
+        let blobs = font_blobs(&ctx, &[&runs]);
+        corpus.scene_with_blobs(
+            "colr-radial-identical",
+            192,
             64,
             white,
             |l| {
