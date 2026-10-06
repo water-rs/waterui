@@ -8,7 +8,6 @@ use std::{
     collections::VecDeque,
     future::Future,
     rc::Rc,
-    sync::Arc,
 };
 
 use accesskit::ActionRequest as AccessibilityActionRequest;
@@ -20,7 +19,6 @@ use executor_core::{
 };
 use js_sys::Uint8Array;
 use nami::Signal;
-use parley::fontique::{Blob, FontInfoOverride};
 use serde::Deserialize;
 use wasm_bindgen::{JsCast, closure::Closure};
 use wasm_bindgen_futures::JsFuture;
@@ -30,7 +28,6 @@ use waterui_core::Environment;
 use waterui_text::FontCollection;
 use web_sys::Response;
 
-use super::fonts::ResourceFontFamilies;
 use crate::platform::{BrowserWindow, PlatformWindow};
 use crate::renderer::{
     FontFamilyResolution, HydrolysisRenderer, HydrolysisTextContextMenuMode, MenuShortcutRegistry,
@@ -39,6 +36,7 @@ use crate::runner::web_accessibility::WebAccessibilityBridge;
 use crate::runner::{
     RenderDiagnosticsConfig, RuntimeWindow, advance_runtime, handle_input_events, render_window,
 };
+use crate::text::SessionTextEngine;
 use crate::time::Instant;
 
 const WEB_FONT_MANIFEST_PATH: &str = "fonts/waterui-fonts.json";
@@ -112,7 +110,7 @@ async fn fetch_text(path: &str) -> String {
     clippy::future_not_send,
     reason = "the future runs on the browser main thread via spawn_local; wasm32 is single-threaded so !Send state never crosses a thread"
 )]
-async fn load_web_fonts() -> parley::FontContext {
+async fn load_web_fonts() -> FontCollection {
     let manifest_text = fetch_text(WEB_FONT_MANIFEST_PATH).await;
     let manifest: WebFontManifest = serde_json::from_str(&manifest_text).unwrap_or_else(|error| {
         panic!("hydrolysis web font manifest parse failed for `{WEB_FONT_MANIFEST_PATH}`: {error}")
@@ -126,30 +124,14 @@ async fn load_web_fonts() -> parley::FontContext {
     }))
     .await;
 
-    let mut default_family_ids = Vec::new();
-    let mut resource_fonts = ResourceFontFamilies::default();
-    let mut font_cx = parley::FontContext::new();
-    for (font, font_data) in manifest.fonts.iter().zip(font_files) {
-        let families = font_cx.collection.register_fonts(
-            Blob::new(Arc::new(font_data)),
-            Some(FontInfoOverride {
-                family_name: Some(font.name.as_str()),
-                ..Default::default()
-            }),
-        );
-        if font.name == manifest.default_family {
-            default_family_ids.extend(families.iter().map(|(family_id, _)| *family_id));
-        }
-        resource_fonts.classify(font.name.as_str(), &families);
-    }
-
-    assert!(
-        !default_family_ids.is_empty(),
-        "hydrolysis web font manifest default family `{}` did not register any fonts",
-        manifest.default_family
-    );
-    resource_fonts.install(&mut font_cx.collection);
-    font_cx
+    crate::text::fonts::web_collection(
+        &manifest.default_family,
+        manifest
+            .fonts
+            .iter()
+            .zip(font_files)
+            .map(|(font, font_data)| (font.name.as_str(), font_data)),
+    )
 }
 
 #[derive(Clone)]
@@ -424,7 +406,7 @@ pub fn run(app: App, style: impl crate::Style) {
         // seeded from the collection, and a self-drawn component that typesets
         // text itself reads it out of the environment instead of building a
         // collection of its own.
-        let (mut platform, font_cx) = futures::join!(
+        let (mut platform, fonts) = futures::join!(
             BrowserWindow::new(
                 Rc::clone(&browser_schedule),
                 Rc::clone(&browser_occlusion_wake),
@@ -432,10 +414,14 @@ pub fn run(app: App, style: impl crate::Style) {
             load_web_fonts()
         );
         platform.apply_properties(&window);
-        let mut renderer = HydrolysisRenderer::new(theme, FontFamilyResolution::Lenient);
-        let fonts = FontCollection::new(font_cx);
+        // The root content lays out inside the page's safe area while
+        // backgrounds reach under the browser and system chrome around it.
+        env.insert(crate::platform::WindowSafeArea(platform.safe_area()));
         fonts.clone().install(&mut env);
-        super::fonts::seed_core(&mut renderer, &fonts);
+        let mut renderer = HydrolysisRenderer::with_engine(
+            theme,
+            SessionTextEngine::from_collection(&fonts, FontFamilyResolution::Lenient),
+        );
         renderer.set_window_id(
             env.get::<MenuShortcutRegistry>()
                 .expect("the web runner seeds MenuShortcutRegistry")

@@ -22,7 +22,7 @@ mod support {
 
 use hydrolysis_m3::Material3;
 use waterui::component::list::{List, ListItem};
-use waterui::component::{button, text, vstack};
+use waterui::component::{button, hstack, text, vstack};
 use waterui::id::SelfId;
 use waterui::navigation::{
     NavigationLink, NavigationSplitView, NavigationStack, NavigationToolbar, NavigationToolbarItem,
@@ -223,6 +223,58 @@ fn tabs_content_fits_pane() {
         f64::from(content_bottom),
         1.0,
         "the tab content's list must fill the pane minus the dock",
+    );
+}
+
+/// water-rs/waterui#1915, the measure-time half: a retained sub-view's
+/// layout pass also reads text metrics — a `text!` binding inside
+/// navigation content — through the `&mut HydroState` measure path rather
+/// than `read_signal`, so no watch registered it: growing the bound text
+/// must still re-run the sub-view's layout and shift the sibling beside it.
+#[test]
+fn navigation_content_relayouts_when_a_measure_read_text_grows() {
+    let value = Binding::container(String::from("9"));
+    let value_for_view = value.clone();
+    let mut app = ui()
+        .viewport(320, 240)
+        .theme(Material3::defaults())
+        .mount_offscreen(move || {
+            let value = value_for_view.clone();
+            NavigationStack::new(NavigationView::new(
+                "Inbox",
+                hstack((
+                    waterui::text!("{value}").a11y_label("counter"),
+                    text("next").a11y_label("next"),
+                ))
+                .spacing(0.0),
+            ))
+        });
+    app.settle();
+    let counter_before = label_bounds(&mut app, "counter");
+    let next_before = label_bounds(&mut app, "next");
+
+    value.set(String::from("10000"));
+    app.settle();
+
+    let counter_after = label_bounds(&mut app, "counter");
+    let next_after = label_bounds(&mut app, "next");
+    assert!(
+        f64::from(counter_after.width()) > f64::from(counter_before.width()),
+        "the counter's laid-out frame did not grow with its text: \
+         {counter_before:?} -> {counter_after:?}"
+    );
+    assert!(
+        f64::from(next_after.x()) > f64::from(next_before.x()),
+        "the sibling did not move when the text beside it grew: \
+         {next_before:?} -> {next_after:?}"
+    );
+    // Zero spacing places the sibling exactly at the text's trailing edge,
+    // wherever the row itself sits inside the page.
+    assert_close(
+        f64::from(next_after.x()),
+        f64::from(counter_after.x() + counter_after.width()),
+        1.0,
+        "the sibling must start at the grown text's trailing edge",
     );
 }
 

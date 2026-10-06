@@ -20,7 +20,7 @@ class HydrolysisSession internal constructor(context: Context) {
      * host-family modules (the GPU band, painters) that hand it back over JNI.
      */
     val nativePtr: Long =
-        NativeBridge.nativeCreateSession(this, context.applicationContext)
+        NativeBridge.nativeCreateSession(this, context)
 
     /** The view currently presenting this session, or none between bindings. */
     internal var hostView: HydrolysisHostView? = null

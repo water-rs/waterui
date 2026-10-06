@@ -108,10 +108,12 @@ pub async fn build_aar(
 
     // Kotlin helpers and Maven dependencies likewise belong on the classpath
     // the host app resolves classes from; `api` exports them through the
-    // published POM so a consumer's build sees them too. The scan mirrors the
-    // Rust build's feature selection so helpers behind optional features are
-    // not missed.
-    crate::assets::stage_android_classpath(
+    // published POM so a consumer's build sees them too. Manifest components
+    // go into the library manifest, which the host's manifest merger folds
+    // into its own, `${applicationId}` resolving to the host's. The scan
+    // mirrors the Rust build's feature selection so helpers behind optional
+    // features are not missed.
+    crate::assets::stage_android_declarations(
         project,
         &project.ffi_crate_path().join("Cargo.toml"),
         &module_dir,

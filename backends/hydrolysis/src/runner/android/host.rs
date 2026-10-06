@@ -29,10 +29,8 @@ use ndk::looper::{FdEvent, ForeignLooper, ThreadLooper};
 use waterui::Environment;
 use waterui::cursor::CursorStyle;
 use waterui::window::WindowState;
-use waterui_text::FontCollection;
 
 use super::accessibility::AccessibilitySnapshot;
-use super::fonts::android_fonts;
 use super::gpu::{AndroidGpuContext, AndroidSurface};
 use super::ime::ImeBridge;
 use super::jni::JniError;
@@ -51,6 +49,7 @@ use crate::runner::{
     RenderDiagnosticsConfig, init_main_thread_executors, install_headless_window_managers,
     install_native_component_hooks, menu_bar,
 };
+use crate::text::SessionTextEngine;
 use crate::time::Instant;
 
 /// One coherent metrics snapshot the host pushes — size, density, font scale,
@@ -723,7 +722,7 @@ impl AndroidSession {
         env.insert(waterui_core::ViewRenderer::new(
             crate::view_renderer::HydrolysisViewRenderer::new(Rc::clone(&theme)),
         ));
-        let fonts = FontCollection::new(android_fonts());
+        let fonts = crate::text::fonts::android_collection();
         fonts.clone().install(&mut env);
         let shortcuts = env
             .get::<MenuShortcutRegistry>()
@@ -759,8 +758,10 @@ impl AndroidSession {
             soft_input: None,
         };
         platform.apply_properties(&window);
-        let mut renderer = HydrolysisRenderer::new(theme, FontFamilyResolution::Lenient);
-        crate::runner::fonts::seed_core(&mut renderer, &fonts);
+        let mut renderer = HydrolysisRenderer::with_engine(
+            theme,
+            SessionTextEngine::from_collection(&fonts, FontFamilyResolution::Lenient),
+        );
         renderer.set_window_id(shortcuts.mint_window_id());
         let mut runtime = RuntimeWindow::new(
             window,

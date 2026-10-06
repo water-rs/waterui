@@ -48,14 +48,19 @@ struct SignalWatchEntry {
 }
 
 impl SignalWatchRegistry {
-    const fn begin_frame(&mut self) {
+    /// Opens a sweep window: entries marked seen in it survive the matching
+    /// [`Self::finish_frame`]. `pub(crate)` so `LayoutDependencies` can reuse
+    /// the same dedup-and-sweep contract for a `BuiltSubview`'s layout pass.
+    pub(crate) const fn begin_frame(&mut self) {
         self.generation = self
             .generation
             .checked_add(1)
             .expect("hydrolysis renderer: signal watch generation overflow");
     }
 
-    fn finish_frame(&mut self) {
+    /// Closes the sweep window, pruning every entry no `mark_seen` reached
+    /// since [`Self::begin_frame`].
+    pub(crate) fn finish_frame(&mut self) {
         let generation = self.generation;
         self.entries
             .retain(|_, entry| entry.last_seen == generation);
@@ -80,8 +85,9 @@ impl SignalWatchRegistry {
         })
     }
 
-    /// Records a fresh subscription for `identity`, alive until the signal goes
-    /// a whole frame without being read.
+    /// Records a fresh subscription for `identity`, alive until it goes a
+    /// whole sweep window — a frame for the flush registry, a layout pass for
+    /// a `BuiltSubview`'s dependency set — without being read.
     pub(crate) fn insert(
         &mut self,
         identity: usize,

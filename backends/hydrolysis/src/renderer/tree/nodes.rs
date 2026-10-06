@@ -58,6 +58,14 @@ struct BuiltSubview {
     /// keyboard inset animating under an unchanged rect) re-runs layout so
     /// the subtree's touch tests and surface facts track it.
     laid_out_area: Option<Box<safe_area::SafeAreaLayout>>,
+    /// The signal dependencies of the cached layout: every signal the last
+    /// layout pass read, kept subscribed for as long as that layout lives —
+    /// an update on any of them marks the set dirty so the next flush re-runs
+    /// exactly this sub-view's layout (a signal read inside a cached layout,
+    /// e.g. a scroll controller's request generation, would otherwise never
+    /// reach the sub-view again). `None` only while the set is lent to
+    /// [`HydroState::layout_dependencies`] for the duration of a pass.
+    layout_dependencies: Option<LayoutDependencies>,
     /// The default spoken accessibility label extracted from the source view once,
     /// at build time (mirrors `GestureObserverEffect::default_a11y_label`): the
     /// node owns the source after build, so the per-frame a11y path reads this.
@@ -80,9 +88,10 @@ pub(super) fn store_safe_area(
 }
 
 impl BuiltSubview {
-    /// Lays the node out when the structure, the size, the proposal or the
-    /// §7.1 context moved since the last layout — recording what it laid out
-    /// against so an unchanged re-flush skips the pass.
+    /// Lays the node out when the structure, the size, the proposal, the
+    /// §7.1 context or a signal the last layout pass read changed since the
+    /// last layout — recording what it laid out against so an unchanged
+    /// re-flush skips the pass.
     fn layout_if_needed(
         &mut self,
         renderer: &mut HydrolysisRenderer,
@@ -92,12 +101,49 @@ impl BuiltSubview {
         size: Size,
     ) {
         if self.needs_layout
+            || self
+                .layout_dependencies
+                .as_ref()
+                .is_some_and(LayoutDependencies::is_dirty)
             || size != self.laid_out
             || self.laid_out_proposal != Some(proposal)
             || self.laid_out_area.as_deref() != safe_area.as_ref()
         {
+            // Collect this pass's signal reads as dependencies: while the
+            // set is installed in `HydroState::layout_dependencies`,
+            // `watch_signal` and `measure_signal` record every read into it,
+            // so each signal the layout consumed stays watched — and its
+            // updates mark the sub-view's layout dirty — for as long as the
+            // cached layout lives. Two passes are never live at once
+            // (`RenderNode::layout` does not lay out a retained sub-view),
+            // so the slot must be empty coming in and full going out.
+            let mut dependencies = self
+                .layout_dependencies
+                .take()
+                .expect("hydrolysis renderer: a retained sub-view lost its layout dependency set");
+            dependencies.begin_pass();
+            // A host may have measured this sub-view earlier in the same
+            // flush (a label's `measure_built`, a lazy row's
+            // `patch_and_measure`), filling measure memos the pass would
+            // hit instead of re-running the reads beneath them — sweeping
+            // the dependencies those reads feed. Invalidate them so only
+            // memos filled during the pass can answer inside it.
+            renderer.state.measurement.begin_dependency_pass();
+            assert!(
+                renderer.state.layout_dependencies.is_none(),
+                "hydrolysis renderer: a retained sub-view's layout pass ran \
+                 inside another — RenderNode::layout must not lay out a \
+                 retained sub-view"
+            );
+            renderer.state.layout_dependencies = Some(dependencies);
             self.node
                 .layout(renderer, env, safe_area.clone(), proposal, size);
+            let mut dependencies =
+                renderer.state.layout_dependencies.take().expect(
+                    "hydrolysis renderer: a layout pass emptied the sub-view dependency slot",
+                );
+            dependencies.finish_pass();
+            self.layout_dependencies = Some(dependencies);
             self.laid_out = size;
             self.laid_out_proposal = Some(proposal);
             store_safe_area(&mut self.laid_out_area, safe_area);
@@ -139,6 +185,7 @@ impl RetainedSubview {
             laid_out_proposal: None,
             needs_layout: true,
             laid_out_area: None,
+            layout_dependencies: Some(LayoutDependencies::new(renderer.signals.clone())),
             default_a11y_label,
         });
     }
@@ -360,9 +407,12 @@ impl RetainedSubview {
     /// zero-area rect renders nothing, matching the dispatch path's empty-rect
     /// guard. `safe_area` is the context the sub-view lays out against — the
     /// ambient context of where it is placed for an ordinary sub-view, the
-    /// host's context inherited with `Covered` edges where its chrome sits for
-    /// chrome content (`NavigationView`, `Tabs`), `None` for a scroll
-    /// surface's context-free content.
+    /// host's context inherited with `Covered` edges where its chrome sits —
+    /// `Docked` on every edge the chrome draws a bar on (any bar with
+    /// extent > 0, keyboard or not), so the edge stays untouchable while
+    /// carrying the bar's inner edge as the dock a nested bar on it lands
+    /// on — for chrome content (`NavigationView`, `Tabs`), `None` for a
+    /// scroll surface's context-free content.
     pub(crate) fn flush_in_rect(
         &mut self,
         renderer: &mut HydrolysisRenderer,
