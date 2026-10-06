@@ -40,7 +40,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use muda::accelerator::{Accelerator, Code, Modifiers};
+use muda::accelerator::{Key, KeyAccelerator, Modifiers};
 use muda::{CheckMenuItem, Menu as NativeMenu, MenuEvent, MenuId, PredefinedMenuItem, Submenu};
 use nami::Computed;
 use nami::Signal as _;
@@ -50,6 +50,8 @@ use waterui::Environment;
 use waterui::app::Quit;
 #[cfg(target_os = "macos")]
 use waterui_controls::menu::ResolvedNestedMenu;
+#[cfg(target_os = "macos")]
+use waterui_controls::menu::{NamedKey, ShortcutKey};
 use waterui_controls::menu::{ResolvedCommand, ResolvedMenuItem, Shortcut};
 use waterui_core::handler::SharedAction;
 
@@ -78,13 +80,35 @@ pub struct NativeMenuBar {
     _watch: BoxWatcherGuard,
 }
 
-/// Maps a `Shortcut` to a muda [`Accelerator`]: modifiers go through the
-/// same platform mapping `ChordModifiers` gives the registry (the command
-/// modifier is the menu accelerator — ⌘ on macOS, Ctrl elsewhere) and the
-/// key maps to its physical [`Code`]. `None` for a key muda cannot express
-/// — the registry, still armed on every platform, owns that chord
-/// outright.
-fn accelerator_for(shortcut: &Shortcut) -> Option<Accelerator> {
+/// Whether a native menu item may carry `shortcut`'s accelerator.
+///
+/// Upstream muda 0.20 defect: on macOS it gives `Delete` the key equivalent
+/// U+007F, which is `NSDeleteCharacter`, the ⌫ key; forward delete (⌦) is
+/// `NSDeleteFunctionKey` (U+F728). It gives `Backspace` U+0008
+/// (`NSBackspaceCharacter`), which the ⌫ key does not send. The native item
+/// would claim the wrong key or none, so it carries no accelerator for either
+/// there; the registry still fires both chords.
+#[cfg(target_os = "macos")]
+fn native_item_arms(shortcut: &Shortcut) -> bool {
+    !matches!(
+        shortcut.key,
+        ShortcutKey::Named(NamedKey::Delete | NamedKey::Backspace)
+    )
+}
+
+/// Whether a native menu item may carry `shortcut`'s accelerator — always:
+/// the only exclusions are the macOS `Delete`/`Backspace` mapping defects
+/// above.
+#[cfg(not(target_os = "macos"))]
+const fn native_item_arms(_shortcut: &Shortcut) -> bool {
+    true
+}
+
+/// Maps a `Shortcut` to a muda [`KeyAccelerator`] on the key's W3C value:
+/// modifiers go through the same platform mapping `ChordModifiers` gives the
+/// registry (the command modifier is the menu accelerator — ⌘ on macOS, Ctrl
+/// elsewhere).
+fn accelerator_for(shortcut: &Shortcut) -> KeyAccelerator {
     let mut mods = Modifiers::empty();
     let modifiers = shortcut.modifiers;
     #[cfg(target_os = "macos")]
@@ -108,70 +132,13 @@ fn accelerator_for(shortcut: &Shortcut) -> Option<Accelerator> {
     if modifiers.shift() {
         mods |= Modifiers::SHIFT;
     }
-    Some(Accelerator::new(mods, code_for(&shortcut.key)?))
-}
-
-/// A `Shortcut` key is a single character; the matching [`Code`] is the
-/// physical key that types it — letters, digits, and the punctuation a
-/// menu accelerator can display. Anything else (named keys, multi-char
-/// strings) returns `None` and stays with the registry.
-fn code_for(key: &str) -> Option<Code> {
-    let mut chars = key.chars();
-    let c = chars.next()?;
-    if chars.next().is_some() {
-        return None;
-    }
-    Some(match c.to_ascii_uppercase() {
-        'A' => Code::KeyA,
-        'B' => Code::KeyB,
-        'C' => Code::KeyC,
-        'D' => Code::KeyD,
-        'E' => Code::KeyE,
-        'F' => Code::KeyF,
-        'G' => Code::KeyG,
-        'H' => Code::KeyH,
-        'I' => Code::KeyI,
-        'J' => Code::KeyJ,
-        'K' => Code::KeyK,
-        'L' => Code::KeyL,
-        'M' => Code::KeyM,
-        'N' => Code::KeyN,
-        'O' => Code::KeyO,
-        'P' => Code::KeyP,
-        'Q' => Code::KeyQ,
-        'R' => Code::KeyR,
-        'S' => Code::KeyS,
-        'T' => Code::KeyT,
-        'U' => Code::KeyU,
-        'V' => Code::KeyV,
-        'W' => Code::KeyW,
-        'X' => Code::KeyX,
-        'Y' => Code::KeyY,
-        'Z' => Code::KeyZ,
-        '0' => Code::Digit0,
-        '1' => Code::Digit1,
-        '2' => Code::Digit2,
-        '3' => Code::Digit3,
-        '4' => Code::Digit4,
-        '5' => Code::Digit5,
-        '6' => Code::Digit6,
-        '7' => Code::Digit7,
-        '8' => Code::Digit8,
-        '9' => Code::Digit9,
-        ' ' => Code::Space,
-        '-' => Code::Minus,
-        '=' => Code::Equal,
-        '[' => Code::BracketLeft,
-        ']' => Code::BracketRight,
-        ';' => Code::Semicolon,
-        '\'' => Code::Quote,
-        '`' => Code::Backquote,
-        ',' => Code::Comma,
-        '.' => Code::Period,
-        '/' => Code::Slash,
-        '\\' => Code::Backslash,
-        _ => return None,
-    })
+    let key = match shortcut.key.to_key() {
+        // An uppercase character accelerator implies Shift; Shift comes only
+        // from the shortcut's modifiers.
+        Key::Character(character) => Key::Character(character.to_lowercase()),
+        named @ Key::Named(_) => named,
+    };
+    KeyAccelerator::new(mods, key)
 }
 
 fn command_title(command: &ResolvedCommand) -> String {
@@ -189,13 +156,25 @@ fn build_command(
     actions: &mut HashMap<MenuId, SharedAction<()>>,
     state_watches: &mut Vec<BoxWatcherGuard>,
 ) -> CheckMenuItem {
-    let accelerator = command.shortcut.as_ref().and_then(accelerator_for);
     let item = CheckMenuItem::new(
         title,
         !command.disabled.snapshot(),
         command.selected.snapshot(),
-        accelerator,
+        None,
     );
+    if let Some(shortcut) = command
+        .shortcut
+        .as_ref()
+        .filter(|shortcut| native_item_arms(shortcut))
+    {
+        item.set_key_accelerator(Some(accelerator_for(shortcut)))
+            .unwrap_or_else(|error| {
+                panic!(
+                    "the native menu bar cannot arm `{title}`'s shortcut {shortcut:?} on this \
+                     platform: {error}"
+                )
+            });
+    }
     actions.insert(item.id().clone(), command.action.clone());
     let disabled_item = item.clone();
     state_watches.push(command.disabled.watch(move |ctx| {

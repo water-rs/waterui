@@ -20,23 +20,76 @@ use std::rc::{Rc, Weak};
 use nami::{Computed, Signal as _};
 use waterui::app::Quit;
 use waterui::window::WindowState;
-use waterui_controls::menu::{ResolvedCommand, ResolvedMenuItem, Shortcut};
+use waterui_controls::menu::{NamedKey, ResolvedCommand, ResolvedMenuItem, Shortcut, ShortcutKey};
 use waterui_core::Environment;
 use waterui_core::Str;
 use waterui_core::handler::SharedAction;
 
 use super::popup_menu::{PopupMenuNode, PopupMenuStateGroup};
 use crate::HydrolysisRenderer;
-use crate::platform::{KeyCode, Modifiers};
+use crate::platform::Modifiers;
 use crate::renderer::call_action_discarding_result;
 use crate::widgets::controls::button::MenuRenderState;
+
+/// The label a menu hint draws for a shortcut key: a letter in upper case,
+/// the space bar as `Space`, and a named key in the platform's own notation —
+/// the `⌦`/`↩`/`←` glyphs of macOS menus, the `Del`/`Enter`/`Left` text of
+/// Windows and Linux menus. A named key without a platform abbreviation
+/// shows its W3C name, which is already the label those menus print (`F5`,
+/// `Home`).
+fn shortcut_key_label(key: &ShortcutKey) -> String {
+    match key {
+        ShortcutKey::Character(' ') => String::from("Space"),
+        ShortcutKey::Character(character) => character.to_uppercase().collect(),
+        ShortcutKey::Named(named) => {
+            named_key_label(*named).map_or_else(|| named.to_string(), String::from)
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+const fn named_key_label(key: NamedKey) -> Option<&'static str> {
+    Some(match key {
+        NamedKey::Delete => "⌦",
+        NamedKey::Backspace => "⌫",
+        NamedKey::Enter => "↩",
+        NamedKey::Escape => "⎋",
+        NamedKey::Tab => "⇥",
+        NamedKey::ArrowUp => "↑",
+        NamedKey::ArrowDown => "↓",
+        NamedKey::ArrowLeft => "←",
+        NamedKey::ArrowRight => "→",
+        NamedKey::PageUp => "⇞",
+        NamedKey::PageDown => "⇟",
+        NamedKey::Home => "↖",
+        NamedKey::End => "↘",
+        NamedKey::Clear => "⌧",
+        _ => return None,
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+const fn named_key_label(key: NamedKey) -> Option<&'static str> {
+    Some(match key {
+        NamedKey::Delete => "Del",
+        NamedKey::Insert => "Ins",
+        NamedKey::Escape => "Esc",
+        NamedKey::PageUp => "PgUp",
+        NamedKey::PageDown => "PgDn",
+        NamedKey::ArrowUp => "Up",
+        NamedKey::ArrowDown => "Down",
+        NamedKey::ArrowLeft => "Left",
+        NamedKey::ArrowRight => "Right",
+        _ => return None,
+    })
+}
 
 /// The trailing hint a menu row draws for a `Command`'s shortcut — `⌃⌥⇧⌘`
 /// symbols on macOS, `Ctrl+Alt+Shift+` text elsewhere (where the command
 /// modifier is control, the platform's menu accelerator).
 pub fn shortcut_hint_text(shortcut: &Shortcut) -> Str {
     let modifiers = shortcut.modifiers;
-    let key = shortcut.key.to_uppercase();
+    let key = shortcut_key_label(&shortcut.key);
     #[cfg(target_os = "macos")]
     {
         let mut hint = String::new();
@@ -108,13 +161,13 @@ impl ChordModifiers {
     }
 }
 
-/// One command's chord: the normalized modifier set and lowercased key, the
-/// action it runs, its live disabled flag, the label a conflict warning names
+/// One command's chord: the normalized modifier set and the key, the action
+/// it runs, its live disabled flag, the label a conflict warning names
 /// it by, and the rendered hint text.
 #[derive(Clone)]
 struct MenuShortcut {
     modifiers: ChordModifiers,
-    key: Str,
+    key: ShortcutKey,
     action: SharedAction<()>,
     disabled: Computed<bool>,
     label: Str,
@@ -130,7 +183,7 @@ impl MenuShortcut {
     ) -> Self {
         Self {
             modifiers: ChordModifiers::of(shortcut),
-            key: shortcut.key.to_lowercase().into(),
+            key: shortcut.key.clone(),
             action,
             disabled,
             label,
@@ -138,12 +191,12 @@ impl MenuShortcut {
         }
     }
 
-    fn matches(&self, key: &str, pressed: Modifiers) -> bool {
+    fn matches(&self, key: &keyboard_types::Key, pressed: Modifiers) -> bool {
         self.modifiers.control == pressed.control
             && self.modifiers.alt == pressed.alt
             && self.modifiers.shift == pressed.shift
             && self.modifiers.super_key == pressed.super_key
-            && key.eq_ignore_ascii_case(&self.key)
+            && self.key.matches(key)
     }
 }
 
@@ -436,19 +489,17 @@ impl MenuShortcutRegistry {
         });
     }
 
-    /// Dispatch a pressed key for `window` against the registry. Returns
-    /// `true` when a chord matched and claimed the event — whether or not its
-    /// command fired (disabled commands claim without firing).
+    /// Dispatch a pressed key — its W3C `KeyboardEvent.key` — for `window`
+    /// against the registry. Returns `true` when a chord matched and claimed
+    /// the event — whether or not its command fired (disabled commands claim
+    /// without firing).
     pub(crate) fn dispatch(
         &self,
         window: WindowId,
-        key: &KeyCode,
+        pressed: &keyboard_types::Key,
         modifiers: Modifiers,
         env: &Environment,
     ) -> bool {
-        let KeyCode::Character(pressed) = key else {
-            return false;
-        };
         let mut winner: Option<(MenuShortcut, Option<PopupMenuStateGroup>, Environment)> = None;
         let mut conflicts: Vec<Str> = Vec::new();
         {

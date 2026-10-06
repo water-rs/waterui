@@ -4834,6 +4834,39 @@ mod winit_impl {
             }));
         }
 
+        /// The space bar is the character `" "` in the W3C vocabulary, not a
+        /// named key: winit's `NamedKey::Space` must reach the renderer as
+        /// that character so a `Shortcut::new(' ')` chord matches it
+        /// (water-rs/waterui#2038).
+        #[test]
+        fn the_space_bar_reports_the_w3c_space_character() {
+            let space = Key::Named(winit::keyboard::NamedKey::Space);
+            let mut events = Vec::new();
+            queue_keyboard_input(
+                &mut events,
+                Modifiers {
+                    control: true,
+                    ..Modifiers::default()
+                },
+                WinitKeyInput {
+                    is_synthetic: false,
+                    state: ElementState::Pressed,
+                    repeat: false,
+                    text: Some(" "),
+                    logical_key: &space,
+                    physical_key: PhysicalKey::Code(winit::keyboard::KeyCode::Space),
+                },
+            );
+            let Some(InputEvent::Key { logical_key, .. }) = events.first() else {
+                panic!("a space-bar press queues a key event first: {events:?}");
+            };
+            assert_eq!(*logical_key, keyboard_types::Key::Character(" ".to_owned()));
+            assert!(
+                waterui_controls::menu::ShortcutKey::from(' ').matches(logical_key),
+                "a space shortcut matches the space bar's logical key"
+            );
+        }
+
         /// water-rs/hydrolysis#211: on X11, `XI_FocusIn` replays every held
         /// key as a synthetic `KeyboardInput` press and `XI_FocusOut` as a
         /// synthetic release — state synchronisation, not keystrokes. The

@@ -189,6 +189,20 @@ typedef enum WuiEvent {
 } WuiEvent;
 
 /**
+ * Which kind of key a [`WuiShortcutKey`] carries.
+ */
+typedef enum WuiShortcutKeyTag {
+  /**
+   * A key that produces one character, in `character`.
+   */
+  WuiShortcutKeyTag_Character = 0,
+  /**
+   * A named key, its W3C `KeyboardEvent.key` name in `name`.
+   */
+  WuiShortcutKeyTag_Named = 1,
+} WuiShortcutKeyTag;
+
+/**
  * FFI-safe menu item tag.
  */
 typedef enum WuiMenuItemTag {
@@ -3883,6 +3897,26 @@ typedef struct WuiSystemIcon {
 } WuiSystemIcon;
 
 /**
+ * FFI-safe shortcut key: one character, or a named key from the W3C
+ * `KeyboardEvent.key` vocabulary.
+ */
+typedef struct WuiShortcutKey {
+  /**
+   * Which of `character` and `name` holds the key.
+   */
+  enum WuiShortcutKeyTag tag;
+  /**
+   * The key's Unicode scalar value for `Character`; 0 for `Named`.
+   */
+  uint32_t character;
+  /**
+   * The W3C key name (`Delete`, `F5`, `ArrowLeft`, …) for `Named`; empty
+   * for `Character`.
+   */
+  struct WuiStr name;
+} WuiShortcutKey;
+
+/**
  * FFI-safe shortcut modifier flags.
  */
 typedef struct WuiShortcutModifiers {
@@ -3909,9 +3943,9 @@ typedef struct WuiShortcutModifiers {
  */
 typedef struct WuiShortcut {
   /**
-   * The key equivalent.
+   * The key the shortcut fires on.
    */
-  struct WuiStr key;
+  struct WuiShortcutKey key;
   /**
    * The shortcut modifiers.
    */
@@ -4456,10 +4490,15 @@ typedef struct WuiGradient {
   float end_y;
   /**
    * Start radius (radial) or start angle in radians (angular).
+   *
+   * A radial radius is a fraction of the shorter side of the view's
+   * bounds and draws a circle: on a `w`x`h` box it spans `r * min(w, h)`
+   * points, so `0.5` reaches the nearer edge.
    */
   float start_value;
   /**
-   * End radius (radial) or end angle in radians (angular).
+   * End radius (radial) or end angle in radians (angular), in the same
+   * units as [`start_value`](Self::start_value).
    */
   float end_value;
 } WuiGradient;

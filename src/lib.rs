@@ -86,7 +86,8 @@ pub mod prelude {
         List, ListContent, ListItem, ListMinRowHeight, ListSection, Row, Section, detail_row, row,
     };
     pub use super::component::menu::{
-        Command, CommandExt, CommandRole, Menu, MenuItem, Shortcut, ShortcutModifiers,
+        Command, CommandExt, CommandRole, Menu, MenuItem, NamedKey, Shortcut, ShortcutKey,
+        ShortcutModifiers,
     };
     pub use super::metadata::context_menu::{ContextMenu, DismissContextMenu};
 

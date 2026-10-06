@@ -2477,9 +2477,29 @@ impl SemanticCore {
     pub(crate) fn handle_keyboard_key_down(
         &mut self,
         key: &KeyCode,
+        logical_key: &keyboard_types::Key,
         modifiers: Modifiers,
         env: &Environment,
     ) -> bool {
+        // A declared menu chord claims its key before any built-in key
+        // handling — Escape, Tab traversal, arrow stepping, activation and
+        // focused text input — as AppKit offers key equivalents before
+        // `keyDown` (water-rs/hydrolysis#247). The runner seeds the registry
+        // into every window's environment — a missing one is a bug in the
+        // runner, not an absent table. Chords match the press's W3C
+        // `logical_key`. Without Control, Alt or Super a press is typing
+        // while it names a character — the space bar included — and it
+        // belongs to a focused text editor on any key: a bare `Delete`
+        // chord does not steal the field's own delete.
+        let registry = env
+            .get::<MenuShortcutRegistry>()
+            .expect(MISSING_MENU_SHORTCUT_REGISTRY);
+        let typing = !(modifiers.control || modifiers.alt || modifiers.super_key)
+            && (matches!(logical_key, keyboard_types::Key::Character(_))
+                || self.text_editing.has_focus());
+        if !typing && registry.dispatch(self.window_id, logical_key, modifiers, env) {
+            return true;
+        }
         if matches!(key, KeyCode::Named(value) if value == "Escape")
             && let Some(modal) = self.hit_test.modal_interaction.clone()
             && modal.close_on_escape()
@@ -2627,17 +2647,6 @@ impl SemanticCore {
             } {
                 return self.navigate_list_row(*dest, env, modifiers);
             }
-            return true;
-        }
-        // Menu chords are consulted before the modifier early return and
-        // before focused text input sees the key: a matching shortcut claims
-        // the event (water-rs/hydrolysis#247). The runner seeds the registry
-        // into every window's environment — a missing one is a bug in the
-        // runner, not an absent table.
-        let registry = env
-            .get::<MenuShortcutRegistry>()
-            .expect(MISSING_MENU_SHORTCUT_REGISTRY);
-        if registry.dispatch(self.window_id, key, modifiers, env) {
             return true;
         }
         if !activates || modifiers.control || modifiers.alt || modifiers.super_key {

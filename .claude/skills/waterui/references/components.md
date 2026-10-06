@@ -312,7 +312,9 @@ Menu::new("Choose an Option", (
 That `"Option A".action(..)` is `CommandExt`, blanket-implemented for every
 `impl IntoLabel`: the receiver is the *label* and the result is a `Command` — not a
 button. `Command` has its own builder chain: `.state(&value)`, `.disabled(signal)`,
-`.selected(signal)`, `.shortcut(Shortcut)`. A `Button` also converts into `MenuItem` and
+`.selected(signal)`, `.shortcut(Shortcut)` — the key is a char or a W3C `NamedKey`:
+`Shortcut::new('s').command()`, `Shortcut::new(NamedKey::Delete)`. A `Button` also
+converts into `MenuItem` and
 `Command`, so one definition can serve a toolbar, a menu, and a keyboard shortcut.
 
 `.context_menu(items)` attaches a long-press / right-click menu to ANY view and takes the

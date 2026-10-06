@@ -15,7 +15,7 @@ use waterui::app::{App, TerminationHost};
 use waterui::prelude::{ContextMenu, Shortcut};
 use waterui::widget::condition::when;
 use waterui_controls::button::button;
-use waterui_controls::menu::{CommandExt as _, Menu, MenuItem};
+use waterui_controls::menu::{CommandExt as _, Menu, MenuItem, NamedKey};
 use waterui_controls::text_field::field;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, Environment};
@@ -50,17 +50,42 @@ fn click(x: f32, y: f32, button: PointerButton) -> [InputEvent; 2] {
 }
 
 fn key_chord(runtime: &mut HeadlessRuntime, key: &str, modifiers: Modifiers) {
+    key_press(
+        runtime,
+        &keyboard_types::Key::Character(key.to_owned()),
+        &KeyCode::Character(key.to_owned()),
+        modifiers,
+    );
+}
+
+/// Presses and releases a key the way a runner reports it: the W3C
+/// `logical_key` beside the legacy `KeyCode`.
+fn key_press(
+    runtime: &mut HeadlessRuntime,
+    logical_key: &keyboard_types::Key,
+    key: &KeyCode,
+    modifiers: Modifiers,
+) {
     for state in [KeyState::Pressed, KeyState::Released] {
         runtime.push_input_event(InputEvent::Key {
-            logical_key: keyboard_types::Key::Character(key.to_owned()),
+            logical_key: logical_key.clone(),
             physical_code: keyboard_types::Code::Unidentified,
             repeat: false,
-            key: KeyCode::Character(key.to_owned()),
+            key: key.clone(),
             state,
             modifiers,
         });
     }
     let _ = runtime.pump(false);
+}
+
+fn named_key_press(runtime: &mut HeadlessRuntime, key: NamedKey, modifiers: Modifiers) {
+    key_press(
+        runtime,
+        &keyboard_types::Key::Named(key),
+        &KeyCode::Named(key.to_string()),
+        modifiers,
+    );
 }
 
 fn ctrl() -> Modifiers {
@@ -153,8 +178,8 @@ fn command_shortcut_renders_a_trailing_aligned_hint() {
                         ContextMenu::new(vec![
                             "Copy"
                                 .action(|| {})
-                                .shortcut(Shortcut::new("c").control().shift()),
-                            "Paste".action(|| {}).shortcut(Shortcut::new("v").control()),
+                                .shortcut(Shortcut::new('c').control().shift()),
+                            "Paste".action(|| {}).shortcut(Shortcut::new('v').control()),
                             "Cut".action(|| {}),
                         ])
                         // An accessory lifts the menu into the drawn
@@ -258,7 +283,7 @@ fn menu_shortcut_fires_while_text_field_focused_and_stops_after_unmount() {
                         "Actions",
                         "Bump"
                             .action(move || hits.set(hits.snapshot() + 1))
-                            .shortcut(Shortcut::new("b").control()),
+                            .shortcut(Shortcut::new('b').control()),
                     )
                 }),
             )))
@@ -314,7 +339,7 @@ fn context_menu_shortcut_fires_only_while_open() {
                         .context_menu(ContextMenu::new(vec![
                             "Copy"
                                 .action(move || hits.set(hits.snapshot() + 1))
-                                .shortcut(Shortcut::new("c").control().shift()),
+                                .shortcut(Shortcut::new('c').control().shift()),
                         ])),
                 )
                 .width(160.0)
@@ -376,13 +401,13 @@ fn the_most_recently_mounted_menu_wins_a_chord_conflict() {
                     "First",
                     "Bump"
                         .action(move || first.set(first.snapshot() + 1))
-                        .shortcut(Shortcut::new("b").control()),
+                        .shortcut(Shortcut::new('b').control()),
                 ),
                 Menu::new(
                     "Second",
                     "Bump"
                         .action(move || second.set(second.snapshot() + 1))
-                        .shortcut(Shortcut::new("b").control()),
+                        .shortcut(Shortcut::new('b').control()),
                 ),
             )))
         })
@@ -418,7 +443,7 @@ fn menu_bar_chord_fires_without_a_mounted_menu() {
             "App",
             "Quit"
                 .action(move || fired.set(fired.snapshot() + 1))
-                .shortcut(Shortcut::new("w").control()),
+                .shortcut(Shortcut::new('w').control()),
         )])
     };
     let env = test_environment();
@@ -515,7 +540,7 @@ fn a_declared_quit_arms_no_chord_where_nothing_can_quit() {
     assert!(
         !registry.dispatch(
             crate::renderer::WindowId::Orphan,
-            &KeyCode::Character("q".to_owned()),
+            &keyboard_types::Key::Character("q".to_owned()),
             command(),
             &env,
         ),
@@ -538,7 +563,7 @@ fn a_mounted_menu_wins_the_app_bars_chord_while_mounted() {
             "App",
             "Quit"
                 .action(move || bar_fired.set(bar_fired.snapshot() + 1))
-                .shortcut(Shortcut::new("w").control()),
+                .shortcut(Shortcut::new('w').control()),
         )])
     };
     let mounted = Binding::container(false);
@@ -558,7 +583,7 @@ fn a_mounted_menu_wins_the_app_bars_chord_while_mounted() {
                         "Conflicting",
                         "Bump"
                             .action(move || menu_fired.set(menu_fired.snapshot() + 1))
-                            .shortcut(Shortcut::new("w").control()),
+                            .shortcut(Shortcut::new('w').control()),
                     )
                 }),
             )))
@@ -587,4 +612,248 @@ fn a_mounted_menu_wins_the_app_bars_chord_while_mounted() {
         "the app bar answers again once the menu unmounts"
     );
     assert_eq!(menu_fired.snapshot(), 1, "the unmounted menu is inert");
+}
+
+/// A runtime whose only content is a mounted `Menu` holding `items`.
+fn runtime_with_menu(items: Vec<MenuItem>) -> HeadlessRuntime {
+    let view =
+        AnyViewBuilder::<AnyView>::new(move || AnyView::new(Menu::new("Actions", items.clone())));
+    HeadlessRuntime::new_for_tests(
+        test_environment(),
+        view,
+        WINDOW.0,
+        WINDOW.1,
+        MinimalTestTheme::default(),
+    )
+}
+
+/// Named-key chords arm like character ones (water-rs/waterui#2038): Ctrl+
+/// Delete, a bare F5, Ctrl+Tab and Ctrl+ArrowLeft each fire their command,
+/// and none fires another.
+#[test]
+fn named_key_chords_fire_their_commands() {
+    let removed = Binding::container(0_i32);
+    let reloaded = Binding::container(0_i32);
+    let switched = Binding::container(0_i32);
+    let back = Binding::container(0_i32);
+    let mut runtime = runtime_with_menu(vec![
+        {
+            let removed = removed.clone();
+            "Remove"
+                .action(move || removed.set(removed.snapshot() + 1))
+                .shortcut(Shortcut::new(NamedKey::Delete).control())
+                .into()
+        },
+        {
+            let reloaded = reloaded.clone();
+            "Reload"
+                .action(move || reloaded.set(reloaded.snapshot() + 1))
+                .shortcut(Shortcut::new(NamedKey::F5))
+                .into()
+        },
+        {
+            let switched = switched.clone();
+            "Switch"
+                .action(move || switched.set(switched.snapshot() + 1))
+                .shortcut(Shortcut::new(NamedKey::Tab).control())
+                .into()
+        },
+        {
+            let back = back.clone();
+            "Back"
+                .action(move || back.set(back.snapshot() + 1))
+                .shortcut(Shortcut::new(NamedKey::ArrowLeft).control())
+                .into()
+        },
+    ]);
+    let _ = pump_until_settled(&mut runtime);
+
+    named_key_press(&mut runtime, NamedKey::Delete, ctrl());
+    assert_eq!(removed.snapshot(), 1, "Ctrl+Delete runs Remove");
+    assert_eq!(reloaded.snapshot(), 0, "Ctrl+Delete leaves Reload alone");
+
+    named_key_press(&mut runtime, NamedKey::F5, Modifiers::default());
+    assert_eq!(reloaded.snapshot(), 1, "F5 runs Reload");
+    assert_eq!(removed.snapshot(), 1, "F5 leaves Remove alone");
+
+    named_key_press(&mut runtime, NamedKey::Delete, Modifiers::default());
+    assert_eq!(
+        removed.snapshot(),
+        1,
+        "a bare Delete is not the Ctrl+Delete chord"
+    );
+
+    // Tab traversal and arrow stepping run after the registry: a declared
+    // chord claims its key first.
+    named_key_press(&mut runtime, NamedKey::Tab, ctrl());
+    assert_eq!(switched.snapshot(), 1, "Ctrl+Tab runs Switch");
+    named_key_press(&mut runtime, NamedKey::ArrowLeft, ctrl());
+    assert_eq!(back.snapshot(), 1, "Ctrl+ArrowLeft runs Back");
+    assert_eq!(
+        (removed.snapshot(), reloaded.snapshot()),
+        (1, 1),
+        "Ctrl+Tab and Ctrl+ArrowLeft leave the other commands alone"
+    );
+}
+
+/// The space bar is the character `" "` in W3C, which is what winit's
+/// `logical_key` reports, while the legacy `KeyCode` still calls it the named
+/// key `Space`. With a text field focused, a bare `' '` chord is typing: it
+/// does not claim the press and the field receives the space. With Ctrl held,
+/// a `' '` chord fires (water-rs/waterui#2038).
+#[test]
+fn a_bare_space_chord_leaves_the_focused_field_its_space() {
+    let bare = Binding::container(0_i32);
+    let chorded = Binding::container(0_i32);
+    let draft = Binding::container(waterui_core::Str::from(""));
+    let view = {
+        let bare = bare.clone();
+        let chorded = chorded.clone();
+        let draft = draft.clone();
+        AnyViewBuilder::<AnyView>::new(move || {
+            let bare = bare.clone();
+            let chorded = chorded.clone();
+            AnyView::new(vstack((
+                Frame::new(field("Draft", &draft)).width(200.0).height(40.0),
+                Menu::new(
+                    "Actions",
+                    vec![
+                        MenuItem::from(
+                            "Bare"
+                                .action(move || bare.set(bare.snapshot() + 1))
+                                .shortcut(Shortcut::new(' ')),
+                        ),
+                        MenuItem::from(
+                            "Chorded"
+                                .action(move || chorded.set(chorded.snapshot() + 1))
+                                .shortcut(Shortcut::new(' ').control()),
+                        ),
+                    ],
+                ),
+            )))
+        })
+    };
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        test_environment(),
+        view,
+        WINDOW.0,
+        WINDOW.1,
+        MinimalTestTheme::default(),
+    );
+    click_label(
+        &mut runtime,
+        Role::TextInput,
+        "Draft",
+        PointerButton::Primary,
+    );
+
+    let space = keyboard_types::Key::Character(" ".to_owned());
+    let space_code = KeyCode::Named("Space".to_owned());
+    let space_event = |state| InputEvent::Key {
+        logical_key: space.clone(),
+        physical_code: keyboard_types::Code::Space,
+        repeat: false,
+        key: space_code.clone(),
+        state,
+        modifiers: Modifiers::default(),
+    };
+    runtime.push_input_event(space_event(KeyState::Pressed));
+    runtime.push_input_event(InputEvent::KeyText {
+        text: " ".to_owned(),
+    });
+    runtime.push_input_event(space_event(KeyState::Released));
+    let _ = pump_until_settled(&mut runtime);
+    assert_eq!(
+        bare.snapshot(),
+        0,
+        "a bare space press is typing, not a chord"
+    );
+    assert_eq!(
+        draft.snapshot().to_string(),
+        " ",
+        "the focused field receives the space"
+    );
+
+    key_press(&mut runtime, &space, &space_code, ctrl());
+    assert_eq!(chorded.snapshot(), 1, "Ctrl+Space runs the Ctrl chord");
+    assert_eq!(bare.snapshot(), 0, "Ctrl+Space is not the bare chord");
+    assert_eq!(
+        draft.snapshot().to_string(),
+        " ",
+        "Ctrl+Space types nothing"
+    );
+}
+
+/// A bare named-key chord is an editing key first (water-rs/waterui#2038):
+/// with a text field focused and no Control, Alt or Super held, the press
+/// belongs to the field — `Delete` deletes at the caret instead of firing
+/// the chord. With no editor focused the same chord fires.
+#[test]
+fn a_bare_named_key_chord_leaves_the_focused_field_its_key() {
+    let hits = Binding::container(0_i32);
+    let draft = Binding::container(waterui_core::Str::from(""));
+    let view = {
+        let hits = hits.clone();
+        let draft = draft.clone();
+        AnyViewBuilder::<AnyView>::new(move || {
+            let hits = hits.clone();
+            AnyView::new(vstack((
+                Frame::new(field("Draft", &draft)).width(200.0).height(40.0),
+                Menu::new(
+                    "Actions",
+                    "Remove"
+                        .action(move || hits.set(hits.snapshot() + 1))
+                        .shortcut(Shortcut::new(NamedKey::Delete)),
+                ),
+            )))
+        })
+    };
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        test_environment(),
+        view,
+        WINDOW.0,
+        WINDOW.1,
+        MinimalTestTheme::default(),
+    );
+    click_label(
+        &mut runtime,
+        Role::TextInput,
+        "Draft",
+        PointerButton::Primary,
+    );
+
+    key_chord(&mut runtime, "a", Modifiers::default());
+    key_chord(&mut runtime, "b", Modifiers::default());
+    assert_eq!(
+        draft.snapshot().to_string(),
+        "ab",
+        "typing reaches the field"
+    );
+
+    // Home moves the caret to the start, so the forward Delete removes `a`.
+    named_key_press(&mut runtime, NamedKey::Home, Modifiers::default());
+    named_key_press(&mut runtime, NamedKey::Delete, Modifiers::default());
+    assert_eq!(
+        hits.snapshot(),
+        0,
+        "a bare Delete is the focused field's editing key, not the chord"
+    );
+    assert_eq!(
+        draft.snapshot().to_string(),
+        "b",
+        "the field's own Delete still deletes"
+    );
+
+    // A press landing outside the field ends editing; the freed chord then
+    // reaches the registry.
+    for event in click(10.0, 230.0, PointerButton::Primary) {
+        runtime.push_input_event(event);
+    }
+    let _ = pump_until_settled(&mut runtime);
+    named_key_press(&mut runtime, NamedKey::Delete, Modifiers::default());
+    assert_eq!(
+        hits.snapshot(),
+        1,
+        "with no editor focused, the bare Delete chord fires"
+    );
 }
