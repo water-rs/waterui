@@ -85,7 +85,7 @@ pub(super) enum RunnerEvent {
 }
 
 /// What a termination signal does, given how many arrived before it.
-#[cfg(any(unix, windows))]
+#[cfg(windows)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TerminationAction {
     /// Ask the event loop to tear the runtime down, the way the last window
@@ -101,13 +101,13 @@ enum TerminationAction {
 /// this a wedged process becomes unkillable from the terminal that started it:
 /// the graceful request is only reachable through the very event loop the hang
 /// lives in.
-#[cfg(any(unix, windows))]
+#[cfg(windows)]
 #[derive(Debug, Default)]
 struct TerminationRequests {
     requested: std::sync::atomic::AtomicBool,
 }
 
-#[cfg(any(unix, windows))]
+#[cfg(windows)]
 impl TerminationRequests {
     fn record(&self) -> TerminationAction {
         if self
@@ -124,19 +124,36 @@ impl TerminationRequests {
 /// Shell convention for a process killed by SIGINT (128 + 2). `ctrlc` does not
 /// report which signal arrived, and Ctrl-C is what a user is pressing when the
 /// forced path is reached.
-#[cfg(any(unix, windows))]
+#[cfg(windows)]
 const FORCED_TERMINATION_EXIT_CODE: i32 = 130;
 
-/// Turns termination signals into [`RunnerEvent::Terminate`].
+/// Turns the termination signals into [`RunnerEvent::Terminate`].
 ///
-/// The `termination` feature of `ctrlc` covers SIGINT, SIGTERM and SIGHUP on
-/// Unix and Ctrl+C and Ctrl+Break on Windows, so every way a desktop shell or
-/// session manager asks a windowed app to stop reaches the same teardown the
-/// last window closing does. Closing the Windows console goes to
+/// [`TerminationSignals`] owns the contract: the first delivery of a watched
+/// signal is this send — the graceful request the event loop serves — and a
+/// repeated signal ends the process by the signal's own default action. The
+/// returned guard keeps the watcher alive for the duration of the run.
+#[cfg(unix)]
+fn install_termination_handler(
+    event_proxy: &winit::event_loop::EventLoopProxy<RunnerEvent>,
+) -> super::termination::TerminationSignals {
+    let signal_proxy = event_proxy.clone();
+    super::termination::TerminationSignals::install(move |_signal| {
+        // The watcher reads deliveries on its own thread rather than inside a
+        // signal handler, so waking the loop from here is an ordinary send.
+        let _ = signal_proxy.send_event(RunnerEvent::Terminate);
+    })
+}
+
+/// Turns the console control events into [`RunnerEvent::Terminate`].
+///
+/// The `termination` feature of `ctrlc` covers Ctrl+C and Ctrl+Break, so every
+/// way a desktop shell or session manager asks a windowed app to stop reaches
+/// the same teardown the last window closing does. Closing the console goes to
 /// `console_close_handler` instead, which holds the event open until
 /// `on_terminate` finished; a logoff or shutdown reaches the application
 /// windows as `WM_ENDSESSION` (see `session_end_proc`).
-#[cfg(any(unix, windows))]
+#[cfg(windows)]
 fn install_termination_handler(event_proxy: &winit::event_loop::EventLoopProxy<RunnerEvent>) {
     let requests = TerminationRequests::default();
     let signal_proxy = event_proxy.clone();
@@ -154,7 +171,6 @@ fn install_termination_handler(event_proxy: &winit::event_loop::EventLoopProxy<R
         }
     })
     .expect("hydrolysis runner: failed to install the termination handler");
-    #[cfg(target_os = "windows")]
     install_console_close_handler(event_proxy);
 }
 
@@ -646,7 +662,9 @@ pub fn run(
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
     super::install_native_component_hooks(&mut env);
-    #[cfg(any(unix, windows))]
+    #[cfg(unix)]
+    let _termination_signals = install_termination_handler(&event_proxy);
+    #[cfg(windows)]
     install_termination_handler(&event_proxy);
     env.insert(HydrolysisTextContextMenuMode::Overlay);
     env.insert(waterui::window::WindowManager::new({
@@ -1590,13 +1608,13 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(any(unix, windows))]
+    #[cfg(windows)]
     use super::{TerminationAction, TerminationRequests};
     use super::{ends_event_loop, native_window_attributes};
     use waterui::window::{Window, WindowState};
     use waterui_core::{Binding, binding};
 
-    #[cfg(any(unix, windows))]
+    #[cfg(windows)]
     #[test]
     fn first_termination_signal_asks_the_loop_and_later_ones_do_not() {
         let requests = TerminationRequests::default();

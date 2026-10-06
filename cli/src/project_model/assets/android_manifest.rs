@@ -534,11 +534,13 @@ pub(super) async fn write_manifest_components(
     let existing = fs::read_to_string(&manifest_path)
         .await
         .wrap_err_with(|| format!("reading module manifest {}", manifest_path.display()))?;
-    let (begin, end) = super::managed_block_span(
+    let block = components.render_block()?;
+    let body = super::splice_managed_block(
         &existing,
         &manifest_path,
         MANIFEST_COMPONENTS_BEGIN,
         MANIFEST_COMPONENTS_END,
+        &block,
     )?
     .ok_or_else(|| {
         eyre::eyre!(
@@ -546,12 +548,6 @@ pub(super) async fn write_manifest_components(
             manifest_path.display()
         )
     })?;
-
-    let block = components.render_block()?;
-    let mut body = String::with_capacity(existing.len() + block.len());
-    body.push_str(&existing[..begin]);
-    body.push_str(&block);
-    body.push_str(&existing[end..]);
 
     super::super::templates::write_file_if_changed(&manifest_path, body.as_bytes())
         .await

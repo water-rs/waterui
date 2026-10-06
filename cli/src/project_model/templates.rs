@@ -1592,6 +1592,7 @@ mod tests {
             let rendered = render(&context(manifest));
             assert!(rendered.contains("https://jitpack.io"), "{rendered}");
             assert!(!rendered.contains("includeBuild"), "{rendered}");
+            crate::assets::assert_settings_plugin_markers(&rendered);
         }
     }
 
@@ -2377,6 +2378,7 @@ mod tests {
         .expect("android build.gradle render");
 
         assert!(rendered.contains("minSdk = 30"));
+        crate::assets::assert_module_plugin_markers(&rendered);
         assert!(rendered.contains(&jitpack_dependency_coordinate(
             ctx.framework.scaffold_value("android-backend-url"),
             ctx.framework.scaffold_value("android-backend-revision"),

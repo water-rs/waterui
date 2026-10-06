@@ -341,8 +341,12 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     override fun onGenericMotionEvent(event: MotionEvent): Boolean {
         val session = session ?: return super.onGenericMotionEvent(event)
         if (event.actionMasked == MotionEvent.ACTION_SCROLL) {
+            // Android AXIS_HSCROLL is positive when content moves left; Hydrolysis
+            // input takes winit's opposite sign.
             val dx = -event.getAxisValue(MotionEvent.AXIS_HSCROLL)
-            val dy = -event.getAxisValue(MotionEvent.AXIS_VSCROLL)
+            // Android AXIS_VSCROLL is positive when content moves down, matching
+            // Hydrolysis's winit sign.
+            val dy = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
             NativeBridge.nativeScrollEvent(session.nativePtr, event.x, event.y, dx, dy)
             return true
         }
