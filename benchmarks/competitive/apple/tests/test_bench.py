@@ -987,6 +987,32 @@ class TestInstrumentsScratch(unittest.TestCase):
         self.assertFalse(sd.exists())
         self.assertEqual(sorted(r["bytes"] for r in s.removed), [1, 10])
 
+    def test_a_signal_inside_the_sweep_is_raised_after_it(self):
+        """A signal the handler defers while a sweep runs is raised again
+        only once that sweep finished and recorded its evidence."""
+        import signal
+        s = bench.InstrumentsScratch(self.root, self.user)
+        sd = s.scratch_dir("cell")
+        (sd / "instrumentsSG01.ktrace").write_bytes(b"k")
+        seen = []
+        sweep = s._sweep
+
+        def interrupted(bound_s):
+            # what on_signal does when it lands inside a sweep
+            self.assertTrue(s.sweeping)
+            s.deferred_signal = signal.SIGUSR1
+            return sweep(bound_s)
+        s._sweep = interrupted
+        prev = signal.signal(
+            signal.SIGUSR1,
+            lambda sig, _f: seen.append((sig, s.sweeping, len(s.removed))))
+        try:
+            self.assertIsNone(s.sweep())
+        finally:
+            signal.signal(signal.SIGUSR1, prev)
+        self.assertEqual(seen, [(signal.SIGUSR1, False, 1)])
+        self.assertIsNone(s.deferred_signal)
+
     def test_one_hub_holder_is_terminated_and_logged(self):
         import contextlib
         import io
@@ -1112,10 +1138,10 @@ class TestStageTarball(unittest.TestCase):
                 tf.add(src, arcname="stage")
             run_dir = tmp / "run"
             run_dir.mkdir()
-            # the run's flow: copy in, hash and verify the copy
-            copy = run_dir / tar.name
-            shutil.copy2(tar, copy)
-            bench.verify_stage(copy, bench.toolchain.sha256_file(copy))
+            # run_device's own copy step: copy in, hash and verify the copy
+            copy = bench.stage_copy(tar, bench.toolchain.sha256_file(tar),
+                                    run_dir)
+            self.assertEqual(copy, run_dir / tar.name)
             # the checkout identity gates are environment checks, not
             # the copy's — pinned to the fixture manifest's values
             saved = (bench.toolchain.require_clean_checkout,

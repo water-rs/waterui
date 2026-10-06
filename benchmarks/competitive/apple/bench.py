@@ -107,6 +107,19 @@ def _kill_active_procs():
 _ACTIVE_SCRATCH: list = []
 
 
+class SignalStop(SystemExit):
+    """A device run stopped by SIGINT/SIGTERM: the exit code is 128 + the
+    signal, and what the stop's scratch sweep removed and terminated
+    (InstrumentsScratch.evidence per registered cell) rides along so
+    cmd_device_run writes it into status.json."""
+
+    def __init__(self, sig: int, scratch: list[dict], errors: list[str]):
+        super().__init__(128 + sig)
+        self.sig = sig
+        self.scratch = scratch
+        self.errors = errors
+
+
 class CommandTimeout(RuntimeError):
     """A command outlived its declared bound; its process group was
     killed."""
@@ -1304,7 +1317,22 @@ class InstrumentsScratch:
         self.removed: list[dict] = []
         # the DTServiceHub pid sweep terminated, if any
         self.terminated: int | None = None
+        # every error a sweep of this cell reported
+        self.errors: list[str] = []
+        # a sweep is in progress; a signal landing inside it is deferred
+        # to its end (deferred_signal). Python runs the handler on this
+        # same thread, between two steps of the sweep, and a second sweep
+        # there would lose the DTServiceHub pid this one collected for a
+        # ktrace it already unlinked. A signal mask cannot express this:
+        # the handler runs in the main thread wherever the signal lands,
+        # and the recorder's drain thread does not block it.
+        self.sweeping = False
+        self.deferred_signal: int | None = None
         self.before = set(self.user_tmp.glob(self.PATTERN))
+
+    def evidence(self) -> dict:
+        return {"removed": self.removed,
+                "terminated_pid": self.terminated, "errors": self.errors}
 
     def scratch_dir(self, name: str) -> Path:
         d = self.root / f"{name}.xctrace-tmp"
@@ -1361,7 +1389,22 @@ class InstrumentsScratch:
 
     def sweep(self, bound_s: float = HUB_EXIT_S) -> str | None:
         """Remove the cell's scratch; an error string when a scratch
-        file cannot be released. Takes at most LSOF_S + `bound_s`."""
+        file cannot be released. Takes at most LSOF_S + `bound_s`. A
+        signal the handler deferred while this ran is raised again once
+        the sweep's evidence is recorded."""
+        self.sweeping = True
+        try:
+            err = self._sweep(bound_s)
+            if err is not None:
+                self.errors.append(err)
+            return err
+        finally:
+            self.sweeping = False
+            if (sig := self.deferred_signal) is not None:
+                self.deferred_signal = None
+                signal.raise_signal(sig)
+
+    def _sweep(self, bound_s: float) -> str | None:
         leaked = set(self.user_tmp.glob(self.PATTERN)) - self.before
         for d in self.dirs:
             leaked |= set(d.rglob(self.PATTERN))
@@ -1972,9 +2015,11 @@ def run_one(ctx: DeviceCtx, cid: str, app: Path, workload: str, rep: int,
         # --- invocation 2: workload test, the recorder armed first ---
         scratch = InstrumentsScratch(ctx.results_dir,
                                      InstrumentsScratch.user_temp_dir())
-        _ACTIVE_SCRATCH.append(scratch)  # on_signal sweeps it on a signal
         xb, xbf, xblog = _xcodebuild_test(xr_work, res_work, ctx,
                                           tag + "-work")
+        # registered for on_signal's sweep only inside the try whose
+        # finally deregisters it
+        _ACTIVE_SCRATCH.append(scratch)
         try:
             try:
                 recorder = XctraceRecorder(
@@ -2382,6 +2427,16 @@ def unpack_stage(tar: Path, run_dir: Path) -> tuple[Path, dict]:
     return stage, staging
 
 
+def stage_copy(src: Path, sha256: str, run_dir: Path) -> Path:
+    """Copy the staged tarball into the run dir and verify the copy: the
+    copy is the one hashed and the only one unpacked, so the original
+    path is never read again."""
+    copy = run_dir / src.name
+    shutil.copy2(src, copy)
+    verify_stage(copy, sha256)
+    return copy
+
+
 def check_stage_entries(artifacts: dict) -> None:
     """Every contestant installs under one shared bundle id, so a
     contestant on the device is told apart only by its stage entry: the
@@ -2469,9 +2524,7 @@ def run_device(run_dir: Path, opts: argparse.Namespace) -> None:
     # anything else, since the tarball could change while the job waited —
     # the run dir's copy is the one verified and the only one unpacked;
     # the original path is never read again after the copy
-    stage_tar = run_dir / Path(opts.stage).name
-    shutil.copy2(opts.stage, stage_tar)
-    verify_stage(stage_tar, opts.stage_sha256)
+    stage_tar = stage_copy(Path(opts.stage), opts.stage_sha256, run_dir)
     udid = MANIFEST["device"]["udid"]
     lock = device_lock(udid, {
         "pid": os.getpid(), "run_dir": str(run_dir),
@@ -2497,25 +2550,28 @@ def run_device(run_dir: Path, opts: argparse.Namespace) -> None:
         installed.clear()
 
     def on_signal(sig, _frame):
+        if busy := [s for s in _ACTIVE_SCRATCH if s.sweeping]:
+            # landed inside a sweep: it finishes, then raises this again
+            for s in busy:
+                s.deferred_signal = sig
+            return
+        # stopping: a further signal must not restart the stop halfway
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
         _kill_active_procs()   # only PIDs this run spawned
         # the in-progress cell's scratch sweep, before the uninstalls:
         # the recording's ktrace is gigabytes held open by an agent the
-        # kill doesn't reach. Its result joins the status this exit
-        # produces (a SystemExit message becomes status["error"]).
+        # kill doesn't reach. A cell whose own sweep already ran finds
+        # nothing more here; either way its evidence reaches status.json
         errs = []
         for s in list(_ACTIVE_SCRATCH):
             try:
-                e = s.sweep()
-            except Exception as ex:
-                errs.append(str(ex))
-            else:
-                if e is not None:
-                    errs.append(e)
+                s.sweep()
+            except Exception as ex:  # noqa: BLE001 — recorded in status
+                errs.append(f"instruments scratch: {ex}")
         cleanup()
-        if errs:
-            raise SystemExit(f"stopped by signal {sig}; instruments "
-                             "scratch: " + "; ".join(errs))
-        raise SystemExit(128 + sig)
+        raise SignalStop(sig, [s.evidence() for s in _ACTIVE_SCRATCH],
+                         errs)
 
     prev = (signal.signal(signal.SIGINT, on_signal),
             signal.signal(signal.SIGTERM, on_signal))
@@ -2564,8 +2620,10 @@ def run_device(run_dir: Path, opts: argparse.Namespace) -> None:
         if results_path.exists():
             prior = json.loads(results_path.read_text())
             check_resume(prior, staging, machine, udid)
-            state = {**prior, **{k: v for k, v in state.items()
-                                 if k not in ("runs", "sizes")}}
+            # only the rows and sizes carry over: every other key is this
+            # run's own evidence, so no key of an older harness survives
+            state = {**state, "runs": prior["runs"],
+                     "sizes": prior["sizes"]}
         sanitize_runs(state)
         reps = (sorted({int(i) for i in opts.reps.split(",")})
                 if opts.reps else list(range(opts.repeats)))
@@ -2671,6 +2729,13 @@ def cmd_device_run(args):
     try:
         run_device(run_dir, opts)
         code = 0
+    except SignalStop as e:
+        code = e.code
+        status["signal"] = e.sig
+        status["instruments_scratch"] = e.scratch
+        if errs := e.errors + [err for x in e.scratch
+                               for err in x["errors"]]:
+            status["error"] = "; ".join(errs)
     except SystemExit as e:
         code = e.code if isinstance(e.code, int) else 1
         if not isinstance(e.code, int):
