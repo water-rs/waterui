@@ -253,23 +253,19 @@ mod tests {
     }
 
     #[test]
-    #[expect(
+    #[allow(
         clippy::float_cmp,
         reason = "the tone parameters are the treatment's literal table bound through untouched"
     )]
     fn the_colour_stage_follows_the_appearance() {
         let scheme = waterui_core::binding(ColorScheme::Light);
         let runtime = MaterialRuntime::new(WithinWindowLevel::Regular, &scheme.computed());
-        assert!(
-            runtime.tone.params() == [0.9, 0.83, 0.925, 0.815, 0.75, 0.375, 0.1],
-            "left {:?}, right {:?}",
+        assert_eq!(
             runtime.tone.params(),
             [0.9, 0.83, 0.925, 0.815, 0.75, 0.375, 0.1]
         );
         scheme.set(ColorScheme::Dark);
-        assert!(
-            runtime.tone.params() == [0.16, 0.26, 0.1, 0.1, 0.75, 0.375, 0.0],
-            "left {:?}, right {:?}",
+        assert_eq!(
             runtime.tone.params(),
             [0.16, 0.26, 0.1, 0.1, 0.75, 0.375, 0.0]
         );

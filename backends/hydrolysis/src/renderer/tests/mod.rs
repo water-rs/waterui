@@ -312,7 +312,7 @@ fn registration_signal<T: Clone + 'static>(
 }
 
 #[test]
-#[expect(
+#[allow(
     clippy::float_cmp,
     reason = "the snapshot is the signal's stored literal read back untouched; any drift means the read went through arithmetic it must not"
 )]
@@ -331,13 +331,13 @@ fn subscribed_snapshot_preserves_registration_animation_metadata() {
         }
     });
 
-    assert!(snapshot == 0.25, "left {:?}, right {:?}", snapshot, 0.25);
+    assert_eq!(snapshot, 0.25);
     assert!(signal.subscribed.get());
     assert!(metadata_replayed.get());
 }
 
 #[test]
-#[expect(
+#[allow(
     clippy::float_cmp,
     reason = "the snapshot is the signal's stored literal read back untouched; any drift means the read went through arithmetic it must not"
 )]
@@ -347,7 +347,7 @@ fn animated_scalar_subscribes_before_reading_its_snapshot() {
 
     let resolved = renderer.resolve_animated_scalar_with_discriminator(&signal, usize::MAX);
 
-    assert!(resolved == 0.25, "left {:?}, right {:?}", resolved, 0.25);
+    assert_eq!(resolved, 0.25);
     assert!(signal.subscribed.get());
 }
 
@@ -1965,7 +1965,7 @@ fn disabled_picker_family_and_tabs_expose_no_mutating_actions() {
 }
 
 #[test]
-#[expect(
+#[allow(
     clippy::float_cmp,
     reason = "the local-space mapping must carry the wave's progress and opacity through untouched, so the values stay bit-identical"
 )]
@@ -1988,18 +1988,8 @@ fn interaction_press_origin_is_converted_to_widget_local_space() {
         .latest()
         .expect("wave must survive the local-space mapping");
     assert_eq!(wave.origin, Some(Point::new(25.0, 4.0)));
-    assert!(
-        wave.progress == 0.5,
-        "left {:?}, right {:?}",
-        wave.progress,
-        0.5
-    );
-    assert!(
-        wave.opacity == 0.12,
-        "left {:?}, right {:?}",
-        wave.opacity,
-        0.12
-    );
+    assert_eq!(wave.progress, 0.5);
+    assert_eq!(wave.opacity, 0.12);
 }
 
 #[test]
