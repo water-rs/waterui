@@ -335,6 +335,9 @@ jobs:
 
           # `unzip` is only required when the selected archive is a .zip, so it
           # is guarded inside that case branch rather than the loop above.
+          # `$_file` and `$_dir` are the installer's own variables, matched
+          # and written back literally.
+          # shellcheck disable=SC2016
           sed -i 's|^\( *\)ensure unzip -q "\$_file" -d "\$_dir"$|\1need_cmd unzip\n&|' "$installer"
           grep -q 'need_cmd unzip' "$installer"
 
