@@ -50,11 +50,15 @@ that actually used a CPU-type adapter is refused without `--development`.
   `drm-cycles-*` on xe) of every render-node fd the contestant's processes
   hold, read by benchcomp once at window start and once at window end. A
   hardware rep must show GPU work on the selected adapter's render node
-  across the window; a software rep must show none on any node, with a
-  software rasterizer mapped. The driver libraries mapped and nodes held
-  at window end are recorded as supporting evidence only (the Vulkan
-  loader maps every installed ICD). A driver that keeps no fdinfo usage
-  counters cannot prove hardware rendering, and any evidence read failure
+  across the window and none on any other node; a software rep must show
+  none on any node, with a software rasterizer mapped. A DRM client held
+  at window start that is gone at window end fails the rep (its in-window
+  usage closed with its file); a client opened and closed strictly inside
+  the window is not observable by two reads. The driver libraries mapped
+  and nodes held at window end are recorded as supporting evidence only
+  (the Vulkan loader maps every installed ICD). A driver that keeps no
+  fdinfo usage counters cannot prove hardware rendering, and any evidence
+  read failure — an fdinfo `drm-*` line that does not parse included —
   fails the rep
 - frame p50/p90/p99, dropped %, fps — W2 and W3 only, per the issue
 

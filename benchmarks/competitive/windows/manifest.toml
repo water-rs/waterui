@@ -67,12 +67,16 @@ fling_pause_ms = 350
 
 [measurement]
 # Uniform method for every contestant: one ETW session per run, in file and
-# real-time mode at once, enabling Microsoft-Windows-DXGI (all keywords)
-# and Microsoft-Windows-Kernel-Process (process events). The .etl is
-# parsed after the rep; the same session's real-time stream reports the
-# first owned present the drive is scheduled on, and the two must be the
-# identical event (exact timestamp equality). Each contestant declares the
-# ONE frame source both use in [frame_source] — nothing else is consulted.
+# real-time mode at once, on the performance-counter clock, enabling
+# Microsoft-Windows-DXGI (all keywords) and Microsoft-Windows-Kernel-Process
+# (process events). The same session's real-time stream reports the first
+# owned present the drive is scheduled on; after the rep the .etl is
+# decoded through the same consumer path in log-file mode. Both consumers
+# hand over raw counter stamps, so the two first presents must be the
+# identical stamped integer; the runner's own clock reads the same counter
+# (one timebase for drive, memory samples and frames). A session that lost
+# any event or buffer fails the rep. Each contestant declares the ONE
+# frame source both use in [frame_source] — nothing else is consulted.
 # Frame statistics follow lib/frame_stats.py (../WORKLOADS.md METHOD):
 # the window is [first owned present + warmup, +capture_s]; a >100 ms
 # present gap ends an active run and is excluded; within a run an

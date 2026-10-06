@@ -6,9 +6,12 @@
 # image keeps the display/driver uniform across contestants.
 #
 # Every input is pinned: the base image by index digest, apt packages by a
-# dated snapshot.debian.org archive, rustup-init by sha256, the Flutter
-# tarball by sha256, and the Rust toolchain by the repository's own
-# rust-toolchain.toml (passed as RUST_CHANNEL build-arg).
+# dated snapshot.debian.org archive, rustup-init by sha256, the Rust
+# toolchain by the repository's own rust-toolchain.toml (passed as
+# RUST_CHANNEL build-arg), and the Flutter and Node tarballs by version and
+# sha256 from ../manifest.toml, passed as build args by the runner — this
+# file declares no default for any of them, so an image cannot be built
+# from a pin the manifest does not hold.
 FROM debian:trixie@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -87,9 +90,12 @@ RUN set -eu; \
     cargo clippy --version
 
 # Flutter SDK — tarball sha256-verified against the pinned version
-ARG FLUTTER_VERSION=3.47.5
-ARG FLUTTER_SHA256=2132e990f236f8d22e7c6314b29a191a95b10d7cbcfec9b4e2e303d996652cbb
-RUN curl -sSf -o /tmp/flutter.tar.xz \
+# (manifest [contestants.flutter] flutter_version / flutter_sha256)
+ARG FLUTTER_VERSION
+ARG FLUTTER_SHA256
+RUN : "${FLUTTER_VERSION:?build arg from manifest [contestants.flutter]}" \
+    && : "${FLUTTER_SHA256:?build arg from manifest [contestants.flutter]}" \
+    && curl -sSf -o /tmp/flutter.tar.xz \
         "https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_${FLUTTER_VERSION}-stable.tar.xz" \
     && echo "${FLUTTER_SHA256}  /tmp/flutter.tar.xz" | sha256sum -c - \
     && tar -C /opt -xf /tmp/flutter.tar.xz \
@@ -98,16 +104,20 @@ RUN curl -sSf -o /tmp/flutter.tar.xz \
     && flutter --version
 
 # Node.js — the official tarball for the pinned version, sha256-verified
-# against nodejs.org's SHASUMS256.txt (manifest [toolchain].node). It only
-# drives `npm ci` for the Electron contestant, whose toolchain requires
-# node >= 22.12; trixie's packaged nodejs is 20.x.
-ARG NODE_VERSION=24.21.0
+# (manifest [toolchain.node]: version and the nodejs.org SHASUMS256.txt
+# value per architecture). It only drives `npm ci` for the Electron
+# contestant, whose toolchain requires node >= 22.12; trixie's packaged
+# nodejs is 20.x.
+ARG NODE_VERSION
+ARG NODE_SHA256_AMD64
+ARG NODE_SHA256_ARM64
 RUN set -eu; \
+    : "${NODE_VERSION:?build arg from manifest [toolchain.node]}"; \
     case "$TARGETARCH" in \
         amd64) NODE_ARCH=x64; \
-               NODE_SHA256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6 ;; \
+               NODE_SHA256="${NODE_SHA256_AMD64:?build arg from manifest [toolchain.node]}" ;; \
         arm64) NODE_ARCH=arm64; \
-               NODE_SHA256=6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d289ad2 ;; \
+               NODE_SHA256="${NODE_SHA256_ARM64:?build arg from manifest [toolchain.node]}" ;; \
         *) echo "unsupported image arch: $TARGETARCH" >&2; exit 1 ;; \
     esac; \
     curl -sSf -o /tmp/node.tar.xz \

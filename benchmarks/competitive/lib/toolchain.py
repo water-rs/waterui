@@ -12,9 +12,12 @@ and `android-backend-revision`:
 - `tracked_tree_unchanged` wraps every build/bootstrap step of every leg:
   the paths the step may write (the leg's own directory and the apps it
   builds) are clean before it runs and still clean after it, or the step
-  fails naming the tracked files it rewrote. Paths outside them belong to
-  other legs and edits elsewhere; the framework source the CLI builds from
-  is held clean by `provision_water_cli`.
+  fails naming the tracked files it rewrote. A guarded WaterUI project
+  (a directory with a Water.toml) brings the framework checkout its
+  `waterui_path` names into the guard, so the framework source the
+  contestant compiles is held as clean as the app. Paths outside them
+  belong to other legs and edits elsewhere; the framework source the CLI
+  builds from is held clean by `provision_water_cli`.
 - `provision_water_cli` runs `cargo install --locked --path cli --root
   <runner-owned>` into the suite-shared `.cache/toolchain/` once per
   checkout-sha + host target, under a file lock so concurrently running
@@ -368,6 +371,44 @@ def require_clean_checkout(root: Path | None = None, run=None) -> Path:
     return root
 
 
+def waterui_framework_root(project: Path, root: Path) -> Path | None:
+    """The framework checkout the WaterUI project at `project` builds
+    against — its Water.toml's `waterui_path`, resolved against the project
+    — or None when `project` is not a WaterUI project. The suite labels
+    WaterUI results with this checkout's HEAD, so a project that builds
+    against anything else (no `waterui_path`: published crates; a path
+    outside `root`: another checkout) fails."""
+    import tomllib
+    water_toml = project / "Water.toml"
+    if not water_toml.is_file():
+        return None
+    rel = tomllib.loads(water_toml.read_text()).get("waterui_path")
+    if not isinstance(rel, str):
+        raise RuntimeError(
+            f"{water_toml} declares no waterui_path — the WaterUI "
+            f"contestant must build against the checkout at {root}, whose "
+            "HEAD labels its results")
+    framework = (project / rel).resolve()
+    if framework != root and root not in framework.parents:
+        raise RuntimeError(
+            f"{water_toml}: waterui_path {rel!r} resolves to {framework}, "
+            f"outside the checkout at {root} whose HEAD labels the results")
+    return framework
+
+
+def guarded_paths(paths: list[Path], root: Path) -> list[Path]:
+    """`paths` plus the framework root every WaterUI project among them
+    builds against: an uncommitted tracked edit to framework source enters
+    that contestant's build exactly as an edit to the app does."""
+    out: list[Path] = []
+    for p in paths:
+        p = Path(p).resolve()
+        for q in (p, waterui_framework_root(p, root)):
+            if q is not None and q not in out:
+                out.append(q)
+    return out
+
+
 @contextlib.contextmanager
 def tracked_tree_unchanged(label: str, paths: list[Path],
                            root: Path | None = None, run=None):
@@ -382,12 +423,15 @@ def tracked_tree_unchanged(label: str, paths: list[Path],
     output; after the step they must still be clean. A step that rewrote
     tracked files fails naming them: the committed generated files are
     stale and are regenerated with the pinned tool and committed — the
-    HEAD sha never labels a tree a bootstrap changed. Tracked changes
-    outside `paths` (another leg's concurrent bootstrap, an edit
-    elsewhere) are not this step's and never fail it."""
+    HEAD sha never labels a tree a bootstrap changed. A WaterUI project
+    among `paths` also guards the framework checkout it builds against
+    (guarded_paths). Tracked changes outside the guarded paths (another
+    leg's concurrent bootstrap, an edit elsewhere) are not this step's and
+    never fail it."""
     if not paths:
         raise RuntimeError(f"{label}: no paths declared for the guard")
     root = Path(root or repo_root()).resolve()
+    paths = guarded_paths(paths, root)
     dirty = _dirty_tracked(root, run, paths)
     if dirty:
         shown = "\n  ".join(dirty[:20])
@@ -732,6 +776,39 @@ def _self_test() -> None:
         else:
             raise AssertionError("dirty path accepted before bootstrap")
         assert not ran, "bootstrap ran over a dirty path"
+        # a WaterUI project guards the framework checkout its waterui_path
+        # names: an uncommitted framework edit fails its build before it
+        # runs, though it lies outside the declared leg and app paths
+        state["dirty"] = {}
+        wapp = root / "bench" / "apps" / "waterui"
+        wapp.mkdir(parents=True)
+        (wapp / "Water.toml").write_text('waterui_path = "../../.."\n')
+        with tracked_tree_unchanged("water build", [leg, wapp], root,
+                                    run=guard_run):
+            pass
+        assert guard_calls[-1][-3:] == [str(leg), str(wapp), str(root)], \
+            guard_calls[-1]
+        state["dirty"] = {str(root / "core" / "src" / "lib.rs"):
+                          " M core/src/lib.rs\n"}
+        try:
+            with tracked_tree_unchanged("water build", [leg, wapp], root,
+                                        run=guard_run):
+                raise AssertionError("built over a dirty framework")
+        except RuntimeError as e:
+            assert "core/src/lib.rs" in str(e), e
+        state["dirty"] = {}
+        for bad, why in (('x = 1\n', "declares no waterui_path"),
+                         ('waterui_path = "../../../.."\n',
+                          "outside the checkout")):
+            (wapp / "Water.toml").write_text(bad)
+            try:
+                with tracked_tree_unchanged("water build", [wapp], root,
+                                            run=guard_run):
+                    pass
+            except RuntimeError as e:
+                assert why in str(e), (why, e)
+            else:
+                raise AssertionError(f"accepted Water.toml {bad!r}")
 
     # react-native-macos template: the installed version must match the
     # pin; committed files win, absent ones are generated and stamped,

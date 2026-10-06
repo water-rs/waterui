@@ -244,9 +244,11 @@ def render(results: dict, baseline: dict | None = None) -> str:
         L.append("")
 
     # ---- versions -------------------------------------------------------------
-    raw = (results.get("versions") or {}).get("raw")
-    if raw:
-        L.append("## Versions\n\n```\n" + raw + "\n```\n")
+    versions = results.get("versions") or {}
+    if versions:
+        L.append("## Versions\n\n```")
+        L.extend(f"{k}: {v}" for k, v in versions.items())
+        L.append("```\n")
 
     if results.get("development_only") or m.get("gpu_software"):
         L.append("_Numbers taken on a software-emulated GPU are development "

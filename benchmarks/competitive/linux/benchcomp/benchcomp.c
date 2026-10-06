@@ -394,21 +394,43 @@ static void log_drm_usage_fd(struct benchcomp *c, int pid, const char *fd,
             (unsigned long long)now_ns(), phase, pid, fd);
     json_str(c->log, target);
     fputs(",\"counters\":{", c->log);
+    // Every `drm-` line is "<key>:<value>" with any run of spaces/tabs
+    // (including none) after the colon; one that cannot be split, or that
+    // does not fit the line buffer, is an evidence error — never a
+    // silently missing counter. Errors are logged after this event's
+    // line closes, so they cannot interleave with it.
     char line[512];
-    bool first = true;
+    bool first = true, in_tail = false;
+    int bad = 0;
     while (fgets(line, sizeof line, info)) {
-        char key[128], val[256];
-        if (sscanf(line, "%127[^:]:%*[ \t]%255[^\n]", key, val) != 2)
+        size_t n = strlen(line);
+        bool ends = n > 0 && line[n - 1] == '\n';
+        bool tail = in_tail;    // this chunk continues an over-long line
+        in_tail = !ends;
+        if (tail || strncmp(line, "drm-", 4)) continue;
+        if (!ends && !feof(info)) {
+            bad = EOVERFLOW;
             continue;
-        if (strncmp(key, "drm-", 4)) continue;
+        }
+        while (n > 0 && strchr("\n\r \t", line[n - 1])) line[--n] = 0;
+        char *colon = strchr(line, ':');
+        if (!colon) {
+            bad = EPROTO;
+            continue;
+        }
+        *colon = 0;
+        const char *val = colon + 1;
+        val += strspn(val, " \t");
         if (!first) fputc(',', c->log);
         first = false;
-        json_str(c->log, key);
+        json_str(c->log, line);
         fputc(':', c->log);
         json_str(c->log, val);
     }
+    if (ferror(info)) bad = EIO;
     fclose(info);
     fputs("}}\n", c->log);
+    if (bad) evidence_error(c, "fdinfo-format", pid, bad);
 }
 
 static void log_drm_usage(struct benchcomp *c, const char *phase) {

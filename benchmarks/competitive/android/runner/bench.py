@@ -812,13 +812,16 @@ def device_program(am_start: str, pkg: str, warmup_ms: int, cap_ms: int,
 
     `am start -W` returns on the launch's first-frame event; the declared
     warmup follows and the window opens. At window start the program
-    records the steady memory, writes the `bench.window` begin marker into
-    the trace, and starts the hold, the drive program and the in-window
-    memory sampler in the background; the hold is exactly the capture
-    length — the drive never shortens the window, and a drive that has not
-    finished when the window closes fails the capture. The end marker is
-    written when the hold ends. The trace analysis bounds the marker
-    against the window it derives from the first owned present."""
+    writes the `bench.window` begin marker into the trace and starts the
+    hold and the drive program in the background — nothing runs between
+    the warmup and the marker, so the marker's offset from the window the
+    trace derives is the device's scheduling, not the program's own work.
+    Only then does it take the steady memory reading and start the
+    in-window memory sampler; the hold is exactly the capture length —
+    the drive never shortens the window, and a drive that has not finished
+    when the window closes fails the capture. The end marker is written
+    when the hold ends. The trace analysis bounds the marker against the
+    window it derives from the first owned present."""
     marker = shlex.quote(TRACE_MARKER)
     lines = [
         am_start,
@@ -827,13 +830,7 @@ def device_program(am_start: str, pkg: str, warmup_ms: int, cap_ms: int,
         'exit 11; }',
         'echo "BENCH_PID $pid"',
         f"sleep {warmup_ms / 1000.0}",
-    ]
-    if sample_mem:
-        lines.append(
-            'echo "BENCH_MEM_STEADY $(grep -E \'^(Pss|Rss):\' '
-            '/proc/$pid/smaps_rollup | tr \'\\n\' \' \')"')
-    # window start: the marker, then the hold and the drive at once
-    lines += [
+        # window start: the marker, then the hold and the drive at once
         f'echo "B|$$|{WINDOW_MARKER}" > {marker} || '
         f'{{ echo "BENCH_ERR cannot write the window marker to '
         f'{TRACE_MARKER}"; exit 13; }}',
@@ -842,6 +839,11 @@ def device_program(am_start: str, pkg: str, warmup_ms: int, cap_ms: int,
     if drive is not None:
         lines.append(f"( {drive} ) & drv=$!")
     if sample_mem:
+        # the steady reading follows the drive's start: its read time
+        # (tens of ms on a large app) never sits between warmup and marker
+        lines.append(
+            'echo "BENCH_MEM_STEADY $(grep -E \'^(Pss|Rss):\' '
+            '/proc/$pid/smaps_rollup | tr \'\\n\' \' \')"')
         lines.append(
             '( while kill -0 $hold 2>/dev/null; do '
             'echo "BENCH_MEM_SAMPLE $(grep \'^Pss:\' '
@@ -2528,9 +2530,10 @@ def _self_test() -> None:
         else:
             raise AssertionError("wrong distributionUrl accepted")
 
-    # capture program: launch, warmup, then the fixed window — the drive
-    # and the memory sampler start at window start, the hold is the
-    # capture, and an unfinished drive fails the capture
+    # capture program: launch, warmup, then the fixed window — the marker
+    # and the drive start at window start with nothing between them and
+    # the warmup, the steady reading and the memory sampler follow, the
+    # hold is the capture, and an unfinished drive fails the capture
     fling = {"margin_x_frac": 0.5, "start_y_frac": 0.75,
              "end_y_frac": 0.15, "duration_ms": 250,
              "pause_between_ms": 350, "down_swipes": 8, "up_swipes": 2}
@@ -2542,9 +2545,10 @@ def _self_test() -> None:
         "dev.bench.views", 4000, 12000, drv, sample_mem=True)
     order = [prog.index(k) for k in (
         "am start -W -n dev.bench.views/.MainActivity --es workload w2",
-        "sleep 4.0", "BENCH_MEM_STEADY",
+        "sleep 4.0",
         f'echo "B|$$|{WINDOW_MARKER}" > {TRACE_MARKER}',
-        "sleep 12.0 & hold=$!", "input swipe", "BENCH_MEM_SAMPLE",
+        "sleep 12.0 & hold=$!", "input swipe", "BENCH_MEM_STEADY",
+        "BENCH_MEM_SAMPLE",
         "wait $hold", f'echo "E|$$" > {TRACE_MARKER}',
         "outlasted the capture window", "wait $mem")]
     assert order == sorted(order), prog

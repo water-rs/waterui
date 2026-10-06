@@ -33,6 +33,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import statistics
 import subprocess
 import sys
@@ -162,9 +163,25 @@ def resolve_channel_manifest(ch: str, doc: dict, url: str) -> str:
         "dated nightly/beta, nor stable/nightly/beta")
 
 
-def build_image() -> None:
+def image_build_args(manifest: dict) -> dict[str, str]:
+    """The Dockerfile's pinned inputs, every one from the manifest — the
+    Dockerfile declares no default for any of them."""
+    node = manifest["toolchain"]["node"]
+    flutter = manifest["contestants"]["flutter"]
+    return {
+        "NODE_VERSION": node["version"],
+        "NODE_SHA256_AMD64": node["sha256_amd64"],
+        "NODE_SHA256_ARM64": node["sha256_arm64"],
+        "FLUTTER_VERSION": flutter["flutter_version"],
+        "FLUTTER_SHA256": flutter["flutter_sha256"],
+    }
+
+
+def build_image(manifest: dict) -> None:
+    args = {"RUST_CHANNEL": rust_toolchain_resolved(),
+            **image_build_args(manifest)}
     docker("build", "-t", IMAGE, "-f", str(ROOT / "docker" / "Dockerfile"),
-           "--build-arg", f"RUST_CHANNEL={rust_toolchain_resolved()}",
+           *(a for k, v in args.items() for a in ("--build-arg", f"{k}={v}")),
            str(ROOT))
 
 
@@ -523,8 +540,14 @@ def drm_usage_delta(events: list[dict]) -> dict[str, dict]:
     A DRM client is (render node, drm-client-id) — dup'd fds and forked
     holders of one open file share it. Its usage over the window is its
     end counters minus its start counters; a client opened inside the
-    window started from zero. Returns {node: {"driver", "clients",
-    "counters": {key: delta}}} for every node held at window end."""
+    window started from zero. A client held at window start and gone at
+    window end closed mid-window: its counters died with its file, so its
+    in-window usage is unreadable from two reads and the rep fails rather
+    than undercount it. (A client opened and closed strictly inside the
+    window is invisible to two reads; finding one would take sampling the
+    counters during the capture, which this design rules out.) Returns
+    {node: {"driver", "clients", "counters": {key: delta}}} for every node
+    held at window end."""
     by_phase: dict[str, dict] = {"start": {}, "end": {}}
     for e in events:
         if e.get("ev") != "drm":
@@ -542,6 +565,12 @@ def drm_usage_delta(events: list[dict]) -> dict[str, dict]:
     if not any(e.get("ev") == "window_start" for e in events):
         raise RuntimeError("benchcomp logged no window_start — the DRM "
                            "usage counters were never read at window start")
+    vanished = sorted(set(by_phase["start"]) - set(by_phase["end"]))
+    if vanished:
+        raise RuntimeError(
+            "DRM client(s) held at window start were closed before window "
+            "end — their in-window GPU usage cannot be read: "
+            + ", ".join(f"{n} client {c}" for n, c in vanished))
     nodes: dict[str, dict] = {}
     for (node, client), (driver, end) in by_phase["end"].items():
         start = by_phase["start"].get((node, client), (driver, {}))[1]
@@ -572,7 +601,9 @@ def renderer_evidence(events: list[dict], expected: dict) -> dict:
     `expected` is {"class": "hardware", "kernel_driver", "nodes"} for a
     run pinned to a hardware adapter, {"class": "software"} otherwise. A
     hardware run must show a non-zero usage delta on one of the selected
-    adapter's render nodes. A software run must show zero usage on every
+    adapter's render nodes and none on any other node — work on another
+    adapter is rendering the selection does not account for. A software
+    run must show zero usage on every
     render node it holds, with a software rasterizer (lavapipe, llvmpipe,
     or the gallium megadriver that carries it) mapped."""
     errors = [e for e in events if e.get("ev") == "evidence_error"]
@@ -602,6 +633,12 @@ def renderer_evidence(events: list[dict], expected: dict) -> dict:
                 f"drm-cycles usage counters (kernel driver "
                 f"{expected['kernel_driver']}) — GPU use cannot be proven "
                 "on this adapter")
+        stray = sorted(set(busy) - set(expected["nodes"]))
+        if stray:
+            raise RuntimeError(
+                f"renderer evidence: GPU work on {stray}, outside the "
+                f"selected adapter's nodes {expected['nodes']} (usage "
+                f"{usage})")
         used = sorted(set(expected["nodes"]) & set(busy))
         if not used:
             raise RuntimeError(
@@ -899,17 +936,73 @@ def machine_spec(gpu: dict, sw: bool, selected: dict | None = None) -> dict:
     }
 
 
-def resolved_versions() -> dict:
-    """Query the image for the versions actually used."""
-    q = docker_run_bash(
-        "dpkg-query -W -f='${Package} ${Version}\\n' mesa-vulkan-drivers "
-        "libwlroots-0.18 libgtk-4-1 libwayland-client0 2>/dev/null; "
-        "rustc --version; node --version; python3 --version; "
-        "flutter --version 2>/dev/null | head -4; "
-        "cat /repo/benchmarks/competitive/apps/electron/node_modules/electron/package.json 2>/dev/null "
-        " | python3 -c 'import json,sys; print(\"electron\", json.load(sys.stdin)[\"version\"])'",
-        quiet=True)
-    return {"raw": q.stdout.strip()}
+IMAGE_PACKAGES = ("mesa-vulkan-drivers", "libwlroots-0.18", "libgtk-4-1",
+                  "libwayland-client0")
+ELECTRON_PACKAGE_JSON = ("/repo/benchmarks/competitive/apps/electron/"
+                         "node_modules/electron/package.json")
+
+
+def image_version(cmd: list[str]) -> str:
+    """One version query run in the image. A query that fails fails the
+    run, with the tool's own error — never an omitted line."""
+    try:
+        q = docker_run_bash(shlex.join(cmd), quiet=True)
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(
+            f"version query `{shlex.join(cmd)}` failed in the image (exit "
+            f"{e.returncode}): {e.stderr.strip()}") from e
+    return q.stdout.strip()
+
+
+def require_pinned(what: str, reported: str, pinned: str) -> None:
+    if reported != pinned:
+        raise RuntimeError(
+            f"the image provides {what} {reported!r}; the manifest pins "
+            f"{pinned!r} — rebuild the image (drop --skip-build)")
+
+
+def flutter_version_of(output: str) -> str:
+    """The framework version `flutter --version` reports on its first
+    line (`Flutter 3.47.5 • channel stable • ...`)."""
+    m = re.match(r"Flutter (\S+) ", output)
+    if m is None:
+        raise RuntimeError(
+            f"unparseable `flutter --version` output: {output!r}")
+    return m.group(1)
+
+
+def resolved_versions(manifest: dict, only: set[str] | None) -> dict:
+    """The versions the image actually provides, one query each. Node and
+    Flutter must be the manifest's pins (the Dockerfile installs them from
+    the manifest's build args; an image built from another pin — a stale
+    image under --skip-build — is refused), and the Electron version is
+    the installed package's, checked against the manifest when Electron
+    is measured."""
+    out: dict[str, str] = {}
+    for line in image_version(
+            ["dpkg-query", "-W", "--showformat=${Package} ${Version}\\n",
+             *IMAGE_PACKAGES]).splitlines():
+        pkg, version = line.split(" ", 1)
+        out[pkg] = version
+    missing = sorted(set(IMAGE_PACKAGES) - set(out))
+    if missing:
+        raise RuntimeError(f"dpkg-query reported no version for {missing}")
+    out["rustc"] = image_version(["rustc", "--version"])
+    out["python3"] = image_version(["python3", "--version"])
+    out["node"] = image_version(["node", "--version"])
+    require_pinned("node", out["node"],
+                   "v" + manifest["toolchain"]["node"]["version"])
+    out["flutter"] = image_version(["flutter", "--version"])
+    require_pinned("flutter", flutter_version_of(out["flutter"]),
+                   manifest["contestants"]["flutter"]["flutter_version"])
+    if not only or "electron" in only:
+        out["electron"] = image_version(
+            ["node", "-p", f"require({json.dumps(ELECTRON_PACKAGE_JSON)})"
+             ".version"])
+        require_pinned("electron", out["electron"],
+                       manifest["contestants"]["electron"]
+                       ["electron_version"])
+    return out
 
 
 CONTESTANT_CMDS = {
@@ -1053,7 +1146,7 @@ def _self_test() -> None:
     # are recorded, never decisive
     node = "/dev/dri/renderD128"
 
-    def drm(phase, gfx, client="7", driver="amdgpu", fd=12):
+    def drm(phase, gfx, client="7", driver="amdgpu", fd=12, target=node):
         counters = {"drm-driver": driver, "drm-client-id": client,
                     "drm-pdev": "0000:03:00.0",
                     "drm-engine-capacity-gfx": "1"}
@@ -1061,7 +1154,7 @@ def _self_test() -> None:
             counters["drm-engine-gfx"] = f"{gfx} ns"
             counters["drm-engine-compute"] = "0 ns"
         return {"ev": "drm", "phase": phase, "pid": 7, "fd": fd,
-                "target": node, "counters": counters}
+                "target": target, "counters": counters}
 
     def ev(*libs, held=(), drm_events=(), window=True):
         return ([{"ev": "lib", "pid": 7, "path": p} for p in libs]
@@ -1118,6 +1211,17 @@ def _self_test() -> None:
         (ev(radv, held=[node], drm_events=(drm("start", 9_000),
                                            drm("end", 1_000))),
          hw, "went backwards"),
+        # a client that closed mid-window took its usage with it
+        (ev(radv, held=[node], drm_events=busy + (
+            drm("start", 500, client="8"),)),
+         hw, "closed before window end"),
+        # work on a node outside the selected adapter fails a hardware
+        # run even when the selected adapter is busy too
+        (ev(radv, held=[node], drm_events=busy + (
+            drm("start", 0, client="3", target="/dev/dri/renderD129"),
+            drm("end", 7_000, client="3",
+                target="/dev/dri/renderD129"))),
+         hw, "outside the selected adapter"),
     )
     for events, exp, why in rejected:
         try:
@@ -1178,6 +1282,30 @@ def _self_test() -> None:
             pass
         else:
             raise AssertionError(f"{ch} resolved without a dist pin")
+
+    # one Node/Flutter pin: every Dockerfile input the runner passes comes
+    # from the manifest, and the Dockerfile declares each one without a
+    # default of its own
+    manifest = tomllib.loads((ROOT / "manifest.toml").read_text())
+    build_args = image_build_args(manifest)
+    for v in build_args.values():
+        assert v and isinstance(v, str), build_args
+    dockerfile = (ROOT / "docker" / "Dockerfile").read_text()
+    for arg in build_args:
+        assert re.search(rf"^ARG {arg}$", dockerfile, re.M), arg
+        assert not re.search(rf"^ARG {arg}=", dockerfile, re.M), arg
+    assert flutter_version_of(
+        "Flutter 3.47.5 • channel stable • https://github.com/flutter/"
+        "flutter.git\nDart 3.13.4\n") == "3.47.5"
+    require_pinned("node", "v24.21.0", "v24.21.0")
+    for check in (lambda: flutter_version_of("Welcome to Flutter!\n"),
+                  lambda: require_pinned("node", "v22.20.0", "v24.21.0")):
+        try:
+            check()
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("an unpinned image version was accepted")
     print("linux runner self-test ok")
 
 
@@ -1284,7 +1412,7 @@ def main() -> int:
     sh(["chmod", "+x", str(tools / "water")])
 
     if not args.skip_build:
-        build_image()
+        build_image(manifest)
 
     gpu = gpu_probe()
     adapters = gpu.get("vulkan") or []
@@ -1382,7 +1510,7 @@ def main() -> int:
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "machine": machine_spec(gpu, sw, selected),
         "development_only": bool(args.development),
-        "versions": resolved_versions(),
+        "versions": resolved_versions(manifest, only),
         "water_cli": {"source": "in-tree cli/ (workspace member)",
                       "checkout_head": toolchain.checkout_head(),
                       "provisioned": str(water_bin)},

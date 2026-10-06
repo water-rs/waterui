@@ -10,7 +10,7 @@ workloads W1–W4.
 | path | what |
 |---|---|
 | `manifest.toml` | every toolchain/framework pin; `run.py` reads it |
-| `run.py` | single entry point (`uv run`) — builds contestants, launches each workload, samples memory, captures per-frame submission timestamps from one ETW session per run (DXGI + Kernel-Process, the stream PresentMon consumes) in file and real-time mode at once — the real-time stream reports the first owned present the drive is scheduled on, and the .etl's first owned present must be that identical event. Precondition: the foreground lock time-out (`HKCU\Control Panel\Desktop\ForegroundLockTimeout`) is 0 for the measuring user — checked before any cell |
+| `run.py` | single entry point (`uv run`) — builds contestants, launches each workload, samples memory, captures per-frame submission timestamps from one ETW session per run (DXGI + Kernel-Process, the stream PresentMon consumes) in file and real-time mode at once — the real-time stream reports the first owned present the drive is scheduled on, the .etl is decoded through the same consumer path afterwards, and both hand over the raw performance-counter stamp, so the .etl's first owned present must be that identical stamp. The runner's clock reads the same counter; a session that lost any event or buffer fails the rep. Precondition: the foreground lock time-out (`HKCU\Control Panel\Desktop\ForegroundLockTimeout`) is 0 for the measuring user — checked before any cell |
 | `report.py` | renders a results JSON into markdown tables |
 | `apps/` | one idiomatic app per framework, each implementing W1–W4 selected by `BENCH_WORKLOAD`; `apps/waterui` is a `water create` project |
 
