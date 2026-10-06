@@ -5,6 +5,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::renderer::recording::transform_paint;
+use waterui::app::Quit;
 
 pub fn slider_value_epsilon(span: f64, track_width: f64) -> f64 {
     (span / track_width).abs().max(f64::EPSILON)
@@ -15,7 +16,7 @@ pub fn call_action_discarding_result<T: 'static>(action: &SharedAction<T>, env: 
 }
 
 /// Resolved menu items as popup-menu nodes. A declared `MenuItem::Quit`
-/// becomes the row of the quit command [`quit_command`] builds, and is
+/// becomes the row of the quit command [`Quit::command`] builds, and is
 /// omitted where `env` carries no application quit.
 pub fn popup_menu_nodes(items: &[ResolvedMenuItem], env: &Environment) -> Vec<PopupMenuNode> {
     items
@@ -28,7 +29,9 @@ pub fn popup_menu_nodes(items: &[ResolvedMenuItem], env: &Environment) -> Vec<Po
 fn popup_menu_node(item: ResolvedMenuItem, env: &Environment) -> Option<PopupMenuNode> {
     match item {
         ResolvedMenuItem::Command(command) => Some(command_node(command)),
-        ResolvedMenuItem::Quit => quit_command(env).map(command_node),
+        ResolvedMenuItem::Quit => env
+            .get::<Quit>()
+            .map(|quit| command_node(quit.command(env))),
         ResolvedMenuItem::Divider => Some(PopupMenuNode::Divider),
         ResolvedMenuItem::Menu(menu) => {
             let styled = menu.label.content.snapshot() + StyledStr::plain(" ›");
