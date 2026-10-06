@@ -36,6 +36,7 @@ pub mod size;
 pub mod style;
 pub mod surface;
 pub mod target;
+pub mod text;
 pub mod tree;
 
 pub use kurbo;
@@ -86,5 +87,6 @@ pub use crate::size::LayoutSize;
 pub use crate::style::{BlendMode, BlendSpace, FilterId, Group, Shadow};
 pub use crate::surface::{Layer, LayerContent, LayerEdit, LayerOwner, Shared, Transaction};
 pub use crate::target::{BackdropSampling, GpuInstalls, ProjectiveLayers, Queue, Target};
+pub use crate::text::TextLayoutId;
 pub use crate::tree::{LayerAnimations, LayerNode, Realize, SurfaceTree, snap_animating};
 pub use kurbo::Stroke;

@@ -4686,6 +4686,7 @@ dependencies = [
  "rustc-hash 2.1.3",
  "serde",
  "serde_json",
+ "signal-hook",
  "skrifa 0.44.0",
  "thiserror 2.0.21",
  "tiny_http",
@@ -10235,6 +10236,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7f45b8998ced5134fb1d75732c77842a3e888f19c1ff98481822e8fbfbf930b"
 
 [[package]]
+name = "signal-hook"
+version = "0.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b29ffa27d3d59a049bb328258de100f8012848d1b08d444e08bbc02ac468435e"
+dependencies = [
+ "libc",
+ "signal-hook-registry",
+]
+
+[[package]]
 name = "signal-hook-registry"
 version = "1.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13567,6 +13578,7 @@ dependencies = [
  "waterui-image",
  "waterui-layout",
  "waterui-macros",
+ "waterui-media",
  "waterui-testing",
  "waterui-text",
  "waterui-url",

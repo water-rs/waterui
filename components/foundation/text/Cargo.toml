@@ -45,7 +45,12 @@ tracing = { workspace = true, optional = true }
 waterkit-clipboard = { workspace = true, optional = true }
 
 [features]
-default = ["highlight"]
+# Empty, so the facade's `highlight` stays the one switch: component crates
+# that name `waterui-text` directly (waterui-chart, waterui-math,
+# waterui-video-gpu) take its defaults, and a default-on `highlight` here would
+# re-enable syntect and the platform clipboard for an application that turned
+# the facade's feature off.
+default = []
 # `DefaultHighlighter`, the bundled syntect/two-face syntax highlighter, and
 # with it the syntax and theme definitions those two crates carry, plus `Code`,
 # the fenced-code widget built on it, with the layout primitives it composes
@@ -77,18 +82,20 @@ system-fonts = ["font-collection", "parley/system"]
 [dev-dependencies]
 waterui = { path = "../../.." }
 waterui-testing = { path = "../../../testing" }
-# This crate's own tests cover the Markdown parser, which is not in `default`.
-# A dev-dependency on itself turns the feature on for this crate's test targets
-# without turning it on for anything that depends on the crate.
-waterui-text = { path = ".", features = ["markdown", "system-fonts"] }
+# This crate's own tests cover the `Code` widget and the Markdown parser,
+# neither of which is in `default`. A dev-dependency on itself turns the
+# features on for this crate's test targets without turning them on for
+# anything that depends on the crate.
+waterui-text = { path = ".", features = ["highlight", "markdown", "system-fonts"] }
 
 [lints]
 workspace = true
 [package.metadata.cargo-machete]
 ignored = [
     "waterui-macros",
-    # The dev-dependency on itself, which turns `markdown` on for this crate's
-    # own test targets. cargo-machete looks for `use waterui_text` in the
-    # sources and never finds one, because the crate is already `crate`.
+    # The dev-dependency on itself, which turns `highlight` and `markdown` on
+    # for this crate's own test targets. cargo-machete looks for
+    # `use waterui_text` in the sources and never finds one, because the crate
+    # is already `crate`.
     "waterui-text",
 ]

@@ -51,8 +51,13 @@ pub struct WuiGradient {
     /// End point (linear) y-coordinate.
     pub end_y: f32,
     /// Start radius (radial) or start angle in radians (angular).
+    ///
+    /// A radial radius is a fraction of the shorter side of the view's
+    /// bounds and draws a circle: on a `w`x`h` box it spans `r * min(w, h)`
+    /// points, so `0.5` reaches the nearer edge.
     pub start_value: f32,
-    /// End radius (radial) or end angle in radians (angular).
+    /// End radius (radial) or end angle in radians (angular), in the same
+    /// units as [`start_value`](Self::start_value).
     pub end_value: f32,
 }
 
