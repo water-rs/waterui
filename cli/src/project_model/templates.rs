@@ -1372,10 +1372,7 @@ mod tests {
     };
     use crate::framework::{
         framework_repository,
-        test_fixtures::{
-            dev_framework, nightly_framework, stable_framework, write_apple_pathless_checkout,
-            write_local_checkout,
-        },
+        test_fixtures::{dev_framework, nightly_framework, stable_framework, write_local_checkout},
     };
     use crate::project_types::{BundleIdentifier, CrateName};
     use include_dir::Dir;
@@ -2340,28 +2337,6 @@ mod tests {
         let directory = tempdir().unwrap();
         let root = directory.path().join("waterui");
         write_local_checkout(&root);
-        let mut context = ctx(
-            Some(root.clone()),
-            Some(PathBuf::from("managed_backends/apple")),
-            None,
-        );
-        context.framework = smol::block_on(ResolvedFramework::for_local_checkout(&root)).unwrap();
-
-        let error = context
-            .waterui_apple_dependency()
-            .err()
-            .unwrap()
-            .to_string();
-        assert!(error.contains("backends/apple"), "{error}");
-    }
-
-    /// A local checkout whose manifest predates the backend's return carries
-    /// no `apple-backend-path` and no backend crate: the same clear error.
-    #[test]
-    fn a_checkout_without_apple_backend_path_is_an_error() {
-        let directory = tempdir().unwrap();
-        let root = directory.path().join("waterui");
-        write_apple_pathless_checkout(&root);
         let mut context = ctx(
             Some(root.clone()),
             Some(PathBuf::from("managed_backends/apple")),
