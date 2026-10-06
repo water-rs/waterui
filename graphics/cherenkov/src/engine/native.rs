@@ -667,17 +667,35 @@ mod tests {
         surface.update(|tx| {
             tx[&layer].clear_content();
         });
+        let (full_tx, full_rx) = std::sync::mpsc::channel::<()>();
         let stop = Arc::new(AtomicUsize::new(0));
         let filler = std::thread::spawn({
             let tx = engine.tx.clone();
             let stop = Arc::clone(&stop);
             move || {
-                while stop.load(Ordering::Relaxed) == 0
-                    && tx.send(Message::Resource(Box::new(|_| {}))).is_ok()
-                {}
+                // Fill with `try_send`: the first send that would block
+                // is the exact saturation point.
+                let pending = loop {
+                    match tx.try_send(Message::Resource(Box::new(|_| {}))) {
+                        Ok(()) => {}
+                        Err(crossbeam_channel::TrySendError::Full(m)) => break m,
+                        Err(crossbeam_channel::TrySendError::Disconnected(_)) => return,
+                    }
+                };
+                full_tx.send(()).expect("the test is waiting on saturation");
+                // Then pin the channel with a blocking send — the filler
+                // sleeps on the channel instead of spinning a core.
+                let mut next = pending;
+                while stop.load(Ordering::Relaxed) == 0 && tx.send(next).is_ok() {
+                    next = Message::Resource(Box::new(|_| {}));
+                }
             }
         });
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        // The channel is full the moment a send would block; the render
+        // thread is released into the saturation, never into a guess.
+        full_rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("transaction channel never saturated");
         drop(parked_tx);
 
         // The render thread drains: the Apply unbinds and drops the
