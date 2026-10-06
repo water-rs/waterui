@@ -327,13 +327,24 @@ impl RenderNode {
                     content,
                     value: MaterialBackground(material),
                 } = *meta;
-                let runtime = crate::renderer::material::MaterialRuntime::new(
-                    crate::renderer::material::WithinWindowLevel::of(material),
-                    &waterui::theme::current_color_scheme(env),
-                );
                 return Self::build_wrapper(
-                    WrapperEffect::Material(Rc::new(runtime)),
+                    WrapperEffect::Material(crate::renderer::material::WithinWindowLevel::of(
+                        material,
+                    )),
                     content,
+                    env,
+                    renderer,
+                );
+            }
+            Err(view) => view,
+        };
+        let view = match view.downcast::<IgnorableMetadata<MaterialGroup>>() {
+            // The modifier takes no value: the wrapper's own render identity is
+            // the group scope its member materials join at flush.
+            Ok(meta) => {
+                return Self::build_wrapper(
+                    WrapperEffect::MaterialGroup,
+                    meta.content,
                     env,
                     renderer,
                 );
@@ -816,14 +827,21 @@ impl RenderNode {
     /// The environment a metadata-carried callback captures: the one its
     /// modified view resolves in. Walks down the child's leading env-only
     /// wrappers — `Env` nodes (`With`/`Metadata<Environment>` installs and
-    /// env-scoped metadata) and handler wrappers of the same modifier chain —
-    /// until the first node that is neither. Resolving on the *built* node
-    /// means each `With` was already expanded exactly once into the `Env` node
-    /// that carries its scoped env.
+    /// env-scoped metadata), `.material_group()` scope markers and handler
+    /// wrappers of the same modifier chain — until the first node that is
+    /// none of them. Resolving on the *built* node means each `With` was
+    /// already expanded exactly once into the `Env` node that carries its
+    /// scoped env.
     fn resolved_handler_env<'a>(node: &'a Self, env: &'a Environment) -> &'a Environment {
         match node {
             Self::Env(node) => Self::resolved_handler_env(&node.child, &node.env),
             Self::Wrapper(node) if node.effect.captures_environment() => {
+                Self::resolved_handler_env(&node.child, &node.env)
+            }
+            // A `.material_group()` is a pure scope marker — a handler
+            // wrapped through it still captures the env its modifier chain
+            // resolved.
+            Self::Wrapper(node) if matches!(node.effect, WrapperEffect::MaterialGroup) => {
                 Self::resolved_handler_env(&node.child, &node.env)
             }
             _ => env,
@@ -1214,11 +1232,11 @@ impl RenderNode {
 /// reaches nothing that draws or registers against it: `Opacity`,
 /// `Env` (accessibility and other scoped metadata), `Retain`, and the
 /// `Wrapper` effects with no geometry — `LayoutPriority`, `LifeCycle`,
-/// `Focused` and `OnKeyPress`. So `Color.opacity(..)` or an
-/// accessibility-scoped env in the slot is still a fill, while a clipped,
-/// bordered, scaled or hit-registered color is just another background
-/// view and never extends (§7.1's fill is a solid color, a gradient or a
-/// material).
+/// `Focused`, `OnKeyPress` and `MaterialGroup` (a pure scope marker).
+/// So `Color.opacity(..)` or an accessibility-scoped env in the slot is
+/// still a fill, while a clipped, bordered, scaled or hit-registered
+/// color is just another background view and never extends (§7.1's fill
+/// is a solid color, a gradient or a material).
 ///
 /// An `.ignore_safe_area` wrapper on the fill is NOT transparent to this:
 /// a declaration on the fill replaces the default extension — the
@@ -1238,6 +1256,7 @@ fn is_background_fill_leaf(node: &RenderNode) -> bool {
                     | WrapperEffect::LifeCycle(_)
                     | WrapperEffect::Focused(_)
                     | WrapperEffect::OnKeyPress(_)
+                    | WrapperEffect::MaterialGroup
             ) && is_background_fill_leaf(&node.child)
         }
         _ => false,

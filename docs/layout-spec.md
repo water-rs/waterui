@@ -430,7 +430,10 @@ transforms, ends on that boundary.
   extends each bar it draws under the regions of the edge the bar touches.
   Its content touches no edge where a bar sits; on the edges where it draws
   no bar, the content is laid out against the safe area like any other
-  view.
+  view. A bar stays docked to its edge: it is laid out clear of that edge's
+  container region only, so the keyboard region covers it instead of
+  lifting it, while the content the chrome container hosts is laid out
+  clear of both regions.
 - **Keyboard motion.** A change of the keyboard inset follows the platform's
   keyboard animation frame by frame. A backend never avoids the keyboard by
   resizing the window or its rendering surface.

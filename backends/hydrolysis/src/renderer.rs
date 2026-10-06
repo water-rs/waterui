@@ -56,7 +56,9 @@ pub use native_measure::*;
 pub use recording::assert_well_formed_image;
 pub use recording::{Glyph, GlyphRun, Recording, working_color};
 pub use retained::*;
-pub use tree::safe_area::{Edge, EdgeOffsets, SafeAreaLayout, ScrollSurfaceArea, grow_rect};
+pub use tree::safe_area::{
+    ChromeBar, Edge, EdgeOffsets, SafeAreaLayout, ScrollSurfaceArea, grow_rect,
+};
 pub use tree::*;
 pub use views::*;
 pub use waterui_backend_core::frame_signals::FrameSignals;
@@ -108,7 +110,7 @@ use waterui::accessibility::{
     AccessibilityRole, AccessibilityState, AccessibilityStateSignal, AccessibilityValue,
 };
 use waterui::animation::Animation;
-use waterui::background::{Background, MaterialBackground};
+use waterui::background::{Background, MaterialBackground, MaterialGroup};
 use waterui::border::Border;
 use waterui::component::badge::BadgeConfig;
 use waterui::component::focus::Focused;
@@ -130,7 +132,6 @@ use waterui::navigation::{
     NavigationTransitionSource, NavigationView,
 };
 use waterui::style::{Offset, Rotation, Scale, Shadow};
-use waterui::theme;
 use waterui::widget::Divider;
 use waterui::window::{Window, WindowState, WindowStyle};
 use waterui_controls::button::{Button, ButtonConfig};
@@ -174,8 +175,7 @@ use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
 use waterui_map::MapConfig;
 use waterui_shape::{ClipShape, PathCommand, ResolvedMorphShape, ResolvedShape, ShapeKind};
-use waterui_text::font::FontWeight as TextFontWeight;
-use waterui_text::styled::{Style as TextStyle, StyledStr};
+use waterui_text::styled::StyledStr;
 use waterui_text::{Text, TextConfig};
 use waterui_webview::WebView;
 
@@ -189,6 +189,7 @@ use crate::platform::{
 };
 #[cfg(feature = "accessibility")]
 use crate::scroll::ScrollHandle;
+use crate::text::SessionTextEngine;
 use crate::time::Instant;
 use crate::widgets::inset_rect;
 
@@ -403,9 +404,9 @@ impl SemanticCore {
             .and_then(|link| link.parent.clone());
     }
 
-    pub(crate) fn new(frame_instant: Instant, family_resolution: FontFamilyResolution) -> Self {
+    pub(crate) fn new(frame_instant: Instant, text: SessionTextEngine) -> Self {
         Self {
-            state: HydroState::new(family_resolution),
+            state: HydroState::new(text),
             hit_test: HitTestState::default(),
             gesture_engine: GestureEngine::default(),
             gesture_group_ids: BTreeMap::new(),
@@ -470,18 +471,25 @@ impl SemanticCore {
 }
 
 impl HydrolysisRenderer {
-    /// A renderer drawing with `theme`. `family_resolution` decides whether a
-    /// named font family the collection cannot resolve is skipped
-    /// ([`FontFamilyResolution::Lenient`], applications) or fails the shape
-    /// naming it ([`FontFamilyResolution::Strict`], test hosts).
+    /// A renderer drawing with `theme`, shaping text against the system font
+    /// collection under `family_resolution`.
     #[must_use]
     pub fn new(
         theme: Rc<dyn crate::engine::WidgetTheme>,
         family_resolution: FontFamilyResolution,
     ) -> Self {
+        Self::with_engine(theme, SessionTextEngine::system(family_resolution))
+    }
+
+    /// A renderer drawing with `theme`, shaping through `text` — the
+    /// session's text engine the runner built it with.
+    pub(crate) fn with_engine(
+        theme: Rc<dyn crate::engine::WidgetTheme>,
+        text: SessionTextEngine,
+    ) -> Self {
         let frame_instant = Instant::now();
         Self {
-            core: SemanticCore::new(frame_instant, family_resolution),
+            core: SemanticCore::new(frame_instant, text),
             theme,
             scene: Recording::new(),
             transient_scene: None,

@@ -1,11 +1,12 @@
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
+use crate::renderer::Edge;
 #[cfg(feature = "accessibility")]
 use crate::renderer::ROOT_NAVIGATION_IDENTITY;
 use crate::renderer::SafeAreaLayout;
 use crate::renderer::bounded_proposal;
 use crate::renderer::{
-    CapturedScenePlacement, Edge, HydroNativeView, HydroState, HydrolysisRenderer, RenderContext,
+    CapturedScenePlacement, HydroNativeView, HydroState, HydrolysisRenderer, RenderContext,
     RetainedSubview, WidgetRenderContext, measure_navigation_view_intrinsic,
     measure_owned_navigation_view_with_proposal, measure_transient_view_with_proposal,
     navigation_back_button_rect, navigation_base_bar_height_for_display_mode,
@@ -563,26 +564,35 @@ pub fn render_navigation_view_parts(
         };
         base + search_extra
     };
+    // The span clamp in `Edge::split_band` covers a band that outgrows
+    // bounds — the extent is not clamped to `bounds.height()` here (a bar
+    // the keyboard covers past `bounds` still keeps its height).
     let bottom_bar_height = if has_bottom {
-        metrics.inline_bar_height.min(ctx.bounds.height())
+        metrics.inline_bar_height
     } else {
         0.0
     };
 
+    // §7.1's multi-edge chrome split — one derivation for both bars:
+    // each bar docks to its edge clear of the container region only, so
+    // the keyboard covers it instead of lifting it, while the hosted
+    // content keeps the laid-out frame minus both bands — clear of both
+    // regions — with each bar's edge docked on its band's inner edge.
+    let chrome = ctx.chrome_splits([
+        (Edge::Top, top_bar_height),
+        (Edge::Bottom, bottom_bar_height),
+    ]);
+    let [top, bottom] = &chrome.bars;
+    let (bar_rect, bottom_rect) = (top.band, bottom.band);
+
     if top_bar_height > 0.0 {
         let base_bar_height = navigation_base_bar_height_for_display_mode(display_mode, &theme);
-        let bar_rect = kurbo::Rect::new(
-            ctx.bounds.x0,
-            ctx.bounds.y0,
-            ctx.bounds.x1,
-            (ctx.bounds.y0 + top_bar_height).min(ctx.bounds.y1),
-        );
         let bar_color = Paint::Solid(ctx.renderer_mut().read_signal(&color_signal));
         // §7.1 "Chrome": the bar's surface extends through the regions of
         // the edges a top bar can touch — top, leading, trailing — to the
         // window edge; the separator stays at the bar's inner edge and
         // everything else keeps `bar_rect`.
-        let bar_surface = ctx.chrome_surface(bar_rect, Edge::Top);
+        let bar_surface = top.surface(Edge::Top);
         {
             let theme = ctx.theme();
             ctx.draw_context(|draw| {
@@ -635,6 +645,7 @@ pub fn render_navigation_view_parts(
                 env,
                 leading_rect,
                 ToolbarAlignment::Leading,
+                top,
             );
             flush_toolbar_group(
                 ctx,
@@ -642,6 +653,7 @@ pub fn render_navigation_view_parts(
                 env,
                 trailing_rect,
                 ToolbarAlignment::Trailing,
+                top,
             );
         }
 
@@ -683,7 +695,7 @@ pub fn render_navigation_view_parts(
                 // (buttons, menus) emit like the other toolbar groups.
                 #[cfg(feature = "accessibility")]
                 ctx.renderer_mut().push_accessibility_suppression();
-                flush_title_and_subtitle(ctx, &mut state, env, title_rect);
+                flush_title_and_subtitle(ctx, &mut state, env, title_rect, top);
                 #[cfg(feature = "accessibility")]
                 ctx.renderer_mut().pop_accessibility_suppression();
             } else {
@@ -693,6 +705,7 @@ pub fn render_navigation_view_parts(
                     env,
                     title_rect,
                     ToolbarAlignment::Center,
+                    top,
                 );
             }
         }
@@ -710,7 +723,7 @@ pub fn render_navigation_view_parts(
             );
             if search_rect.width() > 0.0 && search_rect.height() > 0.0 {
                 let render_ctx = ctx.render_context();
-                let field_area = ctx.safe_area_for(search_rect);
+                let field_area = top.area_for(search_rect);
                 if let Some(field) = state.borrow_mut().search_field.as_mut() {
                     field.flush_in_rect(
                         ctx.renderer_mut(),
@@ -725,41 +738,30 @@ pub fn render_navigation_view_parts(
         }
     }
 
-    let content_rect = kurbo::Rect::new(
-        ctx.bounds.x0,
-        (ctx.bounds.y0 + top_bar_height).min(ctx.bounds.y1),
-        ctx.bounds.x1,
-        (ctx.bounds.y1 - bottom_bar_height).max(ctx.bounds.y0),
-    );
+    let content_rect = chrome.content;
     if content_rect.width() > 0.0 && content_rect.height() > 0.0 {
         let render_ctx = ctx.render_context();
         // §7.1: navigation content is chrome-hosted — it inherits the
         // widget's boundaries, so a scroll surface inside still extends
         // and clears on the edges the bars leave reachable, and an
-        // `.ignore_safe_area` inside still releases there.
-        let content_area = ctx.content_area_for(content_rect);
+        // `.ignore_safe_area` inside still releases there; each bar's
+        // edge docks on its band's inner edge.
         state.borrow_mut().content.flush_in_rect(
             ctx.renderer_mut(),
             render_ctx,
             env,
             bounded_proposal(content_rect),
             content_rect,
-            content_area,
+            chrome.content_area,
         );
     }
 
     if bottom_bar_height > 0.0 {
-        let bottom_rect = kurbo::Rect::new(
-            ctx.bounds.x0,
-            (ctx.bounds.y1 - bottom_bar_height).max(ctx.bounds.y0),
-            ctx.bounds.x1,
-            ctx.bounds.y1,
-        );
         let bar_color = Paint::Solid(ctx.renderer_mut().read_signal(&color_signal));
         // §7.1 "Chrome": the bottom bar's surface extends through the
         // regions of the edges a bottom bar can touch — bottom, leading,
         // trailing — to the window edge.
-        let bottom_surface = ctx.chrome_surface(bottom_rect, Edge::Bottom);
+        let bottom_surface = bottom.surface(Edge::Bottom);
         {
             let theme = ctx.theme();
             ctx.draw_context(|draw| {
@@ -772,6 +774,7 @@ pub fn render_navigation_view_parts(
             env,
             bottom_rect,
             ToolbarAlignment::Center,
+            bottom,
         );
     }
 }
@@ -812,6 +815,7 @@ fn flush_toolbar_group(
     env: &Environment,
     bounds: kurbo::Rect,
     alignment: ToolbarAlignment,
+    bar: &crate::renderer::ChromeBar,
 ) {
     if group.is_empty() || bounds.width() <= 0.0 || bounds.height() <= 0.0 {
         return;
@@ -838,7 +842,7 @@ fn flush_toolbar_group(
         let rect = kurbo::Rect::new(x, y, x + width, y + height);
         if rect.width() > 0.0 && rect.height() > 0.0 {
             let render_ctx = ctx.render_context();
-            let item_area = ctx.safe_area_for(rect);
+            let item_area = bar.area_for(rect);
             item.flush_in_rect(
                 ctx.renderer_mut(),
                 render_ctx,
@@ -876,6 +880,7 @@ fn flush_title_and_subtitle(
     state: &mut NavigationViewRenderState,
     env: &Environment,
     bounds: kurbo::Rect,
+    bar: &crate::renderer::ChromeBar,
 ) {
     let title_size = state.title.measure_intrinsic(ctx.renderer_mut(), env);
     let subtitle_size = if state.subtitle_present {
@@ -886,7 +891,7 @@ fn flush_title_and_subtitle(
     let (title_rect, subtitle_rect) = title_and_subtitle_rects(bounds, title_size, subtitle_size);
     if title_rect.height() > 0.0 {
         let render_ctx = ctx.render_context();
-        let title_area = ctx.safe_area_for(title_rect);
+        let title_area = bar.area_for(title_rect);
         state.title.flush_in_rect(
             ctx.renderer_mut(),
             render_ctx,
@@ -898,7 +903,7 @@ fn flush_title_and_subtitle(
     }
     if state.subtitle_present && subtitle_rect.height() > 0.0 {
         let render_ctx = ctx.render_context();
-        let subtitle_area = ctx.safe_area_for(subtitle_rect);
+        let subtitle_area = bar.area_for(subtitle_rect);
         state.subtitle.flush_in_rect(
             ctx.renderer_mut(),
             render_ctx,
@@ -2555,7 +2560,7 @@ mod tests {
     fn prominent_detail_squeezes_the_sidebar_to_its_minimum() {
         let width = ColumnWidth::new(180.0, 260.0, 400.0);
 
-        assert_eq!(
+        approx::assert_relative_eq!(
             resolved_split_column_width(width, NativeNavigationSplitStyle::ProminentDetail),
             180.0
         );
@@ -2563,7 +2568,7 @@ mod tests {
             NativeNavigationSplitStyle::Automatic,
             NativeNavigationSplitStyle::Balanced,
         ] {
-            assert_eq!(resolved_split_column_width(width, balanced), 260.0);
+            approx::assert_relative_eq!(resolved_split_column_width(width, balanced), 260.0);
         }
     }
 
@@ -2578,7 +2583,7 @@ mod tests {
             NativeNavigationSplitStyle::Balanced,
             NativeNavigationSplitStyle::ProminentDetail,
         ] {
-            assert_eq!(resolved_split_column_width(fixed, style), 240.0);
+            approx::assert_relative_eq!(resolved_split_column_width(fixed, style), 240.0);
         }
     }
 

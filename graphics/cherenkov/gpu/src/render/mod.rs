@@ -21,6 +21,7 @@ mod prepared;
 pub mod present;
 mod projective;
 mod raster;
+mod reduce;
 mod resolve;
 pub mod shaders;
 mod shadow;
@@ -223,7 +224,7 @@ struct ScratchTarget {
 impl ScratchTarget {
     /// Resident texel bytes at the texture's format.
     fn bytes(&self) -> u64 {
-        u64::from(self.width) * u64::from(self.height) * texel_bytes(self.texture.format())
+        target_bytes(self, 0)
     }
 }
 
@@ -381,22 +382,56 @@ struct SurfaceState {
     waker: cherenkov::CompletionWaker,
 }
 
+/// One backdrop region's capture: the mipmapped texture whose mip 0 is
+/// level 0 — the resolve's target, optionally filtered in place — and
+/// whose deeper mips hold the pyramid's levels.
+struct Capture {
+    /// The texture and its level-0 view; `width`/`height` are the
+    /// allocation's texels, the region size aligned up to the deepest
+    /// level's grid.
+    target: ScratchTarget,
+    /// The whole-pyramid view `backdrop_sample_at` reads; `None` for a
+    /// one-level capture, whose `target.view` is read instead.
+    source: Option<wgpu::TextureView>,
+    /// `levels[k − 1]` is level `k`'s single-mip view, for `k` in `1..n`.
+    levels: Vec<wgpu::TextureView>,
+    /// `reduces[k − 1]` caches the level `k` step's bind group.
+    reduces: Vec<Option<reduce::Bind>>,
+}
+
+impl Capture {
+    /// The view the member composites sample.
+    fn sample_view(&self) -> &wgpu::TextureView {
+        self.source.as_ref().unwrap_or(&self.target.view)
+    }
+}
+
 /// A registered backdrop group: its optional capture filter, its capture
-/// scale and the capture textures, one per region (#117 sparse capture),
-/// each exactly sized to this frame's region.
+/// spec and the capture textures, one per region (#117 sparse capture),
+/// each exactly sized to this frame's region and level count.
 struct BackdropGroupState {
     /// The group's filter chain key, when registered with a filter.
     filter: Option<filter::FilterKey>,
-    /// The resolution the group captures at.
-    scale: cherenkov::CaptureScale,
+    /// The group's capture spec (scale and level count).
+    spec: cherenkov::BackdropSpec,
     /// The capture textures indexed by region, empty until a frame
     /// samples the group.
-    captures: Vec<ScratchTarget>,
+    captures: Vec<Capture>,
     /// Each region's cached resolve bind group.
     resolves: Vec<Option<resolve::Bind>>,
 }
 
 impl BackdropGroupState {
+    /// Bytes the group's capture textures hold: every region's capture
+    /// with its pyramid levels. Staging is the surface's, counted there.
+    fn bytes(&self) -> u64 {
+        let deep = self.spec.levels().get() - 1;
+        self.captures
+            .iter()
+            .map(|capture| target_bytes(&capture.target, deep))
+            .sum()
+    }
+
     /// Keeps the first `regions` regions' textures and bind groups.
     fn truncate(&mut self, regions: usize) {
         self.captures.truncate(regions);
@@ -430,7 +465,7 @@ impl SurfaceState {
                             .map_or(Some(filtrate_core::Footprint::ZERO), |key| {
                                 filters.footprint_bound(key)
                             }),
-                        scale: state.scale,
+                        spec: state.spec,
                     },
                 )
             })
@@ -447,12 +482,12 @@ impl SurfaceState {
     }
 
     /// Bytes held by this surface's backdrop captures, summed over all
-    /// regions of all groups.
+    /// regions of all groups, pyramid levels included; the shared staging
+    /// is counted by [`staging_bytes`](Self::staging_bytes).
     fn backdrop_bytes(&self) -> u64 {
         self.backdrop_groups
             .values()
-            .flat_map(|group| group.captures.iter())
-            .map(ScratchTarget::bytes)
+            .map(BackdropGroupState::bytes)
             .sum()
     }
 
@@ -639,7 +674,7 @@ fn prepare_resolve(
     let staged = resolve::staged(pass);
     let size = (pass.region[2], pass.region[3]);
     let state = &surf.backdrop_groups[&group];
-    let target = &state.captures[region as usize];
+    let target = &state.captures[region as usize].target;
     let pipeline = pipelines.pipeline(device, target.texture.format()).clone();
     let capture_view = target.view.clone();
     let bind = if staged {
@@ -816,6 +851,9 @@ pub struct GpuRenderer {
     /// The reduced-capture resolve pipelines — `None` until a frame
     /// resolves a backdrop group captured below device resolution.
     resolve: Option<resolve::Pipelines>,
+    /// The capture pyramid reduce pipelines — `None` until a frame
+    /// reduces a levelled capture.
+    reduce: Option<reduce::Pipelines>,
     last_frame: Option<Instant>,
     origin: Option<Instant>,
     device: wgpu::Device,
@@ -2009,6 +2047,15 @@ pub fn texel_bytes(format: wgpu::TextureFormat) -> u64 {
     u64::from(format.block_copy_size(None).unwrap_or(0))
 }
 
+/// `c`'s bytes at its format's texel size, including the `deep` deeper
+/// pyramid levels of `⌈d / 2^k⌉` texels each.
+fn target_bytes(c: &ScratchTarget, deep: u32) -> u64 {
+    let texels: u64 = (0..=deep)
+        .map(|k| u64::from(c.width).div_ceil(1 << k) * u64::from(c.height).div_ceil(1 << k))
+        .sum();
+    texels * texel_bytes(c.texture.format())
+}
+
 /// `{0, 1, 2, 2, 1, 3}`: the coverage partial pass's indexed draw replays
 /// the painter path's ordered triangles while the vertex shader runs once
 /// per corner.
@@ -2248,6 +2295,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             filters: filter::Registry::default(),
             shadow_blur: None,
             resolve: None,
+            reduce: None,
             last_frame: None,
             origin: None,
             max_texture: device.limits().max_texture_dimension_2d,
@@ -2571,6 +2619,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         filters: filter::Registry::default(),
         shadow_blur: None,
         resolve: None,
+        reduce: None,
         last_frame: None,
         origin: None,
         max_texture: device.limits().max_texture_dimension_2d,
@@ -3495,7 +3544,7 @@ impl Renderer for GpuRenderer {
             .values()
             .flat_map(|surf| surf.backdrop_groups.values())
             .flat_map(|g| &g.captures)
-            .map(|c| format_name(c.texture.format()))
+            .map(|c| format_name(c.target.texture.format()))
             .next();
         let cpu = self.atlas.cpu_bytes()
             + self
@@ -4097,7 +4146,9 @@ impl GpuRenderer {
             if let Some(surf) = self.surfaces.get(&id) {
                 inst_base += u32::try_from(surf.frame.instances.len()).unwrap_or(u32::MAX);
                 stop_base += u32::try_from(surf.frame.stops.len()).unwrap_or(u32::MAX);
-                globals_base += u32::try_from(surf.frame.passes.len()).unwrap_or(u32::MAX);
+                globals_base += u32::try_from(surf.frame.passes.len())
+                    .unwrap_or(u32::MAX)
+                    .saturating_add(surf.frame.reduce_slots());
             }
         }
         let wait = stats.phases.wait_seconds;
@@ -4254,7 +4305,9 @@ impl GpuRenderer {
             if let Some(surf) = self.surfaces.get(&id) {
                 inst_base += u32::try_from(surf.frame.instances.len()).unwrap_or(u32::MAX);
                 stop_base += u32::try_from(surf.frame.stops.len()).unwrap_or(u32::MAX);
-                globals_base += u32::try_from(surf.frame.passes.len()).unwrap_or(u32::MAX);
+                globals_base += u32::try_from(surf.frame.passes.len())
+                    .unwrap_or(u32::MAX)
+                    .saturating_add(surf.frame.reduce_slots());
             }
         }
         let wait = stats.phases.wait_seconds;
@@ -4383,7 +4436,7 @@ impl GpuRenderer {
         surface: SurfaceId,
         id: cherenkov::BackdropId,
         source: Option<Box<dyn filter::Source>>,
-        scale: cherenkov::CaptureScale,
+        spec: cherenkov::BackdropSpec,
     ) {
         let Some(surf) = self.surfaces.get_mut(&surface) else {
             return;
@@ -4400,7 +4453,7 @@ impl GpuRenderer {
             id.raw(),
             BackdropGroupState {
                 filter,
-                scale,
+                spec,
                 captures: Vec::new(),
                 resolves: Vec::new(),
             },
@@ -6767,38 +6820,79 @@ impl GpuRenderer {
             // regrown around an animated region size — it grows only
             // when the frame needs more, and `trim` releases it outside
             // the hot path.
+            // A levelled group captures into a mipmapped texture whose
+            // level-0 size is the region aligned up to the deepest
+            // level's grid; the tail past the spec extent is never
+            // written or read.
+            let levels = group_state.spec.levels().get();
+            let grid = 1 << (levels - 1);
             let (nw, nh) = (
-                w.max(group_state.captures.get(r).map_or(0, |c| c.width)),
-                h.max(group_state.captures.get(r).map_or(0, |c| c.height)),
+                w.max(group_state.captures.get(r).map_or(0, |c| c.target.width))
+                    .next_multiple_of(grid),
+                h.max(group_state.captures.get(r).map_or(0, |c| c.target.height))
+                    .next_multiple_of(grid),
             );
-            if group_state
-                .captures
-                .get(r)
-                .is_none_or(|c| c.width < w || c.height < h || c.texture.format() != format)
-            {
-                let old_capture = group_state.captures.get(r).map_or(0, ScratchTarget::bytes);
-                let (texture, view) = create_target(
-                    &self.device,
-                    "backdrop capture",
-                    (nw, nh),
-                    TARGET_USAGES | wgpu::TextureUsages::COPY_DST,
+            if group_state.captures.get(r).is_none_or(|c| {
+                c.target.width < nw || c.target.height < nh || c.target.texture.format() != format
+            }) {
+                let old_capture = group_state
+                    .captures
+                    .get(r)
+                    .map_or(0, |c| target_bytes(&c.target, levels - 1));
+                let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("backdrop capture"),
+                    size: wgpu::Extent3d {
+                        width: nw,
+                        height: nh,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: levels,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
                     format,
-                );
-                let target = ScratchTarget {
-                    texture,
-                    view,
-                    width: nw,
-                    height: nh,
+                    usage: TARGET_USAGES | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                });
+                let view = texture.create_view(&wgpu::TextureViewDescriptor {
+                    mip_level_count: Some(1),
+                    ..wgpu::TextureViewDescriptor::default()
+                });
+                let source = (levels > 1)
+                    .then(|| texture.create_view(&wgpu::TextureViewDescriptor::default()));
+                let levels_views: Vec<wgpu::TextureView> = (1..levels)
+                    .map(|level| {
+                        texture.create_view(&wgpu::TextureViewDescriptor {
+                            base_mip_level: level,
+                            mip_level_count: Some(1),
+                            ..wgpu::TextureViewDescriptor::default()
+                        })
+                    })
+                    .collect();
+                let target = Capture {
+                    target: ScratchTarget {
+                        view,
+                        texture,
+                        width: nw,
+                        height: nh,
+                    },
+                    source,
+                    levels: levels_views,
+                    reduces: (1..levels).map(|_| None).collect(),
                 };
-                let new = target.bytes();
+                let new = target_bytes(&target.target, levels - 1);
                 if r < group_state.captures.len() {
                     group_state.captures[r] = target;
                 } else {
-                    group_state.captures.resize_with(r, || ScratchTarget {
-                        texture: surf.target.clone(),
-                        view: surf.view.clone(),
-                        width: 0,
-                        height: 0,
+                    group_state.captures.resize_with(r, || Capture {
+                        target: ScratchTarget {
+                            texture: surf.target.clone(),
+                            view: surf.view.clone(),
+                            width: 0,
+                            height: 0,
+                        },
+                        source: None,
+                        levels: Vec::new(),
+                        reduces: Vec::new(),
                     });
                     group_state.captures.push(target);
                 }
@@ -7098,7 +7192,7 @@ impl GpuRenderer {
         for surf in dirty.iter().filter_map(|sf| self.surfaces.get(&sf.id)) {
             instances += surf.frame.instances.len() as u64;
             stops += surf.frame.stops.len() as u64;
-            passes += surf.frame.passes.len() as u64;
+            passes += surf.frame.passes.len() as u64 + u64::from(surf.frame.reduce_slots());
         }
         let sizes = [
             (
@@ -7178,6 +7272,29 @@ impl GpuRenderer {
                     entry[..g.len()].copy_from_slice(g);
                     entry[g.len()..g.len() + params.len()].copy_from_slice(params);
                     put(&entry);
+                }
+                // The pyramid steps' slots follow the pass slots: one
+                // per reduce, in pass and level order, reading the
+                // level above's spec extent.
+                for &(index, levels) in &surf.frame.reduces {
+                    let pass = &surf.frame.passes[index];
+                    for k in 1..levels {
+                        let dst = (
+                            pass.region[2].div_ceil(1 << k),
+                            pass.region[3].div_ceil(1 << k),
+                        );
+                        let src = (
+                            pass.region[2].div_ceil(1 << (k - 1)),
+                            pass.region[3].div_ceil(1 << (k - 1)),
+                        );
+                        let g = lower::globals([dst.0 as f32, dst.1 as f32], [0.0; 2], pass.space);
+                        let params = reduce::params(src);
+                        let g = bytemuck::bytes_of(&g);
+                        let params = bytemuck::bytes_of(&params);
+                        entry[..g.len()].copy_from_slice(g);
+                        entry[g.len()..g.len() + params.len()].copy_from_slice(params);
+                        put(&entry);
+                    }
                 }
             }
         });
@@ -7372,6 +7489,10 @@ impl GpuRenderer {
             .retain(|index, _| *index < surf.frame.passes.len());
         let mask_gen = self.atlas.mask_texture_generation();
         let mut i = 0;
+        // The pyramid steps' globals-slot index within this surface:
+        // `write_uploads` lays them out in pass and level order after the
+        // pass slots.
+        let mut reduce_slot = 0u32;
         while i < surf.frame.passes.len() {
             #[cfg(target_vendor = "apple")]
             if let Some(epoch) = surf.composition.epoch_at(i) {
@@ -7515,7 +7636,7 @@ impl GpuRenderer {
                             .as_ref()
                             .expect("staging allocated before encode")
                     } else {
-                        &group_state.captures[region as usize]
+                        &group_state.captures[region as usize].target
                     };
                     (&capture.view, &capture.texture)
                 }
@@ -7552,7 +7673,7 @@ impl GpuRenderer {
                     Target::Scratch(k) => (&surf.scratch[&k].texture, 0, 0),
                     Target::Backdrop { group, region } => {
                         let capture = &surf.backdrop_groups[&group].captures[region as usize];
-                        (&capture.texture, 0, 0)
+                        (&capture.target.texture, 0, 0)
                     }
                 };
                 debug_assert!(draw_region[0] + draw_region[2] <= src.width());
@@ -8241,9 +8362,9 @@ impl GpuRenderer {
                             &self.dummy_view,
                             range.source.map(|s| match s {
                                 Source::Scratch(i) => &surf.scratch[&i].view,
-                                Source::Backdrop { group, region } => {
-                                    &surf.backdrop_groups[&group].captures[region as usize].view
-                                }
+                                Source::Backdrop { group, region } => surf.backdrop_groups[&group]
+                                    .captures[region as usize]
+                                    .sample_view(),
                                 Source::Projected(_) => {
                                     unreachable!("local images draw with the projective pipeline")
                                 }
@@ -8335,7 +8456,7 @@ impl GpuRenderer {
                 let capture = match pass.target {
                     Target::Scratch(depth) => &surf.scratch[&depth],
                     Target::Backdrop { group, region } => {
-                        &surf.backdrop_groups[&group].captures[region as usize]
+                        &surf.backdrop_groups[&group].captures[region as usize].target
                     }
                     Target::Part(_) | Target::Projected(_) | Target::Plane(_) => {
                         return Err(RenderError::Render(format!(
@@ -8356,6 +8477,69 @@ impl GpuRenderer {
                     timing,
                     &mut encoder,
                 )?;
+            }
+            // A levelled group's pyramid: each level reduces the filtered
+            // level above by an exact 2×2 box, appended in pass and level
+            // order after `write_uploads`' pass slots.
+            if let Some(capture) = pass.capture {
+                let levels = capture.levels;
+                if levels > 1 {
+                    let pipelines = self.reduce.get_or_insert_with(|| {
+                        reduce::Pipelines::new(&self.device, self.shader_delivery)
+                    });
+                    let target = &mut surf
+                        .backdrop_groups
+                        .get_mut(&capture.group)
+                        .expect("registered group")
+                        .captures[capture.region as usize];
+                    let pipeline = pipelines
+                        .pipeline(&self.device, target.target.texture.format())
+                        .clone();
+                    for k in 1..levels {
+                        let size = (
+                            pass.region[2].div_ceil(1 << k),
+                            pass.region[3].div_ceil(1 << k),
+                        );
+                        let source = if k == 1 {
+                            &target.target.view
+                        } else {
+                            &target.levels[(k - 2) as usize]
+                        };
+                        let bind = pipelines
+                            .bind(
+                                &self.device,
+                                &mut target.reduces[(k - 1) as usize],
+                                &self.globals,
+                                source,
+                            )
+                            .clone();
+                        let mut level_pass =
+                            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                label: Some("backdrop level"),
+                                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                    view: &target.levels[(k - 1) as usize],
+                                    resolve_target: None,
+                                    ops: wgpu::Operations {
+                                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                                        store: wgpu::StoreOp::Store,
+                                    },
+                                    depth_slice: None,
+                                })],
+                                depth_stencil_attachment: None,
+                                timestamp_writes: None,
+                                occlusion_query_set: None,
+                                multiview_mask: None,
+                            });
+                        let offset = (surf.globals_base
+                            + u32::try_from(surf.frame.passes.len()).unwrap_or(u32::MAX)
+                            + reduce_slot)
+                            * 256;
+                        reduce::draw(&mut level_pass, &pipeline, &bind, offset, size);
+                        drop(level_pass);
+                        reduce_slot += 1;
+                        stats.passes += 1;
+                    }
+                }
             }
             for (_, key) in surf.frame.mips.iter().filter(|(pass, _)| *pass == i) {
                 let pipes = self
@@ -9238,6 +9422,7 @@ impl GpuRenderer {
                     Target::Scratch(depth) => surface.scratch[&depth].texture.format(),
                     Target::Backdrop { group, region } => surface.backdrop_groups[&group].captures
                         [region as usize]
+                        .target
                         .texture
                         .format(),
                     Target::Part(_) | Target::Projected(_) | Target::Plane(_) => TARGET_FORMAT,

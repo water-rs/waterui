@@ -316,10 +316,26 @@ impl HeadlessRuntime {
     /// The layout is unchanged — it stays in logical units — so this only makes
     /// the captured image sharper. A preview meant to be viewed on a `HiDPI`
     /// display should raise this above 1.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `scale_factor` is not finite and positive.
     #[must_use]
     pub fn with_scale_factor(mut self, scale_factor: f64) -> Self {
-        self.runtime.platform.set_scale_factor(scale_factor);
+        self.set_scale_factor(scale_factor);
         self
+    }
+
+    /// Moves the display onto a new scale factor mid-run: a window dragged
+    /// between monitors of different densities reports a scale change, and
+    /// the runtime rebuilds its scale-dependent state — capture chains and
+    /// other texel-parameterized content — for the frames after this call.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `scale_factor` is not finite and positive.
+    pub fn set_scale_factor(&mut self, scale_factor: f64) {
+        self.runtime.platform.set_scale_factor(scale_factor);
     }
 
     /// Creates a headless runtime for `WaterUI` test hosts.
@@ -438,9 +454,9 @@ impl HeadlessRuntime {
         // Every window's renderer is seeded from this collection, and a
         // self-drawn component that typesets text itself reads it out of the
         // environment instead of enumerating the system's fonts for itself.
-        let fonts = FontCollection::new(native_resource_fonts(
+        let fonts = crate::text::fonts::native_collection(
             waterui_core::ResourceContext::from_environment(&env),
-        ));
+        );
         fonts.clone().install(&mut env);
 
         // Headless binaries (preview, tests) have no platform runner to install
@@ -473,8 +489,10 @@ impl HeadlessRuntime {
             wgpu::TextureFormat::Rgba8Unorm,
         );
         platform.apply_properties(&window);
-        let mut renderer = HydrolysisRenderer::new(Rc::clone(&theme), family_resolution);
-        super::seed_core(&mut renderer, &fonts);
+        let mut renderer = HydrolysisRenderer::with_engine(
+            Rc::clone(&theme),
+            SessionTextEngine::from_collection(&fonts, family_resolution),
+        );
         renderer.set_window_id(
             env.get::<MenuShortcutRegistry>()
                 .expect("install_headless_window_managers seeds MenuShortcutRegistry")
@@ -516,8 +534,10 @@ impl HeadlessRuntime {
             wgpu::TextureFormat::Rgba8Unorm,
         );
         platform.apply_properties(&window);
-        let mut renderer = HydrolysisRenderer::new(Rc::clone(&self.theme), self.family_resolution);
-        super::seed_core(&mut renderer, &self.fonts);
+        let mut renderer = HydrolysisRenderer::with_engine(
+            Rc::clone(&self.theme),
+            SessionTextEngine::from_collection(&self.fonts, self.family_resolution),
+        );
         renderer.set_window_id(
             self.env
                 .get::<MenuShortcutRegistry>()
@@ -1291,9 +1311,9 @@ mod generation_tests {
             if self.font.is_none() {
                 self.font = Some(
                     resources
-                        .font(FontSource::bytes(
-                            crate::renderer::tests::installed_font_bytes("Roboto"),
-                        ))
+                        .font(FontSource::bytes(crate::text::fonts::installed_font_bytes(
+                            "Roboto",
+                        )))
                         .expect("test font registers on the engine's resource table"),
                 );
             }

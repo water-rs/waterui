@@ -59,7 +59,7 @@ fn row_long_wrap() -> AnyView {
 fn lazy_view_path_answers_what_its_item_answers() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let mut state = HydroState::new(FontFamilyResolution::Strict);
+    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
 
     let shapes: [(&str, RowFactory); 7] = [
         ("one-line", row_one_line),
@@ -110,10 +110,14 @@ fn lazy_view_path_answers_what_its_item_answers() {
 /// lazy stack must report the offered cross extent — the content's intrinsic
 /// is what the viewport clips, not what the scroll is.
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the scroll shell must echo its offered width unchanged, not recompute it"
+)]
 fn scroll_shell_answers_its_proposal() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let mut state = HydroState::new(FontFamilyResolution::Strict);
+    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
     let shell = normalize_layout_view(
         AnyView::new(scroll(vstack((VStack::for_each(
             (0..40).map(SelfId::new).collect::<Vec<_>>(),
@@ -129,8 +133,10 @@ fn scroll_shell_answers_its_proposal() {
         &theme,
     )
     .size;
-    assert_eq!(
-        answer.width, 308.0,
-        "scroll wrapping a lazy stack answered {answer:?} under (308, None)"
+    assert!(
+        answer.width == 308.0,
+        "scroll wrapping a lazy stack answered {answer:?} under (308, None): left {:?}, right {:?}",
+        answer.width,
+        308.0
     );
 }

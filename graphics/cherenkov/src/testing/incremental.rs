@@ -476,7 +476,7 @@ fn updates(list: &crate::DisplayList, frame: u32) -> Vec<SlotUpdate> {
                     value.mul_add(3., 1.),
                     WorkingColor::new([0.1, 0.2, 0.3, 0.5]),
                 )),
-                Command::Picture { .. } | Command::BeginTransform { .. } => {
+                Command::Picture { .. } | Command::Text { .. } | Command::BeginTransform { .. } => {
                     Operand::Transform(Affine::translate((value * 5., value * 3.)))
                 }
                 Command::BeginGroup { .. } => {

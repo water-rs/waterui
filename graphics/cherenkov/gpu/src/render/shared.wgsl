@@ -28,6 +28,7 @@ const EFFECT_REFRACTION: u32 = 2u;
 const EFFECT_SHADER: u32 = 3u;
 const EFFECT_RIM: u32 = 4u;
 const EFFECT_SAMPLE: u32 = 5u;
+const EFFECT_LEVEL: u32 = 6u;
 
 const EXTEND_PAD: u32 = 0u;
 const EXTEND_REPEAT: u32 = 1u;

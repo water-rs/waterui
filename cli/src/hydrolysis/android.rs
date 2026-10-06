@@ -873,9 +873,11 @@ mod tests {
                 ),
                 "gpu painter substitution: {settings}"
             );
+            crate::assets::assert_settings_plugin_markers(settings);
 
             let gradle = files["app/build.gradle.kts"].as_str();
             assert!(gradle.contains("minSdk = 31"), "gpu api floor: {gradle}");
+            crate::assets::assert_module_plugin_markers(gradle);
             assert!(
                 gradle.contains("\"dev.waterui.hydrolysis:host\""),
                 "{gradle}"

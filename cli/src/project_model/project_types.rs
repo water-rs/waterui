@@ -564,6 +564,12 @@ pub enum PermissionKey {
     Vibrate,
     /// Wake lock access.
     WakeLock,
+    /// Physical activity recognition: Android's activity recognition
+    /// permission, Apple's motion and fitness usage description.
+    ActivityRecognition,
+    /// Discovery of and connection to nearby devices over Wi-Fi, without
+    /// deriving location (Android 13+).
+    NearbyWifiDevices,
 }
 
 impl PermissionKey {
@@ -582,6 +588,8 @@ impl PermissionKey {
             Self::BluetoothAdmin => "android.permission.BLUETOOTH_ADMIN",
             Self::Vibrate => "android.permission.VIBRATE",
             Self::WakeLock => "android.permission.WAKE_LOCK",
+            Self::ActivityRecognition => "android.permission.ACTIVITY_RECOGNITION",
+            Self::NearbyWifiDevices => "android.permission.NEARBY_WIFI_DEVICES",
             Self::PhotoLibrary | Self::Contacts | Self::Calendars => return None,
         };
         Some(AndroidPermissionName(name))
@@ -598,13 +606,15 @@ impl PermissionKey {
             Self::Contacts => Some("INFOPLIST_KEY_NSContactsUsageDescription"),
             Self::Calendars => Some("INFOPLIST_KEY_NSCalendarsUsageDescription"),
             Self::Bluetooth => Some("INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription"),
+            Self::ActivityRecognition => Some("INFOPLIST_KEY_NSMotionUsageDescription"),
             Self::Internet
             | Self::CoarseLocation
             | Self::Storage
             | Self::WriteStorage
             | Self::BluetoothAdmin
             | Self::Vibrate
-            | Self::WakeLock => None,
+            | Self::WakeLock
+            | Self::NearbyWifiDevices => None,
         }
     }
 
@@ -622,13 +632,17 @@ impl PermissionKey {
             Self::Contacts => &["NSContactsUsageDescription"],
             Self::Calendars => &["NSCalendarsUsageDescription"],
             Self::Bluetooth => &["NSBluetoothAlwaysUsageDescription"],
+            // Core Motion's activity APIs are not available on macOS, so it
+            // has no motion usage description to show.
             Self::Internet
             | Self::CoarseLocation
             | Self::Storage
             | Self::WriteStorage
             | Self::BluetoothAdmin
             | Self::Vibrate
-            | Self::WakeLock => &[],
+            | Self::WakeLock
+            | Self::ActivityRecognition
+            | Self::NearbyWifiDevices => &[],
         }
     }
 }
@@ -638,9 +652,48 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        AndroidPackageName, BundleIdentifier, CrateName, default_bundle_identifier,
+        AndroidPackageName, BundleIdentifier, CrateName, PermissionKey, default_bundle_identifier,
         generated_crate_name,
     };
+
+    /// Activity recognition and nearby Wi-Fi devices are spelt in
+    /// `Water.toml` and crate metadata the way every other key is, and reach
+    /// the Android manifest and the iOS Info.plist under their platform names.
+    #[test]
+    fn activity_recognition_and_nearby_wifi_devices_map_to_their_platform_keys() {
+        let parse = |key: &str| {
+            toml::from_str::<std::collections::BTreeMap<PermissionKey, bool>>(&format!(
+                "{key} = true"
+            ))
+            .unwrap_or_else(|error| panic!("`{key}` parses: {error}"))
+            .into_keys()
+            .next()
+            .expect("one key")
+        };
+        let activity = parse("activity_recognition");
+        let wifi = parse("nearby_wifi_devices");
+        assert_eq!(activity, PermissionKey::ActivityRecognition);
+        assert_eq!(wifi, PermissionKey::NearbyWifiDevices);
+
+        assert_eq!(
+            activity
+                .android_permission_name()
+                .map(|name| name.to_string()),
+            Some("android.permission.ACTIVITY_RECOGNITION".to_owned())
+        );
+        assert_eq!(
+            activity.ios_plist_key(),
+            Some("INFOPLIST_KEY_NSMotionUsageDescription")
+        );
+        assert_eq!(activity.macos_usage_description_keys(), [] as [&str; 0]);
+
+        assert_eq!(
+            wifi.android_permission_name().map(|name| name.to_string()),
+            Some("android.permission.NEARBY_WIFI_DEVICES".to_owned())
+        );
+        assert_eq!(wifi.ios_plist_key(), None);
+        assert_eq!(wifi.macos_usage_description_keys(), [] as [&str; 0]);
+    }
 
     /// Two projects that share a crate name (`water create demo` twice, a
     /// copied project, two checkouts) generate identically suffixed crates —

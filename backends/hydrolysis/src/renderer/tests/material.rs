@@ -16,9 +16,9 @@ use waterui_graphics::filtrate::{
 };
 use waterui_layout::stack::zstack;
 
-use super::{MinimalTestTheme, pumped_test_environment};
+use super::{MinimalTestTheme, capture_bytes, material_layers, mounts, pumped_test_environment};
 use crate::HeadlessRuntime;
-use crate::renderer::{MaterialLayer, RenderLayer};
+use crate::renderer::MaterialLayer;
 
 /// The window, in points; the material fills it.
 const WIDTH: u32 = 160;
@@ -67,16 +67,7 @@ fn rendered(opacity: f32) -> HeadlessRuntime {
 
 /// The frame's only material layer.
 fn material_layer(runtime: &HeadlessRuntime) -> &MaterialLayer {
-    let layers: Vec<_> = runtime
-        .renderer()
-        .compositor
-        .render_layers
-        .iter()
-        .filter_map(|layer| match layer {
-            RenderLayer::Material(layer) => Some(layer),
-            _ => None,
-        })
-        .collect();
+    let layers = material_layers(runtime);
     assert_eq!(layers.len(), 1, "the frame presents one material layer");
     layers[0]
 }
@@ -95,14 +86,20 @@ fn ancestry_alphas(runtime: &HeadlessRuntime) -> Vec<f32> {
 /// and format.
 fn installed(runtime: &HeadlessRuntime) -> (Option<f64>, u64, Option<&'static str>) {
     let key = material_layer(runtime).key;
-    let mut windows = runtime.renderer().cherenkov_windows.values();
-    let window = windows.next().expect("the frame installed into a window");
-    assert!(windows.next().is_none(), "the test renders one window");
-    let memory = window.state.engine.memory();
+    let format = runtime
+        .renderer()
+        .cherenkov_windows
+        .values()
+        .next()
+        .expect("the frame installed into a window")
+        .state
+        .engine
+        .memory()
+        .backdrop_capture_format;
     (
-        window.mounts.backdrop_display_scale(key),
-        memory.backdrop_captures.0,
-        memory.backdrop_capture_format,
+        mounts(runtime).backdrop_display_scale(key),
+        capture_bytes(runtime),
+        format,
     )
 }
 
@@ -118,8 +115,11 @@ fn a_material_installs_a_quarter_scale_colour_then_blur_backdrop_group() {
     );
 
     // The chain the install builds runs the colour stage, then the blur's
-    // two passes, all in encoded sRGB.
-    let chain = material_layer(&runtime).runtime.chain(DISPLAY_SCALE);
+    // two passes, all in encoded sRGB — read off the group's own runtime.
+    let key = material_layer(&runtime).key;
+    let chain = mounts(&runtime)
+        .backdrop_chain(key)
+        .expect("the member holds a backdrop group");
     let mut stages = Stages::default();
     chain.collect_stages(&mut stages);
     assert_eq!(
