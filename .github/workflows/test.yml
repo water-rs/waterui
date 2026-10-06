@@ -140,15 +140,17 @@ jobs:
       # The composite also installs the test fonts the styled suites resolve
       # at run time; this gate never runs tests, so that half only matters
       # to the `full` callers that share the step.
+      # The writer sweep lints the whole workspace with `--all-targets`
+      # whatever the scope, so it needs every generated asset too.
       - name: Generate Hydrolysis test assets
-        if: inputs.full || inputs['test-assets']
+        if: inputs.full || inputs['test-assets'] || steps.writer.outputs.sweep == 'true'
         uses: ./.github/actions/generate-test-assets
       # cherenkov-oracle, cherenkov-gpu, and cherenkov-cpu compile
       # `include_bytes!` of fonts only `scenes/tools/generate.py` writes;
       # `--all-targets` compiles them, so the fonts must exist first.
       # Corpus and perf are read at run time — this job never runs tests.
       - name: Generate Cherenkov scene assets
-        if: inputs.full || inputs['scene-assets']
+        if: inputs.full || inputs['scene-assets'] || steps.writer.outputs.sweep == 'true'
         uses: ./.github/actions/generate-scene-assets
         with:
           mode: fonts
