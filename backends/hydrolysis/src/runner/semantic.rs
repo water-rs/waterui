@@ -132,11 +132,14 @@ impl SemanticRuntime {
         // page has no synchronous resource directory to scan, so the semantic
         // runtime there shapes with the default collection alone.
         #[cfg(not(target_arch = "wasm32"))]
-        return Self::on_env(env, content, width, height, family_resolution, |env| {
-            crate::text::fonts::native_collection(waterui_core::ResourceContext::from_environment(
-                env,
-            ))
-        });
+        return Self::on_env(
+            env,
+            content,
+            width,
+            height,
+            family_resolution,
+            crate::text::fonts::native_collection,
+        );
         #[cfg(target_arch = "wasm32")]
         Self::on_env(env, content, width, height, family_resolution, |_| {
             crate::text::fonts::system_collection()

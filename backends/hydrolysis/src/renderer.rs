@@ -481,6 +481,21 @@ impl HydrolysisRenderer {
         Self::with_engine(theme, SessionTextEngine::system(family_resolution))
     }
 
+    /// A renderer drawing with `theme`, shaping text against `fonts` — the
+    /// collection [`crate::native_collection`] builds — under
+    /// `family_resolution`.
+    #[must_use]
+    pub fn with_fonts(
+        theme: Rc<dyn crate::engine::WidgetTheme>,
+        fonts: &waterui_text::FontCollection,
+        family_resolution: FontFamilyResolution,
+    ) -> Self {
+        Self::with_engine(
+            theme,
+            SessionTextEngine::from_collection(fonts, family_resolution),
+        )
+    }
+
     /// A renderer drawing with `theme`, shaping through `text` — the
     /// session's text engine the runner built it with.
     pub(crate) fn with_engine(

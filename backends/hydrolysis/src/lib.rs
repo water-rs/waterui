@@ -85,7 +85,9 @@ pub use runner::run;
 pub use runner::{FrameCounters, FramePhases, FrameProfile, SemanticPumpResult, SemanticRuntime};
 #[cfg(not(target_arch = "wasm32"))]
 pub use runner::{HeadlessPumpResult, HeadlessRuntime, HeadlessSnapshot};
-pub use text::FontFamilyResolution;
+#[cfg(not(target_arch = "wasm32"))]
+pub use text::fonts::native_collection;
+pub use text::{DeclaredFonts, FontFamilyResolution};
 pub use view_renderer::HydrolysisViewRenderer;
 #[cfg(hydrolysis_macos_system_webview)]
 pub use widgets::platform::webview::MacSystemWebViewController;

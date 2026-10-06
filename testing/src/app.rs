@@ -286,6 +286,10 @@ impl<S> UiBuilder<S> {
         // `realization::install` skips because their system backend would
         // bridge a native player.
         waterui::realization::install_video(&mut env);
+        // An application's declared fonts are staged by the `water` CLI; a
+        // test binary resolves the package under test's crate-local ones
+        // itself, styled or not, as the application path loads them.
+        env.insert(crate::declared_fonts::package_declared_fonts());
         env
     }
 
@@ -439,6 +443,7 @@ impl<S: Style> UiBuilder<Styled<S>> {
         // self-drawn video realization applies even where `App::new`'s
         // `realization::install` skipped it.
         waterui::realization::install_video(&mut env);
+        env.insert(crate::declared_fonts::package_declared_fonts());
         self.mount_rendered_window(env, window)
     }
 

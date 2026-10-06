@@ -582,8 +582,10 @@ fn assert_family_list_installed(
             && collection.family_by_name(&name).is_none()
         {
             panic!(
-                "font family `{name}` is not installed; install the style package's \
-                 fonts with its font install script"
+                "font family `{name}` is neither installed on this host nor provided by a \
+                 declared font file; declare it with `local_path` under \
+                 `[[package.metadata.waterui.assets.font]]` in the crate that names it (fonts \
+                 declared by registry name or `remote_path` are staged only by the `water` CLI)"
             );
         }
     }

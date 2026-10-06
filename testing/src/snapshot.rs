@@ -8,6 +8,7 @@ use hydrolysis::{
 use waterui::graphics::SceneViewMergeToParent;
 use waterui::graphics::WorkingColor;
 use waterui::graphics::draw::kurbo;
+use waterui::text::FontCollection;
 use waterui_core::{AnyView, Environment, View};
 
 use crate::artifacts::{CapturedSnapshot, TestArtifacts};
@@ -60,6 +61,9 @@ pub struct TestHost {
     width: u32,
     height: u32,
     theme: Rc<dyn WidgetTheme>,
+    /// Built once from the host's environment — system fonts plus the
+    /// package's declared fonts — and shared by every render.
+    fonts: FontCollection,
 }
 
 impl core::fmt::Debug for TestHost {
@@ -77,14 +81,18 @@ impl TestHost {
     #[must_use]
     pub fn new(env: Environment, width: u32, height: u32, style: impl Style) -> Self {
         let mut env = env;
+        waterui_core::install_application_resources(&mut env);
+        env.insert(crate::declared_fonts::package_declared_fonts());
         hydrolysis::theme::install_default_tokens(&mut env);
         style.install_tokens(&mut env);
+        let fonts = hydrolysis::native_collection(&env);
         Self {
             env,
             gpu: OffscreenGpuContext::new_for_tests_blocking(),
             width,
             height,
             theme: Rc::new(style),
+            fonts,
         }
     }
 
@@ -101,8 +109,11 @@ impl TestHost {
             self.height.max(1),
             wgpu::TextureFormat::Rgba8Unorm,
         );
-        let mut renderer =
-            HydrolysisRenderer::new(Rc::clone(&self.theme), FontFamilyResolution::Strict);
+        let mut renderer = HydrolysisRenderer::with_fonts(
+            Rc::clone(&self.theme),
+            &self.fonts,
+            FontFamilyResolution::Strict,
+        );
         let bounds = kurbo::Rect::new(
             0.0,
             0.0,

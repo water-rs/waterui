@@ -20,7 +20,9 @@ use smol::fs;
 use tracing::{debug, info, warn};
 use walkdir::WalkDir;
 
-use waterui_assets_planner::BundleManifest;
+use waterui_assets_planner::{
+    BundleManifest, FontDeclaration, FontSource, dependency_font_declarations,
+};
 use zenwave::{Client as _, Method};
 
 use crate::project::Project;
@@ -89,37 +91,6 @@ impl FontRegistry {
 const HYDROLYSIS_DEFAULT_FONT_FAMILY: &str = "Roboto";
 const FONT_MANIFEST_FILE_NAME: &str = "waterui-fonts.json";
 
-/// A font declaration — from `[[assets.font]]` in `Water.toml` or a crate's
-/// `[package.metadata.waterui.assets.font]` Cargo.toml metadata.
-#[derive(Debug, Clone)]
-pub struct FontDeclaration {
-    /// Font family name (used as `font_family` in Text).
-    pub name: String,
-    /// Source of the font file.
-    pub source: FontSource,
-    /// Crate or project that declared this font.
-    pub crate_name: String,
-}
-
-/// Source of a font file.
-#[derive(Debug, Clone)]
-pub enum FontSource {
-    /// Font bundled with the crate at a local path.
-    Local {
-        /// Absolute path to the crate root.
-        crate_root: PathBuf,
-        /// Relative path within the crate.
-        relative_path: PathBuf,
-    },
-    /// Font that must be fetched out of band into the font cache.
-    Remote {
-        /// URL to fetch the font from when pre-seeding the cache.
-        url: String,
-    },
-    /// Font from the built-in registry.
-    BuiltIn,
-}
-
 /// A resolved font with its absolute path.
 #[derive(Debug, Clone)]
 pub struct ResolvedFont {
@@ -146,11 +117,11 @@ struct FontManifestEntry {
     file_name: String,
 }
 
-/// Font metadata from Cargo.toml `[package.metadata.waterui.assets]`.
+/// The CLI's own keys of a crate's `[package.metadata.waterui]`; font
+/// declarations under `assets` are read by
+/// [`waterui_assets_planner::dependency_font_declarations`].
 #[derive(Debug, Deserialize)]
 struct WaterUIMetadata {
-    #[serde(default)]
-    assets: AssetsMetadata,
     /// Permissions this crate cannot work without, keyed by logical permission.
     #[serde(default)]
     permissions: BTreeMap<PermissionKey, PermissionRequirement>,
@@ -232,26 +203,6 @@ pub enum PermissionEvidence {
     /// Inferred from the shape of the dependency graph; may be a false
     /// positive, so the report is phrased as a suggestion.
     Inferred,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct AssetsMetadata {
-    #[serde(default)]
-    font: Vec<FontMetadata>,
-}
-
-#[derive(Debug, Deserialize)]
-struct FontMetadata {
-    name: String,
-    #[serde(default)]
-    local_path: Option<String>,
-    #[serde(default)]
-    remote_path: Option<String>,
-    /// Optional feature that must be enabled for this font to be included.
-    /// If specified, the font will only be bundled if this feature is enabled
-    /// for the declaring package.
-    #[serde(default, rename = "required-feature")]
-    required_feature: Option<String>,
 }
 
 /// Fonts the project itself declares as `[[assets.font]]` tables in
@@ -408,7 +359,10 @@ pub async fn crate_metadata(
 /// would miss the backend's declarations entirely.
 ///
 /// Fonts with a `required-feature` field will only be included if that feature
-/// is enabled for the declaring package (checked via cargo metadata's resolved graph).
+/// is enabled for the declaring package (checked via cargo metadata's resolved
+/// graph, which is why the metadata is resolved rather than `--no-deps`). A
+/// declaration that is malformed, roots its `local_path`, or sets both
+/// `local_path` and `remote_path` fails the scan.
 async fn scan_crate_font_declarations(
     project: &Project,
     build_manifest: &Path,
@@ -439,91 +393,12 @@ async fn scan_crate_font_declarations(
         message
     })?;
 
-    // Build map of package_id -> enabled features from resolved graph
-    let enabled_features_map: HashMap<&PackageId, HashSet<&str>> = metadata
-        .resolve
-        .as_ref()
-        .map(|resolve| {
-            resolve
-                .nodes
-                .iter()
-                .map(|node| (&node.id, node.features.iter().map(|f| f.as_str()).collect()))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let mut fonts = Vec::new();
-
-    for package in &metadata.packages {
-        // Skip if no waterui metadata
-        let Some(waterui) = package.metadata.get("waterui") else {
-            continue;
-        };
-
-        // Parse the metadata
-        let waterui_meta: WaterUIMetadata =
-            serde_json::from_value(waterui.clone()).map_err(|error| {
-                eyre::eyre!(
-                    "crate {} declares malformed `[package.metadata.waterui]`: {error}",
-                    package.name
-                )
-            })?;
-
-        // Get enabled features for this package from resolve
-        let enabled_features = enabled_features_map
-            .get(&package.id)
-            .cloned()
-            .unwrap_or_default();
-
-        // Process font declarations
-        for font_meta in waterui_meta.assets.font {
-            // Skip if required feature is not enabled
-            if let Some(required) = &font_meta.required_feature
-                && !enabled_features.contains(required.as_str())
-            {
-                debug!(
-                    "Skipping font '{}': feature '{}' not enabled for {}",
-                    font_meta.name, required, package.name
-                );
-                continue;
-            }
-
-            let source = if let Some(local_path) = font_meta.local_path {
-                let local_path = PathBuf::from(local_path);
-                if local_path.is_absolute() {
-                    warn!(
-                        "Skipping font '{}': local_path must be relative (crate: {})",
-                        font_meta.name, package.name
-                    );
-                    continue;
-                }
-
-                // Local path - resolve relative to crate root
-                let crate_root = package
-                    .manifest_path
-                    .parent()
-                    .ok_or_eyre("Package has no parent directory")?
-                    .as_std_path()
-                    .to_path_buf();
-
-                FontSource::Local {
-                    crate_root,
-                    relative_path: local_path,
-                }
-            } else if let Some(url) = font_meta.remote_path {
-                FontSource::Remote { url }
-            } else {
-                // Just name - use built-in registry
-                FontSource::BuiltIn
-            };
-
-            fonts.push(FontDeclaration {
-                name: font_meta.name,
-                source,
-                crate_name: package.name.to_string(),
-            });
-        }
-    }
+    let fonts = dependency_font_declarations(&metadata).wrap_err_with(|| {
+        format!(
+            "Invalid font declaration in the dependency graph of {}",
+            build_manifest.display()
+        )
+    })?;
 
     info!("Found {} font declarations from dependencies", fonts.len());
     Ok(fonts)

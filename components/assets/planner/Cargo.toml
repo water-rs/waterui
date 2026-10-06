@@ -10,7 +10,14 @@ description = "Shared WaterUI asset discovery and planning"
 keywords = ["assets", "bundle", "planner", "waterui"]
 categories = ["gui", "development-tools"]
 
+[features]
+# `dependency_font_declarations`: the font declarations a resolved Cargo graph
+# carries. Off by default so the asset proc macro does not build
+# `cargo_metadata`.
+font-declarations = ["dep:cargo_metadata"]
+
 [dependencies]
+cargo_metadata = { version = "0.23.1", optional = true }
 heck = "0.5"
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

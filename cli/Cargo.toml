@@ -111,7 +111,7 @@ remove_dir_all = "1.0"
 # `version` fields are what `cargo publish` keeps — a release therefore
 # cannot ship until versions carrying those APIs publish.
 waterui-assets-core = { workspace = true, features = ["remote"] }
-waterui-assets-planner.workspace = true
+waterui-assets-planner = { workspace = true, features = ["font-declarations"] }
 waterui-preview-protocol.workspace = true
 waterui-inspector-protocol.workspace = true
 waterui-mcp-protocol.workspace = true
