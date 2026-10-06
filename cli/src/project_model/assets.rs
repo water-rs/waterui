@@ -27,6 +27,7 @@ use crate::project::Project;
 use crate::project_model::project_types::PermissionKey;
 
 mod android_manifest;
+mod gradle_plugins;
 pub mod icon;
 mod unified;
 mod web;
@@ -34,6 +35,9 @@ mod web;
 pub use android_manifest::ManifestComponents;
 #[cfg(test)]
 pub use android_manifest::assert_component_markers_inside_application;
+pub use gradle_plugins::GradlePlugins;
+#[cfg(test)]
+pub use gradle_plugins::{assert_module_plugin_markers, assert_settings_plugin_markers};
 
 /// A font the CLI can fetch when a crate names it and nothing else.
 #[derive(Debug, Clone, Deserialize)]
@@ -168,7 +172,9 @@ struct WaterUIMetadata {
 /// module performs the compile — the crate's build script does not. A crate
 /// whose platform code needs an entry inside the manifest's `<application>`
 /// declares it as a `[[provider]]`, `[[service]]`, `[[receiver]]` or
-/// `[[meta-data]]` table (see [`android_manifest`]).
+/// `[[meta-data]]` table (see [`android_manifest`]). A crate whose platform
+/// code needs a Gradle plugin applied to the application module declares it
+/// as a `[[gradle-plugin]]` table (see [`gradle_plugins`]).
 ///
 /// Every key is the CLI's, so an unknown one — a misspelling, or a key a
 /// newer CLI understands — is an error rather than a declaration silently
@@ -195,6 +201,9 @@ struct AndroidMetadata {
     /// Application-level `<meta-data>` entries for the generated manifest.
     #[serde(default)]
     meta_data: Vec<android_manifest::MetaData>,
+    /// Gradle plugins to apply to the generated application module.
+    #[serde(default)]
+    gradle_plugin: Vec<gradle_plugins::GradlePlugin>,
     /// Only required when this cargo feature is enabled on the declaring
     /// crate; gates every key of the table.
     #[serde(default)]
@@ -538,6 +547,8 @@ pub struct AndroidDeclarations {
     pub classpath: AndroidClasspath,
     /// Components for the `<application>` element of the module's manifest.
     pub manifest: ManifestComponents,
+    /// Gradle plugins for the application module and the project settings.
+    pub gradle_plugins: GradlePlugins,
 }
 
 /// Kotlin sources and Maven coordinates the dependency graph asks to place on
@@ -631,7 +642,11 @@ fn collect_android_declarations(
             receivers: android.receiver,
             meta_data: android.meta_data,
         };
-        if android.kotlin_sources.is_empty() && android.maven.is_empty() && components.is_empty() {
+        if android.kotlin_sources.is_empty()
+            && android.maven.is_empty()
+            && components.is_empty()
+            && android.gradle_plugin.is_empty()
+        {
             continue;
         }
         if let Some(gate) = &android.required_feature
@@ -675,6 +690,9 @@ fn collect_android_declarations(
         declarations
             .manifest
             .merge(package.name.as_str(), components)?;
+        declarations
+            .gradle_plugins
+            .merge(package.name.as_str(), android.gradle_plugin)?;
     }
     Ok(declarations)
 }
@@ -692,6 +710,11 @@ const ANDROID_KEEPS_END: &str = "# --- end waterui android classpath keeps ---";
 /// compile and run against, emitted into the module's managed dependencies
 /// block as `implementation(...)` for application modules or `api(...)` for
 /// the embedded AAR so the published POM propagates them to consumers.
+///
+/// Declared Gradle plugins are pinned in the project's `settings.gradle.kts`
+/// and applied in the module's `plugins {}` block for application modules;
+/// the embedded AAR is a library, so its host application must apply them
+/// and the stage names each one.
 ///
 /// Both destinations are managed: whatever an earlier stage left is removed
 /// first, so a dependency or feature that is no longer in the graph stops
@@ -712,7 +735,36 @@ pub async fn stage_android_declarations(
 ) -> eyre::Result<()> {
     let declarations = scan_android_declarations(project, build_manifest, features).await?;
     stage_classpath_files(&declarations.classpath, module_dir, scope).await?;
-    android_manifest::write_manifest_components(module_dir, &declarations.manifest).await
+    android_manifest::write_manifest_components(module_dir, &declarations.manifest).await?;
+    match scope {
+        AndroidDependencyScope::Implementation => {
+            let project_dir = module_dir
+                .parent()
+                .ok_or_eyre("the Gradle module has no parent project directory")?;
+            gradle_plugins::write_gradle_plugins(
+                project_dir,
+                module_dir,
+                &declarations.gradle_plugins,
+            )
+            .await
+        }
+        AndroidDependencyScope::Api => {
+            warn_host_applies_gradle_plugins(&declarations.gradle_plugins);
+            Ok(())
+        }
+    }
+}
+
+/// A Gradle plugin acts on the application module — `google-services`
+/// matches its configuration against the application id — so the embedded
+/// AAR, a library, cannot apply one for its host. The host application
+/// module must apply each plugin the graph declares itself.
+fn warn_host_applies_gradle_plugins(plugins: &GradlePlugins) {
+    for (crate_name, id, version) in plugins.iter() {
+        warn!(
+            "{crate_name} needs Gradle plugin `{id}` version `{version}`; the embedded library cannot apply it, so the host application module must declare `id(\"{id}\") version \"{version}\"`"
+        );
+    }
 }
 
 /// The classpath half of [`stage_android_declarations`], split from the cargo-metadata
@@ -807,6 +859,27 @@ fn managed_block_span(
             path.display()
         ),
     }
+}
+
+/// `existing` with its managed block between `begin_marker` and
+/// `end_marker` replaced by `block`, which carries the markers itself;
+/// `None` when `existing` has no such block.
+fn splice_managed_block(
+    existing: &str,
+    path: &Path,
+    begin_marker: &str,
+    end_marker: &str,
+    block: &str,
+) -> eyre::Result<Option<String>> {
+    Ok(
+        managed_block_span(existing, path, begin_marker, end_marker)?.map(|(begin, end)| {
+            let mut body = String::with_capacity(existing.len() + block.len());
+            body.push_str(&existing[..begin]);
+            body.push_str(block);
+            body.push_str(&existing[end..]);
+            body
+        }),
+    )
 }
 
 /// Rewrites the managed dependencies block inside `module_dir`'s
@@ -3191,6 +3264,73 @@ mod permission_audit_tests {
         let message = error.to_string();
         assert!(message.contains("`clipboard`"), "{message}");
         assert!(message.contains("`other-clipboard`"), "{message}");
+    }
+
+    /// Gradle plugins are collected across the resolved graph like every
+    /// other Android declaration: a table behind a disabled
+    /// `required-feature` contributes nothing, the same table with the
+    /// feature on contributes its plugin, and two crates pinning one plugin
+    /// at different versions fail the collection naming both.
+    #[test]
+    fn gradle_plugins_are_collected_across_the_graph() {
+        let project = tempdir().expect("temp project");
+        let plugin = "[[package.metadata.waterui.android.gradle-plugin]]\n\
+                      id = \"com.google.gms.google-services\"\n\
+                      version = \"4.4.2\"\n";
+        write_crate(
+            &project.path().join("push"),
+            "push",
+            &format!(
+                "[features]\nremote = []\n\n\
+                 [package.metadata.waterui.android]\nrequired-feature = \"remote\"\n\n{plugin}"
+            ),
+        );
+        let gated = write_crate(
+            &project.path().join("gated"),
+            "app-gated",
+            "[dependencies]\npush = { path = \"../push\" }\n",
+        );
+        let enabled = write_crate(
+            &project.path().join("enabled"),
+            "app-enabled",
+            "[dependencies]\npush = { path = \"../push\", features = [\"remote\"] }\n",
+        );
+        let collect = |manifest: &Path| {
+            let metadata =
+                smol::block_on(crate_metadata(manifest, &[])).expect("resolve the fixture graph");
+            collect_android_declarations(&metadata)
+        };
+
+        let gated = collect(&gated).expect("collect the gated graph");
+        assert_eq!(gated.gradle_plugins.iter().count(), 0);
+        let enabled = collect(&enabled).expect("collect the enabled graph");
+        let plugins: Vec<String> = enabled
+            .gradle_plugins
+            .iter()
+            .map(|(crate_name, id, version)| format!("{crate_name} {id} {version}"))
+            .collect();
+        assert_eq!(plugins, ["push com.google.gms.google-services 4.4.2"]);
+
+        write_crate(
+            &project.path().join("other"),
+            "other-push",
+            &format!(
+                "[package.metadata.waterui.android]\n\n{}",
+                plugin.replace("4.4.2", "4.3.0")
+            ),
+        );
+        let conflicting = write_crate(
+            &project.path().join("conflicting"),
+            "app-conflicting",
+            "[dependencies]\n\
+             push = { path = \"../push\", features = [\"remote\"] }\n\
+             other-push = { path = \"../other\" }\n",
+        );
+        let message = collect(&conflicting)
+            .expect_err("two versions of one plugin must fail")
+            .to_string();
+        assert!(message.contains("`push`"), "{message}");
+        assert!(message.contains("`other-push`"), "{message}");
     }
 
     /// Every key of `[package.metadata.waterui.android]` is the CLI's: a
