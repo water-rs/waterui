@@ -36,8 +36,9 @@ fn main() {
 /// inside a running `UIApplication` with a connected scene. Each runs on
 /// the platform's wall clock: the offset is still at its start when the
 /// request returns, and it lands on the target no sooner than a native
-/// animation takes; a process outside the application never moves it. This is where the
-/// `UIKit` `Animation::Default` arm of the `native` scroll suites lives.
+/// animation takes; a process outside the application never moves it.
+/// This is where the `UIKit` `Animation::Default` arm of the `native`
+/// scroll suites lives.
 #[cfg(target_os = "ios")]
 mod scroll_animation {
     use cocoa_ui::geometry::{Point, Size};
@@ -154,9 +155,9 @@ mod scroll_animation {
     /// `Animation::Default` on a list is `UIKit`'s own
     /// `scrollToRow(_:at:animated: true)`: driven through the controller
     /// on a cold table, it does not jump, and it lands with the row's top
-    /// at the viewport's top no sooner than a native animation takes. Rows `UIKit` has not
-    /// shown are sized by estimate, and the scroll measures them on the
-    /// way, so the row's top is read as it stands when the offset lands —
+    /// at the viewport's top no sooner than a native animation takes.
+    /// Rows `UIKit` has not shown are sized by estimate, and the scroll
+    /// measures them on the way, so the row's top is read as it stands when the offset lands —
     /// not taken from an earlier jump, which resolves against estimates.
     fn a_default_list_request_lands_after_a_native_animation() {
         let mtm = mtm();

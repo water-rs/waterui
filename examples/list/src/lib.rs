@@ -71,18 +71,18 @@ fn move_record(ListMove(movement): ListMove, state: DemoState) {
     let _ = state.records.replace(records);
 }
 
-fn jump_top(state: DemoState) {
+fn scroll_top(state: DemoState) {
     state.scroll.animate_to(0, Animation::default());
 }
 
-fn jump_middle(state: DemoState) {
+fn scroll_middle(state: DemoState) {
     state.scroll.animate_to(
         (state.remaining.snapshot() as usize) / 2,
         Animation::default(),
     );
 }
 
-fn jump_last(state: DemoState) {
+fn scroll_last(state: DemoState) {
     let remaining = state.remaining.snapshot();
     if remaining > 0 {
         state
@@ -113,9 +113,9 @@ fn content(state: DemoState) -> impl View {
             .sub_headline()
             .muted(),
             hstack((
-                button("Top").bordered().action(jump_top),
-                button("Middle").bordered().action(jump_middle),
-                button("Last").bordered().action(jump_last),
+                button("Top").bordered().action(scroll_top),
+                button("Middle").bordered().action(scroll_middle),
+                button("Last").bordered().action(scroll_last),
                 button(text!("{edit_label}"))
                     .bordered_prominent()
                     .action(toggle_editing),
