@@ -468,10 +468,6 @@ mod tests {
     use waterui_graphics::draw::WorkingColor;
 
     #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "the scale and radii use exact-representable test values"
-    )]
     fn radial_gradient_radii_use_the_shorter_side_of_a_200x100_box() {
         let gradient = Gradient::radial(
             vec![(0.0, WorkingColor::WHITE), (1.0, WorkingColor::BLACK)],
