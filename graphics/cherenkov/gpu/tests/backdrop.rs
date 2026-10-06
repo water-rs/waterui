@@ -462,7 +462,7 @@ fn render(engine: &Engine<Gpu>, opacity: f32, filter: Option<[f32; 12]>, blend: 
     // the assertion also pins that the filter never covers the sample.
     let identity_full = wait!(render(&engine, 1.0, Some(IDENTITY), normal))?;
     let identity_half = wait!(render(&engine, 0.5, Some(IDENTITY), normal))?;
-    for &(x, y) in &[(10, 4), (5, 5), (8, 16), (16, 16), (24, 16)] {
+    for &(x, y) in &[(6, 5), (5, 5), (8, 16), (16, 16), (24, 16)] {
         assert_pixel(pixel(&identity_full, x, y), pixel(&full, x, y), 1e-3);
         assert_pixel(pixel(&identity_half, x, y), pixel(&half, x, y), 1e-3);
     }

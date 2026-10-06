@@ -203,6 +203,8 @@ fn member_inside_clip_only_isolation_sees_the_surface() {
 /// covers it — and still fades by the member's opacity, once (#1974).
 #[test]
 fn member_sample_is_attenuated_by_layer_opacity() {
+    use filtrate::filters::ColorMatrix;
+
     // A red|blue step under a red↔blue-swapping group: the captured
     // sample differs from the sharp backdrop everywhere — at the clip's
     // antialiased rim too — so attenuating the sample and the member
@@ -222,13 +224,10 @@ fn member_sample_is_attenuated_by_layer_opacity() {
         let surface = engine
             .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32))
             .expect("surface");
-        let group = surface.backdrop_group(
-            filtrate::filters::ColorMatrix(SWAP),
-            cherenkov::CaptureScale::FULL,
-        );
+        let group = surface.backdrop_group(ColorMatrix(SWAP), cherenkov::CaptureScale::FULL);
         let member = surface.layer();
         let child = surface.layer();
-        let member_filter = filter.map(|matrix| engine.filter(filtrate::filters::ColorMatrix(matrix)));
+        let member_filter = filter.map(|matrix| engine.filter(ColorMatrix(matrix)));
         surface.update(|tx| {
             tx[surface.root()].content(surface.record(|r| {
                 r.fill(
@@ -313,7 +312,7 @@ fn member_sample_is_attenuated_by_layer_opacity() {
     // the assertion also pins that the filter never covers the sample.
     let identity_full = render(1.0, Some(IDENTITY), normal);
     let identity_half = render(0.5, Some(IDENTITY), normal);
-    for &(x, y) in &[(10, 4), (5, 5), (8, 16), (16, 16), (24, 16)] {
+    for &(x, y) in &[(6, 5), (5, 5), (8, 16), (16, 16), (24, 16)] {
         assert_pixel(pixel(&identity_full, x, y), pixel(&full, x, y), 1e-5);
         assert_pixel(pixel(&identity_half, x, y), pixel(&half, x, y), 1e-5);
     }

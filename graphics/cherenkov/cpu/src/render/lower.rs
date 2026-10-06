@@ -1286,9 +1286,10 @@ impl<'a, 'b> Lowering<'a, 'b> {
         // A filtered member composites as a whole — its sample and its
         // filtered content — with the member's opacity and blend. When
         // neither is a no-op an outer member scope composites at
-        // (opacity, blend) under the member clip; the sample draws into
-        // it at full strength, outside the filter, beside a nested
-        // filter scope at opacity 1, `Normal` blend over the items.
+        // (opacity, blend) under `composite_clip` below; the sample draws
+        // into it at full strength under the member clip, outside the
+        // filter, beside a nested filter scope at opacity 1, `Normal`
+        // blend over the items.
         let member_scope = backdrop
             .zip(node.filter)
             .filter(|_| opacity < 1.0 || blend != BlendMode::Normal);
@@ -1342,10 +1343,10 @@ impl<'a, 'b> Lowering<'a, 'b> {
                             Some(id),
                         )
                     } else if opacity < 1.0
-                || blend != BlendMode::Normal
-                // The root already renders into the surface target, and a
-                // local root into its image.
-                || (id != s.start(tree) && node.blends_within())
+                        || blend != BlendMode::Normal
+                        // The root already renders into the surface target, and a
+                        // local root into its image.
+                        || (id != s.start(tree) && node.blends_within())
                     {
                         // An unfiltered member's sample is its plane's
                         // bottom-most content: the level's opacity and blend

@@ -1781,7 +1781,8 @@ impl<'a> Lowering<'a> {
         reason = "surface size is a small positive float; an isolate carries the
         clip, style and pixel-space state of one scope"
     )]
-    // Keep isolation's buffers off the ordinary drawing walk's stack.
+    // Keep isolation's saved state, live across the recursive body, off
+    // the ordinary drawing walk's stack.
     #[inline(never)]
     fn isolate_direct(
         &mut self,
@@ -2002,6 +2003,9 @@ impl<'a> Lowering<'a> {
     /// when `body` stayed in one pass (folding opacity for disjoint bounds,
     /// or promoting an unclipped overlapping batch into a scratch pass).
     /// Otherwise rolls back and returns `Ok(false)` for nested/clipped isolation.
+    // Keep the speculative snapshot, live across the recursive body, off
+    // the ordinary drawing walk's stack.
+    #[inline(never)]
     fn try_passthrough(
         &mut self,
         opacity: f32,
@@ -2604,9 +2608,11 @@ impl<'a> Lowering<'a> {
     /// and blend cover it exactly like its items — while a filtered
     /// member composites as a whole too (#1974): when its opacity or
     /// blend is not a no-op an outer member scope composites at the
-    /// member's opacity and blend under the member clip, holding the
-    /// sample at full strength beside a nested filter scope over the
-    /// items; the member's blend applies to the sample either way. The
+    /// member's opacity and blend — under the clip in force outside the
+    /// member for a non-destructive blend, under the member clip for a
+    /// destructive one — holding the sample, clipped at full strength,
+    /// beside a nested filter scope over the items; the member's blend
+    /// applies to the sample either way. The
     /// filter covers the member's items, never its sample.
     #[expect(
         clippy::too_many_arguments,
