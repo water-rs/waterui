@@ -240,10 +240,7 @@ waterui-webview = { version = "0.5.1", path = "components/platform/webview" }
 waterui-chromium = { version = "0.5.1", path = "components/platform/chromium" }
 waterui-browser-cef = { version = "0.5.1", path = "components/platform/browser-cef", default-features = false }
 waterui-browser-wpe = { version = "0.5.1", path = "components/platform/browser-wpe", default-features = false }
-# Zero-copy import of an externally produced GPU frame into a wgpu texture.
-# Deliberately free of every waterui dependency: it is a general interop layer
-# and lives in its own repository at water-rs/wgpu-external-frame.
-wgpu-external-frame = { git = "https://github.com/water-rs/wgpu-external-frame", rev = "d047b57e6fd8930f95c78b3e4fba7b06cd056b68" }
+wgpu-external-frame = "0.3.0"
 waterui-icon = { version = "0.5.1", path = "components/foundation/icon" }
 waterui-icons-sf-symbol = { version = "0.5.1", path = "components/icon/sf_symbol" }
 waterui-icons-material-icon = { version = "0.5.1", path = "components/icon/material" }
@@ -291,19 +288,17 @@ waterui-mcp = { version = "0.5.1", path = "components/devtools/mcp/server" }
 # backend's nami-migration head — the published releases still require the
 # pre-rename nami line (`^0.11.2` and peers) — so `dev`, `nightly` and
 # local-checkout scaffolds declare the commit directly while `stable`
-# withholds the packages under `experimental-packages`. The GTK and WinUI
-# heads are on nami 0.12 (water-rs/gtk-backend#144,
-# water-rs/waterui-winui#84); the Dew head is still on nami 0.11 and does not
-# build beside the `nami = "0.12"` requirement above until it moves
-# (water-rs/dew#25).
+# withholds the packages under `experimental-packages`. All three heads are
+# on nami 0.12 (water-rs/gtk-backend#144, water-rs/waterui-winui#84,
+# water-rs/dew#25).
 # Drop the `git`/`rev` half once each backend releases a migrated version.
-waterui-gtk = { version = "0.2.1", git = "https://github.com/water-rs/gtk-backend", rev = "4021fd0e9f6acdaa07665a8e465a783a254e714d" }
-waterui-winui = { version = "0.1.0", git = "https://github.com/water-rs/waterui-winui", rev = "73385dd502702f019bebdf691223c40c71570182" }
+waterui-gtk = { version = "0.2.1", git = "https://github.com/water-rs/gtk-backend", rev = "0173db0e8e066305ff49bc4e12197c1056321831" }
+waterui-winui = { version = "0.1.0", git = "https://github.com/water-rs/waterui-winui", rev = "4c8c82bb133940d1d2671c1d29c5b448ad035255" }
 waterui-testing = { path = "testing" }
 waterui-internal = { version = "0.5.1", path = "src", default-features = false }
 waterui-dylib = { version = "0.5.1", path = "utils/dylib", default-features = false }
 hydrolysis = { version = "0.3.1", path = "backends/hydrolysis", default-features = false }
-waterui-dew = { version = "0.3.0", git = "https://github.com/water-rs/dew", rev = "db709fc0c29fd1b4493c014409406de710f8b915" }
+waterui-dew = { version = "0.3.0", git = "https://github.com/water-rs/dew", rev = "c1ce5d79e34b1bf343f8008f05e43b49acd8d0b5" }
 # default-features lives here, not on members: cargo rejects a member
 # `default-features` override when the workspace entry does not declare
 # one (the MSRV failure in #1551). Members name the features they need.

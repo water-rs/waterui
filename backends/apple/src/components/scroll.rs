@@ -19,7 +19,8 @@ use alloc::rc::Rc;
 use core::cell::Cell;
 
 use cocoa_ui::{MainThreadMarker, Retained};
-use waterui::layout::scroll::{Axis, ScrollController, ScrollView};
+use waterui::animation::Animation;
+use waterui::layout::scroll::{Axis, ScrollController, ScrollRequest, ScrollView};
 use waterui::reactive::{Binding, Signal};
 use waterui_core::layout::{Point, ProposalSize, Rect, Size, StretchAxis, SubView, ViewDimensions};
 
@@ -312,44 +313,69 @@ fn layout_child(
     child_view.layoutSubtreeIfNeeded();
 }
 
-/// `UIKit`: applies a controller target, clamped inside the adjusted
-/// content insets, matching `applyScrollControllerTarget`.
+/// `UIKit`: the content offset `target` resolves to — clamped inside the
+/// adjusted content insets, the same math the jump applies, shared by
+/// every animated variant.
 #[cfg(target_os = "ios")]
-fn apply_scroll_target(scroll: &ScrollSurface, target: Point) {
-    scroll.layout_if_needed();
-    assert!(
-        target.x.is_finite() && target.y.is_finite(),
-        "WaterUI ScrollView target must contain finite coordinates"
-    );
+fn clamped_offset(scroll: &ScrollSurface, target: Point) -> cocoa_ui::Point {
     let inset = scroll.adjusted_content_inset();
-    let extent = scroll.content_extent();
-    let viewport = scroll.viewport_size();
-    let minimum_x = -inset.left;
-    let minimum_y = -inset.top;
-    let maximum_x = (extent.width - viewport.width + inset.right).max(minimum_x);
-    let maximum_y = (extent.height - viewport.height + inset.bottom).max(minimum_y);
-    scroll.set_content_offset(
-        cocoa_ui::Point::new(
-            (f64::from(target.x) - inset.left).clamp(minimum_x, maximum_x),
-            (f64::from(target.y) - inset.top).clamp(minimum_y, maximum_y),
-        ),
-        false,
-    );
+    scroll.clamped_content_offset(cocoa_ui::Point::new(
+        f64::from(target.x) - inset.left,
+        f64::from(target.y) - inset.top,
+    ))
 }
 
-/// `AppKit`: applies a controller target by scrolling the clip view, like
-/// `applyScrollControllerTarget`.
-#[cfg(target_os = "macos")]
-fn apply_scroll_target(scroll: &ScrollSurface, target: Point) {
+/// `UIKit`: applies a controller request — `None` is the jump it always
+/// was, `Animation::Default` is `UIKit`'s own animated `contentOffset`
+/// write, and an explicit animation drives the offset on the frame clock,
+/// writing the model along the core curve each tick. The clamped target
+/// is the jump's, so the flight lands where it would have.
+#[cfg(target_os = "ios")]
+fn apply_scroll_request(scroll: &ScrollSurface, request: &ScrollRequest<Point>) {
     scroll.layout_if_needed();
     assert!(
-        target.x.is_finite() && target.y.is_finite(),
+        request.target.x.is_finite() && request.target.y.is_finite(),
         "WaterUI ScrollView target must contain finite coordinates"
     );
-    scroll.scroll_to(cocoa_ui::Point::new(
-        f64::from(target.x.max(0.0)),
-        f64::from(target.y.max(0.0)),
-    ));
+    let offset = clamped_offset(scroll, request.target);
+    match request.animation.as_ref() {
+        None => scroll.set_content_offset(offset, false),
+        Some(Animation::Default) => scroll.set_content_offset(offset, true),
+        Some(animation) => scroll.animate_content_offset(
+            offset,
+            animation.duration().as_secs_f64(),
+            crate::animation::progress(animation),
+        ),
+    }
+}
+
+/// `AppKit`: applies a controller request — `None` jumps the clip view as
+/// `applyScrollControllerTarget` did, `Animation::Default` plays the
+/// system's animated scroll (`boundsOrigin` through the clip's animator
+/// proxy in an `NSAnimationContext` group, the `AppKit` counterpart of
+/// `setContentOffset(_:animated: true)`), and an explicit animation drives
+/// the offset on the frame clock, writing the model along the core curve
+/// each tick.
+#[cfg(target_os = "macos")]
+fn apply_scroll_request(scroll: &ScrollSurface, request: &ScrollRequest<Point>) {
+    scroll.layout_if_needed();
+    assert!(
+        request.target.x.is_finite() && request.target.y.is_finite(),
+        "WaterUI ScrollView target must contain finite coordinates"
+    );
+    let target = cocoa_ui::Point::new(
+        f64::from(request.target.x.max(0.0)),
+        f64::from(request.target.y.max(0.0)),
+    );
+    match request.animation.as_ref() {
+        None => scroll.scroll_to(target),
+        Some(Animation::Default) => scroll.scroll_to_animated(target),
+        Some(animation) => scroll.animate_scroll_to(
+            target,
+            animation.duration().as_secs_f64(),
+            crate::animation::progress(animation),
+        ),
+    }
 }
 
 /// Renders a `ScrollView` config into the kit's scroll surface.
@@ -436,26 +462,26 @@ fn render(config: ScrollView, ctx: &RenderContext<'_>) -> NativeLeaf {
 }
 
 /// Wires a `ScrollController` into the scroll surface: a generation bump
-/// applies the current target. The Swift port kept the target observations
-/// alive with no-op watchers and read the latest value at apply time — the
-/// snapshot here is that same read.
+/// applies the latest request — target and animation together. The Swift
+/// port kept the target observations alive with no-op watchers and read
+/// the latest value at apply time — the snapshot here is that same read.
 fn wire_controller(
     leaf: &mut NativeLeaf,
     scroll: &cocoa_ui::Retained<ScrollSurface>,
     controller: &ScrollController<Point>,
 ) {
-    let target = controller.target();
+    let request = controller.request();
     let generation = controller.generation();
-    leaf.watch(&target, |_| {});
+    leaf.watch(&request, |_| {});
     if generation.snapshot() > 0 {
-        apply_scroll_target(scroll, target.snapshot());
+        apply_scroll_request(scroll, &request.snapshot());
     }
     leaf.watch(&generation, {
         let scroll = Retained::clone(scroll);
-        let target = target.clone();
+        let request = request.clone();
         move |ctx| {
             if *ctx.value() > 0 {
-                apply_scroll_target(&scroll, target.snapshot());
+                apply_scroll_request(&scroll, &request.snapshot());
             }
         }
     });

@@ -435,9 +435,11 @@ fn spacer_min_length_is_the_stack_compression_floor() {
         .iter()
         .map(Rect::height)
         .collect();
-    assert_eq!(
-        heights[1], 40.0,
-        "the spacer keeps its min_length floor under compression"
+    assert!(
+        approx::relative_eq!(heights[1], 40.0),
+        "the spacer keeps its min_length floor under compression: left {:?}, right {:?}",
+        heights[1],
+        40.0
     );
 }
 

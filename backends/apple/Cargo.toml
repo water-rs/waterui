@@ -42,7 +42,6 @@ default = [
     "hittable",
     "gesture",
     "image",
-    "layer_transform",
     "layout_priority",
     "lifecycle_hook",
     "material_background",
@@ -106,7 +105,6 @@ gesture = []
 layout_priority = []
 image = []
 lifecycle_hook = []
-layer_transform = []
 list = []
 # `cocoa-ui/map` brings `MKMapView`, the `MapKit` framework link and the
 # `CoreLocation` types; an app that never uses the leaf gets none of it.
@@ -127,8 +125,8 @@ resolved_color = []
 resolved_gradient = []
 resolved_shape = []
 retain = []
-rotation = ["layer_transform"]
-scale = ["layer_transform"]
+rotation = []
+scale = []
 scroll = []
 secure = []
 secure_field = []
@@ -235,6 +233,14 @@ objc2-quartz-core = { version = "0.3", default-features = false, features = [
     "objc2-core-graphics",
 ] }
 
+[build-dependencies]
+cfg_aliases = "0.2.2"
+
+# cargo-machete: `cfg_aliases` is named only in `build.rs`, which the
+# analysis does not read.
+[package.metadata.cargo-machete]
+ignored = ["cfg_aliases"]
+
 [dev-dependencies]
 criterion = "0.8.2"
 pollster = { workspace = true }
@@ -242,6 +248,16 @@ libtest-mimic = "0.8"
 serde_json = { workspace = true }
 # The termination tests park the hook futures on an `async-task` executor.
 executor-core = { workspace = true, features = ["async-task"] }
+
+# The scroll takeover cases synthesize a real wheel event through
+# `CGEventCreateScrollWheelEvent2` → `+[NSEvent eventWithCGEvent:]`.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+objc2-core-graphics = { version = "0.3", default-features = false, features = [
+    "std",
+    "CGEvent",
+    "CGEventTypes",
+] }
+
 # The native tests create real `AppKit`/`UIKit` objects, which are only
 # legal on the process's actual main thread — libtest's worker threads can
 # never hold a `MainThreadMarker`. The custom harness pins execution to
@@ -253,6 +269,16 @@ path = "Tests/native.rs"
 harness = false
 # The suite links `native_test_support`, which only exists behind the
 # non-default feature; lanes that want it pass it explicitly.
+required-features = ["native-test"]
+
+# The cases that need a running `UIApplication` with a connected window
+# scene (iOS only; the binary lists no trials on macOS). The iOS target
+# runner launches it as an application, one case per launch — far costlier
+# than `native`'s bare spawn — so it carries only those cases.
+[[test]]
+name = "native_app"
+path = "Tests/native_app.rs"
+harness = false
 required-features = ["native-test"]
 
 [[bench]]

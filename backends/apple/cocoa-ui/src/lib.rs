@@ -87,6 +87,9 @@ pub mod map;
 pub mod material;
 pub mod menu;
 pub mod metal;
+#[cfg(feature = "native-test")]
+#[doc(hidden)]
+pub mod native_test;
 pub mod notification;
 pub mod path;
 pub mod picker;
@@ -94,6 +97,7 @@ pub mod pointer;
 pub mod process;
 pub mod progress;
 pub mod scroll;
+pub(crate) mod scroll_flight;
 pub mod shape;
 pub mod signal;
 pub mod slider;

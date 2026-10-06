@@ -25,12 +25,16 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 
 use crate::main_queue_owned::{Shared, shared};
+#[cfg(feature = "video")]
+use cocoa_ui::avkit::PlayerLayerView;
 use cocoa_ui::avkit::{
-    ItemStatus, LoadGuard, MediaCharacteristic, PipEvent, Player, PlayerItem, PlayerLayerView,
-    PlayerView, TimeControlStatus, VideoGravity, media_option_is_forced, media_option_label,
-    media_option_language, media_option_roles, variant_codec_fourccs, variant_declared_bit_rate,
-    variant_is_hdr, variant_presentation_size,
+    ItemStatus, LoadGuard, MediaCharacteristic, Player, PlayerItem, TimeControlStatus,
+    VideoGravity, media_option_is_forced, media_option_label, media_option_language,
+    media_option_roles, variant_codec_fourccs, variant_declared_bit_rate, variant_is_hdr,
+    variant_presentation_size,
 };
+#[cfg(feature = "video_player")]
+use cocoa_ui::avkit::{PipEvent, PlayerView};
 use cocoa_ui::objc2_av_foundation::{AVAssetVariant, AVMediaSelectionGroup};
 use cocoa_ui::{MainThreadMarker, Retained, Size as CocoaSize, main_queue};
 use waterkit_audio::{
@@ -39,11 +43,14 @@ use waterkit_audio::{
 };
 use waterui::reactive::{Binding, Computed, Signal};
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+#[cfg(feature = "video")]
+use waterui_video::video::NativeVideoConfig;
+#[cfg(feature = "video_player")]
+use waterui_video::video::NativeVideoPlayerConfig;
 use waterui_video::video::{
     AudioTrackInfo, AudioTrackSelection, BoundVideoEventHandler, ContentMode, Event,
-    NativeVideoConfig, NativeVideoPlayerConfig, PlaybackMetrics, PlaybackOutputPath,
-    PlaybackPowerPolicy, SubtitleSelection, SubtitleTrackInfo, SubtitleTrackOrigin, TrackCatalog,
-    VideoTrackInfo, VideoTrackSelection,
+    PlaybackMetrics, PlaybackOutputPath, PlaybackPowerPolicy, SubtitleSelection, SubtitleTrackInfo,
+    SubtitleTrackOrigin, TrackCatalog, VideoTrackInfo, VideoTrackSelection,
 };
 use waterui_video::{
     Delivery, LiveWindow, MediaItem, PlaybackPhase, PlaybackPolicy, PlayerController, RepeatMode,
@@ -55,7 +62,6 @@ use crate::dispatch::Dispatcher;
 #[cfg(all(target_os = "ios", feature = "video_player"))]
 use cocoa_ui::uikit::HostView;
 
-#[cfg(feature = "video_player")]
 /// Registers both video leaves; each is still gated by its own feature.
 pub fn install(dispatcher: &mut Dispatcher) {
     #[cfg(feature = "video")]

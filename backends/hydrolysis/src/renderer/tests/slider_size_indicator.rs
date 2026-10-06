@@ -111,10 +111,11 @@ fn slider_size_reaches_theme_metrics() {
         );
         let track = tracks.borrow()[0];
         let expected_height = 4.0f64.mul_add(f64::from(size as u8), 6.0);
-        assert_eq!(
+        assert!(
+            approx::relative_eq!(track.height(), expected_height),
+            "{size:?} must draw the theme's {expected_height}pt track, got {track:?}: left {:?}, right {:?}",
             track.height(),
-            expected_height,
-            "{size:?} must draw the theme's {expected_height}pt track, got {track:?}"
+            expected_height
         );
     }
 }
@@ -169,10 +170,11 @@ fn value_indicator_only_while_dragging() {
         "pressing the thumb draws one indicator, got {draws:?}"
     );
     let bubble = draws[0];
-    assert_eq!(
+    assert!(
+        approx::relative_eq!(f64::midpoint(bubble.x0, bubble.x1), 206.0),
+        "the indicator is centred on the thumb, got {bubble:?}: left {:?}, right {:?}",
         f64::midpoint(bubble.x0, bubble.x1),
-        206.0,
-        "the indicator is centred on the thumb, got {bubble:?}"
+        206.0
     );
     assert!(
         bubble.y1 <= 310.0 - 20.0,
@@ -197,10 +199,11 @@ fn value_indicator_only_while_dragging() {
         "the indicator tracks the dragged value, got {dragged}"
     );
     let bubble = indicator_draws.borrow()[0];
-    assert_eq!(
+    assert!(
+        approx::relative_eq!(f64::midpoint(bubble.x0, bubble.x1), 500.0),
+        "the indicator follows the thumb, got {bubble:?}: left {:?}, right {:?}",
         f64::midpoint(bubble.x0, bubble.x1),
-        500.0,
-        "the indicator follows the thumb, got {bubble:?}"
+        500.0
     );
 
     indicator_draws.borrow_mut().clear();

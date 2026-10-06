@@ -316,10 +316,26 @@ impl HeadlessRuntime {
     /// The layout is unchanged — it stays in logical units — so this only makes
     /// the captured image sharper. A preview meant to be viewed on a `HiDPI`
     /// display should raise this above 1.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `scale_factor` is not finite and positive.
     #[must_use]
     pub fn with_scale_factor(mut self, scale_factor: f64) -> Self {
-        self.runtime.platform.set_scale_factor(scale_factor);
+        self.set_scale_factor(scale_factor);
         self
+    }
+
+    /// Moves the display onto a new scale factor mid-run: a window dragged
+    /// between monitors of different densities reports a scale change, and
+    /// the runtime rebuilds its scale-dependent state — capture chains and
+    /// other texel-parameterized content — for the frames after this call.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `scale_factor` is not finite and positive.
+    pub fn set_scale_factor(&mut self, scale_factor: f64) {
+        self.runtime.platform.set_scale_factor(scale_factor);
     }
 
     /// Creates a headless runtime for `WaterUI` test hosts.
@@ -835,6 +851,13 @@ impl HeadlessRuntime {
     #[cfg(any(test, feature = "testing"))]
     pub fn set_touch_scroll_config(&mut self, config: crate::platform::TouchScrollConfig) {
         self.runtime.platform.set_touch_scroll_config(config);
+    }
+
+    /// The environment the runtime renders its windows in, for tests that
+    /// read what a frame resolved against — its colour scheme, say.
+    #[cfg(test)]
+    pub(crate) const fn env(&self) -> &Environment {
+        &self.env
     }
 
     /// The main window's renderer, for tests that assert on frame internals.

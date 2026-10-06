@@ -4644,6 +4644,7 @@ dependencies = [
  "accesskit_winit",
  "aither-mcp",
  "android_logger",
+ "approx",
  "async-task",
  "base64 0.22.1",
  "block2 0.6.2",
@@ -4686,6 +4687,7 @@ dependencies = [
  "rustc-hash 2.1.3",
  "serde",
  "serde_json",
+ "signal-hook",
  "skrifa 0.44.0",
  "thiserror 2.0.21",
  "tiny_http",
@@ -10235,6 +10237,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7f45b8998ced5134fb1d75732c77842a3e888f19c1ff98481822e8fbfbf930b"
 
 [[package]]
+name = "signal-hook"
+version = "0.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b29ffa27d3d59a049bb328258de100f8012848d1b08d444e08bbc02ac468435e"
+dependencies = [
+ "libc",
+ "signal-hook-registry",
+]
+
+[[package]]
 name = "signal-hook-registry"
 version = "1.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12725,6 +12737,7 @@ version = "0.1.0"
 dependencies = [
  "async-channel",
  "block2 0.6.2",
+ "cfg_aliases",
  "cocoa-ui",
  "cookie",
  "criterion",
@@ -13066,6 +13079,7 @@ version = "0.5.1"
 dependencies = [
  "executor-core",
  "nami",
+ "thiserror 2.0.21",
  "waterui",
  "waterui-core",
  "waterui-icon",
@@ -14277,17 +14291,21 @@ dependencies = [
 
 [[package]]
 name = "wgpu-external-frame"
-version = "0.1.0"
-source = "git+https://github.com/water-rs/wgpu-external-frame?rev=d047b57e6fd8930f95c78b3e4fba7b06cd056b68#d047b57e6fd8930f95c78b3e4fba7b06cd056b68"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "911f341938a2bacb3a3f270082e8cd52d3ae51e667a1a9abe8367ea530a317d5"
 dependencies = [
  "ash",
  "glow",
  "libc",
  "libloading 0.9.0",
+ "ndk",
  "objc2 0.6.4",
  "objc2-core-foundation",
  "objc2-io-surface",
  "objc2-metal 0.3.2",
+ "sync_wrapper",
+ "thiserror 2.0.21",
  "wgpu 30.0.1",
  "windows 0.62.2",
 ]

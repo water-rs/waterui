@@ -334,11 +334,20 @@ fn paint_data(
             data.packed = packed;
         }
         Paint::Radial(g) => {
+            let identical = g.has_identical_circles();
+            if identical && matches!(g.extend, Extend::Repeat | Extend::Reflect) {
+                return Err(RenderError::IdenticalRadialCircles(g.extend));
+            }
             data.kind = PAINT_RADIAL;
             let c0 = to_local * g.start_center;
             let c1 = to_local * g.end_center;
             data.grad = [f32_f64(c0.x), f32_f64(c0.y), f32_f64(c1.x), f32_f64(c1.y)];
-            data.grad2 = [f32_f64(g.start_radius), f32_f64(g.end_radius), 0.0, 0.0];
+            data.grad2 = [
+                f32_f64(g.start_radius),
+                f32_f64(g.end_radius),
+                if identical { 1.0 } else { 0.0 },
+                0.0,
+            ];
             let (first, packed) = push_stops(stops, &g.stops, g.interpolation, g.extend);
             data.first_stop = first;
             data.packed = packed;

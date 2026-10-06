@@ -690,7 +690,8 @@ impl<K: Eq + core::hash::Hash + Clone> VisibleSubviewCache<K> {
 pub struct WrapperNode {
     pub(super) accessibility_identity: Rc<()>,
     /// The node's render identity; a `Material` wrapper keys its engine
-    /// mount by it.
+    /// mount by it, a `MaterialGroup` wrapper keys its backdrop-group
+    /// scope by it.
     pub(crate) render_id: RenderId,
     pub(super) effect: WrapperEffect,
     pub(super) env: Environment,
@@ -874,10 +875,16 @@ pub(super) enum WrapperEffect {
     PopupMenuSurface,
     /// A within-window `Material` background (water-rs/waterui#1854): every
     /// flush closes the scene segment painted so far — the content behind
-    /// the view — and presents a keyed mount that samples the material's
-    /// backdrop group inside the view's bounds, then flushes the child on
-    /// top. The runtime is shared with the mount the compositor installs.
-    Material(Rc<crate::renderer::material::MaterialRuntime>),
+    /// the view — and presents a keyed mount that samples a backdrop group
+    /// inside the view's bounds, then flushes the child on top. The level is
+    /// part of the member's backdrop-group key.
+    Material(crate::renderer::material::WithinWindowLevel),
+    /// A `.material_group()` scope (water-rs/waterui#1999): the wrapper
+    /// carries no parameters — its `render_id` is the group-scope identity
+    /// the flush pushes while the child flushes, so the members of one
+    /// modifier instance join one shared backdrop group and two instances
+    /// are two groups.
+    MaterialGroup,
     /// An `.anchored_overlay(...)` (water-rs/waterui#1275): every flush the
     /// wrapper registers the anchor's live bounds plus the effect's handles
     /// for the post-flush `render_anchored_overlays` pass, which measures,

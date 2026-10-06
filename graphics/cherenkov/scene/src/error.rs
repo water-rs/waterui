@@ -5,6 +5,11 @@ pub enum SceneError {
     /// An independent paint transform cannot be inverted to sample its paint.
     #[error("paint transform must be finite and invertible")]
     PaintTransform,
+    /// A radial gradient's two circles are identical and its extend mode
+    /// repeats or reflects, which the two-point conical parameter does not
+    /// define.
+    #[error("radial gradient with identical circles cannot use extend {0:?}")]
+    IdenticalRadialCircles(crate::Extend),
     /// An I/O error.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -23,6 +28,13 @@ pub enum SceneError {
     /// A backdrop group's capture scale is not finite or not in `(0, 1]`.
     #[error("backdrop group {0} has a capture scale outside (0, 1]")]
     InvalidBackdropScale(u32),
+    /// A backdrop group's level count is outside `1` to
+    /// [`BackdropGroup::MAX_LEVELS`](crate::BackdropGroup::MAX_LEVELS).
+    #[error(
+        "backdrop group {0} has a level count outside 1..={max}",
+        max = crate::BackdropGroup::MAX_LEVELS
+    )]
+    InvalidBackdropLevels(u32),
     /// A backdrop-group member layer has no clip.
     #[error("backdrop group {0} member layer has no clip")]
     BackdropMemberUnclipped(u32),

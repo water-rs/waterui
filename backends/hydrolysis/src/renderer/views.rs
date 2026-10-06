@@ -482,7 +482,7 @@ mod tests {
 
         assert_eq!(radial.start_center, kurbo::Point::new(100.0, 50.0));
         assert_eq!(radial.end_center, kurbo::Point::new(100.0, 50.0));
-        assert_eq!(radial.start_radius, 25.0);
-        assert_eq!(radial.end_radius, 50.0);
+        approx::assert_relative_eq!(radial.start_radius, 25.0);
+        approx::assert_relative_eq!(radial.end_radius, 50.0);
     }
 }

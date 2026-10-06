@@ -193,6 +193,18 @@ pub fn add_subview(parent: &PlatformView, child: &PlatformView) {
     parent.addSubview(child);
 }
 
+/// Adds `child` below `parent`'s existing subviews.
+pub fn add_subview_at_bottom(parent: &PlatformView, child: &PlatformView) {
+    #[cfg(target_os = "macos")]
+    parent.addSubview_positioned_relativeTo(
+        child,
+        objc2_app_kit::NSWindowOrderingMode::Below,
+        None,
+    );
+    #[cfg(target_os = "ios")]
+    parent.insertSubview_atIndex(child, 0);
+}
+
 /// Detaches `view` from its superview; does nothing when it has none.
 pub fn remove_from_superview(view: &PlatformView) {
     view.removeFromSuperview();
