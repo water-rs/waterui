@@ -44,7 +44,12 @@ that actually used a CPU-type adapter is refused without `--development`.
 
 - package size of the installed directory, uncompressed and gzip
 - cold launch → first committed present
-- memory steady-state (`memory.current` median) and peak (`memory.peak`)
+- memory steady-state and peak: median and maximum of the cgroup's
+  `memory.current`, sampled every 100 ms inside the measurement window
+- renderer evidence: the Mesa/Vulkan/GL driver libraries mapped and the
+  render nodes held by the contestant's processes, read once by benchcomp
+  at window end; a rep whose loaded renderer is not the run's expected
+  class (the selected adapter's driver, or software) fails
 - frame p50/p90/p99, dropped %, fps — W2 and W3 only, per the issue
 
 ## Accounting and output

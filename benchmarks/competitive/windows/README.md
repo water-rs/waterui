@@ -10,7 +10,7 @@ workloads W1–W4.
 | path | what |
 |---|---|
 | `manifest.toml` | every toolchain/framework pin; `run.py` reads it |
-| `run.py` | single entry point (`uv run`) — builds contestants, launches each workload, samples memory, captures per-frame submission timestamps from one ETW trace per run (DXGI + DxgKrnl + Kernel-Process, the stream PresentMon consumes) |
+| `run.py` | single entry point (`uv run`) — builds contestants, launches each workload, samples memory, captures per-frame submission timestamps from one ETW trace per run (DXGI + DxgKrnl + Kernel-Process, the stream PresentMon consumes); a second, real-time ETW session on the DXGI provider reports the first owned present the drive is scheduled on. Precondition: the foreground lock time-out (`HKCU\Control Panel\Desktop\ForegroundLockTimeout`) is 0 for the measuring user — checked before any cell |
 | `report.py` | renders a results JSON into markdown tables |
 | `apps/` | one idiomatic app per framework, each implementing W1–W4 selected by `BENCH_WORKLOAD`; `apps/waterui` is a `water create` project |
 

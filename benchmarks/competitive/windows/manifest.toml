@@ -43,11 +43,13 @@ dotnet_target = "net10.0-windows10.0.26100.0"
 
 [runner]
 repetitions = 5
-# bounds the event-driven readiness wait (WaitForInputIdle + an owned
-# visible window) — a timeout, not a sleep
+# bounds the event-driven waits (WaitForInputIdle + an owned visible
+# window, and the first owned DXGI present from the real-time ETW
+# consumer) — a timeout, not a sleep
 ready_timeout_seconds = 30.0
 # the measured window starts at the contestant's first owned present
-# plus this warmup, then capture_seconds_* wide
+# plus this warmup, then capture_seconds_* wide; the drive starts at
+# window start, scheduled on that present's own timestamp
 warmup_seconds = 1.0
 capture_seconds_w2 = 8.0
 capture_seconds_w3 = 8.0

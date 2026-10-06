@@ -126,23 +126,41 @@ def rust_toolchain_resolved() -> str:
     results.versions. A floating channel name must never reach the
     Dockerfile."""
     ch = rust_channel()
-    if re.fullmatch(r"\d+\.\d+(\.\d+)?", ch) or "-20" in ch:
+    if re.fullmatch(r"\d+\.\d+(\.\d+)?|(nightly|beta)-\d{4}-\d{2}-\d{2}",
+                    ch):
         return ch  # already exact (1.90.0 or nightly-2025-…)
     import urllib.request
     url = ("https://static.rust-lang.org/dist/"
            f"channel-rust-{ch}.toml")
     doc = tomllib.loads(
         urllib.request.urlopen(url, timeout=30).read().decode())
-    ver = doc["pkg"]["rust"]["version"]  # e.g. "1.90.0 (1159e78 2025-09-14)"
-    m = re.match(r"(\d+\.\d+\.\d+)(?:-(nightly|beta))?.*?"
-                 r"(\d{4}-\d{2}-\d{2})\)", ver)
-    if not m:
-        raise RuntimeError(
-            f"unparseable rust version in {url}: {ver!r}")
-    base, pre, date = m.group(1), m.group(2), m.group(3)
-    resolved = f"{pre}-{date}" if pre else base
+    resolved = resolve_channel_manifest(ch, doc, url)
     print(f"resolved rust channel {ch} -> {resolved} ({url})", flush=True)
     return resolved
+
+
+def resolve_channel_manifest(ch: str, doc: dict, url: str) -> str:
+    """The exact toolchain name a dist channel manifest pins. A stable
+    channel resolves to its release version; nightly and beta resolve to
+    `<channel>-<dist date>` — the manifest's own `date`, which names the
+    dist directory. The date inside `rustc --version` is the commit date,
+    usually a day earlier, and names no installable toolchain."""
+    if ch == "stable":
+        ver = doc["pkg"]["rust"]["version"]  # "1.90.0 (1159e78 2025-09-14)"
+        m = re.match(r"(\d+\.\d+\.\d+) ", ver)
+        if not m:
+            raise RuntimeError(
+                f"unparseable rust version in {url}: {ver!r}")
+        return m.group(1)
+    if ch in ("nightly", "beta"):
+        date = doc.get("date")
+        if not (isinstance(date, str)
+                and re.fullmatch(r"\d{4}-\d{2}-\d{2}", date)):
+            raise RuntimeError(f"{url} carries no dist date: {date!r}")
+        return f"{ch}-{date}"
+    raise RuntimeError(
+        f"rust-toolchain.toml channel {ch!r} is neither a release, a "
+        "dated nightly/beta, nor stable/nightly/beta")
 
 
 def build_image() -> None:
@@ -377,6 +395,10 @@ def metrics_from_events(events: list[dict], warmup_ms: float = 0.0,
 
     m: dict = {"mapped": bool(mapped), "present_count": len(presents),
                "commit_count": len(commits)}
+    if any(e.get("ev") == "evidence_error" for e in events):
+        raise RuntimeError(
+            "benchcomp could not read the app cgroup's process list at "
+            "window end — no renderer evidence")
 
     first_committed = next(
         (p for p in presents if p.get("committed")), None)
@@ -401,44 +423,132 @@ def metrics_from_events(events: list[dict], warmup_ms: float = 0.0,
             m["missed_vsyncs"] = stats["missed_vsyncs"]
             m["fps"] = stats["fps"]
 
-    if mems:
-        currents = [e.get("current", 0) for e in mems]
-        peaks = [e.get("peak", 0) for e in mems]
-        m["rss_bytes_steady"] = int(statistics.median(currents))
-        m["rss_bytes_peak"] = max(peaks)
+    if committed_ts and capture_ms:
+        # memory over the same window as the frames: median and peak of
+        # the cgroup's memory.current samples inside it — startup and
+        # the lifetime high-water mark (memory.peak) never enter
+        w0 = committed_ts[0] + warmup_ms * 1e6
+        w1 = w0 + capture_ms * 1e6
+        cur = [e["current"] for e in mems if w0 <= e["t"] <= w1]
+        if not cur:
+            raise RuntimeError(
+                "no cgroup memory sample inside the measurement window")
+        m["rss_bytes_steady"] = int(statistics.median(cur))
+        m["rss_bytes_peak"] = max(cur)
 
     return m
 
 
-def dri_nodes_in_use(cname: str) -> dict[str, str]:
-    """Render nodes held open by the contestant's own processes (the
-    `benchapp` cgroup inside the container), each resolved to the driver
-    backing the fd — `readlink /sys/class/drm/<node>/device/driver`
-    names the kernel driver (amdgpu, i915, virtio_gpu, ...) and so the
-    hardware renderer the process actually holds. Opening a node alone
-    is not evidence; the map node -> driver is. Empty dict when the
-    container or cgroup is gone."""
-    q = subprocess.run(
-        ["docker", "exec", cname, "bash", "-c",
-         "for p in $(cat /sys/fs/cgroup/benchapp/cgroup.procs "
-         "2>/dev/null); do ls -l /proc/$p/fd 2>/dev/null; done "
-         "| grep -oE '/dev/[A-Za-z0-9_]+' | sort -u"],
-        capture_output=True, text=True)
-    if q.returncode != 0:
-        return {}
-    nodes = {Path(n).name for n in q.stdout.split()}
-    drivers = subprocess.run(
-        ["docker", "exec", cname, "bash", "-c",
-         "for n in " + " ".join(sorted(nodes) or ["x-none"]) + "; do "
-         "d=$(basename \"$(readlink /sys/class/drm/$n/device/driver "
-         "2>/dev/null)\" 2>/dev/null); "
-         "echo \"$n ${d:-unknown}\"; done"],
-        capture_output=True, text=True)
-    out: dict[str, str] = {}
-    for line in drivers.stdout.splitlines():
-        parts = line.split()
-        if len(parts) == 2:
-            out[parts[0]] = parts[1]
+# Userspace renderer libraries, by basename: Mesa Vulkan drivers
+# (libvulkan_<drv>.so), DRI/gallium drivers (<drv>_dri.so), the gallium
+# megadriver (libgallium-<ver>.so: every gallium driver in one object, so
+# the render node it binds decides which one runs), Chromium's SwiftShader
+# and the NVIDIA userspace driver.
+_VK_DRIVERS = {"lvp": "lavapipe", "radeon": "radv", "intel": "anv",
+               "intel_hasvk": "hasvk", "nouveau": "nvk", "virtio": "venus",
+               "freedreno": "turnip", "panfrost": "panvk",
+               "broadcom": "v3dv", "asahi": "honeykrisp",
+               "powervr_mesa": "powervr"}
+SOFTWARE_RENDERERS = {"lavapipe", "llvmpipe", "softpipe", "swrast",
+                      "kms_swrast", "swiftshader"}
+GALLIUM = "gallium"
+# kernel DRM driver of the selected adapter -> the hardware userspace
+# renderers that drive it
+KERNEL_RENDERERS = {
+    "amdgpu": {"radv", "radeonsi"}, "radeon": {"radeonsi", "r600"},
+    "i915": {"anv", "hasvk", "iris", "crocus", "i965"},
+    "xe": {"anv", "iris"}, "nouveau": {"nvk", "nouveau"},
+    "virtio_gpu": {"venus", "virtio_gpu"}, "nvidia": {"nvidia"},
+    "msm": {"turnip", "freedreno"}, "panfrost": {"panvk", "panfrost"},
+    "panthor": {"panvk", "panfrost"}, "v3d": {"v3dv", "v3d"},
+    "asahi": {"honeykrisp", "asahi"},
+}
+
+
+def renderer_of(lib_path: str) -> str | None:
+    """The userspace renderer a mapped library is, or None."""
+    name = Path(lib_path).name
+    m = re.match(r"libvulkan_(\w+?)\.so", name)
+    if m:
+        return _VK_DRIVERS.get(m.group(1), f"vulkan:{m.group(1)}")
+    m = re.match(r"(\w+)_dri\.so", name)
+    if m:
+        return m.group(1)
+    if re.match(r"libgallium-.*\.so", name):
+        return GALLIUM
+    if name.startswith("libvk_swiftshader.so"):
+        return "swiftshader"
+    if re.match(r"lib(nvidia-(glcore|eglcore)|GLX_nvidia|EGL_nvidia)\.so",
+                name):
+        return "nvidia"
+    return None
+
+
+def kernel_driver(node: str) -> str:
+    """The kernel DRM driver behind a render node on this host."""
+    link = Path("/sys/class/drm") / Path(node).name / "device" / "driver"
+    if not link.exists():
+        raise RuntimeError(f"{node}: no kernel driver bound ({link})")
+    return link.resolve().name
+
+
+def renderer_evidence(events: list[dict], expected: dict) -> dict:
+    """What the contestant rendered with, read once at window end by
+    benchcomp from its own cgroup's processes: the renderer libraries
+    mapped and the render nodes held open. Raises when the run's expected
+    renderer class is not the one loaded.
+
+    `expected` is {"class": "hardware", "kernel_driver", "nodes"} for a
+    run pinned to a hardware adapter, {"class": "software"} otherwise. A
+    hardware run must hold the selected adapter's render nodes and map a
+    userspace driver for its kernel driver (the gallium megadriver counts
+    only together with the held node — that node is what binds it). A
+    software run must map a software renderer (or the megadriver, which
+    then has no render node to bind) and no hardware driver."""
+    renderers = sorted({r for e in events if e.get("ev") == "lib"
+                        for r in [renderer_of(e["path"])] if r})
+    nodes = sorted({e["target"] for e in events if e.get("ev") == "fd"
+                    and e["target"].startswith("/dev/dri/")})
+    if not renderers:
+        raise RuntimeError(
+            "no renderer evidence: the contestant's processes mapped no "
+            "Mesa/Vulkan/GL driver library at window end")
+    out = {"renderers_mapped": renderers, "render_nodes": nodes,
+           "renderer_class": expected["class"]}
+    if expected["class"] == "hardware":
+        want = KERNEL_RENDERERS.get(expected["kernel_driver"])
+        if want is None:
+            raise RuntimeError(
+                f"no userspace renderer is known for kernel driver "
+                f"{expected['kernel_driver']!r} — extend KERNEL_RENDERERS")
+        missing = sorted(set(expected["nodes"]) - set(nodes))
+        if missing:
+            raise RuntimeError(
+                f"renderer evidence: the contestant held none of the "
+                f"selected adapter's render nodes {missing} (held {nodes})")
+        used = sorted(want & set(renderers))
+        if not used and GALLIUM in renderers:
+            used = [f"{GALLIUM} on {expected['kernel_driver']}"]
+        if not used:
+            raise RuntimeError(
+                f"renderer evidence: no {sorted(want)} driver for "
+                f"{expected['kernel_driver']} mapped — the contestant "
+                f"loaded {renderers}")
+    else:
+        hw = [r for r in renderers
+              if r not in SOFTWARE_RENDERERS and r != GALLIUM]
+        if hw:
+            raise RuntimeError(
+                f"renderer evidence: a software run mapped hardware "
+                f"renderers {hw}")
+        used = [r for r in renderers if r in SOFTWARE_RENDERERS]
+        if not used and GALLIUM in renderers and not nodes:
+            used = [f"{GALLIUM} (llvmpipe — no render node)"]
+        if not used:
+            raise RuntimeError(
+                f"renderer evidence: no software renderer mapped "
+                f"({renderers}, nodes {nodes})")
+    out["renderer_used"] = used
     return out
 
 
@@ -479,21 +589,23 @@ def workload_script(manifest: dict, wl: str, duration_ms: int) -> Path | None:
 
 def run_workload(contestant_cmd: str, wl: str, duration_ms: int,
                  script: Path | None, out_jsonl: Path,
+                 expected: dict,
                  dri: list[str] | bool = True,
                  warmup_ms: int = 0
-                 ) -> tuple[dict, str, dict[str, str]]:
+                 ) -> tuple[dict, str]:
     """One measurement rep. benchcomp writes straight to the run-scoped
     out path (unique per rep AND per invocation); the owned container is
-    removed even when the run fails. Returns (metrics, log, dri_nodes)
-    where dri_nodes is the set of device-node basenames the contestant's
-    own cgroup actually held open during the run."""
+    removed even when the run fails. Returns (metrics, log); the metrics
+    carry the renderer evidence benchcomp read at window end, checked
+    against `expected`."""
     script_arg = (f"--script /bench/{script.relative_to(ROOT)}"
                   if script else "")
     cname = _owned_container_name()
     # Measurement containers run as root inside the container: cgroup v2
     # setup needs CAP_SYS_ADMIN-adjacent ownership of /sys/fs/cgroup and
     # /dev/dri nodes open without group juggling. Outputs are chowned to
-    # the host uid at the end (owner of the /bench mount).
+    # the host uid at the end (owner of the /bench mount); a chown that
+    # fails fails the rep.
     inner = (
         "export XDG_RUNTIME_DIR=/tmp/bench-xdg; "
         "mkdir -p $XDG_RUNTIME_DIR; "
@@ -503,54 +615,48 @@ def run_workload(contestant_cmd: str, wl: str, duration_ms: int,
         f"--cgroup benchapp {script_arg} "
         f"--out /bench/{out_jsonl.relative_to(ROOT)}; "
         "rc=$?; "
-        "chown -R $(stat -c %u:%g /bench) /bench/out "
-        "2>/dev/null || true; "
+        "chown -R \"$(stat -c %u:%g /bench)\" /bench/out "
+        "|| { echo 'benchcomp: chown of /bench/out failed' >&2; exit 125; }; "
         "exit $rc"
     )
     cmd = _docker_run_cmd(inner, name=cname, privileged=True, dri=dri,
                           host_user=False)
     print("+", " ".join(cmd), flush=True)
-    proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True)
-    opened: dict[str, str] = {}
     try:
-        while proc.poll() is None:
-            opened.update(dri_nodes_in_use(cname))
-            time.sleep(0.3)
-        opened.update(dri_nodes_in_use(cname))
-        out, _ = proc.communicate()
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True)
     finally:
         subprocess.run(["docker", "rm", "-f", cname],
                        capture_output=True)
+    out = proc.stdout
     if proc.returncode != 0:
         raise subprocess.CalledProcessError(
             proc.returncode, cmd, output=out, stderr=out)
     sys.stdout.write(out or "")
+    events = parse_events(out_jsonl)
     # capture is fixed from window start (first owned present +
     # warmup), never from spawn — duration_ms IS the capture length
-    return (metrics_from_events(
-                parse_events(out_jsonl), warmup_ms, duration_ms),
-            out or "", opened)
+    m = metrics_from_events(events, warmup_ms, duration_ms)
+    m["renderer"] = renderer_evidence(events, expected)
+    return m, out or ""
 
 
-def capacity_rep(contestant_cmd: str, spec: dict, dri,
+def capacity_rep(contestant_cmd: str, spec: dict, dri, expected: dict,
                  out_dir: Path, tag: str) -> dict:
     """One W5 ladder: one launch per step with BENCH_STEP, settle+hold.
 
     A step collapses (the ladder stops) when fewer than collapse_frac of
     its presents land inside two 60 Hz budgets (~33.3 ms — drawing slower
     than ~30 fps) or the capture yields fewer than four frames."""
-    out = {"steps": [], "collapsed_at": None, "dri_nodes": []}
+    out = {"steps": [], "collapsed_at": None}
     for n in spec["steps"]:
         out_jsonl = out_dir / f"{tag}-step{n}-{RUN_ID}.jsonl"
         cmd = contestant_cmd.replace("BENCH_WORKLOAD",
                                      f"BENCH_STEP={n} BENCH_WORKLOAD", 1)
         # settle_ms is the declared warmup, hold_ms the capture length
-        s, run_log, opened = run_workload(
-            cmd, "w5", spec["hold_ms"], None,
-            out_jsonl, dri=dri, warmup_ms=spec["settle_ms"])
-        out["dri_nodes"] = sorted(set(out["dri_nodes"]) | set(opened))
+        s, _run_log = run_workload(
+            cmd, "w5", spec["hold_ms"], None, out_jsonl, expected,
+            dri=dri, warmup_ms=spec["settle_ms"])
         rec = {"step": n, "metrics": s}
         frames = (s.get("frame_ms") or {}).get("samples", [])
         if len(frames) < 4:
@@ -593,7 +699,7 @@ def aggregate(samples: list[dict]) -> dict:
     keys = set()
     for s in good:
         keys |= s.keys()
-    keys -= {"mapped", "present_count", "run", "adapter_used"}
+    keys -= {"mapped", "present_count", "run", "adapter_used", "renderer"}
     out: dict = {}
     for k in sorted(keys):
         if k == "frame_ms":
@@ -752,8 +858,11 @@ LIMITATIONS = {
     "frame_ms": "Software Vulkan/GL (lavapipe/llvmpipe): frame times reflect "
                 "CPU rasterisation, not a hardware GPU — dev numbers only.",
     "fps": "Compositor vsync at 60Hz; same for every contestant.",
-    "rss_bytes_steady": "cgroup v2 memory.current of the app process tree.",
-    "rss_bytes_peak": "cgroup v2 memory.peak of the app process tree.",
+    "rss_bytes_steady": "median of the app process tree's cgroup v2 "
+                        "memory.current, sampled every 100 ms inside the "
+                        "measurement window.",
+    "rss_bytes_peak": "maximum of the same in-window memory.current "
+                      "samples (startup is outside the window).",
     "launch_ms": "spawn to first committed present, CLOCK_MONOTONIC.",
 }
 
@@ -866,9 +975,78 @@ def _self_test() -> None:
         assert rc3 == 0 and "INCOMPLETE" not in out3.name
         assert _m3 is other
 
-    # renderer evidence: basenames compared, empty opened set fails
-    assert {"renderD128"} & {Path("/dev/dri/renderD128").name}
-    assert not ({"card0"} & {"renderD128"})
+    # renderer evidence: the libraries mapped at window end decide the
+    # renderer; the expected class must be the one loaded
+    def ev(*libs, nodes=()):
+        return ([{"ev": "lib", "pid": 7, "path": p} for p in libs]
+                + [{"ev": "fd", "pid": 7, "target": n} for n in nodes])
+    lvp = "/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so"
+    radv = "/usr/lib/x86_64-linux-gnu/libvulkan_radeon.so"
+    gal = "/usr/lib/x86_64-linux-gnu/libgallium-25.0.7-1+deb13u1.so"
+    assert renderer_of(lvp) == "lavapipe" and renderer_of(radv) == "radv"
+    assert renderer_of(gal) == "gallium"
+    assert renderer_of("/usr/lib/x86_64-linux-gnu/dri/iris_dri.so") == "iris"
+    assert renderer_of("/usr/lib/x86_64-linux-gnu/libgtk-4.so.1") is None
+    hw = {"class": "hardware", "kernel_driver": "amdgpu",
+          "nodes": ["/dev/dri/renderD128"]}
+    ok = renderer_evidence(ev(lvp, radv, nodes=["/dev/dri/renderD128"]), hw)
+    assert ok["renderer_used"] == ["radv"], ok
+    ok = renderer_evidence(ev(gal, nodes=["/dev/dri/renderD128"]), hw)
+    assert ok["renderer_used"] == ["gallium on amdgpu"], ok
+    sw = {"class": "software"}
+    assert renderer_evidence(ev(lvp), sw)["renderer_used"] == ["lavapipe"]
+    for events, exp in ((ev(lvp, nodes=["/dev/dri/renderD128"]), hw),
+                        (ev(radv), hw),
+                        (ev(gal), hw),
+                        (ev(radv, lvp), sw),
+                        (ev(gal, nodes=["/dev/dri/renderD128"]), sw),
+                        (ev(nodes=["/dev/dri/renderD128"]), hw)):
+        try:
+            renderer_evidence(events, exp)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError(f"wrong renderer accepted: {events} {exp}")
+
+    # memory is the capture window's: median and peak of the in-window
+    # memory.current samples — the startup spike never enters
+    ms = 1_000_000
+    events = ([{"ev": "spawn", "t": 0},
+               {"ev": "present", "t": 100 * ms, "committed": True}]
+              + [{"ev": "present", "t": (100 + 16 * i) * ms,
+                  "committed": True} for i in range(1, 200)]
+              + [{"ev": "mem", "t": 50 * ms, "current": 900}]
+              + [{"ev": "mem", "t": (1100 + 100 * i) * ms,
+                  "current": 100 + i} for i in range(10)]
+              + [{"ev": "mem", "t": 9000 * ms, "current": 800}])
+    mm = metrics_from_events(events, warmup_ms=1000, capture_ms=1000)
+    assert mm["rss_bytes_peak"] == 109 and mm["rss_bytes_steady"] == 104, mm
+    try:
+        metrics_from_events([e for e in events if e["ev"] != "mem"],
+                            warmup_ms=1000, capture_ms=1000)
+    except RuntimeError as e:
+        assert "inside the measurement window" in str(e)
+    else:
+        raise AssertionError("window without memory samples accepted")
+
+    # toolchain names: nightly/beta take the manifest's dist date, never
+    # the commit date in the version string
+    url = "https://static.rust-lang.org/dist/channel-rust-nightly.toml"
+    nightly = {"date": "2025-10-05", "pkg": {"rust": {
+        "version": "1.92.0-nightly (abc1234 2025-10-04)"}}}
+    assert resolve_channel_manifest("nightly", nightly, url) \
+        == "nightly-2025-10-05"
+    stable = {"date": "2025-09-18", "pkg": {"rust": {
+        "version": "1.90.0 (1159e78c4 2025-09-14)"}}}
+    assert resolve_channel_manifest("stable", stable, url) == "1.90.0"
+    for ch, doc in (("nightly", {"pkg": nightly["pkg"]}),
+                    ("1.90", stable), ("my-toolchain", stable)):
+        try:
+            resolve_channel_manifest(ch, doc, url)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError(f"{ch} resolved without a dist pin")
     print("linux runner self-test ok")
 
 
@@ -1037,7 +1215,10 @@ def main() -> int:
             selenv += f"DRI_PRIME={pci_env(selected['pci'])} "
 
     if not args.skip_build:
-        staged = build_contestants(manifest, only)
+        # the generated flutter linux/ tree, npm ci and every contestant
+        # build run on a clean tree and must leave it clean
+        with toolchain.tracked_tree_unchanged("linux contestant build"):
+            staged = build_contestants(manifest, only)
     else:
         staged = {c: f"dist/{c}" for c in CONTESTANT_CMDS
                   if not only or c in only}
@@ -1045,6 +1226,14 @@ def main() -> int:
         for c, d in staged.items():
             print(f"   staged {c} -> {ROOT / d}")
         return 0
+
+    # The renderer class every rep must prove it loaded: the selected
+    # hardware adapter's userspace driver (bound through its render
+    # nodes), or a software renderer on an all-software host.
+    expected_renderer: dict = (
+        {"class": "hardware", "nodes": list(dri_mounts),
+         "kernel_driver": kernel_driver(dri_mounts[0])}
+        if selected else {"class": "software"})
 
     # No adapter-forcing env ever exports — which GPU hydrolysis picks is
     # what the evidence must record, not what the runner dictates.
@@ -1080,9 +1269,6 @@ def main() -> int:
             entry["errors"].append(f"staged dir missing: {staged.get(name)}")
 
         entry["workloads"] = {}
-        expected_nodes = (
-            {Path(n).name for n in dri_mounts}
-            if isinstance(dri_mounts, list) else set())
         for wl in workloads:
             if wl in (manifest.get("capacity") or {}):
                 spec = manifest["capacity"][wl]
@@ -1100,16 +1286,8 @@ def main() -> int:
                 for rep in range(reps):
                     try:
                         lad = capacity_rep(
-                            cmd, spec, dri_mounts,
+                            cmd, spec, dri_mounts, expected_renderer,
                             ROOT / "out", f"{name}-{wl}-{rep}")
-                        missing = expected_nodes - set(lad["dri_nodes"])
-                        if expected_nodes and missing:
-                            raise RuntimeError(
-                                "no renderer evidence: the contestant's "
-                                "own processes opened none of the "
-                                "expected DRI nodes "
-                                f"({sorted(lad['dri_nodes'])} vs "
-                                f"{sorted(expected_nodes)})")
                         ladders.append(lad)
                     except Exception as e:  # record, keep going
                         failures.append({"run": rep, "error": str(e)})
@@ -1139,39 +1317,19 @@ def main() -> int:
                 out_jsonl = (ROOT / "out"
                              / f"{name}-{wl}-{rep}-{RUN_ID}.jsonl")
                 try:
-                    s, run_log, opened = run_workload(
+                    # per-rep renderer evidence (the libraries and
+                    # render nodes of the contestant's own processes at
+                    # window end) is checked inside run_workload
+                    s, run_log = run_workload(
                         CONTESTANT_CMDS[name].format(
                             wl=wl, wenv=wenv, selenv=selenv), wl,
                         durations.get(wl, 15000),
                         workload_script(
                             manifest, wl, durations.get(wl, 15000)),
-                        out_jsonl,
+                        out_jsonl, expected_renderer,
                         dri=dri_mounts,
                         warmup_ms=manifest["pacing"]["warmup_ms"])
                     s["run"] = rep
-                    s["dri_nodes"] = sorted(opened)
-                    s["dri_drivers"] = opened
-                    # per-rep renderer evidence from the contestant's
-                    # own processes — the driver backing each held fd,
-                    # and a missing node list fails the attempt
-                    if expected_nodes:
-                        missing = expected_nodes - set(opened)
-                        if missing:
-                            raise RuntimeError(
-                                "no renderer evidence: the contestant's "
-                                "own processes opened none of the "
-                                "expected DRI nodes "
-                                f"({sorted(opened)} vs "
-                                f"{sorted(expected_nodes)})")
-                        unknown = {n: d for n, d in opened.items()
-                                   if n in expected_nodes
-                                   and d == "unknown"}
-                        if unknown:
-                            raise RuntimeError(
-                                "renderer evidence unresolved: held "
-                                f"nodes {sorted(unknown)} have no "
-                                "driver binding — opening a DRI node "
-                                "is not evidence")
                     if name == "waterui-hydrolysis":
                         used = selected_adapter(run_log)
                         s["adapter_used"] = used

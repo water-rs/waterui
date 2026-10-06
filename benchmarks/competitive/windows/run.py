@@ -4,8 +4,9 @@ One entry point: ``uv run run.py``. Builds every contestant, launches each
 workload, drives it identically, and measures:
 
   * package size      — installed directory, uncompressed and zip-compressed
-  * memory            — private working set (steady) and peak working set,
-                        sampled from NtQuerySystemInformation every 100 ms
+  * memory            — median (steady) and peak private working set of
+                        the owned tree, sampled from NtQuerySystemInformation
+                        every 100 ms inside the measurement window
   * frame rate        — per-frame submission timestamps from one ETW trace
                         per run (DXGI + DxgKrnl + Kernel-Process providers,
                         the same stream PresentMon consumes), parsed into
@@ -386,6 +387,32 @@ def pin_topmost(hwnd: int) -> None:
     user32.SetWindowPos(
         hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE_NOSIZE_SHOW
     )
+
+
+SPI_GETFOREGROUNDLOCKTIMEOUT = 0x2000
+
+
+def require_foreground_eligible() -> None:
+    """SetForegroundWindow succeeds for a background process only while
+    the foreground lock time-out is 0 — Windows otherwise refuses it
+    whenever the runner is not the foreground process, which it is not
+    once a contestant window has focus. Checked once before any cell; the
+    runner never changes the setting and never fakes input to get around
+    the lock."""
+    timeout = c_ulong(0)
+    if not user32.SystemParametersInfoW(
+            SPI_GETFOREGROUNDLOCKTIMEOUT, 0, byref(timeout), 0):
+        raise SystemExit(
+            "cannot read the foreground lock time-out "
+            f"(winerror {kernel32.GetLastError()})")
+    if timeout.value != 0:
+        raise SystemExit(
+            "refusing to measure: every rep brings the contestant window "
+            "to the foreground with SetForegroundWindow, which Windows "
+            "refuses to a background process while the foreground lock "
+            f"time-out is {timeout.value} ms. Precondition: set "
+            "HKCU\\Control Panel\\Desktop\\ForegroundLockTimeout to 0 "
+            "for the measuring user and sign in again.")
 
 
 def bring_to_foreground(hwnd: int) -> None:
@@ -785,8 +812,8 @@ class MemorySampler(threading.Thread):
 
     `tree_pids` is a callable returning the pids the measured process
     tree currently owns (the Job Object's process-id list on Windows).
-    Per sample: sum of private working set across exactly those pids;
-    per pid: running max of peak working set and private bytes.
+    Per sample: FILETIME, and the sums of private working set and of
+    private bytes across exactly those pids.
     """
 
     def __init__(self, tree_pids, interval: float):
@@ -794,9 +821,7 @@ class MemorySampler(threading.Thread):
         self.tree_pids = tree_pids
         self.interval = interval
         self._done = threading.Event()
-        self.samples: list[tuple[float, int]] = []
-        self.per_pid_peak_ws: dict[int, int] = {}
-        self.per_pid_private_bytes: dict[int, int] = {}
+        self.samples: list[tuple[int, int, int]] = []
         self.max_processes = 0
         # a native query failing inside the thread lands here and must
         # reach the attempt record — never silently truncate the sample
@@ -817,38 +842,27 @@ class MemorySampler(threading.Thread):
                     # measurement window (first present + warmup)
                     self.samples.append(
                         (filetime_now(),
-                         sum(m["ws_private"] for m in mine.values()))
-                    )
+                         sum(m["ws_private"] for m in mine.values()),
+                         sum(m["private_bytes"] for m in mine.values())))
                     self.max_processes = max(self.max_processes, len(mine))
-                    for p, m in mine.items():
-                        self.per_pid_peak_ws[p] = max(
-                            self.per_pid_peak_ws.get(p, 0), m["peak_ws"]
-                        )
-                        self.per_pid_private_bytes[p] = max(
-                            self.per_pid_private_bytes.get(p, 0), m["private_bytes"]
-                        )
-                time.sleep(self.interval)
+                self._done.wait(self.interval)
         except Exception as e:
             self.error = e
 
-    def summarise(self, window: tuple[int, int] | None = None) -> dict:
-        # `window` bounds the steady-state series to [first_present +
-        # warmup, +capture] in FILETIME ticks; per-pid peaks are
-        # cumulative process counters and are reported for the run
-        in_window = self.samples if window is None else [
-            (t, s) for t, s in self.samples
-            if window[0] <= t <= window[1]]
-        ws_samples_mb = [s / 1e6 for _, s in in_window]
+    def summarise(self, window: tuple[int, int]) -> dict:
+        """Steady (median) and peak (max) of the tree's private working
+        set, and its peak private bytes, over the samples inside `window`
+        = [first present + warmup, +capture] in FILETIME ticks — startup
+        and the processes' lifetime peak counters never enter."""
+        in_window = [(ws, pb) for t, ws, pb in self.samples
+                     if window[0] <= t <= window[1]]
+        ws_mb = [ws / 1e6 for ws, _ in in_window]
         return {
-            "steady_private_ws_mb": statistics.median(ws_samples_mb)
-            if ws_samples_mb
-            else None,
-            "peak_private_ws_mb": (sum(self.per_pid_peak_ws.values()) / 1e6)
-            if self.per_pid_peak_ws
-            else None,
-            "private_bytes_mb": (sum(self.per_pid_private_bytes.values()) / 1e6)
-            if self.per_pid_private_bytes
-            else None,
+            "steady_private_ws_mb": statistics.median(ws_mb)
+            if ws_mb else None,
+            "peak_private_ws_mb": max(ws_mb) if ws_mb else None,
+            "private_bytes_mb": max(pb for _, pb in in_window) / 1e6
+            if in_window else None,
             "process_count": self.max_processes,
             "samples_taken": len(in_window),
             "samples_total": len(self.samples),
@@ -913,6 +927,295 @@ def etl_to_csv(etl: Path, csv_path: Path) -> None:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+
+
+# ---------------------------------------------------------------------------
+# Real-time first-present consumer — the event the drive is scheduled on.
+# A second, real-time-only ETW session over the same DXGI provider the
+# file trace records; ctypes over the documented StartTraceW /
+# EnableTraceEx2 / OpenTraceW / ProcessTrace / ControlTraceW API. All
+# structures use fixed-width fields (the documented x64 layouts), so their
+# sizes are checked by the CPU self-test on any host.
+# ---------------------------------------------------------------------------
+
+from ctypes import Structure as _S, c_int64 as _i64, c_uint8 as _u8, \
+    c_uint16 as _u16, c_uint32 as _u32, c_uint64 as _u64, c_void_p as _ptr
+
+
+class _EtwGuid(_S):
+    _fields_ = [("Data1", _u32), ("Data2", _u16), ("Data3", _u16),
+                ("Data4", _u8 * 8)]
+
+    @classmethod
+    def parse(cls, text: str) -> "_EtwGuid":
+        h = text.strip("{}").replace("-", "")
+        g = cls(int(h[0:8], 16), int(h[8:12], 16), int(h[12:16], 16))
+        for i in range(8):
+            g.Data4[i] = int(h[16 + 2 * i:18 + 2 * i], 16)
+        return g
+
+    def key(self) -> tuple:
+        return (self.Data1, self.Data2, self.Data3, bytes(self.Data4))
+
+
+class _WnodeHeader(_S):
+    _fields_ = [("BufferSize", _u32), ("ProviderId", _u32),
+                ("HistoricalContext", _u64), ("TimeStamp", _i64),
+                ("Guid", _EtwGuid), ("ClientContext", _u32),
+                ("Flags", _u32)]
+
+
+class _EventTraceProperties(_S):
+    _fields_ = [("Wnode", _WnodeHeader), ("BufferSize", _u32),
+                ("MinimumBuffers", _u32), ("MaximumBuffers", _u32),
+                ("MaximumFileSize", _u32), ("LogFileMode", _u32),
+                ("FlushTimer", _u32), ("EnableFlags", _u32),
+                ("AgeLimit", _u32), ("NumberOfBuffers", _u32),
+                ("FreeBuffers", _u32), ("EventsLost", _u32),
+                ("BuffersWritten", _u32), ("LogBuffersLost", _u32),
+                ("RealTimeBuffersLost", _u32), ("LoggerThreadId", _ptr),
+                ("LogFileNameOffset", _u32), ("LoggerNameOffset", _u32)]
+
+
+class _EventTraceHeader(_S):
+    _fields_ = [("Size", _u16), ("FieldTypeFlags", _u16),
+                ("Version", _u32), ("ThreadId", _u32), ("ProcessId", _u32),
+                ("TimeStamp", _i64), ("Guid", _EtwGuid),
+                ("ProcessorTime", _u64)]
+
+
+class _EventTrace(_S):
+    _fields_ = [("Header", _EventTraceHeader), ("InstanceId", _u32),
+                ("ParentInstanceId", _u32), ("ParentGuid", _EtwGuid),
+                ("MofData", _ptr), ("MofLength", _u32),
+                ("ClientContext", _u32)]
+
+
+class _SystemTime(_S):
+    _fields_ = [(n, _u16) for n in ("wYear", "wMonth", "wDayOfWeek", "wDay",
+                                     "wHour", "wMinute", "wSecond",
+                                     "wMilliseconds")]
+
+
+class _TimeZoneInformation(_S):
+    _fields_ = [("Bias", _u32), ("StandardName", _u16 * 32),
+                ("StandardDate", _SystemTime), ("StandardBias", _u32),
+                ("DaylightName", _u16 * 32), ("DaylightDate", _SystemTime),
+                ("DaylightBias", _u32)]
+
+
+class _TraceLogfileHeader(_S):
+    _fields_ = [("BufferSize", _u32), ("Version", _u32),
+                ("ProviderVersion", _u32), ("NumberOfProcessors", _u32),
+                ("EndTime", _i64), ("TimerResolution", _u32),
+                ("MaximumFileSize", _u32), ("LogFileMode", _u32),
+                ("BuffersWritten", _u32), ("LogInstanceGuid", _EtwGuid),
+                ("LoggerName", _ptr), ("LogFileName", _ptr),
+                ("TimeZone", _TimeZoneInformation), ("BootTime", _i64),
+                ("PerfFreq", _i64), ("StartTime", _i64),
+                ("ReservedFlags", _u32), ("BuffersLost", _u32)]
+
+
+class _EventDescriptor(_S):
+    _fields_ = [("Id", _u16), ("Version", _u8), ("Channel", _u8),
+                ("Level", _u8), ("Opcode", _u8), ("Task", _u16),
+                ("Keyword", _u64)]
+
+
+class _EventHeader(_S):
+    _fields_ = [("Size", _u16), ("HeaderType", _u16), ("Flags", _u16),
+                ("EventProperty", _u16), ("ThreadId", _u32),
+                ("ProcessId", _u32), ("TimeStamp", _i64),
+                ("ProviderId", _EtwGuid),
+                ("EventDescriptor", _EventDescriptor),
+                ("ProcessorTime", _u64), ("ActivityId", _EtwGuid)]
+
+
+class _EventRecord(_S):
+    _fields_ = [("EventHeader", _EventHeader), ("BufferContext", _u32),
+                ("ExtendedDataCount", _u16), ("UserDataLength", _u16),
+                ("ExtendedData", _ptr), ("UserData", _ptr),
+                ("UserContext", _ptr)]
+
+
+class _EventTraceLogfileW(_S):
+    _fields_ = [("LogFileName", _ptr), ("LoggerName", ctypes.c_void_p),
+                ("CurrentTime", _i64), ("BuffersRead", _u32),
+                ("ProcessTraceMode", _u32), ("CurrentEvent", _EventTrace),
+                ("LogfileHeader", _TraceLogfileHeader),
+                ("BufferCallback", _ptr), ("BufferSize", _u32),
+                ("Filled", _u32), ("EventsLost", _u32),
+                ("EventRecordCallback", _ptr), ("IsKernelTrace", _u32),
+                ("Context", _ptr)]
+
+
+# documented x64 sizes (evntrace.h / evntcons.h)
+ETW_STRUCT_SIZES = {_WnodeHeader: 48, _EventTraceProperties: 120,
+                    _EventTrace: 88, _TraceLogfileHeader: 280,
+                    _EventHeader: 80, _EventRecord: 112,
+                    _EventTraceLogfileW: 448}
+
+DXGI_PROVIDER_GUID = "{CA11C036-0102-4A2D-A6AD-F03CFED5D3C9}"  # Microsoft-Windows-DXGI
+WIN_START_OPCODE = 1
+# the DXGI present events the file trace's frame sources A and B are made
+# of: event id -> source letter (parse_frames)
+DXGI_PRESENT_EVENTS = {42: "A", 144: "B"}
+WNODE_FLAG_TRACED_GUID = 0x00020000
+EVENT_TRACE_REAL_TIME_MODE = 0x00000100
+EVENT_TRACE_USE_MS_FLUSH_TIMER = 0x00000010
+PROCESS_TRACE_MODE_REAL_TIME = 0x00000100
+PROCESS_TRACE_MODE_EVENT_RECORD = 0x10000000
+EVENT_CONTROL_CODE_ENABLE_PROVIDER = 1
+EVENT_TRACE_CONTROL_STOP = 1
+INVALID_PROCESSTRACE_HANDLE = 0xFFFFFFFFFFFFFFFF
+# real-time buffers are delivered at least this often, so the drive is
+# scheduled within milliseconds of the first present, not a 1 s flush
+RT_FLUSH_MS = 10
+
+
+def first_present_of(provider: tuple, event_id: int, opcode: int, pid: int,
+                     owned) -> str | None:
+    """The frame source letter when one real-time event is an owned DXGI
+    present Start, else None. `owned(pid)` answers ownership."""
+    if provider != _EtwGuid.parse(DXGI_PROVIDER_GUID).key() \
+            or opcode != WIN_START_OPCODE \
+            or event_id not in DXGI_PRESENT_EVENTS:
+        return None
+    return DXGI_PRESENT_EVENTS[event_id] if owned(pid) else None
+
+
+class FirstPresentConsumer:
+    """Real-time consumer of the DXGI present events of the owned process
+    tree: `wait()` returns (FILETIME, source) of the tree's first present
+    — the event the measurement window anchors on, delivered within
+    RT_FLUSH_MS. Timestamps are system time (FILETIME), the clock of the
+    file trace's dump. The session is stopped as soon as the first
+    present is in, so it adds no load during the capture."""
+
+    def __init__(self, name: str, tree_pids):
+        self.name = name
+        self.tree_pids = tree_pids
+        self._known: set[int] = set()
+        self.first: tuple[int, str] | None = None
+        self._got = threading.Event()
+        self._advapi = windll.advapi32
+        self._advapi.OpenTraceW.restype = _u64
+        self._session = _u64(0)
+        self._props_buf = None
+        self._consumer = None
+        self._thread = None
+        self._error: list[str] = []
+        self._start_session()
+
+    def _props(self):
+        name_bytes = (len(self.name) + 1) * 2
+        size = ctypes.sizeof(_EventTraceProperties) + name_bytes
+        buf = ctypes.create_string_buffer(size)
+        props = _EventTraceProperties.from_buffer(buf)
+        props.Wnode.BufferSize = size
+        props.Wnode.Flags = WNODE_FLAG_TRACED_GUID
+        props.Wnode.ClientContext = 1  # QPC
+        props.LogFileMode = (EVENT_TRACE_REAL_TIME_MODE
+                             | EVENT_TRACE_USE_MS_FLUSH_TIMER)
+        props.FlushTimer = RT_FLUSH_MS
+        props.LoggerNameOffset = ctypes.sizeof(_EventTraceProperties)
+        return buf, props
+
+    def _start_session(self) -> None:
+        self._props_buf, props = self._props()
+        rc = self._advapi.StartTraceW(byref(self._session),
+                                      ctypes.c_wchar_p(self.name),
+                                      byref(props))
+        if rc != 0:
+            raise RuntimeError(f"StartTraceW({self.name}) failed: {rc}")
+        try:
+            guid = _EtwGuid.parse(DXGI_PROVIDER_GUID)
+            rc = self._advapi.EnableTraceEx2(
+                self._session, byref(guid),
+                _u32(EVENT_CONTROL_CODE_ENABLE_PROVIDER), _u8(0xFF),
+                _u64(0xFFFFFFFFFFFFFFFF), _u64(0), _u32(0), None)
+            if rc != 0:
+                raise RuntimeError(f"EnableTraceEx2(DXGI) failed: {rc}")
+            self._open_consumer()
+        except BaseException:
+            self.stop()
+            raise
+
+    def _open_consumer(self) -> None:
+        cb_type = WINFUNCTYPE(None, ctypes.POINTER(_EventRecord))
+        self._cb = cb_type(self._on_event)
+        self._logname = ctypes.create_unicode_buffer(self.name)
+        lf = _EventTraceLogfileW()
+        lf.LoggerName = ctypes.cast(self._logname, _ptr)
+        lf.ProcessTraceMode = (PROCESS_TRACE_MODE_REAL_TIME
+                               | PROCESS_TRACE_MODE_EVENT_RECORD)
+        lf.EventRecordCallback = ctypes.cast(self._cb, _ptr)
+        self._logfile = lf
+        handle = self._advapi.OpenTraceW(byref(lf))
+        if handle == INVALID_PROCESSTRACE_HANDLE:
+            raise RuntimeError(
+                f"OpenTraceW({self.name}) failed: "
+                f"winerror {kernel32.GetLastError()}")
+        self._consumer = _u64(handle)
+
+        def _pump() -> None:
+            rc = self._advapi.ProcessTrace(byref(self._consumer), _u32(1),
+                                           None, None)
+            # ERROR_CANCELLED (1223) is the stop this consumer asked for
+            if rc not in (0, 1223):
+                self._error.append(f"ProcessTrace returned {rc}")
+                self._got.set()
+        self._thread = threading.Thread(target=_pump, daemon=True)
+        self._thread.start()
+
+    def _owned(self, pid: int) -> bool:
+        if pid not in self._known:
+            self._known = set(self.tree_pids())
+        return pid in self._known
+
+    def _on_event(self, rec_p) -> None:
+        if self.first is not None:
+            return
+        h = rec_p.contents.EventHeader
+        src = first_present_of(h.ProviderId.key(), h.EventDescriptor.Id,
+                               h.EventDescriptor.Opcode, h.ProcessId,
+                               self._owned)
+        if src is not None:
+            self.first = (h.TimeStamp, src)
+            self._got.set()
+
+    def wait(self, budget_s: float) -> tuple[int, str]:
+        if not self._got.wait(budget_s):
+            raise RuntimeError(
+                f"no owned DXGI present within {budget_s} s of launch")
+        if self._error:
+            raise RuntimeError(self._error[0])
+        return self.first
+
+    def stop(self) -> None:
+        """Stop the real-time session; ProcessTrace then returns."""
+        errors = []
+        if self._session.value:
+            _buf, props = self._props()
+            rc = self._advapi.ControlTraceW(self._session, None,
+                                            byref(props),
+                                            _u32(EVENT_TRACE_CONTROL_STOP))
+            if rc != 0:
+                errors.append(f"ControlTraceW(stop {self.name}) failed: {rc}")
+            self._session = _u64(0)
+        if self._consumer is not None:
+            rc = self._advapi.CloseTrace(self._consumer)
+            # ERROR_CTX_CLOSE_PENDING: ProcessTrace is still draining
+            if rc not in (0, 7007):
+                errors.append(f"CloseTrace failed: {rc}")
+            self._consumer = None
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+            if self._thread.is_alive():
+                errors.append("real-time ETW consumer did not stop")
+            self._thread = None
+        if errors:
+            raise RuntimeError("; ".join(errors))
 
 
 SOURCE_LABELS = {
@@ -1349,11 +1652,16 @@ def renderer_evidence(c_key: str, c: dict, owned_pids: set[int],
 
 def wait_for_ready(app, budget_s: float) -> tuple:
     """Block until the owned process is input-idle AND owns a visible
-    window. Both stages block on the events themselves: WaitForInputIdle
-    on the owned root handle, then an EVENT_OBJECT_SHOW WinEvent hook —
-    the window-manager notification that a window just became visible —
-    so no EnumWindows poll loop. `budget_s` bounds the total wait;
-    raises when it expires without readiness."""
+    window; returns (hwnd, rect) of its largest visible top-level window.
+
+    Both stages block on the events themselves: WaitForInputIdle on the
+    owned root handle, then an EVENT_OBJECT_SHOW WinEvent hook. The hook
+    is installed FIRST and only then is the window list snapshotted, so a
+    window that becomes visible at any moment is either in the snapshot
+    or delivered to the hook — never lost between the two. `budget_s`
+    bounds the total wait; raises when it expires without readiness.
+    Readiness only locates the window: the measurement window anchors on
+    the first owned present (FirstPresentConsumer)."""
     deadline = time.monotonic() + budget_s
     hproc = getattr(app, "hproc", None)
     if hproc is not None and win32event is not None:
@@ -1362,13 +1670,11 @@ def wait_for_ready(app, budget_s: float) -> tuple:
         rc = win32event.WaitForInputIdle(hproc, int(budget_s * 1000))
         if rc != 0:
             raise RuntimeError(f"WaitForInputIdle returned {rc}")
-    # may already be visible — one synchronous snapshot before hooking
-    hwnd_info = window_for_pids(app.pids())
-    if hwnd_info:
-        return hwnd_info
 
     got = threading.Event()
-    hits: list[tuple[int, tuple]] = []
+    installed = threading.Event()
+    hook_error: list[str] = []
+    hits: list[tuple[int, tuple, int]] = []
     EVENT_OBJECT_SHOW = 0x8002
     OBJID_WINDOW = 0
     WINEVENT_OUTOFCONTEXT = 0
@@ -1396,19 +1702,33 @@ def wait_for_ready(app, budget_s: float) -> tuple:
         hook = user32.SetWinEventHook(
             EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW, None, _on_show,
             0, 0, WINEVENT_OUTOFCONTEXT)
+        if not hook:
+            hook_error.append(
+                f"SetWinEventHook failed: winerror {kernel32.GetLastError()}")
+            installed.set()
+            return
+        installed.set()
         try:
             msg = ctypes.wintypes.MSG()
             while user32.GetMessageW(byref(msg), None, 0, 0) != 0:
                 user32.TranslateMessage(byref(msg))
                 user32.DispatchMessageW(byref(msg))
         finally:
-            if hook:
-                user32.UnhookWinEvent(hook)
+            user32.UnhookWinEvent(hook)
 
     WM_QUIT = 0x0012
     hook_thread = threading.Thread(target=_hook_loop, daemon=True)
     hook_thread.start()
     try:
+        if not installed.wait(max(0.0, deadline - time.monotonic())):
+            raise RuntimeError("WinEvent hook thread did not start")
+        if hook_error:
+            raise RuntimeError(hook_error[0])
+        # the hook is live: a window already visible is in this snapshot,
+        # one shown from now on reaches the hook
+        snap = window_for_pids(app.pids())
+        if snap:
+            return snap
         if not got.wait(max(0.0, deadline - time.monotonic())):
             raise RuntimeError(
                 "no owned visible window before readiness deadline")
@@ -1418,9 +1738,29 @@ def wait_for_ready(app, budget_s: float) -> tuple:
     return max(hits, key=lambda r: r[2])[:2]
 
 
+# the real-time and the file session stamp the same event from one QPC
+# read, each converting it to system time — they agree to well within this
+ANCHOR_TOLERANCE_100NS = 10_000  # 1 ms
+
+
+def require_same_anchor(trace_first: int, trace_source: str | None,
+                        rt_first: int, rt_source: str) -> None:
+    """The present the drive was scheduled on (real-time consumer) and the
+    present the window anchors on (the dump's first owned present of the
+    chosen source) must be one event; otherwise the drive did not start
+    at window start."""
+    if trace_source != rt_source \
+            or abs(trace_first - rt_first) > ANCHOR_TOLERANCE_100NS:
+        raise RuntimeError(
+            f"drive anchor mismatch: scheduled on source {rt_source} at "
+            f"{rt_first}, the trace's window anchors on source "
+            f"{trace_source} at {trace_first} "
+            f"({(trace_first - rt_first) / 1e4:+.1f} ms)")
+
+
 def measure_run(c_key: str, workload: str, rep: int, cfg,
                 providers_file: Path,
-                owned_launch=None) -> dict:
+                owned_launch=None, owned_first_present=None) -> dict:
     """One rep — ALWAYS returns an attempt record.
 
     On success the record carries the metrics; on any launch/capture/
@@ -1431,13 +1771,15 @@ def measure_run(c_key: str, workload: str, rep: int, cfg,
     the rep still leaves the machine clean — and the adapter-refusal
     SystemExit (a BaseException) still propagates past the record path.
 
-    `owned_launch` is injectable for off-Windows tests of this control
-    logic; on Windows it defaults to OwnedApp (Job Object).
+    `owned_launch` and `owned_first_present` are injectable for
+    off-Windows tests of this control logic; on Windows they default to
+    OwnedApp (Job Object) and FirstPresentConsumer (real-time ETW).
     """
     c = CONTESTANTS[c_key]
     minimized: list[int] = []
     app = None
     sampler = None
+    first_present_rt = None
     trace_name = f"bench1262_{os.getpid()}_{rep}"
     trace_started = False
     etl = TRACE_DIR / f"{c_key}_{workload}_{rep}.etl"
@@ -1451,6 +1793,11 @@ def measure_run(c_key: str, workload: str, rep: int, cfg,
         # every cleanup runs on every path — success, attempt failure,
         # or the software-renderer refusal — and a failure in one step
         # never skips the rest; failures are collected, not suppressed
+        if first_present_rt is not None:
+            try:
+                first_present_rt.stop()
+            except Exception as e:
+                cleanup_errors.append(f"first-present consumer: {e}")
         if trace_started:
             try:
                 stop_trace(trace_name)
@@ -1479,6 +1826,11 @@ def measure_run(c_key: str, workload: str, rep: int, cfg,
         minimized = minimize_other_windows()
         start_trace(trace_name, etl, providers_file)
         trace_started = True
+        # the real-time consumer is live before the launch, so the owned
+        # tree's first present cannot pass unseen
+        first_present_rt = (owned_first_present or FirstPresentConsumer)(
+            f"{trace_name}_rt",
+            lambda: app.pids() if app is not None else set())
 
         # every contestant's output is captured — evidence mechanisms
         # read it (hydrolysis adapter line, Electron BENCH_GPUINFO)
@@ -1498,36 +1850,42 @@ def measure_run(c_key: str, workload: str, rep: int, cfg,
                 "runner.warmup_seconds must be > 0 — the warmup is "
                 "declared in the manifest and is never zero (METHOD)")
 
-        # readiness is event-driven: the WinEvent consumer blocks until
-        # an owned top-level window becomes visible —
-        # ready_timeout_seconds bounds the wait; it is not a fixed
-        # sleep
+        # readiness locates the window (event-driven, bounded by
+        # ready_timeout_seconds); the window itself anchors on the first
+        # owned present the real-time consumer reports
         hwnd_info = wait_for_ready(
             app, cfg["runner"]["ready_timeout_seconds"])
+        rt_first_ft, rt_source = first_present_rt.wait(
+            cfg["runner"]["ready_timeout_seconds"])
+        first_present_rt.stop()
+        first_present_rt = None
 
         owned = app.pids()
         sampler = MemorySampler(
             app.pids, cfg["runner"]["memory_sample_interval_ms"] / 1000
         )
         sampler.start()
+        bring_to_foreground(hwnd_info[0])
 
-        if hwnd_info:
-            bring_to_foreground(hwnd_info[0])
         # The measurement window is [first owned present + warmup,
         # +capture] and the drive program starts at window start
-        # (METHOD). An owned top-level window becoming visible IS the
-        # first composite of the contestant's first presented frame on
-        # Windows, so readiness approximates first-present to within a
-        # frame; the declared warmup then lands the fling program on the
-        # window start — every contestant receives the same program
-        # inside the window, not a different mid-program slice.
-        slack_s = min(cfg["runner"]["ready_timeout_seconds"], 5.0)
-        if workload in SCROLL_WORKLOADS and hwnd_info:
-            time.sleep(warmup_s)
+        # (METHOD): both are deadlines on the first-present event's own
+        # timestamp, on the FILETIME clock the dump and the sampler share.
+        rt_win_start = rt_first_ft + int(warmup_s * 10_000_000)
+        rt_win_end = rt_win_start + int(capture_s * 10_000_000)
+        lead = (rt_win_start - filetime_now()) / 1e7
+        if lead < 0:
+            raise RuntimeError(
+                f"the window opened {-lead * 1000:.0f} ms before the "
+                "runner could start the drive — first-present delivery "
+                "or foreground activation outlasted the declared warmup")
+        time.sleep(lead)
+        if workload in SCROLL_WORKLOADS:
             fling_window(hwnd_info[0], hwnd_info[1],
-                         capture_s + slack_s, cfg["runner"])
-        else:
-            time.sleep(capture_s + warmup_s + slack_s)
+                         (rt_win_end - filetime_now()) / 1e7, cfg["runner"])
+        rest = (rt_win_end - filetime_now()) / 1e7
+        if rest > 0:
+            time.sleep(rest)
 
         # GPU-engine attribution while the app is still alive — the
         # counters only exist for active engines
@@ -1560,6 +1918,10 @@ def measure_run(c_key: str, workload: str, rep: int, cfg,
         # capture_s wide — startup frames before it are trimmed, and
         # memory samples (FILETIME-stamped) trim to the same window
         first_present = min(frames["timestamps_100ns"])
+        # the drive was scheduled on the real-time first present: it must
+        # be the very event the trace anchors the window on
+        require_same_anchor(first_present, frames["source"],
+                            rt_first_ft, rt_source)
         win_start = first_present + int(warmup_s * 10_000_000)
         win_end = win_start + int(capture_s * 10_000_000)
         windowed_ts = [t for t in frames["timestamps_100ns"]
@@ -1782,12 +2144,28 @@ def _self_test() -> None:
                 self.log.close()
             events.append("terminate")
 
+    # the real-time first-present consumer at the OS boundary: it
+    # reports the rep's launch-clock first present as source A
+    rt = {"first": None}
+
+    class FakeFirstPresent:
+        def __init__(self, name, tree_pids):
+            events.append("rt_start")
+        def wait(self, budget_s):
+            return rt["first"] or (ts["t0"], "A")
+        def stop(self):
+            events.append("rt_stop")
+
     saved = {k: globals()[k] for k in (
         "minimize_other_windows", "restore_windows", "start_trace",
         "stop_trace", "etl_to_csv", "parse_frames", "window_for_pids",
         "process_memory_snapshot", "adapter_from_log",
-        "renderer_evidence", "bring_to_foreground")}
+        "renderer_evidence", "bring_to_foreground", "wait_for_ready",
+        "FirstPresentConsumer")}
     try:
+        globals()["FirstPresentConsumer"] = FakeFirstPresent
+        globals()["wait_for_ready"] = \
+            lambda app, budget: (42, (10, 10, 800, 600))
         globals()["minimize_other_windows"] = \
             lambda: events.append("minimize") or [42]
         globals()["restore_windows"] = \
@@ -1851,11 +2229,31 @@ def _self_test() -> None:
             round(90 / 16.7) - 1 + round(90 / 16.7) - 1 + \
             round(60 / 16.7) - 1
         order = [e for e in events if e in (
-            "minimize", "trace_start", "launch", "etl_csv",
-            "trace_stop", "terminate", "restore[42]")]
-        assert order == ["minimize", "trace_start", "launch",
-                         "trace_stop", "terminate", "etl_csv",
-                         "restore[42]"], order
+            "minimize", "trace_start", "rt_start", "launch", "rt_stop",
+            "foreground", "etl_csv", "trace_stop", "terminate",
+            "restore[42]")]
+        assert order == ["minimize", "trace_start", "rt_start", "launch",
+                         "rt_stop", "foreground", "trace_stop",
+                         "terminate", "etl_csv", "restore[42]"], order
+
+        # -- the drive was scheduled on the real-time first present: a
+        #    trace whose window anchors on another event fails the rep,
+        #    and so does a first present delivered after the window
+        #    already opened
+        rt["first"] = "B-source"
+        events.clear()
+        orig_wait = FakeFirstPresent.wait
+        FakeFirstPresent.wait = lambda self, b: (ts["t0"], "B")
+        rec = measure_run("waterui", "w1", 0, cfg, Path("prov.txt"),
+                          owned_launch=FakeApp)
+        assert "drive anchor mismatch" in rec["error"], rec
+        FakeFirstPresent.wait = lambda self, b: (ts["t0"] - 10_000_000, "A")
+        rec = measure_run("waterui", "w1", 0, cfg, Path("prov.txt"),
+                          owned_launch=FakeApp)
+        assert "before the runner could start the drive" in rec["error"], rec
+        assert "rt_stop" in events and "restore[42]" in events
+        FakeFirstPresent.wait = orig_wait
+        rt["first"] = None
 
         # -- capture failure (etl_to_csv raises): attempt record keeps
         #    the error AND the finally still stops trace, terminates the
@@ -2002,6 +2400,34 @@ def _self_test() -> None:
         #    data at the OS boundary — restore the real function first
         globals()["renderer_evidence"] = saved["renderer_evidence"]
         globals()["adapter_from_log"] = saved["adapter_from_log"]
+        globals()["FirstPresentConsumer"] = saved["FirstPresentConsumer"]
+        globals()["wait_for_ready"] = saved["wait_for_ready"]
+
+        # -- the real-time ETW structures match the documented x64
+        #    layouts, and only an owned DXGI present Start anchors
+        for etw_struct, size in ETW_STRUCT_SIZES.items():
+            assert ctypes.sizeof(etw_struct) == size, (
+                etw_struct.__name__, ctypes.sizeof(etw_struct))
+        dxgi = _EtwGuid.parse(DXGI_PROVIDER_GUID).key()
+        assert dxgi == (0xCA11C036, 0x0102, 0x4A2D,
+                        bytes.fromhex("A6ADF03CFED5D3C9"))
+        mine = {7}.__contains__
+        assert first_present_of(dxgi, 42, 1, 7, mine) == "A"
+        assert first_present_of(dxgi, 144, 1, 7, mine) == "B"
+        assert first_present_of(dxgi, 42, 2, 7, mine) is None   # Stop
+        assert first_present_of(dxgi, 42, 1, 8, mine) is None   # not owned
+        assert first_present_of(dxgi, 43, 1, 7, mine) is None
+        other = _EtwGuid.parse("{802EC45A-1E99-4B83-9920-87C98277BA9D}")
+        assert first_present_of(other.key(), 42, 1, 7, mine) is None
+        require_same_anchor(1_000_000, "A", 1_005_000, "A")
+        for args in ((1_000_000, "A", 1_020_000, "A"),
+                     (1_000_000, "C", 1_000_000, "A")):
+            try:
+                require_same_anchor(*args)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError(f"anchor mismatch accepted: {args}")
         import tempfile
         hw = {"name": "NVIDIA GeForce RTX 4090", "device_type": "Gpu",
               "backend": "Vulkan"}
@@ -2283,7 +2709,7 @@ def _self_test() -> None:
                     pass
                 for ev in ("term_root", "close:job-h", "close:ph",
                            "close:th"):
-                    assert ev in _Bus.events, w32.events
+                    assert ev in _Bus.events, _Bus.events
                 _Bus.fail.discard("assign")
 
                 # resume failure: same ownership contract
@@ -2796,6 +3222,9 @@ def main() -> None:
             file=sys.stderr,
         )
         sys.exit(2)
+    # every rep brings its contestant to the foreground — a host that
+    # would refuse SetForegroundWindow fails here, before any cell
+    require_foreground_eligible()
 
     limitations = [
         "PresentMon 2.5.1 captures no presents for WinUI 3 (composition-"
@@ -2854,7 +3283,10 @@ def main() -> None:
         c = CONTESTANTS[key]
         if not args.skip_build:
             print(f"=== building {key} ===", flush=True)
-            builders(manifest)[key]()
+            # every bootstrap step (flutter create, npm ci, water fetch)
+            # runs on a clean tree and must leave it clean
+            with toolchain.tracked_tree_unchanged(f"windows build {key}"):
+                builders(manifest)[key]()
         cres = results["results"].setdefault(key, {})
         cres["package_size"] = package_size(c["exe_dir"])
         cres["workloads"] = previous_results.get(key, {}).get("workloads", {})

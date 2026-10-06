@@ -2,13 +2,14 @@
 //
 // One headless output driven by a fixed vsync timer, one maximized
 // xdg_toplevel per spawned client, a uniform JSONL event log:
-// spawn/map/commit/present/frame/mem/input/app_exit/exit. Present
+// spawn/map/commit/present/frame/mem/input/lib/fd/app_exit/exit. Present
 // timestamps are taken at scene commit in CLOCK_MONOTONIC — identical
 // plumbing for every contestant app.
 //
 // Script file lines:  <ms> motion <x> <y> | click | press | release
 //                     | axis <steps>     (wheel; + scrolls down)
 #define _POSIX_C_SOURCE 200809L
+#include <dirent.h>
 #include <errno.h>
 #include <linux/input-event-codes.h>
 #include <signal.h>
@@ -245,6 +246,76 @@ static void cgroup_add_pid(struct benchcomp *c, pid_t pid) {
     if (!f) return;
     fprintf(f, "%d", (int)pid);
     fclose(f);
+}
+
+// ---------------- renderer evidence ----------------
+
+// One JSONL event carrying a path string, escaped as a JSON string.
+static void log_path_ev(struct benchcomp *c, const char *ev, int pid,
+                        const char *key, const char *path) {
+    fprintf(c->log, "{\"ev\":\"%s\",\"t\":%llu,\"pid\":%d,\"%s\":\"", ev,
+            (unsigned long long)now_ns(), pid, key);
+    for (const unsigned char *s = (const unsigned char *)path; *s; s++) {
+        if (*s == '"' || *s == '\\')
+            fprintf(c->log, "\\%c", *s);
+        else if (*s < 0x20)
+            fprintf(c->log, "\\u%04x", *s);
+        else
+            fputc(*s, c->log);
+    }
+    fputs("\"}\n", c->log);
+}
+
+// At window end, before the app is stopped: every shared object mapped
+// and every device node held open by each process of the app's cgroup —
+// the userspace renderer the contestant actually loaded (Mesa/Vulkan
+// driver libraries) and the render nodes it opened. Read once, so no
+// sampling perturbs the capture. A process that exits between listing
+// and reading has nothing left to report.
+static void log_renderer_evidence(struct benchcomp *c) {
+    char p[512];
+    snprintf(p, sizeof p, "%s/cgroup.procs", c->cgroup);
+    FILE *procs = fopen(p, "r");
+    if (!procs) {
+        logf_ev(c, "evidence_error", "\"errno\":%d", errno);
+        return;
+    }
+    int pid;
+    while (fscanf(procs, "%d", &pid) == 1) {
+        snprintf(p, sizeof p, "/proc/%d/maps", pid);
+        FILE *maps = fopen(p, "r");
+        if (maps) {
+            char line[4352], last[4096] = "";
+            while (fgets(line, sizeof line, maps)) {
+                char *path = strchr(line, '/');
+                if (!path || !strstr(path, ".so")) continue;
+                path[strcspn(path, "\n")] = 0;
+                // a library spans several consecutive mappings
+                if (!strcmp(path, last)) continue;
+                snprintf(last, sizeof last, "%s", path);
+                log_path_ev(c, "lib", pid, "path", path);
+            }
+            fclose(maps);
+        }
+        snprintf(p, sizeof p, "/proc/%d/fd", pid);
+        DIR *fds = opendir(p);
+        if (fds) {
+            struct dirent *de;
+            while ((de = readdir(fds))) {
+                if (de->d_name[0] == '.') continue;
+                char link[600], target[4096];
+                snprintf(link, sizeof link, "%s/%s", p, de->d_name);
+                ssize_t n = readlink(link, target, sizeof target - 1);
+                if (n <= 0) continue;
+                target[n] = 0;
+                if (strncmp(target, "/dev/", 5)) continue;
+                log_path_ev(c, "fd", pid, "target", target);
+            }
+            closedir(fds);
+        }
+    }
+    fclose(procs);
+    fflush(c->log);
 }
 
 // ---------------- surfaces ----------------
@@ -571,6 +642,9 @@ static void finish(struct benchcomp *c, int code) {
 }
 
 static int duration_timer(void *data) {
+    // the window has closed: record what the app rendered with while it
+    // is still alive, then stop it
+    log_renderer_evidence(data);
     finish(data, 0);
     return 0;
 }

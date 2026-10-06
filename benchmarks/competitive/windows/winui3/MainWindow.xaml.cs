@@ -120,7 +120,9 @@ public sealed partial class MainWindow : Window
     // (ListView UI-virtualizes). W6's `complexity` adds that many sibling
     // cells — a 14x14 rounded square (radius 4.2 ≈ ratio 0.3) over a
     // "c{j}" caption — between the text column and the timestamp, cells
-    // separated by 4, the group keeping the row's standard 12 gap.
+    // separated by 4, the group keeping the row's standard 12 gap. W2 has
+    // no cell group at all: it is collapsed, so the text column and the
+    // timestamp keep the spec's single 12 gap.
     private sealed class CellDef
     {
         public required Brush Square { get; init; }
@@ -134,6 +136,8 @@ public sealed partial class MainWindow : Window
         public string Title => FeedTitle(Index);
         public string Subtitle => FeedSubtitle(Index);
         public string Timestamp => FeedTimestamp(Index);
+        public Visibility CellsVisibility =>
+            Complexity > 0 ? Visibility.Visible : Visibility.Collapsed;
         public Brush AvatarBrush => new SolidColorBrush(FeedColor(Index));
         public List<CellDef> Cells
         {
@@ -174,7 +178,8 @@ public sealed partial class MainWindow : Window
                         <TextBlock Text="{Binding Subtitle}" FontSize="13" Foreground="#666666"/>
                     </StackPanel>
                     <ItemsControl Grid.Column="2" ItemsSource="{Binding Cells}"
-                                  VerticalAlignment="Center" Margin="12,0,12,0">
+                                  Visibility="{Binding CellsVisibility}"
+                                  VerticalAlignment="Center" Margin="12,0,0,0">
                         <ItemsControl.ItemsPanel>
                             <ItemsPanelTemplate>
                                 <StackPanel Orientation="Horizontal" Spacing="4"/>
@@ -191,7 +196,7 @@ public sealed partial class MainWindow : Window
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
-                    <TextBlock Grid.Column="3" Text="{Binding Timestamp}"
+                    <TextBlock Grid.Column="3" Text="{Binding Timestamp}" Margin="12,0,0,0"
                                FontSize="13" Foreground="#888888" VerticalAlignment="Center"/>
                 </Grid>
             </DataTemplate>
@@ -260,12 +265,16 @@ public sealed partial class MainWindow : Window
             };
             w.Visual = ElementCompositionPreview.GetElementVisual(w.Wall);
             // rects render at their seeded pose before the first segment —
-            // never from the zero transform. CenterPoint puts rotation
-            // about the rect's centre; Offset places its centre.
+            // never from the zero transform. The rect's layout slot is the
+            // field's top-left corner; its position is the hand-out
+            // visual's Translation — a property XAML layout never writes,
+            // unlike Offset — at (x, y), the rect's top-left inside the
+            // field. CenterPoint puts rotation about the rect's centre.
+            ElementCompositionPreview.SetIsTranslationEnabled(w.Wall, true);
             w.Visual.CenterPoint = new Vector3((float)(Rect / 2.0),
                                                (float)(Rect / 2.0), 0f);
-            w.Visual.Offset = new Vector3((float)(w.Cx + Rect / 2.0),
-                                          (float)(w.Cy + Rect / 2.0), 0f);
+            w.Visual.Properties.InsertVector3(
+                "Translation", new Vector3((float)w.Cx, (float)w.Cy, 0f));
             w.Visual.RotationAngleInDegrees = (float)w.Cr;
             w.Visual.Opacity = (float)w.Co;
             canvas.Children.Add(w.Wall);
@@ -280,8 +289,8 @@ public sealed partial class MainWindow : Window
     }
 
     // Each segment runs on the compositor as keyframe animations under
-    // the spec's cubic-bezier(0.42, 0, 0.58, 1) easing — offset, rotation
-    // and opacity. The scoped batch's Completed handler (UI thread)
+    // the spec's cubic-bezier(0.42, 0, 0.58, 1) easing — translation,
+    // rotation and opacity. The scoped batch's Completed handler (UI thread)
     // syncs the model to the landed pose and retargets the next segment,
     // so motion never drives per-frame property writes from the UI
     // thread (no CompositionTarget.Rendering).
@@ -290,11 +299,10 @@ public sealed partial class MainWindow : Window
         var easing = compositor.CreateCubicBezierEasingFunction(
             new Vector2(0.42f, 0f), new Vector2(0.58f, 1f));
         var dur = TimeSpan.FromMilliseconds(w.DurMs);
-        var offset = compositor.CreateVector3KeyFrameAnimation();
-        offset.InsertKeyFrame(1f,
-            new Vector3((float)(w.Tx + Rect / 2.0),
-                        (float)(w.Ty + Rect / 2.0), 0f), easing);
-        offset.Duration = dur;
+        var translation = compositor.CreateVector3KeyFrameAnimation();
+        translation.InsertKeyFrame(1f,
+            new Vector3((float)w.Tx, (float)w.Ty, 0f), easing);
+        translation.Duration = dur;
         var rot = compositor.CreateScalarKeyFrameAnimation();
         rot.InsertKeyFrame(1f, (float)w.Tr, easing);
         rot.Duration = dur;
@@ -302,7 +310,7 @@ public sealed partial class MainWindow : Window
         op.InsertKeyFrame(1f, (float)w.To, easing);
         op.Duration = dur;
         var batch = compositor.CreateScopedBatch(CompositionBatchTypes.Animation);
-        w.Visual.StartAnimation(nameof(w.Visual.Offset), offset);
+        w.Visual.StartAnimation("Translation", translation);
         w.Visual.StartAnimation(nameof(w.Visual.RotationAngleInDegrees), rot);
         w.Visual.StartAnimation(nameof(w.Visual.Opacity), op);
         batch.Completed += (_, _) =>

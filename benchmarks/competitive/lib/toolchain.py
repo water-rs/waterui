@@ -9,6 +9,9 @@ and `android-backend-revision`:
 
 - `checkout_head` / `require_clean_checkout` establish and record that
   identity; a dirty tracked tree refuses to provision.
+- `tracked_tree_unchanged` wraps every build/bootstrap step of every leg:
+  the tree is clean before the step runs and still clean after it, or the
+  step fails naming the tracked files it rewrote.
 - `provision_water_cli` runs `cargo install --locked --path cli --root
   <runner-owned>` into the suite-shared `.cache/toolchain/` once per
   checkout-sha + host target, under a file lock so concurrently running
@@ -39,7 +42,6 @@ import re
 import shutil
 import subprocess
 import sys
-import time
 import zipfile
 from pathlib import Path
 
@@ -251,12 +253,8 @@ def checkout_head(root: Path | None = None, run=None) -> str:
     return out.stdout.strip()
 
 
-def require_clean_checkout(root: Path | None = None, run=None) -> Path:
-    """Refuse to build the contestant/toolchain from a checkout with
-    uncommitted tracked changes — HEAD sha would then mislabel the actual
-    source. Untracked files do not affect built artifacts and are allowed.
-    """
-    root = Path(root or repo_root()).resolve()
+def _dirty_tracked(root: Path, run=None) -> list[str]:
+    """`git status --porcelain` lines for uncommitted tracked changes."""
     out = (run or _run)(
         ["git", "-C", str(root), "status", "--porcelain",
          "--untracked-files=no"])
@@ -264,7 +262,16 @@ def require_clean_checkout(root: Path | None = None, run=None) -> Path:
         raise RuntimeError(
             f"cannot check checkout cleanliness at {root}: "
             f"{(out.stderr or '').strip()[:200]}")
-    dirty = [ln for ln in out.stdout.splitlines() if ln.strip()]
+    return [ln for ln in out.stdout.splitlines() if ln.strip()]
+
+
+def require_clean_checkout(root: Path | None = None, run=None) -> Path:
+    """Refuse to build the contestant/toolchain from a checkout with
+    uncommitted tracked changes — HEAD sha would then mislabel the actual
+    source. Untracked files do not affect built artifacts and are allowed.
+    """
+    root = Path(root or repo_root()).resolve()
+    dirty = _dirty_tracked(root, run)
     if dirty:
         shown = "\n  ".join(dirty[:20])
         raise RuntimeError(
@@ -272,6 +279,30 @@ def require_clean_checkout(root: Path | None = None, run=None) -> Path:
             f"HEAD-sha identity would mislabel the source — commit or "
             f"stash first:\n  {shown}")
     return root
+
+
+@contextlib.contextmanager
+def tracked_tree_unchanged(label: str, root: Path | None = None, run=None):
+    """Every build step that can write into the checkout — bootstrap
+    (`pod install`, `flutter create`, `npm ci`, wrapper materialisation)
+    and the contestant build itself — runs inside this block, in every
+    leg.
+
+    The checkout must be clean BEFORE the step runs, so a dirty tree is
+    reported as the user's uncommitted change and never as the step's
+    output; after the step it must still be clean. A step that rewrote
+    tracked files fails naming them: the committed generated files are
+    stale and are regenerated with the pinned tool and committed — the
+    HEAD sha never labels a tree a bootstrap changed."""
+    root = require_clean_checkout(root, run)
+    yield root
+    dirty = _dirty_tracked(root, run)
+    if dirty:
+        shown = "\n  ".join(dirty[:20])
+        raise RuntimeError(
+            f"{label} rewrote {len(dirty)} tracked file(s) — the committed "
+            "generated files are stale; regenerate them with the pinned "
+            f"tool and commit:\n  {shown}")
 
 
 def android_backend_revision(root: Path | None = None) -> str:
@@ -296,41 +327,40 @@ def android_backend_revision(root: Path | None = None) -> str:
 
 @contextlib.contextmanager
 def _build_lock(cache_dir: Path):
-    """Serialize CLI builds across concurrently running legs."""
+    """Serialize CLI builds across concurrently running legs: an exclusive
+    lock on <cache>/water-cli.lock that blocks in the kernel until the
+    holder releases it — flock(2) on POSIX, LockFileEx without
+    LOCKFILE_FAIL_IMMEDIATELY on Windows. No retry loop, no deadline: the
+    holder is a build that ends, and the lock dies with its process."""
     cache_dir.mkdir(parents=True, exist_ok=True)
-    fd = os.open(cache_dir / "water-cli.lock", os.O_CREAT | os.O_RDWR)
-    locked = False
-    try:
-        if sys.platform.startswith("win"):
-            import msvcrt
-            # LK_LOCK blocks in the OS wait (it retries internally for
-            # ~10 s before raising) — block on the lock itself rather
-            # than sleeping between non-blocking probes. Bounded by a
-            # build-sized deadline.
-            deadline = time.monotonic() + 900
-            while True:
-                try:
-                    msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
-                    locked = True
-                    break
-                except OSError:
-                    if time.monotonic() >= deadline:
-                        raise TimeoutError(
-                            f"water-cli build lock still held after 900 s: "
-                            f"{cache_dir}") from None
-        else:
-            import fcntl
-            fcntl.flock(fd, fcntl.LOCK_EX)
-            locked = True
-        yield
-    finally:
+    path = cache_dir / "water-cli.lock"
+    if sys.platform.startswith("win"):
+        import pywintypes
+        import win32con
+        import win32file
+        handle = win32file.CreateFile(
+            str(path), win32con.GENERIC_READ | win32con.GENERIC_WRITE,
+            win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE, None,
+            win32con.OPEN_ALWAYS, win32con.FILE_ATTRIBUTE_NORMAL, None)
         try:
-            if locked:
-                if sys.platform.startswith("win"):
-                    os.lseek(fd, 0, os.SEEK_SET)
-                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-                else:
-                    fcntl.flock(fd, fcntl.LOCK_UN)
+            span = pywintypes.OVERLAPPED()  # offset 0
+            win32file.LockFileEx(handle, win32con.LOCKFILE_EXCLUSIVE_LOCK,
+                                 1, 0, span)
+            try:
+                yield
+            finally:
+                win32file.UnlockFileEx(handle, 1, 0, span)
+        finally:
+            handle.Close()
+    else:
+        import fcntl
+        fd = os.open(path, os.O_CREAT | os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
             os.close(fd)
 
@@ -553,6 +583,38 @@ def _self_test() -> None:
             os.close(lock_fd)
             t.join(10)
             assert done and done[0].exists()
+
+    # bootstrap guard: clean before, clean after — a step that rewrites a
+    # tracked file fails naming it; a dirty tree before the step fails
+    # before the step runs
+    state = {"dirty": ""}
+
+    def guard_run(cmd, env=None):
+        if cmd[0] == "git" and "status" in cmd:
+            return Out(state["dirty"])
+        return fake_run(cmd, env)
+    with tempfile.TemporaryDirectory() as td:
+        with tracked_tree_unchanged("noop", Path(td), run=guard_run):
+            pass
+        try:
+            with tracked_tree_unchanged("pod install", Path(td),
+                                        run=guard_run):
+                state["dirty"] = " M ios/Podfile.lock\n"
+        except RuntimeError as e:
+            assert "pod install rewrote 1 tracked file" in str(e)
+            assert "ios/Podfile.lock" in str(e)
+        else:
+            raise AssertionError("bootstrap rewrite accepted")
+        ran = []
+        try:
+            with tracked_tree_unchanged("pod install", Path(td),
+                                        run=guard_run):
+                ran.append(True)
+        except RuntimeError as e:
+            assert "uncommitted tracked change" in str(e)
+        else:
+            raise AssertionError("dirty tree accepted before bootstrap")
+        assert not ran, "bootstrap ran over a dirty tree"
 
     # dirty checkout refused before any build
     def dirty_run(cmd, env=None):

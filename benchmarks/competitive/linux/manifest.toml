@@ -34,8 +34,9 @@ project = "../apps/waterui"
 backend = "hydrolysis"
 profile = "release"
 # No adapter-forcing env: the runner never overrides which GPU hydrolysis
-# picks — the contestant's own adapter log + the DRI nodes its processes
-# opened are the per-rep renderer evidence, whatever it selected.
+# picks — the contestant's own adapter log + the driver libraries and
+# render nodes its processes hold at window end are the per-rep renderer
+# evidence, whatever it selected.
 
 [contestants.gtk4]
 kind = "gtk"

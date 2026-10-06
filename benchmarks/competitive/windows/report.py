@@ -233,7 +233,7 @@ def generate(data: dict) -> str:
         a(table(["Contestant", "Launch"], rows))
         a("")
 
-        a("### Memory — steady private WS / peak WS (MB)")
+        a("### Memory — steady / peak private WS over the window (MB)")
         a("")
         rows = []
         for k in order:
@@ -246,7 +246,7 @@ def generate(data: dict) -> str:
                 peak = cell(mem.get("peak_private_ws_mb"), " MB")
                 procs = str(mem.get("process_count", "n/a"))
             rows.append([APP_NAMES.get(k, k), steady, peak, procs])
-        a(table(["Contestant", "Steady private WS (MB)", "Peak WS (MB)",
+        a(table(["Contestant", "Steady private WS (MB)", "Peak private WS (MB)",
                  "Processes"], rows))
         a("")
 
