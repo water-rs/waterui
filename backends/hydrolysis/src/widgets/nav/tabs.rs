@@ -139,14 +139,14 @@ impl HydroNativeView for Native<TabsLayout> {
 /// Emits a tab list's accessibility tree from per-tab `(tag, interaction_key,
 /// default_label, is_selected)` tuples. Shared by the dispatch path and the
 /// retained `Widget`-node path (which extracts each default label from its
-/// tab's [`RetainedSubview`]). `bar_rect` is the bar's bounds-space rect —
-/// the docked band [`WidgetRenderContext::chrome_split`] carves out; the
-/// semantic walk has no bounds and passes `None`.
+/// tab's [`RetainedSubview`]). `ctx` carries the bar's bounds-space rect —
+/// the docked band [`WidgetRenderContext::chrome_splits`] carves out —
+/// beside the render context; the semantic walk has no bounds and passes
+/// `None`.
 #[cfg(feature = "accessibility")]
 pub fn tabs_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
-    ctx: Option<RenderContext>,
-    bar_rect: Option<kurbo::Rect>,
+    ctx: Option<(RenderContext, kurbo::Rect)>,
     selection: &Binding<Id>,
     style: NativeTabStyle,
     labels: &[(Id, crate::renderer::InteractionKey, Option<String>, bool)],
@@ -187,7 +187,7 @@ pub fn tabs_accessibility(
             selection: selection.clone(),
             target: *tag,
         });
-        let tab_node_id = match ctx.zip(bar_rect) {
+        let tab_node_id = match ctx {
             Some((ctx, bar_rect)) => renderer.register_accessibility_child_node_with_key(
                 key,
                 tab_node,
@@ -206,7 +206,7 @@ pub fn tabs_accessibility(
             renderer.register_accessibility_focus_link(interaction_key, tab_node_id);
         }
     }
-    match ctx.zip(bar_rect) {
+    match ctx {
         Some((ctx, bar_rect)) => {
             let _ = renderer.register_accessibility_node(
                 tab_list,
@@ -308,13 +308,14 @@ pub fn render_tabs_node(
         let layout = theme.tabs_item_layout(extent, state.borrow().tabs.len());
         let metrics = theme.tabs_metrics(layout);
         (
-            ctx.chrome_split(tabs_dock_edge(style), metrics.bar_height),
+            ctx.chrome_splits([(tabs_dock_edge(style), metrics.bar_height)]),
             layout,
             metrics,
         )
     };
     #[cfg(feature = "accessibility")]
     {
+        let [bar] = &chrome.bars;
         let hidden = env
             .get::<waterui::accessibility::AccessibilityHidden>()
             .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
@@ -344,8 +345,7 @@ pub fn render_tabs_node(
             let render_ctx = ctx.render_context();
             tabs_accessibility(
                 ctx.renderer_mut(),
-                Some(render_ctx),
-                Some(chrome.bar),
+                Some((render_ctx, bar.band)),
                 &selection,
                 style,
                 &labels,
@@ -353,7 +353,7 @@ pub fn render_tabs_node(
             );
         }
     }
-    render_tabs_parts(ctx, state, env, &chrome, layout, theme_metrics);
+    render_tabs_parts(ctx, state, env, chrome, layout, theme_metrics);
 }
 
 #[expect(
@@ -364,7 +364,7 @@ fn render_tabs_parts(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<TabsRenderState>>,
     env: &Environment,
-    chrome: &crate::renderer::ChromeRects,
+    chrome: crate::renderer::ChromeGroup<1>,
     layout: TabItemLayout,
     theme_metrics: waterui_backend_core::widget::TabsMetrics,
 ) {
@@ -384,7 +384,8 @@ fn render_tabs_parts(
     // of the container region only, so the keyboard covers it instead of
     // lifting it, while the content keeps the laid-out frame — clear of
     // both regions — with the bar's edge docked on the band's inner edge.
-    let (bar_rect, content_rect) = (chrome.bar, chrome.content);
+    let [bar] = &chrome.bars;
+    let (bar_rect, content_rect) = (bar.band, chrome.content);
     let label_env = tab_label_env(env);
 
     // §7.1 "Chrome": the bar's surface extends through the regions of the
@@ -397,16 +398,8 @@ fn render_tabs_parts(
     // strip's top edge and placing its divider is a `WidgetTheme` contract
     // change tracked as a follow-up issue.
     let bar_surface = match style {
-        NativeTabStyle::Sidebar => WidgetRenderContext::chrome_surface_except(
-            bar_rect,
-            chrome.split.as_ref().map(|split| &split.bar),
-            &[Edge::Top, Edge::Trailing],
-        ),
-        NativeTabStyle::Automatic | NativeTabStyle::TabBar => WidgetRenderContext::chrome_surface(
-            bar_rect,
-            chrome.split.as_ref().map(|split| &split.bar),
-            Edge::Bottom,
-        ),
+        NativeTabStyle::Sidebar => bar.surface_except(&[Edge::Top, Edge::Trailing]),
+        NativeTabStyle::Automatic | NativeTabStyle::TabBar => bar.surface(Edge::Bottom),
     };
     {
         let theme = ctx.theme();
@@ -527,10 +520,7 @@ fn render_tabs_parts(
                 let mut st = state.borrow_mut();
                 // The icon draws whether or not the label has text to show.
                 if let (Some(icon), Some(icon_rect)) = (&mut st.tabs[index].icon, icon_rect) {
-                    let icon_area = chrome
-                        .split
-                        .as_ref()
-                        .map(|split| split.bar.bar_area_for(icon_rect));
+                    let icon_area = bar.area_for(icon_rect);
                     icon.flush_in_rect(
                         ctx.renderer_mut(),
                         render_ctx,
@@ -541,10 +531,7 @@ fn render_tabs_parts(
                     );
                 }
                 if has_label {
-                    let label_area = chrome
-                        .split
-                        .as_ref()
-                        .map(|split| split.bar.bar_area_for(label_rect));
+                    let label_area = bar.area_for(label_rect);
                     st.tabs[index].label.flush_in_rect(
                         ctx.renderer_mut(),
                         render_ctx,
@@ -567,10 +554,7 @@ fn render_tabs_parts(
         // §7.1: tab content is chrome-hosted — it inherits the widget's
         // boundaries on the edges the tab bar leaves reachable, with the
         // bar's edge docked on the band's inner edge.
-        let content_area = chrome
-            .split
-            .as_ref()
-            .map(|split| split.content_area.clone());
+        let content_area = chrome.content_area;
         st.tabs[selected_index].content.flush_in_rect(
             ctx.renderer_mut(),
             render_ctx,
@@ -832,7 +816,7 @@ pub fn emit_tabs_accessibility(
             .collect();
         (state.selection.clone(), state.style, labels)
     };
-    tabs_accessibility(renderer, None, None, &selection, style, &labels, env);
+    tabs_accessibility(renderer, None, &selection, style, &labels, env);
     let selected_index = state.selected_index(selected_id);
     state.tabs[selected_index]
         .content

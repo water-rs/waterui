@@ -448,41 +448,6 @@ impl SafeAreaLayout {
         next
     }
 
-    /// §7.1's chrome split on `edge`, produced in one derivation so no
-    /// caller can pair a bar with a context the split did not derive: the
-    /// band `extent` thick the docked bar occupies, the context the bar's
-    /// subtree lays out against, the remainder of `bounds` the hosted
-    /// content keeps, and the content's context — all in `bounds` space
-    /// (the contexts record window space).
-    ///
-    /// The band and the bar's context follow [`Self::chrome_splits`]'s
-    /// per-bar rule. The content's context is [`Self::hosted`] on the
-    /// remainder's frame with the bar's edge `Docked` on the band's inner
-    /// edge — nothing inside touches, releases or extends through it, and
-    /// a bar a nested chrome container docks on the same edge stacks on
-    /// this bar's inner edge.
-    #[must_use]
-    pub fn chrome_split(&self, bounds: kurbo::Rect, edge: Edge, extent: f64) -> ChromeSplit {
-        let (band, content, bar_area, inner) = self.bar_split(bounds, edge, extent);
-        let content_area = if extent > 0.0 {
-            self.chrome_content_area(self.hosted_frame(bounds, content), [(edge, inner)])
-        } else {
-            self.hosted(self.hosted_frame(bounds, content))
-        };
-        ChromeSplit {
-            bar: ChromeBar {
-                bounds,
-                edge,
-                inner: (extent > 0.0).then_some(inner),
-                band,
-                rest: content,
-                bar_area,
-            },
-            content,
-            content_area,
-        }
-    }
-
     /// §7.1's chrome split over every edge in `bars`, produced in one
     /// derivation so a chrome container drawing bars on several edges
     /// pairs every bar with the context the split derived and never
@@ -504,7 +469,7 @@ impl SafeAreaLayout {
                 inner: (extent > 0.0).then_some(inner),
                 band,
                 rest,
-                bar_area,
+                bar_area: Some(bar_area),
             }
         });
         let content = splits
@@ -558,9 +523,10 @@ impl SafeAreaLayout {
     /// boundary carrying the bar's inner edge in window space and
     /// recording `frame`'s edge as the dock edge, so the content touches
     /// no edge a bar sits on and a nested bar whose own frame edge lands
-    /// on it stacks on it (§7.1).
+    /// on it stacks on it (§7.1). Module-internal: `Docked` boundaries
+    /// are minted only by [`Self::chrome_splits`], never forged.
     #[must_use]
-    pub fn chrome_content_area(
+    fn chrome_content_area(
         &self,
         frame: kurbo::Rect,
         docks: impl IntoIterator<Item = (Edge, f64)>,
@@ -584,26 +550,32 @@ impl SafeAreaLayout {
     /// the keyboard covers it instead of lifting it — while the bar's
     /// fills and extensions still reach the window edge through both
     /// regions. When releasing the keyboard would leave the boundary
-    /// where it stands — the keyboard is down, already released, or the
-    /// edge carries no keyboard depth — the context keeps its recorded
-    /// boundary rather than rebuilding it from f64 inset depths (the
-    /// module seeds boundaries from f32 frames on purpose).
+    /// where it stands — the keyboard is down, already released, carries
+    /// no depth on this edge, or sits shallower than the container region
+    /// — the context keeps its recorded boundary rather than rebuilding
+    /// it from f64 inset depths (the module seeds boundaries from f32
+    /// frames on purpose).
     #[must_use]
-    pub fn releasing_keyboard(&self, edge: Edge) -> Self {
+    fn releasing_keyboard(&self, edge: Edge) -> Self {
         let mut next = self.clone();
         let EdgeBoundary::Reachable { released, .. } = self.boundary(edge) else {
             return next;
         };
         let released_with_keyboard = released.union(SafeAreaRegions::KEYBOARD);
-        // Releasing the keyboard changes nothing when the keyboard is
-        // already released or has no depth on this edge — keyboard down,
-        // or a bottom-only keyboard on the top edge: keep the recorded
-        // boundary rather than rebuilding the same position from f64 inset
-        // depths (the module seeds boundaries from f32 frames on purpose).
-        if released_with_keyboard == released || f64::from(edge.depth_in(&self.keyboard)) <= 0.0 {
+        if released_with_keyboard == released {
             return next;
         }
         let unreleased = self.unreleased_depth(edge, released_with_keyboard);
+        // Releasing the keyboard changes nothing when it is not the
+        // deepest unreleased region — keyboard down, a bottom-only
+        // keyboard on the top edge, or a keyboard shallower than the
+        // container inset: keep the recorded boundary rather than
+        // rebuilding the same position from f64 inset depths. Releasing
+        // a region can only shrink the unreleased depth, so `>=` is
+        // equality.
+        if unreleased >= self.unreleased_depth(edge, released) {
+            return next;
+        }
         let position = edge.boundary_at(self.window, unreleased);
         next.set_boundary(
             edge,
@@ -814,31 +786,10 @@ pub struct ScrollSurfaceFacts {
     pub keyboard_top: f64,
 }
 
-/// The answers [`SafeAreaLayout::chrome_split`] derives together for one
-/// edge of one `bounds` (§7.1): the bar's [`ChromeBar`], the hosted
-/// content's rect, and the content's context. A chrome container drawing
-/// bars on several edges runs [`SafeAreaLayout::chrome_splits`] instead —
-/// one call returning each bar's share and the single composed content
-/// rect and context.
-pub struct ChromeSplit {
-    /// The bar's share of the split — its band, the context its subtree
-    /// lays out against, and the dock it establishes.
-    pub bar: ChromeBar,
-    /// The remainder of `bounds` the hosted content lays out in — always
-    /// inside `bounds`, clear of both regions. Equal to `bar.rest`: a
-    /// single-edge split's content rect is the rest outside its one band.
-    pub content: kurbo::Rect,
-    /// The hosted content's context: [`SafeAreaLayout::hosted`] on
-    /// `content`'s frame plus a `Docked` boundary on the bar's edge
-    /// carrying the band's inner edge — nothing inside the content
-    /// touches, releases or extends through the edge the bar sits on.
-    pub content_area: SafeAreaLayout,
-}
-
 /// One bar's share of [`ChromeSplits`]: its band, the context its
 /// subtree lays out against, and the dock it hands the composed content
-/// context — the same per-bar answer [`ChromeSplit`] carries for the
-/// single-edge split.
+/// context. Band and context live in one type so a bar's surface or
+/// placed views can never be paired with another bar's context.
 pub struct ChromeBar {
     /// The `bounds` the split ran on — the space `band`, `rest` and
     /// [`Self::bar_area_for`]'s `rect` live in.
@@ -858,24 +809,74 @@ pub struct ChromeBar {
     /// region released on the bar's edge so the bar's fills and
     /// extensions still reach the window edge. Its frame is the chrome
     /// container's own; re-frame it per placed rect with
-    /// [`Self::bar_area_for`].
-    pub bar_area: SafeAreaLayout,
+    /// [`Self::area_for`]. `None` where the widget owns no §7.1 context —
+    /// the band then keeps `bounds`' own edge and extends nothing.
+    bar_area: Option<SafeAreaLayout>,
 }
 
 impl ChromeBar {
+    /// A bar with no §7.1 context — the shape a context-free chrome
+    /// container's split takes: the band keeps `bounds`' own edge, the
+    /// placement every context-free chrome container gets.
+    pub(crate) fn contextless(bounds: kurbo::Rect, edge: Edge, extent: f64) -> Self {
+        let (band, rest) = edge.split_band(bounds, edge.frame_edge(bounds), extent);
+        Self {
+            bounds,
+            edge,
+            inner: None,
+            band,
+            rest,
+            bar_area: None,
+        }
+    }
+
     /// The `(edge, inner-edge-in-window-space)` pair a composed
     /// [`SafeAreaLayout::chrome_content_area`] call takes — the dock this
     /// bar establishes, `None` when the split ran for no bar.
-    pub fn dock(&self) -> Option<(Edge, f64)> {
+    fn dock(&self) -> Option<(Edge, f64)> {
         self.inner.map(|inner| (self.edge, inner))
     }
 
     /// The context for a view placed at `rect` inside the band — the
     /// bar's context re-framed the way [`SafeAreaLayout::hosted_frame`]
-    /// maps `rect` inside `bounds`.
-    pub fn bar_area_for(&self, rect: kurbo::Rect) -> SafeAreaLayout {
+    /// maps `rect` inside `bounds`. `None` where the bar owns no §7.1
+    /// context.
+    pub fn area_for(&self, rect: kurbo::Rect) -> Option<SafeAreaLayout> {
         self.bar_area
-            .with_frame(self.bar_area.hosted_frame(self.bounds, rect))
+            .as_ref()
+            .map(|area| area.with_frame(area.hosted_frame(self.bounds, rect)))
+    }
+
+    /// The surface rect this bar paints — its band grown by the
+    /// touched-edge offsets of its own keyboard-released context on every
+    /// edge except `dock`'s opposite, the one boundary a bar docked at
+    /// `dock` can never reach. Because the offsets come from the bar's
+    /// context, a docked bar still extends to the window edge once the
+    /// keyboard sits deeper than the container inset (the ambient
+    /// context's boundary would then sit at the keyboard top). The mask
+    /// matters when a bar's measured frame is clamped to the widget's
+    /// bounds — a top bar on a `NavigationView` shorter than the bar
+    /// lands its inner edge on the bottom boundary and would otherwise
+    /// extend through that inset. A bar with no §7.1 context extends
+    /// nothing.
+    pub fn surface(&self, dock: Edge) -> kurbo::Rect {
+        self.surface_except(&[dock.opposite()])
+    }
+
+    /// The band grown by [`Self::area_for`]'s touched-edge offsets with
+    /// every edge in `except` cleared — the surface of a bar that must
+    /// keep some edges it touches unextended, e.g. because a decoration
+    /// the `WidgetTheme` contract receives no placement for would move
+    /// off its edge.
+    pub fn surface_except(&self, except: &[Edge]) -> kurbo::Rect {
+        grow_rect(
+            self.band,
+            except.iter().copied().fold(
+                self.area_for(self.band)
+                    .map_or_else(EdgeOffsets::default, |area| area.touched_edge_offsets()),
+                EdgeOffsets::cleared,
+            ),
+        )
     }
 }
 
@@ -883,7 +884,8 @@ impl ChromeBar {
 /// chrome container's bars (§7.1): each bar's [`ChromeBar`], the one
 /// content rect `bounds` leaves once every band is carved, and the one
 /// content context — [`SafeAreaLayout::hosted`] on the content's frame
-/// plus every bar's `Docked` boundary.
+/// plus every bar's `Docked` boundary. A one-bar container calls it as
+/// `chrome_splits::<1>` — the single content rect is then `bars[0].rest`.
 pub struct ChromeSplits<const N: usize> {
     /// Each bar's share of the split, in the order `chrome_splits` took
     /// the edges.

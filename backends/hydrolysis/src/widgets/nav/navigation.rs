@@ -583,7 +583,7 @@ pub fn render_navigation_view_parts(
         (Edge::Bottom, bottom_bar_height),
     ]);
     let [top, bottom] = &chrome.bars;
-    let (bar_rect, bottom_rect) = (top.bar, bottom.bar);
+    let (bar_rect, bottom_rect) = (top.band, bottom.band);
 
     if top_bar_height > 0.0 {
         let base_bar_height = navigation_base_bar_height_for_display_mode(display_mode, &theme);
@@ -592,8 +592,7 @@ pub fn render_navigation_view_parts(
         // the edges a top bar can touch — top, leading, trailing — to the
         // window edge; the separator stays at the bar's inner edge and
         // everything else keeps `bar_rect`.
-        let bar_surface =
-            WidgetRenderContext::chrome_surface(bar_rect, top.split.as_ref(), Edge::Top);
+        let bar_surface = top.surface(Edge::Top);
         {
             let theme = ctx.theme();
             ctx.draw_context(|draw| {
@@ -646,7 +645,7 @@ pub fn render_navigation_view_parts(
                 env,
                 leading_rect,
                 ToolbarAlignment::Leading,
-                top.split.as_ref(),
+                top,
             );
             flush_toolbar_group(
                 ctx,
@@ -654,7 +653,7 @@ pub fn render_navigation_view_parts(
                 env,
                 trailing_rect,
                 ToolbarAlignment::Trailing,
-                top.split.as_ref(),
+                top,
             );
         }
 
@@ -696,7 +695,7 @@ pub fn render_navigation_view_parts(
                 // (buttons, menus) emit like the other toolbar groups.
                 #[cfg(feature = "accessibility")]
                 ctx.renderer_mut().push_accessibility_suppression();
-                flush_title_and_subtitle(ctx, &mut state, env, title_rect, top.split.as_ref());
+                flush_title_and_subtitle(ctx, &mut state, env, title_rect, top);
                 #[cfg(feature = "accessibility")]
                 ctx.renderer_mut().pop_accessibility_suppression();
             } else {
@@ -706,7 +705,7 @@ pub fn render_navigation_view_parts(
                     env,
                     title_rect,
                     ToolbarAlignment::Center,
-                    top.split.as_ref(),
+                    top,
                 );
             }
         }
@@ -724,10 +723,7 @@ pub fn render_navigation_view_parts(
             );
             if search_rect.width() > 0.0 && search_rect.height() > 0.0 {
                 let render_ctx = ctx.render_context();
-                let field_area = top
-                    .split
-                    .as_ref()
-                    .map(|split| split.bar_area_for(search_rect));
+                let field_area = top.area_for(search_rect);
                 if let Some(field) = state.borrow_mut().search_field.as_mut() {
                     field.flush_in_rect(
                         ctx.renderer_mut(),
@@ -756,7 +752,7 @@ pub fn render_navigation_view_parts(
             env,
             bounded_proposal(content_rect),
             content_rect,
-            chrome.content_area.clone(),
+            chrome.content_area,
         );
     }
 
@@ -765,8 +761,7 @@ pub fn render_navigation_view_parts(
         // §7.1 "Chrome": the bottom bar's surface extends through the
         // regions of the edges a bottom bar can touch — bottom, leading,
         // trailing — to the window edge.
-        let bottom_surface =
-            WidgetRenderContext::chrome_surface(bottom_rect, bottom.split.as_ref(), Edge::Bottom);
+        let bottom_surface = bottom.surface(Edge::Bottom);
         {
             let theme = ctx.theme();
             ctx.draw_context(|draw| {
@@ -779,7 +774,7 @@ pub fn render_navigation_view_parts(
             env,
             bottom_rect,
             ToolbarAlignment::Center,
-            bottom.split.as_ref(),
+            bottom,
         );
     }
 }
@@ -820,7 +815,7 @@ fn flush_toolbar_group(
     env: &Environment,
     bounds: kurbo::Rect,
     alignment: ToolbarAlignment,
-    bar: Option<&crate::renderer::ChromeBar>,
+    bar: &crate::renderer::ChromeBar,
 ) {
     if group.is_empty() || bounds.width() <= 0.0 || bounds.height() <= 0.0 {
         return;
@@ -847,7 +842,7 @@ fn flush_toolbar_group(
         let rect = kurbo::Rect::new(x, y, x + width, y + height);
         if rect.width() > 0.0 && rect.height() > 0.0 {
             let render_ctx = ctx.render_context();
-            let item_area = bar.map(|split| split.bar_area_for(rect));
+            let item_area = bar.area_for(rect);
             item.flush_in_rect(
                 ctx.renderer_mut(),
                 render_ctx,
@@ -885,7 +880,7 @@ fn flush_title_and_subtitle(
     state: &mut NavigationViewRenderState,
     env: &Environment,
     bounds: kurbo::Rect,
-    bar: Option<&crate::renderer::ChromeBar>,
+    bar: &crate::renderer::ChromeBar,
 ) {
     let title_size = state.title.measure_intrinsic(ctx.renderer_mut(), env);
     let subtitle_size = if state.subtitle_present {
@@ -896,7 +891,7 @@ fn flush_title_and_subtitle(
     let (title_rect, subtitle_rect) = title_and_subtitle_rects(bounds, title_size, subtitle_size);
     if title_rect.height() > 0.0 {
         let render_ctx = ctx.render_context();
-        let title_area = bar.map(|split| split.bar_area_for(title_rect));
+        let title_area = bar.area_for(title_rect);
         state.title.flush_in_rect(
             ctx.renderer_mut(),
             render_ctx,
@@ -908,7 +903,7 @@ fn flush_title_and_subtitle(
     }
     if state.subtitle_present && subtitle_rect.height() > 0.0 {
         let render_ctx = ctx.render_context();
-        let subtitle_area = bar.map(|split| split.bar_area_for(subtitle_rect));
+        let subtitle_area = bar.area_for(subtitle_rect);
         state.subtitle.flush_in_rect(
             ctx.renderer_mut(),
             render_ctx,
