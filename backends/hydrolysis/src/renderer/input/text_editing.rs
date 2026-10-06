@@ -1406,8 +1406,8 @@ impl SemanticCore {
         }
         // The transition itself is window bookkeeping — the caret deadline,
         // the focus-binding writes and the traversal anchor live on the
-        // window's state, not on whichever node the key resolves to (a key
-        // with no target resolves to none, and the wake must still land).
+        // window's state, not on the node that owns the key, so the window
+        // is marked as well.
         self.context_mark_layout();
         true
     }

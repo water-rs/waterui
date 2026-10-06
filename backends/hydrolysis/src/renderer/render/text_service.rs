@@ -16,7 +16,15 @@
 //! measurement shape identical text through one cache.
 
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
-#[allow(clippy::wildcard_imports)]
+// Clippy exempts `super::*` in a test build, so the expectation holds only
+// outside one.
+#[cfg_attr(
+    not(test),
+    expect(
+        clippy::wildcard_imports,
+        reason = "the text service is a split-out part of the renderer module and shares its imports"
+    )
+)]
 use super::*;
 #[cfg(test)]
 use crate::renderer::{HydroState, HydrolysisRenderer};

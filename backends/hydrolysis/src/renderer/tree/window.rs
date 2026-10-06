@@ -479,6 +479,44 @@ impl SemanticCore {
 }
 
 impl HydrolysisRenderer {
+    /// Records every presentation under its host cell — the text context
+    /// menu overlay, the open `.context_menu` presentation and the anchored
+    /// overlays — after the window content's flush. Each host's record
+    /// retires what its previous record registered, so a closed
+    /// presentation's occluders and targets leave with it. Every window
+    /// pass — the capture paths included — runs it, so no path leaves a
+    /// host's registrations from an earlier frame behind.
+    fn record_presentation_hosts(
+        &mut self,
+        env: &Environment,
+        transform: kurbo::Affine,
+        safe_area: &SafeAreaLayout,
+    ) {
+        // The overlay-mode text context menu re-encodes with the frame it
+        // floats over; drawing it only on the one-time build path would
+        // leave it visible for a single frame.
+        let host = self.core.presentation_hosts.text_overlay.clone();
+        self.with_reader(&host, ReaderPhase::Record, |renderer| {
+            renderer.render_active_text_context_menu_overlay(env, transform);
+        });
+        // Same for an open `.context_menu` presentation: its dim backdrop,
+        // lifted preview and anchored accessory re-encode per frame and the
+        // pass is where dismiss_requests/menu-close is observed.
+        let host = self.core.presentation_hosts.context_menu.clone();
+        self.with_reader(&host, ReaderPhase::Record, |renderer| {
+            renderer.render_context_menu_presentation(transform, safe_area);
+        });
+        // Anchored overlays (`.anchored_overlay`) draw above all content:
+        // the flush registered each anchor's live bounds, so the placement
+        // contract re-runs per frame and the overlay follows moves/resizes.
+        let host = self.core.presentation_hosts.anchored.clone();
+        self.with_reader(&host, ReaderPhase::Record, |renderer| {
+            renderer.render_anchored_overlays(transform, safe_area);
+        });
+    }
+}
+
+impl HydrolysisRenderer {
     /// Build the retained tree before its first sized frame, so statically
     /// reachable nodes exist before the first render target is presented.
     #[cfg(test)]
@@ -510,20 +548,6 @@ impl HydrolysisRenderer {
         transform: kurbo::Affine,
         hit_transform: kurbo::Affine,
     ) {
-        self.capture_window_tree_with_root(content, env, bounds, transform, hit_transform);
-    }
-
-    /// `capture_window_tree` returning the frame's root §7.1 context — the
-    /// runner needs it to present context menus against the window's released
-    /// regions, but `SafeAreaLayout` itself is not public surface.
-    pub(crate) fn capture_window_tree_with_root(
-        &mut self,
-        content: AnyView,
-        env: &Environment,
-        bounds: kurbo::Rect,
-        transform: kurbo::Affine,
-        hit_transform: kurbo::Affine,
-    ) -> SafeAreaLayout {
         let _flush_span = tracing::debug_span!("hydrolysis_capture_window_tree").entered();
         let (content_rect, size, safe_area) = window_root_layout(self, env, bounds, transform);
         let proposal = ProposalSize::new(Some(size.width), Some(size.height));
@@ -568,17 +592,14 @@ impl HydrolysisRenderer {
             self.with_reader(&root, ReaderPhase::Record, |renderer| {
                 tree.flush(renderer, ctx, env, hit_delta);
             });
-            let host = self.core.presentation_hosts.anchored.clone();
-            self.with_reader(&host, ReaderPhase::Record, |renderer| {
-                renderer.render_anchored_overlays(transform, &safe_area);
-            });
+            self.record_presentation_hosts(env, transform, &safe_area);
             self.core.finish_emit_pass();
             #[cfg(feature = "frame-profile")]
             {
                 self.frame_stage_times.encode += encode_started_at.elapsed();
             }
             self.render_tree = Some(tree);
-            return safe_area;
+            return;
         }
         #[cfg(feature = "frame-profile")]
         {
@@ -608,17 +629,13 @@ impl HydrolysisRenderer {
         self.with_reader(&root, ReaderPhase::Record, |renderer| {
             node.flush(renderer, ctx, env, hit_delta);
         });
-        let host = self.core.presentation_hosts.anchored.clone();
-        self.with_reader(&host, ReaderPhase::Record, |renderer| {
-            renderer.render_anchored_overlays(transform, &safe_area);
-        });
+        self.record_presentation_hosts(env, transform, &safe_area);
         self.core.finish_emit_pass();
         #[cfg(feature = "frame-profile")]
         {
             self.frame_stage_times.encode += encode_started_at.elapsed();
         }
         self.render_tree = Some(node);
-        safe_area
     }
 
     /// Apply pending structural changes, run layout, and re-encode the retained
@@ -698,28 +715,7 @@ impl HydrolysisRenderer {
         self.with_reader(&root, ReaderPhase::Record, |renderer| {
             tree.flush(renderer, ctx, env, hit_delta);
         });
-        // The overlay-mode text context menu re-encodes with the frame it floats
-        // over; drawing it only on the one-time build path would leave it visible
-        // for a single frame. Each presentation records under its host cell, so
-        // its registrations retire when the host re-records or closes.
-        let host = self.core.presentation_hosts.text_overlay.clone();
-        self.with_reader(&host, ReaderPhase::Record, |renderer| {
-            renderer.render_active_text_context_menu_overlay(env, transform);
-        });
-        // Same for an open `.context_menu` presentation: its dim backdrop,
-        // lifted preview and anchored accessory re-encode per frame and the
-        // pass is where dismiss_requests/menu-close is observed.
-        let host = self.core.presentation_hosts.context_menu.clone();
-        self.with_reader(&host, ReaderPhase::Record, |renderer| {
-            renderer.render_context_menu_presentation(transform, &safe_area);
-        });
-        // Anchored overlays (`.anchored_overlay`) draw above all content: the
-        // flush registered each anchor's live bounds, so the placement
-        // contract re-runs per frame and the overlay follows moves/resizes.
-        let host = self.core.presentation_hosts.anchored.clone();
-        self.with_reader(&host, ReaderPhase::Record, |renderer| {
-            renderer.render_anchored_overlays(transform, &safe_area);
-        });
+        self.record_presentation_hosts(env, transform, &safe_area);
         self.core.finish_emit_pass();
         self.flush_scene_layer();
         drop(encode_span);

@@ -209,7 +209,12 @@ impl<'a> WidgetRenderContext<'a> {
     }
 
     pub(crate) fn push_layer_rect(&mut self, alpha: f32, clip: kurbo::Rect) {
-        self.renderer.push_layer_rect(alpha, self.local, clip);
+        self.renderer.push_layer_rect(
+            alpha,
+            self.local,
+            clip,
+            crate::renderer::ScopeDelta::RECORD_SPACE,
+        );
     }
 
     pub(crate) fn pop_layer(&mut self) {

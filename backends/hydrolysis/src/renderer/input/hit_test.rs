@@ -319,6 +319,9 @@ pub struct HitTestState {
     /// [`SemanticCore::next_gesture_deadline`].
     pub(crate) pending_context_menu_hold: Option<PendingContextMenuHold>,
     pub(crate) keyboard_focus: Option<InteractionKey>,
+    /// The cell owning `keyboard_focus`'s target, captured when focus
+    /// arrived so the move away marks it even once the target is gone.
+    pub(crate) keyboard_focus_owner: Weak<crate::renderer::NodeCell>,
     pub(crate) keyboard_focus_binding: Option<Binding<bool>>,
     pub(crate) keyboard_focus_visible: bool,
     /// The `OnKeyPress` scopes enclosing every registration this frame —
@@ -430,9 +433,14 @@ impl SemanticCore {
     /// subtree. Taking the cell's bucket is the whole purge: entries live
     /// per owner, so the retire is O(its count) with no registry sweep.
     pub(crate) fn purge_registrations(&self, cell: &Rc<crate::renderer::NodeCell>) {
-        if cell.registrations.borrow_mut().take().is_some() {
-            self.retained.stale.set(true);
+        let Some(regs) = cell.registrations.borrow_mut().take() else {
+            return;
+        };
+        for entry in &regs.scroll_targets {
+            self.retained
+                .release_scroll_owner(entry.payload.handle.cache_key(), cell);
         }
+        self.retained.stale.set(true);
     }
 
     /// Rebuilds the flat lists consumers read from the retained
@@ -440,13 +448,25 @@ impl SemanticCore {
     /// resolves its region through the placement chain it was anchored at,
     /// and the merged paint sort assigns the `order` rank — the same
     /// globally comparable sequence dev's per-frame registration counter
-    /// minted. Entries on an unhittable chain gate out exactly the kinds
-    /// dev truncated (pointer, gestures, cursor, hover, scroll, text and
-    /// embedded inputs); drop, context-menu, back, modal, occlusions and
-    /// occluders resolve through the paint chain, and platform views place
-    /// unconditionally, staging into `materialized_platform_views` for the
-    /// one frame-end `record` step. No-op while neither a registry write
-    /// nor a placement write has landed since the last materialization.
+    /// minted. Each kind passes the gate of its [`HitClasses`] on the
+    /// structural chain, keeping dev's two mechanisms distinct:
+    ///
+    /// - a *removal* — `Hittable(false)` truncated the input kinds
+    ///   (pointer targets with their occluder and scrollbar presses,
+    ///   gestures, cursor, hover, scroll, text and embedded inputs); the
+    ///   context-menu preview truncated those plus drop, context-menu and
+    ///   native-occlusion entries. A hovered target a removal drops has its
+    ///   hover cleared here, as the truncation did.
+    /// - the *alpha gate* — dev's `hit_test_opacity` (inactive pages,
+    ///   exiting overlays, entries mid-transition) withheld the input
+    ///   kinds, drop and context-menu targets and gesture occluders.
+    ///
+    /// Back targets, modal scopes and platform views pass no gate. Drop,
+    /// context-menu, occluder, occlusion and platform-view geometry resolves
+    /// through the paint chain; platform views stage into
+    /// `materialized_platform_views` for the one frame-end `record` step.
+    /// No-op while neither a registry write nor a placement write has
+    /// landed since the last materialization.
     #[expect(
         clippy::too_many_lines,
         reason = "each kind materializes with the same resolve-and-rank pattern; splitting it would hide that the lists are one merged order"
@@ -477,13 +497,18 @@ impl SemanticCore {
         if !stale && epoch == self.materialized_epoch {
             return;
         }
-        // The paint chain's alpha gate — `Hittable(false)` never enters
-        // these resolutions, exactly the kinds dev kept under its
-        // truncation (drop, menus, back, modal, occlusions, occluders).
-        let paint_gate = |placement: &Placement| -> Option<(kurbo::Affine, Option<kurbo::Rect>)> {
-            let (transform, clip, alpha) = placement.resolved_chain(false);
-            (alpha > HIT_TEST_ALPHA_THRESHOLD).then_some((transform, clip))
+        // A kind the structural chain admits resolves its geometry through
+        // the paint chain.
+        let paint_gate = |placement: &Placement,
+                          class: HitClasses|
+         -> Option<(kurbo::Affine, Option<kurbo::Rect>)> {
+            placement.admits(class).then(|| {
+                let (transform, clip, _) = placement.resolved_chain(false);
+                (transform, clip)
+            })
         };
+        let now = self.frame_instant();
+        let mut cleared_hover: Vec<Weak<crate::renderer::NodeCell>> = Vec::new();
 
         self.materialized_epoch = epoch;
 
@@ -541,7 +566,9 @@ impl SemanticCore {
             }
 
             for entry in &regs.gesture_occluders {
-                if let Some((transform, clip)) = paint_gate(&entry.region.placement) {
+                if let Some((transform, clip)) =
+                    paint_gate(&entry.region.placement, HitClasses::GESTURE_OCCLUDER)
+                {
                     let rect = crate::renderer::transformed_rect(transform, entry.region.local);
                     let rect = clip.map_or(rect, |clip| rect.intersect(clip));
                     orders.push(entry.order.clone());
@@ -566,14 +593,28 @@ impl SemanticCore {
             // the engine drops the slot's state at frame end, so staging
             // an unbound slot would leave a target that can only panic on
             // read. Entries gated out by the hit chain simply miss the
-            // flat list — the hover sync then clears their hover state,
-            // matching dev's truncation.
+            // flat list; a target a removal gate dropped has its hover
+            // cleared below, matching dev's truncation.
             regs.hover_targets.retain(|entry| {
                 self.hit_test
                     .interaction
                     .key_active(&entry.payload.slot.key)
             });
             for entry in &regs.hover_targets {
+                if entry.region.placement.removes(HitClasses::INPUT) {
+                    let slot = &entry.payload.slot;
+                    let handles = entry.payload.handles.as_ref();
+                    if self.hit_test.interaction.hovering(slot)
+                        || handles.is_some_and(|handles| handles.hovering())
+                    {
+                        self.hit_test.interaction.set_hovering(slot, false);
+                        if let Some(handles) = handles {
+                            handles.set_hovering(false, now);
+                        }
+                        cleared_hover.push(entry.owner.clone());
+                    }
+                    continue;
+                }
                 if let Some(resolved) = entry.region.placement.resolve_hit(entry.region.local) {
                     let mut payload = entry.payload.clone();
                     payload.bounds = resolved.rect;
@@ -587,7 +628,9 @@ impl SemanticCore {
             }
 
             for entry in &regs.drop_targets {
-                if let Some((transform, clip)) = paint_gate(&entry.region.placement) {
+                if let Some((transform, clip)) =
+                    paint_gate(&entry.region.placement, HitClasses::DROP)
+                {
                     let mut payload = entry.payload.clone();
                     payload.bounds =
                         crate::renderer::transformed_rect(transform, entry.region.local);
@@ -606,7 +649,9 @@ impl SemanticCore {
             }
 
             for entry in &regs.context_menu_targets {
-                if let Some((transform, clip)) = paint_gate(&entry.region.placement) {
+                if let Some((transform, clip)) =
+                    paint_gate(&entry.region.placement, HitClasses::CONTEXT_MENU)
+                {
                     let mut payload = entry.payload.clone();
                     payload.bounds =
                         crate::renderer::transformed_rect(transform, entry.region.local);
@@ -639,12 +684,12 @@ impl SemanticCore {
 
             // Text inputs keep four rectangles (field, cursor area, text
             // bounds, text clip) under the hit chain plus the clip
-            // intersect and the alpha gate.
+            // intersect, behind the input gate.
             for entry in &regs.text_input_targets {
-                let (transform, clip, alpha) = entry.region.placement.resolved_chain(true);
-                if alpha <= HIT_TEST_ALPHA_THRESHOLD {
+                if !entry.region.placement.admits(HitClasses::INPUT) {
                     continue;
                 }
+                let (transform, clip, _) = entry.region.placement.resolved_chain(true);
                 let mut target = entry.payload.clone();
                 let local = entry.region.local;
                 target.bounds = crate::renderer::transformed_rect(transform, local);
@@ -673,10 +718,10 @@ impl SemanticCore {
             // Embedded input targets resolve to the inverse transform +
             // hit clip.
             for entry in &regs.embedded_input_targets {
-                let (transform, clip, alpha) = entry.region.placement.resolved_chain(true);
-                if alpha <= HIT_TEST_ALPHA_THRESHOLD {
+                if !entry.region.placement.admits(HitClasses::INPUT) {
                     continue;
                 }
+                let (transform, clip, _) = entry.region.placement.resolved_chain(true);
                 let mut target = entry.payload.clone();
                 target.inverse_transform = transform.inverse();
                 target.hit_clip = clip;
@@ -689,7 +734,9 @@ impl SemanticCore {
             }
 
             for entry in &regs.native_view_occlusions {
-                if let Some((transform, clip)) = paint_gate(&entry.region.placement) {
+                if let Some((transform, clip)) =
+                    paint_gate(&entry.region.placement, HitClasses::NATIVE_OCCLUSION)
+                {
                     let mut payload = entry.payload.clone();
                     payload.bounds =
                         crate::renderer::transformed_rect(transform, entry.region.local);
@@ -727,27 +774,29 @@ impl SemanticCore {
 
             // Back targets carry no geometry — order is their only
             // resolved datum, so they stage into the rank sort like
-            // everything else. The paint chain gates them, never the hit
-            // chain: an unhittable scope must not unbind Back.
+            // everything else. No gate applies: dev registered them under
+            // neither its truncation nor its hit opacity.
             for entry in &regs.back_targets {
-                if paint_gate(&entry.region.placement).is_some() {
-                    orders.push(entry.order.clone());
-                    staged_back.push(Staged {
-                        entry_order: entry.order.clone(),
-                        payload: entry.payload.clone(),
-                        window: entry.region.local,
-                    });
-                }
+                orders.push(entry.order.clone());
+                staged_back.push(Staged {
+                    entry_order: entry.order.clone(),
+                    payload: entry.payload.clone(),
+                    window: entry.region.local,
+                });
             }
 
-            // Modal scope: the frontmost entry on a live paint chain.
+            // Modal scope: the frontmost entry, ungated as on dev.
             for entry in &regs.modal_scope {
-                if paint_gate(&entry.region.placement).is_some()
-                    && modal.as_ref().is_none_or(|(order, _)| entry.order > *order)
-                {
+                if modal.as_ref().is_none_or(|(order, _)| entry.order > *order) {
                     modal = Some((entry.order.clone(), entry.payload.clone()));
                 }
             }
+        }
+
+        // A hover a removal gate cleared repaints its owner, the same mark
+        // `HoverSync` raises for a hover change.
+        for owner in cleared_hover {
+            Self::mark_owner(&owner, Dirty::LAYOUT);
         }
 
         // The merged paint sort gives every materialized `order` — the same
@@ -929,6 +978,35 @@ impl SemanticCore {
         // materialization: a target whose owner retired or gated out has
         // left the flat list, so the stale drag is dropped then.
         self.ensure_active_pointer_drag_target_is_live();
+        self.end_orphaned_touch_input();
+    }
+
+    /// Ends the touch input that outlives its target: a fling whose scroll
+    /// view no registered `ScrollTarget` holds any more, and a delayed
+    /// press whose key no live node binds. Both end with their owner, so
+    /// the next fling tick or release never resolves a retired owner; the
+    /// press drops the tap it armed with it, as a touch move cancels one.
+    fn end_orphaned_touch_input(&mut self) {
+        if self.hit_test.touch_fling.as_ref().is_some_and(|fling| {
+            self.try_scroll_target_owner(fling.handle().cache_key())
+                .is_none()
+        }) {
+            self.hit_test.touch_fling = None;
+        }
+        if self
+            .hit_test
+            .pending_pointer_press
+            .as_ref()
+            .is_some_and(|pending| {
+                !self.hit_test.interaction.key_active(&pending.slot.key)
+                    || self.try_key_owner(&pending.slot.key).is_none()
+            })
+        {
+            self.hit_test.pending_pointer_press = None;
+            self.hit_test.active_pointer_target = None;
+            self.hit_test.active_press_bounds = None;
+            self.hit_test.active_press_origin = None;
+        }
     }
 }
 
@@ -2641,9 +2719,23 @@ impl SemanticCore {
             .or(leaving)
             .or(self.hit_test.traversal_anchor);
         self.hit_test.keyboard_focus_visible = visible;
+        // Both ends of the move repaint: the owner focus left drops its
+        // focus visuals, the one it reached takes them. The leaving owner
+        // was captured when focus arrived, so a target removed since still
+        // resolves (a dead owner has nothing left to wake).
+        let left_owner = core::mem::take(&mut self.hit_test.keyboard_focus_owner);
         if let Some(key) = self.hit_test.keyboard_focus.clone() {
-            self.mark_key_owner(&key, Dirty::LAYOUT);
+            // A semantic-only focusable (the semantic runtime registers no
+            // hit targets) is owned by the cell that emitted its node.
+            let owner = self.try_key_owner(&key);
+            #[cfg(feature = "accessibility")]
+            let owner = owner.or_else(|| node.and_then(|node| self.live_node_owner(node)));
+            let owner = owner
+                .unwrap_or_else(|| panic!("hydrolysis renderer: focused key {key:?} has no owner"));
+            Self::mark_owner(&owner, Dirty::LAYOUT);
+            self.hit_test.keyboard_focus_owner = owner;
         }
+        Self::mark_owner(&left_owner, Dirty::LAYOUT);
         // The transition itself is window bookkeeping — same split as
         // `set_focused_text_input_key`: the key's owner takes the focus
         // visuals, the context takes the deadline and binding writes.
@@ -4030,13 +4122,7 @@ impl SemanticCore {
     /// dispatch runs outside any record, so it looks the owner up through
     /// the registry rather than asking the reader.
     pub(crate) fn begin_scrollbar_drag(&mut self, key: usize, grab: f64) {
-        let owner = self
-            .hit_test
-            .scroll_targets
-            .iter()
-            .find(|target| target.handle.cache_key() == key)
-            .map(|target| target.owner.clone())
-            .unwrap_or_default();
+        let owner = self.scroll_target_owner(key);
         self.hit_test.active_scrollbar_drag = Some(ScrollbarDrag { key, grab, owner });
     }
 
@@ -4566,15 +4652,15 @@ impl SemanticCore {
         // The registering node's cell — this call runs inside the scroll
         // node's record under its reader, so `reader_cell()` is the owner a
         // smoothed scroll tick marks.
-        let scroll_owner = self
-            .reader_cell()
-            .map_or_else(Weak::new, |cell| Rc::downgrade(&cell));
+        let scroll_owner = self.registration_owner();
+        self.retained
+            .bind_scroll_owner(handle.cache_key(), &scroll_owner);
         self.register_retained(
             ScrollTarget {
                 bounds,
                 action: Rc::new(RefCell::new(action)),
                 handle,
-                owner: scroll_owner,
+                owner: Rc::downgrade(&scroll_owner),
                 depth: self.render_depth,
                 order: 0,
             },
@@ -4618,6 +4704,12 @@ impl SemanticCore {
         config: Option<crate::platform::TouchScrollConfig>,
     ) {
         self.hit_test.touch_scroll_config = config;
+    }
+
+    /// Whether a touch press is still waiting out its touch delay.
+    #[cfg(test)]
+    pub(crate) const fn has_pending_pointer_press(&self) -> bool {
+        self.hit_test.pending_pointer_press.is_some()
     }
 
     /// Whether a touch fling is still decelerating toward rest.

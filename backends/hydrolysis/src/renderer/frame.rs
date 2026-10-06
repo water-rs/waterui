@@ -402,12 +402,29 @@ impl HydrolysisRenderer {
         self.scene.record_picture(ctx.local, body);
     }
 
+    /// Opens a rect clip/opacity layer. `alpha` and `transform` are the
+    /// paint group's; `scope` is the placement scope's delta in the
+    /// recording node's space, passed by the caller and never derived from
+    /// `transform`.
     pub(crate) fn push_layer_rect(
         &mut self,
         alpha: f32,
         transform: kurbo::Affine,
         rect: kurbo::Rect,
+        scope: crate::renderer::ScopeDelta,
     ) {
+        self.push_scene_layer_rect(alpha, transform, rect);
+        // The same clip paint bounds the hit regions flushed inside the
+        // layer: a row straddling a scroll viewport keeps only the part of
+        // its hit bounds that is actually painted (water-rs/hydrolysis#252).
+        // The placement scope carries it — resolve intersects the clip
+        // chain instead of a per-frame hit-clip stack.
+        self.push_placement_scope(scope, Some(rect));
+    }
+
+    /// The paint half of [`Self::push_layer_rect`]: the scene group and its
+    /// compositor layer, with no placement scope.
+    fn push_scene_layer_rect(&mut self, alpha: f32, transform: kurbo::Affine, rect: kurbo::Rect) {
         self.record_clip_layer_push();
         self.scene.push_group(
             peniko::Fill::NonZero,
@@ -416,15 +433,6 @@ impl HydrolysisRenderer {
             transform,
             &rect,
         );
-        // The same clip paint bounds the hit regions flushed inside the
-        // layer: a row straddling a scroll viewport keeps only the part of
-        // its hit bounds that is actually painted (water-rs/hydrolysis#252).
-        // The placement scope carries it — resolve intersects the clip
-        // chain instead of a per-frame hit-clip stack — and `transform`
-        // (the space the children record into, here the recording's
-        // accumulated local) so the scope resolves where they draw; the
-        // layer's alpha gates their hit tests the way it fades their paint.
-        self.push_placement_scope(transform, Some(rect), alpha);
         self.compositor.active_scene_layers.push(ActiveSceneLayer {
             alpha,
             transform,
@@ -432,11 +440,20 @@ impl HydrolysisRenderer {
         });
     }
 
+    fn pop_scene_layer(&mut self) {
+        self.scene.pop_scope();
+        self.compositor
+            .active_scene_layers
+            .pop()
+            .expect("hydrolysis renderer: pop_layer underflow");
+    }
+
     pub(super) fn push_layer_path(
         &mut self,
         alpha: f32,
         transform: kurbo::Affine,
         path: kurbo::BezPath,
+        scope: crate::renderer::ScopeDelta,
     ) {
         self.record_clip_layer_push();
         self.scene.push_group(
@@ -446,7 +463,7 @@ impl HydrolysisRenderer {
             transform,
             &path,
         );
-        self.push_placement_scope(transform, Some(path.bounding_box()), alpha);
+        self.push_placement_scope(scope, Some(path.bounding_box()));
         self.compositor.active_scene_layers.push(ActiveSceneLayer {
             alpha,
             transform,
@@ -454,6 +471,10 @@ impl HydrolysisRenderer {
         });
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the paint group, its rounded clip and the placement scope are one layer push"
+    )]
     pub(super) fn push_layer_rounded_rect(
         &mut self,
         alpha: f32,
@@ -462,6 +483,7 @@ impl HydrolysisRenderer {
         rect: kurbo::Rect,
         corner_width: f64,
         corner_height: f64,
+        scope: crate::renderer::ScopeDelta,
     ) {
         self.record_clip_layer_push();
         self.scene.push_group(
@@ -471,7 +493,7 @@ impl HydrolysisRenderer {
             transform,
             &path,
         );
-        self.push_placement_scope(transform, Some(rect), alpha);
+        self.push_placement_scope(scope, Some(rect));
         self.compositor.active_scene_layers.push(ActiveSceneLayer {
             alpha,
             transform,
@@ -485,12 +507,22 @@ impl HydrolysisRenderer {
     }
 
     pub(crate) fn pop_layer(&mut self) {
-        self.scene.pop_scope();
-        self.compositor
-            .active_scene_layers
-            .pop()
-            .expect("hydrolysis renderer: pop_layer underflow");
+        self.pop_scene_layer();
         self.pop_placement_scope();
+    }
+
+    /// A rect clip/opacity group around paint-only content — replayed
+    /// layers that register nothing — so no placement scope opens.
+    pub(super) fn with_paint_clip_rect(
+        &mut self,
+        alpha: f32,
+        transform: kurbo::Affine,
+        rect: kurbo::Rect,
+        f: impl FnOnce(&mut Self),
+    ) {
+        self.push_scene_layer_rect(alpha, transform, rect);
+        f(self);
+        self.pop_scene_layer();
     }
 
     /// Opens a rect clip/opacity scope on the recording, runs `f` inside it,
@@ -502,9 +534,10 @@ impl HydrolysisRenderer {
         alpha: f32,
         transform: kurbo::Affine,
         rect: kurbo::Rect,
+        scope: crate::renderer::ScopeDelta,
         f: impl FnOnce(&mut Self),
     ) {
-        self.push_layer_rect(alpha, transform, rect);
+        self.push_layer_rect(alpha, transform, rect, scope);
         f(self);
         self.pop_layer();
     }
@@ -515,15 +548,19 @@ impl HydrolysisRenderer {
         alpha: f32,
         transform: kurbo::Affine,
         path: kurbo::BezPath,
+        scope: crate::renderer::ScopeDelta,
         f: impl FnOnce(&mut Self),
     ) {
-        self.push_layer_path(alpha, transform, path);
+        self.push_layer_path(alpha, transform, path, scope);
         f(self);
         self.pop_layer();
     }
 
     /// The [`Self::with_clip_rect_scope`] pairing for a rounded-rect clip.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the paint group, its rounded clip and the placement scope are one layer push"
+    )]
     pub(super) fn with_clip_rounded_rect_scope(
         &mut self,
         alpha: f32,
@@ -532,9 +569,18 @@ impl HydrolysisRenderer {
         rect: kurbo::Rect,
         corner_width: f64,
         corner_height: f64,
+        scope: crate::renderer::ScopeDelta,
         f: impl FnOnce(&mut Self),
     ) {
-        self.push_layer_rounded_rect(alpha, transform, path, rect, corner_width, corner_height);
+        self.push_layer_rounded_rect(
+            alpha,
+            transform,
+            path,
+            rect,
+            corner_width,
+            corner_height,
+            scope,
+        );
         f(self);
         self.pop_layer();
     }

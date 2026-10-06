@@ -222,7 +222,7 @@ impl HydrolysisRenderer {
             // presented; one with nothing left animating discards it — the
             // overlay draws no frame past its last animation.
             let scratch = exiting.then(|| {
-                self.push_unhittable_scope();
+                self.push_hit_gate_scope(crate::renderer::HitGate::Inactive);
                 (
                     core::mem::take(&mut self.scene),
                     core::mem::take(&mut self.compositor.render_layers),

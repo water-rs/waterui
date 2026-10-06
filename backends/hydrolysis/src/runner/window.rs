@@ -613,21 +613,16 @@ fn build_window_scene<P: PlatformWindow>(
     phases.build_content += build_content_started_at.elapsed();
     let _ = drain_local_tasks();
     let scene_dispatch_started_at = Instant::now();
-    let safe_area = runtime.renderer.capture_window_tree_with_root(
+    // The capture records the presentation hosts too — an open text
+    // context menu or `.context_menu` presentation builds and places its
+    // sub-views there, under its host cell.
+    runtime.renderer.capture_window_tree(
         content,
         env,
         bounds,
         root_transform,
         kurbo::Affine::IDENTITY,
     );
-    runtime
-        .renderer
-        .render_active_text_context_menu_overlay(env, root_transform);
-    // The same for an open `.context_menu` presentation — this one-time build
-    // path is where its sub-views are first built and placed.
-    runtime
-        .renderer
-        .render_context_menu_presentation(root_transform, &safe_area);
     phases.scene_dispatch += scene_dispatch_started_at.elapsed();
     let scene_finish_started_at = Instant::now();
     runtime.renderer.finish_rebuild_frame();

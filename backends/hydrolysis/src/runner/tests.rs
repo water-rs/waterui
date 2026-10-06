@@ -124,12 +124,11 @@ fn text_caret_tick_wakes_redraw_without_layout_rebuild() {
     runtime.renderer.set_text_caret_motion(motion);
     // Focus by identity: the caret animates off the focused field's identity, and
     // this runtime emits no text-input targets, so there is no position to name.
+    // Every focused key has an owner; the root cell owns this one.
     let focused_field = Rc::new(());
-    assert!(
-        runtime
-            .renderer
-            .set_focused_text_input_key(Some(InteractionKey::for_rc(&focused_field, 0)))
-    );
+    let key = InteractionKey::for_rc(&focused_field, 0);
+    runtime.renderer.bind_root_owned_key(&key);
+    assert!(runtime.renderer.set_focused_text_input_key(Some(key)));
     assert!(runtime.renderer.root_is_dirty());
     assert!(
         !runtime
@@ -235,11 +234,9 @@ fn hidden_window_reports_no_deadline_for_an_armed_animation() {
     runtime.renderer.set_frame_instant(now);
     runtime.renderer.set_text_caret_motion(motion);
     let focused_field = Rc::new(());
-    assert!(
-        runtime
-            .renderer
-            .set_focused_text_input_key(Some(InteractionKey::for_rc(&focused_field, 0)))
-    );
+    let key = InteractionKey::for_rc(&focused_field, 0);
+    runtime.renderer.bind_root_owned_key(&key);
+    assert!(runtime.renderer.set_focused_text_input_key(Some(key)));
 
     let env = Environment::new();
     let deadline = now
@@ -990,10 +987,78 @@ fn drive_until_idle(
 /// stable so the target sits a predictable distance away.
 const ROW_HEIGHT_FOR_JUMP_TEST: f32 = 24.0;
 
+/// The one-time build path records the presentation hosts once, inside
+/// the window capture: a `.context_menu` presentation already open when
+/// the tree is first built mounts there under its host cell — painted and
+/// registered once, never again outside a reader.
+#[test]
+fn an_open_context_menu_presentation_builds_once_through_the_build_path() {
+    use waterui_controls::menu::{CommandExt as _, ResolvedMenuItem};
+
+    let mut runtime = sized_test_runtime_window(320, 240);
+    let mut env = crate::renderer::tests::test_environment();
+    env.insert(crate::renderer::HydrolysisWindowOrigin { x: 0.0, y: 0.0 });
+    let items = vec![ResolvedMenuItem::Command(
+        "Copy".action(|| {}).resolve(&env),
+    )];
+    let nodes = crate::renderer::popup_menu_nodes(&items, &env);
+    let metrics = runtime.renderer.theme().text_context_menu_metrics();
+    assert!(runtime.renderer.show_context_menu(
+        nodes,
+        None,
+        waterui_core::layout::Point::new(40.0, 40.0),
+        metrics,
+        &env,
+        true,
+    ));
+    assert!(
+        !runtime.renderer.has_render_tree(),
+        "the menu must be open before the first build"
+    );
+
+    assert!(render_window(&mut runtime, &env, &mut || false));
+    assert!(runtime.renderer.has_render_tree());
+    assert!(
+        runtime
+            .renderer
+            .context_menu_presentation_frames()
+            .is_some(),
+        "the drawn presentation mounts on the build frame"
+    );
+    let built_targets = runtime.renderer.registries().pointer_targets.len();
+    let built_occluders = runtime.renderer.registries().gesture_occluders.len();
+
+    // A later refresh records the hosts through the ordinary path; the
+    // build frame registered exactly what it does.
+    runtime.renderer.root_cell().mark_layout();
+    runtime.request_refresh();
+    assert!(render_window(&mut runtime, &env, &mut || false));
+    assert!(
+        runtime
+            .renderer
+            .context_menu_presentation_frames()
+            .is_some()
+    );
+    assert_eq!(
+        runtime.renderer.registries().pointer_targets.len(),
+        built_targets,
+        "the build frame must register the presentation's targets once"
+    );
+    assert_eq!(
+        runtime.renderer.registries().gesture_occluders.len(),
+        built_occluders,
+        "the build frame must register the presentation's occluders once"
+    );
+}
+
 fn test_runtime_window() -> RuntimeWindow<HeadlessPlatformWindow> {
+    sized_test_runtime_window(16, 16)
+}
+
+fn sized_test_runtime_window(width: u32, height: u32) -> RuntimeWindow<HeadlessPlatformWindow> {
     let window = Window::new("", binding(WindowState::Normal), || ());
     let mut platform =
-        HeadlessPlatformWindow::new_for_tests(16, 16, wgpu::TextureFormat::Rgba8Unorm);
+        HeadlessPlatformWindow::new_for_tests(width, height, wgpu::TextureFormat::Rgba8Unorm);
     platform.apply_properties(&window);
     let renderer = HydrolysisRenderer::new(
         Rc::new(MinimalTestTheme::default()),

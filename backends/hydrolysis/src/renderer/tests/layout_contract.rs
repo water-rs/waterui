@@ -194,6 +194,16 @@ fn equal_bounds_keep_the_selected_proposal_after_other_probes() {
     }
 }
 
+/// Runs `f` inside the root's record: a sub-view flush always runs under a
+/// recording reader, which owns what it registers and anchors its placement.
+fn under_root_record<R>(
+    renderer: &mut HydrolysisRenderer,
+    f: impl FnOnce(&mut HydrolysisRenderer) -> R,
+) -> R {
+    let root = renderer.core.root_core.clone();
+    renderer.with_reader(&root, crate::renderer::ReaderPhase::Record, f)
+}
+
 #[test]
 fn retained_scene_capture_preserves_proposal_and_viewport_boundaries() {
     use crate::renderer::{LazyViewport, RenderContext, tree::RetainedSubview};
@@ -214,22 +224,28 @@ fn retained_scene_capture_preserves_proposal_and_viewport_boundaries() {
         bounds: rect,
     };
     let ideal = ProposalSize::new(None, Some(20.0));
-    retained.flush_in_rect(&mut renderer, ctx, &env, ideal, rect, None);
+    under_root_record(&mut renderer, |renderer| {
+        retained.flush_in_rect(renderer, ctx, &env, ideal, rect, None);
+    });
     let outer = LazyViewport {
         bounds: SceneRect::new(0.0, 800.0, 160.0, 820.0),
         transform: Affine::translate((0.0, -800.0)),
     };
     renderer.push_lazy_viewport(outer);
-    let _ = retained.render_built_scene(
-        &mut renderer,
-        &env,
-        crate::renderer::CapturedScenePlacement { size },
-        None,
-    );
+    let _ = under_root_record(&mut renderer, |renderer| {
+        retained.render_built_scene(
+            renderer,
+            &env,
+            crate::renderer::CapturedScenePlacement { size },
+            None,
+        )
+    });
     assert_eq!(renderer.lazy.lazy_viewport_stack.len(), 1);
     assert_eq!(renderer.lazy.lazy_viewport_stack[0].bounds, outer.bounds);
     trace.borrow_mut().clear();
-    retained.flush_in_rect(&mut renderer, ctx, &env, ideal, rect, None);
+    under_root_record(&mut renderer, |renderer| {
+        retained.flush_in_rect(renderer, ctx, &env, ideal, rect, None);
+    });
     assert_eq!(
         trace.borrow().last().expect("offer changed").proposal,
         ideal
@@ -266,7 +282,9 @@ fn retained_subview_relayouts_when_a_layout_signal_invalidates() {
         bounds: rect,
     };
     let proposal = ProposalSize::new(Some(800.0), Some(600.0));
-    retained.flush_in_rect(&mut renderer, ctx, &env, proposal, rect, None);
+    under_root_record(&mut renderer, |renderer| {
+        retained.flush_in_rect(renderer, ctx, &env, proposal, rect, None);
+    });
     assert_eq!(
         trace.borrow().last().expect("mount places").proposal.width,
         Some(120.0)
@@ -276,7 +294,9 @@ fn retained_subview_relayouts_when_a_layout_signal_invalidates() {
         renderer.root_is_dirty(),
         "the constraint signal must still schedule a refresh"
     );
-    retained.flush_in_rect(&mut renderer, ctx, &env, proposal, rect, None);
+    under_root_record(&mut renderer, |renderer| {
+        retained.flush_in_rect(renderer, ctx, &env, proposal, rect, None);
+    });
     assert_eq!(
         trace
             .borrow()

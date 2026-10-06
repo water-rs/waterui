@@ -617,11 +617,18 @@ impl CollectionNode {
             ),
             None => bounds,
         };
-        // The outer scope carries `factor` as its hit-test alpha, so the
-        // entry's regions gate exactly the way its paint fades — no
-        // renderer-wide `hit_test_opacity`.
-        renderer.with_clip_rect_scope(factor, child_ctx.local, clip, |renderer| {
-            entry.node.flush(renderer, child_ctx, env, delta);
+        // The scope carries the entry's `delta` as its placement transform
+        // and `factor` as its hit alpha, so the entry's regions gate the way
+        // its paint fades; the entry node then links with IDENTITY under
+        // it, so the delta applies once.
+        let scope = crate::renderer::ScopeDelta {
+            transform: delta,
+            hit_alpha: factor,
+        };
+        renderer.with_clip_rect_scope(factor, child_ctx.local, clip, scope, |renderer| {
+            entry
+                .node
+                .flush(renderer, child_ctx, env, kurbo::Affine::IDENTITY);
         });
     }
 

@@ -27,7 +27,13 @@ impl HydrolysisRenderer {
         {
             match regular_clip {
                 RegularClipShape::Rect(rect) => {
-                    renderer.with_clip_rect_scope(1.0, ctx.local, rect, render_content);
+                    renderer.with_clip_rect_scope(
+                        1.0,
+                        ctx.local,
+                        rect,
+                        crate::renderer::ScopeDelta::RECORD_SPACE,
+                        render_content,
+                    );
                 }
                 RegularClipShape::RoundedRect {
                     rect,
@@ -40,11 +46,18 @@ impl HydrolysisRenderer {
                     rect,
                     corner_width,
                     corner_height,
+                    crate::renderer::ScopeDelta::RECORD_SPACE,
                     render_content,
                 ),
             }
         } else {
-            renderer.with_clip_path_scope(1.0, ctx.local, clip_path, render_content);
+            renderer.with_clip_path_scope(
+                1.0,
+                ctx.local,
+                clip_path,
+                crate::renderer::ScopeDelta::RECORD_SPACE,
+                render_content,
+            );
         }
     }
 
@@ -283,12 +296,14 @@ impl HydrolysisRenderer {
     /// handler and the retained `Wrapper` node. The bookkeeping counts targets
     /// registered during the content render, so it works identically whether the
     /// content is dispatched or node-flushed.
-    /// `.hittable(false)`: the subtree's retained registrations resolve on
-    /// a dead chain — the alpha-zero scope is the retained equivalent of the
-    /// per-frame truncation the flat lists used to take. Focus bookkeeping
-    /// needs no eager pass: `finish_rebuild_frame`'s absent-target sweep
-    /// retires a focused target the materialized list no longer emits, the
-    /// same end state the immediate `set_focused_*` calls produced.
+    /// `.hittable(false)`: the subtree's retained registrations sit under a
+    /// [`HitGate::Unhittable`](crate::renderer::HitGate::Unhittable) scope,
+    /// which removes exactly the input kinds dev's per-frame truncation
+    /// took (drop and context-menu targets, back targets, modal scopes and
+    /// native-view occlusions stay). Materialization clears the hover of a
+    /// target the gate removed, as the truncation did; focus needs no
+    /// eager pass — `finish_rebuild_frame`'s absent-target sweep retires a
+    /// focused target the materialized list no longer emits.
     pub(super) fn apply_hittable(
         renderer: &mut Self,
         value: &Hittable,
@@ -300,9 +315,10 @@ impl HydrolysisRenderer {
             return;
         }
         // Regions flushed inside carry the unhittable scope on their
-        // chain and never materialize; a stale in-flight drag against the
-        // content clears in the materialization signature check.
-        renderer.push_unhittable_scope();
+        // chain, so materialization drops their input kinds; a stale
+        // in-flight drag against the content clears in the materialization
+        // signature check.
+        renderer.push_hit_gate_scope(crate::renderer::HitGate::Unhittable);
         render_content(renderer);
         renderer.pop_placement_scope();
     }

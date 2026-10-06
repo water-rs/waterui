@@ -210,7 +210,7 @@ fn append_matched_element(
             target.height() / element.bounds.height(),
         )
         * kurbo::Affine::translate((-element.bounds.x0, -element.bounds.y0));
-    renderer.with_clip_rect_scope(opacity, transform, target, |renderer| {
+    renderer.with_paint_clip_rect(opacity, transform, target, |renderer| {
         renderer.present_layers(&element.layers, transform * local);
     });
 }
@@ -268,7 +268,7 @@ fn append_scene_layer(
     // engine layer rather than as one flattened group, so translucent
     // content that overlaps across those layers blends slightly differently
     // mid-transition than it would flattened.
-    renderer.with_clip_rect_scope(layer.opacity, transform, transformed_bounds, |renderer| {
+    renderer.with_paint_clip_rect(layer.opacity, transform, transformed_bounds, |renderer| {
         renderer.present_layers(content, transform * local);
     });
 }

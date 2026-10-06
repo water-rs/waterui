@@ -676,7 +676,7 @@ impl ScrollSurfaceArea {
     /// [`HydrolysisRenderer::focused_field_frame_in_scope`] reads the
     /// focused field out of the buckets the cells under this surface's own
     /// record wrote, so it answers exactly dev's set.
-    pub fn end_flush(&self, renderer: &mut HydrolysisRenderer, handle: &ScrollHandle) {
+    pub fn end_flush(&self, renderer: &HydrolysisRenderer, handle: &ScrollHandle) {
         let Some(facts) = self.facts.get() else {
             self.cleared.replace(None);
             return;

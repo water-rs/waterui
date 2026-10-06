@@ -13,7 +13,9 @@ use std::time::{Duration, Instant};
 
 use accesskit::Role;
 use nami::Binding;
+use nami::collection::List as Membership;
 use nami::collection::SignalCollection;
+use waterui::animation::Animation;
 use waterui::component::list::{List, ListItem};
 use waterui::component::text;
 use waterui::prelude::ContextMenu;
@@ -23,16 +25,18 @@ use waterui_controls::menu::CommandExt as _;
 use waterui_core::Native;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::{Id, SelfId};
+use waterui_layout::collection_transition::collection_transition;
 use waterui_layout::frame::Frame;
+use waterui_layout::padding::EdgeInsets;
 use waterui_layout::scroll::scroll;
-use waterui_layout::stack::vstack;
+use waterui_layout::stack::{VStack, vstack};
 use waterui_navigation::tab::{Tab, TabsLayout};
 use waterui_navigation::{NavigationLink, NavigationStack, NavigationView};
 
 use super::popup_windows::find_by_label;
 use super::{MinimalTestTheme, test_environment};
 use crate::HeadlessRuntime;
-use crate::platform::{InputEvent, PointerButton, PointerKind};
+use crate::platform::{InputEvent, PointerButton, PointerKind, WindowSafeArea};
 use crate::platform_view::{PlatformView, PlatformViewSink};
 
 const WINDOW: (u32, u32) = (400, 700);
@@ -511,4 +515,344 @@ fn materialized_paint_order_keeps_devs_ranking() {
             }
         }
     }
+}
+
+/// The gesture regions covering a window-space point, top-down by `y0`.
+fn regions_at(runtime: &HeadlessRuntime, x: f64) -> Vec<kurbo::Rect> {
+    let mut regions: Vec<kurbo::Rect> = runtime
+        .renderer()
+        .hit_test
+        .gesture_regions
+        .iter()
+        .map(|region| region.bounds)
+        .filter(|bounds| bounds.x0 <= x && x <= bounds.x1)
+        .collect();
+    regions.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+    regions
+}
+
+fn click(runtime: &mut HeadlessRuntime, x: f64, y: f64) {
+    for event in primary_click(
+        crate::num_cast::f64_as_f32(x),
+        crate::num_cast::f64_as_f32(y),
+    ) {
+        runtime.push_input_event(event);
+    }
+    pump_until_settled(runtime);
+}
+
+/// The scroll content the display-scale case lays out: a reference button
+/// above a scroll whose content puts a 50pt tap target beneath a 100pt
+/// spacer.
+fn reference_over_scrolled_target(fired: &Rc<Cell<bool>>) -> AnyView {
+    let fired = fired.clone();
+    AnyView::new(vstack((
+        button("Reference"),
+        scroll(vstack((
+            vstack((text("Spacer"),)).size(f32::INFINITY, 100.0),
+            vstack((text("Target"),))
+                .size(f32::INFINITY, 50.0)
+                .on_tap(move || fired.set(true)),
+        ))),
+    )))
+}
+
+/// A placement scope's transform is a record-space delta, never the paint
+/// transform: at display scale 2 the paint transform carries the scale while
+/// hit space stays logical, so a scroll's clip scope must not scale the
+/// content's registrations. The target is hit at the same logical window
+/// rect a scale-1 window resolves it at.
+#[test]
+fn a_scroll_content_button_at_display_scale_two_is_hit_at_its_window_position() {
+    const TARGET: f64 = 50.0;
+    let truth_fired = Rc::new(Cell::new(false));
+    let builder =
+        AnyViewBuilder::<AnyView>::new(move || reference_over_scrolled_target(&truth_fired));
+    let mut truth = runtime(builder);
+    let x = midpoint(bounds_of(&mut truth, "Reference")).0;
+    let expected = regions_at(&truth, f64::from(x))
+        .into_iter()
+        .find(|bounds| (bounds.height() - TARGET).abs() < 1.0)
+        .expect("the scroll content's target registers a tap region at scale 1");
+
+    let fired = Rc::new(Cell::new(false));
+    let builder = {
+        let fired = fired.clone();
+        AnyViewBuilder::<AnyView>::new(move || reference_over_scrolled_target(&fired))
+    };
+    let mut runtime = runtime(builder).with_scale_factor(2.0);
+    let x = f64::from(midpoint(bounds_of(&mut runtime, "Reference")).0);
+    let regions = regions_at(&runtime, x);
+    assert!(
+        regions
+            .iter()
+            .any(|bounds| (bounds.y0 - expected.y0).abs() < 1.0
+                && (bounds.height() - TARGET).abs() < 1.0),
+        "the scroll content's tap region must resolve at its logical window rect \
+         y {}..{} at display scale 2, got {regions:?}",
+        expected.y0,
+        expected.y1
+    );
+    click(&mut runtime, x, f64::midpoint(expected.y0, expected.y1));
+    assert!(
+        fired.get(),
+        "a click at the button's true window position must fire it at display scale 2"
+    );
+}
+
+/// More 44pt rows than the test window holds, so the List scrolls.
+const OVERFLOWING_ROWS: usize = 30;
+
+/// The page content shared by the navigation-offset case and its ground
+/// truth: a reference button that registers outside any placement scope,
+/// with an overflowing List — whose surface pushes a scroll clip scope —
+/// directly beneath it.
+fn reference_over_rows(tapped: &Rc<Cell<Option<usize>>>) -> AnyView {
+    let tapped = tapped.clone();
+    AnyView::new(vstack((
+        button("Reference"),
+        List::for_each(
+            SignalCollection::new((0..OVERFLOWING_ROWS).map(SelfId::new).collect::<Vec<_>>()),
+            move |row| {
+                let index = row.into_inner();
+                let tapped = tapped.clone();
+                ListItem::new(
+                    vstack((text(format!("Row {index}")),))
+                        .size(360.0, 44.0)
+                        .on_tap(move || tapped.set(Some(index))),
+                )
+            },
+        ),
+    )))
+}
+
+/// A pushed navigation page sits at the stack's window position (below a
+/// header, the safe-area top and the bar). Its List overflows the page, so
+/// the List's surface pushes a scroll clip scope; that scope's delta is the
+/// caller's record-space delta, so it keeps the stack's position instead of
+/// cancelling it against the paint transform. The first row is hit where it
+/// sits relative to the page's reference button — the same offset a plain
+/// window lays it at.
+#[test]
+fn a_list_row_inside_a_pushed_navigation_page_is_hit_below_the_stack_offset() {
+    // Ground truth: the row's offset beneath the reference in a plain window.
+    let truth_tapped = Rc::new(Cell::new(None));
+    let builder = AnyViewBuilder::<AnyView>::new(move || reference_over_rows(&truth_tapped));
+    let mut truth = runtime(builder);
+    let reference = bounds_of(&mut truth, "Reference");
+    let x = f64::midpoint(reference.x0, reference.x1);
+    let row = regions_at(&truth, x)
+        .into_iter()
+        .find(|bounds| bounds.y0 >= reference.y1 - 1.0)
+        .expect("the first list row registers a tap region below the reference");
+    let (offset, height) = (row.y0 - reference.y1, row.height());
+
+    let tapped = Rc::new(Cell::new(None));
+    let builder = {
+        let tapped = tapped.clone();
+        AnyViewBuilder::<AnyView>::new(move || {
+            let tapped = tapped.clone();
+            // The header puts the stack itself at a non-zero window offset:
+            // a scope that cancelled the stack's window position would land
+            // the rows above where they draw.
+            AnyView::new(vstack((
+                text("Stack header").padding(),
+                NavigationStack::new(NavigationView::new(
+                    "Root",
+                    NavigationLink::new("Open Detail", move || {
+                        NavigationView::new("Detail", reference_over_rows(&tapped))
+                    }),
+                )),
+            )))
+        })
+    };
+    let mut env = test_environment();
+    env.insert(WindowSafeArea(nami::binding(EdgeInsets::new(
+        48.0, 0.0, 0.0, 0.0,
+    ))));
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        env,
+        builder,
+        WINDOW.0,
+        WINDOW.1,
+        MinimalTestTheme::default(),
+    );
+    pump_until_settled(&mut runtime);
+    let update = runtime
+        .accessibility_tree()
+        .expect("the root page emits an accessibility tree");
+    let (open, _) = find_by_label(&update, Role::Button, "Open Detail")
+        .expect("the navigation link is missing");
+    assert!(
+        runtime.perform_accessibility_action(accesskit::ActionRequest {
+            action: accesskit::Action::Click,
+            target_node: open,
+            target_tree: accesskit::TreeId::ROOT,
+            data: None,
+        }),
+        "the link click changed nothing"
+    );
+    let mut at = Instant::now();
+    let mut elapsed = Duration::ZERO;
+    while elapsed < TRANSITION {
+        at += FRAME;
+        let _ = runtime.pump_at(false, at);
+        elapsed += FRAME;
+    }
+    let reference = bounds_of(&mut runtime, "Reference");
+    assert!(
+        reference.y0 > 48.0,
+        "the pushed page sits below the safe-area top, got {reference:?}"
+    );
+    let top = reference.y1 + offset;
+    let regions = regions_at(&runtime, x);
+    assert!(
+        regions
+            .iter()
+            .any(|bounds| (bounds.y0 - top).abs() < 1.0 && (bounds.height() - height).abs() < 1.0),
+        "the first row's tap region must resolve at y {top}..{} under the stack \
+         offset, got {regions:?}",
+        top + height
+    );
+    click(&mut runtime, x, top + height / 2.0);
+    assert_eq!(
+        tapped.get(),
+        Some(0),
+        "a click on the first row's true window position must fire that row"
+    );
+}
+
+/// A collection entry mid-transition flushes under its clip scope: the scope
+/// carries the entry's delta and the entry links with identity, so the
+/// delta applies once. The entering row's tap region starts where the row
+/// above it ends, not one more row-offset further down.
+#[test]
+fn a_collection_entry_mid_transition_is_hit_at_its_single_offset_position() {
+    let tapped = Rc::new(Cell::new(None));
+    let list: Membership<SelfId<u64>> = Membership::from(vec![SelfId::new(0), SelfId::new(1)]);
+    let builder = {
+        let list = list.clone();
+        let tapped = tapped.clone();
+        AnyViewBuilder::<AnyView>::new(move || {
+            let tapped = tapped.clone();
+            let collection = VStack::for_each(list.clone(), move |item: SelfId<u64>| {
+                let id = *item;
+                let tapped = tapped.clone();
+                AnyView::new(
+                    vstack((text(format!("Item {id}")),))
+                        .size(120.0, 40.0)
+                        .on_tap(move || tapped.set(Some(id))),
+                )
+            });
+            AnyView::new(collection_transition(
+                collection,
+                Animation::linear(Duration::from_millis(1_000)),
+            ))
+        })
+    };
+    let mut runtime = runtime(builder);
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+    list.push(SelfId::new(2));
+    let _ = runtime.pump_at(false, start + FRAME);
+    let _ = runtime.pump_at(false, start + Duration::from_millis(516));
+
+    let x = f64::from(WINDOW.0) / 2.0;
+    let regions = regions_at(&runtime, x);
+    assert_eq!(
+        regions.len(),
+        3,
+        "both settled rows and the entering row register tap regions, got {regions:?}"
+    );
+    let settled = regions[1];
+    let entering = regions[2];
+    // Settled, the entering row starts one row pitch below the row above:
+    // mid-transition it lies between that row's end and its settled top. A
+    // delta applied twice lands it a whole offset further down.
+    let settled_top = settled.y0 + (settled.y0 - regions[0].y0);
+    assert!(
+        entering.y0 >= settled.y1 - 1.0 && entering.y0 <= settled_top + 1.0,
+        "the entering row's region must start between the row above's end \
+         (y {}) and its settled top (y {settled_top}), not one more row offset \
+         down: {entering:?}",
+        settled.y1
+    );
+    for event in primary_click(
+        crate::num_cast::f64_as_f32(x),
+        crate::num_cast::f64_as_f32(f64::midpoint(entering.y0, entering.y1)),
+    ) {
+        runtime.push_input_event(event);
+    }
+    let _ = runtime.pump_at(false, start + Duration::from_millis(532));
+    assert_eq!(
+        tapped.get(),
+        Some(2),
+        "a click inside the entering row's region must land on the entering row"
+    );
+}
+
+/// A hovered target that turns unhittable leaves hover, as dev's
+/// `Hittable(false)` truncation cleared it: the slot and the state-layer
+/// handles both report not hovering once the subtree is unhittable.
+#[test]
+fn a_hovered_target_that_turns_unhittable_clears_its_hover() {
+    let enabled = Binding::container(true);
+    let builder = {
+        let enabled = enabled.clone();
+        AnyViewBuilder::<AnyView>::new(move || {
+            AnyView::new(vstack((button("Hover me").hittable(enabled.clone()),)))
+        })
+    };
+    let mut runtime = runtime(builder);
+    let (x, y) = midpoint(bounds_of(&mut runtime, "Hover me"));
+    runtime.push_input_event(InputEvent::PointerMove {
+        id: 2,
+        kind: PointerKind::Mouse,
+        x,
+        y,
+    });
+    pump_until_settled(&mut runtime);
+
+    let point = kurbo::Point::new(f64::from(x), f64::from(y));
+    let (slot, handles) = runtime
+        .renderer()
+        .hit_test
+        .hover_targets
+        .iter()
+        .find(|target| target.bounds.contains(point))
+        .map(|target| (target.slot.clone(), target.handles.clone()))
+        .expect("the button registers a hover target under the pointer");
+    let handles = handles.expect("a button's hover target carries state-layer handles");
+    assert!(
+        runtime.renderer().hit_test.interaction.hovering(&slot) && handles.hovering(),
+        "the pointer resting on the button hovers it"
+    );
+
+    // Each record rebinds the widget's state-layer handles, so the hover
+    // check reads the handles bound by the unhittable record.
+    let press = runtime
+        .renderer()
+        .hit_test
+        .pointer_targets
+        .iter()
+        .find(|target| target.bounds.contains(point))
+        .and_then(|target| target.press_slot.clone())
+        .expect("the button registers a press target under the pointer");
+
+    enabled.set(false);
+    pump_until_settled(&mut runtime);
+    assert!(
+        !runtime.renderer().hit_test.interaction.hovering(&slot),
+        "the unhittable button's hover slot must clear"
+    );
+    let handles = runtime
+        .renderer()
+        .hit_test
+        .interaction
+        .handles_for(&press)
+        .expect("the unhittable button still binds its state-layer handles");
+    assert!(
+        !handles.hovering(),
+        "the unhittable button's state-layer handles must leave hover"
+    );
 }

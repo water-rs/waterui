@@ -1430,7 +1430,7 @@ impl SemanticCore {
                 handle_accessibility_picker_select_action(&selection, target, action)
             }
             AccessibilityActionTarget::Scroll { handle, axis } => {
-                handle_accessibility_scroll_action(self, &handle, axis, action)
+                handle_accessibility_scroll_action(self, &handle, axis, action, target_node)
             }
             AccessibilityActionTarget::ListRow {
                 index,
@@ -1441,7 +1441,13 @@ impl SemanticCore {
                 selection,
             } => match action {
                 AccessibilityAction::Focus => {
-                    self.scroll_list_row_into_view(index, &handle, &extents, extension);
+                    self.scroll_list_row_into_view(
+                        index,
+                        &handle,
+                        &extents,
+                        extension,
+                        target_node,
+                    );
                     true
                 }
                 AccessibilityAction::Click => {
@@ -1459,7 +1465,7 @@ impl SemanticCore {
                     }
                 }
                 AccessibilityAction::ScrollIntoView => {
-                    self.scroll_list_row_into_view(index, &handle, &extents, extension)
+                    self.scroll_list_row_into_view(index, &handle, &extents, extension, target_node)
                 }
                 _ => panic!("hydrolysis accessibility list row does not support action {action:?}"),
             },
@@ -1675,7 +1681,8 @@ impl SemanticCore {
     /// shares the list's extent index, so semantic lists reveal in row
     /// units and rendered lists in pixels. Reports the action handled.
     /// A scroll the handle accepts marks the `ScrollTarget`'s owner,
-    /// looked up through the registry — never the root.
+    /// looked up through the registry — never the root — or, with no
+    /// target registered (the semantic runtime), the row node's owner.
     #[cfg(feature = "accessibility")]
     pub(crate) fn scroll_list_row_into_view(
         &self,
@@ -1683,6 +1690,7 @@ impl SemanticCore {
         handle: &ScrollHandle,
         extents: &Rc<RefCell<crate::renderer::lazy::VirtualExtentIndex>>,
         extension: crate::renderer::EdgeOffsets,
+        node: AccessibilityNodeId,
     ) -> bool {
         let metrics = handle.metrics();
         let extents = extents.borrow();
@@ -1701,7 +1709,7 @@ impl SemanticCore {
             return true;
         };
         if handle.scroll_to(metrics.offset_x, target) {
-            self.mark_scroll_owner(handle, Dirty::LAYOUT);
+            self.mark_scroll_owner_of_node(handle, node, Dirty::LAYOUT);
         }
         true
     }
@@ -2538,6 +2546,7 @@ fn handle_accessibility_scroll_action(
     handle: &ScrollHandle,
     axis: ScrollAxis,
     action: AccessibilityAction,
+    node: AccessibilityNodeId,
 ) -> bool {
     if matches!(action, AccessibilityAction::Focus) {
         return true;
@@ -2570,7 +2579,7 @@ fn handle_accessibility_scroll_action(
     match delta {
         Some((dx, dy)) => {
             if handle.apply_scroll_delta(dx, dy, false) {
-                renderer.mark_scroll_owner(handle, Dirty::LAYOUT);
+                renderer.mark_scroll_owner_of_node(handle, node, Dirty::LAYOUT);
             }
             true
         }

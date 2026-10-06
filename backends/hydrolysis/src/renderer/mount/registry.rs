@@ -18,6 +18,7 @@
 //! two entries compare equal.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
 use super::cell::NodeCell;
@@ -151,15 +152,20 @@ pub struct RetainedRegistry {
     /// The `reg` tail of each [`PaintOrder`]: bumped once per
     /// registration, so no two entries ever tie.
     reg_seq: Cell<u64>,
+    /// The owner of the `ScrollTarget` holding each scroll handle, keyed
+    /// by the handle's cache key — handle-driven scrolls mark it without
+    /// walking every owner's bucket.
+    scroll_owners: RefCell<HashMap<usize, Weak<NodeCell>>>,
 }
 
 impl RetainedRegistry {
     /// An empty registry.
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             owners: Vec::new(),
             stale: Cell::new(true),
             reg_seq: Cell::new(0),
+            scroll_owners: RefCell::new(HashMap::new()),
         }
     }
 
@@ -174,12 +180,48 @@ impl RetainedRegistry {
         seq
     }
 
+    /// Records `cell` as the owner of the scroll target holding the handle
+    /// keyed `key`.
+    pub(crate) fn bind_scroll_owner(&self, key: usize, cell: &Rc<NodeCell>) {
+        self.scroll_owners
+            .borrow_mut()
+            .insert(key, Rc::downgrade(cell));
+    }
+
+    /// Forgets `cell` as the owner of the handle keyed `key` — run when
+    /// its bucket is purged. A handle another owner has since claimed
+    /// keeps that owner.
+    pub(crate) fn release_scroll_owner(&self, key: usize, cell: &Rc<NodeCell>) {
+        let mut owners = self.scroll_owners.borrow_mut();
+        if owners
+            .get(&key)
+            .is_some_and(|owner| core::ptr::eq(owner.as_ptr(), Rc::as_ptr(cell)))
+        {
+            owners.remove(&key);
+        }
+    }
+
+    /// The live owner of the scroll target holding the handle keyed `key`.
+    pub(crate) fn scroll_owner(&self, key: usize) -> Option<Weak<NodeCell>> {
+        self.scroll_owners
+            .borrow()
+            .get(&key)
+            .filter(|owner| owner.strong_count() > 0)
+            .cloned()
+    }
+
     /// Lists `cell` among the registering owners; no-op once listed.
     pub(crate) fn enlist(&mut self, cell: &Rc<NodeCell>) {
         if cell.registered.replace(true) {
             return;
         }
         self.owners.push(Rc::downgrade(cell));
+    }
+
+    /// The live owners without pruning — the lookup paths that run with
+    /// the registry shared (`&self`) walk it through here.
+    pub(crate) fn live_owners(&self) -> impl Iterator<Item = Rc<NodeCell>> + '_ {
+        self.owners.iter().filter_map(Weak::upgrade)
     }
 
     /// The live registering owners — dead cells are pruned from the list

@@ -123,6 +123,10 @@ pub struct NodeCell {
     /// The record sequence this cell's placement was last linked under —
     /// the "placed during that record" stamp `subviews` retires against.
     placed_seq: Cell<u64>,
+    /// The cell's subtree was retired as unplaced and nothing has placed
+    /// the cell since — `retire_subtree` skips it rather than re-walking a
+    /// hidden subtree every frame. Placing the cell clears it.
+    pub(crate) retired: Cell<bool>,
     /// §B.4: the node is an accessibility unit — its record opened an
     /// accessibility container or claimed a gesture scope, so a descendant's
     /// emissions diff escalates here. Reset at each record; set only when
@@ -164,6 +168,7 @@ impl NodeCell {
             children: RefCell::new(Vec::new()),
             subviews: RefCell::new(Vec::new()),
             placed_seq: Cell::new(0),
+            retired: Cell::new(false),
             #[cfg(feature = "accessibility")]
             a11y_unit: Cell::new(false),
             #[cfg(feature = "accessibility")]
@@ -201,6 +206,7 @@ impl NodeCell {
     /// called by the placement links every flush of the node runs.
     pub(crate) fn mark_placed(&self, seq: u64) {
         self.placed_seq.set(seq);
+        self.retired.set(false);
     }
 
     /// The record sequence this cell's placement was last linked under.

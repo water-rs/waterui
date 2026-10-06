@@ -431,10 +431,10 @@ impl HydrolysisRenderer {
     /// presentation.
     fn with_preview_targets_suppressed(&mut self, f: impl FnOnce(&mut Self)) {
         // The preview's registrations stay in the retained registries under
-        // an unhittable placement scope: nothing it emits ever materializes.
+        // a preview gate: the kinds dev truncated never materialize.
         // A stale in-flight drag against the page beneath still clears —
         // the signature check runs at materialization.
-        self.push_unhittable_scope();
+        self.push_hit_gate_scope(crate::renderer::HitGate::Preview);
         f(self);
         self.pop_placement_scope();
     }

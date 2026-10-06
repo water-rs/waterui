@@ -438,22 +438,12 @@ impl RetainedSubview {
         rect: kurbo::Rect,
         safe_area: Option<safe_area::SafeAreaLayout>,
     ) {
-        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        let Some((child_ctx, delta)) =
+            self.layout_in_rect(renderer, ctx, env, proposal, rect, safe_area)
+        else {
             return;
-        }
-        self.ensure_built(renderer, env);
+        };
         let built = self.expect_built_mut("flush_in_rect");
-        let structural = Self::patch_built(&mut built.node, renderer);
-        built.node.prepare_for_measure(renderer);
-        #[allow(clippy::cast_possible_truncation)]
-        let size = Size::new(rect.width() as f32, rect.height() as f32);
-        built.needs_layout |= structural | built.node.take_layout_dirty();
-        built.layout_if_needed(renderer, env, safe_area, proposal, size);
-        let delta = kurbo::Affine::translate((rect.x0, rect.y0));
-        let child_ctx = ctx.child(
-            delta,
-            kurbo::Rect::new(0.0, 0.0, rect.width(), rect.height()),
-        );
         // Record the sub-view's root as the owner of whatever its flush
         // registers: a press the caller registered for the whole sub-view
         // carries the same owner, and the ancestry check tells a gesture
@@ -481,15 +471,48 @@ impl RetainedSubview {
         rect: kurbo::Rect,
         safe_area: Option<safe_area::SafeAreaLayout>,
     ) {
-        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        let Some((child_ctx, delta)) =
+            self.layout_in_rect(renderer, ctx, env, proposal, rect, safe_area)
+        else {
             return;
+        };
+        // The subtree detaches at the current registration frame: an open
+        // scope (the exiting overlay's inactive gate, a suppressed preview)
+        // stays in the chain and gates its entries; with none open the
+        // current placement is the presentation host's own.
+        let anchor = renderer.current_placement();
+        let index = anchor.take_item();
+        self.expect_built_mut("flush_in_rect_detached")
+            .node
+            .flush_anchored(renderer, child_ctx, env, Some(anchor), delta, index);
+    }
+
+    /// The shared head of [`flush_in_rect`](Self::flush_in_rect) and
+    /// [`flush_in_rect_detached`](Self::flush_in_rect_detached): build on
+    /// first use, apply pending patches, lay the sub-view out at `rect`'s
+    /// size when anything changed, and return the child context and the
+    /// delta that places it at `rect`. `None` for a zero-area rect, which
+    /// renders nothing (the dispatch path's empty-rect guard).
+    fn layout_in_rect(
+        &mut self,
+        renderer: &mut HydrolysisRenderer,
+        ctx: RenderContext,
+        env: &Environment,
+        proposal: ProposalSize,
+        rect: kurbo::Rect,
+        safe_area: Option<safe_area::SafeAreaLayout>,
+    ) -> Option<(RenderContext, kurbo::Affine)> {
+        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            return None;
         }
         self.ensure_built(renderer, env);
-        let built = self.expect_built_mut("flush_in_rect_detached");
+        let built = self.expect_built_mut("layout_in_rect");
         let structural = Self::patch_built(&mut built.node, renderer);
         built.node.prepare_for_measure(renderer);
-        #[allow(clippy::cast_possible_truncation)]
-        let size = Size::new(rect.width() as f32, rect.height() as f32);
+        let size = Size::new(
+            crate::num_cast::f64_as_f32(rect.width()),
+            crate::num_cast::f64_as_f32(rect.height()),
+        );
         built.needs_layout |= structural | built.node.take_layout_dirty();
         built.layout_if_needed(renderer, env, safe_area, proposal, size);
         let delta = kurbo::Affine::translate((rect.x0, rect.y0));
@@ -497,15 +520,7 @@ impl RetainedSubview {
             delta,
             kurbo::Rect::new(0.0, 0.0, rect.width(), rect.height()),
         );
-        // The subtree detaches at the current registration frame: an open
-        // scope (the exiting overlay's unhittable one, a suppressed preview)
-        // stays in the chain and gates its entries; with none open the
-        // current placement is the window root, the same anchor as before.
-        let anchor = renderer.current_placement();
-        let index = anchor.take_item();
-        built
-            .node
-            .flush_anchored(renderer, child_ctx, env, Some(anchor), delta, index);
+        Some((child_ctx, delta))
     }
 
     /// The retained identity of the built sub-view's root node — the owner the
@@ -525,7 +540,7 @@ impl RetainedSubview {
     /// label's animated translate + scale). The caller composes the transform via
     /// [`RenderContext::child`] and passes the local layout `size` the node should
     /// lay out at; a zero-area size renders nothing.
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "threads the full flush context; grouping into a struct would not improve clarity"
     )]
@@ -627,7 +642,7 @@ impl RetainedSubview {
         safe_area: Option<safe_area::SafeAreaLayout>,
     ) -> NavigationCapturedScene {
         // An inactive page registers nothing hittable.
-        renderer.push_unhittable_scope();
+        renderer.push_hit_gate_scope(crate::renderer::HitGate::Inactive);
         #[cfg(feature = "accessibility")]
         renderer.push_accessibility_suppression();
         let scene = self.render_built_scene(renderer, env, placement, safe_area);

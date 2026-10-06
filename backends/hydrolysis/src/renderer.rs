@@ -53,6 +53,7 @@ pub use gpu_profile::GpuFrameProfiler;
 pub use gpu_profile::{FrameStageTimes, GpuIdentity};
 pub use identity::*;
 pub use mount::{Dirty, NodeCell, NodeCore, Placement, PlacementClock, ProducerKey};
+use mount::{HitClasses, HitGate, ScopeDelta};
 pub use native_measure::*;
 #[cfg(test)]
 pub use recording::assert_well_formed_image;
@@ -993,31 +994,45 @@ impl SemanticCore {
         drop(leaving);
     }
 
-    /// Retires the whole subtree under `cell`: every descendant cell's
+    /// Retires the whole subtrees under `roots`: every descendant cell's
     /// retained registrations purge and its emitted a11y nodes leave the
-    /// shared accessibility state. Commit 3 extends this to drop the
-    /// subtree's layers too (decision 3). O(nodes under the subtree).
-    fn retire_subtree(&mut self, cell: &Rc<NodeCell>) {
-        let mut stack = vec![Rc::clone(cell)];
+    /// shared accessibility state in one batch. A cell already retired and
+    /// not placed since is skipped with its subtree — nothing under it can
+    /// have registered without placing it — so a hidden subtree costs
+    /// nothing on later frames. Commit 3 extends this to drop the
+    /// subtree's layers too (decision 3). O(newly retired nodes).
+    #[cfg_attr(
+        not(feature = "accessibility"),
+        expect(
+            clippy::needless_pass_by_ref_mut,
+            reason = "the a11y node retire that needs the mutable borrow is compiled out"
+        )
+    )]
+    fn retire_subtrees(&mut self, roots: Vec<Rc<NodeCell>>) {
+        let mut stack = roots;
+        #[cfg(feature = "accessibility")]
+        let mut ids: Vec<AccessibilityNodeId> = Vec::new();
         while let Some(cell) = stack.pop() {
+            if cell.retired.replace(true) {
+                continue;
+            }
             self.purge_registrations(&cell);
             #[cfg(feature = "accessibility")]
             {
-                let ids = core::mem::take(&mut *cell.a11y_emitted.borrow_mut());
+                ids.append(&mut cell.a11y_emitted.borrow_mut());
                 *cell.a11y_retired.borrow_mut() = None;
                 cell.a11y_unit.set(false);
-                if !ids.is_empty() {
-                    self.accessibility.retire_nodes(&ids);
-                }
             }
             cell.children(&mut stack);
         }
+        #[cfg(feature = "accessibility")]
+        self.accessibility.retire_nodes(&ids);
     }
 
     /// §D's unplaced rule, run at `Record` leave: every `RetainedSubview`
     /// the record owns that it did not place while it ran has its subtree
     /// retired — its registrations and a11y nodes leave through
-    /// [`Self::retire_subtree`].
+    /// [`Self::retire_subtrees`].
     fn retire_unplaced_subviews(&mut self, cell: &Rc<NodeCell>, seq: u64) {
         let mut unplaced: Vec<Rc<NodeCell>> = Vec::new();
         cell.subviews.borrow_mut().retain(|weak| {
@@ -1030,8 +1045,8 @@ impl SemanticCore {
                 true
             })
         });
-        for subview in unplaced {
-            self.retire_subtree(&subview);
+        if !unplaced.is_empty() {
+            self.retire_subtrees(unplaced);
         }
     }
 
@@ -1130,49 +1145,46 @@ impl SemanticCore {
 
     /// The placement a registration emitted right now resolves through:
     /// the topmost open clip/alpha scope, else the recording node's own
-    /// placement, else the window root's.
+    /// placement. Every emit path runs under a reader, so a request with
+    /// neither is a bug in the emit path.
     pub(crate) fn current_placement(&self) -> Rc<Placement> {
         self.placement_scope_stack
             .last()
             .cloned()
             .or_else(|| self.reader_cell().map(|cell| Rc::clone(cell.placement())))
-            .unwrap_or_else(|| Rc::clone(self.root.placement()))
+            .expect("hydrolysis renderer: placement requested with no current reader")
     }
 
     /// Opens a clip/alpha scope as a child placement of the current one;
-    /// registrations inside resolve through it. `transform` is the space
-    /// the children record into — the value the recording's group push
-    /// carries — and the placement keeps only the delta against the parent
-    /// chain's resolved transform, so a scope pushed under a non-identity
-    /// local frame (collection entries mid-transition, clip layers)
-    /// resolves its registrations where the content actually draws. `clip`
-    /// is a rect in that child space; `alpha` folds into the hit gate.
-    pub(crate) fn push_placement_scope(
-        &mut self,
-        transform: kurbo::Affine,
-        clip: Option<kurbo::Rect>,
-        alpha: f32,
-    ) {
+    /// registrations inside resolve through it. `scope.transform` is the
+    /// scope's delta in the recording node's space, stored as given — it
+    /// is never derived from the paint transform, which carries the
+    /// display scale and restarts inside a navigation capture. `clip` is a
+    /// rect in the scope's own space; `scope.hit_alpha` folds into the hit
+    /// gate.
+    pub(crate) fn push_placement_scope(&mut self, scope: ScopeDelta, clip: Option<kurbo::Rect>) {
         let parent = self.current_placement();
-        let scope = Placement::new(&self.placement_clock);
-        scope.set_transform(parent.resolved_transform(false).inverse() * transform);
-        scope.set_parent(Some(parent.clone()));
-        scope.set_index(parent.take_item());
-        scope.set_clip(clip);
-        scope.set_alpha(alpha);
-        self.placement_scope_stack.push(scope);
+        let placement = Placement::new(&self.placement_clock);
+        placement.set_transform(scope.transform);
+        placement.set_parent(Some(parent.clone()));
+        placement.set_index(parent.take_item());
+        placement.set_clip(clip);
+        placement.set_alpha(scope.hit_alpha);
+        self.placement_scope_stack.push(placement);
     }
 
-    /// Opens an unhittable scope: registrations inside keep their paint
-    /// chain (the content still draws) but never materialize for input —
-    /// `Hittable(false)`, inactive navigation pages, exiting overlays and
+    /// Opens a hit-gate scope: registrations inside keep their paint chain
+    /// (the content still draws) while `gate` removes or alpha-gates
+    /// exactly the kinds dev's corresponding mechanism did —
+    /// `Hittable(false)`, inactive navigation pages and exiting overlays,
     /// suppressed context-menu previews.
-    pub(crate) fn push_unhittable_scope(&mut self) {
+    pub(crate) fn push_hit_gate_scope(&mut self, gate: HitGate) {
         let parent = self.current_placement();
         let scope = Placement::new(&self.placement_clock);
         scope.set_parent(Some(parent.clone()));
         scope.set_index(parent.take_item());
-        scope.set_hittable(false);
+        scope.set_alpha(gate.alpha());
+        scope.set_removes(gate.removes());
         self.placement_scope_stack.push(scope);
     }
 
@@ -1272,39 +1284,33 @@ impl SemanticCore {
     /// resolves through the entry's own paint chain (unclipped, as dev's
     /// `frame` was).
     pub(crate) fn focused_field_frame_in_scope(
-        &mut self,
+        &self,
         scope: &Rc<NodeCell>,
     ) -> Option<(crate::renderer::input::InteractionKey, kurbo::Rect)> {
         let key = self.text_editing.focused_key()?;
-        for cell in self.retained.owners() {
-            let mut ancestor = Some(Rc::clone(&cell));
-            let inside = loop {
-                let Some(current) = ancestor else {
-                    break false;
-                };
-                if Rc::ptr_eq(&current, scope) {
-                    break true;
-                }
-                ancestor = current.parent();
-            };
-            if !inside {
-                continue;
-            }
-            let slot = cell.registrations.borrow();
-            let Some(regs) = slot.as_ref() else {
-                continue;
-            };
-            for entry in &regs.text_input_targets {
-                if entry.payload.interaction_key == key {
-                    let (transform, _, _) = entry.region.placement.resolved_chain(false);
-                    return Some((
-                        key,
-                        crate::renderer::transformed_rect(transform, entry.region.local),
-                    ));
-                }
-            }
+        let (owner, local, placement) = self.retained.live_owners().find_map(|cell| {
+            let found = cell.registrations.borrow().as_ref().and_then(|regs| {
+                regs.text_input_targets
+                    .iter()
+                    .find(|entry| entry.payload.interaction_key == key)
+                    .map(|entry| (entry.region.local, Rc::clone(&entry.region.placement)))
+            });
+            found.map(|(local, placement)| (cell, local, placement))
+        })?;
+        // Dev's flat list only held the fields the hit gate admitted.
+        if !placement.admits(HitClasses::INPUT) {
+            return None;
         }
-        None
+        let mut ancestor = Some(owner);
+        loop {
+            let current = ancestor?;
+            if Rc::ptr_eq(&current, scope) {
+                break;
+            }
+            ancestor = current.parent();
+        }
+        let (transform, _, _) = placement.resolved_chain(false);
+        Some((key, crate::renderer::transformed_rect(transform, local)))
     }
 
     /// Registers `payload` under the current placement — one retained
@@ -1395,14 +1401,29 @@ impl SemanticCore {
         }
     }
 
-    /// A change attributed to the node that bound `key`'s interaction —
-    /// no-op when the key is unbound (its owner is gone with it). A key
-    /// that never bound interaction state — a text or embedded input —
-    /// resolves through the registered target's owner instead.
+    /// A change attributed to the node that owns `key`.
     pub(crate) fn mark_key_owner(&self, key: &crate::renderer::input::InteractionKey, bits: Dirty) {
-        let live = |owner: &std::rc::Weak<NodeCell>| owner.strong_count() > 0;
-        let owner = self
-            .hit_test
+        Self::mark_owner(&self.key_owner(key), bits);
+    }
+
+    /// The node that owns `key`: the node that bound its interaction
+    /// state, or — for a key that never binds interaction state, a text or
+    /// embedded input — the owner of the target registered under it. A
+    /// key with neither is a bug in the caller: every key a mark names
+    /// came from a live registration.
+    pub(crate) fn key_owner(&self, key: &crate::renderer::input::InteractionKey) -> Weak<NodeCell> {
+        self.try_key_owner(key)
+            .unwrap_or_else(|| panic!("hydrolysis renderer: interaction key {key:?} has no owner"))
+    }
+
+    /// [`Self::key_owner`] for a caller holding a second ownership source
+    /// (the focused semantic node) to consult before it panics.
+    pub(crate) fn try_key_owner(
+        &self,
+        key: &crate::renderer::input::InteractionKey,
+    ) -> Option<Weak<NodeCell>> {
+        let live = |owner: &Weak<NodeCell>| owner.strong_count() > 0;
+        self.hit_test
             .interaction
             .owner_of(key)
             .filter(|owner| live(owner))
@@ -1420,8 +1441,6 @@ impl SemanticCore {
                     .find(|target| &target.interaction_key == key)
                     .map(|target| target.owner.clone())
             })
-            .unwrap_or_default();
-        Self::mark_owner(&owner, bits);
     }
 
     /// A change driven by a `ScrollHandle` write (a scrollbar drag, a
@@ -1429,14 +1448,50 @@ impl SemanticCore {
     /// owner of the `ScrollTarget` that holds that handle — looked up
     /// through the registry, never the root.
     pub(crate) fn mark_scroll_owner(&self, handle: &crate::scroll::ScrollHandle, bits: Dirty) {
+        Self::mark_owner(&self.scroll_target_owner(handle.cache_key()), bits);
+    }
+
+    /// The owner of the retained `ScrollTarget` holding the handle keyed
+    /// `key` — read from the retained registries, so a target the hit gate
+    /// keeps out of the materialized list still resolves. A handle no
+    /// target holds is a bug: only a registered scroll surface drives one.
+    pub(crate) fn scroll_target_owner(&self, key: usize) -> Weak<NodeCell> {
+        self.try_scroll_target_owner(key).unwrap_or_else(|| {
+            panic!("hydrolysis renderer: scroll handle {key} has no registered scroll target")
+        })
+    }
+
+    /// An accessibility-driven scroll of the semantic node `node`: the
+    /// owner of the `ScrollTarget` holding `handle`, or — under the
+    /// semantic runtime, which registers no hit targets — the cell that
+    /// emitted `node`. Neither is a bug: the action reached a node the
+    /// tree emitted.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn mark_scroll_owner_of_node(
+        &self,
+        handle: &crate::scroll::ScrollHandle,
+        node: AccessibilityNodeId,
+        bits: Dirty,
+    ) {
         let owner = self
-            .hit_test
-            .scroll_targets
-            .iter()
-            .find(|target| target.handle.cache_key() == handle.cache_key())
-            .map(|target| target.owner.clone())
-            .unwrap_or_default();
+            .try_scroll_target_owner(handle.cache_key())
+            .or_else(|| self.live_node_owner(node))
+            .unwrap_or_else(|| panic!("hydrolysis renderer: scrolled node {node:?} has no owner"));
         Self::mark_owner(&owner, bits);
+    }
+
+    /// The live cell that emitted the semantic node `node`.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn live_node_owner(&self, node: AccessibilityNodeId) -> Option<Weak<NodeCell>> {
+        self.accessibility
+            .node_owners
+            .get(&node)
+            .filter(|owner| owner.strong_count() > 0)
+            .cloned()
+    }
+
+    fn try_scroll_target_owner(&self, key: usize) -> Option<Weak<NodeCell>> {
+        self.retained.scroll_owner(key)
     }
 
     /// A [`ProducerWake`] for the producer owned by `cell`: the wake posts
@@ -1598,13 +1653,8 @@ impl HydrolysisRenderer {
     }
 
     /// [`SemanticCore::push_placement_scope`].
-    pub(crate) fn push_placement_scope(
-        &mut self,
-        transform: kurbo::Affine,
-        clip: Option<kurbo::Rect>,
-        alpha: f32,
-    ) {
-        self.core.push_placement_scope(transform, clip, alpha);
+    pub(crate) fn push_placement_scope(&mut self, scope: ScopeDelta, clip: Option<kurbo::Rect>) {
+        self.core.push_placement_scope(scope, clip);
     }
 
     /// [`SemanticCore::pop_placement_scope`].
@@ -1632,6 +1682,14 @@ impl HydrolysisRenderer {
     #[cfg(test)]
     pub(crate) fn window_placement(&self) -> Rc<Placement> {
         self.core.window_placement()
+    }
+
+    /// Binds `key`'s interaction state to the root cell: the owner of a
+    /// focusable a test seeds outside any node's record.
+    #[cfg(test)]
+    pub(crate) fn bind_root_owned_key(&mut self, key: &crate::renderer::input::InteractionKey) {
+        let root = Rc::clone(&self.core.root);
+        let _ = self.core.hit_test.interaction.bind_hover(key, &root);
     }
 
     /// [`SemanticCore::resolve_window_rect`].

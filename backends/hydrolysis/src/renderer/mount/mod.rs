@@ -16,7 +16,7 @@ pub mod registry;
 pub mod scopes;
 
 pub use cell::{Dirty, NodeCell, NodeCore};
-pub use placement::{Placement, PlacementClock};
+pub use placement::{HitClasses, HitGate, Placement, PlacementClock, ScopeDelta};
 #[cfg(feature = "accessibility")]
 pub use registry::Region;
 pub use registry::{

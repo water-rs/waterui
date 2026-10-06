@@ -2,7 +2,7 @@
 //!
 //! Every [`NodeCell`](super::cell::NodeCell) owns a [`Placement`] that
 //! mirrors the props its layers carry — transform, clip bounding box,
-//! alpha, hittable, child index — so hit testing, hit-space transforms and
+//! alpha, removed hit classes, child index — so hit testing, hit-space transforms and
 //! GPU pixel coverage resolve them without walking the render tree. Each
 //! setter also bumps the window's [`PlacementClock`], the epoch
 //! resolutions cache against.
@@ -45,6 +45,104 @@ impl PlacementClock {
 /// replaced.
 pub use crate::renderer::HIT_TEST_ALPHA_THRESHOLD as PLACEMENT_HIT_ALPHA_THRESHOLD;
 
+/// The registration kinds a placement level can remove from
+/// materialization — the lists dev's per-frame registration either
+/// truncated (`Hittable(false)`, the context-menu preview) or gated on
+/// `hit_test_opacity` (inactive navigation pages, exiting overlays,
+/// collection entries mid-transition).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HitClasses(u8);
+
+impl HitClasses {
+    /// No kind.
+    pub const NONE: Self = Self(0);
+    /// Pointer targets (occluder and scrollbar presses included), gesture
+    /// regions, cursor, hover and scroll targets, text and embedded inputs.
+    pub const INPUT: Self = Self(1);
+    /// Drop targets.
+    pub const DROP: Self = Self(1 << 1);
+    /// Context-menu targets.
+    pub const CONTEXT_MENU: Self = Self(1 << 2);
+    /// Overlay panels' gesture occluders.
+    pub const GESTURE_OCCLUDER: Self = Self(1 << 3);
+    /// Native-view occlusions.
+    pub const NATIVE_OCCLUSION: Self = Self(1 << 4);
+    /// The kinds dev registered only while `hit_test_opacity` stayed above
+    /// [`PLACEMENT_HIT_ALPHA_THRESHOLD`]; the chain's alpha gates exactly
+    /// these.
+    pub const OPACITY_GATED: Self =
+        Self(Self::INPUT.0 | Self::DROP.0 | Self::CONTEXT_MENU.0 | Self::GESTURE_OCCLUDER.0);
+
+    /// The kinds in either set.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// Whether the two sets share a kind.
+    pub const fn intersects(self, other: Self) -> bool {
+        self.0 & other.0 != 0
+    }
+}
+
+/// The hit gate a scope places over the registrations recorded inside it —
+/// one per dev mechanism, so each keeps exactly dev's coverage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HitGate {
+    /// `.hittable(false)`: dev truncated the [`HitClasses::INPUT`] lists.
+    Unhittable,
+    /// An inactive navigation page or an exiting overlay: dev set
+    /// `hit_test_opacity` to zero, gating [`HitClasses::OPACITY_GATED`].
+    Inactive,
+    /// The lifted context-menu preview: dev truncated the input lists plus
+    /// drop, context-menu and native-occlusion registrations.
+    Preview,
+}
+
+impl HitGate {
+    /// The hit alpha the gate's scope multiplies into its chain.
+    pub const fn alpha(self) -> f32 {
+        match self {
+            Self::Unhittable | Self::Preview => 1.0,
+            Self::Inactive => 0.0,
+        }
+    }
+
+    /// The kinds the gate's scope removes outright.
+    pub const fn removes(self) -> HitClasses {
+        match self {
+            Self::Unhittable => HitClasses::INPUT,
+            Self::Inactive => HitClasses::NONE,
+            Self::Preview => HitClasses::INPUT
+                .union(HitClasses::DROP)
+                .union(HitClasses::CONTEXT_MENU)
+                .union(HitClasses::NATIVE_OCCLUSION),
+        }
+    }
+}
+
+/// What a clip/alpha scope contributes to the placement chain, passed
+/// explicitly by the caller that opens it: `transform` is a delta in the
+/// owning node's record space (never derived from the paint transform),
+/// `hit_alpha` the factor the hit gate multiplies.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScopeDelta {
+    /// The scope's transform relative to the placement it opens under.
+    pub transform: kurbo::Affine,
+    /// The alpha folded into the hit gate — `1.0` for Opacity, Scroll and
+    /// Clip, as on dev; a collection entry carries its transition factor.
+    pub hit_alpha: f32,
+}
+
+impl ScopeDelta {
+    /// A scope that adds no transform and no hit fade: the clip and the
+    /// opacity of an ordinary layer live in the space the node records in.
+    pub const RECORD_SPACE: Self = Self {
+        transform: kurbo::Affine::IDENTITY,
+        hit_alpha: 1.0,
+    };
+}
+
 /// One node's retained mirror of its layer-space placement.
 ///
 /// The structural parent link mirrors the cell tree and is set when the
@@ -56,8 +154,8 @@ pub use crate::renderer::HIT_TEST_ALPHA_THRESHOLD as PLACEMENT_HIT_ALPHA_THRESHO
 ///
 /// The props mirror the layer edits the commit walk writes: `transform`
 /// is the node's own delta in its parent's space, `clip` a clip bounding
-/// box in the node's *own* space, `alpha`/`hittable` the chain factors
-/// hit resolution multiplies and gates on, `index` the position among the
+/// box in the node's *own* space, `alpha`/`removes` the chain factors
+/// materialization multiplies and gates on, `index` the position among the
 /// parent's ordered items.
 pub struct Placement {
     /// The structural parent in the placement chain — the parent cell's
@@ -74,10 +172,9 @@ pub struct Placement {
     clip: Cell<Option<kurbo::Rect>>,
     /// The alpha the node's subtree multiplies into its chain.
     alpha: Cell<f32>,
-    /// Whether this subtree's registrations hit-test. `false` levels are
-    /// skipped entirely by hit resolution (transitioning pages, exiting
-    /// overlays).
-    hittable: Cell<bool>,
+    /// The registration kinds this level removes from materialization for
+    /// its whole subtree (`Hittable(false)`, the context-menu preview).
+    removes: Cell<HitClasses>,
     /// Position among the parent's ordered items — paint order.
     index: Cell<u32>,
     /// The next item position this placement hands out: children link as
@@ -87,17 +184,23 @@ pub struct Placement {
     item_cursor: Cell<u32>,
     /// The window clock every write bumps.
     clock: Rc<PlacementClock>,
-    /// The hit chain's `(epoch, transform, clip, alpha)`, which skips
-    /// `hittable == false` levels — recomputed lazily per clock epoch.
-    resolved_hit: RefCell<Option<ResolvedCache>>,
+    /// The structural chain's resolution at the epoch it was computed —
+    /// recomputed lazily per clock epoch.
+    resolved_hit: RefCell<Option<(u64, ChainResolution)>>,
 }
 
-/// The `(epoch, transform, clip, alpha)` tuple a resolution caches.
-type ResolvedCache = (u64, kurbo::Affine, Option<kurbo::Rect>, f32);
+/// A chain composed down to one placement.
+#[derive(Clone, Copy, Debug)]
+struct ChainResolution {
+    transform: kurbo::Affine,
+    clip: Option<kurbo::Rect>,
+    alpha: f32,
+    removes: HitClasses,
+}
 
 impl Placement {
     /// A placement on `clock`, unattached, identity transform, no clip,
-    /// full alpha, hittable, index 0.
+    /// full alpha, removes nothing, index 0.
     pub fn new(clock: &Rc<PlacementClock>) -> Rc<Self> {
         Rc::new(Self {
             parent: RefCell::new(None),
@@ -106,7 +209,7 @@ impl Placement {
             content_offset: Cell::new(kurbo::Vec2::ZERO),
             clip: Cell::new(None),
             alpha: Cell::new(1.0),
-            hittable: Cell::new(true),
+            removes: Cell::new(HitClasses::NONE),
             index: Cell::new(0),
             item_cursor: Cell::new(0),
             clock: Rc::clone(clock),
@@ -154,16 +257,35 @@ impl Placement {
     /// the chain's own value (embedded targets' inverse projection), not
     /// a resolved rect.
     pub fn resolved_transform(&self, hit: bool) -> kurbo::Affine {
-        let (transform, _, _) = self.resolve_chain(hit);
-        transform
+        self.resolution(hit).transform
     }
 
-    /// The `(transform, clip, alpha)` the chain resolves to, `hit == true`
-    /// skipping `hittable == false` levels — the raw form behind
-    /// [`resolve`](Self::resolve) for consumers that need the clip itself
-    /// (embedded targets' hit clip) or the transform (inverse projection).
+    /// The `(transform, clip, alpha)` the chain resolves to — `hit`
+    /// selects the structural chain, otherwise the paint chain — the raw
+    /// form behind [`resolve_hit`](Self::resolve_hit) for consumers that
+    /// need the clip itself (embedded targets' hit clip) or the transform
+    /// (inverse projection).
     pub fn resolved_chain(&self, hit: bool) -> (kurbo::Affine, Option<kurbo::Rect>, f32) {
-        self.resolve_chain(hit)
+        let resolved = self.resolution(hit);
+        (resolved.transform, resolved.clip, resolved.alpha)
+    }
+
+    /// Whether a registration of kind `class` anchored here materializes:
+    /// no level of the structural chain removes the kind, and an
+    /// [`HitClasses::OPACITY_GATED`] kind additionally needs the chain's
+    /// alpha above the hit threshold — dev's two gates, kept distinct.
+    pub fn admits(&self, class: HitClasses) -> bool {
+        let resolved = self.resolution(true);
+        !resolved.removes.intersects(class)
+            && (!HitClasses::OPACITY_GATED.intersects(class)
+                || resolved.alpha > PLACEMENT_HIT_ALPHA_THRESHOLD)
+    }
+
+    /// Whether a level of the structural chain removes `class` outright —
+    /// the truncation dev's `Hittable(false)` and preview ran, as opposed
+    /// to the alpha gate.
+    pub fn removes(&self, class: HitClasses) -> bool {
+        self.resolution(true).removes.intersects(class)
     }
 
     /// Sets the node's transform in its parent's space.
@@ -184,9 +306,10 @@ impl Placement {
         self.clock.bump();
     }
 
-    /// Sets whether this subtree hit-tests.
-    pub fn set_hittable(&self, hittable: bool) {
-        self.hittable.set(hittable);
+    /// Sets the registration kinds this subtree removes from
+    /// materialization.
+    pub fn set_removes(&self, removes: HitClasses) {
+        self.removes.set(removes);
         self.clock.bump();
     }
 
@@ -197,7 +320,7 @@ impl Placement {
     }
 
     /// Resets the props the node writes about itself — content offset,
-    /// clip, alpha, hittable — to defaults, keeping `transform`,
+    /// clip, alpha, removed kinds — to defaults, keeping `transform`,
     /// `parent`, `paint_parent` and `index`: the structural facts the
     /// parent writes at the child boundary or the cell keeps for its
     /// lifetime. The `item_cursor` resets too: the record re-deals its
@@ -208,43 +331,51 @@ impl Placement {
         self.content_offset.set(kurbo::Vec2::ZERO);
         self.clip.set(None);
         self.alpha.set(1.0);
-        self.hittable.set(true);
+        self.removes.set(HitClasses::NONE);
         self.item_cursor.set(0);
         self.clock.bump();
     }
 
     /// Resolves a rect from this placement's local space to window space
-    /// through the hit chain: `hittable == false` levels are skipped
-    /// entirely, and the alpha chain gates the result.
-    ///
-    /// The result is cached against the clock epoch: any placement write
-    /// anywhere in the window invalidates it.
+    /// through the structural chain for an [`HitClasses::INPUT`]
+    /// registration: `None` when the chain does not
+    /// [`admit`](Self::admits) input.
     pub fn resolve_hit(&self, local: kurbo::Rect) -> Option<ResolvedPlacement> {
-        let epoch = self.clock.epoch();
-        let cached = {
-            let cache = self.resolved_hit.borrow();
-            cache
-                .filter(|entry| entry.0 == epoch)
-                .map(|entry| (entry.1, entry.2, entry.3))
-        };
-        let (transform, clip, alpha) = cached.unwrap_or_else(|| self.resolve_chain(true));
-        *self.resolved_hit.borrow_mut() = Some((epoch, transform, clip, alpha));
-        if alpha <= PLACEMENT_HIT_ALPHA_THRESHOLD {
+        if !self.admits(HitClasses::INPUT) {
             return None;
         }
-        let mut rect = crate::renderer::transformed_rect(transform, local);
-        if let Some(clip) = clip {
+        let resolved = self.resolution(true);
+        let mut rect = crate::renderer::transformed_rect(resolved.transform, local);
+        if let Some(clip) = resolved.clip {
             rect = rect.intersect(clip);
         }
         Some(ResolvedPlacement { rect })
     }
 
-    /// Composes `(transform, clip, alpha)` down the chain, `hit == true`
-    /// skipping levels whose `hittable` flag is cleared.
+    /// The chain's resolution; the structural chain's is cached against
+    /// the clock epoch, so any placement write anywhere in the window
+    /// invalidates it.
+    fn resolution(&self, hit: bool) -> ChainResolution {
+        if !hit {
+            return self.resolve_chain(false);
+        }
+        let epoch = self.clock.epoch();
+        if let Some((at, resolved)) = *self.resolved_hit.borrow()
+            && at == epoch
+        {
+            return resolved;
+        }
+        let resolved = self.resolve_chain(true);
+        *self.resolved_hit.borrow_mut() = Some((epoch, resolved));
+        resolved
+    }
+
+    /// Composes transform, clip, alpha and removed kinds down the chain —
+    /// `hit` walks the structural parents, otherwise the paint parents.
     ///
     /// The walk collects `Rc` clones bottom-up then composes top-down, so
     /// no level can disappear mid-resolve.
-    fn resolve_chain(&self, hit: bool) -> (kurbo::Affine, Option<kurbo::Rect>, f32) {
+    fn resolve_chain(&self, hit: bool) -> ChainResolution {
         let mut ancestors: Vec<Rc<Self>> = Vec::new();
         let mut parent = self.parent_for(hit);
         while let Some(placement) = parent {
@@ -254,16 +385,14 @@ impl Placement {
         let mut transform = kurbo::Affine::IDENTITY;
         let mut clip: Option<kurbo::Rect> = None;
         let mut alpha = 1.0f32;
+        let mut removes = HitClasses::NONE;
         for placement in ancestors
             .iter()
             .rev()
             .map(Rc::as_ref)
             .chain(std::iter::once(self))
         {
-            if hit && !placement.hittable.get() {
-                // An unhittable level removes the whole subtree's chain.
-                return (kurbo::Affine::IDENTITY, None, 0.0);
-            }
+            removes = removes.union(placement.removes.get());
             transform *= placement.transform.get()
                 * kurbo::Affine::translate(placement.content_offset.get());
             alpha *= placement.alpha.get();
@@ -274,7 +403,12 @@ impl Placement {
                 clip = Some(clip.map_or(window_clip, |c| c.intersect(window_clip)));
             }
         }
-        (transform, clip, alpha)
+        ChainResolution {
+            transform,
+            clip,
+            alpha,
+            removes,
+        }
     }
 
     /// The chain link one level up: `parent`, or `paint_parent` when the

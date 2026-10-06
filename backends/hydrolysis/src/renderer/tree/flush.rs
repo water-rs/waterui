@@ -54,7 +54,13 @@ impl RenderNode {
         });
     }
 
-    #[allow(clippy::used_underscore_binding)]
+    #[cfg_attr(
+        feature = "accessibility",
+        expect(
+            clippy::used_underscore_binding,
+            reason = "feature-gated bindings are underscored for the builds that compile them out"
+        )
+    )]
     #[expect(
         clippy::too_many_lines,
         reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
@@ -161,10 +167,16 @@ impl RenderNode {
                     &node.value.value,
                     OPACITY_ANIMATION_KEY,
                 );
-                renderer.with_clip_rect_scope(alpha, ctx.local, ctx.bounds, |renderer| {
-                    node.child
-                        .flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
-                });
+                renderer.with_clip_rect_scope(
+                    alpha,
+                    ctx.local,
+                    ctx.bounds,
+                    crate::renderer::ScopeDelta::RECORD_SPACE,
+                    |renderer| {
+                        node.child
+                            .flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
+                    },
+                );
             }
             Self::Scale(node) => {
                 let center = anchor_point(ctx.bounds, node.value.anchor);
@@ -604,74 +616,81 @@ impl RenderNode {
                 // `List`/`Table` use).
                 node.surface.begin_flush(renderer, &handle);
                 let metrics = handle.metrics();
-                renderer.with_clip_rect_scope(1.0, ctx.local, viewport_rect, |renderer| {
-                    let scroll_offset =
-                        kurbo::Affine::translate((-metrics.offset_x, -metrics.offset_y));
-                    let content_bounds = kurbo::Rect::new(
-                        0.0,
-                        0.0,
-                        f64::from(node.content_size.width),
-                        f64::from(node.content_size.height),
-                    );
-                    let content_ctx = RenderContext {
-                        local: ctx.local * scroll_offset,
-                        bounds: content_bounds,
-                    };
-                    // Publish the visible window (in content coordinates) —
-                    // the viewport window grown by the same extension —
-                    // so a virtualized `LazyStack` child builds the rows
-                    // painted inside the extended clip, not just the ones
-                    // inside the laid-out frame.
-                    let horizontal = node.surface.visible_span(&metrics, ScrollAxis::Horizontal);
-                    let vertical = node.surface.visible_span(&metrics, ScrollAxis::Vertical);
-                    let lazy_viewport = kurbo::Rect::new(
-                        horizontal.start,
-                        vertical.start,
-                        horizontal.end,
-                        vertical.end,
-                    );
-                    // Registered before the content so the content can be parented
-                    // to it: a scroll region owns what it scrolls, and a label on
-                    // the scroll view must reach the node carrying the scroll
-                    // actions rather than a group beside it.
-                    #[cfg(feature = "accessibility")]
-                    let scroll_accessibility_node = {
-                        renderer.push_accessibility_owner(&node.accessibility_identity);
-                        let scroll_accessibility_node =
-                            crate::widgets::scroll::register_scroll_accessibility_node(
-                                renderer,
-                                &node.env,
-                                Some(viewport_rect),
-                                &handle,
-                                metrics,
-                                node.axis,
-                            );
-                        renderer.pop_accessibility_owner();
-                        if let Some(scroll_accessibility_node) = scroll_accessibility_node {
-                            renderer.push_accessibility_parent(scroll_accessibility_node);
+                renderer.with_clip_rect_scope(
+                    1.0,
+                    ctx.local,
+                    viewport_rect,
+                    crate::renderer::ScopeDelta::RECORD_SPACE,
+                    |renderer| {
+                        let scroll_offset =
+                            kurbo::Affine::translate((-metrics.offset_x, -metrics.offset_y));
+                        let content_bounds = kurbo::Rect::new(
+                            0.0,
+                            0.0,
+                            f64::from(node.content_size.width),
+                            f64::from(node.content_size.height),
+                        );
+                        let content_ctx = RenderContext {
+                            local: ctx.local * scroll_offset,
+                            bounds: content_bounds,
+                        };
+                        // Publish the visible window (in content coordinates) —
+                        // the viewport window grown by the same extension —
+                        // so a virtualized `LazyStack` child builds the rows
+                        // painted inside the extended clip, not just the ones
+                        // inside the laid-out frame.
+                        let horizontal =
+                            node.surface.visible_span(&metrics, ScrollAxis::Horizontal);
+                        let vertical = node.surface.visible_span(&metrics, ScrollAxis::Vertical);
+                        let lazy_viewport = kurbo::Rect::new(
+                            horizontal.start,
+                            vertical.start,
+                            horizontal.end,
+                            vertical.end,
+                        );
+                        // Registered before the content so the content can be parented
+                        // to it: a scroll region owns what it scrolls, and a label on
+                        // the scroll view must reach the node carrying the scroll
+                        // actions rather than a group beside it.
+                        #[cfg(feature = "accessibility")]
+                        let scroll_accessibility_node = {
+                            renderer.push_accessibility_owner(&node.accessibility_identity);
+                            let scroll_accessibility_node =
+                                crate::widgets::scroll::register_scroll_accessibility_node(
+                                    renderer,
+                                    &node.env,
+                                    Some(viewport_rect),
+                                    &handle,
+                                    metrics,
+                                    node.axis,
+                                );
+                            renderer.pop_accessibility_owner();
+                            if let Some(scroll_accessibility_node) = scroll_accessibility_node {
+                                renderer.push_accessibility_parent(scroll_accessibility_node);
+                            }
+                            scroll_accessibility_node
+                        };
+                        // The wheel/trackpad target registers before the content
+                        // flushes: dispatch walks the frame's targets newest-first, so
+                        // a scroll region nested inside this one — registered by the
+                        // child below — wins the delta until it hits its own edge.
+                        crate::widgets::scroll::register_scroll_wheel_target(
+                            renderer,
+                            viewport_rect,
+                            &handle,
+                        );
+                        renderer.push_lazy_viewport(crate::renderer::lifecycle::LazyViewport {
+                            bounds: lazy_viewport,
+                            transform: content_ctx.local,
+                        });
+                        node.child.flush(renderer, content_ctx, env, scroll_offset);
+                        renderer.pop_lazy_viewport("hydrolysis render tree ScrollNode");
+                        #[cfg(feature = "accessibility")]
+                        if scroll_accessibility_node.is_some() {
+                            renderer.pop_accessibility_parent();
                         }
-                        scroll_accessibility_node
-                    };
-                    // The wheel/trackpad target registers before the content
-                    // flushes: dispatch walks the frame's targets newest-first, so
-                    // a scroll region nested inside this one — registered by the
-                    // child below — wins the delta until it hits its own edge.
-                    crate::widgets::scroll::register_scroll_wheel_target(
-                        renderer,
-                        viewport_rect,
-                        &handle,
-                    );
-                    renderer.push_lazy_viewport(crate::renderer::lifecycle::LazyViewport {
-                        bounds: lazy_viewport,
-                        transform: content_ctx.local,
-                    });
-                    node.child.flush(renderer, content_ctx, env, scroll_offset);
-                    renderer.pop_lazy_viewport("hydrolysis render tree ScrollNode");
-                    #[cfg(feature = "accessibility")]
-                    if scroll_accessibility_node.is_some() {
-                        renderer.pop_accessibility_parent();
-                    }
-                });
+                    },
+                );
                 // The focused-field clearance reads this frame's input
                 // targets — the child's flush above just emitted them.
                 node.surface.end_flush(renderer, &handle);
