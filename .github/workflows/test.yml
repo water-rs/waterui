@@ -177,18 +177,18 @@ jobs:
           # `-p` and `--exclude` are mutually exclusive, so the Apple-only
           # crates are filtered out of the affected set on this Linux leg —
           # the macOS legs cover them.
-          args="$(printf '%s' '${{ inputs.package-args }}' | sed -E 's/(^| )-p (waterui-apple|cocoa-ui)//g')"
-          if [ -n "$args" ]; then
-            cargo check --locked --profile ci-check $args --all-targets
-            cargo clippy --locked --profile ci-check $args --all-targets -- -D warnings
+          read -ra args <<< "$(printf '%s' '${{ inputs.package-args }}' | sed -E 's/(^| )-p (waterui-apple|cocoa-ui)//g')"
+          if [ "${#args[@]}" -gt 0 ]; then
+            cargo check --locked --profile ci-check "${args[@]}" --all-targets
+            cargo clippy --locked --profile ci-check "${args[@]}" --all-targets -- -D warnings
           fi
       - name: Clippy and rustdoc (comment-only owners)
         if: inputs.full == false && inputs['comment-only'] == true
         run: |
-          args="$(printf '%s' '${{ inputs.package-args }}' | sed -E 's/(^| )-p (waterui-apple|cocoa-ui)//g')"
-          if [ -n "$args" ]; then
-            cargo clippy --locked --profile ci-check $args --all-targets -- -D warnings
-            RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps $args
+          read -ra args <<< "$(printf '%s' '${{ inputs.package-args }}' | sed -E 's/(^| )-p (waterui-apple|cocoa-ui)//g')"
+          if [ "${#args[@]}" -gt 0 ]; then
+            cargo clippy --locked --profile ci-check "${args[@]}" --all-targets -- -D warnings
+            RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps "${args[@]}"
           fi
       # Filters and their portable description without the GPU stack: no other
       # pass builds `effects` with `gpu` off, so a GPU item leaking into the
