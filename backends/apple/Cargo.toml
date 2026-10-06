@@ -255,6 +255,16 @@ harness = false
 # non-default feature; lanes that want it pass it explicitly.
 required-features = ["native-test"]
 
+# The cases that need a running `UIApplication` with a connected window
+# scene (iOS only; the binary lists no trials on macOS). The iOS target
+# runner launches it as an application, one case per launch — far costlier
+# than `native`'s bare spawn — so it carries only those cases.
+[[test]]
+name = "native_app"
+path = "Tests/native_app.rs"
+harness = false
+required-features = ["native-test"]
+
 [[bench]]
 name = "hot_paths"
 harness = false
