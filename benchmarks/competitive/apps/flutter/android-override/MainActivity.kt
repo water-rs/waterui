@@ -33,10 +33,6 @@ class MainActivity : FlutterActivity() {
                             else null
                         result.success(step?.toString())
                     }
-                    // Darwin-notify handshake methods exist only on Apple
-                    // targets; on Android the runner drives externally.
-                    "beginObserved" -> result.success(false)
-                    "logStep", "discardBegins" -> result.success(null)
                     else -> result.notImplemented()
                 }
             }

@@ -15,10 +15,10 @@ import SwiftUI
 /// seconds while it materializes (the 10k-row feed), and a timed-out
 /// query fails the test instead of driving it.
 enum BenchNotify {
-    /// Posts `dev.bench.ready.<bundle-id>.<w>` once the workload argument
-    /// has resolved — the runner waits for this post to confirm the
-    /// argument arrived, instead of a deep AX query (the 10k-row feed's
-    /// accessibility tree takes minutes to materialize).
+    /// Posts `dev.bench.ready.<bundle-id>.<w>` when the workload view
+    /// first appears — the readiness point every contestant shares. The
+    /// runner waits for this post instead of a deep AX query (the 10k-row
+    /// feed's accessibility tree takes minutes to materialize).
     static func postReady(_ workload: String) {
         let bid = Bundle.main.bundleIdentifier ?? "unknown"
         notify_post("dev.bench.ready.\(bid).\(workload)")
@@ -34,9 +34,8 @@ enum Workload: String {
         guard let raw, let w = Workload(rawValue: raw) else {
             fatalError(
                 "missing or unrecognized -bench-workload launch argument "
-                    + "(got \(raw ?? "nil")); expected W1..=W6")
+                    + "(got \(raw ?? "nil")); expected w1..=w6")
         }
-        BenchNotify.postReady(raw)
         return w
     }
 
@@ -107,8 +106,9 @@ struct ContentView: View {
             default: HelloView()
             }
         }
-        // The runner asserts this identifier after launch.
-        .accessibilityIdentifier("bench-workload-\(workload.rawValue)")
+        // readiness = the workload view's first appearance, the point
+        // every contestant posts at
+        .onAppear { BenchNotify.postReady(workload.rawValue) }
     }
 }
 

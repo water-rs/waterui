@@ -36,21 +36,21 @@ enum Bench {
                 "missing or unrecognized -bench-workload launch argument "
                     + "(got \(raw ?? "nil")); expected w1..=w6")
         }
-        BenchNotify.postReady(raw)
         return raw
     }()
 
-    /// `-bench-step <i>` selects one pinned ladder index for w5|w6 — one
-    /// launch renders one step; the host driver advances the ladder on
-    /// its own schedule.
-    static func step(_ steps: [Int]) -> Int {
+    /// `-bench-step N` — the ladder VALUE (200…25600 for w5, 1…64 for
+    /// w6), exactly what the runner passes to every contestant. One
+    /// launch renders one step; a missing, malformed or off-ladder value
+    /// traps.
+    static func step(_ ladder: [Int]) -> Int {
         let raw = UserDefaults.standard.string(forKey: "bench-step")
-        guard let raw, let i = Int(raw), i >= 0, i < steps.count else {
+        guard let raw, let n = Int(raw), ladder.contains(n) else {
             fatalError(
-                "capacity workload requires -bench-step "
-                    + "0..\(steps.count - 1) (got \(raw ?? "nil"))")
+                "missing or off-ladder -bench-step (got \(raw ?? "nil")); "
+                    + "expected one of \(ladder)")
         }
-        return steps[i]
+        return n
     }
 }
 
@@ -76,10 +76,10 @@ enum BenchNotify {
         }
     }
 
-    /// Posts `dev.bench.ready.<bundle-id>.<W>` once the workload argument
-    /// has resolved — the runner waits for this post to confirm the
-    /// argument arrived, instead of a deep AX query (the 10k-row feed's
-    /// accessibility tree takes minutes to materialize).
+    /// Posts `dev.bench.ready.<bundle-id>.<W>` when the workload view
+    /// first appears — the readiness point every contestant shares. The
+    /// runner waits for this post instead of a deep AX query (the 10k-row
+    /// feed's accessibility tree takes minutes to materialize).
     static func postReady(_ workload: String) {
         let bid = Bundle.main.bundleIdentifier ?? "unknown"
         notify_post("dev.bench.ready.\(bid).\(workload)")
@@ -101,33 +101,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             styleMask: [.titled, .closable, .resizable],
             backing: .buffered, defer: false)
         window.title = "Bench AppKit"
+        let content: NSViewController
         switch Bench.workload {
-        case "w2": window.contentViewController = FeedViewController()
-        case "w3": window.contentViewController = MotionViewController()
-        case "w4": window.contentViewController = TextBenchViewController()
-        case "w5": window.contentViewController =
+        case "w2": content = FeedViewController()
+        case "w3": content = MotionViewController()
+        case "w4": content = TextBenchViewController()
+        case "w5": content =
             MotionViewController(count: Bench.step(
                 [200, 400, 800, 1600, 3200, 6400, 12800, 25600]))
-        case "w6": window.contentViewController =
+        case "w6": content =
             FeedViewController(complexity: Bench.step(
                 [1, 2, 4, 8, 16, 32, 64]))
-        default: window.contentViewController = HelloViewController()
+        default: content = HelloViewController()
         }
+        window.contentViewController = RootViewController(content: content)
         BenchNotify.dbg("vc assigned viewLoaded=\(window.contentView != nil)")
-        // The runner asserts this identifier after launch. A plain NSView
-        // never enters the AX tree, so the id rides on a dedicated element.
-        let marker = NSTextField(
-            labelWithString: "bench-workload-\(Bench.workload)")
-        marker.frame = NSRect(x: 0, y: 0, width: 1, height: 1)
-        marker.font = .systemFont(ofSize: 1)
-        marker.setAccessibilityIdentifier("bench-workload-\(Bench.workload)")
-        window.contentView?.addSubview(marker)
         window.center()
         window.makeKeyAndOrderFront(nil)
         BenchNotify.dbg("window ordered, windows=\(NSApp.windows.count)")
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { true }
+}
+
+/// Hosts the workload's view controller and posts readiness when the
+/// workload view first appears in the window — the same point the other
+/// contestants use (SwiftUI `onAppear`, UIKit `viewDidAppear`, WaterUI
+/// `on_appear`).
+final class RootViewController: NSViewController {
+    private let content: NSViewController
+    private var appeared = false
+
+    init(content: NSViewController) {
+        self.content = content
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func loadView() {
+        view = NSView(frame: NSRect(x: 0, y: 0, width: 1280, height: 800))
+        addChild(content)
+        content.view.frame = view.bounds
+        content.view.autoresizingMask = [.width, .height]
+        view.addSubview(content.view)
+    }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        guard !appeared else { return }
+        appeared = true
+        BenchNotify.postReady(Bench.workload)
+    }
 }
 
 // MARK: - W1
@@ -243,8 +268,16 @@ final class FeedCellView: NSTableCellView {
         lines.spacing = 4
         cellStack.orientation = .horizontal
         cellStack.spacing = 4  // cells are separated by 4 (spec)
-        let row = NSStackView(views: [avatar, lines, cellStack, NSView(), time])
+        // The text column takes the free width, as on every other
+        // contestant: avatar · 12 · text · 12 · [cells · 12 ·] time. The
+        // cell group is hidden (and so detached, with its spacing) when a
+        // row carries no cells — W2 rows lay out exactly like the others.
+        lines.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        cellStack.setContentHuggingPriority(.required, for: .horizontal)
+        time.setContentHuggingPriority(.required, for: .horizontal)
+        let row = NSStackView(views: [avatar, lines, cellStack, time])
         row.orientation = .horizontal
+        row.detachesHiddenViews = true
         row.spacing = 12
         row.distribution = .fill
         row.translatesAutoresizingMaskIntoConstraints = false
@@ -291,6 +324,7 @@ final class FeedCellView: NSTableCellView {
             cellStack.removeArrangedSubview(extra)
             extra.removeFromSuperview()
         }
+        cellStack.isHidden = complexity == 0
         for (j, pair) in cells.enumerated() {
             (pair.arrangedSubviews[0]).layer?.backgroundColor =
                 rowColor(i + j).cgColor

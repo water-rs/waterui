@@ -12,47 +12,45 @@ import UIKit
     // NSUserDefaults' NSArgumentDomain. The id is an exact lowercase
     // string — a missing, uppercase or unrecognized workload traps,
     // never silently measures w1.
-    let rawWorkload = UserDefaults.standard.string(forKey: "bench-workload")
-    guard let workload = rawWorkload,
-      ["w1", "w2", "w3", "w4", "w5", "w6"].contains(workload)
-    else {
-      fatalError(
-        "missing or unrecognized -bench-workload launch argument "
-          + "(got \(rawWorkload ?? "nil")); expected w1..=w6")
-    }
-
-    // The runner waits for `dev.bench.ready.<bundle-id>.<W>` to confirm
-    // this argument arrived — a deep AX query on the 10k-row feed stalls
-    // for minutes, so notify carries the assertion.
-    notify_post("dev.bench.ready.\(Bundle.main.bundleIdentifier ?? "unknown").\(workload)")
-
-    // The runner asserts this accessibility identifier after launch —
-    // set it once on the window's root view; a missed set surfaces as a
-    // failed launch check, never a blind retry.
-    for scene in UIApplication.shared.connectedScenes {
-      guard let ws = scene as? UIWindowScene else { continue }
-      for window in ws.windows {
-        window.rootViewController?.view.accessibilityIdentifier =
-          "bench-workload-\(workload)"
-      }
-    }
-
+    _ = benchWorkload()
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
+    let messenger = engineBridge.applicationRegistrar.messenger()
 
-    // Launch arguments `-bench-workload W2` land in NSUserDefaults'
+    // Launch arguments `-bench-workload w2` land in NSUserDefaults'
     // NSArgumentDomain; expose them to Dart for workload selection.
-    let channel = FlutterMethodChannel(
-      name: "bench/config",
-      binaryMessenger: engineBridge.applicationRegistrar.messenger())
+    let config = FlutterMethodChannel(name: "bench/config", binaryMessenger: messenger)
+    config.setMethodCallHandler { call, result in
+      result(UserDefaults.standard.string(forKey: "bench-\(call.method)"))
+    }
 
-    channel.setMethodCallHandler { call, result in
-      switch call.method {
-      default: result(UserDefaults.standard.string(forKey: "bench-\(call.method)"))
+    // Dart reports the workload page's first frame — the readiness point
+    // every contestant shares; the runner waits for
+    // `dev.bench.ready.<bundle-id>.<w>` instead of a deep AX query (the
+    // 10k-row feed's accessibility tree takes minutes to materialize).
+    let ready = FlutterMethodChannel(name: "bench/ready", binaryMessenger: messenger)
+    ready.setMethodCallHandler { call, result in
+      guard call.method == "ready" else {
+        result(FlutterMethodNotImplemented)
+        return
       }
+      let bid = Bundle.main.bundleIdentifier ?? "unknown"
+      notify_post("dev.bench.ready.\(bid).\(benchWorkload())")
+      result(nil)
     }
   }
+}
+
+/// `-bench-workload w1..=w6`; traps on a missing or unrecognized id.
+private func benchWorkload() -> String {
+  let raw = UserDefaults.standard.string(forKey: "bench-workload")
+  guard let raw, ["w1", "w2", "w3", "w4", "w5", "w6"].contains(raw) else {
+    fatalError(
+      "missing or unrecognized -bench-workload launch argument "
+        + "(got \(raw ?? "nil")); expected w1..=w6")
+  }
+  return raw
 }

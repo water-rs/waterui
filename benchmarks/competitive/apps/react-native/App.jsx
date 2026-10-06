@@ -345,21 +345,7 @@ export default function App({ workload, step }) {
     ) : (
       <Hello />
     );
-  // The runner asserts this accessibility identifier after launch.
-  return (
-    <View style={styles.fill}>
-      {/* The runner asserts this accessibility identifier after launch. A
-          plain container View may never enter the AX tree, so the id rides
-          on a dedicated 1x1 accessible element. */}
-      <Text
-        style={{ position: 'absolute', width: 1, height: 1, top: 0, left: 0, fontSize: 1 }}
-        accessibilityIdentifier={`bench-workload-${workload}`}
-        testID={`bench-workload-${workload}`}>
-        {`bench-workload-${workload}`}
-      </Text>
-      {page}
-    </View>
-  );
+  return <View style={styles.fill}>{page}</View>;
 }
 
 const styles = StyleSheet.create({

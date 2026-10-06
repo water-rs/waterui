@@ -22,14 +22,6 @@
             workload ? workload.UTF8String : "nil");
     abort();
   }
-  // The runner waits for `dev.bench.ready.<bundle-id>.<W>` to confirm the
-  // argument arrived — a deep AX query on the 10k-row feed stalls for
-  // minutes, so notify carries the assertion.
-  NSString *bid = NSBundle.mainBundle.bundleIdentifier ?: @"unknown";
-  notify_post([NSString stringWithFormat:@"dev.bench.ready.%@.%@",
-                        bid, workload]
-                  .UTF8String);
-
   NSString *step = [[NSUserDefaults standardUserDefaults] stringForKey:@"bench-step"];
   NSMutableDictionary *props = [@{@"workload": workload} mutableCopy];
   if (step != nil) {
@@ -37,27 +29,30 @@
   }
   self.initialProps = props;
 
-  // The runner asserts this accessibility identifier after launch; retry
-  // until a window's content view exists.
-  NSString *marker = [NSString stringWithFormat:@"bench-workload-%@", workload];
-  for (double d = 0.0; d <= 2.0; d += 0.5) {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(d * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-      for (NSWindow *w in NSApp.windows) {
-        w.contentView.accessibilityIdentifier = marker;
-      }
-    });
-  }
   self.dependencyProvider = [RCTAppDependencyProvider new];
 
-  // BENCH_READY on stdout marks the first rendered JS frame for
-  // external launch timing.
-  [[NSNotificationCenter defaultCenter] addObserverForName:@"RCTContentDidAppearNotification"
-                                                  object:nil
-                                                   queue:[NSOperationQueue mainQueue]
-                                              usingBlock:^(NSNotification *note) {
-    fwrite("BENCH_READY\n", 1, 12, stdout);
-    fflush(stdout);
+  // Readiness = the workload's content first appearing (React Native
+  // posts RCTContentDidAppearNotification once the surface has mounted
+  // its first JS content) — the point every contestant posts
+  // `dev.bench.ready.<bundle-id>.<w>` at (SwiftUI `onAppear`, AppKit
+  // `viewDidAppear`, WaterUI `on_appear`). The runner waits for it
+  // instead of a deep AX query on the 10k-row feed. Registered before
+  // the surface starts, so the first appearance cannot be missed.
+  NSString *readyName = [NSString stringWithFormat:@"dev.bench.ready.%@.%@",
+                         NSBundle.mainBundle.bundleIdentifier ?: @"unknown",
+                         workload];
+  __block id readyObserver = nil;
+  readyObserver = [[NSNotificationCenter defaultCenter]
+      addObserverForName:@"RCTContentDidAppearNotification"
+                  object:nil
+                   queue:[NSOperationQueue mainQueue]
+              usingBlock:^(NSNotification *note) {
+    if (readyObserver == nil) {
+      return;
+    }
+    [[NSNotificationCenter defaultCenter] removeObserver:readyObserver];
+    readyObserver = nil;
+    notify_post(readyName.UTF8String);
   }];
 
   return [super applicationDidFinishLaunching:notification];

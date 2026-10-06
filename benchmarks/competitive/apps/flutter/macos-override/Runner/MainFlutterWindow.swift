@@ -15,31 +15,33 @@ class MainFlutterWindow: NSWindow {
           + "(got \(rawWorkload ?? "nil")); expected w1..=w6")
     }
 
-    // The runner waits for `dev.bench.ready.<bundle-id>.<W>` to confirm
-    // this argument arrived — a deep AX query on the 10k-row feed stalls
-    // for minutes, so notify carries the assertion.
-    notify_post("dev.bench.ready.\(Bundle.main.bundleIdentifier ?? "unknown").\(workload)")
-
     let flutterViewController = FlutterViewController()
     let windowFrame = self.frame
     self.contentViewController = flutterViewController
     self.setFrame(windowFrame, display: true)
 
-    // The runner asserts this accessibility identifier after launch.
-    flutterViewController.view.setAccessibilityIdentifier(
-      "bench-workload-\(workload)")
-
     RegisterGeneratedPlugins(registry: flutterViewController)
 
-    // Launch arguments `-bench-workload W2` land in NSUserDefaults'
+    // Launch arguments `-bench-workload w2` land in NSUserDefaults'
     // NSArgumentDomain; expose them to Dart for workload selection.
-    let channel = FlutterMethodChannel(
-      name: "bench/config",
-      binaryMessenger: flutterViewController.engine.binaryMessenger)
-    channel.setMethodCallHandler { call, result in
-      switch call.method {
-      default: result(UserDefaults.standard.string(forKey: "bench-\(call.method)"))
+    let messenger = flutterViewController.engine.binaryMessenger
+    let config = FlutterMethodChannel(name: "bench/config", binaryMessenger: messenger)
+    config.setMethodCallHandler { call, result in
+      result(UserDefaults.standard.string(forKey: "bench-\(call.method)"))
+    }
+
+    // Dart reports the workload page's first frame — the readiness point
+    // every contestant shares; the runner waits for
+    // `dev.bench.ready.<bundle-id>.<w>` instead of a deep AX query.
+    let ready = FlutterMethodChannel(name: "bench/ready", binaryMessenger: messenger)
+    ready.setMethodCallHandler { call, result in
+      guard call.method == "ready" else {
+        result(FlutterMethodNotImplemented)
+        return
       }
+      let bid = Bundle.main.bundleIdentifier ?? "unknown"
+      notify_post("dev.bench.ready.\(bid).\(workload)")
+      result(nil)
     }
 
     super.awakeFromNib()

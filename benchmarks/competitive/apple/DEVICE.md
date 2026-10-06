@@ -50,12 +50,13 @@ them.
 ios-sim + ios-device, all five contestants). One launch renders one step —
 `bench.py` iterates the manifest's `steps` ladder, passing `-bench-step N`
 per launch, and each launch's `xctrace record --template 'Animation
-Hitches' --attach <process>` recording covers that step's settle + hold
-window; the runner holds a bounded pause so the attach lands before the
-first frame.
+Hitches' --all-processes` recording is armed before the runner's
+recorder-go is released, so it covers the launch and the whole measure
+window; the contestant's rows are selected by process at export.
 
 Per-row results carry `capacity.steps[]` (frames, p50/p99 frame interval,
 % inside the 8.33 ms / 16.67 ms budgets, CPU ms and CPU ms/frame) plus
 `capacity_120hz` / `capacity_60hz` — the largest step sustaining ≥ 99% of
-presented frames inside budget. If `xctrace` cannot attach under free-team
-signing the exact error is recorded in `capacity.errors` instead.
+presented frames inside budget. A recorder that fails to arm fails the
+cell with xctrace's own output; one that fails to save its trace lands
+in the row's `trace_errors`.

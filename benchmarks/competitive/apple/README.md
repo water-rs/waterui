@@ -65,29 +65,35 @@ XCUITest runner (6 App IDs total: 5 contestant apps + 1 shared
 - W4 Text: 50 mixed Latin/CJK/emoji paragraphs scrolling, 12 s, same
   corpus from `shared/paragraphs.txt`
 - W5 Motion capacity: the W3 scene with the rect count doubled per step
-  (200 → 25600), 1 s settle + 4 s hold per step — one launch renders one
-  step, pinned by `-bench-step N`. iOS contestants only.
+  (200 → 25600) — one launch renders one step, pinned by
+  `-bench-step N` (the ladder value). iOS contestants only.
 - W6 Feed capacity: the W2 fling program over rows with 1 → 64 nested
-  text+shape children per row, same step cadence as W5. iOS only.
+  text+shape children per row, same step protocol as W5. iOS only.
 
-Frame timing is external:
-`bench.py` attaches `xctrace record` (Animation Hitches + Time Profiler
-+ Logging) to the app process during the measure window — launch is
-gated on the `dev.bench.recorder` handshake so the attach binds at the
-app's birth; on ios-device the host has no notify channel and arms a
-`bench-recorder-go` sentinel in the runner container instead —
-exports the
-`hitches-frame-lifetimes` table for presented-frame intervals and
-`time-sample` for CPU, then slices both by the logged step times. No
-in-app CADisplayLink: it cannot see Flutter/RN render-thread stalls the
-same way. Report per step: frames, p50/p99 frame interval, % inside the
-8.33 ms (120 Hz) and 16.67 ms (60 Hz) budgets, CPU ms/frame; the
-capacity number is the largest step sustaining ≥ 99% in budget.
+Every cell captures one window: it opens `harness.warmup_ms` after the
+contestant's `dev.bench.ready` post and lasts the workload's
+`duration_s`; the drive runs inside it and the rest is held.
+
+Frame timing is external: on macOS and ios-device `bench.py` runs
+`xctrace record --all-processes` (Animation Hitches; plus Logging on
+ios-device) for every contestant. Each recorder is armed — xctrace's own
+"recording started" line — before the runner's latched recorder-go is
+released, so it covers the app from its launch; the contestant's rows
+are selected by process at export. The `hitches-frame-lifetimes` table
+gives the presented-frame intervals inside the measure window and, on
+ios-device, `time-sample` gives the app and `backboardd` CPU in the
+window. No in-app CADisplayLink: it cannot see Flutter/RN render-thread
+stalls the same way. Report per step: frames, p50/p99 frame interval,
+% inside the 8.33 ms (120 Hz) and 16.67 ms (60 Hz) budgets, CPU
+ms/frame; the capacity number is the largest step sustaining ≥ 99% in
+budget.
 
 Every app reads `-bench-workload w1..w6` from launch arguments and posts
-`dev.bench.ready.<bundle-id>.<w>` at first frame; W1's button is
-`increment-button` for accessibility. Values are byte-identical across
-contestants via the shared corpus.
+`dev.bench.ready.<bundle-id>.<w>` when the workload view first appears
+(SwiftUI `onAppear`, UIKit/AppKit `viewDidAppear`, WaterUI `on_appear`,
+Flutter's first frame of the workload page, React Native's first content
+appearance); W1's button is `increment-button` for accessibility. Values
+are byte-identical across contestants via the shared corpus.
 
 ## Metrics
 
@@ -99,9 +105,8 @@ scrolling workloads W2/W4/W6; on W1/W3 it emitted zero rows).
 Render-server cost is measured alongside every cell, identically for every
 contestant: on ios-sim/macos a `ps -o time` sampler tracks the app and the
 Core Animation render server (sim `backboardd`, macOS `WindowServer`); on
-ios-device a second `xctrace record --template 'Time Profiler'` attaches to
-`backboardd`, and `Animation Hitches` attaches to the app for
-presented-frame counts. Package size = arm64 `.app` bytes on
+ios-device the all-process Animation Hitches recording's `time-sample`
+rows give the app and `backboardd` CPU. Package size = arm64 `.app` bytes on
 disk. Median / min / max / all samples, ≥ 5 repeats, written to
 `build/results-*.json`; `report` renders tables with × WaterUI ratios.
 Each contestant's first run of a session is a discarded warm-up — the

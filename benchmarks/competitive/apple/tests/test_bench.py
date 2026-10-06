@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Pure-fixture + real-control-flow checks for bench.py (stdlib only).
 
-Covers: devicectl JSON parse (nominal/warm/unreadable/missing), thermal
-gate truth table, xcresult-error row marking, CLI hash verification,
-host fingerprint gating, and the device cleanup path with injected
-cleanup failures. No device, simulator, network, or build required —
-failures are injected through real control flow, not mocks shaped like
-the implementation.
+Covers: devicectl JSON parse (nominal/warm/unreadable/missing),
+xcresult-error row marking, CLI hash verification, host fingerprint
+gating, the device cleanup path with injected cleanup failures, xctrace
+export parsing, the pty line reader and xctestrun injection. No device,
+simulator, network, or build required — failures are injected through
+real control flow, not mocks shaped like the implementation.
 
 Run: uv run tests/test_bench.py
 """
@@ -523,55 +523,103 @@ class TestSamplerPidRebind(unittest.TestCase):
         self.assertEqual(s.peak_rss_mb("app", 90.0, 120.0), 0.0)
 
 
-class TestMacThermalGate(unittest.TestCase):
-    """N10: the macOS thermal gate is a bounded poll on CPU_Speed_Limit,
-    not a blind sleep."""
+class TestXctraceExport(unittest.TestCase):
+    """xctrace export rows are keyed by the schema's column mnemonics:
+    row children carry engineering-type tags in column order, refs
+    resolve to the earlier definition, and an empty cell is a
+    sentinel."""
 
-    def test_cool_passes_throttled_waits(self):
-        import subprocess as _sp
-        class R:
-            returncode = 0
-            stderr = ""
-            def __init__(self, out):
-                self.stdout = out
-        seq = [R("CPU_Speed_Limit = 80\n"), R("CPU_Speed_Limit = 100\n")]
-        orig = _sp.run
-        try:
-            calls = []
-            def fake(*a, **k):
-                calls.append(1)
-                return seq[min(len(calls) - 1, len(seq) - 1)]
-            _sp.run = fake
-            # first poll is throttled, second is cool — bounded poll
-            # proceeds without a fixed sleep
-            self.assertTrue(bench.mac_thermal_wait(budget_s=5))
-        finally:
-            _sp.run = orig
+    DOC = """<?xml version="1.0"?>
+<trace-query-result><node xpath="x">
+<schema name="time-sample">
+<col><mnemonic>time</mnemonic><engineering-type>sample-time</engineering-type></col>
+<col><mnemonic>thread</mnemonic><engineering-type>thread</engineering-type></col>
+<col><mnemonic>thread-state</mnemonic><engineering-type>thread-state</engineering-type></col>
+</schema>
+<row><sample-time id="1" fmt="00:00.001">1000000</sample-time><thread id="2" fmt="Main Thread 0x1 (BenchUIKit, pid: 42)"/><thread-state id="3" fmt="Running">Running</thread-state></row>
+<row><sample-time id="4" fmt="00:00.002">2000000</sample-time><thread ref="2"/><sentinel/></row>
+</node></trace-query-result>"""
 
-    def test_throttled_past_budget_fails(self):
-        import subprocess as _sp
-        class R:
-            returncode = 0
-            stderr = ""
-            stdout = "CPU_Speed_Limit = 50\n"
-        orig_run, orig_sleep = _sp.run, bench.time.sleep
-        orig_time = bench.time.time
+    def test_rows_keyed_by_mnemonic(self):
+        rows, err = bench.parse_export_rows(self.DOC)
+        self.assertIsNone(err)
+        self.assertEqual(rows[0]["time"], "1000000")
+        self.assertEqual(rows[0]["thread-state"], "Running")
+        # the ref repeats the defining element's value
+        self.assertEqual(bench._proc_of_thread(rows[1]["thread"]),
+                         "BenchUIKit")
+        self.assertIsNone(rows[1]["thread-state"])
+
+    def test_cell_count_mismatch_is_an_error(self):
+        doc = self.DOC.replace("<sentinel/>", "")
+        rows, err = bench.parse_export_rows(doc)
+        self.assertIsNone(rows)
+        self.assertIn("schema columns", err)
+
+    def test_process_cell_name(self):
+        self.assertEqual(bench._proc_name("WaterUI Bench (311)"),
+                         "WaterUI Bench")
+        self.assertIsNone(bench._proc_name(None))
+
+
+class TestPtyLines(unittest.TestCase):
+    """The arm/begin readers block in select(2) on the descriptor and
+    honour the caller's deadline — no polling."""
+
+    def test_lines_then_eof(self):
+        import os
+        r, w = os.pipe()
+        os.write(w, b"dev.bench.begin 0\r\ndev.bench.begin\npartial")
+        os.close(w)
+        lines = bench.PtyLines(r)
+        self.assertEqual(lines.readline(None), "dev.bench.begin 0")
+        self.assertEqual(lines.readline(None), "dev.bench.begin")
+        self.assertEqual(lines.readline(None), "partial")
+        self.assertIsNone(lines.readline(None))
+        lines.close()
+
+    def test_deadline(self):
+        import os
+        r, w = os.pipe()
+        lines = bench.PtyLines(r)
+        with self.assertRaises(TimeoutError):
+            lines.readline(bench.time.monotonic() + 0.05)
+        lines.close()
+        os.close(w)
+
+
+class TestXctestrunInjection(unittest.TestCase):
+    """The run nonce and the ladder value reach the runner's
+    environment; the notify channel exists only where the host can
+    reach the namespace."""
+
+    def test_nonce_and_step(self):
+        import plistlib
+        tmp = Path(tempfile.mkdtemp(prefix="bench-xr-"))
         try:
-            _sp.run = lambda *a, **k: R()
-            bench.time.sleep = lambda _s: None
-            # a fake clock advancing past the budget on the SECOND call
-            # (the first computes the deadline)
-            t0 = orig_time()
-            calls = [0]
-            def fake_time():
-                calls[0] += 1
-                return t0 if calls[0] == 1 else t0 + 700
-            bench.time.time = fake_time
-            self.assertFalse(bench.mac_thermal_wait(budget_s=600))
+            tmpl = tmp / "t.xctestrun"
+            tmpl.write_bytes(plistlib.dumps({"BenchRunner": {
+                "DependentProductPaths": []}}))
+            out = tmp / "o.xctestrun"
+            bench.write_xctestrun(tmpl, out, "BenchRunner", "Release",
+                                  "X.app", "dev.bench.x", "w5", "none", 12,
+                                  runner_app="", nonce=12345, step=800)
+            env = plistlib.loads(out.read_bytes())["BenchRunner"][
+                "EnvironmentVariables"]
+            self.assertEqual(env["BENCH_RUN_NONCE"], "12345")
+            self.assertEqual(env["BENCH_STEP"], "800")
+            self.assertEqual(env["BENCH_DURATION"], "12")
         finally:
-            _sp.run = orig_run
-            bench.time.sleep = orig_sleep
-            bench.time.time = orig_time
+            shutil.rmtree(tmp)
+
+    def test_notify_namespaces(self):
+        self.assertEqual(bench._notify_cmd("macos", None, "-p", "a"),
+                         ["notifyutil", "-p", "a"])
+        self.assertEqual(
+            bench._notify_cmd("ios-sim", "U", "-p", "a"),
+            ["xcrun", "simctl", "spawn", "U", "notifyutil", "-p", "a"])
+        with self.assertRaises(ValueError):
+            bench._notify_cmd("ios-device", "U", "-p", "a")
 
 
 class TestGitFixture(unittest.TestCase):

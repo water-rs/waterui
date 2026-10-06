@@ -36,11 +36,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
           + "(got \(rawWorkload ?? "nil")); expected w1..=w6")
     }
 
-    // The runner waits for `dev.bench.ready.<bundle-id>.<W>` to confirm
-    // this argument arrived — a deep AX query on the 10k-row feed stalls
-    // for minutes, so notify carries the assertion.
-    notify_post("dev.bench.ready.\(Bundle.main.bundleIdentifier ?? "unknown").\(workload)")
-
     var initialProps: [String: Any] = [
       "workload": workload
     ]
@@ -50,6 +45,18 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
       initialProps["step"] = n
     }
 
+    // Readiness = the workload's content first appearing (React Native
+    // posts RCTContentDidAppearNotification once the surface has mounted
+    // its first JS content) — the point every contestant posts
+    // `dev.bench.ready.<bundle-id>.<w>` at (SwiftUI `onAppear`, UIKit
+    // `viewDidAppear`, WaterUI `on_appear`). The runner waits for it
+    // instead of a deep AX query on the 10k-row feed. Registered before
+    // the surface starts, so the first appearance cannot be missed.
+    readyName = "dev.bench.ready.\(Bundle.main.bundleIdentifier ?? "unknown").\(workload)"
+    NotificationCenter.default.addObserver(
+      self, selector: #selector(contentDidAppear(_:)),
+      name: AppDelegate.contentDidAppearName, object: nil)
+
     factory.startReactNative(
       withModuleName: "RnBench",
       in: window,
@@ -57,23 +64,17 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
       launchOptions: launchOptions
     )
 
-    // The runner asserts this identifier after launch — set it once on
-    // the window's root view; a missed set surfaces as a failed launch
-    // check, never a blind retry.
-    window?.rootViewController?.view.accessibilityIdentifier =
-      "bench-workload-\(workload)"
-
-    // BENCH_READY on stdout marks the first rendered JS frame for
-    // external launch timing (device mode has no XCTest).
-    NotificationCenter.default.addObserver(
-      forName: Notification.Name("RCTContentDidAppearNotification"),
-      object: nil,
-      queue: .main
-    ) { _ in
-      FileHandle.standardOutput.write("BENCH_READY\n".data(using: .utf8)!)
-    }
-
     return true
+  }
+
+  private static let contentDidAppearName = Notification.Name("RCTContentDidAppearNotification")
+  private var readyName = ""
+
+  /// First appearance of the workload's content: post readiness once.
+  @objc private func contentDidAppear(_ note: Notification) {
+    NotificationCenter.default.removeObserver(
+      self, name: AppDelegate.contentDidAppearName, object: nil)
+    notify_post(readyName)
   }
 }
 

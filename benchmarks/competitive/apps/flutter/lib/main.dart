@@ -15,6 +15,10 @@ import 'package:flutter/services.dart';
 
 const _configChannel = MethodChannel('bench/config');
 
+/// Apple legs only: the native side posts `dev.bench.ready.<bundle>.<w>`
+/// over Darwin notify when Dart reports the workload page's first frame.
+const _readyChannel = MethodChannel('bench/ready');
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final workload = await _readConfig('workload');
@@ -76,27 +80,31 @@ class BenchApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Bench',
-      // The runner asserts this accessibility identifier after launch.
-      home: Semantics(
-        identifier: 'bench-workload-$workload',
-        child: switch (workload) {
-          'w1' => const HelloPage(),
-          'w2' => const FeedPage(),
-          'w3' => const MotionPage(),
-          'w4' => const TextPage(),
-          'w5' => MotionCapacityPage(pinnedStep: pinnedStep),
-          'w6' => FeedCapacityPage(pinnedStep: pinnedStep),
-          _ => throw StateError('unreachable: workload() yields w1..=w6'),
-        },
-      ),
+      home: switch (workload) {
+        'w1' => const HelloPage(),
+        'w2' => const FeedPage(),
+        'w3' => const MotionPage(),
+        'w4' => const TextPage(),
+        'w5' => MotionCapacityPage(pinnedStep: pinnedStep),
+        'w6' => FeedCapacityPage(pinnedStep: pinnedStep),
+        _ => throw StateError('unreachable: workload() yields w1..=w6'),
+      },
     );
   }
 }
 
+bool _readyPosted = false;
+
+/// Readiness = the workload page's first frame, the point every Apple
+/// contestant posts `dev.bench.ready` at (SwiftUI `onAppear`, UIKit /
+/// AppKit `viewDidAppear`, WaterUI `on_appear`, React Native's first
+/// content appearance). Only the Apple legs consume it — the other legs
+/// observe the first present from outside the app.
 void _ready() {
-  // BENCH_READY on stdout is the runner's launch-timing signal.
-  // ignore: avoid_print
-  SchedulerBinding.instance.addPostFrameCallback((_) => print('BENCH_READY'));
+  if (_readyPosted || !(Platform.isIOS || Platform.isMacOS)) return;
+  _readyPosted = true;
+  SchedulerBinding.instance.addPostFrameCallback(
+      (_) => _readyChannel.invokeMethod<void>('ready'));
 }
 
 // MARK: - Shared constants (identical across contestants)

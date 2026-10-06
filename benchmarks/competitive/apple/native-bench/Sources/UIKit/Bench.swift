@@ -35,7 +35,6 @@ enum Bench {
                 "missing or unrecognized -bench-workload launch argument "
                     + "(got \(raw ?? "nil")); expected w1..=w6")
         }
-        BenchNotify.postReady(raw)
         return raw
     }()
 
@@ -64,10 +63,10 @@ enum Bench {
 /// completion: the host driver owns the end of every cell from the
 /// declared program and duration.
 enum BenchNotify {
-    /// Posts `dev.bench.ready.<bundle-id>.<w>` once the workload argument
-    /// has resolved — the runner waits for this post to confirm the
-    /// argument arrived, instead of a deep AX query (the 10k-row feed's
-    /// accessibility tree takes minutes to materialize).
+    /// Posts `dev.bench.ready.<bundle-id>.<w>` when the workload view
+    /// first appears — the readiness point every contestant shares. The
+    /// runner waits for this post instead of a deep AX query (the 10k-row
+    /// feed's accessibility tree takes minutes to materialize).
     static func postReady(_ workload: String) {
         let bid = Bundle.main.bundleIdentifier ?? "unknown"
         notify_post("dev.bench.ready.\(bid).\(workload)")
@@ -75,6 +74,18 @@ enum BenchNotify {
 }
 
 final class RootViewController: UIViewController {
+    private var appeared = false
+
+    /// Readiness = the workload view's first appearance, the point every
+    /// contestant posts at (SwiftUI `onAppear`, AppKit `viewDidAppear`,
+    /// WaterUI `on_appear`).
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        guard !appeared else { return }
+        appeared = true
+        BenchNotify.postReady(Bench.workload)
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
@@ -87,14 +98,6 @@ final class RootViewController: UIViewController {
         case "w6": child = FeedCapacityViewController()
         default: child = HelloViewController()
         }
-        // The runner asserts this identifier after launch. A plain container
-        // view never enters the AX tree, so the id rides on a dedicated
-        // minimal label (labels are always accessibility elements).
-        let marker = UILabel(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
-        marker.font = .systemFont(ofSize: 1)
-        marker.text = "bench-workload-\(Bench.workload)"
-        marker.accessibilityIdentifier = "bench-workload-\(Bench.workload)"
-        view.addSubview(marker)
         addChild(child)
         child.view.frame = view.bounds
         child.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]

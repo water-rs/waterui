@@ -5,42 +5,52 @@
 //   BENCH_WORKLOAD   — w1 | w2 | w3 | w4 | w5 | w6 (exact lowercase; any
 //                      other value fails)
 //   BENCH_STEP       — capacity step for w5/w6 (one launch = one step)
-//   BENCH_DRIVE      — "swipe" (coordinate drags on the window, iOS
-//                      device/macOS) or "wheel" (host-side CGEvent scroll
-//                      into the window — ios-sim/AppKit; the runner's own
-//                      process drives it, started by the `dev.bench.begin`
-//                      post inside the measure block and ended by its
-//                      `dev.bench.end` — the driver's own name)
+//   BENCH_DRIVE      — "swipe" (coordinate drags, iOS device), "wheel"
+//                      (host-side CGEvent scroll-wheel detents — iOS
+//                      Simulator and macOS; the host driver starts on the
+//                      single `dev.bench.begin` this runner posts when the
+//                      measure block opens and ends the cell with its own
+//                      `dev.bench.end`), "tap" (w1) or "none"
 //   BENCH_FLING      — JSON fling program from the manifest:
-//                      {"distance_fraction":0.6,"pause_s":0.35,
-//                       "hold_s":0.02,"flings_down":8,"flings_up":2}
-//   BENCH_DURATION   — measurement seconds for w3/w5 (required; a
-//                      missing or malformed value fails)
+//                      {"start_fraction":0.75,"end_fraction":0.15,
+//                       "duration_ms":250,"pause_s":0.35,"hold_s":0.02,
+//                       "flings_down":8,"flings_up":2}
+//   BENCH_DURATION   — capture seconds for every workload (required; a
+//                      missing or malformed value fails). The measure
+//                      block is exactly this long: the drive program runs
+//                      inside it and the remainder is held, so every cell
+//                      captures the same declared window (METHOD).
 //   BENCH_WARMUP_MS  — declared warmup between the contestant's
 //                      dev.bench.ready first-frame post and the start
 //                      of the measure window (required, > 0 — METHOD:
 //                      window = first owned present + warmup)
+//   BENCH_RUN_NONCE  — non-zero u64 the host chose for this invocation;
+//                      the recorder-go handshake matches it, so a latched
+//                      signal from an earlier invocation can never
+//                      release this one
 //   BENCH_NO_HITCH   — "1" drops XCTHitchMetric (used when the platform
 //                      cannot record it; see bench.py)
 //
-// testWorkload does NOT launch the app until the host posts
-// `dev.bench.recorder` (or drops a bench-recorder-go sentinel into this
-// runner's tmp on ios-device, where the host cannot reach the device's
-// notify namespace) — the runner's xctrace recorders arm before launch
-// so they bind at process birth. Each row also records the device state
-// read INSIDE this process (ProcessInfo.thermalState, screen max fps —
-// devicectl cannot report them) into the runner log.
+// testWorkload does NOT launch the app until the host has armed its
+// recorders. The host latches recorder-go: on macOS and the iOS
+// Simulator it holds a registration on `dev.bench.recorder` whose notify
+// state is BENCH_RUN_NONCE, then posts it; on ios-device (no notify
+// channel into the device) it copies `bench-recorder-go-<nonce>` into
+// this runner's tmp. Both are latched, so the order in which host and
+// runner arrive cannot lose the signal. Each row also records the device
+// state read INSIDE this process (ProcessInfo.thermalState, screen max
+// fps — devicectl cannot report them) into the runner log.
 //
 // Launch arguments follow one convention on every contestant:
 //   -bench-workload <w1|w2|w3|w4|w5|w6> [-bench-step N]
-// which lands in NSUserDefaults' NSArgumentDomain (and argv). Apps trap
-// when the workload is missing or unrecognized, and expose their selected
-// workload as the accessibility identifier `bench-workload-<id>`. The runner
-// asserts it through the `dev.bench.ready.<bundle-id>.<W>` Darwin
-// notification each app posts once its argument is resolved — a wrong page
-// fails the test instead of measuring the Hello page. The assertion goes
-// over notify (not an AX query) because materializing the accessibility
-// tree of the 10k-row feed blocks a descendants query for minutes.
+// which lands in NSUserDefaults' NSArgumentDomain (and argv); N is the
+// ladder value itself (200…25600 for w5, 1…64 for w6). Apps trap when
+// the workload is missing or unrecognized and post
+// `dev.bench.ready.<bundle-id>.<W>` over Darwin notify when the workload
+// view first appears — a wrong page fails the test instead of measuring
+// the Hello page. The assertion goes over notify (not an AX query)
+// because materializing the accessibility tree of the 10k-row feed
+// blocks a descendants query for minutes.
 //
 // The same metrics are attached for every contestant — XCTest measures the
 // app from outside (Core Animation commits, memory footprint, launch
@@ -73,67 +83,69 @@ final class BenchTests: XCTestCase {
     private var workload: String = ""
     private var drive: String = ""
 
+    /// A harness precondition that does not hold — thrown from setUp so
+    /// the test body never runs against a half-configured runner.
+    struct HarnessError: Error, CustomStringConvertible {
+        let description: String
+    }
+
     override func setUpWithError() throws {
         continueAfterFailure = true
         let env = ProcessInfo.processInfo.environment
         bundleID = env["BENCH_BUNDLE_ID"] ?? ""
         guard !bundleID.isEmpty else {
-            XCTFail("BENCH_BUNDLE_ID not set")
-            return
+            throw HarnessError(description: "BENCH_BUNDLE_ID not set")
         }
         workload = env["BENCH_WORKLOAD"] ?? ""
         drive = env["BENCH_DRIVE"] ?? ""
         guard ["w1", "w2", "w3", "w4", "w5", "w6"].contains(workload) else {
-            XCTFail("missing or unrecognized BENCH_WORKLOAD "
-                + "(got \(workload)); expected w1..w6")
-            return
+            throw HarnessError(
+                description: "missing or unrecognized BENCH_WORKLOAD "
+                    + "(got \(workload)); expected w1..w6")
         }
         guard ["swipe", "wheel", "tap", "none"].contains(drive) else {
-            XCTFail("missing or unrecognized BENCH_DRIVE "
-                + "(got \(drive)); expected swipe|wheel|tap|none")
-            return
+            throw HarnessError(
+                description: "missing or unrecognized BENCH_DRIVE "
+                    + "(got \(drive)); expected swipe|wheel|tap|none")
         }
         app = XCUIApplication(bundleIdentifier: bundleID)
         app.launchArguments = ["-bench-workload", workload]
         if ["w5", "w6"].contains(workload) {
             let step = env["BENCH_STEP"] ?? ""
-            guard Int(step) != nil else {
-                XCTFail("capacity workload \(workload) requires BENCH_STEP")
-                return
+            guard let n = Int(step), n > 0 else {
+                throw HarnessError(
+                    description: "capacity workload \(workload) requires "
+                        + "BENCH_STEP (a ladder value; got \(step))")
             }
-            app.launchArguments += ["-bench-step", step]
+            app.launchArguments += ["-bench-step", String(n)]
         }
-        // Thermal gate, measured by the runner itself: devicectl has no
-        // thermalState channel, so the check lives on-device. Cool-down
-        // is a bounded wait on the thermal-state notification, not a
-        // fixed sleep — an already-cool device proceeds immediately and
-        // a device still hot at the bound fails the row.
+        // Thermal gate, measured by the runner itself on every Apple
+        // platform (macOS included — ProcessInfo reports the host's
+        // thermal pressure there): devicectl has no thermalState
+        // channel, so the check lives in this process. An already-cool
+        // host proceeds immediately; one still hot at the bound fails.
         try waitForNominalThermal(budget: 600)
     }
 
-    /// Waits until ProcessInfo reports a nominal thermal state, woken by
-    /// thermalStateDidChangeNotification; throws past the budget.
+    /// Blocks until ProcessInfo reports a nominal thermal state. The
+    /// wake-up is thermalStateDidChangeNotification itself: the
+    /// expectation observes it from before the state is read (a
+    /// transition between the read and the wait cannot be lost), and
+    /// XCTWaiter runs the run loop the notification is delivered on.
     private func waitForNominalThermal(budget: TimeInterval) throws {
-        let deadline = Date().addingTimeInterval(budget)
-        while ProcessInfo.processInfo.thermalState != .nominal {
-            if Date() > deadline {
-                XCTFail("thermal cool-down exceeded \(budget)s: "
-                    + "state=\(ProcessInfo.processInfo.thermalState.rawValue)")
-                return
-            }
-            let sem = DispatchSemaphore(value: 0)
-            let obs = NotificationCenter.default.addObserver(
-                forName: ProcessInfo.thermalStateDidChangeNotification,
-                object: nil, queue: nil) { _ in sem.signal() }
-            // the notification is the wake-up; the semaphore's timeout
-            // carries the deadline discipline — no shared var across
-            // queues
-            let wake = Date().addingTimeInterval(min(30, budget))
-            while ProcessInfo.processInfo.thermalState != .nominal
-                && Date() < wake && Date() < deadline {
-                _ = sem.wait(timeout: .now() + 0.2)
-            }
-            NotificationCenter.default.removeObserver(obs)
+        let cooled = XCTNSNotificationExpectation(
+            name: ProcessInfo.thermalStateDidChangeNotification)
+        cooled.handler = { _ in
+            ProcessInfo.processInfo.thermalState == .nominal
+        }
+        if ProcessInfo.processInfo.thermalState == .nominal { return }
+        dbg("thermal wait: state="
+            + "\(ProcessInfo.processInfo.thermalState.rawValue)")
+        guard XCTWaiter().wait(for: [cooled], timeout: budget) == .completed
+        else {
+            throw HarnessError(
+                description: "thermal cool-down exceeded \(budget)s: state="
+                    + "\(ProcessInfo.processInfo.thermalState.rawValue)")
         }
     }
 
@@ -251,178 +263,208 @@ final class BenchTests: XCTestCase {
 
     /// Steady-state and peak memory + hitch metrics while the workload runs.
     func testWorkload() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let rawWarmup = env["BENCH_WARMUP_MS"],
+            let warmupMs = Double(rawWarmup), warmupMs > 0
+        else {
+            throw HarnessError(description: "missing or malformed BENCH_WARMUP_MS")
+        }
+        guard let rawDuration = env["BENCH_DURATION"],
+            let duration = Double(rawDuration), duration > 0
+        else {
+            throw HarnessError(description: "missing or malformed BENCH_DURATION")
+        }
+        guard let rawNonce = env["BENCH_RUN_NONCE"],
+            let nonce = UInt64(rawNonce), nonce != 0
+        else {
+            throw HarnessError(description: "missing or malformed BENCH_RUN_NONCE")
+        }
         dbg("testWorkload: launching \(bundleID) w=\(workload) drive=\(drive)")
         registerWorkloadReady()
-        // The host arms its recorders, then posts dev.bench.recorder —
-        // launch is gated on that handshake so an xctrace attach binds
-        // at the app's birth, not whenever a fixed sleep happened to end.
-        waitForRecorderGo()
+        // The host arms its recorders, then latches recorder-go — launch
+        // is gated on that handshake so every recorder covers the app
+        // from its birth.
+        try waitForRecorderGo(nonce: nonce)
         app.launch()
         dbg("launched — awaiting ready post")
         assertWorkloadReady()
         dbg("ready ok")
 
-        guard let rawWarmup = ProcessInfo.processInfo
-            .environment["BENCH_WARMUP_MS"],
-            let warmupMs = Double(rawWarmup), warmupMs > 0
-        else {
-            XCTFail("missing or malformed BENCH_WARMUP_MS")
-            return
-        }
         // METHOD: the measure window opens the declared warmup after
         // the contestant's first-frame post — the drive program runs
         // entirely inside the window, identically for every contestant
         Thread.sleep(forTimeInterval: warmupMs / 1000.0)
         dbg("warmup done")
 
-        guard let rawDuration = ProcessInfo.processInfo
-            .environment["BENCH_DURATION"],
-            let duration = Double(rawDuration), duration > 0
-        else {
-            XCTFail("missing or malformed BENCH_DURATION")
-            return
-        }
-
         // device state read on-device per row (devicectl cannot report
         // thermal/fps); the measure-window markers let the host slice
-        // its CPU sampler to exactly the measure block
+        // its samplers and traces to exactly the measure block
         recordDeviceState()
         dbg("measure-begin")
         measure(metrics: baseMetrics(), options: measureOptions) {
+            // One window definition: every cell captures exactly
+            // BENCH_DURATION seconds. The drive runs inside it; the
+            // remainder is held. The host wheel driver owns its cell's
+            // end itself, at begin + the same duration.
+            let windowEnd = Date().addingTimeInterval(duration)
             switch workload {
             case "w2", "w4", "w6":
-                driveScroll(duration: duration)
+                if drive == "wheel" {
+                    awaitHostWheelDrive(duration: duration)
+                    return
+                }
+                swipeFlings()
             case "w3", "w5":
-                Thread.sleep(forTimeInterval: duration)
+                break
             default:
-                // W1: tap the counter a fixed number of times. The
-                // button is asserted, not probed — a contestant missing
-                // its workload content fails the row instead of
-                // silently tapping nothing.
-                var button = anyElement("increment-button")
-                if !button.exists {
-                    button = app.buttons["Increment"].firstMatch
-                }
-                XCTAssertTrue(button.waitForExistence(timeout: 10),
-                              "no increment button — workload content "
-                              + "not found")
-                for _ in 0..<20 {
-                    button.tap()
-                    Thread.sleep(forTimeInterval: 0.05)
-                }
+                tapCounter()
             }
+            holdWindow(until: windowEnd)
         }
         dbg("measure-end")
     }
 
-    /// Blocks until the host has armed its recorders: `dev.bench.recorder`
-    /// on Darwin notify, or the bench-recorder-go sentinel in this
-    /// runner's tmp on ios-device (the host has no notify channel into a
-    /// physical device — devicectl copy is the side channel).
-    private func waitForRecorderGo() {
-        // Event sources, not polling: `dev.bench.recorder` on a notify
-        // file descriptor blocks in poll(2). On ios-device the host has
-        // NO notify channel into the device, so the bench-recorder-go
-        // sentinel (devicectl copy) is the only signalling path — the
-        // file check rides each poll wake for that path only.
-        var fd: Int32 = -1
-        var tok: Int32 = 0
-        guard notify_register_file_descriptor("dev.bench.recorder",
-                    &fd, 0, &tok) == UInt32(NOTIFY_STATUS_OK)
-        else {
-            XCTFail("notify_register_file_descriptor(dev.bench.recorder) failed")
+    /// Holds the measure block open until the declared capture window
+    /// ends. A drive program that ran past the window is a harness
+    /// defect, never a longer window.
+    private func holdWindow(until end: Date) {
+        let remaining = end.timeIntervalSinceNow
+        guard remaining >= 0 else {
+            XCTFail("drive program overran the capture window by "
+                + "\(-remaining)s")
             return
         }
-        defer { notify_cancel(tok); close(fd) }
-        let sentinel = FileManager.default.temporaryDirectory
-            .appendingPathComponent("bench-recorder-go")
-        try? FileManager.default.removeItem(at: sentinel)
-        let deadline = Date().addingTimeInterval(300)
-        var fired = false
-        while !fired && Date() < deadline {
-            var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
-            // the wake interval only bounds the sentinel-check cadence —
-            // the notify fd still delivers its post the moment it lands
-            let rc = poll(&pfd, 1, Int32(max(0, min(2000,
-                deadline.timeIntervalSinceNow * 1000))))
-            if rc > 0, (pfd.revents & Int16(POLLIN)) != 0 {
-                var buf: UInt64 = 0
-                _ = read(fd, &buf, MemoryLayout<UInt64>.size)
-                fired = true
-            }
-            if !fired {
-                fired = FileManager.default
-                    .fileExists(atPath: sentinel.path)
-            }
+        Thread.sleep(forTimeInterval: remaining)
+    }
+
+    /// W1: tap the counter a fixed number of times. The button is
+    /// asserted, not probed — a contestant missing its workload content
+    /// fails the row instead of silently tapping nothing.
+    private func tapCounter() {
+        var button = anyElement("increment-button")
+        if !button.exists {
+            button = app.buttons["Increment"].firstMatch
         }
-        dbg("recorder-go fired=\(fired)")
-        XCTAssertTrue(fired,
-                      "host never armed recorders (dev.bench.recorder)")
+        XCTAssertTrue(button.waitForExistence(timeout: 10),
+                      "no increment button — workload content not found")
+        for _ in 0..<20 {
+            button.tap()
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+    }
+
+    /// Blocks until the host has armed its recorders. Both channels are
+    /// latched by the host, so it does not matter whether the host or
+    /// this runner gets here first:
+    /// - macOS / iOS Simulator: the host holds a registration on
+    ///   `dev.bench.recorder` whose notify state is `nonce`, then posts
+    ///   it. The dispatch registration is armed before the state is
+    ///   read, so a post after the read wakes it and a post before it
+    ///   is visible in the state.
+    /// - ios-device: the host has no notify channel into the device; it
+    ///   copies `bench-recorder-go-<nonce>` into this runner's tmp. A
+    ///   DispatchSource on the directory is armed before the file is
+    ///   checked, so the copy is seen whenever it lands.
+    private func waitForRecorderGo(nonce: UInt64) throws {
+        let fired = DispatchSemaphore(value: 0)
+        let queue = DispatchQueue(label: "bench.recorder-go")
+        #if os(iOS) && !targetEnvironment(simulator)
+        let dir = FileManager.default.temporaryDirectory
+        let sentinel = dir.appendingPathComponent("bench-recorder-go-\(nonce)").path
+        let dirFd = open(dir.path, O_EVTONLY)
+        guard dirFd >= 0 else {
+            throw HarnessError(description: "cannot watch \(dir.path): errno \(errno)")
+        }
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: dirFd, eventMask: .write, queue: queue)
+        source.setEventHandler {
+            if FileManager.default.fileExists(atPath: sentinel) { fired.signal() }
+        }
+        source.setCancelHandler { close(dirFd) }
+        source.resume()
+        defer { source.cancel() }
+        queue.sync {
+            if FileManager.default.fileExists(atPath: sentinel) { fired.signal() }
+        }
+        #else
+        var token: Int32 = 0
+        let matches: (Int32) -> Bool = { t in
+            var state: UInt64 = 0
+            return notify_get_state(t, &state) == UInt32(NOTIFY_STATUS_OK)
+                && state == nonce
+        }
+        guard notify_register_dispatch("dev.bench.recorder", &token, queue, { t in
+            if matches(t) { fired.signal() }
+        }) == UInt32(NOTIFY_STATUS_OK) else {
+            throw HarnessError(
+                description: "notify_register_dispatch(dev.bench.recorder) failed")
+        }
+        defer { notify_cancel(token) }
+        queue.sync {
+            if matches(token) { fired.signal() }
+        }
+        #endif
+        let ok = fired.wait(timeout: .now() + 300) == .success
+        dbg("recorder-go fired=\(ok)")
+        guard ok else {
+            throw HarnessError(
+                description: "host never armed its recorders within 300s "
+                    + "(recorder-go nonce \(nonce))")
+        }
     }
 
     // MARK: - Driving
 
-    /// Same fling sequence for every contestant (../WORKLOADS.md): 8
-    /// flings down then 2 back up. `swipe` = coordinate drags; `wheel` =
-    /// the host's own process posts CGEvent scroll-wheel detents into the
-    /// window (iOS Simulator and AppKit, where gesture synthesis either
-    /// stalls on a timed-out AX query or has no swipeable hit target) —
-    /// the test only opens the measure window with `dev.bench.begin` and
-    /// waits for the host driver's `dev.bench.end` — the driver owns
-    /// cell end; apps never post it. w6 uses the same
-    /// drive kind as w2/w4 — one launch renders one pinned step.
-    private func driveScroll(duration: Double) {
-        if drive == "wheel" {
-            // The host driver's program is the identical fling protocol;
-            // `begin` opens its window, `end` closes the wait. The wait
-            // blocks on the notification's file descriptor — posts are
-            // reposted on each poll wake until an end is seen (the
-            // driver may arm after the first post).
-            var fd: Int32 = -1
-            var doneToken: Int32 = 0
-            guard notify_register_file_descriptor("dev.bench.end", &fd, 0,
-                        &doneToken) == UInt32(NOTIFY_STATUS_OK)
-            else {
-                XCTFail("wheel drive: notify_register_file_descriptor failed")
-                return
-            }
-            defer { notify_cancel(doneToken); close(fd) }
-            let deadline = Date().addingTimeInterval(max(600, duration * 2))
-            var fired = false
-            var lastPost = Date.distantPast
-            while !fired && Date() < deadline {
-                if Date().timeIntervalSince(lastPost) > 5 {
-                    notify_post("dev.bench.begin")
-                    lastPost = Date()
-                }
-                var pfd = pollfd(fd: fd, events: Int16(POLLIN),
-                                 revents: 0)
-                let rc = poll(&pfd, 1, Int32(max(0, min(1000,
-                    deadline.timeIntervalSinceNow * 1000))))
-                if rc > 0, (pfd.revents & Int16(POLLIN)) != 0 {
-                    var buf: UInt64 = 0
-                    _ = read(fd, &buf, MemoryLayout<UInt64>.size)
-                    fired = true
-                }
-            }
-            XCTAssertTrue(
-                fired,
-                "wheel drive: host driver never posted 'dev.bench.end'")
+    /// `wheel` drive (iOS Simulator and macOS): the host's own process
+    /// posts CGEvent scroll-wheel detents — the identical fling protocol —
+    /// into the contestant. This runner posts `dev.bench.begin` exactly
+    /// once, when the measure block opens; the host armed its listener
+    /// before it released recorder-go, so the post cannot be missed. The
+    /// host driver ends the cell with `dev.bench.end` at begin + the
+    /// declared duration — apps never post it.
+    private func awaitHostWheelDrive(duration: Double) {
+        var fd: Int32 = -1
+        var endToken: Int32 = 0
+        guard notify_register_file_descriptor("dev.bench.end", &fd, 0,
+                    &endToken) == UInt32(NOTIFY_STATUS_OK)
+        else {
+            XCTFail("wheel drive: notify_register_file_descriptor failed")
             return
         }
-        // Coordinate drags, not element gestures: `swipeUp` resolves the app
-        // element and waits for quiescence on every call, and a scrolling
-        // workload keeps the AX server inside the app busy long enough to stall
-        // the query past the test cap. `XCUICoordinate.press(thenDragTo:)`
-        // resolves one window-frame point and injects raw HID events without a
-        // quiescence wait — identical touches for every contestant.
+        defer { notify_cancel(endToken); close(fd) }
+        // registered before the begin post: the driver's end can only
+        // follow its begin, so it always lands on this descriptor
+        notify_post("dev.bench.begin")
+        var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+        // the driver ends the cell at begin + duration; the bound only
+        // catches a driver that died
+        let boundMs = Int32((duration + 30) * 1000)
+        let fired = poll(&pfd, 1, boundMs) > 0
+            && (pfd.revents & Int16(POLLIN)) != 0
+        if fired {
+            var buf: Int32 = 0
+            _ = read(fd, &buf, MemoryLayout<Int32>.size)
+        }
+        XCTAssertTrue(
+            fired,
+            "wheel drive: host driver never posted 'dev.bench.end' within "
+                + "\(duration + 30)s of begin")
+    }
+
+    /// `swipe` drive (iOS device): the same fling sequence for every
+    /// contestant (../WORKLOADS.md) — 8 flings down then 2 back up, as
+    /// coordinate drags. Not element gestures: `swipeUp` resolves the app
+    /// element and waits for quiescence on every call, and a scrolling
+    /// workload keeps the AX server inside the app busy long enough to
+    /// stall the query past the test cap. `XCUICoordinate.press(thenDragTo:)`
+    /// resolves one window-frame point and injects raw HID events without
+    /// a quiescence wait — identical touches for every contestant.
+    private func swipeFlings() {
         // On macOS the XCUIApplication element's frame is empty, so a
-        // normalized coordinate on it resolves to an infinite point; anchor
-        // the drags to the app's first window instead.
+        // normalized coordinate on it resolves to an infinite point;
+        // anchor the drags to the app's first window instead.
         #if os(macOS)
         let dragAnchor: XCUIElement = app.windows.firstMatch
-        dbg("probe: app.exists=\(app.exists) windows=\(app.windows.count) "
-            + "anchor.exists=\(dragAnchor.exists) frame=\(dragAnchor.frame)")
         #else
         let dragAnchor: XCUIElement = app
         #endif
@@ -445,24 +487,30 @@ final class BenchTests: XCTestCase {
             return
         }
         // spec endpoints: 75% -> 15% of the scroll surface's height over
-        // 250 ms — declared absolutely in the manifest, never centred
-        // from a distance fraction
-        let dragStart = dragAnchor.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: fling.start_fraction))
-        let dragEnd = dragAnchor.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: fling.end_fraction))
+        // 250 ms — declared absolutely in the manifest
+        let dragStart = dragAnchor.coordinate(
+            withNormalizedOffset: CGVector(dx: 0.5, dy: fling.start_fraction))
+        let dragEnd = dragAnchor.coordinate(
+            withNormalizedOffset: CGVector(dx: 0.5, dy: fling.end_fraction))
         let anchorH = dragAnchor.frame.height
         guard anchorH > 0, fling.duration_ms > 0 else {
-            XCTFail("fling geometry degenerate: anchor height \(anchorH), duration \(fling.duration_ms)ms")
+            XCTFail("fling geometry degenerate: anchor height \(anchorH), "
+                + "duration \(fling.duration_ms)ms")
             return
         }
         // withVelocity: takes points/second — the declared endpoints'
-        // pixel distance over the declared duration
-        let velocity = CGFloat(abs(fling.start_fraction - fling.end_fraction)) * anchorH / CGFloat(fling.duration_ms / 1000)
+        // distance over the declared duration
+        let velocity = XCUIGestureVelocity(
+            CGFloat(abs(fling.start_fraction - fling.end_fraction)) * anchorH
+                / CGFloat(fling.duration_ms / 1000))
         for _ in 0..<fling.flings_down {
-            dragStart.press(forDuration: fling.hold_s, thenDragTo: dragEnd, withVelocity: velocity, thenHoldForDuration: 0)
+            dragStart.press(forDuration: fling.hold_s, thenDragTo: dragEnd,
+                            withVelocity: velocity, thenHoldForDuration: 0)
             Thread.sleep(forTimeInterval: fling.pause_s)
         }
         for _ in 0..<fling.flings_up {
-            dragEnd.press(forDuration: fling.hold_s, thenDragTo: dragStart, withVelocity: velocity, thenHoldForDuration: 0)
+            dragEnd.press(forDuration: fling.hold_s, thenDragTo: dragStart,
+                          withVelocity: velocity, thenHoldForDuration: 0)
             Thread.sleep(forTimeInterval: fling.pause_s)
         }
     }
