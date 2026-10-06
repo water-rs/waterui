@@ -1755,6 +1755,8 @@ fn platform_input_view(
 static REGISTRY: Mutex<Option<HashMap<usize, Sendable<Weak<Capturable>>>>> = Mutex::new(None);
 
 /// Looks up the capturable surface `view` presents — `as? WuiGpuSurface`.
+/// Called only by the rendered-content capture the effect leaves own.
+#[cfg(any(feature = "applied_filter", feature = "view_effect"))]
 pub fn resolve_capturable(
     view: &cocoa_ui::PlatformView,
 ) -> Option<Rc<dyn cocoa_ui::capture::CapturableSurface>> {
@@ -1769,6 +1771,7 @@ pub fn resolve_capturable(
 }
 
 /// The resolver closure `ViewCapture::new` takes.
+#[cfg(any(feature = "applied_filter", feature = "view_effect"))]
 pub fn capturable_resolver()
 -> impl Fn(&cocoa_ui::PlatformView) -> Option<Rc<dyn cocoa_ui::capture::CapturableSurface>> {
     resolve_capturable
