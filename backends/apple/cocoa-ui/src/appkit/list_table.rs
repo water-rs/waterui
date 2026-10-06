@@ -899,13 +899,18 @@ impl TableView {
         )
     }
 
-    /// The first table row the clip's visible rect shows, or `None` while
-    /// it shows none.
+    /// The viewport's top edge in document coordinates: the clip's bounds
+    /// origin.
     #[must_use]
-    pub fn first_visible_row(&self) -> Option<usize> {
-        let table = self.table_view();
-        let rows = table.rowsInRect(table.visibleRect());
-        (rows.length > 0).then_some(rows.location)
+    pub fn viewport_top(&self) -> f64 {
+        self.contentView().bounds().origin.y
+    }
+
+    /// The bottom edge of table row `row` in document coordinates.
+    #[must_use]
+    pub fn row_bottom(&self, row: usize) -> f64 {
+        let rect = self.rect_of_row(row);
+        rect.origin.y + rect.size.height
     }
 
     /// Scrolls `row`'s top edge to the clip's top, unanimated.

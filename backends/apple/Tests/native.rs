@@ -2826,13 +2826,18 @@ mod list_scroll {
 
     use waterui_apple::native_test_support::{
         APPROACH_LIST_ROWS, APPROACH_ROW, APPROACH_TARGET_ROW, ListSurface as TableSurface,
-        row_item, row_list,
+        list_row_top, row_item, row_list,
     };
 
     /// A list taller than the window by far — row targets past the fold.
     const ROWS: usize = 200;
     /// The row the cases aim at.
     const TARGET: usize = 40;
+    /// Slack for sub-point rounding when an offset is compared with the
+    /// scrollable end on either kit: a row scroll can land a fraction of a
+    /// thousandth of a point short of the end its content size implies, as
+    /// `UIKit`'s own row scroll does.
+    const EPSILON: f64 = 1.0e-3;
 
     /// A mounted list of `ROWS` rows, the controller that drives it, and
     /// the leaf and window that keep the wiring alive.
@@ -2843,25 +2848,11 @@ mod list_scroll {
         _window: AttachedWindow,
     }
 
-    /// The clip offset the jump's family lands `row` on — `rectOfRow`'s
-    /// origin on `AppKit`; `rectForRowAtIndexPath`'s origin minus the
-    /// adjusted top inset on `UIKit`. `TARGET` sits far from either end,
-    /// where no clamp applies.
+    /// The clip offset the jump's family lands `row` on: its
+    /// [`list_row_top`]. `TARGET` sits far from either end, where no
+    /// clamp applies.
     fn row_top_offset(fixture: &Fixture, row: usize) -> f64 {
-        #[cfg(target_os = "macos")]
-        {
-            fixture.table.rect_of_row(row).origin.y
-        }
-        #[cfg(target_os = "ios")]
-        {
-            use cocoa_ui::objc2_ui_kit::NSIndexPathUIKitAdditions;
-            let index = cocoa_ui::objc2_foundation::NSIndexPath::indexPathForRow_inSection(
-                row.cast_signed(),
-                0,
-            );
-            fixture.table.rectForRowAtIndexPath(&index).origin.y
-                - fixture.table.adjustedContentInset().top
-        }
+        list_row_top(&fixture.table, row).y
     }
 
     /// The clip's current scroll position.
@@ -3046,9 +3037,10 @@ mod list_scroll {
             );
         } else {
             request();
+            let approach_top = row_top_offset(&fixture, APPROACH_ROW);
             assert_offset_eq(
                 offset_y(&fixture),
-                row_top_offset(&fixture, APPROACH_ROW),
+                approach_top,
                 "the far request jumps to the approach row's top before it animates",
             );
             let samples = pump_flight(
@@ -3058,6 +3050,10 @@ mod list_scroll {
             assert!(
                 distinct_offsets(&samples) >= 3,
                 "the far {name} row flight must move through intermediate offsets: {samples:?}"
+            );
+            assert!(
+                samples.iter().all(|&y| y >= approach_top),
+                "the far {name} row flight never falls back short of the approach row's top {approach_top}: {samples:?}"
             );
         }
         assert_offset_eq(
@@ -3073,11 +3069,6 @@ mod list_scroll {
     /// frame's write is clamped, so no sample passes the end as it
     /// stands at that frame, and the flight lands on it.
     fn an_overshooting_spring_toward_the_last_rows_never_passes_the_end() {
-        /// Slack for sub-point rounding: `UIKit`'s own row scroll lands a
-        /// fraction of a thousandth of a point short of the end its
-        /// `contentSize` implies.
-        const EPSILON: f64 = 1.0e-3;
-
         let spring = Animation::Spring {
             stiffness: 300.0,
             damping: 6.0,
@@ -3120,11 +3111,6 @@ mod list_scroll {
     /// so the last row's rect is a real measure, not a multiple of the
     /// first.
     fn the_last_rows_animation_lands_where_the_jump_lands() {
-        /// Slack for sub-point rounding: `UIKit`'s own row scroll lands a
-        /// fraction of a thousandth of a point short of the end its
-        /// `contentSize` implies.
-        const EPSILON: f64 = 1.0e-3;
-
         let fixture = mounted_mixed_heights();
         fixture
             .controller

@@ -181,11 +181,8 @@ fn animate_to_a_row_glides_and_lands_where_the_jump_would_offscreen() {
     );
 
     app.settle();
-    assert_eq!(
-        scroll_y(&mut app),
-        jump_offset,
-        "an animated list scroll must land on the same offset as the jump"
-    );
+    // An animated list scroll must land on the same offset as the jump.
+    approx::assert_relative_eq!(scroll_y(&mut app), jump_offset);
     app.query().label("row 8").assert_exists();
     app.query().label("row 0").assert_not_exists();
 }

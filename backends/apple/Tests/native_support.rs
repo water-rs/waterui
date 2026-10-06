@@ -381,6 +381,30 @@ pub type ListSurface = cocoa_ui::appkit::ListTableView;
 #[cfg(target_os = "ios")]
 pub type ListSurface = cocoa_ui::uikit::TableView;
 
+/// The offset that puts `row`'s top edge at the viewport's top, before
+/// any clamp — `rectOfRow`'s origin on `AppKit`; `rectForRowAtIndexPath`'s
+/// origin in section 0 minus the adjusted top inset on `UIKit`, read as
+/// the table stands now, since `UIKit` sizes unseen rows by estimate.
+#[must_use]
+pub fn list_row_top(table: &ListSurface, row: usize) -> cocoa_ui::Point {
+    #[cfg(target_os = "macos")]
+    {
+        cocoa_ui::Point::new(0.0, table.rect_of_row(row).origin.y)
+    }
+    #[cfg(target_os = "ios")]
+    {
+        use cocoa_ui::objc2_ui_kit::NSIndexPathUIKitAdditions;
+        let index = cocoa_ui::objc2_foundation::NSIndexPath::indexPathForRow_inSection(
+            isize::try_from(row).expect("the row fits an NSInteger"),
+            0,
+        );
+        cocoa_ui::Point::new(
+            0.0,
+            table.rectForRowAtIndexPath(&index).origin.y - table.adjustedContentInset().top,
+        )
+    }
+}
+
 /// The scroll suites' surface, rendered but not mounted: a vertical
 /// scroll over a 2000pt document, driven by `controller` and reporting its
 /// offset into `offset` — with the leaf that owns its watchers.

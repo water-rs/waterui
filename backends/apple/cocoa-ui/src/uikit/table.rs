@@ -643,14 +643,19 @@ impl TableView {
         );
     }
 
-    /// The first row the visible rect shows, in section-then-row order,
-    /// or `None` while it shows none.
+    /// The viewport's top edge in content coordinates: the content offset
+    /// past the adjusted top inset.
     #[must_use]
-    pub fn first_visible_row(&self) -> Option<IndexPath> {
-        self.indexPathsForVisibleRows()?
-            .iter()
-            .map(|index_path| table_index(&index_path))
-            .min_by_key(|index| (index.section, index.row))
+    pub fn viewport_top(&self) -> f64 {
+        self.contentOffset().y + self.adjustedContentInset().top
+    }
+
+    /// The bottom edge of `index`'s row in content coordinates — by
+    /// estimate for a row not measured yet.
+    #[must_use]
+    pub fn row_bottom(&self, index: IndexPath) -> f64 {
+        let rect = self.rectForRowAtIndexPath(&index_path(index));
+        rect.origin.y + rect.size.height
     }
 
     /// The content offset that puts `index`'s row top edge at the adjusted

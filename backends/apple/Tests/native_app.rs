@@ -41,8 +41,7 @@ fn main() {
 #[cfg(target_os = "ios")]
 mod scroll_animation {
     use cocoa_ui::geometry::{Point, Size};
-    use cocoa_ui::objc2_foundation::NSIndexPath;
-    use cocoa_ui::objc2_ui_kit::{NSIndexPathUIKitAdditions, UIWindow};
+    use cocoa_ui::objc2_ui_kit::UIWindow;
     use cocoa_ui::uikit::{ScrollView, native_test};
     use cocoa_ui::{MainThreadMarker, PlatformView, Rect, Retained, view};
     use waterui::animation::Animation;
@@ -51,7 +50,7 @@ mod scroll_animation {
     use waterui::reactive::binding;
     use waterui_apple::native_test_support::{
         APPROACH_LIST_ROWS, APPROACH_ROW, APPROACH_TARGET_ROW, assert_native_scroll,
-        assert_native_scroll_from, row_item, row_list, scroll_surface,
+        assert_native_scroll_from, list_row_top, row_item, row_list, scroll_surface,
     };
     use waterui_core::layout::Point as LayoutPoint;
 
@@ -166,22 +165,12 @@ mod scroll_animation {
         let window = scene_window(mtm, leaf.view());
         table.layout_if_needed();
         let offset = || Point::from(table.contentOffset());
-        let row = NSIndexPath::indexPathForRow_inSection(
-            isize::try_from(TARGET_ROW).expect("the target row fits an NSInteger"),
-            0,
-        );
-        let row_top = || {
-            Point::new(
-                0.0,
-                table.rectForRowAtIndexPath(&row).origin.y - table.adjustedContentInset().top,
-            )
-        };
 
         assert_native_scroll(
             "a Default list request",
             || controller.animate_to(TARGET_ROW, Animation::Default),
             offset,
-            row_top,
+            || list_row_top(&table, TARGET_ROW),
         );
         window.setHidden(true);
     }
@@ -201,23 +190,13 @@ mod scroll_animation {
         );
         let window = scene_window(mtm, leaf.view());
         table.layout_if_needed();
-        let row_top = |row: usize| {
-            let index = NSIndexPath::indexPathForRow_inSection(
-                isize::try_from(row).expect("the row fits an NSInteger"),
-                0,
-            );
-            Point::new(
-                0.0,
-                table.rectForRowAtIndexPath(&index).origin.y - table.adjustedContentInset().top,
-            )
-        };
 
         assert_native_scroll_from(
             "a far Default list request",
             || controller.animate_to(APPROACH_TARGET_ROW, Animation::Default),
-            || row_top(APPROACH_ROW),
+            || list_row_top(&table, APPROACH_ROW),
             || Point::from(table.contentOffset()),
-            || row_top(APPROACH_TARGET_ROW),
+            || list_row_top(&table, APPROACH_TARGET_ROW),
         );
         window.setHidden(true);
     }

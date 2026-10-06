@@ -25,6 +25,26 @@ pub const SCROLL_LINE_STEP: f64 = 40.0;
 /// motion stays legible and never drags the list through every row in
 /// between.
 pub const ANIMATED_ROW_SCROLL_APPROACH: usize = 100;
+
+/// The row an animated list scroll toward `target` first jumps to.
+///
+/// `current` is the row at the viewport's top. A `target` further than
+/// [`ANIMATED_ROW_SCROLL_APPROACH`] rows from it answers the row that many
+/// rows short of `target` on `current`'s side — where the unanimated jump
+/// lands before the animation takes over; a nearer `target` answers `None`
+/// and animates the whole way.
+#[must_use]
+pub const fn animated_row_scroll_approach(current: usize, target: usize) -> Option<usize> {
+    if target.abs_diff(current) <= ANIMATED_ROW_SCROLL_APPROACH {
+        return None;
+    }
+    Some(if target > current {
+        target - ANIMATED_ROW_SCROLL_APPROACH
+    } else {
+        target + ANIMATED_ROW_SCROLL_APPROACH
+    })
+}
+
 /// Time constant (seconds) of the exponential approach that eases the offset
 /// toward a smooth-scroll target: ~63% of the remaining gap per τ, visually
 /// settled (>95%) after ~3τ ≈ 180ms — the smooth-wheel feel of browsers and
@@ -1897,5 +1917,27 @@ mod tests {
         assert!(handle.apply_scroll_delta(0.0, -10.0, false));
         assert_eq!(writes.get(), 1);
         assert_eq!(report.snapshot(), Point::zero());
+    }
+
+    #[test]
+    fn a_far_animated_row_scroll_stops_the_bound_short_of_the_target() {
+        assert_eq!(
+            animated_row_scroll_approach(0, 180),
+            Some(180 - ANIMATED_ROW_SCROLL_APPROACH)
+        );
+        assert_eq!(
+            animated_row_scroll_approach(400, 20),
+            Some(20 + ANIMATED_ROW_SCROLL_APPROACH)
+        );
+    }
+
+    #[test]
+    fn the_animated_row_scroll_approach_starts_one_row_past_the_bound() {
+        const BOUND: usize = ANIMATED_ROW_SCROLL_APPROACH;
+        assert_eq!(animated_row_scroll_approach(0, BOUND + 1), Some(1));
+        assert_eq!(animated_row_scroll_approach(0, BOUND), None);
+        assert_eq!(animated_row_scroll_approach(BOUND + 1, 0), Some(BOUND));
+        assert_eq!(animated_row_scroll_approach(BOUND, 0), None);
+        assert_eq!(animated_row_scroll_approach(7, 7), None);
     }
 }

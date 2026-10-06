@@ -23,7 +23,7 @@ use accesskit::{
 use waterui::accessibility::{AccessibilityHidden, AccessibilityStateSignal};
 use waterui::component::list::{ListConfig, ListItem, ListSelection, Move};
 use waterui::gesture::{DragEvent, DragGesture, Gesture, GesturePhase};
-use waterui_backend_core::scroll::ANIMATED_ROW_SCROLL_APPROACH;
+use waterui_backend_core::scroll::animated_row_scroll_approach;
 use waterui_core::animation::Animation;
 use waterui_core::handler::{BoxedAction, boxed_action};
 use waterui_core::id::{Id as RawId, SelfId};
@@ -753,17 +753,14 @@ impl ListRenderState {
                             metrics.offset_y + metrics.viewport_height,
                         )
                         .start;
-                    if pending.index.abs_diff(current) > ANIMATED_ROW_SCROLL_APPROACH {
-                        // Animating the whole way across a large dataset would
-                        // drag the list through every viewport between here and
-                        // there, and read as a blur regardless: jump to within
-                        // the approach bound of the target and animate only
-                        // that final stretch.
-                        let approach_index = if pending.index > current {
-                            pending.index - ANIMATED_ROW_SCROLL_APPROACH
-                        } else {
-                            pending.index + ANIMATED_ROW_SCROLL_APPROACH
-                        };
+                    // Animating the whole way across a large dataset would
+                    // drag the list through every viewport between here and
+                    // there, and read as a blur regardless: jump to within
+                    // the approach bound of the target and animate only that
+                    // final stretch.
+                    if let Some(approach_index) =
+                        animated_row_scroll_approach(current, pending.index)
+                    {
                         let approach = self.extent_index.borrow().offset_of(approach_index);
                         let _ = handle.scroll_to(0.0, approach);
                     }

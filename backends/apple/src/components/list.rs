@@ -37,7 +37,7 @@ use waterui::resolve::Resolvable;
 use waterui::text::{StyledStr, Text};
 use waterui::views::{AnyViewsSnapshot, SharedAnyViews, ViewSnapshot, Views};
 use waterui_backend_core::Environment;
-use waterui_backend_core::scroll::ANIMATED_ROW_SCROLL_APPROACH;
+use waterui_backend_core::scroll::animated_row_scroll_approach;
 use waterui_core::Computed;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
 
@@ -1666,75 +1666,47 @@ const fn platform_weight(weight: waterui::text::font::FontWeight) -> f64 {
     }
 }
 
-/// The item an animated request toward `target` first jumps to from
-/// `current`, the first visible item: [`ANIMATED_ROW_SCROLL_APPROACH`]
-/// items short of `target` on `current`'s side, or `None` when `target`
-/// is already that close.
-const fn approach_item(current: usize, target: usize) -> Option<usize> {
-    if target.abs_diff(current) <= ANIMATED_ROW_SCROLL_APPROACH {
-        return None;
-    }
-    Some(if target > current {
-        target - ANIMATED_ROW_SCROLL_APPROACH
-    } else {
-        target + ANIMATED_ROW_SCROLL_APPROACH
-    })
-}
-
 /// Closes an animated request's distance to the approach bound before
-/// the animation starts: a `target` item further than
-/// [`ANIMATED_ROW_SCROLL_APPROACH`] from the first visible item is
-/// jumped to within the bound through the unanimated row jump — which
-/// also ends any flight in progress — so the animation glides over the
-/// final stretch only. A viewport showing no row has nothing to glide
-/// over and is left as it is.
+/// the animation starts. The current item is the first whose row bottom
+/// lies below the viewport's top — read from the offset, so a viewport
+/// showing only a section header or footer still has one. A `target` item
+/// further than
+/// [`ANIMATED_ROW_SCROLL_APPROACH`](waterui_backend_core::scroll::ANIMATED_ROW_SCROLL_APPROACH)
+/// from it is jumped to within the bound through the unanimated row jump
+/// — which also ends any flight in progress — so the animation glides
+/// over the final stretch only.
 fn approach(state: &Rc<RefCell<Shared>>, table: &TableView, target: usize) {
-    let Some(first_visible) = table.first_visible_row() else {
-        return;
-    };
-    // Flatten and resolve under short borrows, released before the jump —
-    // the scroll call can measure rows, which borrows `state` mutably.
+    // Flatten under a short borrow, released before reading row geometry
+    // and jumping — both can measure rows, which borrows `state` mutably.
+    // Each item's row, indexed by flat item.
     #[cfg(target_os = "ios")]
-    let current = state.borrow().groups[..first_visible.section]
+    let rows: Vec<IndexPath> = state
+        .borrow()
+        .groups
         .iter()
-        .map(|group| group.count)
-        .sum::<usize>()
-        + first_visible.row;
-    // A visible header or footer stands for the nearest item row: the
-    // first one after it, or — past the last item — the last one before.
+        .enumerate()
+        .flat_map(|(section, group)| (0..group.count).map(move |row| IndexPath { section, row }))
+        .collect();
     #[cfg(target_os = "macos")]
-    let current = {
-        let item = |entry: &FlatEntry| match *entry {
-            FlatEntry::Row(item) => Some(item),
-            FlatEntry::Header(_) | FlatEntry::Footer(_) => None,
-        };
-        let state = state.borrow();
-        let (before, from) = state.flat_layout.split_at(first_visible);
-        from.iter()
-            .find_map(item)
-            .or_else(|| before.iter().rev().find_map(item))
-            .expect("the request's target resolved, so the table holds an item row")
-    };
-    let Some(item) = approach_item(current, target) else {
+    let rows: Vec<usize> = state
+        .borrow()
+        .flat_layout
+        .iter()
+        .enumerate()
+        .filter_map(|(row, entry)| matches!(entry, FlatEntry::Row(_)).then_some(row))
+        .collect();
+    let top = table.viewport_top();
+    let current = rows.partition_point(|&row| table.row_bottom(row) <= top);
+    let Some(item) = animated_row_scroll_approach(current, target) else {
         return;
     };
     #[cfg(target_os = "ios")]
     {
-        let (section, row) = index_path_for_flat(&state.borrow().groups, item)
-            .expect("the approach item lies between the visible item and the target");
-        table.scroll_to_row(IndexPath { section, row }, false);
+        table.scroll_to_row(rows[item], false);
         table.layout_if_needed();
     }
     #[cfg(target_os = "macos")]
-    {
-        let row = state
-            .borrow()
-            .flat_layout
-            .iter()
-            .position(|entry| *entry == FlatEntry::Row(item))
-            .expect("the approach item lies between the visible item and the target");
-        table.scroll_row_to_top(row);
-    }
+    table.scroll_row_to_top(rows[item]);
 }
 
 /// Wires a `ScrollController<usize>` into the table: a generation bump
@@ -2016,25 +1988,6 @@ mod tests {
     fn single_section_row_diff_rejects_duplicates() {
         let a = SelfId::new(RawId::try_from(1).unwrap());
         assert!(single_section_row_diff(&[a, a], &[a]).is_none());
-    }
-
-    #[test]
-    fn approach_item_stops_the_bound_short_of_a_far_target() {
-        assert_eq!(
-            approach_item(0, 180),
-            Some(180 - ANIMATED_ROW_SCROLL_APPROACH)
-        );
-        assert_eq!(
-            approach_item(400, 20),
-            Some(20 + ANIMATED_ROW_SCROLL_APPROACH)
-        );
-    }
-
-    #[test]
-    fn approach_item_leaves_a_target_within_the_bound() {
-        assert_eq!(approach_item(0, ANIMATED_ROW_SCROLL_APPROACH), None);
-        assert_eq!(approach_item(ANIMATED_ROW_SCROLL_APPROACH, 0), None);
-        assert_eq!(approach_item(7, 7), None);
     }
 
     #[test]
