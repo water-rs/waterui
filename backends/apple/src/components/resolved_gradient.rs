@@ -6,9 +6,13 @@
 //! layer's three kinds (`Mesh` is an authoring error, as the Swift `fatalError`
 //! was).
 
+use core::cmp::Ordering;
+
 use cocoa_ui::gradient::{GradientKind, GradientLayer, GradientStop};
 use waterui::graphics::Gradient;
-use waterui::graphics::draw::{Paint, kurbo::Point};
+use waterui::graphics::draw::{
+    ColorStop, LinearGradient, Paint, RadialGradient, SweepGradient, kurbo::Point,
+};
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
 
 use crate::contract::NativeLeaf;
@@ -67,6 +71,80 @@ fn radial_end_point(center: Point, radius: f64, size: cocoa_ui::Size) -> cocoa_u
     }
 }
 
+/// The radius `CAGradientLayer` places location 1 on.
+///
+/// Equal radii are a hard edge at the shared radius; doubling it puts the
+/// edge at location 0.5, inside the layer.
+fn radial_rim(radial: &RadialGradient) -> f64 {
+    match radial.start_radius.total_cmp(&radial.end_radius) {
+        Ordering::Equal => 2.0 * radial.start_radius,
+        Ordering::Less | Ordering::Greater => radial.start_radius.max(radial.end_radius),
+    }
+}
+
+/// A stop's location on the layer for a concentric two-circle gradient.
+///
+/// `CAGradientLayer` has no start radius: its location 0 is the centre and 1
+/// the layer rim at `rim`. Offset `t` lies on the circle of radius
+/// `r0 + t * (r1 - r0)`, so it sits at `(r0 + t * (r1 - r0)) / rim`; the
+/// layer pads the outermost stops inside and outside that span.
+fn radial_stop_location(offset: f64, start_radius: f64, end_radius: f64, rim: f64) -> f64 {
+    offset.mul_add(end_radius - start_radius, start_radius) / rim
+}
+
+/// The layer locations of a radial gradient's stops, in the ascending order
+/// `CAGradientLayer` requires.
+///
+/// `Gradient::radial` makes the two circles concentric and sorts the stops
+/// by ascending offset. A reversed gradient (`start_radius > end_radius`)
+/// runs inward, so its locations descend with the offset and the list is
+/// reversed. Equal radii are a hard edge at the shared radius: the first
+/// stop's colour inside, the last stop's outside.
+fn radial_layer_stops(radial: &RadialGradient) -> Vec<(f64, &ColorStop)> {
+    let rim = radial_rim(radial);
+    let remapped = || -> Vec<(f64, &ColorStop)> {
+        radial
+            .stops
+            .iter()
+            .map(|stop| {
+                let location = radial_stop_location(
+                    f64::from(stop.offset),
+                    radial.start_radius,
+                    radial.end_radius,
+                    rim,
+                );
+                (location, stop)
+            })
+            .collect()
+    };
+    match radial.start_radius.total_cmp(&radial.end_radius) {
+        Ordering::Less => remapped(),
+        Ordering::Greater => {
+            let mut stops = remapped();
+            stops.reverse();
+            stops
+        }
+        Ordering::Equal => {
+            let first = radial
+                .stops
+                .first()
+                .expect("Gradient::radial keeps at least one stop");
+            let last = radial
+                .stops
+                .last()
+                .expect("Gradient::radial keeps at least one stop");
+            vec![(0.0, first), (0.5, first), (0.5, last), (1.0, last)]
+        }
+    }
+}
+
+fn layer_stop(stop: &ColorStop, position: f64) -> GradientStop {
+    GradientStop {
+        position,
+        color: cg_color(&stop.color),
+    }
+}
+
 /// The gradient's shape and normalized geometry on the layer.
 fn endpoints(
     paint: &Paint,
@@ -81,7 +159,7 @@ fn endpoints(
         Paint::Radial(radial) => (
             GradientKind::Radial,
             cocoa_ui::Point::new(radial.start_center.x, radial.start_center.y),
-            radial_end_point(radial.end_center, radial.end_radius, size),
+            radial_end_point(radial.start_center, radial_rim(radial), size),
         ),
         Paint::Sweep(sweep) => (
             GradientKind::Angular,
@@ -135,18 +213,18 @@ pub fn install(dispatcher: &mut Dispatcher) {
             .addSublayer(&layer.layer());
 
         let stops: Vec<GradientStop> = match gradient.paint() {
-            Paint::Linear(linear) => &linear.stops,
-            Paint::Radial(radial) => &radial.stops,
-            Paint::Sweep(sweep) => &sweep.stops,
+            Paint::Linear(LinearGradient { stops, .. })
+            | Paint::Sweep(SweepGradient { stops, .. }) => stops
+                .iter()
+                .map(|stop| layer_stop(stop, f64::from(stop.offset)))
+                .collect(),
+            Paint::Radial(radial) => radial_layer_stops(radial)
+                .into_iter()
+                .map(|(position, stop)| layer_stop(stop, position))
+                .collect(),
             Paint::Mesh(_) => panic!("a mesh gradient is rendered by the scene engine"),
             _ => panic!("a native gradient must carry a gradient paint"),
-        }
-        .iter()
-        .map(|stop| GradientStop {
-            position: f64::from(stop.offset),
-            color: cg_color(&stop.color),
-        })
-        .collect();
+        };
         layer.set_stops(&stops);
         let bounds = cocoa_ui::view::bounds(&view);
         layer.set_frame(bounds);
@@ -178,6 +256,71 @@ mod tests {
             0.0,
             0.5,
         )
+    }
+
+    const RED: WorkingColor = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
+    const GREEN: WorkingColor = WorkingColor::new([0.0, 1.0, 0.0, 1.0]);
+    const BLUE: WorkingColor = WorkingColor::new([0.0, 0.0, 1.0, 1.0]);
+
+    fn three_stop_radial(start_radius: f32, end_radius: f32) -> Gradient {
+        Gradient::radial(
+            vec![(0.0, RED), (0.5, GREEN), (1.0, BLUE)],
+            [0.5, 0.5],
+            start_radius,
+            end_radius,
+        )
+    }
+
+    fn layer_stops(gradient: &Gradient) -> Vec<(f64, WorkingColor)> {
+        let Paint::Radial(radial) = gradient.paint() else {
+            panic!("expected a radial paint");
+        };
+        radial_layer_stops(radial)
+            .into_iter()
+            .map(|(location, stop)| (location, stop.color))
+            .collect()
+    }
+
+    #[test]
+    fn radial_gradient_stops_start_at_the_start_radius() {
+        assert_eq!(
+            layer_stops(&three_stop_radial(0.25, 0.5)),
+            vec![(0.5, RED), (0.75, GREEN), (1.0, BLUE)]
+        );
+    }
+
+    #[test]
+    fn reversed_radial_gradient_stops_run_inward() {
+        assert_eq!(
+            layer_stops(&three_stop_radial(0.5, 0.25)),
+            vec![(0.5, BLUE), (0.75, GREEN), (1.0, RED)]
+        );
+    }
+
+    #[test]
+    fn equal_radii_radial_gradient_stops_are_a_hard_edge() {
+        assert_eq!(
+            layer_stops(&three_stop_radial(0.25, 0.25)),
+            vec![(0.0, RED), (0.5, RED), (0.5, BLUE), (1.0, BLUE)]
+        );
+    }
+
+    #[test]
+    fn equal_radii_radial_gradient_end_point_is_twice_the_radius() {
+        let (_, _, end) = endpoints(
+            three_stop_radial(0.25, 0.25).paint(),
+            cocoa_ui::Size::new(200.0, 100.0),
+        );
+        assert_eq!(end, cocoa_ui::Point::new(0.75, 1.0));
+    }
+
+    #[test]
+    fn reversed_radial_gradient_end_point_is_the_start_circle() {
+        let (_, _, end) = endpoints(
+            three_stop_radial(0.5, 0.25).paint(),
+            cocoa_ui::Size::new(200.0, 100.0),
+        );
+        assert_eq!(end, cocoa_ui::Point::new(0.75, 1.0));
     }
 
     #[test]

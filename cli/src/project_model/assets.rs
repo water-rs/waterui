@@ -1357,6 +1357,17 @@ pub enum FetchOutcome {
     },
 }
 
+/// Why seeding the font cache failed.
+#[derive(Debug, thiserror::Error)]
+pub enum SeedFontCacheError {
+    /// A generated crate whose manifest a build scans could not be scaffolded.
+    #[error("{0:#}")]
+    Scaffold(eyre::Report),
+    /// The font declarations could not be read, or a declared font could not be fetched.
+    #[error("{0:#}")]
+    Fonts(eyre::Report),
+}
+
 /// Seeds the font cache with every font a build of `project` would demand.
 ///
 /// `water fetch` and the tail of `water create` share this one path:
@@ -1374,7 +1385,7 @@ pub enum FetchOutcome {
 /// the font and its URL. Declarations fetching can never satisfy arrive as
 /// [`FetchOutcome::Unsatisfiable`] instead, carrying the same report the
 /// build gives them.
-pub async fn seed_font_cache(project: &Project) -> eyre::Result<Vec<FetchOutcome>> {
+pub async fn seed_font_cache(project: &Project) -> Result<Vec<FetchOutcome>, SeedFontCacheError> {
     seed_font_cache_scoped(project, None).await
 }
 
@@ -1391,19 +1402,30 @@ pub async fn seed_font_cache(project: &Project) -> eyre::Result<Vec<FetchOutcome
 pub async fn seed_font_cache_for_backend(
     project: &Project,
     backend: crate::platform::TargetBackend,
-) -> eyre::Result<Vec<FetchOutcome>> {
+) -> Result<Vec<FetchOutcome>, SeedFontCacheError> {
     seed_font_cache_scoped(project, Some(backend)).await
 }
 
 async fn seed_font_cache_scoped(
     project: &Project,
     scope: Option<crate::platform::TargetBackend>,
-) -> eyre::Result<Vec<FetchOutcome>> {
-    let mut declarations = manifest_font_declarations(project.manifest(), project.root())?;
-    for manifest in ensure_font_scan_manifests(project, scope).await? {
-        declarations.extend(scan_crate_font_declarations(project, &manifest).await?);
+) -> Result<Vec<FetchOutcome>, SeedFontCacheError> {
+    let mut declarations = manifest_font_declarations(project.manifest(), project.root())
+        .map_err(SeedFontCacheError::Fonts)?;
+    let manifests = ensure_font_scan_manifests(project, scope)
+        .await
+        .map_err(SeedFontCacheError::Scaffold)?;
+    for manifest in manifests {
+        declarations.extend(
+            scan_crate_font_declarations(project, &manifest)
+                .await
+                .map_err(SeedFontCacheError::Fonts)?,
+        );
     }
-    fetch_fonts(declarations, &cache_dir()?, download_font).await
+    let cache_dir = cache_dir().map_err(SeedFontCacheError::Fonts)?;
+    fetch_fonts(declarations, &cache_dir, download_font)
+        .await
+        .map_err(SeedFontCacheError::Fonts)
 }
 
 /// The crate manifests a build of `project` scans for font declarations —

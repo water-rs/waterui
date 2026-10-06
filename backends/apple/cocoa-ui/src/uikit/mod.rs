@@ -42,6 +42,9 @@ mod date_picker;
 pub mod drag_drop;
 pub mod gesture;
 mod menu_panel;
+#[cfg(feature = "native-test")]
+#[doc(hidden)]
+pub mod native_test;
 pub use color_well::ColorWell;
 pub use context_menu::{
     ContextMenu, ContextMenuConfiguration, ContextMenuHandlers, preview_controller,
