@@ -107,6 +107,7 @@
 mod app;
 mod artifacts;
 pub mod bench;
+mod declared_fonts;
 pub(crate) mod driver;
 mod executor;
 mod perf;

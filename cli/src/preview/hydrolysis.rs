@@ -14,6 +14,7 @@ use crate::platform::{TargetBackend, TargetPlatform};
 use crate::project::{ManagedBackends, Project};
 use crate::project_model::assets;
 use crate::utils::command;
+use waterui_assets_planner::{FontDeclaration, FontSource};
 
 const HYDROLYSIS_PREVIEW_FEATURE: &str = "waterui-preview-mode";
 const HYDROLYSIS_PREVIEW_TEST_FEATURE: &str = "waterui-preview-test-mode";
@@ -43,11 +44,11 @@ impl HydrolysisPreviewTheme {
         }
     }
 
-    fn font_declarations(self) -> Vec<assets::FontDeclaration> {
+    fn font_declarations(self) -> Vec<FontDeclaration> {
         match self {
-            Self::Material3 => vec![assets::FontDeclaration {
+            Self::Material3 => vec![FontDeclaration {
                 name: "Roboto".to_string(),
-                source: assets::FontSource::BuiltIn,
+                source: FontSource::BuiltIn,
                 crate_name: "hydrolysis-m3".to_string(),
             }],
         }

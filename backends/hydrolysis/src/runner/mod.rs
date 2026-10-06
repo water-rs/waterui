@@ -302,9 +302,7 @@ pub fn run(app: App, style: impl crate::Style) {
     // seeded from this collection, and a self-drawn component that typesets
     // text itself reads it out of the environment instead of enumerating the
     // system's fonts for itself.
-    let fonts = crate::text::fonts::native_collection(
-        waterui_core::ResourceContext::from_environment(&env),
-    );
+    let fonts = crate::text::fonts::native_collection(&env);
     fonts.clone().install(&mut env);
     let shortcuts = env
         .get::<MenuShortcutRegistry>()
