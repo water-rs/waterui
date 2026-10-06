@@ -1,11 +1,13 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.11"
+# dependencies = ["pyobjc-framework-Quartz==12.2.2"]
 # ///
 """Competitive benchmark runner — Apple targets (water-rs/waterui#1262).
 
-Single entry point. Run with `uv run bench.py <command>` or `python3 bench.py`.
-Stdlib only, so `uv run` needs no project environment.
+Single entry point. Run with `uv run bench.py <command>`. The inline
+script metadata above is its whole environment: the standard library plus
+PyObjC's Quartz bindings, which the wheel driver posts CGEvents through.
 
 Commands:
   build    --platform ios-sim|macos|ios-device   build every contestant, stage artifacts
@@ -650,12 +652,19 @@ def write_xctestrun(template: Path, out: Path, target_key: str,
         raise RuntimeError(
             "harness.warmup_ms must be > 0 — the warmup is declared in "
             "the manifest and is never zero (METHOD)")
+    tolerance_ms = MANIFEST["harness"]["anchor_tolerance_ms"]
+    if tolerance_ms <= 0:
+        raise RuntimeError(
+            "harness.anchor_tolerance_ms must be > 0 — the runner holds "
+            "the contestant this long past the capture so the trace's "
+            "window ends inside the held span")
     env.update({
         "BENCH_BUNDLE_ID": bundle_id,
         "BENCH_WORKLOAD": workload,
         "BENCH_DRIVE": drive,
         "BENCH_DURATION": str(duration),
         "BENCH_WARMUP_MS": str(warmup_ms),
+        "BENCH_ANCHOR_TOLERANCE_MS": str(tolerance_ms),
         # the recorder-go latch this invocation must match — a latched
         # signal left by another invocation never releases this one
         "BENCH_RUN_NONCE": str(nonce),
@@ -995,17 +1004,56 @@ def _xctrace(args_, timeout=None):
                           capture_output=True, text=True, timeout=timeout)
 
 
+# ---------------------------------------------------- trace attribution
+#
+# The Animation Hitches template records through the Hitches tap
+# (Instruments.app/Contents/PlugIns/HitchesTap.framework, whose plug-in
+# data declares the tables hitches, hitches-frame-lifetimes,
+# hitches-renders, hitches-updates, hitches-gpu, hitches-framewait).
+# Frame lifetimes are display-level: they carry the swap they presented
+# and the display, never a process. Client updates (Core Animation
+# commits) carry the committing process and the swap they landed in. A
+# frame is the contestant's own when one of the swaps it presented
+# composited an update from a process the contestant owns. Every value
+# below is a trace-relative nanosecond timestamp (the tap's start-time /
+# event-time columns), so the window, the frames and the runner's marks
+# live on one clock and nothing is mapped through a guessed epoch.
+#
+# The column mnemonics are fixed here; scratchpad recipe
+# s8-apple-trace-discovery.sh prints every schema the template records
+# so they are confirmed against the pinned Xcode.
+
+FRAMES_SCHEMA = "hitches-frame-lifetimes"
+UPDATES_SCHEMA = "hitches-updates"
+SIGNPOST_SCHEMA = "os-signpost"
+FRAME_COLS = ("start", "duration", "swap-id", "display")
+UPDATE_COLS = ("process", "swap-id")
+SIGNPOST_COLS = ("time", "name", "subsystem")
+# The runner's own marks, emitted as Points of Interest events: the
+# drive starts at drive-begin; measure-end closes the held span.
+MARK_SUBSYSTEM = "dev.bench"
+MARK_DRIVE_BEGIN = "drive-begin"
+MARK_MEASURE_END = "measure-end"
+# recorded with the frames recorder so the marks share the trace clock
+FRAMES_TEMPLATE = "Animation Hitches"
+FRAMES_INSTRUMENTS = ("Points of Interest",)
+
+
+class TraceAttributionError(RuntimeError):
+    """The trace cannot say which frames are the contestant's, or the
+    window the METHOD defines is not covered by what the runner held."""
+
+
 def _export_table(trace: Path, schema: str):
-    """`xctrace export` rows of one table → list of dicts keyed by the
-    schema's column mnemonics.
+    """`xctrace export` rows of every table with `schema` → (rows, err).
 
     Row children carry the column's ENGINEERING TYPE as their tag and
     appear in schema column order (an empty cell is a `<sentinel/>`), so
-    each row is zipped against the `<schema><col><mnemonic>` list.
-    Elements either define a value (`id` attr, raw text or `fmt`) or
-    repeat one (`ref` attr pointing at an earlier `id` of the same tag)
-    — refs are resolved so every row is self-contained. Time engineering
-    values come out in nanoseconds (e.g. start-time / sample-time)."""
+    each row is zipped against the `<schema><col><mnemonic>` list of
+    the node it belongs to. Elements either define a value (`id` attr,
+    raw text or `fmt`) or repeat one (`ref` attr pointing at an earlier
+    `id` of the same tag) — refs are resolved so every row is
+    self-contained."""
     r = _xctrace(["export", "--input", str(trace), "--xpath",
                   f'/trace-toc/run[@number="1"]/data/table[@schema="{schema}"]'],
                  timeout=600)
@@ -1015,13 +1063,15 @@ def _export_table(trace: Path, schema: str):
 
 
 def parse_export_rows(xml_text: str):
-    """Pure parse of one `xctrace export` table document → (rows, err)."""
+    """Pure parse of an `xctrace export` table document → (rows, err).
+
+    The document holds one `<node>` per matching table; each node
+    carries its own `<schema>`, and its rows zip against that schema."""
     import xml.etree.ElementTree as ET
     root = ET.fromstring(xml_text)
-    schema = root.find(".//schema")
-    if schema is None:
-        return None, "export carries no <schema>"
-    cols = [c.findtext("mnemonic") for c in schema.findall("col")]
+    nodes = root.findall(".//node")
+    if not nodes:
+        return None, "export carries no <node>"
     idmap = {}
     for e in root.iter():
         if e.get("id") is not None:
@@ -1036,77 +1086,230 @@ def parse_export_rows(xml_text: str):
         t = (e.text or "").strip()
         return t if t else (e.get("fmt") or "")
     rows = []
-    for row in root.iter("row"):
-        cells = list(row)
-        if len(cells) != len(cols):
-            return None, (f"row has {len(cells)} cells for "
-                          f"{len(cols)} schema columns")
-        rows.append({c: val(e) for c, e in zip(cols, cells)})
+    for node in nodes:
+        schema = node.find("schema")
+        if schema is None:
+            return None, "export node carries no <schema>"
+        cols = [c.findtext("mnemonic") for c in schema.findall("col")]
+        for row in node.findall("row"):
+            cells = list(row)
+            if len(cells) != len(cols):
+                return None, (f"row has {len(cells)} cells for "
+                              f"{len(cols)} schema columns")
+            rows.append({c: val(e) for c, e in zip(cols, cells)})
     return rows, None
 
 
-def _boot_epoch():
+def parse_toc_processes(xml_text: str) -> list[dict]:
+    """`xctrace export --toc` → [{name, pid, path}] of run 1's process
+    list. A process entry without a path cannot be tied to a bundle and
+    fails the parse rather than being skipped."""
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(xml_text)
+    run = root.find("run[@number='1']")
+    if run is None:
+        raise TraceAttributionError("trace TOC has no run 1")
+    procs = run.findall("processes/process")
+    if not procs:
+        raise TraceAttributionError("trace TOC lists no processes")
+    out = []
+    for p in procs:
+        pid = p.get("pid")
+        if pid is None or not pid.lstrip("-").isdigit():
+            raise TraceAttributionError(
+                f"TOC process without a pid: {p.attrib}")
+        out.append({"name": p.get("name"), "pid": int(pid),
+                    "path": p.get("path")})
+    return out
+
+
+def _trace_toc(trace: Path) -> list[dict]:
+    r = _xctrace(["export", "--input", str(trace), "--toc"], timeout=600)
+    if r.returncode != 0:
+        raise TraceAttributionError(
+            f"xctrace export --toc failed: {(r.stderr or '')[-400:]}")
+    return parse_toc_processes(r.stdout)
+
+
+def owned_processes(processes: list[dict], bundle_name: str,
+                    main_rel: str) -> tuple[int, set[int]]:
+    """(main pid, owned pids) of the contestant in one trace.
+
+    Owned = every process whose executable lives inside the contestant's
+    bundle (`…/<bundle_name>/…`): the app itself plus helpers it ships
+    (Electron's GPU/renderer processes live in Contents/Frameworks).
+    Exactly one process may run the main executable — a second instance
+    or none means the trace does not show one launch of this
+    contestant."""
+    seg = f"/{bundle_name}/"
+    main_suffix = f"/{bundle_name}/{main_rel}"
+    pathless = [p for p in processes if not p.get("path")
+                and p["pid"] > 0]
+    owned = {p["pid"] for p in processes
+             if p.get("path") and seg in p["path"]}
+    main = [p["pid"] for p in processes
+            if p.get("path") and p["path"].endswith(main_suffix)]
+    if len(main) != 1:
+        raise TraceAttributionError(
+            f"expected exactly one process running …{main_suffix} in the "
+            f"trace, found {len(main)} ({main}); "
+            f"{len(pathless)} TOC processes carry no path")
+    return main[0], owned
+
+
+def _pid_of_process(fmt: str | None) -> int | None:
+    """Pid from an export `process` cell ("Name (pid)")."""
+    m = re.search(r"\((\d+)\)\s*$", (fmt or "").strip())
+    return int(m.group(1)) if m else None
+
+
+def _require_cols(rows: list[dict], cols, schema: str):
+    if rows and not set(cols) <= set(rows[0]):
+        raise TraceAttributionError(
+            f"{schema} lacks column(s) "
+            f"{sorted(set(cols) - set(rows[0]))}; has {sorted(rows[0])}")
+
+
+def _int(v, what: str) -> int:
     try:
-        out = subprocess.run(["sysctl", "-n", "kern.boottime"],
-                             capture_output=True, text=True).stdout
-        m = re.search(r"sec\s*=\s*(\d+)\s*,\s*usec\s*=\s*(\d+)", out)
-        if m:
-            return int(m.group(1)) + int(m.group(2)) / 1e6
-    except Exception:
-        pass
-    return 0.0
+        return int(str(v).strip())
+    except (TypeError, ValueError):
+        raise TraceAttributionError(f"{what}: not an integer: {v!r}") \
+            from None
 
 
-def _epoch_map(raw_vals, lo, hi, trace: Path):
-    """Pick the affine map raw engineering timestamp → epoch seconds.
+def owned_presents(frames: list[dict], updates: list[dict],
+                   owned: set[int]) -> dict:
+    """Join frame lifetimes to the contestant's client updates by swap.
 
-    Different export tables use different bases (ns since epoch, ns/µs
-    since boot, ns since trace start). The trace file's birthtime ≈ the
-    record start; kern.boottime covers mach-absolute bases. Score each
-    candidate by how many mapped timestamps land inside [lo, hi]."""
-    if not raw_vals:
-        return None
-    birth = os.stat(trace).st_birthtime
-    boot = _boot_epoch()
-    cands = [(1e-9, 0.0), (1e-6, 0.0), (1.0, 0.0),
-             (1e-9, boot), (1e-6, boot),
-             (1e-9, birth), (1e-6, birth)]
-    best, best_n = None, 0
-    for s, b in cands:
-        n = sum(1 for v in raw_vals if lo <= v * s + b <= hi)
-        if n > best_n:
-            best, best_n = (s, b), n
-    return best if best_n else None
+    A frame lifetime ends at its presentation (start + duration); an
+    open lifetime (no duration) never presented and is not a present.
+    Returns {presents_ns (sorted), display, owned_swaps, frames_total,
+    updates_owned}. Raises when nothing joins or the owned frames span
+    more than one display — swap ids are not proven unique across
+    displays, so a multi-display join is not attribution."""
+    _require_cols(frames, FRAME_COLS, FRAMES_SCHEMA)
+    _require_cols(updates, UPDATE_COLS, UPDATES_SCHEMA)
+    swaps = set()
+    n_upd = 0
+    for u in updates:
+        pid = _pid_of_process(u["process"])
+        if pid in owned and u["swap-id"] is not None:
+            swaps.add(_int(u["swap-id"], f"{UPDATES_SCHEMA} swap-id"))
+            n_upd += 1
+    if not swaps:
+        raise TraceAttributionError(
+            f"no {UPDATES_SCHEMA} row from owned pids {sorted(owned)} "
+            f"carries a swap ({len(updates)} updates in the trace)")
+    presents, displays = [], set()
+    for f in frames:
+        if f["swap-id"] is None or f["duration"] is None:
+            continue
+        if _int(f["swap-id"], f"{FRAMES_SCHEMA} swap-id") not in swaps:
+            continue
+        presents.append(_int(f["start"], f"{FRAMES_SCHEMA} start")
+                        + _int(f["duration"], f"{FRAMES_SCHEMA} duration"))
+        displays.add(f["display"])
+    if not presents:
+        raise TraceAttributionError(
+            f"no {FRAMES_SCHEMA} row presented a swap carrying an owned "
+            f"update ({len(swaps)} owned swaps, {len(frames)} frames)")
+    if len(displays) != 1:
+        raise TraceAttributionError(
+            f"owned frames span displays {sorted(map(str, displays))} — "
+            "swap ids are joined per trace, so the measured contestant "
+            "must present on one display")
+    return {"presents_ns": sorted(presents), "display": displays.pop(),
+            "owned_swaps": len(swaps), "frames_total": len(frames),
+            "updates_owned": n_upd}
 
 
-def trace_frame_stats(trace: Path, window_ms, device_rec: dict):
-    """lib/frame_stats over the presents inside the measurement window.
+def runner_marks(signposts: list[dict]) -> dict:
+    """{mark name: trace ns} of the runner's Points of Interest events —
+    each mark exactly once per trace."""
+    _require_cols(signposts, SIGNPOST_COLS, SIGNPOST_SCHEMA)
+    found = {}
+    for s in signposts:
+        if s["subsystem"] != MARK_SUBSYSTEM:
+            continue
+        found.setdefault(s["name"], []).append(
+            _int(s["time"], f"{SIGNPOST_SCHEMA} time"))
+    out = {}
+    for name in (MARK_DRIVE_BEGIN, MARK_MEASURE_END):
+        ts = found.get(name, [])
+        if len(ts) != 1:
+            raise TraceAttributionError(
+                f"expected one {MARK_SUBSYSTEM} '{name}' signpost in the "
+                f"trace, found {len(ts)}")
+        out[name] = ts[0]
+    return out
 
-    hitches-frame-lifetimes carries one row per presented frame; their
-    `start` timestamps are epoch-mapped and kept as the present series.
-    The table is display-level — it has no process column — so the
-    attribution to the contestant is the cell itself: the contestant is
-    the only foreground content on the measured display during the
-    window. window_ms = (w0, w1) in EPOCH milliseconds — the runner
-    log's measure-begin/measure-end pair, so window bounds and mapped
-    presents live on the same clock. Returns (stats, error)."""
-    frames, err = _export_table(trace, "hitches-frame-lifetimes")
-    if not frames:
-        return None, err or "hitches-frame-lifetimes: 0 rows"
-    raw = [v for v in (_num(f.get("start")) for f in frames) if v > 0]
-    w0, w1 = window_ms
-    fmap = _epoch_map(raw, w0 / 1000.0 - 60, w1 / 1000.0 + 60, trace)
-    if fmap is None:
-        return None, "hitches-frame-lifetimes: no timestamp base maps " \
-                     "into the measure window"
-    sc, base = fmap
-    pres_ms = [(t * sc + base) * 1000.0 for t in raw]  # epoch ms
-    if not device_rec.get("maxFps"):
-        return None, "runner log has no device-record maxFps"
-    maxfps = float(device_rec["maxFps"])
-    return lib_frames.frame_statistics(
-        pres_ms, window_start_ms=w0, capture_ms=w1 - w0,
-        refresh_ms=1000.0 / maxfps), None
+
+def measurement_window(presents_ns: list[int], marks: dict, *,
+                       warmup_ms: float, capture_ms: float,
+                       tolerance_ms: float) -> dict:
+    """METHOD's window on the trace clock: [first owned present +
+    warmup, + capture]. The runner starts the drive at its own
+    readiness + warmup; that start must sit within `tolerance_ms` of the
+    window start (METHOD: the drive starts at window start), and the
+    runner must have held the contestant through the window end.
+    Returns milliseconds on the trace clock."""
+    first = presents_ns[0] / 1e6
+    w0 = first + warmup_ms
+    w1 = w0 + capture_ms
+    drive = marks[MARK_DRIVE_BEGIN] / 1e6
+    held = marks[MARK_MEASURE_END] / 1e6
+    offset = drive - w0
+    if abs(offset) > tolerance_ms:
+        raise TraceAttributionError(
+            f"drive started {offset:+.1f} ms from the window start "
+            f"(first owned present {first:.1f} ms + warmup {warmup_ms:g} "
+            f"ms); tolerance is {tolerance_ms:g} ms")
+    if held < w1:
+        raise TraceAttributionError(
+            f"runner released the contestant at {held:.1f} ms, before "
+            f"the window end {w1:.1f} ms")
+    return {"first_owned_present_ms": first, "window_start_ms": w0,
+            "window_end_ms": w1, "drive_begin_ms": drive,
+            "drive_offset_ms": round(offset, 3), "measure_end_ms": held}
+
+
+def trace_attribution(trace: Path, bundle_name: str,
+                      main_rel: str) -> dict:
+    """Read one all-process trace: owned pids from its TOC, owned
+    presents by the swap join, the runner marks. No window gating — the
+    `attribution` command prints this as evidence."""
+    main_pid, owned = owned_processes(_trace_toc(trace), bundle_name,
+                                      main_rel)
+    tables = {}
+    for schema in (FRAMES_SCHEMA, UPDATES_SCHEMA, SIGNPOST_SCHEMA):
+        rows, err = _export_table(trace, schema)
+        if rows is None:
+            raise TraceAttributionError(f"{schema}: {err}")
+        tables[schema] = rows
+    joined = owned_presents(tables[FRAMES_SCHEMA], tables[UPDATES_SCHEMA],
+                            owned)
+    return {"main_pid": main_pid, "owned_pids": sorted(owned),
+            "signposts": tables[SIGNPOST_SCHEMA], **joined}
+
+
+def trace_frame_window(trace: Path, bundle_name: str, main_rel: str,
+                       capture_ms: float, refresh_ms: float) -> dict:
+    """Frame statistics of the contestant's own presents over METHOD's
+    window, plus the window itself (trace ms) and the attribution
+    evidence. Raises TraceAttributionError when either is unsound."""
+    att = trace_attribution(trace, bundle_name, main_rel)
+    marks = runner_marks(att.pop("signposts"))
+    h = MANIFEST["harness"]
+    win = measurement_window(att["presents_ns"], marks,
+                             warmup_ms=float(h["warmup_ms"]),
+                             capture_ms=capture_ms,
+                             tolerance_ms=float(h["anchor_tolerance_ms"]))
+    stats = lib_frames.frame_statistics(
+        [t / 1e6 for t in att.pop("presents_ns")],
+        window_start_ms=win["window_start_ms"], capture_ms=capture_ms,
+        refresh_ms=refresh_ms)
+    return {"frame_stats": stats, "window": win, "attribution": att}
 
 
 def _proc_name(fmt: str | None):
@@ -1115,16 +1318,10 @@ def _proc_name(fmt: str | None):
     return m.group(1) if m else None
 
 
-def _proc_of_thread(fmt: str):
+def _pid_of_thread(fmt: str) -> int | None:
+    """Owning pid from an export `thread` cell ("… (name, pid: N)")."""
     m = re.findall(r"\(([^()]*), pid: (\d+)\)", fmt or "")
-    return m[-1][0].strip() if m else None
-
-
-def _num(v, default=0.0):
-    try:
-        return float(str(v).strip())
-    except Exception:
-        return default
+    return int(m[-1][1]) if m else None
 
 
 _PAINT_RE = re.compile(r"waterui_first_paint_ms=\s*([0-9]+(?:\.[0-9]+)?)")
@@ -1321,10 +1518,12 @@ class XctraceRecorder:
     ARMED = "Ctrl-C to stop the recording"
 
     def __init__(self, out: Path, template: str, device_udid: str | None,
-                 time_limit_s: int):
+                 time_limit_s: int, instruments: tuple[str, ...] = ()):
         cmd = ["xcrun", "xctrace", "record", "--template", template,
                "--all-processes", "--output", str(out),
                "--time-limit", f"{time_limit_s}s"]
+        for name in instruments:
+            cmd += ["--instrument", name]
         if device_udid:
             cmd += ["--device", device_udid]
         self.out = out
@@ -1401,18 +1600,25 @@ class RecorderGo:
     """Host side of the runner's recorder-go gate, latched so neither
     side can miss the other:
 
-    - macOS / ios-sim: a holder process registers `dev.bench.recorder`,
-      sets its notify state to this invocation's nonce, then posts it
-      (notifyutil runs its commands left to right) and stays registered
-      — the state lives while a registration exists — until close().
-      The runner arms its own registration, then reads the state: a
-      post after the read wakes it, one before it shows in the state.
+    - macOS / ios-sim: a holder notifyutil registers `dev.bench.recorder`
+      for exactly two notifications, sets its notify state to this
+      invocation's nonce, then posts it (notifyutil runs its commands
+      left to right) — its own post is the first of the two, so it stays
+      registered and the state lives — until close() posts the second,
+      on which the holder exits by itself. The holder's lifetime is
+      therefore owned inside the notify namespace it runs in: killing
+      the host-side `simctl spawn` would leave the notifyutil it started
+      inside the simulator registered. The runner arms its own
+      registration, then reads the state: a post after the read wakes
+      it, one before it shows in the state.
     - ios-device: the host cannot reach the device's notify namespace,
       so `bench-recorder-go-<nonce>` is copied into the runner's tmp;
       the file persists and the runner watches the directory.
 
     The nonce rides into the runner through BENCH_RUN_NONCE, so a latch
     left by another invocation can never release this one."""
+
+    NAME = "dev.bench.recorder"
 
     def __init__(self, plat: str, udid: str | None,
                  runner_bid: str | None, results_dir: Path):
@@ -1425,7 +1631,6 @@ class RecorderGo:
         self._holder = None
 
     def release(self):
-        name = "dev.bench.recorder"
         if self.plat == "ios-device":
             if not self.runner_bid:
                 raise RuntimeError("ios-device recorder-go needs the "
@@ -1445,19 +1650,33 @@ class RecorderGo:
                 sentinel.unlink(missing_ok=True)
             return
         self._holder = subprocess.Popen(
-            _notify_cmd(self.plat, self.udid, "-w", name,
-                        "-s", name, str(self.nonce), "-p", name),
+            _notify_cmd(self.plat, self.udid, "-2", self.NAME,
+                        "-s", self.NAME, str(self.nonce), "-p", self.NAME),
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             start_new_session=True)
         _ACTIVE_PROCS.append(self._holder)
 
-    def close(self):
-        if self._holder is not None:
-            _kill_proc(self._holder)
-            self._holder.wait()
-            if self._holder in _ACTIVE_PROCS:
-                _ACTIVE_PROCS.remove(self._holder)
-            self._holder = None
+    def close(self, bound_s: float = 60.0) -> str | None:
+        """Release the holder with its second notification and wait for
+        it to exit on its own; an error string when it does not."""
+        if self._holder is None:
+            return None
+        holder, self._holder = self._holder, None
+        err = None
+        try:
+            subprocess.run(_notify_cmd(self.plat, self.udid, "-p",
+                                       self.NAME),
+                           capture_output=True, check=True, timeout=60)
+            holder.wait(timeout=bound_s)
+        except (subprocess.SubprocessError, OSError) as e:
+            err = (f"recorder-go holder (pid {holder.pid}) did not exit on "
+                   f"its release post: {e}")
+            _kill_proc(holder)
+            holder.wait()
+        finally:
+            if holder in _ACTIVE_PROCS:
+                _ACTIVE_PROCS.remove(holder)
+        return err
 
 
 def pull_runner_log(plat: str, udid: str, runner_bid: str | None,
@@ -1492,14 +1711,16 @@ def pull_runner_log(plat: str, udid: str, runner_bid: str | None,
 
 
 def read_runner_log(path: Path, since: float):
-    """Parse the runner log for this rep: the measure-window pair and the
-    device record the runner wrote inside the measure block. Entries are
+    """Parse the runner log for this rep: the runner's marks and the
+    device record it wrote inside the measured iteration. Entries are
     '<epoch> <text>' lines; only rows at/after `since` count so a
-    previous rep's markers can't alias into this one."""
-    window = [None, None]
+    previous rep's marks can't alias into this one. Returns
+    ({drive-begin, measure-end: epoch s}, device record); a mark the
+    log does not carry, or a pair out of order, is absent."""
+    marks = {}
     device = {}
     if not path.exists():
-        return window, device
+        return marks, device
     for line in path.read_text().splitlines():
         parts = line.split(" ", 1)
         if len(parts) != 2:
@@ -1511,48 +1732,41 @@ def read_runner_log(path: Path, since: float):
         if t < since:
             continue
         body = parts[1]
-        if body.startswith("measure-begin"):
-            window[0] = t
-        elif body.startswith("measure-end"):
-            window[1] = t
-        elif body.startswith("device-record"):
+        for name in (MARK_DRIVE_BEGIN, MARK_MEASURE_END):
+            if body == name:
+                marks[name] = t
+        if body.startswith("device-record"):
             for kv in body.split():
                 if "=" in kv:
                     k, v = kv.split("=", 1)
                     device[k] = v
-    if not (window[0] and window[1] and window[1] > window[0]):
-        window = [None, None]
-    return window, device
+    if (len(marks) != 2
+            or marks[MARK_MEASURE_END] <= marks[MARK_DRIVE_BEGIN]):
+        marks = {}
+    return marks, device
 
 
-def _trace_proc_cpu(trace: Path, proc: str, window_s):
-    """CPU seconds of process `proc` inside the measure window, from the
+def _trace_proc_cpu(trace: Path, pid: int, window_ms):
+    """CPU seconds of process `pid` inside the window, from the
     all-process time-sample table: Running samples whose thread belongs
-    to `proc` (the export names it in the thread's "(name, pid: N)"),
-    times the median sample period. window_s = (w0, w1) epoch seconds."""
+    to `pid` (the export names it in the thread's "(name, pid: N)"),
+    times the median sample period. window_ms = (w0, w1) on the trace
+    clock — the same clock as the frame window."""
     rows, err = _export_table(trace, "time-sample")
     if not rows:
         return None, err or "time-sample: 0 rows"
-    stamped = [(_num(r.get("time")), r) for r in rows]
-    stamped = [(t, r) for t, r in stamped if t > 0]
+    stamped = [(_int(r["time"], "time-sample time"), r) for r in rows]
     raw = sorted(t for t, _ in stamped)
-    smp = None
-    if len(raw) > 2:
-        dt = sorted(b - a for a, b in zip(raw, raw[1:]) if b > a)
-        if dt:
-            smp = dt[len(dt) // 2]
-    if smp is None:
+    dt = sorted(b - a for a, b in zip(raw, raw[1:]) if b > a)
+    if not dt:
         return None, "time-sample: too few samples for a period"
-    w0, w1 = window_s
-    fmap = _epoch_map(raw, w0 - 60, w1 + 60, trace)
-    if fmap is None:
-        return None, "time-sample: no timestamp base maps into the window"
-    sc, base = fmap
+    smp = dt[len(dt) // 2]
+    w0, w1 = (w * 1e6 for w in window_ms)
     n = sum(1 for t, r in stamped
-            if w0 <= t * sc + base <= w1
+            if w0 <= t <= w1
             and r.get("thread-state") == "Running"
-            and _proc_of_thread(r.get("thread")) == proc)
-    return round(n * smp * sc, 3), None
+            and _pid_of_thread(r.get("thread")) == pid)
+    return round(n * smp / 1e9, 3), None
 
 
 def _run_xctest_invocation(xr: Path, res: Path, dest: str,
@@ -1623,12 +1837,15 @@ def _window_center_for_pid(pid: int):
 class SimulatorHost:
     """The Simulator.app process that hosts the booted device's window.
 
-    The run launches it itself — its executable with `-CurrentDeviceUDID
+    Only runs with a wheel cell need it: the wheel driver posts host
+    scroll events into this window. Other ios-sim cells leave the device
+    to xcodebuild, which boots it without a host window. The run
+    launches it itself — its executable with `-CurrentDeviceUDID
     <udid>`, through subprocess — so the pid the wheel driver targets
     comes from that launch, never from a lookup by app name or window
-    title. A Simulator host this run did not launch (for another device
-    or for this one) and any other booted device are refused before the
-    first cell: the driver must own the only device window there is."""
+    title. Any Simulator host already running — from any Xcode, for any
+    device — and any other booted device are refused before the first
+    cell: the driver must own the only device window there is."""
 
     def __init__(self, udid: str):
         self.udid = udid
@@ -1646,6 +1863,10 @@ class SimulatorHost:
             raise SystemExit(f"Simulator host executable missing: {exe}")
         return exe
 
+    # the host executable inside any Simulator.app, whichever Xcode (or
+    # copy of it) it belongs to
+    HOST_SUFFIX = "/Simulator.app/Contents/MacOS/Simulator"
+
     def start(self):
         exe = self.executable()
         out = subprocess.run(["ps", "-axo", "pid=,comm="],
@@ -1653,14 +1874,15 @@ class SimulatorHost:
                              check=True).stdout
         for line in out.splitlines():
             pid, _, comm = line.strip().partition(" ")
-            if comm.strip() != str(exe):
+            if not comm.strip().endswith(self.HOST_SUFFIX):
                 continue
             argv = subprocess.run(["ps", "-o", "args=", "-p", pid],
                                   capture_output=True, text=True).stdout
             m = re.search(r"-CurrentDeviceUDID\s+(\S+)", argv)
             raise SystemExit(
-                f"a Simulator host is already running (pid {pid}, device "
-                f"{m.group(1) if m else 'unspecified'}) — quit it: ios-sim "
+                f"a Simulator host is already running (pid {pid}, "
+                f"{comm.strip()}, device "
+                f"{m.group(1) if m else 'unspecified'}) — quit it: wheel "
                 f"cells drive the host this run launches for {self.udid}")
         booted = json.loads(subprocess.run(
             ["xcrun", "simctl", "list", "devices", "booted", "--json"],
@@ -1719,10 +1941,19 @@ class WheelDriver:
     protocol (manifest `fling` block) as CGEvent scroll-wheel detents
     DIRECTLY to the target process (`CGEventPostToPid`, the event
     located at the window's centre): no cursor warp, no HID-tap
-    broadcast. It then holds until begin + the declared duration and
-    posts `dev.bench.end` — a name only the driver uses — into the same
-    namespace (the simulator's for ios-sim, the host's for macOS). The
-    app never scrolls itself and never signals completion.
+    broadcast. It then holds until begin + the declared hold (the
+    capture plus harness.anchor_tolerance_ms, the same span the runner
+    holds on every other drive) and posts `dev.bench.end` — a name only
+    the driver uses — into the same namespace (the simulator's for
+    ios-sim, the host's for macOS). The app never scrolls itself and
+    never signals completion.
+
+    The listener runs inside that namespace (for ios-sim, inside the
+    simulator, where killing the host-side `simctl spawn` would not
+    reach it), so its lifetime is ended there: it exits on its one
+    begin, and a cell that ends before any begin releases it with a
+    begin of its own after the runner is gone — the driver has stopped
+    by then, so that post drives nothing.
 
     The driver refuses to run anywhere but the declared measurement host
     (`measurement_host.hw_uuid` in the manifest — the Mac mini's
@@ -1733,12 +1964,12 @@ class WheelDriver:
     (cmd_run_local checks up front)."""
 
     def __init__(self, plat: str, udid: str | None,
-                 pid_resolver, fling: dict, duration_s: float):
+                 pid_resolver, fling: dict, hold_s: float):
         self.plat = plat
         self.udid = udid
         self.pid_resolver = pid_resolver
         self.fling = fling
-        self.duration_s = float(duration_s)
+        self.hold_s = float(hold_s)
         self.error = None
         self._listener = None
         self._lines = None
@@ -1786,14 +2017,29 @@ class WheelDriver:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
-    def stop(self):
+    def stop(self, bound_s: float = 60.0):
+        """End the driver; an unfired listener is released inside its
+        namespace and must exit on that release. Records a listener that
+        does not exit as the driver's error."""
         self._stop.set()
         if self._listener is not None:
-            _kill_proc(self._listener)
-            self._listener.wait()
-            if self._listener in _ACTIVE_PROCS:
-                _ACTIVE_PROCS.remove(self._listener)
-            self._listener = None
+            listener, self._listener = self._listener, None
+            try:
+                if listener.poll() is None:
+                    subprocess.run(_notify_cmd(self.plat, self.udid, "-p",
+                                               "dev.bench.begin"),
+                                   capture_output=True, check=True,
+                                   timeout=60)
+                listener.wait(timeout=bound_s)
+            except (subprocess.SubprocessError, OSError) as e:
+                self.error = self.error or (
+                    f"wheel driver: begin listener (pid {listener.pid}) "
+                    f"did not exit on its release post: {e}")
+                _kill_proc(listener)
+                listener.wait()
+            finally:
+                if listener in _ACTIVE_PROCS:
+                    _ACTIVE_PROCS.remove(listener)
         if self._thread is not None:
             self._thread.join(timeout=10)
             self._thread = None
@@ -1804,17 +2050,19 @@ class WheelDriver:
     def _run(self):
         try:
             fired = self._lines.readline(None)
-            if fired is None:
-                return  # stopped before any begin: the runner fails the cell
+            if fired is None or self._stop.is_set():
+                # EOF, or the release post of a cell that ended before
+                # any begin: the runner fails that cell on its own
+                return
             if fired.strip() != "dev.bench.begin":
                 raise RuntimeError(f"unexpected listener output {fired!r}")
             begin = time.monotonic()
             self._program()
-            remaining = begin + self.duration_s - time.monotonic()
+            remaining = begin + self.hold_s - time.monotonic()
             if remaining < 0:
                 raise RuntimeError(
-                    f"fling program overran the {self.duration_s:g}s "
-                    f"capture window by {-remaining:.3f}s")
+                    f"fling program overran the {self.hold_s:g}s hold by "
+                    f"{-remaining:.3f}s")
             if self._stop.wait(remaining):
                 return
             subprocess.run(_notify_cmd(self.plat, self.udid, "-p",
@@ -1861,6 +2109,18 @@ class WheelDriver:
 XCTRACE_LIMIT_S = 1800
 
 
+def bundle_executable(app_path: Path, plat: str) -> tuple[str, str]:
+    """(CFBundleExecutable, its path relative to the bundle root). The
+    executable need not equal the bundle stem — Electron names it
+    "Electron" — so it comes from the bundle's own Info.plist."""
+    plist_f = (app_path / "Contents" / "Info.plist" if plat == "macos"
+               else app_path / "Info.plist")
+    exe = plistlib.loads(plist_f.read_bytes()).get("CFBundleExecutable")
+    if not exe:
+        raise RuntimeError(f"{plist_f} has no CFBundleExecutable")
+    return exe, (f"Contents/MacOS/{exe}" if plat == "macos" else exe)
+
+
 def run_one(plat, contestant_id, app_path: Path, bundle_id, workload,
             drive, duration, rep, dest, products_dir: Path, subdir: str,
             template: Path, target_key: str, results_dir: Path,
@@ -1874,19 +2134,27 @@ def run_one(plat, contestant_id, app_path: Path, bundle_id, workload,
     One test per xcodebuild invocation: the launch test and the workload
     test never share a process lifetime. External observation, identical
     for every contestant:
+    - macos / ios-device: `xctrace record --all-processes` with the
+      Animation Hitches template plus Points of Interest, armed BEFORE
+      the runner's recorder-go is released. The contestant's frames are
+      the frame lifetimes whose swap composited an update from a process
+      inside its bundle; METHOD's window [first owned present + warmup,
+      + capture] is computed on that trace's clock, and the runner's
+      drive-begin / measure-end signposts in the same trace prove the
+      drive started within harness.anchor_tolerance_ms of the window
+      start and the contestant was held through its end. On ios-device
+      the app and backboardd CPU come from the same trace and window.
+      ios-device also records the Logging template the same way (the
+      first-paint marker channel), for every contestant.
     - ios-sim / macos: a CpuSampler polls `ps -o time/rss` on the app,
       its helper children and the render server (sim backboardd / macOS
       WindowServer) so work Core Animation executes outside the app
-      process is still counted — windowed to the measure block by the
-      runner's own measure-begin/measure-end markers.
-    - macos / ios-device: `xctrace record --all-processes` with the
-      Animation Hitches template, armed BEFORE the runner's recorder-go
-      is released: presented frames for frame statistics, and on
-      ios-device the app and backboardd CPU, selected by process at
-      export. ios-device also records the Logging template the same way
-      (the first-paint marker channel), for every contestant.
+      process is still counted. On macOS it is windowed to the trace's
+      window, carried to the host clock through the drive-begin mark
+      both clocks carry; ios-sim records no trace, so its (development
+      only) window is the runner's drive-begin + the capture.
     - wheel drive: the host driver's listener is armed before
-      recorder-go too; it ends the cell itself at begin + duration.
+      recorder-go too; it ends the cell itself at begin + the hold.
     - capacity workloads (w5/w6) run one launch per ladder step: the
       caller passes `step` and merges the per-step rows.
     """
@@ -1917,17 +2185,10 @@ def run_one(plat, contestant_id, app_path: Path, bundle_id, workload,
         else:
             p.unlink(missing_ok=True)
 
-    exe = app_path.stem
-    if plat == "macos":
-        # CFBundleExecutable need not equal the bundle stem — Electron
-        # names it "Electron", not the app name
-        plist_f = app_path / "Contents" / "Info.plist"
-        if plist_f.exists():
-            exe = plistlib.loads(plist_f.read_bytes()).get(
-                "CFBundleExecutable", exe)
-            if not exe:
-                raise RuntimeError(
-                    f"{plist_f} has no CFBundleExecutable")
+    exe, main_rel = bundle_executable(app_path, plat)
+    capture_ms = float(duration) * 1000.0
+    hold_s = float(duration) + float(
+        MANIFEST["harness"]["anchor_tolerance_ms"]) / 1000.0
 
     rec = {}
     sampler = None
@@ -1949,8 +2210,7 @@ def run_one(plat, contestant_id, app_path: Path, bundle_id, workload,
         if plat in ("ios-sim", "macos"):
             sampler = CpuSampler(cpu_pids_resolver(
                 plat, udid, bundle_id,
-                str(app_path / "Contents" / "MacOS" / exe)
-                if plat == "macos" else exe),
+                str(app_path / main_rel) if plat == "macos" else exe),
                 interval=0.5)
             sampler.start()
         xb, xbf, xblog = _xctest_spawn(xr_work, res_work, dest,
@@ -1959,15 +2219,15 @@ def run_one(plat, contestant_id, app_path: Path, bundle_id, workload,
             try:
                 if plat in ("macos", "ios-device"):
                     recorders["frames"] = XctraceRecorder(
-                        trace, "Animation Hitches", device_udid,
-                        XCTRACE_LIMIT_S)
+                        trace, FRAMES_TEMPLATE, device_udid,
+                        XCTRACE_LIMIT_S, instruments=FRAMES_INSTRUMENTS)
                 if plat == "ios-device":
                     recorders["log"] = XctraceRecorder(
                         fp_trace, "Logging", device_udid, XCTRACE_LIMIT_S)
                 for r in recorders.values():
                     r.arm()
                 if drive == "wheel":
-                    exe_path = str(app_path / "Contents" / "MacOS" / exe)
+                    exe_path = str(app_path / main_rel)
                     if plat == "ios-sim":
                         if sim_host is None:
                             raise RuntimeError(
@@ -1985,7 +2245,7 @@ def run_one(plat, contestant_id, app_path: Path, bundle_id, workload,
                             return pid
                     wheel = WheelDriver(plat, udid, resolve,
                                         MANIFEST["harness"]["fling"],
-                                        duration)
+                                        hold_s)
                     wheel.start()
                 go.release()
             except RuntimeError as e:
@@ -2018,7 +2278,8 @@ def run_one(plat, contestant_id, app_path: Path, bundle_id, workload,
                     wm = wrec.get("metrics") or {}
                     rec["metrics"] = {**(rec.get("metrics") or {}), **wm}
         finally:
-            go.close()
+            if (e := go.close()) is not None:
+                rec.setdefault("error", e)
             if wheel is not None:
                 wheel.stop()
                 if wheel.error and "error" not in rec:
@@ -2033,25 +2294,59 @@ def run_one(plat, contestant_id, app_path: Path, bundle_id, workload,
         if artifact_sha:
             rec["artifact_sha256"] = artifact_sha
 
-        # --- windowed sampler deltas + runner log markers ------------
+        # --- the measurement window --------------------------------
         pull_runner_log(plat, udid or "", runner_bid, runner_log)
-        window, device_rec = read_runner_log(runner_log,
-                                             max(runner_log_since,
-                                                 t_start - 5))
+        marks, device_rec = read_runner_log(
+            runner_log, max(runner_log_since, t_start - 5))
         if device_rec:
             rec["device_record"] = device_rec
-        w0, w1 = window
-        # the runner log's measure-begin/measure-end pair is the only
-        # window CPU/memory deltas and frame stats may be sliced by — a
-        # missing pair fails the attempt; whole-invocation data is not
-        # evidence
-        if not (w0 and w1) and "error" not in rec:
-            raise RuntimeError(
-                "runner log has no measure-begin/measure-end pair — "
-                "the measurement window is unbounded")
+        if not marks:
+            rec.setdefault(
+                "error", "runner log has no drive-begin/measure-end pair "
+                         "— the runner never reached its measured span")
+        if "error" in rec:
+            return rec
+
+        host_window = None   # epoch s, for the host-side sampler
+        trace_window = None  # trace ms, for tables of the same trace
+        if "frames" in recorders:
+            if not device_rec.get("maxFps"):
+                rec["error"] = "runner log has no device-record maxFps"
+                return rec
+            try:
+                tw = trace_frame_window(
+                    trace, app_path.name, main_rel, capture_ms,
+                    refresh_ms=1000.0 / float(device_rec["maxFps"]))
+                render = [p["pid"] for p in _trace_toc(trace)
+                          if p["name"] == RENDER_NAME[plat]]
+            except TraceAttributionError as e:
+                rec["error"] = f"frame attribution: {e}"
+                return rec
+            rec["frame_stats"] = tw["frame_stats"]
+            rec["frames"] = tw["frame_stats"]["presents"]
+            rec["window"] = {"source": "trace", **tw["window"]}
+            rec["attribution"] = tw["attribution"]
+            win = tw["window"]
+            trace_window = (win["window_start_ms"], win["window_end_ms"])
+            # the runner's drive-begin is one instant on both clocks
+            off = marks[MARK_DRIVE_BEGIN] - win["drive_begin_ms"] / 1000.0
+            host_window = (trace_window[0] / 1000.0 + off,
+                           trace_window[1] / 1000.0 + off)
+        else:
+            d0 = marks[MARK_DRIVE_BEGIN]
+            if marks[MARK_MEASURE_END] < d0 + capture_ms / 1000.0:
+                rec["error"] = ("runner released the contestant before "
+                                "drive-begin + the capture")
+                return rec
+            host_window = (d0, d0 + capture_ms / 1000.0)
+            rec["window"] = {"source": "runner-drive-begin",
+                             "start_epoch_s": host_window[0],
+                             "end_epoch_s": host_window[1]}
+
         if sampler is not None:
+            w0, w1 = host_window
             rec["renderserver"] = RENDER_NAME[plat]
-            rec["cpu_window_source"] = "measure"
+            rec["cpu_window_source"] = rec["window"]["source"]
             for label, key in (("app", "app_cpu_window_s"),
                                ("render_server", "renderserver_cpu_s"),
                                ("helpers", "helpers_cpu_s")):
@@ -2063,31 +2358,24 @@ def run_one(plat, contestant_id, app_path: Path, bundle_id, workload,
                 m = sampler.peak_rss_mb(label, w0, w1)
                 if m is not None:
                     rec[key] = m
-
-        # frame statistics over the measurement window (lib/frame_stats:
-        # [first owned present + warmup, +capture_s], gap >100 ms ends an
-        # active run, missed = round(i/period)-1 beyond 1.5 periods)
-        if "frames" in recorders and trace.exists() and w0 and w1:
-            fstats, e = trace_frame_stats(
-                trace, window_ms=(w0 * 1000.0, w1 * 1000.0),
-                device_rec=device_rec)
-            if fstats is not None:
-                rec["frame_stats"] = fstats
-                rec["frames"] = fstats["presents"]
-            if e:
-                rec.setdefault("trace_errors", []).append(e)
-        if plat == "ios-device" and trace.exists() and w0 and w1:
+        if plat == "ios-device":
             # the all-process recording carries every process's samples;
-            # the contestant and the render server are selected here
+            # the contestant and the render server are selected by pid
             rec["renderserver"] = RENDER_NAME[plat]
-            for proc, key in ((exe, "app_cpu_window_s"),
-                              ("backboardd", "renderserver_cpu_s")):
-                cpu_s, e = _trace_proc_cpu(trace, proc, (w0, w1))
+            rec["cpu_window_source"] = "trace"
+            if len(render) != 1:
+                rec["error"] = (f"trace lists {len(render)} "
+                                f"{RENDER_NAME[plat]} processes")
+                return rec
+            for pid, key in ((rec["attribution"]["main_pid"],
+                              "app_cpu_window_s"),
+                             (render[0], "renderserver_cpu_s")):
+                cpu_s, e = _trace_proc_cpu(trace, pid, trace_window)
                 if cpu_s is not None:
                     rec[key] = cpu_s
                 if e:
                     rec.setdefault("trace_errors", []).append(
-                        f"{proc}: {e}")
+                        f"pid {pid}: {e}")
 
         # apple-backend#281 baseline fields: app size on every row, and
         # waterui's first-paint marker where a readable channel exists.
@@ -2106,13 +2394,12 @@ def run_one(plat, contestant_id, app_path: Path, bundle_id, workload,
     finally:
         if sampler is not None:
             sampler.stop()
-
-    # keep xcresult small: delete the bundles after parsing; the .trace
-    # stays (it is the frame-interval evidence)
-    shutil.rmtree(res_launch, ignore_errors=True)
-    shutil.rmtree(res_work, ignore_errors=True)
-    xr_launch.unlink(missing_ok=True)
-    xr_work.unlink(missing_ok=True)
+        # keep xcresult small: delete the bundles after parsing; the
+        # .trace stays (it is the frame-interval evidence)
+        shutil.rmtree(res_launch, ignore_errors=True)
+        shutil.rmtree(res_work, ignore_errors=True)
+        xr_launch.unlink(missing_ok=True)
+        xr_work.unlink(missing_ok=True)
     return rec
 
 
@@ -2253,8 +2540,9 @@ def cmd_run_local(args):
     # ever runs on the declared measurement host (measurement_host
     # .hw_uuid), and the refusal happens BEFORE any cell starts, not
     # after a 600 s timeout per rep
-    if any((drive_override or drive_for(c, plat, w)) == "wheel"
-           for c in contestants for w in workloads):
+    needs_wheel = any((drive_override or drive_for(c, plat, w)) == "wheel"
+                      for c in contestants for w in workloads)
+    if needs_wheel:
         if err := WheelDriver.confinement_error():
             raise SystemExit(err)
 
@@ -2324,11 +2612,12 @@ def cmd_run_local(args):
         sys.exit(128 + sig)
 
     _prev = _install_signal_handlers(_on_sig)
-    # ios-sim: this run launches the Simulator host for the device it
-    # measures, so the wheel driver's target pid comes from that launch
+    # ios-sim wheel cells: this run launches the Simulator host for the
+    # device it measures, so the wheel driver's target pid comes from
+    # that launch; a run without wheel cells needs no host window
     sim_host = None
     try:
-      if plat == "ios-sim":
+      if plat == "ios-sim" and needs_wheel:
           sim_host = SimulatorHost(resolve_sim_udid(args.sim_udid))
           sim_host.start()
       for rep in reps_run:
@@ -3323,6 +3612,45 @@ def cmd_report(args):
 
 # ---------------------------------------------------------------- main
 
+def cmd_attribution(args):
+    """Print, as JSON, how one all-process Animation Hitches trace
+    attributes frames to one contestant: its owned pids, the swap join,
+    and the owned present series next to every present on the same
+    display, over the whole recording (no window, no gating) — the
+    evidence that the join is sound for that contestant's rendering
+    model. Signposts of the dev.bench subsystem are listed as found."""
+    app = Path(args.app)
+    _, main_rel = bundle_executable(app, args.platform)
+    att = trace_attribution(Path(args.trace), app.name, main_rel)
+    frames, err = _export_table(Path(args.trace), FRAMES_SCHEMA)
+    if frames is None:
+        raise SystemExit(f"{FRAMES_SCHEMA}: {err}")
+    display_all = sorted(
+        _int(f["start"], "start") + _int(f["duration"], "duration")
+        for f in frames
+        if f["duration"] is not None and f["display"] == att["display"])
+    owned = att.pop("presents_ns")
+    span = (owned[0] / 1e6, (owned[-1] - owned[0]) / 1e6)
+    refresh_ms = 1000.0 / args.max_fps
+
+    def stats(ns):
+        st = lib_frames.frame_statistics(
+            [t / 1e6 for t in ns], window_start_ms=span[0],
+            capture_ms=span[1], refresh_ms=refresh_ms)
+        st.pop("intervals_ms")
+        return st
+    marks = [{"name": x["name"], "time_ns": x["time"],
+              "process": x.get("process")}
+             for x in att.pop("signposts")
+             if x.get("subsystem") == MARK_SUBSYSTEM]
+    print(json.dumps({**att, "owned_presents": len(owned),
+                      "span_ms": span,
+                      "owned": stats(owned),
+                      "display_all": stats(display_all),
+                      "dev_bench_signposts": marks},
+                     indent=2, default=str))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -3398,6 +3726,21 @@ def main():
              "manifest measurement_host.hw_uuid must declare")
     fp.set_defaults(f=lambda a: print(json.dumps(
         host_evidence(), indent=2, sort_keys=True)))
+
+    at = sub.add_parser(
+        "attribution",
+        help="print how a recorded all-process Animation Hitches trace "
+             "attributes frames to one contestant (evidence, no window)")
+    at.add_argument("--trace", required=True)
+    at.add_argument("--app", required=True,
+                    help="the contestant's .app bundle (its name and "
+                         "CFBundleExecutable select its processes)")
+    at.add_argument("--platform", choices=["macos", "ios-device"],
+                    required=True)
+    at.add_argument("--max-fps", type=float, required=True,
+                    help="the display's refresh rate, for missed-vsync "
+                         "counts")
+    at.set_defaults(f=cmd_attribution)
 
     args = ap.parse_args()
     args.f(args)

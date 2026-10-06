@@ -271,7 +271,6 @@
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
-					"-lc++",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = dev.bench.rn;
 				PRODUCT_NAME = RnBench;
@@ -299,7 +298,6 @@
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
-					"-lc++",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = dev.bench.rn;
 				PRODUCT_NAME = RnBench;

@@ -70,23 +70,38 @@ XCUITest runner (6 App IDs total: 5 contestant apps + 1 shared
 - W6 Feed capacity: the W2 fling program over rows with 1 → 64 nested
   text+shape children per row, same step protocol as W5. iOS only.
 
-Every cell captures one window: it opens `harness.warmup_ms` after the
-contestant's `dev.bench.ready` post and lasts the workload's
-`duration_s`; the drive runs inside it and the rest is held.
+Every cell is measured over METHOD's window (`../WORKLOADS.md`):
+[first owned present + `harness.warmup_ms`, + the workload's
+`duration_s`]. `dev.bench.ready` is a readiness signal only: the runner
+starts the drive at ready + warmup, marking it with a `dev.bench`
+`drive-begin` Points of Interest signpost, and holds the contestant for
+`duration_s` + `harness.anchor_tolerance_ms` (`measure-end`). XCTest runs a
+measure block once more than `iterationCount` and discards the first
+run; that discarded run is the warmup and the recorded one is the drive
+and hold, so each happens exactly once.
 
 Frame timing is external: on macOS and ios-device `bench.py` runs
-`xctrace record --all-processes` (Animation Hitches; plus Logging on
-ios-device) for every contestant. Each recorder is armed — xctrace's own
-"recording started" line — before the runner's latched recorder-go is
-released, so it covers the app from its launch; the contestant's rows
-are selected by process at export. The `hitches-frame-lifetimes` table
-gives the presented-frame intervals inside the measure window and, on
-ios-device, `time-sample` gives the app and `backboardd` CPU in the
-window. No in-app CADisplayLink: it cannot see Flutter/RN render-thread
-stalls the same way. Report per step: frames, p50/p99 frame interval,
-% inside the 8.33 ms (120 Hz) and 16.67 ms (60 Hz) budgets, CPU
-ms/frame; the capacity number is the largest step sustaining ≥ 99% in
-budget.
+`xctrace record --all-processes` (Animation Hitches + Points of Interest;
+plus Logging on ios-device) for every contestant. Each recorder is armed
+— xctrace's own "recording started" line — before the runner's latched
+recorder-go is released, so it covers the app from its launch. The
+contestant's processes are those whose executable lives inside its
+bundle (trace TOC); a `hitches-frame-lifetimes` row is the contestant's
+present (at start + duration) when its swap composited a
+`hitches-updates` row from one of them. The window is computed on that
+trace's clock, the drive-begin signpost must lie within
+`anchor_tolerance_ms` of its start, and frame statistics are clipped to it
+exactly, whenever the runner's measured span closes. On ios-device
+`time-sample` gives the app and `backboardd` CPU over the same window; on
+macOS the host `ps` sampler's window is the trace window carried to the
+host clock through the drive-begin instant both clocks record.
+`bench.py attribution --trace T --app A --platform P --max-fps F` prints a
+trace's attribution evidence (owned pids, the swap join, owned presents
+next to every present on the same display). No in-app CADisplayLink: it
+cannot see Flutter/RN render-thread stalls the same way. Report per step:
+frames, p50/p99 frame interval, % inside the 8.33 ms (120 Hz) and
+16.67 ms (60 Hz) budgets, CPU ms/frame; the capacity number is the
+largest step sustaining ≥ 99% in budget.
 
 Every app reads `-bench-workload w1..w6` from launch arguments and posts
 `dev.bench.ready.<bundle-id>.<w>` when the workload view first appears

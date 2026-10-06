@@ -472,26 +472,36 @@ class TestStagingManifest(unittest.TestCase):
 
 
 class TestRunnerLog(unittest.TestCase):
-    """N1/N8: measure-window markers + on-device record are read from the
+    """N1/N8: the runner's marks + on-device record are read from the
     runner log; stale rows from a previous rep can't alias in."""
 
-    def test_window_and_device_record(self):
+    def test_marks_and_device_record(self):
         tmp = Path(tempfile.mkdtemp(prefix="bench-rlog-"))
         try:
             log = tmp / "bench-runner.log"
             log.write_text(
-                "100.0 measure-begin\n"
+                "100.0 drive-begin\n"
                 "105.0 measure-end\n"
-                "200.0 measure-begin\n"
-                "200.1 device-record thermal=0 maxFps=120\n"
+                "199.9 device-record thermal=0 maxFps=120\n"
+                "200.0 drive-begin\n"
                 "207.0 measure-end\n")
-            window, dev = bench.read_runner_log(log, since=150.0)
-            self.assertEqual(window, [200.0, 207.0])
+            marks, dev = bench.read_runner_log(log, since=150.0)
+            self.assertEqual(marks, {"drive-begin": 200.0,
+                                     "measure-end": 207.0})
             self.assertEqual(dev, {"thermal": "0", "maxFps": "120"})
-            # window from before `since` is invisible
-            window, dev = bench.read_runner_log(log, since=300.0)
-            self.assertEqual(window, [None, None])
+            # marks from before `since` are invisible
+            marks, dev = bench.read_runner_log(log, since=300.0)
+            self.assertEqual(marks, {})
             self.assertEqual(dev, {})
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_unpaired_mark_is_no_window(self):
+        tmp = Path(tempfile.mkdtemp(prefix="bench-rlog-"))
+        try:
+            log = tmp / "bench-runner.log"
+            log.write_text("200.0 drive-begin\n")
+            self.assertEqual(bench.read_runner_log(log, since=0.0)[0], {})
         finally:
             shutil.rmtree(tmp)
 
@@ -546,8 +556,7 @@ class TestXctraceExport(unittest.TestCase):
         self.assertEqual(rows[0]["time"], "1000000")
         self.assertEqual(rows[0]["thread-state"], "Running")
         # the ref repeats the defining element's value
-        self.assertEqual(bench._proc_of_thread(rows[1]["thread"]),
-                         "BenchUIKit")
+        self.assertEqual(bench._pid_of_thread(rows[1]["thread"]), 42)
         self.assertIsNone(rows[1]["thread-state"])
 
     def test_cell_count_mismatch_is_an_error(self):
@@ -560,6 +569,160 @@ class TestXctraceExport(unittest.TestCase):
         self.assertEqual(bench._proc_name("WaterUI Bench (311)"),
                          "WaterUI Bench")
         self.assertIsNone(bench._proc_name(None))
+        self.assertEqual(bench._pid_of_process("WaterUI Bench (311)"), 311)
+
+    def test_one_document_many_tables(self):
+        """Every table of a schema comes back, each zipped against its
+        own node's schema; refs resolve across nodes."""
+        doc = """<?xml version="1.0"?>
+<trace-query-result>
+<node xpath="a"><schema name="os-signpost">
+<col><mnemonic>time</mnemonic></col><col><mnemonic>name</mnemonic></col>
+</schema>
+<row><event-time id="1">10</event-time><string id="2">drive-begin</string></row>
+</node>
+<node xpath="b"><schema name="os-signpost">
+<col><mnemonic>name</mnemonic></col><col><mnemonic>time</mnemonic></col>
+</schema>
+<row><string ref="2"/><event-time id="3">20</event-time></row>
+</node></trace-query-result>"""
+        rows, err = bench.parse_export_rows(doc)
+        self.assertIsNone(err)
+        self.assertEqual(rows, [{"time": "10", "name": "drive-begin"},
+                                {"name": "drive-begin", "time": "20"}])
+
+
+class TestFrameAttribution(unittest.TestCase):
+    """H2/M2: frames are the contestant's own by the swap join, and the
+    window is [first owned present + warmup, + capture] on the trace
+    clock, gated by the runner's drive-begin / measure-end marks."""
+
+    BUNDLE = "WaterUI Bench.app"
+    MAIN = "Contents/MacOS/WaterUI Bench"
+    PROCS = [
+        {"name": "WindowServer", "pid": 150,
+         "path": "/System/Library/PrivateFrameworks/SkyLight.framework/"
+                 "Resources/WindowServer"},
+        {"name": "WaterUI Bench", "pid": 700,
+         "path": "/b/Release/WaterUI Bench.app/Contents/MacOS/WaterUI Bench"},
+        {"name": "helper", "pid": 701,
+         "path": "/b/Release/WaterUI Bench.app/Contents/Frameworks/"
+                 "H.app/Contents/MacOS/helper"},
+        {"name": "SystemUIServer", "pid": 300,
+         "path": "/System/Library/CoreServices/SystemUIServer.app/"
+                 "Contents/MacOS/SystemUIServer"},
+    ]
+
+    def test_toc_processes(self):
+        toc = """<?xml version="1.0"?>
+<trace-toc><run number="1"><processes>
+<process name="kernel" pid="0"/>
+<process name="WaterUI Bench" pid="700" path="/x/WaterUI Bench.app/Contents/MacOS/WaterUI Bench"/>
+</processes></run></trace-toc>"""
+        procs = bench.parse_toc_processes(toc)
+        self.assertEqual(procs[1], {"name": "WaterUI Bench", "pid": 700,
+                                    "path": "/x/WaterUI Bench.app/Contents/"
+                                            "MacOS/WaterUI Bench"})
+        main, owned = bench.owned_processes(procs, self.BUNDLE, self.MAIN)
+        self.assertEqual((main, owned), (700, {700}))
+
+    def test_owned_processes_bundle_tree(self):
+        main, owned = bench.owned_processes(self.PROCS, self.BUNDLE,
+                                            self.MAIN)
+        self.assertEqual(main, 700)
+        self.assertEqual(owned, {700, 701})
+        # a second instance of the main executable is not one launch
+        two = self.PROCS + [dict(self.PROCS[1], pid=702)]
+        with self.assertRaises(bench.TraceAttributionError):
+            bench.owned_processes(two, self.BUNDLE, self.MAIN)
+        with self.assertRaises(bench.TraceAttributionError):
+            bench.owned_processes(self.PROCS[:1], self.BUNDLE, self.MAIN)
+
+    @staticmethod
+    def frame(start, dur, swap, display="1"):
+        return {"start": str(start), "duration":
+                None if dur is None else str(dur),
+                "swap-id": str(swap), "display": display}
+
+    @staticmethod
+    def update(pid, swap):
+        return {"process": f"P ({pid})", "swap-id": str(swap)}
+
+    def test_swap_join_keeps_only_owned_frames(self):
+        frames = [self.frame(1_000, 500, 1),      # menu bar only
+                  self.frame(2_000, 500, 2),      # contestant
+                  self.frame(3_000, 500, 3),      # helper (owned)
+                  self.frame(4_000, None, 4)]     # never presented
+        updates = [self.update(300, 1), self.update(700, 2),
+                   self.update(701, 3), self.update(700, 4)]
+        j = bench.owned_presents(frames, updates, {700, 701})
+        self.assertEqual(j["presents_ns"], [2_500, 3_500])
+        self.assertEqual(j["display"], "1")
+        self.assertEqual(j["updates_owned"], 3)
+
+    def test_swap_join_refuses_unattributable(self):
+        with self.assertRaises(bench.TraceAttributionError):
+            bench.owned_presents([self.frame(0, 1, 1)],
+                                 [self.update(300, 1)], {700})
+        with self.assertRaises(bench.TraceAttributionError):
+            bench.owned_presents([self.frame(0, 1, 9)],
+                                 [self.update(700, 1)], {700})
+        two_displays = [self.frame(0, 1, 1, "1"), self.frame(5, 1, 1, "2")]
+        with self.assertRaises(bench.TraceAttributionError):
+            bench.owned_presents(two_displays, [self.update(700, 1)], {700})
+        # a schema without the join columns fails, never joins on nothing
+        with self.assertRaises(bench.TraceAttributionError):
+            bench.owned_presents([{"start": "0", "duration": "1"}],
+                                 [self.update(700, 1)], {700})
+
+    def test_runner_marks(self):
+        rows = [{"time": "100", "name": "drive-begin",
+                 "subsystem": "dev.bench"},
+                {"time": "900", "name": "measure-end",
+                 "subsystem": "dev.bench"},
+                {"time": "50", "name": "drive-begin",
+                 "subsystem": "com.other"}]
+        self.assertEqual(bench.runner_marks(rows),
+                         {"drive-begin": 100, "measure-end": 900})
+        with self.assertRaises(bench.TraceAttributionError):
+            bench.runner_marks(rows + [rows[0]])
+        with self.assertRaises(bench.TraceAttributionError):
+            bench.runner_marks(rows[1:])
+
+    def test_window_from_first_owned_present(self):
+        ms = 1_000_000
+        presents = [500 * ms, 516 * ms, 532 * ms]
+        marks = {"drive-begin": 3_480 * ms, "measure-end": 15_600 * ms}
+        w = bench.measurement_window(presents, marks, warmup_ms=3000,
+                                     capture_ms=12000, tolerance_ms=100)
+        self.assertEqual(w["window_start_ms"], 3500.0)
+        self.assertEqual(w["window_end_ms"], 15500.0)
+        self.assertEqual(w["drive_offset_ms"], -20.0)
+        # a drive outside tolerance is not "at window start"
+        with self.assertRaises(bench.TraceAttributionError):
+            bench.measurement_window(
+                presents, dict(marks, **{"drive-begin": 3_700 * ms}),
+                warmup_ms=3000, capture_ms=12000, tolerance_ms=100)
+        # released before the window end: the tail is not the workload
+        with self.assertRaises(bench.TraceAttributionError):
+            bench.measurement_window(
+                presents, dict(marks, **{"measure-end": 15_400 * ms}),
+                warmup_ms=3000, capture_ms=12000, tolerance_ms=100)
+
+    def test_stats_clip_to_trace_window(self):
+        """Frame statistics cover exactly the trace window, however long
+        the runner held past it (e.g. a late dev.bench.end)."""
+        ms = 1_000_000
+        presents = [0] + [(3_000 + 10 * i) * ms for i in range(0, 200)]
+        presents[0] = 0
+        w = bench.measurement_window(
+            presents, {"drive-begin": 3_000 * ms,
+                       "measure-end": 6_000 * ms},
+            warmup_ms=3000, capture_ms=1000, tolerance_ms=100)
+        st = bench.lib_frames.frame_statistics(
+            [t / 1e6 for t in presents], w["window_start_ms"],
+            1000.0, 1000.0 / 120)
+        self.assertEqual(st["presents"], 101)  # 3000..4000 ms inclusive
 
 
 class TestPtyLines(unittest.TestCase):

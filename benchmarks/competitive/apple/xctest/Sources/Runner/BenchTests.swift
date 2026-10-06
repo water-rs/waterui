@@ -8,22 +8,26 @@
 //   BENCH_DRIVE      — "swipe" (coordinate drags, iOS device), "wheel"
 //                      (host-side CGEvent scroll-wheel detents — iOS
 //                      Simulator and macOS; the host driver starts on the
-//                      single `dev.bench.begin` this runner posts when the
-//                      measure block opens and ends the cell with its own
-//                      `dev.bench.end`), "tap" (w1) or "none"
+//                      single `dev.bench.begin` this runner posts when its
+//                      measured invocation opens and ends the cell with
+//                      its own `dev.bench.end`), "tap" (w1) or "none"
 //   BENCH_FLING      — JSON fling program from the manifest:
 //                      {"start_fraction":0.75,"end_fraction":0.15,
 //                       "duration_ms":250,"pause_s":0.35,"hold_s":0.02,
 //                       "flings_down":8,"flings_up":2}
 //   BENCH_DURATION   — capture seconds for every workload (required; a
-//                      missing or malformed value fails). The measure
-//                      block is exactly this long: the drive program runs
-//                      inside it and the remainder is held, so every cell
-//                      captures the same declared window (METHOD).
+//                      missing or malformed value fails). The host
+//                      computes the window itself — [first owned present
+//                      + warmup, + BENCH_DURATION] on its all-process
+//                      trace (METHOD); this runner starts the drive at
+//                      readiness + warmup and holds the contestant for
+//                      BENCH_DURATION + BENCH_ANCHOR_TOLERANCE_MS, so the
+//                      window lies inside the held span.
 //   BENCH_WARMUP_MS  — declared warmup between the contestant's
-//                      dev.bench.ready first-frame post and the start
-//                      of the measure window (required, > 0 — METHOD:
-//                      window = first owned present + warmup)
+//                      dev.bench.ready post and the drive (required, > 0)
+//   BENCH_ANCHOR_TOLERANCE_MS — how far the drive may start from the
+//                      trace's window start (required, > 0); the hold
+//                      extends past the capture by the same amount
 //   BENCH_RUN_NONCE  — non-zero u64 the host chose for this invocation;
 //                      the recorder-go handshake matches it, so a latched
 //                      signal from an earlier invocation can never
@@ -34,7 +38,8 @@
 // testWorkload does NOT launch the app until the host has armed its
 // recorders. The host latches recorder-go: on macOS and the iOS
 // Simulator it holds a registration on `dev.bench.recorder` whose notify
-// state is BENCH_RUN_NONCE, then posts it; on ios-device (no notify
+// state is BENCH_RUN_NONCE, then posts it (and releases that holder with a
+// second post once the invocation is over); on ios-device (no notify
 // channel into the device) it copies `bench-recorder-go-<nonce>` into
 // this runner's tmp. Both are latched, so the order in which host and
 // runner arrive cannot lose the signal. Each row also records the device
@@ -58,6 +63,7 @@
 
 import Darwin
 import XCTest
+import os
 #if os(iOS)
 import UIKit
 #elseif os(macOS)
@@ -65,6 +71,13 @@ import AppKit
 #endif
 
 final class BenchTests: XCTestCase {
+    /// The runner's marks in the host's all-process trace (the frames
+    /// recorder adds the Points of Interest instrument): drive-begin is
+    /// where the drive starts, measure-end where the hold ends. The same
+    /// instants go to the runner log, which carries them on the wall
+    /// clock — together they relate the trace clock to the host's.
+    private static let marks = OSLog(subsystem: "dev.bench",
+                                     category: .pointsOfInterest)
     private var app: XCUIApplication!
     private var dbgURL: URL = {
         FileManager.default.temporaryDirectory
@@ -264,21 +277,21 @@ final class BenchTests: XCTestCase {
     /// Steady-state and peak memory + hitch metrics while the workload runs.
     func testWorkload() throws {
         let env = ProcessInfo.processInfo.environment
-        guard let rawWarmup = env["BENCH_WARMUP_MS"],
-            let warmupMs = Double(rawWarmup), warmupMs > 0
-        else {
-            throw HarnessError(description: "missing or malformed BENCH_WARMUP_MS")
+        func positive(_ key: String) throws -> Double {
+            guard let raw = env[key], let v = Double(raw), v > 0 else {
+                throw HarnessError(description: "missing or malformed \(key)")
+            }
+            return v
         }
-        guard let rawDuration = env["BENCH_DURATION"],
-            let duration = Double(rawDuration), duration > 0
-        else {
-            throw HarnessError(description: "missing or malformed BENCH_DURATION")
-        }
+        let warmupMs = try positive("BENCH_WARMUP_MS")
+        let duration = try positive("BENCH_DURATION")
+        let toleranceMs = try positive("BENCH_ANCHOR_TOLERANCE_MS")
         guard let rawNonce = env["BENCH_RUN_NONCE"],
             let nonce = UInt64(rawNonce), nonce != 0
         else {
             throw HarnessError(description: "missing or malformed BENCH_RUN_NONCE")
         }
+        let hold = duration + toleranceMs / 1000.0
         dbg("testWorkload: launching \(bundleID) w=\(workload) drive=\(drive)")
         registerWorkloadReady()
         // The host arms its recorders, then latches recorder-go — launch
@@ -288,49 +301,78 @@ final class BenchTests: XCTestCase {
         app.launch()
         dbg("launched — awaiting ready post")
         assertWorkloadReady()
+        let driveAt = Date().addingTimeInterval(warmupMs / 1000.0)
         dbg("ready ok")
 
-        // METHOD: the measure window opens the declared warmup after
-        // the contestant's first-frame post — the drive program runs
-        // entirely inside the window, identically for every contestant
-        Thread.sleep(forTimeInterval: warmupMs / 1000.0)
-        dbg("warmup done")
-
         // device state read on-device per row (devicectl cannot report
-        // thermal/fps); the measure-window markers let the host slice
-        // its samplers and traces to exactly the measure block
+        // thermal/fps)
         recordDeviceState()
-        dbg("measure-begin")
+        // XCTest invokes a measure block iterationCount + 1 times and
+        // discards the first invocation's measurements
+        // (XCTMeasureOptions.iterationCount). The discarded invocation is
+        // the declared warmup: it holds until readiness + warmup. The
+        // recorded one is the measured span: the drive, then the hold.
+        // Each invocation does its own work exactly once, so the single
+        // dev.bench.begin and the host's one-shot listener belong to the
+        // recorded invocation alone; any other invocation count fails.
+        var invocation = 0
         measure(metrics: baseMetrics(), options: measureOptions) {
-            // One window definition: every cell captures exactly
-            // BENCH_DURATION seconds. The drive runs inside it; the
-            // remainder is held. The host wheel driver owns its cell's
-            // end itself, at begin + the same duration.
-            let windowEnd = Date().addingTimeInterval(duration)
-            switch workload {
-            case "w2", "w4", "w6":
-                if drive == "wheel" {
-                    awaitHostWheelDrive(duration: duration)
+            invocation += 1
+            switch invocation {
+            case 1:
+                let remaining = driveAt.timeIntervalSinceNow
+                guard remaining >= 0 else {
+                    XCTFail("XCTest started measuring \(-remaining)s after "
+                        + "the declared warmup ended")
                     return
                 }
-                swipeFlings()
-            case "w3", "w5":
-                break
+                Thread.sleep(forTimeInterval: remaining)
+            case 2:
+                measuredSpan(hold: hold)
             default:
-                tapCounter()
+                XCTFail("measure block invoked \(invocation) times; the "
+                    + "harness expects one discarded warmup and one "
+                    + "measured invocation")
             }
-            holdWindow(until: windowEnd)
         }
+        guard invocation == 2 else {
+            XCTFail("measure block invoked \(invocation) time(s); the drive "
+                + "runs only in the second (measured) invocation")
+            return
+        }
+    }
+
+    /// The measured invocation: mark drive-begin, run the drive, hold
+    /// until drive-begin + `hold`, mark measure-end. The host wheel
+    /// driver owns its cell's end itself, at begin + the same hold.
+    private func measuredSpan(hold: Double) {
+        os_signpost(.event, log: Self.marks, name: "drive-begin")
+        dbg("drive-begin")
+        let end = Date().addingTimeInterval(hold)
+        switch workload {
+        case "w2", "w4", "w6":
+            if drive == "wheel" {
+                awaitHostWheelDrive(hold: hold)
+            } else {
+                swipeFlings()
+                holdWindow(until: end)
+            }
+        case "w3", "w5":
+            holdWindow(until: end)
+        default:
+            tapCounter()
+            holdWindow(until: end)
+        }
+        os_signpost(.event, log: Self.marks, name: "measure-end")
         dbg("measure-end")
     }
 
-    /// Holds the measure block open until the declared capture window
-    /// ends. A drive program that ran past the window is a harness
-    /// defect, never a longer window.
+    /// Holds the measured invocation open until `end`. A drive program
+    /// that ran past it is a harness defect, never a longer window.
     private func holdWindow(until end: Date) {
         let remaining = end.timeIntervalSinceNow
         guard remaining >= 0 else {
-            XCTFail("drive program overran the capture window by "
+            XCTFail("drive program overran the held span by "
                 + "\(-remaining)s")
             return
         }
@@ -418,11 +460,11 @@ final class BenchTests: XCTestCase {
     /// `wheel` drive (iOS Simulator and macOS): the host's own process
     /// posts CGEvent scroll-wheel detents — the identical fling protocol —
     /// into the contestant. This runner posts `dev.bench.begin` exactly
-    /// once, when the measure block opens; the host armed its listener
-    /// before it released recorder-go, so the post cannot be missed. The
-    /// host driver ends the cell with `dev.bench.end` at begin + the
-    /// declared duration — apps never post it.
-    private func awaitHostWheelDrive(duration: Double) {
+    /// once, when the measured invocation opens; the host armed its
+    /// listener before it released recorder-go, so the post cannot be
+    /// missed. The host driver ends the cell with `dev.bench.end` at
+    /// begin + the same hold — apps never post it.
+    private func awaitHostWheelDrive(hold: Double) {
         var fd: Int32 = -1
         var endToken: Int32 = 0
         guard notify_register_file_descriptor("dev.bench.end", &fd, 0,
@@ -436,9 +478,9 @@ final class BenchTests: XCTestCase {
         // follow its begin, so it always lands on this descriptor
         notify_post("dev.bench.begin")
         var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
-        // the driver ends the cell at begin + duration; the bound only
+        // the driver ends the cell at begin + hold; the bound only
         // catches a driver that died
-        let boundMs = Int32((duration + 30) * 1000)
+        let boundMs = Int32((hold + 30) * 1000)
         let fired = poll(&pfd, 1, boundMs) > 0
             && (pfd.revents & Int16(POLLIN)) != 0
         if fired {
@@ -448,7 +490,7 @@ final class BenchTests: XCTestCase {
         XCTAssertTrue(
             fired,
             "wheel drive: host driver never posted 'dev.bench.end' within "
-                + "\(duration + 30)s of begin")
+                + "\(hold + 30)s of begin")
     }
 
     /// `swipe` drive (iOS device): the same fling sequence for every

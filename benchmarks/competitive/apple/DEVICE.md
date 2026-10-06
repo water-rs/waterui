@@ -52,7 +52,9 @@ ios-sim + ios-device, all five contestants). One launch renders one step —
 per launch, and each launch's `xctrace record --template 'Animation
 Hitches' --all-processes` recording is armed before the runner's
 recorder-go is released, so it covers the launch and the whole measure
-window; the contestant's rows are selected by process at export.
+window; the contestant's frames are selected at export by the swap join
+described in README.md (frame lifetimes whose swap carries an update from
+a process inside the contestant's bundle).
 
 Per-row results carry `capacity.steps[]` (frames, p50/p99 frame interval,
 % inside the 8.33 ms / 16.67 ms budgets, CPU ms and CPU ms/frame) plus
