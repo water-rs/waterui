@@ -65,6 +65,11 @@ pub mod menu_bar;
 #[cfg(hydrolysis_winit)]
 pub mod placement;
 mod semantic;
+/// The windowed runner's SIGINT/SIGTERM/SIGHUP contract on Unix — compiled
+/// where the winit runner needs it, and in test builds for its child-process
+/// suite, which runs without the `winit` feature.
+#[cfg(all(unix, not(target_os = "android"), any(hydrolysis_winit, test)))]
+mod termination;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 #[cfg(all(target_arch = "wasm32", feature = "web"))]

@@ -87,8 +87,23 @@ cfg_aliases = "0.2.2"
 
 # Termination signals for the windowed desktop runner. No windowing system
 # delivers SIGINT/SIGTERM/SIGHUP (or the Windows console close events) to winit,
-# so the runner installs its own handler on every desktop target it builds for.
-[target.'cfg(all(any(unix, windows), not(target_os = "android")))'.dependencies]
+# so the runner installs its own watcher on every desktop target it builds for:
+# `signal-hook` on Unix — src/runner/termination.rs, gated on
+# `any(hydrolysis_winit, test)`, so the pair is optional under the `winit`
+# feature and repeated as dev-dependencies for the test build — and `ctrlc`
+# for the Windows console control events.
+[target.'cfg(all(unix, not(target_os = "android")))'.dependencies]
+signal-hook = { version = "0.4", default-features = false, features = ["iterator"], optional = true }
+libc = { version = "0.2", optional = true }
+
+# The termination child-process suite compiles the module in test builds
+# without the `winit` feature, so the optional pair above is repeated here
+# unconditionally for tests.
+[target.'cfg(all(unix, not(target_os = "android")))'.dev-dependencies]
+signal-hook = { version = "0.4", default-features = false, features = ["iterator"] }
+libc = "0.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
 ctrlc = { version = "3.5", features = ["termination"], optional = true }
 
 # Explicit ProMotion opt-in on macOS: a CADisplayLink created from the winit
@@ -332,6 +347,8 @@ winit = [
     "dep:ui-events-winit",
     "dep:accesskit_winit",
     "dep:ctrlc",
+    "dep:signal-hook",
+    "dep:libc",
     "dep:objc2",
     "dep:objc2-app-kit",
     "dep:objc2-core-graphics",
