@@ -361,7 +361,11 @@ def cmd_bootstrap(args):
     committed copy is stale, and the staged set would otherwise carry a
     HEAD label the tree no longer matches."""
     t = MANIFEST["toolchain"]
-    with toolchain.tracked_tree_unchanged(f"apple bootstrap {args.platform}"):
+    # the leg directory and every contestant project bootstrap writes into
+    guarded = [ROOT, *{(ROOT / c["dir"]).resolve()
+                       for c in MANIFEST["contestants"]}]
+    with toolchain.tracked_tree_unchanged(
+            f"apple bootstrap {args.platform}", guarded):
         # RN root template files are generated, not committed —
         # materialize them from the pinned init before `npm ci`/`bundle`
         # reads the dir.
@@ -519,7 +523,9 @@ def cmd_build(args):
         if c["id"] == "flutter" and not c.get("build", {}).get(plat):
             continue
         # a contestant build must leave the tracked tree as committed
-        with toolchain.tracked_tree_unchanged(f"apple build {plat} {c['id']}"):
+        with toolchain.tracked_tree_unchanged(
+                f"apple build {plat} {c['id']}",
+                [ROOT, (ROOT / c["dir"]).resolve()]):
             if c["id"] == "flutter":
                 ensure_flutter_apple(ROOT / c["dir"],
                                      ["macos" if plat == "macos" else "ios"],
