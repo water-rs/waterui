@@ -936,8 +936,10 @@ fn register_listeners(
             pending_events.borrow_mut().push(InputEvent::Scroll {
                 x,
                 y,
-                dx: crate::num_cast::f64_as_f32(event.delta_x()),
-                dy: crate::num_cast::f64_as_f32(event.delta_y()),
+                // DOM WheelEvent deltas are positive right/down; Hydrolysis input
+                // takes winit's opposite sign.
+                dx: -crate::num_cast::f64_as_f32(event.delta_x()),
+                dy: -crate::num_cast::f64_as_f32(event.delta_y()),
                 is_line_delta: event.delta_mode() != WheelEvent::DOM_DELTA_PIXEL,
             });
             redraw_requested.set(true);
