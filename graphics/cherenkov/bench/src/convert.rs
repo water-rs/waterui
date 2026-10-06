@@ -1005,6 +1005,21 @@ mod front {
         Ok(scale)
     }
 
+    /// A scene backdrop group's capture spec at the engine boundary: the
+    /// scale exactly as [`capture_scale`], plus its pyramid level count.
+    ///
+    /// # Errors
+    /// `BenchError::Engine` when the scale is not exactly representable in
+    /// `f32` or the level count is not a valid [`cherenkov::CaptureLevels`].
+    pub fn backdrop_spec(
+        group: &cherenkov_scene::BackdropGroup,
+    ) -> Result<cherenkov::BackdropSpec, BenchError> {
+        let scale = capture_scale(group)?;
+        let levels = cherenkov::CaptureLevels::new(group.levels)
+            .map_err(|error| BenchError::Engine(format!("backdrop group {}: {error}", group.id)))?;
+        Ok(cherenkov::BackdropSpec::new(scale).levels(levels))
+    }
+
     // ---------------------------------------------------------------------
     // Scene → front-end recording ops, shared by the `cherenkov` (GPU) and
     // `cherenkov-cpu` adapters. The adapters differ only in [`Front`]: the
@@ -1501,6 +1516,7 @@ mod tests {
             id: 1,
             filters: Vec::new(),
             scale,
+            levels: 1,
         };
         let quarter = capture_scale(&group(0.25)).expect("0.25 is exact in f32");
         assert_eq!(quarter.get().to_bits(), 0.25f32.to_bits());

@@ -26,6 +26,10 @@ pub enum BackdropEffect {
     /// `t = clamp(1 + d / width, 0, 1)` and
     /// `c.rgb += color.rgb · color.a · gain · t²`, alpha unchanged.
     Rim(Rim),
+    /// Samples the capture pyramid at a blur level ramping from `edge`
+    /// at the clip's edge to `interior` deep inside it
+    /// (`backdrop_sample_level`).
+    Level(LevelRamp),
     /// A registered backdrop shader with its uniforms (declared order).
     Shader(BackdropShaderEffect),
 }
@@ -45,6 +49,12 @@ impl From<Refraction> for BackdropEffect {
 impl From<Rim> for BackdropEffect {
     fn from(rim: Rim) -> Self {
         Self::Rim(rim)
+    }
+}
+
+impl From<LevelRamp> for BackdropEffect {
+    fn from(ramp: LevelRamp) -> Self {
+        Self::Level(ramp)
     }
 }
 
@@ -86,6 +96,23 @@ pub struct Rim {
     pub gain: f32,
 }
 
+/// A blur-level ramp over the member clip's signed distance.
+///
+/// `t = clamp(1 + d / depth, 0, 1)` (the same `t` as [`Refraction`] and
+/// [`Rim`]) and `level = interior + (edge − interior)·t`, the member's
+/// composite reading `backdrop_sample_level(p, level)`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct LevelRamp {
+    /// The rim depth the level decays over inside the clip edge, in
+    /// device pixels; must be positive.
+    pub depth: f32,
+    /// The pyramid level at the clip's edge (`t = 1`); finite.
+    pub edge: f32,
+    /// The pyramid level deep inside the clip (`t = 0`); finite.
+    pub interior: f32,
+}
+
 /// A registered backdrop shader with its uniforms, in declared order.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -115,13 +142,13 @@ impl BackdropShaderEffect {
 
 impl BackdropEffect {
     /// The effect's sampling reach in device pixels: how far beyond the
-    /// member's bounds its samples can land. `Color` and `Rim` read the
-    /// member pixel only; `Refraction` reaches `strength`; a shader
-    /// reaches its registered `reach`.
+    /// member's bounds its samples can land. `Color`, `Rim` and `Level`
+    /// read the member pixel only; `Refraction` reaches `strength`; a
+    /// shader reaches its registered `reach`.
     #[must_use]
     pub const fn reach(&self) -> f32 {
         match self {
-            Self::Color(_) | Self::Rim(_) => 0.0,
+            Self::Color(_) | Self::Rim(_) | Self::Level(_) => 0.0,
             Self::Refraction(r) => r.strength,
             Self::Shader(s) => s.reach,
         }

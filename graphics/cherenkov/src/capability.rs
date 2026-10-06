@@ -203,12 +203,12 @@ impl<F: filtrate_core::Filter<Kind = filtrate_core::kind::Color>>
 /// (`Surface::backdrop_group_unfiltered`, `LayerEdit::backdrop`).
 pub trait Backdrop: Filters + BackdropSampling {
     /// Registers backdrop group `id` on `surface` with no filter chain,
-    /// capturing at `scale`.
+    /// capturing per `spec` ([`BackdropSpec`](crate::BackdropSpec)).
     fn add_backdrop_group(
         r: &mut Self::Renderer,
         surface: SurfaceId,
         id: BackdropId,
-        scale: crate::CaptureScale,
+        spec: crate::BackdropSpec,
     );
 
     /// Unregisters a backdrop group; frames that still sample it fail.
@@ -220,15 +220,15 @@ pub trait Backdrop: Filters + BackdropSampling {
 pub trait BackdropRuns<K: filtrate_core::kind::Kind, F: BackdropChain<K> + crate::RenderTransfer>:
     Backdrop
 {
-    /// Registers backdrop group `id` on `surface` capturing at `scale`,
-    /// whose capture runs through `filter` with its footprint counted in
-    /// capture texels.
+    /// Registers backdrop group `id` on `surface` capturing per `spec`
+    /// ([`BackdropSpec`](crate::BackdropSpec)), whose capture runs through
+    /// `filter` with its footprint counted in capture texels.
     fn add_filtered_backdrop_group(
         r: &mut Self::Renderer,
         surface: SurfaceId,
         id: BackdropId,
         filter: F,
-        scale: crate::CaptureScale,
+        spec: crate::BackdropSpec,
     );
 }
 

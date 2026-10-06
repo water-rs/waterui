@@ -92,12 +92,32 @@ struct Capture {
     x0: usize,
     /// Row stride (the capture region's width in texels).
     w: usize,
+    /// The capture region's texel origin (level-0 row `y0` counts from
+    /// `ry0` only when the region starts the window).
+    ry0: usize,
+    /// The pyramid's deeper levels: `levels[k − 1]` holds level `k`'s
+    /// kept texel rows, `k` in `1..n`; empty on a one-level capture.
+    levels: Vec<CaptureLevel>,
     /// The device rows `[y0, y1)` this band's samples read.
     device_rows: (usize, usize),
     /// The device columns `[x0, x1)` the region's texels cover.
     device_cols: (usize, usize),
     /// The space the captured rows are stored in.
     space: cherenkov::BlendSpace,
+}
+
+/// A pyramid level's kept rows: level `k`'s texels, `w` columns wide
+/// (the level's spec extent), starting at level-k row `y0`.
+struct CaptureLevel {
+    /// `w × rows` premultiplied texels starting at level-k row `y0`.
+    buf: Vec<[f32; 4]>,
+    /// First kept level-k row, in level-k texels counting from the
+    /// region's level-k origin.
+    y0: usize,
+    /// Kept level-k row count.
+    rows: usize,
+    /// The level's spec width in texels (`⌈w / 2^k⌉`).
+    w: usize,
 }
 
 /// Where one capture lands for a surface band (see [`capture_rows`]).
@@ -111,6 +131,9 @@ struct CaptureRows {
     /// The device rows the run window must hold for the chain's window
     /// around the kept texels, before clamping to the region.
     window: (usize, usize),
+    /// Levels 1..n's kept texel-row ranges, the first `n − 1` entries
+    /// used; each counts from that level's grid origin.
+    levels: [(usize, usize); 8],
 }
 
 /// The rows capture `item` covers for the surface band `band` of a
@@ -132,11 +155,12 @@ fn capture_rows(item: &CaptureItem, band: (usize, usize), h: usize) -> Option<Ca
     if k0 >= k1 {
         return None;
     }
-    if item.scale.is_full() {
+    if item.scale.is_full() && item.levels == 1 {
         return Some(CaptureRows {
             device: (k0, k1),
             kept: (k0, k1),
             window: (k0.saturating_sub(item.apron), k1.saturating_add(item.apron)),
+            levels: [(0, 0); 8],
         });
     }
     let s = f64::from(item.scale.get());
@@ -146,10 +170,42 @@ fn capture_rows(item: &CaptureItem, band: (usize, usize), h: usize) -> Option<Ca
     );
     let first = (k0 as f64 + 0.5).mul_add(s, -0.5).floor().max(0.0) as usize;
     let last = (k1 as f64 - 0.5).mul_add(s, -0.5).floor().max(0.0) as usize + 2;
-    let kept = (
+    let mut kept = (
         first.saturating_sub(SAMPLE_MARGIN).max(ty0),
         (last + SAMPLE_MARGIN).min(ty1),
     );
+    let mut levels = [(0usize, 0usize); 8];
+    if item.levels > 1 {
+        // Level `k`'s tap range: the sampled device rows read level-k
+        // texels `floor((d ± ½)·s/2^k − ½)` through `+1`, clamped to the
+        // level's spec rows — the region's `y0` is 2^k-aligned, so the
+        // level-k grid runs `ty0 / 2^k .. ⌈ty1 / 2^k⌉` in absolute
+        // level-k rows.
+        for (k, slot) in levels.iter_mut().enumerate().take(item.levels as usize - 1) {
+            let k = k as u64 + 1;
+            let d = (1u64 << k) as f64;
+            let (gy0, gy1) = (ty0 >> k, ty1.div_ceil(1 << k));
+            let first = ((k0 as f64 + 0.5) * s / d - 0.5).floor().max(0.0) as usize;
+            let last = ((k1 as f64 - 0.5) * s / d - 0.5).floor().max(0.0) as usize + 2;
+            *slot = (first.clamp(gy0, gy1), last.min(gy1));
+        }
+        // Level-k texel `r` reads level `k−1` texels `{2r, 2r+1}` — each
+        // level's kept rows must cover the deeper level's parents,
+        // folding down into the level-0 window the capture keeps.
+        for k in (1..item.levels as usize).rev() {
+            let (r0, r1) = levels[k - 1];
+            if r0 >= r1 {
+                continue;
+            }
+            let (lo, hi) = (2 * r0, (2 * r1).min(ty1.div_ceil(1 << (k - 1))));
+            if k == 1 {
+                kept = (kept.0.min(lo), kept.1.max(hi));
+            } else {
+                levels[k - 2].0 = levels[k - 2].0.min(lo);
+                levels[k - 2].1 = levels[k - 2].1.max(hi);
+            }
+        }
+    }
     if kept.0 >= kept.1 {
         return None;
     }
@@ -164,6 +220,7 @@ fn capture_rows(item: &CaptureItem, band: (usize, usize), h: usize) -> Option<Ca
             (w0 as f64 / s).floor() as usize,
             (w1 as f64 / s).ceil() as usize,
         ),
+        levels,
     })
 }
 
@@ -561,6 +618,15 @@ fn sdf_sample(capture: &Capture, sdf: &SdfEffect, px: usize, py: usize, crow: us
                 s[3],
             ]
         }
+        SdfKind::Level {
+            depth,
+            edge,
+            interior,
+        } => {
+            let t = d.mul_add(depth.recip(), 1.0).clamp(0.0, 1.0);
+            let level = (edge - interior).mul_add(t, interior);
+            capture_sample_level(capture, px as f32 + 0.5, py as f32 + 0.5, level)
+        }
     }
 }
 
@@ -651,6 +717,78 @@ fn capture_sample(capture: &Capture, x: f32, y: f32) -> [f32; 4] {
         ]
     };
     mix(mix(c00, c10, tx), mix(c01, c11, tx), ty)
+}
+
+/// Bilinear sample of `capture`'s level `k` at device point `(x, y)`:
+/// `(x, y) · s / 2^k` on the level's grid, texel centres at integer +
+/// 0.5, clamped to the kept rows — the GPU's `backdrop_sample_at`
+/// convention.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "the coordinates are clamped into the capture first"
+)]
+fn capture_sample_at(capture: &Capture, x: f32, y: f32, k: u32) -> [f32; 4] {
+    if k == 0 {
+        return capture_sample(capture, x, y);
+    }
+    let level = &capture.levels[k as usize - 1];
+    if level.rows == 0 {
+        return [0.0; 4];
+    }
+    let div = (1u64 << k) as f32;
+    let s = capture.scale.get();
+    // Level-k texel coordinates relative to the region's origin; `y0`
+    // shifts them to the kept rows' window.
+    let fx = (x.mul_add(s, -(capture.x0 as f32)) / div - 0.5).clamp(0.0, level.w as f32 - 1.0);
+    let fy = (y.mul_add(s, -(capture.ry0 as f32)) / div - 0.5 - level.y0 as f32)
+        .clamp(0.0, level.rows as f32 - 1.0);
+    let (x_lo, y_lo) = (fx.floor() as usize, fy.floor() as usize);
+    let (x_hi, y_hi) = ((x_lo + 1).min(level.w - 1), (y_lo + 1).min(level.rows - 1));
+    let (tx, ty) = (fx - x_lo as f32, fy - y_lo as f32);
+    let at = |x: usize, y: usize| level.buf[y * level.w + x];
+    let (c00, c10, c01, c11) = (
+        at(x_lo, y_lo),
+        at(x_hi, y_lo),
+        at(x_lo, y_hi),
+        at(x_hi, y_hi),
+    );
+    let mix = |a: [f32; 4], b: [f32; 4], t: f32| {
+        [
+            (b[0] - a[0]).mul_add(t, a[0]),
+            (b[1] - a[1]).mul_add(t, a[1]),
+            (b[2] - a[2]).mul_add(t, a[2]),
+            (b[3] - a[3]).mul_add(t, a[3]),
+        ]
+    };
+    mix(mix(c00, c10, tx), mix(c01, c11, tx), ty)
+}
+
+/// Trilinear sample of `capture`'s pyramid at device point `(x, y)`:
+/// `level` clamped to `[0, n − 1]`, bilinear at `floor(level)` and
+/// `ceil(level)` mixed by `fract(level)` — the GPU's
+/// `backdrop_sample_level` convention.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "the level is clamped into the pyramid first"
+)]
+fn capture_sample_level(capture: &Capture, x: f32, y: f32, level: f32) -> [f32; 4] {
+    let n = capture.levels.len() as u32 + 1;
+    let lc = level.clamp(0.0, (n - 1) as f32);
+    let k0 = lc.floor() as u32;
+    let k1 = (k0 + 1).min(n - 1);
+    let lo = capture_sample_at(capture, x, y, k0);
+    let hi = capture_sample_at(capture, x, y, k1);
+    let t = lc - k0 as f32;
+    [
+        (hi[0] - lo[0]).mul_add(t, lo[0]),
+        (hi[1] - lo[1]).mul_add(t, lo[1]),
+        (hi[2] - lo[2]).mul_add(t, lo[2]),
+        (hi[3] - lo[3]).mul_add(t, lo[3]),
+    ]
 }
 
 /// Convert a premultiplied pixel between linear and sRGB-encoded
@@ -1342,6 +1480,9 @@ fn capture_band(
     let kept_rows = kept1 - kept0;
     let mut buf = buffers.take_color(rw * kept_rows);
     buf.copy_from_slice(&canvas[(kept0 - win0) * rw..(kept0 - win0) * rw + rw * kept_rows]);
+    // A levelled group's pyramid over the chain's output: `canvas` is
+    // level 0, holding the `win0..win1` window.
+    let levels = capture_pyramid(&canvas, item, &rows, (rw, ry0, ry1, win0), buffers);
     buffers.give_color(canvas);
     buffers.meter.captured = true;
     ctx.captures.insert(
@@ -1353,12 +1494,83 @@ fn capture_band(
             rows: kept_rows,
             x0: rx0,
             w: rw,
+            ry0,
+            levels,
             device_rows: rows.device,
             device_cols: (c0, c1),
             space,
         },
     );
     Ok(())
+}
+
+/// Builds levels `1..item.levels` of a levelled capture: level `k` texel
+/// `(x, y)` is the mean of level `k − 1` texels `(2x..=2x+1, 2y..=2y+1)`,
+/// a partial box at the spec edge averaging the texels present — the
+/// GPU reduce's exact 2×2 box. Each level's source is the previous
+/// level's kept rows (`canvas` is level 0's, holding the `win0..win1`
+/// texel window).
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "a partial 2×2 box holds at most 4 texels"
+)]
+fn capture_pyramid(
+    canvas: &[[f32; 4]],
+    item: &CaptureItem,
+    rows: &CaptureRows,
+    (rw, ry0, ry1, win0): (usize, usize, usize, usize),
+    buffers: &mut Buffers,
+) -> Vec<CaptureLevel> {
+    let mut levels: Vec<CaptureLevel> = Vec::new();
+    if item.levels <= 1 {
+        return levels;
+    }
+    // `sh`/`sw` are the source level's spec extent; `gy0` its grid
+    // origin in absolute rows (`ry0 / 2^{k−1}`, exact since the region
+    // is `2^{n−1}`-aligned); `src_y0` the first row its buf actually
+    // holds.
+    let (mut sw, mut sh, mut gy0, mut src_y0) = (rw, ry1 - ry0, ry0, win0);
+    for (k, &range) in (1..item.levels as usize).zip(rows.levels.iter()) {
+        let dw = sw.div_ceil(2);
+        let (r0, r1) = range;
+        let mut dst = buffers.take_color(r1.saturating_sub(r0) * dw);
+        if r0 < r1 {
+            let src: &[[f32; 4]] = levels
+                .last()
+                .map_or_else(|| canvas, |prev| prev.buf.as_slice());
+            for r in r0..r1 {
+                let (y0, y1) = (2 * r, (2 * r + 1).min(gy0 + sh - 1));
+                for x in 0..dw {
+                    let (x0, x1) = (2 * x, (2 * x + 1).min(sw - 1));
+                    let mut acc = [0f32; 4];
+                    for row in y0..=y1 {
+                        for xx in x0..=x1 {
+                            let c = src[(row - src_y0) * sw + xx];
+                            acc[0] += c[0];
+                            acc[1] += c[1];
+                            acc[2] += c[2];
+                            acc[3] += c[3];
+                        }
+                    }
+                    let n = ((y1 - y0 + 1) * (x1 - x0 + 1)) as f32;
+                    dst[(r - r0) * dw + x] = [acc[0] / n, acc[1] / n, acc[2] / n, acc[3] / n];
+                }
+            }
+        }
+        src_y0 = r0;
+        gy0 >>= 1;
+        sh = sh.div_ceil(2);
+        sw = dw;
+        levels.push(CaptureLevel {
+            buf: dst,
+            // The kept window relative to the level's grid origin
+            // (`ry0 / 2^k`), which `capture_sample_at` subtracts.
+            y0: r0 - (ry0 >> k),
+            rows: r1.saturating_sub(r0),
+            w: dw,
+        });
+    }
+    levels
 }
 
 /// Copies the device `rows × cols` of the nearest semantic level below

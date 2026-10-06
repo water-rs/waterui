@@ -6085,6 +6085,54 @@ fn run() -> Result<(), SceneError> {
         });
     });
 
+    // A quarter-scale capture reduced into five levels over hard black/
+    // white stripes: the blurred level 0 (σ = 2 capture texels) feeds a
+    // pyramid the members read per pixel. The first member ramps level
+    // 0 at its edge to level 4 at its core — the stripes blur more the
+    // deeper they sit — and the second holds a fixed trilinear read at
+    // level 2.5, a blur no single bilinear sample of one level expresses.
+    corpus.scene_setup("backdrop-levels", 256, 256, white, |b| {
+        b.backdrop_group_levels(
+            1,
+            vec![BackdropFilter::GaussianBlur { sigma: 2.0 }],
+            0.25,
+            5,
+        );
+        let l = &mut b.root();
+        stripes(
+            l,
+            srgb(0.04, 0.04, 0.05),
+            srgb(0.96, 0.96, 0.96),
+            [
+                srgb(0.9, 0.12, 0.12),
+                srgb(0.12, 0.7, 0.2),
+                srgb(0.12, 0.3, 0.9),
+            ],
+        );
+        l.layer(|m| {
+            m.clip(Shape::RoundedRect(RoundedRect::new(
+                16.0, 24.0, 148.0, 160.0, 20.0,
+            )));
+            m.backdrop(1);
+            m.backdrop_effect(BackdropEffectSpec::Level {
+                depth: 28.0,
+                edge_level: 0.0,
+                interior_level: 4.0,
+            });
+        });
+        l.layer(|m| {
+            m.clip(Shape::RoundedRect(RoundedRect::new(
+                104.0, 112.0, 244.0, 236.0, 20.0,
+            )));
+            m.backdrop(1);
+            m.backdrop_effect(BackdropEffectSpec::Level {
+                depth: 8.0,
+                edge_level: 2.5,
+                interior_level: 2.5,
+            });
+        });
+    });
+
     // A blurred member under a `0.5`-opacity ancestor: the capture looks
     // through the translucent level — the busy background plus the green
     // block the level painted before the member are blurred at full

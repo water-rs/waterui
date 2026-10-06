@@ -840,6 +840,7 @@ fn cherenkov_features() -> Vec<Feature> {
         Feature::BackdropColorMatrix,
         Feature::BackdropEffect,
         Feature::BackdropScale,
+        Feature::BackdropLevels,
         Feature::Projective,
         // `sRGB` maps to `SrgbEncoded`; `linear-p3` and `linear-srgb` are
         // both linear interpolation, which is the working space already.
@@ -1477,6 +1478,16 @@ fn build_layer(
                             gain: *gain as f32,
                         }
                         .into(),
+                        S::Level {
+                            depth,
+                            edge_level,
+                            interior_level,
+                        } => cherenkov::LevelRamp {
+                            depth: *depth as f32,
+                            edge: *edge_level as f32,
+                            interior: *interior_level as f32,
+                        }
+                        .into(),
                     };
                     edit.backdrop(group.sample_with(effect));
                 }
@@ -1543,21 +1554,21 @@ fn backdrop_group(
         feature: Feature::Backdrop,
         api: Some("backdrop filter chain shape is not built"),
     };
-    let scale = convert::capture_scale(group)?;
+    let spec = convert::backdrop_spec(group)?;
     Ok(match group.filters.as_slice() {
-        [] => surface.backdrop_group_unfiltered(scale),
+        [] => surface.backdrop_group_unfiltered(spec),
         [BackdropFilter::GaussianBlur { sigma }] => {
-            surface.backdrop_group(GaussianBlur::new(*sigma as f32), scale)
+            surface.backdrop_group(GaussianBlur::new(*sigma as f32), spec)
         }
         [BackdropFilter::ColorMatrix { matrix }] => {
-            surface.backdrop_group(ColorMatrix(matrix.map(|v| v as f32)), scale)
+            surface.backdrop_group(ColorMatrix(matrix.map(|v| v as f32)), spec)
         }
         [
             BackdropFilter::GaussianBlur { sigma },
             BackdropFilter::ColorMatrix { matrix },
         ] => surface.backdrop_group(
             GaussianBlur::new(*sigma as f32).then(ColorMatrix(matrix.map(|v| v as f32))),
-            scale,
+            spec,
         ),
         _ => return Err(unsupported()),
     })

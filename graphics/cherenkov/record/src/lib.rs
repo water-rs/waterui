@@ -47,7 +47,7 @@ pub use crate::animation::{
     settled, spring_step,
 };
 pub use crate::backdrop::{
-    BackdropEffect, BackdropSample, BackdropShaderEffect, ColorMatrix, Refraction, Rim,
+    BackdropEffect, BackdropSample, BackdropShaderEffect, ColorMatrix, LevelRamp, Refraction, Rim,
 };
 pub use crate::color::{
     Color, ColorSpace, DisplayP3, DynColor, LinearDisplayP3, LinearSrgb, Rec2020, Srgb,

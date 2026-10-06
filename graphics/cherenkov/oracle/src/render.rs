@@ -240,10 +240,13 @@ fn flattened(chain: &[Level]) -> Canvas {
 }
 
 /// One group's filtered capture: the capture grid's pixels, the space
-/// they were captured in and the grid's scale against device pixels.
+/// they were captured in, the grid's scale against device pixels, and
+/// the pyramid's deeper levels (`levels[k − 1]` is level `k`,
+/// `k` in `1..n`; empty on a one-level capture).
 struct Capture {
     space: BlendSpace,
     canvas: Canvas,
+    levels: Vec<Canvas>,
     scale: f64,
 }
 
@@ -429,9 +432,20 @@ impl Renderer {
                         for filter in &group.filters {
                             apply_backdrop_filter(&mut capture, filter);
                         }
+                        // The blur pyramid: level `k` is the exact 2×2
+                        // box reduction of level `k − 1` (the filtered
+                        // capture), matching the GPU's mip chain.
+                        let mut levels = Vec::with_capacity(
+                            usize::try_from(group.levels).unwrap_or(0).saturating_sub(1),
+                        );
+                        for _ in 1..group.levels {
+                            let src = levels.last().unwrap_or(&capture);
+                            levels.push(reduce_level(src));
+                        }
                         backdrops.captures.entry(gid).or_insert(Capture {
                             space,
                             canvas: capture,
+                            levels,
                             scale,
                         });
                     }
@@ -847,12 +861,8 @@ impl Renderer {
             RenderError::Backdrop(format!("backdrop group {gid} member layer has no clip"))
         })?;
         let coverage = self.shape_coverage(clip, FillRule::NonZero, tf, clips);
-        if let Some(Capture {
-            space: cap_space,
-            canvas: capture,
-            scale,
-        }) = backdrops.captures.get(&gid)
-        {
+        if let Some(capture) = backdrops.captures.get(&gid) {
+            let cap_space = capture.space;
             // SDF effects need the member clip's analytic box (the GPU
             // errors the same name for a mask or path clip).
             let sdf_clip = match &child.backdrop_effect {
@@ -865,7 +875,6 @@ impl Renderer {
                         })?,
                 ),
             };
-            let (w, h) = (capture.width, capture.height);
             let cw = canvas.width;
             #[expect(
                 clippy::cast_precision_loss,
@@ -878,11 +887,11 @@ impl Renderer {
                 }
                 let src = sample_backdrop(
                     child,
-                    (&capture.pixels, w, h, *scale),
+                    capture,
                     [(i % cw) as f64 + 0.5, (i / cw) as f64 + 0.5],
                     sdf_clip.as_ref(),
                 );
-                *dst = src_over(*dst, move_space(src.map(|v| v * c), *cap_space, space));
+                *dst = src_over(*dst, move_space(src.map(|v| v * c), cap_space, space));
             }
         }
         Ok(())
@@ -1159,18 +1168,44 @@ impl Renderer {
 )]
 fn sample_backdrop(
     layer: &Layer,
-    (capture, width, height, scale): (&[[f64; 4]], usize, usize, f64),
+    capture: &Capture,
     p: [f64; 2],
     sdf_clip: Option<&(crate::sdf::BoxShape, Affine)>,
 ) -> [f64; 4] {
     use cherenkov_scene::BackdropEffectSpec as E;
+    let (base, levels, scale) = (&capture.canvas, &capture.levels, capture.scale);
+    let (width, height) = (base.width, base.height);
+    let pixels = &base.pixels;
     let at =
-        |q: [f64; 2]| crate::sdf::bilinear(capture, width, height, [q[0] * scale, q[1] * scale]);
+        |q: [f64; 2]| crate::sdf::bilinear(pixels, width, height, [q[0] * scale, q[1] * scale]);
+    // `backdrop_sample_level(q, level)`: `level` clamped to `[0, n−1]`,
+    // bilinear at `floor`/`ceil` mixed by `fract`, at level-k texel
+    // coordinate `q · s / 2^k`.
+    let at_level = |q: [f64; 2], level: f64| {
+        let n = f64::from(u32::try_from(levels.len()).expect("levels ≤ 8")) + 1.0;
+        let lc = level.clamp(0.0, n - 1.0);
+        let k0 = lc.floor();
+        let k1 = (k0 + 1.0).min(n - 1.0);
+        let read = |k: f64| {
+            let k = k as usize;
+            let c = if k == 0 { base } else { &levels[k - 1] };
+            let div = f64::from(1u32 << k);
+            crate::sdf::bilinear(
+                &c.pixels,
+                c.width,
+                c.height,
+                [q[0] * scale / div, q[1] * scale / div],
+            )
+        };
+        let (lo, hi) = (read(k0), read(k1));
+        let t = lc - k0;
+        std::array::from_fn(|i| (hi[i] - lo[i]).mul_add(t, lo[i]))
+    };
     match &layer.backdrop_effect {
         // `bilinear` at a texel centre is the texel: a 1:1 capture keeps
         // the exact pre-effect read.
         None if scale >= 1.0 => {
-            capture[usize::min(p[1] as usize, height - 1) * width
+            pixels[usize::min(p[1] as usize, height - 1) * width
                 + usize::min(p[0] as usize, width - 1)]
         }
         None => at(p),
@@ -1219,6 +1254,16 @@ fn sample_backdrop(
             c[2] = color[2].mul_add(k, c[2]);
             c
         }
+        Some(E::Level {
+            depth,
+            edge_level,
+            interior_level,
+        }) => {
+            let (shape, clip_tf) = sdf_clip.expect("SDF effects carry a box clip");
+            let (d, _) = crate::sdf::distance_and_normal(shape, clip_tf, p);
+            let t = (1.0 + d / depth).clamp(0.0, 1.0);
+            at_level(p, (edge_level - interior_level).mul_add(t, *interior_level))
+        }
     }
 }
 
@@ -1265,6 +1310,39 @@ fn downsample(canvas: &Canvas, scale: f64) -> Canvas {
         pixels,
         width: cw,
         height: ch,
+    }
+}
+
+/// The next pyramid level: texel `(i, j)` is the mean of `src` texels
+/// `(2i..=2i+1, 2j..=2j+1)` — a partial box at the grid's edge averages
+/// the texels present, matching the GPU's reduce pass.
+fn reduce_level(src: &Canvas) -> Canvas {
+    let (w, h) = (src.width.div_ceil(2), src.height.div_ceil(2));
+    let mut pixels = vec![[0.0; 4]; w * h];
+    for j in 0..h {
+        let (y0, y1) = (2 * j, (2 * j + 1).min(src.height - 1));
+        for i in 0..w {
+            let (x0, x1) = (2 * i, (2 * i + 1).min(src.width - 1));
+            let mut acc = [0.0; 4];
+            for y in y0..=y1 {
+                for x in x0..=x1 {
+                    let c = src.pixels[y * src.width + x];
+                    for (a, &v) in acc.iter_mut().zip(&c) {
+                        *a += v;
+                    }
+                }
+            }
+            let n = f64::from(
+                u32::try_from(y1 - y0 + 1).expect("box ≤ 2 rows")
+                    * u32::try_from(x1 - x0 + 1).expect("box ≤ 2 columns"),
+            );
+            pixels[j * w + i] = acc.map(|v| v / n);
+        }
+    }
+    Canvas {
+        pixels,
+        width: w,
+        height: h,
     }
 }
 

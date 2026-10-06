@@ -10,6 +10,21 @@ fn pixel(readback: &cherenkov::Readback, x: usize, y: usize) -> [f32; 4] {
     [p[0], p[1], p[2], p[3]]
 }
 
+/// The CPU side of `backdrop_sample_level` for the
+/// `sample_level_mixes_the_pyramid_trilinearly` scene: the red coverage
+/// the bilinear read at device point `p` sees in level `k`, whose texel
+/// column `i` covers `[2^k·i, 2^k·(i+1))` device columns — red below 16.
+fn red_share(k: u32, p: f32) -> f32 {
+    let size = f32::from(32u16 >> k);
+    let div = f32::from(1u16 << k);
+    let column_red = |i: f32| i.mul_add(-div, 16.0f32).clamp(0.0, div) / div;
+    let f = (p / div - 0.5).clamp(0.0, size - 1.0);
+    let lo = f.floor();
+    let hi = (lo + 1.0).min(size - 1.0);
+    let t = f - lo;
+    column_red(hi).mul_add(t, column_red(lo) * (1.0 - t))
+}
+
 fn assert_pixel(actual: [f32; 4], expected: [f32; 4], tolerance: f32) {
     for (a, e) in actual.iter().zip(expected) {
         assert!(
@@ -1115,6 +1130,69 @@ fn reduced_rim_lights_the_bilinear_sample_on_the_capture_grid()
     );
     // Past the rim's width the sample is unlit.
     assert_pixel(pixel(&readback, 32, 32), [1.0, 0.0, 0.0, 1.0], 1e-3);
+    Ok(())
+}
+}
+
+split_test! {
+/// A WGSL member effect reading the capture pyramid at a fractional
+/// level: `backdrop_sample_level(p, 1.5)` is the trilinear mix of the
+/// level-1 and level-2 box reductions — checked per pixel against the
+/// same computation run here on the capture (#1786).
+fn sample_level_mixes_the_pyramid_trilinearly() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let shader = engine.backdrop_shader(cherenkov::BackdropShaderSource::wgsl(
+        "fn backdrop_effect(p: vec2<f32>, sdf: f32, normal: vec2<f32>, size: vec2<f32>, params: array<vec4<f32>, 16>) -> vec4<f32> {
+            return backdrop_sample_level(p, params[0].x);
+        }",
+    ))?;
+    let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
+    let spec = cherenkov::BackdropSpec::new(cherenkov::CaptureScale::FULL)
+        .levels(cherenkov::CaptureLevels::new(3)?);
+    let group = surface.backdrop_group_unfiltered(spec);
+    let member = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 16.0, 32.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+            r.fill(
+                Rect::new(16.0, 0.0, 32.0, 32.0),
+                WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&member);
+        tx[&member]
+            .clip(Rect::new(0.0, 0.0, 32.0, 32.0))
+            .backdrop(group.sample_with(shader.effect(vec![1.5])));
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    let readback = wait!(surface.readback())?;
+
+    let expected = |x: u16| {
+        let p = f32::from(x) + 0.5;
+        let red = f32::midpoint(red_share(1, p), red_share(2, p));
+        [red, 0.0, 1.0 - red, 1.0]
+    };
+    // Deep in either half both levels agree.
+    assert_pixel(pixel(&readback, 8, 16), expected(8), 0.01);
+    assert_pixel(pixel(&readback, 24, 16), expected(24), 0.01);
+    // Around the step the two levels blend over different spans: x = 14
+    // is pure red at level 1 but 7/8 red at level 2, x = 17 pure blue at
+    // level 1 but 1/8 red at level 2 — neither integer level produces
+    // the level-1.5 read.
+    assert_pixel(pixel(&readback, 14, 16), expected(14), 0.01);
+    assert_pixel(pixel(&readback, 15, 16), expected(15), 0.01);
+    assert_pixel(pixel(&readback, 16, 16), expected(16), 0.01);
+    assert_pixel(pixel(&readback, 17, 16), expected(17), 0.01);
+    let memory = wait!(engine.memory());
+    // The whole-surface member's 32×32 capture plus its two levels.
+    assert_eq!(
+        memory.backdrop_captures,
+        Bytes((32 * 32 + 16 * 16 + 8 * 8) * 8)
+    );
+    assert_eq!(memory.backdrop_capture_format, Some("rgba16float"));
     Ok(())
 }
 }

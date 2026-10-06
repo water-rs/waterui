@@ -97,6 +97,8 @@ pub enum Feature {
     BackdropEffect,
     /// A backdrop group captures below device resolution (`scale < 1`).
     BackdropScale,
+    /// A backdrop group captures a blur pyramid (`levels > 1`).
+    BackdropLevels,
     /// A layer with a projective pose.
     Projective,
 }
@@ -188,6 +190,9 @@ impl Scene {
         for group in &self.backdrop_groups {
             if group.scale < 1.0 {
                 f.insert(Feature::BackdropScale);
+            }
+            if group.levels > 1 {
+                f.insert(Feature::BackdropLevels);
             }
             for filter in &group.filters {
                 match filter {
@@ -371,6 +376,13 @@ impl Scene {
         {
             return Err(SceneError::InvalidBackdropScale(group.id));
         }
+        if let Some(group) = self
+            .backdrop_groups
+            .iter()
+            .find(|g| !(1..=8).contains(&g.levels))
+        {
+            return Err(SceneError::InvalidBackdropLevels(group.id));
+        }
         walk(&self.root, &self.backdrop_groups)
     }
 
@@ -404,6 +416,23 @@ impl Scene {
                 } else {
                     Err(SceneError::InvalidBackdropEffect(
                         "rim-light colour and gain must be finite, gain non-negative",
+                    ))
+                }
+            }
+            E::Level {
+                depth,
+                edge_level,
+                interior_level,
+            } => {
+                if depth.is_finite()
+                    && *depth > 0.0
+                    && edge_level.is_finite()
+                    && interior_level.is_finite()
+                {
+                    Ok(())
+                } else {
+                    Err(SceneError::InvalidBackdropEffect(
+                        "level ramp needs depth > 0 and finite edge and interior levels",
                     ))
                 }
             }

@@ -405,26 +405,56 @@ fn paint(i: u32, meta_: vec4<u32>, color: vec4<f32>, local: vec2<f32>, device: v
 
 // Per-member backdrop effects: a member composite bilinearly samples the
 // bound capture and applies the effect packed in meta_.w's low bits.
-// `backdrop_origin`/`backdrop_size`/`backdrop_scale` are set per instance
-// by paint_backdrop; registered effect shaders call backdrop_sample.
+// `backdrop_origin`/`backdrop_size`/`backdrop_scale`/`backdrop_levels`
+// are set per instance by paint_backdrop; registered effect shaders call
+// backdrop_sample and backdrop_sample_level.
 var<private> backdrop_origin: vec2<f32>;
 var<private> backdrop_size: vec2<f32>;
 var<private> backdrop_scale: f32;
+var<private> backdrop_levels: f32;
+
+// Bilinear sample of the bound capture's level `k` at device point `q`:
+// on the level-k grid `q` is `q · scale / 2^k`, the four texels around
+// it minus 0.5 (texel centres) are read at mip `k`, clamped to the
+// level's extent `ceil(backdrop_size / 2^k)`, values unclamped. The
+// region's texel origin is aligned to `2^k`, so the level-k origin is
+// `backdrop_origin / 2^k` exactly.
+fn backdrop_sample_at(q: vec2<f32>, k: u32) -> vec4<f32> {
+    let div = f32(1u << k);
+    let size = (vec2<u32>(backdrop_size) + vec2<u32>((1u << k) - 1u)) >> vec2<u32>(k);
+    let f = clamp(
+        (q * backdrop_scale - backdrop_origin) / div - 0.5,
+        vec2<f32>(0.0),
+        vec2<f32>(size) - 1.0,
+    );
+    let lo = vec2<i32>(floor(f));
+    let hi = min(lo + 1, vec2<i32>(size) - 1);
+    let t = f - floor(f);
+    let c00 = textureLoad(source, lo, i32(k));
+    let c10 = textureLoad(source, vec2<i32>(hi.x, lo.y), i32(k));
+    let c01 = textureLoad(source, vec2<i32>(lo.x, hi.y), i32(k));
+    let c11 = textureLoad(source, hi, i32(k));
+    return mix(mix(c00, c10, t.x), mix(c01, c11, t.x), t.y);
+}
 
 // Bilinear sample of the bound capture at device point `q`: on the
 // capture grid `q` is `q · scale`, and the four texels around it minus
 // 0.5 (texel centres) are read, clamped to the capture region, values
 // unclamped.
 fn backdrop_sample(q: vec2<f32>) -> vec4<f32> {
-    let f = clamp(q * backdrop_scale - backdrop_origin - 0.5, vec2<f32>(0.0), backdrop_size - 1.0);
-    let lo = vec2<i32>(floor(f));
-    let hi = min(lo + 1, vec2<i32>(backdrop_size) - 1);
-    let t = f - floor(f);
-    let c00 = textureLoad(source, lo, 0);
-    let c10 = textureLoad(source, vec2<i32>(hi.x, lo.y), 0);
-    let c01 = textureLoad(source, vec2<i32>(lo.x, hi.y), 0);
-    let c11 = textureLoad(source, hi, 0);
-    return mix(mix(c00, c10, t.x), mix(c01, c11, t.x), t.y);
+    return backdrop_sample_at(q, 0u);
+}
+
+// Trilinear sample of the capture pyramid at device point `q`: `level`
+// clamps to `[0, backdrop_levels − 1]` and the read is bilinear at
+// `floor(level)` and `ceil(level)`, mixed by `fract(level)`.
+fn backdrop_sample_level(q: vec2<f32>, level: f32) -> vec4<f32> {
+    let lc = clamp(level, 0.0, backdrop_levels - 1.0);
+    let k0 = u32(floor(lc));
+    let k1 = min(k0 + 1u, u32(backdrop_levels) - 1u);
+    let lo = backdrop_sample_at(q, k0);
+    let hi = backdrop_sample_at(q, k1);
+    return mix(lo, hi, lc - floor(lc));
 }
 
 // backdrop-effect-stub
@@ -436,11 +466,13 @@ fn backdrop_effect(p: vec2<f32>, sdf: f32, normal: vec2<f32>, size: vec2<f32>, p
 // The member composite for a PAINT_BACKDROP instance: the effect in
 // meta_.w's low bits (`kind | stop count << 8`) evaluated at the device
 // pixel centre `pixel`. grad.xy is the capture origin, grad.z the capture
-// scale, grad2.xy its size, grad2.zw the member's device size.
+// scale, grad.w its level count, grad2.xy its size, grad2.zw the member's
+// device size.
 fn paint_backdrop(i: u32, pixel: vec2<f32>) -> vec4<f32> {
     let inst = instances[i];
     backdrop_origin = inst.grad.xy;
     backdrop_scale = inst.grad.z;
+    backdrop_levels = inst.grad.w;
     backdrop_size = inst.grad2.xy;
     let kind = inst.meta_.w & 0xffu;
     let first = inst.meta_.z;
@@ -485,6 +517,14 @@ fn paint_backdrop(i: u32, pixel: vec2<f32>) -> vec4<f32> {
         let k = p1.x * p1.y * t * t;
         let c = backdrop_sample(pixel);
         return vec4<f32>(c.rgb + p0.yzw * k, c.a);
+    }
+    if kind == EFFECT_LEVEL {
+        // stops[first].color = (depth, edge, interior): the pyramid
+        // level ramps from `edge` at the clip's edge (t = 1) to
+        // `interior` deep inside (t = 0).
+        let p0 = stops[first].color;
+        let t = clamp(1.0 + d / p0.x, 0.0, 1.0);
+        return backdrop_sample_level(pixel, p0.z + (p0.y - p0.z) * t);
     }
     var params = array<vec4<f32>, 16>();
     let count = (inst.meta_.w >> 8u) & 0xffu;
