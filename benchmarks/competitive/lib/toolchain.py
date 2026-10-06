@@ -162,6 +162,39 @@ def generate_rn_template(cli_version: str, rn_version: str,
     return Path(work_dir) / "RnBench"
 
 
+def _generated_current(dest_dir: Path, tag: str) -> bool:
+    """True when `dest_dir/.bench-generator` records `tag`. A stamp with
+    another tag deletes the files it lists and itself, so the caller
+    regenerates from scratch."""
+    stamp = dest_dir / ".bench-generator"
+    if not stamp.exists():
+        return False
+    lines = stamp.read_text().splitlines()
+    if lines[0] == tag:
+        return True
+    for rel in lines[1:]:
+        (dest_dir / rel).unlink(missing_ok=True)
+    stamp.unlink()
+    return False
+
+
+def _write_generated(dest_dir: Path, tag: str, gen: Path,
+                     files: list[str]) -> None:
+    """Copy each generated file in `files` (relative to `gen`) into
+    `dest_dir` unless the checkout already has that path — committed
+    authored files always win — and stamp the tag and the written list."""
+    written = []
+    for rel in files:
+        dst = dest_dir / rel
+        if dst.exists():
+            continue  # committed authored file wins
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(gen / rel, dst)
+        written.append(rel)
+    (dest_dir / ".bench-generator").write_text(
+        tag + "\n" + "\n".join(written) + "\n")
+
+
 def ensure_rn_template(app_dir: Path, cli_version: str, rn_version: str,
                        template_sha256: str, env: dict | None = None,
                        run=None):
@@ -177,14 +210,9 @@ def ensure_rn_template(app_dir: Path, cli_version: str, rn_version: str,
     """
     import tempfile
     app_dir = Path(app_dir)
-    stamp = app_dir / ".bench-generator"
     tag = f"rn-template {cli_version} {rn_version} {template_sha256}"
-    if stamp.exists() and stamp.read_text().splitlines()[0] == tag:
+    if _generated_current(app_dir, tag):
         return
-    if stamp.exists():
-        for rel in stamp.read_text().splitlines()[1:]:
-            (app_dir / rel).unlink(missing_ok=True)
-        stamp.unlink()
     with tempfile.TemporaryDirectory() as td:
         gen = generate_rn_template(cli_version, rn_version, Path(td),
                                    env=env, run=run)
@@ -194,15 +222,67 @@ def ensure_rn_template(app_dir: Path, cli_version: str, rn_version: str,
                 f"RN template digest {digest} != declared "
                 f"{template_sha256} (cli {cli_version}, rn {rn_version}): "
                 "the generator re-resolved to different content")
-        written = []
-        for rel in files:
-            dst = app_dir / rel
-            if dst.exists():
-                continue  # committed authored file wins
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy(gen / rel, dst)
-            written.append(rel)
-        stamp.write_text(tag + "\n" + "\n".join(written) + "\n")
+        _write_generated(app_dir, tag, gen, files)
+
+
+# The installed react-native-macos package's own generator entry point
+# (the one its `react-native-macos-init` drives):
+# generateMacOS(projectDir, name, options).
+_RN_MACOS_GENERATE = (
+    "require(process.argv[1])(process.argv[2], process.argv[3], "
+    "{overwrite: true})")
+
+
+def ensure_rn_macos_template(app_dir: Path, rn_macos_version: str,
+                             env: dict | None = None, run=None):
+    """Materialize the react-native-macos template files the committed
+    `macos/` project does not keep (AppDelegate.h, main.m, storyboard,
+    asset catalogs, entitlements, shared scheme, .gitignore).
+
+    Runs after `npm ci`: the generator is the installed package's
+    `local-cli/generate-macos.js`, whose bytes the lockfile's integrity
+    hash pins, and the installed version must equal the declared
+    `rn_macos_version`. The whole template is generated into a scratch
+    dir under the app's package.json name; committed authored files
+    (AppDelegate.mm, Info.plist, Podfile, the project) win, the rest
+    fill `macos/`, and `macos/.bench-generator` records the tag and the
+    written list exactly as `ensure_rn_template` does for the root and
+    ios/ files.
+    """
+    import tempfile
+    app_dir = Path(app_dir)
+    pkg = app_dir / "node_modules" / "react-native-macos"
+    if not (pkg / "package.json").is_file():
+        raise RuntimeError(
+            f"react-native-macos is not installed under {pkg} — "
+            "`npm ci` must run before the macOS template step")
+    installed = json.loads((pkg / "package.json").read_text())["version"]
+    if installed != rn_macos_version:
+        raise RuntimeError(
+            f"installed react-native-macos is {installed}, the manifest "
+            f"declares {rn_macos_version} — package-lock.json and the "
+            "manifest pin disagree")
+    name = json.loads((app_dir / "package.json").read_text())["name"]
+    dest = app_dir / "macos"
+    tag = f"rn-macos-template {rn_macos_version} {name}"
+    if _generated_current(dest, tag):
+        return
+    with tempfile.TemporaryDirectory() as td:
+        r = (run or _run)(
+            ["node", "-e", _RN_MACOS_GENERATE,
+             str(pkg / "local-cli" / "generate-macos.js"), td, name],
+            env=env)
+        if r.returncode != 0:
+            raise RuntimeError(
+                f"react-native-macos template generation failed "
+                f"({r.returncode}): {(r.stderr or r.stdout).strip()[-500:]}")
+        gen = Path(td) / "macos"
+        files = sorted(str(f.relative_to(gen)) for f in gen.rglob("*")
+                       if f.is_file())
+        if not files:
+            raise RuntimeError(
+                f"react-native-macos generator produced no files in {gen}")
+        _write_generated(dest, tag, gen, files)
 
 
 def require_version(name: str, cmd: list[str],
@@ -615,6 +695,43 @@ def _self_test() -> None:
         else:
             raise AssertionError("dirty tree accepted before bootstrap")
         assert not ran, "bootstrap ran over a dirty tree"
+
+    # react-native-macos template: the installed version must match the
+    # pin; committed files win, absent ones are generated and stamped,
+    # a current stamp skips the generator
+    gen_calls = []
+
+    def gen_run(cmd, env=None):
+        gen_calls.append(cmd)
+        out = Path(cmd[4]) / "macos" / f"{cmd[5]}-macOS"
+        out.mkdir(parents=True)
+        (out / "main.m").write_text("generated")
+        (out / "AppDelegate.mm").write_text("generated")
+        return Out()
+    with tempfile.TemporaryDirectory() as td:
+        app = Path(td)
+        (app / "package.json").write_text('{"name": "RnBench"}')
+        pkg = app / "node_modules" / "react-native-macos"
+        pkg.mkdir(parents=True)
+        (pkg / "package.json").write_text('{"version": "0.81.9"}')
+        authored = app / "macos" / "RnBench-macOS" / "AppDelegate.mm"
+        authored.parent.mkdir(parents=True)
+        authored.write_text("authored")
+        try:
+            ensure_rn_macos_template(app, "0.81.8", run=gen_run)
+        except RuntimeError as e:
+            assert "manifest pin disagree" in str(e)
+        else:
+            raise AssertionError("react-native-macos version drift accepted")
+        assert not gen_calls
+        ensure_rn_macos_template(app, "0.81.9", run=gen_run)
+        assert authored.read_text() == "authored"
+        assert (app / "macos" / "RnBench-macOS" / "main.m").read_text() \
+            == "generated"
+        assert (app / "macos" / ".bench-generator").read_text().splitlines() \
+            == ["rn-macos-template 0.81.9 RnBench", "RnBench-macOS/main.m"]
+        ensure_rn_macos_template(app, "0.81.9", run=gen_run)
+        assert len(gen_calls) == 1, "current stamp regenerated"
 
     # dirty checkout refused before any build
     def dirty_run(cmd, env=None):

@@ -35,12 +35,15 @@
   "macos": [
    "cd ../apps/electron && npm ci",
    "cd ../apps/react-native && npm ci",
+   {
+    "step": "rn-macos-template"
+   },
    "cd ../apps/react-native && bundle install",
    "cd ../apps/react-native && printf 'export NODE_BINARY=$(command -v node)\\n' > macos/.xcode.env",
    "cd ../apps/react-native && LANG=en_US.UTF-8 pod _{COCOAPODS}_ install --project-directory=macos",
    "cd native-bench && xcodegen"
   ],
-  "note": "fresh-clone dependency install, pinned to committed lockfiles: npm ci installs exactly package-lock.json; bundle install honors Gemfile.lock; pod install runs as `pod _<version>_ install` with the toolchain.cocoapods pin (the generated RN Gemfile caps CocoaPods at 1.15.2 via xcodeproj < 1.26.0, so `bundle exec pod` can never reach the pinned 1.17.0); a failed pod install fails the build with its error — mid-generation residue (missing modulemap links) poisons later xcodebuilds, so there is no blind retry; xcodegen regenerates NativeBench.xcodeproj from the committed project.yml so the checked-in project cannot drift. Per-contestant build failures are recorded and reported; the sweep continues for the remaining contestants. Run standalone with `bench.py bootstrap --platform <plat>`; `build` runs it first."
+  "note": "fresh-clone dependency install, pinned to committed lockfiles: npm ci installs exactly package-lock.json; bundle install honors Gemfile.lock; pod install runs as `pod _<version>_ install` with the toolchain.cocoapods pin (the generated RN Gemfile caps CocoaPods at 1.15.2 via xcodeproj < 1.26.0, so `bundle exec pod` can never reach the pinned 1.17.0); a failed pod install fails the build with its error — mid-generation residue (missing modulemap links) poisons later xcodebuilds, so there is no blind retry; xcodegen regenerates NativeBench.xcodeproj from the committed project.yml so the checked-in project cannot drift. A {\"step\": \"rn-macos-template\"} entry is not a shell command: it materializes the react-native-macos template files the macos/ project does not commit (AppDelegate.h, main.m, storyboard, asset catalogs, entitlements, shared scheme) from the generator `npm ci` just installed (lib/toolchain.ensure_rn_macos_template), before `pod install` reads the project. The whole bootstrap runs inside lib/toolchain.tracked_tree_unchanged: it starts on a clean tracked tree and fails naming any tracked file it rewrote. Per-contestant build failures are recorded and reported; the sweep continues for the remaining contestants. Run standalone with `bench.py bootstrap --platform <plat>`; `build` runs it first."
  },
  "workloads": {
   "w1": {

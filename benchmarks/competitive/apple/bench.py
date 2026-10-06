@@ -352,28 +352,50 @@ def cmd_bootstrap(args):
     """Fresh-clone dependency install for one platform, pinned to the
     committed lockfiles — npm ci (package-lock.json), bundle install +
     pod install (Gemfile.lock / Podfile.lock), xcodegen regen of the
-    native project. Any failure aborts; there is no silent retry."""
-    # RN root template files are generated, not committed — materialize
-    # them from the pinned init before `npm ci`/`bundle` reads the dir.
-    rn = next((c for c in MANIFEST["contestants"] if c["id"] == "rn"), None)
-    if rn:
-        t = MANIFEST["toolchain"]
-        toolchain.ensure_rn_template(
-            ROOT / rn["dir"], t["react_native_cli"],
-            t["react_native"], t["react_native_template_sha256"],
-            env=os.environ.copy())
-    cp_ver = re.match(r"[\d.]+", MANIFEST["toolchain"]["cocoapods"])
-    for cmd in (MANIFEST.get("bootstrap") or {}).get(args.platform, []):
-        if "{SIM_UDID}" in cmd:
-            cmd = cmd.replace("{SIM_UDID}",
-                              resolve_sim_udid(args.sim_udid))
-        if "{COCOAPODS}" in cmd:
-            if not cp_ver:
-                raise SystemExit(
-                    "toolchain.cocoapods in manifest.json does not start "
-                    "with a version number")
-            cmd = cmd.replace("{COCOAPODS}", cp_ver.group(0))
-        sh(cmd)
+    native project. Any failure aborts; there is no silent retry.
+
+    The whole bootstrap runs on a clean tracked tree and must leave it
+    clean: a step that rewrites a committed lockfile or project means the
+    committed copy is stale, and the staged set would otherwise carry a
+    HEAD label the tree no longer matches."""
+    t = MANIFEST["toolchain"]
+    with toolchain.tracked_tree_unchanged(f"apple bootstrap {args.platform}"):
+        # RN root template files are generated, not committed —
+        # materialize them from the pinned init before `npm ci`/`bundle`
+        # reads the dir.
+        rn = next((c for c in MANIFEST["contestants"] if c["id"] == "rn"),
+                  None)
+        if rn:
+            toolchain.ensure_rn_template(
+                ROOT / rn["dir"], t["react_native_cli"],
+                t["react_native"], t["react_native_template_sha256"],
+                env=os.environ.copy())
+        cp_ver = re.match(r"[\d.]+", t["cocoapods"])
+        for step in (MANIFEST.get("bootstrap") or {}).get(args.platform, []):
+            match step:
+                case {"step": "rn-macos-template"}:
+                    # the react-native-macos template files the macos/
+                    # project does not commit, from the generator `npm
+                    # ci` just installed — before `pod install` reads it
+                    toolchain.ensure_rn_macos_template(
+                        ROOT / contestant("rn")["dir"],
+                        t["react_native_macos"], env=os.environ.copy())
+                case str():
+                    cmd = step
+                    if "{SIM_UDID}" in cmd:
+                        cmd = cmd.replace("{SIM_UDID}",
+                                          resolve_sim_udid(args.sim_udid))
+                    if "{COCOAPODS}" in cmd:
+                        if not cp_ver:
+                            raise SystemExit(
+                                "toolchain.cocoapods in manifest.json does "
+                                "not start with a version number")
+                        cmd = cmd.replace("{COCOAPODS}", cp_ver.group(0))
+                    sh(cmd)
+                case _:
+                    raise SystemExit(
+                        f"manifest bootstrap.{args.platform} has an "
+                        f"unknown step: {step!r}")
     print(f"bootstrap complete for {args.platform}")
 
 
@@ -465,13 +487,16 @@ def ensure_flutter_apple(d: Path, platforms: list[str], env: dict):
 
 def cmd_build(args):
     plat = args.platform
-    # The staged set is labelled with the checkout HEAD, so the tracked
-    # tree must be clean BEFORE anything runs — and the bootstrap below
-    # (npm ci, pod install, xcodegen) must leave it clean: a step that
-    # rewrites a committed lockfile or project means the committed copy
-    # is stale, and the WaterUI build would otherwise refuse later,
-    # mid-sweep, naming the wrong cause.
-    toolchain.require_clean_checkout()
+    # The staged set is labelled with the checkout HEAD: the bootstrap
+    # runs first, on a clean tree it must leave clean (cmd_bootstrap's
+    # tracked_tree_unchanged), so a dirty checkout is refused before any
+    # staged artifact is deleted.
+    try:
+        cmd_bootstrap(args)
+    except Exception as e:
+        # a failed bootstrap leaves every later build unproven — stop at
+        # the first bootstrap failure
+        raise SystemExit(f"bootstrap failed: {e}") from e
     staged = ROOT / "build" / "artifacts" / plat
     # stale staged artifacts are deleted wholesale, not overwritten in
     # place: a run must never measure a file left over from an earlier
@@ -488,40 +513,30 @@ def cmd_build(args):
             _wb["b"] = water_bin()
         return _wb["b"]
 
-    try:
-        cmd_bootstrap(args)
-    except Exception as e:
-        # a failed bootstrap leaves every later build unproven — stop at
-        # the first bootstrap failure
-        raise SystemExit(f"bootstrap failed: {e}") from e
-    try:
-        toolchain.require_clean_checkout()
-    except RuntimeError as e:
-        raise SystemExit(
-            "bootstrap rewrote committed files — regenerate them with the "
-            f"pinned toolchain and commit them: {e}") from e
     for c in MANIFEST["contestants"]:
         if c["id"] == "flutter" and not c.get("build", {}).get(plat):
             continue
-        if c["id"] == "flutter":
-            ensure_flutter_apple(ROOT / c["dir"],
-                                 ["macos" if plat == "macos" else "ios"],
-                                 os.environ.copy())
-        cmds = c.get("build", {}).get(plat)
-        if cmds:
-            for cmd in cmds:
-                if "{SIM_UDID}" in cmd:
-                    cmd = cmd.replace(
-                        "{SIM_UDID}", resolve_sim_udid(args.sim_udid))
-                if "{WATER}" in cmd:
-                    cmd = cmd.replace("{WATER}", wb())
-                if "{FLUTTER}" in cmd:
-                    cmd = cmd.replace("{FLUTTER}", flutter_bin())
-                try:
-                    sh(cmd)
-                except Exception as e:  # report exact error, don't drop silently
-                    failures[c["id"]] = str(e)[-2000:]
-                    break
+        # a contestant build must leave the tracked tree as committed
+        with toolchain.tracked_tree_unchanged(f"apple build {plat} {c['id']}"):
+            if c["id"] == "flutter":
+                ensure_flutter_apple(ROOT / c["dir"],
+                                     ["macos" if plat == "macos" else "ios"],
+                                     os.environ.copy())
+            cmds = c.get("build", {}).get(plat)
+            if cmds:
+                for cmd in cmds:
+                    if "{SIM_UDID}" in cmd:
+                        cmd = cmd.replace(
+                            "{SIM_UDID}", resolve_sim_udid(args.sim_udid))
+                    if "{WATER}" in cmd:
+                        cmd = cmd.replace("{WATER}", wb())
+                    if "{FLUTTER}" in cmd:
+                        cmd = cmd.replace("{FLUTTER}", flutter_bin())
+                    try:
+                        sh(cmd)
+                    except Exception as e:  # report exact error, don't drop silently
+                        failures[c["id"]] = str(e)[-2000:]
+                        break
         art = c.get("artifact", {}).get(plat)
         if c["id"] not in failures and art:
             src = ROOT / art
