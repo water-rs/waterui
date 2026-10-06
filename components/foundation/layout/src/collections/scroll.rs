@@ -13,9 +13,10 @@ pub struct ScrollRequest<T> {
     /// The position the scroll view moves to.
     pub target: T,
     /// How the scroll view moves there. `None` jumps in one frame.
-    /// [`Animation::Default`] scrolls with the platform's native smooth
-    /// scroll; any other animation drives the offset along its own curve
-    /// and duration.
+    /// [`Animation::Default`] uses the backend's default scroll motion: the
+    /// native smooth scroll on a backend that drives a platform scroll view,
+    /// the backend's default animation curve on a self-drawn one. Any other
+    /// animation drives the offset along its own curve and duration.
     pub animation: Option<Animation>,
 }
 
@@ -32,7 +33,7 @@ pub struct ScrollRequest<T> {
 /// let controller = ScrollController::new(Point::zero());
 /// // Jump straight to the target.
 /// controller.scroll_to(Point::new(0.0, 2_400.0));
-/// // Glide back with the platform's native smooth scroll.
+/// // Glide back with the backend's default scroll motion.
 /// controller.animate_to(Point::zero(), Animation::default());
 /// ```
 #[derive(Clone, Debug)]
@@ -65,9 +66,10 @@ impl<T: Clone + 'static> ScrollController<T> {
 
     /// Requests an animated scroll to `target`.
     ///
-    /// [`Animation::Default`] scrolls with the platform's native smooth
-    /// scroll. Any other animation moves the offset along that animation's
-    /// curve and duration. A later request, or the user scrolling, takes over
+    /// [`Animation::Default`] uses the backend's default scroll motion: the
+    /// native smooth scroll on a backend that drives a platform scroll view,
+    /// the backend's default animation curve on a self-drawn one. Any other
+    /// animation moves the offset along that animation's curve and duration. A later request, or the user scrolling, takes over
     /// from an animation still in flight.
     ///
     /// # Panics
