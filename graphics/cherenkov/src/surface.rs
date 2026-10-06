@@ -34,7 +34,7 @@ use crate::record::Content;
 ///
 /// It holds the surface's host waker and the render-thread channel. A
 /// hidden surface drains inline — the drained [`ChangeSet`] leaves as
-/// [`Message::Apply`] in order with the surface's other messages — a
+/// `Message::Apply` in order with the surface's other messages — a
 /// visible one wakes the host for the frame's drain instead.
 pub struct EngineQueue<B: Backend> {
     /// The surface's identifier on the render thread.
@@ -86,7 +86,7 @@ impl<B: Backend> Queue<B> for EngineQueue<B> {
 }
 
 /// A surface: a render target plus its layer tree. `!Send`; dropping sends
-/// [`Message::DestroySurface`].
+/// `Message::DestroySurface`.
 pub struct Surface<B: Backend> {
     /// The shared pending-changes state, also registered with the engine
     /// for the per-frame drain.
@@ -320,7 +320,7 @@ impl<B: Backend> Surface<B> {
     }
 
     /// Records live content for this surface. The recording reads the root
-    /// layer's [`layout_size`](LayerEdit::layout_size); content for another
+    /// layer's [`layout_size`](crate::LayerEdit::layout_size); content for another
     /// layer that reads its size is recorded with
     /// [`LayerEdit::record`].
     ///
