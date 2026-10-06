@@ -351,6 +351,10 @@ fn flow_markdown_blocks_reconnect_after_lazy_eviction() {
 
 #[cfg(feature = "accessibility")]
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the user's scroll offset must survive the append untouched; any drift is the reset this test guards against"
+)]
 fn flow_markdown_append_preserves_user_scroll_offset() {
     fn scroll_y(result: crate::HeadlessPumpResult) -> f64 {
         result
@@ -407,8 +411,8 @@ fn flow_markdown_append_preserves_user_scroll_offset() {
 
     source.set(Str::from(format!("{initial}\n\nAppended tail block.")));
     let after_append = scroll_y(runtime.pump_at(false, start + Duration::from_millis(32)));
-    assert_eq!(
-        before_append, after_append,
-        "incremental FlowMarkdown growth must not reset the user's scroll offset"
+    assert!(
+        before_append == after_append,
+        "incremental FlowMarkdown growth must not reset the user's scroll offset: left {before_append:?}, right {after_append:?}"
     );
 }

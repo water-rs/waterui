@@ -3,7 +3,8 @@
 Produces ``scenes/fonts/CherenkovColrTest.ttf``: a small COLRv0+v1 test
 font covering transformed brushes (rotate/skew/scale on linear, radial and
 sweep gradients), every COLR composite mode, clip boxes, foreground
-(0xFFFF) brushes, a nested PaintColrGlyph and one COLRv0 layered glyph.
+(0xFFFF) brushes, a nested PaintColrGlyph, one COLRv0 layered glyph and
+radial gradients with identical circles (which paint nothing).
 
 This file is generated; do not edit the TTF by hand. Run
 ``python3 scenes/fonts/tools/build_colr_test_font.py`` to regenerate.
@@ -34,6 +35,8 @@ PALETTE = [
 # The shared gradient: red -> yellow -> blue.
 G_STOPS = [(0.0, RED), (0.5, YELLOW), (1.0, BLUE)]
 CENTER = (500, 450)
+# Identical-circle radial glyphs under pad, repeat and reflect.
+IDENTICAL_CPS = (0xE700, 0xE701, 0xE702)
 
 
 def rect(pen, x0, y0, x1, y1):
@@ -214,8 +217,17 @@ def build():
         colr_names.append(name)
         glyphs[name] = TTGlyphPen(None).glyph()
 
-    # `space` comes last so every existing glyph id is unchanged.
-    order = [".notdef", "box", "disc", "discL", "discR", "cross"] + colr_names + ["space"]
+    # Later additions go after `space` so every existing glyph id is
+    # unchanged.
+    identical_names = [f"g{cp:04X}" for cp in IDENTICAL_CPS]
+    for name in identical_names:
+        glyphs[name] = TTGlyphPen(None).glyph()
+    order = (
+        [".notdef", "box", "disc", "discL", "discR", "cross"]
+        + colr_names
+        + ["space"]
+        + identical_names
+    )
     cmap = {0x0020: "space"}
     cmap.update({cp: f"g{cp:04X}" for cp in (
         list(range(0xE000, 0xE009))
@@ -225,6 +237,7 @@ def build():
         + [0xE400, 0xE500]
     )})
     cmap[0xE600] = "cross"
+    cmap.update({cp: f"g{cp:04X}" for cp in IDENTICAL_CPS})
 
     fb = FontBuilder(UPEM, isTTF=True)
     # Pin the head timestamps so the output is reproducible byte-for-byte.
@@ -299,6 +312,16 @@ def build():
             {"Format": int(ot.PaintFormat.PaintColrGlyph), "Glyph": "gE000"},
         ),
     }
+    # Radial gradients with identical circles over a green disc, one per
+    # extend mode: PaintRadialGradient step 1 paints nothing for them.
+    for cp, extend in zip(IDENTICAL_CPS, ("pad", "repeat", "reflect")):
+        colr[f"g{cp:04X}"] = {
+            "Format": int(ot.PaintFormat.PaintColrLayers),
+            "Layers": [
+                glyph("disc", solid(GREEN)),
+                glyph("box", radial((500, 450), 200, (500, 450), 200, extend=extend)),
+            ],
+        }
     # All 28 composite modes, E100..E11B in CompositeMode order.
     for m in range(28):
         colr[f"g{0xE100 + m:04X}"] = composite(

@@ -2560,7 +2560,7 @@ mod tests {
     fn prominent_detail_squeezes_the_sidebar_to_its_minimum() {
         let width = ColumnWidth::new(180.0, 260.0, 400.0);
 
-        assert_eq!(
+        approx::assert_relative_eq!(
             resolved_split_column_width(width, NativeNavigationSplitStyle::ProminentDetail),
             180.0
         );
@@ -2568,7 +2568,7 @@ mod tests {
             NativeNavigationSplitStyle::Automatic,
             NativeNavigationSplitStyle::Balanced,
         ] {
-            assert_eq!(resolved_split_column_width(width, balanced), 260.0);
+            approx::assert_relative_eq!(resolved_split_column_width(width, balanced), 260.0);
         }
     }
 
@@ -2583,7 +2583,7 @@ mod tests {
             NativeNavigationSplitStyle::Balanced,
             NativeNavigationSplitStyle::ProminentDetail,
         ] {
-            assert_eq!(resolved_split_column_width(fixed, style), 240.0);
+            approx::assert_relative_eq!(resolved_split_column_width(fixed, style), 240.0);
         }
     }
 

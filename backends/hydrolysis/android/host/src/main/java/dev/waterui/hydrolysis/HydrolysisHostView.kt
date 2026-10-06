@@ -68,6 +68,13 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     private var lastRootInsets: WindowInsetsCompat? = null
 
     /**
+     * Wheel axis values are normalized (about ±1 per notch); Android's own
+     * scrolling views multiply them by this configuration's scaled scroll
+     * factors to get pixels, and so does the host.
+     */
+    private val wheelConfiguration = ViewConfiguration.get(context)
+
+    /**
      * An IME `WindowInsetsAnimation` is running. While it is, the insets
      * `onApplyWindowInsets` dispatches already carry the animation's *end*
      * state — pushing them would jump the layout to the full keyboard
@@ -341,8 +348,16 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     override fun onGenericMotionEvent(event: MotionEvent): Boolean {
         val session = session ?: return super.onGenericMotionEvent(event)
         if (event.actionMasked == MotionEvent.ACTION_SCROLL) {
-            val dx = -event.getAxisValue(MotionEvent.AXIS_HSCROLL)
-            val dy = -event.getAxisValue(MotionEvent.AXIS_VSCROLL)
+            // Android AXIS_HSCROLL is positive when content moves left; Hydrolysis
+            // input takes winit's opposite sign.
+            val dx =
+                -event.getAxisValue(MotionEvent.AXIS_HSCROLL) *
+                    wheelConfiguration.scaledHorizontalScrollFactor
+            // Android AXIS_VSCROLL is positive when content moves down, matching
+            // Hydrolysis's winit sign.
+            val dy =
+                event.getAxisValue(MotionEvent.AXIS_VSCROLL) *
+                    wheelConfiguration.scaledVerticalScrollFactor
             NativeBridge.nativeScrollEvent(session.nativePtr, event.x, event.y, dx, dy)
             return true
         }

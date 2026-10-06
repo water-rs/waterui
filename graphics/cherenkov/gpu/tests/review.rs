@@ -9,6 +9,7 @@ use cherenkov::{
 };
 use cherenkov::{Draw, GlyphRun, WorkingColor};
 use cherenkov_gpu::{Gpu, GpuConfig, TimestampSupport};
+use cherenkov_oracle::paint::radial_t;
 
 split_fn! {
 /// An engine under `config`, or `None` when no adapter exists.
@@ -187,30 +188,22 @@ fn dropped_surfaces_do_not_leak() -> Result<(), Box<dyn std::error::Error>> {
 }
 }
 
-/// The oracle's `radial_t`, ported for the cone test.
-fn oracle_t(p: (f64, f64), c0: (f64, f64), r0: f64, c1: (f64, f64), r1: f64) -> f64 {
-    let (px, py) = (p.0 - c0.0, p.1 - c0.1);
-    let (dcx, dcy) = (c1.0 - c0.0, c1.1 - c0.1);
-    let dr = r1 - r0;
-    let a = dr.mul_add(-dr, dcy.mul_add(dcy, dcx * dcx));
-    let b = -2.0 * r0.mul_add(dr, dcy.mul_add(py, dcx * px));
-    let c = r0.mul_add(-r0, py.mul_add(py, px * px));
-    if a.abs() < 1e-12 {
-        if b.abs() < 1e-12 {
-            return if r0.abs() < 1e-12 {
-                0.0
-            } else {
-                (px.hypot(py) - r0) / r0.abs()
-            };
-        }
-        return -c / b;
+/// The oracle's form of a [`radial_fill`] gradient, for its `radial_t`.
+const fn oracle_radial(
+    center0: (f64, f64),
+    r0: f64,
+    center1: (f64, f64),
+    r1: f64,
+) -> cherenkov_scene::RadialGradient {
+    cherenkov_scene::RadialGradient {
+        center0: Point::new(center0.0, center0.1),
+        r0,
+        center1: Point::new(center1.0, center1.1),
+        r1,
+        stops: Vec::new(),
+        extend: cherenkov_scene::Extend::Pad,
+        interpolation: cherenkov_scene::ColorSpace::Srgb,
     }
-    let disc = (4.0 * a).mul_add(-c, b * b);
-    if disc < 0.0 {
-        return f64::NAN;
-    }
-    let sq = disc.sqrt();
-    ((-b + sq) / (2.0 * a)).max((-b - sq) / (2.0 * a))
 }
 
 fn radial_fill(
@@ -259,19 +252,69 @@ fn render_radial(gradient: cherenkov::RadialGradient) -> Option<Vec<[f32; 4]>> {
 }
 
 split_test! {
-/// Coincident circles (c0 == c1, r0 == r1) interpolate on distance / r0.
-fn coincident_circles_interpolate_by_distance() {
-    let Some(pixels) = wait!(render_radial(radial_fill((64., 64.), 20., (64., 64.), 20.))) else {
+/// Identical circles (c0 == c1, r0 == r1) are a hard edge at r0 under pad:
+/// the oracle's t = -∞ inside takes the first stop, t = +∞ outside the last.
+#[expect(clippy::cast_possible_truncation)]
+fn identical_circles_draw_a_hard_edge() {
+    let (c, r) = ((64., 64.), 20.);
+    let Some(pixels) = wait!(render_radial(radial_fill(c, r, c, r))) else {
         return;
     };
-    let at = |x: usize, y: usize| pixels[y * 128 + x];
-    // Pixel centres land at half-integer coordinates: distance 30.5 gives
-    // t = (30.5 - 20) / 20 = 0.525.
-    let px = at(94, 64);
-    assert!((px[0] - 0.525).abs() < 5e-3, "t=0.525 pixel: {px:?}");
-    // Distance 10 is inside r0: t < 0 pads to the first stop.
-    let inside = at(74, 64);
-    assert!(inside[0] < 1e-3, "inside pixel: {inside:?}");
+    let oracle = oracle_radial(c, r, c, r);
+    // Pixel centres land at half-integer coordinates: (83, 64) is 19.5 from
+    // the centre, (84, 64) is 20.5.
+    for (x, inside) in [(74u8, true), (83, true), (84, false), (94, false)] {
+        let t = radial_t(Point::new(f64::from(x) + 0.5, 64.5), &oracle);
+        assert!(
+            t.is_infinite() && t.is_sign_negative() == inside,
+            "oracle t at ({x}, 64): {t}"
+        );
+        let want = t.clamp(0.0, 1.0) as f32;
+        let got = pixels[64 * 128 + usize::from(x)];
+        assert!((got[0] - want).abs() < 1e-3, "pixel ({x}, 64): {got:?}, want {want}");
+    }
+}
+}
+
+split_fn! {
+fn render_radial_result(
+    gradient: cherenkov::RadialGradient,
+) -> Option<Result<(), cherenkov::RenderError>> {
+    let engine = wait!(engine(GpuConfig::default()))?;
+    let surface = wait!(engine
+        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {}))
+        .expect("surface");
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|c| {
+            c.fill(
+                Rect::new(0.0, 0.0, 16.0, 16.0),
+                cherenkov::Paint::Radial(gradient),
+            );
+        }));
+    });
+    Some(wait!(engine.render(cherenkov::FrameTime::now())).map(|_| ()))
+}
+}
+
+split_test! {
+/// Identical circles have no repeat or reflect form: lowering rejects them.
+fn identical_circles_reject_repeat_and_reflect() {
+    for extend in [cherenkov::Extend::Repeat, cherenkov::Extend::Reflect] {
+        let gradient = cherenkov::RadialGradient {
+            extend,
+            ..radial_fill((8., 8.), 4., (8., 8.), 4.)
+        };
+        let Some(result) = wait!(render_radial_result(gradient)) else {
+            return;
+        };
+        let Err(err) = result else {
+            panic!("identical circles rendered under {extend:?}");
+        };
+        assert!(
+            matches!(err, cherenkov::RenderError::IdenticalRadialCircles(e) if e == extend),
+            "{extend:?}: {err}"
+        );
+    }
 }
 }
 
@@ -283,6 +326,7 @@ split_test! {
 fn a_cone_gradient_matches_the_oracle() {
     let c0 = (32., 64.);
     let c1 = (72., 64.);
+    let oracle = oracle_radial(c0, 0., c1, 30.);
     let Some(pixels) = wait!(render_radial(radial_fill(c0, 0., c1, 30.))) else {
         return;
     };
@@ -290,7 +334,7 @@ fn a_cone_gradient_matches_the_oracle() {
     // Pixels where the oracle's discriminant is negative get NaN →
     // transparent.
     for (x, y) in [(32, 20), (10, 20), (32, 44)] {
-        let t = oracle_t((x as f64 + 0.5, y as f64 + 0.5), c0, 0., c1, 30.);
+        let t = radial_t(Point::new(x as f64 + 0.5, y as f64 + 0.5), &oracle);
         assert!(t.is_nan(), "expected NaN at ({x}, {y}), got {t}");
         assert!(
             at(x, y)[3] < 1e-6,
@@ -301,7 +345,7 @@ fn a_cone_gradient_matches_the_oracle() {
     // Inside the cone the shader's t equals the oracle's (clamped to the
     // stop range by the pad extension).
     for (x, y) in [(33, 64), (35, 64), (80, 44)] {
-        let t = oracle_t((x as f64 + 0.5, y as f64 + 0.5), c0, 0., c1, 30.);
+        let t = radial_t(Point::new(x as f64 + 0.5, y as f64 + 0.5), &oracle);
         let want = t.clamp(0.0, 1.0) as f32;
         assert!(
             (at(x, y)[0] - want).abs() < 5e-2,

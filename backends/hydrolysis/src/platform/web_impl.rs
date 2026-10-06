@@ -966,13 +966,11 @@ fn register_listeners(
                 f64::from(event.client_x()),
                 f64::from(event.client_y()),
             );
-            // A DOM wheel delta is the change of the scroll offset; hosts
-            // report how the content moves (winit's convention), the
-            // opposite sign. The browser has already applied the system's
-            // natural-scrolling setting to the delta.
             pending_events.borrow_mut().push(InputEvent::Scroll {
                 x,
                 y,
+                // DOM WheelEvent deltas are positive right/down; Hydrolysis input
+                // takes winit's opposite sign.
                 dx: -crate::num_cast::f64_as_f32(event.delta_x()),
                 dy: -crate::num_cast::f64_as_f32(event.delta_y()),
                 is_line_delta: event.delta_mode() != WheelEvent::DOM_DELTA_PIXEL,
