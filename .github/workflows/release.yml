@@ -194,9 +194,19 @@ jobs:
           targets: ${{ matrix.target }}
 
       - uses: ./.github/actions/setup-linux-deps
-        if: runner.os == 'Linux'
-        with:
-          package-manager: ${{ matrix.container && 'dnf' || 'apt' }}
+        if: runner.os == 'Linux' && !matrix.container
+
+      # The manylinux_2_28 image is AlmaLinux 8: no apt, so the shared apt
+      # action does not apply, and nothing else in the repository builds on
+      # dnf. What `water` links natively on Linux is libudev alone, through
+      # `serialport` (the default `esp32` feature) -> `libudev-sys`, whose
+      # build script asks pkg-config for `libudev`. The image ships the C
+      # toolchain aws-lc-sys and ring compile with, and pkg-config; it does
+      # not ship libudev.pc.
+      - name: Install native dependencies (container)
+        if: matrix.container
+        shell: bash
+        run: dnf install -y -q systemd-devel pkgconf-pkg-config
 
       - name: Install the musl toolchain
         if: contains(matrix.target, 'musl')
