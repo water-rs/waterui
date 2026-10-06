@@ -4,7 +4,7 @@
 //! a type-safe substitution API for generating Apple and Android backend projects.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io,
     path::{Path, PathBuf},
 };
@@ -367,6 +367,16 @@ pub struct TemplateContext {
     pub preview_runtime_features: Vec<String>,
     /// User crate whose dependency graph defines the preview runtime ABI.
     pub preview_app_dependency: Option<(CrateName, PathBuf)>,
+    /// The project's own packages — the set `generated_profiles` writes
+    /// `[profile.dev.package.<name>]` overrides for, so the user's own crates
+    /// build at `opt-level = 0` with line tables while every other dependency
+    /// keeps `"*"`'s `opt-level = 2, debug = false`.
+    ///
+    /// `None` until [`Self::with_project_packages`] supplies the real set: a
+    /// context that never received one must fail rather than write a plausible
+    /// but wrong override — for the generated crate's own name, say — so every
+    /// manifest writer calls `generated_profiles` with this field directly.
+    pub project_packages: Option<BTreeSet<String>>,
     /// The `include_web!` argument when the root view is a web frontend:
     /// `"web"` for the conventional layout, a path relative to the project
     /// root for a frontend referenced in place. `None` renders the demo
@@ -423,6 +433,7 @@ impl TemplateContext {
             preview_runtime_fingerprint: None,
             preview_runtime_features: Vec::new(),
             preview_app_dependency: None,
+            project_packages: None,
             web_frontend_arg: options.web.as_ref().map(|web| web.include_arg.clone()),
             android_signing: None,
             esp32: Esp32TemplateEntry::default(),
@@ -464,6 +475,7 @@ impl TemplateContext {
             preview_runtime_fingerprint: None,
             preview_runtime_features: Vec::new(),
             preview_app_dependency: None,
+            project_packages: None,
             web_frontend_arg: manifest.web.as_ref().map(|_| "web".to_string()),
             android_signing: manifest
                 .signing
@@ -520,6 +532,7 @@ impl TemplateContext {
             preview_runtime_fingerprint,
             preview_runtime_features: Vec::new(),
             preview_app_dependency: None,
+            project_packages: None,
             web_frontend_arg: None,
             android_signing: None,
             esp32: Esp32TemplateEntry::default(),
@@ -609,6 +622,17 @@ impl TemplateContext {
     #[must_use]
     pub fn with_preview_app_dependency(mut self, crate_name: CrateName, path: PathBuf) -> Self {
         self.preview_app_dependency = Some((crate_name, path));
+        self
+    }
+
+    /// Set the project's own packages — the set `generated_profiles` writes
+    /// `[profile.dev.package.<name>]` overrides for. Every context a generated
+    /// manifest renders through must carry the set
+    /// [`crate::project::Project::project_packages`] resolves; a context left
+    /// unset fails its manifest writes rather than render a wrong override.
+    #[must_use]
+    pub fn with_project_packages(mut self, packages: BTreeSet<String>) -> Self {
+        self.project_packages = Some(packages);
         self
     }
 
@@ -1367,8 +1391,8 @@ mod tests {
     use super::{
         BrowserTemplateContext, Esp32TemplateEntry, LaunchTemplateEntry, LocalBackendSources,
         ResolvedFramework, ResolvedWebViewBackend, SupportAppIdentity, TemplateContext,
-        TemplateNamespace, embedded, gtk4, jitpack_dependency_coordinate, local_backend_sources,
-        normalize_path_for_config, preview_ffi, render_scaffold_template,
+        TemplateNamespace, embedded, generated_profiles, gtk4, jitpack_dependency_coordinate,
+        local_backend_sources, normalize_path_for_config, preview_ffi, render_scaffold_template,
     };
     use crate::framework::{
         framework_repository,
@@ -1376,6 +1400,7 @@ mod tests {
     };
     use crate::project_types::{BundleIdentifier, CrateName};
     use include_dir::Dir;
+    use std::collections::BTreeSet;
     use std::path::{Path, PathBuf};
     use tempfile::tempdir;
 
@@ -1412,6 +1437,7 @@ mod tests {
             preview_runtime_fingerprint: None,
             preview_runtime_features: Vec::new(),
             preview_app_dependency: None,
+            project_packages: Some(BTreeSet::from(["waterui_test".to_string()])),
             web_frontend_arg: None,
             android_signing: None,
             esp32: Esp32TemplateEntry::default(),
@@ -4058,6 +4084,42 @@ mod tests {
         assert!(rendered.contains("android:resizeableActivity=\"true\""));
         assert!(rendered.contains("android:supportsPictureInPicture=\"true\""));
     }
+
+    /// The user's own packages escape the `\"*\"` override through per-package
+    /// entries at the generated crate's own dev profile — unoptimized, with
+    /// line tables — while `\"*\"` keeps every other dependency optimized and
+    /// stripped.
+    #[test]
+    fn generated_profiles_override_the_project_packages() {
+        let project_packages = BTreeSet::from(["my_app".to_string(), "my_path_dep".to_string()]);
+        let profiles = generated_profiles(Some(&project_packages)).expect("a set is provided");
+        let dev = profiles.dev.expect("the dev profile exists");
+
+        let star = dev
+            .package
+            .get("*")
+            .and_then(toml::Value::as_table)
+            .expect("the wildcard override stays");
+        assert_eq!(star["opt-level"], toml::Value::Integer(2));
+        assert_eq!(star["debug"], toml::Value::Boolean(false));
+
+        for name in ["my_app", "my_path_dep"] {
+            let override_table = dev
+                .package
+                .get(name)
+                .and_then(toml::Value::as_table)
+                .unwrap_or_else(|| panic!("package override for {name}"));
+            assert_eq!(override_table["opt-level"], toml::Value::Integer(0));
+            assert_eq!(
+                override_table["debug"],
+                toml::Value::String("line-tables-only".to_string())
+            );
+        }
+
+        // A package outside the project's own set keeps the wildcard's
+        // optimized, stripped build.
+        assert!(!dev.package.contains_key("waterui-core"));
+    }
 }
 
 /// Scaffold a directory from embedded templates (non-recursive, uses stack).
@@ -4278,9 +4340,15 @@ impl From<GeneratedDependencyDetail> for SupportDependencyDetail {
 /// while scrolling. The generated crate itself stays unoptimized and fully
 /// debuggable.
 ///
+/// The user's own packages are path dependencies of the generated crate, so the
+/// `"*"` override would otherwise catch them too. They build under the generated
+/// crate's own dev profile instead — `opt-level = 0` and line tables — since
+/// they are the code a `water run` rebuilds and steps through
+/// (`Project::project_packages`).
+///
 /// Line tables are kept for the generated crate itself so panics still resolve to
 /// file and line.
-fn generated_profiles() -> cargo_toml::Profiles {
+fn generated_profiles_table(project_packages: &BTreeSet<String>) -> cargo_toml::Profiles {
     let mut dev = cargo_toml::Profile {
         debug: Some(cargo_toml::DebugSetting::Lines),
         ..Default::default()
@@ -4290,6 +4358,19 @@ fn generated_profiles() -> cargo_toml::Profiles {
     dependency_override.insert("opt-level".to_string(), toml::Value::Integer(2));
     dev.package
         .insert("*".to_string(), toml::Value::Table(dependency_override));
+
+    let mut project_override = toml::value::Table::new();
+    project_override.insert(
+        "debug".to_string(),
+        toml::Value::String("line-tables-only".to_string()),
+    );
+    project_override.insert("opt-level".to_string(), toml::Value::Integer(0));
+    for package in project_packages {
+        dev.package.insert(
+            package.clone(),
+            toml::Value::Table(project_override.clone()),
+        );
+    }
 
     // Generated crates are their own workspace roots, so without this section a
     // `cargo build --release` (what `water package` runs) fell back to Cargo's
@@ -4313,13 +4394,32 @@ fn generated_profiles() -> cargo_toml::Profiles {
     }
 }
 
-/// Serialized form of [`generated_profiles`], hashed into support-app
+/// [`generated_profiles_table`] for the project's own package set a render
+/// site must supply explicitly. `None` is a `TemplateContext` built without
+/// `with_project_packages` — or a helper handed nothing — and is an error:
+/// writing the `"*"` pin alone would leave the user's own crates optimized
+/// and undebuggable while looking complete.
+fn generated_profiles(
+    project_packages: Option<&BTreeSet<String>>,
+) -> io::Result<cargo_toml::Profiles> {
+    project_packages
+        .ok_or_else(|| {
+            io::Error::other(
+                "a generated manifest's profiles need the project's own package set — \
+                 build the context with `TemplateContext::with_project_packages` first",
+            )
+        })
+        .map(generated_profiles_table)
+}
+
+/// Serialized form of [`generated_profiles_table`], hashed into support-app
 /// template fingerprints: the scaffold `Cargo.toml` is generated
 /// programmatically rather than from an embedded template file, so cached
 /// scaffolds (preview/inspector support apps) would otherwise keep a stale
 /// profile when the generated section changes.
-fn generated_profiles_fingerprint() -> String {
-    toml::to_string(&generated_profiles()).expect("generated profiles must serialize to TOML")
+fn generated_profiles_fingerprint(project_packages: &BTreeSet<String>) -> String {
+    toml::to_string(&generated_profiles_table(project_packages))
+        .expect("generated profiles must serialize to TOML")
 }
 
 async fn write_support_cargo_toml(
@@ -4329,6 +4429,7 @@ async fn write_support_cargo_toml(
     dependencies: std::collections::BTreeMap<String, SupportDependencyValue>,
     runtime_root: Option<&Path>,
     framework: &ResolvedFramework,
+    project_packages: Option<&BTreeSet<String>>,
 ) -> io::Result<()> {
     let patch = match runtime_root {
         Some(root) => {
@@ -4360,7 +4461,7 @@ async fn write_support_cargo_toml(
             // dependency graph twice more for products nothing ever loads.
             crate_type: vec!["rlib".to_string()],
         },
-        profile: generated_profiles(),
+        profile: generated_profiles(project_packages)?,
         features,
         dependencies,
         workspace: SupportWorkspaceSection {},
@@ -4464,7 +4565,7 @@ fn render_native_backend_bin_cargo_toml(
     let mut package = Package::new(package_name.to_string(), cargo_semver("0.1.0"));
     package.edition = cargo_toml::Inheritable::Set(cargo_toml::Edition::E2024);
     manifest.package = Some(package);
-    manifest.profile = generated_profiles();
+    manifest.profile = generated_profiles(ctx.project_packages.as_ref())?;
 
     manifest.dependencies.insert(
         ctx.crate_name.to_string(),
@@ -5112,7 +5213,7 @@ pub mod winui {
         let mut package = Package::new(package_name.to_string(), super::cargo_semver("0.1.0"));
         package.edition = cargo_toml::Inheritable::Set(cargo_toml::Edition::E2024);
         manifest.package = Some(package);
-        manifest.profile = super::generated_profiles();
+        manifest.profile = super::generated_profiles(ctx.project_packages.as_ref())?;
 
         manifest.dependencies.insert(
             ctx.crate_name.to_string(),
@@ -5347,7 +5448,7 @@ pub mod hydrolysis {
             package,
             lib,
             bins,
-            profile: super::generated_profiles(),
+            profile: super::generated_profiles(ctx.project_packages.as_ref())?,
             features: BTreeMap::from([
                 (
                     "waterui-preview-mode".to_string(),
@@ -5905,7 +6006,7 @@ pub mod tui {
         // The launcher is its own workspace root and therefore inherits no
         // profile — a TUI built at opt-level 0 cannot push frames, so the dev
         // profile has to be carried here like every other generated crate.
-        manifest.profile = super::generated_profiles();
+        manifest.profile = super::generated_profiles(ctx.project_packages.as_ref())?;
 
         manifest.dependencies.insert(
             ctx.crate_name.to_string(),
@@ -6969,9 +7070,10 @@ pub mod ffi {
     use cargo_toml::{Dependency, DependencyDetail, Manifest, Package, Product, Workspace};
 
     use super::{
-        NativeBackendDependencySource, NativeBackendDependencySpec, Path, TemplateContext,
-        TemplateNamespace, cargo_semver, embedded, fs, generated_dependency_from_spec,
-        generated_profiles, io, scaffold_dir, write_file_if_changed,
+        BTreeSet, NativeBackendDependencySource, NativeBackendDependencySpec, Path,
+        TemplateContext, TemplateNamespace, cargo_semver, embedded, fs,
+        generated_dependency_from_spec, generated_profiles, io, scaffold_dir,
+        write_file_if_changed,
     };
 
     /// Write all FFI companion templates to the given directory.
@@ -7010,7 +7112,7 @@ pub mod ffi {
         package.edition = cargo_toml::Inheritable::Set(cargo_toml::Edition::E2024);
         package.autobins = false;
         manifest.package = Some(package);
-        manifest.profile = generated_profiles();
+        manifest.profile = generated_profiles(ctx.project_packages.as_ref())?;
 
         // Apple links `lib<ffi>.a` and Android loads `lib<ffi>.so`, so the manifest
         // declares only that union plus `rlib` — which Cargo requires for the
@@ -7221,13 +7323,14 @@ pub mod ffi {
         base_dir: &Path,
         patches: cargo_toml::PatchSet,
         project_root: Option<&Path>,
+        project_packages: Option<&BTreeSet<String>>,
     ) -> io::Result<()> {
         let project_root = project_root.map(Path::to_path_buf);
         let patch =
             smol::unblock(move || super::with_project_patches(patches, project_root.as_deref()))
                 .await?;
         let manifest = Manifest::<()> {
-            profile: generated_profiles(),
+            profile: generated_profiles(project_packages)?,
             patch,
             workspace: Some(Workspace {
                 members: super::preview_module_members(base_dir).await?,
@@ -7397,7 +7500,10 @@ pub mod root {
             package: super::generated_package(ctx.crate_name.as_str(), vec![ctx.author.clone()]),
             lib: super::generated_lib(&["lib"]),
             bins: Vec::new(),
-            profile: super::generated_profiles(),
+            // The project's own root manifest keeps the `"*"` pin alone:
+            // workspace members are never matched by `package."*"`, so a
+            // self-override would be noise in a file the user owns.
+            profile: super::generated_profiles_table(&std::collections::BTreeSet::new()),
             features: BTreeMap::from([
                 (
                     "dev".to_string(),
@@ -7491,15 +7597,18 @@ pub mod root {
 /// Preview app templates.
 pub mod preview {
     use super::{
-        Path, SupportDependencyDetail, SupportDependencyValue, TemplateContext, TemplateNamespace,
-        dependency_path, embedded, io, scaffold_dir, write_support_cargo_toml,
+        BTreeSet, Path, SupportDependencyDetail, SupportDependencyValue, TemplateContext,
+        TemplateNamespace, dependency_path, embedded, io, scaffold_dir, write_support_cargo_toml,
     };
 
     /// Hash of embedded preview template files and the programmatically
     /// generated scaffold inputs (the dev profile written into every generated
     /// `Cargo.toml`), so a change to either regenerates cached support apps.
+    /// `project_packages` is the previewed project's own package set — the
+    /// `[profile.dev.package.<name>]` overrides the support manifests write,
+    /// so a changed set regenerates too.
     #[must_use]
-    pub fn template_fingerprint() -> String {
+    pub fn template_fingerprint(project_packages: &BTreeSet<String>) -> String {
         use sha2::Digest as _;
 
         let mut hasher = sha2::Sha256::new();
@@ -7513,7 +7622,7 @@ pub mod preview {
                 dirs_to_process.push(subdir);
             }
         }
-        hasher.update(super::generated_profiles_fingerprint().as_bytes());
+        hasher.update(super::generated_profiles_fingerprint(project_packages).as_bytes());
         hex::encode(hasher.finalize())
     }
 
@@ -7671,6 +7780,7 @@ pub mod preview {
             dependencies,
             ctx.waterui_path.as_deref(),
             &ctx.framework,
+            ctx.project_packages.as_ref(),
         )
         .await
     }
@@ -7856,14 +7966,16 @@ pub mod preview_ffi {
 /// Inspector app templates.
 pub mod inspector {
     use super::{
-        Path, TemplateContext, TemplateNamespace, dependency_path, embedded, io, scaffold_dir,
-        write_support_cargo_toml,
+        BTreeSet, Path, TemplateContext, TemplateNamespace, dependency_path, embedded, io,
+        scaffold_dir, write_support_cargo_toml,
     };
 
     /// Hash of embedded inspector template files and the programmatically
     /// generated scaffold inputs (see `generated_profiles_fingerprint`).
+    /// `project_packages` is the set the inspector support manifest writes —
+    /// its own crate is the only project package in its graph.
     #[must_use]
-    pub fn template_fingerprint() -> String {
+    pub fn template_fingerprint(project_packages: &BTreeSet<String>) -> String {
         use sha2::Digest as _;
 
         let mut hasher = sha2::Sha256::new();
@@ -7877,7 +7989,7 @@ pub mod inspector {
                 dirs_to_process.push(subdir);
             }
         }
-        hasher.update(super::generated_profiles_fingerprint().as_bytes());
+        hasher.update(super::generated_profiles_fingerprint(project_packages).as_bytes());
         hex::encode(hasher.finalize())
     }
 
@@ -7953,6 +8065,7 @@ pub mod inspector {
             dependencies,
             ctx.waterui_path.as_deref(),
             &ctx.framework,
+            ctx.project_packages.as_ref(),
         )
         .await
     }

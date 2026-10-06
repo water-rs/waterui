@@ -684,18 +684,10 @@ impl Project {
         Ok(())
     }
 
-    /// Returns whether the packaged application links `package_name`.
-    ///
-    /// Development-only and build-only dependencies are excluded because they
-    /// do not become part of the packaged application. The resolved graph is
-    /// cached so backend regeneration and scaffolding share one Cargo metadata
-    /// resolution.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when Cargo cannot resolve the application graph or
-    /// omits a package referenced by that graph.
-    pub async fn links_runtime_package(&self, package_name: &str) -> eyre::Result<bool> {
+    /// The resolved `{p}` entries of the application's normal-edge dependency
+    /// graph, keyed by package name — the single `cargo tree` evaluation
+    /// [`Self::links_runtime_package`] and [`Self::project_packages`] share.
+    async fn linked_runtime_packages(&self) -> eyre::Result<&BTreeMap<String, String>> {
         let host = self.host.clone();
         let project_root = self.root.clone();
         let cargo_layout = self.cargo_layout.clone();
@@ -709,9 +701,102 @@ impl Project {
             })
             .await;
         match packages {
-            Ok(packages) => Ok(packages.contains_key(package_name)),
+            Ok(packages) => Ok(packages),
             Err(error) => Err(eyre::eyre!(error.clone())),
         }
+    }
+
+    /// Returns whether the packaged application links `package_name`.
+    ///
+    /// Development-only and build-only dependencies are excluded because they
+    /// do not become part of the packaged application. The resolved graph is
+    /// cached so backend regeneration and scaffolding share one Cargo metadata
+    /// resolution.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Cargo cannot resolve the application graph or
+    /// omits a package referenced by that graph.
+    pub async fn links_runtime_package(&self, package_name: &str) -> eyre::Result<bool> {
+        Ok(self
+            .linked_runtime_packages()
+            .await?
+            .contains_key(package_name))
+    }
+
+    /// The application's own packages: the app crate plus every other package
+    /// in its normal-edge dependency graph that is a path package and does not
+    /// belong to the resolved framework — the set `generated_profiles` keeps
+    /// at `opt-level = 0` with line tables so the user's own code stays
+    /// steppable in development builds.
+    ///
+    /// A package belongs to the framework when its manifest lies inside one of
+    /// the framework's local roots — see [`Self::framework_local_roots`].
+    /// Channel and git framework packages have non-path sources, so the path
+    /// condition already excludes them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Cargo cannot resolve the application graph, a
+    /// framework source or a path package's directory cannot be canonicalized.
+    pub async fn project_packages(&self) -> eyre::Result<BTreeSet<String>> {
+        let packages = self.linked_runtime_packages().await?;
+        let framework_roots = self.framework_local_roots().await?;
+        project_packages_from_tree(self.crate_name.as_str(), packages, &framework_roots)
+    }
+
+    /// The framework's local source roots — directories whose packages are the
+    /// framework's, never the user's own code:
+    ///
+    /// - the resolved framework's local checkout — `Source::Local`, the
+    ///   `waterui_path` project;
+    /// - `waterui_path` itself: `refresh_local_patches` copies its `[patch]`
+    ///   tables into the project's manifest and the generated manifests
+    ///   resolve backend crates through it whether or not a channel is
+    ///   recorded alongside, so a recorded framework plus a checkout still
+    ///   builds the framework from there;
+    /// - any local `path` entries the framework's own patch tables carry.
+    ///
+    /// Channel and git sources name no local root and contribute nothing.
+    /// Every root is canonicalized: `cargo tree` prints a path package's
+    /// directory as the dependency declared it, symlinks included, so nothing
+    /// here may be compared against it before both sides are canonical.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming the framework source whose canonicalization
+    /// fails.
+    async fn framework_local_roots(&self) -> eyre::Result<BTreeSet<PathBuf>> {
+        let framework = self.resolved_framework().await?;
+        let mut candidates = Vec::new();
+        if let Some(root) = framework.local_checkout_root() {
+            candidates.push(root.to_path_buf());
+        }
+        if let Some(local) = &self.manifest().waterui_path {
+            candidates.push(self.root.join(local));
+        }
+        for dependency in framework
+            .patches()
+            .values()
+            .flat_map(std::collections::BTreeMap::values)
+        {
+            if let cargo_toml::Dependency::Detailed(detail) = dependency
+                && let Some(path) = &detail.path
+            {
+                candidates.push(self.root.join(path));
+            }
+        }
+        let mut roots = BTreeSet::new();
+        for root in candidates {
+            let root = dunce::canonicalize(&root).wrap_err_with(|| {
+                format!(
+                    "the framework source {} cannot be canonicalized",
+                    root.display()
+                )
+            })?;
+            roots.insert(root);
+        }
+        Ok(roots)
     }
 
     /// Whether the application's graph turns on the standard `WebView`
@@ -1380,6 +1465,11 @@ impl Project {
         )
         .with_backend_project_path(self.ffi_crate_path())
         .with_project_root_path(self.root.clone())
+        .with_project_packages(
+            self.project_packages()
+                .await
+                .map_err(crate::backend::FailToInitBackend::Config)?,
+        )
         .with_apple_backend_selected(apple_selected)
         .with_webview_enabled(webview_enabled)
         .with_chromium_enabled(chromium_enabled)
@@ -1430,7 +1520,12 @@ impl Project {
             self.local_sources(),
         )
         .with_backend_project_path(self.preview_ffi_crate_path(workspace_root))
-        .with_project_root_path(self.root.clone());
+        .with_project_root_path(self.root.clone())
+        .with_project_packages(
+            self.project_packages()
+                .await
+                .map_err(crate::backend::FailToInitBackend::Config)?,
+        );
 
         let crate_path = self.preview_ffi_crate_path(workspace_root);
         templates::preview_ffi::scaffold(&crate_path, &ctx, &self.preview_ffi_crate_name())
@@ -2189,7 +2284,12 @@ async fn resolve_linked_runtime_packages(
             .split_ascii_whitespace()
             .next()
             .ok_or_else(|| eyre::eyre!("Cargo emitted an empty runtime dependency entry"))?;
-        linked.insert(name.to_string(), package.to_string());
+        // A package repeated in the graph prints again; the first occurrence
+        // is the annotated one `project_packages_from_tree` reads its path
+        // from, so a repeat must not overwrite it.
+        linked
+            .entry(name.to_string())
+            .or_insert_with(|| package.to_string());
     }
 
     Ok(linked)
@@ -2215,6 +2315,227 @@ async fn resolve_enabled_features(
         }
     }
     Ok(features)
+}
+
+/// The package directory a `cargo tree --format {p}` line's annotation
+/// carries, when it names a path package: a path package prints
+/// `name vX (dir)`, a path proc-macro marks `(proc-macro)` ahead of it, and
+/// registry and git sources annotate nothing absolute.
+fn tree_package_directory(entry: &str) -> Option<PathBuf> {
+    let mut rest = entry;
+    while let Some(open) = rest.find('(') {
+        let Some(close) = rest[open + 1..].find(')') else {
+            break;
+        };
+        let inside = &rest[open + 1..open + 1 + close];
+        let candidate = inside.strip_prefix("path+file://").unwrap_or(inside);
+        if Path::new(candidate).is_absolute() {
+            return Some(PathBuf::from(candidate));
+        }
+        rest = &rest[open + 1 + close + 1..];
+    }
+    None
+}
+
+/// The project's own packages read out of the resolved `{p}` graph:
+/// `crate_name` — the app crate, always, even when its own manifest lies
+/// inside the framework checkout the way the in-tree examples do — plus every
+/// other path package outside `framework_roots`. Channel and git packages
+/// carry no path, so the directory condition excludes them on its own.
+///
+/// `cargo tree` prints a path package's directory as the dependency declared
+/// it — symlinks included — so it is canonicalized before the
+/// `starts_with` comparison, the same canonicalization the framework roots
+/// already went through. A directory that does not resolve is an error
+/// naming it.
+fn project_packages_from_tree(
+    crate_name: &str,
+    tree: &BTreeMap<String, String>,
+    framework_roots: &BTreeSet<PathBuf>,
+) -> eyre::Result<BTreeSet<String>> {
+    let mut packages = BTreeSet::from([crate_name.to_string()]);
+    for (name, entry) in tree {
+        if name.as_str() == crate_name {
+            continue;
+        }
+        let Some(directory) = tree_package_directory(entry) else {
+            continue;
+        };
+        let directory = dunce::canonicalize(&directory).wrap_err_with(|| {
+            format!(
+                "the path package directory {} cannot be canonicalized",
+                directory.display()
+            )
+        })?;
+        if framework_roots
+            .iter()
+            .any(|root| directory.starts_with(root))
+        {
+            continue;
+        }
+        packages.insert(name.clone());
+    }
+    Ok(packages)
+}
+
+#[cfg(test)]
+mod project_package_tests {
+    use super::*;
+
+    #[test]
+    fn tree_package_directory_reads_only_absolute_annotations() {
+        let cases = [
+            ("app v0.1.0 (/workspace/app)", Some("/workspace/app")),
+            ("dep v0.1.0 (/workspace/dep) (*)", Some("/workspace/dep")),
+            (
+                "macrodep v0.1.0 (proc-macro) (/workspace/macrodep)",
+                Some("/workspace/macrodep"),
+            ),
+            ("serde v1.0.228", None),
+            ("serde_derive v1.0.228 (proc-macro)", None),
+            (
+                "wgpu v26.0.0 (git+https://github.com/gfx-rs/wgpu?rev=abc#abc)",
+                None,
+            ),
+        ];
+        for (entry, expected) in cases {
+            assert_eq!(
+                tree_package_directory(entry),
+                expected.map(PathBuf::from),
+                "entry: {entry}"
+            );
+        }
+    }
+
+    /// A `water create` app gives the app crate: registry and git packages
+    /// carry no path, so nothing else qualifies.
+    #[test]
+    fn project_packages_keep_only_path_packages() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let dep = temp.path().join("my_dep");
+        std::fs::create_dir_all(&dep).expect("dep dir");
+        let tree = BTreeMap::from([
+            ("app".to_string(), "app v0.1.0 (/workspace/app)".to_string()),
+            (
+                "my_dep".to_string(),
+                format!("my_dep v0.1.0 ({})", dep.display()),
+            ),
+            ("serde".to_string(), "serde v1.0.228".to_string()),
+            (
+                "wgpu".to_string(),
+                "wgpu v26.0.0 (git+https://github.com/gfx-rs/wgpu?rev=abc#abc)".to_string(),
+            ),
+        ]);
+        assert_eq!(
+            project_packages_from_tree("app", &tree, &BTreeSet::new())
+                .expect("path packages resolve"),
+            BTreeSet::from(["app".to_string(), "my_dep".to_string()])
+        );
+    }
+
+    /// A package whose manifest lies inside the `waterui_path` checkout root
+    /// belongs to the framework, whatever the package is — except the app
+    /// crate itself, which an in-tree example puts there on purpose.
+    #[test]
+    fn project_packages_exclude_the_framework_checkout() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let checkout = temp.path().join("checkout");
+        std::fs::create_dir_all(checkout.join("waterui/core")).expect("framework dirs");
+        let my_dep = temp.path().join("my_dep");
+        std::fs::create_dir_all(&my_dep).expect("dep dir");
+        let framework_roots =
+            BTreeSet::from([dunce::canonicalize(&checkout).expect("checkout canonicalizes")]);
+        let tree = BTreeMap::from([
+            ("app".to_string(), "app v0.1.0 (/workspace/app)".to_string()),
+            (
+                "my_dep".to_string(),
+                format!("my_dep v0.1.0 ({})", my_dep.display()),
+            ),
+            (
+                "waterui".to_string(),
+                format!("waterui v0.6.0 ({})", checkout.join("waterui").display()),
+            ),
+            (
+                "waterui-core".to_string(),
+                format!(
+                    "waterui-core v0.6.0 ({})",
+                    checkout.join("waterui/core").display()
+                ),
+            ),
+        ]);
+        assert_eq!(
+            project_packages_from_tree("app", &tree, &framework_roots)
+                .expect("path packages resolve"),
+            BTreeSet::from(["app".to_string(), "my_dep".to_string()])
+        );
+
+        let gallery = checkout.join("waterui/examples/gallery");
+        std::fs::create_dir_all(&gallery).expect("example dir");
+        let example_tree = BTreeMap::from([
+            (
+                "waterui-example-gallery".to_string(),
+                format!("waterui-example-gallery v0.1.0 ({})", gallery.display()),
+            ),
+            (
+                "waterui".to_string(),
+                format!("waterui v0.6.0 ({})", checkout.join("waterui").display()),
+            ),
+        ]);
+        assert_eq!(
+            project_packages_from_tree("waterui-example-gallery", &example_tree, &framework_roots)
+                .expect("path packages resolve"),
+            BTreeSet::from(["waterui-example-gallery".to_string()])
+        );
+    }
+
+    /// `cargo tree` prints a path package's directory as declared — symlinks
+    /// included — while the framework roots were canonicalized. A checkout
+    /// reached through a symlinked parent must still classify as framework.
+    #[cfg(unix)]
+    #[test]
+    fn project_packages_canonicalize_the_tree_directories() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let checkout = temp.path().join("real/checkout");
+        std::fs::create_dir_all(checkout.join("waterui")).expect("framework dirs");
+        let alias = temp.path().join("alias");
+        std::os::unix::fs::symlink(temp.path().join("real"), &alias).expect("symlink");
+        let aliased_checkout = alias.join("checkout");
+        let framework_roots = BTreeSet::from([
+            dunce::canonicalize(&aliased_checkout).expect("checkout canonicalizes")
+        ]);
+        let tree = BTreeMap::from([
+            ("app".to_string(), "app v0.1.0 (/workspace/app)".to_string()),
+            (
+                "waterui".to_string(),
+                format!(
+                    "waterui v0.6.0 ({})",
+                    aliased_checkout.join("waterui").display()
+                ),
+            ),
+        ]);
+        assert_eq!(
+            project_packages_from_tree("app", &tree, &framework_roots)
+                .expect("path packages resolve"),
+            BTreeSet::from(["app".to_string()])
+        );
+    }
+
+    /// A path package whose directory cannot be canonicalized is an error
+    /// naming that directory.
+    #[test]
+    fn project_packages_fail_on_an_unresolvable_directory() {
+        let missing = PathBuf::from("/definitely/missing/path/package");
+        let tree = BTreeMap::from([(
+            "my_dep".to_string(),
+            format!("my_dep v0.1.0 ({})", missing.display()),
+        )]);
+        let error = project_packages_from_tree("app", &tree, &BTreeSet::new())
+            .expect_err("an unresolvable directory is an error");
+        assert!(
+            error.to_string().contains(&missing.display().to_string()),
+            "the error names the directory: {error}"
+        );
+    }
 }
 
 use std::{

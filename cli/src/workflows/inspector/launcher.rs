@@ -1,5 +1,6 @@
 //! Inspector app launcher and session management.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
@@ -274,7 +275,8 @@ async fn scaffold_inspector_app(path: &Path, requirements: &InspectorRequirement
         false,
         None,
         project.local_sources(),
-    );
+    )
+    .with_project_packages(project.project_packages().await?);
 
     crate::templates::inspector::scaffold(project.root(), &ctx)
         .await
@@ -292,7 +294,12 @@ fn inspector_signature(requirements: &InspectorRequirements) -> String {
             |path| path.display().to_string()
         ),
         requirements.runtime_fingerprint,
-        crate::templates::inspector::template_fingerprint(),
+        // The support manifest's own crate is the only project package its
+        // graph carries — the name `scaffold_inspector_app`'s "WaterUI
+        // Inspector" identity derives — so its override set is this one entry.
+        crate::templates::inspector::template_fingerprint(&BTreeSet::from([
+            "waterui_inspector".to_string(),
+        ])),
     )
 }
 

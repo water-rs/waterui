@@ -3,6 +3,7 @@
 //! Handles launching the preview app on the target platform and
 //! establishing TCP connection.
 
+use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -65,6 +66,11 @@ struct PreviewRequirements {
     runtime_features: Vec<String>,
     app_crate_name: crate::project_types::CrateName,
     app_path: PathBuf,
+    /// The previewed project's own packages — the app crate plus its path
+    /// dependencies outside the framework checkout — the `[profile.dev
+    /// .package.<name>]` overrides the support manifests write, so the
+    /// module's rebuild keeps the app unoptimized with line tables.
+    project_packages: BTreeSet<String>,
 }
 
 #[derive(Debug)]
@@ -73,6 +79,7 @@ struct ResolvedPreviewMetadata {
     framework: ResolvedFramework,
     app_crate_name: crate::project_types::CrateName,
     app_path: PathBuf,
+    project_packages: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1515,6 +1522,7 @@ async fn scaffold_preview_module(project: &Project, platform: PreviewPlatform) -
             &workspace_root,
             patches,
             Some(project.root()),
+            Some(&project.project_packages().await?),
         )
         .await?;
     }
@@ -1597,7 +1605,8 @@ async fn scaffold_preview_app(path: &Path, requirements: &PreviewRequirements) -
     .with_preview_app_dependency(
         requirements.app_crate_name.clone(),
         requirements.app_path.clone(),
-    );
+    )
+    .with_project_packages(requirements.project_packages.clone());
 
     crate::templates::preview::scaffold(project.root(), &ctx)
         .await
@@ -1645,7 +1654,7 @@ fn preview_signature(requirements: &PreviewRequirements) -> String {
             |path| path.display().to_string()
         ),
         requirements.runtime_fingerprint,
-        crate::templates::preview::template_fingerprint(),
+        crate::templates::preview::template_fingerprint(&requirements.project_packages),
     )
 }
 
@@ -1666,6 +1675,7 @@ async fn resolve_preview_requirements(
         &resolved.app_crate_name,
         &resolved.app_path,
         &resolved.framework,
+        &resolved.project_packages,
     )
     .await?
     {
@@ -1703,6 +1713,7 @@ async fn resolve_preview_requirements(
             runtime_features,
             app_crate_name: resolved.app_crate_name,
             app_path: resolved.app_path,
+            project_packages: resolved.project_packages,
         });
     } else {
         let source = waterui
@@ -1736,6 +1747,7 @@ async fn resolve_preview_requirements(
         runtime_features,
         app_crate_name: resolved.app_crate_name,
         app_path: resolved.app_path,
+        project_packages: resolved.project_packages,
     })
 }
 
@@ -1746,6 +1758,7 @@ async fn resolve_preview_requirements_from_manifest(
     app_crate_name: &crate::project_types::CrateName,
     app_path: &Path,
     framework: &ResolvedFramework,
+    project_packages: &BTreeSet<String>,
 ) -> Result<Option<PreviewRequirements>> {
     let manifest_open_start = Instant::now();
     let manifest = crate::project::Manifest::open(project_path.join("Water.toml"))
@@ -1806,6 +1819,7 @@ async fn resolve_preview_requirements_from_manifest(
         runtime_features: runtime_features.to_vec(),
         app_crate_name: app_crate_name.clone(),
         app_path: app_path.to_path_buf(),
+        project_packages: project_packages.clone(),
     }))
 }
 
@@ -1821,6 +1835,7 @@ async fn resolve_preview_metadata(
         .join("Cargo.toml");
     let app_crate_name = project.crate_name().clone();
     let app_path = project.root().to_path_buf();
+    let project_packages = project.project_packages().await?;
     let metadata_start = Instant::now();
     let metadata_manifest_path = manifest_path.clone();
     let abi_feature = PreviewLinkMode::for_platform(platform)
@@ -1845,6 +1860,7 @@ async fn resolve_preview_metadata(
         framework,
         app_crate_name,
         app_path,
+        project_packages,
     })
 }
 

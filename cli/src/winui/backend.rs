@@ -84,7 +84,8 @@ impl WinUiBackend {
             project.local_sources(),
         )
         .with_backend_project_path(project.backend_path::<Self>())
-        .with_project_root_path(project.root().to_path_buf()))
+        .with_project_root_path(project.root().to_path_buf())
+        .with_project_packages(project.project_packages().await?))
     }
 }
 
