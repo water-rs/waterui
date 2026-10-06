@@ -107,8 +107,8 @@ fn vertical_layout_draws_the_label_strip_highlight() {
         panic!("expected one highlight draw, got {draws:?}");
     };
     assert_eq!(*layout, TabItemLayout::Vertical);
-    assert_eq!(bounds.y0, 252.0);
-    assert_eq!(bounds.y1, 255.0);
+    approx::assert_relative_eq!(bounds.y0, 252.0);
+    approx::assert_relative_eq!(bounds.y1, 255.0);
     assert!(bounds.x0 > 0.0 && bounds.x1 < 200.0);
 }
 

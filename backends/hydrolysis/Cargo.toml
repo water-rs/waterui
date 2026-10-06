@@ -272,6 +272,8 @@ jiff.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 waterui = { workspace = true, features = ["flow-markdown", "gpu", "snackbar", "video-gpu"] }
 base64 = "0.22"
+# Tolerance assertions for computed geometry and animation values in tests.
+approx = "0.5"
 executor-core = { workspace = true, features = ["async-executor"] }
 tiny_http = "0.12"
 # Two crates that only exist to let the segmentation test see what it asserts

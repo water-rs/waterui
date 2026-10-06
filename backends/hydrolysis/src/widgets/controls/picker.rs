@@ -1102,7 +1102,7 @@ mod tests {
         assert_eq!(label, Rect::new(16.0, 8.0, 286.0, 20.0));
         assert_eq!(value, Rect::new(16.0, 28.0, 286.0, 48.0));
         assert!(bounds.contains_rect(label) && bounds.contains_rect(value));
-        assert_eq!(value.y0, label.y1 + metrics().label_spacing);
+        approx::assert_relative_eq!(value.y0, label.y1 + metrics().label_spacing);
     }
 
     /// A hidden label measures empty: it draws nothing, takes no space, and the
@@ -1127,7 +1127,7 @@ mod tests {
         let heading = heading.expect("a drawn group label must be placed");
 
         assert_eq!(heading, Rect::new(16.0, 8.0, 304.0, 20.0));
-        assert_eq!(row_y, heading.y1 + metrics().label_spacing);
+        approx::assert_relative_eq!(row_y, heading.y1 + metrics().label_spacing);
         assert!(bounds.contains_rect(heading));
     }
 
@@ -1142,7 +1142,7 @@ mod tests {
 
         assert_eq!(heading, Rect::new(0.0, 0.0, 320.0, 12.0));
         assert_eq!(row, Rect::new(0.0, 20.0, 320.0, 64.0));
-        assert_eq!(row.y0, heading.y1 + metrics().label_spacing);
+        approx::assert_relative_eq!(row.y0, heading.y1 + metrics().label_spacing);
     }
 
     /// A hidden group label draws nothing and takes no space: no heading rect

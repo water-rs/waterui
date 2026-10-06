@@ -312,6 +312,10 @@ fn registration_signal<T: Clone + 'static>(
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the snapshot is the signal's stored literal read back untouched; any drift means the read went through arithmetic it must not"
+)]
 fn subscribed_snapshot_preserves_registration_animation_metadata() {
     let signal = registration_signal(
         0.25,
@@ -327,19 +331,23 @@ fn subscribed_snapshot_preserves_registration_animation_metadata() {
         }
     });
 
-    assert_eq!(snapshot, 0.25);
+    assert!(snapshot == 0.25, "left {:?}, right {:?}", snapshot, 0.25);
     assert!(signal.subscribed.get());
     assert!(metadata_replayed.get());
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the snapshot is the signal's stored literal read back untouched; any drift means the read went through arithmetic it must not"
+)]
 fn animated_scalar_subscribes_before_reading_its_snapshot() {
     let signal = registration_signal(0.25, nami::watcher::Context::from(0.25));
     let mut renderer = test_renderer();
 
     let resolved = renderer.resolve_animated_scalar_with_discriminator(&signal, usize::MAX);
 
-    assert_eq!(resolved, 0.25);
+    assert!(resolved == 0.25, "left {:?}, right {:?}", resolved, 0.25);
     assert!(signal.subscribed.get());
 }
 
@@ -351,7 +359,7 @@ fn toggle_progress_subscribes_before_reading_its_snapshot() {
     let (progress, selected) =
         renderer.resolve_toggle_progress(&signal, Animation::linear(Duration::ZERO));
 
-    assert_eq!(progress, 0.0);
+    approx::assert_relative_eq!(progress, 0.0);
     assert!(!selected);
     assert!(signal.subscribed.get());
 }
@@ -653,9 +661,11 @@ fn hydro_subview_preserves_non_stretch_button_intrinsic_under_zero_width_proposa
     let intrinsic = subview.measure(ProposalSize::UNSPECIFIED);
     let constrained = subview.measure(ProposalSize::new(Some(0.0), None));
 
-    assert_eq!(
-        constrained.size.width, intrinsic.size.width,
-        "Hydrolysis non-stretch controls must not be compressed below their intrinsic text width"
+    assert!(
+        approx::relative_eq!(constrained.size.width, intrinsic.size.width),
+        "Hydrolysis non-stretch controls must not be compressed below their intrinsic text width: left {:?}, right {:?}",
+        constrained.size.width,
+        intrinsic.size.width
     );
 }
 
@@ -682,9 +692,11 @@ fn state_wrapped_button_remains_non_stretch_for_layout() {
     let proposed = subview.measure(ProposalSize::new(Some(720.0), None));
 
     assert_eq!(subview.stretch_axis(), StretchAxis::None);
-    assert_eq!(
-        proposed.size.width, intrinsic.size.width,
-        "environment state metadata must not make a button stretch across its VStack row"
+    assert!(
+        approx::relative_eq!(proposed.size.width, intrinsic.size.width),
+        "environment state metadata must not make a button stretch across its VStack row: left {:?}, right {:?}",
+        proposed.size.width,
+        intrinsic.size.width
     );
 }
 
@@ -747,8 +759,8 @@ fn floating_button_measurement_uses_style_tokens() {
         .first()
         .expect("floating button must register an intrinsic pointer target")
         .bounds;
-    assert_eq!(intrinsic_bounds.width(), 37.0);
-    assert_eq!(intrinsic_bounds.height(), 41.0);
+    approx::assert_relative_eq!(intrinsic_bounds.width(), 37.0);
+    approx::assert_relative_eq!(intrinsic_bounds.height(), 41.0);
 }
 
 /// A button takes its size and chrome from floating-surface tokens only when it
@@ -867,7 +879,7 @@ fn stacked_icon_buttons_above_gesture_surface_receive_clicks() {
         &env,
     ));
 
-    assert_eq!(zoom.snapshot(), 0.5);
+    approx::assert_relative_eq!(zoom.snapshot(), 0.5);
     assert!(
         renderer.take_patch_request(),
         "a synchronous button action must schedule a retained-tree refresh"
@@ -1953,6 +1965,10 @@ fn disabled_picker_family_and_tabs_expose_no_mutating_actions() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the local-space mapping must carry the wave's progress and opacity through untouched, so the values stay bit-identical"
+)]
 fn interaction_press_origin_is_converted_to_widget_local_space() {
     let mut press_waves = waterui_backend_core::widget::PressWaves::EMPTY;
     press_waves.push(waterui_backend_core::widget::PressWave {
@@ -1972,8 +1988,18 @@ fn interaction_press_origin_is_converted_to_widget_local_space() {
         .latest()
         .expect("wave must survive the local-space mapping");
     assert_eq!(wave.origin, Some(Point::new(25.0, 4.0)));
-    assert_eq!(wave.progress, 0.5);
-    assert_eq!(wave.opacity, 0.12);
+    assert!(
+        wave.progress == 0.5,
+        "left {:?}, right {:?}",
+        wave.progress,
+        0.5
+    );
+    assert!(
+        wave.opacity == 0.12,
+        "left {:?}, right {:?}",
+        wave.opacity,
+        0.12
+    );
 }
 
 #[test]
@@ -2067,7 +2093,7 @@ fn interaction_engine_resolves_focus_state() {
     );
 
     assert!(state.state.contains(InteractionState::FOCUSED));
-    assert_eq!(state.focus_progress, 1.0);
+    approx::assert_relative_eq!(state.focus_progress, 1.0);
 }
 
 #[test]
@@ -3561,8 +3587,8 @@ fn badge_indicator_anchors_to_the_content_trailing_edge() {
     // 2 above the anchor).
     let draws = capture(Badge::new(5, anchor.clone()), &env);
     assert_eq!(draws.len(), 1, "one badge indicator draw, got {draws:?}");
-    assert_eq!(draws[0].x0, 148.0);
-    assert_eq!(draws[0].y0, -2.0);
+    approx::assert_relative_eq!(draws[0].x0, 148.0);
+    approx::assert_relative_eq!(draws[0].y0, -2.0);
 
     // RTL mirrors the anchor to the leading edge.
     env.insert(LayoutDirection::RightToLeft);
@@ -3573,8 +3599,8 @@ fn badge_indicator_anchors_to_the_content_trailing_edge() {
 
     let draws = capture(Badge::new(5, anchor), &env);
     assert_eq!(draws.len(), 1, "one badge indicator draw, got {draws:?}");
-    assert_eq!(draws[0].x1, 12.0);
-    assert_eq!(draws[0].y0, -2.0);
+    approx::assert_relative_eq!(draws[0].x1, 12.0);
+    approx::assert_relative_eq!(draws[0].y0, -2.0);
 }
 
 /// water-rs/hydrolysis#51: after the single-child collapse the surviving
