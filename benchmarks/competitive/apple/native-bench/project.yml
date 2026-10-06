@@ -1,4 +1,9 @@
 name: NativeBench
+# The native iOS contestants. Built on the build host for the iphoneos SDK,
+# unsigned (`bench.py build`); the device host signs each with the bundle
+# id manifest.json declares. NativeBench.xcodeproj is generated from this
+# spec by xcodegen at bootstrap and never committed. The XCTest UI runner
+# is a separate project (../xctest/project.yml) built on the device host.
 options:
   bundleIdPrefix: dev.bench
   createIntermediateGroups: true
@@ -11,11 +16,12 @@ settings:
     ONLY_ACTIVE_ARCH: YES
     GENERATE_INFOPLIST_FILE: YES
     SWIFT_VERSION: "5.0"
-    CODE_SIGN_STYLE: Automatic
-    DEVELOPMENT_TEAM: ""
     PRODUCT_NAME: $(TARGET_NAME)
+    # CFBundleShortVersionString / CFBundleVersion of the generated
+    # Info.plist — the device host's thinning export reads both
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
 targets:
-  # --- iOS apps ---
   BenchSwiftUI:
     type: application
     platform: iOS
@@ -41,71 +47,9 @@ targets:
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
-  # --- macOS apps ---
-  BenchSwiftUIMac:
-    type: application
-    platform: macOS
-    deploymentTarget: "14.0"
-    sources: [Sources/SwiftUI]
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.bench.swiftui.mac
-        SWIFT_OBJC_BRIDGING_HEADER: "$(SRCROOT)/Sources/NotifyBridge.h"
-        CODE_SIGN_IDENTITY: "-"
-  BenchAppKit:
-    type: application
-    platform: macOS
-    deploymentTarget: "14.0"
-    sources: [Sources/AppKit]
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.bench.native.mac
-        SWIFT_OBJC_BRIDGING_HEADER: "$(SRCROOT)/Sources/NotifyBridge.h"
-        CODE_SIGN_IDENTITY: "-"
-  # --- shared UI-test harness (drives any app by bundle id) ---
-  BenchRunner:
-    type: bundle.ui-testing
-    platform: iOS
-    deploymentTarget: "17.0"
-    sources: [../xctest/Sources/Runner]
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.bench.runner
-        SWIFT_OBJC_BRIDGING_HEADER: "$(SRCROOT)/Sources/NotifyBridge.h"
-        TEST_TARGET_NAME: BenchSwiftUI
-        GENERATE_INFOPLIST_FILE: YES
-  BenchRunnerMac:
-    type: bundle.ui-testing
-    platform: macOS
-    deploymentTarget: "14.0"
-    sources: [../xctest/Sources/Runner]
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.bench.runner.mac
-        SWIFT_OBJC_BRIDGING_HEADER: "$(SRCROOT)/Sources/NotifyBridge.h"
-        TEST_TARGET_NAME: BenchSwiftUIMac
-        GENERATE_INFOPLIST_FILE: YES
-        CODE_SIGN_IDENTITY: "-"
 schemes:
-  BenchIOS:
+  BenchApps:
     build:
       targets:
         BenchSwiftUI: all
         BenchUIKit: all
-        BenchRunner: [testing]
-    run:
-      targets: [BenchSwiftUI]
-    test:
-      config: Release
-      targets: [BenchRunner]
-  BenchMac:
-    build:
-      targets:
-        BenchSwiftUIMac: all
-        BenchAppKit: all
-        BenchRunnerMac: [testing]
-    run:
-      targets: [BenchSwiftUIMac]
-    test:
-      config: Release
-      targets: [BenchRunnerMac]

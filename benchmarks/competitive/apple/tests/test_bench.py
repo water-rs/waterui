@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Pure-fixture + real-control-flow checks for bench.py (stdlib only).
 
-Covers: devicectl JSON parse (nominal/warm/unreadable/missing),
-xcresult-error row marking, CLI hash verification, host fingerprint
-gating, the device cleanup path with injected cleanup failures, xctrace
-export parsing, the pty line reader and xctestrun injection. No device,
-simulator, network, or build required — failures are injected through
-real control flow, not mocks shaped like the implementation.
+Covers: devicectl JSON parse, xcresult-error row marking, the report's
+completeness gates, the resume gate, profile selection, capacity
+summaries, the device cleanup path with injected cleanup failures,
+xctrace export parsing and frame attribution, the pty line reader, the
+Instruments scratch sweep and xctestrun injection. No device, network,
+or build required — failures are injected through real control flow,
+not mocks shaped like the implementation.
 
 Run: uv run tests/test_bench.py
 """
@@ -37,72 +38,33 @@ spec.loader.exec_module(bench)
 def devicectl_doc(**fields):
     """A devicectl --json-output shaped document with the fields nested
     the way the real tool nests them (hardwareProperties /
-    deviceProperties / screenProperties / connectionProperties)."""
-    hw, dev, scr, conn = {}, {}, {}, {}
+    deviceProperties)."""
+    hw, dev = {}, {}
     for k, v in fields.items():
-        if k in ("marketingName", "productType", "deviceType"):
+        if k in ("marketingName", "productType"):
             hw[k] = v
-        elif k in ("osVersionNumber", "deviceName"):
-            dev[k] = v
-        elif k == "maximumFramesPerSecond":
-            scr[k] = v
         else:
-            conn[k] = v
+            dev[k] = v
     return {"info": {"arguments": ["device", "info", "details"]},
             "result": {"devices": [{
                 "identifier": "test-udid",
                 "hardwareProperties": hw,
                 "deviceProperties": dev,
-                "screenProperties": scr,
-                "connectionProperties": conn,
             }]}}
 
 
 class TestDeviceInfoParse(unittest.TestCase):
-    def test_nominal(self):
+    def test_identity_fields(self):
         st = bench.parse_device_info(devicectl_doc(
-            thermalState="nominal", maximumFramesPerSecond=120,
-            marketingName="iPad Pro 13-inch (M4)",
-            productType="iPad16,6", osVersionNumber="26.5"))
-        self.assertEqual(st["thermal"], "nominal")
-        self.assertEqual(st["refresh_hz"], 120)
-        self.assertEqual(st["model"], "iPad Pro 13-inch (M4)")
-        self.assertEqual(st["product_type"], "iPad16,6")
-        self.assertEqual(st["os_version"], "26.5")
+            marketingName="iPhone 16 Pro", productType="iPhone17,1",
+            osVersionNumber="27.0"))
+        self.assertEqual(st, {"model": "iPhone 16 Pro",
+                              "product_type": "iPhone17,1",
+                              "os_version": "27.0"})
 
-    def test_thermal_states_parse(self):
-        # thermal is parsed when devicectl reports it (an absent or
-        # unreadable value reads 'unknown' — the gate itself lives in
-        # the on-device runner now)
-        for st_name in ("fair", "serious", "critical"):
-            st = bench.parse_device_info(
-                devicectl_doc(thermalState=st_name))
-            self.assertEqual(st["thermal"], st_name)
-
-    def test_missing_thermal_is_unknown(self):
-        st = bench.parse_device_info(devicectl_doc(
-            marketingName="iPhone 17"))
-        self.assertEqual(st["thermal"], "unknown")
-
-    def test_missing_refresh_stays_null_no_spec_fallback(self):
-        st = bench.parse_device_info(devicectl_doc(
-            thermalState="nominal"))
-        self.assertIsNone(st["refresh_hz"])
-        self.assertNotIn("refresh_hz_source", st)
-
-    def test_malformed_and_flat_field_placement(self):
-        # fields nested differently than expected still parse via the
-        # recursive key walk; a malformed document records read_error
-        st = bench.parse_device_info({"result": {"devices": [{
-            "connectionProperties": {"thermalState": "nominal",
-                                     "maximumFramesPerSecond": 59.94}}]}})
-        self.assertEqual(st["thermal"], "nominal")
-        self.assertEqual(st["refresh_hz"], 59)
-        # a non-dict document degrades to unknown-thermal, not a crash;
-        # the read_error marker is recorded by device_state's JSON load
-        bad = bench.parse_device_info(None)
-        self.assertEqual(bad["thermal"], "unknown")
-        self.assertIsNone(bad["refresh_hz"])
+    def test_unreported_fields_stay_absent(self):
+        st = bench.parse_device_info(devicectl_doc(deviceName="phone"))
+        self.assertEqual(st, {"model": "phone"})
 
 
 class TestXcresultError(unittest.TestCase):
@@ -118,103 +80,66 @@ class TestXcresultError(unittest.TestCase):
         finally:
             bench.parse_xcresult = orig
 
-    def test_flatten_skips_error_rows_and_verbatim_strings(self):
+    def test_flatten_skips_error_rows(self):
         results = {"runs": [
-            {"platform": "macos", "contestant": "a", "workload": "W1",
-             "metrics": {"_error": "raw tail kept"}},
-            {"platform": "macos", "contestant": "a", "workload": "W1",
+            {"contestant": "a", "workload": "w1", "error": "x",
+             "metrics": {"t": {"m": {"unit": "s", "measurements": [9.0]}}}},
+            {"contestant": "a", "workload": "w1",
              "metrics": {"t": {"m": {"unit": "s",
                                      "measurements": [1.0, 2.0]}}}},
         ]}
-        table = bench.flatten(results, "macos")
-        self.assertEqual(table[("a", "W1", "swipe")]["t:m"]["median"],
-                         1.5)
+        table = bench.flatten(results)
+        self.assertEqual(table[("a", "w1")]["t:m"]["median"], 1.5)
 
 
-class TestCliVerify(unittest.TestCase):
-    def test_hash_match_and_mismatch(self):
-        ev = {"binary": "/x/water", "sha256": "abc"}
-        self.assertIsNone(bench.cli_check(ev, {"sha256": "abc"}))
-        err = bench.cli_check(ev, {"sha256": "def"})
-        self.assertIn("mismatch", err)
-        self.assertIn("cannot hash",
-                      bench.cli_check(
-                          {"binary": "/x/water", "error": "binary not found"},
-                          {"sha256": "abc"}))
-
-
-FP = {"hw_model": "Mac15,6", "cpu_brand": "Apple M4",
-      "hv_vmm_present": False, "gpus": ["Apple M4"]}
-CLI_SHA = "b01f11d2" * 8
 HEAD = "a1b2c3d4" * 5
+SIZE = {"app_bytes": 3_000_000, "unsigned_ipa_bytes": 1_000_000,
+        "thinned_ipa_bytes": 900_000, "thinned_app_bytes": 2_500_000}
 
 
-def synth_results(plat="macos", reps=5, drop_cell=None, fail_reps=()):
-    """A results document covering every required cell on `plat`, with
+def synth_results(reps=5, drop_cell=None, fail_reps=(), sizes=True):
+    """A device results document covering every required cell, with
     `fail_reps` rep indices recorded as error rows (never counted) and
     `drop_cell`=(cid,w) left unrecorded."""
     runs = []
-    for cid, w, dr in sorted(bench.required_cells(plat)):
+    for cid, w in sorted(bench.required_cells()):
         if (cid, w) == drop_cell:
             continue
         for rep in range(reps):
+            row = {"contestant": cid, "workload": w,
+                   "drive": bench.drive_for(w), "repeat": rep}
             if rep in fail_reps:
-                runs.append({"platform": plat, "contestant": cid,
-                             "workload": w, "drive": dr, "repeat": rep,
-                             "error": "injected launch failure"})
+                row["error"] = "injected launch failure"
             else:
                 # the producer's real shape: one dict per test
                 # identifier, metric tails with unit + measurements
-                runs.append({"platform": plat, "contestant": cid,
-                             "workload": w, "drive": dr, "repeat": rep,
-                             "metrics": {
-                                 "testLaunch": {
-                                     "duration": {
-                                         "unit": "s",
-                                         "measurements":
-                                             [1.0 + rep * 0.01]}},
-                                 "testWorkload": {
-                                     "physical_peak": {
-                                         "unit": "kB",
-                                         "measurements": [64000]},
-                                     "time": {
-                                         "unit": "s",
-                                         "measurements": [0.4]},
-                                     "hitch_time_ratio": {
-                                         "unit": "ms/s",
-                                         "measurements": [0.0]}}}})
-    return {"machine": {"model": "Mac", "fingerprint": FP},
-            "platform": plat,
-            "pins": {"water_cli": CLI_SHA, "waterui_head": HEAD},
-            "runs": runs, "sizes": {}}
+                row.update({"frames": 1400, "metrics": {
+                    "testLaunch": {"duration": {
+                        "unit": "s", "measurements": [1.0 + rep * 0.01]}},
+                    "testWorkload": {
+                        "physical_peak": {"unit": "kB",
+                                          "measurements": [64000]},
+                        "time": {"unit": "s", "measurements": [0.4]}}}})
+            runs.append(row)
+    return {"machine": {"hw_model": "Macmini9,1", "hw_uuid": "U"},
+            "device": {"udid": "D", "model": "iPhone 16 Pro",
+                       "product_type": "iPhone17,1"},
+            "build": {"checkout_head": HEAD},
+            "runs": runs,
+            "sizes": {c["id"]: dict(SIZE) for c in bench.MANIFEST[
+                "contestants"]} if sizes else {}}
 
 
-def run_report(docs):
-    """Run the real report command on temp results files; returns the
+def run_report(doc):
+    """Run the real report command on a temp results file; returns the
     report text (SystemExit propagates)."""
-    import argparse
     tmp = Path(tempfile.mkdtemp(prefix="bench-report-"))
-    paths = []
-    for i, d in enumerate(docs):
-        p = tmp / f"r{i}.json"
-        p.write_text(json.dumps(d))
-        paths.append(str(p))
+    p = tmp / "r.json"
+    p.write_text(json.dumps(doc))
     out = tmp / "report.md"
-    # the synthetic docs only cover the platform(s) they synthesize — the
-    # manifest's required_platforms would flag the others; scope the
-    # requirement to the docs' platforms
-    plats = sorted({d.get("platform") for d in docs if d.get("platform")})
-    meas = bench.MANIFEST.setdefault("measurement", {})
-    saved = meas.get("required_platforms")
-    meas["required_platforms"] = plats
     try:
-        bench.cmd_report(argparse.Namespace(
-            input=",".join(paths), out=str(out)))
+        bench.cmd_report(argparse.Namespace(input=str(p), out=str(out)))
     finally:
-        if saved is None:
-            meas.pop("required_platforms", None)
-        else:
-            meas["required_platforms"] = saved
         text = out.read_text() if out.exists() else ""
         shutil.rmtree(tmp)
     return text
@@ -222,8 +147,7 @@ def run_report(docs):
 
 class TestReporting(unittest.TestCase):
     def test_flatten_reports_n_min_max_spread(self):
-        results = synth_results()
-        table = bench.flatten(results, "macos")
+        table = bench.flatten(synth_results())
         cell = next(iter(table.values()))["testLaunch:duration"]
         self.assertEqual(cell["n"], 5)
         self.assertAlmostEqual(cell["median"], 1.02)
@@ -232,110 +156,62 @@ class TestReporting(unittest.TestCase):
         self.assertAlmostEqual(cell["spread"], 0.04, places=6)
 
     def test_complete_dataset_passes_and_shows_n(self):
-        text = run_report([synth_results()])
+        text = run_report(synth_results())
         self.assertIn("n=5", text)
+        self.assertIn("thinned .ipa", text)
         self.assertNotIn("DATASET INCOMPLETE", text)
 
     def test_missing_cell_fails_report(self):
-        cid, w, _ = next(iter(sorted(bench.required_cells("macos"))))
+        cell = next(iter(sorted(bench.required_cells())))
         with self.assertRaises(SystemExit):
-            run_report([synth_results(drop_cell=(cid, w))])
+            run_report(synth_results(drop_cell=cell))
+
+    def test_missing_thinned_size_fails_report(self):
+        doc = synth_results()
+        doc["sizes"]["waterui"] = {"app_bytes": 1,
+                                   "error": "thinning: injected"}
+        with self.assertRaises(SystemExit):
+            run_report(doc)
 
     def test_all_failed_and_mixed_cells_fail(self):
         # 2 of 5 reps are error rows -> 3 successful < floor
         with self.assertRaises(SystemExit):
-            run_report([synth_results(fail_reps=(3, 4))])
-        # all-failed cell: every rep an error
-        doc = synth_results(reps=5)
-        target = next(iter(sorted(bench.required_cells("macos"))))
+            run_report(synth_results(fail_reps=(3, 4)))
+        doc = synth_results()
+        target = next(iter(sorted(bench.required_cells())))
         for r in doc["runs"]:
-            if (r.get("contestant"), r.get("workload")) == target[:2]:
+            if (r["contestant"], r["workload"]) == target:
                 r.pop("metrics", None)
                 r["error"] = "injected xcresult failure"
         with self.assertRaises(SystemExit) as ctx:
-            run_report([doc])
+            run_report(doc)
         self.assertIn("incomplete", str(ctx.exception))
-        # the failed attempts are retained verbatim in the report
-        # (report file was written before the SystemExit)
-
-    def test_merge_requires_identical_fingerprints(self):
-        a = synth_results()
-        b = synth_results()
-        run_report([a, b])  # same fp + cli sha: merges
-        bad_host = synth_results()
-        bad_host["machine"]["fingerprint"] = dict(FP, hw_model="Macmini9,1")
-        with self.assertRaises(SystemExit):
-            run_report([a, bad_host])
-        bad_cli = synth_results()
-        bad_cli["pins"]["water_cli"] = "deadbeef"
-        with self.assertRaises(SystemExit):
-            run_report([a, bad_cli])
-        stale = synth_results()
-        stale["machine"].pop("fingerprint")
-        with self.assertRaises(SystemExit):
-            run_report([a, stale])
 
 
-class TestHostGate(unittest.TestCase):
-    REAL = {"hw_model": "Mac15,6", "cpu_brand": "Apple M4",
-            "hv_vmm_present": False, "gpus": ["Apple M4"]}
-    VM = {"hw_model": "VirtualMac2,1", "cpu_brand": "Apple M4 (Virtual)",
-          "hv_vmm_present": True, "gpus": ["Apple Paravirtual device"]}
+class TestResumeGate(unittest.TestCase):
+    STAGING = {"checkout_head": HEAD, "artifacts": {"waterui": {
+        "sha256": "s"}}}
+    MACHINE = {"hw_model": "Macmini9,1", "hw_uuid": "U"}
 
-    def test_virtual_detection(self):
-        self.assertIsNone(bench.host_is_virtualized(self.REAL))
-        self.assertIsNotNone(bench.host_is_virtualized(self.VM))
-        para = dict(self.REAL, gpus=["Apple Paravirtual device"])
-        self.assertIsNotNone(bench.host_is_virtualized(para))
+    def state(self, **over):
+        st = {"build": self.STAGING, "machine": self.MACHINE,
+              "device": {"udid": "D"}, "runs": []}
+        st.update(over)
+        return st
 
-    def test_vm_refused_with_no_escape(self):
-        state = {"machine": {}}
-        with self.assertRaises(SystemExit) as ctx:
-            bench.check_host_fingerprint(state, self.VM)
-        self.assertIn("virtualized", str(ctx.exception))
+    def test_same_build_host_and_device_merge(self):
+        bench.check_resume(self.state(), self.STAGING, self.MACHINE, "D")
 
-    def test_cli_fingerprint_mismatch_refused(self):
-        state = {"machine": {"fingerprint": self.REAL},
-                 "pins": {"waterui_head": HEAD,
-                          "water_cli": "otherbinarysha"},
-                 "runs": [{"platform": "macos"}]}
-        orig_head, orig_ev = (bench.toolchain.checkout_head,
-                              bench.cli_evidence)
-        try:
-            bench.toolchain.checkout_head = lambda: HEAD
-            bench.cli_evidence = lambda: {
-                "binary": "/x/water", "sha256": CLI_SHA}
+    def test_other_build_host_or_device_refused(self):
+        for st, why in (
+                (self.state(build={**self.STAGING, "checkout_head": "f"}),
+                 "staged build"),
+                (self.state(machine={**self.MACHINE, "hw_uuid": "V"}),
+                 "device host"),
+                (self.state(device={"udid": "E"}), "different device")):
             with self.assertRaises(SystemExit) as ctx:
-                bench.check_source_fingerprint(state)
-            self.assertIn("different water CLI", str(ctx.exception))
-            # a matching recorded sha passes the gate
-            state["pins"]["water_cli"] = CLI_SHA
-            bench.check_source_fingerprint(state)
-            # head mismatch still refuses
-            state["pins"]["waterui_head"] = "f" * 40
-            with self.assertRaises(SystemExit):
-                bench.check_source_fingerprint(state)
-            # predates provenance with runs present -> stale unknown
-            with self.assertRaises(SystemExit):
-                bench.check_source_fingerprint(
-                    {"pins": {}, "runs": [{"platform": "macos"}]})
-            # empty results pass both gates
-            bench.check_source_fingerprint({"pins": {}, "runs": []})
-        finally:
-            bench.toolchain.checkout_head = orig_head
-            bench.cli_evidence = orig_ev
-
-    def test_mixed_host_refused(self):
-        state = {"machine": {"fingerprint": dict(self.REAL,
-                                               hw_model="Macmini9,1")}}
-        with self.assertRaises(SystemExit) as ctx:
-            bench.check_host_fingerprint(state, self.REAL)
-        self.assertIn("different host", str(ctx.exception))
-
-    def test_same_host_passes(self):
-        state = {"machine": {"fingerprint": self.REAL}}
-        bench.check_host_fingerprint(state, self.REAL)
-        self.assertEqual(state["machine"]["fingerprint"], self.REAL)
+                bench.check_resume(st, self.STAGING, self.MACHINE, "D")
+            self.assertIn(why, str(ctx.exception))
 
 
 class TestDeviceCleanup(unittest.TestCase):
@@ -377,77 +253,110 @@ class TestSanitizeKeepsErrors(unittest.TestCase):
 
     def test_error_rows_survive_sanitize(self):
         state = {"runs": [
-            {"platform": "macos", "contestant": "waterui",
-             "workload": None, "repeat": 0,
+            {"contestant": "waterui", "workload": None, "repeat": 0,
              "error": "missing artifact /x/Bench.app"},
-            {"platform": "macos", "contestant": "waterui",
-             "workload": "W1", "drive": "swipe", "repeat": 0,
-             "error": "thermal gate closed"},
-            {"platform": "macos", "contestant": "waterui",
-             "workload": "W1", "drive": "stale-drive", "repeat": 0,
+            {"contestant": "waterui", "workload": "w1", "drive": "tap",
+             "repeat": 0, "error": "thermal gate closed"},
+            {"contestant": "waterui", "workload": "w1",
+             "drive": "stale-drive", "repeat": 0,
+             "metrics": {"t": {"m": {"unit": "s", "measurements": [1]}}}},
+            {"contestant": "waterui", "workload": "w1", "drive": "tap",
+             "repeat": 1,
              "metrics": {"t": {"m": {"unit": "s", "measurements": [1]}}}},
         ]}
         bench.sanitize_runs(state)
-        self.assertEqual(len(state["runs"]), 2)
-        self.assertTrue(all("error" in r for r in state["runs"]))
+        self.assertEqual([r["repeat"] for r in state["runs"]], [0, 0, 1])
 
 
 class TestRunFloors(unittest.TestCase):
-    """N9: a cell needs the required metric tails + frame evidence, not
+    """N9: a cell needs the required metric tails + owned frames, not
     any metrics dict."""
 
-    def _run(self, metrics):
-        return {"platform": "macos", "contestant": "a",
-                "workload": "W1", "repeat": 0, "metrics": metrics}
+    FULL = {"testLaunch": {"duration": {"unit": "s", "measurements": [1.0]}},
+            "testWorkload": {
+                "physical_peak": {"unit": "kB", "measurements": [1]},
+                "time": {"unit": "s", "measurements": [1]}}}
+
+    def _run(self, metrics, frames=42):
+        return {"contestant": "a", "workload": "w1", "repeat": 0,
+                "metrics": metrics, "frames": frames}
 
     def test_full_shape_passes(self):
-        r = self._run({"testLaunch": {"duration": {
-            "unit": "s", "measurements": [1.0]}},
-            "testWorkload": {
-                "physical_peak": {"unit": "kB", "measurements": [1]},
-                "time": {"unit": "s", "measurements": [1]},
-                "hitch_time_ratio": {"unit": "ms/s",
-                                     "measurements": [0]}}})
-        self.assertTrue(bench._run_succeeded(r))
+        self.assertTrue(bench._run_succeeded(self._run(self.FULL)))
 
     def test_missing_memory_fails(self):
-        r = self._run({"testLaunch": {"duration": {
-            "unit": "s", "measurements": [1.0]}},
-            "testWorkload": {"time": {"unit": "s",
-                                      "measurements": [1]}}})
-        self.assertFalse(bench._run_succeeded(r))
+        m = {**self.FULL, "testWorkload": {"time": {
+            "unit": "s", "measurements": [1]}}}
+        self.assertFalse(bench._run_succeeded(self._run(m)))
 
-    def test_no_frame_evidence_fails(self):
-        r = self._run({"testLaunch": {"duration": {
-            "unit": "s", "measurements": [1.0]}},
-            "testWorkload": {
-                "physical_peak": {"unit": "kB", "measurements": [1]},
-                "time": {"unit": "s", "measurements": [1]}}})
-        self.assertFalse(bench._run_succeeded(r))
-        # xctrace presented frames on device satisfy the floor too
-        r["frames"] = 42
-        self.assertTrue(bench._run_succeeded(r))
+    def test_no_frames_or_error_fails(self):
+        self.assertFalse(bench._run_succeeded(self._run(self.FULL, 0)))
+        self.assertFalse(bench._run_succeeded(
+            {**self._run(self.FULL), "error": "frame attribution: x"}))
 
 
-class TestRequiredPlatforms(unittest.TestCase):
-    """N2: a required platform with zero rows fails the report."""
+class TestCapacitySummary(unittest.TestCase):
+    """Budget shares are over the step's presents; collapse is fewer than
+    half the presents inside two 60 Hz budgets (WORKLOADS.md)."""
 
-    def test_missing_required_platform_fails(self):
-        # a macos-only dataset under the real manifest (which declares
-        # ios-sim, macos and ios-device required) must fail
-        doc = synth_results("macos")
-        tmp = Path(tempfile.mkdtemp(prefix="bench-req-"))
-        try:
-            p = tmp / "r.json"
-            p.write_text(json.dumps(doc))
-            out = tmp / "report.md"
-            with self.assertRaises(SystemExit) as ctx:
-                bench.cmd_report(argparse.Namespace(
-                    input=str(p), out=str(out)))
-            self.assertIn("incomplete", str(ctx.exception))
-            self.assertTrue(out.exists())
-        finally:
-            shutil.rmtree(tmp)
+    @staticmethod
+    def step(n, intervals):
+        return {"n": n, "frame_stats": {"presents": len(intervals) + 1,
+                                        "intervals_ms": intervals}}
+
+    def test_capacities_and_collapse(self):
+        steps = [self.step(200, [8.3] * 999),          # 99.9% at 120 Hz
+                 self.step(400, [16.7] * 999),         # 60 Hz only
+                 self.step(800, [40.0] * 99)]          # collapsed
+        cap = bench.capacity_summary(steps)
+        self.assertEqual(cap, {"capacity_120hz": 200,
+                               "capacity_60hz": 400})
+        self.assertEqual([s["collapsed"] for s in steps],
+                         [False, False, True])
+        self.assertEqual(steps[1]["in_120hz_pct"], 0.0)
+
+    def test_no_presents_is_collapsed(self):
+        st = {"n": 25600, "frame_stats": {"presents": 0,
+                                          "intervals_ms": []}}
+        bench.capacity_summary([st])
+        self.assertTrue(st["collapsed"])
+
+
+class TestProfileSelection(unittest.TestCase):
+    """A profile signs a bundle id only for its exact App ID, the
+    signing identity's certificate, the device, and the validity
+    margin — a wildcard is never assumed."""
+
+    CERT = b"der-certificate"
+
+    def setUp(self):
+        import hashlib
+        self.ident = bench.Identity(
+            hashlib.sha1(self.CERT).hexdigest().upper(),
+            "Apple Development: someone (ABCDE12345)")
+        self.now = bench.datetime.datetime(2026, 10, 5)
+        self.doc = {"TeamIdentifier": ["4AZ53N9R83"],
+                    "Entitlements": {"application-identifier":
+                                     "4AZ53N9R83.dev.bench.rn"},
+                    "DeveloperCertificates": [self.CERT],
+                    "ProvisionedDevices": ["UDID"],
+                    "ExpirationDate": bench.datetime.datetime(2026, 10, 9)}
+
+    def why(self, **over):
+        return bench.profile_rejection({**self.doc, **over}, "dev.bench.rn",
+                                       self.ident, "UDID", self.now)
+
+    def test_exact_profile_accepted(self):
+        self.assertIsNone(self.why())
+
+    def test_each_mismatch_rejected(self):
+        self.assertIn("App ID", self.why(Entitlements={
+            "application-identifier": "4AZ53N9R83.*"}))
+        self.assertIn("certificate", self.why(
+            DeveloperCertificates=[b"other"]))
+        self.assertIn("device", self.why(ProvisionedDevices=["OTHER"]))
+        self.assertIn("expires", self.why(
+            ExpirationDate=bench.datetime.datetime(2026, 10, 4)))
 
 
 class TestStagingManifest(unittest.TestCase):
@@ -504,33 +413,6 @@ class TestRunnerLog(unittest.TestCase):
             self.assertEqual(bench.read_runner_log(log, since=0.0)[0], {})
         finally:
             shutil.rmtree(tmp)
-
-
-class TestSamplerPidRebind(unittest.TestCase):
-    """N8: a delta across a pid-set change is None, never the difference
-    of two different processes' cumulative times."""
-
-    def _sampler(self):
-        return bench.CpuSampler(lambda: {}, interval=0.5)
-
-    def test_pid_change_returns_none(self):
-        s = self._sampler()
-        s.series = [
-            (100.0, {"app": {"pids": [10], "cpu_s": 1.0, "rss_kb": 1}}),
-            (105.0, {"app": {"pids": [20], "cpu_s": 0.2, "rss_kb": 1}}),
-            (110.0, {"app": {"pids": [20], "cpu_s": 0.9, "rss_kb": 1}}),
-        ]
-        self.assertIsNone(s.delta("app", 100.0, 110.0))
-        self.assertAlmostEqual(s.delta("app", 105.0, 110.0), 0.7)
-
-    def test_whole_run_requires_same_set(self):
-        s = self._sampler()
-        s.series = [
-            (100.0, {"app": {"pids": [10], "cpu_s": 1.0, "rss_kb": 1}}),
-            (110.0, {"app": {"pids": [20], "cpu_s": 0.9, "rss_kb": 1}}),
-        ]
-        self.assertIsNone(s.delta("app"))
-        self.assertEqual(s.peak_rss_mb("app", 90.0, 120.0), 0.0)
 
 
 class TestXctraceExport(unittest.TestCase):
@@ -612,31 +494,29 @@ class TestFrameAttribution(unittest.TestCase):
     clock, gated by the runner's drive-begin / measure-end marks."""
 
     BUNDLE = "WaterUI Bench.app"
-    MAIN = "Contents/MacOS/WaterUI Bench"
+    MAIN = "WaterUI Bench"
+    APP = "/private/var/containers/Bundle/Application/X/WaterUI Bench.app"
     PROCS = [
-        {"name": "WindowServer", "pid": 150,
-         "path": "/System/Library/PrivateFrameworks/SkyLight.framework/"
-                 "Resources/WindowServer"},
+        {"name": "backboardd", "pid": 150,
+         "path": "/usr/libexec/backboardd"},
         {"name": "WaterUI Bench", "pid": 700,
-         "path": "/b/Release/WaterUI Bench.app/Contents/MacOS/WaterUI Bench"},
+         "path": f"{APP}/WaterUI Bench"},
         {"name": "helper", "pid": 701,
-         "path": "/b/Release/WaterUI Bench.app/Contents/Frameworks/"
-                 "H.app/Contents/MacOS/helper"},
-        {"name": "SystemUIServer", "pid": 300,
-         "path": "/System/Library/CoreServices/SystemUIServer.app/"
-                 "Contents/MacOS/SystemUIServer"},
+         "path": f"{APP}/Frameworks/H.framework/helper"},
+        {"name": "SpringBoard", "pid": 300,
+         "path": "/System/Library/CoreServices/SpringBoard.app/SpringBoard"},
     ]
 
     def test_toc_processes(self):
         toc = """<?xml version="1.0"?>
 <trace-toc><run number="1"><processes>
 <process name="kernel" pid="0"/>
-<process name="WaterUI Bench" pid="700" path="/x/WaterUI Bench.app/Contents/MacOS/WaterUI Bench"/>
+<process name="WaterUI Bench" pid="700" path="/x/WaterUI Bench.app/WaterUI Bench"/>
 </processes></run></trace-toc>"""
         procs = bench.parse_toc_processes(toc)
         self.assertEqual(procs[1], {"name": "WaterUI Bench", "pid": 700,
-                                    "path": "/x/WaterUI Bench.app/Contents/"
-                                            "MacOS/WaterUI Bench"})
+                                    "path": "/x/WaterUI Bench.app/"
+                                            "WaterUI Bench"})
         main, owned = bench.owned_processes(procs, self.BUNDLE, self.MAIN)
         self.assertEqual((main, owned), (700, {700}))
 
@@ -813,7 +693,8 @@ class TestInstrumentsScratch(unittest.TestCase):
     """The cell owns the raw ktrace scratch its recordings leave: what
     appeared in the user temp dir or a recorder's scratch dir during
     the cell is removed (real lsof, real files); what predates the cell
-    stays; a holder other than DTServiceHub fails the sweep."""
+    stays; a holder other than DTServiceHub, or several holders, fail
+    the sweep and terminate nothing."""
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="bench-scratch-"))
@@ -848,12 +729,29 @@ class TestInstrumentsScratch(unittest.TestCase):
         self.assertIsNotNone(err)
         self.assertIn("not DTServiceHub", err)
         self.assertFalse(f.exists())
+        self.assertIsNone(s.terminated)
+
+    def test_several_holders_fail_the_sweep(self):
+        import subprocess
+        s = bench.InstrumentsScratch(self.root, self.user)
+        f = self.user / "instrumentsGH78.ktrace"
+        f.write_bytes(b"k")
+        child = subprocess.Popen(
+            ["/bin/sh", "-c", 'exec 3<"$0"; echo held; read x', str(f)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(child.stdout.readline().strip(), "held")
+            with open(f, "rb"):
+                err = s.sweep()
+        finally:
+            child.communicate("\n", timeout=30)
+        self.assertIn("held open by 2 processes", err)
+        self.assertIsNone(s.terminated)
 
 
 class TestXctestrunInjection(unittest.TestCase):
-    """The run nonce and the ladder value reach the runner's
-    environment; the notify channel exists only where the host can
-    reach the namespace."""
+    """The run nonce, the ladder value and the manifest's fling program
+    reach the runner's environment."""
 
     def test_nonce_and_step(self):
         import plistlib
@@ -863,25 +761,22 @@ class TestXctestrunInjection(unittest.TestCase):
             tmpl.write_bytes(plistlib.dumps({"BenchRunner": {
                 "DependentProductPaths": []}}))
             out = tmp / "o.xctestrun"
-            bench.write_xctestrun(tmpl, out, "BenchRunner", "Release",
-                                  "X.app", "dev.bench.x", "w5", "none", 12,
-                                  runner_app="", nonce=12345, step=800)
-            env = plistlib.loads(out.read_bytes())["BenchRunner"][
-                "EnvironmentVariables"]
+            bench.write_xctestrun(tmpl, out, "BenchRunner",
+                                  "Release-iphoneos", "X.app", "dev.bench.x",
+                                  "w5", "none", 12, nonce=12345, step=800)
+            t = plistlib.loads(out.read_bytes())["BenchRunner"]
+            env = t["EnvironmentVariables"]
             self.assertEqual(env["BENCH_RUN_NONCE"], "12345")
             self.assertEqual(env["BENCH_STEP"], "800")
             self.assertEqual(env["BENCH_DURATION"], "12")
+            self.assertEqual(t["UITargetAppPath"],
+                             "__TESTROOT__/Release-iphoneos/X.app")
+            fling = json.loads(env["BENCH_FLING"])
+            self.assertEqual((fling["flings_down"], fling["flings_up"]),
+                             (8, 2))
+            self.assertAlmostEqual(fling["pause_s"], 0.35)
         finally:
             shutil.rmtree(tmp)
-
-    def test_notify_namespaces(self):
-        self.assertEqual(bench._notify_cmd("macos", None, "-p", "a"),
-                         ["notifyutil", "-p", "a"])
-        self.assertEqual(
-            bench._notify_cmd("ios-sim", "U", "-p", "a"),
-            ["xcrun", "simctl", "spawn", "U", "notifyutil", "-p", "a"])
-        with self.assertRaises(ValueError):
-            bench._notify_cmd("ios-device", "U", "-p", "a")
 
 
 class TestGitFixture(unittest.TestCase):

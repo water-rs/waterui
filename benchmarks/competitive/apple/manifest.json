@@ -1,379 +1,155 @@
 {
- "schema": 1,
- "benchmark": "water-rs/waterui#1262 competitive benchmark — Apple targets",
+ "schema": 2,
+ "benchmark": "water-rs/waterui#1262 competitive benchmark — iOS on a physical iPhone",
+ "device": {
+  "model": "iPhone 16 Pro",
+  "product_type": "iPhone17,1",
+  "udid": "00008140-001845681E98801C",
+  "note": "the one Apple benchmark platform; macOS and the iOS Simulator are not benchmark platforms. device_state() refuses a device whose devicectl product type differs."
+ },
  "toolchain": {
-  "build_machine": "macOS build VM, macOS 26.5.2 arm64 (Apple Silicon)",
-  "xcode": "26.6 (17F113), DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer",
-  "ios_simulator": "iPhone 17, iOS 26.5",
-  "rust": "stable aarch64-apple-darwin + aarch64-apple-ios(-sim)",
-  "water_cli": "in-tree waterui-cli (cli/ is a workspace member of this checkout): `cargo install --locked --path cli` into the suite .cache once per host; framework+CLI+backend identity = checkout HEAD sha, recorded by the runner",
-  "flutter": "3.47.5",
-  "node": "24.20.0",
-  "electron": "44.4.3",
-  "react_native": "0.81.6",
-  "react_native_macos": "0.81.9",
-  "cocoapods": "1.17.0 (requires LANG=en_US.UTF-8)",
-  "xcodegen": "2.46.0",
-  "uv": ">=0.8",
-  "flutter_root": "$HOME/toolchains/flutter",
-  "react_native_cli": "20.0.0",
-  "react_native_template_sha256": "340c4e329b6d60a5856387347577fa56aa7cd2229959e07ef8d83c40ad227fe5"
+  "build_host": {
+   "flutter": "3.47.5",
+   "flutter_root": "$HOME/toolchains/flutter",
+   "node": "24.20.0",
+   "react_native": "0.81.6",
+   "react_native_cli": "20.0.0",
+   "react_native_template_sha256": "340c4e329b6d60a5856387347577fa56aa7cd2229959e07ef8d83c40ad227fe5",
+   "cocoapods": "1.17.0 (requires LANG=en_US.UTF-8)",
+   "xcodegen": "2.46.0",
+   "water_cli": "in-tree waterui-cli (cli/ is a workspace member of this checkout): `cargo install --locked --path cli` into the suite .cache once per host; framework+CLI+backend identity = checkout HEAD sha, recorded in the staging manifest"
+  },
+  "device_host": {
+   "xcodegen": "2.46.0"
+  },
+  "xcode": "not pinned: every host records the Xcode it actually uses (xcodebuild -version, iphoneos SDK version and build) — the build host in the staging manifest, the device host in the results — and must report exactly one Xcode"
  },
  "bootstrap": {
-  "ios-sim": [
+  "steps": [
    "cd ../apps/react-native && npm ci",
    "cd ../apps/react-native && bundle install",
    "cd ../apps/react-native && LANG=en_US.UTF-8 pod _{COCOAPODS}_ install --project-directory=ios",
    "cd native-bench && xcodegen"
   ],
-  "ios-device": [
-   "cd ../apps/react-native && npm ci",
-   "cd ../apps/react-native && bundle install",
-   "cd ../apps/react-native && LANG=en_US.UTF-8 pod _{COCOAPODS}_ install --project-directory=ios",
-   "cd native-bench && xcodegen"
-  ],
-  "macos": [
-   "cd ../apps/electron && npm ci",
-   "cd ../apps/react-native && npm ci",
-   {
-    "step": "rn-macos-template"
-   },
-   "cd ../apps/react-native && bundle install",
-   "cd ../apps/react-native && printf 'export NODE_BINARY=$(command -v node)\\n' > macos/.xcode.env",
-   "cd ../apps/react-native && LANG=en_US.UTF-8 pod _{COCOAPODS}_ install --project-directory=macos",
-   "cd native-bench && xcodegen"
-  ],
-  "note": "fresh-clone dependency install, pinned to committed lockfiles: npm ci installs exactly package-lock.json; bundle install honors Gemfile.lock; pod install runs as `pod _<version>_ install` with the toolchain.cocoapods pin (the generated RN Gemfile caps CocoaPods at 1.15.2 via xcodeproj < 1.26.0, so `bundle exec pod` can never reach the pinned 1.17.0); a failed pod install fails the build with its error — mid-generation residue (missing modulemap links) poisons later xcodebuilds, so there is no blind retry; xcodegen regenerates NativeBench.xcodeproj from the committed project.yml so the checked-in project cannot drift. A {\"step\": \"rn-macos-template\"} entry is not a shell command: it materializes the react-native-macos template files the macos/ project does not commit (AppDelegate.h, main.m, storyboard, asset catalogs, entitlements, shared scheme) from the generator `npm ci` just installed (lib/toolchain.ensure_rn_macos_template), before `pod install` reads the project. The whole bootstrap runs inside lib/toolchain.tracked_tree_unchanged: it starts on a clean tracked tree and fails naming any tracked file it rewrote. Per-contestant build failures are recorded and reported; the sweep continues for the remaining contestants. Run standalone with `bench.py bootstrap --platform <plat>`; `build` runs it first."
+  "note": "build host only. Fresh-clone dependency install, pinned to committed lockfiles: the RN init template is materialized first (lib/toolchain.ensure_rn_template); npm ci installs exactly package-lock.json; bundle install honors Gemfile.lock; pod install runs as `pod _<version>_ install` with the toolchain.build_host.cocoapods pin (the generated RN Gemfile caps CocoaPods at 1.15.2 via xcodeproj < 1.26.0, so `bundle exec pod` can never reach it); xcodegen generates native-bench/NativeBench.xcodeproj from the committed project.yml (the generated project is not committed). The whole bootstrap runs inside lib/toolchain.tracked_tree_unchanged."
  },
  "workloads": {
-  "w1": {
-   "name": "Hello",
-   "duration_s": 8,
-   "drive": "tap increment-button x20"
-  },
-  "w2": {
-   "name": "Feed 10k rows",
-   "duration_s": 12,
-   "drive": "fling program (harness.fling)"
-  },
-  "w3": {
-   "name": "Motion 200 rects",
-   "duration_s": 12,
-   "drive": "no input; continuous animation"
-  },
-  "w4": {
-   "name": "Text 50 paragraphs",
-   "duration_s": 12,
-   "drive": "fling program (harness.fling) — same as w2"
-  },
+  "w1": {"name": "Hello", "duration_s": 8, "drive": "tap"},
+  "w2": {"name": "Feed 10k rows", "duration_s": 12, "drive": "swipe"},
+  "w3": {"name": "Motion 200 rects", "duration_s": 12, "drive": "none"},
+  "w4": {"name": "Text 50 paragraphs", "duration_s": 12, "drive": "swipe"},
   "w5": {
    "name": "Motion capacity: W3 scene, rects 200→25600 doubling",
    "duration_s": 12,
-   "drive": "no input; continuous animation — one launch renders one step of the ladder, pinned by -bench-step",
-   "platforms": [
-    "ios-sim",
-    "ios-device"
-   ],
-   "contestants": [
-    "waterui",
-    "swiftui",
-    "uikit",
-    "flutter",
-    "rn"
-   ],
-   "steps": [
-    200,
-    400,
-    800,
-    1600,
-    3200,
-    6400,
-    12800,
-    25600
-   ]
+   "drive": "none",
+   "steps": [200, 400, 800, 1600, 3200, 6400, 12800, 25600]
   },
   "w6": {
    "name": "Feed capacity: W2 fling over rows ×1→64 nested children",
    "duration_s": 12,
-   "drive": "fling program (harness.fling) — same drive kind as w2/w4; one launch renders one step of the ladder, pinned by -bench-step",
-   "platforms": [
-    "ios-sim",
-    "ios-device"
-   ],
-   "contestants": [
-    "waterui",
-    "swiftui",
-    "uikit",
-    "flutter",
-    "rn"
-   ],
-   "steps": [
-    1,
-    2,
-    4,
-    8,
-    16,
-    32,
-    64
-   ]
+   "drive": "swipe",
+   "steps": [1, 2, 4, 8, 16, 32, 64]
   }
- },
- "measurement": {
-  "method": "shared XCUITest runner (dev.bench.runner / dev.bench.runner.mac) + XCTest metrics: XCTApplicationLaunchMetric, XCTMemoryMetric, XCTCPUMetric, XCTHitchMetric, XCTOSSignpostMetric.scrollingAndDecelerationMetric",
-  "repeats": 5,
-  "order": "contestants interleaved across repeats",
-  "launch_arg": "-bench-workload w1|w2|w3|w4|w5|w6 -bench-step N (w5/w6; N is the ladder value; one launch renders one step) — single dash; NSArgumentDomain/UserDefaults on Apple platforms, argv elsewhere. Workload ids are exact lowercase strings; a missing or unrecognized value traps naming the argument, and the app posts dev.bench.ready.<bundle-id>.<w> when the workload view first appears (SwiftUI onAppear, UIKit/AppKit viewDidAppear, WaterUI on_appear, Flutter's first frame of the workload page, React Native's first content appearance, Electron's ready-to-show, where its hidden window is first shown).",
-  "drive_contract": "one drive per contestant per platform per workload, recorded per row, always from outside the app: swipe = real XCUITest coordinate drags inside the measure block (iOS device), driven by the manifest fling program via BENCH_FLING; wheel = host-side CGEvent scroll-wheel detents posted by bench.py with CGEventPostToPid — on macOS to the contestant's process, on the iOS Simulator to the Simulator host process bench.py launched for the booted device; tap = a single XCUITest tap (w1); none = no drive (w3 self-animates; w5 is motion-only). w6 uses the same drive kind as w2/w4. Every cell's frame statistics cover exactly the workload's duration_s from the window start (first owned present + warmup on the trace); a driven cell's drive starts within harness.anchor_tolerance_ms of it. Capacity workloads are paced one launch per step (-bench-step N), never an in-app ladder. The app never scrolls itself; `auto` does not exist.",
-  "hitch_metric": "XCTHitchMetric attached for every contestant on ios-device and macos; never attached on ios-sim — the simulator has no GPU frame telemetry and every xcresult emits zero hitch measurements there. Attachment is a platform declaration, not learned per run: the metric never disappears mid-sweep for one contestant and not another.",
-  "package_size": "app bundle bytes on disk (arm64); .ipa thinning needs signing not present on this VM — recorded as limitation",
-  "known_limitations": [
-   "iOS Simulator has no true vsync pacing — hitch/signpost numbers are directional",
-   "no signing identity on this VM: .ipa thinning and physical-device runs happen in device mode on the M1 host"
-  ],
-  "required_platforms": [
-   "ios-sim",
-   "macos",
-   "ios-device"
-  ]
  },
  "contestants": [
   {
    "id": "waterui",
-   "label": "WaterUI — Rust/objc2 backend (apple-backend#281)",
+   "label": "WaterUI — Rust/objc2 apple backend",
    "framework_version": "waterui @ checkout HEAD — framework, cli, apple backend and hydrolysis are all workspace members of this checkout",
    "dir": "../apps/waterui",
-   "bundle_id": {
-    "ios": "dev.waterui.bench",
-    "macos": "dev.waterui.bench"
-   },
-   "build": {
-    "ios-sim": [
-     "cd ../apps/waterui && {WATER} package --platform ios-simulator --backend apple --release"
-    ],
-    "ios-device": [
-     "cd ../apps/waterui && {WATER} package --platform ios --backend apple --release --unsigned"
-    ],
-    "macos": [
-     "cd ../apps/waterui && {WATER} package --platform macos --backend apple --release"
-    ]
-   },
-   "artifact": {
-    "ios-sim": "../apps/waterui/target/package/WaterUI Bench.app",
-    "ios-device": "../apps/waterui/target/package/WaterUI Bench.app",
-    "macos": "../apps/waterui/target/package/WaterUI Bench.app"
-   }
+   "bundle_id": "dev.waterui.bench",
+   "build": [
+    "cd ../apps/waterui && {WATER} package --platform ios --backend apple --release --unsigned"
+   ],
+   "artifact": "../apps/waterui/target/package/WaterUI Bench.app"
   },
   {
    "id": "swiftui",
    "label": "SwiftUI",
-   "framework_version": "iOS 26.5 SDK / macOS 26.5 SDK (system)",
+   "framework_version": "iOS SDK of the build host's Xcode (system; recorded in the staging manifest)",
    "dir": "native-bench",
-   "bundle_id": {
-    "ios": "dev.bench.swiftui",
-    "macos": "dev.bench.swiftui.mac"
-   },
-   "build": {
-    "ios-sim": [
-     "cd native-bench && xcodebuild -project NativeBench.xcodeproj -scheme BenchIOS -configuration Release -destination 'platform=iOS Simulator,id={SIM_UDID}' -derivedDataPath build/dd-ios CODE_SIGNING_ALLOWED=NO build-for-testing"
-    ],
-    "ios-device": [
-     "cd native-bench && xcodebuild -project NativeBench.xcodeproj -scheme BenchIOS -configuration Release -destination 'generic/platform=iOS' -derivedDataPath build/dd-device CODE_SIGNING_ALLOWED=NO build-for-testing"
-    ],
-    "macos": [
-     "cd native-bench && xcodebuild -project NativeBench.xcodeproj -scheme BenchMac -configuration Release -derivedDataPath build/dd-mac CODE_SIGNING_ALLOWED=NO build-for-testing"
-    ]
-   },
-   "artifact": {
-    "ios-sim": "native-bench/build/dd-ios/Build/Products/Release-iphonesimulator/BenchSwiftUI.app",
-    "ios-device": "native-bench/build/dd-device/Build/Products/Release-iphoneos/BenchSwiftUI.app",
-    "macos": "native-bench/build/dd-mac/Build/Products/Release/BenchSwiftUIMac.app"
-   }
+   "bundle_id": "dev.bench.swiftui",
+   "build": [
+    "cd native-bench && xcodebuild -project NativeBench.xcodeproj -scheme BenchApps -configuration Release -destination 'generic/platform=iOS' -derivedDataPath build/dd CODE_SIGNING_ALLOWED=NO build"
+   ],
+   "artifact": "native-bench/build/dd/Build/Products/Release-iphoneos/BenchSwiftUI.app"
   },
   {
    "id": "uikit",
    "label": "UIKit",
-   "framework_version": "iOS 26.5 SDK (system)",
+   "framework_version": "iOS SDK of the build host's Xcode (system; recorded in the staging manifest)",
    "dir": "native-bench",
-   "bundle_id": {
-    "ios": "dev.bench.native"
-   },
-   "build": {
-    "ios-sim": [],
-    "ios-device": []
-   },
-   "artifact": {
-    "ios-sim": "native-bench/build/dd-ios/Build/Products/Release-iphonesimulator/BenchUIKit.app",
-    "ios-device": "native-bench/build/dd-device/Build/Products/Release-iphoneos/BenchUIKit.app"
-   }
-  },
-  {
-   "id": "appkit",
-   "label": "AppKit",
-   "framework_version": "macOS 26.5 SDK (system)",
-   "dir": "native-bench",
-   "bundle_id": {
-    "macos": "dev.bench.native.mac"
-   },
-   "build": {
-    "macos": []
-   },
-   "artifact": {
-    "macos": "native-bench/build/dd-mac/Build/Products/Release/BenchAppKit.app"
-   }
+   "bundle_id": "dev.bench.native",
+   "build": [],
+   "artifact": "native-bench/build/dd/Build/Products/Release-iphoneos/BenchUIKit.app"
   },
   {
    "id": "flutter",
    "label": "Flutter",
    "framework_version": "Flutter 3.47.5 stable",
    "dir": "../apps/flutter",
-   "bundle_id": {
-    "ios": "dev.bench.flutter",
-    "macos": "dev.bench.flutter.mac"
-   },
-   "build": {
-    "ios-sim": [
-     "cd ../apps/flutter && {FLUTTER} build ios --simulator --debug --no-codesign"
-    ],
-    "ios-device": [
-     "cd ../apps/flutter && {FLUTTER} build ios --release --no-codesign"
-    ],
-    "macos": [
-     "cd ../apps/flutter && {FLUTTER} build macos --release"
-    ]
-   },
-   "artifact": {
-    "ios-sim": "../apps/flutter/build/ios/iphonesimulator/Runner.app",
-    "ios-device": "../apps/flutter/build/ios/iphoneos/Runner.app",
-    "macos": "../apps/flutter/build/macos/Build/Products/Release/bench_flutter.app"
-   },
-   "platform_label": {
-    "ios-sim": "Flutter — debug JIT (no simulator release mode) — not comparable"
-   },
-   "comparable": {
-    "ios-sim": false
-   }
+   "bundle_id": "dev.bench.flutter",
+   "build": [
+    "cd ../apps/flutter && {FLUTTER} build ios --release --no-codesign"
+   ],
+   "artifact": "../apps/flutter/build/ios/iphoneos/Runner.app"
   },
   {
    "id": "rn",
    "label": "React Native",
-   "framework_version": "react-native 0.81.6 / react-native-macos 0.81.9 (Hermes, New Arch)",
+   "framework_version": "react-native 0.81.6 (Hermes, New Arch)",
    "dir": "../apps/react-native",
-   "bundle_id": {
-    "ios": "dev.bench.rn",
-    "macos": "dev.bench.rn.mac"
-   },
-   "build": {
-    "ios-sim": [
-     "cd ../apps/react-native && LANG=en_US.UTF-8 xcodebuild -workspace ios/RnBench.xcworkspace -scheme RnBench -configuration Release -destination 'platform=iOS Simulator,id={SIM_UDID}' -derivedDataPath build/dd-ios CODE_SIGNING_ALLOWED=NO build"
-    ],
-    "ios-device": [
-     "cd ../apps/react-native && LANG=en_US.UTF-8 xcodebuild -workspace ios/RnBench.xcworkspace -scheme RnBench -configuration Release -destination 'generic/platform=iOS' -derivedDataPath build/dd-device CODE_SIGNING_ALLOWED=NO TARGETED_DEVICE_FAMILY=1,2 build"
-    ],
-    "macos": [
-     "cd ../apps/react-native && LANG=en_US.UTF-8 xcodebuild -workspace macos/RnBench.xcworkspace -scheme RnBench-macOS -configuration Release -derivedDataPath build/dd-mac CODE_SIGNING_ALLOWED=NO build"
-    ]
-   },
-   "artifact": {
-    "ios-sim": "../apps/react-native/build/dd-ios/Build/Products/Release-iphonesimulator/RnBench.app",
-    "ios-device": "../apps/react-native/build/dd-device/Build/Products/Release-iphoneos/RnBench.app",
-    "macos": "../apps/react-native/build/dd-mac/Build/Products/Release/RnBench.app"
-   }
-  },
-  {
-   "id": "electron",
-   "label": "Electron",
-   "framework_version": "electron 44.4.3",
-   "dir": "../apps/electron",
-   "bundle_id": {
-    "macos": "dev.bench.electron"
-   },
-   "build": {
-    "macos": [
-     "./scripts/build-electron-mac.sh"
-    ]
-   },
-   "artifact": {
-    "macos": "../apps/electron/build/BenchElectron.app"
-   }
+   "bundle_id": "dev.bench.rn",
+   "build": [
+    "cd ../apps/react-native && LANG=en_US.UTF-8 xcodebuild -workspace ios/RnBench.xcworkspace -scheme RnBench -configuration Release -destination 'generic/platform=iOS' -derivedDataPath build/dd CODE_SIGNING_ALLOWED=NO build"
+   ],
+   "artifact": "../apps/react-native/build/dd/Build/Products/Release-iphoneos/RnBench.app"
   }
  ],
+ "runner": {
+  "bundle_id": "dev.bench.runner",
+  "test_target": "BenchRunner",
+  "note": "the XCTest UI runner (xctest/project.yml) is built on the device host with its Xcode; its app is <bundle_id>.xctrunner, the bundle id the device host needs a profile for"
+ },
+ "signing": {
+  "identity_kind": "Apple Development",
+  "profile_dir": "~/Library/Developer/Xcode/UserData/Provisioning Profiles",
+  "profile_min_validity_h": 24,
+  "note": "device host only. Each contestant's `bundle_id` above is the id the device host signs it as (CFBundleIdentifier is set on the signed copy; the staged artifact keeps its built id): distinct ids per contestant, or one id shared by several contestants — the device host installs one contestant at a time and uninstalls it before the next, so a shared id never has two apps installed. Every id needs a profile on the device host whose App ID is exactly <team>.<id> (never a wildcard), that includes the host's one Apple Development certificate and the device, valid for profile_min_validity_h; a missing one fails the run naming the id and how to create it (Xcode automatic signing for that id). A free personal team's profiles are per id and expire after 7 days; the team may register 10 App IDs per 7 days and have 3 of its apps installed on a device at once (here: the runner + the contestant under measurement)."
+ },
  "harness": {
   "warmup_ms": 3000,
-  "warmup_note": "declared warmup, never 0 — METHOD (../WORKLOADS.md): the window is [first owned present + harness.warmup_ms, + duration_s], computed on the all-process Animation Hitches trace (macos, ios-device), where a present is owned when the frame's (display, swap) composited an update from a process inside the contestant's bundle; readiness is that first owned present. The trace is readable only after the recording stops, so dev.bench.ready is the live signal a drive starts on: the runner starts the drive at ready + warmup and marks it with a dev.bench drive-begin Points of Interest signpost in the same trace.",
+  "warmup_note": "declared warmup, never 0 — METHOD (../WORKLOADS.md): the window is [first owned present + harness.warmup_ms, + duration_s], computed on the all-process Animation Hitches device trace, where a present is owned when the frame's (display, swap) composited an update from a process inside the contestant's bundle; readiness is that first owned present. The trace is readable only after the recording stops, so dev.bench.ready is the live signal a drive starts on: the runner starts the drive at ready + warmup and marks it with a dev.bench drive-begin Points of Interest signpost in the same trace.",
   "anchor_tolerance_ms": 100,
-  "anchor_tolerance_note": "for a driven cell (tap, wheel, swipe) the drive-begin signpost must lie within this many ms of the trace's window start (METHOD: the drive starts at window start), else the row fails; an undriven cell (w3, w5) records its offset ungated. The runner (and the wheel driver) also hold the contestant this long past the capture, so the window end lies inside the held span whenever the drive offset is in tolerance. Every row records window.drive_offset_ms; the value is provisional until the first hardware reps show the real ready-to-first-present spread per contestant.",
-  "ios_sim_xctestrun": "apps/native-bench/build/dd-ios/Build/Products/BenchIOS_iphonesimulator26.5-arm64.xctestrun",
-  "ios_device_xctestrun": "apps/native-bench/build/dd-device/Build/Products/BenchIOS_iphoneos26.5-arm64.xctestrun",
-  "macos_xctestrun": "apps/native-bench/build/dd-mac/Build/Products/BenchMac_macosx26.5-arm64.xctestrun",
-  "test_target_key": {
-   "ios": "BenchRunner",
-   "macos": "BenchRunnerMac"
-  },
-  "launch_arg": "-bench-workload w1|w2|w3|w4|w5|w6 -bench-step N (w5/w6; N is the ladder value; one launch renders one step) — single dash; NSArgumentDomain/UserDefaults on Apple platforms, argv elsewhere. Workload ids are exact lowercase strings; a missing or unrecognized value traps naming the argument, and the app posts dev.bench.ready.<bundle-id>.<w> when the workload view first appears (SwiftUI onAppear, UIKit/AppKit viewDidAppear, WaterUI on_appear, Flutter's first frame of the workload page, React Native's first content appearance, Electron's ready-to-show, where its hidden window is first shown).",
+  "anchor_tolerance_note": "for a driven cell (tap, swipe) the drive-begin signpost must lie within this many ms of the trace's window start (METHOD: the drive starts at window start), else the row fails; an undriven cell (w3, w5) records its offset ungated. The runner also holds the contestant this long past the capture, so the window end lies inside the held span whenever the drive offset is in tolerance. Every row records window.drive_offset_ms; the value is provisional until the first device reps show the real ready-to-first-present spread per contestant (RN and Flutter present a launch view before their ready post).",
   "fling": {
    "down": 8,
    "up": 2,
-   "detents": 12,
-   "detent_px": 15,
+   "start_fraction": 0.75,
+   "end_fraction": 0.15,
    "duration_ms": 250,
    "pause_ms": 350,
-   "wheel": "each `down`/`up` fires `detents` CGEvent wheel detents of `detent_px` over `duration_ms`, then `pause_ms`",
-   "swipe_start_fraction": 0.75,
-   "swipe_end_fraction": 0.15,
-   "swipe_duration_ms": 250,
-   "swipe_hold_s": 0.02,
-   "swipe_pause_s": 0.35
+   "hold_s": 0.02,
+   "note": "XCUICoordinate press-and-drag from start_fraction to end_fraction of the app's height over duration_ms (velocity = distance / duration), after a hold_s press; pause_ms between flings — WORKLOADS.md shared fling protocol"
+  },
+  "disk": {
+   "recording_floor_bytes": 2684354560,
+   "note": "free bytes the device host's run dir must have before each cell starts its recordings (one Animation Hitches + one Logging recording, their .trace bundles and the Instruments raw ktrace scratch the cell removes before the next cell starts); a cell short of it fails with the free byte count. Every row records disk_free_bytes, trace_bytes and the removed scratch bytes, so the floor is re-derived from the first device recordings."
   }
+ },
+ "measurement": {
+  "method": "shared XCUITest runner + XCTest metrics (XCTApplicationLaunchMetric, XCTMemoryMetric, XCTCPUMetric, XCTHitchMetric, XCTOSSignpostMetric.scrollingAndDecelerationMetric on w2/w4/w6) + all-process xctrace recordings on the device (Animation Hitches + Points of Interest for frames, marks and time-sample CPU of the app and backboardd; Logging for the WaterUI first-paint marker)",
+  "repeats": 5,
+  "order": "contestants interleaved across repeats; one discarded launch-test warm-up per contestant per results file",
+  "launch_arg": "-bench-workload w1|w2|w3|w4|w5|w6 -bench-step N (w5/w6; N is the ladder value; one launch renders one step) — single dash; NSArgumentDomain/UserDefaults. Workload ids are exact lowercase strings; a missing or unrecognized value traps naming the argument, and the app posts dev.bench.ready.<its CFBundleIdentifier>.<w> when the workload view first appears (SwiftUI onAppear, UIKit viewDidAppear, WaterUI on_appear, Flutter's first frame of the workload page, React Native's first content appearance).",
+  "package_size": "build host: the unsigned arm64 .app bytes on disk and the deflated Payload/ zip of it (the unsigned .ipa); device host: the thinned .ipa for the measured device's variant (xcodebuild -exportArchive with exportOptions thinning = the device product type) — its bytes (download, compressed) and the sum of its entries (installed, uncompressed), with Xcode's App Thinning Size Report line as evidence"
  },
  "notes": [
-  "waterui-bench is the shared workspace-member app at ../apps/waterui (Cargo.toml, Water.toml, src/, assets/ only — no Water.lock, backends/, or per-app Cargo.lock), packaged by the in-tree water CLI built from this checkout; framework+CLI+backend identity = checkout HEAD sha.",
-  "RnBench ios-device: TARGETED_DEVICE_FAMILY=1,2 added as a command-line build setting (project had none -> default [1], iPhone-only) so it runs natively on the iPad Pro 13 M4 device host like the other four universal apps. No project files or other build inputs changed.",
-  "device mode is device-agnostic: --udid defaults to the single available device `xcrun devicectl list devices` reports (several attached = explicit --udid required); the signing identity is the keychain's 'Apple Development' cert selected by --identity (team derived from the identity or --team); destinations use platform=iOS,id=<resolved udid> with no model/screen-size assumptions; ios-sim destinations resolve the newest available iPhone simulator at run time ({SIM_UDID} token in manifest build commands, or --sim-udid); results JSON records the device model/os under 'device'; thermal and screen max fps come from the runner's device-record log lines.",
-  "waterui ios-device is produced ONLY by `water package --platform ios --backend apple --release --unsigned` (the in-tree CLI): CODE_SIGNING_ALLOWED=NO with the static Rust in the main executable, UIDeviceFamily [1,2]; the device host re-signs inside-out before install.",
-  "harness v2 (fixes two defects found in the first device run): (a) launch args now use a single dash (-bench-workload/-bench-drive) — the previous --bench-workload became NSArgumentDomain key '-bench-workload', which Flutter/RN read as nil and silently fell back to W1; all contestants now trap on a missing/unrecognized workload and expose bench-workload-<id>, asserted by the runner post-launch. (b) the auto drive previously self-started at viewDidAppear and finished before the measure window; iOS (sim + device) now uses real swipe gestures inside measure(), and the surviving auto drive (AppKit macOS) is gated on a runner-tapped bench-begin control and a driver-owned end-of-cell notification.",
-  "harness v3 (second device run, iPad Pro M4): (a) W2 swipe gestures now use XCUICoordinate.press/drag raw HID events — the old app.swipeUp() resolved 'descendants matching type Window' + per-gesture quiescence, which stalls >117s on a scrolling 10k list (waterui W2 AND uikit W2 both hit it; it is a runner defect, not a framework one — WuiList virtualises via dequeueReusableCell at WuiList.swift:721 and carries no AX-container overrides). (b) XCTOSSignpostMetric.scrollingAndDecelerationMetric is now attached only for W2/W4/W6 (it emitted zero duration/ratio rows on W1/W3). (c) one discarded warm-up run per contestant absorbs the first-attach XCTFuture init failure seen on rep 0. (d) every cell now also records render-server CPU — ps -o time deltas on sim backboardd / macOS WindowServer, and an xctrace Time Profiler attach to device backboardd — so Core Animation work outside the app process is counted identically for every contestant; ios-device also attaches Animation Hitches to the app for presented-frame counts.",
-  "contestant W2 idiom fixes: rn-bench W2 switched ScrollView -> Animated.FlatList (windowing + view recycling); electron-bench W2 switched innerHTML x10000 -> pooled windowed list (48px rows, +/-6 overscan) — the DOM analogue of cell reuse. UIKit was already dequeueReusableCell and SwiftUI/Flutter already List/ListView.builder (unchanged); the 1.07GB UIKit / 2.78GB RN RSS on device came from the AX-snapshot pathology above, not the widgets.",
-  "BUILD IDENTITY: WaterUI contestant = Rust + objc2 apple backend at checkout HEAD, packaged by the in-tree cli/ built from this checkout — plain `water package`, no restoration/retry/pin workarounds.",
-  "SCOPE: there is no iPad/device toolchain on the M1 host — the iPad device leg is skipped; iOS-simulator results are the mobile reference.",
-  "electron-bench iOS-sim + macOS W2/W4 are wheel-driven like every other contestant there: bench.py posts CGEvent scroll-wheel detents into the target window on each dev.bench.begin (posted inside the measure block by the XCTest runner), and the driver itself ends the cell on its own schedule (dev.bench.end). The in-app notify->IPC->renderer fling chain is gone — the app never scrolls itself.",
-  "sim frame source: xctrace 'Animation Hitches' is UNSUPPORTED on the iOS Simulator (verified by direct attach: 'Hitches is not supported on this platform'), and the sim presents into a host window with no vsync'd display pipeline — no other system-level presented-frame source exists there. ios-sim W5/W6 rows therefore carry per-step app + render-server CPU with frames=null; capacity-at-120Hz/60Hz is a device-only metric.",
-  "flutter ios-sim is a --debug (JIT) build: Flutter ships no release mode for the iOS Simulator, so its sim numbers (incl. the five W6 timeouts) are not comparable to the release builds of every other contestant and are excluded from sim ranking/ratio rows. Flutter's comparable iOS numbers come from the device leg (not run: no device toolchain). macOS flutter is a release build and stays comparable. Sim rows carry build=debug-jit for flutter, build=release for the rest.",
-  "objc2 migration note (historical, pre-restructure): earlier scaffolds tripped the Water.lock guard when a per-app lock existed; the shared workspace member resolves against the checkout's own Cargo.lock so no per-app lock exists to conflict.",
-  "thermal gate: one mechanism on every Apple platform — the runner's setUp blocks on ProcessInfo.thermalStateDidChangeNotification (XCTWaiter) until the state is nominal and fails the row past the budget; on macOS ProcessInfo reports the host's thermal pressure, so no host-side gate exists. thermal + screen maxFps are recorded per row from the runner log (device-record), there is no spec-sheet fallback.",
-  "environment gate: run-local refuses to measure on virtualized/paravirtual hosts (kern.hv_vmm_present, virtualized CPU/model identity, paravirtual GPU); every results file records a host fingerprint (hw.model + CPU brand + vmm + GPU names) and resume refuses to merge rows from a different host — no VM or software-GPU timings are admitted.",
-  "RnBench ios: only authored files are committed (AppDelegate.swift, bridging header, Info.plist, project.pbxproj, Podfile, Podfile.lock); every template file the pinned @react-native-community/cli init emits is materialized by toolchain.ensure_rn_template at bootstrap and sha256-locked. RnBench macos: react-native-macos has no pinned template generator, so its project tree is committed as authored; the pod xcworkspace and .xcode.env are regenerated at bootstrap, never committed."
- ],
- "drive_overrides": {
-  "ios-sim": {
-   "w2": "wheel",
-   "w4": "wheel",
-   "w6": "wheel",
-   "w5": "none",
-   "note": "uniform per contestant: on the iOS Simulator a swipe gesture cannot be synthesized — the gesture's wait-for-idle/query resolution exceeds the ~31 s XCUITest cap on every contestant measured. run-local launches the Simulator host itself (Simulator.app's executable with -CurrentDeviceUDID <booted udid>, refusing a host it did not launch and any other booted device), and the wheel driver posts CGEvent scroll-wheel detents with CGEventPostToPid to that launched pid, located at the centre of its on-screen device window, on the runner's dev.bench.begin; w6 takes the same wheel drive as w2/w4."
-  },
-  "macos": {
-   "w2": "wheel",
-   "w4": "wheel",
-   "w6": "wheel",
-   "w5": "none",
-   "w1": "tap",
-   "w3": "none",
-   "note": "uniform per contestant: bench.py posts CGEvent scroll-wheel detents to the contestant's process by pid (CGEventPostToPid) — AppKit's content window has no swipeable hit target, and one mechanism keeps every contestant identical."
-  },
-  "ios-device": {
-   "w5": "none",
-   "note": "w5 is motion-only — no scroll drive. w6 is driven by the same swipe gestures as w2/w4 from the manifest fling program."
-  },
-  "*": {
-   "w1": "tap",
-   "w3": "none",
-   "w5": "none"
-  }
- },
- "cli_model": "in-tree: bench.py provisions `water` from this checkout (lib/toolchain.provision_water_cli) and substitutes {WATER} in build commands; a dirty tracked checkout is refused so the HEAD sha stays the true source identity",
- "measurement_host": {
-  "kind": "Apple Silicon Mac mini (physical measurement host)",
-  "hw_uuid": "",
-  "note": "bench.py's WheelDriver and run-local refuse to measure unless host_evidence().hw_uuid EXACTLY equals this fingerprint AND the host is not virtualized — a model name is never identity (any Mac mini contains \"Macmini\"). Fill in the machine's IOPlatformUUID (printed by `uv run bench.py fingerprint` on the measurement host) before the first measurement; an empty value refuses, which is the correct failure until the host declares itself."
- }
+  "BUILD IDENTITY: the WaterUI contestant is the Rust + objc2 apple backend at checkout HEAD, packaged by the in-tree cli/ built from this checkout (`water package --platform ios --backend apple --release --unsigned`: CODE_SIGNING_ALLOWED=NO, static Rust in the main executable). The device host refuses a staged set built at another HEAD than its own checkout.",
+  "Swipe gestures are raw XCUICoordinate press/drag HID events — app.swipeUp() resolves 'descendants matching type Window' plus a per-gesture quiescence wait that stalls past 117 s on a scrolling 10k-row list.",
+  "XCTOSSignpostMetric.scrollingAndDecelerationMetric is attached only for w2/w4/w6 (it emits zero rows on w1/w3).",
+  "W2 idioms: React Native uses Animated.FlatList (windowing + view recycling); UIKit dequeueReusableCell; SwiftUI List; Flutter ListView.builder.",
+  "Thermal gate: the runner's setUp blocks on ProcessInfo.thermalStateDidChangeNotification until the device is nominal and fails the row past its bound; thermal state and screen maximumFramesPerSecond are recorded per row from the runner log (device-record) — devicectl reports neither.",
+  "RnBench: only authored files are committed (AppDelegate.swift, bridging header, Info.plist, project.pbxproj, Podfile, Podfile.lock); every template file the pinned @react-native-community/cli init emits is materialized by toolchain.ensure_rn_template at bootstrap and sha256-locked."
+ ]
 }

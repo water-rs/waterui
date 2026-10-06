@@ -21,8 +21,8 @@
 //! ids are the exact lowercase strings `w1`–`w6` — anything else traps;
 //! there is no fallback. Scrolling is driven from outside the app by
 //! OS-level input on every platform — the app never scrolls itself.
-//! On Apple targets the selected id also posts
-//! `dev.bench.ready.<bundle>.<w>` when the view first appears.
+//! On iOS the selected id also posts `dev.bench.ready.<bundle>.<w>`
+//! when the view first appears.
 //!
 //! W5/W6 pacing is one model on every leg: one launch renders one
 //! ladder step, pinned by `BENCH_STEP` (or `-bench-step N`) — a missing
@@ -94,22 +94,69 @@ fn capacity_step(ladder: &[u32], workload: &str) -> u32 {
     }
 }
 
-/// Darwin-notification readiness signal: the Apple runner waits for
-/// `dev.bench.ready.dev.waterui.bench.<w>` instead of querying the
+/// Darwin-notification readiness signal: the iOS runner waits for
+/// `dev.bench.ready.<bundle-id>.<w>` instead of querying the
 /// accessibility tree (materializing the 10k-row feed's tree blocks an
-/// AX query for minutes).
-#[cfg(any(target_os = "ios", target_os = "macos"))]
+/// AX query for minutes). The bundle id is the main bundle's own: the
+/// device host signs each contestant with the bundle id its manifest
+/// declares, so the id is never a literal here.
+#[cfg(target_os = "ios")]
 mod bench_notify {
-    use std::ffi::c_char;
+    use std::ffi::{CStr, c_char, c_void};
+
+    /// kCFStringEncodingUTF8
+    const CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
+
     #[link(name = "System")]
     unsafe extern "C" {
         fn notify_post(name: *const c_char) -> u32;
     }
-    /// Signals `dev.bench.ready.dev.waterui.bench.<w>` — posted once the
-    /// bench workload's view first appears.
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFBundleGetMainBundle() -> *const c_void;
+        fn CFBundleGetIdentifier(bundle: *const c_void) -> *const c_void;
+        fn CFStringGetCString(
+            string: *const c_void,
+            buffer: *mut c_char,
+            buffer_size: isize,
+            encoding: u32,
+        ) -> u8;
+    }
+
+    /// CFBundleIdentifier of the running app's main bundle.
+    fn main_bundle_identifier() -> String {
+        // SAFETY: CFBundleGetMainBundle and CFBundleGetIdentifier follow
+        // the CoreFoundation Get rule (no ownership transferred); the
+        // returned CFString lives as long as the main bundle, i.e. the
+        // process, and is only read into a local buffer.
+        unsafe {
+            let bundle = CFBundleGetMainBundle();
+            assert!(!bundle.is_null(), "CFBundleGetMainBundle returned NULL");
+            let id = CFBundleGetIdentifier(bundle);
+            assert!(!id.is_null(), "main bundle has no CFBundleIdentifier");
+            // a bundle identifier is at most 255 ASCII characters
+            let mut buf: [c_char; 256] = [0; 256];
+            let ok = CFStringGetCString(
+                id,
+                buf.as_mut_ptr(),
+                buf.len().try_into().expect("256 fits in CFIndex"),
+                CF_STRING_ENCODING_UTF8,
+            );
+            assert!(ok != 0, "CFBundleIdentifier does not fit 255 bytes");
+            CStr::from_ptr(buf.as_ptr())
+                .to_str()
+                .expect("CFBundleIdentifier is UTF-8")
+                .to_owned()
+        }
+    }
+
+    /// Signals `dev.bench.ready.<bundle-id>.<w>` — posted once the bench
+    /// workload's view first appears.
     pub fn post_ready(workload: &str) {
-        let name = format!("dev.bench.ready.dev.waterui.bench.{workload}\0");
-        let status = unsafe { notify_post(name.as_ptr() as _) };
+        let name = format!("dev.bench.ready.{}.{workload}\0", main_bundle_identifier());
+        // SAFETY: `name` is NUL-terminated and outlives the call.
+        let status = unsafe { notify_post(name.as_ptr().cast()) };
         assert_eq!(status, 0, "notify_post({name:?}) failed with {status}");
     }
 }
@@ -369,7 +416,7 @@ fn main() -> impl View {
     };
     // `ready` fires when the workload view first appears — the earliest
     // rendered frame — never at view construction.
-    #[cfg(any(target_os = "ios", target_os = "macos"))]
+    #[cfg(target_os = "ios")]
     let content = content.on_appear(move || bench_notify::post_ready(w));
     content
 }

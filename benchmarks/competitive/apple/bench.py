@@ -1,24 +1,36 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.11"
-# dependencies = ["pyobjc-framework-Quartz==12.2.2"]
-# ///
-"""Competitive benchmark runner — Apple targets (water-rs/waterui#1262).
+#!/usr/bin/env python3
+"""Competitive benchmark runner — iOS on the physical iPhone
+(water-rs/waterui#1262, harness #1864).
 
-Single entry point. Run with `uv run bench.py <command>`. The inline
-script metadata above is its whole environment: the standard library plus
-PyObjC's Quartz bindings, which the wheel driver posts CGEvents through.
+Run with `uv run bench.py <command>` (stdlib only). Apple is measured on
+one platform: the iPhone the manifest declares (`device`), attached to
+the device host. Two hosts take part, each with the one Xcode it has:
 
-Commands:
-  build    --platform ios-sim|macos|ios-device   build every contestant, stage artifacts
-  run-local --platform ios-sim|macos [--repeats 5]   drive + measure on this machine
-  device   --artifacts <dir> --udid <udid> [--repeats 5]   iOS device on the
-            M1 host: sign (free team), install, drive, measure. Signs NOTHING here.
-  report   --input results.json [--out report.md]
+  build host (macOS with flutter, CocoaPods, node, Rust, the water CLI):
+    bootstrap                  fresh-clone dependency install
+    build                      build every contestant for the iphoneos
+                               SDK, unsigned; stage them with a staging
+                               manifest and pack build/ios-stage-<head>.tar.gz
+
+  device host (the Mac the iPhone is attached to; never compiles a
+  contestant, builds only the XCTest runner with its own Xcode):
+    device-session start --stage <tar.gz> [selection]
+                               submit one measurement run as a LaunchAgent
+                               job in the user's GUI (Aqua) session — xctrace,
+                               DTServiceHub and the login keychain live
+                               there, not in an ssh session — and return
+    device-session status --run-dir <dir>
+    device-session stop   --run-dir <dir>
+    device-run --run-dir <dir> the job itself (launchd starts it)
+
+  anywhere:
+    report --input results.json [--out report.md]
+    attribution --trace T --app A --max-fps F
 
 Every contestant is measured the same way: the shared BenchRunner XCUITest
-bundle drives the app and XCTest metrics (launch, memory, CPU, hitch, scroll
-signposts) are collected externally. No per-contestant measurement shortcuts.
+bundle drives the app, an all-process Animation Hitches recording gives
+the frames, and XCTest metrics (launch, memory, CPU, hitch, scroll
+signposts) are collected externally. No per-contestant shortcuts.
 """
 from __future__ import annotations
 
@@ -27,11 +39,13 @@ import sys
 if sys.version_info < (3, 10):
     raise SystemExit(
         "benchmarks/competitive requires Python >= 3.10 "
-        f"(this interpreter is {sys.version.split()[0]}); every leg "
-        "declares its version in pyproject.toml + .python-version and "
-        "runs under the uv-managed interpreter (`uv run`)")
+        f"(this interpreter is {sys.version.split()[0]}); it declares its "
+        "version in pyproject.toml + .python-version and runs under the "
+        "uv-managed interpreter (`uv run`)")
 
 import argparse
+import dataclasses
+import datetime
 import fcntl
 import hashlib
 import json
@@ -41,10 +55,12 @@ import re
 import shutil
 import signal
 import subprocess
+import tarfile
 import tempfile
 import threading
-import sys
 import time
+import traceback
+import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
@@ -54,10 +70,12 @@ import frame_stats as lib_frames  # benchmarks/competitive/lib/frame_stats.py
 ROOT = Path(__file__).resolve().parent
 MANIFEST = json.loads((ROOT / "manifest.json").read_text())
 LOCK_DIR = Path("/tmp/device-locks")
-RESULTS_DEFAULT = ROOT / "build" / "results.json"
+STAGE_DIR = ROOT / "build" / "stage"
+RUNS_DIR = ROOT / "build" / "device-runs"
+RUNNER_PROJECT = ROOT / "xctest"
 
 
-# ------------------------------------------------------------------ hosts
+# ------------------------------------------------------------ processes
 
 _ACTIVE_PROCS: list = []
 
@@ -69,11 +87,8 @@ def _kill_proc(p):
     xctrace under it."""
     try:
         os.killpg(os.getpgid(p.pid), signal.SIGKILL)
-    except Exception:
-        try:
-            p.kill()
-        except Exception:
-            pass
+    except ProcessLookupError:
+        pass
 
 
 def _kill_active_procs():
@@ -83,145 +98,6 @@ def _kill_active_procs():
     for p in list(_ACTIVE_PROCS):
         _kill_proc(p)
 
-
-def resolve_sim_udid(requested: str | None = None) -> str:
-    """UDID of the iOS simulator this host builds and runs against.
-
-    An explicit --sim-udid wins; otherwise the newest-runtime available
-    iPhone from `simctl list devices available` is selected — build
-    destinations and container lookups derive from the resolved device,
-    never a baked-in hardware id."""
-    global _SIM_UDID_CACHE
-    if requested:
-        _SIM_UDID_CACHE = requested
-        return requested
-    if _SIM_UDID_CACHE:
-        return _SIM_UDID_CACHE
-    r = subprocess.run(
-        ["xcrun", "simctl", "list", "devices", "available", "--json"],
-        capture_output=True, text=True, timeout=60)
-    doc = json.loads(r.stdout)
-    cands = []
-    for runtime, devs in doc.get("devices", {}).items():
-        m = re.search(r"iOS[- ](\d+)[-.](\d+)", runtime)
-        ver = (int(m.group(1)), int(m.group(2))) if m else (0, 0)
-        for d in devs:
-            if d.get("isAvailable", True) and "iPhone" in d.get("name", ""):
-                cands.append((ver, d["name"], d["udid"]))
-    if not cands:
-        raise RuntimeError(
-            "no available iPhone simulator — create one with "
-            "`xcrun simctl create` or pass --sim-udid")
-    cands.sort()
-    ver, name, udid = cands[-1]
-    _SIM_UDID_CACHE = udid
-    print(f"resolved iOS simulator: {name} ({udid}, "
-          f"runtime iOS {ver[0]}.{ver[1]})", flush=True)
-    return udid
-
-
-_SIM_UDID_CACHE = None
-
-
-def sim_udid() -> str:
-    return resolve_sim_udid()
-
-
-def _find_json_fields(node, wanted) -> dict:
-    """First scalar value of each wanted key, anywhere in the JSON tree."""
-    out = {}
-    stack = [node]
-    while stack:
-        cur = stack.pop()
-        if isinstance(cur, dict):
-            for k, v in cur.items():
-                if k in wanted and not isinstance(v, (dict, list)):
-                    out.setdefault(k, v)
-                elif isinstance(v, (dict, list)):
-                    stack.append(v)
-        elif isinstance(cur, list):
-            stack.extend(cur)
-    return out
-
-
-def host_evidence() -> dict:
-    """Evidence that identifies the measurement host's real hardware.
-
-    Recorded on every results file and re-verified on resume, so rows
-    from mixed hosts or a paravirtual VM never merge into one dataset."""
-    def _sysctl(k):
-        r = subprocess.run(["sysctl", "-n", k], capture_output=True,
-                           text=True, timeout=30)
-        return r.stdout.strip() if r.returncode == 0 else None
-
-    def _ioreg_uuid():
-        r = subprocess.run(
-            ["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
-            capture_output=True, text=True, timeout=30)
-        if r.returncode != 0:
-            return None
-        m = re.search(r'"IOPlatformUUID"\s*=\s*"([^"]+)"', r.stdout)
-        return m.group(1) if m else None
-
-    ev = {"hw_model": _sysctl("hw.model"),
-          # hardware UUID — the machine fingerprint the manifest declares;
-          # a model name is never identity (any Mac mini matches)
-          "hw_uuid": _ioreg_uuid(),
-          "cpu_brand": _sysctl("machdep.cpu.brand_string"),
-          "hv_vmm_present": _sysctl("kern.hv_vmm_present") == "1",
-          "gpus": []}
-    r = subprocess.run(["system_profiler", "SPDisplaysDataType", "-json"],
-                       capture_output=True, text=True, timeout=120)
-    if r.returncode == 0:
-        try:
-            for d in json.loads(r.stdout).get("SPDisplaysDataType", []):
-                name = d.get("sppci_model") or d.get("_name")
-                if name:
-                    ev["gpus"].append(name)
-        except Exception:
-            pass
-    return ev
-
-
-def host_is_virtualized(ev: dict) -> str | None:
-    """Reason string when the evidence says VM/paravirtual, else None."""
-    if ev.get("hv_vmm_present"):
-        return "kern.hv_vmm_present=1 (Hypervisor.framework guest)"
-    brand = f"{ev.get('cpu_brand') or ''} {ev.get('hw_model') or ''}"
-    if "virtual" in brand.lower():
-        return f"virtualized identity: {brand.strip()}"
-    for g in ev.get("gpus", []):
-        if "virtual" in g.lower() or "paravirtual" in g.lower():
-            return f"paravirtual GPU: {g}"
-    return None
-
-
-def water_bin() -> str:
-    """The `water` CLI built from THIS checkout (cli/ is a workspace
-    member) — `cargo install --locked --path cli` into the suite-shared
-    cache under a file lock, once per host. Refuses a dirty tracked
-    checkout so the recorded HEAD sha is the real identity."""
-    return str(toolchain.provision_water_cli())
-
-
-def cli_evidence() -> dict:
-    """Identity of the `water` binary actually invoked: path, sha256,
-    --version output, plus the checkout HEAD it was built from."""
-    path = water_bin()
-    ev = {"binary": path}
-    p = Path(path)
-    if not p.exists():
-        ev["error"] = "binary not found"
-        return ev
-    ev["sha256"] = hashlib.sha256(p.read_bytes()).hexdigest()
-    r = subprocess.run([str(p), "--version"], capture_output=True,
-                       text=True, timeout=30)
-    ev["version"] = (r.stdout or r.stderr).strip()
-    ev["checkout_head"] = toolchain.checkout_head()
-    ev["source"] = "in-tree cli/ (workspace member), cargo install --locked"
-    return ev
-
-# ---------------------------------------------------------------- helpers
 
 def sh(cmd, cwd=ROOT, env=None, check=True, capture=False, timeout=None):
     print(f"$ {cmd}", flush=True)
@@ -251,94 +127,99 @@ def sh(cmd, cwd=ROOT, env=None, check=True, capture=False, timeout=None):
     return r
 
 
-def du_bytes(path: Path) -> int:
-    total = 0
-    for p in path.rglob("*"):
-        if p.is_file() and not p.is_symlink():
-            total += p.lstat().st_size
-    return total
+def _out(cmd: list[str], timeout: int = 60) -> str:
+    """stdout of a short probe; a failing probe raises with its stderr."""
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    if r.returncode != 0:
+        raise RuntimeError(f"{' '.join(cmd)} failed rc={r.returncode}: "
+                           f"{(r.stderr or r.stdout).strip()[-400:]}")
+    return r.stdout.strip()
 
 
-def stat_machine() -> dict:
-    out = {}
-    for k, cmd in {
-        "model": "sysctl -n machdep.cpu.brand_string 2>/dev/null || sysctl -n hw.model",
-        "os": "sw_vers -productName && sw_vers -productVersion",
-        "kernel": "uname -m",
-        "memory_gb": "expr $(sysctl -n hw.memsize) / 1073741824",
-    }.items():
-        r = sh(cmd, capture=True, check=False, timeout=30)
-        out[k] = (r.stdout or "").strip().replace("\n", " ")
-    out["fingerprint"] = host_evidence()
-    return out
+# ---------------------------------------------------------- host identity
+
+def host_evidence() -> dict:
+    """Evidence that identifies a host's real hardware and OS. Recorded
+    for the build host in the staging manifest and for the device host
+    on every results file (re-verified on resume)."""
+    def _sysctl(k):
+        r = subprocess.run(["sysctl", "-n", k], capture_output=True,
+                           text=True, timeout=30)
+        return r.stdout.strip() if r.returncode == 0 else None
+
+    def _ioreg_uuid():
+        r = subprocess.run(
+            ["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
+            capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            return None
+        m = re.search(r'"IOPlatformUUID"\s*=\s*"([^"]+)"', r.stdout)
+        return m.group(1) if m else None
+
+    return {"hw_model": _sysctl("hw.model"),
+            "hw_uuid": _ioreg_uuid(),
+            "cpu_brand": _sysctl("machdep.cpu.brand_string"),
+            "hv_vmm_present": _sysctl("kern.hv_vmm_present") == "1",
+            "os": f"{_out(['sw_vers', '-productName'])} "
+                  f"{_out(['sw_vers', '-productVersion'])} "
+                  f"({_out(['sw_vers', '-buildVersion'])})"}
 
 
-def check_host_fingerprint(state: dict, evidence: dict | None = None
-                           ) -> None:
-    """Refuse to merge runs taken on a different host, and refuse to
-    measure at all on a virtualized host — paravirtual timings are not
-    hardware evidence and there is no escape flag."""
-    fp = evidence if evidence is not None else host_evidence()
-    vm = host_is_virtualized(fp)
-    if vm:
+def xcode_identity() -> dict:
+    """The Xcode this host actually uses — recorded on every host, never
+    pinned. The host must report exactly one Xcode: the active developer
+    dir lies inside one Xcode .app and `xcodebuild -version` names one
+    Xcode version and one build. The Xcode bundles installed under
+    /Applications are recorded alongside as evidence."""
+    dev = Path(_out(["xcode-select", "-p"])).resolve()
+    bundle = next((p for p in (dev, *dev.parents) if p.suffix == ".app"),
+                  None)
+    if bundle is None:
         raise SystemExit(
-            f"refusing to measure on a virtualized host: {vm}. "
-            "Measurements here would be paravirtual timings, not "
-            "hardware evidence — run on the physical host.")
-    prev = (state.get("machine_fingerprint") or
-            state.get("machine", {}).get("fingerprint"))
-    if prev and prev != fp:
+            f"the active developer dir {dev} is not inside an Xcode .app "
+            "(Command Line Tools alone cannot build or record) — select "
+            "the host's Xcode with xcode-select")
+    lines = _out(["xcodebuild", "-version"]).splitlines()
+    versions = [ln for ln in lines if ln.startswith("Xcode ")]
+    builds = [ln for ln in lines if ln.startswith("Build version ")]
+    if len(versions) != 1 or len(builds) != 1:
         raise SystemExit(
-            "results file was produced on a different host — refusing "
-            "to merge mixed hardware evidence\n"
-            f"  recorded: {prev}\n  current : {fp}")
-    if prev is None and state.get("runs"):
-        raise SystemExit(
-            "results file predates host fingerprinting — stale/unknown "
-            "hardware evidence cannot merge with current runs")
-    state["machine"]["fingerprint"] = fp
+            "xcodebuild -version does not report exactly one Xcode: "
+            f"{lines!r}")
+    return {"app": str(bundle),
+            "developer_dir": str(dev),
+            "version": versions[0].removeprefix("Xcode ").strip(),
+            "build": builds[0].removeprefix("Build version ").strip(),
+            "iphoneos_sdk": _out(["xcrun", "--sdk", "iphoneos",
+                                  "--show-sdk-version"]),
+            "iphoneos_sdk_build": _out(["xcrun", "--sdk", "iphoneos",
+                                        "--show-sdk-build-version"]),
+            "installed": sorted(str(p) for p in
+                                Path("/Applications").glob("Xcode*.app"))}
 
 
-def cli_check(ev: dict, pin: dict | None) -> str | None:
-    """None when a recorded CLI-binary sha matches the fresh binary
-    evidence; an error string otherwise. An absent pin is not an error
-    here — files that never recorded one are refused by the
-    fingerprint gates instead."""
-    if not pin or pin.get("sha256") is None:
-        return None
-    want = pin["sha256"]
-    if ev.get("error") or not ev.get("sha256"):
-        return f"cannot hash the CLI binary: {ev.get('error', 'no sha256')}"
-    if ev["sha256"] != want:
-        return (f"CLI binary sha256 mismatch: recorded {want}, "
-                f"current {ev['sha256']}")
-    return None
+def water_bin() -> str:
+    """The `water` CLI built from THIS checkout (cli/ is a workspace
+    member) — `cargo install --locked --path cli` into the suite-shared
+    cache under a file lock, once per host. Refuses a dirty tracked
+    checkout so the recorded HEAD sha is the real identity."""
+    return str(toolchain.provision_water_cli())
 
 
-def check_source_fingerprint(state: dict) -> None:
-    """Resume gate for the framework identity: a results file made by a
-    different checkout HEAD or a different water CLI binary — or one
-    that predates that provenance — cannot merge with current runs.
-    Call BEFORE refreshing pins."""
-    declared = toolchain.checkout_head()
-    pins = state.get("pins") or {}
-    old_head = pins.get("waterui_head")
-    if old_head and old_head != declared:
-        raise SystemExit(
-            "results file was produced at a different waterui checkout "
-            "— refusing to merge\n"
-            f"  recorded: {old_head}\n  current:   {declared}")
-    if state.get("runs") and not old_head:
-        raise SystemExit(
-            "results file predates checkout fingerprinting — stale/"
-            "unknown source provenance cannot merge with current runs")
-    old_cli = pins.get("water_cli")
-    if old_cli and not str(old_cli).startswith("unresolved"):
-        err = cli_check(cli_evidence(), {"sha256": old_cli})
-        if err:
-            raise SystemExit(
-                "results file was produced by a different water CLI "
-                f"binary — refusing to merge\n  {err}")
+def cli_evidence() -> dict:
+    """Identity of the `water` binary the build invoked: path, sha256,
+    --version output, plus the checkout HEAD it was built from."""
+    p = Path(water_bin())
+    r = subprocess.run([str(p), "--version"], capture_output=True,
+                       text=True, timeout=30)
+    if r.returncode != 0:
+        raise RuntimeError(f"{p} --version failed rc={r.returncode}: "
+                           f"{(r.stderr or r.stdout).strip()[-300:]}")
+    return {"binary": str(p),
+            "sha256": toolchain.sha256_file(p),
+            "version": r.stdout.strip(),
+            "checkout_head": toolchain.checkout_head(),
+            "source": "in-tree cli/ (workspace member), cargo install --locked"}
 
 
 def contestant(cid):
@@ -348,78 +229,17 @@ def contestant(cid):
     raise KeyError(cid)
 
 
-# ---------------------------------------------------------------- build
-
-def cmd_bootstrap(args):
-    """Fresh-clone dependency install for one platform, pinned to the
-    committed lockfiles — npm ci (package-lock.json), bundle install +
-    pod install (Gemfile.lock / Podfile.lock), xcodegen regen of the
-    native project. Any failure aborts; there is no silent retry.
-
-    The whole bootstrap runs on a clean tracked tree and must leave it
-    clean: a step that rewrites a committed lockfile or project means the
-    committed copy is stale, and the staged set would otherwise carry a
-    HEAD label the tree no longer matches."""
-    t = MANIFEST["toolchain"]
-    # the leg directory and every contestant project bootstrap writes into
-    guarded = [ROOT, *{(ROOT / c["dir"]).resolve()
-                       for c in MANIFEST["contestants"]}]
-    with toolchain.tracked_tree_unchanged(
-            f"apple bootstrap {args.platform}", guarded):
-        # RN root template files are generated, not committed —
-        # materialize them from the pinned init before `npm ci`/`bundle`
-        # reads the dir.
-        rn = next((c for c in MANIFEST["contestants"] if c["id"] == "rn"),
-                  None)
-        if rn:
-            toolchain.ensure_rn_template(
-                ROOT / rn["dir"], t["react_native_cli"],
-                t["react_native"], t["react_native_template_sha256"],
-                env=os.environ.copy())
-        cp_ver = re.match(r"[\d.]+", t["cocoapods"])
-        for step in (MANIFEST.get("bootstrap") or {}).get(args.platform, []):
-            match step:
-                case {"step": "rn-macos-template"}:
-                    # the react-native-macos template files the macos/
-                    # project does not commit, from the generator `npm
-                    # ci` just installed — before `pod install` reads it
-                    toolchain.ensure_rn_macos_template(
-                        ROOT / contestant("rn")["dir"],
-                        t["react_native_macos"], env=os.environ.copy())
-                case str():
-                    cmd = step
-                    if "{SIM_UDID}" in cmd:
-                        cmd = cmd.replace("{SIM_UDID}",
-                                          resolve_sim_udid(args.sim_udid))
-                    if "{COCOAPODS}" in cmd:
-                        if not cp_ver:
-                            raise SystemExit(
-                                "toolchain.cocoapods in manifest.json does "
-                                "not start with a version number")
-                        cmd = cmd.replace("{COCOAPODS}", cp_ver.group(0))
-                    sh(cmd)
-                case _:
-                    raise SystemExit(
-                        f"manifest bootstrap.{args.platform} has an "
-                        f"unknown step: {step!r}")
-    print(f"bootstrap complete for {args.platform}")
-
-
-def app_binary(path: Path) -> Path | None:
-    """The executable inside a .app bundle: <stem> at top level for iOS,
-    Contents/MacOS/<stem> for macOS. None when either candidate is
-    absent — an Xcode stub after a failed build-for-testing carries
-    Info.plist + PkgInfo but no binary."""
-    for cand in (path / path.stem,
-                 path / "Contents" / "MacOS" / path.stem):
-        if cand.is_file() and cand.stat().st_size > 0:
-            return cand
-    return None
+def du_bytes(path: Path) -> int:
+    total = 0
+    for p in path.rglob("*"):
+        if p.is_file() and not p.is_symlink():
+            total += p.lstat().st_size
+    return total
 
 
 def dir_sha256(path: Path) -> str:
     """Content hash of an app bundle: sorted (relpath, size, sha256)
-    triples — the staging manifest records it so a later run measures
+    triples — the staging manifest records it so the device host measures
     exactly the artifact the build produced."""
     h = hashlib.sha256()
     for p in sorted(path.rglob("*")):
@@ -434,211 +254,240 @@ def dir_sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def app_info(app: Path) -> dict:
+    """The bundle's Info.plist (iOS layout: at the bundle root)."""
+    return plistlib.loads((app / "Info.plist").read_bytes())
+
+
+def bundle_executable(app: Path) -> str:
+    """CFBundleExecutable — it need not equal the bundle stem (Flutter's
+    is Runner, WaterUI's is its product name)."""
+    exe = app_info(app).get("CFBundleExecutable")
+    if not exe:
+        raise RuntimeError(f"{app}/Info.plist has no CFBundleExecutable")
+    return exe
+
+
+def payload_zip_bytes(app: Path, work: Path) -> int:
+    """Bytes of `Payload/<app>` deflated into a zip — the unsigned
+    .ipa a store submission would carry, before thinning."""
+    out = work / f"{app.stem}.unsigned.ipa"
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        for p in sorted(app.rglob("*")):
+            arc = Path("Payload") / app.name / p.relative_to(app)
+            if p.is_symlink():
+                info = zipfile.ZipInfo(str(arc))
+                info.external_attr = 0o120777 << 16
+                z.writestr(info, os.readlink(p))
+            elif p.is_file():
+                z.write(p, str(arc))
+    size = out.stat().st_size
+    out.unlink()
+    return size
+
+
+# ---------------------------------------------------------------- build
+
+def cmd_bootstrap(args):
+    """Fresh-clone dependency install on the build host, pinned to the
+    committed lockfiles — the RN template, npm ci (package-lock.json),
+    bundle install + pod install (Gemfile.lock / Podfile.lock), xcodegen
+    generation of the native project. Any failure aborts; there is no
+    silent retry.
+
+    The whole bootstrap runs on a clean tracked tree and must leave it
+    clean: a step that rewrites a committed lockfile or project means the
+    committed copy is stale, and the staged set would otherwise carry a
+    HEAD label the tree no longer matches."""
+    t = MANIFEST["toolchain"]["build_host"]
+    guarded = [ROOT, *{(ROOT / c["dir"]).resolve()
+                       for c in MANIFEST["contestants"]}]
+    toolchain.require_version("xcodegen", ["xcodegen", "--version"],
+                              t["xcodegen"])
+    toolchain.require_version("node", ["node", "--version"], t["node"])
+    with toolchain.tracked_tree_unchanged("apple bootstrap", guarded):
+        # RN root template files are generated, not committed —
+        # materialize them from the pinned init before `npm ci`/`bundle`
+        # reads the dir.
+        toolchain.ensure_rn_template(
+            ROOT / contestant("rn")["dir"], t["react_native_cli"],
+            t["react_native"], t["react_native_template_sha256"],
+            env=os.environ.copy())
+        cp_ver = re.match(r"[\d.]+", t["cocoapods"])
+        if not cp_ver:
+            raise SystemExit("toolchain.build_host.cocoapods in "
+                             "manifest.json does not start with a version")
+        for step in MANIFEST["bootstrap"]["steps"]:
+            sh(step.replace("{COCOAPODS}", cp_ver.group(0)))
+    print("bootstrap complete")
+
+
 def flutter_bin():
     """Resolved flutter binary for this host, version-checked against the
-    manifest's declared toolchain — module scope so every consumer
-    (ensure_flutter_apple, build command substitution) shares it."""
-    root = os.path.expandvars(
-        MANIFEST["toolchain"]["flutter_root"])
-    b = Path(root) / "bin" / "flutter"
-    toolchain.require_version(
-        "flutter", [str(b), "--version"],
-        MANIFEST["toolchain"]["flutter"])
+    manifest's declared toolchain."""
+    t = MANIFEST["toolchain"]["build_host"]
+    b = Path(os.path.expandvars(t["flutter_root"])) / "bin" / "flutter"
+    toolchain.require_version("flutter", [str(b), "--version"], t["flutter"])
     return str(b)
 
 
-def ensure_flutter_apple(d: Path, platforms: list[str], env: dict):
-    """The flutter app's ios/ + macos/ directories are generated, not
-    committed: produced by the pinned Flutter SDK's `flutter create` in a
-    scratch dir, the authored override files then replace the template
-    sources, and the iOS bundle id is rewritten to the manifest's
-    dev.bench.flutter (the generator emits dev.bench.<ProjectName>, i.e.
-    dev.bench.benchFlutter for project name bench_flutter).
-    Reuses a stale generated dir only if .bench-generator records the same
-    Flutter version — otherwise it is regenerated."""
+def ensure_flutter_ios(d: Path):
+    """The flutter app's ios/ directory is generated, not committed:
+    produced by the pinned Flutter SDK's `flutter create` in a scratch
+    dir, the authored ios-override files then replace the template
+    sources. The generator's bundle id (dev.bench.benchFlutter) is left
+    as built — the device host signs every contestant with the bundle id
+    the manifest declares. Reuses a generated dir only if .bench-generator
+    records the same Flutter version — otherwise it is regenerated."""
     fb = flutter_bin()
     ver = subprocess.run([fb, "--version", "--machine"],
                          capture_output=True, text=True)
-    tag = ""
     try:
         tag = json.loads(ver.stdout)["frameworkVersion"]
-    except Exception:
+    except (json.JSONDecodeError, KeyError) as e:
         raise RuntimeError(
             f"flutter --version --machine unreadable: "
-            f"{(ver.stdout or ver.stderr)[:200]}")
-    for plat in platforms:
-        dst = d / plat
-        stamp = dst / ".bench-generator"
-        if dst.is_dir() and stamp.exists()                 and stamp.read_text().strip() == tag:
-            continue
-        shutil.rmtree(dst, ignore_errors=True)
-        with tempfile.TemporaryDirectory() as td:
-            sh(f"'{fb}' create --platforms={plat} "
-               f"--project-name bench_flutter --org dev.bench "
-               f"--template app '{td}/app'", cwd=td)
-            shutil.copytree(Path(td) / "app" / plat, dst)
-        ovr = d / f"{plat}-override"
-        if ovr.is_dir():
-            for f in ovr.rglob("*"):
-                if f.is_file():
-                    rel = f.relative_to(ovr)
-                    (dst / rel).parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy(f, dst / rel)
-        if plat == "ios":
-            pbx = dst / "Runner.xcodeproj" / "project.pbxproj"
-            pbx.write_text(pbx.read_text().replace(
-                "dev.bench.benchFlutter", "dev.bench.flutter"))
-        stamp.write_text(tag + "\n")
+            f"{(ver.stdout or ver.stderr)[:200]}") from e
+    dst = d / "ios"
+    stamp = dst / ".bench-generator"
+    if dst.is_dir() and stamp.exists() and stamp.read_text().strip() == tag:
+        return
+    shutil.rmtree(dst, ignore_errors=True)
+    with tempfile.TemporaryDirectory() as td:
+        sh(f"'{fb}' create --platforms=ios "
+           f"--project-name bench_flutter --org dev.bench "
+           f"--template app '{td}/app'", cwd=td)
+        shutil.copytree(Path(td) / "app" / "ios", dst)
+    ovr = d / "ios-override"
+    for f in ovr.rglob("*"):
+        if f.is_file():
+            rel = f.relative_to(ovr)
+            (dst / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(f, dst / rel)
+    stamp.write_text(tag + "\n")
+
+
+def check_rpath_deps(app: Path) -> None:
+    """Every @rpath dependency of the main executable must resolve inside
+    the bundle's Frameworks/ — an unresolved one is a build failure,
+    never a warning that ships a dead binary."""
+    out = _out(["otool", "-L", str(app / bundle_executable(app))])
+    for line in out.splitlines()[1:]:
+        name = line.strip().split(" ")[0]
+        if name.startswith("@rpath/"):
+            lib = name.removeprefix("@rpath/")
+            if not (app / "Frameworks" / lib).exists():
+                raise RuntimeError(
+                    f"unresolved @rpath dependency {name}: the artifact "
+                    "does not carry it under Frameworks/")
+
+
+def build_host_toolchain() -> dict:
+    """Versions the build host's tools report — evidence beside the
+    manifest's declared requirements (which bootstrap/build enforce)."""
+    out = {}
+    for name, cmd in {"flutter": [flutter_bin(), "--version"],
+                      "node": ["node", "--version"],
+                      "cocoapods": ["pod", "--version"],
+                      "xcodegen": ["xcodegen", "--version"],
+                      "rustc": ["rustc", "--version"]}.items():
+        out[name] = _out(cmd, timeout=120).splitlines()[0]
+    return out
 
 
 def cmd_build(args):
-    plat = args.platform
-    # The staged set is labelled with the checkout HEAD: the bootstrap
-    # runs first, on a clean tree it must leave clean (cmd_bootstrap's
-    # tracked_tree_unchanged), so a dirty checkout is refused before any
-    # staged artifact is deleted.
-    try:
-        cmd_bootstrap(args)
-    except Exception as e:
-        # a failed bootstrap leaves every later build unproven — stop at
-        # the first bootstrap failure
-        raise SystemExit(f"bootstrap failed: {e}") from e
-    staged = ROOT / "build" / "artifacts" / plat
-    # stale staged artifacts are deleted wholesale, not overwritten in
-    # place: a run must never measure a file left over from an earlier
-    # build graph
-    shutil.rmtree(staged, ignore_errors=True)
-    staged.mkdir(parents=True, exist_ok=True)
+    """Build every contestant for the iphoneos SDK, unsigned, on this
+    (build) host and stage them with a staging manifest: per artifact its
+    built bundle id, sha256, unsigned sizes; the build host's identity,
+    Xcode and toolchain; the checkout HEAD and water CLI. The staged set
+    is packed into build/ios-stage-<head12>.tar.gz for transfer to the
+    device host. A failing contestant fails the build — a partial staged
+    set is never packed."""
+    cmd_bootstrap(args)
+    head = toolchain.checkout_head()
+    xcode = xcode_identity()
+    shutil.rmtree(STAGE_DIR, ignore_errors=True)
+    STAGE_DIR.mkdir(parents=True)
     failures = {}
-    # the water CLI consumed by {WATER} build commands is provisioned
-    # from this checkout on first use, never a PATH entry
-    _wb = {}
-
-    def wb():
-        if not _wb:
-            _wb["b"] = water_bin()
-        return _wb["b"]
-
+    cli = None
     for c in MANIFEST["contestants"]:
-        if c["id"] == "flutter" and not c.get("build", {}).get(plat):
-            continue
-        # a contestant build must leave the tracked tree as committed
         with toolchain.tracked_tree_unchanged(
-                f"apple build {plat} {c['id']}",
+                f"apple build {c['id']}",
                 [ROOT, (ROOT / c["dir"]).resolve()]):
             if c["id"] == "flutter":
-                ensure_flutter_apple(ROOT / c["dir"],
-                                     ["macos" if plat == "macos" else "ios"],
-                                     os.environ.copy())
-            cmds = c.get("build", {}).get(plat)
-            if cmds:
-                for cmd in cmds:
-                    if "{SIM_UDID}" in cmd:
-                        cmd = cmd.replace(
-                            "{SIM_UDID}", resolve_sim_udid(args.sim_udid))
-                    if "{WATER}" in cmd:
-                        cmd = cmd.replace("{WATER}", wb())
-                    if "{FLUTTER}" in cmd:
-                        cmd = cmd.replace("{FLUTTER}", flutter_bin())
-                    try:
-                        sh(cmd)
-                    except Exception as e:  # report exact error, don't drop silently
-                        failures[c["id"]] = str(e)[-2000:]
-                        break
-        art = c.get("artifact", {}).get(plat)
-        if c["id"] not in failures and art:
-            src = ROOT / art
-            if not src.exists():
-                failures[c["id"]] = f"build ok but artifact missing: {art}"
-                continue
-            dst = staged / src.name
-            shutil.rmtree(dst, ignore_errors=True)
-            shutil.copytree(src, dst, symlinks=True)
-            if src.name.endswith(".app") and not app_binary(dst):
-                failures[c["id"]] = (
-                    f"staged artifact {art} carries no executable — the "
-                    "build left an empty Xcode stub, not a success")
-                shutil.rmtree(dst, ignore_errors=True)
-                continue
-            if plat == "ios-device":
-                # water package aborts at signing before embedding the rust
-                # cdylib; every missing @rpath dep must resolve inside the
-                # package output — an unresolved dep is a build failure,
-                # never a warning that ships a dead binary
-                exe = dst / dst.stem
-                if exe.exists():
-                    out = subprocess.run(["otool", "-L", str(exe)],
-                                         capture_output=True, text=True).stdout
-                    for line in out.splitlines()[1:]:
-                        name = line.strip().split(" ")[0]
-                        if not name.startswith("@rpath/"):
-                            continue
-                        lib = name[len("@rpath/"):]
-                        dd = dst / "Frameworks" / lib
-                        if dd.exists():
-                            continue
-                        search = [src.parent, src.parent / "Frameworks",
-                                  src / "Frameworks"]
-                        for cand in (p / lib for p in search):
-                            if cand.exists():
-                                dd.parent.mkdir(exist_ok=True)
-                                shutil.copy2(cand, dd)
-                                print(f"  staged nested dylib {lib}")
-                                break
-                        else:
-                            failures[c["id"]] = (
-                                f"unresolved @rpath dep {name} — "
-                                "the packaged artifact does not carry it")
-                            break
-                    if c["id"] in failures:
-                        continue
-            print(f"staged {c['id']}: {dst} ({du_bytes(dst)/1e6:.1f} MB)")
-    # stage the test-runner products next to the artifacts
-    if plat in ("ios-sim", "ios-device", "macos"):
-        key = {"ios-sim": "ios_sim_xctestrun", "ios-device": "ios_device_xctestrun",
-               "macos": "macos_xctestrun"}[plat]
-        tmpl = ROOT / MANIFEST["harness"][key]
-        if tmpl.exists():
-            dst = staged / tmpl.name
-            shutil.rmtree(dst, ignore_errors=True)
-            shutil.copy2(tmpl, dst)
-            products = tmpl.parent
-            for sub in products.iterdir():
-                if not (sub.is_dir() and sub.name.startswith("Release")):
-                    continue
-                for p in sub.iterdir():
-                    if p.name.endswith(("-Runner.app", ".xctest")):
-                        dd = staged / p.name
-                        shutil.rmtree(dd, ignore_errors=True)
-                        if p.is_dir():
-                            shutil.copytree(p, dd, symlinks=True)
-                        else:
-                            shutil.copy2(p, dd)
+                ensure_flutter_ios(ROOT / c["dir"])
+            for cmd in c["build"]:
+                if "{WATER}" in cmd:
+                    if cli is None:
+                        cli = cli_evidence()
+                    cmd = cmd.replace("{WATER}", cli["binary"])
+                cmd = cmd.replace("{FLUTTER}", flutter_bin())
+                try:
+                    sh(cmd)
+                except RuntimeError as e:
+                    failures[c["id"]] = str(e)[-2000:]
+                    break
+        if c["id"] in failures:
+            continue
+        src = ROOT / c["artifact"]
+        if not (src / "Info.plist").is_file():
+            failures[c["id"]] = f"build ok but artifact missing: {src}"
+            continue
+        dst = STAGE_DIR / src.name
+        shutil.copytree(src, dst, symlinks=True)
+        if not (dst / bundle_executable(dst)).is_file():
+            failures[c["id"]] = (f"staged {src.name} carries no executable "
+                                 "— the build left an empty stub")
+            continue
+        try:
+            check_rpath_deps(dst)
+        except RuntimeError as e:
+            failures[c["id"]] = str(e)
+            continue
+        print(f"staged {c['id']}: {dst} ({du_bytes(dst) / 1e6:.1f} MB)")
     if failures:
         print(json.dumps({"build_failures": failures}, indent=2))
-        sys.exit(2)
-    # staging manifest: which artifacts (and which source identity and
-    # build host) produced this staged set — the run verifies each
-    # artifact's hash against it before measuring, and records it as
-    # per-row provenance
-    staging = {"checkout_head": toolchain.checkout_head(),
-               "built_utc": time.time(),
-               "host_fingerprint": host_evidence(),
-               "artifacts": {p.name: dir_sha256(p)
-                             for p in sorted(staged.iterdir())
-                             if p.is_dir() and p.suffix == ".app"}}
-    (staged / "staging-manifest.json").write_text(
+        raise SystemExit(2)
+    if cli is None:
+        raise SystemExit("no contestant build invoked the water CLI — "
+                         "the WaterUI contestant's build command lost "
+                         "{WATER}")
+    artifacts = {}
+    with tempfile.TemporaryDirectory() as td:
+        for c in MANIFEST["contestants"]:
+            app = STAGE_DIR / Path(c["artifact"]).name
+            info = app_info(app)
+            artifacts[c["id"]] = {
+                "app": app.name,
+                "built_bundle_id": info["CFBundleIdentifier"],
+                "executable": info["CFBundleExecutable"],
+                "sha256": dir_sha256(app),
+                "app_bytes": du_bytes(app),
+                "unsigned_ipa_bytes": payload_zip_bytes(app, Path(td)),
+            }
+    staging = {"checkout_head": head,
+               "built_utc": datetime.datetime.now(
+                   datetime.timezone.utc).isoformat(timespec="seconds"),
+               "build_host": host_evidence(),
+               "xcode": xcode,
+               "water_cli": cli,
+               "toolchain": build_host_toolchain(),
+               "artifacts": artifacts}
+    (STAGE_DIR / "staging-manifest.json").write_text(
         json.dumps(staging, indent=1) + "\n")
-    print("all contestants built and staged")
+    tar = ROOT / "build" / f"ios-stage-{head[:12]}.tar.gz"
+    with tarfile.open(tar, "w:gz") as t:
+        t.add(STAGE_DIR, arcname="stage")
+    print(f"staged set → {tar}\nsha256 {toolchain.sha256_file(tar)}")
 
 
 # ------------------------------------------------------- xctestrun surgery
 
 def write_xctestrun(template: Path, out: Path, target_key: str,
                     products_subdir: str, app_name: str, bundle_id: str,
-                    workload: str, drive: str, duration: int, runner_app: str,
-                    nonce: int, no_hitch: bool = False,
-                    only_test: str | None = None, step: int | None = None):
+                    workload: str, drive: str, duration: int,
+                    nonce: int, only_test: str | None = None,
+                    step: int | None = None):
     d = plistlib.loads(template.read_bytes())
     t = d[target_key]
     app_rel = f"__TESTROOT__/{products_subdir}/{app_name}"
@@ -653,50 +502,41 @@ def write_xctestrun(template: Path, out: Path, target_key: str,
         # would bind to whichever test's app instance appeared first
         t["OnlyTestIdentifiers"] = [f"BenchTests/{only_test}"]
     env = t.setdefault("EnvironmentVariables", {})
-    warmup_ms = MANIFEST["harness"]["warmup_ms"]
-    if warmup_ms <= 0:
+    h = MANIFEST["harness"]
+    if h["warmup_ms"] <= 0:
         raise RuntimeError(
             "harness.warmup_ms must be > 0 — the warmup is declared in "
             "the manifest and is never zero (METHOD)")
-    tolerance_ms = MANIFEST["harness"]["anchor_tolerance_ms"]
-    if tolerance_ms <= 0:
+    if h["anchor_tolerance_ms"] <= 0:
         raise RuntimeError(
             "harness.anchor_tolerance_ms must be > 0 — the runner holds "
             "the contestant this long past the capture so the trace's "
             "window ends inside the held span")
+    f = h["fling"]
     env.update({
         "BENCH_BUNDLE_ID": bundle_id,
         "BENCH_WORKLOAD": workload,
         "BENCH_DRIVE": drive,
         "BENCH_DURATION": str(duration),
-        "BENCH_WARMUP_MS": str(warmup_ms),
-        "BENCH_ANCHOR_TOLERANCE_MS": str(tolerance_ms),
+        "BENCH_WARMUP_MS": str(h["warmup_ms"]),
+        "BENCH_ANCHOR_TOLERANCE_MS": str(h["anchor_tolerance_ms"]),
         # the recorder-go latch this invocation must match — a latched
         # signal left by another invocation never releases this one
         "BENCH_RUN_NONCE": str(nonce),
         # the fling program the XCTest's swipe branch executes — from the
         # manifest, never Swift literals
         "BENCH_FLING": json.dumps({
-            "flings_down": int(MANIFEST["harness"]["fling"]["down"]),
-            "flings_up": int(MANIFEST["harness"]["fling"]["up"]),
-            "start_fraction":
-                float(MANIFEST["harness"]["fling"]["swipe_start_fraction"]),
-            "end_fraction":
-                float(MANIFEST["harness"]["fling"]["swipe_end_fraction"]),
-            "duration_ms":
-                float(MANIFEST["harness"]["fling"]["swipe_duration_ms"]),
-            "pause_s":
-                float(MANIFEST["harness"]["fling"]["swipe_pause_s"]),
-            "hold_s":
-                float(MANIFEST["harness"]["fling"]["swipe_hold_s"]),
+            "flings_down": int(f["down"]),
+            "flings_up": int(f["up"]),
+            "start_fraction": float(f["start_fraction"]),
+            "end_fraction": float(f["end_fraction"]),
+            "duration_ms": float(f["duration_ms"]),
+            "pause_s": float(f["pause_ms"]) / 1000.0,
+            "hold_s": float(f["hold_s"]),
         }),
     })
     if step is not None:
         env["BENCH_STEP"] = str(step)
-    if no_hitch:
-        # deterministic per-platform attachment (ios-sim has no GPU frame
-        # telemetry) — the row records the hitch metric as not collected
-        env["BENCH_NO_HITCH"] = "1"
     out.write_bytes(plistlib.dumps(d))
 
 
@@ -714,7 +554,8 @@ def _metrics_record(res: Path) -> dict:
 def parse_xcresult(path: Path) -> dict:
     """testIdentifier -> metric tail -> {unit, measurements}."""
     r = subprocess.run(
-        ["xcrun", "xcresulttool", "get", "test-results", "metrics", "--path", str(path)],
+        ["xcrun", "xcresulttool", "get", "test-results", "metrics",
+         "--path", str(path)],
         capture_output=True, text=True)
     if r.returncode != 0:
         return {"_error": r.stderr[-500:]}
@@ -733,276 +574,32 @@ def parse_xcresult(path: Path) -> dict:
     return out
 
 
-# Per-workload default drive when the manifest has no override: the
-# scroll workloads are fling-driven; w1 taps the counter; w3 and w5 are
-# self-animating (no drive).
-_DEFAULT_DRIVE = {"w1": "tap", "w3": "none", "w5": "none"}
-
-
-def drive_for(c: dict, plat: str, workload: str = "") -> str:
-    """One drive per contestant per platform, recorded per row.
-       Resolution order: contestant's own `drive` override (manifest),
-       then the platform-level `drive_overrides` for this workload, then
-       the shared `*` overrides, then `swipe`. There is no `auto` drive —
-       the app never scrolls itself and never paces a ladder."""
-    if (d := c.get("drive", {}).get(plat)) is not None:
-        if isinstance(d, dict):
-            return d.get(workload, d.get("*", "swipe"))
-        return d
-    ov = MANIFEST.get("drive_overrides", {})
-    pov = {**ov.get("*", {}), **ov.get(plat, {})}
-    pov.pop("note", None)
-    return pov.get(workload, pov.get("*",
-        _DEFAULT_DRIVE.get(workload, "swipe")))
+def drive_for(workload: str) -> str:
+    """The drive of a workload, identical for every contestant: the
+    manifest's `workloads.<w>.drive` (swipe | tap | none)."""
+    return MANIFEST["workloads"][workload]["drive"]
 
 
 def sanitize_runs(state: dict) -> None:
-    """Drop rows from superseded harness generations. Rows with no
-    `drive` key predate per-row drive recording; rows whose drive
-    disagrees with the manifest's current drive_for() decision are stale
-    duplicates the (plat, contestant, workload, drive) prune key leaves
-    behind whenever the drive convention changes."""
-    by_id = {c["id"]: c for c in MANIFEST["contestants"]}
+    """Drop rows from superseded harness generations: rows without a
+    `drive`, of an unknown contestant/workload, or whose drive disagrees
+    with the manifest's current one. Error rows are evidence and stay."""
+    ids = {c["id"] for c in MANIFEST["contestants"]}
     kept = []
     for x in state.get("runs", []):
-        plat, cid, w, dr = (x.get("platform"), x.get("contestant"),
-                            x.get("workload"), x.get("drive"))
         if "error" in x:
-            # a failed attempt is evidence — sanitize drops superseded
-            # harness rows, never error records
             kept.append(x)
             continue
-        if dr is None or cid not in by_id or w not in MANIFEST["workloads"]:
-            continue
-        if dr != drive_for(by_id[cid], plat, w):
-            continue
-        kept.append(x)
+        w = x.get("workload")
+        if (x.get("contestant") in ids and w in MANIFEST["workloads"]
+                and x.get("drive") == drive_for(w)):
+            kept.append(x)
     state["runs"] = kept
 
 
-def _ps_time_to_s(v: str) -> float:
-    """ps -o time value: [[dd-]hh:]mm:ss(.cc) → seconds."""
-    neg = v.startswith("-")
-    v = v.lstrip("-")
-    days = 0.0
-    if "-" in v:
-        d, v = v.split("-", 1)
-        days = float(d) * 86400
-    parts = v.split(":")
-    try:
-        if len(parts) == 3:
-            s = float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
-        elif len(parts) == 2:
-            s = float(parts[0]) * 60 + float(parts[1])
-        else:
-            s = float(parts[0])
-    except ValueError:
-        return 0.0
-    return days + (-s if neg else s)
-
-
-def _sim_launchctl_pid(udid: str, name: str) -> int | None:
-    """PID of a process inside a booted simulator via launchctl list."""
-    r = subprocess.run(
-        ["xcrun", "simctl", "spawn", udid, "launchctl", "list"],
-        capture_output=True, text=True)
-    for line in r.stdout.splitlines():
-        p = line.split()
-        # apps register as UIKitApplication:<bid>[hex][...]; daemons use
-        # their own label (e.g. com.apple.backboardd).
-        if len(p) >= 3 and p[0].isdigit() and (
-                p[2] == name or p[2].startswith(f"UIKitApplication:{name}")):
-            return int(p[0])
-    return None
-
-
-def _host_pid(name: str) -> int | None:
-    r = subprocess.run(["pgrep", "-x", name], capture_output=True, text=True)
-    for tok in r.stdout.split():
-        if tok.isdigit():
-            return int(tok)
-    return None
-
-
-def _host_pid_path(exe_path: str) -> int | None:
-    """Pid of the process running exactly `exe_path` — the app binary
-    this run launched, not any process sharing its name. `ps comm` is
-    the executable path itself, so an exact string equality filters out
-    both name collisions and cmdline-substring matches."""
-    out = subprocess.run(["ps", "-axo", "pid=,comm="],
-                         capture_output=True, text=True).stdout
-    for line in out.splitlines():
-        p = line.strip().split(None, 1)
-        if len(p) == 2 and p[0].isdigit() and p[1].strip() == exe_path:
-            return int(p[0])
-    return None
-
-
-def _children_of(pid: int) -> list[int]:
-    """Direct children of a host pid (Electron's renderer/GPU helpers
-    live here — its main process alone is not the memory footprint)."""
-    out = subprocess.run(["ps", "-axo", "pid=,ppid="],
-                         capture_output=True, text=True).stdout
-    kids = []
-    for line in out.splitlines():
-        p = line.strip().split()
-        if len(p) == 2 and p[0].isdigit() and p[1].isdigit() \
-                and int(p[1]) == pid:
-            kids.append(int(p[0]))
-    return kids
-
-
-def cpu_pids_resolver(plat: str, udid: str, bundle_id: str, exe: str):
-    """Return a () -> {label: [pids]} lookup for a platform.
-
-    The render server is the process Core Animation hands committed work
-    to — backboardd inside the sim's runtime / WindowServer on macOS —
-    so W3-type animations that run there cost every contestant the same
-    way. `ps` polling needs no entitlements or attach consent. On macOS
-    the app's helper children (renderer/GPU/utility processes — exactly
-    how Electron's footprint splits) are summed as `helpers`.
-    App resolution retries: the runner launches the app mid-test."""
-    if plat == "ios-sim":
-        def res():
-            return {
-                "app": [p] if (p := _sim_launchctl_pid(udid, bundle_id))
-                else [],
-                "render_server":
-                [p] if (p := _sim_launchctl_pid(udid, "com.apple.backboardd"))
-                else [],
-            }
-        return res
-    if plat == "macos":
-        def res():
-            # resolve by the launched executable path, not a name — a
-            # pid found by name could be a contestant from another run
-            app = _host_pid_path(exe)
-            return {
-                "app": [app] if app else [],
-                "render_server":
-                [p] if (p := _host_pid("WindowServer")) else [],
-                "helpers": _children_of(app) if app else [],
-            }
-        return res
-    return lambda: {"app": [], "render_server": [], "helpers": []}
-
-
-RENDER_NAME = {"ios-sim": "backboardd", "macos": "WindowServer",
-               "ios-device": "backboardd"}
-
-
-class CpuSampler(threading.Thread):
-    """Poll `ps -o pid,time,rss` for {label: [pids]} every interval.
-
-    Each series row carries the pid SET it was sampled from: a label is
-    re-resolved every tick (an app killed between invocations gets a new
-    pid), and `delta` across a pid-set change returns None instead of
-    subtracting the cumulative CPU of two different processes. Memory
-    (rss kB summed per label) rides the same samples."""
-
-    def __init__(self, resolver, interval=0.5):
-        super().__init__(daemon=True)
-        self.resolver = resolver
-        self.interval = interval
-        self.pids: dict[str, list[int]] = {}
-        # (epoch, {label: {"pids": [...], "cpu_s": float, "rss_kb": int}})
-        self.series: list[tuple[float, dict]] = []
-        self._stop = threading.Event()
-
-    def run(self):
-        while not self._stop.is_set():
-            t = time.time()
-            try:
-                for k, v in (self.resolver() or {}).items():
-                    cur = sorted(v or [])
-                    if cur and self.pids.get(k) != cur:
-                        # re-latch on a changed pid set — the row records
-                        # which processes the numbers belong to
-                        self.pids[k] = cur
-            except Exception:
-                pass
-            sel = {k: v for k, v in self.pids.items() if v}
-            if sel:
-                all_pids = [p for vs in sel.values() for p in vs]
-                out = subprocess.run(
-                    ["ps", "-p", ",".join(map(str, all_pids)),
-                     "-o", "pid=,time=,rss="],
-                    capture_output=True, text=True).stdout
-                by_pid = {}
-                for line in out.splitlines():
-                    p = line.strip().split()
-                    if len(p) == 3 and p[0].isdigit():
-                        by_pid[int(p[0])] = (_ps_time_to_s(p[1]),
-                                             float(p[2]))
-                row = {}
-                for k, v in sel.items():
-                    hit = [by_pid[p] for p in v if p in by_pid]
-                    row[k] = {
-                        "pids": list(v),
-                        "cpu_s": sum(h[0] for h in hit),
-                        "rss_kb": sum(h[1] for h in hit),
-                    }
-                self.series.append((t, row))
-            self._stop.wait(self.interval)
-
-    def stop(self):
-        self._stop.set()
-
-    def _nearest(self, label: str, t: float):
-        vals = [(ts, d.get(label)) for ts, d in self.series
-                if d.get(label) is not None]
-        if not vals:
-            return None
-        return min(vals, key=lambda x: abs(x[0] - t))[1]
-
-    def delta(self, label: str, t0: float | None = None,
-              t1: float | None = None):
-        """CPU seconds for `label` between t0 and t1 — None when the two
-        window ends were sampled from different process sets (an app
-        relaunch inside the window makes a cumulative difference
-        meaningless)."""
-        if t0 is None or t1 is None:
-            vals = [d.get(label) for _, d in self.series
-                    if d.get(label) is not None]
-            if len(vals) < 2 or vals[-1]["pids"] != vals[0]["pids"]:
-                return None
-            return round(vals[-1]["cpu_s"] - vals[0]["cpu_s"], 3)
-        a, b = self._nearest(label, t0), self._nearest(label, t1)
-        if (a is None or b is None or a["pids"] != b["pids"]
-                or b["cpu_s"] < a["cpu_s"]):
-            return None
-        return round(b["cpu_s"] - a["cpu_s"], 3)
-
-    def peak_rss_mb(self, label: str, t0: float | None = None,
-                    t1: float | None = None):
-        """Peak summed RSS (MB) for `label` inside [t0, t1]."""
-        vals = [d[label]["rss_kb"] for ts, d in self.series
-                if d.get(label) is not None
-                and (t0 is None or ts >= t0)
-                and (t1 is None or ts <= t1)]
-        if not vals:
-            return None
-        return round(max(vals) / 1024.0, 1)
-
-
-CAPACITY_WORKLOADS = ("w5", "w6")
-# w5/w6 cells exist only in the five iOS contestants (manifest declares
-# the platform+contestant sets per workload).
-CAPACITY_CONTESTANTS = {"waterui", "swiftui", "uikit", "flutter", "rn"}
-
-
-def capacity_steps(workload: str) -> list[int]:
-    """Ladder for a capacity workload, from the manifest — a missing or
-    empty list fails instead of guessing a default."""
-    steps = MANIFEST["workloads"][workload].get("steps")
-    if not steps:
-        raise SystemExit(f"manifest workloads.{workload}.steps missing")
-    return [int(n) for n in steps]
-
-
-def capacity_cell(plat, cid, w) -> bool:
-    return (w in CAPACITY_WORKLOADS and cid in CAPACITY_CONTESTANTS
-            and plat in ("ios-sim", "ios-device"))
+def capacity_workload(w: str) -> bool:
+    """W5/W6: the manifest declares a ladder (`steps`) for them."""
+    return "steps" in MANIFEST["workloads"][w]
 
 
 def _xctrace(args_, timeout=None):
@@ -1025,8 +622,10 @@ def _xctrace(args_, timeout=None):
 # event-time columns), so the window, the frames and the runner's marks
 # live on one clock and nothing is mapped through a guessed epoch.
 #
-# Schemas as Xcode 26.6 (xctrace 16.0) exports them (column mnemonic:
-# engineering type):
+# Schemas as Xcode 26.6 (xctrace 16.0) exported them from a macOS
+# recording (column mnemonic: engineering type); the device recordings
+# of the Xcode the device host has are read by the same mnemonics, and
+# a missing column fails attribution (_require_cols):
 #   hitches-frame-lifetimes  start:start-time duration:duration
 #       display:display-name swap-id:uint32 surface-id:uint32
 #       frame-color layout-qualifier label
@@ -1165,8 +764,8 @@ def owned_processes(processes: list[dict], bundle_name: str,
     """(main pid, owned pids) of the contestant in one trace.
 
     Owned = every process whose executable lives inside the contestant's
-    bundle (`…/<bundle_name>/…`): the app itself plus helpers it ships
-    (Electron's GPU/renderer processes live in Contents/Frameworks).
+    bundle (`…/<bundle_name>/…`): the app itself plus any helper
+    executable it ships.
     Exactly one process may run the main executable — a second instance
     or none means the trace does not show one launch of this
     contestant."""
@@ -1246,8 +845,7 @@ def owned_presents(frames: list[dict], updates: list[dict],
     if not frames:
         raise TraceAttributionError(
             f"{FRAMES_SCHEMA} has 0 rows: the Hitches tap recorded no "
-            "frame on any display (a virtualized macOS host records "
-            "none — Xcode 26.6 on the build VM)")
+            "frame on any display")
     _require_cols(frames, FRAME_COLS, FRAMES_SCHEMA)
     _require_cols(updates, UPDATE_COLS, UPDATES_SCHEMA)
     by_swap = _updates_by_swap(updates)
@@ -1360,8 +958,8 @@ def measurement_window(presents_ns: list[int], marks: dict, *,
     """METHOD's window on the trace clock: [first owned present +
     warmup, + capture] — readiness is the contestant's first owned
     present, read from the trace. The runner must have held the
-    contestant through the window end. A driven cell (tap, wheel,
-    swipe) starts its drive live at the contestant's ready post +
+    contestant through the window end. A driven cell (tap, swipe)
+    starts its drive live at the contestant's ready post +
     warmup — the trace is only readable after the recording stops — so
     that start must sit within `tolerance_ms` of the window start
     (METHOD: the drive starts at window start). An undriven cell (W3,
@@ -1451,126 +1049,25 @@ def _pid_of_thread(fmt: str) -> int | None:
 _PAINT_RE = re.compile(r"waterui_first_paint_ms=\s*([0-9]+(?:\.[0-9]+)?)")
 
 
-def first_paint_ms(plat: str, udid: str | None,
-                   trace: Path | None = None,
-                   since: float | None = None,
-                   proc: str | None = None) -> float | None:
-    """Latest `waterui_first_paint_ms=N` the app emitted (os_log
-    `dev.waterui`, notice level → persisted). Emitted once per process
-    by the apple backend's WuiLaunchTiming.
-
-    - macos: host unified log.
-    - ios-sim: `simctl spawn <udid> log show` inside the simulator.
-    - ios-device: devicectl exposes no console read, so the cell's own
-      all-process Logging-template xctrace is the source: its os-log
-      rows are selected by `proc` (the contestant's executable name).
-
-    `since` (epoch seconds) bounds the search to this rep: without it a
-    `--last 5m` window can return a PREVIOUS rep's marker — the newest
-    hit is then stale evidence. Log lines carry a compact timestamp
-    prefix ("YYYY-MM-DD HH:MM:SS.mmm"); rows before `since` are skipped.
-    """
-    def _log_epoch(line: str) -> float | None:
-        m = re.match(r"^(\d{4}-\d{2}-\d{2}) (\d{2}):(\d{2}):(\d{2})",
-                     line)
-        if not m:
-            return None
-        try:
-            import datetime as _dt
-            return _dt.datetime.strptime(
-                f"{m.group(1)} {m.group(2)}:{m.group(3)}:{m.group(4)}",
-                "%Y-%m-%d %H:%M:%S").timestamp()
-        except ValueError:
-            return None
-    cmd = None
-    if plat == "macos":
-        cmd = ["log", "show", "--last", "5m", "--style", "compact",
-               "--predicate", 'subsystem == "dev.waterui"']
-    elif plat == "ios-sim":
-        cmd = ["xcrun", "simctl", "spawn", str(udid), "log", "show",
-               "--last", "5m", "--style", "compact",
-               "--predicate", 'subsystem == "dev.waterui"']
-    if cmd is not None:
-        try:
-            out = subprocess.run(cmd, capture_output=True, text=True,
-                                 timeout=180).stdout
-        except Exception:
-            return None
-        vals = []
-        for line in out.splitlines():
-            m = _PAINT_RE.search(line)
-            if not m:
-                continue
-            if since is not None:
-                t = _log_epoch(line)
-                if t is None or t < since:
-                    continue
-            vals.append(float(m.group(1)))
-        return vals[-1] if vals else None
-    if trace is not None and trace.exists():
-        rows, _ = _export_table(trace, "os-log")
-        for row in rows or []:
-            if _proc_name(row.get("process")) != proc:
-                continue
-            m = _PAINT_RE.search(str(row.get("message") or ""))
-            if m:
-                return float(m.group(1))
-    return None
-
-
-def collect_pins() -> dict:
-    """Exact commit pins behind a run — the apple-backend#281
-    Swift→objc2 migration baseline consumes these. The CLI pin is the
-    executed binary's own sha256, not a checkout HEAD or PATH guess."""
-    def _git(path, *a):
-        r = subprocess.run(["git", "-C", str(path), *a],
-                           capture_output=True, text=True, timeout=30)
-        return r.stdout.strip() if r.returncode == 0 else None
-
-    out = {}
-    head = toolchain.checkout_head()
-    if head:
-        # one commit pins framework, CLI, apple backend and hydrolysis —
-        # the in-tree model's whole identity
-        out["waterui_head"] = head
-    # the apple backend revision is the scaffolded project's backend pin
-    # once it exists; the checkout pin remains the primary identity
-    pbx = (ROOT / "native-bench" / "NativeBench.xcodeproj"
-           / "project.pbxproj")
-    for cand in (pbx,
-                 (ROOT.parent / "apps" / "waterui" / "backends" / "apple"
-                  / "Waterui_bench.xcodeproj" / "project.pbxproj")):
-        if cand.exists():
-            m = re.search(r'revision = "([0-9a-f]{7,40})"',
-                          cand.read_text())
-            if m:
-                out["apple_backend_revision"] = m.group(1)
-            break
-    cli = cli_evidence()
-    out["water_cli"] = cli.get("sha256") or f"unresolved: {cli.get('error')}"
-    out["water_cli_binary"] = cli.get("binary")
-    out["water_cli_version"] = cli.get("version", "")
-    out["water_cli_source"] = cli.get("source")
-    # observed tool versions on this host — evidence, distinct from the
-    # manifest's declared requirements (which are enforced at build)
-    probes = {}
-    fl_root = os.path.expandvars(
-        MANIFEST["toolchain"]["flutter_root"])
-    for name, cmd in {
-        "xcodebuild": ["xcodebuild", "-version"],
-        "flutter": [fl_root + "/bin/flutter", "--version"],
-        "node": ["node", "--version"],
-    }.items():
-        try:
-            r = subprocess.run(cmd, capture_output=True, text=True,
-                               timeout=30)
-            line = (r.stdout or r.stderr or "").splitlines()
-            probes[name] = (line[0].strip() if line else
-                            f"rc={r.returncode}")
-        except Exception as e:
-            probes[name] = f"unavailable: {e.__class__.__name__}"
-    out["observed_toolchain"] = probes
-    return out
+def first_paint_ms(trace: Path, proc: str) -> float:
+    """The `waterui_first_paint_ms=N` the WaterUI contestant emitted
+    (os_log `dev.waterui`, notice level), read from the cell's own
+    all-process Logging recording — devicectl exposes no console read.
+    Rows are selected by `proc` (the contestant's executable name). An
+    export error or an absent marker raises: the apple backend emits the
+    marker once per process, so its absence is a defect, not a gap."""
+    rows, err = _export_table(trace, "os-log")
+    if rows is None:
+        raise TraceAttributionError(f"os-log export: {err}")
+    for row in rows:
+        if _proc_name(row.get("process")) != proc:
+            continue
+        m = _PAINT_RE.search(str(row.get("message") or ""))
+        if m:
+            return float(m.group(1))
+    raise TraceAttributionError(
+        f"no waterui_first_paint_ms marker from {proc} in the Logging "
+        f"recording ({len(rows)} os-log rows)")
 
 
 def _spawn_pty(cmd: list[str], env: dict | None = None):
@@ -1628,25 +1125,29 @@ class PtyLines:
     def close(self):
         os.close(self.fd)
 
-
 class InstrumentsScratch:
-    """The raw kernel-trace scratch files a cell's recordings leave.
+    """The raw kernel-trace scratch files one cell's recordings leave.
 
-    A Deferred-mode recording writes its raw kdebug stream to an
-    `instruments*.ktrace` file and converts it into the .trace at stop.
-    On Xcode 26.6 the file stays in the user's Darwin temp dir after the
-    recording ended (2-4.5 GB per W3 recording on the build VM), held
-    open by the idle DTServiceHub agent that recorded it, so neither the
-    .trace output nor the recorder process owns it. The runner owns it:
-    each recorder runs with TMPDIR set to a scratch dir of its own
-    (`scratch_dir`, removed whole by `sweep`), and every
-    `instruments*.ktrace` that appeared in the user temp dir or a
-    scratch dir between `__init__` (before any recorder of the cell
-    spawns) and `sweep` (after every one of them stopped) is the cell's
-    own. It is unlinked, and the process still holding it open — which
-    must be DTServiceHub — is terminated by pid, so the space comes back
-    now rather than whenever the agent exits. A holder that is anything
-    else, or that outlives its SIGTERM, fails the cell."""
+    A recording writes its raw kdebug stream to an `instruments*.ktrace`
+    file and converts it into the .trace at stop. The file stays in the
+    user's Darwin temp dir after the recording ended (2-4.5 GB per W3
+    recording on a macOS build VM), held open by the idle DTServiceHub
+    agent that recorded it, so neither the .trace output nor the recorder
+    process owns it. The cell owns it: each recorder runs with TMPDIR set
+    to a scratch dir of its own (`scratch_dir`, removed whole by `sweep`),
+    and every `instruments*.ktrace` that appeared in the user temp dir or
+    a scratch dir between `__init__` (before any recorder of the cell
+    spawns) and `sweep` (after every one of them stopped) is the cell's.
+
+    `sweep` asks lsof which processes hold each such file. Every file may
+    be held by at most one process, that process must be DTServiceHub,
+    and the whole cell's files may be held by at most one pid: that one
+    pid is the only process the runner may terminate (SIGTERM, logged),
+    so the space comes back before the next recording starts. A file held
+    by several processes, by anything but DTServiceHub, or a second
+    DTServiceHub pid fails the cell and terminates nothing; the files are
+    unlinked either way (an unlinked file held open keeps its blocks until
+    the holder exits — the failed cell says so)."""
 
     PATTERN = "instruments*.ktrace"
     HOLDER = "DTServiceHub"
@@ -1655,13 +1156,7 @@ class InstrumentsScratch:
     def user_temp_dir() -> Path:
         """The user's Darwin temp dir (confstr DARWIN_USER_TEMP_DIR), the
         agent's scratch location whatever TMPDIR the recorder sees."""
-        r = subprocess.run(["getconf", "DARWIN_USER_TEMP_DIR"],
-                           capture_output=True, text=True, timeout=30)
-        if r.returncode != 0 or not r.stdout.strip():
-            raise RuntimeError(
-                f"getconf DARWIN_USER_TEMP_DIR failed: rc={r.returncode} "
-                f"{r.stderr.strip()!r}")
-        return Path(r.stdout.strip())
+        return Path(_out(["getconf", "DARWIN_USER_TEMP_DIR"]))
 
     def __init__(self, root: Path, user_tmp: Path):
         self.user_tmp = user_tmp
@@ -1669,6 +1164,8 @@ class InstrumentsScratch:
         self.dirs: list[Path] = []
         # what sweep removed: [{path, bytes, holders {pid: command}}]
         self.removed: list[dict] = []
+        # the DTServiceHub pid sweep terminated, if any
+        self.terminated: int | None = None
         self.before = set(self.user_tmp.glob(self.PATTERN))
 
     def scratch_dir(self, name: str) -> Path:
@@ -1725,28 +1222,38 @@ class InstrumentsScratch:
         for d in self.dirs:
             leaked |= set(d.rglob(self.PATTERN))
         errs = []
-        holders = set()
+        hub_pids = set()
         for f in sorted(leaked):
             held = self._holders(f)
             self.removed.append({"path": str(f), "bytes": f.stat().st_size,
                                  "holders": held})
             f.unlink()
+            if len(held) > 1:
+                errs.append(f"{f.name} is held open by {len(held)} "
+                            f"processes {held}")
             for pid, cmd in held.items():
                 if cmd == self.HOLDER:
-                    holders.add(pid)
+                    hub_pids.add(pid)
                 else:
                     errs.append(f"{f.name} is held open by {cmd} "
                                 f"(pid {pid}), not {self.HOLDER}")
-        for pid in sorted(holders):
+        if len(hub_pids) > 1:
+            errs.append(f"the cell's scratch is held by {len(hub_pids)} "
+                        f"{self.HOLDER} pids {sorted(hub_pids)}; the runner "
+                        "terminates at most one")
+        if not errs and hub_pids:
+            pid = hub_pids.pop()
+            print(f"instruments scratch: SIGTERM {self.HOLDER} pid {pid} "
+                  "(lsof: holds the cell's removed ktrace)", flush=True)
+            self.terminated = pid
             try:
-                gone = self._terminate(pid, bound_s)
+                if not self._terminate(pid, bound_s):
+                    errs.append(f"{self.HOLDER} (pid {pid}) still holds a "
+                                f"removed ktrace {bound_s:.0f}s after "
+                                "SIGTERM")
             except PermissionError:
                 errs.append(f"{self.HOLDER} (pid {pid}) holds a removed "
                             "ktrace and is not this user's to terminate")
-                continue
-            if not gone:
-                errs.append(f"{self.HOLDER} (pid {pid}) still holds a "
-                            f"removed ktrace {bound_s:.0f}s after SIGTERM")
         for d in self.dirs:
             shutil.rmtree(d)
         self.dirs = []
@@ -1835,130 +1342,41 @@ class XctraceRecorder:
         self._result = (err,)
         return err
 
-
-def _notify_cmd(plat: str, udid: str | None, *args: str) -> list[str]:
-    """notifyutil in the notify namespace the runner and the contestant
-    use: the simulator's own notifyd for ios-sim, the host's for macOS.
-    ios-device has no host-reachable namespace."""
-    if plat == "ios-sim":
-        return ["xcrun", "simctl", "spawn", str(udid), "notifyutil", *args]
-    if plat == "macos":
-        return ["notifyutil", *args]
-    raise ValueError(f"no host notify channel into {plat}")
-
-
-class RecorderGo:
-    """Host side of the runner's recorder-go gate, latched so neither
-    side can miss the other:
-
-    - macOS / ios-sim: a holder notifyutil registers `dev.bench.recorder`
-      for exactly two notifications, sets its notify state to this
-      invocation's nonce, then posts it (notifyutil runs its commands
-      left to right) — its own post is the first of the two, so it stays
-      registered and the state lives — until close() posts the second,
-      on which the holder exits by itself. The holder's lifetime is
-      therefore owned inside the notify namespace it runs in: killing
-      the host-side `simctl spawn` would leave the notifyutil it started
-      inside the simulator registered. The runner arms its own
-      registration, then reads the state: a post after the read wakes
-      it, one before it shows in the state.
-    - ios-device: the host cannot reach the device's notify namespace,
-      so `bench-recorder-go-<nonce>` is copied into the runner's tmp;
-      the file persists and the runner watches the directory.
-
-    The nonce rides into the runner through BENCH_RUN_NONCE, so a latch
-    left by another invocation can never release this one."""
-
-    NAME = "dev.bench.recorder"
-
-    def __init__(self, plat: str, udid: str | None,
-                 runner_bid: str | None, results_dir: Path):
-        import secrets
-        self.plat = plat
-        self.udid = udid
-        self.runner_bid = runner_bid
-        self.results_dir = results_dir
-        self.nonce = secrets.randbits(63) | 1
-        self._holder = None
-
-    def release(self):
-        if self.plat == "ios-device":
-            if not self.runner_bid:
-                raise RuntimeError("ios-device recorder-go needs the "
-                                   "runner bundle id")
-            sentinel = self.results_dir / f"bench-recorder-go-{self.nonce}"
-            sentinel.write_text("armed\n")
-            try:
-                if sh(f"xcrun devicectl device copy to --device {self.udid} "
-                      f"--domain-type appDataContainer "
-                      f"--domain-identifier {self.runner_bid} "
-                      f"--source '{sentinel}' "
-                      f"--destination 'tmp/{sentinel.name}'",
-                      capture=True, timeout=120) is None:
-                    raise RuntimeError("devicectl copy of the recorder-go "
-                                       "sentinel timed out after 120s")
-            finally:
-                sentinel.unlink(missing_ok=True)
-            return
-        self._holder = subprocess.Popen(
-            _notify_cmd(self.plat, self.udid, "-2", self.NAME,
-                        "-s", self.NAME, str(self.nonce), "-p", self.NAME),
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True)
-        _ACTIVE_PROCS.append(self._holder)
-
-    def close(self, bound_s: float = 60.0) -> str | None:
-        """Release the holder with its second notification and wait for
-        it to exit on its own; an error string when it does not."""
-        if self._holder is None:
-            return None
-        holder, self._holder = self._holder, None
-        err = None
-        try:
-            subprocess.run(_notify_cmd(self.plat, self.udid, "-p",
-                                       self.NAME),
-                           capture_output=True, check=True, timeout=60)
-            holder.wait(timeout=bound_s)
-        except (subprocess.SubprocessError, OSError) as e:
-            err = (f"recorder-go holder (pid {holder.pid}) did not exit on "
-                   f"its release post: {e}")
-            _kill_proc(holder)
-            holder.wait()
-        finally:
-            if holder in _ACTIVE_PROCS:
-                _ACTIVE_PROCS.remove(holder)
-        return err
+def release_recorder_go(udid: str, runner_bid: str, nonce: int,
+                        work: Path) -> None:
+    """Release the runner's recorder-go gate. The host cannot reach the
+    device's notify namespace, so `bench-recorder-go-<nonce>` is copied
+    into the runner's tmp; the file persists (latched) and the runner
+    watches the directory. The nonce rides into the runner through
+    BENCH_RUN_NONCE, so a latch left by another invocation can never
+    release this one."""
+    sentinel = work / f"bench-recorder-go-{nonce}"
+    sentinel.write_text("armed\n")
+    try:
+        if sh(f"xcrun devicectl device copy to --device {udid} "
+              f"--domain-type appDataContainer "
+              f"--domain-identifier {runner_bid} "
+              f"--source '{sentinel}' "
+              f"--destination 'tmp/{sentinel.name}'",
+              capture=True, timeout=120) is None:
+            raise RuntimeError("devicectl copy of the recorder-go "
+                               "sentinel timed out after 120s")
+    finally:
+        sentinel.unlink(missing_ok=True)
 
 
-def pull_runner_log(plat: str, udid: str, runner_bid: str | None,
-                    out: Path):
+def pull_runner_log(udid: str, runner_bid: str, out: Path) -> None:
     """Fetch the runner's tmp/bench-runner.log — it carries the
     measure-window markers, the per-row device record (thermalState,
     maximumFramesPerSecond read inside the runner process) and the
     ready/drive diagnostics."""
-    if plat == "ios-sim":
-        for bid in [b for b in (runner_bid, "dev.bench.runner",
-                                "dev.bench.runner.xctrunner") if b]:
-            r = subprocess.run(
-                ["xcrun", "simctl", "get_app_container", udid, bid,
-                 "data"], capture_output=True, text=True, timeout=60)
-            if r.returncode == 0:
-                src = Path(r.stdout.strip()) / "tmp" / "bench-runner.log"
-                if src.exists():
-                    shutil.copy2(src, out)
-                    return
-    elif plat == "macos":
-        src = Path(os.environ.get("TMPDIR", "/tmp")) / "bench-runner.log"
-        if src.exists():
-            shutil.copy2(src, out)
-    elif plat == "ios-device" and runner_bid:
-        sh(f"xcrun devicectl device copy from --device {udid} "
-           f"--domain-type appDataContainer "
-           f"--domain-identifier {runner_bid} "
-           f"--source tmp/bench-runner.log --destination '{out}'",
-           check=False, capture=True)
-    if not out.exists():
-        out.write_text("")
+    if sh(f"xcrun devicectl device copy from --device {udid} "
+       f"--domain-type appDataContainer "
+       f"--domain-identifier {runner_bid} "
+       f"--source tmp/bench-runner.log --destination '{out}'",
+       capture=True, timeout=120) is None:
+        raise RuntimeError("devicectl copy of the runner log timed out "
+                           "after 120s")
 
 
 def read_runner_log(path: Path, since: float):
@@ -2020,20 +1438,262 @@ def _trace_proc_cpu(trace: Path, pid: int, window_ms):
     return round(n * smp / 1e9, 3), None
 
 
-def _run_xctest_invocation(xr: Path, res: Path, dest: str,
-                           results_dir: Path, tag: str):
-    """One xcodebuild invocation, tracked so a signal kills its group.
-    Returns (rc | None, output_tail)."""
+# ------------------------------------------------------------- signing
+#
+# The device host signs every app itself, with the one "Apple
+# Development" identity its login keychain holds and the provisioning
+# profile Xcode's automatic signing created on that host for the exact
+# bundle id the manifest declares. The keychain is reachable from the
+# user's GUI session, where the device-run job runs.
+
+@dataclasses.dataclass(frozen=True)
+class Identity:
+    sha1: str
+    name: str
+
+
+@dataclasses.dataclass(frozen=True)
+class Profile:
+    path: Path
+    uuid: str
+    name: str
+    team: str
+    expires: datetime.datetime
+    entitlements: dict
+
+
+def signing_identity() -> Identity:
+    """The keychain's one valid "Apple Development" code-signing
+    identity; none or several fail naming what was found."""
+    kind = MANIFEST["signing"]["identity_kind"]
+    out = _out(["security", "find-identity", "-v", "-p", "codesigning"])
+    ids = re.findall(rf'([0-9A-F]{{40}})\s+"({re.escape(kind)}: [^"]+)"',
+                     out)
+    if len(ids) != 1:
+        raise SystemExit(
+            f"the device host must hold exactly one valid '{kind}' "
+            f"signing identity; found {len(ids)}:\n{out}")
+    return Identity(*ids[0])
+
+
+def decode_profile(path: Path) -> dict:
+    return plistlib.loads(
+        _out(["security", "cms", "-D", "-i", str(path)]).encode())
+
+
+def profile_rejection(d: dict, bundle_id: str, identity: Identity,
+                      udid: str, not_before: datetime.datetime) -> str | None:
+    """Why a decoded profile cannot sign `bundle_id` for this identity on
+    this device until `not_before` (naive UTC, as plistlib decodes the
+    profile's dates) — None when it can. The App ID must be exactly
+    <team>.<bundle_id>: a wildcard profile is never assumed."""
+    team = d["TeamIdentifier"][0]
+    app_id = d["Entitlements"]["application-identifier"]
+    if app_id != f"{team}.{bundle_id}":
+        return f"App ID {app_id}"
+    certs = {hashlib.sha1(c).hexdigest().upper()
+             for c in d["DeveloperCertificates"]}
+    if identity.sha1 not in certs:
+        return "does not include the signing identity's certificate"
+    if udid not in d.get("ProvisionedDevices", []):
+        return f"does not provision device {udid}"
+    if d["ExpirationDate"] <= not_before:
+        return f"expires {d['ExpirationDate']:%Y-%m-%d %H:%M} UTC"
+    return None
+
+
+def find_profile(bundle_id: str, identity: Identity, udid: str) -> Profile:
+    """The provisioning profile on this host that signs `bundle_id`
+    (exact App ID) with `identity` for the device and stays valid for
+    the declared margin; among several, the one valid longest. None
+    fails naming the bundle id and how the operator creates its profile —
+    there is no fallback to another id."""
+    s = MANIFEST["signing"]
+    pdir = Path(os.path.expanduser(s["profile_dir"]))
+    not_before = (datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+                  + datetime.timedelta(hours=s["profile_min_validity_h"]))
+    ok, near = [], []
+    for p in sorted(pdir.glob("*.mobileprovision")):
+        d = decode_profile(p)
+        why = profile_rejection(d, bundle_id, identity, udid, not_before)
+        if why is None:
+            ok.append(Profile(p, d["UUID"], d["Name"], d["TeamIdentifier"][0],
+                              d["ExpirationDate"], d["Entitlements"]))
+        elif d["Entitlements"]["application-identifier"].endswith(
+                f".{bundle_id}"):
+            near.append(f"{p.name}: {why}")
+    if ok:
+        return max(ok, key=lambda pr: pr.expires)
+    raise LookupError(
+        f"no usable provisioning profile for bundle id {bundle_id} in "
+        f"{pdir} (signed by '{identity.name}', device {udid}, valid "
+        f"≥ {s['profile_min_validity_h']} h)"
+        + ("".join(f"\n    rejected {n}" for n in near))
+        + f"\n  create it on this host with Xcode automatic signing: in "
+        f"any iOS app project set the bundle identifier to {bundle_id}, "
+        "enable 'Automatically manage signing' with the personal team of "
+        f"'{identity.name}', select the attached iPhone and build once "
+        "(free-team profiles expire after 7 days)")
+
+
+def codesign(path: Path, identity: Identity,
+             entitlements: Path | None = None) -> None:
+    cmd = ["codesign", "--force", "--sign", identity.sha1,
+           "--timestamp=none"]
+    if entitlements is not None:
+        cmd += ["--entitlements", str(entitlements)]
+    _out([*cmd, str(path)], timeout=300)
+
+
+NESTED_CODE = (".framework", ".dylib", ".xctest", ".appex", ".app")
+
+
+def sign_bundle(app: Path, identity: Identity, profile: Profile) -> None:
+    """Embed `profile` and sign `app` inside-out: every nested
+    framework, dylib and test bundle (deepest first), then the app with
+    the profile's entitlements. A nested app or extension would need a
+    profile of its own, which the harness does not provision — it fails."""
+    nested = [p for p in app.rglob("*")
+              if p.suffix in NESTED_CODE
+              and (p.is_dir() or p.suffix == ".dylib")]
+    for p in nested:
+        if p.suffix in (".appex", ".app"):
+            raise RuntimeError(
+                f"{p} is a nested app/extension: it needs its own "
+                "provisioning profile, which the harness does not "
+                "provision")
+    shutil.copy2(profile.path, app / "embedded.mobileprovision")
+    ents = app.parent / f"{app.stem}.entitlements"
+    ents.write_bytes(plistlib.dumps(profile.entitlements))
+    for p in sorted(nested, key=lambda q: -len(q.relative_to(app).parts)):
+        codesign(p, identity)
+    codesign(app, identity, ents)
+    ents.unlink()
+
+
+def signed_copy(src: Path, dst: Path, bundle_id: str, identity: Identity,
+                profile: Profile) -> None:
+    """Copy a verified staged artifact to `dst`, give it the manifest's
+    bundle id (CFBundleIdentifier) and sign it — the staged artifact
+    itself stays as built."""
+    shutil.rmtree(dst, ignore_errors=True)
+    shutil.copytree(src, dst, symlinks=True)
+    info = app_info(dst)
+    info["CFBundleIdentifier"] = bundle_id
+    (dst / "Info.plist").write_bytes(plistlib.dumps(info))
+    sign_bundle(dst, identity, profile)
+
+
+# ------------------------------------------------------------ thinning
+
+_THIN_APP_SIZE = re.compile(r"^App size: (.+) compressed, (.+) uncompressed$",
+                            re.M)
+
+
+def thinned_size(app: Path, identity: Identity, profile: Profile,
+                 product_type: str, work: Path) -> dict:
+    """The thinned .ipa of a signed app for the measured device's
+    variant (`product_type`), as App Store thinning produces it:
+    `xcodebuild -exportArchive` of an archive holding the app, with
+    exportOptions `thinning` = the device's product type. Returns the
+    variant .ipa's bytes (compressed: the download), the sum of its
+    entries' sizes (uncompressed: installed app bytes) and Xcode's own
+    App Thinning Size Report line. Runs on the device host — export
+    signs, so it needs the host's identity and profile."""
+    shutil.rmtree(work, ignore_errors=True)
+    archive = work / f"{app.stem}.xcarchive"
+    apps = archive / "Products" / "Applications"
+    apps.mkdir(parents=True)
+    shutil.copytree(app, apps / app.name, symlinks=True)
+    info = app_info(app)
+    (archive / "Info.plist").write_bytes(plistlib.dumps({
+        "ArchiveVersion": 2,
+        "CreationDate": datetime.datetime.now(datetime.timezone.utc).replace(
+            tzinfo=None),
+        "Name": app.stem,
+        "SchemeName": app.stem,
+        "ApplicationProperties": {
+            "ApplicationPath": f"Applications/{app.name}",
+            "CFBundleIdentifier": info["CFBundleIdentifier"],
+            "CFBundleShortVersionString":
+                info["CFBundleShortVersionString"],
+            "CFBundleVersion": info["CFBundleVersion"],
+            "SigningIdentity": identity.name,
+            "Team": profile.team,
+            "Architectures": ["arm64"],
+        }}))
+    opts = work / "ExportOptions.plist"
+    opts.write_bytes(plistlib.dumps({
+        "method": "debugging",
+        "signingStyle": "manual",
+        "teamID": profile.team,
+        "signingCertificate": identity.sha1,
+        "provisioningProfiles": {info["CFBundleIdentifier"]: profile.uuid},
+        "thinning": product_type,
+    }))
+    export = work / "export"
+    sh(f"xcodebuild -exportArchive -archivePath '{archive}' "
+       f"-exportPath '{export}' -exportOptionsPlist '{opts}'",
+       capture=True, timeout=900)
+    ipas = sorted(export.rglob("*.ipa"))
+    if len(ipas) != 1:
+        raise RuntimeError(f"thinned export for {product_type} produced "
+                           f"{len(ipas)} .ipa files: {ipas}")
+    report = export / "App Thinning Size Report.txt"
+    m = _THIN_APP_SIZE.search(report.read_text())
+    if m is None:
+        raise RuntimeError(f"{report} has no 'App size:' line")
+    with zipfile.ZipFile(ipas[0]) as z:
+        uncompressed = sum(i.file_size for i in z.infolist())
+    out = {"thinned_ipa_bytes": ipas[0].stat().st_size,
+           "thinned_app_bytes": uncompressed,
+           "thinning_variant": product_type,
+           "thinning_report_app_size": {"compressed": m.group(1),
+                                        "uncompressed": m.group(2)}}
+    shutil.rmtree(work)
+    return out
+
+
+# ------------------------------------------------------------ cells
+
+# xctrace recordings never outlive the cell, which stops them on SIGINT;
+# the limit only bounds a cell that hangs (runner thermal gate 600 s,
+# launch + ready 60 s, warmup, the capture, and margin)
+XCTRACE_LIMIT_S = 1800
+SUBDIR = "Release-iphoneos"
+RENDER_SERVER = "backboardd"
+
+
+@dataclasses.dataclass
+class DeviceCtx:
+    udid: str
+    testroot: Path      # __TESTROOT__: signed apps live in testroot/SUBDIR
+    template: Path      # the runner build's .xctestrun
+    target_key: str     # the test target's key in the .xctestrun
+    runner_bid: str     # the runner app's bundle id (log, recorder-go)
+    results_dir: Path   # per-cell xcresults, traces and logs
+    keep_traces: bool
+    disk_floor: int     # harness.disk.recording_floor_bytes
+
+
+def _xcodebuild_test(xr: Path, res: Path, ctx: DeviceCtx, tag: str):
+    """Spawn one test-without-building invocation, tracked so a signal
+    kills its group. Returns (proc, log file, log path)."""
     cmd = (f"xcodebuild test-without-building -xctestrun '{xr}' "
-           f"-destination '{dest}' -resultBundlePath '{res}' "
-           f"-collect-test-diagnostics never")
-    xblog = results_dir / f"{tag}.xcodebuild.log"
+           f"-destination 'platform=iOS,id={ctx.udid}' "
+           f"-resultBundlePath '{res}' -collect-test-diagnostics never")
+    xblog = ctx.results_dir / f"{tag}.xcodebuild.log"
     xbf = open(xblog, "w")
     xb = subprocess.Popen(cmd, shell=True, cwd=ROOT, stdout=xbf,
                           stderr=subprocess.STDOUT, start_new_session=True)
     _ACTIVE_PROCS.append(xb)
+    return xb, xbf, xblog
+
+
+def _xcodebuild_wait(xb, xbf, xblog: Path, bound_s: int = 2400):
+    """Wait for an invocation; (rc | None on timeout, output)."""
     try:
-        xb.wait(timeout=2400)
+        xb.wait(timeout=bound_s)
         rc = xb.returncode
     except subprocess.TimeoutExpired:
         _kill_proc(xb)
@@ -2043,1035 +1703,279 @@ def _run_xctest_invocation(xr: Path, res: Path, dest: str,
         if xb in _ACTIVE_PROCS:
             _ACTIVE_PROCS.remove(xb)
         xbf.close()
-    xb_out = xblog.read_text() if xblog.exists() else ""
-    xblog.unlink(missing_ok=True)
-    return rc, xb_out
+    out = xblog.read_text()
+    xblog.unlink()
+    return rc, out
 
 
-def _xctest_spawn(xr: Path, res: Path, dest: str, results_dir: Path,
-                  tag: str):
-    """Spawn an xcodebuild invocation without waiting — used for the
-    workload invocation whose recorders arm while the runner waits on
-    the recorder-go handshake."""
-    cmd = (f"xcodebuild test-without-building -xctestrun '{xr}' "
-           f"-destination '{dest}' -resultBundlePath '{res}' "
-           f"-collect-test-diagnostics never")
-    xblog = results_dir / f"{tag}.xcodebuild.log"
-    xbf = open(xblog, "w")
-    xb = subprocess.Popen(cmd, shell=True, cwd=ROOT, stdout=xbf,
-                          stderr=subprocess.STDOUT, start_new_session=True)
-    _ACTIVE_PROCS.append(xb)
-    return xb, xbf, xblog
-
-def _window_center_for_pid(pid: int):
-    """Centre of the largest on-screen window owned by `pid`, from the
-    Quartz window list. The owner is resolved by process id — never by
-    name — so the drive can only land in a window this run launched."""
-    import Quartz
-    wl = Quartz.CGWindowListCopyWindowInfo(
-        Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID)
-    best = None
-    for w in wl:
-        if w.get("kCGWindowOwnerPID") != pid:
-            continue
-        b = w.get("kCGWindowBounds", {})
-        area = (b.get("Width", 0) or 0) * (b.get("Height", 0) or 0)
-        if best is None or area > best[0]:
-            best = (area,
-                    (b.get("X", 0) or 0) + (b.get("Width", 0) or 0) / 2,
-                    (b.get("Y", 0) or 0) + (b.get("Height", 0) or 0) / 2)
-    if best is None:
-        return None
-    return (best[1], best[2])
+def _xcodebuild_error(what: str, rc, out: str) -> str | None:
+    if rc is None:
+        return f"xcodebuild({what}) timed out after 2400s"
+    if rc != 0:
+        return f"xcodebuild({what}) rc={rc}: {out[-800:]}"
+    return None
 
 
-class SimulatorHost:
-    """The Simulator.app process that hosts the booted device's window.
-
-    Only runs with a wheel cell need it: the wheel driver posts host
-    scroll events into this window. Other ios-sim cells leave the device
-    to xcodebuild, which boots it without a host window. The run
-    launches it itself — its executable with `-CurrentDeviceUDID
-    <udid>`, through subprocess — so the pid the wheel driver targets
-    comes from that launch, never from a lookup by app name or window
-    title. Any Simulator host already running — from any Xcode, for any
-    device — and any other booted device are refused before the first
-    cell: the driver must own the only device window there is."""
-
-    def __init__(self, udid: str):
-        self.udid = udid
-        self.proc = None
-
-    @staticmethod
-    def executable() -> Path:
-        simctl = subprocess.run(["xcrun", "--find", "simctl"],
-                                capture_output=True, text=True, check=True,
-                                timeout=60).stdout.strip()
-        # <DEVELOPER_DIR>/usr/bin/simctl → <DEVELOPER_DIR>/Applications
-        exe = (Path(simctl).parents[2] / "Applications" / "Simulator.app"
-               / "Contents" / "MacOS" / "Simulator")
-        if not exe.is_file():
-            raise SystemExit(f"Simulator host executable missing: {exe}")
-        return exe
-
-    # the host executable inside any Simulator.app, whichever Xcode (or
-    # copy of it) it belongs to
-    HOST_SUFFIX = "/Simulator.app/Contents/MacOS/Simulator"
-
-    def start(self):
-        exe = self.executable()
-        out = subprocess.run(["ps", "-axo", "pid=,comm="],
-                             capture_output=True, text=True,
-                             check=True).stdout
-        for line in out.splitlines():
-            pid, _, comm = line.strip().partition(" ")
-            if not comm.strip().endswith(self.HOST_SUFFIX):
-                continue
-            argv = subprocess.run(["ps", "-o", "args=", "-p", pid],
-                                  capture_output=True, text=True).stdout
-            m = re.search(r"-CurrentDeviceUDID\s+(\S+)", argv)
-            raise SystemExit(
-                f"a Simulator host is already running (pid {pid}, "
-                f"{comm.strip()}, device "
-                f"{m.group(1) if m else 'unspecified'}) — quit it: wheel "
-                f"cells drive the host this run launches for {self.udid}")
-        booted = json.loads(subprocess.run(
-            ["xcrun", "simctl", "list", "devices", "booted", "--json"],
-            capture_output=True, text=True, check=True,
-            timeout=60).stdout)
-        others = [d["udid"] for devs in booted["devices"].values()
-                  for d in devs if d["udid"] != self.udid]
-        if others:
-            raise SystemExit(
-                "other simulators are booted (" + ", ".join(others)
-                + f") — shut them down: only {self.udid} may own a "
-                "device window while ios-sim cells run")
-        self.proc = subprocess.Popen(
-            [str(exe), "-CurrentDeviceUDID", self.udid],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True)
-        _ACTIVE_PROCS.append(self.proc)
-        # blocks until the device has finished booting (booting it if the
-        # host has not yet)
-        r = subprocess.run(["xcrun", "simctl", "bootstatus", self.udid,
-                            "-b"], capture_output=True, text=True,
-                           timeout=600)
-        if r.returncode != 0:
-            self.stop()
-            raise SystemExit(f"simulator {self.udid} did not boot: "
-                             f"{(r.stderr or r.stdout)[-400:]}")
-        if self.proc.poll() is not None:
-            raise SystemExit(f"Simulator host exited rc={self.proc.returncode}"
-                             f" while {self.udid} booted")
-
-    @property
-    def pid(self) -> int:
-        if self.proc is None or self.proc.poll() is not None:
-            raise RuntimeError("the Simulator host this run launched is "
-                               "not running")
-        return self.proc.pid
-
-    def stop(self):
-        if self.proc is not None:
-            _kill_proc(self.proc)
-            self.proc.wait()
-            if self.proc in _ACTIVE_PROCS:
-                _ACTIVE_PROCS.remove(self.proc)
-            self.proc = None
+def warm_up(ctx: DeviceCtx, app: Path, bundle_id: str, tag: str) -> str | None:
+    """One discarded launch test: the first XCUITest attach after an
+    install can fail inside the framework ("Failed to initialize for UI
+    testing: XCTFuture") and must not land on a measured rep. Returns
+    the invocation's error, recorded but never counted."""
+    xr = ctx.testroot / f"{tag}-warmup.xctestrun"
+    res = ctx.results_dir / f"{tag}-warmup.xcresult"
+    shutil.rmtree(res, ignore_errors=True)
+    write_xctestrun(ctx.template, xr, ctx.target_key, SUBDIR, app.name,
+                    bundle_id, "w1", drive_for("w1"),
+                    MANIFEST["workloads"]["w1"]["duration_s"],
+                    nonce=1, only_test="testLaunch")
+    try:
+        return _xcodebuild_error(
+            "warm-up", *_xcodebuild_wait(*_xcodebuild_test(
+                xr, res, ctx, f"{tag}-warmup")))
+    finally:
+        shutil.rmtree(res, ignore_errors=True)
+        xr.unlink()
 
 
-class WheelDriver:
-    """Host-side OS-level scroll drive for the `wheel` drive mode.
+def run_one(ctx: DeviceCtx, cid: str, app: Path, bundle_id: str,
+            workload: str, rep: int, step: int | None = None) -> dict:
+    """One measured launch: two single-test xcodebuild invocations.
 
-    The listener (`notifyutil -1 dev.bench.begin -g dev.bench.begin`)
-    is armed in start(): notifyutil runs its commands left to right, so
-    the `-g` state line it prints proves the registration exists, and
-    run_one releases the runner's recorder-go only after that — the
-    runner's single `dev.bench.begin`, posted when its measure block
-    opens, cannot be missed. On begin this driver posts the shared fling
-    protocol (manifest `fling` block) as CGEvent scroll-wheel detents
-    DIRECTLY to the target process (`CGEventPostToPid`, the event
-    located at the window's centre): no cursor warp, no HID-tap
-    broadcast. It then holds until begin + the declared hold (the
-    capture plus harness.anchor_tolerance_ms, the same span the runner
-    holds on every other drive) and posts `dev.bench.end` — a name only
-    the driver uses — into the same namespace (the simulator's for
-    ios-sim, the host's for macOS). The app never scrolls itself and
-    never signals completion.
+    The launch test and the workload test never share a process
+    lifetime. Before the workload invocation's runner may launch the app,
+    two `xctrace record --all-processes --device` recordings are armed:
+    Animation Hitches plus Points of Interest (frames, the runner's
+    drive-begin / measure-end marks, time-sample CPU) and Logging (the
+    WaterUI first-paint marker; recorded for every contestant so each
+    pays the same recording cost). The contestant's frames are the frame
+    lifetimes whose swap composited an update from a process inside its
+    bundle; METHOD's window [first owned present + warmup, + capture] is
+    computed on that trace's clock, and the runner's marks prove that a
+    driven cell's drive started within harness.anchor_tolerance_ms of
+    the window start and that the contestant was held through its end.
+    The app's and backboardd's CPU come from the same trace and window.
 
-    The listener runs inside that namespace (for ios-sim, inside the
-    simulator, where killing the host-side `simctl spawn` would not
-    reach it), so its lifetime is ended there: it exits on its one
-    begin, and a cell that ends before any begin releases it with a
-    begin of its own after the runner is gone — the driver has stopped
-    by then, so that post drives nothing.
-
-    The driver refuses to run anywhere but the declared measurement host
-    (`measurement_host.hw_uuid` in the manifest — the Mac mini's
-    hardware UUID, printed by `bench.py fingerprint`): a wheel program
-    that can post into any process is not a tool to leave live on a
-    development machine, and a model name is not an identity — any Mac
-    mini contains "Macmini". A mismatch refuses before any cell starts
-    (cmd_run_local checks up front)."""
-
-    def __init__(self, plat: str, udid: str | None,
-                 pid_resolver, fling: dict, hold_s: float):
-        self.plat = plat
-        self.udid = udid
-        self.pid_resolver = pid_resolver
-        self.fling = fling
-        self.hold_s = float(hold_s)
-        self.error = None
-        self._listener = None
-        self._lines = None
-        self._thread = None
-        self._stop = threading.Event()
-
-    @staticmethod
-    def confinement_error() -> str | None:
-        """None when this host is the declared measurement host, else the
-        reason string. Identity is the hardware UUID the manifest
-        declares — exact equality, never a model-name substring."""
-        mh = MANIFEST.get("measurement_host") or {}
-        want = mh.get("hw_uuid")
-        ev = host_evidence()
-        vm = host_is_virtualized(ev)
-        if vm:
-            return f"wheel driver: virtualized host ({vm})"
-        if not want:
-            return ("wheel driver: manifest measurement_host.hw_uuid is "
-                    "unset — declare the measurement host's hardware "
-                    "UUID (see `bench.py fingerprint`)")
-        if ev.get("hw_uuid") != want:
-            return ("wheel driver: host is not the declared measurement "
-                    f"host (hw_uuid={ev.get('hw_uuid')!r}, expected "
-                    f"{want!r} — {mh.get('kind', 'the Mac mini')})")
-        return None
-
-    def start(self):
-        err = self.confinement_error()
-        if err:
-            raise RuntimeError(err)
-        name = "dev.bench.begin"
-        self._listener, self._lines = _spawn_pty(
-            _notify_cmd(self.plat, self.udid, "-1", name, "-g", name))
-        try:
-            armed = self._lines.readline(time.monotonic() + 60)
-        except TimeoutError:
-            self.stop()
-            raise RuntimeError("wheel driver: begin listener not armed "
-                               "within 60s") from None
-        if armed is None or not armed.startswith(name + " "):
-            self.stop()
-            raise RuntimeError(
-                f"wheel driver: begin listener did not arm: {armed!r}")
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-
-    def stop(self, bound_s: float = 60.0):
-        """End the driver; an unfired listener is released inside its
-        namespace and must exit on that release. Records a listener that
-        does not exit as the driver's error."""
-        self._stop.set()
-        if self._listener is not None:
-            listener, self._listener = self._listener, None
-            try:
-                if listener.poll() is None:
-                    subprocess.run(_notify_cmd(self.plat, self.udid, "-p",
-                                               "dev.bench.begin"),
-                                   capture_output=True, check=True,
-                                   timeout=60)
-                listener.wait(timeout=bound_s)
-            except (subprocess.SubprocessError, OSError) as e:
-                self.error = self.error or (
-                    f"wheel driver: begin listener (pid {listener.pid}) "
-                    f"did not exit on its release post: {e}")
-                _kill_proc(listener)
-                listener.wait()
-            finally:
-                if listener in _ACTIVE_PROCS:
-                    _ACTIVE_PROCS.remove(listener)
-        if self._thread is not None:
-            self._thread.join(timeout=10)
-            self._thread = None
-        if self._lines is not None:
-            self._lines.close()
-            self._lines = None
-
-    def _run(self):
-        try:
-            fired = self._lines.readline(None)
-            if fired is None or self._stop.is_set():
-                # EOF, or the release post of a cell that ended before
-                # any begin: the runner fails that cell on its own
-                return
-            if fired.strip() != "dev.bench.begin":
-                raise RuntimeError(f"unexpected listener output {fired!r}")
-            begin = time.monotonic()
-            self._program()
-            remaining = begin + self.hold_s - time.monotonic()
-            if remaining < 0:
-                raise RuntimeError(
-                    f"fling program overran the {self.hold_s:g}s hold by "
-                    f"{-remaining:.3f}s")
-            if self._stop.wait(remaining):
-                return
-            subprocess.run(_notify_cmd(self.plat, self.udid, "-p",
-                                       "dev.bench.end"),
-                           capture_output=True, check=True, timeout=60)
-        except Exception as e:  # never kill the runner from a thread
-            self.error = f"wheel driver: {e}"
-
-    def _program(self):
-        # The begin notification is the readiness event itself: it is
-        # posted from inside the measure block, so the target exists —
-        # resolve its pid once (no launch-pid poll loop).
-        pid = self.pid_resolver()
-        center = _window_center_for_pid(pid)
-        if center is None:
-            raise RuntimeError(
-                f"no on-screen window owned by pid {pid}")
-        import Quartz
-        f = self.fling
-        seq = [1] * int(f["down"]) + [-1] * int(f["up"])
-        step_ms = float(f["duration_ms"]) / int(f["detents"])
-        px = int(f["detent_px"])
-        point = Quartz.CGPointMake(center[0], center[1])
-        # Quartz wheel semantics: a POSITIVE wheel1 delta scrolls content
-        # toward the top (the "scroll up" direction); scrolling the feed
-        # DOWN is a negative delta — direction verified against
-        # NSScrollView on the measurement host.
-        for direction in seq:
-            for _ in range(int(f["detents"])):
-                ev = Quartz.CGEventCreateScrollWheelEvent(
-                    None, Quartz.kCGScrollEventUnitPixel, 1,
-                    -px * direction)
-                # carry the target window's centre so the event lands in
-                # the contestant's window regardless of cursor position
-                Quartz.CGEventSetLocation(ev, point)
-                Quartz.CGEventPostToPid(pid, ev)
-                time.sleep(step_ms / 1000)
-            time.sleep(float(f["pause_ms"]) / 1000)
-
-
-# xctrace recordings never outlive the cell, which stops them on SIGINT;
-# the limit only bounds a cell that hangs (runner thermal gate 600 s,
-# launch + ready 60 s, warmup, the capture, and margin)
-XCTRACE_LIMIT_S = 1800
-
-
-def bundle_executable(app_path: Path, plat: str) -> tuple[str, str]:
-    """(CFBundleExecutable, its path relative to the bundle root). The
-    executable need not equal the bundle stem — Electron names it
-    "Electron" — so it comes from the bundle's own Info.plist."""
-    plist_f = (app_path / "Contents" / "Info.plist" if plat == "macos"
-               else app_path / "Info.plist")
-    exe = plistlib.loads(plist_f.read_bytes()).get("CFBundleExecutable")
-    if not exe:
-        raise RuntimeError(f"{plist_f} has no CFBundleExecutable")
-    return exe, (f"Contents/MacOS/{exe}" if plat == "macos" else exe)
-
-
-def run_one(plat, contestant_id, app_path: Path, bundle_id, workload,
-            drive, duration, rep, dest, products_dir: Path, subdir: str,
-            template: Path, target_key: str, results_dir: Path,
-            no_hitch: bool = False, device_udid: str | None = None,
-            runner_bid: str | None = None, artifact_sha: str | None = None,
-            runner_log_since: float = 0.0,
-            step: int | None = None,
-            sim_host: SimulatorHost | None = None) -> dict:
-    """Stage app + injected xctestrun, run two single-test invocations.
-
-    One test per xcodebuild invocation: the launch test and the workload
-    test never share a process lifetime. External observation, identical
-    for every contestant:
-    - macos / ios-device: `xctrace record --all-processes` with the
-      Animation Hitches template plus Points of Interest, armed BEFORE
-      the runner's recorder-go is released. The contestant's frames are
-      the frame lifetimes whose swap composited an update from a process
-      inside its bundle; METHOD's window [first owned present + warmup,
-      + capture] is computed on that trace's clock, and the runner's
-      drive-begin / measure-end signposts in the same trace prove that
-      a driven cell's drive started within harness.anchor_tolerance_ms
-      of the window start and that the contestant was held through its
-      end. The cell's InstrumentsScratch removes the raw ktrace scratch
-      the recordings leave once every recorder stopped. On ios-device
-      the app and backboardd CPU come from the same trace and window.
-      ios-device also records the Logging template the same way (the
-      first-paint marker channel), for every contestant.
-    - ios-sim / macos: a CpuSampler polls `ps -o time/rss` on the app,
-      its helper children and the render server (sim backboardd / macOS
-      WindowServer) so work Core Animation executes outside the app
-      process is still counted. On macOS it is windowed to the trace's
-      window, carried to the host clock through the drive-begin mark
-      both clocks carry; ios-sim records no trace, so its (development
-      only) window is the runner's drive-begin + the capture.
-    - wheel drive: the host driver's listener is armed before
-      recorder-go too; it ends the cell itself at begin + the hold.
-    - capacity workloads (w5/w6) run one launch per ladder step: the
-      caller passes `step` and merges the per-step rows.
-    """
-    tag = f"{contestant_id}-{workload}"
-    if step is not None:
-        tag += f"-s{step}"
-    tag += f"-r{rep}"
-    udid = device_udid or (sim_udid() if plat == "ios-sim" else None)
-    dst = products_dir / subdir / app_path.name
-    shutil.rmtree(dst, ignore_errors=True)
-    shutil.copytree(app_path, dst, symlinks=True)
-    go = RecorderGo(plat, udid, runner_bid, results_dir)
-    xr_launch = products_dir / f"{tag}-launch.xctestrun"
-    xr_work = products_dir / f"{tag}-work.xctestrun"
+    The cell checks free disk against the declared recording floor
+    before it starts, and its InstrumentsScratch removes the raw ktrace
+    scratch once both recorders stopped, so the next recording starts
+    without it. Unless the run keeps traces, the cell's .trace bundles
+    are deleted once their numbers are extracted (their size is
+    recorded)."""
+    tag = f"{cid}-{workload}" + (f"-s{step}" if step is not None else "") \
+        + f"-r{rep}"
+    rec: dict = {}
+    free = shutil.disk_usage(ctx.results_dir).free
+    rec["disk_free_bytes"] = free
+    if free < ctx.disk_floor:
+        rec["error"] = (f"disk: {free} bytes free under {ctx.results_dir}, "
+                        "below harness.disk.recording_floor_bytes="
+                        f"{ctx.disk_floor}")
+        return rec
+    import secrets
+    nonce = secrets.randbits(63) | 1
+    drive = drive_for(workload)
+    duration = MANIFEST["workloads"][workload]["duration_s"]
+    xr_launch = ctx.testroot / f"{tag}-launch.xctestrun"
+    xr_work = ctx.testroot / f"{tag}-work.xctestrun"
     for xr, only in ((xr_launch, "testLaunch"), (xr_work, "testWorkload")):
-        write_xctestrun(template, xr, target_key, subdir, app_path.name,
-                        bundle_id, workload, drive, duration,
-                        runner_app="", nonce=go.nonce, no_hitch=no_hitch,
+        write_xctestrun(ctx.template, xr, ctx.target_key, SUBDIR, app.name,
+                        bundle_id, workload, drive, duration, nonce=nonce,
                         only_test=only, step=step)
-    res_launch = results_dir / f"{tag}-launch.xcresult"
-    res_work = results_dir / f"{tag}-work.xcresult"
-    trace = results_dir / f"{tag}.trace"
-    fp_trace = results_dir / f"{tag}-log.trace"
-    runner_log = results_dir / f"{tag}-runner.log"
-    for p in (res_launch, res_work, trace, fp_trace, runner_log):
-        if p.is_dir():
-            shutil.rmtree(p, ignore_errors=True)
-        else:
-            p.unlink(missing_ok=True)
+    res_launch = ctx.results_dir / f"{tag}-launch.xcresult"
+    res_work = ctx.results_dir / f"{tag}-work.xcresult"
+    trace = ctx.results_dir / f"{tag}.trace"
+    fp_trace = ctx.results_dir / f"{tag}-log.trace"
+    runner_log = ctx.results_dir / f"{tag}-runner.log"
+    for p in (res_launch, res_work, trace, fp_trace):
+        shutil.rmtree(p, ignore_errors=True)
+    runner_log.unlink(missing_ok=True)
 
-    exe, main_rel = bundle_executable(app_path, plat)
+    exe = bundle_executable(app)
     capture_ms = float(duration) * 1000.0
-    hold_s = float(duration) + float(
-        MANIFEST["harness"]["anchor_tolerance_ms"]) / 1000.0
-
-    rec = {}
-    sampler = None
     recorders: dict[str, XctraceRecorder] = {}
-    scratch = None
-    wheel = None
     t_start = time.time()
     try:
         # --- invocation 1: launch test (its own process lifetime) ----
-        rc, out = _run_xctest_invocation(xr_launch, res_launch, dest,
-                                       results_dir, tag + "-launch")
-        if rc is None:
-            rec["error"] = "xcodebuild(launch) timed out after 2400s"
-        elif rc != 0:
-            rec["error"] = f"xcodebuild(launch) rc={rc}: {out[-800:]}"
-        else:
-            rec["metrics"] = _metrics_record(res_launch).get("metrics")
+        rc, out = _xcodebuild_wait(*_xcodebuild_test(
+            xr_launch, res_launch, ctx, tag + "-launch"))
+        if err := _xcodebuild_error("launch", rc, out):
+            rec["error"] = err
+            return rec
+        launch = _metrics_record(res_launch)
+        if "error" in launch:
+            return {**rec, **launch}
+        rec["metrics"] = launch["metrics"]
 
         # --- invocation 2: workload test, recorders armed first ------
-        if plat in ("ios-sim", "macos"):
-            sampler = CpuSampler(cpu_pids_resolver(
-                plat, udid, bundle_id,
-                str(app_path / main_rel) if plat == "macos" else exe),
-                interval=0.5)
-            sampler.start()
-        xb, xbf, xblog = _xctest_spawn(xr_work, res_work, dest,
-                                     results_dir, tag + "-work")
+        scratch = InstrumentsScratch(ctx.results_dir,
+                                     InstrumentsScratch.user_temp_dir())
+        xb, xbf, xblog = _xcodebuild_test(xr_work, res_work, ctx,
+                                          tag + "-work")
         try:
             try:
-                if plat in ("macos", "ios-device"):
-                    scratch = InstrumentsScratch(
-                        results_dir, InstrumentsScratch.user_temp_dir())
-                    recorders["frames"] = XctraceRecorder(
-                        trace, FRAMES_TEMPLATE, device_udid,
-                        XCTRACE_LIMIT_S,
-                        scratch.scratch_dir(f"{tag}-frames"),
-                        instruments=FRAMES_INSTRUMENTS)
-                if plat == "ios-device":
-                    recorders["log"] = XctraceRecorder(
-                        fp_trace, "Logging", device_udid, XCTRACE_LIMIT_S,
-                        scratch.scratch_dir(f"{tag}-log"))
+                recorders["frames"] = XctraceRecorder(
+                    trace, FRAMES_TEMPLATE, ctx.udid, XCTRACE_LIMIT_S,
+                    scratch.scratch_dir(f"{tag}-frames"),
+                    instruments=FRAMES_INSTRUMENTS)
+                recorders["log"] = XctraceRecorder(
+                    fp_trace, "Logging", ctx.udid, XCTRACE_LIMIT_S,
+                    scratch.scratch_dir(f"{tag}-log"))
                 for r in recorders.values():
                     r.arm()
-                if drive == "wheel":
-                    exe_path = str(app_path / main_rel)
-                    if plat == "ios-sim":
-                        if sim_host is None:
-                            raise RuntimeError(
-                                "ios-sim wheel drive needs the Simulator "
-                                "host this run launched")
-                        def resolve():
-                            return sim_host.pid
-                    else:
-                        def resolve():
-                            pid = _host_pid_path(exe_path)
-                            if pid is None:
-                                raise RuntimeError(
-                                    f"no process runs {exe_path} at "
-                                    "measure begin")
-                            return pid
-                    wheel = WheelDriver(plat, udid, resolve,
-                                        MANIFEST["harness"]["fling"],
-                                        hold_s)
-                    wheel.start()
-                go.release()
+                release_recorder_go(ctx.udid, ctx.runner_bid, nonce,
+                                    ctx.results_dir)
             except RuntimeError as e:
                 # nothing was released: the runner would only time out
                 # on its recorder-go gate — end the invocation now
-                rec.setdefault("error", f"recorder arming: {e}")
+                rec["error"] = f"recorder arming: {e}"
                 _kill_proc(xb)
-            try:
-                xb.wait(timeout=2400)
-                rc = xb.returncode
-            except subprocess.TimeoutExpired:
-                _kill_proc(xb)
-                xb.wait()
-                rc = None
-            if xb in _ACTIVE_PROCS:
-                _ACTIVE_PROCS.remove(xb)
-            xbf.close()
-            xb_out = xblog.read_text() if xblog.exists() else ""
-            xblog.unlink(missing_ok=True)
+            rc, out = _xcodebuild_wait(xb, xbf, xblog)
             if "error" not in rec:
-                if rc is None:
-                    rec["error"] = "xcodebuild timed out after 2400s"
-                elif rc != 0:
-                    rec["error"] = f"xcodebuild rc={rc}: {xb_out[-800:]}"
+                if err := _xcodebuild_error("workload", rc, out):
+                    rec["error"] = err
                 else:
-                    wrec = _metrics_record(res_work)
-                    if "error" in wrec:
-                        rec["error"] = wrec["error"]
-                        rec["xcresult_error"] = wrec.get("xcresult_error")
-                    wm = wrec.get("metrics") or {}
-                    rec["metrics"] = {**(rec.get("metrics") or {}), **wm}
+                    work = _metrics_record(res_work)
+                    if "error" in work:
+                        rec.update(work)
+                    else:
+                        rec["metrics"].update(work["metrics"])
         finally:
-            if (e := go.close()) is not None:
-                rec.setdefault("error", e)
-            if wheel is not None:
-                wheel.stop()
-                if wheel.error and "error" not in rec:
-                    rec["error"] = wheel.error
             for r in recorders.values():
                 if (e := r.stop()) is not None:
                     rec.setdefault("trace_errors", []).append(e)
             # only after EVERY recorder of the cell stopped: a sweep
             # between two stops would take the live one's scratch
-            if scratch is not None:
-                if (e := scratch.sweep()) is not None:
-                    rec.setdefault("error", f"instruments scratch: {e}")
-                rec["instruments_scratch_removed"] = scratch.removed
-            if sampler is not None:
-                sampler.stop()
-                sampler.join(timeout=10)
-
-        if artifact_sha:
-            rec["artifact_sha256"] = artifact_sha
-
-        # --- the measurement window --------------------------------
-        pull_runner_log(plat, udid or "", runner_bid, runner_log)
-        marks, device_rec = read_runner_log(
-            runner_log, max(runner_log_since, t_start - 5))
-        if device_rec:
-            rec["device_record"] = device_rec
-        if not marks:
-            rec.setdefault(
-                "error", "runner log has no drive-begin/measure-end pair "
-                         "— the runner never reached its measured span")
+            if (e := scratch.sweep()) is not None:
+                rec.setdefault("error", f"instruments scratch: {e}")
+            rec["instruments_scratch_removed"] = scratch.removed
+            rec["instruments_scratch_terminated_pid"] = scratch.terminated
         if "error" in rec:
             return rec
+        if rec.get("trace_errors"):
+            rec["error"] = "a recording failed: " + "; ".join(
+                rec["trace_errors"])
+            return rec
 
-        host_window = None   # epoch s, for the host-side sampler
-        trace_window = None  # trace ms, for tables of the same trace
-        if "frames" in recorders:
-            if not device_rec.get("maxFps"):
-                rec["error"] = "runner log has no device-record maxFps"
-                return rec
-            try:
-                tw = trace_frame_window(
-                    trace, app_path.name, main_rel, capture_ms,
-                    refresh_ms=1000.0 / float(device_rec["maxFps"]),
-                    driven=drive != "none")
-                render = [p["pid"] for p in _trace_toc(trace)
-                          if p["name"] == RENDER_NAME[plat]]
-            except TraceAttributionError as e:
-                rec["error"] = f"frame attribution: {e}"
-                return rec
-            rec["frame_stats"] = tw["frame_stats"]
-            rec["frames"] = tw["frame_stats"]["presents"]
-            rec["window"] = {"source": "trace", **tw["window"]}
-            rec["attribution"] = tw["attribution"]
-            win = tw["window"]
-            trace_window = (win["window_start_ms"], win["window_end_ms"])
-            # the runner's drive-begin is one instant on both clocks
-            off = marks[MARK_DRIVE_BEGIN] - win["drive_begin_ms"] / 1000.0
-            host_window = (trace_window[0] / 1000.0 + off,
-                           trace_window[1] / 1000.0 + off)
-        else:
-            d0 = marks[MARK_DRIVE_BEGIN]
-            if marks[MARK_MEASURE_END] < d0 + capture_ms / 1000.0:
-                rec["error"] = ("runner released the contestant before "
-                                "drive-begin + the capture")
-                return rec
-            host_window = (d0, d0 + capture_ms / 1000.0)
-            rec["window"] = {"source": "runner-drive-begin",
-                             "start_epoch_s": host_window[0],
-                             "end_epoch_s": host_window[1]}
-
-        if sampler is not None:
-            w0, w1 = host_window
-            rec["renderserver"] = RENDER_NAME[plat]
-            rec["cpu_window_source"] = rec["window"]["source"]
-            for label, key in (("app", "app_cpu_window_s"),
-                               ("render_server", "renderserver_cpu_s"),
-                               ("helpers", "helpers_cpu_s")):
-                d = sampler.delta(label, w0, w1)
-                if d is not None:
-                    rec[key] = d
-            for label, key in (("app", "app_mem_peak_mb"),
-                               ("helpers", "helpers_mem_peak_mb")):
-                m = sampler.peak_rss_mb(label, w0, w1)
-                if m is not None:
-                    rec[key] = m
-        if plat == "ios-device":
-            # the all-process recording carries every process's samples;
-            # the contestant and the render server are selected by pid
-            rec["renderserver"] = RENDER_NAME[plat]
-            rec["cpu_window_source"] = "trace"
+        # --- the measurement window --------------------------------
+        try:
+            pull_runner_log(ctx.udid, ctx.runner_bid, runner_log)
+        except RuntimeError as e:
+            rec["error"] = f"runner log: {e}"
+            return rec
+        marks, device_rec = read_runner_log(runner_log, t_start - 5)
+        rec["device_record"] = device_rec
+        if not marks:
+            rec["error"] = ("runner log has no drive-begin/measure-end "
+                            "pair — the runner never reached its "
+                            "measured span")
+            return rec
+        if not device_rec.get("maxFps"):
+            rec["error"] = "runner log has no device-record maxFps"
+            return rec
+        refresh_ms = 1000.0 / float(device_rec["maxFps"])
+        try:
+            tw = trace_frame_window(trace, app.name, exe, capture_ms,
+                                    refresh_ms=refresh_ms,
+                                    driven=drive != "none")
+            render = [p["pid"] for p in _trace_toc(trace)
+                      if p["name"] == RENDER_SERVER]
             if len(render) != 1:
-                rec["error"] = (f"trace lists {len(render)} "
-                                f"{RENDER_NAME[plat]} processes")
+                raise TraceAttributionError(
+                    f"trace lists {len(render)} {RENDER_SERVER} processes")
+            if cid == "waterui":
+                rec["first_paint_ms"] = first_paint_ms(fp_trace, exe)
+        except TraceAttributionError as e:
+            rec["error"] = f"frame attribution: {e}"
+            return rec
+        rec["refresh_ms"] = refresh_ms
+        rec["frame_stats"] = tw["frame_stats"]
+        rec["frames"] = tw["frame_stats"]["presents"]
+        rec["window"] = {"source": "trace", **tw["window"]}
+        rec["attribution"] = tw["attribution"]
+        win = (tw["window"]["window_start_ms"], tw["window"]["window_end_ms"])
+        # the all-process recording carries every process's samples; the
+        # contestant and the render server are selected by pid
+        rec["renderserver"] = RENDER_SERVER
+        for pid, key in ((tw["attribution"]["main_pid"], "app_cpu_window_s"),
+                         (render[0], "renderserver_cpu_s")):
+            cpu_s, e = _trace_proc_cpu(trace, pid, win)
+            if cpu_s is None:
+                rec["error"] = f"time-sample CPU of pid {pid}: {e}"
                 return rec
-            for pid, key in ((rec["attribution"]["main_pid"],
-                              "app_cpu_window_s"),
-                             (render[0], "renderserver_cpu_s")):
-                cpu_s, e = _trace_proc_cpu(trace, pid, trace_window)
-                if cpu_s is not None:
-                    rec[key] = cpu_s
-                if e:
-                    rec.setdefault("trace_errors", []).append(
-                        f"pid {pid}: {e}")
-
-        # apple-backend#281 baseline fields: app size on every row, and
-        # waterui's first-paint marker where a readable channel exists.
-        rec["app_bytes"] = du_bytes(app_path)
-        if contestant_id == "waterui":
-            fp = first_paint_ms(
-                plat, udid,
-                trace=fp_trace if plat == "ios-device" else None,
-                since=t_start, proc=exe)
-            if fp is not None:
-                rec["first_paint_ms"] = fp
-        fr = rec.get("frames")
-        if fr and rec.get("app_cpu_window_s") is not None:
+            rec[key] = cpu_s
+        if rec["frames"]:
             rec["cpu_ms_per_frame"] = round(
-                rec["app_cpu_window_s"] * 1000.0 / fr, 3)
+                rec["app_cpu_window_s"] * 1000.0 / rec["frames"], 3)
+        return rec
     finally:
-        if sampler is not None:
-            sampler.stop()
-        # keep xcresult small: delete the bundles after parsing; the
-        # .trace stays (it is the frame-interval evidence)
+        rec["trace_bytes"] = sum(du_bytes(p) for p in (trace, fp_trace)
+                                 if p.exists())
+        if not ctx.keep_traces:
+            for p in (trace, fp_trace):
+                shutil.rmtree(p, ignore_errors=True)
+        # keep xcresult small: the bundles are parsed and deleted
         shutil.rmtree(res_launch, ignore_errors=True)
         shutil.rmtree(res_work, ignore_errors=True)
         xr_launch.unlink(missing_ok=True)
         xr_work.unlink(missing_ok=True)
-    return rec
 
 
-# ------------------------------------------------------------- run-local
+def capacity_summary(steps: list[dict]) -> dict:
+    """Per-step budget shares and the ladder's capacities. A present is
+    inside a budget when the interval since the previous present is at
+    most budget × frame_stats.MISS_FACTOR (the same tolerance a missed
+    vsync is counted with); shares are over the step's presents, so a
+    present after an excluded >100 ms gap is outside every budget. A step
+    collapses when fewer than half its presents land inside two 60 Hz
+    budgets (WORKLOADS.md W5). capacity_<rate> is the largest step with
+    ≥ 99% of presents inside that rate's budget."""
+    def share(st, limit_ms):
+        fs = st["frame_stats"]
+        if not fs["presents"]:
+            return 0.0
+        n = sum(1 for iv in fs["intervals_ms"] if iv <= limit_ms)
+        return round(100.0 * n / fs["presents"], 2)
+    cap120 = cap60 = 0
+    for st in steps:
+        st["in_120hz_pct"] = share(st, 1000 / 120 * lib_frames.MISS_FACTOR)
+        st["in_60hz_pct"] = share(st, 1000 / 60 * lib_frames.MISS_FACTOR)
+        st["collapsed"] = share(st, 2000 / 60) < 50.0
+        if st["in_120hz_pct"] >= 99.0:
+            cap120 = max(cap120, st["n"])
+        if st["in_60hz_pct"] >= 99.0:
+            cap60 = max(cap60, st["n"])
+    return {"capacity_120hz": cap120, "capacity_60hz": cap60}
 
-def runner_bundle_id(staged: Path) -> str | None:
-    """CFBundleIdentifier of the staged *-Runner.app — the recipient of
-    the device-side recorder-go sentinel and the owner of the runner log
-    the window markers are pulled from."""
-    for app in sorted(staged.glob("*-Runner.app")):
-        plist_f = app / "Info.plist"
-        if not plist_f.exists():
-            plist_f = app / "Contents" / "Info.plist"
-        if plist_f.exists():
-            # an unreadable or id-less plist is a broken staged runner —
-            # fail, never skip to the next glob or a silent None
-            return plistlib.loads(
-                plist_f.read_bytes())["CFBundleIdentifier"]
-        raise RuntimeError(f"{app} has no Info.plist")
-    return None
+
+STEP_KEYS = ("metrics", "frame_stats", "frames", "app_cpu_window_s",
+             "renderserver_cpu_s", "cpu_ms_per_frame", "window",
+             "trace_bytes", "disk_free_bytes", "first_paint_ms")
 
 
-def _install_signal_handlers(on_sig):
-    """Register SIGINT/SIGTERM cleanup for a run command; returns the
-    previous handlers for restoration."""
-    prev_int = signal.signal(signal.SIGINT, on_sig)
-    prev_term = signal.signal(signal.SIGTERM, on_sig)
-    return prev_int, prev_term
-
-
-def cmd_run_local(args):
-    plat = args.platform
-    repeats = args.repeats
-    # shared-host resources: only one measurement run at a time per
-    # platform (the ios-sim drive posts into a shared notify namespace;
-    # macOS WindowServer CPU attribution is global)
-    lock = device_lock(plat)
-    # --drive overrides the manifest's per-contestant decision for every
-    # contestant (recorded per row); unset → drive_for() decides.
-    drive_override = args.drive
-    staged = ROOT / "build" / "artifacts" / plat
-    if plat == "ios-sim":
-        target_key = MANIFEST["harness"]["test_target_key"]["ios"]
-        subdir = "Release-iphonesimulator"
-        dest = f"platform=iOS Simulator,id={resolve_sim_udid(args.sim_udid)}"
-    elif plat == "macos":
-        target_key = MANIFEST["harness"]["test_target_key"]["macos"]
-        subdir = "Release"
-        dest = "platform=macOS"
-    else:
-        raise SystemExit("run-local supports ios-sim | macos")
-
-    # the staged artifacts dir is canonical at run time; the manifest's dd
-    # path is the build-time source of the same files
-    # the staged .xctestrun the build produced is the only template —
-    # a missing one fails, never a silent manifest-template fallback
-    template = next(iter(sorted(staged.glob("*.xctestrun"))), None)
-    if template is None:
-        raise SystemExit(
-            f"no staged .xctestrun in {staged} — run the build first; "
-            "a manifest-template fallback would run unverified "
-            "products")
-
-    # harness products dir: copy every staged .app — contestants AND test
-    # runners. `*-Runner.app` alone misses a contestant actually named
-    # "Runner.app" (flutter's scheme) and leaves a stale build to run.
-    products_dir = ROOT / "build" / "harness" / plat / "Products"
-    products_dir.mkdir(parents=True, exist_ok=True)
-    (products_dir / subdir).mkdir(exist_ok=True)
-    for p in sorted(staged.glob("*.app")):
-        dd = products_dir / subdir / p.name
-        shutil.rmtree(dd, ignore_errors=True)
-        shutil.copytree(p, dd, symlinks=True)
-
-    if plat == "macos":
-        # unsigned local builds trip Gatekeeper on macOS 26 ("is damaged");
-        # clear quarantine + ad-hoc sign every staged app and the runner.
-        # Same treatment for every contestant; a signing failure aborts —
-        # an unsigned/missigned app would fail launch mid-run.
-        for app in sorted(staged.glob("*.app")) + \
-                sorted(products_dir.rglob("*.app")):
-            subprocess.run(["xattr", "-dr", "com.apple.quarantine", str(app)],
-                           capture_output=True)
-            for nested in app.rglob("*"):
-                if nested.suffix in (".framework", ".dylib"):
-                    r = subprocess.run(
-                        ["codesign", "-f", "-s", "-", str(nested)],
-                        capture_output=True, text=True)
-                    if r.returncode != 0:
-                        raise SystemExit(
-                            f"codesign failed on {nested}: "
-                            f"{r.stderr[-300:]}")
-            r = subprocess.run(
-                ["codesign", "-f", "-s", "-", "--deep", str(app)],
-                capture_output=True, text=True)
-            if r.returncode != 0:
-                raise SystemExit(
-                    f"codesign failed on {app}: {r.stderr[-300:]}")
-
-    contestants = [c for c in MANIFEST["contestants"]
-                   if c.get("artifact", {}).get(plat)]
-    # N5: every staged .app must hash equal to the staging manifest the
-    # build wrote — a re-staged/modified artifact that diverges from
-    # recorded provenance refuses to run rather than silently measuring
-    # an unrecorded binary
-    sman_path = staged / "staging-manifest.json"
-    artifact_shas = {}
-    staged_apps = ([d.name for d in staged.iterdir() if d.suffix == ".app"]
-                   if staged.is_dir() else [])
-    if staged_apps and not sman_path.exists():
-        raise SystemExit(
-            f"staged artifacts exist without a staging manifest at "
-            f"{sman_path} — build to re-establish provenance; a manifest-"
-            "less artifact is unverifiable")
-    if sman_path.exists():
-        sman = json.loads(sman_path.read_text())
-        artifact_shas = sman.get("artifacts") or {}
-        for name, want in artifact_shas.items():
-            p = staged / name
-            if p.is_dir() and dir_sha256(p) != want:
-                raise SystemExit(
-                    f"staged artifact {name} no longer matches the "
-                    "staging manifest — rebuild to re-establish "
-                    "provenance")
-        missing = [n for n in staged_apps if n not in artifact_shas]
-        if missing:
-            raise SystemExit(
-                "staged artifact(s) absent from the staging manifest: "
-                + ", ".join(sorted(missing))
-                + " — rebuild to re-establish provenance")
-    runner_bid = runner_bundle_id(staged)
-    workloads = list(MANIFEST["workloads"].keys())
-    if getattr(args, "workloads", None):
-        wanted_w = set(args.workloads.split(","))
-        workloads = [w for w in workloads if w in wanted_w]
-
-    # the wheel drive posts CGEvents into the launched process — it only
-    # ever runs on the declared measurement host (measurement_host
-    # .hw_uuid), and the refusal happens BEFORE any cell starts, not
-    # after a 600 s timeout per rep
-    needs_wheel = any((drive_override or drive_for(c, plat, w)) == "wheel"
-                      for c in contestants for w in workloads)
-    if needs_wheel:
-        if err := WheelDriver.confinement_error():
-            raise SystemExit(err)
-
-    results_path = Path(args.out) if args.out else RESULTS_DEFAULT
-    state = {"machine": stat_machine(), "platform": plat,
-             "manifest": MANIFEST["toolchain"], "pins": collect_pins(),
-             "runs": [], "sizes": {}}
-    if plat == "ios-sim":
-        # simulator rows are development evidence, not hardware timing:
-        # the sim renders into a host window with no vsync'd display
-        # pipeline and jitters under host load
-        state["development_only"] = True
-    if results_path.exists():
-        state = json.loads(results_path.read_text())
-        state.setdefault("machine", {})
-        # fingerprint gates run on the recorded provenance, before the
-        # pins refresh below would overwrite it
-        check_source_fingerprint(state)
-        state["pins"] = collect_pins()  # refresh: pin may have moved
-        if plat == "ios-sim":
-            state["development_only"] = True
-    check_host_fingerprint(state)
-    if getattr(args, "only", None):
-        wanted = set(args.only.split(","))
-        contestants = [c for c in contestants if c["id"] in wanted]
-    sanitize_runs(state)
-    reps_run = (sorted({int(i) for i in args.reps.split(",")})
-                if getattr(args, "reps", None) else list(range(repeats)))
-    # replace only the cells this invocation will (re)measure: platform ×
-    # contestant × workload × drive × rep, so patch runs never clobber
-    # neighbouring cells or another platform's rows in the shared file.
-    cells = {(plat, c["id"], w, drive_override or drive_for(c, plat, w), rep)
-             for c in contestants for w in workloads for rep in reps_run
-             if not (w in CAPACITY_WORKLOADS and
-                     not capacity_cell(plat, c["id"], w))}
-    state["runs"] = [
-        x for x in state["runs"]
-        if (x.get("platform"), x.get("contestant"), x.get("workload"),
-            x.get("drive"), x.get("repeat")) not in cells]
-
-    results_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # sizes (same method for every contestant: on-disk .app bytes)
-    for c in contestants:
-        app = staged / Path(c["artifact"][plat]).name
-        if app.exists():
-            state["sizes"].setdefault(plat, {})[c["id"]] = {
-                "app_bytes": du_bytes(app),
-                "note": "on-disk .app size; .ipa thinning requires signing (device host)",
-            }
-
-    # The first-ever XCUITest attach of a session can fail inside the
-    # framework itself ("Failed to initialize for UI testing: XCTFuture") —
-    # burn one discarded run per contestant before measured reps so rep 0
-    # does not carry that failure. Persists across re-runs of the same
-    # results file.
-    warmed = set(state.get("warmed_up", []))
-    # XCTHitchMetric is a platform capability (manifest
-    # measurement.hitch_metric): attached everywhere except ios-sim,
-    # which has no GPU frame telemetry. It is never learned mid-sweep —
-    # no run's outcome decides another contestant's metrics.
-    no_hitch = plat == "ios-sim"
-
-    def _on_sig(sig, _frame):
-        _kill_active_procs()
-        lock.close()
-        sys.exit(128 + sig)
-
-    _prev = _install_signal_handlers(_on_sig)
-    # ios-sim wheel cells: this run launches the Simulator host for the
-    # device it measures, so the wheel driver's target pid comes from
-    # that launch; a run without wheel cells needs no host window
-    sim_host = None
-    try:
-      if plat == "ios-sim" and needs_wheel:
-          sim_host = SimulatorHost(resolve_sim_udid(args.sim_udid))
-          sim_host.start()
-      for rep in reps_run:
-        # interleave: rotate order so no side gets the same slot every round
-        order = contestants[rep % len(contestants):] + contestants[:rep % len(contestants)]
-        for c in order:
-            app = staged / Path(c["artifact"][plat]).name
-            if not app.exists():
-                state["runs"].append({
-                    "contestant": c["id"], "workload": None,
-                    "repeat": rep, "platform": plat,
-                    "error": f"missing artifact {app}"})
-                continue
-            bid = c["bundle_id"].get("ios" if plat != "macos" else "macos")
-            if c["id"] not in warmed:
-                print(f"[{plat}] warm-up {c['id']} (discarded)", flush=True)
-                wd = drive_override or drive_for(c, plat, "w1")
-                run_one(plat, c["id"], app, bid, "w1", wd,
-                        MANIFEST["workloads"]["w1"]["duration_s"], rep,
-                        dest, products_dir, subdir, template, target_key,
-                        results_path.parent / "xcresults",
-                        no_hitch=True, device_udid=None,
-                        runner_bid=runner_bid,
-                        artifact_sha=artifact_shas.get(app.name),
-                        sim_host=sim_host)
-                warmed.add(c["id"])
-                state["warmed_up"] = sorted(warmed)
-                results_path.write_text(json.dumps(state, indent=1))
-            for w in workloads:
-                if (w in CAPACITY_WORKLOADS
-                        and not capacity_cell(plat, c["id"], w)):
-                    continue  # W5/W6 ship in the five iOS contestants only
-                drive = drive_override or drive_for(c, plat, w)
-                duration = MANIFEST["workloads"][w]["duration_s"]
-                # the thermal gate is the runner's own: setUp blocks on
-                # thermalStateDidChangeNotification until nominal (macOS
-                # included) and fails the row past its bound
-                steps = (capacity_steps(w) if w in CAPACITY_WORKLOADS
-                         else [None])
-                rec = None
-                for si, n in enumerate(steps):
-                    print(f"[{plat}] rep {rep+1}/{repeats} {c['id']} {w}"
-                          + (f" step={n}" if n is not None else "")
-                          + f" drive={drive}", flush=True)
-                    rec = run_one(
-                        plat, c["id"], app, bid, w, drive, duration,
-                        rep, dest, products_dir, subdir, template,
-                        target_key, results_path.parent / "xcresults",
-                        no_hitch=no_hitch, device_udid=None,
-                        runner_bid=runner_bid,
-                        artifact_sha=artifact_shas.get(app.name),
-                        step=n, sim_host=sim_host)
-                    rec.update({"contestant": c["id"], "workload": w,
-                                "repeat": rep, "platform": plat,
-                                "drive": drive})
-                    if n is not None:
-                        rec.setdefault("capacity", {}).setdefault(
-                            "steps", []).append({
-                                "step": si, "n": n, **{
-                                    k: v for k, v in rec.items()
-                                    if k in ("metrics", "frame_stats",
-                                             "app_cpu_window_s",
-                                             "renderserver_cpu_s",
-                                             "helpers_cpu_s",
-                                             "app_mem_peak_mb",
-                                             "helpers_mem_peak_mb",
-                                             "cpu_ms_per_frame",
-                                             "frames", "error")}})
-                    if rec.get("error"):
-                        break
-                if rec is not None and rec.get("capacity", {}).get("steps"):
-                    cap120 = cap60 = 0
-                    for st in rec["capacity"]["steps"]:
-                        fs = st.get("frame_stats") or {}
-                        if fs.get("missed_vsyncs") == 0 and st.get("frames"):
-                            cap120 = cap60 = st["n"]
-                        elif (fs.get("frame_ms_p90") or 9e9) <= 16.67 * 1.5:
-                            cap60 = st["n"]
-                    rec["capacity"]["capacity_120hz"] = cap120
-                    rec["capacity"]["capacity_60hz"] = cap60
-                state["runs"].append(rec)
-                results_path.write_text(json.dumps(state, indent=1))
-                # Hitch evidence is per-row: a xcresult that emits no
-                # hitch identifiers is visible in flatten as missing
-                # metric, never silently rewritten or propagated — the
-                # platform's attachment declaration (no_hitch) does not
-                # change mid-sweep.
-    finally:
-        if sim_host is not None:
-            sim_host.stop()
-        signal.signal(signal.SIGINT, _prev[0])
-        signal.signal(signal.SIGTERM, _prev[1])
-        lock.close()
-    print(f"results → {results_path}")
+def measure_cell(ctx: DeviceCtx, cid: str, app: Path, bundle_id: str,
+                 workload: str, rep: int) -> dict:
+    """One (contestant, workload, rep) row. A capacity workload runs one
+    launch per ladder step and stops at the first collapsed step (or a
+    failed one, which fails the row); its row carries every step and the
+    ladder's capacities."""
+    if not capacity_workload(workload):
+        return run_one(ctx, cid, app, bundle_id, workload, rep)
+    steps = []
+    for n in MANIFEST["workloads"][workload]["steps"]:
+        print(f"  step {n}", flush=True)
+        r = run_one(ctx, cid, app, bundle_id, workload, rep, step=n)
+        if "error" in r:
+            return {**r, "capacity": {"steps": steps, "failed_step": n}}
+        steps.append({"n": n, **{k: r[k] for k in STEP_KEYS if k in r}})
+        summary = capacity_summary(steps)
+        if steps[-1]["collapsed"]:
+            break
+    return {"capacity": {"steps": steps, **summary},
+            "metrics": steps[0]["metrics"],
+            "frames": sum(s["frames"] for s in steps)}
 
 
 # ---------------------------------------------------------------- device
-
-def ensure_profile(bundle_id: str, team: str, udid: str, workdir: Path):
-    """Mint a provisioning profile for bundle_id without compiling."""
-    prof_dir = Path.home() / "Library/Developer/Xcode/UserData/Provisioning Profiles"
-    have = None
-    for p in prof_dir.glob("*.mobileprovision"):
-        try:
-            r = subprocess.run(["security", "cms", "-D", "-i", str(p)],
-                               capture_output=True, text=True)
-            d = plistlib.loads(r.stdout.encode())
-            if (d.get("Entitlements", {}).get("application-identifier", "")
-                    .endswith(bundle_id)
-                    and d.get("ExpirationDate").timestamp() > time.time() + 86400):
-                have = p
-                break
-        except Exception:
-            continue
-    if have:
-        return have
-    # generate an empty application target to force automatic provisioning
-    proj = workdir / "prov" / bundle_id
-    proj.mkdir(parents=True, exist_ok=True)
-    name = "ProvApp"
-    (proj / "project.yml").write_text(f"""
-name: ProvApp
-options:
-  bundleIdPrefix: {bundle_id.rsplit('.', 1)[0]}
-targets:
-  {name}:
-    type: application
-    platform: iOS
-    deploymentTarget: "17.0"
-    sources: []
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: {bundle_id}
-        DEVELOPMENT_TEAM: {team}
-        CODE_SIGN_STYLE: Automatic
-        GENERATE_INFOPLIST_FILE: YES
-""")
-    sh(f"xcodegen --spec '{proj}/project.yml' --project '{proj}'")
-    # The dummy build signs with the development identity, which the keychain
-    # only releases inside the GUI security session — the same session
-    # _codesign enters. sudo drops the environment, so DEVELOPER_DIR is passed
-    # explicitly.
-    developer_dir = subprocess.run(["xcode-select", "-p"], capture_output=True,
-                                   text=True).stdout.strip()
-    developer_dir = os.environ.get("DEVELOPER_DIR", developer_dir)
-    sh(f"sudo -n launchctl asuser {os.getuid()} sudo -n -u {os.getenv('USER')!s} "
-       f"env DEVELOPER_DIR='{developer_dir}' "
-       "xcodebuild -project '{p}/{n}.xcodeproj' -scheme '{n}' "
-       "-destination 'id={u}' -allowProvisioningUpdates "
-       "-allowProvisioningDeviceRegistration build"
-       .format(p=proj.resolve(), n=name, u=udid))
-    for p in prof_dir.glob("*.mobileprovision"):
-        r = subprocess.run(["security", "cms", "-D", "-i", str(p)],
-                           capture_output=True, text=True)
-        try:
-            d = plistlib.loads(r.stdout.encode())
-        except Exception:
-            continue
-        if d.get("Entitlements", {}).get("application-identifier", "").endswith(bundle_id):
-            return p
-    raise RuntimeError(f"no provisioning profile minted for {bundle_id}")
-
-
-def sign_app(app: Path, profile: Path, ident_hash: str):
-    """Inside-out codesign via the GUI security session."""
-    shutil.copy2(profile, app / "embedded.mobileprovision")
-    r = subprocess.run(["security", "cms", "-D", "-i", str(profile)],
-                       capture_output=True, text=True)
-    ents = plistlib.loads(r.stdout.encode())["Entitlements"]
-    ents_plist = app.parent / (app.stem + ".entitlements")
-    ents_plist.write_bytes(plistlib.dumps(ents))
-    # sign nested frameworks/dylibs first
-    for nested in sorted(app.rglob("*"), key=lambda p: -len(p.parts)):
-        if nested.suffix in (".framework", ".dylib") and nested.is_dir() or \
-                nested.suffix == ".dylib":
-            inner = nested / nested.stem if nested.suffix == ".framework" else nested
-            if inner.exists():
-                _codesign(inner, ident_hash)
-    _codesign(app, ident_hash, ents_plist)
-
-
-def _codesign(path: Path, ident_hash: str, ents: Path | None = None):
-    cmd = (f"sudo -n launchctl asuser {os.getuid()} sudo -n -u {os.getenv('USER')!s} "
-           f"/usr/bin/codesign -f -s {ident_hash} --timestamp=none")
-    if ents:
-        cmd += f" --entitlements '{ents}'"
-    sh(f"{cmd} '{path}'")
-
 
 def device_lock(name: str):
     LOCK_DIR.mkdir(exist_ok=True)
@@ -3082,31 +1986,36 @@ def device_lock(name: str):
     return f
 
 
-# devicectl `device info details --json-output` field names -> state keys
-_DEVICE_INFO_FIELDS = ("thermalState", "maximumFramesPerSecond",
-                       "marketingName", "deviceName", "productType",
+# devicectl `device info details --json-output` field names
+_DEVICE_INFO_FIELDS = ("marketingName", "deviceName", "productType",
                        "osVersionNumber", "productVersion")
 
 
-def parse_device_info(doc) -> dict:
-    """Pure parse of one devicectl JSON document. Missing fields stay
-    absent/None — the caller must not treat 'unknown' as nominal, and
-    there is no spec-sheet refresh fallback."""
-    st = {"refresh_hz": None, "thermal": "unknown"}
+def _find_json_fields(node, wanted) -> dict:
+    """First scalar value of each wanted key, anywhere in the JSON tree."""
+    out = {}
+    stack = [node]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, dict):
+            for k, v in cur.items():
+                if k in wanted and not isinstance(v, (dict, list)):
+                    out.setdefault(k, v)
+                elif isinstance(v, (dict, list)):
+                    stack.append(v)
+        elif isinstance(cur, list):
+            stack.extend(cur)
+    return out
+
+
+def parse_device_info(doc: dict) -> dict:
+    """Model, product type and OS of one devicectl JSON document; a field
+    devicectl did not report is absent (thermal state and refresh rate
+    come from the on-device runner, never from here)."""
     found = _find_json_fields(doc, _DEVICE_INFO_FIELDS)
-    if found.get("thermalState") is not None:
-        st["thermal"] = str(found["thermalState"])
-    if found.get("maximumFramesPerSecond") is not None:
-        try:
-            st["refresh_hz"] = int(
-                float(str(found["maximumFramesPerSecond"])))
-            st["refresh_hz_source"] = "devicectl maximumFramesPerSecond"
-        except ValueError:
-            st["read_error"] = ("maximumFramesPerSecond unparsable: "
-                                f"{found['maximumFramesPerSecond']!r}")
+    st = {}
     if found.get("marketingName") or found.get("deviceName"):
-        st["model"] = str(found.get("marketingName")
-                          or found["deviceName"])
+        st["model"] = str(found.get("marketingName") or found["deviceName"])
     if found.get("productType"):
         st["product_type"] = str(found["productType"])
     if found.get("osVersionNumber") or found.get("productVersion"):
@@ -3116,92 +2025,33 @@ def parse_device_info(doc) -> dict:
 
 
 def device_state(udid: str) -> dict:
-    """Model + refresh rate + thermal state, parsed from devicectl's
-    real JSON output. Unreadable output records a read_error and leaves
-    thermal 'unknown' / refresh_hz null."""
-    st = {"udid": udid, "refresh_hz": None, "thermal": "unknown"}
-    out = Path(tempfile.gettempdir()) / f"bench-dinfo-{os.getpid()}.json"
-    sh(f"xcrun devicectl device info details --device {udid} "
-       f"--json-output '{out}'", check=False, capture=True, timeout=60)
-    try:
-        st.update(parse_device_info(json.loads(out.read_text())))
-    except Exception as e:
-        st["read_error"] = f"{type(e).__name__}: {e}"
-    finally:
-        out.unlink(missing_ok=True)
-    st["udid"] = udid
+    """The declared iPhone's identity as devicectl reports it; it must be
+    the declared product type — the harness measures one device."""
+    with tempfile.TemporaryDirectory() as td:
+        out = Path(td) / "info.json"
+        sh(f"xcrun devicectl device info details --device {udid} "
+           f"--json-output '{out}'", capture=True, timeout=60)
+        st = {"udid": udid, **parse_device_info(json.loads(out.read_text()))}
+    want = MANIFEST["device"]["product_type"]
+    if st.get("product_type") != want:
+        raise SystemExit(f"device {udid} reports product type "
+                         f"{st.get('product_type')!r}; the manifest "
+                         f"declares {want!r} ({MANIFEST['device']['model']})")
     return st
 
 
 def uninstall_app(udid: str, bundle_id: str):
-    """Removes one app from the device; an app that is not installed is fine."""
-    installed = subprocess.run(
-        ["xcrun", "devicectl", "device", "info", "apps", "--device", udid,
-         "--bundle-id", bundle_id, "--json-output", "/dev/stdout"],
-        capture_output=True, text=True, timeout=60)
-    if bundle_id not in installed.stdout:
-        return
+    """Removes one app from the device; an app that is not installed is
+    fine."""
+    with tempfile.TemporaryDirectory() as td:
+        out = Path(td) / "apps.json"
+        sh(f"xcrun devicectl device info apps --device {udid} "
+           f"--bundle-id {bundle_id} --json-output '{out}'",
+           capture=True, timeout=60)
+        if bundle_id not in out.read_text():
+            return
     sh(f"xcrun devicectl device uninstall app --device {udid} {bundle_id}",
-       timeout=120)
-
-
-def resolve_device_udid(requested: str | None = None) -> str:
-    """Explicit --udid wins; otherwise the single device `devicectl list
-    devices` reports as available is selected. Zero or several
-    candidates is an error naming them — never a baked-in hardware id."""
-    if requested:
-        return requested
-    out = Path(tempfile.gettempdir()) / f"bench-devices-{os.getpid()}.json"
-    sh(f"xcrun devicectl list devices --json-output '{out}'",
-       capture=True, timeout=30)
-    try:
-        doc = json.loads(out.read_text())
-    finally:
-        out.unlink(missing_ok=True)
-    devices = ((doc.get("result") or {}).get("devices")
-               or doc.get("devices") or [])
-    def ok(d):
-        cp = d.get("connectionProperties") or {}
-        return (d.get("identifier")
-                and cp.get("tunnelState", "available")
-                in ("available", "connected"))
-    cands = [d for d in devices if ok(d)]
-    if len(cands) == 1:
-        udid = cands[0]["identifier"]
-        name = (cands[0].get("deviceProperties") or {}).get("name", "?")
-        print(f"resolved device: {name} ({udid})", flush=True)
-        return udid
-    listing = "\n".join(
-        f"  {d.get('identifier')} "
-        f"{(d.get('deviceProperties') or {}).get('name', '?')}"
-        for d in devices) or "  (none reported)"
-    raise SystemExit(
-        f"--udid required: {len(cands)} device candidates:\n{listing}")
-
-
-def signing_identity(selector: str | None = None):
-    """(cert hash, name, team) of the keychain's Apple Development
-    identity. `selector` (--identity) picks among several; no default
-    author identity is baked in."""
-    out = subprocess.run(
-        ["security", "find-identity", "-v", "-p", "codesigning"],
-        capture_output=True, text=True, timeout=30).stdout
-    ids = re.findall(r'([0-9A-F]{40})\s+"(Apple Development:[^"]+)"',
-                     out)
-    if selector:
-        ids = [i for i in ids if selector in i[1]]
-    if not ids:
-        raise SystemExit(
-            "no usable 'Apple Development' signing identity in the "
-            "keychain:\n" + out)
-    if len(ids) > 1:
-        raise SystemExit(
-            "multiple 'Apple Development' identities — pass --identity "
-            "with a substring of one:\n"
-            + "\n".join(f"  {h} {n}" for h, n in ids))
-    ih, name = ids[0]
-    m = re.search(r"\(([A-Z0-9]{10})\)", name)
-    return ih, name, (m.group(1) if m else None)
+       capture=True, timeout=120)
 
 
 def _cleanup_step(label: str, fn) -> str | None:
@@ -3210,336 +2060,389 @@ def _cleanup_step(label: str, fn) -> str | None:
     try:
         fn()
         return None
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — a diagnostic per action
         print(f"cleanup failed ({label}): {e}", flush=True)
         return f"{label}: {e}"
 
 
-def cmd_device(args):
-    """iOS device measurement on the Apple Silicon host. Expects staged
-    unsigned artifacts: <artifacts>/<id>.app plus the runner products
-    and template .xctestrun. Device and signing identity are resolved
-    from the actual host (or explicit --udid/--identity/--team), never
-    baked in."""
-    artifacts = Path(args.artifacts)
-    udid = resolve_device_udid(args.udid)
-    ih, ident_name, ident_team = signing_identity(args.identity)
-    team = args.team or ident_team
-    if not team:
+def unpack_stage(tar: Path, run_dir: Path) -> tuple[Path, dict]:
+    """Extract the build host's staged set into the run dir and verify
+    it: the device host's checkout is the HEAD the build was made from
+    (its harness and runner sources are the ones the build labels), and
+    every artifact hashes to the staging manifest."""
+    with tarfile.open(tar) as t:
+        t.extractall(run_dir, filter="data")
+    stage = run_dir / "stage"
+    staging = json.loads((stage / "staging-manifest.json").read_text())
+    toolchain.require_clean_checkout()
+    head = toolchain.checkout_head()
+    if staging["checkout_head"] != head:
         raise SystemExit(
-            "cannot derive DEVELOPMENT_TEAM from identity "
-            f"{ident_name!r} — pass --team explicitly")
-    print(f"signing with {ident_name} (team {team})", flush=True)
+            f"staged set was built at {staging['checkout_head']}, this "
+            f"checkout is at {head} — check out the build's HEAD on the "
+            "device host")
+    for cid, a in staging["artifacts"].items():
+        if dir_sha256(stage / a["app"]) != a["sha256"]:
+            raise SystemExit(f"staged {a['app']} ({cid}) does not match "
+                             "the staging manifest")
+    return stage, staging
+
+
+def build_runner(run_dir: Path) -> dict:
+    """Build the XCTest UI runner on this (device) host with its own
+    Xcode: xcodegen generates xctest/BenchRunner.xcodeproj, xcodebuild
+    build-for-testing produces the unsigned runner app and the .xctestrun
+    template under the run dir. The runner's bundle id is the manifest's
+    `runner.bundle_id`."""
+    toolchain.require_version(
+        "xcodegen", ["xcodegen", "--version"],
+        MANIFEST["toolchain"]["device_host"]["xcodegen"])
+    dd = run_dir / "runner-dd"
+    with toolchain.tracked_tree_unchanged("apple runner build", [ROOT]):
+        sh(f"xcodegen --spec '{RUNNER_PROJECT / 'project.yml'}'")
+        sh("xcodebuild -project xctest/BenchRunner.xcodeproj "
+           "-scheme BenchRunner -configuration Release "
+           f"-destination 'generic/platform=iOS' -derivedDataPath '{dd}' "
+           f"PRODUCT_BUNDLE_IDENTIFIER={MANIFEST['runner']['bundle_id']} "
+           "CODE_SIGNING_ALLOWED=NO build-for-testing")
+    products = dd / "Build" / "Products"
+    xctestruns = sorted(products.glob("*.xctestrun"))
+    if len(xctestruns) != 1:
+        raise SystemExit(f"runner build produced {len(xctestruns)} "
+                         f".xctestrun files in {products}")
+    app = products / SUBDIR / "BenchRunner-Runner.app"
+    want = MANIFEST["runner"]["bundle_id"] + ".xctrunner"
+    if app_info(app)["CFBundleIdentifier"] != want:
+        raise SystemExit(f"{app} is {app_info(app)['CFBundleIdentifier']}, "
+                         f"expected {want}")
+    return {"app": app, "xctestrun": xctestruns[0], "bundle_id": want}
+
+
+def check_resume(state: dict, staging: dict, machine: dict,
+                 udid: str) -> None:
+    """A results file only grows with rows of the same staged build, the
+    same device host and the same device."""
+    if state.get("build") != staging:
+        raise SystemExit("results file was produced from a different "
+                         "staged build — refusing to merge")
+    prev = state.get("machine") or {}
+    if (prev.get("hw_uuid"), prev.get("hw_model")) != (
+            machine.get("hw_uuid"), machine.get("hw_model")):
+        raise SystemExit(
+            "results file was produced on a different device host — "
+            f"refusing to merge\n  recorded: {prev}\n  current : {machine}")
+    if (state.get("device") or {}).get("udid") != udid:
+        raise SystemExit("results file was produced on a different device "
+                         "— refusing to merge")
+
+
+def run_device(run_dir: Path, opts: argparse.Namespace) -> None:
+    """One measurement run on the device host (inside the GUI-session
+    job). Builds the runner, signs and installs one contestant at a time
+    (free provisioning allows three apps installed at once: the runner
+    and the contestant under measurement), measures its cells, and
+    uninstalls it before the next."""
+    udid = MANIFEST["device"]["udid"]
     lock = device_lock(udid)
-    installed = []   # bundle ids this run installed (cleanup unowns only these)
-    own_dirs = []    # directories this run created (testroot, provwork)
+    installed: list[str] = []
+    diags: list[str] = []
 
-    _cleaned = {"done": False}
-
-    def cleanup() -> list:
-        if _cleaned["done"]:
-            return []
-        _cleaned["done"] = True
-        diags = []
+    def cleanup():
         for bid in reversed(installed):
-            d = _cleanup_step(
-                f"uninstall {bid}", lambda b=bid: uninstall_app(udid, b))
-            if d:
+            if d := _cleanup_step(f"uninstall {bid}",
+                                  lambda b=bid: uninstall_app(udid, b)):
                 diags.append(d)
-        for p in own_dirs:
-            d = _cleanup_step(
-                f"remove {p}",
-                lambda q=p: shutil.rmtree(q) if Path(q).exists() else None)
-            if d:
-                diags.append(d)
-        return diags
+        installed.clear()
 
     def on_signal(sig, _frame):
         _kill_active_procs()   # only PIDs this run spawned
         cleanup()
-        sys.exit(128 + sig)
+        raise SystemExit(128 + sig)
 
-    prev_int = signal.signal(signal.SIGINT, on_signal)
-    prev_term = signal.signal(signal.SIGTERM, on_signal)
+    prev = (signal.signal(signal.SIGINT, on_signal),
+            signal.signal(signal.SIGTERM, on_signal))
     try:
-        # Stage a device testroot: Release-iphoneos/ holds the signed runner
-        # plus each signed contestant; the injected .xctestrun sits beside it.
-        testroot = artifacts / "device-testroot"
-        provwork = artifacts / "provwork"
-        for _d in (testroot, provwork):
-            # cleanup may only delete what this run created — a dir that
-            # predates the run belongs to an earlier one
-            if not _d.exists():
-                own_dirs.append(_d)
-
-        # Stage a device testroot: Release-iphoneos/ holds the signed runner
-        # plus each signed contestant; the injected .xctestrun sits beside it.
-        prod = testroot / "Release-iphoneos"
-        prod.mkdir(parents=True, exist_ok=True)
-        template = artifacts / "device.xctestrun"
-        if not template.exists():
-            # fall back to a template staged next to the artifacts
-            cand = list(artifacts.glob("*.xctestrun"))
-            if not cand:
-                raise SystemExit("no template .xctestrun in artifacts dir")
-            shutil.copy2(cand[0], template)
-
-        runner_bid = runner_bundle_id(artifacts)
-        # every staged .app must hash equal to the staging manifest the
-        # build wrote
-        sman_path = artifacts / "staging-manifest.json"
-        artifact_shas = {}
-        if sman_path.exists():
-            sman = json.loads(sman_path.read_text())
-            artifact_shas = sman.get("artifacts") or {}
-            for name, want in artifact_shas.items():
-                p = artifacts / name
-                if p.is_dir() and dir_sha256(p) != want:
-                    raise SystemExit(
-                        f"staged artifact {name} no longer matches the "
-                        "staging manifest — rebuild to re-establish "
-                        "provenance")
-
-        # stage and sign the UI-test runner once
-        runner_app = prod / "BenchRunner-Runner.app"
-        staged_runner = artifacts / runner_app.name
-        if not staged_runner.exists():
-            raise SystemExit(f"no UI-test runner at {staged_runner}")
-        shutil.rmtree(runner_app, ignore_errors=True)
-        shutil.copytree(staged_runner, runner_app, symlinks=True)
-        runner_id = None
-        if runner_app.exists():
-            # The runner app's identifier is the test target's plus
-            # `.xctrunner`; its profile must match that exact App ID.
-            with open(runner_app / "Info.plist", "rb") as f:
-                runner_id = plistlib.load(f)["CFBundleIdentifier"]
-            installed.append(runner_id)  # xcodebuild installs it per run
-            rprof = ensure_profile(runner_id, team, udid, provwork)
-            sign_app(runner_app, rprof, ih)
-            xct = runner_app / "PlugIns/BenchRunner.xctest"
-            if xct.exists():
-                _codesign(xct, ih)
-
+        stage, staging = unpack_stage(Path(opts.stage), run_dir)
+        machine = host_evidence()
+        xcode = xcode_identity()
+        device = device_state(udid)
+        identity = signing_identity()
         contestants = [c for c in MANIFEST["contestants"]
-                       if c.get("bundle_id", {}).get("ios")]
-        if getattr(args, "only", None):
-            wanted = set(args.only.split(","))
-            contestants = [c for c in contestants if c["id"] in wanted]
-        workloads = list(MANIFEST["workloads"].keys())
-        if getattr(args, "workloads", None):
-            wanted_w = set(args.workloads.split(","))
-            workloads = [w for w in workloads if w in wanted_w]
-        state = {"machine": stat_machine(), "platform": "ios-device",
-                 "manifest": MANIFEST["toolchain"], "pins": collect_pins(),
-                 "runs": [], "sizes": {}}
-        # Record the attached device identity once; per-run
-        # device_state rows keep the sampled refresh/thermal values.
-        state["device"] = device_state(udid)
-        results_path = Path(args.out or artifacts / "results-device.json")
+                       if not opts.only or c["id"] in opts.only]
+        workloads = [w for w in MANIFEST["workloads"]
+                     if not opts.workloads or w in opts.workloads]
+        runner_bid = MANIFEST["runner"]["bundle_id"] + ".xctrunner"
+        profiles, missing = {}, []
+        for bid in [runner_bid, *{c["bundle_id"] for c in contestants}]:
+            try:
+                profiles[bid] = find_profile(bid, identity, udid)
+            except LookupError as e:
+                missing.append(str(e))
+        if missing:
+            raise SystemExit("\n".join(missing))
+
+        runner = build_runner(run_dir)
+        testroot = run_dir / "testroot"
+        prod = testroot / SUBDIR
+        prod.mkdir(parents=True)
+        signed_copy(runner["app"], prod / runner["app"].name, runner_bid,
+                    identity, profiles[runner_bid])
+        template = testroot / "runner.xctestrun"
+        shutil.copy2(runner["xctestrun"], template)
+
+        results_path = Path(opts.out) if opts.out else \
+            run_dir / "results-device.json"
+        state = {"machine": machine, "device": device, "build": staging,
+                 "device_host_xcode": xcode,
+                 "stage_tar_sha256": toolchain.sha256_file(Path(opts.stage)),
+                 "signing": {"identity": identity.name, "profiles": {
+                     b: {"uuid": p.uuid, "name": p.name, "team": p.team,
+                         "expires_utc": p.expires.isoformat()}
+                     for b, p in profiles.items()}},
+                 "runs": [], "sizes": {}, "warmed_up": []}
         if results_path.exists():
-            state = json.loads(results_path.read_text())
-            check_source_fingerprint(state)
-            check_host_fingerprint(state)
-            prev_dev = (state.get("device") or {}).get("udid")
-            if prev_dev and prev_dev != udid:
-                raise SystemExit(
-                    "results file was produced on a different device — "
-                    "refusing to merge\n"
-                    f"  recorded: {prev_dev}\n  current:   {udid}")
-            state["pins"] = collect_pins()
-        for c in contestants:
-            app = artifacts / Path(c["artifact"]["ios-device"]).name
-            if app.exists():
-                state["sizes"].setdefault("ios-device", {})[c["id"]] = {
-                    "app_bytes": du_bytes(app),
-                    "note": "signed device .app"}
-        # A free developer profile allows three installed apps per device, and
-        # the UI-test runner takes one, so each contestant is installed only
-        # while it is measured. Clear this benchmark's own leftovers first.
-        for c in contestants:
-            uninstall_app(udid, c["bundle_id"]["ios"])
+            prior = json.loads(results_path.read_text())
+            check_resume(prior, staging, machine, udid)
+            state = {**prior, **{k: v for k, v in state.items()
+                                 if k not in ("runs", "sizes",
+                                              "warmed_up")}}
         sanitize_runs(state)
-        reps_run = (sorted({int(i) for i in args.reps.split(",")})
-                    if getattr(args, "reps", None)
-                    else list(range(args.repeats)))
-        # replace only the cells this invocation will (re)measure — same
-        # platform × contestant × workload × drive × rep key as run-local.
-        cells = {("ios-device", c["id"], w, drive_for(c, "ios-device", w), rep)
-                 for c in contestants for w in workloads for rep in reps_run
-                 if capacity_cell("ios-device", c["id"], w)
-                 or w not in CAPACITY_WORKLOADS}
-        state["runs"] = [
-            x for x in state["runs"]
-            if (x.get("platform"), x.get("contestant"), x.get("workload"),
-                x.get("drive"), x.get("repeat")) not in cells]
-        # XCTHitchMetric attaches on ios-device per the platform
-        # declaration (measurement.hitch_metric); presented frames come
-        # from the xctrace Animation Hitches attach. The declaration
-        # never mutates mid-sweep.
-        no_hitch = False
-        warmed = set(state.get("warmed_up", []))
-        try:
-            for rep in reps_run:
-                order = (contestants[rep % len(contestants):]
-                         + contestants[:rep % len(contestants)])
-                for c in order:
-                    app = artifacts / Path(c["artifact"]["ios-device"]).name
-                    if not app.exists():
-                        state["runs"].append({
-                            "contestant": c["id"], "workload": None,
-                            "repeat": rep, "platform": "ios-device",
-                            "error": f"missing artifact {app}"})
-                        results_path.write_text(
-                            json.dumps(state, indent=1))
-                        continue
-                    bid = c["bundle_id"]["ios"]
-                    prof = ensure_profile(bid, team, udid, provwork)
+        reps = (sorted({int(i) for i in opts.reps.split(",")})
+                if opts.reps else list(range(opts.repeats)))
+        cells = {(c["id"], w, rep) for c in contestants for w in workloads
+                 for rep in reps}
+        state["runs"] = [x for x in state["runs"]
+                         if (x.get("contestant"), x.get("workload"),
+                             x.get("repeat")) not in cells]
+        results_dir = run_dir / "cells"
+        results_dir.mkdir(exist_ok=True)
+        ctx = DeviceCtx(udid=udid, testroot=testroot, template=template,
+                        target_key=MANIFEST["runner"]["test_target"],
+                        runner_bid=runner_bid, results_dir=results_dir,
+                        keep_traces=opts.keep_traces,
+                        disk_floor=int(MANIFEST["harness"]["disk"]
+                                       ["recording_floor_bytes"]))
+
+        def save():
+            results_path.write_text(json.dumps(state, indent=1))
+
+        # this benchmark's own leftovers from an interrupted run
+        for bid in {c["bundle_id"] for c in contestants}:
+            uninstall_app(udid, bid)
+        installed.append(runner_bid)  # xcodebuild installs it per run
+        signed = set()
+        for rep in reps:
+            # interleave: rotate order so no contestant gets the same slot
+            k = rep % len(contestants)
+            for c in contestants[k:] + contestants[:k]:
+                bid = c["bundle_id"]
+                art = staging["artifacts"][c["id"]]
+                app = prod / art["app"]
+                if c["id"] not in signed:
+                    signed_copy(stage / art["app"], app, bid, identity,
+                                profiles[bid])
+                    signed.add(c["id"])
+                    size = {k2: art[k2] for k2 in
+                            ("app_bytes", "unsigned_ipa_bytes")}
                     try:
-                        sign_app(app, prof, ih)
-                        sh("xcrun devicectl device install app "
-                           f"--device {udid} '{app}'", timeout=300)
-                        installed.append(bid)
-                        dst = prod / app.name
-                        shutil.rmtree(dst, ignore_errors=True)
-                        shutil.copytree(app, dst, symlinks=True)
-                        st = device_state(udid)
-                        if c["id"] not in warmed:
-                            # One discarded run per contestant: the first-ever
-                            # XCUITest attach on a freshly installed device can
-                            # fail inside the framework ("Failed to initialize
-                            # for UI testing: XCTFuture") and must not land on
-                            # a measured rep.
-                            print("[ios-device] warm-up "
-                                  f"{c['id']} (discarded)", flush=True)
-                            run_one("ios-device", c["id"], app, bid,
-                                    "w1", drive_for(c, "ios-device", "w1"),
-                                    MANIFEST["workloads"]["w1"]["duration_s"],
-                                    rep, f"platform=iOS,id={udid}",
-                                    testroot, "Release-iphoneos", template,
-                                    MANIFEST["harness"]["test_target_key"]["ios"],
-                                    artifacts / "xcresults-device",
-                                    no_hitch=True, device_udid=udid,
-                                    runner_bid=runner_bid,
-                                    artifact_sha=artifact_shas.get(
-                                        app.name))
-                            warmed.add(c["id"])
-                            state["warmed_up"] = sorted(warmed)
-                            results_path.write_text(
-                                json.dumps(state, indent=1))
-                        for w in workloads:
-                            if (w in CAPACITY_WORKLOADS
-                                    and not capacity_cell(
-                                        "ios-device", c["id"], w)):
-                                continue
-                            # the thermal gate lives in the runner's
-                            # setUp — devicectl has no thermal channel
-                            wspec = MANIFEST["workloads"][w]
-                            drive = drive_for(c, "ios-device", w)
-                            steps = (capacity_steps(w)
-                                     if w in CAPACITY_WORKLOADS else [None])
-                            rec = None
-                            for si, n in enumerate(steps):
-                                rec = run_one(
-                                    "ios-device", c["id"], app, bid, w,
-                                    drive, wspec["duration_s"], rep,
-                                    f"platform=iOS,id={udid}",
-                                    testroot, "Release-iphoneos",
-                                    template,
-                                    MANIFEST["harness"]["test_target_key"]["ios"],
-                                    artifacts / "xcresults-device",
-                                    no_hitch=no_hitch, device_udid=udid,
-                                    runner_bid=runner_bid,
-                                    artifact_sha=artifact_shas.get(app.name),
-                                    step=n)
-                                rec.update({"contestant": c["id"], "workload": w,
-                                            "repeat": rep,
-                                            "platform": "ios-device",
-                                            "drive": drive,
-                                            "device_state": st})
-                                if n is not None:
-                                    rec.setdefault("capacity", {}).setdefault(
-                                        "steps", []).append({
-                                            "step": si, "n": n, **{
-                                                k: v for k, v in rec.items()
-                                                if k in ("metrics",
-                                                         "frame_stats",
-                                                         "app_cpu_window_s",
-                                                         "renderserver_cpu_s",
-                                                         "frames",
-                                                         "cpu_ms_per_frame",
-                                                         "error")}})
-                                if rec.get("error"):
-                                    break
-                            if (rec is not None
-                                    and rec.get("capacity", {}).get("steps")):
-                                cap120 = cap60 = 0
-                                for st in rec["capacity"]["steps"]:
-                                    fs = st.get("frame_stats") or {}
-                                    if (fs.get("missed_vsyncs") == 0
-                                            and st.get("frames")):
-                                        cap120 = cap60 = st["n"]
-                                    elif (fs.get("frame_ms_p90") or 9e9)                                             <= 16.67 * 1.5:
-                                        cap60 = st["n"]
-                                rec["capacity"]["capacity_120hz"] = cap120
-                                rec["capacity"]["capacity_60hz"] = cap60
-                            state["runs"].append(rec)
-                            results_path.write_text(
-                                json.dumps(state, indent=1))
-                            # Hitch evidence is per-row: an xcresult
-                            # emitting no hitch identifiers shows as a
-                            # missing metric in flatten — attachment
-                            # never changes mid-sweep.
-                    finally:
-                        # uninstall only what this run installed — even
-                        # when the contestant errored mid-run (free-team
-                        # cap ~3 app IDs makes leftovers break later runs)
-                        if bid in installed:
-                            _cleanup_step(
+                        size.update(thinned_size(
+                            app, identity, profiles[bid],
+                            device["product_type"],
+                            run_dir / "thinning" / c["id"]))
+                    except (RuntimeError, KeyError, OSError) as e:
+                        size["error"] = f"thinning: {e!r}"
+                    state["sizes"][c["id"]] = size
+                    save()
+                sh(f"xcrun devicectl device install app --device {udid} "
+                   f"'{app}'", capture=True, timeout=300)
+                installed.append(bid)
+                try:
+                    if c["id"] not in state["warmed_up"]:
+                        print(f"warm-up {c['id']} (discarded)", flush=True)
+                        err = warm_up(ctx, app, bid, f"{c['id']}-r{rep}")
+                        state.setdefault("warmups", []).append(
+                            {"contestant": c["id"], "error": err})
+                        state["warmed_up"].append(c["id"])
+                        save()
+                    for w in workloads:
+                        print(f"rep {rep + 1}/{len(reps)} {c['id']} {w} "
+                              f"drive={drive_for(w)}", flush=True)
+                        rec = measure_cell(ctx, c["id"], app, bid, w, rep)
+                        rec.update({"contestant": c["id"], "workload": w,
+                                    "repeat": rep, "drive": drive_for(w),
+                                    "bundle_id": bid,
+                                    "artifact_sha256": art["sha256"]})
+                        state["runs"].append(rec)
+                        save()
+                finally:
+                    # uninstall what this run installed, even when a cell
+                    # errored — the free team caps installed apps at three
+                    if bid in installed:
+                        if d := _cleanup_step(
                                 f"uninstall {bid}",
-                                lambda b=bid: uninstall_app(udid, b))
-                            installed.remove(bid)
-        finally:
-            diags = cleanup()
-            signal.signal(signal.SIGINT, prev_int)
-            signal.signal(signal.SIGTERM, prev_term)
-            if diags:
-                print("cleanup diagnostics: " + "; ".join(diags),
-                      flush=True)
+                                lambda b=bid: uninstall_app(udid, b)):
+                            diags.append(d)
+                        installed.remove(bid)
         print(f"device results → {results_path}")
     finally:
+        cleanup()
+        signal.signal(signal.SIGINT, prev[0])
+        signal.signal(signal.SIGTERM, prev[1])
         lock.close()
+        if diags:
+            print("cleanup diagnostics: " + "; ".join(diags), flush=True)
+
+
+def cmd_device_run(args):
+    """The device-run job (launchd starts it in the GUI session). Its
+    selection comes from <run-dir>/args.json, written by `device-session
+    start`; its exit status lands in <run-dir>/status.json whatever ends
+    it — success, a failed precondition, an exception or SIGTERM from
+    `device-session stop`."""
+    run_dir = Path(args.run_dir)
+    opts = argparse.Namespace(**json.loads(
+        (run_dir / "args.json").read_text()))
+    status = {"started_utc": datetime.datetime.now(
+        datetime.timezone.utc).isoformat(timespec="seconds")}
+    code = 1
+    try:
+        run_device(run_dir, opts)
+        code = 0
+    except SystemExit as e:
+        code = e.code if isinstance(e.code, int) else 1
+        if not isinstance(e.code, int):
+            status["error"] = str(e.code)
+    except BaseException:  # noqa: BLE001 — recorded, then re-exited
+        status["error"] = traceback.format_exc()
+        traceback.print_exc()
+    finally:
+        status["exit_code"] = code
+        status["finished_utc"] = datetime.datetime.now(
+            datetime.timezone.utc).isoformat(timespec="seconds")
+        (run_dir / "status.json").write_text(json.dumps(status, indent=1))
+    raise SystemExit(code)
+
+
+# ------------------------------------------------------- GUI-session job
+#
+# xctrace and DTServiceHub only reach the device from the logged-in
+# user's GUI (Aqua) session, and the login keychain that holds the
+# signing identity is unlocked there; an ssh session has neither. The
+# operator therefore never runs the measurement in the ssh session:
+# `device-session start` writes a one-shot LaunchAgent for the run and
+# bootstraps it into gui/<uid>, where launchd starts `device-run`
+# detached from ssh. The job owns its log (job.log) and exit status
+# (status.json) in the run dir; `status` reads them with launchd's view
+# of the job, `stop` boots it out (launchd SIGTERMs it; device-run
+# uninstalls what it installed and records the exit).
+
+def _job_label(run_dir: Path) -> str:
+    return f"dev.bench.device.{run_dir.name}"
+
+
+def _launchctl_print(label: str) -> str | None:
+    r = subprocess.run(["launchctl", "print",
+                        f"gui/{os.getuid()}/{label}"],
+                       capture_output=True, text=True, timeout=30)
+    return r.stdout if r.returncode == 0 else None
+
+
+def cmd_session(args):
+    if args.action == "start":
+        stage = Path(args.stage).resolve()
+        if not stage.is_file():
+            raise SystemExit(f"no staged set at {stage}")
+        run_dir = RUNS_DIR / datetime.datetime.now(datetime.timezone.utc).strftime(
+            "%Y%m%dT%H%M%SZ")
+        run_dir.mkdir(parents=True)
+        (run_dir / "args.json").write_text(json.dumps({
+            "stage": str(stage),
+            "only": args.only.split(",") if args.only else None,
+            "workloads": args.workloads.split(",") if args.workloads
+            else None,
+            "repeats": args.repeats, "reps": args.reps,
+            "out": str(Path(args.out).resolve()) if args.out else None,
+            "keep_traces": args.keep_traces}, indent=1))
+        label = _job_label(run_dir)
+        plist = run_dir / "job.plist"
+        plist.write_bytes(plistlib.dumps({
+            "Label": label,
+            "ProgramArguments": [sys.executable, str(ROOT / "bench.py"),
+                                 "device-run", "--run-dir", str(run_dir)],
+            "WorkingDirectory": str(ROOT),
+            # the job runs once; launchd never restarts it
+            "RunAtLoad": True,
+            "KeepAlive": False,
+            "LimitLoadToSessionType": "Aqua",
+            "ProcessType": "Interactive",
+            "StandardOutPath": str(run_dir / "job.log"),
+            "StandardErrorPath": str(run_dir / "job.log"),
+            # the login shell's PATH (xcodegen, uv-managed tools) and HOME
+            "EnvironmentVariables": {"PATH": os.environ["PATH"],
+                                     "HOME": os.environ["HOME"],
+                                     "LANG": "en_US.UTF-8",
+                                     "LC_ALL": "en_US.UTF-8",
+                                     "PYTHONUNBUFFERED": "1"},
+        }))
+        r = subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}",
+                            str(plist)], capture_output=True, text=True,
+                           timeout=60)
+        if r.returncode != 0:
+            raise SystemExit(
+                f"launchctl bootstrap gui/{os.getuid()} failed "
+                f"rc={r.returncode}: {(r.stderr or r.stdout).strip()} — the "
+                "user must be logged in to the Mac's GUI session")
+        print(json.dumps({"run_dir": str(run_dir), "label": label}))
+        return
+    run_dir = Path(args.run_dir).resolve()
+    label = _job_label(run_dir)
+    if args.action == "status":
+        st = run_dir / "status.json"
+        log = run_dir / "job.log"
+        printed = _launchctl_print(label)
+        print(json.dumps({
+            "run_dir": str(run_dir), "label": label,
+            "loaded": printed is not None,
+            "launchd": [ln.strip() for ln in (printed or "").splitlines()
+                        if re.match(r"\s*(state|pid|last exit code) =", ln)],
+            "status": json.loads(st.read_text()) if st.exists() else None,
+            "log_tail": log.read_text().splitlines()[-40:]
+            if log.exists() else []}, indent=1))
+        return
+    # stop: boot the job out — a running job gets SIGTERM and records its
+    # exit; a finished one is unloaded
+    if _launchctl_print(label) is None:
+        raise SystemExit(f"job {label} is not loaded in gui/{os.getuid()}")
+    _out(["launchctl", "bootout", f"gui/{os.getuid()}/{label}"], timeout=120)
+    print(f"booted out {label}")
 
 
 # ---------------------------------------------------------------- report
 
-KNOWN = {
-    "AppLaunch.duration": "cold launch (s)",
-    "physical_peak": "peak memory (kB)",
-    "physical_absolute": "steady memory (kB)",
-    "time": "CPU time (s)",
-    "hitch_time_ratio": "hitch time ratio (ms/s)",
-    "total_hitches": "hitches (count)",
-    "scrollDecelerationAndScrolling.frameRate": "scroll fps",
-}
-
-
-def flatten(results: dict, plat: str) -> dict:
+def flatten(results: dict) -> dict:
     """(contestant, workload) -> metric -> {median,min,max,samples}."""
     import statistics
     table = {}
     for run in results["runs"]:
-        if run.get("platform") != plat or "metrics" not in run:
+        if "error" in run or "metrics" not in run:
             continue
-        key = (run["contestant"], run["workload"], run.get("drive", "swipe"))
-        cell = table.setdefault(key, {})
+        cell = table.setdefault((run["contestant"], run["workload"]), {})
         for test, mets in run["metrics"].items():
-            if not isinstance(mets, dict):
-                continue  # e.g. the verbatim "_error" diagnostics string
             for tail, m in mets.items():
-                name = f"{test}:{tail}"
-                for v in m["measurements"]:
-                    cell.setdefault(name, {"unit": m["unit"], "samples": []})
-                    cell[name]["samples"].append(v)
+                c = cell.setdefault(f"{test}:{tail}",
+                                    {"unit": m["unit"], "samples": []})
+                c["samples"].extend(m["measurements"])
+        for key in ("frames", "app_cpu_window_s", "renderserver_cpu_s",
+                    "cpu_ms_per_frame", "first_paint_ms"):
+            if run.get(key) is not None:
+                cell.setdefault(key, {"unit": "", "samples": []})[
+                    "samples"].append(run[key])
+        fs = run.get("frame_stats") or {}
+        for key in ("frame_ms_p50", "frame_ms_p90", "frame_ms_p99",
+                    "missed_vsyncs", "fps"):
+            if fs.get(key) is not None:
+                cell.setdefault(key, {"unit": "", "samples": []})[
+                    "samples"].append(fs[key])
     for cell in table.values():
         for m in cell.values():
             s = m["samples"]
@@ -3555,55 +2458,36 @@ MIN_REPS = 5
 
 def _run_succeeded(r: dict) -> bool:
     """A run counts toward a cell only when it produced the required
-    evidence, not just ANY metric: launch duration, memory and CPU must
-    be present, plus frame/pacing evidence (a scroll-fps signpost
-    metric, a hitch metric, or xctrace presented frames on device).
-    Error rows are kept verbatim but never counted."""
-    m = r.get("metrics")
-    if not (isinstance(m, dict)
-            and any(isinstance(v, dict) for v in m.values())):
+    evidence: no error, launch duration, memory and CPU metrics, and
+    owned presented frames from the trace. Error rows are kept verbatim
+    but never counted."""
+    if "error" in r:
         return False
-    tails = {tail for mets in m.values() if isinstance(mets, dict)
-             for tail, mm in mets.items()
-             if isinstance(mm, dict) and mm.get("measurements")}
-    if not {"duration", "physical_peak", "time"} <= tails:
-        return False
-    frame_evidence = (
-        "scrollDecelerationAndScrolling.frameRate" in tails
-        or "hitch_time_ratio" in tails
-        or bool(r.get("frames")))
-    return frame_evidence
+    m = r.get("metrics") or {}
+    tails = {tail for mets in m.values() for tail, mm in mets.items()
+             if mm.get("measurements")}
+    return ({"duration", "physical_peak", "time"} <= tails
+            and bool(r.get("frames")))
 
 
-def required_cells(plat: str) -> set:
-    """(contestant, workload, drive) cells a complete dataset carries:
-    every contestant declaring an artifact for the platform x every
-    non-capacity workload at the manifest-resolved drive."""
-    reqs = set()
-    for c in MANIFEST["contestants"]:
-        if not c.get("artifact", {}).get(plat):
-            continue
-        for w in MANIFEST["workloads"]:
-            if w in CAPACITY_WORKLOADS and not capacity_cell(
-                    plat, c["id"], w):
-                continue
-            reqs.add((c["id"], w, drive_for(c, plat, w)))
-    return reqs
+def required_cells() -> set:
+    """(contestant, workload) cells a complete dataset carries: every
+    contestant × every workload."""
+    return {(c["id"], w) for c in MANIFEST["contestants"]
+            for w in MANIFEST["workloads"]}
 
 
-def completeness(results: dict, plat: str, min_reps: int = MIN_REPS):
-    """Cells below the rep floor: (cell, successes, attempts, reason).
-    Missing (no attempts), all-failed, and mixed-attempt cells under
-    min_reps all count — retry attempts are never padded."""
+def completeness(results: dict, min_reps: int = MIN_REPS) -> list:
+    """Gaps of the dataset: cells below the rep floor as (cell,
+    successes, attempts, reason), and contestants without a measured
+    package size. Missing (no attempts), all-failed and mixed-attempt
+    cells under min_reps all count — retry attempts are never padded."""
     have = {}
     for r in results["runs"]:
-        if r.get("platform") != plat:
-            continue
-        key = (r.get("contestant"), r.get("workload"),
-               r.get("drive", "swipe"))
-        have.setdefault(key, []).append(r)
+        have.setdefault((r.get("contestant"), r.get("workload")),
+                        []).append(r)
     gaps = []
-    for cell in sorted(required_cells(plat)):
+    for cell in sorted(required_cells()):
         rows = have.get(cell, [])
         ok = sum(1 for r in rows if _run_succeeded(r))
         if not rows:
@@ -3613,287 +2497,146 @@ def completeness(results: dict, plat: str, min_reps: int = MIN_REPS):
         elif ok < min_reps:
             gaps.append((cell, ok, len(rows),
                          f"{ok}/{min_reps} successful reps"))
+    for c in MANIFEST["contestants"]:
+        size = (results.get("sizes") or {}).get(c["id"]) or {}
+        if "thinned_ipa_bytes" not in size:
+            gaps.append(((c["id"], "size"), 0, 0,
+                         size.get("error", "no thinned package size")))
     return gaps
 
 
-def _file_provenance(doc: dict, name: str):
-    """(host fingerprint, cli sha256) a results file recorded — None
-    where the file predates provenance recording."""
-    fp = (doc.get("machine") or {}).get("fingerprint")
-    cli = (doc.get("pins") or {}).get("water_cli")
-    return fp, (cli if isinstance(cli, str)
-                and not cli.startswith("unresolved") else None)
+def _mb(b) -> str:
+    return f"{b / 1e6:.1f}" if b else "—"
 
 
 def cmd_report(args):
-    files = [Path(p) for p in str(args.input).split(",")]
-    docs = [(p, json.loads(p.read_text())) for p in files]
-    results = docs[0][1]
-    if len(docs) > 1:
-        # merged inputs must carry identical actual host/GPU and
-        # declared-CLI fingerprints — stale or unknown provenance is
-        # never merged
-        provs = [(p.name,) + _file_provenance(d, p.name)
-                 for p, d in docs]
-        if any(fp is None for _, fp, _ in provs):
-            raise SystemExit(
-                "refusing to merge: file(s) without a host "
-                "fingerprint: "
-                + ", ".join(n for n, fp, _ in provs if fp is None))
-        if any(cli is None for _, _, cli in provs):
-            raise SystemExit(
-                "refusing to merge: file(s) without a CLI sha256: "
-                + ", ".join(n for n, _, c in provs if c is None))
-        if len({json.dumps(fp, sort_keys=True) for _, fp, _ in provs}) > 1:
-            raise SystemExit(
-                "refusing to merge results recorded on different "
-                "hosts:\n" + "\n".join(
-                    f"  {n}: {fp}" for n, fp, _ in provs))
-        if len({c for _, _, c in provs}) > 1:
-            raise SystemExit(
-                "refusing to merge results produced by different water "
-                "CLI builds:\n" + "\n".join(
-                    f"  {n}: {c}" for n, _, c in provs))
-    for _, other in docs[1:]:
-        results["runs"].extend(other.get("runs", []))
-        for plat, sizes in other.get("sizes", {}).items():
-            results["sizes"].setdefault(plat, {}).update(sizes)
+    results = json.loads(Path(args.input).read_text())
     sanitize_runs(results)
-    incomplete = []
-    required_plats = MANIFEST.get("measurement", {}).get(
-        "required_platforms") or []
-    plats = sorted(set(required_plats) | {
-        r.get("platform") for r in results["runs"] if r.get("platform")})
-    lines = ["# Competitive benchmark — Apple (water-rs/waterui#1262)", "",
-             f"Machine: `{results['machine'].get('model','?')}`, "
-             f"{results['machine'].get('os','?')} {results['machine'].get('kernel','')}, "
-             f"{results['machine'].get('memory_gb','?')} GB", ""]
+    contestants = [c["id"] for c in MANIFEST["contestants"]]
+    label = {c["id"]: c["label"] for c in MANIFEST["contestants"]}
+    dev = results.get("device") or {}
+    build = results.get("build") or {}
+    lines = ["# Competitive benchmark — iOS (water-rs/waterui#1262)", "",
+             f"Device: {dev.get('model', '?')} ({dev.get('product_type', '?')}"
+             f", iOS {dev.get('os_version', '?')}). Device host: "
+             f"{(results.get('machine') or {}).get('hw_model', '?')}, Xcode "
+             f"{(results.get('device_host_xcode') or {}).get('version', '?')}."
+             f" Build host: {(build.get('build_host') or {}).get('hw_model', '?')}"
+             f", Xcode {(build.get('xcode') or {}).get('version', '?')}, "
+             f"checkout `{build.get('checkout_head', '?')}`.", ""]
     for c in MANIFEST["contestants"]:
         lines.append(f"- **{c['label']}**: {c['framework_version']}")
-    pins = results.get("pins") or {}
-    if pins:
-        lines.append("")
-        lines.append("Commit pins: " + ", ".join(
-            f"{k} `{v}`" for k, v in pins.items()))
     lines.append("")
-    for plat in plats:
-        table = flatten(results, plat)
-        # every contestant declaring an artifact for this platform is a
-        # required contestant — a platform with no rows still renders
-        # its (empty) section and its completeness gaps
-        contestants = [c["id"] for c in MANIFEST["contestants"]
-                       if c.get("artifact", {}).get(plat)]
-        lines += [f"## {plat}", ""]
-        sizes = results.get("sizes", {}).get(plat, {})
-        def cname(cid):
-            """Column name for a contestant on this platform — a manifest
-            `platform_label` override (e.g. a non-comparable build mode)
-            wins over the shared label, which wins over the raw id."""
-            entry = next((c for c in MANIFEST["contestants"]
-                          if c["id"] == cid), {})
-            return (entry.get("platform_label", {}).get(plat)
-                    or entry.get("label") or cid)
-
-        # A contestant whose platform label marks it non-comparable is
-        # excluded from the ×-WaterUI ratio rows (its raw medians still
-        # print under the label).
-        noncomparable = {cid for cid in contestants
-                         if (next((c for c in MANIFEST["contestants"]
-                                   if c["id"] == cid), {})
-                             .get("comparable", {}).get(plat) is False)}
-
-        lines.append("### Package size (on-disk .app, MB)")
-        lines.append("| " + " | ".join(
-            ["metric"] + [cname(c) for c in contestants]) + " |")
-        lines.append("|" + "---|" * (len(contestants) + 1))
-        row = ["app MB"]
-        for cid in contestants:
-            b = sizes.get(cid, {}).get("app_bytes")
-            row.append(f"{b/1e6:.1f}" if b else "—")
-        lines.append("| " + " | ".join(row) + " |")
-        wu = sizes.get("waterui", {}).get("app_bytes")
-        if wu:
-            row = ["× WaterUI"]
-            for cid in contestants:
-                b = sizes.get(cid, {}).get("app_bytes")
-                row.append("1.00" if cid == "waterui" else
-                           ("—" if cid in noncomparable
-                            else (f"{b/wu:.2f}" if b else "—")))
-            lines.append("| " + " | ".join(row) + " |")
+    sizes = results.get("sizes") or {}
+    lines += ["## Package size (MB)", "",
+              "| size | " + " | ".join(label[c] for c in contestants) + " |",
+              "|" + "---|" * (len(contestants) + 1)]
+    for key, name in (("app_bytes", "unsigned .app (build host)"),
+                      ("unsigned_ipa_bytes", "unsigned .ipa (build host)"),
+                      ("thinned_ipa_bytes", "thinned .ipa, download"),
+                      ("thinned_app_bytes", "thinned app, installed")):
+        lines.append(f"| {name} | " + " | ".join(
+            _mb((sizes.get(c) or {}).get(key)) for c in contestants) + " |")
+    lines.append("")
+    table = flatten(results)
+    for w, spec in MANIFEST["workloads"].items():
+        wconts = [c for c in contestants if (c, w) in table]
+        if not wconts:
+            continue
+        lines += [f"## {w} — {spec['name']} (drive: {spec['drive']})", "",
+                  "| metric — median · min..max · n | "
+                  + " | ".join(label[c] for c in wconts) + " |",
+                  "|" + "---|" * (len(wconts) + 1)]
+        metrics = sorted({mn for c in wconts for mn in table[(c, w)]})
+        wu = table.get(("waterui", w), {})
+        for mn in metrics:
+            row, ratio = [mn], ["× WaterUI"]
+            for c in wconts:
+                m = table[(c, w)].get(mn)
+                row.append(f"{m['median']:.3g} {m['unit']} · "
+                           f"{m['min']:.3g}..{m['max']:.3g} · n={m['n']}"
+                           if m else "—")
+                base = (wu.get(mn) or {}).get("median")
+                ratio.append(f"{m['median'] / base:.2f}"
+                             if m and base else "—")
+            lines += ["| " + " | ".join(row) + " |",
+                      "| " + " | ".join(ratio) + " |"]
         lines.append("")
-        workloads = list(MANIFEST["workloads"].keys())
-        for w in workloads:
-            drives = sorted({k[2] for k in table if k[1] == w})
-            for drive in drives:
-                wconts = [cid for cid in contestants
-                          if (cid, w, drive) in table]
-                if not wconts:
-                    continue
-                suffix = f" (drive: {drive})" if drive != "swipe" else ""
-                lines.append(f"### {w} — {MANIFEST['workloads'][w]['name']}{suffix}")
-                metrics = sorted({mn for (cid, wl, dr), cell in table.items()
-                                  if wl == w and dr == drive and cid in wconts
-                                  for mn in cell})
-                lines.append("| " + " | ".join(
-                    ["metric — median · min..max · n"]
-                    + [cname(c) for c in wconts]) + " |")
-                lines.append("|" + "---|" * (len(wconts) + 1))
-                for mn in metrics:
-                    row = [mn]
-                    for cid in wconts:
-                        m = table.get((cid, w, drive), {}).get(mn)
-                        row.append(
-                            (f"{m['median']:.3g} {m['unit']} · "
-                             f"{m['min']:.3g}..{m['max']:.3g} · "
-                             f"n={m['n']}") if m else "—")
-                    lines.append("| " + " | ".join(row) + " |")
-                    row = ["× WaterUI"]
-                    wm = table.get(("waterui", w, drive), {}).get(mn)
-                    for cid in wconts:
-                        m = table.get((cid, w, drive), {}).get(mn)
-                        if m and wm and wm["median"]:
-                            row.append("1.00" if cid == "waterui"
-                                       else ("—" if cid in noncomparable
-                                             else f"{m['median']/wm['median']:.2f}"))
-                        else:
-                            row.append("—")
-                    lines.append("| " + " | ".join(row) + " |")
-                lines.append("")
-        # Render-server accounting: app CPU vs render-server CPU per cell,
-        # external and identical for every contestant (defence for W3-type
-        # workloads whose real work happens in the compositor, not the app).
-        rs = [r for r in results["runs"]
-              if r.get("platform") == plat
-              and ("renderserver_cpu_s" in r or "app_cpu_window_s" in r
-                   or "frames" in r)]
-        if rs:
-            lines += [f"### {plat} — render server & frames", "",
-                      "| contestant | workload | rep | app CPU s | "
-                      "render-server CPU s | frames |",
-                      "|---|---|---|---|---|---|"]
-            for r in rs:
+    caps = [r for r in results["runs"]
+            if (r.get("capacity") or {}).get("steps") and "error" not in r]
+    if caps:
+        lines += ["## Capacity (W5/W6)", "",
+                  "| contestant | workload | rep | capacity@120Hz | "
+                  "capacity@60Hz |", "|---|---|---|---|---|"]
+        for r in caps:
+            lines.append(f"| {label[r['contestant']]} | {r['workload']} | "
+                         f"{r['repeat']} | {r['capacity']['capacity_120hz']} "
+                         f"| {r['capacity']['capacity_60hz']} |")
+        lines.append("")
+        for r in caps:
+            lines += [f"### {label[r['contestant']]} {r['workload']} rep "
+                      f"{r['repeat']} — per step", "",
+                      "| n | frames | p50 ms | p99 ms | %in 120 Hz | "
+                      "%in 60 Hz | collapsed | CPU ms/frame | app CPU s | "
+                      "render CPU s |", "|---|---|---|---|---|---|---|---|---|---|"]
+            for st in r["capacity"]["steps"]:
+                fs = st["frame_stats"]
                 lines.append(
-                    f"| {cname(r['contestant'])} | {r.get('workload')} "
-                    f"| {r.get('repeat')} | "
-                    f"{r.get('app_cpu_window_s', '—')} | "
-                    f"{r.get('renderserver_cpu_s', '—')} "
-                    f"({r.get('renderserver', '?')}) | "
-                    f"{r.get('frames', '—')} |")
+                    f"| {st['n']} | {st['frames']} | {fs['frame_ms_p50']} | "
+                    f"{fs['frame_ms_p99']} | {st['in_120hz_pct']} | "
+                    f"{st['in_60hz_pct']} | {st['collapsed']} | "
+                    f"{st.get('cpu_ms_per_frame', '—')} | "
+                    f"{st['app_cpu_window_s']} | "
+                    f"{st['renderserver_cpu_s']} |")
             lines.append("")
-
-        # capacity workloads (W5/W6): per-contestant largest step inside the
-        # frame budget + per-step percentiles — one launch per pinned step,
-        # the evidence lives in the .trace files
-        caps = [r for r in results["runs"]
-                if r.get("platform") == plat and r.get("capacity")]
-        if caps:
-            lines += [f"### {plat} — capacity (W5/W6)", "",
-                      "| contestant | workload | capacity@120Hz | capacity@60Hz |",
-                      "|---|---|---|---|"]
-            for r in caps:
-                steps = r["capacity"].get("steps", [])
-                framed = any(st.get("frames") for st in steps)
-                c0 = (r["capacity"].get("capacity_120hz", 0)
-                      if framed else "— (no frame source)")
-                c6 = (r["capacity"].get("capacity_60hz", 0)
-                      if framed else "—")
-                lines.append(f"| {cname(r['contestant'])} | {r['workload']} "
-                             f"(r{r.get('repeat')}) | {c0} | {c6} |")
-            lines.append("")
-            for r in caps:
-                lines.append(f"#### {cname(r['contestant'])} {r['workload']} "
-                             f"rep {r.get('repeat')} — per-step")
-                lines.append("| step | n | frames | p50 ms | p99 ms | "
-                             "%in 8.33ms | %in 16.67ms | CPU ms/frame | "
-                             "app CPU ms | render CPU ms |")
-                lines.append("|---|---|---|---|---|---|---|---|---|---|")
-                for st in r["capacity"].get("steps", []):
-                    lines.append(
-                        f"| {st['step']} | {st['n']} | "
-                        f"{st.get('frames', '—')} "
-                        f"| {st.get('p50_ms') or '—'} "
-                        f"| {st.get('p99_ms') or '—'} "
-                        f"| {st.get('in8.33ms_pct') or '—'} "
-                        f"| {st.get('in16.67ms_pct') or '—'} "
-                        f"| {st.get('cpu_ms_per_frame') or '—'} "
-                        f"| {st.get('cpu_ms', '—')} "
-                        f"| {st.get('render_cpu_ms', '—')} |")
-                for e in r["capacity"].get("errors", []):
-                    lines.append(f"- trace error: {e}")
-                lines.append("")
-
-        # failed cells: never dropped silently
-        errs = [r for r in results["runs"]
-                if r.get("platform") == plat and "error" in r]
-        if errs:
-            lines += [f"### {plat} — errors / limitations", "",
-                      "| contestant | workload | repeat | error |",
-                      "|---|---|---|---|"]
-            for r in errs:
-                e = r["error"].replace("\n", " ").replace("|", "\\|")
-                lines.append(f"| {cname(r['contestant'])} | {r.get('workload')} | "
-                             f"{r.get('repeat')} | {e[:300]} |")
-            lines.append("")
-        # rep-floor sufficiency: every required contestant/workload cell
-        # needs >= MIN_REPS successful reps; failed attempts stay in the
-        # errors table above and never count toward the floor
-        gaps = completeness(results, plat)
-        if gaps:
-            incomplete.append(plat)
-            lines += [
-                f"### {plat} — DATASET INCOMPLETE "
-                f"(cells need ≥{MIN_REPS} successful reps)", "",
-                "| contestant | workload | drive | ok/attempts | reason |",
-                "|---|---|---|---|---|"]
-            for (cid, w, dr), ok, att, why in gaps:
-                lines.append(f"| {cname(cid)} | {w} | {dr} | "
-                             f"{ok}/{att} | {why} |")
-            lines.append("")
+    errs = [r for r in results["runs"] if "error" in r]
+    if errs:
+        lines += ["## Errors", "",
+                  "| contestant | workload | repeat | error |",
+                  "|---|---|---|---|"]
+        for r in errs:
+            e = r["error"].replace("\n", " ").replace("|", "\\|")
+            lines.append(f"| {label.get(r.get('contestant'), '?')} | "
+                         f"{r.get('workload')} | {r.get('repeat')} | "
+                         f"{e[:300]} |")
+        lines.append("")
+    gaps = completeness(results)
+    if gaps:
+        lines += [f"## DATASET INCOMPLETE (cells need ≥{MIN_REPS} "
+                  "successful reps; every contestant needs a thinned size)",
+                  "", "| contestant | workload | ok/attempts | reason |",
+                  "|---|---|---|---|"]
+        for (cid, w), ok, att, why in gaps:
+            lines.append(f"| {label[cid]} | {w} | {ok}/{att} | {why} |")
+        lines.append("")
     notes = MANIFEST.get("notes") or []
     if notes:
-        lines += ["## Harness & scope notes", ""]
-        lines += [f"- {n}" for n in notes]
-        lines.append("")
-    lines += ["## Raw results", "",
-              "Per-run samples (including all failed attempts verbatim) are in",
-              f"`{Path(args.input).name}` shipped next to this report. "
-              "`harness.diff` carries the exact code state of the harness "
-              "(`git diff` of `benchmarks/competitive/apple` vs `dev`).", ""]
-    if incomplete:
-        lines += [
-            "## DATASET INCOMPLETE", "",
-            "This report does not meet the ≥5-successful-reps floor for "
-            "every required cell on: " + ", ".join(incomplete) + ". "
-            "Missing, all-failed and mixed-attempt cells are listed "
-            "above; raw failed attempts are retained in the results "
-            "JSON and the per-platform errors tables.", ""]
+        lines += ["## Harness notes", ""] + [f"- {n}" for n in notes] + [""]
     out = Path(args.out)
     out.write_text("\n".join(lines) + "\n")
     print(f"report → {out}")
-    if incomplete:
-        raise SystemExit(
-            "dataset incomplete on " + ", ".join(incomplete)
-            + " — see DATASET INCOMPLETE sections in the report")
+    if gaps:
+        raise SystemExit("dataset incomplete — see the DATASET INCOMPLETE "
+                         "section of the report")
 
 
-# ---------------------------------------------------------------- main
+# ----------------------------------------------------------- attribution
 
 def cmd_attribution(args):
-    """Print, as JSON, how one all-process Animation Hitches trace
-    attributes frames to one contestant: its owned pids, the
-    (display, swap) join, the owned present series next to every
-    present on the same display, and every frame on that display
-    classified by the client updates its swap carried (owned / owned
-    and foreign / foreign / none) with the foreign updating processes —
-    over the owned span of the whole recording (no window, no gating).
-    It is the evidence that decides the attribution rule for a
-    contestant's rendering model. Signposts of the dev.bench subsystem
-    are listed as found."""
+    """Print, as JSON, how one all-process Animation Hitches trace from
+    the device attributes frames to one contestant: its owned pids, the
+    (display, swap) join, the owned present series next to every present
+    on the same display, and every frame on that display classified by
+    the client updates its swap carried (owned / owned and foreign /
+    foreign / none) with the foreign updating processes — over the owned
+    span of the whole recording (no window, no gating). It is the
+    evidence that decides the attribution rule for render-server-driven
+    frames. Signposts of the dev.bench subsystem are listed as found.
+    Record the trace with `device-session start --keep-traces`."""
     app = Path(args.app)
     trace = Path(args.trace)
-    _, main_rel = bundle_executable(app, args.platform)
     tables = trace_tables(trace)
-    att = trace_attribution(trace, app.name, main_rel, tables)
+    att = trace_attribution(trace, app.name, bundle_executable(app), tables)
     frames, updates = tables[FRAMES_SCHEMA], tables[UPDATES_SCHEMA]
     display_all = sorted(
         t for f in frames
@@ -3927,81 +2670,51 @@ def cmd_attribution(args):
                      indent=2, default=str))
 
 
+# ---------------------------------------------------------------- main
+
 def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    b = sub.add_parser("build")
-    b.add_argument("--platform", choices=["ios-sim", "macos", "ios-device"],
-                   required=True)
-    b.add_argument("--sim-udid", default=None,
-                   help="iOS Simulator UDID for ios-sim destinations "
-                        "(default: newest available iPhone simulator)")
-    b.set_defaults(f=cmd_build)
+    sub.add_parser("bootstrap").set_defaults(f=cmd_bootstrap)
+    sub.add_parser("build").set_defaults(f=cmd_build)
 
-    bs = sub.add_parser("bootstrap")
-    bs.add_argument("--platform", choices=["ios-sim", "macos",
-                                           "ios-device"], required=True)
-    bs.add_argument("--sim-udid", default=None)
-    bs.set_defaults(f=cmd_bootstrap)
-
-    r = sub.add_parser("run-local")
-    r.add_argument("--platform", choices=["ios-sim", "macos"], required=True)
-    r.add_argument("--repeats", type=int, default=5)
-    r.add_argument("--drive", default=None,
-                   choices=["swipe", "wheel", "none", "tap"],
-                   help="override the manifest's per-contestant drive for "
-                        "every contestant (default: manifest decision — "
-                        "swipe on iOS devices, wheel on macOS/simulator)")
-    r.add_argument("--only", default=None,
-                   help="comma-separated contestant ids (default: all); "
-                        "re-runs append to the existing results file")
-    r.add_argument("--workloads", default=None,
-                   help="comma-separated workload ids (default: all w1-w6)")
-    r.add_argument("--reps", default=None,
+    s = sub.add_parser("device-session",
+                       help="start/inspect/stop a measurement run in the "
+                            "device host's GUI session (run over ssh)")
+    s.add_argument("action", choices=["start", "status", "stop"])
+    s.add_argument("--stage", help="start: the build host's "
+                                   "ios-stage-<head>.tar.gz")
+    s.add_argument("--run-dir", help="status/stop: the run dir start "
+                                     "printed")
+    s.add_argument("--repeats", type=int, default=MIN_REPS)
+    s.add_argument("--reps", default=None,
                    help="comma-separated rep indices to (re)measure "
                         "(default: --repeats reps starting at 0)")
-    r.add_argument("--sim-udid", default=None,
-                   help="iOS Simulator UDID (default: newest available "
-                        "iPhone simulator on this host)")
-    r.add_argument("--out", default=None)
-    r.set_defaults(f=cmd_run_local)
-
-    d = sub.add_parser("device")
-    d.add_argument("--artifacts", required=True)
-    d.add_argument("--udid", default=None,
-                   help="attached iOS device UDID (default: the single "
-                        "available device `devicectl list devices` "
-                        "reports; required when several are attached)")
-    d.add_argument("--identity", default=None,
-                   help="substring selecting among multiple "
-                        "'Apple Development' signing identities")
-    d.add_argument("--team", default=None,
-                   help="DEVELOPMENT_TEAM (default: the team of the "
-                        "selected signing identity)")
-    d.add_argument("--repeats", type=int, default=5)
-    d.add_argument("--only", default=None,
+    s.add_argument("--only", default=None,
                    help="comma-separated contestant ids (default: all)")
-    d.add_argument("--reps", default=None,
-                   help="comma-separated rep indices to (re)measure "
-                        "(default: --repeats reps starting at 0)")
-    d.add_argument("--workloads", default=None,
-                   help="comma-separated workload ids (default: all w1-w6)")
-    d.add_argument("--out", default=None)
-    d.set_defaults(f=cmd_device)
+    s.add_argument("--workloads", default=None,
+                   help="comma-separated workload ids (default: all)")
+    s.add_argument("--out", default=None,
+                   help="results file to create or extend (default: "
+                        "<run-dir>/results-device.json)")
+    s.add_argument("--keep-traces", action="store_true",
+                   help="keep every cell's .trace bundles (attribution "
+                        "evidence); the disk floor still gates each cell")
+    s.set_defaults(f=cmd_session)
+
+    d = sub.add_parser("device-run",
+                       help="the measurement job launchd starts in the GUI "
+                            "session (device-session start submits it)")
+    d.add_argument("--run-dir", required=True)
+    d.set_defaults(f=cmd_device_run)
 
     rp = sub.add_parser("report")
-    rp.add_argument("--input", default=str(RESULTS_DEFAULT))
+    rp.add_argument("--input", required=True)
     rp.add_argument("--out", default=str(ROOT / "build" / "report.md"))
     rp.set_defaults(f=cmd_report)
-
-    fp = sub.add_parser(
-        "fingerprint",
-        help="print this host's measurement fingerprint — the value "
-             "manifest measurement_host.hw_uuid must declare")
-    fp.set_defaults(f=lambda a: print(json.dumps(
-        host_evidence(), indent=2, sort_keys=True)))
 
     at = sub.add_parser(
         "attribution",
@@ -4011,14 +2724,17 @@ def main():
     at.add_argument("--app", required=True,
                     help="the contestant's .app bundle (its name and "
                          "CFBundleExecutable select its processes)")
-    at.add_argument("--platform", choices=["macos", "ios-device"],
-                    required=True)
     at.add_argument("--max-fps", type=float, required=True,
                     help="the display's refresh rate, for missed-vsync "
                          "counts")
     at.set_defaults(f=cmd_attribution)
 
     args = ap.parse_args()
+    if args.cmd == "device-session" and (
+            (args.action == "start") != bool(args.stage)
+            or (args.action != "start") != bool(args.run_dir)):
+        ap.error("device-session start takes --stage; status/stop take "
+                 "--run-dir")
     args.f(args)
 
 

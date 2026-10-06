@@ -1,16 +1,14 @@
-// Shared UI-test harness for the competitive benchmark.
-// Drives one workload of one contestant per test run, configured through
-// environment variables injected into the .xctestrun EnvironmentVariables:
+// Shared UI-test harness for the competitive benchmark — runs on the
+// physical iPhone the device host drives (the only Apple benchmark
+// platform). Drives one workload of one contestant per test run,
+// configured through environment variables injected into the .xctestrun
+// EnvironmentVariables:
 //   BENCH_BUNDLE_ID  — bundle identifier of the app under test
 //   BENCH_WORKLOAD   — w1 | w2 | w3 | w4 | w5 | w6 (exact lowercase; any
 //                      other value fails)
 //   BENCH_STEP       — capacity step for w5/w6 (one launch = one step)
-//   BENCH_DRIVE      — "swipe" (coordinate drags, iOS device), "wheel"
-//                      (host-side CGEvent scroll-wheel detents — iOS
-//                      Simulator and macOS; the host driver starts on the
-//                      single `dev.bench.begin` this runner posts when its
-//                      measured invocation opens and ends the cell with
-//                      its own `dev.bench.end`), "tap" (w1) or "none"
+//   BENCH_DRIVE      — "swipe" (coordinate drags: w2/w4/w6), "tap" (w1)
+//                      or "none" (w3/w5)
 //   BENCH_FLING      — JSON fling program from the manifest:
 //                      {"start_fraction":0.75,"end_fraction":0.15,
 //                       "duration_ms":250,"pause_s":0.35,"hold_s":0.02,
@@ -34,17 +32,12 @@
 //                      the recorder-go handshake matches it, so a latched
 //                      signal from an earlier invocation can never
 //                      release this one
-//   BENCH_NO_HITCH   — "1" drops XCTHitchMetric (used when the platform
-//                      cannot record it; see bench.py)
 //
 // testWorkload does NOT launch the app until the host has armed its
-// recorders. The host latches recorder-go: on macOS and the iOS
-// Simulator it holds a registration on `dev.bench.recorder` whose notify
-// state is BENCH_RUN_NONCE, then posts it (and releases that holder with a
-// second post once the invocation is over); on ios-device (no notify
-// channel into the device) it copies `bench-recorder-go-<nonce>` into
-// this runner's tmp. Both are latched, so the order in which host and
-// runner arrive cannot lose the signal. Each row also records the device
+// recorders. The host latches recorder-go: it has no notify channel into
+// the device, so it copies `bench-recorder-go-<nonce>` into this runner's
+// tmp. The file is latched, so the order in which host and runner arrive
+// cannot lose the signal. Each row also records the device
 // state read INSIDE this process (ProcessInfo.thermalState, screen max
 // fps — devicectl cannot report them) into the runner log.
 //
@@ -64,13 +57,9 @@
 // interval), so nothing is measured by framework code.
 
 import Darwin
+import UIKit
 import XCTest
 import os
-#if os(iOS)
-import UIKit
-#elseif os(macOS)
-import AppKit
-#endif
 
 final class BenchTests: XCTestCase {
     /// The runner's marks in the host's all-process trace (the frames
@@ -118,10 +107,10 @@ final class BenchTests: XCTestCase {
                 description: "missing or unrecognized BENCH_WORKLOAD "
                     + "(got \(workload)); expected w1..w6")
         }
-        guard ["swipe", "wheel", "tap", "none"].contains(drive) else {
+        guard ["swipe", "tap", "none"].contains(drive) else {
             throw HarnessError(
                 description: "missing or unrecognized BENCH_DRIVE "
-                    + "(got \(drive)); expected swipe|wheel|tap|none")
+                    + "(got \(drive)); expected swipe|tap|none")
         }
         app = XCUIApplication(bundleIdentifier: bundleID)
         app.launchArguments = ["-bench-workload", workload]
@@ -134,11 +123,10 @@ final class BenchTests: XCTestCase {
             }
             app.launchArguments += ["-bench-step", String(n)]
         }
-        // Thermal gate, measured by the runner itself on every Apple
-        // platform (macOS included — ProcessInfo reports the host's
-        // thermal pressure there): devicectl has no thermalState
-        // channel, so the check lives in this process. An already-cool
-        // host proceeds immediately; one still hot at the bound fails.
+        // Thermal gate, measured by the runner itself on the device:
+        // devicectl has no thermalState channel, so the check lives in
+        // this process. An already-cool device proceeds immediately; one
+        // still hot at the bound fails.
         try waitForNominalThermal(budget: 600)
     }
 
@@ -167,12 +155,7 @@ final class BenchTests: XCTestCase {
     /// thermalState/maximumFramesPerSecond as observed inside the runner
     /// process — devicectl cannot report either.
     private func recordDeviceState() {
-        var maxFps = -1
-        #if os(iOS)
-        maxFps = UIScreen.main.maximumFramesPerSecond
-        #elseif os(macOS)
-        maxFps = NSScreen.main?.maximumFramesPerSecond ?? -1
-        #endif
+        let maxFps = UIScreen.main.maximumFramesPerSecond
         dbg("device-record "
             + "thermal=\(ProcessInfo.processInfo.thermalState.rawValue) "
             + "maxFps=\(maxFps)")
@@ -186,22 +169,17 @@ final class BenchTests: XCTestCase {
     // MARK: - Metrics
 
     private func baseMetrics() -> [any XCTMetric] {
-        let env = ProcessInfo.processInfo.environment
         var metrics: [any XCTMetric] = [
             XCTMemoryMetric(application: app),
             XCTCPUMetric(application: app),
         ]
-        if env["BENCH_NO_HITCH"] != "1",
-            #available(macOS 26.0, iOS 26.0, *)
-        {
+        if #available(iOS 26.0, *) {
             metrics.append(XCTHitchMetric(application: app))
         }
         // The scroll signpost only has intervals to aggregate on a scrolling
         // workload — on W1/W3 it records nothing and lands as a zeroed
         // duration/ratio pair in the report.
-        if ["w2", "w4", "w6"].contains(workload),
-            #available(macOS 11.0, iOS 15.0, *)
-        {
+        if ["w2", "w4", "w6"].contains(workload) {
             metrics.append(XCTOSSignpostMetric.scrollingAndDecelerationMetric)
         }
         return metrics
@@ -345,20 +323,15 @@ final class BenchTests: XCTestCase {
     }
 
     /// The measured invocation: mark drive-begin, run the drive, hold
-    /// until drive-begin + `hold`, mark measure-end. The host wheel
-    /// driver owns its cell's end itself, at begin + the same hold.
+    /// until drive-begin + `hold`, mark measure-end.
     private func measuredSpan(hold: Double) {
         os_signpost(.event, log: Self.marks, name: "drive-begin")
         dbg("drive-begin")
         let end = Date().addingTimeInterval(hold)
         switch workload {
         case "w2", "w4", "w6":
-            if drive == "wheel" {
-                awaitHostWheelDrive(hold: hold)
-            } else {
-                swipeFlings()
-                holdWindow(until: end)
-            }
+            swipeFlings()
+            holdWindow(until: end)
         case "w3", "w5":
             holdWindow(until: end)
         default:
@@ -397,22 +370,15 @@ final class BenchTests: XCTestCase {
         }
     }
 
-    /// Blocks until the host has armed its recorders. Both channels are
-    /// latched by the host, so it does not matter whether the host or
-    /// this runner gets here first:
-    /// - macOS / iOS Simulator: the host holds a registration on
-    ///   `dev.bench.recorder` whose notify state is `nonce`, then posts
-    ///   it. The dispatch registration is armed before the state is
-    ///   read, so a post after the read wakes it and a post before it
-    ///   is visible in the state.
-    /// - ios-device: the host has no notify channel into the device; it
-    ///   copies `bench-recorder-go-<nonce>` into this runner's tmp. A
-    ///   DispatchSource on the directory is armed before the file is
-    ///   checked, so the copy is seen whenever it lands.
+    /// Blocks until the host has armed its recorders. The host has no
+    /// notify channel into the device; it copies
+    /// `bench-recorder-go-<nonce>` into this runner's tmp. The file is
+    /// latched, so it does not matter whether the host or this runner
+    /// gets here first: a DispatchSource on the directory is armed before
+    /// the file is checked, so the copy is seen whenever it lands.
     private func waitForRecorderGo(nonce: UInt64) throws {
         let fired = DispatchSemaphore(value: 0)
         let queue = DispatchQueue(label: "bench.recorder-go")
-        #if os(iOS) && !targetEnvironment(simulator)
         let dir = FileManager.default.temporaryDirectory
         let sentinel = dir.appendingPathComponent("bench-recorder-go-\(nonce)").path
         let dirFd = open(dir.path, O_EVTONLY)
@@ -430,24 +396,6 @@ final class BenchTests: XCTestCase {
         queue.sync {
             if FileManager.default.fileExists(atPath: sentinel) { fired.signal() }
         }
-        #else
-        var token: Int32 = 0
-        let matches: (Int32) -> Bool = { t in
-            var state: UInt64 = 0
-            return notify_get_state(t, &state) == UInt32(NOTIFY_STATUS_OK)
-                && state == nonce
-        }
-        guard notify_register_dispatch("dev.bench.recorder", &token, queue, { t in
-            if matches(t) { fired.signal() }
-        }) == UInt32(NOTIFY_STATUS_OK) else {
-            throw HarnessError(
-                description: "notify_register_dispatch(dev.bench.recorder) failed")
-        }
-        defer { notify_cancel(token) }
-        queue.sync {
-            if matches(token) { fired.signal() }
-        }
-        #endif
         let ok = fired.wait(timeout: .now() + 300) == .success
         dbg("recorder-go fired=\(ok)")
         guard ok else {
@@ -459,43 +407,7 @@ final class BenchTests: XCTestCase {
 
     // MARK: - Driving
 
-    /// `wheel` drive (iOS Simulator and macOS): the host's own process
-    /// posts CGEvent scroll-wheel detents — the identical fling protocol —
-    /// into the contestant. This runner posts `dev.bench.begin` exactly
-    /// once, when the measured invocation opens; the host armed its
-    /// listener before it released recorder-go, so the post cannot be
-    /// missed. The host driver ends the cell with `dev.bench.end` at
-    /// begin + the same hold — apps never post it.
-    private func awaitHostWheelDrive(hold: Double) {
-        var fd: Int32 = -1
-        var endToken: Int32 = 0
-        guard notify_register_file_descriptor("dev.bench.end", &fd, 0,
-                    &endToken) == UInt32(NOTIFY_STATUS_OK)
-        else {
-            XCTFail("wheel drive: notify_register_file_descriptor failed")
-            return
-        }
-        defer { notify_cancel(endToken); close(fd) }
-        // registered before the begin post: the driver's end can only
-        // follow its begin, so it always lands on this descriptor
-        notify_post("dev.bench.begin")
-        var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
-        // the driver ends the cell at begin + hold; the bound only
-        // catches a driver that died
-        let boundMs = Int32((hold + 30) * 1000)
-        let fired = poll(&pfd, 1, boundMs) > 0
-            && (pfd.revents & Int16(POLLIN)) != 0
-        if fired {
-            var buf: Int32 = 0
-            _ = read(fd, &buf, MemoryLayout<Int32>.size)
-        }
-        XCTAssertTrue(
-            fired,
-            "wheel drive: host driver never posted 'dev.bench.end' within "
-                + "\(hold + 30)s of begin")
-    }
-
-    /// `swipe` drive (iOS device): the same fling sequence for every
+    /// `swipe` drive: the same fling sequence for every
     /// contestant (../WORKLOADS.md) — 8 flings down then 2 back up, as
     /// coordinate drags. Not element gestures: `swipeUp` resolves the app
     /// element and waits for quiescence on every call, and a scrolling
@@ -504,14 +416,7 @@ final class BenchTests: XCTestCase {
     /// resolves one window-frame point and injects raw HID events without
     /// a quiescence wait — identical touches for every contestant.
     private func swipeFlings() {
-        // On macOS the XCUIApplication element's frame is empty, so a
-        // normalized coordinate on it resolves to an infinite point;
-        // anchor the drags to the app's first window instead.
-        #if os(macOS)
-        let dragAnchor: XCUIElement = app.windows.firstMatch
-        #else
         let dragAnchor: XCUIElement = app
-        #endif
         // Fling program comes from the manifest via BENCH_FLING — a
         // missing or malformed program fails the row, never defaults.
         struct Fling: Decodable {

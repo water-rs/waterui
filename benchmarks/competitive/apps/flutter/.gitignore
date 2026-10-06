@@ -1,13 +1,8 @@
 # Generated at build by the pinned Flutter SDK's `flutter create`
 /ios/
-/macos/
 /android/
 /linux/
 /windows/
 build/
 .dart_tool/
 .packages
-
-# generated platform dirs (flutter create, .bench-generator-stamped)
-ios/
-macos/

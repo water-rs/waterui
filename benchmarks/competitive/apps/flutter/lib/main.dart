@@ -15,7 +15,7 @@ import 'package:flutter/services.dart';
 
 const _configChannel = MethodChannel('bench/config');
 
-/// Apple legs only: the native side posts `dev.bench.ready.<bundle>.<w>`
+/// iOS only: the native side posts `dev.bench.ready.<bundle>.<w>`
 /// over Darwin notify when Dart reports the workload page's first frame.
 const _readyChannel = MethodChannel('bench/ready');
 
@@ -50,7 +50,7 @@ Future<void> main() async {
   runApp(BenchApp(workload: workload!, pinnedStep: pinnedStep));
 }
 
-/// Reads a benchmark config value. On Apple targets the platform channel
+/// Reads a benchmark config value. On iOS the platform channel
 /// serves it from NSUserDefaults' NSArgumentDomain (launch arguments);
 /// on Android the override MainActivity serves the same channel from
 /// intent extras; desktop legs pass `BENCH_<NAME>` in the environment.
@@ -95,13 +95,13 @@ class BenchApp extends StatelessWidget {
 
 bool _readyPosted = false;
 
-/// Readiness = the workload page's first frame, the point every Apple
-/// contestant posts `dev.bench.ready` at (SwiftUI `onAppear`, UIKit /
-/// AppKit `viewDidAppear`, WaterUI `on_appear`, React Native's first
-/// content appearance). Only the Apple legs consume it — the other legs
-/// observe the first present from outside the app.
+/// Readiness = the workload page's first frame, the point every iOS
+/// contestant posts `dev.bench.ready` at (SwiftUI `onAppear`, UIKit
+/// `viewDidAppear`, WaterUI `on_appear`, React Native's first content
+/// appearance). Only the iOS leg consumes it — the other legs observe
+/// the first present from outside the app.
 void _ready() {
-  if (_readyPosted || !(Platform.isIOS || Platform.isMacOS)) return;
+  if (_readyPosted || !Platform.isIOS) return;
   _readyPosted = true;
   SchedulerBinding.instance.addPostFrameCallback(
       (_) => _readyChannel.invokeMethod<void>('ready'));

@@ -1,4 +1,4 @@
-// Competitive benchmark app — SwiftUI contestant (iOS + macOS).
+// Competitive benchmark app — SwiftUI contestant (iOS).
 // Workloads W1–W6 per water-rs/waterui#1262 (canonical spec:
 // benchmarks/competitive/WORKLOADS.md); workload selected with the launch
 // argument `-bench-workload W1|W2|W3|W4|W5|W6`, read through
@@ -205,14 +205,10 @@ struct MotionView: View {
             ForEach(0..<200, id: \.self) { MotionRect(index: $0) }
         }
         .frame(width: fieldW, height: fieldH)
-        // field placement: centred on desktop; on mobile layouts it is
-        // pinned to the top of the content area with a 16-point inset
-        #if os(macOS)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        #else
+        // field placement (mobile layout): pinned to the top of the
+        // content area with a 16-point inset
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .padding(.top, 16)
-        #endif
     }
 }
 
@@ -261,12 +257,8 @@ struct MotionCapacityView: View {
             ForEach(0..<count, id: \.self) { MotionRect(index: $0) }
         }
         .frame(width: fieldW, height: fieldH)
-        #if os(macOS)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        #else
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .padding(.top, 16)
-        #endif
     }
 }
 

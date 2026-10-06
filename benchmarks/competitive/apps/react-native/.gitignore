@@ -102,17 +102,3 @@ ios/RnBench/Images.xcassets/
 ios/RnBench/LaunchScreen.storyboard
 ios/RnBench/PrivacyInfo.xcprivacy
 ios/RnBench.xcodeproj/xcshareddata/
-macos/.xcode.env
-macos/RnBench.xcworkspace/
-
-# bench: template files materialized after `npm ci` by the installed
-# react-native-macos generator (lib/toolchain.ensure_rn_macos_template)
-# — never committed; the files that differ from the template stay tracked
-macos/.bench-generator
-macos/.gitignore
-macos/RnBench-macOS/AppDelegate.h
-macos/RnBench-macOS/main.m
-macos/RnBench-macOS/Base.lproj/
-macos/RnBench-macOS/Assets.xcassets/
-macos/RnBench-macOS/RnBench.entitlements
-macos/RnBench.xcodeproj/xcshareddata/

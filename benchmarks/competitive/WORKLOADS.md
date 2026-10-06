@@ -24,7 +24,7 @@ floating-point seeds are spec violations.
 
 Workload ids are the exact lowercase strings `w1|w2|w3|w4|w5|w6`. Any
 other value — including uppercase or missing — fails the contestant.
-Apple legs pass `-bench-workload <id>` as a launch argument; desktop
+The iOS leg passes `-bench-workload <id>` as a launch argument; desktop
 legs and Android pass `BENCH_WORKLOAD` in the environment (Android
 forwards it as the `waterui.env.BENCH_WORKLOAD` intent extra). Capacity
 steps arrive as `-bench-step <n>` / `BENCH_STEP`.
@@ -105,7 +105,7 @@ Ladder: `200, 400, 800, 1600, 3200, 6400, 12800, 25600`.
 
 Pacing — one model on every leg: one launch renders one step. The
 runner launches the contestant once per ladder step with `BENCH_STEP`
-(`-bench-step` on Apple) naming the step — required, missing or
+(`-bench-step` on iOS) naming the step — required, missing or
 malformed fails the contestant — then measures per METHOD below. A
 step collapses when fewer than half its presents land inside two 60 Hz
 frame budgets (33.3 ms).
@@ -132,10 +132,8 @@ and W6 on each platform (whatever OS-level injector that leg uses).
 
 All scrolling in W2, W4 and W6 is driven from **outside the app** by
 OS-level input on every platform: Android `input swipe` / UiAutomator,
-XCTest coordinate drags on iOS devices and CGEvent scroll-wheel detents
-posted by the host driver on macOS and the iOS Simulator (a synthesized
-swipe cannot reach a simulator window), the compositor's virtual
-pointer on Linux, `SendInput` on Windows. No contestant scrolls itself;
+XCTest coordinate drags on the iPhone, the compositor's virtual pointer
+on Linux, `SendInput` on Windows. No contestant scrolls itself;
 there is no in-app drive.
 
 The protocol is identical for every contestant on a platform and is

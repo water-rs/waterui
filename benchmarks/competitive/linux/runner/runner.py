@@ -316,7 +316,7 @@ cd /repo/benchmarks/competitive/apps/electron
 npm ci --no-audit --no-fund
 # electron >= 43 ships the binary download as a bin entry, not a
 # postinstall — `npm ci` alone leaves node_modules/electron/dist absent.
-# Same check-and-run as the macOS packager: pull dist/ only when it is
+# Pull dist/ only when it is
 # missing, then fail loudly if it is still absent.
 if [ ! -d node_modules/electron/dist ]; then
   node node_modules/electron/install.js

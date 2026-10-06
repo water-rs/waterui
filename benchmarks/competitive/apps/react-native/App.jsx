@@ -2,7 +2,7 @@
 // (exact lowercase ids), per benchmarks/competitive/WORKLOADS.md. The
 // workload and the capacity `step` arrive as initial props from the
 // native side, which reads `-bench-workload` launch arguments from
-// NSUserDefaults' NSArgumentDomain (Apple) or intent extras (Android).
+// NSUserDefaults' NSArgumentDomain (iOS) or intent extras (Android).
 // One pacing model on every leg: one launch renders one ladder step.
 // Scrolling is driven from outside the app by OS-level input — the app
 // never scrolls itself.
@@ -11,7 +11,6 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   Animated,
   Easing,
-  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -351,12 +350,9 @@ export default function App({ workload, step }) {
 const styles = StyleSheet.create({
   fill: { flex: 1 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  // field placement: pinned to the top of the content area with a
-  // 16-point inset on mobile, centred on desktop (WORKLOADS.md)
-  fieldWrap:
-    Platform.OS === 'ios' || Platform.OS === 'android'
-      ? { flex: 1, alignItems: 'center', paddingTop: 16 }
-      : { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  // field placement (mobile layout, WORKLOADS.md): pinned to the top
+  // of the content area with a 16-point inset
+  fieldWrap: { flex: 1, alignItems: 'center', paddingTop: 16 },
   button: {
     backgroundColor: '#0A84FF',
     borderRadius: 8,

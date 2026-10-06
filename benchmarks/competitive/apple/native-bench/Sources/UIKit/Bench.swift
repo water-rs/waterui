@@ -77,7 +77,7 @@ final class RootViewController: UIViewController {
     private var appeared = false
 
     /// Readiness = the workload view's first appearance, the point every
-    /// contestant posts at (SwiftUI `onAppear`, AppKit `viewDidAppear`,
+    /// contestant posts at (SwiftUI `onAppear`, UIKit `viewDidAppear`,
     /// WaterUI `on_appear`).
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)

@@ -13,7 +13,7 @@ identical workloads implemented once per framework, measured per platform.
   workloads once and serves every platform leg that framework runs on.
 - `<platform>/` — the leg runner, its manifest, and only the native
   contestants of that platform: Compose and Views under `android/`,
-  SwiftUI/UIKit/AppKit plus the XCTest runner under `apple/`, GTK 4 under
+  SwiftUI/UIKit plus the XCTest runner under `apple/`, GTK 4 under
   `linux/`, WinUI 3 under `windows/`.
 - `lib/` — code shared by the legs (toolchain provisioning, plus the
   canonical `paragraphs.txt` workload text).

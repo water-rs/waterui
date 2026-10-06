@@ -1,0 +1,40 @@
+name: BenchRunner
+# The shared XCTest UI runner. It is built on the DEVICE host with that
+# host's own Xcode (`bench.py device-run`): xcodegen generates
+# BenchRunner.xcodeproj here (never committed) and xcodebuild
+# build-for-testing produces an unsigned BenchRunner-Runner.app plus the
+# .xctestrun template; the device host signs the runner like a contestant.
+# The UI-testing bundle has no target application: it drives whichever
+# app the injected .xctestrun names (XCUIApplication(bundleIdentifier:)).
+# PRODUCT_BUNDLE_IDENTIFIER is overridden on the xcodebuild command line
+# from manifest.json `runner.bundle_id`; the runner app is that id plus
+# `.xctrunner`.
+options:
+  createIntermediateGroups: true
+configs:
+  Debug: debug
+  Release: release
+settings:
+  base:
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: YES
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: "5.0"
+    PRODUCT_NAME: $(TARGET_NAME)
+targets:
+  BenchRunner:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources: [Sources/Runner]
+    settings:
+      base:
+        SWIFT_OBJC_BRIDGING_HEADER: "$(SRCROOT)/../native-bench/Sources/NotifyBridge.h"
+schemes:
+  BenchRunner:
+    build:
+      targets:
+        BenchRunner: [testing]
+    test:
+      config: Release
+      targets: [BenchRunner]
