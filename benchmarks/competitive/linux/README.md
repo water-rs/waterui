@@ -46,10 +46,16 @@ that actually used a CPU-type adapter is refused without `--development`.
 - cold launch → first committed present
 - memory steady-state and peak: median and maximum of the cgroup's
   `memory.current`, sampled every 100 ms inside the measurement window
-- renderer evidence: the Mesa/Vulkan/GL driver libraries mapped and the
-  render nodes held by the contestant's processes, read once by benchcomp
-  at window end; a rep whose loaded renderer is not the run's expected
-  class (the selected adapter's driver, or software) fails
+- renderer evidence: the DRM fdinfo usage counters (`drm-engine-*`,
+  `drm-cycles-*` on xe) of every render-node fd the contestant's processes
+  hold, read by benchcomp once at window start and once at window end. A
+  hardware rep must show GPU work on the selected adapter's render node
+  across the window; a software rep must show none on any node, with a
+  software rasterizer mapped. The driver libraries mapped and nodes held
+  at window end are recorded as supporting evidence only (the Vulkan
+  loader maps every installed ICD). A driver that keeps no fdinfo usage
+  counters cannot prove hardware rendering, and any evidence read failure
+  fails the rep
 - frame p50/p90/p99, dropped %, fps — W2 and W3 only, per the issue
 
 ## Accounting and output

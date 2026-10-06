@@ -10,18 +10,20 @@ workloads W1–W4.
 | path | what |
 |---|---|
 | `manifest.toml` | every toolchain/framework pin; `run.py` reads it |
-| `run.py` | single entry point (`uv run`) — builds contestants, launches each workload, samples memory, captures per-frame submission timestamps from one ETW trace per run (DXGI + DxgKrnl + Kernel-Process, the stream PresentMon consumes); a second, real-time ETW session on the DXGI provider reports the first owned present the drive is scheduled on. Precondition: the foreground lock time-out (`HKCU\Control Panel\Desktop\ForegroundLockTimeout`) is 0 for the measuring user — checked before any cell |
+| `run.py` | single entry point (`uv run`) — builds contestants, launches each workload, samples memory, captures per-frame submission timestamps from one ETW session per run (DXGI + Kernel-Process, the stream PresentMon consumes) in file and real-time mode at once — the real-time stream reports the first owned present the drive is scheduled on, and the .etl's first owned present must be that identical event. Precondition: the foreground lock time-out (`HKCU\Control Panel\Desktop\ForegroundLockTimeout`) is 0 for the measuring user — checked before any cell |
 | `report.py` | renders a results JSON into markdown tables |
 | `apps/` | one idiomatic app per framework, each implementing W1–W4 selected by `BENCH_WORKLOAD`; `apps/waterui` is a `water create` project |
 
 ## Method
 
 Every metric is the median of ≥5 runs with min/max and all samples kept.
-Frame timing is contestant-agnostic: DXGI Present events for swapchain
-presenters, DXGI task-63 eid144/145 pairs for composition-path presents
-(WinUI 3, which PresentMon 2.5.1 cannot time), and DxgKrnl
-`DxgkCddDrvBitBlt` pairs for the CDD-blit path Chromium takes on a software
-adapter. `dropped_pct` counts frame intervals over 1.5× the 60 Hz budget.
+Frame timing uses one declared source per contestant (`[frame_source]` in
+`manifest.toml`): DXGI Present Start events for swapchain presenters
+(WaterUI, Flutter, Electron) and DXGI event 144 for WinUI 3's
+composition-path presents, which PresentMon 2.5.1 cannot time. The same
+source anchors the drive and is parsed from the trace; no other stream is
+consulted. `dropped_pct` counts frame intervals over 1.5× the 60 Hz
+budget.
 
 **Publishable frame-time and memory numbers require a hardware GPU host.**
 The runner records the GPU adapters (`Win32_VideoController`) in

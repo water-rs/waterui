@@ -7,10 +7,11 @@ workload, drives it identically, and measures:
   * memory            — median (steady) and peak private working set of
                         the owned tree, sampled from NtQuerySystemInformation
                         every 100 ms inside the measurement window
-  * frame rate        — per-frame submission timestamps from one ETW trace
-                        per run (DXGI + DxgKrnl + Kernel-Process providers,
-                        the same stream PresentMon consumes), parsed into
-                        frame intervals → fps, p50/p90/p99, missed vsyncs
+  * frame rate        — per-frame submission timestamps of the contestant's
+                        declared DXGI frame source from one ETW session per
+                        run (file + real-time; DXGI + Kernel-Process), parsed
+                        into frame intervals → fps, p50/p90/p99, missed
+                        vsyncs
   * startup           — cold launch to first presented frame
 
 Every metric is the median of >= 5 runs with min/max and all samples kept.
@@ -57,7 +58,6 @@ try:
         c_ulong,
         c_void_p,
         create_string_buffer,
-        sizeof,
         windll,
         wstring_at,
     )
@@ -129,6 +129,8 @@ def staged_dxc_dll(manifest: dict, packaged_dir: Path, dll: str) -> Path:
 
 CONTESTANTS = {
     "waterui": {
+        # the project its build writes into (tracked_tree_unchanged)
+        "project": APPS / "waterui",
         "title": "WaterUI (hydrolysis)",
         "exe": "bench_waterui-hydrolysis.exe",
         "exe_dir": APPS / "waterui" / "dist" / "bench_waterui",
@@ -143,6 +145,8 @@ CONTESTANTS = {
         "adapter_from_log": True,
     },
     "flutter": {
+        # the project its build writes into (tracked_tree_unchanged)
+        "project": APPS / "flutter",
         "title": "Flutter",
         "exe": "bench_flutter.exe",
         "exe_dir": APPS / "flutter" / "build" / "windows" / "x64" / "runner" / "Release",
@@ -153,6 +157,8 @@ CONTESTANTS = {
         "adapter": "per-run: owned-pid GPU-engine → DXGI adapter LUID",
     },
     "electron": {
+        # the project its build writes into (tracked_tree_unchanged)
+        "project": APPS / "electron",
         "title": "Electron",
         "exe": "bench-electron.exe",
         "exe_dir": APPS / "electron" / "dist" / "bench-electron-win32-x64",
@@ -163,6 +169,8 @@ CONTESTANTS = {
         "adapter": "per-run: Electron app.getGPUInfo from measured process",
     },
     "winui3": {
+        # the project its build writes into (tracked_tree_unchanged)
+        "project": WINUI3,
         "title": "WinUI 3",
         "exe": "winui3.exe",
         "exe_dir": WINUI3 / "dist" / "win-x64",
@@ -480,49 +488,54 @@ WM_MOUSEWHEEL = 0x020A
 SCROLL_WORKLOADS = ("w2", "w4")
 
 
-def fling_window(hwnd: int, rect: tuple[int, int, int, int], seconds: float,
-                 fling: dict) -> None:
+def fling_window(hwnd: int, rect: tuple[int, int, int, int], end: int,
+                 fling: dict, clock) -> None:
     """The shared fling protocol (../WORKLOADS.md) as real wheel input:
     SendInput with the cursor parked over the window centre, routed exactly
     like physical wheel input so every framework's scroll handler sees it.
     One fling = `fling_detents` -120-unit detents spread over
     `fling_duration_ms`, then a `fling_pause_ms` pause; `fling_down`
     flings down (content scrolls up) then `fling_up` back — repeated to
-    cover the measurement window."""
+    cover the measurement window, which closes at `end` (FILETIME). Every
+    detent and pause is a deadline on `clock`, so the pacing never drifts
+    with the time SendInput takes."""
     MOUSEEVENTF_WHEEL = 0x0800
     WHEEL_DELTA = -120  # down (content scrolls up); negated for up
 
     class MOUSEINPUT(ctypes.Structure):
         _fields_ = [
-            ("dx", c_long),
-            ("dy", c_ulong),
-            ("mouseData", c_ulong),
-            ("dwFlags", c_ulong),
-            ("time", c_ulong),
-            ("dwExtraInfo", ctypes.POINTER(c_ulong)),
+            ("dx", ctypes.c_long),
+            ("dy", ctypes.c_ulong),
+            ("mouseData", ctypes.c_ulong),
+            ("dwFlags", ctypes.c_ulong),
+            ("time", ctypes.c_ulong),
+            ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
         ]
 
     class INPUT(ctypes.Structure):
-        _fields_ = [("type", c_ulong), ("mi", MOUSEINPUT)]
+        _fields_ = [("type", ctypes.c_ulong), ("mi", MOUSEINPUT)]
 
     INPUT_MOUSE = 0
     cx = (rect[0] + rect[2]) // 2
     cy = (rect[1] + rect[3]) // 2
     user32.SetCursorPos(cx, cy)
-    detent_s = fling["fling_duration_ms"] / 1000.0 / fling["fling_detents"]
-    pause_s = fling["fling_pause_ms"] / 1000.0
+    detent = fling["fling_duration_ms"] * 10_000 // fling["fling_detents"]
+    pause = fling["fling_pause_ms"] * 10_000
+    at = clock.now()
 
     def one_fling(direction: int) -> None:
+        nonlocal at
         mi = MOUSEINPUT(0, 0, (direction * WHEEL_DELTA) & 0xFFFFFFFF,
                         MOUSEEVENTF_WHEEL, 0, None)
         inp = INPUT(INPUT_MOUSE, mi)
         for _ in range(fling["fling_detents"]):
-            user32.SendInput(1, byref(inp), sizeof(INPUT))
-            time.sleep(detent_s)
-        time.sleep(pause_s)
+            user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
+            at += detent
+            clock.sleep_until(at)
+        at += pause
+        clock.sleep_until(at)
 
-    end = time.monotonic() + seconds
-    while time.monotonic() < end:
+    while clock.now() < end:
         for _ in range(fling["fling_down"]):
             one_fling(1)
         for _ in range(fling["fling_up"]):
@@ -762,6 +775,52 @@ def filetime_now() -> int:
     return ft.value
 
 
+class SystemClock:
+    """The rep's one time source, on the FILETIME clock the ETW session's
+    timestamps convert to: what time it is, waiting until a deadline on
+    it, and running a callback every interval. measure_run takes its
+    clock as a parameter, so the CPU self-test drives a rep on a virtual
+    clock and never depends on host scheduling."""
+
+    def now(self) -> int:
+        return filetime_now()
+
+    def sleep_until(self, deadline: int) -> None:
+        delta = (deadline - self.now()) / 1e7
+        if delta > 0:
+            time.sleep(delta)
+
+    def every(self, interval_s: float, fn) -> "Ticker":
+        return Ticker(self, interval_s, fn)
+
+
+class Ticker:
+    """`fn(now)` on a thread, at once and then every `interval_s`, until
+    stop(). An exception in `fn` ends the ticking and is kept in `error`."""
+
+    def __init__(self, clock, interval_s: float, fn):
+        self.error: Exception | None = None
+        self._done = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run, args=(clock, interval_s, fn), daemon=True)
+        self._thread.start()
+
+    def _run(self, clock, interval_s: float, fn) -> None:
+        try:
+            while True:
+                fn(clock.now())
+                if self._done.wait(interval_s):
+                    return
+        except Exception as e:
+            self.error = e
+
+    def stop(self) -> None:
+        self._done.set()
+        self._thread.join(timeout=5)
+        if self._thread.is_alive():
+            raise RuntimeError("ticker thread did not stop")
+
+
 def process_memory_snapshot(
         buffer_bytes: int = 4 * 1024 * 1024) -> dict[int, dict]:
     """SystemProcessInformation for every live process, keyed by pid.
@@ -821,47 +880,48 @@ def process_memory_snapshot(
     return out
 
 
-class MemorySampler(threading.Thread):
-    """Samples the owned process tree every `interval` seconds.
+class MemorySampler:
+    """Samples the owned process tree every `interval` seconds of `clock`.
 
     `tree_pids` is a callable returning the pids the measured process
     tree currently owns (the Job Object's process-id list on Windows).
-    Per sample: FILETIME, and the sums of private working set and of
-    private bytes across exactly those pids.
+    Per sample: the clock's FILETIME, and the sums of private working set
+    and of private bytes across exactly those pids. A native query that
+    fails stops the sampling and is kept in `error` — the attempt fails;
+    the sample is never silently truncated.
     """
 
-    def __init__(self, tree_pids, interval: float):
-        super().__init__(daemon=True)
+    def __init__(self, tree_pids, interval: float, clock):
         self.tree_pids = tree_pids
         self.interval = interval
-        self._done = threading.Event()
+        self.clock = clock
         self.samples: list[tuple[int, int, int]] = []
         self.max_processes = 0
-        # a native query failing inside the thread lands here and must
-        # reach the attempt record — never silently truncate the sample
-        self.error: Exception | None = None
+        self._ticker = None
+
+    @property
+    def error(self) -> Exception | None:
+        return self._ticker.error if self._ticker is not None else None
+
+    def start(self) -> None:
+        self._ticker = self.clock.every(self.interval, self._sample)
 
     def stop(self) -> None:
-        self._done.set()
+        if self._ticker is not None:
+            self._ticker.stop()
 
-    def run(self) -> None:
-        try:
-            while not self._done.is_set():
-                snap = process_memory_snapshot()
-                owned = self.tree_pids()
-                mine = {p: m for p, m in snap.items() if p in owned}
-                if mine:
-                    # FILETIME ticks — the same clock the ETW dump's
-                    # clock column carries, so samples trim to the
-                    # measurement window (first present + warmup)
-                    self.samples.append(
-                        (filetime_now(),
-                         sum(m["ws_private"] for m in mine.values()),
-                         sum(m["private_bytes"] for m in mine.values())))
-                    self.max_processes = max(self.max_processes, len(mine))
-                self._done.wait(self.interval)
-        except Exception as e:
-            self.error = e
+    def _sample(self, now: int) -> None:
+        snap = process_memory_snapshot()
+        owned = self.tree_pids()
+        mine = {p: m for p, m in snap.items() if p in owned}
+        if mine:
+            # FILETIME ticks — the clock the ETW dump's clock column
+            # carries, so samples trim to the measurement window
+            self.samples.append(
+                (now,
+                 sum(m["ws_private"] for m in mine.values()),
+                 sum(m["private_bytes"] for m in mine.values())))
+            self.max_processes = max(self.max_processes, len(mine))
 
     def summarise(self, window: tuple[int, int]) -> dict:
         """Steady (median) and peak (max) of the tree's private working
@@ -888,50 +948,7 @@ class MemorySampler(threading.Thread):
 # ---------------------------------------------------------------------------
 
 DXGI = "Microsoft-Windows-DXGI"
-DXGKRNL = "Microsoft-Windows-DxgKrnl"
 KPROC = "Microsoft-Windows-Kernel-Process"
-
-
-def write_providers_file(path: Path) -> None:
-    path.write_text(
-        # DXGI: all keywords — composition-path presents carry keyword 0.
-        "Microsoft-Windows-DXGI\t0xffffffffffffffff\t0xff\n"
-        # DxgKrnl keywords 0x2 (per-frame present events) | 0x20 (CDD driver
-        # events, e.g. DxgkCddDrvBitBlt — Chromium's frame path on WARP).
-        "Microsoft-Windows-DxgKrnl\t0x22\t0xff\n"
-        # pid bookkeeping for process-create timestamps.
-        "Microsoft-Windows-Kernel-Process\t0x10\t0x4\n"
-    )
-
-
-def start_trace(name: str, etl: Path, providers_file: Path) -> None:
-    # clear a same-named session left over from a crashed run, then create
-    subprocess.run(
-        ["logman", "delete", name, "-ets"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    if etl.exists():
-        etl.unlink()
-    out = subprocess.run(
-        [
-            "logman", "create", "trace", name, "-ets",
-            "-o", str(etl), "-pf", str(providers_file),
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if out.returncode != 0:
-        raise RuntimeError(f"logman create failed: {out.stdout} {out.stderr}")
-
-
-def stop_trace(name: str) -> None:
-    subprocess.run(
-        ["logman", "stop", name, "-ets"],
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
 
 
 def etl_to_csv(etl: Path, csv_path: Path) -> None:
@@ -944,12 +961,13 @@ def etl_to_csv(etl: Path, csv_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Real-time first-present consumer — the event the drive is scheduled on.
-# A second, real-time-only ETW session over the same DXGI provider the
-# file trace records; ctypes over the documented StartTraceW /
-# EnableTraceEx2 / OpenTraceW / ProcessTrace / ControlTraceW API. All
-# structures use fixed-width fields (the documented x64 layouts), so their
-# sizes are checked by the CPU self-test on any host.
+# One ETW session per rep, in file AND real-time mode: it records the .etl
+# the frames are parsed from, and the same session's real-time stream
+# reports the first owned present the drive is scheduled on — one event,
+# seen twice, so the anchor check is exact equality. ctypes over the
+# documented StartTraceW / EnableTraceEx2 / OpenTraceW / ProcessTrace /
+# ControlTraceW API. All structures use fixed-width fields (the documented
+# x64 layouts), so their sizes are checked by the CPU self-test on any host.
 # ---------------------------------------------------------------------------
 
 from ctypes import Structure as _S, c_int64 as _i64, c_uint8 as _u8, \
@@ -1070,11 +1088,33 @@ ETW_STRUCT_SIZES = {_WnodeHeader: 48, _EventTraceProperties: 120,
                     _EventTraceLogfileW: 448}
 
 DXGI_PROVIDER_GUID = "{CA11C036-0102-4A2D-A6AD-F03CFED5D3C9}"  # Microsoft-Windows-DXGI
+KPROC_PROVIDER_GUID = "{22FB2CD6-0E7B-422B-A0C7-2FAD1FD0E716}"  # Microsoft-Windows-Kernel-Process
 WIN_START_OPCODE = 1
-# the DXGI present events the file trace's frame sources A and B are made
-# of: event id -> source letter (parse_frames)
-DXGI_PRESENT_EVENTS = {42: "A", 144: "B"}
+# Kernel-Process ProcessStart / ProcessStop; both carry the pid they are
+# about as the first UInt32 of their payload
+KPROC_PROCESS_EVENTS = (1, 2)
+# The frame sources a contestant can declare ([frame_source] in the
+# manifest): the DXGI event whose Start marks one frame submission.
+FRAME_SOURCES = {
+    "dxgi_present": {
+        "event_id": 42,
+        "label": "DXGI Present Start (IDXGISwapChain::Present — the same "
+                 "events PresentMon reports)"},
+    "dxgi_composition_present": {
+        "event_id": 144,
+        "label": "DXGI event 144 Start (composition-path present emitted "
+                 "by WinUI 3's compositor; below PresentMon's keyword "
+                 "mask)"},
+}
+# the session's providers: (guid, keyword mask, level) — DXGI with every
+# keyword (composition-path presents carry keyword 0), Kernel-Process
+# process events for pid bookkeeping
+SESSION_PROVIDERS = (
+    (DXGI_PROVIDER_GUID, 0xFFFFFFFFFFFFFFFF, 0xFF),
+    (KPROC_PROVIDER_GUID, 0x10, 4),
+)
 WNODE_FLAG_TRACED_GUID = 0x00020000
+EVENT_TRACE_FILE_MODE_SEQUENTIAL = 0x00000001
 EVENT_TRACE_REAL_TIME_MODE = 0x00000100
 EVENT_TRACE_USE_MS_FLUSH_TIMER = 0x00000010
 PROCESS_TRACE_MODE_REAL_TIME = 0x00000100
@@ -1082,74 +1122,136 @@ PROCESS_TRACE_MODE_EVENT_RECORD = 0x10000000
 EVENT_CONTROL_CODE_ENABLE_PROVIDER = 1
 EVENT_TRACE_CONTROL_STOP = 1
 INVALID_PROCESSTRACE_HANDLE = 0xFFFFFFFFFFFFFFFF
+ERROR_CANCELLED = 1223
+ERROR_ALREADY_EXISTS = 183
 # real-time buffers are delivered at least this often, so the drive is
 # scheduled within milliseconds of the first present, not a 1 s flush
 RT_FLUSH_MS = 10
+# room for each name the session properties carry (ControlTraceW writes
+# both back on stop)
+SESSION_NAME_CHARS = 1024
 
 
-def first_present_of(provider: tuple, event_id: int, opcode: int, pid: int,
-                     owned) -> str | None:
-    """The frame source letter when one real-time event is an owned DXGI
-    present Start, else None. `owned(pid)` answers ownership."""
-    if provider != _EtwGuid.parse(DXGI_PROVIDER_GUID).key() \
-            or opcode != WIN_START_OPCODE \
-            or event_id not in DXGI_PRESENT_EVENTS:
-        return None
-    return DXGI_PRESENT_EVENTS[event_id] if owned(pid) else None
+def frame_source(cfg: dict, c_key: str) -> str:
+    """The frame source `c_key` declares in the manifest's [frame_source]
+    table — the one source both the real-time anchor and the trace parse
+    use. A contestant without a declaration, or with an unknown one,
+    fails."""
+    src = cfg.get("frame_source", {}).get(c_key)
+    if src not in FRAME_SOURCES:
+        raise RuntimeError(
+            f"manifest [frame_source] declares {src!r} for {c_key}; one of "
+            f"{sorted(FRAME_SOURCES)} is required")
+    return src
 
 
-class FirstPresentConsumer:
-    """Real-time consumer of the DXGI present events of the owned process
-    tree: `wait()` returns (FILETIME, source) of the tree's first present
-    — the event the measurement window anchors on, delivered within
-    RT_FLUSH_MS. Timestamps are system time (FILETIME), the clock of the
-    file trace's dump. The session is stopped as soon as the first
-    present is in, so it adds no load during the capture."""
+def is_frame_event(provider: tuple, event_id: int, opcode: int,
+                   source: str) -> bool:
+    """Whether one real-time event is a Start of the declared source."""
+    return (provider == _EtwGuid.parse(DXGI_PROVIDER_GUID).key()
+            and opcode == WIN_START_OPCODE
+            and event_id == FRAME_SOURCES[source]["event_id"])
 
-    def __init__(self, name: str, tree_pids):
-        self.name = name
+
+class PidOwnership:
+    """Ownership decisions for the pids the ETW stream names, cached per
+    pid: DXGI fires system-wide (DWM presents every vsync), so the Job's
+    pid list is queried once per pid, not once per event. A decision is
+    final for the life of the process — a process enters the Job at
+    creation, before it can present — and is dropped when Kernel-Process
+    reports that pid starting or stopping, so a reused pid is decided
+    afresh."""
+
+    def __init__(self, tree_pids):
         self.tree_pids = tree_pids
-        self._known: set[int] = set()
-        self.first: tuple[int, str] | None = None
+        self._decided: dict[int, bool] = {}
+
+    def owned(self, pid: int) -> bool:
+        known = self._decided.get(pid)
+        if known is None:
+            known = pid in self.tree_pids()
+            self._decided[pid] = known
+        return known
+
+    def forget(self, pid: int) -> None:
+        self._decided.pop(pid, None)
+
+
+class PresentTrace:
+    """The rep's ETW session: file mode writes `etl` (the frames are parsed
+    from it after the rep), real-time mode feeds a consumer in this
+    process that reports the owned tree's first present of the declared
+    source — the event the drive is scheduled on. Both are the same
+    session's view of the same event, so the trace's first owned present
+    must equal the real-time one exactly.
+
+    The consumer stays attached for the whole session: a real-time
+    session without a consumer stalls its providers once its buffers
+    fill. After the first present its callback only tracks pid churn.
+    An exception inside the callback, or ProcessTrace ending before the
+    first present, is recorded and wakes the waiter at once."""
+
+    def __init__(self, name: str, etl: Path, source: str, tree_pids):
+        self.name = name
+        self.etl = etl
+        self.source = source
+        self.ownership = PidOwnership(tree_pids)
+        self.first: int | None = None
         self._got = threading.Event()
+        self._error: list[str] = []
+        self._stopping = False
         self._advapi = windll.advapi32
         self._advapi.OpenTraceW.restype = _u64
         self._session = _u64(0)
-        self._props_buf = None
         self._consumer = None
         self._thread = None
-        self._error: list[str] = []
         self._start_session()
 
     def _props(self):
-        name_bytes = (len(self.name) + 1) * 2
-        size = ctypes.sizeof(_EventTraceProperties) + name_bytes
+        name_room = SESSION_NAME_CHARS * 2
+        size = ctypes.sizeof(_EventTraceProperties) + 2 * name_room
         buf = ctypes.create_string_buffer(size)
         props = _EventTraceProperties.from_buffer(buf)
         props.Wnode.BufferSize = size
         props.Wnode.Flags = WNODE_FLAG_TRACED_GUID
         props.Wnode.ClientContext = 1  # QPC
-        props.LogFileMode = (EVENT_TRACE_REAL_TIME_MODE
+        props.LogFileMode = (EVENT_TRACE_FILE_MODE_SEQUENTIAL
+                             | EVENT_TRACE_REAL_TIME_MODE
                              | EVENT_TRACE_USE_MS_FLUSH_TIMER)
         props.FlushTimer = RT_FLUSH_MS
         props.LoggerNameOffset = ctypes.sizeof(_EventTraceProperties)
+        props.LogFileNameOffset = props.LoggerNameOffset + name_room
+        path = str(self.etl).encode("utf-16-le") + b"\0\0"
+        if len(path) > name_room:
+            raise RuntimeError(f"trace path too long for ETW: {self.etl}")
+        ctypes.memmove(ctypes.addressof(buf) + props.LogFileNameOffset,
+                       path, len(path))
         return buf, props
 
     def _start_session(self) -> None:
+        if self.etl.exists():
+            self.etl.unlink()
         self._props_buf, props = self._props()
         rc = self._advapi.StartTraceW(byref(self._session),
                                       ctypes.c_wchar_p(self.name),
                                       byref(props))
+        if rc == ERROR_ALREADY_EXISTS:
+            raise RuntimeError(
+                f"an ETW session named {self.name} already exists (a "
+                f"crashed run's) — stop it with `logman stop {self.name} "
+                "-ets` and re-run")
         if rc != 0:
             raise RuntimeError(f"StartTraceW({self.name}) failed: {rc}")
         try:
-            guid = _EtwGuid.parse(DXGI_PROVIDER_GUID)
-            rc = self._advapi.EnableTraceEx2(
-                self._session, byref(guid),
-                _u32(EVENT_CONTROL_CODE_ENABLE_PROVIDER), _u8(0xFF),
-                _u64(0xFFFFFFFFFFFFFFFF), _u64(0), _u32(0), None)
-            if rc != 0:
-                raise RuntimeError(f"EnableTraceEx2(DXGI) failed: {rc}")
+            for guid_text, keywords, level in SESSION_PROVIDERS:
+                guid = _EtwGuid.parse(guid_text)
+                rc = self._advapi.EnableTraceEx2(
+                    self._session, byref(guid),
+                    _u32(EVENT_CONTROL_CODE_ENABLE_PROVIDER), _u8(level),
+                    _u64(keywords), _u64(0), _u32(0), None)
+                if rc != 0:
+                    raise RuntimeError(
+                        f"EnableTraceEx2({guid_text}) failed: {rc}")
             self._open_consumer()
         except BaseException:
             self.stop()
@@ -1171,43 +1273,59 @@ class FirstPresentConsumer:
                 f"OpenTraceW({self.name}) failed: "
                 f"winerror {kernel32.GetLastError()}")
         self._consumer = _u64(handle)
-
-        def _pump() -> None:
-            rc = self._advapi.ProcessTrace(byref(self._consumer), _u32(1),
-                                           None, None)
-            # ERROR_CANCELLED (1223) is the stop this consumer asked for
-            if rc not in (0, 1223):
-                self._error.append(f"ProcessTrace returned {rc}")
-                self._got.set()
-        self._thread = threading.Thread(target=_pump, daemon=True)
+        self._thread = threading.Thread(target=self._pump, daemon=True)
         self._thread.start()
 
-    def _owned(self, pid: int) -> bool:
-        if pid not in self._known:
-            self._known = set(self.tree_pids())
-        return pid in self._known
+    def _pump(self) -> None:
+        rc = self._advapi.ProcessTrace(byref(self._consumer), _u32(1),
+                                       None, None)
+        if rc not in (0, ERROR_CANCELLED):
+            self._error.append(f"ProcessTrace returned {rc}")
+        elif self.first is None and not self._stopping:
+            self._error.append(
+                f"ProcessTrace ended (rc {rc}) before any owned "
+                f"{self.source} present was delivered")
+        self._got.set()
 
     def _on_event(self, rec_p) -> None:
-        if self.first is not None:
-            return
-        h = rec_p.contents.EventHeader
-        src = first_present_of(h.ProviderId.key(), h.EventDescriptor.Id,
-                               h.EventDescriptor.Opcode, h.ProcessId,
-                               self._owned)
-        if src is not None:
-            self.first = (h.TimeStamp, src)
+        try:
+            h = rec_p.contents.EventHeader
+            provider = h.ProviderId.key()
+            if provider == _EtwGuid.parse(KPROC_PROVIDER_GUID).key():
+                if h.EventDescriptor.Id in KPROC_PROCESS_EVENTS:
+                    if rec_p.contents.UserDataLength < 4:
+                        raise RuntimeError(
+                            f"Kernel-Process event {h.EventDescriptor.Id} "
+                            "carries no ProcessID payload")
+                    self.ownership.forget(ctypes.c_uint32.from_address(
+                        rec_p.contents.UserData).value)
+                return
+            if self.first is None and is_frame_event(
+                    provider, h.EventDescriptor.Id,
+                    h.EventDescriptor.Opcode, self.source) \
+                    and self.ownership.owned(h.ProcessId):
+                self.first = h.TimeStamp
+                self._got.set()
+        except BaseException as e:  # ctypes would print and swallow it
+            self._error.append(
+                f"real-time ETW callback raised {type(e).__name__}: {e}")
             self._got.set()
 
-    def wait(self, budget_s: float) -> tuple[int, str]:
+    def first_present(self, budget_s: float) -> int:
+        """FILETIME of the owned tree's first present of the declared
+        source, as the real-time stream delivered it."""
         if not self._got.wait(budget_s):
             raise RuntimeError(
-                f"no owned DXGI present within {budget_s} s of launch")
+                f"no owned {self.source} present within {budget_s} s of "
+                "launch")
         if self._error:
-            raise RuntimeError(self._error[0])
+            raise RuntimeError("; ".join(self._error))
         return self.first
 
     def stop(self) -> None:
-        """Stop the real-time session; ProcessTrace then returns."""
+        """Stop the session (the .etl is flushed and closed), let
+        ProcessTrace drain and return, then close the consumer."""
+        self._stopping = True
         errors = []
         if self._session.value:
             _buf, props = self._props()
@@ -1217,44 +1335,28 @@ class FirstPresentConsumer:
             if rc != 0:
                 errors.append(f"ControlTraceW(stop {self.name}) failed: {rc}")
             self._session = _u64(0)
-        if self._consumer is not None:
-            rc = self._advapi.CloseTrace(self._consumer)
-            # ERROR_CTX_CLOSE_PENDING: ProcessTrace is still draining
-            if rc not in (0, 7007):
-                errors.append(f"CloseTrace failed: {rc}")
-            self._consumer = None
         if self._thread is not None:
             self._thread.join(timeout=5)
             if self._thread.is_alive():
                 errors.append("real-time ETW consumer did not stop")
             self._thread = None
+        if self._consumer is not None:
+            rc = self._advapi.CloseTrace(self._consumer)
+            if rc != 0:
+                errors.append(f"CloseTrace failed: {rc}")
+            self._consumer = None
         if errors:
             raise RuntimeError("; ".join(errors))
 
 
-SOURCE_LABELS = {
-    "A": "dxgi_present (IDXGISwapChain::Present — the same events PresentMon reports)",
-    "B": "dxgi_composition_present (DXGI event 144 — emitted by WinUI 3's compositor; below PresentMon's keyword mask)",
-    "C": "dxgkrnl_cdd_blit (per-frame DxgkCddDrvBitBlt — Electron's submission path on this adapter)",
-    "D": "dxgkrnl_present_history (PresentHistory_Start fallback)",
-}
-
-
-def parse_frames(csv_path: Path, app_pids: set[int]) -> dict:
-    """Frame-submission timestamps for the owned pid set from the dump.
-
-    Streams tried in order (identical logic for every contestant):
-      A. DXGI "Present" task Start events — classic swapchain presenters
-         (waterui/vello, flutter); identical to what PresentMon reports.
-      B. DXGI event 144 task 63 — composition-path present marker emitted by
-         WinUI 3's compositor (PresentMon's keyword mask filters it out).
-      C. DxgKrnl event 107 "DxgkCddDrvBitBlt" — per-frame CDD blit; the only
-         frame signal Chromium/Electron produces on the Basic Render Driver.
-      D. DxgKrnl PresentHistory task (6) event 171 — fallback.
-    """
-    frame_rows: list[tuple[int, int, str]] = []
+def parse_frames(csv_path: Path, app_pids: set[int], source: str) -> dict:
+    """Frame-submission timestamps of the owned pid set from the dump: the
+    Start events of the contestant's declared source only (the same rule
+    the real-time anchor uses), plus Kernel-Process start times. No other
+    stream is consulted."""
+    event_id = str(FRAME_SOURCES[source]["event_id"])
+    stamps: list[int] = []
     proc_starts: dict[int, int] = {}
-    owned = set(app_pids)
     with open(csv_path, newline="", errors="replace") as f:
         for r in csv.reader(f):
             if len(r) < 20 or "Event" in r[0][:12]:
@@ -1267,60 +1369,15 @@ def parse_frames(csv_path: Path, app_pids: set[int]) -> dict:
                 continue
             if prov == KPROC:
                 if typ == "Start":
-                    try:
-                        child = int(r[19].split(",")[0].strip())
-                        proc_starts[child] = clock
-                    except (ValueError, IndexError):
-                        pass
+                    proc_starts[int(r[19].split(",")[0].strip())] = clock
                 continue
-            eid = r[2].strip()
-            if prov == DXGI and typ == "Start" and eid == "42":
-                frame_rows.append((pid, clock, "A"))
-            elif prov == DXGI and typ == "Start" and eid == "144":
-                frame_rows.append((pid, clock, "B"))
-            elif (
-                prov == DXGKRNL
-                and typ == "Start"
-                and eid == "107"
-                and "DxgkCddDrvBitBlt" in r[19]
-            ):
-                frame_rows.append((pid, clock, "C"))
-            elif (
-                prov == DXGKRNL
-                and typ == "Start"
-                and r[7].strip() == "6"
-                and eid == "171"
-            ):
-                frame_rows.append((pid, clock, "D"))
-
-    app_pids = owned
-    chosen = [(pid, clock, src) for pid, clock, src in frame_rows if pid in app_pids]
-    by_src: dict[str, list[int]] = {}
-    for _, clock, s in chosen:
-        by_src.setdefault(s, []).append(clock)
-
-    for src in ("A", "B", "C", "D"):
-        if len(by_src.get(src, ())) >= 4:
-            return {
-                "present_events": len(by_src[src]),
-                "source": src,
-                "timestamps_100ns": sorted(by_src[src]),
-                "proc_starts": proc_starts,
-                "app_pids": sorted(app_pids),
-            }
-    if by_src:
-        src = max(by_src, key=lambda k: len(by_src[k]))
-        return {
-            "present_events": len(by_src[src]),
-            "source": src,
-            "timestamps_100ns": sorted(by_src[src]),
-            "proc_starts": proc_starts,
-            "app_pids": sorted(app_pids),
-        }
+            if prov == DXGI and typ == "Start" and r[2].strip() == event_id \
+                    and pid in app_pids:
+                stamps.append(clock)
     return {
-        "present_events": 0,
-        "source": None,
-        "timestamps_100ns": [],
+        "present_events": len(stamps),
+        "source": source,
+        "timestamps_100ns": sorted(stamps),
         "proc_starts": proc_starts,
         "app_pids": sorted(app_pids),
     }
@@ -1675,7 +1732,7 @@ def wait_for_ready(app, budget_s: float) -> tuple:
     or delivered to the hook — never lost between the two. `budget_s`
     bounds the total wait; raises when it expires without readiness.
     Readiness only locates the window: the measurement window anchors on
-    the first owned present (FirstPresentConsumer)."""
+    the first owned present (PresentTrace)."""
     deadline = time.monotonic() + budget_s
     hproc = getattr(app, "hproc", None)
     if hproc is not None and win32event is not None:
@@ -1752,29 +1809,24 @@ def wait_for_ready(app, budget_s: float) -> tuple:
     return max(hits, key=lambda r: r[2])[:2]
 
 
-# the real-time and the file session stamp the same event from one QPC
-# read, each converting it to system time — they agree to well within this
-ANCHOR_TOLERANCE_100NS = 10_000  # 1 ms
-
-
-def require_same_anchor(trace_first: int, trace_source: str | None,
-                        rt_first: int, rt_source: str) -> None:
-    """The present the drive was scheduled on (real-time consumer) and the
-    present the window anchors on (the dump's first owned present of the
-    chosen source) must be one event; otherwise the drive did not start
-    at window start."""
-    if trace_source != rt_source \
-            or abs(trace_first - rt_first) > ANCHOR_TOLERANCE_100NS:
+def require_same_anchor(trace_first: int, rt_first: int) -> None:
+    """The present the drive was scheduled on (the session's real-time
+    stream) and the present the window anchors on (the same session's
+    .etl, first owned present of the declared source) are one event seen
+    twice, converted to system time from the same session's clock — they
+    must be equal. Anything else means the drive did not start at window
+    start."""
+    if trace_first != rt_first:
         raise RuntimeError(
-            f"drive anchor mismatch: scheduled on source {rt_source} at "
-            f"{rt_first}, the trace's window anchors on source "
-            f"{trace_source} at {trace_first} "
-            f"({(trace_first - rt_first) / 1e4:+.1f} ms)")
+            f"drive anchor mismatch: the drive was scheduled on the "
+            f"real-time first present at {rt_first}, the trace's window "
+            f"anchors on {trace_first} "
+            f"({(trace_first - rt_first) / 1e4:+.4f} ms)")
 
 
 def measure_run(c_key: str, workload: str, rep: int, cfg,
-                providers_file: Path,
-                owned_launch=None, owned_first_present=None) -> dict:
+                owned_launch=None, present_trace=None,
+                clock=None) -> dict:
     """One rep — ALWAYS returns an attempt record.
 
     On success the record carries the metrics; on any launch/capture/
@@ -1785,17 +1837,18 @@ def measure_run(c_key: str, workload: str, rep: int, cfg,
     the rep still leaves the machine clean — and the adapter-refusal
     SystemExit (a BaseException) still propagates past the record path.
 
-    `owned_launch` and `owned_first_present` are injectable for
+    `owned_launch`, `present_trace` and `clock` are injectable for
     off-Windows tests of this control logic; on Windows they default to
-    OwnedApp (Job Object) and FirstPresentConsumer (real-time ETW).
+    OwnedApp (Job Object), PresentTrace (one file + real-time ETW
+    session) and SystemClock.
     """
     c = CONTESTANTS[c_key]
+    clock = clock or SystemClock()
     minimized: list[int] = []
     app = None
     sampler = None
-    first_present_rt = None
+    trace = None
     trace_name = f"bench1262_{os.getpid()}_{rep}"
-    trace_started = False
     etl = TRACE_DIR / f"{c_key}_{workload}_{rep}.etl"
     dump = etl.with_suffix(".csv")
     log_path = etl.with_suffix(".log")
@@ -1807,20 +1860,14 @@ def measure_run(c_key: str, workload: str, rep: int, cfg,
         # every cleanup runs on every path — success, attempt failure,
         # or the software-renderer refusal — and a failure in one step
         # never skips the rest; failures are collected, not suppressed
-        if first_present_rt is not None:
+        if trace is not None:
             try:
-                first_present_rt.stop()
+                trace.stop()
             except Exception as e:
-                cleanup_errors.append(f"first-present consumer: {e}")
-        if trace_started:
-            try:
-                stop_trace(trace_name)
-            except Exception as e:
-                cleanup_errors.append(f"stop_trace: {e}")
+                cleanup_errors.append(f"trace stop: {e}")
         if sampler is not None:
             try:
                 sampler.stop()
-                sampler.join(timeout=5)
                 if sampler.error is not None:
                     cleanup_errors.append(
                         f"sampler: {sampler.error}")
@@ -1837,13 +1884,12 @@ def measure_run(c_key: str, workload: str, rep: int, cfg,
             cleanup_errors.append(f"restore: {e}")
 
     try:
+        source = frame_source(cfg, c_key)
         minimized = minimize_other_windows()
-        start_trace(trace_name, etl, providers_file)
-        trace_started = True
-        # the real-time consumer is live before the launch, so the owned
-        # tree's first present cannot pass unseen
-        first_present_rt = (owned_first_present or FirstPresentConsumer)(
-            f"{trace_name}_rt",
+        # the session — .etl and real-time stream — is live before the
+        # launch, so the owned tree's first present cannot pass unseen
+        trace = (present_trace or PresentTrace)(
+            trace_name, etl, source,
             lambda: app.pids() if app is not None else set())
 
         # every contestant's output is captured — evidence mechanisms
@@ -1866,18 +1912,16 @@ def measure_run(c_key: str, workload: str, rep: int, cfg,
 
         # readiness locates the window (event-driven, bounded by
         # ready_timeout_seconds); the window itself anchors on the first
-        # owned present the real-time consumer reports
+        # owned present the session's real-time stream reports
         hwnd_info = wait_for_ready(
             app, cfg["runner"]["ready_timeout_seconds"])
-        rt_first_ft, rt_source = first_present_rt.wait(
+        rt_first_ft = trace.first_present(
             cfg["runner"]["ready_timeout_seconds"])
-        first_present_rt.stop()
-        first_present_rt = None
 
         owned = app.pids()
         sampler = MemorySampler(
-            app.pids, cfg["runner"]["memory_sample_interval_ms"] / 1000
-        )
+            app.pids, cfg["runner"]["memory_sample_interval_ms"] / 1000,
+            clock)
         sampler.start()
         bring_to_foreground(hwnd_info[0])
 
@@ -1887,19 +1931,17 @@ def measure_run(c_key: str, workload: str, rep: int, cfg,
         # timestamp, on the FILETIME clock the dump and the sampler share.
         rt_win_start = rt_first_ft + int(warmup_s * 10_000_000)
         rt_win_end = rt_win_start + int(capture_s * 10_000_000)
-        lead = (rt_win_start - filetime_now()) / 1e7
+        lead = rt_win_start - clock.now()
         if lead < 0:
             raise RuntimeError(
-                f"the window opened {-lead * 1000:.0f} ms before the "
+                f"the window opened {-lead / 1e4:.0f} ms before the "
                 "runner could start the drive — first-present delivery "
                 "or foreground activation outlasted the declared warmup")
-        time.sleep(lead)
+        clock.sleep_until(rt_win_start)
         if workload in SCROLL_WORKLOADS:
-            fling_window(hwnd_info[0], hwnd_info[1],
-                         (rt_win_end - filetime_now()) / 1e7, cfg["runner"])
-        rest = (rt_win_end - filetime_now()) / 1e7
-        if rest > 0:
-            time.sleep(rest)
+            fling_window(hwnd_info[0], hwnd_info[1], rt_win_end,
+                         cfg["runner"], clock)
+        clock.sleep_until(rt_win_end)
 
         # GPU-engine attribution while the app is still alive — the
         # counters only exist for active engines
@@ -1909,21 +1951,20 @@ def measure_run(c_key: str, workload: str, rep: int, cfg,
         )
 
         sampler.stop()
-        sampler.join()
         if sampler.error is not None:
             # a failed native PID-list/memory query inside the sampler
-            # thread reaches the record as an attempt failure
+            # reaches the record as an attempt failure
             raise RuntimeError(
                 f"memory sampler failed: {sampler.error}")
         owned |= app.pids()  # catch descendants spawned late in the run
 
-        stop_trace(trace_name)
-        trace_started = False
+        trace.stop()
+        trace = None
         app.terminate()
         app = None
 
         etl_to_csv(etl, dump)
-        frames = parse_frames(dump, owned)
+        frames = parse_frames(dump, owned, source)
         if not frames["timestamps_100ns"]:
             raise RuntimeError(
                 "no owned present events — the measurement window has "
@@ -1931,11 +1972,10 @@ def measure_run(c_key: str, workload: str, rep: int, cfg,
         # measurement window: first owned present + declared warmup,
         # capture_s wide — startup frames before it are trimmed, and
         # memory samples (FILETIME-stamped) trim to the same window
-        first_present = min(frames["timestamps_100ns"])
+        first_present = frames["timestamps_100ns"][0]
         # the drive was scheduled on the real-time first present: it must
         # be the very event the trace anchors the window on
-        require_same_anchor(first_present, frames["source"],
-                            rt_first_ft, rt_source)
+        require_same_anchor(first_present, rt_first_ft)
         win_start = first_present + int(warmup_s * 10_000_000)
         win_end = win_start + int(capture_s * 10_000_000)
         windowed_ts = [t for t in frames["timestamps_100ns"]
@@ -1979,8 +2019,8 @@ def measure_run(c_key: str, workload: str, rep: int, cfg,
             "frame_rate": {
                 **stats,
                 "present_events": frames["present_events"],
-                "source": frames["source"],
-                "source_label": SOURCE_LABELS.get(frames["source"]),
+                "source": source,
+                "source_label": FRAME_SOURCES[source]["label"],
             },
         }
     except SoftwareRendererError as sre:
@@ -2125,30 +2165,71 @@ def _self_test() -> None:
                    "warmup_seconds": 0.1,
                    "capture_seconds_static": 0.3,
                    "capture_seconds_w2": 0.3, "capture_seconds_w3": 0.3,
-                                      "memory_sample_interval_ms": 10,
+                   "memory_sample_interval_ms": 10,
                    "fling_down": 8, "fling_up": 2, "fling_detents": 12,
                    "fling_duration_ms": 250, "fling_pause_ms": 350},
         "measurement": {"vsync_budget_ms": 16.7},
+        "frame_source": {"waterui": "dxgi_present"},
     }
 
-    # per-rep ETW-clock (FILETIME 100ns) anchor — the measurement
-    # window is derived from the first present, and memory samples
-    # stamp filetime_now(), so the fixture clock is reset at each
-    # launch to keep the sampler inside the window
-    # the fixture clock stands in for GetSystemTimePreciseAsFileTime so
-    # the self-test runs on any host; it is installed as filetime_now
-    # below for the whole rep
-    def fixture_filetime() -> int:
-        return int((time.time() + 11644473600) * 10_000_000)
+    class VirtualTicker:
+        def __init__(self, fn, interval: int):
+            self.fn, self.interval = fn, interval
+            self.error: Exception | None = None
+            self.live = True
+            self.next_at = 0
 
-    ts = {"t0": fixture_filetime()}
+        def fire(self, now: int) -> None:
+            try:
+                self.fn(now)
+            except Exception as e:
+                self.error = e
+                self.live = False
+                return
+            self.next_at = now + self.interval
+
+        def stop(self) -> None:
+            self.live = False
+
+    class VirtualClock:
+        """The rep's clock at the OS boundary: FILETIME that moves only
+        when the rep waits on it, firing every ticker due on the way —
+        the rep's timeline is the same on every host, whatever the
+        scheduler does."""
+
+        def __init__(self, start: int):
+            self.t = start
+            self._tickers: list[VirtualTicker] = []
+
+        def now(self) -> int:
+            return self.t
+
+        def sleep_until(self, deadline: int) -> None:
+            while True:
+                due = [k for k in self._tickers
+                       if k.live and k.next_at <= deadline]
+                if not due:
+                    break
+                k = min(due, key=lambda k: k.next_at)
+                self.t = max(self.t, k.next_at)
+                k.fire(self.t)
+            self.t = max(self.t, deadline)
+
+        def every(self, interval_s: float, fn) -> VirtualTicker:
+            k = VirtualTicker(fn, int(interval_s * 10_000_000))
+            self._tickers.append(k)
+            k.fire(self.t)
+            return k
+
+    clock = VirtualClock(133_000_000_000_000_000)
+    ts = {"t0": clock.now()}
 
     class FakeApp:
         """Same contract as OwnedApp: pid, pids(), create_filetime(),
         terminate(), log."""
         def __init__(self, c, workload, log_path):
             events.append("launch")
-            ts["t0"] = fixture_filetime()
+            ts["t0"] = clock.now()
             self.pid = os.getpid()
             self.hproc = None
             self.terminated = False
@@ -2164,37 +2245,38 @@ def _self_test() -> None:
                 self.log.close()
             events.append("terminate")
 
-    # the real-time first-present consumer at the OS boundary: it
-    # reports the rep's launch-clock first present as source A
-    rt = {"first": None}
+    # the file + real-time ETW session at the OS boundary: its real-time
+    # stream reports the rep's launch-clock first present
+    rt = {"first": None, "fail_stop": False}
 
-    class FakeFirstPresent:
-        def __init__(self, name, tree_pids):
-            events.append("rt_start")
-        def wait(self, budget_s):
-            return rt["first"] or (ts["t0"], "A")
+    class FakeTrace:
+        def __init__(self, name, etl, source, tree_pids):
+            assert source == "dxgi_present", source
+            events.append("trace_start")
+        def first_present(self, budget_s):
+            return ts["t0"] if rt["first"] is None else rt["first"]
         def stop(self):
-            events.append("rt_stop")
+            events.append("trace_stop")
+            if rt["fail_stop"]:
+                raise RuntimeError("etl stop broke")
+
+    def run(rep: int, launch=FakeApp, workload: str = "w1") -> dict:
+        return measure_run("waterui", workload, rep, cfg,
+                           owned_launch=launch, present_trace=FakeTrace,
+                           clock=clock)
 
     saved = {k: globals()[k] for k in (
-        "minimize_other_windows", "restore_windows", "start_trace",
-        "stop_trace", "etl_to_csv", "parse_frames", "window_for_pids",
-        "process_memory_snapshot", "adapter_from_log",
-        "renderer_evidence", "bring_to_foreground", "wait_for_ready",
-        "FirstPresentConsumer", "filetime_now")}
+        "minimize_other_windows", "restore_windows", "etl_to_csv",
+        "parse_frames", "window_for_pids", "process_memory_snapshot",
+        "adapter_from_log", "renderer_evidence", "bring_to_foreground",
+        "wait_for_ready")}
     try:
-        globals()["filetime_now"] = fixture_filetime
-        globals()["FirstPresentConsumer"] = FakeFirstPresent
         globals()["wait_for_ready"] = \
             lambda app, budget: (42, (10, 10, 800, 600))
         globals()["minimize_other_windows"] = \
             lambda: events.append("minimize") or [42]
         globals()["restore_windows"] = \
             lambda hw: events.append(f"restore{hw}")
-        globals()["start_trace"] = \
-            lambda n, e, p: events.append("trace_start")
-        globals()["stop_trace"] = \
-            lambda n: events.append("trace_stop")
         globals()["window_for_pids"] = \
             lambda pids: (42, 10, 10, 800, 600)
         globals()["bring_to_foreground"] = \
@@ -2204,13 +2286,12 @@ def _self_test() -> None:
             "name": "Fixture RTX", "device_type": "Gpu",
             "backend": "d3d", "mechanism": "fixture"}
 
-        def _fixture_frames(d, pids):
+        def _fixture_frames(d, pids, source):
             # anchored at the rep's launch clock — memory samples stamp
-            # filetime_now() during the rep, so the fixture must share
-            # that clock or the measurement-window trim empties it
+            # the same clock, so the measurement-window trim keeps them
             t0 = ts["t0"]
             return {
-                "present_events": 6, "source": "A",
+                "present_events": 6, "source": source,
                 "timestamps_100ns": [
                     t0,                  # first owned present → anchor
                     t0 + 500_000,        # inside warmup → trimmed
@@ -2224,24 +2305,27 @@ def _self_test() -> None:
             }
         globals()["parse_frames"] = _fixture_frames
         globals()["etl_to_csv"] = lambda e, d: events.append("etl_csv")
-        globals()["process_memory_snapshot"] = lambda: {
+        snapshot = lambda: {
             os.getpid(): {"name": "fake.exe", "ws_private": 100 << 20,
                           "peak_ws": 110 << 20,
                           "private_bytes": 90 << 20}}
+        globals()["process_memory_snapshot"] = snapshot
 
         # -- success path: cleanup order is minimize→…→trace_stop→
         #    terminate→restore, and restore receives exactly the hwnds
         #    minimize returned
-        rec = measure_run("waterui", "w1", 0, cfg, Path("prov.txt"),
-                          owned_launch=FakeApp)
+        rec = run(0)
         assert "error" not in rec, rec
         assert rec["memory"]["steady_private_ws_mb"] == \
             (100 << 20) / 1e6
-        assert rec["memory"]["samples_taken"] >= 1
+        # the sampler ticks every 10 ms of the rep's clock: the 300 ms
+        # window [t0 + 100 ms, + 300 ms] holds exactly 31 samples
+        assert rec["memory"]["samples_taken"] == 31, rec["memory"]
         # the measurement window trimmed the startup/warmup frames —
         # stats come from the windowed series, not all 6 presents
         assert rec["frame_rate"]["present_events"] == 6
         assert rec["frame_rate"]["presents"] == 4
+        assert rec["frame_rate"]["source"] == "dxgi_present"
         # the windowed presents form one active run; 90/90/60 ms
         # intervals each exceed 1.5 periods → missed-vsync counting
         # follows lib/frame_stats.py (round(i/period)-1 each)
@@ -2249,31 +2333,28 @@ def _self_test() -> None:
         assert rec["frame_rate"]["missed_vsyncs"] == \
             round(90 / 16.7) - 1 + round(90 / 16.7) - 1 + \
             round(60 / 16.7) - 1
+        # the rep held until the window closed on its own clock
+        assert clock.now() == ts["t0"] + 4_000_000, clock.now() - ts["t0"]
         order = [e for e in events if e in (
-            "minimize", "trace_start", "rt_start", "launch", "rt_stop",
-            "foreground", "etl_csv", "trace_stop", "terminate",
-            "restore[42]")]
-        assert order == ["minimize", "trace_start", "rt_start", "launch",
-                         "rt_stop", "foreground", "trace_stop",
-                         "terminate", "etl_csv", "restore[42]"], order
+            "minimize", "trace_start", "launch", "foreground", "etl_csv",
+            "trace_stop", "terminate", "restore[42]")]
+        assert order == ["minimize", "trace_start", "launch",
+                         "foreground", "trace_stop", "terminate",
+                         "etl_csv", "restore[42]"], order
 
         # -- the drive was scheduled on the real-time first present: a
-        #    trace whose window anchors on another event fails the rep,
-        #    and so does a first present delivered after the window
-        #    already opened
-        rt["first"] = "B-source"
+        #    trace whose first owned present is another event fails the
+        #    rep (exact equality), and so does a first present delivered
+        #    after the window already opened
         events.clear()
-        orig_wait = FakeFirstPresent.wait
-        FakeFirstPresent.wait = lambda self, b: (ts["t0"], "B")
-        rec = measure_run("waterui", "w1", 0, cfg, Path("prov.txt"),
-                          owned_launch=FakeApp)
+        rt["first"] = clock.now() + 1
+        rec = run(0)
         assert "drive anchor mismatch" in rec["error"], rec
-        FakeFirstPresent.wait = lambda self, b: (ts["t0"] - 10_000_000, "A")
-        rec = measure_run("waterui", "w1", 0, cfg, Path("prov.txt"),
-                          owned_launch=FakeApp)
-        assert "before the runner could start the drive" in rec["error"], rec
-        assert "rt_stop" in events and "restore[42]" in events
-        FakeFirstPresent.wait = orig_wait
+        rt["first"] = clock.now() - 10_000_000
+        rec = run(0)
+        assert "900 ms before the runner could start the drive" \
+            in rec["error"], rec
+        assert "trace_stop" in events and "restore[42]" in events
         rt["first"] = None
 
         # -- capture failure (etl_to_csv raises): attempt record keeps
@@ -2283,8 +2364,7 @@ def _self_test() -> None:
         globals()["etl_to_csv"] = (
             lambda e, d: (_ for _ in ()).throw(
                 RuntimeError("tracerpt exploded")))
-        rec = measure_run("waterui", "w1", 1, cfg, Path("prov.txt"),
-                          owned_launch=FakeApp)
+        rec = run(1)
         assert rec["error"].startswith("RuntimeError: tracerpt"), rec
         assert "detail" in rec and rec["run"] == 1
         for ev in ("trace_stop", "terminate", "restore[42]"):
@@ -2297,8 +2377,7 @@ def _self_test() -> None:
         def boom(c, w, lp):
             events.append("launch")
             raise OSError("exe missing")
-        rec = measure_run("waterui", "w1", 2, cfg, Path("prov.txt"),
-                          owned_launch=boom)
+        rec = run(2, launch=boom)
         assert rec["error"].startswith("OSError: exe missing"), rec
         assert "trace_stop" in events and "restore[42]" in events
         assert "terminate" not in events
@@ -2310,8 +2389,7 @@ def _self_test() -> None:
         globals()["renderer_evidence"] = (
             lambda *a, **kw: (_ for _ in ()).throw(
                 RendererEvidenceError("no proof")))
-        rec = measure_run("waterui", "w1", 3, cfg, Path("prov.txt"),
-                          owned_launch=FakeApp)
+        rec = run(3)
         assert rec["error"].startswith(
             "RendererEvidenceError: no proof"), rec
         assert "terminate" in events and "restore[42]" in events
@@ -2322,8 +2400,7 @@ def _self_test() -> None:
             lambda *a, **kw: (_ for _ in ()).throw(
                 SoftwareRendererError("SwiftShader")))
         try:
-            measure_run("waterui", "w1", 4, cfg, Path("prov.txt"),
-                        owned_launch=FakeApp)
+            run(4)
             raise AssertionError("software renderer accepted")
         except SystemExit:
             pass
@@ -2334,21 +2411,17 @@ def _self_test() -> None:
             "backend": "d3d", "mechanism": "fixture"}
 
         # -- a failing cleanup step still runs the rest of the
-        #    teardown: stop_trace raising skips neither terminate nor
-        #    restore, and the record keeps BOTH the operation error and
-        #    the cleanup failure
+        #    teardown: the trace stop raising skips neither terminate
+        #    nor restore, and the record keeps BOTH the operation error
+        #    and the cleanup failure
         events.clear()
-        globals()["stop_trace"] = (
-            lambda n: (_ for _ in ()).throw(
-                RuntimeError("etl stop broke")))
-        rec = measure_run("waterui", "w1", 5, cfg, Path("prov.txt"),
-                          owned_launch=FakeApp)
+        rt["fail_stop"] = True
+        rec = run(5)
         assert "etl stop broke" in rec["error"], rec
-        assert "cleanup: stop_trace" in rec["error"], rec
+        assert "cleanup: trace stop" in rec["error"], rec
         for ev in ("terminate", "restore[42]"):
             assert ev in events, events
-        globals()["stop_trace"] = \
-            lambda n: events.append("trace_stop")
+        rt["fail_stop"] = False
         # -- and a cleanup failure on an otherwise measured attempt
         #    degrades it to a recorded failure — its numbers are not
         #    trustworthy once teardown broke
@@ -2356,31 +2429,23 @@ def _self_test() -> None:
         globals()["restore_windows"] = (
             lambda hw: (_ for _ in ()).throw(
                 RuntimeError("desktop restore broke")))
-        rec = measure_run("waterui", "w1", 5, cfg, Path("prov.txt"),
-                          owned_launch=FakeApp)
+        rec = run(5)
         assert "cleanup failure" in rec["error"], rec
         assert "metrics_discarded" in rec and "cleanup_errors" in rec
         assert "terminate" in events
-        globals()["stop_trace"] = \
-            lambda n: events.append("trace_stop")
         globals()["restore_windows"] = \
             lambda hw: events.append(f"restore{hw}")
 
-        # -- a native query failing inside the sampler thread reaches
-        #    the attempt record as a failure, not a silent shortfall
+        # -- a native query failing inside the sampler reaches the
+        #    attempt record as a failure, not a silent shortfall
         events.clear()
-
-        class BadPidApp(FakeApp):
-            def pids(self):
-                if (threading.current_thread()
-                        is not threading.main_thread()):
-                    raise RuntimeError("job pid query failed")
-                return {os.getpid()}
-
-        rec = measure_run("waterui", "w1", 6, cfg, Path("prov.txt"),
-                          owned_launch=BadPidApp)
+        def failing_snapshot():
+            raise OSError("NtQuerySystemInformation failed")
+        globals()["process_memory_snapshot"] = failing_snapshot
+        rec = run(6)
         assert "memory sampler failed" in rec["error"], rec
         assert "terminate" in events and "restore[42]" in events
+        globals()["process_memory_snapshot"] = snapshot
 
         # -- a missing startup timestamp is a failed attempt (M1): the
         #    GetProcessTimes call on the owned handle raising propagates
@@ -2391,64 +2456,139 @@ def _self_test() -> None:
             def create_filetime(self):
                 raise OSError("GetProcessTimes failed")
 
-        rec = measure_run("waterui", "w1", 7, cfg, Path("prov.txt"),
-                          owned_launch=NoClockApp)
+        rec = run(7, launch=NoClockApp)
         assert "GetProcessTimes" in rec["error"], rec
 
         # -- zero memory samples inside the measurement window is a
         #    failed attempt (M2), not a steady=None success
         events.clear()
-        saved_snap = globals()["process_memory_snapshot"]
         globals()["process_memory_snapshot"] = lambda: {}
-        rec = measure_run("waterui", "w1", 8, cfg, Path("prov.txt"),
-                          owned_launch=FakeApp)
-        globals()["process_memory_snapshot"] = saved_snap
+        rec = run(8)
+        globals()["process_memory_snapshot"] = snapshot
         assert "zero memory samples" in rec["error"], rec
 
         # -- zero owned presents: no first present exists to anchor the
         #    window on → failed attempt (M3)
         events.clear()
-        globals()["parse_frames"] = lambda d, pids: {
-            "present_events": 0, "source": None,
+        globals()["parse_frames"] = lambda d, pids, source: {
+            "present_events": 0, "source": source,
             "timestamps_100ns": [], "proc_starts": {},
             "app_pids": sorted(pids)}
-        rec = measure_run("waterui", "w1", 9, cfg, Path("prov.txt"),
-                          owned_launch=FakeApp)
+        rec = run(9)
         assert "no owned present events" in rec["error"], rec
         globals()["parse_frames"] = _fixture_frames
+
+        # -- a contestant without a declared frame source fails before
+        #    anything launches
+        events.clear()
+        rec = measure_run("flutter", "w1", 10, cfg, owned_launch=FakeApp,
+                          present_trace=FakeTrace, clock=clock)
+        assert "[frame_source]" in rec["error"], rec
+        assert "launch" not in events
+
+        # -- the scroll drive paces every detent and pause on the rep's
+        #    clock: one fling program (8 down + 2 up, 12 detents over
+        #    250 ms, 350 ms pause) is 6 s of clock time
+        sent: list[int] = []
+        saved_user32 = globals()["user32"]
+
+        class FakeUser32:
+            def SetCursorPos(self, x, y):
+                pass
+
+            def SendInput(self, n, inp, size):
+                sent.append(clock.now())
+
+        globals()["user32"] = FakeUser32()
+        try:
+            start = clock.now()
+            fling_window(42, (0, 0, 800, 600), start + 1,
+                         cfg["runner"], clock)
+        finally:
+            globals()["user32"] = saved_user32
+        assert len(sent) == 120, len(sent)
+        assert sent[1] - sent[0] == 2_500_000 // 12
+        assert clock.now() - start == 10 * (12 * (2_500_000 // 12)
+                                            + 3_500_000)
 
         # -- renderer_evidence fixtures: real parser/dispatch, fixture
         #    data at the OS boundary — restore the real function first
         globals()["renderer_evidence"] = saved["renderer_evidence"]
         globals()["adapter_from_log"] = saved["adapter_from_log"]
-        globals()["FirstPresentConsumer"] = saved["FirstPresentConsumer"]
         globals()["wait_for_ready"] = saved["wait_for_ready"]
+        globals()["parse_frames"] = saved["parse_frames"]
 
-        # -- the real-time ETW structures match the documented x64
-        #    layouts, and only an owned DXGI present Start anchors
+        # -- the ETW structures match the documented x64 layouts, and
+        #    only a Start of the declared source is a frame event
         for etw_struct, size in ETW_STRUCT_SIZES.items():
             assert ctypes.sizeof(etw_struct) == size, (
                 etw_struct.__name__, ctypes.sizeof(etw_struct))
         dxgi = _EtwGuid.parse(DXGI_PROVIDER_GUID).key()
         assert dxgi == (0xCA11C036, 0x0102, 0x4A2D,
                         bytes.fromhex("A6ADF03CFED5D3C9"))
-        mine = {7}.__contains__
-        assert first_present_of(dxgi, 42, 1, 7, mine) == "A"
-        assert first_present_of(dxgi, 144, 1, 7, mine) == "B"
-        assert first_present_of(dxgi, 42, 2, 7, mine) is None   # Stop
-        assert first_present_of(dxgi, 42, 1, 8, mine) is None   # not owned
-        assert first_present_of(dxgi, 43, 1, 7, mine) is None
-        other = _EtwGuid.parse("{802EC45A-1E99-4B83-9920-87C98277BA9D}")
-        assert first_present_of(other.key(), 42, 1, 7, mine) is None
-        require_same_anchor(1_000_000, "A", 1_005_000, "A")
-        for args in ((1_000_000, "A", 1_020_000, "A"),
-                     (1_000_000, "C", 1_000_000, "A")):
+        assert is_frame_event(dxgi, 42, 1, "dxgi_present")
+        assert is_frame_event(dxgi, 144, 1, "dxgi_composition_present")
+        assert not is_frame_event(dxgi, 144, 1, "dxgi_present")
+        assert not is_frame_event(dxgi, 42, 1, "dxgi_composition_present")
+        assert not is_frame_event(dxgi, 42, 2, "dxgi_present")   # Stop
+        other = _EtwGuid.parse(KPROC_PROVIDER_GUID)
+        assert not is_frame_event(other.key(), 42, 1, "dxgi_present")
+        for bad in ({}, {"waterui": "dxgkrnl_cdd_blit"}):
             try:
-                require_same_anchor(*args)
+                frame_source({"frame_source": bad}, "waterui")
             except RuntimeError:
                 pass
             else:
-                raise AssertionError(f"anchor mismatch accepted: {args}")
+                raise AssertionError(f"undeclared source accepted: {bad}")
+        # ownership is decided once per pid and re-decided only after
+        # Kernel-Process reports that pid starting or stopping
+        queries = []
+        tree = {7}
+
+        def tree_pids():
+            queries.append(1)
+            return set(tree)
+        own = PidOwnership(tree_pids)
+        assert own.owned(7) and own.owned(7) and not own.owned(8)
+        assert not own.owned(8) and len(queries) == 2
+        tree.add(8)
+        own.forget(8)
+        assert own.owned(8) and len(queries) == 3
+        require_same_anchor(1_000_000, 1_000_000)
+        for trace_first, rt_first in ((1_000_000, 1_000_001),
+                                      (1_000_001, 1_000_000)):
+            try:
+                require_same_anchor(trace_first, rt_first)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError(
+                    f"anchor mismatch accepted: {trace_first} {rt_first}")
+        # the trace parse reads only the declared source's Start events
+        # of owned pids, and Kernel-Process start times
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            dump_csv = Path(td) / "dump.csv"
+            with open(dump_csv, "w", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(["Event Name", "Type", "Event ID"] + [""] * 17)
+
+                def row(prov, typ, eid, pid, clock_ft, data=""):
+                    r = [""] * 20
+                    r[0], r[1], r[2] = prov, typ, str(eid)
+                    r[9], r[16], r[19] = f"0x{pid:08X}", str(clock_ft), data
+                    w.writerow(r)
+                row(KPROC, "Start", 1, 4, 900, " 7")
+                row(DXGI, "Start", 42, 7, 1000)
+                row(DXGI, "Start", 144, 7, 1001)
+                row(DXGI, "Stop", 42, 7, 1002)
+                row(DXGI, "Start", 42, 9, 1003)
+                row(DXGI, "Start", 42, 7, 1200)
+            fr = parse_frames(dump_csv, {7}, "dxgi_present")
+            assert fr["timestamps_100ns"] == [1000, 1200], fr
+            assert fr["proc_starts"] == {7: 900}, fr
+            fr = parse_frames(dump_csv, {7}, "dxgi_composition_present")
+            assert fr["timestamps_100ns"] == [1001], fr
         import tempfile
         hw = {"name": "NVIDIA GeForce RTX 4090", "device_type": "Gpu",
               "backend": "Vulkan"}
@@ -3131,25 +3271,27 @@ while u.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
         rec(8, "PASS", "NTSTATUS clean; matches psutil; small-buffer "
                        "errors propagate")
 
-    # 9 — logman/tracerpt dump columns + owned-pid process rows
+    # 9 — the file + real-time session: the real-time consumer runs
+    # attached for the session's life, the .etl it records dumps through
+    # tracerpt, and the test app's Kernel-Process start lands in it
     def i9():
         etl = td / "nc.etl"
-        prov = td / "providers.txt"
-        write_providers_file(prov)
         name = f"bench1262_native_{os.getpid()}"
-        start_trace(name, etl, prov)
-        app = spawn_test_app(td / "etw.log")
+        trace = PresentTrace(name, etl, "dxgi_present", lambda: set())
         try:
-            time.sleep(2)
-        finally:
+            app = spawn_test_app(td / "etw.log")
+            app_pid = app.pid
             app.terminate()
-        stop_trace(name)
+        finally:
+            trace.stop()
+        assert not trace._error, trace._error
         dump = td / "nc.csv"
         etl_to_csv(etl, dump)
-        frames = parse_frames(dump, set())
-        assert dump.exists() and dump.stat().st_size > 0
-        assert frames["proc_starts"], "no Kernel-Process rows parsed"
-        rec(9, "PASS", "trace dump parses; process-start rows present")
+        frames = parse_frames(dump, set(), "dxgi_present")
+        assert app_pid in frames["proc_starts"], (
+            f"test app {app_pid} has no Kernel-Process start row")
+        rec(9, "PASS", "file + real-time session: consumer clean, dump "
+                       "parses, the app's process start is recorded")
 
     # 10 — minimize/restore round-trip only touches owned changes
     def i10():
@@ -3199,8 +3341,6 @@ def main() -> None:
     reps = args.reps or manifest["runner"]["repetitions"]
     TRACE_DIR.mkdir(parents=True, exist_ok=True)
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    providers_file = TRACE_DIR / "etw_providers.txt"
-    write_providers_file(providers_file)
 
     out = Path(args.out) if args.out else RESULTS_DIR / (
         f"windows-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.json"
@@ -3251,9 +3391,9 @@ def main() -> None:
 
     limitations = [
         "PresentMon 2.5.1 captures no presents for WinUI 3 (composition-"
-        "path presents sit below its keyword mask) or Electron (CDD blit "
-        "path on this adapter); the runner consumes the underlying "
-        "DXGI/DxgKrnl ETW events directly, uniformly for all four.",
+        "path presents sit below its keyword mask); the runner consumes "
+        "the underlying DXGI ETW events directly — each contestant's "
+        "declared frame source ([frame_source]).",
         "Adapter identity per row is per-run evidence, not host "
         "inventory: hydrolysis's own adapter log (WaterUI), Electron's "
         "app.getGPUInfo from the measured process, or the owned pid "
@@ -3308,7 +3448,8 @@ def main() -> None:
             print(f"=== building {key} ===", flush=True)
             # every bootstrap step (flutter create, npm ci, water fetch)
             # runs on a clean tree and must leave it clean
-            with toolchain.tracked_tree_unchanged(f"windows build {key}"):
+            with toolchain.tracked_tree_unchanged(
+                    f"windows build {key}", [ROOT, c["project"]]):
                 builders(manifest)[key]()
         cres = results["results"].setdefault(key, {})
         cres["package_size"] = package_size(c["exe_dir"])
@@ -3326,7 +3467,7 @@ def main() -> None:
                 # metrics, or the error it failed with; no rep is
                 # silently retried or dropped
                 attempts.append(
-                    measure_run(key, wl, rep, manifest, providers_file))
+                    measure_run(key, wl, rep, manifest))
             runs = [r for r in attempts if "error" not in r]
             failures = [r for r in attempts if "error" in r]
             for f in failures:

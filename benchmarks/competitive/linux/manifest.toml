@@ -19,7 +19,8 @@ rustc = "resolved-at-build" # channel from rust-toolchain.toml, resolved to
                             # an exact version at image build (runner's
                             # rust_toolchain_resolved) and recorded in
                             # results.versions
-node = "20.19.2"          # debian:trixie nodejs (only drives `npm i electron`)
+node = "24.21.0"          # official tarball, sha256-pinned in docker/Dockerfile
+                          # (only drives `npm ci` for electron, engines >= 22.12)
 python = "3.13"           # trixie python3 (report tooling)
 cc = "gcc 14 (trixie)"    # resolved at image build
 
@@ -47,7 +48,7 @@ gtk_version = "4.18.6"     # libgtk-4-dev from debian:trixie
 kind = "electron"
 project = "../apps/electron"
 electron_version = "44.4.3"
-node_version = "20.19.2"
+node_version = "24.21.0"
 # In-container (no sandbox kernel support, wayland-only).
 flags = ["--no-sandbox", "--ozone-platform=wayland"]
 

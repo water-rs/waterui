@@ -263,7 +263,7 @@ def generate(data: dict) -> str:
                                  "unsupported"])
                     continue
                 srcs = {s for s in fr.get("source", []) if s}
-                src = f" [{''.join(sorted(srcs))}]" if srcs else ""
+                src = f" [{', '.join(sorted(srcs))}]" if srcs else ""
                 rows.append([
                     APP_NAMES.get(k, k) + src,
                     cell(fr.get("fps")),

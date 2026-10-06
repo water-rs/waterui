@@ -28,7 +28,6 @@ if sys.version_info < (3, 10):
 import argparse
 import atexit
 import fcntl
-import gzip
 import io
 import json
 import os
@@ -253,7 +252,7 @@ def build_contestants(manifest: dict, only: set[str] | None) -> dict[str, str]:
         "for xml in $(find /usr/share/wayland-protocols -name '*.xml'); "
         "do wayland-scanner server-header \"$xml\" "
         "/tmp/proto/$(basename \"${xml%.xml}\")-protocol.h; done && "
-        "gcc -O2 -Wall -Wextra -DWLR_USE_UNSTABLE -I/tmp/proto "
+        "gcc -O2 -Wall -Wextra -Werror -DWLR_USE_UNSTABLE -I/tmp/proto "
         "-o /bench/benchcomp/benchcomp /bench/benchcomp/benchcomp.c "
         "-Wl,--export-dynamic $(pkg-config --cflags --libs wlroots-0.18 "
         "wayland-server libdrm gbm xkbcommon pixman-1) -lrt -ldl")
@@ -385,57 +384,63 @@ def percentile(vals: list[float], p: float) -> float:
     return vals[lo] + (vals[hi] - vals[lo]) * (k - lo)
 
 
-def metrics_from_events(events: list[dict], warmup_ms: float = 0.0,
-                        capture_ms: float = 0.0) -> dict:
+def metrics_from_events(events: list[dict], warmup_ms: float,
+                        capture_ms: float) -> dict:
+    """Launch, frame pacing and memory of one rep over the declared window
+    [first committed present + warmup_ms, + capture_ms] (METHOD). Both
+    are declared and nonzero; a rep with no committed present has no
+    window and fails."""
+    if warmup_ms <= 0 or capture_ms <= 0:
+        raise RuntimeError(
+            f"warmup_ms ({warmup_ms}) and capture_ms ({capture_ms}) must "
+            "both be declared and nonzero")
     spawn = next((e for e in events if e.get("ev") == "spawn"), None)
     presents = [e for e in events if e.get("ev") == "present"]
     commits = [e for e in events if e.get("ev") == "commit"]
     mems = [e for e in events if e.get("ev") == "mem"]
     mapped = [e for e in events if e.get("ev") == "map"]
+    mem_errors = [e for e in events if e.get("ev") == "mem_error"]
+    if mem_errors:
+        raise RuntimeError(
+            "benchcomp could not read the app cgroup's memory: "
+            + "; ".join(f"{e['what']}: {os.strerror(e['errno'])}"
+                        for e in mem_errors))
+    committed_ts = [p["t"] for p in presents if p.get("committed")]
+    if spawn is None or not committed_ts:
+        raise RuntimeError(
+            "benchcomp logged no spawn or no committed present owned by "
+            "the contestant — the rep has no launch and no window")
 
     m: dict = {"mapped": bool(mapped), "present_count": len(presents),
-               "commit_count": len(commits)}
-    if any(e.get("ev") == "evidence_error" for e in events):
+               "commit_count": len(commits),
+               "launch_ms": (committed_ts[0] - spawn["t"]) / 1e6}
+
+    # Frame pacing over the declared window — lib/frame_stats decides
+    # runs, gaps and missed vsyncs (decision 1).
+    rel = [(t - committed_ts[0]) / 1e6 for t in committed_ts]
+    stats = lib_frames.frame_statistics(rel, warmup_ms, capture_ms,
+                                        VSYNC_MS)
+    if stats["intervals_ms"]:
+        m["frame_ms"] = {
+            "p50": stats["frame_ms_p50"],
+            "p90": stats["frame_ms_p90"],
+            "p99": stats["frame_ms_p99"],
+            "samples": [round(d, 3) for d in stats["intervals_ms"]],
+        }
+        m["missed_vsyncs"] = stats["missed_vsyncs"]
+        m["fps"] = stats["fps"]
+
+    # memory over the same window as the frames: median and peak of the
+    # cgroup's memory.current samples inside it — startup and the
+    # lifetime high-water mark (memory.peak) never enter
+    w0 = committed_ts[0] + warmup_ms * 1e6
+    w1 = w0 + capture_ms * 1e6
+    cur = [e["current"] for e in mems if w0 <= e["t"] <= w1]
+    if not cur:
         raise RuntimeError(
-            "benchcomp could not read the app cgroup's process list at "
-            "window end — no renderer evidence")
-
-    first_committed = next(
-        (p for p in presents if p.get("committed")), None)
-    if spawn and first_committed:
-        m["launch_ms"] = (first_committed["t"] - spawn["t"]) / 1e6
-
-    # Frame pacing over the declared window [first committed present +
-    # warmup, +capture_ms] — lib/frame_stats decides runs, gaps and
-    # missed vsyncs; the 2000 ms gap filter is gone (decision 1).
-    committed_ts = [p["t"] for p in presents if p.get("committed")]
-    if committed_ts:
-        rel = [(t - committed_ts[0]) / 1e6 for t in committed_ts]
-        stats = lib_frames.frame_statistics(
-            rel, warmup_ms, capture_ms or (rel[-1] + 1), VSYNC_MS)
-        if stats["intervals_ms"]:
-            m["frame_ms"] = {
-                "p50": stats["frame_ms_p50"],
-                "p90": stats["frame_ms_p90"],
-                "p99": stats["frame_ms_p99"],
-                "samples": [round(d, 3) for d in stats["intervals_ms"]],
-            }
-            m["missed_vsyncs"] = stats["missed_vsyncs"]
-            m["fps"] = stats["fps"]
-
-    if committed_ts and capture_ms:
-        # memory over the same window as the frames: median and peak of
-        # the cgroup's memory.current samples inside it — startup and
-        # the lifetime high-water mark (memory.peak) never enter
-        w0 = committed_ts[0] + warmup_ms * 1e6
-        w1 = w0 + capture_ms * 1e6
-        cur = [e["current"] for e in mems if w0 <= e["t"] <= w1]
-        if not cur:
-            raise RuntimeError(
-                "no cgroup memory sample inside the measurement window")
-        m["rss_bytes_steady"] = int(statistics.median(cur))
-        m["rss_bytes_peak"] = max(cur)
-
+            "no cgroup memory sample inside the measurement window")
+    m["rss_bytes_steady"] = int(statistics.median(cur))
+    m["rss_bytes_peak"] = max(cur)
     return m
 
 
@@ -492,63 +497,132 @@ def kernel_driver(node: str) -> str:
     return link.resolve().name
 
 
+def _counter_value(key: str, raw: str) -> int | None:
+    """A DRM fdinfo GPU usage counter as an integer, or None for a key that
+    is not one: `drm-engine-<engine>: <n> ns` (busy time) and
+    `drm-cycles-<class>: <n>` (xe). Capacity, total-cycle and memory keys
+    are not usage."""
+    if key.startswith("drm-engine-capacity-"):
+        return None
+    if key.startswith("drm-engine-"):
+        m = re.fullmatch(r"(\d+) ns", raw)
+    elif key.startswith("drm-cycles-"):
+        m = re.fullmatch(r"(\d+)", raw)
+    else:
+        return None
+    if m is None:
+        raise RuntimeError(
+            f"unparseable DRM fdinfo usage counter {key}: {raw!r}")
+    return int(m.group(1))
+
+
+def drm_usage_delta(events: list[dict]) -> dict[str, dict]:
+    """GPU work per render node across the measurement window, from the
+    DRM fdinfo counters benchcomp read at window start and window end.
+
+    A DRM client is (render node, drm-client-id) — dup'd fds and forked
+    holders of one open file share it. Its usage over the window is its
+    end counters minus its start counters; a client opened inside the
+    window started from zero. Returns {node: {"driver", "clients",
+    "counters": {key: delta}}} for every node held at window end."""
+    by_phase: dict[str, dict] = {"start": {}, "end": {}}
+    for e in events:
+        if e.get("ev") != "drm":
+            continue
+        ctr = e["counters"]
+        if "drm-client-id" not in ctr or "drm-driver" not in ctr:
+            raise RuntimeError(
+                f"{e['target']} fd {e['fd']} of pid {e['pid']}: fdinfo "
+                f"carries no drm-client-id/drm-driver ({sorted(ctr)}) — the "
+                "kernel exposes no DRM client usage for this node")
+        usage = {k: v for k, raw in ctr.items()
+                 for v in [_counter_value(k, raw)] if v is not None}
+        by_phase[e["phase"]][(e["target"], ctr["drm-client-id"])] = (
+            ctr["drm-driver"], usage)
+    if not any(e.get("ev") == "window_start" for e in events):
+        raise RuntimeError("benchcomp logged no window_start — the DRM "
+                           "usage counters were never read at window start")
+    nodes: dict[str, dict] = {}
+    for (node, client), (driver, end) in by_phase["end"].items():
+        start = by_phase["start"].get((node, client), (driver, {}))[1]
+        n = nodes.setdefault(node, {"driver": driver, "clients": 0,
+                                    "counters": {}})
+        n["clients"] += 1
+        for k, v in end.items():
+            d = v - start.get(k, 0)
+            if d < 0:
+                raise RuntimeError(
+                    f"{node} client {client}: {k} went backwards across "
+                    f"the window ({start.get(k)} -> {v})")
+            n["counters"][k] = n["counters"].get(k, 0) + d
+    return nodes
+
+
 def renderer_evidence(events: list[dict], expected: dict) -> dict:
-    """What the contestant rendered with, read once at window end by
-    benchcomp from its own cgroup's processes: the renderer libraries
-    mapped and the render nodes held open. Raises when the run's expected
-    renderer class is not the one loaded.
+    """What the contestant rendered with, proven by the GPU work its own
+    processes submitted inside the window: benchcomp reads the DRM fdinfo
+    usage counters of every render-node fd in the contestant's cgroup at
+    window start and at window end. The libraries mapped and nodes held at
+    window end are recorded as supporting evidence only — the Vulkan
+    loader maps every installed ICD and opens render nodes while
+    enumerating, and the gallium megadriver carries llvmpipe, so neither
+    shows what did the rendering. Raises when the run's expected renderer
+    class is not the one proven.
 
     `expected` is {"class": "hardware", "kernel_driver", "nodes"} for a
     run pinned to a hardware adapter, {"class": "software"} otherwise. A
-    hardware run must hold the selected adapter's render nodes and map a
-    userspace driver for its kernel driver (the gallium megadriver counts
-    only together with the held node — that node is what binds it). A
-    software run must map a software renderer (or the megadriver, which
-    then has no render node to bind) and no hardware driver."""
+    hardware run must show a non-zero usage delta on one of the selected
+    adapter's render nodes. A software run must show zero usage on every
+    render node it holds, with a software rasterizer (lavapipe, llvmpipe,
+    or the gallium megadriver that carries it) mapped."""
+    errors = [e for e in events if e.get("ev") == "evidence_error"]
+    if errors:
+        raise RuntimeError(
+            "benchcomp could not read the contestant's renderer evidence: "
+            + "; ".join(f"{e['what']} of pid {e['pid']}: "
+                        f"{os.strerror(e['errno'])} (errno {e['errno']})"
+                        for e in errors))
     renderers = sorted({r for e in events if e.get("ev") == "lib"
                         for r in [renderer_of(e["path"])] if r})
-    nodes = sorted({e["target"] for e in events if e.get("ev") == "fd"
-                    and e["target"].startswith("/dev/dri/")})
-    if not renderers:
-        raise RuntimeError(
-            "no renderer evidence: the contestant's processes mapped no "
-            "Mesa/Vulkan/GL driver library at window end")
-    out = {"renderers_mapped": renderers, "render_nodes": nodes,
-           "renderer_class": expected["class"]}
+    held = sorted({e["target"] for e in events if e.get("ev") == "fd"
+                   and e["target"].startswith("/dev/dri/")})
+    usage = drm_usage_delta(events)
+    busy = sorted(n for n, u in usage.items()
+                  if any(v > 0 for v in u["counters"].values()))
+    out = {"renderer_class": expected["class"],
+           "gpu_usage": usage, "gpu_busy_nodes": busy,
+           "renderers_mapped": renderers, "render_nodes": held}
     if expected["class"] == "hardware":
-        want = KERNEL_RENDERERS.get(expected["kernel_driver"])
-        if want is None:
+        silent = sorted(n for n in expected["nodes"]
+                        if n.startswith("/dev/dri/renderD")
+                        and n in usage and not usage[n]["counters"])
+        if silent:
             raise RuntimeError(
-                f"no userspace renderer is known for kernel driver "
-                f"{expected['kernel_driver']!r} — extend KERNEL_RENDERERS")
-        missing = sorted(set(expected["nodes"]) - set(nodes))
-        if missing:
-            raise RuntimeError(
-                f"renderer evidence: the contestant held none of the "
-                f"selected adapter's render nodes {missing} (held {nodes})")
-        used = sorted(want & set(renderers))
-        if not used and GALLIUM in renderers:
-            used = [f"{GALLIUM} on {expected['kernel_driver']}"]
+                f"renderer evidence: {silent} expose no drm-engine/"
+                f"drm-cycles usage counters (kernel driver "
+                f"{expected['kernel_driver']}) — GPU use cannot be proven "
+                "on this adapter")
+        used = sorted(set(expected["nodes"]) & set(busy))
         if not used:
             raise RuntimeError(
-                f"renderer evidence: no {sorted(want)} driver for "
-                f"{expected['kernel_driver']} mapped — the contestant "
-                f"loaded {renderers}")
+                f"renderer evidence: no GPU work on the selected adapter's "
+                f"render nodes {expected['nodes']} across the window "
+                f"(usage {usage}; mapped {renderers})")
+        out["renderer_used"] = [
+            f"{expected['kernel_driver']} on {n}" for n in used]
     else:
-        hw = [r for r in renderers
-              if r not in SOFTWARE_RENDERERS and r != GALLIUM]
-        if hw:
+        if busy:
             raise RuntimeError(
-                f"renderer evidence: a software run mapped hardware "
-                f"renderers {hw}")
-        used = [r for r in renderers if r in SOFTWARE_RENDERERS]
-        if not used and GALLIUM in renderers and not nodes:
-            used = [f"{GALLIUM} (llvmpipe — no render node)"]
+                f"renderer evidence: a software run submitted GPU work on "
+                f"{busy} across the window (usage {usage})")
+        used = [r for r in renderers
+                if r in SOFTWARE_RENDERERS or r == GALLIUM]
         if not used:
             raise RuntimeError(
-                f"renderer evidence: no software renderer mapped "
-                f"({renderers}, nodes {nodes})")
-    out["renderer_used"] = used
+                f"renderer evidence: no GPU work, but no software "
+                f"rasterizer mapped either ({renderers}) — nothing shows "
+                "what rendered")
+        out["renderer_used"] = used
     return out
 
 
@@ -590,9 +664,8 @@ def workload_script(manifest: dict, wl: str, duration_ms: int) -> Path | None:
 def run_workload(contestant_cmd: str, wl: str, duration_ms: int,
                  script: Path | None, out_jsonl: Path,
                  expected: dict,
-                 dri: list[str] | bool = True,
-                 warmup_ms: int = 0
-                 ) -> tuple[dict, str]:
+                 dri: list[str] | bool,
+                 warmup_ms: int) -> tuple[dict, str]:
     """One measurement rep. benchcomp writes straight to the run-scoped
     out path (unique per rep AND per invocation); the owned container is
     removed even when the run fails. Returns (metrics, log); the metrics
@@ -830,7 +903,7 @@ def resolved_versions() -> dict:
     """Query the image for the versions actually used."""
     q = docker_run_bash(
         "dpkg-query -W -f='${Package} ${Version}\\n' mesa-vulkan-drivers "
-        "libwlroots-0.18 libgtk-4-1 libwayland-client0 nodejs 2>/dev/null; "
+        "libwlroots-0.18 libgtk-4-1 libwayland-client0 2>/dev/null; "
         "rustc --version; node --version; python3 --version; "
         "flutter --version 2>/dev/null | head -4; "
         "cat /repo/benchmarks/competitive/apps/electron/node_modules/electron/package.json 2>/dev/null "
@@ -975,11 +1048,26 @@ def _self_test() -> None:
         assert rc3 == 0 and "INCOMPLETE" not in out3.name
         assert _m3 is other
 
-    # renderer evidence: the libraries mapped at window end decide the
-    # renderer; the expected class must be the one loaded
-    def ev(*libs, nodes=()):
+    # renderer evidence: the DRM fdinfo usage counters of the contestant's
+    # render-node fds across the window decide the class; mapped libraries
+    # are recorded, never decisive
+    node = "/dev/dri/renderD128"
+
+    def drm(phase, gfx, client="7", driver="amdgpu", fd=12):
+        counters = {"drm-driver": driver, "drm-client-id": client,
+                    "drm-pdev": "0000:03:00.0",
+                    "drm-engine-capacity-gfx": "1"}
+        if gfx is not None:
+            counters["drm-engine-gfx"] = f"{gfx} ns"
+            counters["drm-engine-compute"] = "0 ns"
+        return {"ev": "drm", "phase": phase, "pid": 7, "fd": fd,
+                "target": node, "counters": counters}
+
+    def ev(*libs, held=(), drm_events=(), window=True):
         return ([{"ev": "lib", "pid": 7, "path": p} for p in libs]
-                + [{"ev": "fd", "pid": 7, "target": n} for n in nodes])
+                + [{"ev": "fd", "pid": 7, "target": n} for n in held]
+                + ([{"ev": "window_start"}] if window else [])
+                + list(drm_events))
     lvp = "/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so"
     radv = "/usr/lib/x86_64-linux-gnu/libvulkan_radeon.so"
     gal = "/usr/lib/x86_64-linux-gnu/libgallium-25.0.7-1+deb13u1.so"
@@ -987,24 +1075,55 @@ def _self_test() -> None:
     assert renderer_of(gal) == "gallium"
     assert renderer_of("/usr/lib/x86_64-linux-gnu/dri/iris_dri.so") == "iris"
     assert renderer_of("/usr/lib/x86_64-linux-gnu/libgtk-4.so.1") is None
-    hw = {"class": "hardware", "kernel_driver": "amdgpu",
-          "nodes": ["/dev/dri/renderD128"]}
-    ok = renderer_evidence(ev(lvp, radv, nodes=["/dev/dri/renderD128"]), hw)
-    assert ok["renderer_used"] == ["radv"], ok
-    ok = renderer_evidence(ev(gal, nodes=["/dev/dri/renderD128"]), hw)
-    assert ok["renderer_used"] == ["gallium on amdgpu"], ok
+    hw = {"class": "hardware", "kernel_driver": "amdgpu", "nodes": [node]}
     sw = {"class": "software"}
+    busy = (drm("start", 1_000), drm("end", 5_001_000))
+    idle = (drm("start", 1_000), drm("end", 1_000))
+    ok = renderer_evidence(ev(lvp, radv, held=[node], drm_events=busy), hw)
+    assert ok["renderer_used"] == [f"amdgpu on {node}"], ok
+    assert ok["gpu_usage"][node]["counters"]["drm-engine-gfx"] == 5_000_000
+    assert ok["renderers_mapped"] == ["lavapipe", "radv"], ok
+    # a client that opened the node inside the window starts from zero
+    ok = renderer_evidence(ev(radv, held=[node], drm_events=(
+        drm("end", 300, client="9"),)), hw)
+    assert ok["gpu_busy_nodes"] == [node], ok
+    # software: no GPU work on any held node, a software rasterizer
+    # mapped — hardware ICDs the loader mapped do not matter, and the
+    # gallium megadriver (llvmpipe inside) counts once the node is idle
     assert renderer_evidence(ev(lvp), sw)["renderer_used"] == ["lavapipe"]
-    for events, exp in ((ev(lvp, nodes=["/dev/dri/renderD128"]), hw),
-                        (ev(radv), hw),
-                        (ev(gal), hw),
-                        (ev(radv, lvp), sw),
-                        (ev(gal, nodes=["/dev/dri/renderD128"]), sw),
-                        (ev(nodes=["/dev/dri/renderD128"]), hw)):
+    assert renderer_evidence(
+        ev(radv, lvp, held=[node], drm_events=idle), sw)[
+            "renderer_used"] == ["lavapipe"]
+    assert renderer_evidence(
+        ev(gal, held=[node], drm_events=idle), sw)[
+            "renderer_used"] == ["gallium"]
+    rejected = (
+        # lvp + radv mapped and the node held, but no GPU work: software
+        # rendering that the mapped-library rule used to pass as hardware
+        (ev(lvp, radv, held=[node], drm_events=idle), hw, "no GPU work"),
+        (ev(gal, held=[node], drm_events=idle), hw, "no GPU work"),
+        (ev(radv), hw, "no GPU work"),
+        # a driver that keeps no usage counters cannot prove hardware
+        (ev(radv, held=[node], drm_events=(drm("start", None),
+                                           drm("end", None))),
+         hw, "no drm-engine/drm-cycles usage counters"),
+        (ev(lvp, held=[node], drm_events=busy), sw, "submitted GPU work"),
+        (ev(radv, held=[node], drm_events=idle), sw,
+         "no software rasterizer mapped"),
+        (ev(radv, held=[node], drm_events=busy, window=False), hw,
+         "no window_start"),
+        (ev(radv, held=[node], drm_events=busy)
+         + [{"ev": "evidence_error", "what": "maps", "pid": 7,
+             "errno": 13}], hw, "maps of pid 7"),
+        (ev(radv, held=[node], drm_events=(drm("start", 9_000),
+                                           drm("end", 1_000))),
+         hw, "went backwards"),
+    )
+    for events, exp, why in rejected:
         try:
             renderer_evidence(events, exp)
-        except RuntimeError:
-            pass
+        except RuntimeError as e:
+            assert why in str(e), (why, str(e))
         else:
             raise AssertionError(f"wrong renderer accepted: {events} {exp}")
 
@@ -1028,6 +1147,18 @@ def _self_test() -> None:
         assert "inside the measurement window" in str(e)
     else:
         raise AssertionError("window without memory samples accepted")
+    # no committed present, or an undeclared window: no measurement
+    for bad_events, warm, capture in (
+            ([e for e in events if e["ev"] != "present"], 1000, 1000),
+            (events, 1000, 0), (events, 0, 1000)):
+        try:
+            metrics_from_events(bad_events, warmup_ms=warm,
+                                capture_ms=capture)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError(
+                f"rep without a window accepted ({warm}, {capture})")
 
     # toolchain names: nightly/beta take the manifest's dist date, never
     # the commit date in the version string
@@ -1217,7 +1348,11 @@ def main() -> int:
     if not args.skip_build:
         # the generated flutter linux/ tree, npm ci and every contestant
         # build run on a clean tree and must leave it clean
-        with toolchain.tracked_tree_unchanged("linux contestant build"):
+        with toolchain.tracked_tree_unchanged(
+                "linux contestant build",
+                [ROOT] + [(ROOT / c["project"]).resolve()
+                          for name, c in manifest["contestants"].items()
+                          if not only or name in only]):
             staged = build_contestants(manifest, only)
     else:
         staged = {c: f"dist/{c}" for c in CONTESTANT_CMDS
@@ -1323,9 +1458,8 @@ def main() -> int:
                     s, run_log = run_workload(
                         CONTESTANT_CMDS[name].format(
                             wl=wl, wenv=wenv, selenv=selenv), wl,
-                        durations.get(wl, 15000),
-                        workload_script(
-                            manifest, wl, durations.get(wl, 15000)),
+                        durations[wl],
+                        workload_script(manifest, wl, durations[wl]),
                         out_jsonl, expected_renderer,
                         dri=dri_mounts,
                         warmup_ms=manifest["pacing"]["warmup_ms"])

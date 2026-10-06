@@ -2,7 +2,8 @@
 //
 // One headless output driven by a fixed vsync timer, one maximized
 // xdg_toplevel per spawned client, a uniform JSONL event log:
-// spawn/map/commit/present/frame/mem/input/lib/fd/app_exit/exit. Present
+// spawn/map/commit/present/frame/mem/input/anchor/window_start/drm/
+// window_end/lib/fd/evidence_error/app_exit/exit. Present
 // timestamps are taken at scene commit in CLOCK_MONOTONIC — identical
 // plumbing for every contestant app.
 //
@@ -11,6 +12,8 @@
 #define _POSIX_C_SOURCE 200809L
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
 #include <linux/input-event-codes.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -112,6 +115,7 @@ struct benchcomp {
     struct wl_event_source *script_source;
     struct wl_event_source *vsync_timer;
     struct wl_event_source *sig_timer;
+    struct wl_event_source *window_timer;
     struct wl_event_source *dur_timer;
     bool frame_pending;
 
@@ -187,134 +191,274 @@ int drmGetDeviceFromDevId(dev_t dev, uint32_t flags, drmDevicePtr *device) {
 
 // ---------------- memory sampling (cgroup v2) ----------------
 
-static uint64_t read_u64_file(const char *path) {
+// One cgroup counter; false (errno set, EINVAL for unparseable content)
+// when it cannot be read.
+static bool read_u64_file(const char *path, uint64_t *v) {
     FILE *f = fopen(path, "r");
-    if (!f) return 0;
-    uint64_t v = 0;
-    if (fscanf(f, "%llu", (unsigned long long *)&v) != 1) v = 0;
+    if (!f) return false;
+    unsigned long long x;
+    int n = fscanf(f, "%llu", &x);
     fclose(f);
-    return v;
+    if (n != 1) {
+        errno = EINVAL;
+        return false;
+    }
+    *v = x;
+    return true;
 }
 
+// The cgroup's memory every 100 ms. A counter that cannot be read is
+// logged as mem_error with its errno — the runner fails the rep; it is
+// never recorded as zero.
 static int mem_sample(void *data) {
     struct benchcomp *c = data;
-    char p[512];
-    snprintf(p, sizeof p, "%s/memory.current", c->cgroup);
-    uint64_t cur = read_u64_file(p);
-    snprintf(p, sizeof p, "%s/memory.peak", c->cgroup);
-    uint64_t peak = read_u64_file(p);
-    logf_ev(c, "mem", "\"current\":%llu,\"peak\":%llu",
-            (unsigned long long)cur, (unsigned long long)peak);
+    char cur_p[PATH_MAX + 32], peak_p[PATH_MAX + 32];
+    snprintf(cur_p, sizeof cur_p, "%s/memory.current", c->cgroup);
+    snprintf(peak_p, sizeof peak_p, "%s/memory.peak", c->cgroup);
+    uint64_t cur, peak;
+    if (!read_u64_file(cur_p, &cur))
+        logf_ev(c, "mem_error", "\"what\":\"memory.current\",\"errno\":%d",
+                errno);
+    else if (!read_u64_file(peak_p, &peak))
+        logf_ev(c, "mem_error", "\"what\":\"memory.peak\",\"errno\":%d",
+                errno);
+    else
+        logf_ev(c, "mem", "\"current\":%llu,\"peak\":%llu",
+                (unsigned long long)cur, (unsigned long long)peak);
     wl_event_source_timer_update(c->mem_timer, 100);
     return 0;
 }
 
+static bool cgroup_fail(const char *step, const char *path) {
+    fprintf(stderr, "benchcomp: cgroup setup: %s %s: %s\n", step, path,
+            strerror(errno));
+    return false;
+}
+
+// The app's memory cgroup under the container's private cgroup namespace.
+// The no-internal-process rule blocks enabling +memory on a cgroup that
+// still holds procs, so every root-cgroup process (benchcomp included)
+// first moves into an `init` child — one pid per write, as cgroup.procs
+// takes them; a pid that exited before its move (ESRCH) no longer occupies
+// the root. Every other failure fails the setup with its errno.
 static bool cgroup_setup(struct benchcomp *c, const char *name) {
-    // The no-internal-process rule blocks enabling controllers on a cgroup
-    // that still holds procs, so reparent every root-cgroup process (benchcomp
-    // included) into an init child first.
-    mkdir("/sys/fs/cgroup/init", 0755);
+    const char *init_dir = "/sys/fs/cgroup/init";
+    if (mkdir(init_dir, 0755) != 0 && errno != EEXIST)
+        return cgroup_fail("mkdir", init_dir);
     FILE *procs = fopen("/sys/fs/cgroup/cgroup.procs", "r");
-    if (procs) {
-        FILE *dst = fopen("/sys/fs/cgroup/init/cgroup.procs", "w");
-        int pid;
-        while (dst && fscanf(procs, "%d", &pid) == 1) fprintf(dst, "%d\n", pid);
+    if (!procs) return cgroup_fail("open", "/sys/fs/cgroup/cgroup.procs");
+    int dst = open("/sys/fs/cgroup/init/cgroup.procs", O_WRONLY);
+    if (dst < 0) {
         fclose(procs);
-        if (dst) fclose(dst);
+        return cgroup_fail("open", "/sys/fs/cgroup/init/cgroup.procs");
     }
-    char path[512];
-    snprintf(path, sizeof path, "/sys/fs/cgroup/%s", name);
+    int pid;
+    while (fscanf(procs, "%d", &pid) == 1) {
+        char buf[32];
+        int n = snprintf(buf, sizeof buf, "%d", pid);
+        if (write(dst, buf, (size_t)n) != n && errno != ESRCH) {
+            close(dst);
+            fclose(procs);
+            return cgroup_fail("move pid into", init_dir);
+        }
+    }
+    close(dst);
+    fclose(procs);
+    char path[PATH_MAX];
+    int n = snprintf(path, sizeof path, "/sys/fs/cgroup/%s", name);
+    if (n < 0 || (size_t)n >= sizeof path) {
+        errno = ENAMETOOLONG;
+        return cgroup_fail("name", name);
+    }
     FILE *sc = fopen("/sys/fs/cgroup/cgroup.subtree_control", "w");
-    if (!sc) return false;
+    if (!sc) return cgroup_fail("open", "/sys/fs/cgroup/cgroup.subtree_control");
     fputs("+memory", sc);
-    if (fclose(sc) != 0) return false;
-    if (mkdir(path, 0755) != 0 && errno != EEXIST) return false;
-    char probe[640];
+    if (fclose(sc) != 0)
+        return cgroup_fail("enable +memory in",
+                           "/sys/fs/cgroup/cgroup.subtree_control");
+    if (mkdir(path, 0755) != 0 && errno != EEXIST)
+        return cgroup_fail("mkdir", path);
+    char probe[PATH_MAX + 32];
     snprintf(probe, sizeof probe, "%s/memory.current", path);
-    if (access(probe, R_OK) != 0) return false;
+    if (access(probe, R_OK) != 0) return cgroup_fail("read", probe);
     c->cgroup = strdup(path);
     c->mem_timer = wl_event_loop_add_timer(c->loop, mem_sample, c);
     wl_event_source_timer_update(c->mem_timer, 100);
     return true;
 }
 
-static void cgroup_add_pid(struct benchcomp *c, pid_t pid) {
-    if (!c->cgroup) return;
-    char p[512];
-    snprintf(p, sizeof p, "%s/cgroup.procs", c->cgroup);
-    FILE *f = fopen(p, "w");
-    if (!f) return;
-    fprintf(f, "%d", (int)pid);
-    fclose(f);
-}
-
 // ---------------- renderer evidence ----------------
 
-// One JSONL event carrying a path string, escaped as a JSON string.
-static void log_path_ev(struct benchcomp *c, const char *ev, int pid,
-                        const char *key, const char *path) {
-    fprintf(c->log, "{\"ev\":\"%s\",\"t\":%llu,\"pid\":%d,\"%s\":\"", ev,
-            (unsigned long long)now_ns(), pid, key);
-    for (const unsigned char *s = (const unsigned char *)path; *s; s++) {
+// A JSON string value: quotes, backslashes and control bytes escaped.
+static void json_str(FILE *f, const char *v) {
+    fputc('"', f);
+    for (const unsigned char *s = (const unsigned char *)v; *s; s++) {
         if (*s == '"' || *s == '\\')
-            fprintf(c->log, "\\%c", *s);
+            fprintf(f, "\\%c", *s);
         else if (*s < 0x20)
-            fprintf(c->log, "\\u%04x", *s);
+            fprintf(f, "\\u%04x", *s);
         else
-            fputc(*s, c->log);
+            fputc(*s, f);
     }
-    fputs("\"}\n", c->log);
+    fputc('"', f);
 }
 
-// At window end, before the app is stopped: every shared object mapped
-// and every device node held open by each process of the app's cgroup —
-// the userspace renderer the contestant actually loaded (Mesa/Vulkan
-// driver libraries) and the render nodes it opened. Read once, so no
-// sampling perturbs the capture. A process that exits between listing
-// and reading has nothing left to report.
-static void log_renderer_evidence(struct benchcomp *c) {
-    char p[512];
+// One JSONL event carrying a path string.
+static void log_path_ev(struct benchcomp *c, const char *ev, int pid,
+                        const char *key, const char *path) {
+    fprintf(c->log, "{\"ev\":\"%s\",\"t\":%llu,\"pid\":%d,\"%s\":", ev,
+            (unsigned long long)now_ns(), pid, key);
+    json_str(c->log, path);
+    fputs("}\n", c->log);
+}
+
+// A piece of renderer evidence that could not be read: what, for which
+// pid, and errno. The runner fails the rep on any of these — evidence is
+// never silently partial.
+static void evidence_error(struct benchcomp *c, const char *what, int pid,
+                           int err) {
+    logf_ev(c, "evidence_error", "\"what\":\"%s\",\"pid\":%d,\"errno\":%d",
+            what, pid, err);
+}
+
+typedef void (*fd_visit_fn)(struct benchcomp *c, int pid, const char *fd,
+                            const char *target, void *ctx);
+
+// Every device node (/dev/...) held open by every process of the app's
+// cgroup, handed to `visit`. A pid whose fd directory cannot be opened is
+// an evidence error; an fd that closes between listing and readlink is no
+// longer held and is skipped.
+static void visit_device_fds(struct benchcomp *c, fd_visit_fn visit,
+                             void *ctx) {
+    char p[PATH_MAX + 32];
     snprintf(p, sizeof p, "%s/cgroup.procs", c->cgroup);
     FILE *procs = fopen(p, "r");
     if (!procs) {
-        logf_ev(c, "evidence_error", "\"errno\":%d", errno);
+        evidence_error(c, "cgroup.procs", 0, errno);
+        return;
+    }
+    int pid;
+    while (fscanf(procs, "%d", &pid) == 1) {
+        snprintf(p, sizeof p, "/proc/%d/fd", pid);
+        DIR *fds = opendir(p);
+        if (!fds) {
+            evidence_error(c, "fd", pid, errno);
+            continue;
+        }
+        struct dirent *de;
+        while ((de = readdir(fds))) {
+            if (de->d_name[0] == '.') continue;
+            char link[PATH_MAX], target[PATH_MAX];
+            int len = snprintf(link, sizeof link, "%s/%s", p, de->d_name);
+            if (len < 0 || (size_t)len >= sizeof link) {
+                evidence_error(c, "fd", pid, ENAMETOOLONG);
+                continue;
+            }
+            ssize_t n = readlink(link, target, sizeof target - 1);
+            if (n < 0) {
+                if (errno != ENOENT) evidence_error(c, "fd", pid, errno);
+                continue;
+            }
+            target[n] = 0;
+            if (strncmp(target, "/dev/", 5)) continue;
+            visit(c, pid, de->d_name, target, ctx);
+        }
+        closedir(fds);
+    }
+    fclose(procs);
+}
+
+// One "drm" event per render-node fd: the DRM fdinfo usage counters the
+// kernel keeps for that client — drm-engine-<engine> busy ns (amdgpu,
+// i915, msm, panfrost, v3d, ...) and drm-cycles-<class> (xe) — with the
+// client id and driver that identify it. Read at window start and again
+// at window end (one read each, no sampling); the runner's delta across
+// the window is what proves the GPU did the contestant's work.
+static void log_drm_usage_fd(struct benchcomp *c, int pid, const char *fd,
+                             const char *target, void *ctx) {
+    const char *phase = ctx;
+    if (strncmp(target, "/dev/dri/renderD", 16)) return;
+    char p[PATH_MAX];
+    int len = snprintf(p, sizeof p, "/proc/%d/fdinfo/%s", pid, fd);
+    if (len < 0 || (size_t)len >= sizeof p) {
+        evidence_error(c, "fdinfo", pid, ENAMETOOLONG);
+        return;
+    }
+    FILE *info = fopen(p, "r");
+    if (!info) {
+        if (errno != ENOENT) evidence_error(c, "fdinfo", pid, errno);
+        return;
+    }
+    fprintf(c->log, "{\"ev\":\"drm\",\"t\":%llu,\"phase\":\"%s\","
+            "\"pid\":%d,\"fd\":%s,\"target\":",
+            (unsigned long long)now_ns(), phase, pid, fd);
+    json_str(c->log, target);
+    fputs(",\"counters\":{", c->log);
+    char line[512];
+    bool first = true;
+    while (fgets(line, sizeof line, info)) {
+        char key[128], val[256];
+        if (sscanf(line, "%127[^:]:%*[ \t]%255[^\n]", key, val) != 2)
+            continue;
+        if (strncmp(key, "drm-", 4)) continue;
+        if (!first) fputc(',', c->log);
+        first = false;
+        json_str(c->log, key);
+        fputc(':', c->log);
+        json_str(c->log, val);
+    }
+    fclose(info);
+    fputs("}}\n", c->log);
+}
+
+static void log_drm_usage(struct benchcomp *c, const char *phase) {
+    visit_device_fds(c, log_drm_usage_fd, (void *)phase);
+    fflush(c->log);
+}
+
+static void log_fd_target(struct benchcomp *c, int pid, const char *fd,
+                          const char *target, void *ctx) {
+    (void)fd;
+    (void)ctx;
+    log_path_ev(c, "fd", pid, "target", target);
+}
+
+// At window end, before the app is stopped — supporting evidence beside
+// the DRM usage counters: every shared object mapped and every device
+// node held open by each process of the app's cgroup (the Mesa/Vulkan
+// driver libraries the loader mapped and the render nodes opened). Read
+// once, so no sampling perturbs the capture; a maps file or fd directory
+// that cannot be read is an evidence error.
+static void log_renderer_evidence(struct benchcomp *c) {
+    char p[PATH_MAX + 32];
+    snprintf(p, sizeof p, "%s/cgroup.procs", c->cgroup);
+    FILE *procs = fopen(p, "r");
+    if (!procs) {
+        evidence_error(c, "cgroup.procs", 0, errno);
         return;
     }
     int pid;
     while (fscanf(procs, "%d", &pid) == 1) {
         snprintf(p, sizeof p, "/proc/%d/maps", pid);
         FILE *maps = fopen(p, "r");
-        if (maps) {
-            char line[4352], last[4096] = "";
-            while (fgets(line, sizeof line, maps)) {
-                char *path = strchr(line, '/');
-                if (!path || !strstr(path, ".so")) continue;
-                path[strcspn(path, "\n")] = 0;
-                // a library spans several consecutive mappings
-                if (!strcmp(path, last)) continue;
-                snprintf(last, sizeof last, "%s", path);
-                log_path_ev(c, "lib", pid, "path", path);
-            }
-            fclose(maps);
+        if (!maps) {
+            evidence_error(c, "maps", pid, errno);
+            continue;
         }
-        snprintf(p, sizeof p, "/proc/%d/fd", pid);
-        DIR *fds = opendir(p);
-        if (fds) {
-            struct dirent *de;
-            while ((de = readdir(fds))) {
-                if (de->d_name[0] == '.') continue;
-                char link[600], target[4096];
-                snprintf(link, sizeof link, "%s/%s", p, de->d_name);
-                ssize_t n = readlink(link, target, sizeof target - 1);
-                if (n <= 0) continue;
-                target[n] = 0;
-                if (strncmp(target, "/dev/", 5)) continue;
-                log_path_ev(c, "fd", pid, "target", target);
-            }
-            closedir(fds);
+        char line[PATH_MAX + 256], last[sizeof line] = "";
+        while (fgets(line, sizeof line, maps)) {
+            char *path = strchr(line, '/');
+            if (!path || !strstr(path, ".so")) continue;
+            path[strcspn(path, "\n")] = 0;
+            // a library spans several consecutive mappings
+            if (!strcmp(path, last)) continue;
+            snprintf(last, sizeof last, "%s", path);
+            log_path_ev(c, "lib", pid, "path", path);
         }
+        fclose(maps);
     }
     fclose(procs);
+    visit_device_fds(c, log_fd_target, NULL);
     fflush(c->log);
 }
 
@@ -595,15 +739,27 @@ static void load_script(struct benchcomp *c, const char *path) {
 
 // ---------------- spawn / shutdown ----------------
 
+// The child joins the app cgroup itself ("0" moves the writer) before it
+// execs, so nothing it starts can run outside the cgroup the memory and
+// renderer evidence are scoped to; a child that cannot join exits 126 and
+// the rep fails.
 static void spawn_app(struct benchcomp *c) {
+    char procs[PATH_MAX + 32];
+    snprintf(procs, sizeof procs, "%s/cgroup.procs", c->cgroup);
     pid_t pid = fork();
     if (pid == 0) {
+        int fd = open(procs, O_WRONLY);
+        if (fd < 0 || write(fd, "0", 1) != 1) {
+            fprintf(stderr, "benchcomp: cannot join %s: %s\n", procs,
+                    strerror(errno));
+            _exit(126);
+        }
+        close(fd);
         setsid();
         execl("/bin/sh", "sh", "-c", c->spawn_cmd, (char *)NULL);
         _exit(127);
     }
     c->spawn_pid = pid;
-    cgroup_add_pid(c, pid);
     logf_ev(c, "spawn", "\"pid\":%d", (int)pid);
 }
 
@@ -641,11 +797,23 @@ static void finish(struct benchcomp *c, int code) {
     wl_display_terminate(c->display);
 }
 
+static int window_start_timer(void *data) {
+    // the window opens: the DRM usage counters' starting values
+    struct benchcomp *c = data;
+    logf_ev(c, "window_start", NULL);
+    log_drm_usage(c, "start");
+    return 0;
+}
+
 static int duration_timer(void *data) {
     // the window has closed: record what the app rendered with while it
-    // is still alive, then stop it
-    log_renderer_evidence(data);
-    finish(data, 0);
+    // is still alive — the usage counters' end values, then the mapped
+    // libraries and held nodes — then stop it
+    struct benchcomp *c = data;
+    logf_ev(c, "window_end", NULL);
+    log_drm_usage(c, "end");
+    log_renderer_evidence(c);
+    finish(c, 0);
     return 0;
 }
 
@@ -667,11 +835,11 @@ static void anchor(struct benchcomp *c) {
             c->script_source,
             (int)c->warmup_ms + (int)c->script_next->at_ms + 1);
     }
-    if (c->duration_ms) {
-        c->dur_timer = wl_event_loop_add_timer(c->loop, duration_timer, c);
-        wl_event_source_timer_update(
-            c->dur_timer, (int)c->warmup_ms + (int)c->duration_ms);
-    }
+    c->window_timer = wl_event_loop_add_timer(c->loop, window_start_timer, c);
+    wl_event_source_timer_update(c->window_timer, (int)c->warmup_ms);
+    c->dur_timer = wl_event_loop_add_timer(c->loop, duration_timer, c);
+    wl_event_source_timer_update(
+        c->dur_timer, (int)c->warmup_ms + (int)c->duration_ms);
 }
 
 static int present_deadline(void *data) {
@@ -739,9 +907,10 @@ int main(int argc, char **argv) {
             usage(argv[0]);
     }
     if (!c.spawn_cmd) usage(argv[0]);
-    if (!c.warmup_ms) {
-        fprintf(stderr, "benchcomp: --warmup must be declared and nonzero "
-                "(METHOD: window = first owned present + warmup)\n");
+    if (!c.warmup_ms || !c.duration_ms) {
+        fprintf(stderr, "benchcomp: --warmup and --duration must be declared "
+                "and nonzero (METHOD: window = [first owned present + "
+                "warmup, + capture])\n");
         return 2;
     }
     if (out_path && !(c.log = fopen(out_path, "w"))) {

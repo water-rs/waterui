@@ -113,53 +113,32 @@ def checked(cmd: list[str], **kw) -> str:
     return r.stdout
 
 
-def _adb_bin(man: dict | None = None) -> str:
-    """adb from the manifest-declared SDK, else PATH (device hosts that
-    only run prebuilt artifacts and carry no toolchain pins)."""
-    if man is not None:
-        sdk = toolchain.require_dir(
-            "android.sdk_root", man["toolchain"]["android"]["sdk_root"])
-        return str(toolchain.require_file(
-            "adb", sdk / "platform-tools" / "adb"))
-    return shutil.which("adb") or str(
-        Path.home() / "Android" / "Sdk" / "platform-tools" / "adb")
-
-
-# manifest-resolved adb, set in main() when the declared SDK exists
-_ADB_OVERRIDE: str | None = None
+def _adb_bin() -> str:
+    """adb from the manifest-declared SDK — the one adb every host uses,
+    build VM and device host alike. A host without the declared SDK fails
+    here naming the pin; nothing is picked from PATH."""
+    sdk = toolchain.require_dir(
+        "android.sdk_root", FULL_MAN["toolchain"]["android"]["sdk_root"])
+    return str(toolchain.require_file(
+        "adb", sdk / "platform-tools" / "adb"))
 
 
 def adb(serial: str, *args: str, timeout: int = 60) -> str:
-    return checked([_ADB_OVERRIDE or _adb_bin(), "-s", serial, *args],
+    return checked([_adb_bin(), "-s", serial, *args],
                    timeout=timeout).strip()
 
 
-_JAVA: str | None = None
-
-
-def _java_bin(man: dict | None = None) -> str:
-    """The manifest-declared JDK (build hosts). Device-only hosts that
-    pass no manifest fall back to $JAVA_HOME then PATH."""
-    global _JAVA
-    if _JAVA:
-        return _JAVA
-    if man is not None:
-        jh = toolchain.require_dir(
-            "android.java_home", man["toolchain"]["android"]["java_home"])
-        java = toolchain.require_file("java", jh / "bin" / "java")
-        toolchain.require_version(
-            "JDK", [str(java), "-version"],
-            man["toolchain"]["android"]["jdk_version"])
-        _JAVA = str(java)
-        return _JAVA
-    for cand in [os.environ.get("JAVA_HOME", "") + "/bin/java",
-                 shutil.which("java") or ""]:
-        if cand and Path(cand).exists() and \
-                sh([cand, "-version"]).returncode == 0:
-            _JAVA = cand
-            return cand
-    raise RuntimeError("no working JDK; the manifest declares "
-                       "toolchain.android.java_home for build hosts")
+def _java_bin(man: dict) -> str:
+    """The manifest-declared JDK (toolchain.android.java_home), verified
+    to report the declared major version — the one JDK every host uses;
+    nothing is picked from $JAVA_HOME or PATH."""
+    jh = toolchain.require_dir(
+        "android.java_home", man["toolchain"]["android"]["java_home"])
+    java = toolchain.require_file("java", jh / "bin" / "java")
+    toolchain.require_version(
+        "JDK", [str(java), "-version"],
+        man["toolchain"]["android"]["jdk_version"])
+    return str(java)
 
 
 def adb_shell(serial: str, *args: str, timeout: int = 60) -> str:
@@ -619,7 +598,8 @@ def cmd_build(man):
         # bootstrap (generated android/ trees, npm ci, wrapper pins) and
         # the build run on a clean tree and must leave it clean — a step
         # that rewrites a tracked file aborts the build command
-        with toolchain.tracked_tree_unchanged(f"android build {name}"):
+        with toolchain.tracked_tree_unchanged(
+                f"android build {name}", [ROOT, (ROOT / c["dir"]).resolve()]):
             try:
                 if c["kind"] == "reactnative":
                     build_gradle(c, ddir, e, rn=True)
@@ -677,25 +657,25 @@ def ensure_bundletool(man: dict) -> Path:
         BUNDLETOOL_JAR)
 
 
-def aab_download_size(aab: Path, serial: str | None,
-                      man: dict | None = None) -> dict:
-    jar = ensure_bundletool(man) if man is not None else BUNDLETOOL_JAR
+def aab_download_size(aab: Path, serial: str | None, man: dict) -> dict:
+    jar = ensure_bundletool(man)
+    java = _java_bin(man)
     with tempfile.TemporaryDirectory() as td:
         apks = Path(td) / "out.apks"
         spec = Path(td) / "spec.json"
         if serial:
             # the attached device's own spec; a failure here is a broken
             # adb/bundletool setup, not a reason to size for another device
-            checked([_java_bin(man), "-jar", str(jar), "get-device-spec",
-                     "--adb", _adb_bin(man), "--device-id", serial,
+            checked([java, "-jar", str(jar), "get-device-spec",
+                     "--adb", _adb_bin(), "--device-id", serial,
                      "--output", str(spec)])
         else:
             # VM mode has no device: size for the documented reference spec
             spec.write_text(json.dumps(_default_spec()))
-        checked([_java_bin(man), "-jar", str(jar), "build-apks",
+        checked([java, "-jar", str(jar), "build-apks",
                  "--bundle", str(aab), "--output", str(apks),
                  "--device-spec", str(spec)])
-        out = checked([_java_bin(man), "-jar", str(jar), "get-size",
+        out = checked([java, "-jar", str(jar), "get-size",
                        "total", "--apks", str(apks)])
         n = re.findall(r"(\d+)", out)
         if not n:
@@ -814,6 +794,15 @@ def launch(serial: str, pkg: str, activity: str, workload: str,
 # every MEM_SAMPLE_S, read by the on-device program itself.
 MEM_SAMPLE_S = 0.5
 
+# The device program's window-start marker: an atrace slice the program
+# writes through the kernel's trace_marker the instant it opens the window
+# and starts the drive, closed when the window's hold ends. The traces
+# record it through ftrace `print`, so the drive's start is a timestamp in
+# the same trace — and the same clock — as the owned presents that define
+# the window (WORKLOADS.md METHOD).
+TRACE_MARKER = "/sys/kernel/tracing/trace_marker"
+WINDOW_MARKER = "bench.window"
+
 
 def device_program(am_start: str, pkg: str, warmup_ms: int, cap_ms: int,
                    drive: str | None, sample_mem: bool) -> str:
@@ -823,10 +812,14 @@ def device_program(am_start: str, pkg: str, warmup_ms: int, cap_ms: int,
 
     `am start -W` returns on the launch's first-frame event; the declared
     warmup follows and the window opens. At window start the program
-    records the steady memory, starts the in-window memory sampler and
-    the drive program in the background, and holds for exactly the
-    capture length — the drive never shortens the window, and a drive
-    that has not finished when the window closes fails the capture."""
+    records the steady memory, writes the `bench.window` begin marker into
+    the trace, and starts the hold, the drive program and the in-window
+    memory sampler in the background; the hold is exactly the capture
+    length — the drive never shortens the window, and a drive that has not
+    finished when the window closes fails the capture. The end marker is
+    written when the hold ends. The trace analysis bounds the marker
+    against the window it derives from the first owned present."""
+    marker = shlex.quote(TRACE_MARKER)
     lines = [
         am_start,
         f"pid=$(pidof {shlex.quote(pkg)})",
@@ -834,22 +827,32 @@ def device_program(am_start: str, pkg: str, warmup_ms: int, cap_ms: int,
         'exit 11; }',
         'echo "BENCH_PID $pid"',
         f"sleep {warmup_ms / 1000.0}",
-        # window start
-        f"sleep {cap_ms / 1000.0} & hold=$!",
     ]
     if sample_mem:
-        lines += [
+        lines.append(
             'echo "BENCH_MEM_STEADY $(grep -E \'^(Pss|Rss):\' '
-            '/proc/$pid/smaps_rollup | tr \'\\n\' \' \')"',
+            '/proc/$pid/smaps_rollup | tr \'\\n\' \' \')"')
+    # window start: the marker, then the hold and the drive at once
+    lines += [
+        f'echo "B|$$|{WINDOW_MARKER}" > {marker} || '
+        f'{{ echo "BENCH_ERR cannot write the window marker to '
+        f'{TRACE_MARKER}"; exit 13; }}',
+        f"sleep {cap_ms / 1000.0} & hold=$!",
+    ]
+    if drive is not None:
+        lines.append(f"( {drive} ) & drv=$!")
+    if sample_mem:
+        lines.append(
             '( while kill -0 $hold 2>/dev/null; do '
             'echo "BENCH_MEM_SAMPLE $(grep \'^Pss:\' '
             '/proc/$pid/smaps_rollup)"; '
-            f"sleep {MEM_SAMPLE_S}; done ) & mem=$!",
-        ]
-    if drive is not None:
-        lines.append(f"( {drive} ) & drv=$!")
+            f"sleep {MEM_SAMPLE_S}; done ) & mem=$!")
     lines.append("wait $hold")
     # window end
+    lines.append(
+        f'echo "E|$$" > {marker} || '
+        f'{{ echo "BENCH_ERR cannot write the window end marker to '
+        f'{TRACE_MARKER}"; exit 14; }}')
     if drive is not None:
         lines.append(
             'if kill -0 $drv 2>/dev/null; then kill $drv; '
@@ -907,6 +910,9 @@ def proc_mem(serial: str, pkg: str) -> dict:
     return vals
 
 
+# Every capture records FrameTimeline (the frame source), the process scan
+# and ftrace `print` — the device program's window marker (WINDOW_MARKER),
+# which places the drive's start in the trace beside the owned presents.
 PERFETTO_CFG = """\
 buffers { size_kb: 32768 fill_policy: RING_BUFFER }
 data_sources { config { name: "android.surfaceflinger.frametimeline" } }
@@ -914,12 +920,14 @@ data_sources { config { name: "linux.process_stats" process_stats_config {
   scan_all_processes_on_start: true
   record_thread_names: true
 } } }
+data_sources { config { name: "linux.ftrace" ftrace_config {
+  ftrace_events: "ftrace/print"
+} } }
 duration_ms: %d
 """
 
-# Capacity-workload config: FrameTimeline + process stats plus scheduler
-# slices so CPU ms/frame on the app's UI + render threads can be attributed
-# (W5/W6 only; the emulator path has no FrameTimeline).
+# Capacity-workload config: the same sources plus scheduler slices so CPU
+# ms/frame on the app's UI + render threads can be attributed (W5/W6 only).
 PERFETTO_CAP_CFG = """\
 buffers { size_kb: 65536 fill_policy: RING_BUFFER }
 data_sources { config { name: "android.surfaceflinger.frametimeline" } }
@@ -928,6 +936,7 @@ data_sources { config { name: "linux.process_stats" process_stats_config {
   record_thread_names: true
 } } }
 data_sources { config { name: "linux.ftrace" ftrace_config {
+  ftrace_events: "ftrace/print"
   ftrace_events: "sched/sched_switch"
   ftrace_events: "sched/sched_wakeup"
   ftrace_events: "task/task_newtask"
@@ -958,7 +967,7 @@ def _record_trace(serial: str, cfg: str, program: str,
     cap. Returns the pulled trace and the program's output."""
     remote = f"/data/misc/perfetto-traces/bench_{int(time.time()*1000)}.perfetto-trace"
     proc = subprocess.run(
-        [_ADB_OVERRIDE or _adb_bin(), "-s", serial, "shell",
+        [_adb_bin(), "-s", serial, "shell",
          f"perfetto --background-wait -c - --txt -o {remote}"],
         input=cfg, text=True, capture_output=True, timeout=40)
     pid = proc.stdout.strip().splitlines()[-1].strip() if proc.stdout.strip() else ""
@@ -1416,8 +1425,8 @@ def assert_foreground(serial: str, pkg: str) -> None:
 
 
 def frame_capture(serial: str, c: dict, workload: str, warmup_ms: int,
-                  cap_ms: int, drive: str | None,
-                  refresh: float | None) -> tuple[dict, dict]:
+                  cap_ms: int, drive: str | None, refresh: float | None,
+                  marker_tolerance_ms: float) -> tuple[dict, dict]:
     """One frame source for every contestant: Perfetto FrameTimeline over
     the on-device capture program (launch + warmup + the fixed window,
     drive inside it); a capture error aborts the run. The window anchors
@@ -1427,7 +1436,7 @@ def frame_capture(serial: str, c: dict, workload: str, warmup_ms: int,
     local, prog = run_capture(serial, PERFETTO_CFG, c, workload, None,
                               warmup_ms, cap_ms, drive, sample_mem=True)
     st = analyze_trace(local, c["package"], prog["pid"], warmup_ms, cap_ms,
-                       refresh)
+                       refresh, marker_tolerance_ms)
     assert_foreground(serial, c["package"])
     return st, prog
 
@@ -1458,21 +1467,62 @@ def _table_columns(tp, table: str) -> set:
         f"SELECT name FROM pragma_table_info('{table}')")}
 
 
-def _owned_upid(tp, pkg: str, pid: int) -> int:
-    """The trace's process entry for the launched contestant: the pid the
-    capture program reported, named as the package. The system starting
-    window, splash screen and transition leashes carry the package in
-    their layer names but are owned by system processes — attribution is
-    by this upid alone, never by layer name."""
+def _owned_upid(tp, pid: int) -> int:
+    """The trace's process entry for the launched contestant, by pid alone.
+
+    Identity was established on the device: the capture program's `pidof
+    <package>` named this pid after `am start -W` returned. The trace only
+    has to map it to exactly one process whose lifetime covers the
+    window: one with no recorded start (trace_processor created it from
+    the pid FrameTimeline reported) or one forked inside the trace. The process name is never
+    consulted: without a scan of the new pid it is NULL, and at fork it is
+    still zygote's. A pid that maps to no row or to several (reuse inside
+    the trace) cannot be attributed and fails the capture."""
+    start = next(iter(tp.query(
+        "SELECT start_ts FROM trace_bounds"))).start_ts
     rows = list(tp.query(
-        f"SELECT upid, name FROM process WHERE pid = {int(pid)}"))
-    owned = [r.upid for r in rows if r.name == pkg]
-    if len(owned) != 1:
+        f"SELECT upid, name, start_ts FROM process WHERE pid = {int(pid)} "
+        f"AND (start_ts IS NULL OR start_ts >= {int(start)})"))
+    if len(rows) != 1:
         raise RuntimeError(
-            f"launched {pkg} pid {pid} resolves to "
-            f"{[(r.upid, r.name) for r in rows]} in the trace's process "
-            "table — the capture cannot be attributed")
-    return owned[0]
+            f"launched pid {pid} resolves to "
+            f"{[(r.upid, r.name, r.start_ts) for r in rows]} in the trace's "
+            "process table (trace start "
+            f"{start}) — exactly one process must own the window; the "
+            "capture cannot be attributed")
+    return rows[0].upid
+
+
+def _window_marker_ns(tp) -> tuple[int, int]:
+    """The device program's `bench.window` slice: (drive start, hold end)
+    in trace ns. Exactly one complete slice must exist — a missing or
+    unterminated marker means the program's window was never recorded."""
+    rows = list(tp.query(
+        "SELECT ts, dur FROM slice "
+        f"WHERE name = '{WINDOW_MARKER}'"))
+    if len(rows) != 1 or rows[0].dur is None or rows[0].dur < 0:
+        raise RuntimeError(
+            f"the trace holds {[(r.ts, r.dur) for r in rows]} for the "
+            f"{WINDOW_MARKER} marker — the capture program's window must "
+            "be exactly one complete slice (ftrace/print recorded)")
+    return rows[0].ts, rows[0].ts + rows[0].dur
+
+
+def require_marker_at_window(marker_ns: int, window_start_ns: int,
+                             tolerance_ms: float) -> float:
+    """The drive starts at window start (METHOD). The device program opens
+    its window `warmup` after `am start -W` returns; the trace's window
+    opens `warmup` after the first owned present. The marker is the
+    program's window start in trace time, so the difference is measured,
+    returned as evidence and bounded by the manifest's declared tolerance
+    ([pacing].window_marker_tolerance_ms) — a capture outside it fails."""
+    offset_ms = (marker_ns - window_start_ns) / 1e6
+    if abs(offset_ms) > tolerance_ms:
+        raise RuntimeError(
+            f"the drive started {offset_ms:+.1f} ms from the window start "
+            f"(first owned present + warmup); the declared bound is "
+            f"±{tolerance_ms:g} ms")
+    return offset_ms
 
 
 def _frame_rows(tp, upid: int):
@@ -1520,6 +1570,7 @@ def require_window_covered(trace_end_ns: int, window: tuple[int, int]) -> None:
 
 def analyze_trace(path: Path, pkg: str, pid: int, warmup_ms: int,
                   cap_ms: int, refresh: float | None,
+                  marker_tolerance_ms: float,
                   with_cpu: bool = False) -> dict:
     """FrameTimeline presents of the launched process: present interval
     statistics over the window and the jank share from the frame-timeline
@@ -1530,7 +1581,7 @@ def analyze_trace(path: Path, pkg: str, pid: int, warmup_ms: int,
     miss is never aggregated around."""
     from perfetto.trace_processor import TraceProcessor
     with TraceProcessor(trace=str(path)) as tp:
-        upid = _owned_upid(tp, pkg, pid)
+        upid = _owned_upid(tp, pid)
         rows = _frame_rows(tp, upid)
         # dropped frames never presented — they are jank evidence, not
         # presents, and must not join the interval math
@@ -1547,6 +1598,9 @@ def analyze_trace(path: Path, pkg: str, pid: int, warmup_ms: int,
         bounds = next(iter(tp.query(
             "SELECT start_ts, end_ts FROM trace_bounds")))
         require_window_covered(bounds.end_ts, window)
+        marker = _window_marker_ns(tp)
+        offset_ms = require_marker_at_window(marker[0], window[0],
+                                             marker_tolerance_ms)
         cpu = _window_cpu(tp, upid, pkg, window) if with_cpu else None
     stats = lib_frames.frame_statistics(
         [t / 1e6 for t in pts], window[0] / 1e6, cap_ms,
@@ -1559,6 +1613,7 @@ def analyze_trace(path: Path, pkg: str, pid: int, warmup_ms: int,
              if str(r[2]) not in ("None", "null", "None.None", "")]
     stats["dropped_pct"] = (round(100.0 * len(janky) / len(in_win), 2)
                             if in_win else None)
+    stats["drive_offset_ms"] = round(offset_ms, 3)
     stats["frames"] = stats.pop("presents")
     stats["ivals_ms"] = stats.pop("intervals_ms")
     if cpu is not None:
@@ -1625,7 +1680,8 @@ def within_budget(ivals: list[float], budget_ms: float) -> float | None:
 
 def capacity_capture(serial: str, c: dict, workload: str, step: int,
                      warmup_ms: int, cap_ms: int, drive: str | None,
-                     refresh: float | None) -> dict:
+                     refresh: float | None,
+                     marker_tolerance_ms: float) -> dict:
     """Frame capture for one capacity step, Perfetto FrameTimeline like
     every other capture plus CPU ms/frame from sched_slice. The step's
     launch and settle run inside the trace so the window anchors on THIS
@@ -1636,7 +1692,7 @@ def capacity_capture(serial: str, c: dict, workload: str, step: int,
                               warmup_ms, cap_ms, drive, sample_mem=False)
     try:
         st = analyze_trace(local, pkg, prog["pid"], warmup_ms, cap_ms,
-                           refresh, with_cpu=True)
+                           refresh, marker_tolerance_ms, with_cpu=True)
     except NoFramesError:
         # live app, surfaces still present, zero presents: the collapse
         # point is a measurement; a dead process or vanished surfaces
@@ -1668,7 +1724,7 @@ def measure_capacity(man, name: str, c: dict, serial: str, wl: str,
     spec = man["workloads"][wl]
     settle_ms = spec["settle_ms"]
     hold_ms = spec["hold_ms"]
-    collapse_frac = spec.get("collapse_frac", 0.5)
+    collapse_frac = spec["collapse_frac"]
     pkg = c["package"]
     out: dict = {"steps": [], "collapsed_at": None, "crashed": None,
                  "not_responding": None}
@@ -1680,7 +1736,7 @@ def measure_capacity(man, name: str, c: dict, serial: str, wl: str,
             st = capacity_capture(
                 serial, c, wl, n, settle_ms, hold_ms,
                 fling_program(man["fling"], dims) if wl == "w6" else None,
-                refresh)
+                refresh, man["pacing"]["window_marker_tolerance_ms"])
         except AppNotRespondingError:
             # the step blocked the main thread past the ANR timeout: the
             # ladder's limit. Stopping the app dismisses the dialog before
@@ -1716,6 +1772,7 @@ def measure_capacity(man, name: str, c: dict, serial: str, wl: str,
             "within_120hz": within_budget(ivals, BUDGET_120_MS),
             "within_60hz": within_budget(ivals, BUDGET_60_MS),
             "cpu_ms_per_frame": st.get("cpu_ms_per_frame"),
+            "drive_offset_ms": st.get("drive_offset_ms"),
         }
         if st.get("cpu_threads"):
             rec["cpu_threads"] = st["cpu_threads"]
@@ -1786,7 +1843,7 @@ def measure_rep(man, name: str, c: dict, serial: str,
         frames, prog = frame_capture(
             serial, c, w, warmup_ms, pacing["capture_ms"][w],
             fling_program(man["fling"], dims) if w in ("w2", "w4") else None,
-            rep["refresh_hz"])
+            rep["refresh_hz"], pacing["window_marker_tolerance_ms"])
         wr["startup_ms"] = prog["startup_ms"]
         wr["memory_steady"] = prog["memory_steady"]
         wr["memory_peak_kb"] = prog["memory_peak_kb"]
@@ -2241,6 +2298,164 @@ def cmd_report(results: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _fixture_trace(path: Path, *, pid: int, fork: bool,
+                   scan_pid: bool, presents_ns: list[int],
+                   marker_ns: tuple[int, int] | None) -> None:
+    """A synthetic Perfetto trace shaped like a capture: the start-of-trace
+    process scan, optionally the contestant's fork (task_newtask, as the
+    capacity config records it), the device program's ftrace `print`
+    window marker, and the contestant's FrameTimeline surface frames.
+
+    The pip `perfetto` protos omit FrameTimelineEvent (TracePacket field
+    76), so its frames are serialized from a runtime descriptor of the
+    upstream message layout and merged into the packet as that field."""
+    from google.protobuf import (descriptor_pb2, descriptor_pool,
+                                 message_factory)
+    from perfetto.trace_builder.proto_builder import TraceProtoBuilder
+    F = descriptor_pb2.FieldDescriptorProto
+    fd = descriptor_pb2.FileDescriptorProto(
+        name="frame_timeline_fixture.proto", package="fixture",
+        syntax="proto2")
+
+    def message(name: str, fields) -> None:
+        m = fd.message_type.add(name=name)
+        for fname, num, typ, tname in fields:
+            f = m.field.add(name=fname, number=num, type=typ,
+                            label=F.LABEL_OPTIONAL)
+            if tname:
+                f.type_name = tname
+    message("ActualSurfaceFrameStart", [
+        ("cookie", 1, F.TYPE_INT64, None),
+        ("token", 2, F.TYPE_INT64, None),
+        ("display_frame_token", 3, F.TYPE_INT64, None),
+        ("pid", 4, F.TYPE_INT32, None),
+        ("layer_name", 5, F.TYPE_STRING, None),
+        ("present_type", 6, F.TYPE_INT32, None),
+        ("on_time_finish", 7, F.TYPE_BOOL, None),
+        ("gpu_composition", 8, F.TYPE_BOOL, None),
+        ("jank_type", 9, F.TYPE_INT32, None),
+        ("prediction_type", 10, F.TYPE_INT32, None),
+        ("is_buffer", 11, F.TYPE_BOOL, None)])
+    message("FrameEnd", [("cookie", 1, F.TYPE_INT64, None)])
+    message("FrameTimelineEvent", [
+        ("actual_surface_frame_start", 4, F.TYPE_MESSAGE,
+         ".fixture.ActualSurfaceFrameStart"),
+        ("frame_end", 5, F.TYPE_MESSAGE, ".fixture.FrameEnd")])
+    message("Packet", [
+        ("timestamp", 8, F.TYPE_UINT64, None),
+        ("trusted_packet_sequence_id", 10, F.TYPE_UINT32, None),
+        ("frame_timeline_event", 76, F.TYPE_MESSAGE,
+         ".fixture.FrameTimelineEvent")])
+    pool = descriptor_pool.DescriptorPool()
+    pool.Add(fd)
+    Packet = message_factory.GetMessageClass(
+        pool.FindMessageTypeByName("fixture.Packet"))
+
+    b = TraceProtoBuilder()
+    t0 = presents_ns[0] - 500_000_000
+    pk = b.add_packet()
+    pk.timestamp = t0
+    for spid, name in [(1, "/system/bin/init"), (700, "zygote64")] + (
+            [(pid, "com.example.stale")] if scan_pid else []):
+        pr = pk.process_tree.processes.add()
+        pr.pid, pr.ppid = spid, (0 if spid == 1 else 1)
+        pr.cmdline.append(name)
+    pk = b.add_packet()
+    pk.timestamp = t0
+    pk.trusted_packet_sequence_id = 1
+    fb = pk.ftrace_events
+    fb.cpu = 0
+    if fork:
+        ev = fb.event.add()
+        ev.timestamp, ev.pid = t0 + 100_000_000, 700
+        ev.task_newtask.pid = pid
+        ev.task_newtask.comm = "zygote64"
+        ev.task_newtask.clone_flags = 0
+    if marker_ns is not None:
+        for ts, buf in ((marker_ns[0], f"B|900|{WINDOW_MARKER}\n"),
+                        (marker_ns[1], "E|900\n")):
+            ev = fb.event.add()
+            ev.timestamp, ev.pid = ts, 900
+            ev.print.buf = buf
+    for i, end in enumerate(presents_ns):
+        start = Packet(timestamp=end - 4_000_000,
+                       trusted_packet_sequence_id=2)
+        a = start.frame_timeline_event.actual_surface_frame_start
+        a.cookie, a.token, a.display_frame_token = i + 1, 1000 + i, 5000 + i
+        a.pid, a.layer_name = pid, "dev.bench.views/dev.bench.views.Main#0"
+        a.present_type, a.on_time_finish, a.gpu_composition = 1, True, False
+        a.jank_type, a.prediction_type, a.is_buffer = 1, 1, True
+        b.add_packet().MergeFromString(start.SerializeToString())
+        fin = Packet(timestamp=end, trusted_packet_sequence_id=2)
+        fin.frame_timeline_event.frame_end.cookie = i + 1
+        b.add_packet().MergeFromString(fin.SerializeToString())
+    path.write_bytes(b.serialize())
+
+
+def _self_test_trace_attribution() -> None:
+    """Pid attribution, the window marker and the window arithmetic of
+    analyze_trace against synthetic traces in the real trace_processor."""
+    from perfetto.trace_processor import TraceProcessor
+    pid, period = 4242, 8_333_333
+    first = 2_000_000_000
+    presents = [first + i * period for i in range(120)]  # 1 s at 120 Hz
+    warm, cap = 100, 500
+    win_start = first + warm * 1_000_000
+    good_marker = (win_start + 20_000_000, win_start + 20_000_000
+                   + cap * 1_000_000)
+    with tempfile.TemporaryDirectory() as td:
+        def trace(name, **kw) -> Path:
+            path = Path(td) / f"{name}.perfetto-trace"
+            _fixture_trace(path, pid=pid, presents_ns=presents, **kw)
+            return path
+        # W2/W3/W4 shape: no fork event, the process row comes from
+        # FrameTimeline's pid with no name — attributed by pid alone
+        w2 = trace("w2", fork=False, scan_pid=False, marker_ns=good_marker)
+        st = analyze_trace(w2, "dev.bench.views", pid, warm, cap, 120.0,
+                           100)
+        assert st["drive_offset_ms"] == 20.0, st
+        assert st["frames"] == 60, st
+        # capacity shape: forked inside the trace, comm still zygote's
+        cap_trace = trace("cap", fork=True, scan_pid=False,
+                          marker_ns=good_marker)
+        with TraceProcessor(trace=str(cap_trace)) as tp:
+            upid = _owned_upid(tp, pid)
+            name = next(iter(tp.query(
+                f"SELECT name FROM process WHERE upid = {upid}"))).name
+            assert name != "dev.bench.views", name
+        # pid reuse inside the trace: the start scan and the fork both
+        # claim the pid — two candidate processes, no attribution
+        reuse = trace("reuse", fork=True, scan_pid=True,
+                      marker_ns=good_marker)
+        with TraceProcessor(trace=str(reuse)) as tp:
+            try:
+                _owned_upid(tp, pid)
+            except RuntimeError as e:
+                assert "cannot be attributed" in str(e)
+            else:
+                raise AssertionError("ambiguous pid attributed")
+        # the drive started 150 ms after the window opened: out of bound
+        late = trace("late", fork=False, scan_pid=False,
+                     marker_ns=(win_start + 150_000_000,
+                                win_start + 650_000_000))
+        try:
+            analyze_trace(late, "dev.bench.views", pid, warm, cap, 120.0,
+                          100)
+        except RuntimeError as e:
+            assert "+150.0 ms from the window start" in str(e), e
+        else:
+            raise AssertionError("late drive accepted")
+        # no marker recorded: the program's window is unknown
+        bare = trace("bare", fork=False, scan_pid=False, marker_ns=None)
+        try:
+            analyze_trace(bare, "dev.bench.views", pid, warm, cap, 120.0,
+                          100)
+        except RuntimeError as e:
+            assert WINDOW_MARKER in str(e), e
+        else:
+            raise AssertionError("capture without a window marker accepted")
+
+
 def _self_test() -> None:
     """Failure-direction checks through the report path — no device."""
     toolchain._self_test()
@@ -2327,10 +2542,13 @@ def _self_test() -> None:
         "dev.bench.views", 4000, 12000, drv, sample_mem=True)
     order = [prog.index(k) for k in (
         "am start -W -n dev.bench.views/.MainActivity --es workload w2",
-        "sleep 4.0", "sleep 12.0 & hold=$!", "BENCH_MEM_STEADY",
-        "BENCH_MEM_SAMPLE", "input swipe", "wait $hold",
+        "sleep 4.0", "BENCH_MEM_STEADY",
+        f'echo "B|$$|{WINDOW_MARKER}" > {TRACE_MARKER}',
+        "sleep 12.0 & hold=$!", "input swipe", "BENCH_MEM_SAMPLE",
+        "wait $hold", f'echo "E|$$" > {TRACE_MARKER}',
         "outlasted the capture window", "wait $mem")]
     assert order == sorted(order), prog
+    _self_test_trace_attribution()
     assert "--es waterui.env.BENCH_STEP 400" in am_start_cmd(
         "dev.waterui.bench", ".MainActivity", "w5", "waterui", 400)
     out = ("Status: ok\nTotalTime: 812\nWaitTime: 815\nComplete\n"
@@ -2427,11 +2645,6 @@ def main():
     if args.cmd == "selftest":
         _self_test()
         return
-    global _ADB_OVERRIDE
-    try:
-        _ADB_OVERRIDE = _adb_bin(man)
-    except RuntimeError:
-        pass  # device-only host without the declared SDK: PATH adb
     if getattr(args, "contestants", None):
         wanted = [c.strip() for c in args.contestants.split(",") if c.strip()]
         unknown = [c for c in wanted if c not in man["contestants"]]

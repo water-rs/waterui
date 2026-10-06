@@ -48,7 +48,7 @@ RUN echo 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/2
     # toolchain
     build-essential gcc g++ clang cmake ninja-build pkg-config \
     curl xz-utils unzip git ca-certificates \
-    nodejs npm python3 python3-venv \
+    python3 python3-venv \
     # misc runtime
     dbus-x11 procps \
     && rm -rf /var/lib/apt/lists/*
@@ -62,7 +62,7 @@ RUN echo 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/2
 ARG TARGETARCH
 ARG RUST_CHANNEL
 ARG RUSTUP_VERSION=1.29.1
-ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:/opt/flutter/bin:/usr/local/bin:$PATH
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:/opt/flutter/bin:/opt/node/bin:/usr/local/bin:$PATH
 RUN set -eu; \
     case "$TARGETARCH" in \
         amd64) RUSTUP_ARCH=x86_64-unknown-linux-gnu; \
@@ -96,6 +96,27 @@ RUN curl -sSf -o /tmp/flutter.tar.xz \
     && rm /tmp/flutter.tar.xz \
     && git config --global --add safe.directory /opt/flutter \
     && flutter --version
+
+# Node.js — the official tarball for the pinned version, sha256-verified
+# against nodejs.org's SHASUMS256.txt (manifest [toolchain].node). It only
+# drives `npm ci` for the Electron contestant, whose toolchain requires
+# node >= 22.12; trixie's packaged nodejs is 20.x.
+ARG NODE_VERSION=24.21.0
+RUN set -eu; \
+    case "$TARGETARCH" in \
+        amd64) NODE_ARCH=x64; \
+               NODE_SHA256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6 ;; \
+        arm64) NODE_ARCH=arm64; \
+               NODE_SHA256=6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d289ad2 ;; \
+        *) echo "unsupported image arch: $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    curl -sSf -o /tmp/node.tar.xz \
+        "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz"; \
+    echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum -c -; \
+    mkdir /opt/node; \
+    tar -C /opt/node --strip-components=1 -xf /tmp/node.tar.xz; \
+    rm /tmp/node.tar.xz; \
+    test "$(node --version)" = "v${NODE_VERSION}"
 
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

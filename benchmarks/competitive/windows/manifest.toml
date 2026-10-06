@@ -26,8 +26,8 @@ dotnet_root = "~/dotnet"
 node_root = "~/tools/node22"
 flutter_root = "~/tools/flutter"
 # PresentMon is the reference consumer for the ETW present stream; the runner
-# reads the same DXGI/DxgKrnl events directly so contestants that submit
-# frames via DirectComposition or CDD blits are still timed identically.
+# reads the same DXGI events directly so contestants that submit frames
+# through the composition path ([frame_source]) are timed identically.
 presentmon = "2.5.1"
 
 # The WaterUI contestant is the shared apps/waterui project — a
@@ -66,21 +66,31 @@ fling_duration_ms = 250
 fling_pause_ms = 350
 
 [measurement]
-# Uniform method for every contestant: one ETW trace per run enabling
-# Microsoft-Windows-DXGI (all keywords), Microsoft-Windows-DxgKrnl
-# (Events keyword) and Microsoft-Windows-Kernel-Process (process events);
-# per-process frame-submission timestamps are picked out of the trace:
-#   1. DXGI "Present" task Start events      — swapchain presenters
-#      (waterui/vello, flutter) — the same events PresentMon reports.
-#   2. DXGI event-id 144/145 task-63 pairs   — composition-path presents
-#      (WinUI 3's compositor); PresentMon's keyword mask filters these out,
-#      so PresentMon alone cannot time WinUI 3.
-#   3. DxgKrnl "DxgkCddDrvBitBlt" pairs      — per-frame canonical-display-
-#      driver blits; the path Chromium/Electron takes when the only adapter
-#      is the Basic Render Driver (WARP-class), emitting no DXGI presents.
+# Uniform method for every contestant: one ETW session per run, in file and
+# real-time mode at once, enabling Microsoft-Windows-DXGI (all keywords)
+# and Microsoft-Windows-Kernel-Process (process events). The .etl is
+# parsed after the rep; the same session's real-time stream reports the
+# first owned present the drive is scheduled on, and the two must be the
+# identical event (exact timestamp equality). Each contestant declares the
+# ONE frame source both use in [frame_source] — nothing else is consulted.
 # Frame statistics follow lib/frame_stats.py (../WORKLOADS.md METHOD):
 # the window is [first owned present + warmup, +capture_s]; a >100 ms
 # present gap ends an active run and is excluded; within a run an
 # interval over 1.5 vsync periods contributes round(i/period)-1 missed
 # vsyncs. vsync_budget_ms is the 60 Hz refresh period used by that rule.
 vsync_budget_ms = 16.667
+
+# The frame source of each contestant — the DXGI event whose Start events
+# are its frame submissions, used by the real-time anchor and the trace
+# parse alike:
+#   dxgi_present             DXGI Present Start (event 42) — swapchain
+#                            presenters; the events PresentMon reports
+#   dxgi_composition_present DXGI event 144 Start — WinUI 3's compositor
+#                            path, below PresentMon's keyword mask
+# Electron presents through Chromium's GPU-process swapchain on a hardware
+# adapter (software adapters are refused before any cell).
+[frame_source]
+waterui = "dxgi_present"
+flutter = "dxgi_present"
+electron = "dxgi_present"
+winui3 = "dxgi_composition_present"

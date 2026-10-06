@@ -10,8 +10,11 @@ and `android-backend-revision`:
 - `checkout_head` / `require_clean_checkout` establish and record that
   identity; a dirty tracked tree refuses to provision.
 - `tracked_tree_unchanged` wraps every build/bootstrap step of every leg:
-  the tree is clean before the step runs and still clean after it, or the
-  step fails naming the tracked files it rewrote.
+  the paths the step may write (the leg's own directory and the apps it
+  builds) are clean before it runs and still clean after it, or the step
+  fails naming the tracked files it rewrote. Paths outside them belong to
+  other legs and edits elsewhere; the framework source the CLI builds from
+  is held clean by `provision_water_cli`.
 - `provision_water_cli` runs `cargo install --locked --path cli --root
   <runner-owned>` into the suite-shared `.cache/toolchain/` once per
   checkout-sha + host target, under a file lock so concurrently running
@@ -333,11 +336,15 @@ def checkout_head(root: Path | None = None, run=None) -> str:
     return out.stdout.strip()
 
 
-def _dirty_tracked(root: Path, run=None) -> list[str]:
-    """`git status --porcelain` lines for uncommitted tracked changes."""
-    out = (run or _run)(
-        ["git", "-C", str(root), "status", "--porcelain",
-         "--untracked-files=no"])
+def _dirty_tracked(root: Path, run=None,
+                   paths: list[Path] | None = None) -> list[str]:
+    """`git status --porcelain` lines for uncommitted tracked changes —
+    over the whole checkout, or only under `paths` when given."""
+    cmd = ["git", "-C", str(root), "status", "--porcelain",
+           "--untracked-files=no"]
+    if paths is not None:
+        cmd += ["--", *(str(Path(p).resolve()) for p in paths)]
+    out = (run or _run)(cmd)
     if out.returncode != 0:
         raise RuntimeError(
             f"cannot check checkout cleanliness at {root}: "
@@ -362,21 +369,33 @@ def require_clean_checkout(root: Path | None = None, run=None) -> Path:
 
 
 @contextlib.contextmanager
-def tracked_tree_unchanged(label: str, root: Path | None = None, run=None):
+def tracked_tree_unchanged(label: str, paths: list[Path],
+                           root: Path | None = None, run=None):
     """Every build step that can write into the checkout — bootstrap
     (`pod install`, `flutter create`, `npm ci`, wrapper materialisation)
     and the contestant build itself — runs inside this block, in every
-    leg.
+    leg, naming the `paths` it may write: its own leg directory and the
+    app projects it builds.
 
-    The checkout must be clean BEFORE the step runs, so a dirty tree is
-    reported as the user's uncommitted change and never as the step's
-    output; after the step it must still be clean. A step that rewrote
+    Those paths must be clean BEFORE the step runs, so a dirty file there
+    is reported as the user's uncommitted change and never as the step's
+    output; after the step they must still be clean. A step that rewrote
     tracked files fails naming them: the committed generated files are
     stale and are regenerated with the pinned tool and committed — the
-    HEAD sha never labels a tree a bootstrap changed."""
-    root = require_clean_checkout(root, run)
+    HEAD sha never labels a tree a bootstrap changed. Tracked changes
+    outside `paths` (another leg's concurrent bootstrap, an edit
+    elsewhere) are not this step's and never fail it."""
+    if not paths:
+        raise RuntimeError(f"{label}: no paths declared for the guard")
+    root = Path(root or repo_root()).resolve()
+    dirty = _dirty_tracked(root, run, paths)
+    if dirty:
+        shown = "\n  ".join(dirty[:20])
+        raise RuntimeError(
+            f"{label}: {len(dirty)} uncommitted tracked change(s) under the "
+            f"paths it builds — commit or stash first:\n  {shown}")
     yield root
-    dirty = _dirty_tracked(root, run)
+    dirty = _dirty_tracked(root, run, paths)
     if dirty:
         shown = "\n  ".join(dirty[:20])
         raise RuntimeError(
@@ -664,37 +683,55 @@ def _self_test() -> None:
             t.join(10)
             assert done and done[0].exists()
 
-    # bootstrap guard: clean before, clean after — a step that rewrites a
-    # tracked file fails naming it; a dirty tree before the step fails
-    # before the step runs
-    state = {"dirty": ""}
+    # bootstrap guard: clean before, clean after, over the declared paths
+    # only — a step that rewrites a tracked file there fails naming it; a
+    # dirty path before the step fails before the step runs; a tracked
+    # change outside the paths is another leg's and never fails it
+    state = {"dirty": {}}
+    guard_calls = []
 
     def guard_run(cmd, env=None):
         if cmd[0] == "git" and "status" in cmd:
-            return Out(state["dirty"])
+            guard_calls.append(cmd)
+            scope = cmd[cmd.index("--") + 1:] if "--" in cmd else None
+            lines = [line for path, line in state["dirty"].items()
+                     if scope is None
+                     or any(path.startswith(s + "/") for s in scope)]
+            return Out("".join(lines))
         return fake_run(cmd, env)
     with tempfile.TemporaryDirectory() as td:
-        with tracked_tree_unchanged("noop", Path(td), run=guard_run):
+        root = Path(td).resolve()
+        leg, app = root / "bench" / "apple", root / "apps" / "rn"
+        other = str(root / "bench" / "android" / "build.gradle")
+        with tracked_tree_unchanged("noop", [leg, app], root,
+                                    run=guard_run):
+            pass
+        assert guard_calls[-1][-2:] == [str(leg), str(app)], guard_calls
+        # a concurrent leg dirtied its own tree: not this step's concern
+        state["dirty"] = {other: " M bench/android/build.gradle\n"}
+        with tracked_tree_unchanged("noop", [leg, app], root,
+                                    run=guard_run):
             pass
         try:
-            with tracked_tree_unchanged("pod install", Path(td),
+            with tracked_tree_unchanged("pod install", [leg, app], root,
                                         run=guard_run):
-                state["dirty"] = " M ios/Podfile.lock\n"
+                state["dirty"][str(app / "ios" / "Podfile.lock")] = \
+                    " M apps/rn/ios/Podfile.lock\n"
         except RuntimeError as e:
-            assert "pod install rewrote 1 tracked file" in str(e)
-            assert "ios/Podfile.lock" in str(e)
+            assert "pod install rewrote 1 tracked file" in str(e), e
+            assert "Podfile.lock" in str(e)
         else:
             raise AssertionError("bootstrap rewrite accepted")
         ran = []
         try:
-            with tracked_tree_unchanged("pod install", Path(td),
+            with tracked_tree_unchanged("pod install", [leg, app], root,
                                         run=guard_run):
                 ran.append(True)
         except RuntimeError as e:
             assert "uncommitted tracked change" in str(e)
         else:
-            raise AssertionError("dirty tree accepted before bootstrap")
-        assert not ran, "bootstrap ran over a dirty tree"
+            raise AssertionError("dirty path accepted before bootstrap")
+        assert not ran, "bootstrap ran over a dirty path"
 
     # react-native-macos template: the installed version must match the
     # pin; committed files win, absent ones are generated and stamped,

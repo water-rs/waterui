@@ -148,6 +148,18 @@ gradle_project = "."
 # program starts at window start and capture is fixed from window start.
 [pacing]
 warmup_ms = 4000
+# The device program writes a `bench.window` trace marker when it opens its
+# window and starts the drive (`am start -W` return + pidof + warmup); the
+# analysis derives the window from the first owned present + warmup and
+# fails the capture when the marker is further than this from that start.
+# The two anchors differ by the launch's report path — SurfaceFlinger
+# presents the first frame a vsync or two after the window is reported
+# drawn, then `am` delivers the result and exits and `pidof` scans /proc —
+# tens of ms. 100 ms bounds that while staying under half of one 250 ms
+# fling gesture, so at most the first gesture's leading edge can straddle
+# the window boundary; each capture records its measured offset
+# (drive_offset_ms) as evidence.
+window_marker_tolerance_ms = 100
 # per-workload capture length; w1 measures startup + memory only, no window
 capture_ms = { w2 = 12000, w3 = 15000, w4 = 12000 }
 
