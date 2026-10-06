@@ -123,6 +123,15 @@ impl HydrolysisRenderer {
         transform: kurbo::Affine,
         safe_area: &crate::renderer::SafeAreaLayout,
     ) {
+        // The overlay pass runs after the tree flush returns, so no
+        // `.material_group()` scope the anchors' ancestry opened can
+        // reach overlay content: the stack is empty by construction.
+        assert!(
+            self.compositor.material_scopes.is_empty(),
+            "hydrolysis renderer: the anchored-overlay pass must start \
+             with an empty material-scope stack — the tree flush leaves \
+             no scope open"
+        );
         let registered = core::mem::take(&mut self.popup_menu.anchored_overlays);
         let last_presented = core::mem::take(&mut self.popup_menu.presented_anchored_overlays);
         let mut presented = Vec::with_capacity(last_presented.len());
