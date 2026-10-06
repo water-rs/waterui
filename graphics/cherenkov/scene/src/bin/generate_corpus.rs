@@ -6340,7 +6340,7 @@ fn run() -> Result<(), SceneError> {
     // reach — untinted — and fades the same way; the `Multiply`
     // filtered member blends its sample against the backdrop too.
     corpus.scene_setup("backdrop-member-opacity", 256, 256, white, |b| {
-        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 6.0 }], 1.0);
+        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 6.0 }], 1.0, 1);
         let l = &mut b.root();
         backdrop_background(l);
         l.layer(|m| {
