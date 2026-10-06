@@ -1017,7 +1017,45 @@ mod front {
         let scale = capture_scale(group)?;
         let levels = cherenkov::CaptureLevels::new(group.levels)
             .map_err(|error| BenchError::Engine(format!("backdrop group {}: {error}", group.id)))?;
-        Ok(cherenkov::BackdropSpec::new(scale).levels(levels))
+        Ok(cherenkov::BackdropSpec::new(scale, levels))
+    }
+
+    /// A scene `backdrop_effect` at the engine's `f32` boundary.
+    ///
+    /// # Errors
+    /// `BenchError::Engine` when a level ramp's parameters are not a valid
+    /// [`cherenkov::LevelRamp`].
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "effect parameters are f32 at the engine boundary"
+    )]
+    pub fn backdrop_effect(
+        spec: &cherenkov_scene::BackdropEffectSpec,
+    ) -> Result<cherenkov::BackdropEffect, BenchError> {
+        use cherenkov_scene::BackdropEffectSpec as S;
+        Ok(match spec {
+            S::ColorMatrix { matrix } => cherenkov::ColorMatrix(matrix.map(|v| v as f32)).into(),
+            S::Refraction { depth, strength } => cherenkov::Refraction {
+                depth: *depth as f32,
+                strength: *strength as f32,
+            }
+            .into(),
+            S::RimLight { width, color, gain } => cherenkov::Rim {
+                width: *width as f32,
+                color: color.map(|v| v as f32),
+                gain: *gain as f32,
+            }
+            .into(),
+            S::Level {
+                depth,
+                edge_level,
+                interior_level,
+            } => {
+                cherenkov::LevelRamp::new(*depth as f32, *edge_level as f32, *interior_level as f32)
+                    .map_err(|error| BenchError::Engine(format!("backdrop level ramp: {error}")))?
+                    .into()
+            }
+        })
     }
 
     // ---------------------------------------------------------------------
@@ -1509,6 +1547,17 @@ mod tests {
     /// A capture scale reaches the engine only when it narrows to `f32`
     /// exactly: `0.1` would run the engines at a different scale than the
     /// oracle.
+    /// The scene format bounds `levels` itself; that bound must be the
+    /// engine's, or a loadable scene would fail to convert.
+    #[cfg(any(feature = "cherenkov", feature = "cherenkov-cpu"))]
+    #[test]
+    fn scene_level_bound_is_the_engine_bound() {
+        assert_eq!(
+            cherenkov_scene::BackdropGroup::MAX_LEVELS,
+            cherenkov::CaptureLevels::MAX
+        );
+    }
+
     #[cfg(any(feature = "cherenkov", feature = "cherenkov-cpu"))]
     #[test]
     fn capture_scale_narrows_exactly_or_fails() {

@@ -46,21 +46,10 @@ impl SceneBuilder {
         self
     }
 
-    /// Declare a backdrop group `id` capturing at `scale` with `filters`;
-    /// layers sample it via [`LayerBuilder::backdrop`].
+    /// Declare a backdrop group `id` capturing at `scale` with `filters`,
+    /// reduced into a pyramid of `levels` levels (`1` is the single-level
+    /// capture); layers sample it via [`LayerBuilder::backdrop`].
     pub fn backdrop_group(
-        &mut self,
-        id: u32,
-        filters: Vec<BackdropFilter>,
-        scale: f64,
-    ) -> &mut Self {
-        self.backdrop_group_levels(id, filters, scale, 1)
-    }
-
-    /// Declare a backdrop group `id` capturing at `scale` reduced into a
-    /// pyramid of `levels` levels; layers sample it via
-    /// [`LayerBuilder::backdrop`].
-    pub fn backdrop_group_levels(
         &mut self,
         id: u32,
         filters: Vec<BackdropFilter>,

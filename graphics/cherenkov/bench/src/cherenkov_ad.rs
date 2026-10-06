@@ -23,9 +23,9 @@ use cherenkov_gpu::interop::{
 use cherenkov_gpu::{Gpu, GpuConfig, ScratchFormat};
 use cherenkov_oracle::present::presented_srgb_to_working;
 use cherenkov_scene::{
-    BackdropEffectSpec, BackdropFilter, BlendMode, BlendSpace, ColorSpace, Draw as SceneDraw,
-    Feature, FilterBlend, GroupItem, ImageColorSpace, ImageEncoding, Item, Layer as SceneLayer,
-    LayerFilter, Motion, ResourceHash,
+    BackdropFilter, BlendMode, BlendSpace, ColorSpace, Draw as SceneDraw, Feature, FilterBlend,
+    GroupItem, ImageColorSpace, ImageEncoding, Item, Layer as SceneLayer, LayerFilter, Motion,
+    ResourceHash,
 };
 use filtrate::{FilterExt, FilterImage, filters};
 use kurbo::{Affine, BezPath, Circle, Ellipse, Line, Rect, RoundedRect, Vec2};
@@ -465,7 +465,7 @@ struct PrepLayer {
     /// The backdrop group this layer samples, if any.
     backdrop: Option<u32>,
     /// The member's per-member backdrop effect, if any.
-    backdrop_effect: Option<BackdropEffectSpec>,
+    backdrop_effect: Option<cherenkov::BackdropEffect>,
     /// The layer's projective pose.
     projection: Option<LayerProjection>,
     /// The layer's one-time motion.
@@ -1239,7 +1239,11 @@ fn prep_layer(
         },
         items: Vec::new(),
         backdrop: layer.backdrop,
-        backdrop_effect: layer.backdrop_effect.clone(),
+        backdrop_effect: layer
+            .backdrop_effect
+            .as_ref()
+            .map(crate::convert::backdrop_effect)
+            .transpose()?,
         // A `Motion::Paint` animates a content operand, not a layer
         // property — `paint_motion` binds it inside the content run.
         motion: match &layer.motion {
@@ -1457,39 +1461,8 @@ fn build_layer(
                 None => {
                     edit.backdrop(group.sample());
                 }
-                Some(spec) => {
-                    use BackdropEffectSpec as S;
-                    #[expect(
-                        clippy::cast_possible_truncation,
-                        reason = "effect parameters are f32 at the engine boundary"
-                    )]
-                    let effect: cherenkov::BackdropEffect = match spec {
-                        S::ColorMatrix { matrix } => {
-                            cherenkov::ColorMatrix(matrix.map(|v| v as f32)).into()
-                        }
-                        S::Refraction { depth, strength } => cherenkov::Refraction {
-                            depth: *depth as f32,
-                            strength: *strength as f32,
-                        }
-                        .into(),
-                        S::RimLight { width, color, gain } => cherenkov::Rim {
-                            width: *width as f32,
-                            color: color.map(|v| v as f32),
-                            gain: *gain as f32,
-                        }
-                        .into(),
-                        S::Level {
-                            depth,
-                            edge_level,
-                            interior_level,
-                        } => cherenkov::LevelRamp {
-                            depth: *depth as f32,
-                            edge: *edge_level as f32,
-                            interior: *interior_level as f32,
-                        }
-                        .into(),
-                    };
-                    edit.backdrop(group.sample_with(effect));
+                Some(effect) => {
+                    edit.backdrop(group.sample_with(effect.clone()));
                 }
             }
         }

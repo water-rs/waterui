@@ -359,8 +359,9 @@ impl BackdropPlan {
     /// Places the capture on a `width × h` surface: the union's rows, and
     /// the union on the capture grid inflated by the chain `footprint`'s
     /// apron in texels — plus one texel for the bilinear taps of a reduced
-    /// capture — clamped to the grid's extent and rounded out to whole
-    /// texels.
+    /// capture, and on a levelled group every deeper level's read
+    /// footprint inflated by the apron — clamped to the grid's extent and
+    /// rounded out to whole texels.
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -379,7 +380,7 @@ impl BackdropPlan {
         }
         // The footprint resolves against the capture's size in texels.
         let s = f64::from(self.spec.scale().get());
-        let levels = self.spec.levels.get();
+        let levels = self.spec.levels().get();
         let a = (f64::from(footprint.extent).mul_add(uw.max(uh) * s, f64::from(footprint.pixels))
             / 2.0f64.mul_add(-f64::from(footprint.extent), 1.0))
         .ceil();
@@ -401,21 +402,23 @@ impl BackdropPlan {
         );
         // Levels 1..n: a bilinear read at level `k` taps level-k texels
         // `floor(q·s/2^k − 0.5)` through `+1`, and level-k texel `t`
-        // covers capture texels `[2^k·t, 2^k·(t+1))`; the region covers
-        // every read at every level.
+        // reduces capture texels `[2^k·t, 2^k·(t+1))`. Each level's read
+        // footprint is inflated by the chain's apron so every filtered
+        // texel it reduces is computed from uncut chain input: a member's
+        // result never depends on the other members.
         for k in 1..levels {
             let div = f64::from(1u32 << k);
             x0 = x0
-                .min((self.union.x0 * s / div - 0.5).floor() * div)
+                .min((self.union.x0 * s / div - 0.5).floor().mul_add(div, -a))
                 .max(0.0);
             y0 = y0
-                .min((self.union.y0 * s / div - 0.5).floor() * div)
+                .min((self.union.y0 * s / div - 0.5).floor().mul_add(div, -a))
                 .max(0.0);
             x1 = x1
-                .max(((self.union.x1 * s / div - 0.5).floor() + 2.0) * div)
+                .max(((self.union.x1 * s / div - 0.5).floor() + 2.0).mul_add(div, a))
                 .min(gw);
             y1 = y1
-                .max(((self.union.y1 * s / div - 0.5).floor() + 2.0) * div)
+                .max(((self.union.y1 * s / div - 0.5).floor() + 2.0).mul_add(div, a))
                 .min(gh);
         }
         // The region's origin sits on the deepest level's grid so level
@@ -433,15 +436,29 @@ impl BackdropPlan {
             y1: y1 as i32,
         };
         self.apron = a.min(gh) as usize;
-        self.device_apron = if self.spec.scale().is_full() {
+        self.device_apron = if self.spec.scale().is_full() && levels == 1 {
             self.apron
         } else {
             // The texel window reaches `apron` texels past the kept
             // texels, which reach the sampled rows' bilinear taps plus a
-            // margin and, on a levelled capture, the deeper levels'
-            // parent rows (see `raster::capture_rows`): within
+            // margin and, on a levelled capture, the deepest level's
+            // parent rows (see `raster::capture_rows`). All within
             // `(apron + margin + 2 + extra) / s` device rows of them.
-            let extra = if levels > 1 { 1usize << levels } else { 0 };
+            //
+            // `extra` is 1.5 blocks: a deepest-level texel is a block of
+            // `B = 2^(n−1)` capture texels. A sample at capture row `p`
+            // sits at level row `p / B − 0.5`, so its bilinear taps are
+            // level rows `i = ⌊p / B − 0.5⌋` and `i + 1`, whose parent
+            // rows span `[i·B, (i + 2)·B)`. With `i ≥ p / B − 1.5` and
+            // `i + 2 ≤ p / B + 1.5`, that is within `1.5·B` capture rows
+            // of `p` on either side: the block plus the half-block the
+            // taps sit further out.
+            let extra = if levels > 1 {
+                let block = 1usize << (levels - 1);
+                block + block.div_ceil(2)
+            } else {
+                0
+            };
             (((self.apron + super::raster::SAMPLE_MARGIN + 2 + extra) as f64 / s).ceil() as usize)
                 .min(h)
         };
@@ -576,23 +593,11 @@ fn member_effect(
                 gain: r.gain,
             }
         }
-        cherenkov::BackdropEffect::Level(r) => {
-            if !(r.depth.is_finite()
-                && r.depth > 0.0
-                && r.edge.is_finite()
-                && r.interior.is_finite())
-            {
-                return Err(RenderError::Render(
-                    "backdrop level ramp needs depth > 0 and finite edge and interior levels"
-                        .into(),
-                ));
-            }
-            SdfKind::Level {
-                depth: r.depth,
-                edge: r.edge,
-                interior: r.interior,
-            }
-        }
+        cherenkov::BackdropEffect::Level(r) => SdfKind::Level {
+            depth: r.depth(),
+            edge: r.edge(),
+            interior: r.interior(),
+        },
         cherenkov::BackdropEffect::Shader(_) => {
             return Err(RenderError::Unsupported(names::BACKDROP_SHADER));
         }
@@ -1420,7 +1425,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             self.items.push(Item::Capture(Box::new(CaptureItem {
                 group: gid,
                 scale: spec.scale(),
-                levels: spec.levels.get(),
+                levels: spec.levels().get(),
                 region,
                 union: IRect {
                     x0: 0,

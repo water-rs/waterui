@@ -402,12 +402,20 @@ struct BackdropGroupState {
 }
 
 impl BackdropGroupState {
-    /// Every texture the group holds: captures and staging copies.
-    fn textures(&self) -> impl Iterator<Item = &ScratchTarget> {
+    /// Bytes the group's textures hold: every region's capture with its
+    /// pyramid levels, and the staging copies.
+    fn bytes(&self) -> u64 {
+        let deep = self.spec.levels().get() - 1;
         self.captures
             .iter()
-            .map(|capture| &capture.target)
-            .chain(self.staging.iter().flatten())
+            .map(|capture| target_bytes(&capture.target, deep))
+            .chain(
+                self.staging
+                    .iter()
+                    .flatten()
+                    .map(|target| target_bytes(target, 0)),
+            )
+            .sum()
     }
 
     /// Keeps the first `regions` regions' textures and bind groups.
@@ -451,38 +459,12 @@ impl SurfaceState {
             .collect()
     }
 
-    /// This frame's pyramid reduce count: one globals slot per level
-    /// step of every captured region.
-    fn reduce_slots(&self) -> u32 {
-        self.frame
-            .passes
-            .iter()
-            .filter_map(|pass| {
-                let group = pass.capture?.group;
-                Some(self.backdrop_groups.get(&group)?.spec.levels.get() - 1)
-            })
-            .sum()
-    }
-
     /// Bytes held by this surface's backdrop captures, summed over all
     /// regions of all groups, staging copies and pyramid levels included.
     fn backdrop_bytes(&self) -> u64 {
         self.backdrop_groups
             .values()
-            .flat_map(|group| {
-                let deep = group.spec.levels.get() - 1;
-                group
-                    .captures
-                    .iter()
-                    .map(move |capture| target_bytes(&capture.target, deep))
-                    .chain(
-                        group
-                            .staging
-                            .iter()
-                            .flatten()
-                            .map(|target| target_bytes(target, 0)),
-                    )
-            })
+            .map(BackdropGroupState::bytes)
             .sum()
     }
 
@@ -3011,8 +2993,7 @@ impl Renderer for GpuRenderer {
             let capture_bytes: u64 = state
                 .backdrop_groups
                 .values()
-                .flat_map(BackdropGroupState::textures)
-                .map(|s| u64::from(s.width) * u64::from(s.height) * texel_bytes(s.texture.format()))
+                .map(BackdropGroupState::bytes)
                 .sum();
             let dropped = state.binds1.len() as u64;
             if dropped > 0 {
@@ -3304,8 +3285,7 @@ impl Renderer for GpuRenderer {
             let capture_bytes: u64 = surf
                 .backdrop_groups
                 .values()
-                .flat_map(BackdropGroupState::textures)
-                .map(|s| u64::from(s.width) * u64::from(s.height) * texel_bytes(s.texture.format()))
+                .map(BackdropGroupState::bytes)
                 .sum();
             let dropped = surf.binds1.len() as u64;
             if dropped > 0 {
@@ -4135,7 +4115,7 @@ impl GpuRenderer {
                 stop_base += u32::try_from(surf.frame.stops.len()).unwrap_or(u32::MAX);
                 globals_base += u32::try_from(surf.frame.passes.len())
                     .unwrap_or(u32::MAX)
-                    .saturating_add(surf.reduce_slots());
+                    .saturating_add(surf.frame.reduce_slots());
             }
         }
         let wait = stats.phases.wait_seconds;
@@ -4294,7 +4274,7 @@ impl GpuRenderer {
                 stop_base += u32::try_from(surf.frame.stops.len()).unwrap_or(u32::MAX);
                 globals_base += u32::try_from(surf.frame.passes.len())
                     .unwrap_or(u32::MAX)
-                    .saturating_add(surf.reduce_slots());
+                    .saturating_add(surf.frame.reduce_slots());
             }
         }
         let wait = stats.phases.wait_seconds;
@@ -6818,7 +6798,7 @@ impl GpuRenderer {
             // level-0 size is the region aligned up to the deepest
             // level's grid; the tail past the spec extent is never
             // written or read.
-            let levels = group_state.spec.levels.get();
+            let levels = group_state.spec.levels().get();
             let grid = 1 << (levels - 1);
             let (nw, nh) = (
                 w.max(group_state.captures.get(r).map_or(0, |c| c.target.width))
@@ -6827,10 +6807,7 @@ impl GpuRenderer {
                     .next_multiple_of(grid),
             );
             if group_state.captures.get(r).is_none_or(|c| {
-                c.target.width < nw
-                    || c.target.height < nh
-                    || c.target.texture.format() != format
-                    || c.target.texture.mip_level_count() < levels
+                c.target.width < nw || c.target.height < nh || c.target.texture.format() != format
             }) {
                 let old_capture = group_state
                     .captures
@@ -7183,7 +7160,7 @@ impl GpuRenderer {
         for surf in dirty.iter().filter_map(|sf| self.surfaces.get(&sf.id)) {
             instances += surf.frame.instances.len() as u64;
             stops += surf.frame.stops.len() as u64;
-            passes += surf.frame.passes.len() as u64 + u64::from(surf.reduce_slots());
+            passes += surf.frame.passes.len() as u64 + u64::from(surf.frame.reduce_slots());
         }
         let sizes = [
             (
@@ -7267,14 +7244,9 @@ impl GpuRenderer {
                 // The pyramid steps' slots follow the pass slots: one
                 // per reduce, in pass and level order, reading the
                 // level above's spec extent.
-                for pass in &surf.frame.passes {
-                    let Some(capture) = pass.capture else {
-                        continue;
-                    };
-                    let Some(state) = surf.backdrop_groups.get(&capture.group) else {
-                        continue;
-                    };
-                    for k in 1..state.spec.levels.get() {
+                for &(index, levels) in &surf.frame.reduces {
+                    let pass = &surf.frame.passes[index];
+                    for k in 1..levels {
                         let dst = (
                             pass.region[2].div_ceil(1 << k),
                             pass.region[3].div_ceil(1 << k),
@@ -8464,7 +8436,7 @@ impl GpuRenderer {
             // level above by an exact 2×2 box, appended in pass and level
             // order after `write_uploads`' pass slots.
             if let Some(capture) = pass.capture {
-                let levels = surf.backdrop_groups[&capture.group].spec.levels.get();
+                let levels = capture.levels;
                 if levels > 1 {
                     let pipelines = self.reduce.get_or_insert_with(|| {
                         reduce::Pipelines::new(&self.device, self.shader_delivery)

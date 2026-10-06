@@ -1,8 +1,9 @@
 // A backdrop group's capture pyramid: level `k` texel `(i, j)` is the
 // mean of level `k − 1` texels `(2i..=2i+1, 2j..=2j+1)` — an exact 2×2
 // box reduction matching the capture's area-weighted resolve. A partial
-// box at the grid's edge averages the texels present, which the clamped
-// reads express as the edge texel's duplication, values unclamped.
+// box at the grid's edge averages the texels present: the clamped reads
+// duplicate the edge texel, so the four-tap mean is exactly that average,
+// values unclamped.
 
 // The pass's slot in the per-pass globals buffer: the engine `Globals`
 // (unused here) followed by the reduce parameters.
@@ -38,6 +39,5 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let c10 = textureLoad(source, vec2<i32>(hi.x, lo.y), 0);
     let c01 = textureLoad(source, vec2<i32>(lo.x, hi.y), 0);
     let c11 = textureLoad(source, hi, 0);
-    let count = f32((hi.x - lo.x + 1) * (hi.y - lo.y + 1));
-    return (c00 + c10 + c01 + c11) / count;
+    return (c00 + c10 + c01 + c11) * 0.25;
 }

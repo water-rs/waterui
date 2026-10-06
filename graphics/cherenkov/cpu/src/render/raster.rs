@@ -92,8 +92,11 @@ struct Capture {
     x0: usize,
     /// Row stride (the capture region's width in texels).
     w: usize,
-    /// The capture region's texel origin (level-0 row `y0` counts from
-    /// `ry0` only when the region starts the window).
+    /// The capture region's first texel row (`region.y0`) on the
+    /// device-anchored capture grid — a multiple of `2^(n−1)` on an
+    /// `n`-level capture. `y0` is an absolute grid row like it; each
+    /// deeper level's `CaptureLevel::y0` counts from this origin's
+    /// level-k row `ry0 / 2^k`.
     ry0: usize,
     /// The pyramid's deeper levels: `levels[k − 1]` holds level `k`'s
     /// kept texel rows, `k` in `1..n`; empty on a one-level capture.
@@ -133,7 +136,7 @@ struct CaptureRows {
     window: (usize, usize),
     /// Levels 1..n's kept texel-row ranges, the first `n − 1` entries
     /// used; each counts from that level's grid origin.
-    levels: [(usize, usize); 8],
+    levels: [(usize, usize); cherenkov::CaptureLevels::MAX as usize],
 }
 
 /// The rows capture `item` covers for the surface band `band` of a
@@ -160,7 +163,7 @@ fn capture_rows(item: &CaptureItem, band: (usize, usize), h: usize) -> Option<Ca
             device: (k0, k1),
             kept: (k0, k1),
             window: (k0.saturating_sub(item.apron), k1.saturating_add(item.apron)),
-            levels: [(0, 0); 8],
+            levels: [(0, 0); cherenkov::CaptureLevels::MAX as usize],
         });
     }
     let s = f64::from(item.scale.get());
@@ -174,7 +177,7 @@ fn capture_rows(item: &CaptureItem, band: (usize, usize), h: usize) -> Option<Ca
         first.saturating_sub(SAMPLE_MARGIN).max(ty0),
         (last + SAMPLE_MARGIN).min(ty1),
     );
-    let mut levels = [(0usize, 0usize); 8];
+    let mut levels = [(0usize, 0usize); cherenkov::CaptureLevels::MAX as usize];
     if item.levels > 1 {
         // Level `k`'s tap range: the sampled device rows read level-k
         // texels `floor((d ± ½)·s/2^k − ½)` through `+1`, clamped to the
@@ -735,7 +738,10 @@ fn capture_sample_at(capture: &Capture, x: f32, y: f32, k: u32) -> [f32; 4] {
     }
     let level = &capture.levels[k as usize - 1];
     if level.rows == 0 {
-        return [0.0; 4];
+        unreachable!(
+            "capture_rows keeps every level's tap rows for each sampled device row, \
+             so a sampled level holds at least one row"
+        );
     }
     let div = (1u64 << k) as f32;
     let s = capture.scale.get();
@@ -1510,10 +1516,6 @@ fn capture_band(
 /// GPU reduce's exact 2×2 box. Each level's source is the previous
 /// level's kept rows (`canvas` is level 0's, holding the `win0..win1`
 /// texel window).
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "a partial 2×2 box holds at most 4 texels"
-)]
 fn capture_pyramid(
     canvas: &[[f32; 4]],
     item: &CaptureItem,
@@ -1538,24 +1540,7 @@ fn capture_pyramid(
             let src: &[[f32; 4]] = levels
                 .last()
                 .map_or_else(|| canvas, |prev| prev.buf.as_slice());
-            for r in r0..r1 {
-                let (y0, y1) = (2 * r, (2 * r + 1).min(gy0 + sh - 1));
-                for x in 0..dw {
-                    let (x0, x1) = (2 * x, (2 * x + 1).min(sw - 1));
-                    let mut acc = [0f32; 4];
-                    for row in y0..=y1 {
-                        for xx in x0..=x1 {
-                            let c = src[(row - src_y0) * sw + xx];
-                            acc[0] += c[0];
-                            acc[1] += c[1];
-                            acc[2] += c[2];
-                            acc[3] += c[3];
-                        }
-                    }
-                    let n = ((y1 - y0 + 1) * (x1 - x0 + 1)) as f32;
-                    dst[(r - r0) * dw + x] = [acc[0] / n, acc[1] / n, acc[2] / n, acc[3] / n];
-                }
-            }
+            reduce_rows(src, sw, (src_y0, gy0 + sh), (r0, r1), &mut dst);
         }
         src_y0 = r0;
         gy0 >>= 1;
@@ -1571,6 +1556,44 @@ fn capture_pyramid(
         });
     }
     levels
+}
+
+/// Rows `r0..r1` of the next pyramid level into `dst`, reduced from
+/// `src`: the source level's rows from `src_y0` on, `sw` texels wide,
+/// on a grid whose rows end at `src_end`. Texel `(x, r)` is the mean of
+/// the source texels `(2x..=2x+1, 2r..=2r+1)` inside the grid — a
+/// partial box at the right edge, the bottom edge or the corner averages
+/// the texels present.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "a partial 2×2 box holds at most 4 texels"
+)]
+fn reduce_rows(
+    src: &[[f32; 4]],
+    sw: usize,
+    (src_y0, src_end): (usize, usize),
+    (r0, r1): (usize, usize),
+    dst: &mut [[f32; 4]],
+) {
+    let dw = sw.div_ceil(2);
+    for r in r0..r1 {
+        let (y0, y1) = (2 * r, (2 * r + 1).min(src_end - 1));
+        for x in 0..dw {
+            let (x0, x1) = (2 * x, (2 * x + 1).min(sw - 1));
+            let mut acc = [0f32; 4];
+            for row in y0..=y1 {
+                for xx in x0..=x1 {
+                    let c = src[(row - src_y0) * sw + xx];
+                    acc[0] += c[0];
+                    acc[1] += c[1];
+                    acc[2] += c[2];
+                    acc[3] += c[3];
+                }
+            }
+            let n = ((y1 - y0 + 1) * (x1 - x0 + 1)) as f32;
+            dst[(r - r0) * dw + x] = [acc[0] / n, acc[1] / n, acc[2] / n, acc[3] / n];
+        }
+    }
 }
 
 /// Copies the device `rows × cols` of the nearest semantic level below
@@ -2183,4 +2206,54 @@ pub fn coverage_mask(edges: &[Edge], rule: FillRule, w: usize, h: usize) -> Vec<
             }
         });
     mask
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reduce_rows;
+
+    /// Texel `(x, y)` of the source level: every channel varies, alpha
+    /// included.
+    fn texel(x: u8, y: u8) -> [f32; 4] {
+        [
+            f32::from(x),
+            f32::from(y).mul_add(0.5, 0.25),
+            f32::from(x * y),
+            f32::from(x + 3 * y).mul_add(0.05, 0.1),
+        ]
+    }
+
+    /// The mean of the listed source texels.
+    fn mean(texels: &[(u8, u8)]) -> [f32; 4] {
+        let n = f32::from(u8::try_from(texels.len()).expect("a box holds at most 4 texels"));
+        std::array::from_fn(|c| texels.iter().map(|&(x, y)| texel(x, y)[c]).sum::<f32>() / n)
+    }
+
+    fn assert_texel(actual: [f32; 4], expected: [f32; 4]) {
+        for (a, e) in actual.iter().zip(expected) {
+            assert!(
+                (a - e).abs() <= 1e-6,
+                "texel {actual:?}, expected {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn pyramid_partial_boxes_average_the_texels_present() {
+        // A 5×5 source level whose rows 2..5 are kept: level rows 1..3,
+        // three texels wide.
+        let src: Vec<[f32; 4]> = (2..5)
+            .flat_map(|y| (0..5).map(move |x| texel(x, y)))
+            .collect();
+        let mut dst = vec![[0.0; 4]; 2 * 3];
+        reduce_rows(&src, 5, (2, 5), (1, 3), &mut dst);
+        // A full box.
+        assert_texel(dst[0], mean(&[(0, 2), (1, 2), (0, 3), (1, 3)]));
+        // The right edge's partial box: column 4 alone, two rows.
+        assert_texel(dst[2], mean(&[(4, 2), (4, 3)]));
+        // The bottom edge's partial box: row 4 alone, two columns.
+        assert_texel(dst[4], mean(&[(2, 4), (3, 4)]));
+        // The corner: the single texel present.
+        assert_texel(dst[5], texel(4, 4));
+    }
 }

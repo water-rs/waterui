@@ -44,10 +44,17 @@ pub struct BackdropGroup {
     /// The capture scale `s`, `0 < s ≤ 1` ([`crate::Scene::load`]
     /// validates it).
     pub scale: f64,
-    /// The pyramid's level count `1..=8` ([`crate::Scene::load`]
-    /// validates it); `1` is the single-level capture.
+    /// The pyramid's level count, from `1` to [`Self::MAX_LEVELS`]
+    /// ([`crate::Scene::load`] validates it); `1` is the single-level
+    /// capture.
     #[serde(default = "default_levels", skip_serializing_if = "is_default_levels")]
     pub levels: u32,
+}
+
+impl BackdropGroup {
+    /// The most pyramid levels a group declares; [`crate::Scene::load`]
+    /// rejects a scene file asking for more.
+    pub const MAX_LEVELS: u32 = 8;
 }
 
 const fn default_levels() -> u32 {

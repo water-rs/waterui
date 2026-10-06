@@ -379,7 +379,7 @@ impl Scene {
         if let Some(group) = self
             .backdrop_groups
             .iter()
-            .find(|g| !(1..=8).contains(&g.levels))
+            .find(|g| !(1..=crate::BackdropGroup::MAX_LEVELS).contains(&g.levels))
         {
             return Err(SceneError::InvalidBackdropLevels(group.id));
         }

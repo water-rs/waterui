@@ -434,7 +434,7 @@ impl<B: Backdrop> Surface<B> {
     }
 
     /// Creates a backdrop group on this surface whose members sample the
-    /// unfiltered backdrop, captured per `spec` ([`BackdropSpec`]).
+    /// unfiltered backdrop, captured per `spec` ([`BackdropSpec`](crate::BackdropSpec)).
     #[must_use]
     pub fn backdrop_group_unfiltered(
         &self,
@@ -447,7 +447,7 @@ impl<B: Backdrop> Surface<B> {
     }
 
     /// Creates a backdrop group whose capture, taken per `spec`
-    /// ([`BackdropSpec`]), runs through `filter` once; members share the
+    /// ([`BackdropSpec`](crate::BackdropSpec)), runs through `filter` once; members share the
     /// result. The filter runs on the reduced capture, its footprint
     /// counted in capture texels.
     #[must_use]

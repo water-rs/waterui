@@ -435,9 +435,11 @@ impl Renderer {
                         // The blur pyramid: level `k` is the exact 2×2
                         // box reduction of level `k − 1` (the filtered
                         // capture), matching the GPU's mip chain.
-                        let mut levels = Vec::with_capacity(
-                            usize::try_from(group.levels).unwrap_or(0).saturating_sub(1),
-                        );
+                        // `Scene::load` rejects a level count below 1,
+                        // and the bounded count fits `usize`.
+                        let deeper = usize::try_from(group.levels - 1)
+                            .expect("a validated level count is at least 1 and fits usize");
+                        let mut levels = Vec::with_capacity(deeper);
                         for _ in 1..group.levels {
                             let src = levels.last().unwrap_or(&capture);
                             levels.push(reduce_level(src));
@@ -1481,4 +1483,57 @@ fn scene_clip_stack(layer: &Layer, tf: Affine, _w: usize, _h: usize) -> Vec<Vec<
         .as_ref()
         .map(|c| vec![shape_edges(c, tf)])
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Canvas, reduce_level};
+
+    /// Texel `(x, y)` of the source level: every channel varies, alpha
+    /// included.
+    fn texel(x: u8, y: u8) -> [f64; 4] {
+        [
+            f64::from(x),
+            f64::from(y).mul_add(0.5, 0.25),
+            f64::from(x * y),
+            f64::from(x + 3 * y).mul_add(0.05, 0.1),
+        ]
+    }
+
+    /// The mean of the listed source texels.
+    fn mean(texels: &[(u8, u8)]) -> [f64; 4] {
+        let n = f64::from(u8::try_from(texels.len()).expect("a box holds at most 4 texels"));
+        std::array::from_fn(|c| texels.iter().map(|&(x, y)| texel(x, y)[c]).sum::<f64>() / n)
+    }
+
+    fn assert_texel(actual: [f64; 4], expected: [f64; 4]) {
+        for (a, e) in actual.iter().zip(expected) {
+            assert!(
+                (a - e).abs() <= 1e-12,
+                "texel {actual:?}, expected {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn pyramid_partial_boxes_average_the_texels_present() {
+        let src = Canvas {
+            pixels: (0..5)
+                .flat_map(|y| (0..5).map(move |x| texel(x, y)))
+                .collect(),
+            width: 5,
+            height: 5,
+        };
+        let level = reduce_level(&src);
+        assert_eq!((level.width, level.height), (3, 3));
+        let at = |x: usize, y: usize| level.pixels[y * 3 + x];
+        // A full box.
+        assert_texel(at(1, 1), mean(&[(2, 2), (3, 2), (2, 3), (3, 3)]));
+        // The right edge's partial box: column 4 alone, two rows.
+        assert_texel(at(2, 1), mean(&[(4, 2), (4, 3)]));
+        // The bottom edge's partial box: row 4 alone, two columns.
+        assert_texel(at(1, 2), mean(&[(2, 4), (3, 4)]));
+        // The corner: the single texel present.
+        assert_texel(at(2, 2), texel(4, 4));
+    }
 }

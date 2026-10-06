@@ -81,7 +81,7 @@ impl CaptureScale {
 /// device-anchored grid, so a member's motion never shifts any level's
 /// grid. Members read the pyramid with `backdrop_sample_level`
 /// ([`BackdropShaderSource`]) or a `Level` member effect; one level is
-/// today's single bilinear capture.
+/// the single bilinear capture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CaptureLevels(u32);
 
@@ -89,7 +89,7 @@ pub struct CaptureLevels(u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum CaptureLevelsError {
     /// The count is not in `1..=CaptureLevels::MAX`.
-    #[error("the capture level count must be between 1 and 8")]
+    #[error("the capture level count must be between 1 and {}", CaptureLevels::MAX)]
     OutOfRange,
 }
 
@@ -119,43 +119,26 @@ impl CaptureLevels {
 }
 
 /// How a backdrop group captures and combines its members
-/// ([`Surface::backdrop_group`], [`Surface::backdrop_group_unfiltered`]).
+/// ([`Surface::backdrop_group`](crate::Surface::backdrop_group),
+/// [`Surface::backdrop_group_unfiltered`](crate::Surface::backdrop_group_unfiltered)).
 ///
 /// The spec fixes the group's capture [`scale`](BackdropSpec::scale) and
 /// how many capture [`levels`](BackdropSpec::levels) the group's pyramid
-/// keeps. It is the parameter object the group is created with; a later
-/// change adds a member-union option to it.
+/// keeps; it is the parameter object the group is created with.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BackdropSpec {
     scale: CaptureScale,
-    /// The group's level count `n`: how many capture levels the pyramid
-    /// keeps (`1..=CaptureLevels::MAX`).
-    pub levels: CaptureLevels,
+    levels: CaptureLevels,
 }
 
 impl BackdropSpec {
     /// The 1:1, single-level capture.
-    pub const FULL: Self = Self {
-        scale: CaptureScale::FULL,
-        levels: CaptureLevels::ONE,
-    };
+    pub const FULL: Self = Self::new(CaptureScale::FULL, CaptureLevels::ONE);
 
-    /// A group captured at `scale`, keeping one level.
+    /// A group captured at `scale`, keeping `levels` capture levels.
     #[must_use]
-    pub const fn new(scale: CaptureScale) -> Self {
-        Self {
-            scale,
-            levels: CaptureLevels::ONE,
-        }
-    }
-
-    /// Keeps `levels` capture levels on the group's pyramid.
-    #[must_use]
-    pub const fn levels(self, levels: CaptureLevels) -> Self {
-        Self {
-            scale: self.scale,
-            levels,
-        }
+    pub const fn new(scale: CaptureScale, levels: CaptureLevels) -> Self {
+        Self { scale, levels }
     }
 
     /// The capture scale `s`.
@@ -163,11 +146,17 @@ impl BackdropSpec {
     pub const fn scale(self) -> CaptureScale {
         self.scale
     }
+
+    /// The level count `n`: how many capture levels the pyramid keeps.
+    #[must_use]
+    pub const fn levels(self) -> CaptureLevels {
+        self.levels
+    }
 }
 
 impl From<CaptureScale> for BackdropSpec {
     fn from(scale: CaptureScale) -> Self {
-        Self::new(scale)
+        Self::new(scale, CaptureLevels::ONE)
     }
 }
 
@@ -250,7 +239,17 @@ mod tests {
             assert_eq!(CaptureLevels::new(n), Err(CaptureLevelsError::OutOfRange));
         }
         assert_eq!(CaptureLevels::new(1), Ok(CaptureLevels::ONE));
-        assert_eq!(CaptureLevels::new(CaptureLevels::MAX).unwrap().get(), 8);
+        assert_eq!(
+            CaptureLevels::new(CaptureLevels::MAX).unwrap().get(),
+            CaptureLevels::MAX
+        );
+        assert_eq!(
+            CaptureLevelsError::OutOfRange.to_string(),
+            format!(
+                "the capture level count must be between 1 and {}",
+                CaptureLevels::MAX
+            )
+        );
     }
 
     #[test]
@@ -258,9 +257,11 @@ mod tests {
         let quarter = CaptureScale::new(0.25).expect("in range");
         let spec = BackdropSpec::from(quarter);
         assert_eq!(spec.scale(), quarter);
-        assert_eq!(spec.levels, CaptureLevels::ONE);
-        let spec = spec.levels(CaptureLevels::new(4).expect("in range"));
-        assert_eq!(spec.levels.get(), 4);
+        assert_eq!(spec.levels(), CaptureLevels::ONE);
+        let spec = BackdropSpec::new(quarter, CaptureLevels::new(4).expect("in range"));
+        assert_eq!(spec.scale(), quarter);
+        assert_eq!(spec.levels().get(), 4);
         assert!(BackdropSpec::FULL.scale().is_full());
+        assert_eq!(BackdropSpec::FULL.levels(), CaptureLevels::ONE);
     }
 }

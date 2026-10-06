@@ -103,14 +103,82 @@ pub struct Rim {
 /// composite reading `backdrop_sample_level(p, level)`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "LevelRampFields"))]
 pub struct LevelRamp {
+    depth: f32,
+    edge: f32,
+    interior: f32,
+}
+
+/// Why a [`LevelRamp`] could not be constructed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum LevelRampError {
+    /// The depth is not a finite positive number.
+    #[error("the level ramp depth must be finite and above 0")]
+    Depth,
+    /// The edge or interior level is NaN or infinite.
+    #[error("the level ramp's edge and interior levels must be finite")]
+    NonFiniteLevel,
+}
+
+impl LevelRamp {
+    /// A ramp from level `edge` at the clip's edge to level `interior`
+    /// deep inside it, decaying over `depth` device pixels.
+    ///
+    /// # Errors
+    /// [`LevelRampError::Depth`] unless `depth` is finite and above 0,
+    /// [`LevelRampError::NonFiniteLevel`] unless `edge` and `interior`
+    /// are finite.
+    pub fn new(depth: f32, edge: f32, interior: f32) -> Result<Self, LevelRampError> {
+        if !(depth.is_finite() && depth > 0.0) {
+            return Err(LevelRampError::Depth);
+        }
+        if !(edge.is_finite() && interior.is_finite()) {
+            return Err(LevelRampError::NonFiniteLevel);
+        }
+        Ok(Self {
+            depth,
+            edge,
+            interior,
+        })
+    }
+
     /// The rim depth the level decays over inside the clip edge, in
-    /// device pixels; must be positive.
-    pub depth: f32,
+    /// device pixels; finite and positive.
+    #[must_use]
+    pub const fn depth(self) -> f32 {
+        self.depth
+    }
+
     /// The pyramid level at the clip's edge (`t = 1`); finite.
-    pub edge: f32,
+    #[must_use]
+    pub const fn edge(self) -> f32 {
+        self.edge
+    }
+
     /// The pyramid level deep inside the clip (`t = 0`); finite.
-    pub interior: f32,
+    #[must_use]
+    pub const fn interior(self) -> f32 {
+        self.interior
+    }
+}
+
+/// A [`LevelRamp`]'s serialized fields, validated into the ramp.
+#[cfg(feature = "serde")]
+#[derive(serde::Deserialize)]
+struct LevelRampFields {
+    depth: f32,
+    edge: f32,
+    interior: f32,
+}
+
+#[cfg(feature = "serde")]
+impl TryFrom<LevelRampFields> for LevelRamp {
+    type Error = LevelRampError;
+
+    fn try_from(fields: LevelRampFields) -> Result<Self, Self::Error> {
+        Self::new(fields.depth, fields.edge, fields.interior)
+    }
 }
 
 /// A registered backdrop shader with its uniforms, in declared order.
