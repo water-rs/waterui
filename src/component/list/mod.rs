@@ -268,8 +268,7 @@ where
     /// [`ScrollController::scroll_to`] jumps; [`ScrollController::animate_to`]
     /// glides along the request's animation. An `animate_to` further than 100
     /// rows away does not fly over every row: the backend jumps to within 100
-    /// rows of the target first and animates only that final stretch (the same
-    /// approach teleport Compose's `animateScrollToItem` applies).
+    /// rows of the target first and animates only that final stretch.
     #[must_use]
     pub fn scroll_controller(self, controller: &ScrollController<usize>) -> ListBuilder<V> {
         ListBuilder {
@@ -749,8 +748,7 @@ where
     /// [`ScrollController::scroll_to`] jumps; [`ScrollController::animate_to`]
     /// glides along the request's animation. An `animate_to` further than 100
     /// rows away does not fly over every row: the backend jumps to within 100
-    /// rows of the target first and animates only that final stretch (the same
-    /// approach teleport Compose's `animateScrollToItem` applies).
+    /// rows of the target first and animates only that final stretch.
     #[must_use]
     pub fn scroll_controller(mut self, controller: &ScrollController<usize>) -> Self {
         self.scroll_controller = Some(controller.clone());

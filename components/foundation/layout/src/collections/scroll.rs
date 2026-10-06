@@ -17,6 +17,10 @@ pub struct ScrollRequest<T> {
     /// native smooth scroll on a backend that drives a platform scroll view,
     /// the backend's default animation curve on a self-drawn one. Any other
     /// animation drives the offset along its own curve and duration.
+    ///
+    /// The C FFI does not carry the animation yet, so the Kotlin Android
+    /// runtime, which consumes it, jumps for every request
+    /// (water-rs/waterui#2084).
     pub animation: Option<Animation>,
 }
 
@@ -69,8 +73,13 @@ impl<T: Clone + 'static> ScrollController<T> {
     /// [`Animation::Default`] uses the backend's default scroll motion: the
     /// native smooth scroll on a backend that drives a platform scroll view,
     /// the backend's default animation curve on a self-drawn one. Any other
-    /// animation moves the offset along that animation's curve and duration. A later request, or the user scrolling, takes over
-    /// from an animation still in flight.
+    /// animation moves the offset along that animation's curve and duration.
+    /// A later request, or the user scrolling, takes over from an animation
+    /// still in flight.
+    ///
+    /// The C FFI does not carry the animation yet, so the Kotlin Android
+    /// runtime, which consumes it, jumps for every request
+    /// (water-rs/waterui#2084).
     ///
     /// # Panics
     ///
