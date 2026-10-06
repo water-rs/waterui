@@ -923,7 +923,14 @@ impl RenderNode {
                 let handle = {
                     let mut slot = node.handle.borrow_mut();
                     let handle = if let Some(handle) = slot.as_mut() {
-                        handle.rebind(node.axis, 0.0, 0.0, f64::INFINITY, f64::INFINITY)
+                        handle.rebind(
+                            node.axis,
+                            0.0,
+                            0.0,
+                            f64::INFINITY,
+                            f64::INFINITY,
+                            (0.0, 0.0),
+                        )
                     } else {
                         ScrollHandle::new(
                             node.axis,
@@ -941,8 +948,12 @@ impl RenderNode {
                 if let Some(controller) = &node.controller {
                     let generation = renderer.read_signal(&controller.generation());
                     if generation != node.applied_scroll_generation.get() {
-                        let target = renderer.read_signal(&controller.target());
-                        let _ = handle.scroll_to(f64::from(target.x), f64::from(target.y));
+                        let request = renderer.read_signal(&controller.request());
+                        // The semantic domain has no frame pump to advance an
+                        // animation, so a request lands in place whether or
+                        // not it carries one.
+                        let _ = handle
+                            .scroll_to(f64::from(request.target.x), f64::from(request.target.y));
                         node.applied_scroll_generation.set(generation);
                     }
                 }

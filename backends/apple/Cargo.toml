@@ -235,6 +235,14 @@ objc2-quartz-core = { version = "0.3", default-features = false, features = [
     "objc2-core-graphics",
 ] }
 
+[build-dependencies]
+cfg_aliases = "0.2.2"
+
+# cargo-machete: `cfg_aliases` is named only in `build.rs`, which the
+# analysis does not read.
+[package.metadata.cargo-machete]
+ignored = ["cfg_aliases"]
+
 [dev-dependencies]
 criterion = "0.8.2"
 pollster = { workspace = true }
@@ -242,6 +250,16 @@ libtest-mimic = "0.8"
 serde_json = { workspace = true }
 # The termination tests park the hook futures on an `async-task` executor.
 executor-core = { workspace = true, features = ["async-task"] }
+
+# The scroll takeover cases synthesize a real wheel event through
+# `CGEventCreateScrollWheelEvent2` → `+[NSEvent eventWithCGEvent:]`.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+objc2-core-graphics = { version = "0.3", default-features = false, features = [
+    "std",
+    "CGEvent",
+    "CGEventTypes",
+] }
+
 # The native tests create real `AppKit`/`UIKit` objects, which are only
 # legal on the process's actual main thread — libtest's worker threads can
 # never hold a `MainThreadMarker`. The custom harness pins execution to

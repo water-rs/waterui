@@ -264,7 +264,11 @@ where
         }
     }
 
-    /// Connects a controller that jumps the list to a requested item index.
+    /// Connects a controller that scrolls the list to a requested item index.
+    /// [`ScrollController::scroll_to`] jumps; [`ScrollController::animate_to`]
+    /// glides along the request's animation. An `animate_to` further than 100
+    /// rows away does not fly over every row: the backend jumps to within 100
+    /// rows of the target first and animates only that final stretch.
     #[must_use]
     pub fn scroll_controller(self, controller: &ScrollController<usize>) -> ListBuilder<V> {
         ListBuilder {
@@ -316,8 +320,10 @@ where
 {
     /// Creates a lazy list over an identity-keyed reactive collection.
     ///
-    /// Renderers request only rows in the visible viewport. Programmatic jumps
-    /// through [`ScrollController`] therefore do not materialize preceding rows.
+    /// Renderers request only rows in the visible viewport. A programmatic
+    /// scroll through [`ScrollController`] therefore does not materialize the
+    /// preceding rows it passes — an animated request realizes only the rows
+    /// the moving viewport covers each frame.
     /// Use [`List::content`] instead when rows carry semantic section markers.
     pub fn for_each(data: C, generator: F) -> Self {
         Self {
@@ -738,7 +744,11 @@ where
         self
     }
 
-    /// Connects a controller that jumps the list to a requested item index.
+    /// Connects a controller that scrolls the list to a requested item index.
+    /// [`ScrollController::scroll_to`] jumps; [`ScrollController::animate_to`]
+    /// glides along the request's animation. An `animate_to` further than 100
+    /// rows away does not fly over every row: the backend jumps to within 100
+    /// rows of the target first and animates only that final stretch.
     #[must_use]
     pub fn scroll_controller(mut self, controller: &ScrollController<usize>) -> Self {
         self.scroll_controller = Some(controller.clone());

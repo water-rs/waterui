@@ -293,7 +293,7 @@ pub fn draw_scroll_indicators(
                     grab
                 });
                 let target = ((pointer - grab) / geometry.travel).clamp(0.0, 1.0) * metrics.max_y;
-                handle.scroll_to(metrics.offset_x, target)
+                handle.user_scroll_to(metrics.offset_x, target)
             });
     }
     if horizontal.is_some_and(|geometry| geometry.travel > 0.0) {
@@ -335,7 +335,7 @@ pub fn draw_scroll_indicators(
                     grab
                 });
                 let target = ((pointer - grab) / geometry.travel).clamp(0.0, 1.0) * metrics.max_x;
-                handle.scroll_to(target, metrics.offset_y)
+                handle.user_scroll_to(target, metrics.offset_y)
             });
     }
 }
