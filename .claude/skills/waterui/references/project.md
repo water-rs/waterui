@@ -146,6 +146,16 @@ them once here themes the whole app on every backend.
 When developing against a local WaterUI checkout, add `waterui_path = "../.."` at the top
 level so backends resolve locally instead of from the registry.
 
+Some capability crates need configuration only the app knows. Such a crate requests it, and
+packaging fails naming the key until the app supplies it under `[app_values]`:
+
+```toml
+[app_values]
+firebase_config = "google-services.json"            # Android: copied into the Gradle module
+apple_pay_merchant_ids = ["merchant.com.example"]   # Apple: the in-app-payments entitlement
+cast_receiver_app_id = "CC1AD845"                    # Android: @string/waterui_cast_receiver_app_id
+```
+
 ## Permissions: declaring and requesting
 
 Permission keys: `internet`, `camera`, `microphone`, `location`, `coarse_location`,

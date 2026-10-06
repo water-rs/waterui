@@ -698,12 +698,13 @@ pub async fn package_apple(
     // Crate-declared entitlements and `Info.plist` keys, collected from the
     // graph the companion compiles with — a conflict fails before any
     // bundle work.
-    let apple_declarations = crate::assets::scan_apple_declarations(
+    let mut apple_declarations = crate::assets::scan_apple_declarations(
         project,
         &project.ffi_crate_path().join("Cargo.toml"),
         &apple_dependency_features(project, browser_runtime_plan).await?,
     )
     .await?;
+    apple_declarations.supply_app_values(&project.manifest().app_values)?;
 
     let project_path = project.backend_path::<AppleBackend>();
 
