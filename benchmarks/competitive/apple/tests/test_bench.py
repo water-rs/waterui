@@ -4,8 +4,10 @@
 Covers: devicectl JSON parse, xcresult-error row marking, the report's
 completeness gates, the resume gate, profile selection, capacity
 summaries, the device cleanup path with injected cleanup failures,
-xctrace export parsing and frame attribution, the pty line reader, the
-Instruments scratch sweep and xctestrun injection. No device, network,
+xctrace export parsing and frame attribution (with the render-server
+frame gate), the pty line reader, the Instruments scratch sweep and its
+SIGTERM path (real processes: copies of /bin/sleep), the device lock,
+the staged-tarball check and xctestrun injection. No device, network,
 or build required — failures are injected through real control flow,
 not mocks shaped like the implementation.
 
@@ -213,6 +215,15 @@ class TestResumeGate(unittest.TestCase):
                 bench.check_resume(st, self.STAGING, self.MACHINE, "D")
             self.assertIn(why, str(ctx.exception))
 
+    def test_unknown_identity_is_never_the_same_host(self):
+        """A recorded host without hw_uuid/hw_model is refused even
+        against a current host equally unknown."""
+        blank = {"hw_model": None, "hw_uuid": None}
+        with self.assertRaises(SystemExit) as ctx:
+            bench.check_resume(self.state(machine=blank), self.STAGING,
+                               blank, "D")
+        self.assertIn("no device host identity", str(ctx.exception))
+
 
 class TestDeviceCleanup(unittest.TestCase):
     """Real control flow: injected cleanup failures must not suppress
@@ -244,7 +255,10 @@ class TestDeviceCleanup(unittest.TestCase):
     def test_sh_real_failure_and_timeout(self):
         with self.assertRaises(RuntimeError):
             bench.sh("exit 7")
-        self.assertIsNone(bench.sh("sleep 5", timeout=1))
+        # a timeout raises, never returns a value standing for it
+        with self.assertRaises(bench.CommandTimeout) as cm:
+            bench.sh("sleep 5", timeout=1)
+        self.assertIn("timed out after 1s", str(cm.exception))
 
 
 class TestSanitizeKeepsErrors(unittest.TestCase):
@@ -381,38 +395,43 @@ class TestStagingManifest(unittest.TestCase):
 
 
 class TestRunnerLog(unittest.TestCase):
-    """N1/N8: the runner's marks + on-device record are read from the
-    runner log; stale rows from a previous rep can't alias in."""
+    """The runner's marks + on-device record are read from the runner
+    log by the rep's run nonce; another rep's lines can't alias in,
+    whatever their device time."""
 
-    def test_marks_and_device_record(self):
+    def log(self, text):
         tmp = Path(tempfile.mkdtemp(prefix="bench-rlog-"))
-        try:
-            log = tmp / "bench-runner.log"
-            log.write_text(
-                "100.0 drive-begin\n"
-                "105.0 measure-end\n"
-                "199.9 device-record thermal=0 maxFps=120\n"
-                "200.0 drive-begin\n"
-                "207.0 measure-end\n")
-            marks, dev = bench.read_runner_log(log, since=150.0)
-            self.assertEqual(marks, {"drive-begin": 200.0,
-                                     "measure-end": 207.0})
-            self.assertEqual(dev, {"thermal": "0", "maxFps": "120"})
-            # marks from before `since` are invisible
-            marks, dev = bench.read_runner_log(log, since=300.0)
-            self.assertEqual(marks, {})
-            self.assertEqual(dev, {})
-        finally:
-            shutil.rmtree(tmp)
+        self.addCleanup(shutil.rmtree, tmp)
+        p = tmp / "bench-runner.log"
+        p.write_text(text)
+        return p
 
-    def test_unpaired_mark_is_no_window(self):
-        tmp = Path(tempfile.mkdtemp(prefix="bench-rlog-"))
-        try:
-            log = tmp / "bench-runner.log"
-            log.write_text("200.0 drive-begin\n")
-            self.assertEqual(bench.read_runner_log(log, since=0.0)[0], {})
-        finally:
-            shutil.rmtree(tmp)
+    def test_marks_and_device_record_by_nonce(self):
+        # rep 7 ran later on the device clock than rep 9: time decides
+        # nothing, the nonce does
+        log = self.log(
+            "9 100.0 testWorkload: launching x w=w1 drive=tap\n"
+            "9 199.9 device-record thermal=0 maxFps=120\n"
+            "9 200.0 drive-begin\n"
+            "9 207.0 measure-end\n"
+            "7 300.0 device-record thermal=1 maxFps=60\n"
+            "7 300.5 drive-begin\n"
+            "7 309.0 measure-end\n")
+        marks, dev = bench.read_runner_log(log, 9)
+        self.assertEqual(marks, {"drive-begin": 200.0,
+                                 "measure-end": 207.0})
+        self.assertEqual(dev, {"thermal": "0", "maxFps": "120"})
+        marks, dev = bench.read_runner_log(log, 7)
+        self.assertEqual(dev, {"thermal": "1", "maxFps": "60"})
+        # a nonce the log does not carry has neither
+        self.assertEqual(bench.read_runner_log(log, 5), ({}, {}))
+
+    def test_unpaired_or_repeated_mark_is_no_window(self):
+        self.assertEqual(bench.read_runner_log(
+            self.log("3 200.0 drive-begin\n"), 3)[0], {})
+        self.assertEqual(bench.read_runner_log(self.log(
+            "3 200.0 drive-begin\n3 201.0 drive-begin\n"
+            "3 209.0 measure-end\n"), 3)[0], {})
 
 
 class TestXctraceExport(unittest.TestCase):
@@ -550,11 +569,16 @@ class TestFrameAttribution(unittest.TestCase):
                   self.frame(4_000, None, 4),     # never presented
                   self.frame(5_000, 500, 2, "2")]  # swap 2 of another display
         updates = [self.update(300, 1), self.update(700, 2),
-                   self.update(701, 3), self.update(700, 4)]
+                   self.update(701, 3), self.update(700, 4),
+                   # updates without a swap id join nothing — counted
+                   dict(self.update(700, 0), **{"swap-id": None}),
+                   dict(self.update(300, 0), **{"swap-id": None})]
         j = bench.owned_presents(frames, updates, {700, 701})
         self.assertEqual(j["presents_ns"], [2_500, 3_500])
         self.assertEqual(j["display"], "1")
         self.assertEqual(j["updates_owned"], 3)
+        self.assertEqual((j["updates_without_swap"],
+                          j["owned_updates_without_swap"]), (2, 1))
 
     def test_swap_join_refuses_unattributable(self):
         # a trace without a single frame lifetime recorded no frames
@@ -601,6 +625,14 @@ class TestFrameAttribution(unittest.TestCase):
                          (1, 1, 1, 2, 1))
         self.assertEqual(c["foreign_updaters"],
                          [{"process": "P (300)", "frames": 2}])
+        # while the render-server rule is undecided, a window holding a
+        # frame without any client update fails the rep
+        with self.assertRaises(bench.TraceAttributionError) as cm:
+            bench.require_client_updates(c)
+        self.assertIn("2 frame(s)", str(cm.exception))
+        # a window whose every frame carried a client update passes
+        bench.require_client_updates(bench.classify_display_frames(
+            frames, updates, {700}, "1", 1_000, 3_500))
 
     def test_runner_marks(self):
         rows = [{"time": "100", "name": "drive-begin",
@@ -690,11 +722,14 @@ class TestPtyLines(unittest.TestCase):
 
 
 class TestInstrumentsScratch(unittest.TestCase):
-    """The cell owns the raw ktrace scratch its recordings leave: what
-    appeared in the user temp dir or a recorder's scratch dir during
+    """The cell owns the raw ktrace scratch its recording leaves: what
+    appeared in the user temp dir or the recorder's scratch dir during
     the cell is removed (real lsof, real files); what predates the cell
-    stays; a holder other than DTServiceHub, or several holders, fail
-    the sweep and terminate nothing."""
+    stays. The SIGTERM path runs against real processes — copies of
+    /bin/sleep holding a scratch file open, one of them named
+    DTServiceHub: exactly one DTServiceHub holder is terminated and
+    logged; two DTServiceHub pids, a holder of another name, or several
+    holders fail the sweep and terminate nothing."""
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="bench-scratch-"))
@@ -702,15 +737,50 @@ class TestInstrumentsScratch(unittest.TestCase):
         self.user.mkdir()
         self.root = self.tmp / "results"
         self.root.mkdir()
+        self.children = []
 
     def tearDown(self):
+        for c in self.children:
+            if c.poll() is None:
+                c.kill()
+            c.wait(timeout=30)
+            c.stdin.close()
         shutil.rmtree(self.tmp)
+
+    def hold(self, name: str, f: Path):
+        """A copy of /bin/sleep named `name` holding `f` open (fd 3,
+        opened by the shell that execs the copy). Returns once the copy
+        runs: the shell execs it only after the kqueue NOTE_EXEC watch on
+        its pid is registered, so the event cannot be missed."""
+        import select
+        import subprocess
+        exe = self.tmp / "bin" / name
+        if not exe.exists():
+            exe.parent.mkdir(exist_ok=True)
+            shutil.copy2("/bin/sleep", exe)
+        child = subprocess.Popen(
+            ["/bin/sh", "-c", 'exec 3<"$1"; read go; exec "$0" 600',
+             str(exe), str(f)], stdin=subprocess.PIPE)
+        self.children.append(child)
+        kq = select.kqueue()
+        try:
+            kq.control([select.kevent(
+                child.pid, filter=select.KQ_FILTER_PROC,
+                flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                fflags=select.KQ_NOTE_EXEC)], 0, 0)
+            child.stdin.write(b"go\n")
+            child.stdin.flush()
+            fired = kq.control(None, 1, 30)
+        finally:
+            kq.close()
+        self.assertTrue(fired, f"{name} copy never started")
+        return child
 
     def test_sweep_removes_the_cells_scratch(self):
         old = self.user / "instruments-before.ktrace"
         old.write_bytes(b"x")
         s = bench.InstrumentsScratch(self.root, self.user)
-        sd = s.scratch_dir("cell-frames")
+        sd = s.scratch_dir("cell")
         (self.user / "instrumentsAB12.ktrace").write_bytes(b"k" * 10)
         (sd / "instrumentsCD34.ktrace").write_bytes(b"k")
         self.assertIsNone(s.sweep())
@@ -719,17 +789,47 @@ class TestInstrumentsScratch(unittest.TestCase):
         self.assertFalse(sd.exists())
         self.assertEqual(sorted(r["bytes"] for r in s.removed), [1, 10])
 
-    def test_foreign_holder_fails_the_sweep(self):
+    def test_one_hub_holder_is_terminated_and_logged(self):
+        import contextlib
+        import io
+        import signal
+        s = bench.InstrumentsScratch(self.root, self.user)
+        f = self.user / "instrumentsHB01.ktrace"
+        f.write_bytes(b"k")
+        hub = self.hold("DTServiceHub", f)
+        log = io.StringIO()
+        with contextlib.redirect_stdout(log):
+            err = s.sweep(bound_s=30)
+        self.assertIsNone(err)
+        self.assertFalse(f.exists())
+        self.assertEqual(s.removed[0]["holders"], {hub.pid: "DTServiceHub"})
+        self.assertEqual(s.terminated, hub.pid)
+        self.assertEqual(hub.wait(timeout=30), -signal.SIGTERM)
+        self.assertIn(f"SIGTERM DTServiceHub pid {hub.pid}", log.getvalue())
+
+    def test_two_hub_holders_fail_and_terminate_nothing(self):
+        s = bench.InstrumentsScratch(self.root, self.user)
+        files = [self.user / f"instrumentsHB{i}.ktrace" for i in (2, 3)]
+        hubs = []
+        for f in files:
+            f.write_bytes(b"k")
+            hubs.append(self.hold("DTServiceHub", f))
+        err = s.sweep(bound_s=30)
+        self.assertIn("2 DTServiceHub pids", err)
+        self.assertIsNone(s.terminated)
+        self.assertEqual([h.poll() for h in hubs], [None, None])
+
+    def test_foreign_holder_fails_and_terminates_nothing(self):
         s = bench.InstrumentsScratch(self.root, self.user)
         f = self.user / "instrumentsEF56.ktrace"
-        with open(f, "wb") as held:
-            held.write(b"k")
-            held.flush()
-            err = s.sweep()
-        self.assertIsNotNone(err)
+        f.write_bytes(b"k")
+        other = self.hold("NotTheHub", f)
+        err = s.sweep(bound_s=30)
+        self.assertIn("held open by NotTheHub", err)
         self.assertIn("not DTServiceHub", err)
         self.assertFalse(f.exists())
         self.assertIsNone(s.terminated)
+        self.assertIsNone(other.poll())
 
     def test_several_holders_fail_the_sweep(self):
         import subprocess
@@ -747,6 +847,62 @@ class TestInstrumentsScratch(unittest.TestCase):
             child.communicate("\n", timeout=30)
         self.assertIn("held open by 2 processes", err)
         self.assertIsNone(s.terminated)
+
+
+class TestDeviceLock(unittest.TestCase):
+    """A run never waits on the device: a lock another run holds fails
+    at once, naming the holder that run recorded."""
+
+    def test_held_lock_fails_naming_the_holder(self):
+        tmp = Path(tempfile.mkdtemp(prefix="bench-lock-"))
+        orig = bench.LOCK_DIR
+        bench.LOCK_DIR = tmp
+        try:
+            first = bench.device_lock("UDID", {"pid": 11, "run_dir": "/r/a"})
+            with self.assertRaises(SystemExit) as cm:
+                bench.device_lock("UDID", {"pid": 12, "run_dir": "/r/b"})
+            self.assertIn('"run_dir": "/r/a"', str(cm.exception))
+            # the failed attempt left the holder's record intact
+            self.assertIn('"pid": 11', (tmp / "UDID.lock").read_text())
+            first.close()
+            second = bench.device_lock("UDID", {"pid": 12, "run_dir": "/r/b"})
+            self.assertEqual(json.loads((tmp / "UDID.lock").read_text()),
+                             {"pid": 12, "run_dir": "/r/b"})
+            second.close()
+        finally:
+            bench.LOCK_DIR = orig
+            shutil.rmtree(tmp)
+
+
+class TestStageTarball(unittest.TestCase):
+    """`device-session start` takes the sha256 `build` printed and
+    verifies the tarball against it before anything else."""
+
+    def test_sha256_mismatch_fails(self):
+        tmp = Path(tempfile.mkdtemp(prefix="bench-tar-"))
+        try:
+            tar = tmp / "ios-stage-x.tar.gz"
+            tar.write_bytes(b"staged")
+            good = bench.toolchain.sha256_file(tar)
+            bench.verify_stage(tar, good)
+            with self.assertRaises(SystemExit) as cm:
+                bench.verify_stage(tar, "0" * 64)
+            self.assertIn(good, str(cm.exception))
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_start_requires_the_sha256(self):
+        orig = sys.argv
+        try:
+            for argv in (["device-session", "start", "--stage", "x.tar.gz"],
+                         ["device-session", "start", "--stage", "x.tar.gz",
+                          "--stage-sha256", "not-a-digest"]):
+                sys.argv = ["bench.py", *argv]
+                with self.assertRaises(SystemExit) as cm:
+                    bench.main()
+                self.assertEqual(cm.exception.code, 2)
+        finally:
+            sys.argv = orig
 
 
 class TestXctestrunInjection(unittest.TestCase):

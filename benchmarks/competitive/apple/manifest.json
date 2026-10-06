@@ -134,11 +134,11 @@
   },
   "disk": {
    "recording_floor_bytes": 2684354560,
-   "note": "free bytes the device host's run dir must have before each cell starts its recordings (one Animation Hitches + one Logging recording, their .trace bundles and the Instruments raw ktrace scratch the cell removes before the next cell starts); a cell short of it fails with the free byte count. Every row records disk_free_bytes, trace_bytes and the removed scratch bytes, so the floor is re-derived from the first device recordings."
+   "note": "free bytes the device host's run dir must have before each cell starts its one recording (Animation Hitches + Points of Interest + os_log: its .trace bundle and the Instruments raw ktrace scratch the cell removes before the next cell starts); a cell short of it fails with the free byte count. Every row records disk_free_bytes, trace_bytes and the removed scratch bytes, so the floor is re-derived from the first device recordings."
   }
  },
  "measurement": {
-  "method": "shared XCUITest runner + XCTest metrics (XCTApplicationLaunchMetric, XCTMemoryMetric, XCTCPUMetric, XCTHitchMetric, XCTOSSignpostMetric.scrollingAndDecelerationMetric on w2/w4/w6) + all-process xctrace recordings on the device (Animation Hitches + Points of Interest for frames, marks and time-sample CPU of the app and backboardd; Logging for the WaterUI first-paint marker)",
+  "method": "shared XCUITest runner + XCTest metrics (XCTApplicationLaunchMetric, XCTMemoryMetric, XCTCPUMetric, XCTHitchMetric, XCTOSSignpostMetric.scrollingAndDecelerationMetric on w2/w4/w6) + one all-process xctrace recording per launch on the device (Animation Hitches + Points of Interest + os_log: frames, the runner's marks, time-sample CPU of the app and backboardd, and the WaterUI first-paint marker)",
   "repeats": 5,
   "order": "contestants interleaved across repeats; one discarded launch-test warm-up per contestant per results file",
   "launch_arg": "-bench-workload w1|w2|w3|w4|w5|w6 -bench-step N (w5/w6; N is the ladder value; one launch renders one step) — single dash; NSArgumentDomain/UserDefaults. Workload ids are exact lowercase strings; a missing or unrecognized value traps naming the argument, and the app posts dev.bench.ready.<its CFBundleIdentifier>.<w> when the workload view first appears (SwiftUI onAppear, UIKit viewDidAppear, WaterUI on_appear, Flutter's first frame of the workload page, React Native's first content appearance).",

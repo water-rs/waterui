@@ -52,7 +52,13 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     // `viewDidAppear`, WaterUI `on_appear`). The runner waits for it
     // instead of a deep AX query on the 10k-row feed. Registered before
     // the surface starts, so the first appearance cannot be missed.
-    readyName = "dev.bench.ready.\(Bundle.main.bundleIdentifier ?? "unknown").\(workload)"
+    // The runner waits for exactly this bundle's name; a bundle without
+    // an identifier can never be waited for, so it traps.
+    guard let bundleID = Bundle.main.bundleIdentifier else {
+      fatalError("the app bundle has no CFBundleIdentifier; "
+        + "dev.bench.ready.<bundle-id>.<w> cannot be posted")
+    }
+    readyName = "dev.bench.ready.\(bundleID).\(workload)"
     NotificationCenter.default.addObserver(
       self, selector: #selector(contentDidAppear(_:)),
       name: AppDelegate.contentDidAppearName, object: nil)

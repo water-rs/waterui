@@ -4,7 +4,7 @@ The Apple slice of water-rs/waterui#1262: the workloads of
 `../WORKLOADS.md` measured on one physical iPhone (the `device` block of
 `manifest.json`: an iPhone 16 Pro) for WaterUI (Rust + objc2 apple
 backend), SwiftUI, UIKit, Flutter and React Native, with one XCUITest
-runner and one set of recordings for every contestant. macOS and the iOS
+runner and the same recording for every contestant. macOS and the iOS
 Simulator are not benchmark platforms.
 
 ## Layout
@@ -46,6 +46,7 @@ its unsigned `.ipa` bytes (`Payload/` deflated). It also records the
 build host's identity, Xcode and tool versions, the checkout HEAD, and
 the water CLI binary. The set is packed into
 `build/ios-stage-<head12>.tar.gz`, and the command prints its sha256.
+`device-session start` requires that sha256.
 
 **Transfer** — copy that tarball to the device host, for example
 `scp build/ios-stage-<head12>.tar.gz lexoliu@lexos-mac-mini:bench-stage/`.
@@ -65,28 +66,35 @@ ssh session. The run is therefore submitted as a one-shot LaunchAgent
 in `gui/<uid>` and runs detached from ssh:
 
 ```
-ssh lexoliu@lexos-mac-mini "bash -lc 'cd ~/bench/waterui/benchmarks/competitive/apple && uv run bench.py device-session start --stage ~/bench-stage/ios-stage-<head12>.tar.gz'"
+ssh lexoliu@lexos-mac-mini "bash -lc 'cd ~/bench/waterui/benchmarks/competitive/apple && uv run bench.py device-session start --stage ~/bench-stage/ios-stage-<head12>.tar.gz --stage-sha256 <sha256 build printed>'"
 # → {"run_dir": ".../build/device-runs/<UTC stamp>", "label": "dev.bench.device.<UTC stamp>"}
 ssh lexoliu@lexos-mac-mini "bash -lc 'cd ~/bench/waterui/benchmarks/competitive/apple && uv run bench.py device-session status --run-dir <run_dir>'"
 ssh lexoliu@lexos-mac-mini "bash -lc 'cd ~/bench/waterui/benchmarks/competitive/apple && uv run bench.py device-session stop --run-dir <run_dir>'"
 ```
 
-`start` writes `<run_dir>/args.json` and `job.plist`. It runs
-`launchctl bootstrap gui/<uid>` and returns. launchd then starts
+`start` first checks the tarball against `--stage-sha256` and refuses
+any other bytes. It then writes `<run_dir>/args.json` and `job.plist`,
+runs `launchctl bootstrap gui/<uid>` and returns. launchd then starts
 `bench.py device-run --run-dir <run_dir>` in the GUI session, using the
 login shell's PATH. That fails when nobody is logged in to the GUI.
 `status` prints launchd's view of the job (state, pid, last exit code),
 `<run_dir>/status.json` (the exit code and error, written however the
 job ended) and the tail of `job.log`. `stop` boots the job out. A
-running job gets SIGTERM, uninstalls what it installed and records its
-exit. A finished job is unloaded. `start` accepts `--only`,
+running job gets SIGTERM, uninstalls what it installed, removes its
+recording scratch and records its exit. The job's `ExitTimeOut` is the
+sum of the declared bounds of those steps (`JOB_EXIT_TIMEOUT_S` in
+`bench.py`, which lists them), so launchd never SIGKILLs it mid-cleanup.
+A finished job is unloaded. The job takes the device's lock without
+waiting: when another run holds it, the job fails at once and names the
+holder recorded in the lock file. `start` accepts `--only`,
 `--workloads`, `--repeats`, `--reps`, `--out <results.json>` (to extend
 an earlier results file of the same staged build, device host and
 device) and `--keep-traces`.
 
 The job:
 
-1. Extracts the tarball into the run dir. It refuses a staged set built
+1. Checks the tarball against the sha256 `start` verified, then
+   extracts it into the run dir. It refuses a staged set built
    at another HEAD than the device host's clean checkout, and any
    artifact whose sha256 differs from the staging manifest.
 2. Reads the device (`devicectl device info details`), which must be
@@ -123,10 +131,14 @@ One launch measures one cell (one ladder step for W5/W6). It uses two
 single-test `xcodebuild test-without-building` invocations: `testLaunch`
 (XCTApplicationLaunchMetric), then `testWorkload` (memory, CPU, hitch
 and scroll-signpost metrics). Before the workload runner may launch the
-app, two `xctrace record --all-processes --device <udid>` recordings
-are armed: Animation Hitches + Points of Interest, and Logging. Then
+app, one `xctrace record --all-processes --device <udid>` recording is
+armed: the Animation Hitches template with the Points of Interest and
+os_log instruments added. It is the launch's only recording, and every
+contestant is recorded with the same instruments. Then
 `bench-recorder-go-<nonce>` is copied into the runner's tmp, where the
-runner waits for it.
+runner waits for it. The nonce is fresh per launch. The runner starts
+every line of its log with it, and the host reads only that launch's
+lines.
 
 - The contestant's frames are the frame lifetimes whose (display, swap)
   composited an update from a process inside its bundle.
@@ -136,25 +148,39 @@ runner waits for it.
   `measure-end` in the same trace. A driven cell's drive must start
   within `anchor_tolerance_ms` of the window start. Every cell fails
   when the runner released the contestant before the window end.
+- Every frame on the contestant's display inside the window is
+  classified by the client updates its swap carried: owned, owned and
+  foreign, foreign, or none. The row stores the classification as
+  `frames_by_update`, and `attribution` counts the client updates that
+  carry no swap id and so join no frame. **A rep fails when any frame in
+  its window carried no client update.** The render server can present
+  frames on its own: a Core Animation animation it interpolates, which
+  UIKit's `UIView.animate` and SwiftUI animations may produce in W3/W5.
+  Such a frame joins no owned update, so the swap join would leave it
+  out and under-count that contestant. Until the attribution rule for
+  render-server frames is decided, a window holding one is not counted.
+  The failed row keeps its classification, so every rep gathers the
+  evidence that decides the rule.
 - App and `backboardd` CPU come from the trace's `time-sample` rows in
   the window.
 - WaterUI's first paint is the `waterui_first_paint_ms` os_log marker
-  in the Logging recording. An export error or a missing marker fails
-  the cell.
+  in the same recording's `os-log` table. An export error or a missing
+  marker fails the cell.
 - Capacity ladders (W5, W6) run one launch per step. A step collapses
   when fewer than half its presents land within 33.3 ms of the previous
   one, and the ladder stops there. `capacity_120hz` / `capacity_60hz`
   is the largest step with at least 99% of presents within budget ×
   1.5 at that rate.
 
-Disk: the device host has little free space, so the cells record one
-at a time. Before a cell starts, its run dir must have
-`harness.disk.recording_floor_bytes` free (2.5 GiB: both recordings'
-`.trace` bundles plus the raw `instruments*.ktrace` scratch), or the
-cell fails with the byte count. Each recorder runs with `TMPDIR` set to
-a scratch dir of the cell. After both recorders stop, the cell deletes
-every `instruments*.ktrace` that appeared there or in the user's Darwin
-temp dir. If DTServiceHub still holds those files, the cell sends
+Disk: the device host has little free space, so recordings run one at
+a time: one per launch, and its scratch is removed before the next
+launch starts. Before a cell starts, its run dir must have
+`harness.disk.recording_floor_bytes` free (2.5 GiB: the recording's
+`.trace` bundle plus its raw `instruments*.ktrace` scratch), or the
+cell fails with the byte count. The recorder runs with `TMPDIR` set to
+a scratch dir of the cell. After it stops, the cell deletes every
+`instruments*.ktrace` that appeared there or in the user's Darwin temp
+dir. If DTServiceHub still holds those files, the cell sends
 SIGTERM to that one pid, found by `lsof` on the files and never by
 name, and logs it. A file held by several processes, by anything other
 than DTServiceHub, or a second DTServiceHub pid fails the cell, and the
@@ -168,8 +194,9 @@ trace's attribution evidence. It shows the owned pids, the swap join,
 the owned presents next to every present on the display, and every
 frame on that display classified by whose client updates its swap
 carried: owned, owned and foreign, foreign, or none (render-server
-driven). This evidence settles the attribution rule for
-render-server-driven frames (UIKit's `UIView.animate` in W3/W5).
+driven), over the owned span of the whole recording. Every rep stores
+the same classification over its window, and it is the evidence that
+settles the attribution rule for render-server-driven frames.
 
 ## Package size
 

@@ -28,13 +28,16 @@
 //   BENCH_ANCHOR_TOLERANCE_MS — how far a driven cell's drive may start
 //                      from the trace's window start (required, > 0); the
 //                      hold extends past the capture by the same amount
-//   BENCH_RUN_NONCE  — non-zero u64 the host chose for this invocation;
-//                      the recorder-go handshake matches it, so a latched
-//                      signal from an earlier invocation can never
-//                      release this one
+//   BENCH_RUN_NONCE  — non-zero u64 the host chose for this invocation
+//                      (required in every test); the recorder-go
+//                      handshake matches it, so a latched signal from an
+//                      earlier invocation can never release this one, and
+//                      every runner-log line starts with it, so the host
+//                      selects this invocation's lines by nonce, never by
+//                      comparing the device's clock with its own
 //
 // testWorkload does NOT launch the app until the host has armed its
-// recorders. The host latches recorder-go: it has no notify channel into
+// recorder. The host latches recorder-go: it has no notify channel into
 // the device, so it copies `bench-recorder-go-<nonce>` into this runner's
 // tmp. The file is latched, so the order in which host and runner arrive
 // cannot lose the signal. Each row also records the device
@@ -63,10 +66,10 @@ import os
 
 final class BenchTests: XCTestCase {
     /// The runner's marks in the host's all-process trace (the frames
-    /// recorder adds the Points of Interest instrument): drive-begin is
+    /// recording adds the Points of Interest instrument): drive-begin is
     /// where the drive starts, measure-end where the hold ends. The same
-    /// instants go to the runner log, which carries them on the wall
-    /// clock — together they relate the trace clock to the host's.
+    /// marks go to the runner log under this invocation's run nonce,
+    /// where the host checks the runner reached its measured span.
     private static let marks = OSLog(subsystem: "dev.bench",
                                      category: .pointsOfInterest)
     private var app: XCUIApplication!
@@ -74,8 +77,11 @@ final class BenchTests: XCTestCase {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("bench-runner.log")
     }()
+    /// BENCH_RUN_NONCE, read first in setUp: it keys every log line.
+    private var nonce: UInt64 = 0
+    /// One runner-log line: `<run nonce> <device epoch s> <text>`.
     private func dbg(_ s: String) {
-        let line = "\(Date().timeIntervalSince1970) \(s)\n"
+        let line = "\(nonce) \(Date().timeIntervalSince1970) \(s)\n"
         if let h = try? FileHandle(forWritingTo: dbgURL) {
             h.seekToEndOfFile(); h.write(line.data(using: .utf8)!)
             try? h.close()
@@ -96,6 +102,12 @@ final class BenchTests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = true
         let env = ProcessInfo.processInfo.environment
+        guard let rawNonce = env["BENCH_RUN_NONCE"],
+            let parsed = UInt64(rawNonce), parsed != 0
+        else {
+            throw HarnessError(description: "missing or malformed BENCH_RUN_NONCE")
+        }
+        nonce = parsed
         bundleID = env["BENCH_BUNDLE_ID"] ?? ""
         guard !bundleID.isEmpty else {
             throw HarnessError(description: "BENCH_BUNDLE_ID not set")
@@ -266,16 +278,11 @@ final class BenchTests: XCTestCase {
         let warmupMs = try positive("BENCH_WARMUP_MS")
         let duration = try positive("BENCH_DURATION")
         let toleranceMs = try positive("BENCH_ANCHOR_TOLERANCE_MS")
-        guard let rawNonce = env["BENCH_RUN_NONCE"],
-            let nonce = UInt64(rawNonce), nonce != 0
-        else {
-            throw HarnessError(description: "missing or malformed BENCH_RUN_NONCE")
-        }
         let hold = duration + toleranceMs / 1000.0
         dbg("testWorkload: launching \(bundleID) w=\(workload) drive=\(drive)")
         registerWorkloadReady()
-        // The host arms its recorders, then latches recorder-go — launch
-        // is gated on that handshake so every recorder covers the app
+        // The host arms its recorder, then latches recorder-go — launch
+        // is gated on that handshake so the recording covers the app
         // from its birth.
         try waitForRecorderGo(nonce: nonce)
         app.launch()
@@ -370,7 +377,7 @@ final class BenchTests: XCTestCase {
         }
     }
 
-    /// Blocks until the host has armed its recorders. The host has no
+    /// Blocks until the host has armed its recorder. The host has no
     /// notify channel into the device; it copies
     /// `bench-recorder-go-<nonce>` into this runner's tmp. The file is
     /// latched, so it does not matter whether the host or this runner
@@ -400,7 +407,7 @@ final class BenchTests: XCTestCase {
         dbg("recorder-go fired=\(ok)")
         guard ok else {
             throw HarnessError(
-                description: "host never armed its recorders within 300s "
+                description: "host never armed its recorder within 300s "
                     + "(recorder-go nonce \(nonce))")
         }
     }

@@ -37,7 +37,12 @@ import UIKit
         result(FlutterMethodNotImplemented)
         return
       }
-      let bid = Bundle.main.bundleIdentifier ?? "unknown"
+      // The runner waits for exactly this bundle's name; a bundle
+      // without an identifier can never be waited for, so it traps.
+      guard let bid = Bundle.main.bundleIdentifier else {
+        fatalError("the app bundle has no CFBundleIdentifier; "
+          + "dev.bench.ready.<bundle-id>.<w> cannot be posted")
+      }
       notify_post("dev.bench.ready.\(bid).\(benchWorkload())")
       result(nil)
     }

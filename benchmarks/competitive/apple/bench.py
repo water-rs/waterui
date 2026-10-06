@@ -14,7 +14,7 @@ the device host. Two hosts take part, each with the one Xcode it has:
 
   device host (the Mac the iPhone is attached to; never compiles a
   contestant, builds only the XCTest runner with its own Xcode):
-    device-session start --stage <tar.gz> [selection]
+    device-session start --stage <tar.gz> --stage-sha256 <hex> [selection]
                                submit one measurement run as a LaunchAgent
                                job in the user's GUI (Aqua) session — xctrace,
                                DTServiceHub and the login keychain live
@@ -28,9 +28,11 @@ the device host. Two hosts take part, each with the one Xcode it has:
     attribution --trace T --app A --max-fps F
 
 Every contestant is measured the same way: the shared BenchRunner XCUITest
-bundle drives the app, an all-process Animation Hitches recording gives
-the frames, and XCTest metrics (launch, memory, CPU, hitch, scroll
-signposts) are collected externally. No per-contestant shortcuts.
+bundle drives the app, one all-process recording per launch (Animation
+Hitches + Points of Interest + os_log) gives the frames, the runner's
+marks, CPU samples and the WaterUI first-paint marker, and XCTest
+metrics (launch, memory, CPU, hitch, scroll signposts) are collected
+externally. No per-contestant shortcuts.
 """
 from __future__ import annotations
 
@@ -99,7 +101,15 @@ def _kill_active_procs():
         _kill_proc(p)
 
 
+class CommandTimeout(RuntimeError):
+    """A command outlived its declared bound; its process group was
+    killed."""
+
+
 def sh(cmd, cwd=ROOT, env=None, check=True, capture=False, timeout=None):
+    """Run `cmd` session-led and tracked. A non-zero exit (with `check`)
+    raises RuntimeError; outliving `timeout` kills the group and raises
+    CommandTimeout — there is no return value standing for a timeout."""
     print(f"$ {cmd}", flush=True)
     e = dict(os.environ)
     e.setdefault("LANG", "en_US.UTF-8")
@@ -117,7 +127,8 @@ def sh(cmd, cwd=ROOT, env=None, check=True, capture=False, timeout=None):
     except subprocess.TimeoutExpired:
         _kill_proc(p)
         p.wait()
-        return None
+        raise CommandTimeout(
+            f"command timed out after {timeout}s: {cmd}") from None
     finally:
         if p in _ACTIVE_PROCS:
             _ACTIVE_PROCS.remove(p)
@@ -136,25 +147,71 @@ def _out(cmd: list[str], timeout: int = 60) -> str:
     return r.stdout.strip()
 
 
+# ------------------------------------------------------- declared bounds
+#
+# Every device-side step carries a declared bound. The ones a stopping
+# job can still take after launchd's SIGTERM add up to the job's
+# ExitTimeOut (JOB_EXIT_TIMEOUT_S), so `device-session stop` never
+# SIGKILLs it mid-cleanup.
+
+DEVICECTL_QUERY_S = 60       # devicectl device info details / info apps
+DEVICECTL_COPY_S = 120       # devicectl device copy to / from
+DEVICECTL_INSTALL_S = 300    # devicectl device install app
+DEVICECTL_UNINSTALL_S = 120  # devicectl device uninstall app
+RECORDER_ARM_S = 120         # xctrace record → its "recording" line
+RECORDER_STOP_S = 300        # xctrace SIGINT → the .trace written
+RECORDER_DRAIN_S = 10        # the recorder's pty reader thread ending
+LSOF_S = 60                  # every lsof of one scratch sweep, together
+HUB_EXIT_S = 60              # DTServiceHub SIGTERM → its exit
+# rmtree of the cell's .trace/.xcresult bundles and the status.json
+# write while the job unwinds — local file operations without a
+# subprocess, so no timeout bounds them; this is their allowance
+LOCAL_FS_S = 60
+# apps a run ever has installed at once: the runner and the contestant
+# under measurement
+MAX_INSTALLED_APPS = 2
+UNINSTALL_S = DEVICECTL_QUERY_S + DEVICECTL_UNINSTALL_S  # uninstall_app
+# What a SIGTERM can still cost, in the order it is paid:
+#   on_signal: kill this run's tracked processes (SIGKILL, immediate),
+#     then uninstall every installed app
+#       MAX_INSTALLED_APPS × UNINSTALL_S
+#   run_one's finally: stop the one recorder
+#       RECORDER_STOP_S + RECORDER_DRAIN_S
+#     then sweep the cell's scratch
+#       LSOF_S + HUB_EXIT_S
+#   the remaining finally blocks: run_device's per-contestant uninstall
+#     finds nothing installed (on_signal's cleanup emptied the list),
+#     then trace/xcresult removal and status.json
+#       LOCAL_FS_S
+# = 2 × 180 + 310 + 120 + 60 = 850 s.
+JOB_EXIT_TIMEOUT_S = (MAX_INSTALLED_APPS * UNINSTALL_S
+                      + RECORDER_STOP_S + RECORDER_DRAIN_S
+                      + LSOF_S + HUB_EXIT_S
+                      + LOCAL_FS_S)
+
+
 # ---------------------------------------------------------- host identity
 
 def host_evidence() -> dict:
     """Evidence that identifies a host's real hardware and OS. Recorded
     for the build host in the staging manifest and for the device host
-    on every results file (re-verified on resume)."""
+    on every results file (re-verified on resume). A sysctl or ioreg
+    probe that fails, or an ioreg answer without IOPlatformUUID, raises:
+    a host whose identity cannot be read is never recorded as one."""
     def _sysctl(k):
-        r = subprocess.run(["sysctl", "-n", k], capture_output=True,
-                           text=True, timeout=30)
-        return r.stdout.strip() if r.returncode == 0 else None
+        v = _out(["sysctl", "-n", k], timeout=30)
+        if not v:
+            raise RuntimeError(f"sysctl -n {k} printed nothing")
+        return v
 
     def _ioreg_uuid():
-        r = subprocess.run(
-            ["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
-            capture_output=True, text=True, timeout=30)
-        if r.returncode != 0:
-            return None
-        m = re.search(r'"IOPlatformUUID"\s*=\s*"([^"]+)"', r.stdout)
-        return m.group(1) if m else None
+        out = _out(["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
+                   timeout=30)
+        m = re.search(r'"IOPlatformUUID"\s*=\s*"([^"]+)"', out)
+        if m is None:
+            raise RuntimeError("ioreg IOPlatformExpertDevice reports no "
+                               "IOPlatformUUID")
+        return m.group(1)
 
     return {"hw_model": _sysctl("hw.model"),
             "hw_uuid": _ioreg_uuid(),
@@ -622,10 +679,9 @@ def _xctrace(args_, timeout=None):
 # event-time columns), so the window, the frames and the runner's marks
 # live on one clock and nothing is mapped through a guessed epoch.
 #
-# Schemas as Xcode 26.6 (xctrace 16.0) exported them from a macOS
-# recording (column mnemonic: engineering type); the device recordings
-# of the Xcode the device host has are read by the same mnemonics, and
-# a missing column fails attribution (_require_cols):
+# The tables are read by column mnemonic (column mnemonic: engineering
+# type below); a column attribution needs that the device recording of
+# the device host's Xcode does not carry fails it (_require_cols):
 #   hitches-frame-lifetimes  start:start-time duration:duration
 #       display:display-name swap-id:uint32 surface-id:uint32
 #       frame-color layout-qualifier label
@@ -635,10 +691,11 @@ def _xctrace(args_, timeout=None):
 #   os-signpost  time:event-time thread process event-type scope
 #       identifier name:signpost-name format-string backtrace
 #       subsystem:subsystem category:category message emit-location
-# An Animation Hitches + Points of Interest recording holds two
-# os-signpost tables (categories InduceCondition and PointsOfInterest);
-# the runner's marks live in the PointsOfInterest one, selected by its
-# TOC attribute.
+#   os-log  (process, message — the WaterUI first-paint marker)
+# The frames recording (Animation Hitches + Points of Interest + os_log)
+# holds two os-signpost tables (categories InduceCondition and
+# PointsOfInterest); the runner's marks live in the PointsOfInterest
+# one, selected by its TOC attribute.
 
 FRAMES_SCHEMA = "hitches-frame-lifetimes"
 UPDATES_SCHEMA = "hitches-updates"
@@ -652,9 +709,13 @@ SIGNPOST_COLS = ("time", "name", "subsystem")
 MARK_SUBSYSTEM = "dev.bench"
 MARK_DRIVE_BEGIN = "drive-begin"
 MARK_MEASURE_END = "measure-end"
-# recorded with the frames recorder so the marks share the trace clock
+# The one recording a launch makes: Animation Hitches plus Points of
+# Interest (the runner's marks share the frames' trace clock) plus os_log
+# (the WaterUI first-paint marker). Every contestant is recorded with the
+# same instruments, so each pays the same recording cost.
 FRAMES_TEMPLATE = "Animation Hitches"
-FRAMES_INSTRUMENTS = ("Points of Interest",)
+FRAMES_INSTRUMENTS = ("Points of Interest", "os_log")
+LOG_SCHEMA = "os-log"
 
 
 class TraceAttributionError(RuntimeError):
@@ -815,22 +876,27 @@ def _present_ns(f: dict) -> int | None:
             + _int(f["duration"], f"{FRAMES_SCHEMA} duration"))
 
 
-def _updates_by_swap(updates: list[dict]) -> dict:
-    """{(display, swap id): [committing pid, …]} of the client updates.
-    Swap ids are keyed with their display: the tap does not declare
-    them unique across displays, and both tables carry the display."""
+def _updates_by_swap(updates: list[dict]) -> tuple[dict, list[int]]:
+    """({(display, swap id): [committing pid, …]}, [committing pid of
+    every update without a swap id]) of the client updates. Swap ids are
+    keyed with their display: the tap does not declare them unique
+    across displays, and both tables carry the display. An update
+    without a swap joins no frame; it is returned, never dropped
+    silently, so the attribution evidence counts it."""
     out: dict = {}
+    unswapped: list[int] = []
     for u in updates:
-        if u["swap-id"] is None:
-            continue
         pid = _pid_of_process(u["process"])
         if pid is None:
             raise TraceAttributionError(
                 f"{UPDATES_SCHEMA} process cell without a pid: "
                 f"{u['process']!r}")
+        if u["swap-id"] is None:
+            unswapped.append(pid)
+            continue
         key = (u["display"], _int(u["swap-id"], f"{UPDATES_SCHEMA} swap-id"))
         out.setdefault(key, []).append(pid)
-    return out
+    return out, unswapped
 
 
 def owned_presents(frames: list[dict], updates: list[dict],
@@ -839,16 +905,19 @@ def owned_presents(frames: list[dict], updates: list[dict],
     (display, swap).
 
     Returns {presents_ns (sorted), display, owned_swaps, frames_total,
-    updates_owned}. Raises when the trace recorded no frame at all, when
-    nothing joins, or when the owned frames span more than one display
-    (the frame statistics take one refresh period)."""
+    updates_owned, updates_without_swap, owned_updates_without_swap}:
+    the last two count the client updates (all, and the contestant's)
+    that carry no swap id and so cannot join any frame. Raises when the
+    trace recorded no frame at all, when nothing joins, or when the
+    owned frames span more than one display (the frame statistics take
+    one refresh period)."""
     if not frames:
         raise TraceAttributionError(
             f"{FRAMES_SCHEMA} has 0 rows: the Hitches tap recorded no "
             "frame on any display")
     _require_cols(frames, FRAME_COLS, FRAMES_SCHEMA)
     _require_cols(updates, UPDATE_COLS, UPDATES_SCHEMA)
-    by_swap = _updates_by_swap(updates)
+    by_swap, unswapped = _updates_by_swap(updates)
     swaps = {k for k, pids in by_swap.items() if owned & set(pids)}
     n_upd = sum(1 for pids in by_swap.values() for p in pids if p in owned)
     if not swaps:
@@ -875,13 +944,17 @@ def owned_presents(frames: list[dict], updates: list[dict],
             "the measured contestant must present on one display")
     return {"presents_ns": sorted(presents), "display": displays.pop(),
             "owned_swaps": len(swaps), "frames_total": len(frames),
-            "updates_owned": n_upd}
+            "updates_owned": n_upd,
+            "updates_without_swap": len(unswapped),
+            "owned_updates_without_swap": sum(
+                1 for p in unswapped if p in owned)}
 
 
 def classify_display_frames(frames: list[dict], updates: list[dict],
                             owned: set[int], display: str,
                             lo_ns: int, hi_ns: int) -> dict:
-    """Evidence for the attribution rule (not the rule itself): every
+    """Evidence for the attribution rule (not the rule itself; every rep
+    stores it and `require_client_updates` gates on it): every
     frame presented on `display` within [lo_ns, hi_ns], classified by
     the client updates its swap carried — owned only, owned and
     foreign, foreign only, or none (a frame the render server produced
@@ -891,7 +964,7 @@ def classify_display_frames(frames: list[dict], updates: list[dict],
     client update are also counted when their surface-id is one an
     owned update landed on — whether surface ids can attribute
     render-server frames is part of what this evidence settles."""
-    by_swap = _updates_by_swap(updates)
+    by_swap, _ = _updates_by_swap(updates)
     owned_surfaces = {(u["display"], u.get("surface-id")) for u in updates
                       if _pid_of_process(u["process"]) in owned
                       and u.get("surface-id") is not None}
@@ -929,6 +1002,26 @@ def classify_display_frames(frames: list[dict], updates: list[dict],
                 ({"process": names[p], "frames": n}
                  for p, n in foreign_pids.items()),
                 key=lambda d: -d["frames"])}
+
+
+def require_client_updates(classified: dict) -> None:
+    """The gate that holds while the attribution rule for render-server
+    frames is undecided. The owned-update join counts a frame only when
+    its swap carried a client update from the contestant; a frame the
+    render server presented without any client commit (a Core Animation
+    animation it interpolates, as UIKit's UIView.animate and SwiftUI
+    animations may be) joins nothing, so a window holding one would
+    under-count that contestant's frames. Such a rep fails until the
+    rule is decided; its classification is on the row as evidence."""
+    n = classified["no-client-update"]
+    if n:
+        raise TraceAttributionError(
+            f"{n} frame(s) on display {classified['display']} inside the "
+            "window carried no client update (of them "
+            f"{classified['no-client-update-on-owned-surface']} on a "
+            "surface an owned update landed on): the attribution rule for "
+            "render-server frames is undecided, so the owned-update join "
+            "cannot count this window")
 
 
 def runner_marks(signposts: list[dict]) -> dict:
@@ -1017,21 +1110,35 @@ def trace_frame_window(trace: Path, bundle_name: str, main_rel: str,
                        capture_ms: float, refresh_ms: float,
                        driven: bool) -> dict:
     """Frame statistics of the contestant's own presents over METHOD's
-    window, plus the window itself (trace ms) and the attribution
-    evidence. Raises TraceAttributionError when either is unsound."""
-    att = trace_attribution(trace, bundle_name, main_rel)
+    window, plus the window itself (trace ms), the attribution evidence
+    and every frame on the contestant's display inside the window
+    classified by the client updates its swap carried (`frames_by_update`,
+    from the tables this function already exported). Raises
+    TraceAttributionError when the attribution or the window is unsound;
+    the classification is returned for the caller to store and gate
+    (require_client_updates), so a gated rep still records it."""
+    tables = trace_tables(trace)
+    att = trace_attribution(trace, bundle_name, main_rel, tables)
     marks = runner_marks(att.pop("signposts"))
     h = MANIFEST["harness"]
-    win = measurement_window(att["presents_ns"], marks,
-                             warmup_ms=float(h["warmup_ms"]),
+    warmup_ms = float(h["warmup_ms"])
+    presents_ns = att.pop("presents_ns")
+    win = measurement_window(presents_ns, marks, warmup_ms=warmup_ms,
                              capture_ms=capture_ms,
                              tolerance_ms=float(h["anchor_tolerance_ms"]),
                              driven=driven)
     stats = lib_frames.frame_statistics(
-        [t / 1e6 for t in att.pop("presents_ns")],
+        [t / 1e6 for t in presents_ns],
         window_start_ms=win["window_start_ms"], capture_ms=capture_ms,
         refresh_ms=refresh_ms)
-    return {"frame_stats": stats, "window": win, "attribution": att}
+    # the same window on the trace's integer ns clock
+    lo_ns = presents_ns[0] + round(warmup_ms * 1e6)
+    classified = classify_display_frames(
+        tables[FRAMES_SCHEMA], tables[UPDATES_SCHEMA],
+        set(att["owned_pids"]), att["display"],
+        lo_ns, lo_ns + round(capture_ms * 1e6))
+    return {"frame_stats": stats, "window": win, "attribution": att,
+            "frames_by_update": classified}
 
 
 def _proc_name(fmt: str | None):
@@ -1051,14 +1158,15 @@ _PAINT_RE = re.compile(r"waterui_first_paint_ms=\s*([0-9]+(?:\.[0-9]+)?)")
 
 def first_paint_ms(trace: Path, proc: str) -> float:
     """The `waterui_first_paint_ms=N` the WaterUI contestant emitted
-    (os_log `dev.waterui`, notice level), read from the cell's own
-    all-process Logging recording — devicectl exposes no console read.
-    Rows are selected by `proc` (the contestant's executable name). An
-    export error or an absent marker raises: the apple backend emits the
-    marker once per process, so its absence is a defect, not a gap."""
-    rows, err = _export_table(trace, "os-log")
+    (os_log `dev.waterui`, notice level), read from the os-log table of
+    the cell's one all-process recording (its os_log instrument) —
+    devicectl exposes no console read. Rows are selected by `proc` (the
+    contestant's executable name). An export error or an absent marker
+    raises: the apple backend emits the marker once per process, so its
+    absence is a defect, not a gap."""
+    rows, err = _export_table(trace, LOG_SCHEMA)
     if rows is None:
-        raise TraceAttributionError(f"os-log export: {err}")
+        raise TraceAttributionError(f"{LOG_SCHEMA} export: {err}")
     for row in rows:
         if _proc_name(row.get("process")) != proc:
             continue
@@ -1066,8 +1174,8 @@ def first_paint_ms(trace: Path, proc: str) -> float:
         if m:
             return float(m.group(1))
     raise TraceAttributionError(
-        f"no waterui_first_paint_ms marker from {proc} in the Logging "
-        f"recording ({len(rows)} os-log rows)")
+        f"no waterui_first_paint_ms marker from {proc} in the recording "
+        f"({len(rows)} {LOG_SCHEMA} rows)")
 
 
 def _spawn_pty(cmd: list[str], env: dict | None = None):
@@ -1126,18 +1234,18 @@ class PtyLines:
         os.close(self.fd)
 
 class InstrumentsScratch:
-    """The raw kernel-trace scratch files one cell's recordings leave.
+    """The raw kernel-trace scratch files one cell's recording leaves.
 
     A recording writes its raw kdebug stream to an `instruments*.ktrace`
     file and converts it into the .trace at stop. The file stays in the
-    user's Darwin temp dir after the recording ended (2-4.5 GB per W3
-    recording on a macOS build VM), held open by the idle DTServiceHub
-    agent that recorded it, so neither the .trace output nor the recorder
-    process owns it. The cell owns it: each recorder runs with TMPDIR set
-    to a scratch dir of its own (`scratch_dir`, removed whole by `sweep`),
-    and every `instruments*.ktrace` that appeared in the user temp dir or
-    a scratch dir between `__init__` (before any recorder of the cell
-    spawns) and `sweep` (after every one of them stopped) is the cell's.
+    user's Darwin temp dir after the recording ended (gigabytes for a W3
+    recording), held open by the idle DTServiceHub agent that recorded
+    it, so neither the .trace output nor the recorder process owns it.
+    The cell owns it: the recorder runs with TMPDIR set to a scratch dir
+    of its own (`scratch_dir`, removed whole by `sweep`), and every
+    `instruments*.ktrace` that appeared in the user temp dir or a scratch
+    dir between `__init__` (before the cell's recorder spawns) and
+    `sweep` (after it stopped) is the cell's.
 
     `sweep` asks lsof which processes hold each such file. Every file may
     be held by at most one process, that process must be DTServiceHub,
@@ -1176,11 +1284,17 @@ class InstrumentsScratch:
         return d
 
     @staticmethod
-    def _holders(f: Path) -> dict[int, str]:
+    def _holders(f: Path, deadline: float) -> dict[int, str]:
         """{pid: full command name} of the processes holding `f` open;
-        lsof exits 1 with no output when nothing does."""
+        lsof exits 1 with no output when nothing does. Bounded by the
+        sweep's shared `deadline` (time.monotonic()); past it the sweep
+        fails rather than waiting longer than LSOF_S declares."""
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise RuntimeError(f"lsof {f}: the sweep's {LSOF_S}s lsof "
+                               "budget is spent")
         r = subprocess.run(["lsof", "+c", "0", "-F", "pc", "--", str(f)],
-                           capture_output=True, text=True, timeout=60)
+                           capture_output=True, text=True, timeout=left)
         if r.returncode not in (0, 1):
             raise RuntimeError(f"lsof {f}: rc={r.returncode} "
                                f"{r.stderr.strip()!r}")
@@ -1215,16 +1329,17 @@ class InstrumentsScratch:
         finally:
             kq.close()
 
-    def sweep(self, bound_s: float = 60.0) -> str | None:
+    def sweep(self, bound_s: float = HUB_EXIT_S) -> str | None:
         """Remove the cell's scratch; an error string when a scratch
-        file cannot be released."""
+        file cannot be released. Takes at most LSOF_S + `bound_s`."""
         leaked = set(self.user_tmp.glob(self.PATTERN)) - self.before
         for d in self.dirs:
             leaked |= set(d.rglob(self.PATTERN))
         errs = []
         hub_pids = set()
+        lsof_deadline = time.monotonic() + LSOF_S
         for f in sorted(leaked):
-            held = self._holders(f)
+            held = self._holders(f, lsof_deadline)
             self.removed.append({"path": str(f), "bytes": f.stat().st_size,
                                  "holders": held})
             f.unlink()
@@ -1291,7 +1406,7 @@ class XctraceRecorder:
         self._drain = None
         self._result = None
 
-    def arm(self, bound_s: float = 120.0):
+    def arm(self, bound_s: float = RECORDER_ARM_S):
         deadline = time.monotonic() + bound_s
         while True:
             try:
@@ -1318,7 +1433,7 @@ class XctraceRecorder:
         while (line := self.lines.readline(None)) is not None:
             self.log.append(line)
 
-    def stop(self, bound_s: float = 300.0) -> str | None:
+    def stop(self, bound_s: float = RECORDER_STOP_S) -> str | None:
         """SIGINT and wait for the trace to be written; an error string
         when it was not. Idempotent."""
         if self._result is not None:
@@ -1333,7 +1448,7 @@ class XctraceRecorder:
         if self.proc in _ACTIVE_PROCS:
             _ACTIVE_PROCS.remove(self.proc)
         if self._drain is not None:
-            self._drain.join(timeout=10)
+            self._drain.join(timeout=RECORDER_DRAIN_S)
         self.lines.close()
         err = None
         if self.proc.returncode != 0 or not self.out.exists():
@@ -1353,14 +1468,12 @@ def release_recorder_go(udid: str, runner_bid: str, nonce: int,
     sentinel = work / f"bench-recorder-go-{nonce}"
     sentinel.write_text("armed\n")
     try:
-        if sh(f"xcrun devicectl device copy to --device {udid} "
-              f"--domain-type appDataContainer "
-              f"--domain-identifier {runner_bid} "
-              f"--source '{sentinel}' "
-              f"--destination 'tmp/{sentinel.name}'",
-              capture=True, timeout=120) is None:
-            raise RuntimeError("devicectl copy of the recorder-go "
-                               "sentinel timed out after 120s")
+        sh(f"xcrun devicectl device copy to --device {udid} "
+           f"--domain-type appDataContainer "
+           f"--domain-identifier {runner_bid} "
+           f"--source '{sentinel}' "
+           f"--destination 'tmp/{sentinel.name}'",
+           capture=True, timeout=DEVICECTL_COPY_S)
     finally:
         sentinel.unlink(missing_ok=True)
 
@@ -1370,46 +1483,47 @@ def pull_runner_log(udid: str, runner_bid: str, out: Path) -> None:
     measure-window markers, the per-row device record (thermalState,
     maximumFramesPerSecond read inside the runner process) and the
     ready/drive diagnostics."""
-    if sh(f"xcrun devicectl device copy from --device {udid} "
+    sh(f"xcrun devicectl device copy from --device {udid} "
        f"--domain-type appDataContainer "
        f"--domain-identifier {runner_bid} "
        f"--source tmp/bench-runner.log --destination '{out}'",
-       capture=True, timeout=120) is None:
-        raise RuntimeError("devicectl copy of the runner log timed out "
-                           "after 120s")
+       capture=True, timeout=DEVICECTL_COPY_S)
 
 
-def read_runner_log(path: Path, since: float):
+def run_nonce() -> int:
+    """A fresh non-zero run nonce for one invocation pair: it keys the
+    recorder-go latch and every runner-log line the pair writes."""
+    import secrets
+    return secrets.randbits(63) | 1
+
+
+def read_runner_log(path: Path, nonce: int):
     """Parse the runner log for this rep: the runner's marks and the
     device record it wrote inside the measured iteration. Entries are
-    '<epoch> <text>' lines; only rows at/after `since` count so a
-    previous rep's marks can't alias into this one. Returns
-    ({drive-begin, measure-end: epoch s}, device record); a mark the
-    log does not carry, or a pair out of order, is absent."""
-    marks = {}
+    '<nonce> <device epoch> <text>' lines; only lines carrying this
+    rep's run nonce count, so another rep's lines can never alias into
+    this one (the device clock is never compared with the host's).
+    Returns ({drive-begin, measure-end: device epoch s}, device record);
+    the marks are absent unless each appears exactly once and in order."""
+    found: dict[str, list[float]] = {}
     device = {}
     if not path.exists():
-        return marks, device
+        return {}, device
+    key = str(nonce)
     for line in path.read_text().splitlines():
-        parts = line.split(" ", 1)
-        if len(parts) != 2:
+        parts = line.split(" ", 2)
+        if len(parts) != 3 or parts[0] != key:
             continue
-        try:
-            t = float(parts[0])
-        except ValueError:
-            continue
-        if t < since:
-            continue
-        body = parts[1]
-        for name in (MARK_DRIVE_BEGIN, MARK_MEASURE_END):
-            if body == name:
-                marks[name] = t
+        t, body = float(parts[1]), parts[2]
+        if body in (MARK_DRIVE_BEGIN, MARK_MEASURE_END):
+            found.setdefault(body, []).append(t)
         if body.startswith("device-record"):
             for kv in body.split():
                 if "=" in kv:
                     k, v = kv.split("=", 1)
                     device[k] = v
-    if (len(marks) != 2
+    marks = {name: ts[0] for name, ts in found.items() if len(ts) == 1}
+    if (len(found) != 2 or len(marks) != 2
             or marks[MARK_MEASURE_END] <= marks[MARK_DRIVE_BEGIN]):
         marks = {}
     return marks, device
@@ -1656,7 +1770,7 @@ def thinned_size(app: Path, identity: Identity, profile: Profile,
 
 # ------------------------------------------------------------ cells
 
-# xctrace recordings never outlive the cell, which stops them on SIGINT;
+# a cell's one xctrace recording never outlives it (SIGINT at its end);
 # the limit only bounds a cell that hangs (runner thermal gate 600 s,
 # launch + ready 60 s, warmup, the capture, and margin)
 XCTRACE_LIMIT_S = 1800
@@ -1727,7 +1841,7 @@ def warm_up(ctx: DeviceCtx, app: Path, bundle_id: str, tag: str) -> str | None:
     write_xctestrun(ctx.template, xr, ctx.target_key, SUBDIR, app.name,
                     bundle_id, "w1", drive_for("w1"),
                     MANIFEST["workloads"]["w1"]["duration_s"],
-                    nonce=1, only_test="testLaunch")
+                    nonce=run_nonce(), only_test="testLaunch")
     try:
         return _xcodebuild_error(
             "warm-up", *_xcodebuild_wait(*_xcodebuild_test(
@@ -1739,28 +1853,33 @@ def warm_up(ctx: DeviceCtx, app: Path, bundle_id: str, tag: str) -> str | None:
 
 def run_one(ctx: DeviceCtx, cid: str, app: Path, bundle_id: str,
             workload: str, rep: int, step: int | None = None) -> dict:
-    """One measured launch: two single-test xcodebuild invocations.
+    """One measured launch: two single-test xcodebuild invocations and
+    one recording.
 
     The launch test and the workload test never share a process
     lifetime. Before the workload invocation's runner may launch the app,
-    two `xctrace record --all-processes --device` recordings are armed:
-    Animation Hitches plus Points of Interest (frames, the runner's
-    drive-begin / measure-end marks, time-sample CPU) and Logging (the
-    WaterUI first-paint marker; recorded for every contestant so each
-    pays the same recording cost). The contestant's frames are the frame
-    lifetimes whose swap composited an update from a process inside its
-    bundle; METHOD's window [first owned present + warmup, + capture] is
-    computed on that trace's clock, and the runner's marks prove that a
-    driven cell's drive started within harness.anchor_tolerance_ms of
-    the window start and that the contestant was held through its end.
-    The app's and backboardd's CPU come from the same trace and window.
+    one `xctrace record --all-processes --device` recording is armed:
+    Animation Hitches plus Points of Interest plus os_log (frames, the
+    runner's drive-begin / measure-end marks, time-sample CPU and the
+    WaterUI first-paint marker; the same instruments for every
+    contestant, so each pays the same recording cost). The contestant's
+    frames are the frame lifetimes whose swap composited an update from
+    a process inside its bundle; METHOD's window [first owned present +
+    warmup, + capture] is computed on that trace's clock, and the
+    runner's marks prove that a driven cell's drive started within
+    harness.anchor_tolerance_ms of the window start and that the
+    contestant was held through its end. Every frame on the contestant's
+    display inside the window is classified by the client updates its
+    swap carried and stored on the row (`frames_by_update`); a window
+    holding a frame with no client update fails the rep
+    (require_client_updates). The app's and backboardd's CPU come from
+    the same trace and window.
 
     The cell checks free disk against the declared recording floor
     before it starts, and its InstrumentsScratch removes the raw ktrace
-    scratch once both recorders stopped, so the next recording starts
-    without it. Unless the run keeps traces, the cell's .trace bundles
-    are deleted once their numbers are extracted (their size is
-    recorded)."""
+    scratch once the recorder stopped, so the next recording starts
+    without it. Unless the run keeps traces, the cell's .trace bundle is
+    deleted once its numbers are extracted (its size is recorded)."""
     tag = f"{cid}-{workload}" + (f"-s{step}" if step is not None else "") \
         + f"-r{rep}"
     rec: dict = {}
@@ -1771,8 +1890,7 @@ def run_one(ctx: DeviceCtx, cid: str, app: Path, bundle_id: str,
                         "below harness.disk.recording_floor_bytes="
                         f"{ctx.disk_floor}")
         return rec
-    import secrets
-    nonce = secrets.randbits(63) | 1
+    nonce = run_nonce()
     drive = drive_for(workload)
     duration = MANIFEST["workloads"][workload]["duration_s"]
     xr_launch = ctx.testroot / f"{tag}-launch.xctestrun"
@@ -1784,16 +1902,14 @@ def run_one(ctx: DeviceCtx, cid: str, app: Path, bundle_id: str,
     res_launch = ctx.results_dir / f"{tag}-launch.xcresult"
     res_work = ctx.results_dir / f"{tag}-work.xcresult"
     trace = ctx.results_dir / f"{tag}.trace"
-    fp_trace = ctx.results_dir / f"{tag}-log.trace"
     runner_log = ctx.results_dir / f"{tag}-runner.log"
-    for p in (res_launch, res_work, trace, fp_trace):
+    for p in (res_launch, res_work, trace):
         shutil.rmtree(p, ignore_errors=True)
     runner_log.unlink(missing_ok=True)
 
     exe = bundle_executable(app)
     capture_ms = float(duration) * 1000.0
-    recorders: dict[str, XctraceRecorder] = {}
-    t_start = time.time()
+    recorder: XctraceRecorder | None = None
     try:
         # --- invocation 1: launch test (its own process lifetime) ----
         rc, out = _xcodebuild_wait(*_xcodebuild_test(
@@ -1806,22 +1922,18 @@ def run_one(ctx: DeviceCtx, cid: str, app: Path, bundle_id: str,
             return {**rec, **launch}
         rec["metrics"] = launch["metrics"]
 
-        # --- invocation 2: workload test, recorders armed first ------
+        # --- invocation 2: workload test, the recorder armed first ---
         scratch = InstrumentsScratch(ctx.results_dir,
                                      InstrumentsScratch.user_temp_dir())
         xb, xbf, xblog = _xcodebuild_test(xr_work, res_work, ctx,
                                           tag + "-work")
         try:
             try:
-                recorders["frames"] = XctraceRecorder(
+                recorder = XctraceRecorder(
                     trace, FRAMES_TEMPLATE, ctx.udid, XCTRACE_LIMIT_S,
-                    scratch.scratch_dir(f"{tag}-frames"),
+                    scratch.scratch_dir(tag),
                     instruments=FRAMES_INSTRUMENTS)
-                recorders["log"] = XctraceRecorder(
-                    fp_trace, "Logging", ctx.udid, XCTRACE_LIMIT_S,
-                    scratch.scratch_dir(f"{tag}-log"))
-                for r in recorders.values():
-                    r.arm()
+                recorder.arm()
                 release_recorder_go(ctx.udid, ctx.runner_bid, nonce,
                                     ctx.results_dir)
             except RuntimeError as e:
@@ -1840,20 +1952,21 @@ def run_one(ctx: DeviceCtx, cid: str, app: Path, bundle_id: str,
                     else:
                         rec["metrics"].update(work["metrics"])
         finally:
-            for r in recorders.values():
-                if (e := r.stop()) is not None:
-                    rec.setdefault("trace_errors", []).append(e)
-            # only after EVERY recorder of the cell stopped: a sweep
-            # between two stops would take the live one's scratch
-            if (e := scratch.sweep()) is not None:
-                rec.setdefault("error", f"instruments scratch: {e}")
-            rec["instruments_scratch_removed"] = scratch.removed
-            rec["instruments_scratch_terminated_pid"] = scratch.terminated
+            # the sweep runs even when stopping is interrupted (a SIGTERM
+            # unwinding through here): the scratch never outlives the cell
+            try:
+                if recorder is not None and (e := recorder.stop()):
+                    rec["trace_error"] = e
+            finally:
+                if (e := scratch.sweep()) is not None:
+                    rec.setdefault("error", f"instruments scratch: {e}")
+                rec["instruments_scratch_removed"] = scratch.removed
+                rec["instruments_scratch_terminated_pid"] = \
+                    scratch.terminated
         if "error" in rec:
             return rec
-        if rec.get("trace_errors"):
-            rec["error"] = "a recording failed: " + "; ".join(
-                rec["trace_errors"])
+        if "trace_error" in rec:
+            rec["error"] = f"the recording failed: {rec['trace_error']}"
             return rec
 
         # --- the measurement window --------------------------------
@@ -1862,12 +1975,12 @@ def run_one(ctx: DeviceCtx, cid: str, app: Path, bundle_id: str,
         except RuntimeError as e:
             rec["error"] = f"runner log: {e}"
             return rec
-        marks, device_rec = read_runner_log(runner_log, t_start - 5)
+        marks, device_rec = read_runner_log(runner_log, nonce)
         rec["device_record"] = device_rec
         if not marks:
             rec["error"] = ("runner log has no drive-begin/measure-end "
-                            "pair — the runner never reached its "
-                            "measured span")
+                            f"pair for run nonce {nonce} — the runner never "
+                            "reached its measured span")
             return rec
         if not device_rec.get("maxFps"):
             rec["error"] = "runner log has no device-record maxFps"
@@ -1877,21 +1990,23 @@ def run_one(ctx: DeviceCtx, cid: str, app: Path, bundle_id: str,
             tw = trace_frame_window(trace, app.name, exe, capture_ms,
                                     refresh_ms=refresh_ms,
                                     driven=drive != "none")
+            rec["window"] = {"source": "trace", **tw["window"]}
+            rec["attribution"] = tw["attribution"]
+            rec["frames_by_update"] = tw["frames_by_update"]
+            require_client_updates(tw["frames_by_update"])
             render = [p["pid"] for p in _trace_toc(trace)
                       if p["name"] == RENDER_SERVER]
             if len(render) != 1:
                 raise TraceAttributionError(
                     f"trace lists {len(render)} {RENDER_SERVER} processes")
             if cid == "waterui":
-                rec["first_paint_ms"] = first_paint_ms(fp_trace, exe)
+                rec["first_paint_ms"] = first_paint_ms(trace, exe)
         except TraceAttributionError as e:
             rec["error"] = f"frame attribution: {e}"
             return rec
         rec["refresh_ms"] = refresh_ms
         rec["frame_stats"] = tw["frame_stats"]
         rec["frames"] = tw["frame_stats"]["presents"]
-        rec["window"] = {"source": "trace", **tw["window"]}
-        rec["attribution"] = tw["attribution"]
         win = (tw["window"]["window_start_ms"], tw["window"]["window_end_ms"])
         # the all-process recording carries every process's samples; the
         # contestant and the render server are selected by pid
@@ -1908,11 +2023,9 @@ def run_one(ctx: DeviceCtx, cid: str, app: Path, bundle_id: str,
                 rec["app_cpu_window_s"] * 1000.0 / rec["frames"], 3)
         return rec
     finally:
-        rec["trace_bytes"] = sum(du_bytes(p) for p in (trace, fp_trace)
-                                 if p.exists())
+        rec["trace_bytes"] = du_bytes(trace) if trace.exists() else 0
         if not ctx.keep_traces:
-            for p in (trace, fp_trace):
-                shutil.rmtree(p, ignore_errors=True)
+            shutil.rmtree(trace, ignore_errors=True)
         # keep xcresult small: the bundles are parsed and deleted
         shutil.rmtree(res_launch, ignore_errors=True)
         shutil.rmtree(res_work, ignore_errors=True)
@@ -1949,6 +2062,7 @@ def capacity_summary(steps: list[dict]) -> dict:
 
 STEP_KEYS = ("metrics", "frame_stats", "frames", "app_cpu_window_s",
              "renderserver_cpu_s", "cpu_ms_per_frame", "window",
+             "attribution", "frames_by_update",
              "trace_bytes", "disk_free_bytes", "first_paint_ms")
 
 
@@ -1977,12 +2091,29 @@ def measure_cell(ctx: DeviceCtx, cid: str, app: Path, bundle_id: str,
 
 # ---------------------------------------------------------------- device
 
-def device_lock(name: str):
+def device_lock(name: str, holder: dict):
+    """Take the device's exclusive lock without waiting, and record
+    `holder` (who took it) in the lock file. A lock another run holds
+    fails at once, naming the holder that run recorded — a run never
+    queues behind another one. The file is opened without truncation, so
+    a failed attempt leaves the holder's record intact; the kernel drops
+    the flock when its holder exits, so a stale record never blocks."""
     LOCK_DIR.mkdir(exist_ok=True)
-    f = open(LOCK_DIR / f"{name}.lock", "w")
-    print(f"waiting for device lock {name}…", flush=True)
-    fcntl.flock(f, fcntl.LOCK_EX)
-    print(f"device lock {name} acquired", flush=True)
+    path = LOCK_DIR / f"{name}.lock"
+    f = os.fdopen(os.open(path, os.O_RDWR | os.O_CREAT, 0o644), "r+")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        recorded = f.read().strip()
+        f.close()
+        raise SystemExit(
+            f"device {name} is locked by another run ({path}): "
+            f"{recorded or 'the holder recorded nothing'}") from None
+    f.seek(0)
+    f.truncate()
+    f.write(json.dumps(holder) + "\n")
+    f.flush()
+    print(f"device lock {name} acquired: {json.dumps(holder)}", flush=True)
     return f
 
 
@@ -2030,7 +2161,7 @@ def device_state(udid: str) -> dict:
     with tempfile.TemporaryDirectory() as td:
         out = Path(td) / "info.json"
         sh(f"xcrun devicectl device info details --device {udid} "
-           f"--json-output '{out}'", capture=True, timeout=60)
+           f"--json-output '{out}'", capture=True, timeout=DEVICECTL_QUERY_S)
         st = {"udid": udid, **parse_device_info(json.loads(out.read_text()))}
     want = MANIFEST["device"]["product_type"]
     if st.get("product_type") != want:
@@ -2047,11 +2178,11 @@ def uninstall_app(udid: str, bundle_id: str):
         out = Path(td) / "apps.json"
         sh(f"xcrun devicectl device info apps --device {udid} "
            f"--bundle-id {bundle_id} --json-output '{out}'",
-           capture=True, timeout=60)
+           capture=True, timeout=DEVICECTL_QUERY_S)
         if bundle_id not in out.read_text():
             return
     sh(f"xcrun devicectl device uninstall app --device {udid} {bundle_id}",
-       capture=True, timeout=120)
+       capture=True, timeout=DEVICECTL_UNINSTALL_S)
 
 
 def _cleanup_step(label: str, fn) -> str | None:
@@ -2063,6 +2194,18 @@ def _cleanup_step(label: str, fn) -> str | None:
     except Exception as e:  # noqa: BLE001 — a diagnostic per action
         print(f"cleanup failed ({label}): {e}", flush=True)
         return f"{label}: {e}"
+
+
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def verify_stage(tar: Path, want: str) -> None:
+    """The staged tarball is exactly the one `build` printed the sha256
+    of; any other bytes fail before they are used."""
+    got = toolchain.sha256_file(tar)
+    if got != want:
+        raise SystemExit(f"staged set {tar} has sha256 {got}; "
+                         f"--stage-sha256 declares {want}")
 
 
 def unpack_stage(tar: Path, run_dir: Path) -> tuple[Path, dict]:
@@ -2121,11 +2264,20 @@ def build_runner(run_dir: Path) -> dict:
 def check_resume(state: dict, staging: dict, machine: dict,
                  udid: str) -> None:
     """A results file only grows with rows of the same staged build, the
-    same device host and the same device."""
+    same device host and the same device. The recorded device host must
+    carry both identity fields (`machine` comes from host_evidence, which
+    never yields an empty one): two unknown identities are never the
+    same host."""
     if state.get("build") != staging:
         raise SystemExit("results file was produced from a different "
                          "staged build — refusing to merge")
     prev = state.get("machine") or {}
+    unknown = [k for k in ("hw_uuid", "hw_model") if not prev.get(k)]
+    if unknown:
+        raise SystemExit(
+            "results file records no device host identity "
+            f"({', '.join(unknown)} missing) — refusing to merge\n"
+            f"  recorded: {prev}")
     if (prev.get("hw_uuid"), prev.get("hw_model")) != (
             machine.get("hw_uuid"), machine.get("hw_model")):
         raise SystemExit(
@@ -2142,8 +2294,15 @@ def run_device(run_dir: Path, opts: argparse.Namespace) -> None:
     (free provisioning allows three apps installed at once: the runner
     and the contestant under measurement), measures its cells, and
     uninstalls it before the next."""
+    # the staged set is the one `start` verified: re-checked here, before
+    # anything else, since the tarball could change while the job waited
+    verify_stage(Path(opts.stage), opts.stage_sha256)
     udid = MANIFEST["device"]["udid"]
-    lock = device_lock(udid)
+    lock = device_lock(udid, {
+        "pid": os.getpid(), "run_dir": str(run_dir),
+        "label": _job_label(run_dir),
+        "acquired_utc": datetime.datetime.now(
+            datetime.timezone.utc).isoformat(timespec="seconds")})
     installed: list[str] = []
     diags: list[str] = []
 
@@ -2194,7 +2353,7 @@ def run_device(run_dir: Path, opts: argparse.Namespace) -> None:
             run_dir / "results-device.json"
         state = {"machine": machine, "device": device, "build": staging,
                  "device_host_xcode": xcode,
-                 "stage_tar_sha256": toolchain.sha256_file(Path(opts.stage)),
+                 "stage_tar_sha256": opts.stage_sha256,
                  "signing": {"identity": identity.name, "profiles": {
                      b: {"uuid": p.uuid, "name": p.name, "team": p.team,
                          "expires_utc": p.expires.isoformat()}
@@ -2254,7 +2413,7 @@ def run_device(run_dir: Path, opts: argparse.Namespace) -> None:
                     state["sizes"][c["id"]] = size
                     save()
                 sh(f"xcrun devicectl device install app --device {udid} "
-                   f"'{app}'", capture=True, timeout=300)
+                   f"'{app}'", capture=True, timeout=DEVICECTL_INSTALL_S)
                 installed.append(bid)
                 try:
                     if c["id"] not in state["warmed_up"]:
@@ -2334,7 +2493,9 @@ def cmd_device_run(args):
 # detached from ssh. The job owns its log (job.log) and exit status
 # (status.json) in the run dir; `status` reads them with launchd's view
 # of the job, `stop` boots it out (launchd SIGTERMs it; device-run
-# uninstalls what it installed and records the exit).
+# uninstalls what it installed, sweeps its scratch and records the exit
+# within the job's ExitTimeOut, JOB_EXIT_TIMEOUT_S, before launchd would
+# SIGKILL it).
 
 def _job_label(run_dir: Path) -> str:
     return f"dev.bench.device.{run_dir.name}"
@@ -2352,11 +2513,14 @@ def cmd_session(args):
         stage = Path(args.stage).resolve()
         if not stage.is_file():
             raise SystemExit(f"no staged set at {stage}")
+        # before anything else: the tarball is the one `build` hashed
+        verify_stage(stage, args.stage_sha256)
         run_dir = RUNS_DIR / datetime.datetime.now(datetime.timezone.utc).strftime(
             "%Y%m%dT%H%M%SZ")
         run_dir.mkdir(parents=True)
         (run_dir / "args.json").write_text(json.dumps({
             "stage": str(stage),
+            "stage_sha256": args.stage_sha256,
             "only": args.only.split(",") if args.only else None,
             "workloads": args.workloads.split(",") if args.workloads
             else None,
@@ -2375,6 +2539,10 @@ def cmd_session(args):
             "KeepAlive": False,
             "LimitLoadToSessionType": "Aqua",
             "ProcessType": "Interactive",
+            # SIGTERM → SIGKILL grace on `stop`: the declared bounds of
+            # everything a stopping run still does (JOB_EXIT_TIMEOUT_S),
+            # so it is never killed mid-cleanup
+            "ExitTimeOut": JOB_EXIT_TIMEOUT_S,
             "StandardOutPath": str(run_dir / "job.log"),
             "StandardErrorPath": str(run_dir / "job.log"),
             # the login shell's PATH (xcodegen, uv-managed tools) and HOME
@@ -2413,7 +2581,11 @@ def cmd_session(args):
     # exit; a finished one is unloaded
     if _launchctl_print(label) is None:
         raise SystemExit(f"job {label} is not loaded in gui/{os.getuid()}")
-    _out(["launchctl", "bootout", f"gui/{os.getuid()}/{label}"], timeout=120)
+    # bootout returns once the job is gone, which may take the job's
+    # whole ExitTimeOut; launchctl's own work is bounded by the second
+    # term
+    _out(["launchctl", "bootout", f"gui/{os.getuid()}/{label}"],
+         timeout=JOB_EXIT_TIMEOUT_S + 60)
     print(f"booted out {label}")
 
 
@@ -2687,6 +2859,9 @@ def main():
     s.add_argument("action", choices=["start", "status", "stop"])
     s.add_argument("--stage", help="start: the build host's "
                                    "ios-stage-<head>.tar.gz")
+    s.add_argument("--stage-sha256",
+                   help="start: the sha256 `build` printed for the "
+                        "tarball; it is verified before anything else")
     s.add_argument("--run-dir", help="status/stop: the run dir start "
                                      "printed")
     s.add_argument("--repeats", type=int, default=MIN_REPS)
@@ -2732,9 +2907,14 @@ def main():
     args = ap.parse_args()
     if args.cmd == "device-session" and (
             (args.action == "start") != bool(args.stage)
+            or (args.action == "start") != bool(args.stage_sha256)
             or (args.action != "start") != bool(args.run_dir)):
-        ap.error("device-session start takes --stage; status/stop take "
-                 "--run-dir")
+        ap.error("device-session start takes --stage and --stage-sha256; "
+                 "status/stop take --run-dir")
+    if (args.cmd == "device-session" and args.stage_sha256
+            and not _SHA256_RE.fullmatch(args.stage_sha256)):
+        ap.error("--stage-sha256 must be 64 lowercase hex digits, as "
+                 "`build` prints it")
     args.f(args)
 
 
