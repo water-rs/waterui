@@ -855,12 +855,16 @@ fn level_ramp_reads_levels_of_a_reduced_capture() {
     assert_pixel(pixel(&readback, 18, 16), [0.0, 0.0, 1.0, 1.0], 1e-5);
 }
 
-/// The stripes surface with the levelled member at x 104..244, alone or
-/// with an adjacent plain member that pulls the region to the origin.
+/// The stripes surface with the levelled member at x 600..840, alone —
+/// its region then starts at capture texel 112 (device x 448) — or with
+/// an adjacent plain member at x 0..596 that pulls the region to texel 0.
 fn deep_level_member(with_plain: bool) -> cherenkov::Readback {
     let engine = engine();
     let surface = engine
-        .surface(Offscreen::new((256, 64), OffscreenFormat::LinearF32), || {})
+        .surface(
+            Offscreen::new((1024, 64), OffscreenFormat::LinearF32),
+            || {},
+        )
         .expect("surface");
     let spec = cherenkov::BackdropSpec::new(
         cherenkov::CaptureScale::new(0.25).expect("in range"),
@@ -873,10 +877,10 @@ fn deep_level_member(with_plain: bool) -> cherenkov::Readback {
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|r| {
             r.fill(
-                Rect::new(0.0, 0.0, 256.0, 64.0),
+                Rect::new(0.0, 0.0, 1024.0, 64.0),
                 WorkingColor::new([0.0, 0.0, 0.0, 1.0]),
             );
-            for i in (0..16u16).step_by(2) {
+            for i in (0..64u16).step_by(2) {
                 let x = f64::from(i * 16);
                 r.fill(
                     Rect::new(x, 0.0, x + 16.0, 64.0),
@@ -886,12 +890,12 @@ fn deep_level_member(with_plain: bool) -> cherenkov::Readback {
         }));
         tx[surface.root()].push(&member);
         tx[&member]
-            .clip(Rect::new(104.0, 8.0, 244.0, 56.0))
+            .clip(Rect::new(600.0, 8.0, 840.0, 56.0))
             .backdrop(group.sample_with(cherenkov::BackdropEffect::Level(ramp)));
         if with_plain {
             tx[surface.root()].push(&plain);
             tx[&plain]
-                .clip(Rect::new(0.0, 8.0, 100.0, 56.0))
+                .clip(Rect::new(0.0, 8.0, 596.0, 56.0))
                 .backdrop(group.sample());
         }
     });
@@ -901,13 +905,14 @@ fn deep_level_member(with_plain: bool) -> cherenkov::Readback {
 
 /// A member's deep-level read does not depend on the other members: a
 /// σ = 2 blur at scale 0.25 into 5 levels, read at level 4 over 16-px
-/// stripes, renders the same alone and beside a plain member (#1786).
+/// stripes, renders the same in its own region away from the origin and
+/// in the region a plain member pulls to the origin (#1786).
 #[test]
 fn deep_level_reads_are_independent_of_the_other_members() {
     let alone = deep_level_member(false);
     let shared = deep_level_member(true);
     for y in 8..56 {
-        for x in 104..244 {
+        for x in 600..840 {
             assert_eq!(
                 pixel(&alone, x, y),
                 pixel(&shared, x, y),

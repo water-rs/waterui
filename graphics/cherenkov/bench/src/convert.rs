@@ -1544,9 +1544,6 @@ mod tests {
         assert!(bits.contains(&wght), "wght=1.0 bits missing: {bits:?}");
     }
 
-    /// A capture scale reaches the engine only when it narrows to `f32`
-    /// exactly: `0.1` would run the engines at a different scale than the
-    /// oracle.
     /// The scene format bounds `levels` itself; that bound must be the
     /// engine's, or a loadable scene would fail to convert.
     #[cfg(any(feature = "cherenkov", feature = "cherenkov-cpu"))]
@@ -1558,6 +1555,9 @@ mod tests {
         );
     }
 
+    /// A capture scale reaches the engine only when it narrows to `f32`
+    /// exactly: `0.1` would run the engines at a different scale than the
+    /// oracle.
     #[cfg(any(feature = "cherenkov", feature = "cherenkov-cpu"))]
     #[test]
     fn capture_scale_narrows_exactly_or_fails() {

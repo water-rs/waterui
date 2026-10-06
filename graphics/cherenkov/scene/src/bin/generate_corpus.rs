@@ -6139,13 +6139,20 @@ fn run() -> Result<(), SceneError> {
         });
     });
 
-    // The pyramid on an odd capture grid: 250×186 at scale 0.25 is a
-    // 63×47-texel capture, so every level's last column and row are
-    // partial boxes. Both members sit away from the origin. The first
-    // ramps level 0 at its edge to level 2 inside; the second holds level
-    // 3 against the surface's bottom-right corner, where its deepest
-    // reads land on the region's edge texels.
-    corpus.scene_setup("backdrop-levels-odd-grid", 250, 186, white, |b| {
+    // The pyramid on a capture region away from the origin with partial
+    // boxes at every reduction. 292×258 at scale 0.25 is a 73×65-texel
+    // grid. The first member's top-left corner, (112, 112) px, is texel
+    // 28; inflated by the engines' blur apron, filtrate's ⌈4σ⌉ = 6
+    // texels, its level-2 and level-3 read footprints start at texel 18,
+    // the region's minimum, which floors to an origin of (16, 16) on the
+    // level-3 8-texel grid. The second member touches the bottom-right
+    // corner, so the region runs to the grid's far edge: 57×49 texels,
+    // reduced to 29×25, 15×13 and 8×7. Every reduction's input is odd,
+    // so its last column and row are partial boxes. The first member
+    // ramps level 0 at its edge to level 2 inside; the second holds
+    // level 3, whose reads at its right and bottom edges land on the
+    // region's partial edge texels.
+    corpus.scene_setup("backdrop-levels-odd-grid", 292, 258, white, |b| {
         b.backdrop_group(
             1,
             vec![BackdropFilter::GaussianBlur { sigma: 1.5 }],
@@ -6153,19 +6160,32 @@ fn run() -> Result<(), SceneError> {
             4,
         );
         let l = &mut b.root();
-        stripes(
-            l,
-            srgb(0.04, 0.04, 0.05),
-            srgb(0.96, 0.96, 0.96),
-            [
-                srgb(0.9, 0.12, 0.12),
-                srgb(0.12, 0.7, 0.2),
-                srgb(0.12, 0.3, 0.9),
-            ],
+        for i in 0..10 {
+            let x0 = 32.0 * f64::from(i);
+            l.fill(
+                Shape::rect(x0, 0.0, x0 + 16.0, 258.0),
+                solid(srgb(0.04, 0.04, 0.05)),
+            );
+            l.fill(
+                Shape::rect(x0 + 16.0, 0.0, x0 + 32.0, 258.0),
+                solid(srgb(0.96, 0.96, 0.96)),
+            );
+        }
+        l.fill(
+            Shape::circle(150.0, 150.0, 30.0),
+            solid(srgb(0.9, 0.12, 0.12)),
+        );
+        l.fill(
+            Shape::circle(250.0, 130.0, 24.0),
+            solid(srgb(0.12, 0.7, 0.2)),
+        );
+        l.fill(
+            Shape::circle(272.0, 236.0, 22.0),
+            solid(srgb(0.12, 0.3, 0.9)),
         );
         l.layer(|m| {
             m.clip(Shape::RoundedRect(RoundedRect::new(
-                58.0, 38.0, 142.0, 112.0, 18.0,
+                112.0, 112.0, 212.0, 200.0, 18.0,
             )));
             m.backdrop(1);
             m.backdrop_effect(BackdropEffectSpec::Level {
@@ -6176,7 +6196,7 @@ fn run() -> Result<(), SceneError> {
         });
         l.layer(|m| {
             m.clip(Shape::RoundedRect(RoundedRect::new(
-                154.0, 98.0, 250.0, 186.0, 16.0,
+                184.0, 164.0, 292.0, 258.0, 16.0,
             )));
             m.backdrop(1);
             m.backdrop_effect(BackdropEffectSpec::Level {

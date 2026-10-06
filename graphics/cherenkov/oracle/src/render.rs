@@ -435,10 +435,12 @@ impl Renderer {
                         // The blur pyramid: level `k` is the exact 2×2
                         // box reduction of level `k − 1` (the filtered
                         // capture), matching the GPU's mip chain.
-                        // `Scene::load` rejects a level count below 1,
-                        // and the bounded count fits `usize`.
-                        let deeper = usize::try_from(group.levels - 1)
-                            .expect("a validated level count is at least 1 and fits usize");
+                        let deeper = group
+                            .levels
+                            .checked_sub(1)
+                            .expect("a scene's backdrop group has at least one level");
+                        let deeper =
+                            usize::try_from(deeper).expect("a validated level count fits usize");
                         let mut levels = Vec::with_capacity(deeper);
                         for _ in 1..group.levels {
                             let src = levels.last().unwrap_or(&capture);
