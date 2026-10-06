@@ -2258,18 +2258,22 @@ fn framework_local_roots(
     if let Some(root) = framework.local_checkout_root() {
         candidates.push(root.to_path_buf());
     }
+    // `waterui_patches` is the record of the checkout's `[patch]` tables that
+    // `refresh_local_patches` maintains while `waterui_path` is set; a
+    // channel switch drops the path but not the record, so the record names
+    // framework sources only alongside the path it was written for.
     if let Some(local) = &manifest.waterui_path {
         candidates.push(project_root.join(local));
-    }
-    for dependency in manifest
-        .waterui_patches
-        .values()
-        .flat_map(std::collections::BTreeMap::values)
-    {
-        if let cargo_toml::Dependency::Detailed(detail) = dependency
-            && let Some(path) = &detail.path
+        for dependency in manifest
+            .waterui_patches
+            .values()
+            .flat_map(std::collections::BTreeMap::values)
         {
-            candidates.push(project_root.join(path));
+            if let cargo_toml::Dependency::Detailed(detail) = dependency
+                && let Some(path) = &detail.path
+            {
+                candidates.push(project_root.join(path));
+            }
         }
     }
     let mut roots = BTreeSet::new();
