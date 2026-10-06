@@ -2488,15 +2488,15 @@ impl SemanticCore {
         // into every window's environment — a missing one is a bug in the
         // runner, not an absent table. Chords match the press's W3C
         // `logical_key`. Without Control, Alt or Super a press is typing
-        // while it names a character — the space bar included — and it
-        // belongs to a focused text editor on any key: a bare `Delete`
-        // chord does not steal the field's own delete.
+        // only while a text editor holds focus: J into a focused field
+        // types J, while J with nothing editable focused fires its chord —
+        // the space bar included — and a bare `Delete` chord does not
+        // steal the field's own delete either (water-rs/waterui#2118).
         let registry = env
             .get::<MenuShortcutRegistry>()
             .expect(MISSING_MENU_SHORTCUT_REGISTRY);
         let typing = !(modifiers.control || modifiers.alt || modifiers.super_key)
-            && (matches!(logical_key, keyboard_types::Key::Character(_))
-                || self.text_editing.has_focus());
+            && self.text_editing.has_focus();
         if !typing && registry.dispatch(self.window_id, logical_key, modifiers, env) {
             return true;
         }

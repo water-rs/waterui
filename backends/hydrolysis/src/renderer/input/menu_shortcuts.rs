@@ -12,7 +12,10 @@
 //! the key-dispatch modifier early return and before the focused text input
 //! sees the key; a matching chord claims the event, a disabled command claims
 //! it without firing, and the most recently registered source wins a
-//! conflict.
+//! conflict. A press without Control, Alt or Super reaches the registry only
+//! while no text editor holds focus — while one does the press is typing, so
+//! a bare character or named-key chord leaves the field its key
+//! (water-rs/waterui#2118).
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
