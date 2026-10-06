@@ -193,6 +193,24 @@ pub fn render_gradient_node(
     render_gradient_parts(ctx, gradient, env);
 }
 
+/// The gradient view's unit-space paint on a `width` × `height` box: points
+/// map through [`Gradient::transform_to`], and a radial gradient's radii scale
+/// by `min(width, height)` so a unit-space radius stays a circle.
+fn gradient_paint_in_bounds(paint: Paint, width: f32, height: f32) -> Paint {
+    let transform = Gradient::transform_to(width, height);
+    match paint {
+        Paint::Radial(mut radial) => {
+            radial.start_center = transform * radial.start_center;
+            radial.end_center = transform * radial.end_center;
+            let scale = f64::from(width.min(height));
+            radial.start_radius *= scale;
+            radial.end_radius *= scale;
+            Paint::Radial(radial)
+        }
+        other => transform_paint(other, Some(transform)),
+    }
+}
+
 pub fn render_gradient_parts(
     ctx: &mut WidgetRenderContext<'_>,
     gradient: &Rc<RefCell<waterui_graphics::Gradient>>,
@@ -200,12 +218,11 @@ pub fn render_gradient_parts(
 ) {
     let bounds = ctx.bounds;
     // The view's `Paint` is authored in unit space; map it onto the placed
-    // box and fill the box with it under the frame's transform.
-    let unit = waterui_graphics::Gradient::transform_to(
-        crate::num_cast::f64_as_f32(bounds.width()),
-        crate::num_cast::f64_as_f32(bounds.height()),
-    );
-    let paint = transform_paint(gradient.borrow().paint().clone(), Some(unit));
+    // box, scaling radial radii by its shorter side, and fill it under the
+    // frame's transform.
+    let width = crate::num_cast::f64_as_f32(bounds.width());
+    let height = crate::num_cast::f64_as_f32(bounds.height());
+    let paint = gradient_paint_in_bounds(gradient.borrow().paint().clone(), width, height);
     let transform = ctx.transform;
     ctx.renderer_mut()
         .scene
@@ -443,4 +460,33 @@ pub fn emit_graphics_leaf_accessibility<T>(
     env: &Environment,
 ) {
     graphics_image_accessibility(renderer, None, env, None, None);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use waterui_graphics::draw::WorkingColor;
+
+    #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the scale and radii use exact-representable test values"
+    )]
+    fn radial_gradient_radii_use_the_shorter_side_of_a_200x100_box() {
+        let gradient = Gradient::radial(
+            vec![(0.0, WorkingColor::WHITE), (1.0, WorkingColor::BLACK)],
+            [0.5, 0.5],
+            0.25,
+            0.5,
+        );
+        let paint = gradient_paint_in_bounds(gradient.paint().clone(), 200.0, 100.0);
+        let Paint::Radial(radial) = paint else {
+            panic!("a radial gradient remains a radial paint");
+        };
+
+        assert_eq!(radial.start_center, kurbo::Point::new(100.0, 50.0));
+        assert_eq!(radial.end_center, kurbo::Point::new(100.0, 50.0));
+        assert_eq!(radial.start_radius, 25.0);
+        assert_eq!(radial.end_radius, 50.0);
+    }
 }
