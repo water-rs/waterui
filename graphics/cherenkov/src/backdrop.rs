@@ -69,6 +69,97 @@ impl CaptureScale {
     }
 }
 
+/// The number of capture levels a backdrop group keeps, between 1 and
+/// [`CaptureLevels::MAX`]; `n` is fixed when the group is created.
+///
+/// Level 0 is the filtered capture itself. A group with `n > 1` reduces
+/// that level into `n − 1` progressively half-sized levels: level `k`
+/// texel `(i, j)` is the mean of level `k − 1` texels
+/// `(2i..=2i+1, 2j..=2j+1)` — an exact 2×2 box, partial boxes at the grid
+/// edge averaging the texels present. Level `k` texel `(i, j)` covers
+/// capture texels `[2^k·i, 2^k·(i+1)) × [2^k·j, 2^k·(j+1))` on the same
+/// device-anchored grid, so a member's motion never shifts any level's
+/// grid. Members read the pyramid with `backdrop_sample_level`
+/// ([`BackdropShaderSource`]) or a `Level` member effect; one level is
+/// the single bilinear capture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CaptureLevels(u32);
+
+/// Why a [`CaptureLevels`] could not be constructed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum CaptureLevelsError {
+    /// The count is not in `1..=CaptureLevels::MAX`.
+    #[error("the capture level count must be between 1 and {}", CaptureLevels::MAX)]
+    OutOfRange,
+}
+
+impl CaptureLevels {
+    /// One level: the plain filtered capture only.
+    pub const ONE: Self = Self(1);
+    /// The most levels a group may keep.
+    pub const MAX: u32 = 8;
+
+    /// A group keeping `n` capture levels.
+    ///
+    /// # Errors
+    /// [`CaptureLevelsError::OutOfRange`] unless `n` is between 1 and
+    /// [`CaptureLevels::MAX`].
+    pub const fn new(n: u32) -> Result<Self, CaptureLevelsError> {
+        if n == 0 || n > Self::MAX {
+            return Err(CaptureLevelsError::OutOfRange);
+        }
+        Ok(Self(n))
+    }
+
+    /// The level count `n`.
+    #[must_use]
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
+/// How a backdrop group captures and combines its members
+/// ([`Surface::backdrop_group`](crate::Surface::backdrop_group),
+/// [`Surface::backdrop_group_unfiltered`](crate::Surface::backdrop_group_unfiltered)).
+///
+/// The spec fixes the group's capture [`scale`](BackdropSpec::scale) and
+/// how many capture [`levels`](BackdropSpec::levels) the group's pyramid
+/// keeps; it is the parameter object the group is created with.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BackdropSpec {
+    scale: CaptureScale,
+    levels: CaptureLevels,
+}
+
+impl BackdropSpec {
+    /// The 1:1, single-level capture.
+    pub const FULL: Self = Self::new(CaptureScale::FULL, CaptureLevels::ONE);
+
+    /// A group captured at `scale`, keeping `levels` capture levels.
+    #[must_use]
+    pub const fn new(scale: CaptureScale, levels: CaptureLevels) -> Self {
+        Self { scale, levels }
+    }
+
+    /// The capture scale `s`.
+    #[must_use]
+    pub const fn scale(self) -> CaptureScale {
+        self.scale
+    }
+
+    /// The level count `n`: how many capture levels the pyramid keeps.
+    #[must_use]
+    pub const fn levels(self) -> CaptureLevels {
+        self.levels
+    }
+}
+
+impl From<CaptureScale> for BackdropSpec {
+    fn from(scale: CaptureScale) -> Self {
+        Self::new(scale, CaptureLevels::ONE)
+    }
+}
+
 /// A WGSL shader compiled for the backdrop composite contract
 /// ([`Engine::backdrop_shader`](crate::Engine::backdrop_shader)), not a
 /// shader paint.
@@ -86,8 +177,13 @@ impl CaptureScale {
 /// `params` the effect uniforms packed four per `vec4`, zero-filled.
 /// `fn backdrop_sample(q: vec2<f32>) -> vec4<f32>` bilinearly samples the
 /// filtered capture at device point `q` — at `q · s` on a group's capture
-/// grid ([`CaptureScale`]) — clamped to its region. The return value is
-/// premultiplied and written unclamped.
+/// grid ([`CaptureScale`]) — clamped to its region. For a group keeping
+/// `n` levels ([`BackdropSpec::levels`]),
+/// `fn backdrop_sample_level(q: vec2<f32>, level: f32) -> vec4<f32>`
+/// trilinearly samples the pyramid: `level` clamps to `[0, n − 1]` and
+/// the read is bilinear at `q · s / 2^k` on `k = floor(level)` and
+/// `k = ceil(level)`, mixed by `fract(level)`; `backdrop_sample` is the
+/// level-0 read. The return value is premultiplied and written unclamped.
 #[derive(Clone, Debug)]
 pub struct BackdropShaderSource {
     /// The fragment source, without the backend's prelude.
@@ -120,7 +216,7 @@ impl BackdropShaderSource {
 
 #[cfg(test)]
 mod tests {
-    use super::{CaptureScale, CaptureScaleError};
+    use super::{BackdropSpec, CaptureLevels, CaptureLevelsError, CaptureScale, CaptureScaleError};
 
     #[test]
     fn capture_scale_is_finite_and_in_the_unit_interval() {
@@ -135,5 +231,37 @@ mod tests {
         let quarter = CaptureScale::new(0.25).expect("in range");
         assert!(!quarter.is_full());
         assert!((quarter.get() - 0.25).abs() <= f32::EPSILON);
+    }
+
+    #[test]
+    fn capture_levels_is_within_one_and_max() {
+        for n in [0, CaptureLevels::MAX + 1, u32::MAX] {
+            assert_eq!(CaptureLevels::new(n), Err(CaptureLevelsError::OutOfRange));
+        }
+        assert_eq!(CaptureLevels::new(1), Ok(CaptureLevels::ONE));
+        assert_eq!(
+            CaptureLevels::new(CaptureLevels::MAX).unwrap().get(),
+            CaptureLevels::MAX
+        );
+        assert_eq!(
+            CaptureLevelsError::OutOfRange.to_string(),
+            format!(
+                "the capture level count must be between 1 and {}",
+                CaptureLevels::MAX
+            )
+        );
+    }
+
+    #[test]
+    fn backdrop_spec_defaults_to_one_level() {
+        let quarter = CaptureScale::new(0.25).expect("in range");
+        let spec = BackdropSpec::from(quarter);
+        assert_eq!(spec.scale(), quarter);
+        assert_eq!(spec.levels(), CaptureLevels::ONE);
+        let spec = BackdropSpec::new(quarter, CaptureLevels::new(4).expect("in range"));
+        assert_eq!(spec.scale(), quarter);
+        assert_eq!(spec.levels().get(), 4);
+        assert!(BackdropSpec::FULL.scale().is_full());
+        assert_eq!(BackdropSpec::FULL.levels(), CaptureLevels::ONE);
     }
 }

@@ -14,8 +14,8 @@ pub mod label;
 pub use label::{IconPosition, IntoLabel, Label, LabelDisplayMode, label};
 pub mod menu;
 pub use menu::{
-    Command, CommandExt, CommandRole, Menu, MenuBarView, MenuItem, MenuView, Shortcut,
-    ShortcutModifiers,
+    Command, CommandExt, CommandRole, Menu, MenuBarView, MenuItem, MenuView, NamedKey, Shortcut,
+    ShortcutKey, ShortcutModifiers,
 };
 pub mod size;
 pub use size::ControlSize;

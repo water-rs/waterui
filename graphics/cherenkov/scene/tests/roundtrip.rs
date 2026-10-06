@@ -333,7 +333,7 @@ fn backdrop_effect_specs_roundtrip() {
         assert_eq!(*spec, back);
 
         let mut b = Scene::builder(64, 64);
-        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 4.0 }], 1.0);
+        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 4.0 }], 1.0, 1);
         b.root().layer(|m| {
             m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
             m.backdrop(1);
@@ -349,7 +349,7 @@ fn backdrop_effect_specs_roundtrip() {
 
     // A member without an effect keeps `backdrop_effect` out of the JSON.
     let mut b = Scene::builder(64, 64);
-    b.backdrop_group(1, Vec::new(), 1.0);
+    b.backdrop_group(1, Vec::new(), 1.0, 1);
     b.root().layer(|m| {
         m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
         m.backdrop(1);
@@ -401,7 +401,7 @@ fn backdrop_effect_specs_roundtrip() {
         },
     ] {
         let mut b = Scene::builder(64, 64);
-        b.backdrop_group(1, Vec::new(), 1.0);
+        b.backdrop_group(1, Vec::new(), 1.0, 1);
         b.root().layer(|m| {
             m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
             m.backdrop(1);
@@ -425,7 +425,12 @@ fn backdrop_scale_loads_inside_its_range_only() {
     let _ = std::fs::remove_dir_all(&dir);
     let scene = |scale| {
         let mut b = Scene::builder(64, 64);
-        b.backdrop_group(7, vec![BackdropFilter::GaussianBlur { sigma: 2.0 }], scale);
+        b.backdrop_group(
+            7,
+            vec![BackdropFilter::GaussianBlur { sigma: 2.0 }],
+            scale,
+            1,
+        );
         b.root().layer(|m| {
             m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
             m.backdrop(7);
@@ -449,5 +454,77 @@ fn backdrop_scale_loads_inside_its_range_only() {
             "scale {bad} must be rejected, got {result:?}"
         );
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn backdrop_levels_load_inside_their_range_only() {
+    use cherenkov_scene::{BackdropFilter, BackdropGroup, SceneError};
+    let dir = std::env::temp_dir().join(format!("cherenkov-scene-levels-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let scene = |levels| {
+        let mut b = Scene::builder(64, 64);
+        b.backdrop_group(
+            7,
+            vec![BackdropFilter::GaussianBlur { sigma: 2.0 }],
+            0.5,
+            levels,
+        );
+        b.root().layer(|m| {
+            m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
+            m.backdrop(7);
+        });
+        b.build()
+    };
+
+    let deepest = scene(BackdropGroup::MAX_LEVELS);
+    deepest.save(&dir.join("deepest")).unwrap();
+    assert_eq!(Scene::load(&dir.join("deepest")).unwrap(), deepest);
+
+    for bad in [0, 9] {
+        let scene_dir = dir.join(format!("bad-{bad}"));
+        scene(bad).save(&scene_dir).unwrap();
+        let result = Scene::load(&scene_dir);
+        assert!(
+            matches!(result, Err(SceneError::InvalidBackdropLevels(7))),
+            "levels {bad} must be rejected, got {result:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn backdrop_levels_default_to_one_and_skip_one() {
+    let dir = std::env::temp_dir().join(format!(
+        "cherenkov-scene-levels-default-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let scene = |levels| {
+        let mut b = Scene::builder(64, 64);
+        b.backdrop_group(7, Vec::new(), 1.0, levels);
+        b.root().layer(|m| {
+            m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
+            m.backdrop(7);
+        });
+        b.build()
+    };
+    let json = |name: &str| std::fs::read_to_string(dir.join(name).join("scene.json")).unwrap();
+
+    let single = scene(1);
+    single.save(&dir.join("single")).unwrap();
+    assert!(
+        !json("single").contains("\"levels\""),
+        "a one-level group omits `levels`: {}",
+        json("single")
+    );
+    let loaded = Scene::load(&dir.join("single")).unwrap();
+    assert_eq!(loaded.backdrop_groups[0].levels, 1);
+    assert_eq!(loaded, single);
+
+    let pyramid = scene(3);
+    pyramid.save(&dir.join("pyramid")).unwrap();
+    assert!(json("pyramid").contains("\"levels\""));
+    assert_eq!(Scene::load(&dir.join("pyramid")).unwrap(), pyramid);
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -16,6 +16,16 @@ use cherenkov::{
     OffscreenFormat, ShapeData, WorkingColor,
 };
 
+#[cfg_attr(
+    target_os = "android",
+    expect(
+        clippy::missing_const_for_thread_local,
+        reason = "every initializer is already `const {}`; the lint fires on \
+                  Android because that target's `thread_local!` expansion routes \
+                  const initializers through a generated non-const `__init` fn \
+                  (rust-lang/rust-clippy#13422)"
+    )
+)]
 mod counters {
     use std::cell::Cell;
 

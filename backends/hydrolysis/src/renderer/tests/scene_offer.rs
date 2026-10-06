@@ -415,11 +415,13 @@ fn connected_dynamic_panes_answer_the_offer_not_their_intrinsic() {
         &theme,
     );
     eprintln!("dispatch dims of the stack at 800x600 = {:?}", dims.size);
-    assert_eq!(
-        dims.size.width, WINDOW_WIDTH,
+    assert!(
+        approx::relative_eq!(dims.size.width, WINDOW_WIDTH),
         "the hstack must fit the 800-point window: a connected `Dynamic` pane \
          must answer its offered share, not the intrinsic cached before the \
-         retained tree connected it (the issue saw 820 = 400 + 20 + 400)"
+         retained tree connected it (the issue saw 820 = 400 + 20 + 400): left {:?}, right {:?}",
+        dims.size.width,
+        WINDOW_WIDTH
     );
 }
 
@@ -543,11 +545,13 @@ fn lazy_stack_panes_split_the_divider_width() {
     eprintln!("size_that_fits = ({:.1}, {:.1})", size.width, size.height);
 
     assert_no_answer_beats_its_offer(&log);
-    assert_eq!(
-        size.width, WINDOW_WIDTH,
+    assert!(
+        approx::relative_eq!(size.width, WINDOW_WIDTH),
         "the hstack must fit the 800-point window: a lazy pane must answer \
          its offered share, not the intrinsic cached in its extent index \
-         (the issue saw 807 = 400 + 7 + 400)"
+         (the issue saw 807 = 400 + 7 + 400): left {:?}, right {:?}",
+        size.width,
+        WINDOW_WIDTH
     );
     let widths: Vec<f32> = placements
         .iter()
@@ -594,10 +598,12 @@ fn lazy_stack_panes_split_the_divider_width() {
             "  lazy pane probe={probe:<6} proposal=({:?}, {:?})  answer=({:.1}, {:.1})",
             probe_proposal.width, probe_proposal.height, dims.size.width, dims.size.height,
         );
-        assert_eq!(
-            dims.size.width, expected,
+        assert!(
+            approx::relative_eq!(dims.size.width, expected),
             "a lazy hstack measured through the dispatch path must answer \
-             {expected} to its {probe} probe"
+             {expected} to its {probe} probe: left {:?}, right {:?}",
+            dims.size.width,
+            expected
         );
     }
 }
@@ -656,11 +662,13 @@ fn input_scene_view_panes_split_the_divider_width() {
     eprintln!("size_that_fits = ({:.1}, {:.1})", size.width, size.height);
 
     assert_no_answer_beats_its_offer(&log);
-    assert_eq!(
-        size.width, WINDOW_WIDTH,
+    assert!(
+        approx::relative_eq!(size.width, WINDOW_WIDTH),
         "the hstack must fit the 800-point window: an input-receiving pane \
          must answer its offered share, not its intrinsic size (the issue \
-         saw 807 = 400 + 7 + 400)"
+         saw 807 = 400 + 7 + 400): left {:?}, right {:?}",
+        size.width,
+        WINDOW_WIDTH
     );
     let widths: Vec<f32> = placements
         .iter()

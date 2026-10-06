@@ -58,7 +58,7 @@ pub mod hittable;
 pub mod ignore_safe_area;
 #[cfg(feature = "image")]
 pub mod image;
-#[cfg(feature = "layer_transform")]
+#[cfg(all(feature = "layer_transform", target_os = "macos"))]
 pub mod layer_transform;
 #[cfg(feature = "layout_priority")]
 pub mod layout_priority;

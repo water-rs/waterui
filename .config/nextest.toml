@@ -175,3 +175,26 @@ test-group = 'metal-shader-compile'
 platform = 'cfg(target_os = "windows")'
 filter = 'package(waterui) or package(waterui-browser-cef) or package(waterui-browser-wpe) or package(waterui-controls) or package(waterui-ffi) or package(waterui-form) or package(waterui-graphics) or package(waterui-icon) or package(waterui-icons-lucide) or package(waterui-icons-material-icon) or package(waterui-inspector-app) or package(waterui-map) or package(waterui-mcp) or package(waterui-media) or package(waterui-navigation) or package(waterui-shape) or package(waterui-testing) or package(waterui-text) or package(waterui-webview) or package(gallery-example) or package(list-example) or package(reply-example) or package(stress-example) or package(typography-rtl-example) or package(hydrolysis)'
 test-group = 'gpu-device'
+
+# How many `native_app` cases may run at once on the iOS Simulator.
+#
+# A `native_app` harness runs its cases inside a launched `UIApplication`:
+# the `nextest-ios-sim.sh` target runner installs the binary as an `.app`
+# and `simctl launch`es it, one case per launch. A simulator keeps one
+# installed copy of a bundle identifier and shows one application in the
+# foreground, so two launches at once would replace or terminate each other.
+# The group declares that serialization to nextest, which then keeps its
+# other slots for the bare `simctl spawn` binaries; the runner's own lock is
+# only the guard for `cargo test` or two separate runs sharing one device.
+[test-groups.ios-sim-app]
+max-threads = 1
+
+[[profile.default.overrides]]
+platform = 'cfg(target_os = "ios")'
+filter = 'binary(native_app)'
+test-group = 'ios-sim-app'
+
+[[profile.ci.overrides]]
+platform = 'cfg(target_os = "ios")'
+filter = 'binary(native_app)'
+test-group = 'ios-sim-app'

@@ -9,8 +9,6 @@ use alloc::vec::Vec;
 use cocoa_ui::menu::Command as KitCommand;
 #[cfg(feature = "context_menu")]
 use cocoa_ui::menu::MenuTreeNode;
-#[cfg(feature = "menu")]
-use waterui::animation::Animation;
 use waterui::component::menu::{CommandRole, ResolvedCommand, ResolvedMenuItem, Shortcut};
 use waterui::reactive::Signal;
 #[cfg(feature = "menu")]
@@ -32,36 +30,6 @@ mod platform {
 /// control characters interpolation inserts for layout stripped.
 pub(super) fn item_title(styled: &StyledStr) -> String {
     cocoa_ui::text::strip_bidi_controls(styled.to_plain().as_str())
-}
-
-/// `withPlatformAnimation`: the watcher metadata's `Animation` mapped to a
-/// kit timing — `Default` parses to the 0.25s bezier the FFI spells it as.
-#[cfg(feature = "menu")]
-pub(super) fn with_platform_animation(metadata: &Metadata, body: impl FnOnce() + 'static) {
-    let timing = match metadata.try_get::<Animation>() {
-        None => return body(),
-        Some(Animation::Default) => cocoa_ui::core_animation::Timing::Bezier {
-            duration: 0.25,
-            control_points: [0.42, 0.0, 0.58, 1.0],
-        },
-        Some(Animation::Bezier {
-            duration,
-            x1,
-            y1,
-            x2,
-            y2,
-        }) => cocoa_ui::core_animation::Timing::Bezier {
-            duration: duration.as_secs_f64(),
-            control_points: [x1, y1, x2, y2],
-        },
-        Some(Animation::Spring { stiffness, damping }) => {
-            cocoa_ui::core_animation::Timing::Spring {
-                stiffness: f64::from(stiffness),
-                damping: f64::from(damping),
-            }
-        }
-    };
-    cocoa_ui::core_animation::animate_with(timing, body);
 }
 
 /// Installs one watcher per live item signal — the command and submenu
@@ -122,7 +90,7 @@ fn shortcut_parts(shortcut: &Shortcut) -> (String, cocoa_ui::menu::KeyModifiers)
     .into_iter()
     .filter(|(held, _)| *held)
     .fold(KeyModifiers::empty(), |flags, (_, native)| flags | native);
-    (String::from(shortcut.key.as_str()), modifiers)
+    (crate::menus::key_equivalent_for(&shortcut.key), modifiers)
 }
 
 /// A `ResolvedCommand` as a kit `Command` — every presentation field

@@ -8,9 +8,11 @@
 use waterui::View;
 use waterui::ViewExt as _;
 use waterui::graphics::color::Srgb;
+use waterui::id::SelfId;
+use waterui::navigation::{NavigationStack, NavigationView};
 use waterui::prelude::*;
 use waterui_layout::scroll;
-use waterui_layout::scroll::{ScrollView, scroll_horizontal};
+use waterui_layout::scroll::{ScrollView, scroll_both, scroll_horizontal};
 use waterui_testing::{DragOptions, OffscreenApp, Role, ui};
 
 fn visual_shell<V: View>(content: V) -> impl View {
@@ -437,6 +439,265 @@ fn report_offset_writes_the_offset_on_controller_scroll_to() {
         offset.snapshot(),
         waterui::layout::Point::new(0.0, 60.0),
         "a controller scroll_to must land in the report binding"
+    );
+}
+
+/// A rail tall enough to take `scroll_to(0, 300)` without clamping — the
+/// navigation-content tests below need real travel, not the edge.
+fn nav_rail(
+    offset: &Binding<waterui::layout::Point>,
+    controller: &waterui_layout::scroll::ScrollController<waterui::layout::Point>,
+) -> impl View {
+    scroll(
+        vstack((
+            labeled_card("Item 1", 120.0, 60.0, Srgb::new(1.0, 0.1, 0.1)),
+            labeled_card("Item 2", 120.0, 60.0, Srgb::new(0.1, 1.0, 0.1)),
+            labeled_card("Item 3", 120.0, 60.0, Srgb::new(0.1, 0.1, 1.0)),
+            labeled_card("Item 4", 120.0, 60.0, Srgb::new(1.0, 0.8, 0.1)),
+            labeled_card("Item 5", 120.0, 60.0, Srgb::new(0.8, 0.1, 1.0)),
+            labeled_card("Item 6", 120.0, 60.0, Srgb::new(0.1, 0.8, 1.0)),
+            labeled_card("Item 7", 120.0, 60.0, Srgb::new(1.0, 0.5, 0.1)),
+            labeled_card("Item 8", 120.0, 60.0, Srgb::new(0.5, 0.1, 1.0)),
+        ))
+        .spacing(12.0),
+    )
+    .report_offset(offset)
+    .scroll_controller(controller)
+    .size(120.0, 120.0)
+    .a11y_label("nav-rail")
+}
+
+/// water-rs/waterui#1915: a `scroll_to` is applied while Hydrolysis lays out
+/// the scroll node, and a navigation page's content is a retained sub-view
+/// whose layout is cached (`BuiltSubview::layout_if_needed` skips it once the
+/// rect is stable). On the broken build a controller request only pruned the
+/// controller's frame-registry watch — the cached layout never re-ran, the
+/// request was never applied, and the rail stayed at offset 0.
+#[test]
+fn scroll_controller_applies_requests_inside_navigation_content() {
+    let offset = waterui::binding(waterui::layout::Point::zero());
+    let controller = waterui_layout::scroll::ScrollController::new(waterui::layout::Point::zero());
+    let mut app = ui()
+        .viewport(320, 240)
+        .theme(hydrolysis_m3::Material3::defaults())
+        .mount_offscreen({
+            let offset = offset.clone();
+            let controller = controller.clone();
+            move || {
+                NavigationStack::new(NavigationView::new("Inbox", nav_rail(&offset, &controller)))
+            }
+        });
+    app.settle();
+
+    controller.scroll_to(waterui::layout::Point::new(0.0, 300.0));
+    app.settle();
+    assert_eq!(
+        offset.snapshot(),
+        waterui::layout::Point::new(0.0, 300.0),
+        "a controller scroll_to inside navigation content must land"
+    );
+
+    // A repeat request to the same target after a user scroll is honoured:
+    // the generation bump is what makes it observable.
+    app.query().label("nav-rail").scroll_down();
+    app.settle();
+    assert_ne!(
+        offset.snapshot(),
+        waterui::layout::Point::new(0.0, 300.0),
+        "the user scroll should move the rail off the requested offset"
+    );
+    controller.scroll_to(waterui::layout::Point::new(0.0, 300.0));
+    app.settle();
+    assert_eq!(
+        offset.snapshot(),
+        waterui::layout::Point::new(0.0, 300.0),
+        "a repeat scroll_to to the same target must land after a user scroll"
+    );
+}
+
+/// water-rs/waterui#1915, the measure-memo half: a lazy row's host measures
+/// it (`patch_and_measure`) before the flush lays it out (`flush_in_rect`),
+/// and inside the row's dependency pass the scroll's child measure answers
+/// from the per-frame memo — skipping the reads beneath it, so the pass's
+/// dependency sweep prunes a subscription the cached layout still needs.
+/// The first growth still lays the row out (the memo answered with fresh
+/// dimensions); the pruned dependency only shows on the second, which must
+/// still re-lay the text out.
+#[test]
+fn scroll_child_measure_memo_cannot_hide_a_layout_dependency() {
+    let value = Binding::container(String::from("9"));
+    let mut app = ui()
+        .viewport(320, 240)
+        .theme(hydrolysis_m3::Material3::defaults())
+        .mount_offscreen({
+            let value = value.clone();
+            move || {
+                let value = value.clone();
+                scroll(VStack::for_each(vec![SelfId::new(0usize)], move |_item| {
+                    let value = value.clone();
+                    scroll_both(waterui::text!("{value}").a11y_label("counter")).max_height(24.0)
+                }))
+            }
+        });
+    app.settle();
+    let bounds_of = |app: &mut OffscreenApp, label: &'static str| {
+        app.query().role(Role::LABEL).label(label).single().bounds()
+    };
+
+    // The first update re-runs the row's pass: on the broken build the
+    // pass's own probes hit memos filled by `patch_and_measure`, so the
+    // text's content read is never re-recorded and `finish_pass` prunes it
+    // — the dependency is lost while the fresh geometry still lands.
+    value.set(String::from("10000"));
+    app.settle();
+    let counter_after_first = bounds_of(&mut app, "counter");
+
+    // The second update is what the lost dependency must still deliver: a
+    // string wider than the row's viewport makes the laid-out extent grow
+    // visibly past the first update's answer.
+    value.set(String::from(
+        "100000000000000000000000000000000000000000000000000",
+    ));
+    app.settle();
+    let counter_after_second = bounds_of(&mut app, "counter");
+    assert!(
+        f64::from(counter_after_second.width()) > f64::from(counter_after_first.width()),
+        "the reactive text's laid-out frame did not grow a second time: \
+         {counter_after_first:?} -> {counter_after_second:?}"
+    );
+}
+
+// A controller `animate_to` rides the request's curve: mid-duration the
+// reported offset is strictly between start and target — a jump would
+// already sit at the target — and the run lands exactly on it once the
+// duration ends (water-rs/waterui#1901).
+#[test]
+fn animate_to_glides_along_its_curve_and_lands_on_the_target() {
+    let offset = waterui::binding(waterui::layout::Point::zero());
+    let controller = waterui_layout::scroll::ScrollController::new(waterui::layout::Point::zero());
+    let mut app = ui()
+        .viewport(180, 180)
+        .theme(hydrolysis_m3::Material3::defaults())
+        .mount_offscreen({
+            let offset = offset.clone();
+            let controller = controller.clone();
+            move || offset_rail(offset.clone(), Some(controller.clone()))
+        });
+    app.settle();
+
+    controller.animate_to(
+        waterui::layout::Point::new(0.0, 108.0),
+        waterui::animation::Animation::ease_in_out(std::time::Duration::from_millis(500)),
+    );
+    app.pump_for(std::time::Duration::from_millis(200));
+    let midway = offset.snapshot().y;
+    assert!(
+        midway > 0.0 && midway < 108.0,
+        "an animated scroll should be in flight mid-duration, offset {midway}"
+    );
+
+    app.pump_for(std::time::Duration::from_millis(500));
+    app.settle();
+    assert_eq!(
+        offset.snapshot(),
+        waterui::layout::Point::new(0.0, 108.0),
+        "the animation must land exactly on the target"
+    );
+}
+
+// A spring request settles on the target once its duration ends, however far
+// it overshoots in between.
+#[test]
+fn animate_to_with_a_spring_settles_on_the_target() {
+    let offset = waterui::binding(waterui::layout::Point::zero());
+    let controller = waterui_layout::scroll::ScrollController::new(waterui::layout::Point::zero());
+    let mut app = ui()
+        .viewport(180, 180)
+        .theme(hydrolysis_m3::Material3::defaults())
+        .mount_offscreen({
+            let offset = offset.clone();
+            let controller = controller.clone();
+            move || offset_rail(offset.clone(), Some(controller.clone()))
+        });
+    app.settle();
+
+    controller.animate_to(
+        waterui::layout::Point::new(0.0, 60.0),
+        waterui::animation::Animation::spring(100.0, 10.0),
+    );
+    app.settle();
+    assert_eq!(
+        offset.snapshot(),
+        waterui::layout::Point::new(0.0, 60.0),
+        "a spring scroll must settle exactly on the target"
+    );
+}
+
+// A `scroll_to` request carries no animation: it still lands in one frame.
+#[test]
+fn scroll_to_lands_in_one_frame() {
+    let offset = waterui::binding(waterui::layout::Point::zero());
+    let controller = waterui_layout::scroll::ScrollController::new(waterui::layout::Point::zero());
+    let mut app = ui()
+        .viewport(180, 180)
+        .theme(hydrolysis_m3::Material3::defaults())
+        .mount_offscreen({
+            let offset = offset.clone();
+            let controller = controller.clone();
+            move || offset_rail(offset.clone(), Some(controller.clone()))
+        });
+    app.settle();
+
+    controller.scroll_to(waterui::layout::Point::new(0.0, 60.0));
+    app.pump_for(std::time::Duration::from_millis(16));
+    assert_eq!(
+        offset.snapshot(),
+        waterui::layout::Point::new(0.0, 60.0),
+        "a jump must land within a single frame"
+    );
+}
+
+// The user scrolling takes over from an animation in flight: a trackpad
+// pixel delta cancels the run and moves the offset directly, so pumping the
+// rest of the duration moves nothing.
+#[test]
+fn a_user_scroll_during_animate_to_cancels_the_animation() {
+    let offset = waterui::binding(waterui::layout::Point::zero());
+    let controller = waterui_layout::scroll::ScrollController::new(waterui::layout::Point::zero());
+    let mut app = ui()
+        .viewport(180, 180)
+        .theme(hydrolysis_m3::Material3::defaults())
+        .mount_offscreen({
+            let offset = offset.clone();
+            let controller = controller.clone();
+            move || offset_rail(offset.clone(), Some(controller.clone()))
+        });
+    app.settle();
+
+    controller.animate_to(
+        waterui::layout::Point::new(0.0, 108.0),
+        waterui::animation::Animation::ease_in_out(std::time::Duration::from_millis(500)),
+    );
+    app.pump_for(std::time::Duration::from_millis(200));
+    let midway = offset.snapshot().y;
+    assert!(
+        midway > 0.0 && midway < 108.0,
+        "expected an in-flight offset, got {midway}"
+    );
+
+    let rail = app.query().label("offset-rail").single().bounds();
+    app.scroll_at(rail.x() + 60.0, rail.y() + 60.0, 0.0, -20.0, false);
+    let taken = offset.snapshot().y;
+    assert!(
+        (taken - (midway + 20.0)).abs() < 0.5,
+        "the pixel delta should move the offset directly: {midway} -> {taken}"
+    );
+
+    app.pump_for(std::time::Duration::from_millis(600));
+    assert!(
+        (offset.snapshot().y - taken).abs() < 0.5,
+        "a cancelled animation must not resume toward the target: {:?}",
+        offset.snapshot()
     );
 }
 

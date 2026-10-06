@@ -46,7 +46,7 @@ pub mod android;
     any(target_os = "android", all(test, not(target_arch = "wasm32")))
 ))]
 pub mod android_accessibility;
-// Bare wasm has no window pump to drive these modules' diagnostics, fonts
+// Bare wasm has no window pump to drive these modules' diagnostics
 // and menu-bar plumbing.
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
 mod diagnostics;
@@ -55,8 +55,6 @@ mod diagnostics;
 #[cfg(any(target_os = "android", all(test, not(target_arch = "wasm32"))))]
 pub mod editing;
 mod executor;
-#[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
-mod fonts;
 #[cfg(not(target_arch = "wasm32"))]
 mod headless;
 pub mod ime;
@@ -65,6 +63,11 @@ pub mod menu_bar;
 #[cfg(hydrolysis_winit)]
 pub mod placement;
 mod semantic;
+/// The windowed runner's SIGINT/SIGTERM/SIGHUP contract on Unix — compiled
+/// where the winit runner needs it, and in test builds for its child-process
+/// suite, which runs without the `winit` feature.
+#[cfg(all(unix, not(target_os = "android"), any(hydrolysis_winit, test)))]
+mod termination;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
@@ -84,8 +87,6 @@ use diagnostics::{RenderDiagnostics, RenderDiagnosticsConfig, RenderPhaseSample,
 #[cfg(not(target_arch = "wasm32"))]
 use executor::{DrainExecutorOnDrop, HeadlessMainThreadExecutor};
 #[cfg(not(target_arch = "wasm32"))]
-use fonts::native_resource_fonts;
-use fonts::seed_core;
 #[cfg(not(target_arch = "wasm32"))]
 pub use headless::{HeadlessPumpResult, HeadlessRuntime};
 pub use semantic::{SemanticPumpResult, SemanticRuntime};
@@ -146,6 +147,7 @@ use crate::renderer::{
     FontFamilyResolution, HydrolysisRenderer, HydrolysisWindowOrigin, KeyDelivery, KeyPressOutcome,
 };
 use crate::renderer::{HydrolysisTextContextMenuMode, MenuShortcutRegistry, PopupWindowManager};
+use crate::text::SessionTextEngine;
 use crate::time::Instant;
 
 /// The global executor every runner installs before anything can spawn.
@@ -300,9 +302,9 @@ pub fn run(app: App, style: impl crate::Style) {
     // seeded from this collection, and a self-drawn component that typesets
     // text itself reads it out of the environment instead of enumerating the
     // system's fonts for itself.
-    let fonts = FontCollection::new(native_resource_fonts(
+    let fonts = crate::text::fonts::native_collection(
         waterui_core::ResourceContext::from_environment(&env),
-    ));
+    );
     fonts.clone().install(&mut env);
     let shortcuts = env
         .get::<MenuShortcutRegistry>()
@@ -316,9 +318,10 @@ pub fn run(app: App, style: impl crate::Style) {
         let mut platform = OffscreenWindow::new(width, height, wgpu::TextureFormat::Rgba8Unorm)
             .with_scale_factor(offscreen_scale_factor());
         platform.apply_properties(&window);
-        let mut renderer =
-            HydrolysisRenderer::new(Rc::clone(&theme), FontFamilyResolution::Lenient);
-        seed_core(&mut renderer, &fonts);
+        let mut renderer = HydrolysisRenderer::with_engine(
+            Rc::clone(&theme),
+            SessionTextEngine::from_collection(&fonts, FontFamilyResolution::Lenient),
+        );
         renderer.set_window_id(shortcuts.mint_window_id());
         let mut runtime = RuntimeWindow::new(window, platform, renderer, render_diagnostics_config);
         render_window(&mut runtime, &env, &mut || local_executor.drain());

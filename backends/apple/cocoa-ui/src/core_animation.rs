@@ -151,6 +151,10 @@ pub enum Timing {
 /// Runs `body` while `timing` plays its animatable changes: a
 /// `UIViewPropertyAnimator` on iOS, an `NSAnimationContext` group on macOS.
 ///
+/// The curve the animator plays: `UICubicTimingParameters` for `Bezier`,
+/// a mass-1 `UISpringTimingParameters` for `Spring` (the animator's
+/// `duration` argument is unused there; the spring's physics sets it).
+///
 /// # Panics
 ///
 /// When called off the main thread.

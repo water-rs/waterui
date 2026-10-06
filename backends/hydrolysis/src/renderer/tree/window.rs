@@ -527,7 +527,7 @@ impl HydrolysisRenderer {
             }
             #[cfg(feature = "frame-profile")]
             let encode_started_at = Instant::now();
-            self.present_window_backdrop(bounds, transform);
+            self.present_window_backdrop(bounds, transform, env);
             tree.flush(self, ctx, env);
             self.render_anchored_overlays(transform, &safe_area);
             #[cfg(feature = "frame-profile")]
@@ -554,7 +554,7 @@ impl HydrolysisRenderer {
         }
         #[cfg(feature = "frame-profile")]
         let encode_started_at = Instant::now();
-        self.present_window_backdrop(bounds, transform);
+        self.present_window_backdrop(bounds, transform, env);
         node.flush(self, ctx, env);
         self.render_anchored_overlays(transform, &safe_area);
         #[cfg(feature = "frame-profile")]
@@ -629,7 +629,7 @@ impl HydrolysisRenderer {
         #[cfg(feature = "frame-profile")]
         let encode_started_at = Instant::now();
         let ctx = safe_area_context(content_rect, transform, hit_transform);
-        self.present_window_backdrop(bounds, transform);
+        self.present_window_backdrop(bounds, transform, env);
         tree.flush(self, ctx, env);
         // The overlay-mode text context menu re-encodes with the frame it floats
         // over; drawing it only on the one-time build path would leave it visible

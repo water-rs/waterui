@@ -3,6 +3,7 @@ package dev.waterui.hydrolysis
 import android.annotation.SuppressLint
 import android.content.Context
 import android.util.SparseArray
+import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
@@ -66,6 +67,13 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     private var lastMaxFlingVelocity = Float.NaN
     private var lastScrollFriction = Float.NaN
     private var lastRootInsets: WindowInsetsCompat? = null
+
+    /**
+     * Wheel axis values are normalized (about ±1 per notch); Android's own
+     * scrolling views multiply them by this configuration's scaled scroll
+     * factors to get pixels, and so does the host.
+     */
+    private val wheelConfiguration = ViewConfiguration.get(context)
 
     /**
      * An IME `WindowInsetsAnimation` is running. While it is, the insets
@@ -341,8 +349,16 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     override fun onGenericMotionEvent(event: MotionEvent): Boolean {
         val session = session ?: return super.onGenericMotionEvent(event)
         if (event.actionMasked == MotionEvent.ACTION_SCROLL) {
-            val dx = -event.getAxisValue(MotionEvent.AXIS_HSCROLL)
-            val dy = -event.getAxisValue(MotionEvent.AXIS_VSCROLL)
+            // Android AXIS_HSCROLL is positive when content moves left; Hydrolysis
+            // input takes winit's opposite sign.
+            val dx =
+                -event.getAxisValue(MotionEvent.AXIS_HSCROLL) *
+                    wheelConfiguration.scaledHorizontalScrollFactor
+            // Android AXIS_VSCROLL is positive when content moves down, matching
+            // Hydrolysis's winit sign.
+            val dy =
+                event.getAxisValue(MotionEvent.AXIS_VSCROLL) *
+                    wheelConfiguration.scaledVerticalScrollFactor
             NativeBridge.nativeScrollEvent(session.nativePtr, event.x, event.y, dx, dy)
             return true
         }
@@ -372,7 +388,8 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
 
     /** Maps a hardware key onto the W3C `key` vocabulary the runner parses. */
     private fun w3cKey(event: KeyEvent): String? {
-        if (event.unicodeChar != 0) return event.unicodeChar.toChar().toString()
+        // Named keys first: Enter and Tab also carry `unicodeChar` ('\n', '\t'),
+        // which is not their W3C value.
         return when (event.keyCode) {
             KeyEvent.KEYCODE_ENTER -> "Enter"
             KeyEvent.KEYCODE_DEL -> "Backspace"
@@ -388,11 +405,50 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
             KeyEvent.KEYCODE_MOVE_END -> "End"
             KeyEvent.KEYCODE_PAGE_UP -> "PageUp"
             KeyEvent.KEYCODE_PAGE_DOWN -> "PageDown"
+            KeyEvent.KEYCODE_F1 -> "F1"
+            KeyEvent.KEYCODE_F2 -> "F2"
+            KeyEvent.KEYCODE_F3 -> "F3"
+            KeyEvent.KEYCODE_F4 -> "F4"
+            KeyEvent.KEYCODE_F5 -> "F5"
+            KeyEvent.KEYCODE_F6 -> "F6"
+            KeyEvent.KEYCODE_F7 -> "F7"
+            KeyEvent.KEYCODE_F8 -> "F8"
+            KeyEvent.KEYCODE_F9 -> "F9"
+            KeyEvent.KEYCODE_F10 -> "F10"
+            KeyEvent.KEYCODE_F11 -> "F11"
+            KeyEvent.KEYCODE_F12 -> "F12"
+            KeyEvent.KEYCODE_INSERT -> "Insert"
+            KeyEvent.KEYCODE_SYSRQ -> "PrintScreen"
+            KeyEvent.KEYCODE_BREAK -> "Pause"
+            KeyEvent.KEYCODE_SCROLL_LOCK -> "ScrollLock"
+            KeyEvent.KEYCODE_MENU -> "ContextMenu"
+            KeyEvent.KEYCODE_NUMPAD_ENTER -> "Enter"
             KeyEvent.KEYCODE_SHIFT_LEFT, KeyEvent.KEYCODE_SHIFT_RIGHT -> "Shift"
             KeyEvent.KEYCODE_CTRL_LEFT, KeyEvent.KEYCODE_CTRL_RIGHT -> "Control"
             KeyEvent.KEYCODE_ALT_LEFT, KeyEvent.KEYCODE_ALT_RIGHT -> "Alt"
             KeyEvent.KEYCODE_META_LEFT, KeyEvent.KEYCODE_META_RIGHT -> "Meta"
-            else -> null
+            else -> {
+                // `unicodeChar` resolves the key with the full meta state,
+                // and the stock Generic.kcm defines no `ctrl`/`meta`
+                // behaviour for letters, so a Ctrl/Meta chord resolves to 0
+                // and the press would be dropped. Take the character with
+                // Ctrl and Meta masked off; drop Alt only when the layout
+                // maps no Alt character for the key.
+                val stripped =
+                    event.metaState and (KeyEvent.META_CTRL_MASK or KeyEvent.META_META_MASK).inv()
+                val unicode =
+                    event.getUnicodeChar(stripped).takeIf { it != 0 }
+                        ?: event.getUnicodeChar(stripped and KeyEvent.META_ALT_MASK.inv())
+                when {
+                    // A dead key reports its spacing accent with
+                    // COMBINING_ACCENT set; dead-key composition on the
+                    // view path is a separate missing feature, so the W3C
+                    // name goes through instead of a lone combining mark.
+                    unicode and KeyCharacterMap.COMBINING_ACCENT != 0 -> "Dead"
+                    unicode != 0 -> unicode.toChar().toString()
+                    else -> null
+                }
+            }
         }
     }
 

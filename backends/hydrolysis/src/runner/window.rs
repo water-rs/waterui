@@ -563,9 +563,7 @@ pub(super) fn apply_window_background<P: GpuSurfaceWindow>(
 ) -> peniko::Color {
     let background = SurfaceBackground::of(&runtime.window, env);
     runtime.platform.set_transparent(background.transparent());
-    runtime
-        .renderer
-        .set_window_backdrop(background.backdrop(), env);
+    runtime.renderer.set_window_backdrop(background.backdrop());
     background.clear(env)
 }
 

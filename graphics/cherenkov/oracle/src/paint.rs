@@ -131,15 +131,30 @@ pub fn linear_t(p: Point, g: &LinearGradient) -> f64 {
 
 /// `t` along the two-point radial gradient for point `p`.
 ///
-/// The parameter satisfies `|p - (c0 + t·dc)| = r0 + t·dr`; the larger real
-/// root is taken, matching the CSS radial gradient definition. Degenerate
-/// coincident circles use the relative distance from the centre.
+/// The parameter is the largest `t` with `|p - (c0 + t·dc)| = r0 + t·dr`
+/// and a non-negative radius `r0 + t·dr`, the canvas two-point conical
+/// definition. `NaN` means no such `t`: the pixel is transparent.
+///
+/// Identical circles (see [`RadialGradient::has_identical_circles`]) take the limit of
+/// that definition as `r1 → r0`: `-∞` where `|p - c0| <= r0` and `+∞`
+/// outside, so pad extend draws a hard edge at `r0` (first stop inside,
+/// last stop outside), the no-extend mode leaves both sides transparent,
+/// and repeat and reflect have no defined result ([`eval_paint`] rejects
+/// them).
 #[must_use]
 #[allow(clippy::many_single_char_names)] // quadratic notation mirrors the spec
 pub fn radial_t(p: Point, g: &RadialGradient) -> f64 {
     let (px, py) = (p.x - g.center0.x, p.y - g.center0.y);
+    if g.has_identical_circles() {
+        return if px.hypot(py) <= g.r0 {
+            f64::NEG_INFINITY
+        } else {
+            f64::INFINITY
+        };
+    }
     let (dcx, dcy) = (g.center1.x - g.center0.x, g.center1.y - g.center0.y);
     let dr = g.r1 - g.r0;
+    let radius_ok = |t: f64| t.mul_add(dr, g.r0) >= 0.0;
     let a = dr.mul_add(-dr, dcy.mul_add(dcy, dcx * dcx));
     // |c0 + t·dc - p|² = (r0 + t·dr)² → a·t² + b·t + c = 0 with
     // b = -2·((p - c0)·dc + r0·dr).
@@ -147,24 +162,27 @@ pub fn radial_t(p: Point, g: &RadialGradient) -> f64 {
     let c = g.r0.mul_add(-g.r0, py.mul_add(py, px * px));
     if a.abs() < 1e-12 {
         if b.abs() < 1e-12 {
-            // Coincident circles: distance relative to r0.
-            return if g.r0.abs() < 1e-12 {
-                0.0
-            } else {
-                (px.hypot(py) - g.r0) / g.r0.abs()
-            };
+            return f64::NAN;
         }
-        return -c / b;
+        let t = -c / b;
+        return if radius_ok(t) { t } else { f64::NAN };
     }
     let disc = (4.0 * a).mul_add(-c, b * b);
     if disc < 0.0 {
         return f64::NAN;
     }
     let sq = disc.sqrt();
-    // The cone answer is the larger root; when `a` is negative that is the
-    // smaller numerator, so compare the roots themselves.
+    // When `a` is negative the larger root has the smaller numerator, so
+    // order the roots themselves.
     let (r1, r2) = ((-b + sq) / (2.0 * a), (-b - sq) / (2.0 * a));
-    r1.max(r2)
+    let (hi, lo) = (r1.max(r2), r1.min(r2));
+    if radius_ok(hi) {
+        hi
+    } else if radius_ok(lo) {
+        lo
+    } else {
+        f64::NAN
+    }
 }
 
 /// `t` along the sweep gradient for point `p` (radians, unnormalized).
@@ -191,7 +209,8 @@ pub fn sweep_t(p: Point, g: &SweepGradient) -> f64 {
 /// linear Display P3.
 ///
 /// # Errors
-/// [`SceneError`] if an image resource is missing or undecodable.
+/// [`SceneError`] if an image resource is missing or undecodable, or a
+/// radial gradient with identical circles repeats or reflects.
 pub fn eval_paint(
     paint: &Paint,
     p: Point,
@@ -208,12 +227,18 @@ pub fn eval_paint(
         Paint::Solid(c) => to_working(c),
         Paint::Linear(g) => extend_t(linear_t(p, g), g.extend)
             .map_or([0.0; 4], |t| eval_stops(&g.stops, t, g.interpolation)),
-        Paint::Radial(g) => match radial_t(p, g) {
-            t if t.is_finite() => {
-                extend_t(t, g.extend).map_or([0.0; 4], |t| eval_stops(&g.stops, t, g.interpolation))
+        Paint::Radial(g) => {
+            if matches!(g.extend, Extend::Repeat | Extend::Reflect) && g.has_identical_circles() {
+                return Err(cherenkov_scene::SceneError::IdenticalRadialCircles(
+                    g.extend,
+                ));
             }
-            _ => [0.0; 4],
-        },
+            match radial_t(p, g) {
+                t if t.is_nan() => [0.0; 4],
+                t => extend_t(t, g.extend)
+                    .map_or([0.0; 4], |t| eval_stops(&g.stops, t, g.interpolation)),
+            }
+        }
         Paint::Sweep(g) => extend_t(sweep_t(p, g), g.extend)
             .map_or([0.0; 4], |t| eval_stops(&g.stops, t, g.interpolation)),
         Paint::Mesh(mesh) => crate::mesh::eval(mesh, p),
@@ -287,5 +312,93 @@ pub fn sample_image(img: &crate::image::Image, u: f64, v: f64, sampling: Samplin
             }
             out
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use cherenkov_scene::{ColorSpace, Extend, Paint, RadialGradient, SceneError};
+    use kurbo::Point;
+
+    use super::{eval_paint, radial_t};
+    use crate::resources::Resources;
+
+    fn gradient(c0: (f64, f64), r0: f64, c1: (f64, f64), r1: f64) -> RadialGradient {
+        RadialGradient {
+            center0: Point::new(c0.0, c0.1),
+            r0,
+            center1: Point::new(c1.0, c1.1),
+            r1,
+            stops: Vec::new(),
+            extend: Extend::Pad,
+            interpolation: ColorSpace::LinearP3,
+        }
+    }
+
+    fn assert_t(g: &RadialGradient, p: (f64, f64), want: f64) {
+        let t = radial_t(Point::new(p.0, p.1), g);
+        assert!((t - want).abs() < 1e-9, "t at {p:?}: {t}, want {want}");
+    }
+
+    #[test]
+    fn concentric_reversed_radii_run_inward() {
+        let g = gradient((0.0, 0.0), 40.0, (0.0, 0.0), 16.0);
+        assert_t(&g, (40.0, 0.0), 0.0);
+        assert_t(&g, (0.0, 16.0), 1.0);
+        // Inside the end circle the radius keeps shrinking past t = 1.
+        assert_t(&g, (8.0, 0.0), 4.0 / 3.0);
+        assert_t(&g, (1.0, 0.0), 39.0 / 24.0);
+        assert_t(&g, (60.0, 0.0), -20.0 / 24.0);
+    }
+
+    #[test]
+    fn identical_circles_are_a_hard_edge() {
+        let g = gradient((10.0, 10.0), 24.0, (10.0, 10.0), 24.0);
+        for p in [(10.0, 10.0), (34.0, 10.0), (10.0, -14.0)] {
+            let t = radial_t(Point::new(p.0, p.1), &g);
+            assert!(t.is_infinite() && t.is_sign_negative(), "inside {p:?}: {t}");
+        }
+        for p in [(34.5, 10.0), (60.0, 60.0)] {
+            let t = radial_t(Point::new(p.0, p.1), &g);
+            assert!(
+                t.is_infinite() && t.is_sign_positive(),
+                "outside {p:?}: {t}"
+            );
+        }
+    }
+
+    #[test]
+    fn identical_circles_reject_repeat_and_reflect() {
+        let mut resources = Resources::new(PathBuf::new());
+        for extend in [Extend::Repeat, Extend::Reflect] {
+            let g = RadialGradient {
+                extend,
+                ..gradient((10.0, 10.0), 24.0, (10.0, 10.0), 24.0)
+            };
+            let result = eval_paint(&Paint::Radial(g), Point::new(10.0, 10.0), &mut resources);
+            assert!(
+                matches!(result, Err(SceneError::IdenticalRadialCircles(e)) if e == extend),
+                "{extend:?}: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn linear_case_rejects_a_negative_radius_root() {
+        // |dc| = |dr| makes a = 0.
+        let g = gradient((0.0, 0.0), 0.0, (10.0, 0.0), 10.0);
+        assert_t(&g, (5.0, 5.0), 0.5);
+        // -c / b = -0.5 has radius -5.
+        let t = radial_t(Point::new(-5.0, 5.0), &g);
+        assert!(t.is_nan(), "negative-radius root kept: {t}");
+    }
+
+    #[test]
+    fn quadratic_case_skips_a_larger_negative_radius_root() {
+        // Roots 25/17 (radius 80/17) and 15/7 (radius -80/7).
+        let g = gradient((0.0, 0.0), 40.0, (10.0, 0.0), 16.0);
+        assert_t(&g, (10.0, 0.0), 25.0 / 17.0);
     }
 }

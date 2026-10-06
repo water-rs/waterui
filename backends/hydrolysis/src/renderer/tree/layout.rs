@@ -182,14 +182,18 @@ impl RenderNode {
                 proposal.width.unwrap_or(0.0),
                 proposal.height.unwrap_or(0.0),
             )),
-            Self::Text(text) => HydrolysisRenderer::measure_text_dimensions(
-                state,
-                text.content.snapshot(),
-                text.alignment.snapshot(),
-                env,
-                proposal.width,
-                text.line_limit,
-            ),
+            Self::Text(text) => {
+                let content = state.measure_signal(&text.content);
+                let alignment = state.measure_signal(&text.alignment);
+                HydrolysisRenderer::measure_text_dimensions(
+                    state,
+                    content,
+                    alignment,
+                    env,
+                    proposal.width,
+                    text.line_limit,
+                )
+            }
             Self::Container(container) => {
                 let cell = RefCell::new(state);
                 let subs: Vec<NodeSubView> = container
@@ -566,6 +570,7 @@ impl RenderNode {
                         viewport_height,
                         content_width,
                         content_height,
+                        (0.0, 0.0),
                     )
                 } else {
                     // `report_offset`: the handle writes the content offset
@@ -583,8 +588,23 @@ impl RenderNode {
                 if let Some(controller) = &node.controller {
                     let generation = renderer.read_signal(&controller.generation());
                     if generation != node.applied_scroll_generation.get() {
-                        let target = renderer.read_signal(&controller.target());
-                        let _ = handle.scroll_to(f64::from(target.x), f64::from(target.y));
+                        let request = renderer.read_signal(&controller.request());
+                        // A request carries an optional animation: `None`
+                        // lands in place; `Some` glides along its curve via
+                        // the smooth-scroll pump this render registers.
+                        if let Some(animation) = request.animation {
+                            let _ = handle.scroll_to_animated(
+                                f64::from(request.target.x),
+                                f64::from(request.target.y),
+                                animation,
+                                renderer.frame_instant(),
+                            );
+                        } else {
+                            let _ = handle.scroll_to(
+                                f64::from(request.target.x),
+                                f64::from(request.target.y),
+                            );
+                        }
                         node.applied_scroll_generation.set(generation);
                     }
                 }

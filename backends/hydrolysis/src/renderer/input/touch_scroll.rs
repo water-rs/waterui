@@ -139,6 +139,13 @@ impl VelocityTracker {
 #[derive(Debug)]
 pub struct TouchFling {
     handle: crate::scroll::ScrollHandle,
+    /// The claim the fling holds on the offset — the ownership record: its
+    /// mint already claimed the offset from any live run or wheel glide, it
+    /// keeps writing while it is still the newest claim, and its first
+    /// refused write — a request, a jump, user input — ends it rather than
+    /// overwriting its successor. A `rebind` — shifted by a membership
+    /// anchor or for rows measured mid-fling — never touches it.
+    claim: crate::scroll::FlingClaim,
     x: Option<SplineFling>,
     y: Option<SplineFling>,
 }
@@ -183,27 +190,37 @@ impl TouchFling {
         let y = matches!(handle.axis(), Axis::Vertical | Axis::All)
             .then(|| axis_fling(finger_velocity.y, metrics.offset_y, metrics.max_y))
             .flatten();
-        (x.is_some() || y.is_some()).then_some(Self { handle, x, y })
+        // The mint itself claims the offset — ending a live run or wheel
+        // glide — so it must wait until a fling is known to exist.
+        (x.is_some() || y.is_some()).then(|| Self {
+            claim: handle.begin_fling(),
+            handle,
+            x,
+            y,
+        })
     }
 
     /// Advances the fling to `now` and applies its offset through the
     /// handle.
     pub(crate) fn tick(&self, now: Instant) -> TouchFlingTick {
-        let metrics = self.handle.metrics();
-        let (offset_x, active_x) = self
-            .x
-            .as_ref()
-            .map_or((metrics.offset_x, false), |fling| fling.position(now));
-        let (offset_y, active_y) = self
-            .y
-            .as_ref()
-            .map_or((metrics.offset_y, false), |fling| fling.position(now));
-        let changed = self.handle.scroll_to(offset_x, offset_y);
+        // Only the axes with a spline are sampled: an axis without one keeps
+        // its offset, so a membership shift is never applied to it twice.
+        let x = self.x.as_ref().map(|fling| fling.position(now));
+        let y = self.y.as_ref().map(|fling| fling.position(now));
+        // A programmatic request — jump or animated — or any user input
+        // claims the offset past this fling's claim: the refused write
+        // ends the fling instead of writing over whatever replaced it.
+        let changed = self.handle.apply_fling_offset(
+            &self.claim,
+            x.map(|(offset, _)| offset),
+            y.map(|(offset, _)| offset),
+        );
+        let active = |axis: Option<(f64, bool)>| axis.is_some_and(|(_, active)| active);
         TouchFlingTick {
             changed,
-            // A write the handle refuses — a stale generation, or the
-            // offset already there — ends the fling on the spot.
-            running: changed && (active_x || active_y),
+            // A refused write — a newer claim on the offset — ends the
+            // fling on the spot.
+            running: changed && (active(x) || active(y)),
         }
     }
 }

@@ -11,7 +11,7 @@ use waterui_core::MainThreadBound;
 ///
 /// A text leaf is fully resolved during tree-build (reading its signals and theme)
 /// into a [`ResolvedTextLayoutInput`], and `measure` then shapes it through the
-/// content-keyed [`TextMeasureService`] directly. That shortcut skips the general
+/// content-keyed [`TextService`] directly. That shortcut skips the general
 /// path, which measures by recursing into arbitrary (possibly reactive) bodies and
 /// so has to borrow the renderer's `HydroState` and `Environment`.
 pub struct HydroSubview<'a> {
@@ -28,7 +28,7 @@ pub struct HydroSubview<'a> {
     is_empty: bool,
     /// Per-proposal memo for this layout pass (containers probe children with
     /// repeated proposals). Only the recursion path caches here; the text path
-    /// memoizes in the content-keyed [`TextMeasureService`] instead.
+    /// memoizes in the content-keyed [`TextService`] instead.
     measure_cache: MainThreadBound<RefCell<Vec<(ProposalSize, ViewDimensions)>>>,
     /// Present when this child is a text leaf resolved on the main thread. When
     /// set, `measure` shapes through `service` on any thread and the subview is
@@ -39,7 +39,7 @@ pub struct HydroSubview<'a> {
 /// A text leaf resolved on the main thread, ready to be shaped on any thread.
 struct ResolvedTextMeasure {
     input: ResolvedTextLayoutInput,
-    service: Arc<TextMeasureService>,
+    service: Arc<TextService<SessionTextEngine>>,
     /// Maximum laid-out lines, from the leaf's `TextConfig::line_limit`.
     max_lines: Option<usize>,
 }
@@ -106,8 +106,7 @@ impl SubView for HydroSubview<'_> {
                 resolved
                     .service
                     .shape_limited(&resolved.input, proposal.width, resolved.max_lines);
-            let dimensions =
-                text_dimensions_from_layout(resolved.service.as_ref(), &layout, resolved.max_lines);
+            let dimensions = resolved.service.dimensions(&layout, resolved.max_lines);
             return self.apply_stretch(dimensions, proposal);
         }
 

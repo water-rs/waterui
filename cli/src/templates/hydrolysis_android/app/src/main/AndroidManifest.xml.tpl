@@ -2,7 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
 {% for permission in ctx.android_permissions %}
-    <uses-permission android:name="{{ permission.name }}" />
+    <uses-permission android:name="{{ permission }}" />
 {% endfor %}
 
     <application
@@ -26,6 +26,8 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- begin waterui android manifest components -->
+        <!-- end waterui android manifest components -->
     </application>
 
 </manifest>

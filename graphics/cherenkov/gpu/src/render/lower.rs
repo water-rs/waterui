@@ -154,13 +154,17 @@ pub struct Capture {
     pub copy_from: Target,
     /// A reduced-scale capture's resolve; `None` copies the region 1:1.
     pub resolve: Option<Resolve>,
+    /// The group's capture level count `n`: the pass reduces its region
+    /// into `n − 1` deeper levels after its draws and filter.
+    pub levels: u32,
 }
 
 /// A reduced-scale capture (`resolve.wgsl`): the pass's `region` is on the
 /// capture grid, and the device pixels under it resolve into it. With no
 /// draw ranges the resolve reads `copy_from` directly; with looked-through
-/// composites to apply first, `device` is copied 1:1 into the group's
-/// staging texture, the composites draw there, and the resolve reads it.
+/// composites to apply first, `device` is copied 1:1 into the surface's
+/// shared staging texture, the composites draw there, and the resolve
+/// reads it.
 #[derive(Clone, Copy, Debug)]
 pub struct Resolve {
     /// The capture scale `s`, below 1.
@@ -193,6 +197,10 @@ pub struct Frame {
     /// Local images whose mip chains build after the pass at the index:
     /// the last pass of their realization.
     pub mips: Vec<(usize, LocalKey)>,
+    /// Capture passes of groups keeping more than one level, with the
+    /// group's level count `n`: the pass at the index reduces its region
+    /// into `n − 1` pyramid levels, one globals slot each.
+    pub reduces: Vec<(usize, u32)>,
     open: Option<OpenPass>,
 }
 
@@ -243,6 +251,7 @@ impl Frame {
         self.instances.truncate(snap.instances);
         self.stops.truncate(snap.stops);
         self.passes.truncate(snap.passes);
+        self.reduces.retain(|&(pass, _)| pass < snap.passes);
         self.filters.truncate(snap.filters);
         self.shadows.truncate(snap.shadows);
         self.open = snap.open;
@@ -266,6 +275,13 @@ impl Frame {
         shift(&mut self.shadows, i);
         shift(&mut self.filters, i);
         shift(&mut self.mips, i);
+        shift(&mut self.reduces, i);
+    }
+
+    /// This frame's pyramid reduce count: one globals slot per level
+    /// step of every levelled capture pass.
+    pub fn reduce_slots(&self) -> u32 {
+        self.reduces.iter().map(|&(_, levels)| levels - 1).sum()
     }
 }
 
@@ -280,6 +296,7 @@ impl Frame {
         self.filters.clear();
         self.shadows.clear();
         self.mips.clear();
+        self.reduces.clear();
         self.open = None;
     }
 }
@@ -840,8 +857,8 @@ pub struct BackdropGroupInfo {
     /// The filter chain's footprint bound; `None` only when the registry
     /// lost the entry (an internal error a sampled group reports).
     pub footprint: Option<filtrate_core::Footprint>,
-    /// The group's capture scale.
-    pub scale: cherenkov::CaptureScale,
+    /// The group's capture spec (scale and level count).
+    pub spec: cherenkov::BackdropSpec,
 }
 
 /// The per-region capture overhead in captured pixels: a separated pair
@@ -951,9 +968,10 @@ fn cluster(rects: &[[u32; 4]], overhead: u64) -> Vec<Cluster> {
 struct BackdropPlan {
     /// The first member layer in paint order — its entry emits the capture.
     first: LayerId,
-    /// The capture scale `s`: regions are on the capture grid, whose
-    /// texel `i` covers the device interval `[i/s, (i+1)/s)`.
-    scale: cherenkov::CaptureScale,
+    /// The capture spec: regions are on the capture grid, whose texel `i`
+    /// covers the device interval `[i/s, (i+1)/s)`, and aligned to the
+    /// deepest level's grid when the group keeps levels.
+    spec: cherenkov::BackdropSpec,
     /// The union of members' clip bounds before the footprint apron.
     union: Rect,
     /// Each member's aproned rect (`A_i`) in paint order — the
@@ -1017,8 +1035,15 @@ pub struct Lowering<'a> {
     /// `(0, 0)` for the capture's composite.
     capture_isolation: bool,
     /// Scratch depths a backdrop capture looks through — pass-through
-    /// and translucent levels alike — outer first.
-    looked_through_scratches: Vec<usize>,
+    /// and translucent levels alike — outer first, each with
+    /// `passes_start`, the length of `frame.passes` when the level
+    /// opened.
+    looked_through_scratches: Vec<(usize, usize)>,
+    /// The looked-through scratches that hold draws before the current
+    /// capture: a buffer reused across captures instead of a bitmask —
+    /// isolation depth is unbounded, so a fixed-width bitmask could
+    /// lose a level — keeping its capacity between captures.
+    painted_scratches: Vec<usize>,
     /// The nearest semantic isolation's target the capture copies from.
     semantic_target: Target,
     /// The storage space of the enclosing level, innermost last; the
@@ -1084,6 +1109,7 @@ impl<'a> Lowering<'a> {
             backdrop_filters: FxHashMap::default(),
             capture_isolation: false,
             looked_through_scratches: Vec::new(),
+            painted_scratches: Vec::new(),
             semantic_target: Target::Part(0),
             part: 0,
             promoted: Vec::new(),
@@ -1129,7 +1155,9 @@ impl<'a> Lowering<'a> {
     /// member's device-space clip bounds, then the capture regions — each
     /// member's aproned rect `A_i` (bounds ∪ reach on the capture grid,
     /// inflated by the filter footprint's apron in capture texels, plus
-    /// one texel for the bilinear taps of a reduced capture)
+    /// one texel for the bilinear taps of a reduced capture; on a
+    /// levelled group, every deeper level's read footprint inflated by
+    /// the filter's apron)
     /// integer-rounded and clipped to the grid's extent, clustered by the
     /// `cluster` cost model into one or more regions. A group that ends up
     /// with one region produces exactly the union rect this planning
@@ -1147,16 +1175,57 @@ impl<'a> Lowering<'a> {
         self.plan_layer(self.start(tree), tree, groups, Affine::IDENTITY)?;
         let (width, height) = (f64::from(self.width), f64::from(self.height));
         for (gid, plan) in &mut self.backdrops {
-            let s = f64::from(plan.scale.get());
+            let s = f64::from(plan.spec.scale().get());
+            let levels = plan.spec.levels().get();
             // The capture grid's extent in texels: `⌈len · s⌉`.
             let (w, h) = ((width * s).ceil(), (height * s).ceil());
+            // A reduced capture is sampled bilinearly at `p · s`: an edge
+            // pixel's second tap lies one texel past the member's rect on
+            // the grid, so level 0's footprint covers that texel too.
+            let taps = if plan.spec.scale().is_full() {
+                0.0
+            } else {
+                1.0
+            };
             // A member's device rect aproned on the capture grid in whole
-            // texels, `None` when it is empty or clipped fully off it.
-            let aproned = |r: Rect, a: f64| -> Option<[u32; 4]> {
-                let x0 = r.x0.mul_add(s, -a).floor().max(0.0);
-                let y0 = r.y0.mul_add(s, -a).floor().max(0.0);
-                let x1 = r.x1.mul_add(s, a).ceil().min(w);
-                let y1 = r.y1.mul_add(s, a).ceil().min(h);
+            // texels, `None` when it is empty or clipped fully off it:
+            // every level's read footprint, in level-0 texels, inflated
+            // by the filter's `apron` so each filtered texel any level
+            // reads is computed from uncut filter input — a member's
+            // result never depends on the other members.
+            let aproned = |r: Rect, apron: f64| -> Option<[u32; 4]> {
+                // Level 0: the member rect plus the bilinear taps.
+                let a = apron + taps;
+                let mut x0 = r.x0.mul_add(s, -a).floor().max(0.0);
+                let mut y0 = r.y0.mul_add(s, -a).floor().max(0.0);
+                let mut x1 = r.x1.mul_add(s, a).ceil().min(w);
+                let mut y1 = r.y1.mul_add(s, a).ceil().min(h);
+                // Levels 1..n: a bilinear read at level `k` taps level-k
+                // texels `floor(q·s/2^k − 0.5)` through `+1`, and level-k
+                // texel `t` reduces capture texels `[2^k·t, 2^k·(t+1))`.
+                for k in 1..levels {
+                    let div = f64::from(1u32 << k);
+                    x0 = x0
+                        .min((r.x0 * s / div - 0.5).floor().mul_add(div, -apron))
+                        .max(0.0);
+                    y0 = y0
+                        .min((r.y0 * s / div - 0.5).floor().mul_add(div, -apron))
+                        .max(0.0);
+                    x1 = x1
+                        .max(((r.x1 * s / div - 0.5).floor() + 2.0).mul_add(div, apron))
+                        .min(w);
+                    y1 = y1
+                        .max(((r.y1 * s / div - 0.5).floor() + 2.0).mul_add(div, apron))
+                        .min(h);
+                }
+                // The region's origin sits on the deepest level's grid so
+                // level `k` texel `(i, j)` covers capture texels
+                // `[2^k·i, 2^k·(i+1))`; its far edge stays grid-clipped.
+                let grid = f64::from(1u32 << (levels - 1));
+                x0 = (x0 / grid).floor() * grid;
+                y0 = (y0 / grid).floor() * grid;
+                x1 = ((x1 / grid).ceil() * grid).min(w);
+                y1 = ((y1 / grid).ceil() * grid).min(h);
                 (x1 > x0 && y1 > y0).then_some([
                     x0 as u32,
                     y0 as u32,
@@ -1180,16 +1249,12 @@ impl<'a> Lowering<'a> {
                 plan.regions = Vec::new();
                 continue;
             }
-            // The footprint resolves against the capture's size in texels.
+            // The footprint resolves against the capture's size in texels;
+            // the filter's apron, in capture texels.
             let extent = uw.max(uh) * s;
-            // A reduced capture is sampled bilinearly at `p · s`: an edge
-            // pixel's second tap lies one texel past the member's rect on
-            // the grid, so the apron covers that texel too.
-            let taps = if plan.scale.is_full() { 0.0 } else { 1.0 };
             let a = (f64::from(footprint.extent).mul_add(extent, f64::from(footprint.pixels))
                 / 2.0f64.mul_add(-f64::from(footprint.extent), 1.0))
-            .ceil()
-                + taps;
+            .ceil();
             // Relative-extent filters make the apron depend on the region
             // size, so per-cluster regions are not guaranteed identical:
             // they stay a single union region (a rule, not an error).
@@ -1262,10 +1327,10 @@ impl<'a> Lowering<'a> {
                 f64::from(reach.unwrap_or(0.0)),
                 f64::from(reach.unwrap_or(0.0)),
             );
-            let scale = groups[&g].scale;
+            let spec = groups[&g].spec;
             let plan = self.backdrops.entry(g).or_insert_with(|| BackdropPlan {
                 first: id,
-                scale,
+                spec,
                 union: footprint,
                 aproned: Vec::new(),
                 regions: Vec::new(),
@@ -1626,6 +1691,13 @@ impl<'a> Lowering<'a> {
                     .copied()
                     .unwrap_or([0, 0, 0, 0]),
             };
+            if let Some(capture) = open.capture
+                && capture.levels > 1
+            {
+                self.frame
+                    .reduces
+                    .push((self.frame.passes.len(), capture.levels));
+            }
             self.frame.passes.push(Pass {
                 target: open.target,
                 clear: open.clear,
@@ -1747,15 +1819,9 @@ impl<'a> Lowering<'a> {
     /// composite. An unclipped overlapping batch can become the scratch pass
     /// directly; nested or clipped batches are rolled back and isolated again.
     #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
         clippy::too_many_arguments,
-        clippy::too_many_lines,
-        reason = "surface size is a small positive float; an isolate carries the
-        clip, style and pixel-space state of one scope"
+        reason = "an isolate carries the clip, style and pixel-space state of one scope"
     )]
-    // Keep isolation's speculative buffers off the ordinary drawing walk's stack.
-    #[inline(never)]
     fn isolate(
         &mut self,
         inner_clip: Option<DeviceClip>,
@@ -1774,6 +1840,32 @@ impl<'a> Lowering<'a> {
         {
             return Ok(());
         }
+        self.isolate_direct(inner_clip, filter, opacity, blend, space, body, glyphs)
+    }
+
+    /// [`isolate`](Self::isolate) without the pass-through speculation:
+    /// for a body that can never fold into the parent pass — the member
+    /// scope of a filtered member always opens its nested filter scope.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::too_many_arguments,
+        reason = "surface size is a small positive float; an isolate carries the
+        clip, style and pixel-space state of one scope"
+    )]
+    // Keep isolation's saved state, live across the recursive body, off
+    // the ordinary drawing walk's stack.
+    #[inline(never)]
+    fn isolate_direct(
+        &mut self,
+        inner_clip: Option<DeviceClip>,
+        filter: Option<cherenkov::FilterId>,
+        opacity: f32,
+        blend: cherenkov::BlendMode,
+        space: cherenkov::BlendSpace,
+        mut body: impl FnMut(&mut Self, &GlyphContext<'_>) -> Result<(), RenderError>,
+        glyphs: &GlyphContext<'_>,
+    ) -> Result<(), RenderError> {
         self.depth += 1;
         let scratch = self.depth - 1;
         let outer_clip = self.clip;
@@ -1813,7 +1905,7 @@ impl<'a> Lowering<'a> {
             self.semantic_target = Target::Scratch(scratch);
         } else {
             self.looked_through_scratches.clone_from(&saved_scratches);
-            self.looked_through_scratches.push(scratch);
+            self.looked_through_scratches.push((scratch, passes_start));
         }
         self.space_stack.push(storage);
         body(self, glyphs)?;
@@ -1983,6 +2075,9 @@ impl<'a> Lowering<'a> {
     /// when `body` stayed in one pass (folding opacity for disjoint bounds,
     /// or promoting an unclipped overlapping batch into a scratch pass).
     /// Otherwise rolls back and returns `Ok(false)` for nested/clipped isolation.
+    // Keep the speculative snapshot, live across the recursive body, off
+    // the ordinary drawing walk's stack.
+    #[inline(never)]
     fn try_passthrough(
         &mut self,
         opacity: f32,
@@ -2092,14 +2187,15 @@ impl<'a> Lowering<'a> {
 
     /// Emits the group's capture passes at the first member's paint-order
     /// position — one per region: `region` is copied from the semantic
-    /// target, then every looked-through scratch opened since it composes
-    /// over
-    /// that copy. A reduced-scale group composes over the device pixels
-    /// under the region and resolves them onto the capture grid.
+    /// target, then every looked-through scratch opened since it that
+    /// holds draws by then composes over that copy. A reduced-scale group
+    /// composes over the device pixels under the region and resolves them
+    /// onto the capture grid.
     fn emit_capture(&mut self, gid: u64) {
         let plan = &self.backdrops[&gid];
         let regions = plan.regions.clone();
-        let scale = plan.scale;
+        let scale = plan.spec.scale();
+        let levels = plan.spec.levels().get();
         let copy_from = self.semantic_target;
         let current = self.current_target();
         // The capture texture stores the semantic target's space, and
@@ -2108,6 +2204,29 @@ impl<'a> Lowering<'a> {
         // linear space and composites over the copy source-over at full
         // opacity.
         self.capture_space.insert(gid, self.target_space(copy_from));
+        // Only a looked-through level that painted something before the
+        // capture composites over the copy. Whether it did is the
+        // lowering's own record: the scratch's passes since its level
+        // opened carry the instances emitted into them. An empty
+        // ancestor adds no composite — a reduced capture under it
+        // resolves straight from `copy_from`, unstaged. The open pass
+        // holds what the innermost level painted before the member; the
+        // member has not drawn yet. Close it into `frame.passes` first.
+        self.finish_pass();
+        self.painted_scratches.clear();
+        self.painted_scratches
+            .extend(
+                self.looked_through_scratches
+                    .iter()
+                    .filter_map(|&(s, start)| {
+                        self.frame.passes[start..]
+                            .iter()
+                            .any(|pass| {
+                                pass.target == Target::Scratch(s) && !pass.ranges.is_empty()
+                            })
+                            .then_some(s)
+                    }),
+            );
         for (r, region) in regions.iter().enumerate() {
             #[expect(clippy::cast_possible_truncation, reason = "regions fit u32")]
             let r = r as u32;
@@ -2125,11 +2244,12 @@ impl<'a> Lowering<'a> {
                     region: r,
                     copy_from,
                     resolve,
+                    levels,
                 });
             }
             let covered = resolve.map_or(*region, |resolve| resolve.device);
-            let scratches = std::mem::take(&mut self.looked_through_scratches);
-            for &k in &scratches {
+            for i in 0..self.painted_scratches.len() {
+                let k = self.painted_scratches[i];
                 // Looked-through scratches cover the full surface (see
                 // `isolate`), so their texel origin is (0, 0), and each
                 // is stored in the copy's space — the root's linear
@@ -2143,7 +2263,6 @@ impl<'a> Lowering<'a> {
                     self.target_space(copy_from),
                 );
             }
-            self.looked_through_scratches = scratches;
             self.finish_pass();
             let pass = self.frame.passes.len() - 1;
             if let Some(key) = self.backdrop_filters.get(&gid) {
@@ -2177,11 +2296,12 @@ impl<'a> Lowering<'a> {
     }
 
     /// Emits a member's composite of the shared capture as the
-    /// bottom-most draw inside its clip, covering `member ∩ region`.
-    /// Members without an effect on a 1:1 capture keep the plain
-    /// `PAINT_TEXTURE` sample; an effect, or a reduced-scale capture,
-    /// turns the instance into `PAINT_BACKDROP` with its kind and
-    /// parameter stops packed in `meta[3]`'s low bits.
+    /// bottom-most draw inside its clip, covering `member ∩ region`,
+    /// at full strength — the member's own scope attenuates it at
+    /// composite. Members without an effect on a 1:1 capture keep the
+    /// plain `PAINT_TEXTURE` sample; an effect, or a reduced-scale
+    /// capture, turns the instance into `PAINT_BACKDROP` with its kind
+    /// and parameter stops packed in `meta[3]`'s low bits.
     #[expect(clippy::cast_precision_loss, reason = "region fits the surface")]
     fn emit_backdrop_sample(
         &mut self,
@@ -2201,7 +2321,8 @@ impl<'a> Lowering<'a> {
         if region[2] == 0 || region[3] == 0 {
             return Ok(());
         }
-        let scale = plan.scale;
+        let spec = plan.spec;
+        let scale = spec.scale();
         let s = f64::from(scale.get());
         let (rx, ry, rw, rh) = (
             region[0] as f32,
@@ -2236,6 +2357,8 @@ impl<'a> Lowering<'a> {
             inst.meta[1] = super::instance::PAINT_BACKDROP;
             // `grad.z` maps device points onto the capture grid.
             inst.grad[2] = scale.get();
+            // `grad.w` is the group's level count for `backdrop_sample_level`.
+            inst.grad[3] = spec.levels().get() as f32;
             // `grad2.xy` is the region's size in texels; `grad2.zw` the
             // member's device size for effect shaders: the unclipped
             // bounds, not the visible intersection.
@@ -2537,7 +2660,7 @@ impl<'a> Lowering<'a> {
         } else {
             (node.opacity, node.blend)
         };
-        let backdrop = node.backdrop.clone();
+        let backdrop = &node.backdrop;
         let saved = self.transform;
         let saved_animating = self.animating;
         if !local_root {
@@ -2555,78 +2678,244 @@ impl<'a> Lowering<'a> {
             // The root already renders into the surface target, and a
             // local root into its image.
             || (id != self.start(tree) && node.blends_within());
-        if let Some(sample) = &backdrop {
+        if let Some(sample) = backdrop {
             let gid = sample.group().raw();
             let plan = &self.backdrops[&gid];
             if plan.first == id && !plan.regions.is_empty() {
                 self.emit_capture(gid);
             }
         }
-        let result = if isolates && node.filter.is_none() && !is_destructive(blend) {
-            // The member's sample draws to the current target under the
-            // member clip, before and outside the layer's own isolation,
-            // unaffected by the layer's opacity or blend.
-            if let Some(sample) = &backdrop {
-                self.with_clip(
-                    clip,
-                    |s, _glyphs| {
-                        s.transform = content_space;
-                        s.emit_backdrop_sample(sample.group().raw(), id, sample.effect())
-                    },
-                    glyphs,
-                )?;
-            }
-            // The layer clip applies inside the scratch only; the composite
-            // runs under the clip in force outside the layer.
-            self.isolate(
-                None,
-                None,
+        let result = self.layer_body(
+            id,
+            node,
+            tree,
+            caches,
+            glyphs,
+            clip,
+            content_space,
+            opacity,
+            blend,
+            isolates,
+        );
+        self.transform = saved;
+        self.animating = saved_animating;
+        result
+    }
+
+    /// Renders a non-projective layer's members. An unfiltered member's
+    /// sample is its canvas's bottom-most content — the layer's opacity
+    /// and blend cover it exactly like its items — while a filtered
+    /// member composites as a whole too (#1974): when its opacity or
+    /// blend is not a no-op an outer member scope composites at the
+    /// member's opacity and blend — under the clip in force outside the
+    /// member for a non-destructive blend, under the member clip for a
+    /// destructive one — holding the sample, clipped at full strength,
+    /// beside a nested filter scope over the items; the member's blend
+    /// applies to the sample either way. The
+    /// filter covers the member's items, never its sample.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the layer walk's fixed context, not real complexity"
+    )]
+    fn layer_body(
+        &mut self,
+        id: LayerId,
+        node: &cherenkov::LayerNode,
+        tree: &SurfaceTree,
+        caches: &mut FxHashMap<LayerId, ContentData>,
+        glyphs: &GlyphContext<'_>,
+        clip: Option<&ShapeData>,
+        content_space: Affine,
+        opacity: f32,
+        blend: cherenkov::BlendMode,
+        isolates: bool,
+    ) -> Result<(), RenderError> {
+        // A filtered member whose opacity or blend is not a no-op
+        // composites in two nested member scopes; the scope carries the
+        // member's sample and filter by type.
+        let member_scope = node
+            .backdrop
+            .as_ref()
+            .zip(node.filter)
+            .filter(|_| opacity < 1.0 || blend != cherenkov::BlendMode::Normal);
+        match member_scope {
+            Some((sample, filter)) => self.filtered_member_scope(
+                id,
+                node,
+                tree,
+                caches,
+                glyphs,
+                clip,
+                content_space,
                 opacity,
                 blend,
-                // Layers declare no space; their isolation composites
-                // in the enclosing level's linear storage.
-                cherenkov::BlendSpace::Linear,
-                |s, glyphs| {
-                    s.with_clip(
-                        clip,
-                        |s, glyphs| {
-                            s.transform = content_space;
+                sample,
+                filter,
+            ),
+            None if isolates && node.filter.is_none() && !is_destructive(blend) => {
+                // The layer clip applies inside the scratch only; the composite
+                // runs under the clip in force outside the layer. A member's
+                // sample is its canvas's bottom-most content: the layer's
+                // opacity and blend apply to it exactly as to its items,
+                // once.
+                self.isolate(
+                    None,
+                    None,
+                    opacity,
+                    blend,
+                    // Layers declare no space; their isolation composites
+                    // in the enclosing level's linear storage.
+                    cherenkov::BlendSpace::Linear,
+                    |s, glyphs| {
+                        s.with_clip(
+                            clip,
+                            |s, glyphs| {
+                                s.transform = content_space;
+                                if let Some(sample) = &node.backdrop {
+                                    s.emit_backdrop_sample(
+                                        sample.group().raw(),
+                                        id,
+                                        sample.effect(),
+                                    )?;
+                                }
+                                s.layer_items(id, node, tree, caches, glyphs)
+                            },
+                            glyphs,
+                        )
+                    },
+                    glyphs,
+                )
+            }
+            None => {
+                self.with_clip(
+                    clip,
+                    |s, glyphs| {
+                        s.transform = content_space;
+                        if let Some(sample) = &node.backdrop
+                            && (node.filter.is_some() || !isolates)
+                        {
+                            // An opaque `Normal`-blended filtered member's
+                            // sample — or one nothing isolates — lands in
+                            // the enclosing target at full strength: the
+                            // member's filter never covers it.
+                            s.emit_backdrop_sample(sample.group().raw(), id, sample.effect())?;
+                        }
+                        if isolates {
+                            let inner = s.clip;
+                            s.isolate(
+                                inner,
+                                node.filter,
+                                opacity,
+                                blend,
+                                cherenkov::BlendSpace::Linear,
+                                |s, glyphs| {
+                                    if let Some(sample) = &node.backdrop
+                                        && node.filter.is_none()
+                                    {
+                                        // An unfiltered member's sample is
+                                        // its canvas's bottom-most content.
+                                        s.emit_backdrop_sample(
+                                            sample.group().raw(),
+                                            id,
+                                            sample.effect(),
+                                        )?;
+                                    }
+                                    s.layer_items(id, node, tree, caches, glyphs)
+                                },
+                                glyphs,
+                            )
+                        } else {
                             s.layer_items(id, node, tree, caches, glyphs)
-                        },
+                        }
+                    },
+                    glyphs,
+                )
+            }
+        }
+    }
+
+    /// A filtered member whose opacity or blend is not a no-op
+    /// composites in two nested scopes: the outer member scope
+    /// composites at the member's opacity and blend, holding the
+    /// backdrop sample at full strength — outside the filter — beside
+    /// a nested filter scope covering the member's items at opacity 1,
+    /// `Normal` blend. The member clip applies inside the member scope,
+    /// like the unfiltered member's: a non-destructive composite runs
+    /// under the ancestor clip, so the edge coverage multiplies once; a
+    /// destructive composite carries the member clip as its operator
+    /// domain.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the layer walk's fixed context, not real complexity"
+    )]
+    fn filtered_member_scope(
+        &mut self,
+        id: LayerId,
+        node: &cherenkov::LayerNode,
+        tree: &SurfaceTree,
+        caches: &mut FxHashMap<LayerId, ContentData>,
+        glyphs: &GlyphContext<'_>,
+        clip: Option<&ShapeData>,
+        content_space: Affine,
+        opacity: f32,
+        blend: cherenkov::BlendMode,
+        sample: &cherenkov::BackdropSample,
+        filter: cherenkov::FilterId,
+    ) -> Result<(), RenderError> {
+        // The member scope's contents: the sample at full strength —
+        // outside the filter — beside a nested filter scope over the
+        // member's items at opacity 1, `Normal` blend.
+        let mut body = |s: &mut Self, glyphs: &GlyphContext<'_>| {
+            s.emit_backdrop_sample(sample.group().raw(), id, sample.effect())?;
+            let inner = s.clip;
+            s.isolate(
+                inner,
+                Some(filter),
+                1.0,
+                cherenkov::BlendMode::Normal,
+                cherenkov::BlendSpace::Linear,
+                |s, glyphs| s.layer_items(id, node, tree, caches, glyphs),
+                glyphs,
+            )
+        };
+        if is_destructive(blend) {
+            self.with_clip(
+                clip,
+                |s, glyphs| {
+                    s.transform = content_space;
+                    let inner = s.clip;
+                    s.isolate_direct(
+                        inner,
+                        None,
+                        opacity,
+                        blend,
+                        cherenkov::BlendSpace::Linear,
+                        &mut body,
                         glyphs,
                     )
                 },
                 glyphs,
             )
         } else {
-            self.with_clip(
-                clip,
+            self.isolate_direct(
+                None,
+                None,
+                opacity,
+                blend,
+                cherenkov::BlendSpace::Linear,
                 |s, glyphs| {
-                    s.transform = content_space;
-                    if let Some(sample) = &backdrop {
-                        s.emit_backdrop_sample(sample.group().raw(), id, sample.effect())?;
-                    }
-                    if isolates {
-                        let inner = s.clip;
-                        s.isolate(
-                            inner,
-                            node.filter,
-                            opacity,
-                            blend,
-                            cherenkov::BlendSpace::Linear,
-                            |s, glyphs| s.layer_items(id, node, tree, caches, glyphs),
-                            glyphs,
-                        )
-                    } else {
-                        s.layer_items(id, node, tree, caches, glyphs)
-                    }
+                    s.with_clip(
+                        clip,
+                        |s, glyphs| {
+                            s.transform = content_space;
+                            body(s, glyphs)
+                        },
+                        glyphs,
+                    )
                 },
                 glyphs,
             )
-        };
-        self.transform = saved;
-        self.animating = saved_animating;
-        result
+        }
     }
 
     /// A projective layer composes its completed local image with one
@@ -4146,6 +4435,8 @@ fn effect_reach(effect: &cherenkov::BackdropEffect) -> Result<f32, RenderError> 
                 ))
             }
         }
+        // `LevelRamp`'s constructor validates its parameters.
+        cherenkov::BackdropEffect::Level(_) => Ok(0.0),
         cherenkov::BackdropEffect::Shader(s) => {
             if s.uniforms.len() <= 64
                 && s.uniforms.iter().all(|v| v.is_finite())
@@ -4165,9 +4456,12 @@ fn effect_reach(effect: &cherenkov::BackdropEffect) -> Result<f32, RenderError> 
 /// `(kind, stop count)`: `Color` packs three row stops (the row's
 /// `[r, g, b, bias]` in `color`), `Refraction` one stop (`depth`,
 /// `strength` in `color.xy`), `Rim` two stops (`(width, r, g, b)` and
-/// `(a, gain)`), `Shader` the uniforms packed four per stop, zero-filled.
+/// `(a, gain)`), `Level` one stop (`(depth, edge, interior)`),
+/// `Shader` the uniforms packed four per stop, zero-filled.
 fn push_effect_stops(stops: &mut Vec<Stop>, effect: &cherenkov::BackdropEffect) -> (u32, u32) {
-    use super::instance::{EFFECT_COLOR, EFFECT_REFRACTION, EFFECT_RIM, EFFECT_SHADER};
+    use super::instance::{
+        EFFECT_COLOR, EFFECT_LEVEL, EFFECT_REFRACTION, EFFECT_RIM, EFFECT_SHADER,
+    };
     let push = |stops: &mut Vec<Stop>, v: [f32; 4]| {
         stops.push(Stop {
             color: v,
@@ -4190,6 +4484,10 @@ fn push_effect_stops(stops: &mut Vec<Stop>, effect: &cherenkov::BackdropEffect) 
             push(stops, [r.width, r.color[0], r.color[1], r.color[2]]);
             push(stops, [r.color[3], r.gain, 0.0, 0.0]);
             (EFFECT_RIM, 2)
+        }
+        cherenkov::BackdropEffect::Level(r) => {
+            push(stops, [r.depth(), r.edge(), r.interior(), 0.0]);
+            (EFFECT_LEVEL, 1)
         }
         cherenkov::BackdropEffect::Shader(s) => {
             let mut count = 0;
