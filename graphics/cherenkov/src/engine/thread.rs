@@ -17,7 +17,7 @@ use cherenkov_record::Realize;
 use crate::backend::{
     Backend, Display, Frame, FrameRedraw, Renderer, SurfaceFrame, SurfaceInfo, Visibility,
 };
-use crate::engine::{CompletionWaker, SharedWaker, SurfaceWaker};
+use crate::engine::{CompletionWaker, SurfaceWaker};
 use crate::error::{EngineError, RenderError, ResourceError, SurfaceError};
 use cherenkov_record::RefreshRange;
 
@@ -93,7 +93,7 @@ struct SurfaceState {
     /// and its per-frame state waits for the frame that shows it.
     visibility: Visibility,
     /// The surface's host wake-up, shared with its UI-thread handle.
-    waker: SharedWaker<SurfaceWaker>,
+    waker: Arc<SurfaceWaker>,
 }
 
 impl SurfaceState {
@@ -494,6 +494,11 @@ fn drain_retire<B: Backend>(rx: &Receiver<crate::message::ResOp<B>>, renderer: &
 /// on; each gets the frame's declared alpha contract noted and counts as
 /// a frame swap — a planes-capable backend presents those alone when they
 /// are the surface's only change (#90).
+///
+/// Each of those surfaces then wakes its host, from here: the frame has
+/// landed, so the render the wake asks for draws it, whether or not a
+/// render was in flight when the frame was submitted. A hidden surface
+/// wakes nothing; the frame that shows it draws the frame.
 fn producer_frame<B: Backend>(
     renderer: &mut B::Renderer,
     surfaces: &mut FxHashMap<SurfaceId, SurfaceState>,
@@ -505,6 +510,7 @@ fn producer_frame<B: Backend>(
             state.tree.note_installed(layer, opaque);
             state.commits = state.commits.max(Commits::Installs);
             state.plane_frames.insert(layer);
+            state.waker.wake();
         }
     }
 }
@@ -515,7 +521,7 @@ fn create_surface<B: Backend>(
     surfaces: &mut FxHashMap<SurfaceId, SurfaceState>,
     id: SurfaceId,
     target: B::Target,
-    waker: SharedWaker<SurfaceWaker>,
+    waker: Arc<SurfaceWaker>,
 ) -> Result<SurfaceInfo, SurfaceError> {
     let info = renderer.create_surface(id, target, CompletionWaker::new(&waker))?;
     surfaces.insert(
@@ -969,7 +975,7 @@ mod tests {
     use crate::backend::Visibility;
     use crate::backend::{Backend, Display};
     use crate::display_list::{DisplayList, Picture};
-    use crate::engine::{SurfaceWaker, Waker};
+    use crate::engine::SurfaceWaker;
     use cherenkov_record::{ChangeSet, ContentOp, LayerId, LayerOp, Op, SurfaceId, SurfaceTree};
 
     use crate::testing::{Event, Null, NullConfig};
@@ -1001,7 +1007,7 @@ mod tests {
             content_animating: false,
             sampled_rate: None,
             visibility: Visibility::Visible,
-            waker: std::sync::Arc::new(SurfaceWaker::new(std::sync::Arc::new(Waker::new()))),
+            waker: std::sync::Arc::new(SurfaceWaker::new(|| {})),
         };
 
         let mut first = ChangeSet::<Null> {
@@ -1046,7 +1052,7 @@ mod tests {
         })
         .expect("init");
         let surface = engine
-            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16))
+            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {})
             .expect("surface");
         let layer = surface.layer();
         let mut pointers = Vec::new();

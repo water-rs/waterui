@@ -419,6 +419,26 @@ impl MeasurementCaches {
         self.reset_counters();
     }
 
+    /// Opens a `BuiltSubview` layout-dependency pass, invalidating the memos
+    /// filled outside it.
+    ///
+    /// A host can measure a sub-view earlier in the same flush — a button or
+    /// menu's `measure_built` on its label, a lazy row's `patch_and_measure`
+    /// — filling node memos and `view_dimensions` before `flush_in_rect`
+    /// lays it out. Inside the dependency pass those answers would come back
+    /// from the cache without running the reads beneath them, so the pass's
+    /// dependency sweep would prune subscriptions the cached layout still
+    /// needs. Bumping the memo frame stamps earlier answers stale and
+    /// clearing `view_dimensions` does the same for the address-keyed cache;
+    /// memos filled *during* the pass still serve its repeated probes.
+    pub(crate) fn begin_dependency_pass(&mut self) {
+        self.view_dimensions.clear();
+        self.frame = self
+            .frame
+            .checked_add(1)
+            .expect("hydrolysis measurement frame counter overflow");
+    }
+
     /// Prune `Dynamic` entries whose node no longer exists in the view tree.
     ///
     /// `is_alive` is computed by walking the window's retained tree, which

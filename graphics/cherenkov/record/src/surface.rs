@@ -170,7 +170,6 @@ impl<T: Target> Shared<T> {
     /// Queues an op outside a transaction.
     fn push(&mut self, op: Op<T>) {
         self.pending.push(op);
-        self.queue.pending(true);
         self.flush();
     }
 
@@ -206,7 +205,6 @@ impl<T: Target> Shared<T> {
         let mut ops = std::mem::take(&mut self.spare_ops);
         let recycled = std::mem::take(&mut self.spare_recycled);
         ops.append(&mut self.pending);
-        self.queue.pending(false);
         let mut animating = false;
         // `animated` is poked by a content's `LiveState` the moment an
         // animated operand arrives, so a surface that never saw one
@@ -390,9 +388,7 @@ impl<T: Target> Shared<T> {
                 }
             }
         }
-        let nonempty = !ops.is_empty();
         shared.pending = ops;
-        shared.queue.pending(nonempty);
         for (_, edit) in tx.edits.drain(..) {
             tx.edit_ops.push(edit.ops);
         }
@@ -1114,7 +1110,7 @@ mod tests {
     }
 
     /// The queue of a target that is never hidden and never asked to
-    /// drain: `wake`/`pending` are no-ops, `apply` never fires.
+    /// drain: `wake` is a no-op, `apply` never fires.
     struct TestQueue;
 
     impl Queue<TestTarget> for TestQueue {
@@ -1127,8 +1123,6 @@ mod tests {
         }
 
         fn wake(&self) {}
-
-        fn pending(&self, _pending: bool) {}
     }
 
     fn shared() -> Rc<RefCell<Shared<TestTarget>>> {

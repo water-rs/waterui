@@ -14,7 +14,7 @@
 //! use cherenkov_gpu::{Gpu, GpuConfig};
 //!
 //! let engine = Engine::<Gpu>::new(GpuConfig::default())?;
-//! let surface = engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16))?;
+//! let surface = engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {})?;
 //! surface.update(|tx| {
 //!     tx[surface.root()].content(
 //!         surface.record(|c| c.fill(Rect::new(0., 0., 64., 64.), WorkingColor::WHITE)),
@@ -175,9 +175,6 @@ pub enum ScratchFormat {
 /// Configuration for the GPU engine.
 #[derive(Clone, Debug)]
 pub struct GpuConfig {
-    /// Wakes an idle host for asynchronous filter parameter changes. The
-    /// callback can run on producer threads; offscreen callers may omit it.
-    pub redraw: Option<interop::RedrawCallback>,
     /// Uses an existing host device. Handles must share one creation chain.
     /// Device limits and enabled features govern engine capabilities.
     pub device: Option<interop::SharedDevice>,
@@ -219,7 +216,6 @@ impl Default for GpuConfig {
     fn default() -> Self {
         Self {
             device: None,
-            redraw: None,
             backends: wgpu::Backends::all(),
             power_preference: wgpu::PowerPreference::HighPerformance,
             timestamps: false,
@@ -488,13 +484,8 @@ impl cherenkov::GpuContent for Gpu {
         r.add_gpu_producer(id, content);
     }
 
-    fn add_frame_producer(
-        r: &mut Self::Renderer,
-        id: cherenkov::ProducerId,
-        dirty: std::sync::Arc<std::sync::atomic::AtomicBool>,
-        gate: std::sync::Arc<cherenkov::WakeGate>,
-    ) {
-        r.add_frame_producer(id, dirty, gate);
+    fn add_frame_producer(r: &mut Self::Renderer, id: cherenkov::ProducerId) {
+        r.add_frame_producer(id);
     }
 
     fn bind_gpu_producer(

@@ -2917,8 +2917,8 @@ impl<'a> Lowering<'a> {
         let binding = glyphs.content.get(&id);
         if let Some(binding) = binding {
             // The frame's drawn bindings, whether the layer composites
-            // in-engine or promotes to a plane: the redraw and
-            // wake-gate checks read them from the lowered frame.
+            // in-engine or promotes to a plane: the redraw check and
+            // `update_producer_wakes` read them from the lowered frame.
             self.frame.content.push((binding.producer(), binding.size));
         }
         if self.promoted.contains(&id) {

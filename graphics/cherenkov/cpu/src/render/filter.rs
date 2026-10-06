@@ -10,14 +10,12 @@ use std::{
 };
 
 use cherenkov::{
-    BackdropId, FilterId, FrameId, FrameTime, RenderError, SurfaceId, SurfaceVisibility, WakeGate,
+    BackdropId, CompletionWaker, FilterId, FrameId, FrameTime, RenderError, SurfaceId, SurfaceWakes,
 };
 use filtrate_core::{
     AnimatedTarget, AnimationTrack, CpuFilter, CpuFilterError, CpuImage, Footprint, ParamArray,
     SignalVisitor, WatchGuard, WorkingSpace,
 };
-
-use crate::RedrawCallback;
 
 pub(super) trait Erased: Send + Sync {
     fn footprint(&self, params: &[f32], size: (usize, usize)) -> f32;
@@ -88,8 +86,8 @@ struct Entry {
     events: Receiver<(usize, AnimatedTarget)>,
     pending_events: VecDeque<(usize, AnimatedTarget)>,
     dirty: Arc<AtomicBool>,
-    /// Open while a visible surface's last frame ran the entry.
-    gate: Arc<WakeGate>,
+    /// The wakes of the surfaces whose last frames ran the entry.
+    wakes: Arc<SurfaceWakes>,
     _guards: Vec<WatchGuard>,
     sequence: Option<FrameId>,
     params: Arc<[f32]>,
@@ -128,8 +126,7 @@ impl Entry {
 struct WatcherInstaller<'a> {
     events: Sender<(usize, AnimatedTarget)>,
     dirty: Arc<AtomicBool>,
-    gate: Arc<WakeGate>,
-    redraw: Option<RedrawCallback>,
+    wakes: Arc<SurfaceWakes>,
     guards: &'a mut Vec<WatchGuard>,
 }
 
@@ -137,19 +134,14 @@ impl SignalVisitor for WatcherInstaller<'_> {
     fn visit<P: filtrate_core::FilterParam + ?Sized>(&mut self, index: usize, param: &P) {
         let events = self.events.clone();
         let dirty = Arc::clone(&self.dirty);
-        let gate = Arc::clone(&self.gate);
-        let redraw = self.redraw.clone();
+        let wakes = Arc::clone(&self.wakes);
         self.guards
             .push(param.watch_animated(Box::new(move |target| {
                 if events.send((index, target)).is_err() {
                     return;
                 }
-                dirty.store(true, Ordering::Release);
-                if gate.is_open()
-                    && let Some(redraw) = &redraw
-                {
-                    redraw.wake();
-                }
+                dirty.swap(true, Ordering::AcqRel);
+                wakes.wake();
             })));
     }
 }
@@ -159,21 +151,15 @@ pub struct Registry {
     entries: FxHashMap<u64, Entry>,
     /// Backdrop groups by `(surface, group)`.
     backdrops: FxHashMap<(u64, u64), Group>,
-    redraw: Option<RedrawCallback>,
     last_frame: Option<(FrameId, cherenkov::Instant)>,
     delta: Duration,
 }
 
 impl Registry {
-    pub(super) fn new(redraw: Option<RedrawCallback>) -> Self {
-        let mut registry = Self::default();
-        registry.redraw = redraw;
-        registry
-    }
-
     /// Builds the [`Entry`] for `filter`: its initial parameters,
-    /// animation tracks and redraw watchers.
-    fn entry<F>(&self, filter: F) -> Entry
+    /// animation tracks and redraw watchers. A parameter change wakes the
+    /// host of each surface whose last frame ran the entry.
+    fn entry<F>(filter: F) -> Entry
     where
         F: CpuFilter + cherenkov::RenderTransfer + Send + Sync,
     {
@@ -182,13 +168,12 @@ impl Registry {
         let initial: Arc<[f32]> = initial.into();
         let (event_sender, events) = channel();
         let dirty = Arc::new(AtomicBool::new(false));
-        let gate = Arc::new(WakeGate::default());
+        let wakes = Arc::new(SurfaceWakes::default());
         let mut guards = Vec::with_capacity(F::Params::LEN);
         filter.visit_signals(&mut WatcherInstaller {
             events: event_sender,
             dirty: Arc::clone(&dirty),
-            gate: Arc::clone(&gate),
-            redraw: self.redraw.clone(),
+            wakes: Arc::clone(&wakes),
             guards: &mut guards,
         });
         Entry {
@@ -197,7 +182,7 @@ impl Registry {
             events,
             pending_events: VecDeque::new(),
             dirty,
-            gate,
+            wakes,
             _guards: guards,
             sequence: None,
             params: initial,
@@ -218,7 +203,7 @@ impl Registry {
     where
         F: CpuFilter + cherenkov::RenderTransfer + Send + Sync,
     {
-        let entry = self.entry(filter);
+        let entry = Self::entry(filter);
         self.entries.insert(id.raw(), entry);
     }
 
@@ -243,18 +228,18 @@ impl Registry {
     ) where
         F: CpuFilter + cherenkov::RenderTransfer + Send + Sync,
     {
-        let chain = Some(self.entry(filter));
+        let chain = Some(Self::entry(filter));
         self.insert_group(surface, id, Group { scale, chain });
     }
 
-    /// Registers `group`, closing the chain of a group it replaces.
+    /// Registers `group`, clearing the wakes of a chain it replaces.
     fn insert_group(&mut self, surface: SurfaceId, id: BackdropId, group: Group) {
         if let Some(old) = self
             .backdrops
             .insert((surface.raw(), id.raw()), group)
             .and_then(|old| old.chain)
         {
-            old.gate.close();
+            old.wakes.clear();
         }
     }
 
@@ -265,13 +250,13 @@ impl Registry {
             .remove(&(surface.raw(), id.raw()))
             .and_then(|group| group.chain)
         {
-            entry.gate.close();
+            entry.wakes.clear();
         }
     }
 
     pub fn remove(&mut self, id: FilterId) {
         if let Some(entry) = self.entries.remove(&id.raw()) {
-            entry.gate.close();
+            entry.wakes.clear();
         }
     }
 
@@ -356,25 +341,27 @@ impl Registry {
             .is_some_and(|group| group.chain.as_ref().is_some_and(Entry::wants_redraw))
     }
 
-    /// Sets each filter's and backdrop chain's wake gate to the surfaces
-    /// whose last frames ran it; an entry no frame ran wakes nothing.
+    /// Sets each filter's and backdrop chain's wakes to the surfaces whose
+    /// last frames ran it; an entry no frame ran wakes nothing.
     pub(super) fn set_surfaces(
         &self,
-        uses: &FxHashMap<u64, Vec<SurfaceVisibility>>,
-        groups: &FxHashMap<(u64, u64), SurfaceVisibility>,
+        uses: &FxHashMap<u64, Vec<CompletionWaker>>,
+        groups: &FxHashMap<(u64, u64), CompletionWaker>,
     ) {
         for (id, entry) in &self.entries {
-            entry
-                .gate
-                .set(uses.get(id).map(Vec::as_slice).unwrap_or_default());
+            entry.wakes.set(
+                uses.get(id).map(Vec::as_slice).unwrap_or_default(),
+                &entry.dirty,
+            );
         }
         for (key, group) in &self.backdrops {
             if let Some(entry) = &group.chain {
-                entry.gate.set(
+                entry.wakes.set(
                     groups
                         .get(key)
                         .map(std::slice::from_ref)
                         .unwrap_or_default(),
+                    &entry.dirty,
                 );
             }
         }
@@ -422,7 +409,7 @@ impl Drop for Registry {
                 .values()
                 .filter_map(|group| group.chain.as_ref()),
         ) {
-            entry.gate.close();
+            entry.wakes.clear();
         }
     }
 }

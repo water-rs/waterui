@@ -27,6 +27,7 @@ use waterui::window::{Monitor, MonitorSelector, Window, WindowState};
 use waterui_core::Environment;
 #[cfg(hydrolysis_wayland_platform)]
 use waterui_core::Str;
+use waterui_graphics::gpu::RedrawHandle;
 use waterui_text::FontCollection;
 
 use winit::application::ApplicationHandler;
@@ -47,10 +48,16 @@ use crate::runner::{
     RenderDiagnosticsConfig, RuntimeWindow, advance_runtime, handle_input_events_with,
     pump_window_semantics, render_window, runtime_window_origin,
 };
+use crate::text::SessionTextEngine;
 
 pub(super) enum RunnerEvent {
     PollLocalTasks,
     MountPendingWindows,
+    /// A window's wake, posted by the [`RedrawHandle`] its [`WinitWindow`]
+    /// hands GPU content and the engine: the window is redrawn here, on the
+    /// event loop, because the handle runs on — and its last clone can be
+    /// dropped on — threads that must never touch the winit window.
+    RedrawWindow(WindowId),
     AccessKit(AccessKitEvent),
     /// The X11 state watch saw `_NET_WM_STATE`/`WM_STATE` change or the
     /// window (un)map — the minimize/restore transition winit drops (see
@@ -78,7 +85,7 @@ pub(super) enum RunnerEvent {
 }
 
 /// What a termination signal does, given how many arrived before it.
-#[cfg(any(unix, windows))]
+#[cfg(windows)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TerminationAction {
     /// Ask the event loop to tear the runtime down, the way the last window
@@ -94,13 +101,13 @@ enum TerminationAction {
 /// this a wedged process becomes unkillable from the terminal that started it:
 /// the graceful request is only reachable through the very event loop the hang
 /// lives in.
-#[cfg(any(unix, windows))]
+#[cfg(windows)]
 #[derive(Debug, Default)]
 struct TerminationRequests {
     requested: std::sync::atomic::AtomicBool,
 }
 
-#[cfg(any(unix, windows))]
+#[cfg(windows)]
 impl TerminationRequests {
     fn record(&self) -> TerminationAction {
         if self
@@ -117,19 +124,36 @@ impl TerminationRequests {
 /// Shell convention for a process killed by SIGINT (128 + 2). `ctrlc` does not
 /// report which signal arrived, and Ctrl-C is what a user is pressing when the
 /// forced path is reached.
-#[cfg(any(unix, windows))]
+#[cfg(windows)]
 const FORCED_TERMINATION_EXIT_CODE: i32 = 130;
 
-/// Turns termination signals into [`RunnerEvent::Terminate`].
+/// Turns the termination signals into [`RunnerEvent::Terminate`].
 ///
-/// The `termination` feature of `ctrlc` covers SIGINT, SIGTERM and SIGHUP on
-/// Unix and Ctrl+C and Ctrl+Break on Windows, so every way a desktop shell or
-/// session manager asks a windowed app to stop reaches the same teardown the
-/// last window closing does. Closing the Windows console goes to
+/// [`TerminationSignals`] owns the contract: the first delivery of a watched
+/// signal is this send — the graceful request the event loop serves — and a
+/// repeated signal ends the process by the signal's own default action. The
+/// returned guard keeps the watcher alive for the duration of the run.
+#[cfg(unix)]
+fn install_termination_handler(
+    event_proxy: &winit::event_loop::EventLoopProxy<RunnerEvent>,
+) -> super::termination::TerminationSignals {
+    let signal_proxy = event_proxy.clone();
+    super::termination::TerminationSignals::install(move |_signal| {
+        // The watcher reads deliveries on its own thread rather than inside a
+        // signal handler, so waking the loop from here is an ordinary send.
+        let _ = signal_proxy.send_event(RunnerEvent::Terminate);
+    })
+}
+
+/// Turns the console control events into [`RunnerEvent::Terminate`].
+///
+/// The `termination` feature of `ctrlc` covers Ctrl+C and Ctrl+Break, so every
+/// way a desktop shell or session manager asks a windowed app to stop reaches
+/// the same teardown the last window closing does. Closing the console goes to
 /// `console_close_handler` instead, which holds the event open until
 /// `on_terminate` finished; a logoff or shutdown reaches the application
 /// windows as `WM_ENDSESSION` (see `session_end_proc`).
-#[cfg(any(unix, windows))]
+#[cfg(windows)]
 fn install_termination_handler(event_proxy: &winit::event_loop::EventLoopProxy<RunnerEvent>) {
     let requests = TerminationRequests::default();
     let signal_proxy = event_proxy.clone();
@@ -147,7 +171,6 @@ fn install_termination_handler(event_proxy: &winit::event_loop::EventLoopProxy<R
         }
     })
     .expect("hydrolysis runner: failed to install the termination handler");
-    #[cfg(target_os = "windows")]
     install_console_close_handler(event_proxy);
 }
 
@@ -639,7 +662,9 @@ pub fn run(
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
     super::install_native_component_hooks(&mut env);
-    #[cfg(any(unix, windows))]
+    #[cfg(unix)]
+    let _termination_signals = install_termination_handler(&event_proxy);
+    #[cfg(windows)]
     install_termination_handler(&event_proxy);
     env.insert(HydrolysisTextContextMenuMode::Overlay);
     env.insert(waterui::window::WindowManager::new({
@@ -676,9 +701,9 @@ pub fn run(
     // seeded from this collection, and a self-drawn component that typesets
     // text itself reads it out of the environment instead of enumerating the
     // system's fonts for itself.
-    let fonts = FontCollection::new(super::native_resource_fonts(
+    let fonts = crate::text::fonts::native_collection(
         waterui_core::ResourceContext::from_environment(&env),
-    ));
+    );
     fonts.clone().install(&mut env);
     let window_icon =
         load_staged_window_icon(waterui_core::ResourceContext::from_environment(&env));
@@ -1017,6 +1042,39 @@ impl WinitRunner {
         }
         runtime_window_origin(runtime)
     }
+
+    /// Realizes `native_window` as the platform window of `window` on the
+    /// runner's shared GPU context, creating that context with the first
+    /// window.
+    ///
+    /// The window's wake — what GPU content and the engine call for another
+    /// frame — posts [`RunnerEvent::RedrawWindow`] to this loop. It owns no
+    /// part of the winit window, so it may run and drop on any thread.
+    fn create_platform_window(
+        &mut self,
+        native_window: Arc<NativeWindow>,
+        window: &Window,
+    ) -> WinitWindow {
+        let wake = {
+            let event_proxy = self.event_proxy.clone();
+            let window_id = native_window.id();
+            RedrawHandle::new(move || {
+                // A loop that already exited has no window left to redraw.
+                let _ = event_proxy.send_event(RunnerEvent::RedrawWindow(window_id));
+            })
+        };
+        let (platform, gpu_context) = pollster::block_on(WinitWindow::new_with_shared_gpu(
+            native_window,
+            wake,
+            self.gpu_context.as_ref(),
+            super::window_requires_transparency(window, &self.env),
+        ));
+        if self.gpu_context.is_none() {
+            self.gpu_context = Some(gpu_context);
+        }
+        platform
+    }
+
     fn create_runtime_window(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -1079,18 +1137,10 @@ impl WinitRunner {
                 );
             }
         }
-        let (mut platform, gpu_context) = pollster::block_on(WinitWindow::new_with_shared_gpu(
-            native_window,
-            self.gpu_context.as_ref(),
-            super::window_requires_transparency(&window, &self.env),
-        ));
-        if self.gpu_context.is_none() {
-            self.gpu_context = Some(gpu_context);
-        }
+        let mut platform = self.create_platform_window(native_window, &window);
         platform.apply_properties(&window);
-        let mut renderer =
-            HydrolysisRenderer::new(Rc::clone(&self.theme), FontFamilyResolution::Lenient);
-        super::seed_core(&mut renderer, &self.fonts);
+        let text = SessionTextEngine::from_collection(&self.fonts, FontFamilyResolution::Lenient);
+        let renderer = HydrolysisRenderer::with_engine(Rc::clone(&self.theme), text);
         let mut runtime =
             RuntimeWindow::new(window, platform, renderer, self.render_diagnostics_config);
         runtime
@@ -1452,6 +1502,14 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
             RunnerEvent::MountPendingWindows => {
                 self.mount_pending_windows(event_loop);
             }
+            RunnerEvent::RedrawWindow(window_id) => {
+                // The window may have closed while the wake was in flight.
+                // The wake asks winit for a frame only: GPU content's
+                // cadence does not hold the window's ProMotion demand.
+                if let Some(runtime) = self.windows.get(&window_id) {
+                    runtime.platform.native_window().request_redraw();
+                }
+            }
 
             RunnerEvent::AccessKit(event) => {
                 let Some(runtime) = self.windows.get_mut(&event.window_id) else {
@@ -1550,13 +1608,13 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(any(unix, windows))]
+    #[cfg(windows)]
     use super::{TerminationAction, TerminationRequests};
     use super::{ends_event_loop, native_window_attributes};
     use waterui::window::{Window, WindowState};
     use waterui_core::{Binding, binding};
 
-    #[cfg(any(unix, windows))]
+    #[cfg(windows)]
     #[test]
     fn first_termination_signal_asks_the_loop_and_later_ones_do_not() {
         let requests = TerminationRequests::default();

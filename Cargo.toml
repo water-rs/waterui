@@ -220,7 +220,7 @@ waterui-core = { version = "0.5.1", path = "core" }
 suiteki = { version = "0.1", features = ["nami"] }
 waterui-url = { version = "0.5.1", path = "utils/url" }
 waterui-watcher-set = { version = "0.5.1", path = "utils/watcher-set" }
-waterui-text = { version = "0.5.1", path = "components/foundation/text" }
+waterui-text = { version = "0.5.1", path = "components/foundation/text", default-features = false }
 waterui-media = { version = "0.5.1", path = "components/multimedia/media" }
 waterui-image = "0.5.0"
 waterui-video = { version = "0.5.1", path = "components/multimedia/video" }
@@ -290,13 +290,14 @@ waterui-mcp = { version = "0.5.1", path = "components/devtools/mcp/server" }
 # backend's nami-migration head — the published releases still require the
 # pre-rename nami line (`^0.11.2` and peers) — so `dev`, `nightly` and
 # local-checkout scaffolds declare the commit directly while `stable`
-# withholds the packages under `experimental-packages`. These heads are still
-# on nami 0.11 and do not build beside the `nami = "0.12"` requirement above
-# until each backend moves (water-rs/gtk-backend#144,
-# water-rs/waterui-winui#84, water-rs/dew#25). Drop the `git`/`rev` half once
-# each backend releases a migrated version.
-waterui-gtk = { version = "0.2.1", git = "https://github.com/water-rs/gtk-backend", rev = "9fe7a1f47f64aa1fc26a50c59f6670010559fa71" }
-waterui-winui = { version = "0.1.0", git = "https://github.com/water-rs/waterui-winui", rev = "830932ce5f0a3d316d225da207c88ae9e66ff946" }
+# withholds the packages under `experimental-packages`. The GTK and WinUI
+# heads are on nami 0.12 (water-rs/gtk-backend#144,
+# water-rs/waterui-winui#84); the Dew head is still on nami 0.11 and does not
+# build beside the `nami = "0.12"` requirement above until it moves
+# (water-rs/dew#25).
+# Drop the `git`/`rev` half once each backend releases a migrated version.
+waterui-gtk = { version = "0.2.1", git = "https://github.com/water-rs/gtk-backend", rev = "4021fd0e9f6acdaa07665a8e465a783a254e714d" }
+waterui-winui = { version = "0.1.0", git = "https://github.com/water-rs/waterui-winui", rev = "73385dd502702f019bebdf691223c40c71570182" }
 waterui-testing = { path = "testing" }
 waterui-internal = { version = "0.5.1", path = "src", default-features = false }
 waterui-dylib = { version = "0.5.1", path = "utils/dylib", default-features = false }
@@ -675,8 +676,8 @@ waterui-canvas = { git = "https://github.com/water-rs/canvas", rev = "639957374e
 waterui-chart = { git = "https://github.com/water-rs/chart", rev = "1062c5058f488b7edd302ee065ae3a2776847227" }
 waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "1a7c3e8afe31f8e13039de2aa116c3e37bcdccb0" }
 waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "f43d46521dee1af7660d773e9dbfdf8547ad3480" }
-waterui-particle = { git = "https://github.com/water-rs/particle", rev = "4364f1ece5373bf322ea99cde595d7b4ec6958dc" }
-waterui-image = { git = "https://github.com/water-rs/image", rev = "8b1aa2ce3f03d81ca02164f5563f2cefc34fb566" }
+waterui-particle = { git = "https://github.com/water-rs/particle", rev = "e0ea3655ad77c09ab1b149a7b8464748105a03d3" }
+waterui-image = { git = "https://github.com/water-rs/image", rev = "41bd909642a78c22aed55ba7c4ae362a439db4c6" }
 waterui-svg = { git = "https://github.com/water-rs/svg", rev = "16f99e021f735d0b1b31c95552b074e953d56418" }
 waterkit-build = { git = "https://github.com/water-rs/waterkit", rev = "24ff906aaaaeccfee9b014760372140be0113266" }
 waterkit-camera = { git = "https://github.com/water-rs/waterkit", rev = "24ff906aaaaeccfee9b014760372140be0113266" }

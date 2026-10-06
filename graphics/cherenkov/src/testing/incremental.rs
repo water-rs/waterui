@@ -476,7 +476,7 @@ fn updates(list: &crate::DisplayList, frame: u32) -> Vec<SlotUpdate> {
                     value.mul_add(3., 1.),
                     WorkingColor::new([0.1, 0.2, 0.3, 0.5]),
                 )),
-                Command::Picture { .. } | Command::BeginTransform { .. } => {
+                Command::Picture { .. } | Command::Text { .. } | Command::BeginTransform { .. } => {
                     Operand::Transform(Affine::translate((value * 5., value * 3.)))
                 }
                 Command::BeginGroup { .. } => {
@@ -681,8 +681,7 @@ async fn assert_patch_counts<R: Renderer>(
 /// A surface wake-up with no host behind it: the harness drives the
 /// renderer directly and renders on its own schedule.
 fn unhosted_waker() -> crate::CompletionWaker {
-    let engine = crate::engine::SharedWaker::new(crate::engine::Waker::new());
-    crate::CompletionWaker::new(&crate::engine::SharedWaker::new(
-        crate::engine::SurfaceWaker::new(engine),
-    ))
+    crate::CompletionWaker::new(&std::sync::Arc::new(crate::engine::SurfaceWaker::new(
+        || {},
+    )))
 }

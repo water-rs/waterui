@@ -8,9 +8,11 @@
 //! Colour filters that are linear maps on premultiplied RGBA say so through
 //! [`ColorFilter::LINEAR`](crate::ColorFilter::LINEAR); spatial filters report
 //! how far they read through
-//! [`SpatialFilter::footprint`](crate::SpatialFilter::footprint). Every
-//! filter operates in the linear working space and reads luma coefficients
-//! from the working-space constants.
+//! [`SpatialFilter::footprint`](crate::SpatialFilter::footprint). A filter
+//! operates in the linear working space and reads luma coefficients from the
+//! working-space constants, unless it declares sRGB as its operating space
+//! ([`LumaCurve`], whose luma coefficients are sRGB's own) or selects it
+//! ([`GaussianBlur::in_space`]).
 //!
 //! # Declaring one
 //!

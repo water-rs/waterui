@@ -268,6 +268,10 @@ fn walk<C: Compiler>(
                 append(picture.display_list(), ambient * *transform, compiler, ops)?;
                 None
             }
+            Command::Text { layout, .. } => panic!(
+                "text layout {} reached Cherenkov, which draws text as glyph runs and registers no text layouts: the recorder is bound to another target's text engine",
+                layout.raw()
+            ),
             Command::End => unreachable!("validated scopes consume their end"),
             command => {
                 compiler.draw_at(command, ambient, ops, root.then_some(i))?;
