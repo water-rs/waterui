@@ -13567,6 +13567,7 @@ dependencies = [
  "waterui-image",
  "waterui-layout",
  "waterui-macros",
+ "waterui-media",
  "waterui-testing",
  "waterui-text",
  "waterui-url",
