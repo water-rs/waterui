@@ -104,7 +104,7 @@ pub(super) fn collect_item_watchers(
                 })));
                 collect_item_watchers(&submenu.items.snapshot(), resync, watchers);
             }
-            ResolvedMenuItem::Divider | ResolvedMenuItem::Quit => {}
+            ResolvedMenuItem::Divider | ResolvedMenuItem::Quit | ResolvedMenuItem::CloseWindow => {}
         }
     }
 }
@@ -149,8 +149,8 @@ fn kit_command(command: &ResolvedCommand) -> KitCommand {
 
 /// A `ResolvedMenuItem` list as a kit menu tree — commands, separators,
 /// nested menus — the input both platform menu builders take. A declared
-/// Quit is the standard Quit item on macOS and is omitted on iOS, which has
-/// no application quit.
+/// Quit or Close Window is the standard item on macOS and is omitted on iOS,
+/// which has no application quit and whose windows the system owns.
 #[cfg(feature = "context_menu")]
 pub(super) fn tree_nodes(items: &[ResolvedMenuItem], env: &Environment) -> Vec<MenuTreeNode> {
     let mut nodes = Vec::with_capacity(items.len());
@@ -170,6 +170,10 @@ pub(super) fn tree_nodes(items: &[ResolvedMenuItem], env: &Environment) -> Vec<M
             ResolvedMenuItem::Quit => {
                 #[cfg(target_os = "macos")]
                 nodes.push(crate::menus::standard_quit_node());
+            }
+            ResolvedMenuItem::CloseWindow => {
+                #[cfg(target_os = "macos")]
+                nodes.push(crate::menus::standard_close_window_node());
             }
             ResolvedMenuItem::Menu(submenu) => nodes.push(MenuTreeNode::Submenu(
                 KitCommand {
@@ -237,6 +241,9 @@ pub(super) fn append_items(
                 menu.add_item(command_item(mtm, command, env));
             }
             ResolvedMenuItem::Quit => menu.add_item(crate::menus::standard_quit_item(mtm)),
+            ResolvedMenuItem::CloseWindow => {
+                menu.add_item(crate::menus::standard_close_window_item(mtm));
+            }
             ResolvedMenuItem::Menu(submenu) => {
                 let title = item_title(&submenu.label.content.snapshot());
                 let nested = platform::Menu::new(mtm, &title);
@@ -301,8 +308,11 @@ fn menu_elements(
     items
         .iter()
         .filter_map(|item| match item {
-            // iOS has no application quit, so a declared Quit is omitted.
-            ResolvedMenuItem::Divider | ResolvedMenuItem::Quit => None,
+            // iOS has no application quit and the system owns every
+            // scene's window, so a declared Quit or Close Window is omitted.
+            ResolvedMenuItem::Divider | ResolvedMenuItem::Quit | ResolvedMenuItem::CloseWindow => {
+                None
+            }
             ResolvedMenuItem::Command(command) => {
                 let kit = kit_command(command);
                 let action = command.action.clone();

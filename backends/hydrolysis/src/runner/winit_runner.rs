@@ -73,6 +73,11 @@ pub(super) enum RunnerEvent {
     /// Windows console control events.
     #[cfg(any(unix, windows))]
     Terminate,
+    /// Sent by the [`CloseKeyWindow`](crate::renderer::CloseKeyWindow) the
+    /// runner installs: a declared `MenuItem::CloseWindow` was chosen, or
+    /// its chord pressed, and the key application window closes.
+    #[cfg(hydrolysis_closable_windows)]
+    CloseKeyWindow,
     /// The termination machine finished its work — the runner's
     /// [`TerminationHost`] sent it — so teardown happens on the event loop,
     /// where runtime cleanup is safe.
@@ -701,8 +706,19 @@ pub fn run(
             session_end: Rc::clone(&session_end),
         },
     );
-    // The app's menu bar resolves after the machine installed `Quit`, so a
-    // declared `MenuItem::Quit` and `|quit: Quit|` command actions find it.
+    // A declared `MenuItem::CloseWindow` closes the key application window
+    // through the runner, which owns the windows: the primitive only posts
+    // the request to the event loop.
+    #[cfg(hydrolysis_closable_windows)]
+    env.insert(crate::renderer::CloseKeyWindow::new({
+        let event_proxy = event_proxy.clone();
+        move || {
+            let _ = event_proxy.send_event(RunnerEvent::CloseKeyWindow);
+        }
+    }));
+    // The app's menu bar resolves after the machine installed `Quit` and
+    // the close primitive went in, so a declared `MenuItem::Quit` or
+    // `MenuItem::CloseWindow` and `|quit: Quit|` command actions find them.
     // Its command chords arm on the shared registry, and the native
     // menu-bar surface installs where the platform has one — see `menu_bar`
     // for the per-platform contract (the two chord paths see disjoint keys,
@@ -743,6 +759,8 @@ pub fn run(
         render_diagnostics_config,
         outside_pointer_presses: 0,
         focused_window: None,
+        #[cfg(hydrolysis_closable_windows)]
+        key_window: None,
         last_pointer_window: None,
         termination,
         #[cfg(target_os = "windows")]
@@ -809,6 +827,12 @@ struct WinitRunner {
     /// The window winit last reported `Focused(true)` for — the `Focused`
     /// monitor selector's answer (water-rs/waterui#1302).
     focused_window: Option<WindowId>,
+    /// The application window that last took keyboard focus — the window a
+    /// declared `MenuItem::CloseWindow` closes. A popup window never
+    /// becomes it, so Close chosen from a context menu closes the window
+    /// the menu belongs to.
+    #[cfg(hydrolysis_closable_windows)]
+    key_window: Option<WindowId>,
     /// The window a pointer event last arrived on. Wayland exposes no global
     /// pointer position, so for `MonitorSelector::Pointer` this window's
     /// monitor stands in for the pointer's home.
@@ -1292,9 +1316,107 @@ impl WinitRunner {
             self.popup_window_ids.remove(&id);
             self.accesskit_adapters.remove(&id);
             self.last_accessibility_updates.remove(&id);
+            #[cfg(hydrolysis_closable_windows)]
+            self.forget_key_window(id);
         }
 
         self.exit_if_last_window_closed();
+    }
+
+    /// Forgets `id` as the key window once it is gone: a native window id
+    /// may be reused by a later window, which must take focus to become key.
+    #[cfg(hydrolysis_closable_windows)]
+    fn forget_key_window(&mut self, id: WindowId) {
+        if self.key_window == Some(id) {
+            self.key_window = None;
+        }
+    }
+
+    /// Closes the key application window through its ordinary close path —
+    /// the `Closed` state a close request sets — and reaps it, so closing
+    /// the last window follows the `LastWindowPolicy`. A window declared
+    /// without a close button is not the user's to close and stays.
+    #[cfg(hydrolysis_closable_windows)]
+    fn close_key_window(&mut self) {
+        let Some(runtime) = self.key_window.and_then(|id| self.windows.get(&id)) else {
+            tracing::debug!("Close Window requested with no key window");
+            return;
+        };
+        if !runtime.window.closable {
+            return;
+        }
+        runtime.window.state.set(WindowState::Closed);
+        self.remove_closed_windows();
+    }
+
+    /// An accesskit adapter's request for one of the runner's windows: the
+    /// initial tree, or an action an assistive technology performs.
+    fn accesskit_event(&mut self, event: AccessKitEvent) {
+        let Some(runtime) = self.windows.get_mut(&event.window_id) else {
+            return;
+        };
+        let Some(adapter) = self.accesskit_adapters.get_mut(&event.window_id) else {
+            return;
+        };
+        match event.window_event {
+            AccessKitWindowEvent::InitialTreeRequested => {
+                tracing::trace!(
+                    target: "waterui::hydrolysis::a11y",
+                    window_id = ?event.window_id,
+                    "accesskit initial tree requested"
+                );
+                if let Some(update) = runtime.renderer.take_accessibility_tree_update() {
+                    self.last_accessibility_updates
+                        .insert(event.window_id, update.clone());
+                    tracing::trace!(
+                        target: "waterui::hydrolysis::a11y",
+                        window_id = ?event.window_id,
+                        "publishing accessibility tree update for initial request"
+                    );
+                    adapter.update_if_active(|| update);
+                } else if let Some(update) = self
+                    .last_accessibility_updates
+                    .get(&event.window_id)
+                    .cloned()
+                {
+                    tracing::trace!(
+                        target: "waterui::hydrolysis::a11y",
+                        window_id = ?event.window_id,
+                        "replaying cached accessibility tree update for initial request"
+                    );
+                    adapter.update_if_active(|| update);
+                } else {
+                    tracing::trace!(
+                        target: "waterui::hydrolysis::a11y",
+                        window_id = ?event.window_id,
+                        "missing accessibility tree update for initial request, scheduling rebuild"
+                    );
+                    runtime.request_refresh();
+                    runtime.request_redraw();
+                    runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
+                }
+            }
+            AccessKitWindowEvent::ActionRequested(request) => {
+                tracing::trace!(
+                    target: "waterui::hydrolysis::a11y",
+                    window_id = ?event.window_id,
+                    action = ?request.action,
+                    target = ?request.target_node,
+                    "accesskit action requested"
+                );
+                let action_env = self.env.extending(Self::current_window_origin(runtime));
+                if runtime
+                    .renderer
+                    .handle_accessibility_action(request, &action_env)
+                {
+                    runtime.request_refresh();
+                    runtime.request_redraw();
+                    runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
+                }
+                self.flush_cross_window_rebuild_requests();
+            }
+            AccessKitWindowEvent::AccessibilityDeactivated => {}
+        }
     }
 
     fn flush_cross_window_rebuild_requests(&mut self) {
@@ -1353,6 +1475,10 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
         match &event {
             WindowEvent::Focused(focused) => {
                 self.focused_window = focused.then_some(window_id);
+                #[cfg(hydrolysis_closable_windows)]
+                if *focused && !self.popup_window_ids.contains(&window_id) {
+                    self.key_window = Some(window_id);
+                }
             }
             WindowEvent::CursorMoved { .. }
             | WindowEvent::CursorEntered { .. }
@@ -1392,6 +1518,8 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
             self.popup_window_ids.remove(&window_id);
             self.accesskit_adapters.remove(&window_id);
             self.last_accessibility_updates.remove(&window_id);
+            #[cfg(hydrolysis_closable_windows)]
+            self.forget_key_window(window_id);
             self.exit_if_last_window_closed();
             return;
         }
@@ -1493,73 +1621,7 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
                 }
             }
 
-            RunnerEvent::AccessKit(event) => {
-                let Some(runtime) = self.windows.get_mut(&event.window_id) else {
-                    return;
-                };
-                let Some(adapter) = self.accesskit_adapters.get_mut(&event.window_id) else {
-                    return;
-                };
-                match event.window_event {
-                    AccessKitWindowEvent::InitialTreeRequested => {
-                        tracing::trace!(
-                            target: "waterui::hydrolysis::a11y",
-                            window_id = ?event.window_id,
-                            "accesskit initial tree requested"
-                        );
-                        if let Some(update) = runtime.renderer.take_accessibility_tree_update() {
-                            self.last_accessibility_updates
-                                .insert(event.window_id, update.clone());
-                            tracing::trace!(
-                                target: "waterui::hydrolysis::a11y",
-                                window_id = ?event.window_id,
-                                "publishing accessibility tree update for initial request"
-                            );
-                            adapter.update_if_active(|| update);
-                        } else if let Some(update) = self
-                            .last_accessibility_updates
-                            .get(&event.window_id)
-                            .cloned()
-                        {
-                            tracing::trace!(
-                                target: "waterui::hydrolysis::a11y",
-                                window_id = ?event.window_id,
-                                "replaying cached accessibility tree update for initial request"
-                            );
-                            adapter.update_if_active(|| update);
-                        } else {
-                            tracing::trace!(
-                                target: "waterui::hydrolysis::a11y",
-                                window_id = ?event.window_id,
-                                "missing accessibility tree update for initial request, scheduling rebuild"
-                            );
-                            runtime.request_refresh();
-                            runtime.request_redraw();
-                            runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
-                        }
-                    }
-                    AccessKitWindowEvent::ActionRequested(request) => {
-                        tracing::trace!(
-                            target: "waterui::hydrolysis::a11y",
-                            window_id = ?event.window_id,
-                            action = ?request.action,
-                            target = ?request.target_node,
-                            "accesskit action requested"
-                        );
-                        let action_env = self.env.extending(Self::current_window_origin(runtime));
-                        if runtime
-                            .renderer
-                            .handle_accessibility_action(request, &action_env)
-                        {
-                            runtime.request_refresh();
-                            runtime.request_redraw();
-                            runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
-                        }
-                        self.flush_cross_window_rebuild_requests();
-                    }
-                    AccessKitWindowEvent::AccessibilityDeactivated => {}
-                }
-            }
+            RunnerEvent::AccessKit(event) => self.accesskit_event(event),
             #[cfg(any(unix, windows))]
             RunnerEvent::Terminate => {
                 self.termination.request(TerminationKind::Required);
@@ -1572,6 +1634,8 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
             RunnerEvent::TerminationFinished => {
                 self.exit_after_runtime_cleanup(event_loop);
             }
+            #[cfg(hydrolysis_closable_windows)]
+            RunnerEvent::CloseKeyWindow => self.close_key_window(),
             #[cfg(hydrolysis_wayland_platform)]
             RunnerEvent::X11VisibilitySignal => {
                 // `_NET_WM_STATE`/`WM_STATE` changed or a window

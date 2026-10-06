@@ -523,6 +523,93 @@ fn a_declared_quit_arms_no_chord_where_nothing_can_quit() {
     );
 }
 
+/// A headless runtime whose app menu bar declares only
+/// `MenuItem::CloseWindow`.
+fn runtime_with_declared_close_window(env: Environment) -> HeadlessRuntime {
+    let menu_bar = nami::Computed::constant(vec![Menu::new("Window", MenuItem::CloseWindow)]);
+    let _menu_bar_items = crate::runner::menu_bar::register_menu_bar(&menu_bar, &env);
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        env,
+        AnyViewBuilder::<AnyView>::new(|| AnyView::new(button("plain").action(|| {}))),
+        WINDOW.0,
+        WINDOW.1,
+        MinimalTestTheme::default(),
+    );
+    let _ = pump_until_settled(&mut runtime);
+    runtime
+}
+
+/// Where the runner installed its window-close primitive, a declared
+/// `MenuItem::CloseWindow` arms the platform close chord, and the chord asks
+/// the runner to close the key window — and its popup row is the "Close"
+/// command carrying that chord.
+#[test]
+fn a_declared_close_window_chord_closes_the_key_window() {
+    let mut env = test_environment();
+    let closes = Rc::new(Cell::new(0_u32));
+    env.insert(crate::renderer::CloseKeyWindow::new({
+        let closes = Rc::clone(&closes);
+        move || closes.set(closes.get() + 1)
+    }));
+    let mut runtime = runtime_with_declared_close_window(env.clone());
+
+    key_chord(&mut runtime, "w", command());
+    assert_eq!(closes.get(), 1, "the close chord reaches the runner");
+
+    let nodes = crate::renderer::popup_menu_nodes(
+        &[waterui_controls::menu::ResolvedMenuItem::CloseWindow],
+        &env,
+    );
+    let [
+        crate::renderer::PopupMenuNode::Command {
+            plain_label,
+            shortcut: Some(shortcut),
+            ..
+        },
+    ] = nodes.as_slice()
+    else {
+        panic!(
+            "a declared Close Window is one command row carrying its chord, got {} nodes",
+            nodes.len()
+        );
+    };
+    assert_eq!(plain_label, "Close");
+    assert_eq!(*shortcut, Shortcut::new("w").command());
+}
+
+/// A host whose windows the application cannot close — the headless
+/// runtime installs no close primitive, like Android, iOS and the web —
+/// arms nothing for a declared `MenuItem::CloseWindow`: its chord passes
+/// through and its popup row is omitted.
+#[test]
+fn a_declared_close_window_is_omitted_where_windows_cannot_close() {
+    let env = test_environment();
+    let registry = env
+        .get::<crate::renderer::MenuShortcutRegistry>()
+        .cloned()
+        .expect("the test environment seeds a menu shortcut registry");
+    let mut runtime = runtime_with_declared_close_window(env.clone());
+
+    key_chord(&mut runtime, "w", command());
+    assert!(
+        !registry.dispatch(
+            crate::renderer::WindowId::Orphan,
+            &KeyCode::Character("w".to_owned()),
+            command(),
+            &env,
+        ),
+        "no menu claims the close chord where no window can be closed"
+    );
+    assert!(
+        crate::renderer::popup_menu_nodes(
+            &[waterui_controls::menu::ResolvedMenuItem::CloseWindow],
+            &env,
+        )
+        .is_empty(),
+        "no popup row stands for Close Window where no window can be closed"
+    );
+}
+
 /// With the app bar and a mounted `Menu` claiming the same chord, the
 /// mounted menu — the newer registration — wins while it is up, and the
 /// app bar answers again once it unmounts (watergram DOGFOOD r43-1;

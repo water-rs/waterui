@@ -285,6 +285,10 @@ pub enum MenuAction {
     Delete,
     /// Selects everything.
     SelectAll,
+    /// Closes the key window as its close button would: `performClose:`,
+    /// which asks the window's delegate first and does nothing for a window
+    /// without a close button.
+    CloseWindow,
     /// Minimizes the key window into the Dock.
     Minimize,
     /// Toggles the key window between its standard and its user size.
@@ -294,7 +298,7 @@ pub enum MenuAction {
 }
 
 impl MenuAction {
-    fn selector(self) -> Sel {
+    pub(super) fn selector(self) -> Sel {
         match self {
             Self::About => sel!(orderFrontStandardAboutPanel:),
             Self::Hide => sel!(hide:),
@@ -308,6 +312,7 @@ impl MenuAction {
             Self::Paste => sel!(paste:),
             Self::Delete => sel!(delete:),
             Self::SelectAll => sel!(selectAll:),
+            Self::CloseWindow => sel!(performClose:),
             Self::Minimize => sel!(miniaturize:),
             Self::Zoom => sel!(zoom:),
             Self::BringAllToFront => sel!(arrangeInFront:),

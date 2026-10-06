@@ -16,7 +16,9 @@ pub fn call_action_discarding_result<T: 'static>(action: &SharedAction<T>, env: 
 
 /// Resolved menu items as popup-menu nodes. A declared `MenuItem::Quit`
 /// becomes the row of the quit command [`quit_command`] builds, and is
-/// omitted where `env` carries no application quit.
+/// omitted where `env` carries no application quit; a declared
+/// `MenuItem::CloseWindow` becomes the row [`close_window_command`] builds,
+/// and is omitted where the host's windows cannot be closed.
 pub fn popup_menu_nodes(items: &[ResolvedMenuItem], env: &Environment) -> Vec<PopupMenuNode> {
     items
         .iter()
@@ -29,6 +31,7 @@ fn popup_menu_node(item: ResolvedMenuItem, env: &Environment) -> Option<PopupMen
     match item {
         ResolvedMenuItem::Command(command) => Some(command_node(command)),
         ResolvedMenuItem::Quit => quit_command(env).map(command_node),
+        ResolvedMenuItem::CloseWindow => close_window_command(env).map(command_node),
         ResolvedMenuItem::Divider => Some(PopupMenuNode::Divider),
         ResolvedMenuItem::Menu(menu) => {
             let styled = menu.label.content.snapshot() + StyledStr::plain(" ›");

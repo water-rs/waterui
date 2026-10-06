@@ -181,6 +181,56 @@ pub fn quit_command(env: &Environment) -> Option<ResolvedCommand> {
     )
 }
 
+/// The window-close primitive a declared `MenuItem::CloseWindow` stands
+/// for: it closes the application window that has keyboard focus through
+/// that window's ordinary close path, so closing the last one still follows
+/// the application's `LastWindowPolicy`.
+///
+/// Only a runner whose windows the application can close installs one — the
+/// winit desktop runner. Hosts whose windows the system or the host owns
+/// (Android, the web, the headless and semantic runtimes) install none, and
+/// a declared Close Window is omitted there.
+#[derive(Clone)]
+pub struct CloseKeyWindow(Rc<dyn Fn()>);
+
+impl std::fmt::Debug for CloseKeyWindow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CloseKeyWindow").finish_non_exhaustive()
+    }
+}
+
+impl CloseKeyWindow {
+    /// A primitive that runs `close` to close the focused application
+    /// window. Only runners with closable windows build one.
+    #[cfg(any(hydrolysis_closable_windows, test))]
+    pub fn new(close: impl Fn() + 'static) -> Self {
+        Self(Rc::new(close))
+    }
+
+    /// Closes the focused application window.
+    pub fn request(&self) {
+        (self.0)();
+    }
+}
+
+/// The command a declared `MenuItem::CloseWindow` stands for wherever
+/// Hydrolysis renders it as a command — a popup-menu row, a chord in the
+/// shortcut table, an item in the Windows menu bar: "Close", the platform's
+/// close chord (⌘W on macOS; Ctrl+W elsewhere through [`ChordModifiers`]'
+/// command→control mapping) and the runner's [`CloseKeyWindow`].
+///
+/// `None` when `env` carries no [`CloseKeyWindow`]: the host's windows are
+/// not the application's to close, and the item is omitted.
+pub fn close_window_command(env: &Environment) -> Option<ResolvedCommand> {
+    let close = env.get::<CloseKeyWindow>()?.clone();
+    Some(
+        "Close"
+            .action(move || close.request())
+            .shortcut(Shortcut::new("w").command())
+            .resolve(env),
+    )
+}
+
 /// A window's identity for menu-chord dispatch: the runner assigns one when it
 /// creates the window and hands it to the window's renderer, so the shared
 /// [`MenuShortcutRegistry`] can scope a mounted `Menu`'s chords to the window
@@ -225,7 +275,9 @@ impl HydrolysisRenderer {
 /// The commands of a `Menu` resolve into shortcut entries through the items
 /// signal, so a menu whose items change mounts its new chords on the next
 /// lookup without any registration churn. A declared Quit arms the chord of
-/// [`quit_command`], and nothing where `env` has no application quit.
+/// [`quit_command`], and nothing where `env` has no application quit; a
+/// declared Close Window arms the chord of [`close_window_command`], and
+/// nothing where the host's windows cannot be closed.
 fn collect_menu_shortcuts(
     items: &[ResolvedMenuItem],
     env: &Environment,
@@ -236,6 +288,11 @@ fn collect_menu_shortcuts(
             ResolvedMenuItem::Command(command) => collect_command_shortcut(command, out),
             ResolvedMenuItem::Quit => {
                 if let Some(command) = quit_command(env) {
+                    collect_command_shortcut(&command, out);
+                }
+            }
+            ResolvedMenuItem::CloseWindow => {
+                if let Some(command) = close_window_command(env) {
                     collect_command_shortcut(&command, out);
                 }
             }

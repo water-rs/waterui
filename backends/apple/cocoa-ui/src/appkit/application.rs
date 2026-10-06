@@ -7,6 +7,11 @@
 //! declares, `AppKit` sends them on the main thread, and the delegate stays
 //! alive for as long as the application runs with it, because
 //! [`Application::run`] owns it for that long.
+//!
+//! [`Application::send_action`] sends one of the standard [`MenuAction`]
+//! selectors with no target, so `AppKit` delivers it only to a responder
+//! that implements it — the same contract the menu module's standard items
+//! rely on.
 
 use std::cell::Cell;
 use std::fmt;
@@ -20,7 +25,7 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{NSNotification, NSObject, NSObjectProtocol};
 
-use super::menu::Menu;
+use super::menu::{Menu, MenuAction};
 use crate::callback::guarded;
 
 /// How the application presents itself.
@@ -241,6 +246,18 @@ impl Application {
     /// and the process exits.
     pub fn terminate(&self) {
         self.app.terminate(None);
+    }
+
+    /// Sends `action` up the responder chain, as a standard menu item with
+    /// no target does when chosen: from the key window's first responder
+    /// through the key window, the main window and the application to its
+    /// delegate. `false` when no responder handles it.
+    #[must_use]
+    pub fn send_action(&self, action: MenuAction) -> bool {
+        // SAFETY: see the module safety note — a standard action selector
+        // with a nil target and a nil sender reaches only a responder that
+        // implements it, and every standard action accepts a nil sender.
+        unsafe { self.app.sendAction_to_from(action.selector(), None, None) }
     }
 
     /// Answers a quit the delegate's `should_terminate` deferred with

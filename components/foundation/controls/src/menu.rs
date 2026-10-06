@@ -364,6 +364,32 @@ pub enum MenuItem {
     /// the macOS menu bar rejects ⌘Q, ⌘H and ⌥⌘H on ordinary commands, and
     /// a homemade Quit bypasses the termination hooks.
     Quit,
+    /// The application's own Close Window item.
+    ///
+    /// It renders once, with the platform's label ("Close") and accelerator
+    /// (⌘W on macOS, Ctrl+W elsewhere), and closes the window that has
+    /// keyboard focus through that window's ordinary close path — on macOS
+    /// it sends `performClose:` up the responder chain, so the key window
+    /// closes exactly as its title-bar close button would close it, and
+    /// closing the last window still follows the `LastWindowPolicy` passed to
+    /// `App::on_last_window_closed`. A window declared without a close button
+    /// ignores it.
+    ///
+    /// Declaring it is how an application places Close Window. When no menu
+    /// in the menu bar declares it, the macOS menu bar carries it in the
+    /// standard Window menu; once one does, it appears only where it is
+    /// declared, never twice. It can also appear in menus the window mounts
+    /// and in context menus.
+    ///
+    /// Platforms whose windows the application cannot close — iOS, Android,
+    /// the web, and headless or embedded hosts, whose windows the system or
+    /// the host owns — omit it from every menu and arm no chord for it, so a
+    /// portable menu may declare it unconditionally.
+    ///
+    /// Do not redeclare the platform's close chord on a plain [`Command`]:
+    /// the macOS menu bar rejects ⌘W on ordinary commands, and a homemade
+    /// Close Window bypasses the window's close path.
+    CloseWindow,
 }
 
 impl_constant!(MenuItem);
@@ -376,6 +402,7 @@ impl MenuItem {
             Self::Divider => ResolvedMenuItem::Divider,
             Self::Menu(menu) => ResolvedMenuItem::Menu(menu.resolve(env)),
             Self::Quit => ResolvedMenuItem::Quit,
+            Self::CloseWindow => ResolvedMenuItem::CloseWindow,
         }
     }
 }
@@ -717,28 +744,43 @@ impl ResolvedCommand {
     /// Rejects a command the macOS menu bar may not carry.
     ///
     /// ⌘Q, ⌘H and ⌥⌘H belong to the standard application-menu items — Quit,
-    /// Hide, Hide Others. A plain command redeclaring one would shadow the
-    /// item the system expects to find, and a homemade Quit bypasses the
-    /// termination hooks. Every backend that builds a macOS menu bar calls
-    /// this for each declared command, so the rule holds whichever backend
-    /// renders the bar.
+    /// Hide, Hide Others — and ⌘W to Close Window. A plain command
+    /// redeclaring one would shadow the item the system expects to find, a
+    /// homemade Quit bypasses the termination hooks, and a homemade Close
+    /// Window bypasses the window's close path. Every backend that builds a
+    /// macOS menu bar calls this for each declared command, so the rule
+    /// holds whichever backend renders the bar.
     ///
     /// # Panics
     ///
     /// When the command's shortcut is one of the reserved chords; the
-    /// message names `MenuItem::Quit` and `App::on_terminate` as the APIs to
-    /// use instead.
+    /// message names the API to use instead — `MenuItem::Quit` and
+    /// `App::on_terminate` for the application-menu chords,
+    /// `MenuItem::CloseWindow` for ⌘W.
     #[doc(hidden)]
     pub fn assert_allowed_in_macos_menu_bar(&self) {
+        const APPLICATION_MENU: &str = "declare `MenuItem::Quit` for Quit behavior and \
+                                        `App::on_terminate` for shutdown work";
         let Some(shortcut) = &self.shortcut else {
             return;
         };
         let reserved = [
-            (Shortcut::new("q").command(), "⌘Q", "Quit"),
-            (Shortcut::new("h").command(), "⌘H", "Hide"),
-            (Shortcut::new("h").command().option(), "⌥⌘H", "Hide Others"),
+            (Shortcut::new("q").command(), "⌘Q", "Quit", APPLICATION_MENU),
+            (Shortcut::new("h").command(), "⌘H", "Hide", APPLICATION_MENU),
+            (
+                Shortcut::new("h").command().option(),
+                "⌥⌘H",
+                "Hide Others",
+                APPLICATION_MENU,
+            ),
+            (
+                Shortcut::new("w").command(),
+                "⌘W",
+                "Close Window",
+                "declare `MenuItem::CloseWindow` to place Close Window",
+            ),
         ];
-        for (chord, chord_text, item) in reserved {
+        for (chord, chord_text, item, instead) in reserved {
             if chord.modifiers == shortcut.modifiers
                 && chord
                     .key
@@ -747,9 +789,8 @@ impl ResolvedCommand {
             {
                 panic!(
                     "a menu command in the macOS menu bar may not use the {chord_text} chord — it \
-                     belongs to the standard {item} item; declare `MenuItem::Quit` for Quit \
-                     behavior and `App::on_terminate` for shutdown work instead of redeclaring \
-                     the chord"
+                     belongs to the standard {item} item; {instead} instead of redeclaring the \
+                     chord"
                 );
             }
         }
@@ -794,6 +835,26 @@ pub enum ResolvedMenuItem {
     Menu(ResolvedNestedMenu),
     /// The application's declared Quit item — see [`MenuItem::Quit`].
     Quit,
+    /// The application's declared Close Window item — see
+    /// [`MenuItem::CloseWindow`].
+    CloseWindow,
+}
+
+impl ResolvedMenuItem {
+    /// Whether `items` declare [`MenuItem::CloseWindow`] at any depth.
+    ///
+    /// A backend that supplies a standard Close Window item when the
+    /// application declares none asks this of the resolved menu bar, so the
+    /// item never appears twice.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn declares_close_window(items: &[Self]) -> bool {
+        items.iter().any(|item| match item {
+            Self::CloseWindow => true,
+            Self::Menu(menu) => Self::declares_close_window(&menu.items.snapshot()),
+            Self::Command(_) | Self::Divider | Self::Quit => false,
+        })
+    }
 }
 
 impl_constant!(ResolvedMenuItem);
@@ -995,6 +1056,77 @@ mod tests {
             N,
             "one leaf change must evaluate each of the {N} children exactly once"
         );
+    }
+
+    /// A command carrying `shortcut`, resolved — what a backend checks
+    /// before placing it in the macOS menu bar.
+    fn resolved_with_shortcut(shortcut: Shortcut) -> ResolvedCommand {
+        crate::init_test_executor();
+        Command::builder("Command")
+            .action(|| {})
+            .shortcut(shortcut)
+            .resolve(&Environment::default())
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "may not use the ⌘W chord — it belongs to the standard Close \
+                               Window item; declare `MenuItem::CloseWindow`"
+    )]
+    fn macos_menu_bar_rejects_the_close_window_chord() {
+        resolved_with_shortcut(Shortcut::new("W").command()).assert_allowed_in_macos_menu_bar();
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "may not use the ⌘Q chord — it belongs to the standard Quit item; \
+                               declare `MenuItem::Quit`"
+    )]
+    fn macos_menu_bar_rejects_the_quit_chord() {
+        resolved_with_shortcut(Shortcut::new("q").command()).assert_allowed_in_macos_menu_bar();
+    }
+
+    #[test]
+    fn macos_menu_bar_accepts_chords_near_the_reserved_ones() {
+        for shortcut in [
+            Shortcut::new("w").command().shift(),
+            Shortcut::new("w").command().option(),
+            Shortcut::new("w").control(),
+            Shortcut::new("e").command(),
+        ] {
+            resolved_with_shortcut(shortcut).assert_allowed_in_macos_menu_bar();
+        }
+    }
+
+    #[test]
+    fn close_window_resolves_and_is_found_at_any_depth() {
+        crate::init_test_executor();
+        let env = Environment::default();
+        let top_level = resolve_menu_items_now(vec![MenuItem::CloseWindow], &env);
+        assert!(matches!(top_level[..], [ResolvedMenuItem::CloseWindow]));
+        assert!(ResolvedMenuItem::declares_close_window(&top_level));
+
+        let nested = resolve_menu_items_now(
+            vec![
+                Menu::new("File", (button("Open").action(|| {}),)).into(),
+                Menu::new(
+                    "Window",
+                    (Menu::new("Arrange", vec![MenuItem::CloseWindow]),),
+                )
+                .into(),
+            ],
+            &env,
+        );
+        assert!(ResolvedMenuItem::declares_close_window(&nested));
+
+        let without = resolve_menu_items_now(
+            vec![
+                MenuItem::Quit,
+                Menu::new("File", (button("Open").action(|| {}),)).into(),
+            ],
+            &env,
+        );
+        assert!(!ResolvedMenuItem::declares_close_window(&without));
     }
 
     #[test]

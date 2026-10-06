@@ -53,7 +53,7 @@ use waterui_core::handler::SharedAction;
 
 use crate::renderer::call_action_discarding_result;
 #[cfg(not(target_os = "macos"))]
-use crate::renderer::quit_command;
+use crate::renderer::{close_window_command, quit_command};
 
 /// One built native menu bar: the muda `Menu` tree, the `MenuId → action`
 /// table the event pump dispatches through, and the live watches.
@@ -245,6 +245,26 @@ fn append_items(
                 // row, which would print the `&`.
                 #[cfg(not(target_os = "macos"))]
                 if let Some(command) = quit_command(env) {
+                    parent(&build_command(
+                        &format!("&{}", command_title(&command)),
+                        &command,
+                        actions,
+                        state_watches,
+                    ));
+                }
+            }
+            ResolvedMenuItem::CloseWindow => {
+                // macOS: `AppKit`'s own Close item, ⌘W sending
+                // `performClose:` up the responder chain — the key window
+                // closes as its close button would close it, and winit
+                // reports that as the window's close request. On Windows the
+                // bar shows the close command — "Close", Ctrl+W — whose
+                // chord also arms on the registry, with the `&` access key
+                // only the Win32 menu shows (see `Quit` above).
+                #[cfg(target_os = "macos")]
+                parent(&PredefinedMenuItem::close_window(Some("Close")));
+                #[cfg(not(target_os = "macos"))]
+                if let Some(command) = close_window_command(env) {
                     parent(&build_command(
                         &format!("&{}", command_title(&command)),
                         &command,
