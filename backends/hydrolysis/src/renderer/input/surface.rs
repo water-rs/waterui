@@ -245,8 +245,9 @@ impl<R: SurfaceInputReceiver> EmbeddedInputSink for SurfaceInputSink<R> {
     ) {
         self.send(&SurfaceInputEvent::Scroll {
             position,
-            delta_x: f64::from(delta_x),
-            delta_y: f64::from(delta_y),
+            // winit is positive right/down; SurfaceInputEvent uses the W3C WheelEvent sign.
+            delta_x: -f64::from(delta_x),
+            delta_y: -f64::from(delta_y),
             unit,
             finished,
         });
