@@ -7,10 +7,13 @@
 //! flights the kit clock ticks — evaluate the curve themselves through
 //! [`progress`] instead.
 
+#[cfg(frame_progress)]
 use std::rc::Rc;
 
+#[cfg(platform_timing)]
 use cocoa_ui::core_animation::Timing;
 use waterui::animation::Animation;
+#[cfg(watcher_animation)]
 use waterui::reactive::watcher::Metadata;
 
 /// The kit timing `animation` plays under.
@@ -20,6 +23,7 @@ use waterui::reactive::watcher::Metadata;
 /// control points; `Spring` forwards stiffness and damping to a spring
 /// primitive (`UISpringTimingParameters` on iOS, `CASpringAnimation` on
 /// macOS).
+#[cfg(platform_timing)]
 pub fn timing(animation: &Animation) -> Timing {
     match *animation {
         Animation::Default => Timing::Bezier {
@@ -47,6 +51,7 @@ pub fn timing(animation: &Animation) -> Timing {
 /// `metadata` carries — watcher metadata maps to a kit timing through
 /// [`timing`]; metadata without an `Animation` runs `body` directly.
 /// Every component that honors watcher animation metadata funnels here.
+#[cfg(watcher_animation)]
 pub fn with_platform_animation(metadata: &Metadata, body: impl FnOnce() + 'static) {
     let Some(animation) = metadata.try_get::<Animation>() else {
         return body();
@@ -58,6 +63,7 @@ pub fn with_platform_animation(metadata: &Metadata, body: impl FnOnce() + 'stati
 /// curve a frame-driven animation evaluates each tick, as the kit writes
 /// the model directly rather than handing the property to a platform
 /// animator.
+#[cfg(frame_progress)]
 pub fn progress(animation: &Animation) -> Rc<dyn Fn(f64) -> f64> {
     let animation = animation.clone();
     Rc::new(move |elapsed| {
@@ -65,7 +71,7 @@ pub fn progress(animation: &Animation) -> Rc<dyn Fn(f64) -> f64> {
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, platform_timing))]
 mod tests {
     use core::time::Duration;
 

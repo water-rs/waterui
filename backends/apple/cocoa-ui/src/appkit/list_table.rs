@@ -42,7 +42,7 @@ use objc2::runtime::ProtocolObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
 use objc2_app_kit::{
     NSBezelStyle, NSButton, NSColor, NSControlTextEditingDelegate, NSDragOperation, NSDraggingInfo,
-    NSEvent, NSFont, NSLayoutConstraint, NSPasteboardItem, NSPasteboardType, NSPasteboardWriting,
+    NSFont, NSLayoutConstraint, NSPasteboardItem, NSPasteboardType, NSPasteboardWriting,
     NSRectFill, NSScrollView, NSTableColumn, NSTableRowView, NSTableView,
     NSTableViewAnimationOptions, NSTableViewDataSource, NSTableViewDelegate,
     NSTableViewDropOperation, NSTableViewSelectionHighlightStyle, NSTableViewStyle, NSTextField,
@@ -339,13 +339,16 @@ define_class!(
             true
         }
 
-        /// Keeps `AppKit`'s layout, then reports it so the consumer can
+        /// Keeps `AppKit`'s layout — its clip corrections counted as the
+        /// flight's own writes — then reports it so the consumer can
         /// track the content width onto the column.
         #[unsafe(method(layout))]
         fn layout_override(&self) {
             guarded("TableView layout", || {
-                // SAFETY: see the module safety note.
-                let _: () = unsafe { msg_send![super(self), layout] };
+                self.ivars().flight.own_writes(|| {
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), layout] };
+                });
                 if let Some(handler) = self.ivars().layout.borrow().as_ref().cloned() {
                     handler(self);
                 }
@@ -363,21 +366,6 @@ define_class!(
                 if let Some(handler) = self.ivars().window.borrow().as_ref().cloned() {
                     handler(self);
                 }
-            });
-        }
-
-        /// Every wheel/trackpad/momentum scroll enters through the scroll
-        /// view's `scrollWheel:` — the user's input supersedes a
-        /// programmatic animation in flight before `AppKit` applies it.
-        /// Momentum phases and knob drags that post no wheel event are
-        /// covered by the live-scroll notifications [`new`](Self::new)
-        /// installs.
-        #[unsafe(method(scrollWheel:))]
-        fn scroll_wheel_override(&self, event: &NSEvent) {
-            guarded("TableView scrollWheel", || {
-                self.ivars().flight.cancel();
-                // SAFETY: see the module safety note.
-                let _: () = unsafe { msg_send![super(self), scrollWheel: event] };
             });
         }
 
@@ -406,6 +394,10 @@ impl TableView {
         let this = Self::alloc(mtm).set_ivars(TableViewIvars::new(mtm));
         // SAFETY: standard `NSScrollView` init on a main-thread class.
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
+        this.setContentView(&super::scroll::FlightClipView::new(
+            mtm,
+            &this.ivars().flight,
+        ));
 
         let table = NSTableView::new(mtm);
         let column = NSTableColumn::initWithIdentifier(
@@ -939,14 +931,7 @@ impl TableView {
         let clip = self.contentView();
         let from: Point = clip.bounds().origin.into();
         let to = self.row_top(row);
-        let land = {
-            let weak = objc2::rc::Weak::from_retained(&self.retain());
-            Rc::new(move || {
-                if let Some(this) = weak.load() {
-                    this.scroll_row_to_top(row);
-                }
-            })
-        };
+        let land = ScrollFlight::landing(self, move |this: &Self| this.scroll_row_to_top(row));
         self.ivars().flight.begin(
             self,
             from,
@@ -955,7 +940,7 @@ impl TableView {
                 land,
                 duration,
                 progress,
-                write: ScrollFlight::clip_write(self),
+                write: self.ivars().flight.clip_write(self),
             },
         );
     }

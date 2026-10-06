@@ -165,6 +165,7 @@ mod imp {
     /// The standard Quit item as a kit menu-tree node, for the menus built
     /// from `MenuTreeNode`s (context menus): the same title and chord, its
     /// action the same `terminate:` the application menu's item sends.
+    #[cfg(feature = "context_menu")]
     pub fn standard_quit_node() -> cocoa_ui::menu::MenuTreeNode {
         cocoa_ui::menu::MenuTreeNode::Command(
             cocoa_ui::menu::Command {

@@ -12,13 +12,15 @@
 //! the clip's `boundsOrigin`, which writes the model per frame itself.
 //!
 //! Either animation is superseded by a jump, a new request, or the
-//! user's scroll — `AppKit` cancels through `scrollWheel:` and the pair
-//! of live-scroll notifications, `UIKit` through its drag delegate — and
-//! a view leaving its window lands the flight through
-//! [`land`](ScrollFlight::land). [`ScrollFlight::cancel`] stops the
-//! clock at the offset the last write left — the model is the
-//! presentation, nothing needs committing — and retires a context group
-//! by retargeting it to the current origin in a zero-duration group.
+//! user's scroll — `AppKit` cancels through the pair of live-scroll
+//! notifications and the kit clip view's `scrollToPoint:` (keyboard
+//! scrolling and every other clip write that is not the flight's own),
+//! `UIKit` through its drag delegate — and a view leaving its window
+//! lands the flight through [`land`](ScrollFlight::land).
+//! [`ScrollFlight::cancel`] stops the clock at the offset the last write
+//! left — the model is the presentation, nothing needs committing — and
+//! retires a context group by retargeting it to the current origin in a
+//! zero-duration group.
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
@@ -86,10 +88,14 @@ pub struct ScrollFlight {
     /// completion handler.
     #[cfg(target_os = "macos")]
     weak_self: Weak<Self>,
-    /// The clip whose `boundsOrigin` the context animation plays, while
-    /// one runs.
+    /// The clip whose `boundsOrigin` the context animation plays and the
+    /// origin the group lands on, while one runs.
     #[cfg(target_os = "macos")]
-    context_clip: RefCell<Option<objc2::rc::Weak<PlatformView>>>,
+    context_clip: RefCell<Option<(objc2::rc::Weak<objc2_app_kit::NSClipView>, Point)>>,
+    /// Set while a clocked flight writes the clip, so the kit clip view's
+    /// `scrollToPoint:` tells the flight's own writes from every other.
+    #[cfg(target_os = "macos")]
+    writing: Cell<bool>,
     /// The context group's generation, or 0 while none runs.
     #[cfg(target_os = "macos")]
     context: Cell<u64>,
@@ -126,6 +132,8 @@ impl ScrollFlight {
             context_clip: RefCell::new(None),
             #[cfg(target_os = "macos")]
             context: Cell::new(0),
+            #[cfg(target_os = "macos")]
+            writing: Cell::new(false),
         })
     }
 
@@ -179,16 +187,17 @@ impl ScrollFlight {
         self.flight.borrow_mut().take();
         self.clock.stop();
         #[cfg(target_os = "macos")]
-        self.cancel_context();
+        self.retire_context(false);
     }
 
-    /// Lands a parked flight exactly where a jump would have put it — the
-    /// flight's `land` is the surface's own jump, which retires the
-    /// flight through its cancel — and cancels a context group. A view
-    /// that moves to another window or leaves it lands this way.
+    /// Lands whatever is in flight exactly where it was going: a parked
+    /// flight through its `land` — the surface's own jump, which retires
+    /// the flight through its cancel — and a context group by jumping to
+    /// its target in a zero-duration group. A view that moves to another
+    /// window or leaves it lands this way.
     pub fn land(&self) {
         #[cfg(target_os = "macos")]
-        self.cancel_context();
+        self.retire_context(true);
         let land = self
             .flight
             .borrow()
@@ -197,6 +206,20 @@ impl ScrollFlight {
         if let Some(land) = land {
             land();
         }
+    }
+
+    /// A flight's `land`: `jump` run on `view` — the surface's own jump —
+    /// weak to the view so a parked flight never keeps its surface alive.
+    pub fn landing<V: objc2::Message + 'static>(
+        view: &V,
+        jump: impl Fn(&V) + 'static,
+    ) -> Rc<dyn Fn()> {
+        let weak = objc2::rc::Weak::new(view);
+        Rc::new(move || {
+            if let Some(view) = weak.load() {
+                jump(&view);
+            }
+        })
     }
 
     /// Advances the parked flight one tick: the eased offset lands in the
@@ -273,14 +296,24 @@ impl ScrollFlight {
     /// flight's own writes never self-cancel. The returned observers
     /// keep the subscription alive while they are retained.
     ///
-    /// Keyboard paging and arrows are not covered: they scroll the clip
-    /// through `NSClipView`'s own responder actions
-    /// (`scrollPageUp:`/`scrollLineDown:`/…), an animated bounds write
-    /// that posts no live-scroll notification and never travels to the
-    /// scroll view, so nothing on an `NSScrollView` subclass sees that
-    /// path. `NSViewBoundsDidChangeNotification` cannot substitute — it
-    /// fires for a flight's own writes, and user and animator writes are
-    /// indistinguishable.
+    /// Keyboard scrolling is caught at the clip instead: the document
+    /// view's own actions — `NSTableView`'s
+    /// `scrollToBeginningOfDocument:`/`scrollToEndOfDocument:` and the
+    /// row scroll a selection arrow makes — post no live-scroll
+    /// notification. Every one of them, and `NSScrollView`'s
+    /// `pageUp:`/`pageDown:`, reaches the clip through
+    /// `-[NSScrollView scrollClipView:toPoint:]` → `scrollToPoint:`,
+    /// which the kit clip view overrides to call
+    /// [`clip_will_scroll`](Self::clip_will_scroll). `AppKit`'s own
+    /// corrections are not the user's: a window resize rewrites the clip
+    /// from `-[NSScrollView layout]`'s content-inset update, which the
+    /// kit scroll views run inside [`own_writes`](Self::own_writes); a
+    /// growing document and the clip's frame changes reach no unflagged
+    /// `scrollToPoint:` (verified by the native correction cases). Overriding
+    /// `scrollToPoint:` on the clip keeps the scroll view
+    /// responsive-scrolling compatible (`+isCompatibleWithResponsiveScrolling`
+    /// stays `YES`, as it does for responder-action overrides; a
+    /// `scrollWheel:` override turns it `NO`).
     pub fn watch_user_scroll(
         self: &Rc<Self>,
         scroll_view: &objc2_app_kit::NSScrollView,
@@ -340,17 +373,46 @@ impl ScrollFlight {
 
     /// The write a clocked `AppKit` flight performs each tick —
     /// `scrollToPoint` plus the `reflectScrolledClipView` that keeps the
-    /// scrollers honest — weak to the scroll view so a parked flight
-    /// never keeps its surface alive.
-    pub fn clip_write(scroll_view: &objc2_app_kit::NSScrollView) -> Rc<dyn Fn(Point)> {
+    /// scrollers honest — flagged as the flight's own so the kit clip
+    /// view lets it through, and weak to the scroll view and this state
+    /// so a parked flight never keeps its surface alive.
+    pub fn clip_write(
+        self: &Rc<Self>,
+        scroll_view: &objc2_app_kit::NSScrollView,
+    ) -> Rc<dyn Fn(Point)> {
         let weak = objc2::rc::Weak::new(scroll_view);
+        let flight = Rc::downgrade(self);
         Rc::new(move |point| {
-            if let Some(this) = weak.load() {
+            if let Some(this) = weak.load()
+                && let Some(flight) = flight.upgrade()
+            {
                 let clip = this.contentView();
-                clip.scrollToPoint(point.into());
+                flight.own_writes(|| clip.scrollToPoint(point.into()));
                 this.reflectScrolledClipView(&clip);
             }
         })
+    }
+
+    /// Runs `body` with every clip write it makes counted as the flight's
+    /// own: the flight's [`clip_write`](Self::clip_write), and the scroll
+    /// view's `-[NSScrollView layout]`, whose content-inset update
+    /// (`_updateTitlebarAdjacencyState` → `setContentInsets:`) rewrites
+    /// the clip through `scrollToPoint:` when the window resizes —
+    /// `AppKit`'s own correction, not the user's scroll.
+    pub fn own_writes(&self, body: impl FnOnce()) {
+        let outer = self.writing.replace(true);
+        body();
+        self.writing.set(outer);
+    }
+
+    /// The kit clip view is about to `scrollToPoint:` — anything but a
+    /// write inside [`own_writes`](Self::own_writes) (the keyboard, the
+    /// document's own scroll-to-visible) supersedes the animation at the
+    /// offset it reached.
+    pub fn clip_will_scroll(&self) {
+        if !self.writing.get() {
+            self.cancel();
+        }
     }
 
     /// The `reflectScrolledClipView` the context group fires each frame —
@@ -372,11 +434,16 @@ impl ScrollFlight {
     /// `setContentOffset(_:animated: true)`. The group writes the model
     /// per frame, so `bounds` observers track the flight and the proxy's
     /// constraint lands exactly where the jump would.
-    pub fn scroll_context(&self, clip: &PlatformView, to: Point, reflect: Rc<dyn Fn()>) {
+    pub fn scroll_context(
+        &self,
+        clip: &objc2_app_kit::NSClipView,
+        to: Point,
+        reflect: Rc<dyn Fn()>,
+    ) {
         use block2::RcBlock;
         use core::ptr::NonNull;
+        use objc2::msg_send;
         use objc2::rc::Retained;
-        use objc2::{Message, msg_send};
         use objc2_app_kit::NSAnimationContext;
         use objc2_foundation::NSPoint;
 
@@ -386,7 +453,7 @@ impl ScrollFlight {
         self.context.set(generation);
         self.context_clip
             .borrow_mut()
-            .replace(objc2::rc::Weak::from_retained(&clip.retain()));
+            .replace((objc2::rc::Weak::new(clip), to));
         let weak_self = self.weak_self.clone();
         NSAnimationContext::runAnimationGroup_completionHandler(
             &RcBlock::new(move |ctx: NonNull<NSAnimationContext>| {
@@ -417,11 +484,12 @@ impl ScrollFlight {
         }
     }
 
-    /// Retires a running context group without committing the target —
-    /// a zero-duration group retargets `boundsOrigin` to the origin the
-    /// animation already moved the model to, so the eye's position stands
-    /// as the user's scroll takes over.
-    fn cancel_context(&self) {
+    /// Retires a running context group in a zero-duration group that
+    /// retargets `boundsOrigin`: to the origin the animation already moved
+    /// the model to when cancelled, so the eye's position stands as the
+    /// user's scroll takes over; to the group's own target when `land`ed,
+    /// so the clip ends where the animation was going.
+    fn retire_context(&self, land: bool) {
         use block2::RcBlock;
         use core::ptr::NonNull;
         use objc2::msg_send;
@@ -432,15 +500,19 @@ impl ScrollFlight {
             return;
         }
         self.context.set(0);
-        let Some(clip) = self
+        let Some((clip, target)) = self
             .context_clip
             .borrow_mut()
             .take()
-            .and_then(|weak| weak.load())
+            .and_then(|(weak, target)| Some((weak.load()?, target)))
         else {
             return;
         };
-        let current = clip.bounds().origin;
+        let origin = if land {
+            target.into()
+        } else {
+            clip.bounds().origin
+        };
         NSAnimationContext::runAnimationGroup(&RcBlock::new(
             move |ctx: NonNull<NSAnimationContext>| {
                 // SAFETY: the context pointer is `AppKit`'s grouping object,
@@ -450,7 +522,10 @@ impl ScrollFlight {
                 // SAFETY: `animator` returns this view's
                 // `NSAnimatablePropertyContainer` proxy.
                 let proxy: Retained<PlatformView> = unsafe { msg_send![&*clip, animator] };
-                proxy.setBoundsOrigin(current);
+                proxy.setBoundsOrigin(origin);
+                if let Some(scroll) = clip.enclosingScrollView() {
+                    scroll.reflectScrolledClipView(&clip);
+                }
             },
         ));
     }
@@ -463,6 +538,26 @@ impl ScrollFlight {
     /// flick's deceleration does not fight the clocked writes.
     pub fn freeze_scroll(scroll_view: &objc2_ui_kit::UIScrollView) {
         scroll_view.setContentOffset_animated(scroll_view.contentOffset(), false);
+    }
+
+    /// `offset` — a raw `contentOffset` — clamped inside the scrollable
+    /// range the adjusted content insets bound, the `UIKit` counterpart
+    /// of [`constrained`](Self::constrained): the flight's raw
+    /// `setContentOffset` writes do not clamp, so every target a `UIKit`
+    /// flight aims at resolves here first.
+    #[must_use]
+    pub fn uikit_clamped(scroll_view: &objc2_ui_kit::UIScrollView, offset: Point) -> Point {
+        let inset = scroll_view.adjustedContentInset();
+        let extent = scroll_view.contentSize();
+        let viewport = scroll_view.bounds().size;
+        let minimum_x = -inset.left;
+        let minimum_y = -inset.top;
+        let maximum_x = (extent.width - viewport.width + inset.right).max(minimum_x);
+        let maximum_y = (extent.height - viewport.height + inset.bottom).max(minimum_y);
+        Point::new(
+            offset.x.clamp(minimum_x, maximum_x),
+            offset.y.clamp(minimum_y, maximum_y),
+        )
     }
 
     /// The write a clocked `UIKit` flight performs each tick — the raw

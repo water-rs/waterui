@@ -14,6 +14,7 @@ mod native_layout;
 mod native_log;
 pub mod resources;
 
+#[cfg(any(platform_timing, frame_progress))]
 mod animation;
 pub(crate) mod components;
 pub(crate) mod first_paint;

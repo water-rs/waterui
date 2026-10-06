@@ -650,12 +650,9 @@ impl TableView {
     /// `scrollToRowAtIndexPath` would clamp to.
     fn row_top_offset(&self, index: IndexPath) -> Point {
         self.layoutIfNeeded();
-        let inset = self.adjustedContentInset();
-        let minimum = -inset.top;
-        let maximum =
-            (self.contentSize().height - self.bounds().size.height + inset.bottom).max(minimum);
-        let target = self.rectForRowAtIndexPath(&index_path(index)).origin.y - inset.top;
-        Point::new(self.contentOffset().x, target.clamp(minimum, maximum))
+        let top = self.rectForRowAtIndexPath(&index_path(index)).origin.y
+            - self.adjustedContentInset().top;
+        ScrollFlight::uikit_clamped(self, Point::new(self.contentOffset().x, top))
     }
 
     /// Drives the scroll from its current offset to `index`'s row along
@@ -688,14 +685,7 @@ impl TableView {
                 this.row_top_offset(index)
             })
         };
-        let land = {
-            let weak = Weak::from_retained(&self.retain());
-            Rc::new(move || {
-                if let Some(this) = weak.load() {
-                    this.scroll_to_row(index, false);
-                }
-            })
-        };
+        let land = ScrollFlight::landing(self, move |this: &Self| this.scroll_to_row(index, false));
         self.ivars().flight.begin(
             self,
             from,

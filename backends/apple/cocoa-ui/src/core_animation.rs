@@ -171,6 +171,14 @@ pub fn animate_with(timing: Timing, body: impl FnOnce() + 'static) {
     use std::cell::RefCell;
 
     let mtm = objc2::MainThreadMarker::new().expect("animation runs on the main thread");
+    // `addAnimations` may evaluate its block once only; the option still
+    // guards a double evaluation.
+    let body = RefCell::new(Some(body));
+    let block = block2::RcBlock::new(move || {
+        if let Some(body) = body.borrow_mut().take() {
+            body();
+        }
+    });
     let (duration, parameters): (f64, Retained<ProtocolObject<dyn UITimingCurveProvider>>) =
         match timing {
             Timing::Bezier {
@@ -204,14 +212,6 @@ pub fn animate_with(timing: Timing, body: impl FnOnce() + 'static) {
         duration,
         &parameters,
     );
-    // `addAnimations` may evaluate its block once only; the option still
-    // guards a double evaluation.
-    let body = RefCell::new(Some(body));
-    let block = block2::RcBlock::new(move || {
-        if let Some(body) = body.borrow_mut().take() {
-            body();
-        }
-    });
     animator.addAnimations(&block);
     animator.startAnimation();
 }

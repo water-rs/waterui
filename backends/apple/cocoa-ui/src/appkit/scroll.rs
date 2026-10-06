@@ -22,9 +22,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use objc2::rc::{Retained, Weak};
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
-use objc2_app_kit::{NSClipView, NSEvent, NSScrollView, NSView, NSViewNoIntrinsicMetric};
+use objc2::rc::Retained;
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2_app_kit::{NSClipView, NSScrollView, NSView, NSViewNoIntrinsicMetric};
 use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize};
 
 use crate::callback::guarded;
@@ -91,12 +91,15 @@ define_class!(
             });
         }
 
-        /// Keeps `AppKit`'s layout, then hands layout to the consumer.
+        /// Keeps `AppKit`'s layout — its clip corrections counted as the
+        /// flight's own writes — then hands layout to the consumer.
         #[unsafe(method(layout))]
         fn layout_override(&self) {
             guarded("ScrollView layout", || {
-                // SAFETY: see the module safety note.
-                let _: () = unsafe { msg_send![super(self), layout] };
+                self.ivars().flight.own_writes(|| {
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), layout] };
+                });
                 if let Some(handler) = self.ivars().layout.borrow().as_ref().cloned() {
                     handler(self);
                 }
@@ -113,21 +116,6 @@ define_class!(
             NSSize::new(no_metric, no_metric)
         }
 
-        /// Every wheel/trackpad/momentum scroll enters through the scroll
-        /// view's `scrollWheel:` — the user's input supersedes a
-        /// programmatic animation in flight before `AppKit` applies it.
-        /// Momentum phases and knob drags that post no wheel event are
-        /// covered by the live-scroll notifications [`new`](Self::new)
-        /// installs.
-        #[unsafe(method(scrollWheel:))]
-        fn scroll_wheel_override(&self, event: &NSEvent) {
-            guarded("ScrollView scrollWheel", || {
-                self.ivars().flight.cancel();
-                // SAFETY: see the module safety note.
-                let _: () = unsafe { msg_send![super(self), scrollWheel: event] };
-            });
-        }
-
         /// A view that moves to another window or leaves its window lands
         /// the flight it was running — a parked flight's clock ticks only
         /// for the window it armed on.
@@ -141,6 +129,63 @@ define_class!(
         }
     }
 );
+
+/// The per-instance state [`FlightClipView`] stores: the scroll
+/// animation state of the surface it clips for.
+#[derive(Debug)]
+pub struct FlightClipViewIvars {
+    flight: std::rc::Weak<ScrollFlight>,
+}
+
+define_class!(
+    #[unsafe(super(NSClipView))]
+    #[name = "CocoaUiFlightClipView"]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = FlightClipViewIvars]
+    #[derive(Debug)]
+    /// The clip view every kit scroll surface installs: a plain
+    /// `NSClipView` whose `scrollToPoint:` first supersedes a scroll
+    /// animation in flight, unless the write is the flight's own.
+    ///
+    /// Keyboard scrolling — `NSScrollView`'s `pageUp:`/`pageDown:`, a
+    /// document's own `scrollToBeginningOfDocument:`/`scrollToEndOfDocument:`
+    /// and scroll-to-visible — reaches the clip only through
+    /// `-[NSScrollView scrollClipView:toPoint:]` → `scrollToPoint:`, so
+    /// this is the one hook that sees every such path. `AppKit`'s layout
+    /// corrections pass through it too, inside
+    /// [`ScrollFlight::own_writes`]. Overriding it keeps the scroll view
+    /// responsive-scrolling compatible.
+    pub struct FlightClipView;
+
+    unsafe impl NSObjectProtocol for FlightClipView {}
+
+    impl FlightClipView {
+        /// Lets the flight yield to a write that is not its own, then
+        /// keeps `AppKit`'s scroll.
+        #[unsafe(method(scrollToPoint:))]
+        fn scroll_to_point_override(&self, point: NSPoint) {
+            guarded("FlightClipView scrollToPoint", || {
+                if let Some(flight) = self.ivars().flight.upgrade() {
+                    flight.clip_will_scroll();
+                }
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), scrollToPoint: point] };
+            });
+        }
+    }
+);
+
+impl FlightClipView {
+    /// A clip view reporting non-flight writes to `flight`.
+    #[must_use]
+    pub(crate) fn new(mtm: MainThreadMarker, flight: &Rc<ScrollFlight>) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(FlightClipViewIvars {
+            flight: Rc::downgrade(flight),
+        });
+        // SAFETY: standard `NSClipView` init on a main-thread class.
+        unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] }
+    }
+}
 
 /// The per-instance state [`FlippedView`] stores: none.
 #[derive(Debug, Default)]
@@ -188,6 +233,7 @@ impl ScrollView {
         let this = Self::alloc(mtm).set_ivars(ScrollViewIvars::new(mtm));
         // SAFETY: standard `NSScrollView` init on a main-thread class.
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
+        this.setContentView(&FlightClipView::new(mtm, &this.ivars().flight));
         this.setHasVerticalScroller(vertical);
         this.setHasHorizontalScroller(horizontal);
         this.setAutohidesScrollers(true);
@@ -262,14 +308,7 @@ impl ScrollView {
     pub fn animate_scroll_to(&self, point: Point, duration: f64, progress: Rc<dyn Fn(f64) -> f64>) {
         let to = ScrollFlight::constrained(&self.contentView(), point);
         let from = self.content_offset();
-        let land = {
-            let weak = Weak::from_retained(&self.retain());
-            Rc::new(move || {
-                if let Some(this) = weak.load() {
-                    this.scroll_to(to);
-                }
-            })
-        };
+        let land = ScrollFlight::landing(self, move |this: &Self| this.scroll_to(to));
         self.ivars().flight.begin(
             self,
             from,
@@ -278,7 +317,7 @@ impl ScrollView {
                 land,
                 duration,
                 progress,
-                write: ScrollFlight::clip_write(self),
+                write: self.ivars().flight.clip_write(self),
             },
         );
     }

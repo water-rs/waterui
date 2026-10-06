@@ -21,9 +21,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use objc2::rc::{Retained, Weak};
+use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_core_foundation::{CGRect, CGSize};
 use objc2_foundation::NSObjectProtocol;
 use objc2_ui_kit::{
@@ -168,6 +168,14 @@ impl ScrollView {
         self.bounds().size.into()
     }
 
+    /// `offset` clamped inside the scrollable range the adjusted content
+    /// insets bound — where a jump to it would land, and so the only
+    /// target an animated write may aim at.
+    #[must_use]
+    pub fn clamped_content_offset(&self, offset: Point) -> Point {
+        ScrollFlight::uikit_clamped(self, offset)
+    }
+
     /// The scrollable canvas `UIKit` clips `content_offset` against.
     #[must_use]
     pub fn content_extent(&self) -> Size {
@@ -210,14 +218,9 @@ impl ScrollView {
     ) {
         ScrollFlight::freeze_scroll(self);
         let from = self.content_offset();
-        let land = {
-            let weak = Weak::from_retained(&self.retain());
-            Rc::new(move || {
-                if let Some(this) = weak.load() {
-                    this.set_content_offset(offset, false);
-                }
-            })
-        };
+        let land = ScrollFlight::landing(self, move |this: &Self| {
+            this.set_content_offset(offset, false);
+        });
         self.ivars().flight.begin(
             self,
             from,

@@ -319,16 +319,10 @@ fn layout_child(
 #[cfg(target_os = "ios")]
 fn clamped_offset(scroll: &ScrollSurface, target: Point) -> cocoa_ui::Point {
     let inset = scroll.adjusted_content_inset();
-    let extent = scroll.content_extent();
-    let viewport = scroll.viewport_size();
-    let minimum_x = -inset.left;
-    let minimum_y = -inset.top;
-    let maximum_x = (extent.width - viewport.width + inset.right).max(minimum_x);
-    let maximum_y = (extent.height - viewport.height + inset.bottom).max(minimum_y);
-    cocoa_ui::Point::new(
-        (f64::from(target.x) - inset.left).clamp(minimum_x, maximum_x),
-        (f64::from(target.y) - inset.top).clamp(minimum_y, maximum_y),
-    )
+    scroll.clamped_content_offset(cocoa_ui::Point::new(
+        f64::from(target.x) - inset.left,
+        f64::from(target.y) - inset.top,
+    ))
 }
 
 /// `UIKit`: applies a controller request — `None` is the jump it always
