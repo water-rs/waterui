@@ -182,9 +182,10 @@ fn animate_to_a_row_glides_and_lands_where_the_jump_would_offscreen() {
 }
 
 /// A membership change mid-flight must not kill an animated scroll: a chat
-/// that calls `animate_to(last)` while messages keep arriving re-anchors the
-/// viewport for the insertion, and that correction must not cancel the run —
-/// the request still lands on its row (water-rs/waterui#1901).
+/// that calls `animate_to(last)` while messages keep arriving keeps its run
+/// live, so the insertion does not re-anchor — the request re-issues its
+/// target under the new membership and still lands on its row
+/// (water-rs/waterui#1901).
 #[test]
 fn animate_to_survives_rows_inserted_during_the_flight_offscreen() {
     let items = ReactiveList::<SelfId<usize>>::new();
@@ -203,8 +204,9 @@ fn animate_to_survives_rows_inserted_during_the_flight_offscreen() {
     controller.animate_to(29, waterui::animation::Animation::default());
     app.pump_for(std::time::Duration::from_millis(100));
 
-    // Messages arriving while the scroll is in flight: the membership event
-    // re-anchors the viewport, which must not read as the user scrolling.
+    // Messages arriving while the scroll is in flight: the live request
+    // keeps the anchor from shifting the viewport, and the run must not read
+    // the membership change as the user scrolling.
     let _ = items.replace((0..34).map(SelfId::new).collect());
     app.settle();
 
@@ -226,6 +228,118 @@ fn animate_to_survives_rows_inserted_during_the_flight_offscreen() {
     );
     app.query().label("row 29").assert_exists();
     app.query().label("row 33").assert_exists();
+}
+
+/// The interrupt race: user input ends the run between frames, and rows
+/// changing in that window must still re-anchor the viewport — the flush
+/// settles the request's outcome first instead of dropping the anchor on a
+/// dead request, so content does not jump under the user's finger
+/// (water-rs/waterui#1901).
+#[test]
+fn animate_to_interrupted_then_rows_change_still_anchors_offscreen() {
+    let items = ReactiveList::<SelfId<usize>>::new();
+    let _ = items.replace((0..40).map(SelfId::new).collect());
+    let controller = ScrollController::new(0);
+    let mut app = ui()
+        .viewport(320, 320)
+        .theme(Material3::defaults())
+        .mount_offscreen({
+            let items = items.clone();
+            let controller = controller.clone();
+            move || pending_scroll_list(items.clone(), controller.clone())
+        });
+    app.settle();
+
+    let scroll_y = |app: &mut waterui_testing::OffscreenApp| -> f64 {
+        app.query()
+            .role(Role::LIST)
+            .label("messages")
+            .single()
+            .node()
+            .scroll_y()
+            .expect("the list reports a scroll offset")
+    };
+
+    controller.scroll_to(20);
+    app.settle();
+    // A slow run so a few heavy flush frames still leave it in flight: the
+    // tween runs on the frame's wall clock, and materializing rows can make
+    // one pumped frame cost tens of real milliseconds.
+    controller.animate_to(
+        0,
+        waterui::animation::Animation::linear(std::time::Duration::from_millis(2000)),
+    );
+    app.pump_for(std::time::Duration::from_millis(48));
+    let in_flight = scroll_y(&mut app);
+    assert!(
+        in_flight > 120.0 && in_flight < 20.0 * ROW_HEIGHT,
+        "the run must be mid-flight heading for row 0 when it is interrupted: {in_flight}"
+    );
+
+    // The user's pixel delta (finger down pushes the offset back into the
+    // content) kills the run between frames; the membership event lands one
+    // frame later — the window in which the dead request still waits for
+    // its outcome, and the anchor record already holds the user's offset.
+    app.queue_scroll_at(160.0, 160.0, 0.0, -120.0, false);
+    app.pump_for(std::time::Duration::from_millis(16));
+    let _ = items.replace((100..103).chain(0..40).map(SelfId::new).collect());
+    app.settle();
+
+    // The user scrolled `in_flight` back by 120, then the three prepended
+    // rows re-anchored the viewport on the same content (+3 rows). A drop
+    // would leave the offset 3 rows short of the content the user saw.
+    let expected = 3.0f64.mul_add(ROW_HEIGHT, in_flight + 120.0);
+    let scroll_y = scroll_y(&mut app);
+    assert!(
+        (scroll_y - expected).abs() < 30.0,
+        "the anchor must still apply on the frame the request dies: expected scroll_y≈{expected}, got {scroll_y}"
+    );
+}
+
+/// A request for a row the collection does not have yet waits for contents —
+/// it is not live, so a membership change meanwhile must still re-anchor the
+/// viewport instead of being dropped on the waiting request
+/// (water-rs/waterui#1901).
+#[test]
+fn out_of_range_pending_scroll_still_anchors_membership_changes_offscreen() {
+    let items = ReactiveList::<SelfId<usize>>::new();
+    let _ = items.replace((0..30).map(SelfId::new).collect());
+    let controller = ScrollController::new(0);
+    let mut app = ui()
+        .viewport(320, 320)
+        .theme(Material3::defaults())
+        .mount_offscreen({
+            let items = items.clone();
+            let controller = controller.clone();
+            move || pending_scroll_list(items.clone(), controller.clone())
+        });
+    app.settle();
+
+    controller.scroll_to(15);
+    app.settle();
+    // Row 60 does not exist in the 30-row collection: the request waits, and
+    // the viewport is the user's — not the request's.
+    controller.animate_to(60, waterui::animation::Animation::default());
+    app.pump_for(std::time::Duration::from_millis(32));
+
+    // Three rows land above the viewport; the anchor keeps the parked
+    // content in place (+3 rows of offset).
+    let _ = items.replace((100..103).chain(0..30).map(SelfId::new).collect());
+    app.settle();
+
+    let scroll_y = app
+        .query()
+        .role(Role::LIST)
+        .label("messages")
+        .single()
+        .node()
+        .scroll_y()
+        .expect("the list reports a scroll offset");
+    let expected = 18.0f64 * ROW_HEIGHT;
+    assert!(
+        (scroll_y - expected).abs() < 1.0,
+        "a waiting (out-of-range) request must not swallow the membership anchor: expected scroll_y≈{expected}, got {scroll_y}"
+    );
 }
 
 /// A row inside the last screenful has an `offset_of` past `max_y`: the run

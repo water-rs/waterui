@@ -749,13 +749,19 @@ impl ListRenderState {
                     }
                     // Arming starts the run's clock at the frame instant —
                     // the very next tick already shows motion, and keeps
-                    // requesting frames until the run lands.
-                    if let Some(run) =
-                        handle.scroll_to_animated(0.0, offset, animation, renderer.frame_instant())
-                        && let Some(stored) = self.pending_scroll.borrow_mut().as_mut()
-                    {
-                        stored.state = PendingScrollState::Armed { run };
-                    }
+                    // requesting frames until the run lands. The handle is
+                    // bound live this frame, and the pending request being
+                    // applied is the one still stored — both hold.
+                    let run = handle
+                        .scroll_to_animated(0.0, offset, animation, renderer.frame_instant())
+                        .expect(
+                            "the list binds a live scroll handle before arming a request on it",
+                        );
+                    self.pending_scroll
+                        .borrow_mut()
+                        .as_mut()
+                        .expect("the pending request being applied is still stored")
+                        .state = PendingScrollState::Armed { run };
                 }
             },
             _ => {
@@ -785,21 +791,70 @@ impl ListRenderState {
         }
     }
 
-    fn apply_membership_anchor(&self, handle: &ScrollHandle) {
-        if self.pending_scroll.borrow().is_some() {
-            // A pending scroll request re-issues `offset_of(index)` under
-            // the new membership anyway; re-anchoring now would cancel its
-            // run. The anchor is dropped rather than deferred — replaying a
-            // stale anchor after the request lands would yank the viewport
-            // back to where it no longer belongs.
+    /// The ordered settle-anchor-request step both rendered paths run:
+    /// settle the pending request's outcome first — a request the user
+    /// interrupted between frames, or one naming a row the list does not
+    /// have yet, is not live and must not swallow the anchor — then apply
+    /// the membership anchor unless a live request remains, then apply the
+    /// request itself.
+    fn apply_membership_anchor_then_request(
+        &self,
+        renderer: &mut crate::renderer::SemanticCore,
+        handle: &ScrollHandle,
+        row_count: usize,
+        animate: bool,
+    ) {
+        if self.settle_pending_scroll_outcome(handle, row_count) {
+            // A live request re-issues `offset_of(index)` under the new
+            // membership anyway — the anchor is dropped, not deferred:
+            // replaying it once the request completes would yank the
+            // viewport back to where it no longer belongs.
             let _ = self.pending_membership_offset.take();
-            return;
+        } else {
+            self.apply_membership_anchor(handle);
         }
+        self.apply_scroll_request(renderer, handle, row_count, animate);
+    }
+
+    /// Drops a pending request that stopped being live — an armed run the
+    /// user interrupted — and reports whether one still is: `Armed` with
+    /// `Running`/`Landed`, or `Unarmed` — and in range either way. A request
+    /// for a row the collection does not have yet waits without owning the
+    /// offset, so membership changes under it still anchor.
+    fn settle_pending_scroll_outcome(&self, handle: &ScrollHandle, row_count: usize) -> bool {
+        let (live, dead_generation) = {
+            let borrowed = self.pending_scroll.borrow();
+            match borrowed.as_ref() {
+                Some(pending) if pending.index >= row_count => (false, None),
+                Some(pending) => match &pending.state {
+                    PendingScrollState::Armed { run } => {
+                        match handle.scroll_run_outcome(*run) {
+                            ScrollRunOutcome::Running | ScrollRunOutcome::Landed => (true, None),
+                            // Something else claimed the offset — user
+                            // input, a jump, another owner's run — between
+                            // frames; `apply_scroll_request` no longer sees
+                            // it, so it is settled here.
+                            ScrollRunOutcome::Interrupted => (false, Some(pending.generation)),
+                        }
+                    }
+                    PendingScrollState::Unarmed => (true, None),
+                },
+                None => (false, None),
+            }
+        };
+        if let Some(generation) = dead_generation {
+            self.applied_scroll_generation.set(generation);
+            self.pending_scroll.take();
+        }
+        live
+    }
+
+    fn apply_membership_anchor(&self, handle: &ScrollHandle) {
         if let Some(offset) = self.pending_membership_offset.take() {
-            // Re-anchoring after a delete or move keeps the viewport where the
-            // user left it; that is a correction, not a journey, so it lands
-            // immediately rather than gliding.
-            let _ = handle.scroll_to(0.0, offset);
+            // Re-anchoring after a delete or move shifts the coordinate
+            // system — it does not claim the offset, so `rebase` keeps a
+            // live run or user fling driving through it.
+            let _ = handle.rebase(0.0, offset - handle.metrics().offset_y);
         }
     }
 
@@ -976,8 +1031,7 @@ pub fn list_accessibility(
         .total_extent()
         .max(viewport.height());
     let handle = state.bind_scroll(viewport.width(), viewport.height(), content_height);
-    state.apply_membership_anchor(&handle);
-    state.apply_scroll_request(renderer, &handle, row_count, is_rendered);
+    state.apply_membership_anchor_then_request(renderer, &handle, row_count, is_rendered);
     #[cfg(feature = "accessibility")]
     {
         let metrics = handle.metrics();
@@ -1513,10 +1567,12 @@ pub fn render_list_parts(
     let handle = state
         .borrow()
         .bind_scroll(viewport.width(), viewport.height(), content_height);
-    state.borrow().apply_membership_anchor(&handle);
-    state
-        .borrow()
-        .apply_scroll_request(ctx.renderer_mut(), &handle, row_count, true);
+    state.borrow().apply_membership_anchor_then_request(
+        ctx.renderer_mut(),
+        &handle,
+        row_count,
+        true,
+    );
     // The keyboard-moving clearance runs before the rows paint: while the
     // host's keyboard animation is in flight the offset follows it frame by
     // frame, so this flush paints the field already clear.

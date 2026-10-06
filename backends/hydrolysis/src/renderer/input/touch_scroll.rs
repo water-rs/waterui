@@ -139,11 +139,12 @@ impl VelocityTracker {
 #[derive(Debug)]
 pub struct TouchFling {
     handle: crate::scroll::ScrollHandle,
-    /// The offset epoch captured when the fling started: the fling keeps
-    /// writing while it still owns the offset, and its first refused write
-    /// — a request, a jump, user input — ends it rather than overwriting
-    /// its successor.
-    epoch: u64,
+    /// The claim the fling holds on the offset: it keeps writing while it
+    /// is still the newest claim, and its first refused write — a request,
+    /// a jump, user input — ends it rather than overwriting its successor.
+    /// A membership anchor's `rebase` does not claim the offset, so a live
+    /// list cannot stop a fling by inserting rows.
+    claim: crate::scroll::FlingClaim,
     x: Option<SplineFling>,
     y: Option<SplineFling>,
 }
@@ -188,10 +189,10 @@ impl TouchFling {
         let y = matches!(handle.axis(), Axis::Vertical | Axis::All)
             .then(|| axis_fling(finger_velocity.y, metrics.offset_y, metrics.max_y))
             .flatten();
-        let epoch = handle.offset_epoch();
+        let claim = handle.begin_fling();
         (x.is_some() || y.is_some()).then_some(Self {
             handle,
-            epoch,
+            claim,
             x,
             y,
         })
@@ -210,11 +211,11 @@ impl TouchFling {
             .as_ref()
             .map_or((metrics.offset_y, false), |fling| fling.position(now));
         // A programmatic request — jump or animated — or any user input
-        // claims the offset and bumps the epoch: the refused write ends
-        // the fling instead of writing over whatever replaced it.
+        // claims the offset past this fling's claim: the refused write
+        // ends the fling instead of writing over whatever replaced it.
         let changed = self
             .handle
-            .apply_fling_offset(self.epoch, offset_x, offset_y);
+            .apply_fling_offset(&self.claim, offset_x, offset_y);
         TouchFlingTick {
             changed,
             // A refused write — a newer claim on the offset — ends the
