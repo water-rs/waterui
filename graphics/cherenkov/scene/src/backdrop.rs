@@ -22,6 +22,15 @@ use serde::{Deserialize, Serialize};
 /// opacities still apply when the enclosing frame composites them, so a
 /// fading backdrop panel fades rather than disappearing.
 ///
+/// The member — its backdrop sample and its content — composites as a
+/// whole with its own [`crate::Layer::opacity`] and
+/// [`crate::Layer::blend`]: a filter covers the member's items, never
+/// the sample. An unfiltered member's sample lands in its own canvas;
+/// a filtered member's sample lands beside its filtered content in an
+/// outer member scope when opacity or blend is not a no-op (else in the
+/// enclosing canvas), so the member's blend applies to the sample for
+/// both member kinds.
+///
 /// The capture is taken at `scale` times device resolution: capture texel
 /// `(i, j)` holds the area-weighted mean of the canvas over the device rect
 /// `[i/s, (i+1)/s) × [j/s, (j+1)/s)` clipped to the canvas, `filters` run on

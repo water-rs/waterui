@@ -350,36 +350,54 @@ fn member_inside_blended_descendant_layer_sees_the_layer_contents()
 }
 
 split_test! {
-/// A member layer that itself isolates (opacity < 1 on a Normal blend):
-/// the member's sample draws to the current target under the member
-/// clip, before and outside the layer's own isolation, so it is not
-/// attenuated by the layer opacity; the layer's content is (#134).
-fn member_sample_is_not_attenuated_by_layer_opacity() -> Result<(), Box<dyn std::error::Error>> {
+/// A member layer's own opacity fades the member as a whole, its
+/// backdrop sample included: an unfiltered member's sample is its
+/// canvas's bottom-most content and attenuates with it; a filtered
+/// member's sample stays outside its isolation — the filter never
+/// covers it — and still fades by the member's opacity, once (#1974).
+fn member_sample_is_attenuated_by_layer_opacity() -> Result<(), Box<dyn std::error::Error>> {
     split_fn! {
-// One engine for both opacities: each render builds its own surface, so
-// the two scenes stay independent while engine construction is shared.
-fn render(engine: &Engine<Gpu>, opacity: f32) -> Result<cherenkov::Readback, Box<dyn std::error::Error>> {
+// A red|blue step under a red↔blue-swapping group: the captured sample
+// differs from the sharp backdrop everywhere — at the clip's
+// antialiased rim too — so attenuating the sample and the member
+// clip's coverage are both observable. `filter` gives the member a
+// red↔blue swap or an identity filter.
+fn render(engine: &Engine<Gpu>, opacity: f32, filter: Option<[f32; 12]>, blend: cherenkov::BlendMode) -> Result<cherenkov::Readback, Box<dyn std::error::Error>> {
         let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
-        let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
+        let group = surface.backdrop_group(
+            filtrate::filters::ColorMatrix(SWAP),
+            cherenkov::CaptureScale::FULL,
+        );
         let member = surface.layer();
         let child = surface.layer();
+        let member_filter = filter.map(|matrix| engine.filter(filtrate::filters::ColorMatrix(matrix)));
         surface.update(|tx| {
             tx[surface.root()].content(surface.record(|r| {
                 r.fill(
-                    Rect::new(0.0, 0.0, 32.0, 32.0),
+                    Rect::new(0.0, 0.0, 16.0, 32.0),
                     WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+                );
+                r.fill(
+                    Rect::new(16.0, 0.0, 32.0, 32.0),
+                    WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
                 );
             }));
             tx[surface.root()].push(&member);
             tx[&member]
                 .clip(RoundedRect::new(4.0, 4.0, 28.0, 28.0, 6.0))
                 .opacity(opacity)
+                .blend(blend)
                 .backdrop(group.sample());
+            if let Some(filter) = &member_filter {
+                tx[&member].filter(filter.id());
+            }
             tx[&member].push(&child);
+            // The member's content reaches past the step at x = 16, so
+            // covered pixels see the member's sample too.
             tx[&child].content(surface.record(|r| {
                 r.fill(
-                    Rect::new(16.0, 4.0, 28.0, 28.0),
-                    WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+                    Rect::new(12.0, 4.0, 28.0, 28.0),
+                    WorkingColor::new([0.0, 0.7, 0.0, 1.0]),
                 );
             }));
         });
@@ -388,20 +406,80 @@ fn render(engine: &Engine<Gpu>, opacity: f32) -> Result<cherenkov::Readback, Box
     }
     }
 
+    const SWAP: [f32; 12] = [
+        0.0, 0.0, 1.0, 0.0, //
+        0.0, 1.0, 0.0, 0.0, //
+        1.0, 0.0, 0.0, 0.0,
+    ];
+    const IDENTITY: [f32; 12] = [
+        1.0, 0.0, 0.0, 0.0, //
+        0.0, 1.0, 0.0, 0.0, //
+        0.0, 0.0, 1.0, 0.0,
+    ];
+    // The member as a whole attenuates by its opacity once: inside its
+    // clip, `half` = 0.5·`full` + 0.5·`dst` where `dst` is the sharp
+    // backdrop pixel — true on the sample, on member content, and on
+    // the clip's antialiased edge alike.
+    let dst = |x: usize| {
+        if x < 16 {
+            [1.0, 0.0, 0.0, 1.0]
+        } else {
+            [0.0, 0.0, 1.0, 1.0]
+        }
+    };
+    let faded = |full: &cherenkov::Readback, x: usize, y: usize| {
+        std::array::from_fn(|c| 0.5f32.mul_add(pixel(full, x, y)[c], 0.5 * dst(x)[c]))
+    };
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
-    let half = wait!(render(&engine, 0.5))?;
-    // Sample-only area (left half of the clip): the red backdrop at full
-    // strength, unaffected by the layer's 0.5 opacity.
-    assert_pixel(pixel(&half, 10, 16), [1.0, 0.0, 0.0, 1.0], 1e-3);
-    // Inside the child: 50% blue over the sampled red = [0.5, 0.0, 0.5].
-    assert_pixel(pixel(&half, 20, 16), [0.5, 0.0, 0.5, 1.0], 1e-3);
-    // Outside the clip: the surface is untouched.
+    let normal = cherenkov::BlendMode::Normal;
+    let full = wait!(render(&engine, 1.0, None, normal))?;
+    let half = wait!(render(&engine, 0.5, None, normal))?;
+    // Sample-only over red, content-covered at the step, covered
+    // content, and the clip's corner edge.
+    for &(x, y) in &[(8, 16), (16, 16), (24, 16), (5, 5)] {
+        assert_pixel(pixel(&half, x, y), faded(&full, x, y), 1e-3);
+    }
+    // Outside the clip the surface is untouched.
     assert_pixel(pixel(&half, 1, 16), [1.0, 0.0, 0.0, 1.0], 1e-3);
-    // The clip edge is not squared: a corner pixel's coverage matches the
-    // same layer at full opacity.
-    let full = wait!(render(&engine, 1.0))?;
-    assert_pixel(pixel(&half, 5, 5), pixel(&full, 5, 5), 1e-3);
-    assert_pixel(pixel(&half, 7, 7), pixel(&full, 7, 7), 1e-3);
+    // A filtered member at the same pixels: the sample is attenuated —
+    // never swapped — and fades with the member's content, so the rule
+    // holds at covered pixels too; the member scope compositing sample
+    // and content together is what keeps it true where content covers
+    // the step.
+    let filtered_full = wait!(render(&engine, 1.0, Some(SWAP), normal))?;
+    let filtered_half = wait!(render(&engine, 0.5, Some(SWAP), normal))?;
+    for &(x, y) in &[(8, 16), (16, 16), (24, 16), (5, 5)] {
+        assert_pixel(
+            pixel(&filtered_half, x, y),
+            faded(&filtered_full, x, y),
+            1e-3,
+        );
+    }
+    // An identity-filtered member equals the unfiltered member: the
+    // member scope's nested scopes change nothing — on the clip's rim,
+    // where the swapped sample differs from the sharp backdrop and any
+    // extra clip-edge coverage would show, and in the interior, where
+    // the assertion also pins that the filter never covers the sample.
+    let identity_full = wait!(render(&engine, 1.0, Some(IDENTITY), normal))?;
+    let identity_half = wait!(render(&engine, 0.5, Some(IDENTITY), normal))?;
+    for &(x, y) in &[(6, 5), (5, 5), (8, 16), (16, 16), (24, 16)] {
+        assert_pixel(pixel(&identity_full, x, y), pixel(&full, x, y), 1e-3);
+        assert_pixel(pixel(&identity_half, x, y), pixel(&half, x, y), 1e-3);
+    }
+    // A member's non-Normal blend applies to its sample, for both member
+    // kinds: `Multiply` blends the whole member — sample and content —
+    // against the backdrop, so only channels shared with the backdrop
+    // survive and covered content fades to black.
+    for filter in [None, Some(SWAP)] {
+        let multi = wait!(render(&engine, 1.0, filter, cherenkov::BlendMode::Multiply))?;
+        let base = if filter.is_some() { &filtered_full } else { &full };
+        // Sample-only pixel over red: Multiply blends S as S·D — the
+        // swapped sample is blue over red, so only black survives.
+        let s = pixel(base, 8, 16);
+        assert_pixel(pixel(&multi, 8, 16), [s[0], 0.0, 0.0, 1.0], 1e-3);
+        // Covered content over the step: green × blue = black.
+        assert_pixel(pixel(&multi, 24, 16), [0.0, 0.0, 0.0, 1.0], 1e-3);
+    }
     Ok(())
 }
 }

@@ -1011,7 +1011,8 @@ impl<'a, 'b> Lowering<'a, 'b> {
     }
 
     /// Emits the member's `Sample` item, covering `member ∩ region` under
-    /// the clip in force.
+    /// the clip in force, at full strength — the member's own scope
+    /// attenuates it at composite.
     fn emit_backdrop_sample(&mut self, gid: u64, member: LayerId) {
         let Some(plan) = self.backdrops.get(&gid) else {
             return;
@@ -1282,47 +1283,95 @@ impl<'a, 'b> Lowering<'a, 'b> {
             self.emit_capture(gid, id);
         }
         let outer = self.clip.clone();
+        // A filtered member composites as a whole — its sample and its
+        // filtered content — with the member's opacity and blend. When
+        // neither is a no-op an outer member scope composites at
+        // (opacity, blend) under `composite_clip` below; the sample draws
+        // into it at full strength under the member clip, outside the
+        // filter, beside a nested filter scope at opacity 1, `Normal`
+        // blend over the items.
+        let member_scope = backdrop
+            .zip(node.filter)
+            .filter(|_| opacity < 1.0 || blend != BlendMode::Normal);
         let result = self.with_clip(node.clip.as_ref(), |s| {
             s.transform = content_space;
-            if let Some(gid) = backdrop {
-                s.emit_backdrop_sample(gid, id);
-            }
-            if let Some(filter) = node.filter {
-                let clip = s.clip.clone();
-                s.filter_isolate(
-                    filter,
-                    opacity,
-                    (blend, cherenkov::BlendSpace::Linear),
-                    clip,
-                    |s| s.layer_items(id, node, tree, caches),
-                    Some(id),
-                )
-            } else if opacity < 1.0
-                || blend != BlendMode::Normal
-                // The root already renders into the surface target, and a
-                // local root into its image.
-                || (id != s.start(tree) && node.blends_within())
-            {
-                // The composite's clip: for destructive operators the
-                // operator applies over the layer's effective clip, so the
-                // combined clip is the bound; for every other mode a
-                // transparent source leaves the destination unchanged, so
-                // the clip in force before the layer's own clip suffices —
-                // the layer clip's coverage is already on the content.
-                let composite_clip = if crate::render::blend::is_destructive(blend) {
-                    s.clip.clone()
-                } else {
-                    outer.clone()
-                };
-                s.isolate(
+            // The composite's clip: for destructive operators the
+            // operator applies over the layer's effective clip, so the
+            // combined clip is the bound; for every other mode a
+            // transparent source leaves the destination unchanged, so
+            // the clip in force before the layer's own clip suffices —
+            // the layer clip's coverage is already on the content.
+            let composite_clip = if crate::render::blend::is_destructive(blend) {
+                s.clip.clone()
+            } else {
+                outer.clone()
+            };
+            match member_scope {
+                Some((gid, filter)) => s.isolate(
                     opacity,
                     (blend, cherenkov::BlendSpace::Linear),
                     s.clip.clone(),
                     composite_clip,
-                    |s| s.layer_items(id, node, tree, caches),
-                )
-            } else {
-                s.layer_items(id, node, tree, caches)
+                    |s| {
+                        s.emit_backdrop_sample(gid, id);
+                        let clip = s.clip.clone();
+                        s.filter_isolate(
+                            filter,
+                            1.0,
+                            (BlendMode::Normal, cherenkov::BlendSpace::Linear),
+                            clip,
+                            |s| s.layer_items(id, node, tree, caches),
+                            Some(id),
+                        )
+                    },
+                ),
+                None => {
+                    if let Some(filter) = node.filter {
+                        // Opaque `Normal`-blended member (or no member at all):
+                        // the sample lands in the enclosing plane before the
+                        // isolation — the filter never covers it.
+                        if let Some(gid) = backdrop {
+                            s.emit_backdrop_sample(gid, id);
+                        }
+                        let clip = s.clip.clone();
+                        s.filter_isolate(
+                            filter,
+                            opacity,
+                            (blend, cherenkov::BlendSpace::Linear),
+                            clip,
+                            |s| s.layer_items(id, node, tree, caches),
+                            Some(id),
+                        )
+                    } else if opacity < 1.0
+                        || blend != BlendMode::Normal
+                        // The root already renders into the surface target, and a
+                        // local root into its image.
+                        || (id != s.start(tree) && node.blends_within())
+                    {
+                        // An unfiltered member's sample is its plane's
+                        // bottom-most content: the level's opacity and blend
+                        // apply to it exactly as to the member's items, once.
+                        s.isolate(
+                            opacity,
+                            (blend, cherenkov::BlendSpace::Linear),
+                            s.clip.clone(),
+                            composite_clip,
+                            |s| {
+                                if let Some(gid) = backdrop {
+                                    s.emit_backdrop_sample(gid, id);
+                                }
+                                s.layer_items(id, node, tree, caches)
+                            },
+                        )
+                    } else {
+                        if let Some(gid) = backdrop {
+                            // Nothing isolates: the member's content plane is
+                            // the enclosing one.
+                            s.emit_backdrop_sample(gid, id);
+                        }
+                        s.layer_items(id, node, tree, caches)
+                    }
+                }
             }
         });
         self.transform = saved;

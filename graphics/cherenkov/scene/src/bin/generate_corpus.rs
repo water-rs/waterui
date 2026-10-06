@@ -6100,7 +6100,7 @@ fn run() -> Result<(), SceneError> {
             // capture sees it at full opacity, straddling the member's
             // left edge so the difference is readable.
             t.fill(
-                Shape::rect(28.0, 100.0, 84.0, 156.0),
+                Shape::rect(28.0, 100.0, 56.0, 56.0),
                 solid(srgb(0.05, 0.80, 0.35)),
             );
             t.layer(|m| {
@@ -6109,10 +6109,73 @@ fn run() -> Result<(), SceneError> {
                 )));
                 m.backdrop(1);
                 m.fill(
-                    Shape::rect(38.0, 54.0, 218.0, 202.0),
+                    Shape::rect(38.0, 54.0, 180.0, 148.0),
                     solid(srgba(1.0, 1.0, 1.0, 0.18)),
                 );
             });
+        });
+    });
+
+    // #1974: a member's own opacity fades it as a whole, backdrop
+    // sample included. Blurred members at 0.5 over the same busy
+    // backdrop: the unfiltered member's sample attenuates with its
+    // canvas; the filtered member's sample stays outside the filter's
+    // reach — untinted — and fades the same way; the `Multiply`
+    // filtered member blends its sample against the backdrop too.
+    corpus.scene_setup("backdrop-member-opacity", 256, 256, white, |b| {
+        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 6.0 }], 1.0);
+        let l = &mut b.root();
+        backdrop_background(l);
+        l.layer(|m| {
+            m.clip(Shape::RoundedRect(RoundedRect::new(
+                36.0, 52.0, 124.0, 204.0, 20.0,
+            )));
+            m.opacity(0.5);
+            m.backdrop(1);
+            m.fill(
+                Shape::rect(38.0, 54.0, 84.0, 148.0),
+                solid(srgba(1.0, 1.0, 1.0, 0.18)),
+            );
+        });
+        l.layer(|m| {
+            m.clip(Shape::RoundedRect(RoundedRect::new(
+                132.0, 52.0, 220.0, 204.0, 20.0,
+            )));
+            m.opacity(0.5);
+            m.backdrop(1);
+            // Swaps red and blue on the member's own content only.
+            m.filter(LayerFilter::ColorMatrix {
+                matrix: [
+                    0.0, 0.0, 1.0, 0.0, // r' = b
+                    0.0, 1.0, 0.0, 0.0, // g' = g
+                    1.0, 0.0, 0.0, 0.0, // b' = r
+                ],
+            });
+            m.fill(
+                Shape::rect(140.0, 64.0, 72.0, 56.0),
+                solid(srgb(0.95, 0.45, 0.10)),
+            );
+        });
+        // A filtered `Multiply` member: the member's blend reaches its
+        // backdrop sample as well as its items.
+        l.layer(|m| {
+            m.clip(Shape::RoundedRect(RoundedRect::new(
+                36.0, 214.0, 220.0, 248.0, 12.0,
+            )));
+            m.opacity(0.5);
+            m.blend(BlendMode::Multiply);
+            m.backdrop(1);
+            m.filter(LayerFilter::ColorMatrix {
+                matrix: [
+                    0.0, 0.0, 1.0, 0.0, // r' = b
+                    0.0, 1.0, 0.0, 0.0, // g' = g
+                    1.0, 0.0, 0.0, 0.0, // b' = r
+                ],
+            });
+            m.fill(
+                Shape::rect(44.0, 220.0, 96.0, 22.0),
+                solid(srgb(0.95, 0.45, 0.10)),
+            );
         });
     });
 

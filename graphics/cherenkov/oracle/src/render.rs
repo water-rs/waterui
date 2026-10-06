@@ -46,10 +46,18 @@
 //! the premultiplied `[r, g, b, a]` pixel, alpha untouched. Every member
 //! composites the filtered capture under its own clip's exact coverage,
 //! source-over, as its bottom-most content; its items and children draw
-//! after. Nested groups follow naturally: an inner group's capture is taken
-//! at its first member's paint time and so includes an enclosing member's
-//! sample and earlier content. A member without a clip or referencing an
-//! undeclared group id is a render error.
+//! after. The member — its backdrop sample and its content — composites
+//! as a whole with its own opacity and blend: a filter covers the
+//! member's items, never the sample. An unfiltered member's sample
+//! lands in its own canvas; a filtered member's sample lands in an
+//! outer member scope that composites at the member's opacity and
+//! blend, holding the sample beside a nested filter scope over the
+//! items — or in the enclosing canvas when opacity and blend are
+//! no-ops. The member's blend applies to the sample for both member
+//! kinds. Nested groups follow naturally: an inner group's capture is
+//! taken at its first member's paint time and so includes an enclosing
+//! member's sample and earlier content. A member without a clip or
+//! referencing an undeclared group id is a render error.
 
 use std::collections::HashMap;
 
@@ -452,10 +460,6 @@ impl Renderer {
     /// the parent's. Clip-only and `opacity < 1` levels are not semantic
     /// isolations — a backdrop capture looks through them to the nearest
     /// filtered or `blend != Normal` level (see `flattened`).
-    #[expect(
-        clippy::many_single_char_names,
-        reason = "w/h/dst/s/b/c name geometry and pixel values"
-    )]
     fn render_child_layer(
         &self,
         child: &Layer,
@@ -479,14 +483,29 @@ impl Renderer {
         let content_tf = tf * Affine::translate((-child.scroll_offset.x, -child.scroll_offset.y));
 
         let (w, h) = (top(chain).width, top(chain).height);
-        // A member that is itself filtered draws its backdrop sample into
-        // the enclosing canvas first: `layer` in gpu/src/render/lower.rs
-        // emits the sample to the current target before and outside the
-        // layer's isolation, so the layer's filter covers the member's
-        // items but never the sample.
-        if child.filter.is_some() && child.backdrop.is_some() {
+        // A filtered member composites as a whole — its sample and its
+        // filtered content — with the member's opacity and blend. When
+        // neither is a no-op an outer member scope holds the sample at
+        // full strength, outside the filter, beside a nested filter
+        // scope over the items. An opaque `Normal`-blended member needs
+        // no scope: its sample lands in the enclosing canvas before the
+        // isolation, so the filter never covers it either.
+        let filtered_member = child.filter.is_some() && child.backdrop.is_some();
+        let member_scope =
+            filtered_member && (child.opacity < 1.0 || child.blend != BlendMode::Normal);
+        if filtered_member && !member_scope {
             let space = chain.last().map_or(BlendSpace::Linear, |l| l.space);
             self.backdrop_sample(child, tf, clips, top(chain), space, backdrops)?;
+        }
+        if member_scope {
+            chain.push(Level {
+                canvas: Canvas::new(w, h, [0.0; 4]),
+                opacity: child.opacity,
+                blend: child.blend,
+                space: BlendSpace::Linear,
+                semantic: child.blend != BlendMode::Normal,
+            });
+            self.backdrop_sample(child, tf, clips, top(chain), BlendSpace::Linear, backdrops)?;
         }
         // A filtered layer is a semantic isolation too: a backdrop capture
         // inside it reads this canvas, matching `isolate` in
@@ -500,8 +519,12 @@ impl Renderer {
         let parent_space = chain.last().map_or(BlendSpace::Linear, |l| l.space);
         chain.push(Level {
             canvas: Canvas::new(w, h, [0.0; 4]),
-            opacity: child.opacity,
-            blend: child.blend,
+            opacity: if member_scope { 1.0 } else { child.opacity },
+            blend: if member_scope {
+                BlendMode::Normal
+            } else {
+                child.blend
+            },
             space: if semantic || child.opacity < 1.0 {
                 BlendSpace::Linear
             } else {
@@ -519,6 +542,31 @@ impl Renderer {
             resources,
             backdrops,
         )?;
+        self.pop_level(&child_clips, child.filter.as_deref(), chain, resources)?;
+        if member_scope {
+            // The member scope composites the whole — sample and
+            // filtered content — at the member's opacity and blend,
+            // with the member clip bounding a destructive operator.
+            self.pop_level(&child_clips, None, chain, resources)?;
+        }
+        Ok(())
+    }
+
+    /// Pops the level on top of `chain` and composites it into the level
+    /// beneath: applies `filter` — the child's layer filter — to the
+    /// level's pixels and masks the result by `child_clips`, then
+    /// composites with the level's own opacity and blend. A destructive
+    /// operator is bounded by the `child_clips` coverage: outside it the
+    /// destination is untouched, and the clip edge is antialiased between
+    /// the backdrop and the blended result; unclipped it covers the whole
+    /// parent.
+    fn pop_level(
+        &self,
+        child_clips: &[Vec<Segment>],
+        filter: Option<&LayerFilter>,
+        chain: &mut Vec<Level>,
+        resources: &mut Resources,
+    ) -> Result<(), RenderError> {
         let Level {
             canvas: mut sub,
             opacity,
@@ -526,7 +574,7 @@ impl Renderer {
             space,
             ..
         } = chain.pop().expect("the child level is pushed above");
-        if let Some(filter) = child.filter.as_deref() {
+        if let Some(filter) = filter {
             let texels = match filter {
                 LayerFilter::BlendImage { image, .. } => {
                     Some(resources.texels(*image).map_err(RenderError::Resource)?)
@@ -540,7 +588,7 @@ impl Renderer {
                     &Shape::Rect(self.scene_rect),
                     FillRule::NonZero,
                     Affine::IDENTITY,
-                    &child_clips,
+                    child_clips,
                 );
                 for (px, m) in sub.pixels.iter_mut().zip(mask) {
                     *px = px.map(|v| v * m);
@@ -548,10 +596,6 @@ impl Renderer {
             }
         }
 
-        // A destructive operator is bounded by the effective clip: outside
-        // it the destination is untouched, and the clip edge is antialiased
-        // between the backdrop and the blended result. Unclipped it covers
-        // the whole parent.
         let clip_cov: Option<Vec<f64>> = if Self::is_destructive(mode) && !child_clips.is_empty() {
             let mut segs = child_clips[0].clone();
             for c in &child_clips[1..] {
@@ -828,8 +872,10 @@ impl Renderer {
     }
 
     /// Draw the member's shared group capture into `canvas` under the
-    /// member clip's exact coverage, source-over. `clips` is the enclosing
-    /// clip stack; the member's own clip is the sampled shape.
+    /// member clip's exact coverage, source-over, at full strength —
+    /// the member's own scope attenuates it at composite. `clips` is
+    /// the enclosing clip stack; the member's own clip is the sampled
+    /// shape.
     ///
     /// # Errors
     /// `RenderError::Backdrop` when the member has no clip.
@@ -911,9 +957,10 @@ impl Renderer {
         if let Some(gid) = child.backdrop {
             // The capture was taken when this member (or an earlier one)
             // was reached; sample it under the member clip's coverage as
-            // the layer's bottom-most content. A filtered member already
-            // drew its sample into the enclosing canvas — its isolation
-            // does not cover the sample — so only the clip check applies.
+            // the layer's bottom-most content — the level's opacity
+            // attenuates it at composite. A filtered member already drew
+            // its sample outside the filter's reach — into the enclosing
+            // canvas or its member scope — so only the clip check applies.
             if child.filter.is_none() {
                 let space = target.last().map_or(BlendSpace::Linear, |l| l.space);
                 self.backdrop_sample(child, tf, clips, top(target), space, backdrops)?;

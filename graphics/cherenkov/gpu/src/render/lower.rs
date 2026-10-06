@@ -1747,15 +1747,9 @@ impl<'a> Lowering<'a> {
     /// composite. An unclipped overlapping batch can become the scratch pass
     /// directly; nested or clipped batches are rolled back and isolated again.
     #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
         clippy::too_many_arguments,
-        clippy::too_many_lines,
-        reason = "surface size is a small positive float; an isolate carries the
-        clip, style and pixel-space state of one scope"
+        reason = "an isolate carries the clip, style and pixel-space state of one scope"
     )]
-    // Keep isolation's speculative buffers off the ordinary drawing walk's stack.
-    #[inline(never)]
     fn isolate(
         &mut self,
         inner_clip: Option<DeviceClip>,
@@ -1774,6 +1768,32 @@ impl<'a> Lowering<'a> {
         {
             return Ok(());
         }
+        self.isolate_direct(inner_clip, filter, opacity, blend, space, body, glyphs)
+    }
+
+    /// [`isolate`](Self::isolate) without the pass-through speculation:
+    /// for a body that can never fold into the parent pass — the member
+    /// scope of a filtered member always opens its nested filter scope.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::too_many_arguments,
+        reason = "surface size is a small positive float; an isolate carries the
+        clip, style and pixel-space state of one scope"
+    )]
+    // Keep isolation's saved state, live across the recursive body, off
+    // the ordinary drawing walk's stack.
+    #[inline(never)]
+    fn isolate_direct(
+        &mut self,
+        inner_clip: Option<DeviceClip>,
+        filter: Option<cherenkov::FilterId>,
+        opacity: f32,
+        blend: cherenkov::BlendMode,
+        space: cherenkov::BlendSpace,
+        mut body: impl FnMut(&mut Self, &GlyphContext<'_>) -> Result<(), RenderError>,
+        glyphs: &GlyphContext<'_>,
+    ) -> Result<(), RenderError> {
         self.depth += 1;
         let scratch = self.depth - 1;
         let outer_clip = self.clip;
@@ -1983,6 +2003,9 @@ impl<'a> Lowering<'a> {
     /// when `body` stayed in one pass (folding opacity for disjoint bounds,
     /// or promoting an unclipped overlapping batch into a scratch pass).
     /// Otherwise rolls back and returns `Ok(false)` for nested/clipped isolation.
+    // Keep the speculative snapshot, live across the recursive body, off
+    // the ordinary drawing walk's stack.
+    #[inline(never)]
     fn try_passthrough(
         &mut self,
         opacity: f32,
@@ -2177,11 +2200,12 @@ impl<'a> Lowering<'a> {
     }
 
     /// Emits a member's composite of the shared capture as the
-    /// bottom-most draw inside its clip, covering `member ∩ region`.
-    /// Members without an effect on a 1:1 capture keep the plain
-    /// `PAINT_TEXTURE` sample; an effect, or a reduced-scale capture,
-    /// turns the instance into `PAINT_BACKDROP` with its kind and
-    /// parameter stops packed in `meta[3]`'s low bits.
+    /// bottom-most draw inside its clip, covering `member ∩ region`,
+    /// at full strength — the member's own scope attenuates it at
+    /// composite. Members without an effect on a 1:1 capture keep the
+    /// plain `PAINT_TEXTURE` sample; an effect, or a reduced-scale
+    /// capture, turns the instance into `PAINT_BACKDROP` with its kind
+    /// and parameter stops packed in `meta[3]`'s low bits.
     #[expect(clippy::cast_precision_loss, reason = "region fits the surface")]
     fn emit_backdrop_sample(
         &mut self,
@@ -2537,7 +2561,7 @@ impl<'a> Lowering<'a> {
         } else {
             (node.opacity, node.blend)
         };
-        let backdrop = node.backdrop.clone();
+        let backdrop = &node.backdrop;
         let saved = self.transform;
         let saved_animating = self.animating;
         if !local_root {
@@ -2555,78 +2579,244 @@ impl<'a> Lowering<'a> {
             // The root already renders into the surface target, and a
             // local root into its image.
             || (id != self.start(tree) && node.blends_within());
-        if let Some(sample) = &backdrop {
+        if let Some(sample) = backdrop {
             let gid = sample.group().raw();
             let plan = &self.backdrops[&gid];
             if plan.first == id && !plan.regions.is_empty() {
                 self.emit_capture(gid);
             }
         }
-        let result = if isolates && node.filter.is_none() && !is_destructive(blend) {
-            // The member's sample draws to the current target under the
-            // member clip, before and outside the layer's own isolation,
-            // unaffected by the layer's opacity or blend.
-            if let Some(sample) = &backdrop {
-                self.with_clip(
-                    clip,
-                    |s, _glyphs| {
-                        s.transform = content_space;
-                        s.emit_backdrop_sample(sample.group().raw(), id, sample.effect())
-                    },
-                    glyphs,
-                )?;
-            }
-            // The layer clip applies inside the scratch only; the composite
-            // runs under the clip in force outside the layer.
-            self.isolate(
-                None,
-                None,
+        let result = self.layer_body(
+            id,
+            node,
+            tree,
+            caches,
+            glyphs,
+            clip,
+            content_space,
+            opacity,
+            blend,
+            isolates,
+        );
+        self.transform = saved;
+        self.animating = saved_animating;
+        result
+    }
+
+    /// Renders a non-projective layer's members. An unfiltered member's
+    /// sample is its canvas's bottom-most content — the layer's opacity
+    /// and blend cover it exactly like its items — while a filtered
+    /// member composites as a whole too (#1974): when its opacity or
+    /// blend is not a no-op an outer member scope composites at the
+    /// member's opacity and blend — under the clip in force outside the
+    /// member for a non-destructive blend, under the member clip for a
+    /// destructive one — holding the sample, clipped at full strength,
+    /// beside a nested filter scope over the items; the member's blend
+    /// applies to the sample either way. The
+    /// filter covers the member's items, never its sample.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the layer walk's fixed context, not real complexity"
+    )]
+    fn layer_body(
+        &mut self,
+        id: LayerId,
+        node: &cherenkov::LayerNode,
+        tree: &SurfaceTree,
+        caches: &mut FxHashMap<LayerId, ContentData>,
+        glyphs: &GlyphContext<'_>,
+        clip: Option<&ShapeData>,
+        content_space: Affine,
+        opacity: f32,
+        blend: cherenkov::BlendMode,
+        isolates: bool,
+    ) -> Result<(), RenderError> {
+        // A filtered member whose opacity or blend is not a no-op
+        // composites in two nested member scopes; the scope carries the
+        // member's sample and filter by type.
+        let member_scope = node
+            .backdrop
+            .as_ref()
+            .zip(node.filter)
+            .filter(|_| opacity < 1.0 || blend != cherenkov::BlendMode::Normal);
+        match member_scope {
+            Some((sample, filter)) => self.filtered_member_scope(
+                id,
+                node,
+                tree,
+                caches,
+                glyphs,
+                clip,
+                content_space,
                 opacity,
                 blend,
-                // Layers declare no space; their isolation composites
-                // in the enclosing level's linear storage.
-                cherenkov::BlendSpace::Linear,
-                |s, glyphs| {
-                    s.with_clip(
-                        clip,
-                        |s, glyphs| {
-                            s.transform = content_space;
+                sample,
+                filter,
+            ),
+            None if isolates && node.filter.is_none() && !is_destructive(blend) => {
+                // The layer clip applies inside the scratch only; the composite
+                // runs under the clip in force outside the layer. A member's
+                // sample is its canvas's bottom-most content: the layer's
+                // opacity and blend apply to it exactly as to its items,
+                // once.
+                self.isolate(
+                    None,
+                    None,
+                    opacity,
+                    blend,
+                    // Layers declare no space; their isolation composites
+                    // in the enclosing level's linear storage.
+                    cherenkov::BlendSpace::Linear,
+                    |s, glyphs| {
+                        s.with_clip(
+                            clip,
+                            |s, glyphs| {
+                                s.transform = content_space;
+                                if let Some(sample) = &node.backdrop {
+                                    s.emit_backdrop_sample(
+                                        sample.group().raw(),
+                                        id,
+                                        sample.effect(),
+                                    )?;
+                                }
+                                s.layer_items(id, node, tree, caches, glyphs)
+                            },
+                            glyphs,
+                        )
+                    },
+                    glyphs,
+                )
+            }
+            None => {
+                self.with_clip(
+                    clip,
+                    |s, glyphs| {
+                        s.transform = content_space;
+                        if let Some(sample) = &node.backdrop
+                            && (node.filter.is_some() || !isolates)
+                        {
+                            // An opaque `Normal`-blended filtered member's
+                            // sample — or one nothing isolates — lands in
+                            // the enclosing target at full strength: the
+                            // member's filter never covers it.
+                            s.emit_backdrop_sample(sample.group().raw(), id, sample.effect())?;
+                        }
+                        if isolates {
+                            let inner = s.clip;
+                            s.isolate(
+                                inner,
+                                node.filter,
+                                opacity,
+                                blend,
+                                cherenkov::BlendSpace::Linear,
+                                |s, glyphs| {
+                                    if let Some(sample) = &node.backdrop
+                                        && node.filter.is_none()
+                                    {
+                                        // An unfiltered member's sample is
+                                        // its canvas's bottom-most content.
+                                        s.emit_backdrop_sample(
+                                            sample.group().raw(),
+                                            id,
+                                            sample.effect(),
+                                        )?;
+                                    }
+                                    s.layer_items(id, node, tree, caches, glyphs)
+                                },
+                                glyphs,
+                            )
+                        } else {
                             s.layer_items(id, node, tree, caches, glyphs)
-                        },
+                        }
+                    },
+                    glyphs,
+                )
+            }
+        }
+    }
+
+    /// A filtered member whose opacity or blend is not a no-op
+    /// composites in two nested scopes: the outer member scope
+    /// composites at the member's opacity and blend, holding the
+    /// backdrop sample at full strength — outside the filter — beside
+    /// a nested filter scope covering the member's items at opacity 1,
+    /// `Normal` blend. The member clip applies inside the member scope,
+    /// like the unfiltered member's: a non-destructive composite runs
+    /// under the ancestor clip, so the edge coverage multiplies once; a
+    /// destructive composite carries the member clip as its operator
+    /// domain.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the layer walk's fixed context, not real complexity"
+    )]
+    fn filtered_member_scope(
+        &mut self,
+        id: LayerId,
+        node: &cherenkov::LayerNode,
+        tree: &SurfaceTree,
+        caches: &mut FxHashMap<LayerId, ContentData>,
+        glyphs: &GlyphContext<'_>,
+        clip: Option<&ShapeData>,
+        content_space: Affine,
+        opacity: f32,
+        blend: cherenkov::BlendMode,
+        sample: &cherenkov::BackdropSample,
+        filter: cherenkov::FilterId,
+    ) -> Result<(), RenderError> {
+        // The member scope's contents: the sample at full strength —
+        // outside the filter — beside a nested filter scope over the
+        // member's items at opacity 1, `Normal` blend.
+        let mut body = |s: &mut Self, glyphs: &GlyphContext<'_>| {
+            s.emit_backdrop_sample(sample.group().raw(), id, sample.effect())?;
+            let inner = s.clip;
+            s.isolate(
+                inner,
+                Some(filter),
+                1.0,
+                cherenkov::BlendMode::Normal,
+                cherenkov::BlendSpace::Linear,
+                |s, glyphs| s.layer_items(id, node, tree, caches, glyphs),
+                glyphs,
+            )
+        };
+        if is_destructive(blend) {
+            self.with_clip(
+                clip,
+                |s, glyphs| {
+                    s.transform = content_space;
+                    let inner = s.clip;
+                    s.isolate_direct(
+                        inner,
+                        None,
+                        opacity,
+                        blend,
+                        cherenkov::BlendSpace::Linear,
+                        &mut body,
                         glyphs,
                     )
                 },
                 glyphs,
             )
         } else {
-            self.with_clip(
-                clip,
+            self.isolate_direct(
+                None,
+                None,
+                opacity,
+                blend,
+                cherenkov::BlendSpace::Linear,
                 |s, glyphs| {
-                    s.transform = content_space;
-                    if let Some(sample) = &backdrop {
-                        s.emit_backdrop_sample(sample.group().raw(), id, sample.effect())?;
-                    }
-                    if isolates {
-                        let inner = s.clip;
-                        s.isolate(
-                            inner,
-                            node.filter,
-                            opacity,
-                            blend,
-                            cherenkov::BlendSpace::Linear,
-                            |s, glyphs| s.layer_items(id, node, tree, caches, glyphs),
-                            glyphs,
-                        )
-                    } else {
-                        s.layer_items(id, node, tree, caches, glyphs)
-                    }
+                    s.with_clip(
+                        clip,
+                        |s, glyphs| {
+                            s.transform = content_space;
+                            body(s, glyphs)
+                        },
+                        glyphs,
+                    )
                 },
                 glyphs,
             )
-        };
-        self.transform = saved;
-        self.animating = saved_animating;
-        result
+        }
     }
 
     /// A projective layer composes its completed local image with one

@@ -1750,8 +1750,10 @@ impl Band<'_> {
     /// Composites `capture`'s rows over the band's top inside `bounds`,
     /// under `clip` — the member's backdrop sample.
     /// Samples `capture` under `clip` with the member's `effect`
-    /// (`SampleEffect::None` reads the capture unchanged). Writes are
-    /// `clip`-coverage-gated: nothing lands outside the member clip.
+    /// (`SampleEffect::None` reads the capture unchanged) at full
+    /// strength — the member's own scope attenuates it at composite.
+    /// Writes are `clip`-coverage-gated: nothing lands outside the
+    /// member clip.
     fn sample(
         &mut self,
         capture: &Capture,
