@@ -108,11 +108,12 @@ pub enum ScrollRunOutcome {
 /// [`ScrollHandle::apply_fling_offset`]; any newer claim — a request, a
 /// jump, user input — owns the offset instead, the refused write ends the
 /// fling rather than overwriting its successor. A membership anchor's
-/// `rebase` does not claim the offset, so a fling survives the coordinate
-/// shift: the shift it accumulated applies to the fling's next positions —
-/// the fling's origin moved with the content. Like [`ScrollRun`], the
-/// claim carries the issuing scroll view's identity — a `Weak` pinning its
-/// state's allocation — and applying it on another view's handle panics.
+/// shifted [`ScrollHandle::rebind`] does not claim the offset, so a fling
+/// survives the coordinate shift: the shift it accumulated applies to the
+/// fling's next positions — the fling's origin moved with the content. Like
+/// [`ScrollRun`], the claim carries the issuing scroll view's identity — a
+/// `Weak` pinning its state's allocation — and applying it on another view's
+/// handle panics.
 #[derive(Clone, Debug)]
 pub struct FlingClaim {
     /// The issuing scroll view's state, kept alive enough that its address
@@ -182,7 +183,7 @@ struct ScrollState {
     /// single slot reports an earlier run as `Interrupted` once a newer one
     /// has ended.
     last_run_outcome: Option<(u64, ScrollRunOutcome)>,
-    /// The coordinate shift [`ScrollState::rebase`] has applied since the
+    /// The coordinate shift [`ScrollHandle::rebind`] has applied since the
     /// current fling began — added to its sampled positions so the fling's
     /// origin moves with the content. Reset by [`ScrollHandle::begin_fling`]
     /// and never by a claim: a refused fling writes nothing anyway.
@@ -231,6 +232,14 @@ impl ScrollHandle {
 
     /// Rebinds this scroll view to its latest layout and returns the handle
     /// generation that input registered for the current frame must capture.
+    ///
+    /// `shift` first translates the coordinate system on the scrolled axes —
+    /// a list's membership anchor passes how far the content under the
+    /// viewport moved — without claiming the offset: the offset, the
+    /// wheel-glide targets, a live run's origin and destination and the
+    /// fling's origin all move together, so whatever owned the offset keeps
+    /// owning it. Everything then clamps to the new extents once. Pass
+    /// `(0.0, 0.0)` when the content did not move.
     #[must_use]
     pub fn rebind(
         &mut self,
@@ -239,6 +248,7 @@ impl ScrollHandle {
         viewport_height: f64,
         content_width: f64,
         content_height: f64,
+        shift: (f64, f64),
     ) -> Self {
         self.generation = self.state.borrow_mut().prepare_generation(
             axis,
@@ -246,6 +256,7 @@ impl ScrollHandle {
             viewport_height,
             content_width,
             content_height,
+            shift,
         );
         self.flush_offset_report();
         self.clone()
@@ -457,22 +468,16 @@ impl ScrollHandle {
     /// writing while it feeds the claim back to [`Self::apply_fling_offset`]
     /// each tick, until a newer claim — a request, a jump, user input — owns
     /// the offset instead and the refused write ends the fling.
-    /// [`Self::rebase`] translates the fling's coordinate system without
-    /// claiming it, so a membership anchor cannot stop a fling. Call it only
-    /// when a fling actually starts: the mint itself claims the offset.
+    /// A shifted [`Self::rebind`] translates the fling's coordinate system
+    /// without claiming it, so a membership anchor cannot stop a fling. Call
+    /// it only when a fling actually starts: the mint itself claims the
+    /// offset.
     #[must_use]
     pub fn begin_fling(&self) -> FlingClaim {
-        let mut state = self.state.borrow_mut();
-        state.claim();
-        state.spend_recorded_outcome();
-        state.smooth_target_x = None;
-        state.smooth_target_y = None;
-        state.smooth_last_tick = None;
-        state.fling_shift_x = 0.0;
-        state.fling_shift_y = 0.0;
+        let offset_epoch = self.state.borrow_mut().begin_fling();
         FlingClaim {
             state: Rc::downgrade(&self.state),
-            offset_epoch: state.offset_epoch,
+            offset_epoch,
         }
     }
 
@@ -482,13 +487,14 @@ impl ScrollHandle {
     /// so the fling ends instead of writing over its successor. The claim is
     /// the ownership record — not the handle's generation: a `rebind` for
     /// rows measured mid-fling does not end it, and the write clamps to the
-    /// extents live at that frame.
+    /// extents live at that frame. `None` names an axis the fling does not
+    /// sample: that axis keeps its current offset untouched.
     ///
     /// # Panics
     ///
     /// When `claim` was minted by a different scroll view's handle.
     #[must_use]
-    pub fn apply_fling_offset(&self, claim: &FlingClaim, x: f64, y: f64) -> bool {
+    pub fn apply_fling_offset(&self, claim: &FlingClaim, x: Option<f64>, y: Option<f64>) -> bool {
         self.assert_same_state(&claim.state, "fling claim");
         let changed = {
             let mut state = self.state.borrow_mut();
@@ -496,25 +502,6 @@ impl ScrollHandle {
                 return false;
             }
             state.apply_fling_offset(x, y)
-        };
-        self.flush_offset_report();
-        changed
-    }
-
-    /// Shifts the coordinate system by `(dx, dy)` without claiming the
-    /// offset: the offset, the wheel-glide targets, a live run's origin and
-    /// destination and the fling's origin all translate together, so
-    /// whatever owned the offset — a user fling included — keeps owning it.
-    /// A membership anchor uses this where [`Self::scroll_to`] would end the
-    /// motion in flight.
-    #[must_use]
-    pub fn rebase(&self, dx: f64, dy: f64) -> bool {
-        let changed = {
-            let mut state = self.state.borrow_mut();
-            if state.generation != self.generation {
-                return false;
-            }
-            state.rebase(dx, dy)
         };
         self.flush_offset_report();
         changed
@@ -571,22 +558,28 @@ impl ScrollState {
         viewport_height: f64,
         content_width: f64,
         content_height: f64,
+        (shift_x, shift_y): (f64, f64),
     ) -> u64 {
         let layout_changed = self.axis != axis
             || value_changed(self.viewport_width, viewport_width)
             || value_changed(self.viewport_height, viewport_height)
             || value_changed(self.content_width, content_width)
             || value_changed(self.content_height, content_height);
-        let old_offset_x = self.offset_x;
-        let old_offset_y = self.offset_y;
         self.axis = axis;
         self.viewport_width = viewport_width;
         self.viewport_height = viewport_height;
         self.content_width = content_width;
         self.content_height = content_height;
+        // Translate first, clamp once: clamping against the new extents
+        // before the shift would remove what the shift removes a second
+        // time. The shift keeps the same content under the viewport, so only
+        // the clamp's correction counts as an offset change.
+        self.translate(shift_x, shift_y);
+        let translated_x = self.offset_x;
+        let translated_y = self.offset_y;
         self.clamp_offsets();
-        let offset_changed = value_changed(old_offset_x, self.offset_x)
-            || value_changed(old_offset_y, self.offset_y);
+        let offset_changed = value_changed(translated_x, self.offset_x)
+            || value_changed(translated_y, self.offset_y);
         if layout_changed || offset_changed {
             self.generation = self
                 .generation
@@ -628,6 +621,57 @@ impl ScrollState {
             .expect("scroll offset epoch overflow");
         self.end_programmatic(ScrollRunOutcome::Interrupted);
         self.offset_epoch
+    }
+
+    /// Takes the offset for a programmatic writer — a jump or a run —
+    /// returning the claim: a live run ends `Interrupted` and the wheel
+    /// glide, its targets and its frame clock, is dropped.
+    const fn take_for_request(&mut self) -> u64 {
+        let claim = self.claim();
+        self.smooth_target_x = None;
+        self.smooth_target_y = None;
+        self.smooth_last_tick = None;
+        claim
+    }
+
+    /// Takes the offset for user input: the request's take plus the spend of
+    /// a recorded `Landed`, so a pending request cannot correct its
+    /// post-landing position back over the user's scroll.
+    const fn take_for_user(&mut self) -> u64 {
+        let claim = self.take_for_request();
+        self.spend_recorded_outcome();
+        claim
+    }
+
+    /// Mints a touch fling's claim: the fling takes the offset as user
+    /// input, and the coordinate shift applied to its positions restarts.
+    const fn begin_fling(&mut self) -> u64 {
+        let claim = self.take_for_user();
+        self.fling_shift_x = 0.0;
+        self.fling_shift_y = 0.0;
+        claim
+    }
+
+    /// Translates the coordinate system by `(dx, dy)` on the scrolled axes
+    /// without claiming the offset or clamping: the offset, the wheel-glide
+    /// targets, a live run's origin and destination, and the fling's
+    /// accumulated origin shift all move together.
+    fn translate(&mut self, dx: f64, dy: f64) {
+        let (scroll_x, scroll_y) = self.scrolled_axes();
+        let dx = if scroll_x { dx } else { 0.0 };
+        let dy = if scroll_y { dy } else { 0.0 };
+        self.offset_x += dx;
+        self.offset_y += dy;
+        self.smooth_target_x = self.smooth_target_x.map(|target| target + dx);
+        self.smooth_target_y = self.smooth_target_y.map(|target| target + dy);
+        if let Some(run) = &mut self.programmatic {
+            run.from_x += dx;
+            run.from_y += dy;
+            run.target_x += dx;
+            run.target_y += dy;
+        }
+        self.fling_shift_x += dx;
+        self.fling_shift_y += dy;
     }
 
     /// Spends the recorded run outcome, if any: user input after a run ended
@@ -697,10 +741,7 @@ impl ScrollState {
         // ends, a fling's next write is refused, and a recorded `Landed`
         // left standing is spent rather than letting the request's
         // post-landing correction jump back over this scroll.
-        self.claim();
-        self.spend_recorded_outcome();
-        self.smooth_target_x = None;
-        self.smooth_target_y = None;
+        self.take_for_user();
         self.offset_x = offset_x;
         self.offset_y = offset_y;
         self.report_offset();
@@ -708,17 +749,8 @@ impl ScrollState {
     }
 
     fn scroll_to(&mut self, x: f64, y: f64) -> bool {
-        self.claim();
-        self.smooth_target_x = None;
-        self.smooth_target_y = None;
-        self.smooth_last_tick = None;
-        let (offset_x, offset_y) = self.clamped(x, y);
-        let changed =
-            value_changed(self.offset_x, offset_x) || value_changed(self.offset_y, offset_y);
-        self.offset_x = offset_x;
-        self.offset_y = offset_y;
-        self.report_offset();
-        changed
+        self.take_for_request();
+        self.write_offset(x, y)
     }
 
     /// An absolute offset write driven by the user — the scrollbar's drag or
@@ -726,43 +758,20 @@ impl ScrollState {
     /// plus the user-input spend, so a recorded `Landed` cannot let a pending
     /// request correct its post-landing position back over the user's scroll.
     fn user_scroll_to(&mut self, x: f64, y: f64) -> bool {
-        let changed = self.scroll_to(x, y);
-        self.spend_recorded_outcome();
-        changed
+        self.take_for_user();
+        self.write_offset(x, y)
     }
 
-    /// Translates the coordinate system by `(dx, dy)` without claiming the
-    /// offset: the offset, the wheel-glide targets, a live run's origin and
-    /// destination, and the fling's accumulated origin shift all move
-    /// together, so whatever owned the offset — a user fling included —
-    /// keeps owning it. A membership anchor uses this where `scroll_to`
-    /// would end the motion in flight.
-    fn rebase(&mut self, dx: f64, dy: f64) -> bool {
-        let (scroll_x, scroll_y) = self.scrolled_axes();
-        let dx = if scroll_x { dx } else { 0.0 };
-        let dy = if scroll_y { dy } else { 0.0 };
-        if dx == 0.0 && dy == 0.0 {
-            return false;
-        }
-        let (offset_x, offset_y) = self.clamped(self.offset_x + dx, self.offset_y + dy);
+    /// Writes the clamped absolute offset for whoever just took it and
+    /// reports whether it moved.
+    fn write_offset(&mut self, x: f64, y: f64) -> bool {
+        let (offset_x, offset_y) = self.clamped(x, y);
+        let changed =
+            value_changed(self.offset_x, offset_x) || value_changed(self.offset_y, offset_y);
         self.offset_x = offset_x;
         self.offset_y = offset_y;
-        if let Some(target) = self.smooth_target_x {
-            self.smooth_target_x = Some(target + dx);
-        }
-        if let Some(target) = self.smooth_target_y {
-            self.smooth_target_y = Some(target + dy);
-        }
-        if let Some(run) = &mut self.programmatic {
-            run.from_x += dx;
-            run.from_y += dy;
-            run.target_x += dx;
-            run.target_y += dy;
-        }
-        self.fling_shift_x += dx;
-        self.fling_shift_y += dy;
         self.report_offset();
-        true
+        changed
     }
 
     /// Arms a programmatic scroll animation toward an absolute content offset
@@ -775,10 +784,7 @@ impl ScrollState {
     /// already running when the next tick advances it. A request that needs
     /// no travel lands in place and its token reports `Landed` at once.
     fn scroll_to_animated(&mut self, x: f64, y: f64, animation: Animation, now: Instant) -> u64 {
-        let token = self.claim();
-        self.smooth_target_x = None;
-        self.smooth_target_y = None;
-        self.smooth_last_tick = None;
+        let token = self.take_for_request();
         let (target_x, target_y) = self.clamped(x, y);
         if !value_changed(self.offset_x, target_x) && !value_changed(self.offset_y, target_y) {
             // Nothing to travel: land exactly rather than pump a duration's
@@ -831,11 +837,15 @@ impl ScrollState {
 
     /// Writes the fling's sampled offset while the fling still owns the
     /// offset — the claim's epoch was already checked by the handle. The
-    /// coordinate shift `rebase` accumulated since the fling began applies
-    /// to the positions it feeds in, so an anchored content move does not
-    /// end the fling.
-    fn apply_fling_offset(&mut self, x: f64, y: f64) -> bool {
-        let (offset_x, offset_y) = self.clamped(x + self.fling_shift_x, y + self.fling_shift_y);
+    /// coordinate shift a shifted rebind accumulated since the fling began
+    /// applies to the positions it samples, so an anchored content move does
+    /// not end the fling; an axis it does not sample (`None`) keeps its
+    /// offset, which already carries the shift.
+    fn apply_fling_offset(&mut self, x: Option<f64>, y: Option<f64>) -> bool {
+        let (offset_x, offset_y) = self.clamped(
+            x.map_or(self.offset_x, |x| x + self.fling_shift_x),
+            y.map_or(self.offset_y, |y| y + self.fling_shift_y),
+        );
         let changed =
             value_changed(self.offset_x, offset_x) || value_changed(self.offset_y, offset_y);
         self.offset_x = offset_x;
@@ -867,7 +877,8 @@ impl ScrollState {
     /// of restarting. A tick that changes no target — a zero delta, a
     /// dead-axis delta, or a push at an extent — claims nothing and reports
     /// `false`, so it falls through to the enclosing scroll view without
-    /// ending what owns the offset.
+    /// ending what owns the offset; only while a glide is still live on the
+    /// pushed axis is such a tick consumed, since the content is moving.
     #[allow(
         clippy::similar_names,
         reason = "`scaled_dx`/`scaled_dy` are conventional 2D scroll-delta names"
@@ -882,13 +893,21 @@ impl ScrollState {
         let changed_x = scroll_x && value_changed(base_x, target_x);
         let changed_y = scroll_y && value_changed(base_y, target_y);
         if !changed_x && !changed_y {
-            return false;
+            // A push past the edge a live glide is still heading for belongs
+            // to that glide: falling through would scroll the enclosing view
+            // while this one is still moving. The glide already owns the
+            // offset, so nothing is claimed.
+            return (scroll_x && scaled_dx != 0.0 && self.smooth_target_x.is_some())
+                || (scroll_y && scaled_dy != 0.0 && self.smooth_target_y.is_some());
         }
-        // The wheel tick moves the glide, so it claims the offset: a
-        // programmatic run ends — a wheel glide replaces it — and a
-        // recorded `Landed` is spent with the other user input.
-        self.claim();
-        self.spend_recorded_outcome();
+        // A tick that starts a glide claims the offset: a programmatic run
+        // ends — a wheel glide replaces it — and a recorded `Landed` is spent
+        // with the other user input. A live glide already holds the claim —
+        // every other writer drops the glide when it takes the offset — so a
+        // tick extending it keeps the glide's frame clock running.
+        if self.smooth_target_x.is_none() && self.smooth_target_y.is_none() {
+            self.take_for_user();
+        }
         if changed_x {
             self.smooth_target_x = Some(target_x);
         }
@@ -1002,6 +1021,13 @@ impl ScrollState {
         self.smooth_target_y = self
             .smooth_target_y
             .map(|target| clamp_scroll_offset(target, metrics.max_y));
+        // Arming and retargeting keep a run's destination inside the extents;
+        // a shift or a shrink must too, or the run reaches the edge early and
+        // parks there for the rest of its duration.
+        if let Some(run) = &mut self.programmatic {
+            run.target_x = clamp_scroll_offset(run.target_x, metrics.max_x);
+            run.target_y = clamp_scroll_offset(run.target_y, metrics.max_y);
+        }
     }
 
     fn metrics(&self) -> ScrollMetrics {
@@ -1181,10 +1207,17 @@ mod tests {
 
         // A run cancelled by user input reports Interrupted — the delta has
         // to move the offset: a push at the extent changes nothing and
-        // claims nothing.
+        // claims nothing, so the run still drives.
         let cancelled = handle
             .scroll_to_animated(0.0, 0.0, Animation::default(), start)
             .expect("the run must arm");
+        assert!(!handle.apply_scroll_delta(0.0, -10.0, false));
+        assert!(!handle.apply_scroll_delta(0.0, -1.0, true));
+        assert_eq!(
+            handle.scroll_run_outcome(&cancelled),
+            ScrollRunOutcome::Running,
+            "a push at the edge must not end the run"
+        );
         let _ = handle.apply_scroll_delta(0.0, 10.0, false);
         assert_eq!(
             handle.scroll_run_outcome(&cancelled),
@@ -1204,6 +1237,24 @@ mod tests {
             handle.scroll_run_outcome(&replaced),
             ScrollRunOutcome::Interrupted
         );
+
+        // A fling's mint takes the offset from a live run.
+        let flung = handle
+            .scroll_to_animated(0.0, 0.0, Animation::default(), start)
+            .expect("the run must arm");
+        let claim = handle.begin_fling();
+        assert_eq!(
+            handle.scroll_run_outcome(&flung),
+            ScrollRunOutcome::Interrupted
+        );
+
+        // A push at the edge claims nothing, so the fling still owns the
+        // offset and its next write applies.
+        assert!(handle.apply_fling_offset(&claim, None, Some(200.0)));
+        assert!(!handle.apply_scroll_delta(0.0, -10.0, false));
+        assert!(!handle.apply_scroll_delta(0.0, -1.0, true));
+        assert!(handle.apply_fling_offset(&claim, None, Some(150.0)));
+        assert_eq!(handle.metrics().offset_y, 150.0);
     }
 
     #[test]
@@ -1211,20 +1262,20 @@ mod tests {
         let handle = vertical_handle();
         let claim = handle.begin_fling();
         // While nothing else claimed the offset, the fling's write applies.
-        assert!(handle.apply_fling_offset(&claim, 0.0, 50.0));
+        assert!(handle.apply_fling_offset(&claim, None, Some(50.0)));
         assert_eq!(handle.metrics().offset_y, 50.0);
 
         // A programmatic request claims the offset: the fling's next write is
         // refused instead of writing over its successor.
         let _ = handle.scroll_to(0.0, 100.0);
-        assert!(!handle.apply_fling_offset(&claim, 0.0, 80.0));
+        assert!(!handle.apply_fling_offset(&claim, None, Some(80.0)));
         assert_eq!(handle.metrics().offset_y, 100.0);
 
         // Same for user input and for an animated request.
         let claim = handle.begin_fling();
-        assert!(handle.apply_fling_offset(&claim, 0.0, 60.0));
+        assert!(handle.apply_fling_offset(&claim, None, Some(60.0)));
         let _ = handle.apply_scroll_delta(0.0, -10.0, false);
-        assert!(!handle.apply_fling_offset(&claim, 0.0, 40.0));
+        assert!(!handle.apply_fling_offset(&claim, None, Some(40.0)));
         assert_eq!(handle.metrics().offset_y, 70.0);
 
         let claim = handle.begin_fling();
@@ -1233,27 +1284,27 @@ mod tests {
                 .scroll_to_animated(0.0, 200.0, Animation::default(), Instant::now())
                 .is_some()
         );
-        assert!(!handle.apply_fling_offset(&claim, 0.0, 30.0));
+        assert!(!handle.apply_fling_offset(&claim, None, Some(30.0)));
     }
 
     #[test]
-    fn a_rebase_moves_everything_without_claiming_the_offset() {
-        let handle = vertical_handle();
+    fn a_shifted_rebind_moves_everything_without_claiming_the_offset() {
+        let mut handle = vertical_handle();
         let claim = handle.begin_fling();
-        assert!(handle.apply_fling_offset(&claim, 0.0, 50.0));
+        assert!(handle.apply_fling_offset(&claim, None, Some(50.0)));
 
-        // A membership anchor translates the coordinate system by +40: the
-        // fling's claim survives — it owned the offset before and owns it
-        // still — and the shift moves both the offset and the origin the
-        // fling's next absolute positions are measured from.
-        assert!(handle.rebase(0.0, 40.0));
+        // A membership anchor translates the coordinate system by +40 as 40pt
+        // of rows land above: the fling's claim survives — it owned the
+        // offset before and owns it still — and the shift moves both the
+        // offset and the origin the fling's next positions are measured from.
+        let _ = handle.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 340.0, (0.0, 40.0));
         assert_eq!(handle.metrics().offset_y, 90.0);
-        assert!(handle.apply_fling_offset(&claim, 0.0, 60.0));
+        assert!(handle.apply_fling_offset(&claim, None, Some(60.0)));
         assert_eq!(handle.metrics().offset_y, 100.0);
 
         // Same for a programmatic run: the run keeps driving, and its origin
         // and destination moved with the rows — the sampled offset advances
-        // from the rebased origin toward the rebased target.
+        // from the shifted origin toward the shifted target.
         let start = Instant::now();
         let run = handle
             .scroll_to_animated(
@@ -1263,25 +1314,153 @@ mod tests {
                 start,
             )
             .expect("the run must arm");
-        assert!(handle.rebase(0.0, 40.0));
+        let _ = handle.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 380.0, (0.0, 40.0));
         assert_eq!(handle.scroll_run_outcome(&run), ScrollRunOutcome::Running);
         assert!(handle.tick_smooth_scroll(start + Duration::from_millis(50)));
         assert_eq!(
             handle.metrics().offset_y,
             170.0,
-            "the rebase must move the run's sampled offset: origin 140, target 200"
+            "the shift must move the run's sampled offset: origin 140, target 200"
         );
 
-        // A wheel-glide target translates too: a glide in flight keeps
-        // converging on the row it was heading for, not a stale offset.
+        // A wheel-glide target translates too, and stays clamped: the tick
+        // aims at 250, the +40 shift past the 280 end clamps it there.
         assert!(handle.apply_scroll_delta(0.0, -2.0, true));
-        let glide = handle.state.borrow().smooth_target_y;
-        assert!(handle.rebase(0.0, 40.0));
+        assert_eq!(handle.state.borrow().smooth_target_y, Some(250.0));
+        let _ = handle.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 380.0, (0.0, 40.0));
+        assert_eq!(handle.metrics().offset_y, 210.0);
         assert_eq!(
             handle.state.borrow().smooth_target_y,
-            glide.map(|target| target + 40.0),
-            "the rebase must translate the live wheel-glide target"
+            Some(280.0),
+            "the shifted glide target must clamp to the scrollable end"
         );
+    }
+
+    #[test]
+    fn a_shifted_rebind_translates_before_it_clamps() {
+        // Scrolled to the end (200 of 300), 60pt of rows above the viewport
+        // are deleted: the end moves to 140 and the shift is −60. Translating
+        // first lands on 140; clamping first (to 140) and then shifting would
+        // remove the deleted height twice, landing on 80.
+        let mut handle = vertical_handle();
+        let _ = handle.scroll_to(0.0, 200.0);
+        let _ = handle.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 240.0, (0.0, -60.0));
+        assert_eq!(handle.metrics().offset_y, 140.0);
+
+        // Same with a run in flight: 150 of its way to 200, the deletion
+        // translates it to 90 — inside the new extents — and it keeps running
+        // toward its shifted target, the new end.
+        let mut handle = vertical_handle();
+        let start = Instant::now();
+        let run = handle
+            .scroll_to_animated(
+                0.0,
+                200.0,
+                Animation::linear(Duration::from_millis(100)),
+                start,
+            )
+            .expect("the run must arm");
+        assert!(handle.tick_smooth_scroll(start + Duration::from_millis(75)));
+        assert_eq!(handle.metrics().offset_y, 150.0);
+        let _ = handle.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 240.0, (0.0, -60.0));
+        assert_eq!(handle.metrics().offset_y, 90.0);
+        assert_eq!(handle.scroll_run_outcome(&run), ScrollRunOutcome::Running);
+        assert!(!handle.tick_smooth_scroll(start + Duration::from_millis(100)));
+        assert_eq!(handle.metrics().offset_y, 140.0);
+        assert_eq!(handle.scroll_run_outcome(&run), ScrollRunOutcome::Landed);
+    }
+
+    #[test]
+    fn a_fling_shift_applies_only_to_the_axes_it_samples() {
+        let mut handle = ScrollHandle::new(Axis::All, 100.0, 100.0, 300.0, 300.0, None);
+        let _ = handle.scroll_to(50.0, 50.0);
+        let claim = handle.begin_fling();
+        let _ = handle.rebind(Axis::All, 100.0, 100.0, 340.0, 340.0, (40.0, 40.0));
+        assert_eq!(
+            (handle.metrics().offset_x, handle.metrics().offset_y),
+            (90.0, 90.0)
+        );
+        // A vertical-only fling: x keeps its already shifted offset, y's
+        // sampled position gets the shift.
+        assert!(handle.apply_fling_offset(&claim, None, Some(60.0)));
+        assert_eq!(
+            (handle.metrics().offset_x, handle.metrics().offset_y),
+            (90.0, 100.0)
+        );
+    }
+
+    #[test]
+    fn a_line_delta_at_the_edge_is_consumed_while_the_glide_is_live() {
+        let handle = vertical_handle();
+        let start = Instant::now();
+        // The glide's target reaches the end (200) while the offset is still
+        // on its way there.
+        assert!(handle.apply_scroll_delta(0.0, -10.0, true));
+        assert_eq!(handle.state.borrow().smooth_target_y, Some(200.0));
+        assert!(handle.tick_smooth_scroll(start));
+        let epoch = handle.state.borrow().offset_epoch;
+        // A further tick changes no target, but the list is still moving: it
+        // is consumed rather than handed to the enclosing scroll view, and it
+        // claims nothing.
+        assert!(handle.apply_scroll_delta(0.0, -1.0, true));
+        assert_eq!(handle.state.borrow().offset_epoch, epoch);
+        // Once the glide settles, the same push falls through.
+        let mut now = start;
+        let mut active = true;
+        for _ in 0..600 {
+            now += Duration::from_millis(8);
+            active = handle.tick_smooth_scroll(now);
+            if !active {
+                break;
+            }
+        }
+        assert!(!active, "the glide must settle");
+        assert_eq!(handle.metrics().offset_y, 200.0);
+        assert!(!handle.apply_scroll_delta(0.0, -1.0, true));
+    }
+
+    #[test]
+    fn a_shift_clamps_a_live_runs_target_to_the_new_extents() {
+        let mut handle = vertical_handle();
+        let _ = handle.scroll_to(0.0, 200.0);
+        let start = Instant::now();
+        let run = handle
+            .scroll_to_animated(
+                0.0,
+                0.0,
+                Animation::linear(Duration::from_millis(100)),
+                start,
+            )
+            .expect("the run must arm");
+        // Rows above the viewport deleted: the run's origin translates from
+        // 200 to 32 and its target from 0 to -168, which the clamp pulls back
+        // to the edge.
+        let _ = handle.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 300.0, (0.0, -168.0));
+        assert_eq!(handle.metrics().offset_y, 32.0);
+        assert_eq!(
+            handle
+                .state
+                .borrow()
+                .programmatic
+                .as_ref()
+                .map(|run| run.target_y),
+            Some(0.0)
+        );
+        // Mid-run the offset is still on its way: toward an unclamped target
+        // it would already have reached the edge and parked there.
+        assert!(handle.tick_smooth_scroll(start + Duration::from_millis(50)));
+        let mid = handle.metrics().offset_y;
+        assert!(
+            mid > 0.0 && mid < 32.0,
+            "the run must be between its origin 32 and the edge mid-run: {mid}"
+        );
+        assert!(handle.tick_smooth_scroll(start + Duration::from_millis(99)));
+        assert!(handle.metrics().offset_y > 0.0);
+        assert_eq!(handle.scroll_run_outcome(&run), ScrollRunOutcome::Running);
+        // It reaches the edge exactly when its duration ends.
+        assert!(!handle.tick_smooth_scroll(start + Duration::from_millis(100)));
+        assert_eq!(handle.metrics().offset_y, 0.0);
+        assert_eq!(handle.scroll_run_outcome(&run), ScrollRunOutcome::Landed);
     }
 
     #[test]
@@ -1305,6 +1484,26 @@ mod tests {
         assert!(handle.apply_scroll_delta(0.0, 10.0, false));
         assert_eq!(
             handle.scroll_run_outcome(&run),
+            ScrollRunOutcome::Interrupted
+        );
+
+        // A programmatic jump after a landing leaves the outcome standing —
+        // only user input spends it — while the user's absolute write (the
+        // scrollbar's drag) spends it like a delta.
+        let landed = handle
+            .scroll_to_animated(
+                0.0,
+                0.0,
+                Animation::linear(Duration::from_millis(50)),
+                start,
+            )
+            .expect("the run must arm");
+        assert!(!handle.tick_smooth_scroll(start + Duration::from_millis(50)));
+        assert!(handle.scroll_to(0.0, 100.0));
+        assert_eq!(handle.scroll_run_outcome(&landed), ScrollRunOutcome::Landed);
+        assert!(handle.user_scroll_to(0.0, 50.0));
+        assert_eq!(
+            handle.scroll_run_outcome(&landed),
             ScrollRunOutcome::Interrupted
         );
     }
@@ -1561,7 +1760,7 @@ mod tests {
         let mut owner = vertical_handle();
         let handle = owner.clone();
         assert!(handle.apply_scroll_delta(0.0, -50.0, false));
-        let rebound = owner.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 300.0);
+        let rebound = owner.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 300.0, (0.0, 0.0));
         assert_eq!(rebound.metrics().offset_y, 50.0);
         // The previous handle still targets the same generation.
         assert!(handle.apply_scroll_delta(0.0, -10.0, false));
@@ -1571,7 +1770,7 @@ mod tests {
     fn layout_change_invalidates_stale_handles() {
         let mut owner = vertical_handle();
         let handle = owner.clone();
-        let rebound = owner.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 500.0);
+        let rebound = owner.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 500.0, (0.0, 0.0));
         // The stale handle's generation no longer matches: input is dropped.
         assert!(!handle.apply_scroll_delta(0.0, -10.0, false));
         assert!(
@@ -1587,7 +1786,7 @@ mod tests {
         assert!(handle.apply_scroll_delta(0.0, -10_000.0, false));
         assert_eq!(handle.metrics().offset_y, 200.0);
         // The viewport now shows the whole content: the offset clamps home.
-        let rebound = owner.rebind(Axis::Vertical, 100.0, 300.0, 100.0, 300.0);
+        let rebound = owner.rebind(Axis::Vertical, 100.0, 300.0, 100.0, 300.0, (0.0, 0.0));
         assert_eq!(rebound.metrics().offset_y, 0.0);
         assert_eq!(rebound.metrics().max_y, 0.0);
     }

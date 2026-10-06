@@ -51,10 +51,11 @@ struct ListViewportAnchor {
     id: ListItemId,
     index: usize,
     offset_within_row: f64,
-    /// The offset the moment this anchor was recorded. The next frame's
-    /// glide/fling tick moves the offset before the membership rebase runs,
-    /// so the rebase must translate from this recording — not the live
-    /// offset — to keep the tick's motion.
+    /// The offset the moment this anchor was recorded — or, once a
+    /// membership change resolved it, its offset under the new membership.
+    /// The next frame's glide/fling tick moves the offset before the
+    /// membership shift applies, so the shift must translate from this
+    /// recording — not the live offset — to keep the tick's motion.
     recorded_offset: f64,
 }
 
@@ -315,9 +316,9 @@ pub struct ListRenderState {
     /// visibly jump the viewport.
     viewport_anchor: Cell<Option<ListViewportAnchor>>,
     /// The anchor's target offset under the new membership plus the offset
-    /// it was recorded at: `(rebased, recorded)` — the rebase's pure
-    /// translation is `rebased - recorded` regardless of how far this
-    /// frame's tick already moved the offset.
+    /// it was recorded at: `(rebased, recorded)` — the pure translation
+    /// `bind_scroll` hands `rebind` is `rebased - recorded`, regardless of
+    /// how far this frame's tick already moved the offset.
     pending_membership_offset: Cell<Option<(f64, f64)>>,
     /// A backend move action keeps the viewport's index fixed for the next
     /// membership reconcile so the moved row visibly changes position.
@@ -608,11 +609,18 @@ impl ListRenderState {
                         .find(|index| snapshot.get_id(*index) == Some(anchor.id))
                         .unwrap_or_else(|| anchor.index.min(len - 1))
                 };
-                Some((
-                    self.extent_index.borrow().offset_of(index)
-                        + anchor.offset_within_row.min(estimate),
-                    anchor.recorded_offset,
-                ))
+                let rebased = self.extent_index.borrow().offset_of(index)
+                    + anchor.offset_within_row.min(estimate);
+                // Written back in the new coordinates: `prepare_rows` runs
+                // twice a frame — the semantic pass, then the render pass —
+                // and a collection update between them must translate by its
+                // own change only, not this one again.
+                self.viewport_anchor.set(Some(ListViewportAnchor {
+                    index,
+                    recorded_offset: rebased,
+                    ..anchor
+                }));
+                Some((rebased, anchor.recorded_offset))
             });
             self.pending_membership_offset.set(membership_offset);
         }
@@ -636,6 +644,15 @@ impl ListRenderState {
             kurbo::Size::new(viewport_width, viewport_height),
             kurbo::Size::new(viewport_width, content_height),
         );
+        // The membership anchor always applies — `prepare_rows`' extent
+        // reset discarded measured heights, so skipping it leaves the offset
+        // in the old coordinates and the viewport jumps. It is a pure
+        // translation inside the rebind, ahead of the new extents' clamp, and
+        // claims nothing, so a live run or fling keeps driving through it.
+        let shift = self
+            .pending_membership_offset
+            .take()
+            .map_or(0.0, |(rebased, recorded)| rebased - recorded);
         let mut scroll = self.scroll.borrow_mut();
         if let Some(handle) = scroll.as_mut() {
             handle.rebind(
@@ -644,6 +661,7 @@ impl ListRenderState {
                 viewport.height,
                 content.width,
                 content.height,
+                (0.0, shift),
             )
         } else {
             let handle = ScrollHandle::new(
@@ -797,37 +815,6 @@ impl ListRenderState {
         if row_visible && !handle.is_smooth_scrolling() {
             self.applied_scroll_generation.set(pending.generation);
             self.pending_scroll.take();
-        }
-    }
-
-    /// The ordered anchor-then-request step both rendered paths run: the
-    /// membership anchor always applies — `prepare_rows`' extent reset
-    /// discarded measured heights, so skipping it leaves the offset in the
-    /// old coordinates and the viewport jumps — and since `rebase` does not
-    /// claim the offset it cannot disturb a live run or fling underneath
-    /// it; then the request applies, re-issuing `offset_of(index)` under
-    /// the new membership.
-    fn apply_membership_anchor_then_request(
-        &self,
-        renderer: &mut crate::renderer::SemanticCore,
-        handle: &ScrollHandle,
-        row_count: usize,
-        animate: bool,
-    ) {
-        self.apply_membership_anchor(handle);
-        self.apply_scroll_request(renderer, handle, row_count, animate);
-    }
-
-    fn apply_membership_anchor(&self, handle: &ScrollHandle) {
-        if let Some((rebased, recorded)) = self.pending_membership_offset.take() {
-            // Re-anchoring after a delete or move shifts the coordinate
-            // system — it does not claim the offset, so `rebase` keeps a
-            // live run or user fling driving through it. The translation is
-            // measured from the recorded offset: this frame's tick already
-            // moved the live offset, and measuring against it would erase
-            // the tick's motion and shift the fling's origin and the glide
-            // target by as much.
-            let _ = handle.rebase(0.0, rebased - recorded);
         }
     }
 
@@ -1005,7 +992,7 @@ pub fn list_accessibility(
         .total_extent()
         .max(viewport.height());
     let handle = state.bind_scroll(viewport.width(), viewport.height(), content_height);
-    state.apply_membership_anchor_then_request(renderer, &handle, row_count, is_rendered);
+    state.apply_scroll_request(renderer, &handle, row_count, is_rendered);
     #[cfg(feature = "accessibility")]
     {
         let metrics = handle.metrics();
@@ -1541,12 +1528,9 @@ pub fn render_list_parts(
     let handle = state
         .borrow()
         .bind_scroll(viewport.width(), viewport.height(), content_height);
-    state.borrow().apply_membership_anchor_then_request(
-        ctx.renderer_mut(),
-        &handle,
-        row_count,
-        true,
-    );
+    state
+        .borrow()
+        .apply_scroll_request(ctx.renderer_mut(), &handle, row_count, true);
     // The keyboard-moving clearance runs before the rows paint: while the
     // host's keyboard animation is in flight the offset follows it frame by
     // frame, so this flush paints the field already clear.

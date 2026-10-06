@@ -104,6 +104,7 @@ impl TableRenderState {
                 viewport.height,
                 content.width,
                 content.height,
+                (0.0, 0.0),
             )
         } else {
             let handle = ScrollHandle::new(

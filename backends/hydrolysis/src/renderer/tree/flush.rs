@@ -883,7 +883,14 @@ impl RenderNode {
                 let handle = {
                     let mut slot = node.handle.borrow_mut();
                     let handle = if let Some(handle) = slot.as_mut() {
-                        handle.rebind(node.axis, 0.0, 0.0, f64::INFINITY, f64::INFINITY)
+                        handle.rebind(
+                            node.axis,
+                            0.0,
+                            0.0,
+                            f64::INFINITY,
+                            f64::INFINITY,
+                            (0.0, 0.0),
+                        )
                     } else {
                         ScrollHandle::new(
                             node.axis,

@@ -566,6 +566,7 @@ impl RenderNode {
                         viewport_height,
                         content_width,
                         content_height,
+                        (0.0, 0.0),
                     )
                 } else {
                     // `report_offset`: the handle writes the content offset
