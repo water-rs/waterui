@@ -282,8 +282,13 @@ jobs:
       # WKWebView bridge exists on macOS alone — would regress invisibly
       # otherwise. The bare check is the other half of that contract: call
       # sites a feature gates out rot under every enabled leg.
+      #
+      # `default = []`, so the default-feature affected pass compiles none of
+      # the `accessibility`-gated tests; the fast gate runs this leg too
+      # whenever the scope can reach Hydrolysis, or they lint only nightly
+      # (#2047). Measured at 27 s on top of the default-feature graph.
       - name: Clippy (hydrolysis, checked feature set)
-        if: inputs.full
+        if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' || contains(inputs.affected, 'hydrolysis')
         run: cargo clippy --locked --profile ci-check -p hydrolysis --all-targets --features accessibility,inspector-signals,testing,web,winit -- -D warnings
       - name: Check (hydrolysis, no features)
         if: inputs.full
@@ -871,6 +876,39 @@ jobs:
         uses: ./.github/actions/setup-linux-deps
       - run: cargo clippy --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --features accessibility,inspector-signals,testing,web,winit -- -D warnings
       - run: cargo clippy --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --no-default-features -- -D warnings
+
+  # The Android host library's own lint (`warningsAsErrors`): the Kotlin
+  # half of the Android runner, which no cargo pass reaches (#2047). It
+  # needs no Rust build — lint analyses the Kotlin sources against
+  # `compileSdk` — so it runs beside the cross-target clippy above on the
+  # same scope. The wrapper JAR is not committed (the CLI materializes it),
+  # so the distribution the wrapper pins is installed directly. Measured
+  # locally: 10 s warm, ~70 s with no build outputs and a warm dependency
+  # cache; a cold runner adds the Gradle and AGP downloads.
+  hydrolysis-android-host:
+    name: Hydrolysis Android host lint
+    if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: backends/hydrolysis/android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Gradle version pinned by the wrapper
+        id: gradle-version
+        run: |
+          version="$(sed -n 's|^distributionUrl=.*/gradle-\(.*\)-bin\.zip$|\1|p' gradle/wrapper/gradle-wrapper.properties)"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ steps.gradle-version.outputs.version }}
+      - run: gradle :host:lintDebug
 
   # Hydrolysis's Windows leg, beside the Android one for the same reason:
   # `cfg(target_os = "windows")` code — the winit platform's cursor,
