@@ -22,9 +22,7 @@
 //! there is no fallback. Scrolling is driven from outside the app by
 //! OS-level input on every platform — the app never scrolls itself.
 //! On Apple targets the selected id also posts
-//! `dev.bench.ready.<bundle>.<w>` when the view first appears and rides
-//! the accessibility identifier `bench-workload-<id>` so the runner can
-//! assert it.
+//! `dev.bench.ready.<bundle>.<w>` when the view first appears.
 //!
 //! W5/W6 pacing is one model on every leg: one launch renders one
 //! ladder step, pinned by `BENCH_STEP` (or `-bench-step N`) — a missing
@@ -369,25 +367,11 @@ fn main() -> impl View {
         "w6" => AnyView::new(feed_capacity()),
         _ => unreachable!("workload() only yields w1..=w6"),
     };
-    // The selected workload id rides on a 1x1 text element as its
-    // accessibility identifier — the runner asserts `bench-workload-<id>`
-    // after launch. A text is used because a container view with only the
-    // identifier set does not enter the macOS accessibility hierarchy; the
-    // text overlays the content in a zstack so a greedy List cannot push
-    // it out of the rendered frame. The text comes FIRST so the
-    // accessibility resolver reaches it before descending into the
-    // content's subtree (the 10k-row list exposes every row to AX).
-    let root = zstack((
-        text(format!("bench-workload-{w}"))
-            .a11y_id(Str::from(format!("bench-workload-{w}")))
-            .size(1.0, 1.0),
-        content,
-    ));
     // `ready` fires when the workload view first appears — the earliest
     // rendered frame — never at view construction.
     #[cfg(any(target_os = "ios", target_os = "macos"))]
-    let root = root.on_appear(move || bench_notify::post_ready(w));
-    root
+    let content = content.on_appear(move || bench_notify::post_ready(w));
+    content
 }
 
 pub fn app(env: Environment) -> App {
