@@ -182,7 +182,8 @@ pub struct Instance {
     /// `PAINT_TEXTURE`: source region origin.xy. `PAINT_BACKDROP`: the
     /// capture region's texel origin.xy and the capture scale in z.
     pub grad: [f32; 4],
-    /// Radial: start radius, end radius. Sweep: start angle, end angle.
+    /// Radial: start radius, end radius, identical-circles flag (1 or 0).
+    /// Sweep: start angle, end angle.
     /// Image: local→image affine `[e, f]` and image `[w, h]`.
     pub grad2: [f32; 4],
     /// Glyph/cell: atlas cell origin in texels. zw: mask atlas cell origin.
