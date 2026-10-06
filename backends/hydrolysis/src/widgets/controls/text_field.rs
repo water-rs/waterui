@@ -1287,34 +1287,34 @@ mod tests {
 
     #[test]
     fn material_input_content_enter_matches_material_web_delay() {
-        assert_eq!(material_input_content_alpha(true, 0.0), 0.0);
-        assert_eq!(
+        approx::assert_relative_eq!(material_input_content_alpha(true, 0.0), 0.0);
+        approx::assert_relative_eq!(
             material_input_content_alpha(true, CONTENT_ENTER_DELAY_PORTION),
             0.0
         );
-        assert_eq!(material_input_content_alpha(true, 1.0), 1.0);
+        approx::assert_relative_eq!(material_input_content_alpha(true, 1.0), 1.0);
     }
 
     #[test]
     fn material_input_content_exit_matches_material_web_visible_window() {
-        assert_eq!(material_input_content_alpha(true, 1.0), 1.0);
-        assert_eq!(
+        approx::assert_relative_eq!(material_input_content_alpha(true, 1.0), 1.0);
+        approx::assert_relative_eq!(
             material_input_content_alpha(
                 true,
                 CONTENT_VISIBLE_PORTION.mul_add(0.5, CONTENT_ENTER_DELAY_PORTION),
             ),
             0.5
         );
-        assert_eq!(
+        approx::assert_relative_eq!(
             material_input_content_alpha(true, CONTENT_ENTER_DELAY_PORTION),
             0.0
         );
-        assert_eq!(material_input_content_alpha(true, 0.0), 0.0);
+        approx::assert_relative_eq!(material_input_content_alpha(true, 0.0), 0.0);
     }
 
     #[test]
     fn material_input_without_label_keeps_content_visible() {
-        assert_eq!(material_input_content_alpha(false, 0.0), 1.0);
+        approx::assert_relative_eq!(material_input_content_alpha(false, 0.0), 1.0);
     }
 
     #[test]
@@ -1324,8 +1324,8 @@ mod tests {
 
         let clip = material_input_text_clip_rect(field, text, 30.0);
 
-        assert_eq!(clip.x0, text.x0);
-        assert_eq!(clip.x1, text.x1);
+        approx::assert_relative_eq!(clip.x0, text.x0);
+        approx::assert_relative_eq!(clip.x1, text.x1);
         assert!(clip.height() >= 30.0);
         assert!(clip.y0 >= field.y0);
         assert!(clip.y1 <= field.y1);
@@ -1338,8 +1338,8 @@ mod tests {
 
         let clip = material_input_text_clip_rect(field, text, 34.0);
 
-        assert_eq!(clip.x0, text.x0);
-        assert_eq!(clip.x1, text.x1);
+        approx::assert_relative_eq!(clip.x0, text.x0);
+        approx::assert_relative_eq!(clip.x1, text.x1);
         assert!(clip.height() >= 34.0);
         assert!(clip.y1 > text.y1);
     }
@@ -1355,10 +1355,10 @@ mod tests {
 
         let cursor = material_input_cursor_rect(field, text, empty_geometry);
 
-        assert_eq!(cursor.x0, text.x0);
-        assert_eq!(cursor.x1, text.x0 + 1.0);
-        assert_eq!(cursor.y0, text.y0);
-        assert_eq!(cursor.y1, field.y1);
+        approx::assert_relative_eq!(cursor.x0, text.x0);
+        approx::assert_relative_eq!(cursor.x1, text.x0 + 1.0);
+        approx::assert_relative_eq!(cursor.y0, text.y0);
+        approx::assert_relative_eq!(cursor.y1, field.y1);
     }
 
     #[test]
@@ -1369,9 +1369,9 @@ mod tests {
 
         let cursor = material_input_cursor_rect(field, text, geometry);
 
-        assert_eq!(cursor.x0, text.x0 + 42.0);
-        assert_eq!(cursor.x1, text.x0 + 43.0);
-        assert_eq!(cursor.y0, text.y0 + 3.0);
-        assert_eq!(cursor.y1, text.y0 + 25.0);
+        approx::assert_relative_eq!(cursor.x0, text.x0 + 42.0);
+        approx::assert_relative_eq!(cursor.x1, text.x0 + 43.0);
+        approx::assert_relative_eq!(cursor.y0, text.y0 + 3.0);
+        approx::assert_relative_eq!(cursor.y1, text.y0 + 25.0);
     }
 }

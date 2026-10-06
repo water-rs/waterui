@@ -4644,6 +4644,7 @@ dependencies = [
  "accesskit_winit",
  "aither-mcp",
  "android_logger",
+ "approx",
  "async-task",
  "base64 0.22.1",
  "block2 0.6.2",
