@@ -45,6 +45,7 @@ use crate::renderer::{
     FontFamilyResolution, HydroState, MaterialLayer, ProposalSize,
     measure_view_dimensions_with_proposal, normalize_layout_view, view_renders_nothing,
 };
+use crate::text::SessionTextEngine;
 
 /// The window, in points.
 const WIDTH: u32 = 160;
@@ -484,7 +485,7 @@ fn a_grouped_row_in_a_lazy_stack_measures_and_renders() {
     // the `hstack` the group wraps, not the wrapper.
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let mut state = HydroState::new(FontFamilyResolution::Strict);
+    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
     let proposal = ProposalSize::new(Some(crate::num_cast::u32_as_f32(WIDTH)), None);
     let grouped = normalize_layout_view(AnyView::new(row().material_group()), &env);
     let plain = normalize_layout_view(AnyView::new(row()), &env);
@@ -591,7 +592,7 @@ fn a_grouped_empty_view_claims_no_stack_slot() {
     );
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let mut state = HydroState::new(FontFamilyResolution::Strict);
+    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
     let proposal = ProposalSize::new(Some(200.0), None);
     let grouped = normalize_layout_view(
         AnyView::new(vstack((text("a"), ().material_group(), text("b")))),
