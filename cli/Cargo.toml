@@ -30,7 +30,7 @@ path = "src/terminal/main.rs"
 # Windows `canonicalize` returns extended-length paths that no other tool
 # reports; `dunce` gives the plain one and is `canonicalize` elsewhere.
 dunce = "1.0"
-cargo_metadata = "0.23.1"
+cargo_metadata.workspace = true
 # Cargo configuration load and resolution — the same hierarchical merge,
 # environment and `target.<triple>`/`target.<cfg>` precedence Cargo applies,
 # resolving the rustflags a build's flag set joins.

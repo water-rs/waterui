@@ -82,10 +82,13 @@ impl TestHost {
     pub fn new(env: Environment, width: u32, height: u32, style: impl Style) -> Self {
         let mut env = env;
         waterui_core::install_application_resources(&mut env);
-        env.insert(crate::declared_fonts::package_declared_fonts());
+        // A host that staged its declared fonts itself installs a
+        // `DeclaredFonts`; a test binary under cargo resolves them here.
+        crate::declared_fonts::install_declared_fonts(&mut env);
         hydrolysis::theme::install_default_tokens(&mut env);
         style.install_tokens(&mut env);
         let fonts = hydrolysis::native_collection(&env);
+        fonts.clone().install(&mut env);
         Self {
             env,
             gpu: OffscreenGpuContext::new_for_tests_blocking(),

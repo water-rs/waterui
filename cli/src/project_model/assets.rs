@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::future::Future;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
 use cargo_metadata::PackageId;
@@ -21,7 +21,7 @@ use tracing::{debug, info, warn};
 use walkdir::WalkDir;
 
 use waterui_assets_planner::{
-    BundleManifest, FontDeclaration, FontSource, dependency_font_declarations,
+    BundleManifest, FontDeclaration, FontSource, GraphScope, dependency_font_declarations,
 };
 use zenwave::{Client as _, Method};
 
@@ -221,37 +221,14 @@ fn manifest_font_declarations(
     };
     let mut declarations = Vec::with_capacity(assets.font.len());
     for font in &assets.font {
-        let source = match (&font.local_path, &font.remote_path) {
-            (Some(local_path), None) => {
-                let relative_path = PathBuf::from(local_path);
-                // A rooted path in any flavor — `/x`, `\x`, `C:\x`, `C:x` —
-                // escapes the project root on some platform, so reject it on
-                // all of them.
-                if matches!(
-                    relative_path.components().next(),
-                    Some(Component::Prefix(_) | Component::RootDir)
-                ) {
-                    eyre::bail!(
-                        "[[assets.font]] entry '{}' in Water.toml: local_path must be \
-                         relative to the project root",
-                        font.name
-                    );
-                }
-                FontSource::Local {
-                    crate_root: root.to_path_buf(),
-                    relative_path,
-                }
-            }
-            (None, Some(url)) => FontSource::Remote { url: url.clone() },
-            (None, None) => FontSource::BuiltIn,
-            (Some(_), Some(_)) => {
-                eyre::bail!(
-                    "[[assets.font]] entry '{}' in Water.toml sets both local_path and \
-                     remote_path; a declaration has exactly one source",
-                    font.name
-                );
-            }
-        };
+        let source = FontSource::from_declaration(
+            root,
+            font.local_path.clone(),
+            font.remote_path.clone(),
+            &manifest.package.name,
+            &font.name,
+        )
+        .wrap_err_with(|| format!("[[assets.font]] entry '{}' in Water.toml", font.name))?;
         declarations.push(FontDeclaration {
             name: font.name.clone(),
             source,
@@ -393,7 +370,7 @@ async fn scan_crate_font_declarations(
         message
     })?;
 
-    let fonts = dependency_font_declarations(&metadata).wrap_err_with(|| {
+    let fonts = dependency_font_declarations(&metadata, GraphScope::Build).wrap_err_with(|| {
         format!(
             "Invalid font declaration in the dependency graph of {}",
             build_manifest.display()

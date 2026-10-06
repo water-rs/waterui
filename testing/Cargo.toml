@@ -27,7 +27,7 @@ serde_json.workspace = true
 serde = { workspace = true, features = ["derive", "std"] }
 # The package under test's declared crate-local font files, read from its
 # Cargo metadata the way the `water` CLI reads them for an application.
-cargo_metadata = "0.23.1"
+cargo_metadata.workspace = true
 waterui-assets-planner = { workspace = true, features = ["font-declarations"] }
 
 [dev-dependencies]

@@ -6,10 +6,11 @@ use std::path::PathBuf;
 /// runtime's font collection in addition to the
 /// [`waterui_core::ResourceContext`] fonts directory.
 ///
-/// An application never carries one: the `water` CLI stages the fonts its
-/// dependency graph declares into the fonts directory. A host that runs
-/// without that staging step — a test binary under `cargo test` — resolves
-/// the declarations itself and installs the files it found here.
+/// A host that staged the graph's declared fonts into the fonts directory
+/// installs an empty one — the `water` CLI's runtime binaries do, since the
+/// CLI already staged them — and a host that installs none at all — a test
+/// binary under `cargo test` — has the harness resolve the package under
+/// test's declarations itself.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DeclaredFonts {
     paths: Vec<PathBuf>,

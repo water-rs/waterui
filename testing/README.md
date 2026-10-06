@@ -43,8 +43,9 @@ fn stepper_updates(ui: UiBuilder) {
   families its style package names against the host's installed fonts plus the
   font files the package under test's dependency graph declares, exactly as the
   application does. The harness reads those declarations itself — `cargo
-  metadata` on `$CARGO_MANIFEST_DIR`, with the `cargo` that runs the test — and
-  registers every `local_path` file of a
+  metadata --all-features` on `$CARGO_MANIFEST_DIR`, with the `cargo` that runs
+  the test, over the package's own closure (its normal dependencies plus its
+  dev-dependencies) — and registers every `local_path` file of a
   `[[package.metadata.waterui.assets.font]]` table into every mount, styled or
   not, the way the `water` CLI stages them for an application. A named family
   that is neither installed nor declared that way fails the test naming it.

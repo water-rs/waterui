@@ -564,9 +564,9 @@ fn push_text_style(
 /// The [`FontFamilyResolution::Strict`] gate on one CSS `font-family` list:
 /// every *named* entry must resolve in the collection — generic families
 /// always resolve, so they are skipped, as is the generic fallback a missing
-/// family list defaults to. A named family the host does not carry means the
-/// style package's fonts were never installed; panic naming it rather than
-/// measuring a substitute face.
+/// family list defaults to. A named family that is neither installed on the
+/// host nor provided by a declared font file is a missing declaration;
+/// panic naming it rather than measuring a substitute face.
 fn assert_family_list_installed(
     collection: &mut parley::fontique::Collection,
     family: Option<&str>,

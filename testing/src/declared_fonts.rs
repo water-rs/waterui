@@ -7,7 +7,7 @@ use std::time::UNIX_EPOCH;
 
 use hydrolysis::DeclaredFonts;
 use serde::{Deserialize, Serialize};
-use waterui_assets_planner::{FontSource, dependency_font_declarations};
+use waterui_assets_planner::{FontSource, GraphScope, dependency_font_declarations};
 
 /// Suffix appended to the test executable's file name to name its cache.
 const CACHE_SUFFIX: &str = ".waterui-declared-fonts.json";
@@ -39,27 +39,43 @@ struct Resolved {
     path_manifests: Vec<ManifestStamp>,
 }
 
+/// Installs the package under test's declared fonts into `env` unless `env`
+/// already carries a [`DeclaredFonts`].
+///
+/// A host that staged the graph's declared fonts itself — a runtime binary
+/// the `water` CLI launches, which installs an empty one — needs no cargo
+/// resolution; a test binary under cargo resolves them through
+/// `package_declared_fonts`.
+pub fn install_declared_fonts(env: &mut waterui_core::Environment) {
+    if env.get::<DeclaredFonts>().is_none() {
+        env.insert(package_declared_fonts());
+    }
+}
+
 /// The crate-local font files the package under test's dependency graph
 /// declares under `[[package.metadata.waterui.assets.font]]`, as absolute
 /// paths, resolved through `cargo metadata` the way the `water` CLI resolves
 /// an application's.
 ///
-/// Fonts declared by registry name or `remote_path` are left out: only the
-/// `water` CLI stages those.
+/// The graph walked is the package under test's own closure — its normal
+/// dependencies plus its own dev-dependencies — resolved with all features,
+/// so a `required-feature` font a test enables is included. Fonts declared
+/// by registry name or `remote_path` are left out: only the `water` CLI
+/// stages those.
 ///
-/// The result is cached next to the running test executable, in
-/// `<executable>.waterui-declared-fonts.json`, keyed by the executable's
-/// length and modification time, by `CARGO_MANIFEST_DIR`, and by the
-/// modification time of every path package's `Cargo.toml` in the graph.
-/// Registry and git packages are immutable per version or revision, and a
-/// dependency change relinks the binary, so the executable's identity keys
-/// the graph's shape; Cargo's fingerprint does not cover
-/// `[package.metadata]`, so an edit to a path package's font declarations
-/// relinks nothing, and the path packages' manifests are keyed directly. A
-/// manifest that changed or no longer exists invalidates the cache. The
-/// cache file is held under an exclusive lock for the whole check-and-fill,
-/// so the concurrent test processes of one binary run `cargo metadata` once
-/// and the rest wait and read its result.
+/// The result is cached next to the running test executable — its directory
+/// must be writable — in `<executable>.waterui-declared-fonts.json`, keyed
+/// by the executable's length and modification time, by
+/// `CARGO_MANIFEST_DIR`, and by the modification time of every path
+/// package's `Cargo.toml` in the graph. Registry and git packages are
+/// immutable per version or revision, and a dependency change relinks the
+/// binary, so the executable's identity keys the graph's shape; Cargo's
+/// fingerprint does not cover `[package.metadata]`, so an edit to a path
+/// package's font declarations relinks nothing, and the path packages'
+/// manifests are keyed directly. A manifest that changed or no longer exists
+/// invalidates the cache. The cache file is held under an exclusive lock for
+/// the whole check-and-fill, so the concurrent test processes of one binary
+/// run `cargo metadata` once and the rest wait and read its result.
 ///
 /// # Panics
 ///
@@ -68,7 +84,7 @@ struct Resolved {
 /// `cargo nextest`), if `cargo metadata` fails, if a declaration is invalid,
 /// or if any I/O on the executable, the cache file, or a path package's
 /// manifest other than its absence fails, naming the path.
-pub fn package_declared_fonts() -> DeclaredFonts {
+fn package_declared_fonts() -> DeclaredFonts {
     let manifest_dir = PathBuf::from(cargo_variable("CARGO_MANIFEST_DIR"));
     let executable = std::env::current_exe()
         .unwrap_or_else(|error| panic!("cannot locate the running test executable: {error}"));
@@ -99,6 +115,9 @@ pub fn package_declared_fonts() -> DeclaredFonts {
     let mut contents = Vec::new();
     file.read_to_end(&mut contents)
         .unwrap_or_else(|error| cache_io_failed(&cache_path, "read", &error));
+    // A fresh or unparsable cache file is a miss by construction — `create`
+    // yields an empty file — so a failed parse resolves the fonts rather
+    // than failing.
     if let Ok(cache) = serde_json::from_slice::<DeclaredFontsCache>(&contents)
         && cache.executable_len == executable_len
         && cache.executable_modified_nanos == executable_modified_nanos
@@ -136,13 +155,15 @@ pub fn package_declared_fonts() -> DeclaredFonts {
 fn resolve_declared_fonts(manifest_dir: &Path) -> Resolved {
     let cargo = PathBuf::from(cargo_variable("CARGO"));
     let manifest = manifest_dir.join("Cargo.toml");
-    // `--filter-platform`: an unfiltered graph names every platform's
-    // packages, which a build on a clean `CARGO_HOME` never downloads.
-    // `--offline`: a test run must not reach the network.
+    // `--all-features`: a `required-feature` font a test enables must
+    // resolve. `--filter-platform`: an unfiltered graph names every
+    // platform's packages, which a build on a clean `CARGO_HOME` never
+    // downloads. `--offline`: a test run must not reach the network.
     let metadata = cargo_metadata::MetadataCommand::new()
         .cargo_path(&cargo)
         .manifest_path(&manifest)
         .other_options(vec![
+            "--all-features".to_string(),
             "--offline".to_string(),
             "--filter-platform".to_string(),
             env!("WATERUI_TESTING_TARGET").to_string(),
@@ -155,7 +176,7 @@ fn resolve_declared_fonts(manifest_dir: &Path) -> Resolved {
                 manifest.display()
             )
         });
-    let fonts = dependency_font_declarations(&metadata)
+    let fonts = dependency_font_declarations(&metadata, GraphScope::Test)
         .unwrap_or_else(|error| panic!("{error}"))
         .into_iter()
         .filter_map(|declaration| match declaration.source {
