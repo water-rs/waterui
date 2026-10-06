@@ -5045,6 +5045,49 @@ mod winit_impl {
             );
         }
 
+        /// A behind-window material window is transparent, so its surface
+        /// takes a multiplied composite alpha mode — premultiplied first, the
+        /// postmultiplied mode Metal offers otherwise — while a within-window
+        /// material window keeps the opaque surface every other window has.
+        #[test]
+        fn a_behind_window_material_window_gets_a_multiplied_alpha_mode() {
+            use waterui::background::Material;
+            use waterui::window::{Window, WindowState};
+            use wgpu::CompositeAlphaMode as Mode;
+
+            let env = waterui_core::Environment::new();
+            let window = |material| {
+                Window::new("", waterui_core::binding(WindowState::Normal), || ())
+                    .background(material)
+            };
+            let select = |material, modes: &[Mode]| {
+                super::WinitSurface::select_alpha_mode(
+                    &caps_with_alpha_modes(modes),
+                    crate::runner::window_requires_transparency(&window(material), &env),
+                    &fake_adapter_info(),
+                )
+            };
+            for level in [Material::UltraThin, Material::Thin] {
+                assert_eq!(
+                    select(
+                        level,
+                        &[Mode::Opaque, Mode::PostMultiplied, Mode::PreMultiplied]
+                    ),
+                    Mode::PreMultiplied
+                );
+                assert_eq!(
+                    select(level, &[Mode::Opaque, Mode::PostMultiplied]),
+                    Mode::PostMultiplied
+                );
+            }
+            for level in [Material::Regular, Material::Thick, Material::UltraThick] {
+                assert_eq!(
+                    select(level, &[Mode::Opaque, Mode::PreMultiplied]),
+                    Mode::Opaque
+                );
+            }
+        }
+
         /// water-rs/hydrolysis#118: a depth-32 X11 window on a Mesa
         /// software rasterizer below 24.1 is silently un-presentable — the
         /// version gate is the only signal presentation never had.

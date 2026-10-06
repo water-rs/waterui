@@ -30,7 +30,7 @@ use cocoa_ui::appkit::HostView;
 use cocoa_ui::uikit::HostView;
 
 /// The `Material` thickness as the kit's neutral level.
-const fn level(material: Material) -> MaterialLevel {
+pub const fn level(material: Material) -> MaterialLevel {
     match material {
         Material::UltraThin => MaterialLevel::UltraThin,
         Material::Thin => MaterialLevel::Thin,
