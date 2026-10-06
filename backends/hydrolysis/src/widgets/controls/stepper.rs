@@ -443,6 +443,6 @@ mod tests {
             stepper_control_and_label_bounds(Rect::new(16.0, 20.0, 320.0, 60.0), metrics, 16.0);
         assert_eq!(controls, Rect::new(248.0, 24.0, 320.0, 56.0));
         assert_eq!(label, Rect::new(16.0, 32.0, 240.0, 48.0));
-        assert_eq!(label.center().y, controls.center().y);
+        approx::assert_relative_eq!(label.center().y, controls.center().y);
     }
 }

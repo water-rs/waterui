@@ -10,6 +10,21 @@ fn pixel(readback: &cherenkov::Readback, x: usize, y: usize) -> [f32; 4] {
     [p[0], p[1], p[2], p[3]]
 }
 
+/// The CPU side of `backdrop_sample_level` for the
+/// `sample_level_mixes_the_pyramid_trilinearly` scene: the red coverage
+/// the bilinear read at device point `p` sees in level `k`, whose texel
+/// column `i` covers `[2^k·i, 2^k·(i+1))` device columns — red below 16.
+fn red_share(k: u32, p: f32) -> f32 {
+    let size = f32::from(32u16 >> k);
+    let div = f32::from(1u16 << k);
+    let column_red = |i: f32| i.mul_add(-div, 16.0f32).clamp(0.0, div) / div;
+    let f = (p / div - 0.5).clamp(0.0, size - 1.0);
+    let lo = f.floor();
+    let hi = (lo + 1.0).min(size - 1.0);
+    let t = f - lo;
+    column_red(hi).mul_add(t, column_red(lo) * (1.0 - t))
+}
+
 fn assert_pixel(actual: [f32; 4], expected: [f32; 4], tolerance: f32) {
     for (a, e) in actual.iter().zip(expected) {
         assert!(
@@ -350,36 +365,54 @@ fn member_inside_blended_descendant_layer_sees_the_layer_contents()
 }
 
 split_test! {
-/// A member layer that itself isolates (opacity < 1 on a Normal blend):
-/// the member's sample draws to the current target under the member
-/// clip, before and outside the layer's own isolation, so it is not
-/// attenuated by the layer opacity; the layer's content is (#134).
-fn member_sample_is_not_attenuated_by_layer_opacity() -> Result<(), Box<dyn std::error::Error>> {
+/// A member layer's own opacity fades the member as a whole, its
+/// backdrop sample included: an unfiltered member's sample is its
+/// canvas's bottom-most content and attenuates with it; a filtered
+/// member's sample stays outside its isolation — the filter never
+/// covers it — and still fades by the member's opacity, once (#1974).
+fn member_sample_is_attenuated_by_layer_opacity() -> Result<(), Box<dyn std::error::Error>> {
     split_fn! {
-// One engine for both opacities: each render builds its own surface, so
-// the two scenes stay independent while engine construction is shared.
-fn render(engine: &Engine<Gpu>, opacity: f32) -> Result<cherenkov::Readback, Box<dyn std::error::Error>> {
+// A red|blue step under a red↔blue-swapping group: the captured sample
+// differs from the sharp backdrop everywhere — at the clip's
+// antialiased rim too — so attenuating the sample and the member
+// clip's coverage are both observable. `filter` gives the member a
+// red↔blue swap or an identity filter.
+fn render(engine: &Engine<Gpu>, opacity: f32, filter: Option<[f32; 12]>, blend: cherenkov::BlendMode) -> Result<cherenkov::Readback, Box<dyn std::error::Error>> {
         let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
-        let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
+        let group = surface.backdrop_group(
+            filtrate::filters::ColorMatrix(SWAP),
+            cherenkov::CaptureScale::FULL,
+        );
         let member = surface.layer();
         let child = surface.layer();
+        let member_filter = filter.map(|matrix| engine.filter(filtrate::filters::ColorMatrix(matrix)));
         surface.update(|tx| {
             tx[surface.root()].content(surface.record(|r| {
                 r.fill(
-                    Rect::new(0.0, 0.0, 32.0, 32.0),
+                    Rect::new(0.0, 0.0, 16.0, 32.0),
                     WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+                );
+                r.fill(
+                    Rect::new(16.0, 0.0, 32.0, 32.0),
+                    WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
                 );
             }));
             tx[surface.root()].push(&member);
             tx[&member]
                 .clip(RoundedRect::new(4.0, 4.0, 28.0, 28.0, 6.0))
                 .opacity(opacity)
+                .blend(blend)
                 .backdrop(group.sample());
+            if let Some(filter) = &member_filter {
+                tx[&member].filter(filter.id());
+            }
             tx[&member].push(&child);
+            // The member's content reaches past the step at x = 16, so
+            // covered pixels see the member's sample too.
             tx[&child].content(surface.record(|r| {
                 r.fill(
-                    Rect::new(16.0, 4.0, 28.0, 28.0),
-                    WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+                    Rect::new(12.0, 4.0, 28.0, 28.0),
+                    WorkingColor::new([0.0, 0.7, 0.0, 1.0]),
                 );
             }));
         });
@@ -388,20 +421,80 @@ fn render(engine: &Engine<Gpu>, opacity: f32) -> Result<cherenkov::Readback, Box
     }
     }
 
+    const SWAP: [f32; 12] = [
+        0.0, 0.0, 1.0, 0.0, //
+        0.0, 1.0, 0.0, 0.0, //
+        1.0, 0.0, 0.0, 0.0,
+    ];
+    const IDENTITY: [f32; 12] = [
+        1.0, 0.0, 0.0, 0.0, //
+        0.0, 1.0, 0.0, 0.0, //
+        0.0, 0.0, 1.0, 0.0,
+    ];
+    // The member as a whole attenuates by its opacity once: inside its
+    // clip, `half` = 0.5·`full` + 0.5·`dst` where `dst` is the sharp
+    // backdrop pixel — true on the sample, on member content, and on
+    // the clip's antialiased edge alike.
+    let dst = |x: usize| {
+        if x < 16 {
+            [1.0, 0.0, 0.0, 1.0]
+        } else {
+            [0.0, 0.0, 1.0, 1.0]
+        }
+    };
+    let faded = |full: &cherenkov::Readback, x: usize, y: usize| {
+        std::array::from_fn(|c| 0.5f32.mul_add(pixel(full, x, y)[c], 0.5 * dst(x)[c]))
+    };
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
-    let half = wait!(render(&engine, 0.5))?;
-    // Sample-only area (left half of the clip): the red backdrop at full
-    // strength, unaffected by the layer's 0.5 opacity.
-    assert_pixel(pixel(&half, 10, 16), [1.0, 0.0, 0.0, 1.0], 1e-3);
-    // Inside the child: 50% blue over the sampled red = [0.5, 0.0, 0.5].
-    assert_pixel(pixel(&half, 20, 16), [0.5, 0.0, 0.5, 1.0], 1e-3);
-    // Outside the clip: the surface is untouched.
+    let normal = cherenkov::BlendMode::Normal;
+    let full = wait!(render(&engine, 1.0, None, normal))?;
+    let half = wait!(render(&engine, 0.5, None, normal))?;
+    // Sample-only over red, content-covered at the step, covered
+    // content, and the clip's corner edge.
+    for &(x, y) in &[(8, 16), (16, 16), (24, 16), (5, 5)] {
+        assert_pixel(pixel(&half, x, y), faded(&full, x, y), 1e-3);
+    }
+    // Outside the clip the surface is untouched.
     assert_pixel(pixel(&half, 1, 16), [1.0, 0.0, 0.0, 1.0], 1e-3);
-    // The clip edge is not squared: a corner pixel's coverage matches the
-    // same layer at full opacity.
-    let full = wait!(render(&engine, 1.0))?;
-    assert_pixel(pixel(&half, 5, 5), pixel(&full, 5, 5), 1e-3);
-    assert_pixel(pixel(&half, 7, 7), pixel(&full, 7, 7), 1e-3);
+    // A filtered member at the same pixels: the sample is attenuated —
+    // never swapped — and fades with the member's content, so the rule
+    // holds at covered pixels too; the member scope compositing sample
+    // and content together is what keeps it true where content covers
+    // the step.
+    let filtered_full = wait!(render(&engine, 1.0, Some(SWAP), normal))?;
+    let filtered_half = wait!(render(&engine, 0.5, Some(SWAP), normal))?;
+    for &(x, y) in &[(8, 16), (16, 16), (24, 16), (5, 5)] {
+        assert_pixel(
+            pixel(&filtered_half, x, y),
+            faded(&filtered_full, x, y),
+            1e-3,
+        );
+    }
+    // An identity-filtered member equals the unfiltered member: the
+    // member scope's nested scopes change nothing — on the clip's rim,
+    // where the swapped sample differs from the sharp backdrop and any
+    // extra clip-edge coverage would show, and in the interior, where
+    // the assertion also pins that the filter never covers the sample.
+    let identity_full = wait!(render(&engine, 1.0, Some(IDENTITY), normal))?;
+    let identity_half = wait!(render(&engine, 0.5, Some(IDENTITY), normal))?;
+    for &(x, y) in &[(6, 5), (5, 5), (8, 16), (16, 16), (24, 16)] {
+        assert_pixel(pixel(&identity_full, x, y), pixel(&full, x, y), 1e-3);
+        assert_pixel(pixel(&identity_half, x, y), pixel(&half, x, y), 1e-3);
+    }
+    // A member's non-Normal blend applies to its sample, for both member
+    // kinds: `Multiply` blends the whole member — sample and content —
+    // against the backdrop, so only channels shared with the backdrop
+    // survive and covered content fades to black.
+    for filter in [None, Some(SWAP)] {
+        let multi = wait!(render(&engine, 1.0, filter, cherenkov::BlendMode::Multiply))?;
+        let base = if filter.is_some() { &filtered_full } else { &full };
+        // Sample-only pixel over red: Multiply blends S as S·D — the
+        // swapped sample is blue over red, so only black survives.
+        let s = pixel(base, 8, 16);
+        assert_pixel(pixel(&multi, 8, 16), [s[0], 0.0, 0.0, 1.0], 1e-3);
+        // Covered content over the step: green × blue = black.
+        assert_pixel(pixel(&multi, 24, 16), [0.0, 0.0, 0.0, 1.0], 1e-3);
+    }
     Ok(())
 }
 }
@@ -1115,6 +1208,237 @@ fn reduced_rim_lights_the_bilinear_sample_on_the_capture_grid()
     );
     // Past the rim's width the sample is unlit.
     assert_pixel(pixel(&readback, 32, 32), [1.0, 0.0, 0.0, 1.0], 1e-3);
+    Ok(())
+}
+}
+
+split_test! {
+/// A WGSL member effect reading the capture pyramid at a fractional
+/// level: `backdrop_sample_level(p, 1.5)` is the trilinear mix of the
+/// level-1 and level-2 box reductions — checked per pixel against the
+/// same computation run here on the capture (#1786).
+fn sample_level_mixes_the_pyramid_trilinearly() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let shader = engine.backdrop_shader(cherenkov::BackdropShaderSource::wgsl(
+        "fn backdrop_effect(p: vec2<f32>, sdf: f32, normal: vec2<f32>, size: vec2<f32>, params: array<vec4<f32>, 16>) -> vec4<f32> {
+            return backdrop_sample_level(p, params[0].x);
+        }",
+    ))?;
+    let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
+    let spec = cherenkov::BackdropSpec::new(
+        cherenkov::CaptureScale::FULL,
+        cherenkov::CaptureLevels::new(3)?,
+    );
+    let group = surface.backdrop_group_unfiltered(spec);
+    let member = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 16.0, 32.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+            r.fill(
+                Rect::new(16.0, 0.0, 32.0, 32.0),
+                WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&member);
+        tx[&member]
+            .clip(Rect::new(0.0, 0.0, 32.0, 32.0))
+            .backdrop(group.sample_with(shader.effect(vec![1.5])));
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    let readback = wait!(surface.readback())?;
+
+    let expected = |x: u16| {
+        let p = f32::from(x) + 0.5;
+        let red = f32::midpoint(red_share(1, p), red_share(2, p));
+        [red, 0.0, 1.0 - red, 1.0]
+    };
+    // Deep in either half both levels agree.
+    assert_pixel(pixel(&readback, 8, 16), expected(8), 0.01);
+    assert_pixel(pixel(&readback, 24, 16), expected(24), 0.01);
+    // Around the step the two levels blend over different spans: x = 14
+    // is pure red at level 1 but 7/8 red at level 2, x = 17 pure blue at
+    // level 1 but 1/8 red at level 2 — neither integer level produces
+    // the level-1.5 read.
+    assert_pixel(pixel(&readback, 14, 16), expected(14), 0.01);
+    assert_pixel(pixel(&readback, 15, 16), expected(15), 0.01);
+    assert_pixel(pixel(&readback, 16, 16), expected(16), 0.01);
+    assert_pixel(pixel(&readback, 17, 16), expected(17), 0.01);
+    let memory = wait!(engine.memory());
+    // The whole-surface member's 32×32 capture plus its two levels.
+    assert_eq!(
+        memory.backdrop_captures,
+        Bytes((32 * 32 + 16 * 16 + 8 * 8) * 8)
+    );
+    assert_eq!(memory.backdrop_capture_format, Some("rgba16float"));
+    Ok(())
+}
+}
+
+split_test! {
+/// The pyramid's odd-grid partial box as a pixel read: a 33×33
+/// full-scale capture's level 1 is 17 texels wide, its last a partial
+/// box over column 32 alone. Column 32 is blue and the rest red, so
+/// texel 16 is pure blue — the mean of the texels present — and pixel
+/// 31 (level-1 coordinate 31.5 / 2 − 0.5 = 15.25) mixes red texel 15
+/// and blue texel 16 at 0.25. A level below 0 reads level 0, one above
+/// `n − 1` level `n − 1` (#1786).
+fn level_ramp_reads_odd_grid_partial_boxes_and_clamps_levels()
+-> Result<(), Box<dyn std::error::Error>> {
+    split_fn! {
+fn render(engine: &Engine<Gpu>, level: f32) -> Result<cherenkov::Readback, Box<dyn std::error::Error>> {
+        let surface = wait!(engine.surface(Offscreen::new((33, 33), OffscreenFormat::LinearF16), || {}))?;
+        let spec = cherenkov::BackdropSpec::new(
+            cherenkov::CaptureScale::FULL,
+            cherenkov::CaptureLevels::new(2)?,
+        );
+        let group = surface.backdrop_group_unfiltered(spec);
+        let ramp = cherenkov::LevelRamp::new(1.0, level, level)?;
+        let member = surface.layer();
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(|r| {
+                r.fill(
+                    Rect::new(0.0, 0.0, 32.0, 33.0),
+                    WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+                );
+                r.fill(
+                    Rect::new(32.0, 0.0, 33.0, 33.0),
+                    WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+                );
+            }));
+            tx[surface.root()].push(&member);
+            tx[&member]
+                .clip(Rect::new(0.0, 0.0, 33.0, 33.0))
+                .backdrop(group.sample_with(cherenkov::BackdropEffect::Level(ramp)));
+        });
+        wait!(engine.render(FrameTime::now()))?;
+        Ok(wait!(surface.readback())?)
+    }
+    }
+
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    for level in [1.0, 7.0] {
+        let readback = wait!(render(&engine, level))?;
+        assert_pixel(pixel(&readback, 31, 16), [0.75, 0.0, 0.25, 1.0], 2e-3);
+        // Pixel 32 lands at 15.75: three quarters of the blue texel.
+        assert_pixel(pixel(&readback, 32, 16), [0.25, 0.0, 0.75, 1.0], 2e-3);
+        // The bottom row's partial boxes and the corner hold the texels
+        // present too.
+        assert_pixel(pixel(&readback, 31, 32), [0.75, 0.0, 0.25, 1.0], 2e-3);
+        assert_pixel(pixel(&readback, 32, 32), [0.25, 0.0, 0.75, 1.0], 2e-3);
+        assert_pixel(pixel(&readback, 8, 32), [1.0, 0.0, 0.0, 1.0], 2e-3);
+    }
+    let below = wait!(render(&engine, -3.0))?;
+    assert_pixel(pixel(&below, 31, 16), [1.0, 0.0, 0.0, 1.0], 2e-3);
+    assert_pixel(pixel(&below, 32, 16), [0.0, 0.0, 1.0, 1.0], 2e-3);
+    Ok(())
+}
+}
+
+split_test! {
+/// Levels on a reduced capture: at scale 0.5 a 2-level pyramid's level
+/// 1 texel covers 4 device columns, so a `LevelRamp` at level 1 reads
+/// the same coverage as level 2 of a full-scale capture (#1786).
+fn level_ramp_reads_levels_of_a_reduced_capture() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
+    let spec = cherenkov::BackdropSpec::new(
+        cherenkov::CaptureScale::new(0.5)?,
+        cherenkov::CaptureLevels::new(2)?,
+    );
+    let group = surface.backdrop_group_unfiltered(spec);
+    let ramp = cherenkov::LevelRamp::new(1.0, 1.0, 1.0)?;
+    let member = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 16.0, 32.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+            r.fill(
+                Rect::new(16.0, 0.0, 32.0, 32.0),
+                WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&member);
+        tx[&member]
+            .clip(Rect::new(0.0, 0.0, 32.0, 32.0))
+            .backdrop(group.sample_with(cherenkov::BackdropEffect::Level(ramp)));
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    let readback = wait!(surface.readback())?;
+    for x in [8u16, 13, 14, 15, 16, 17, 18, 24] {
+        let red = red_share(2, f32::from(x) + 0.5);
+        assert_pixel(pixel(&readback, usize::from(x), 16), [red, 0.0, 1.0 - red, 1.0], 2e-3);
+    }
+    Ok(())
+}
+}
+
+split_test! {
+/// A member's deep-level read does not depend on the other members: a
+/// σ = 2 blur at scale 0.25 into 5 levels, the member at x 600..840
+/// reading level 4 over 16-px stripes, renders the same alone — its
+/// region then starts at capture texel 112 (device x 448) — and with an
+/// adjacent plain member at x 0..596 that pulls the region to texel 0
+/// (#1786).
+fn deep_level_reads_are_independent_of_the_other_members()
+-> Result<(), Box<dyn std::error::Error>> {
+    split_fn! {
+fn render(engine: &Engine<Gpu>, with_plain: bool) -> Result<cherenkov::Readback, Box<dyn std::error::Error>> {
+        let surface = wait!(engine.surface(Offscreen::new((1024, 64), OffscreenFormat::LinearF16), || {}))?;
+        let spec = cherenkov::BackdropSpec::new(
+            cherenkov::CaptureScale::new(0.25)?,
+            cherenkov::CaptureLevels::new(5)?,
+        );
+        let group = surface.backdrop_group(filtrate::filters::GaussianBlur::new(2.0f32), spec);
+        let ramp = cherenkov::LevelRamp::new(1.0, 4.0, 4.0)?;
+        let member = surface.layer();
+        let plain = surface.layer();
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(|r| {
+                r.fill(
+                    Rect::new(0.0, 0.0, 1024.0, 64.0),
+                    WorkingColor::new([0.0, 0.0, 0.0, 1.0]),
+                );
+                for i in (0..64u16).step_by(2) {
+                    let x = f64::from(i * 16);
+                    r.fill(
+                        Rect::new(x, 0.0, x + 16.0, 64.0),
+                        WorkingColor::new([1.0, 1.0, 1.0, 1.0]),
+                    );
+                }
+            }));
+            tx[surface.root()].push(&member);
+            tx[&member]
+                .clip(Rect::new(600.0, 8.0, 840.0, 56.0))
+                .backdrop(group.sample_with(cherenkov::BackdropEffect::Level(ramp)));
+            if with_plain {
+                tx[surface.root()].push(&plain);
+                tx[&plain]
+                    .clip(Rect::new(0.0, 8.0, 596.0, 56.0))
+                    .backdrop(group.sample());
+            }
+        });
+        wait!(engine.render(FrameTime::now()))?;
+        Ok(wait!(surface.readback())?)
+    }
+    }
+
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let alone = wait!(render(&engine, false))?;
+    let shared = wait!(render(&engine, true))?;
+    for y in 8..56 {
+        for x in 600..840 {
+            assert_eq!(
+                pixel(&alone, x, y),
+                pixel(&shared, x, y),
+                "member pixel ({x}, {y}) depends on the other member"
+            );
+        }
+    }
     Ok(())
 }
 }

@@ -774,7 +774,7 @@ fn destructive_layer_blend_is_bounded_by_the_clip() {
 fn refraction_on_a_path_clip_is_the_named_error() {
     use cherenkov_scene::{BackdropEffectSpec, BackdropFilter};
     let mut b = Scene::builder(W, H);
-    b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 2.0 }], 1.0);
+    b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 2.0 }], 1.0, 1);
     b.root().layer(|m| {
         let mut path = kurbo::BezPath::new();
         path.move_to((2.0, 2.0));

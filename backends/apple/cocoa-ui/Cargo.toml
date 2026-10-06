@@ -48,8 +48,11 @@ avkit = ["dep:objc2-av-foundation", "dep:objc2-core-media", "dep:objc2-av-kit"]
 webview = ["dep:objc2-web-kit", "dep:objc2-security"]
 # Harness-only reach for `tests/native`: compiles the doc(hidden)
 # test-support entry points that touch implementation-private surfaces
-# (`accessory_overlay_window_for_test`), never part of a production build.
-native-test = []
+# (`accessory_overlay_window_for_test`), the harnesses' shared
+# `native_test::pump_main_until` and, on iOS, the `uikit::native_test`
+# application the `native_app` harnesses run their cases in — never part of
+# a production build.
+native-test = ["dep:libtest-mimic"]
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 block2 = "0.6"
@@ -397,6 +400,8 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
 
 [target.'cfg(target_os = "ios")'.dependencies]
 bitflags = "2"
+# The `native-test` harness application runs the `native_app` trials.
+libtest-mimic = { version = "0.8", optional = true }
 objc2-ui-kit = { version = "0.3", default-features = false, features = [
     "std",
     "objc2-core-foundation",

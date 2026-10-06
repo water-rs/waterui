@@ -42,14 +42,14 @@ pub(super) struct PreparedBackdrop {
     /// The chain's footprint bound over the frame's animation magnitudes
     /// ([`Footprint::ZERO`] unfiltered), in capture texels.
     pub footprint: Footprint,
-    /// The group's capture scale.
-    pub scale: cherenkov::CaptureScale,
+    /// The group's capture spec (scale and level count).
+    pub spec: cherenkov::BackdropSpec,
 }
 
-/// A registered backdrop group: its capture scale and its chain, `None`
+/// A registered backdrop group: its capture spec and its chain, `None`
 /// for an unfiltered group.
 struct Group {
-    scale: cherenkov::CaptureScale,
+    spec: cherenkov::BackdropSpec,
     chain: Option<Entry>,
 }
 
@@ -207,29 +207,29 @@ impl Registry {
         self.entries.insert(id.raw(), entry);
     }
 
-    /// Registers an unfiltered backdrop group capturing at `scale`.
+    /// Registers an unfiltered backdrop group capturing per `spec`.
     pub fn add_backdrop_group(
         &mut self,
         surface: SurfaceId,
         id: BackdropId,
-        scale: cherenkov::CaptureScale,
+        spec: cherenkov::BackdropSpec,
     ) {
-        self.insert_group(surface, id, Group { scale, chain: None });
+        self.insert_group(surface, id, Group { spec, chain: None });
     }
 
-    /// Registers a backdrop group capturing at `scale` whose capture runs
+    /// Registers a backdrop group capturing per `spec` whose capture runs
     /// `filter`.
     pub fn add_filtered_backdrop_group<F>(
         &mut self,
         surface: SurfaceId,
         id: BackdropId,
         filter: F,
-        scale: cherenkov::CaptureScale,
+        spec: cherenkov::BackdropSpec,
     ) where
         F: CpuFilter + cherenkov::RenderTransfer + Send + Sync,
     {
         let chain = Some(Self::entry(filter));
-        self.insert_group(surface, id, Group { scale, chain });
+        self.insert_group(surface, id, Group { spec, chain });
     }
 
     /// Registers `group`, clearing the wakes of a chain it replaces.
@@ -318,19 +318,19 @@ impl Registry {
                 id.raw()
             )));
         };
-        let scale = group.scale;
+        let spec = group.spec;
         let Some(entry) = &mut group.chain else {
             return Ok(PreparedBackdrop {
                 filter: None,
                 footprint: Footprint::ZERO,
-                scale,
+                spec,
             });
         };
         entry.prepare(sequence, self.delta);
         Ok(PreparedBackdrop {
             filter: Some((Arc::clone(&entry.filter), Arc::clone(&entry.params))),
             footprint: Self::footprint_bound(entry),
-            scale,
+            spec,
         })
     }
 

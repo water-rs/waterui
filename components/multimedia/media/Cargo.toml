@@ -58,6 +58,11 @@ remote = ["dep:zenwave", "waterui-url/remote"]
 futures-lite.workspace = true
 waterui = { path = "../../..", features = ["video-gpu"] }
 waterui-testing = { path = "../../../testing" }
+# This crate's own tests cover `LivePhoto` and `Media::Video`, which are behind
+# `video`, not in `default`. A dev-dependency on itself turns the feature on for
+# this crate's test targets without turning it on for anything that depends on
+# the crate.
+waterui-media = { path = ".", features = ["video"] }
 waterkit-codec = { version = "0.1.2", features = ["software-decode"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"] }
 

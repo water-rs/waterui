@@ -200,6 +200,8 @@ pub mod spirv {
     pub const MIP: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/mip.spv"));
     /// `resolve.wgsl`.
     pub const RESOLVE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/resolve.spv"));
+    /// `reduce.wgsl`.
+    pub const REDUCE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/reduce.spv"));
     /// `external_native.spv` — the Vulkan native module: `vs_main`,
     /// `fs_external` and `fs_external_format`, with the external-format
     /// pair merged into a combined sampled image by the build's
@@ -241,6 +243,10 @@ const MIP_METALLIB: &[u8] = &[];
 const RESOLVE_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/resolve.metallib"));
 #[cfg(not(target_vendor = "apple"))]
 const RESOLVE_METALLIB: &[u8] = &[];
+#[cfg(target_vendor = "apple")]
+const REDUCE_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/reduce.metallib"));
+#[cfg(not(target_vendor = "apple"))]
+const REDUCE_METALLIB: &[u8] = &[];
 
 /// The three `VARIANT` specializations of `shader.wgsl`, indexed by
 /// `variant_index`.
@@ -317,6 +323,15 @@ const RESOLVE: Fixed = Fixed {
     #[cfg(cherenkov_spirv)]
     spirv: spirv::RESOLVE,
     metallib: RESOLVE_METALLIB,
+    entries: VS_FS_MAIN,
+};
+
+/// `reduce.wgsl`, the capture pyramid level module.
+const REDUCE: Fixed = Fixed {
+    wgsl: include_str!("reduce.wgsl"),
+    #[cfg(cherenkov_spirv)]
+    spirv: spirv::REDUCE,
+    metallib: REDUCE_METALLIB,
     entries: VS_FS_MAIN,
 };
 
@@ -413,6 +428,12 @@ impl ShaderDelivery {
     #[must_use]
     pub fn resolve_module(self, device: &wgpu::Device) -> wgpu::ShaderModule {
         self.module(device, "cherenkov resolve", &RESOLVE)
+    }
+
+    /// The capture pyramid reduce module.
+    #[must_use]
+    pub fn reduce_module(self, device: &wgpu::Device) -> wgpu::ShaderModule {
+        self.module(device, "cherenkov reduce", &REDUCE)
     }
 
     fn module(

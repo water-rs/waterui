@@ -462,9 +462,11 @@ pub enum InputEvent {
         x: f32,
         /// Vertical position in logical points.
         y: f32,
-        /// Horizontal scroll delta.
+        /// Horizontal scroll delta; winit's sign is positive when the content moves right,
+        /// revealing content to the left.
         dx: f32,
-        /// Vertical scroll delta.
+        /// Vertical scroll delta; winit's sign is positive when the content moves down,
+        /// revealing content above.
         dy: f32,
         /// Whether the deltas are in lines (`true`) or pixels (`false`).
         is_line_delta: bool,
@@ -475,9 +477,11 @@ pub enum InputEvent {
         x: f32,
         /// Vertical position in logical points.
         y: f32,
-        /// Horizontal scroll delta.
+        /// Horizontal scroll delta; winit's sign is positive when the content moves right,
+        /// revealing content to the left.
         dx: f32,
-        /// Vertical scroll delta.
+        /// Vertical scroll delta; winit's sign is positive when the content moves down,
+        /// revealing content above.
         dy: f32,
         /// The gesture's touch phase.
         phase: TouchPhase,

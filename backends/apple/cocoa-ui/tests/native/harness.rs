@@ -30,22 +30,7 @@ pub fn marker() -> MainThreadMarker {
     MainThreadMarker::new().expect("the native suite runs every case on the process's main thread")
 }
 
-/// Pumps the main run loop in small turns until `until` answers or
-/// `seconds` elapse — how a synchronous case awaits work enqueued on the
-/// main queue, like a Metal completion's main-thread hop or a later-turn
-/// lifecycle check. Answers whether `until` was reached.
-pub fn pump_main_until(seconds: f64, until: impl Fn() -> bool) -> bool {
-    use cocoa_ui::objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSRunLoop};
-    let deadline = NSDate::dateWithTimeIntervalSinceNow(seconds);
-    while !until() && deadline.timeIntervalSinceNow() > 0.0 {
-        // SAFETY: `NSDefaultRunLoopMode` is a system-owned run-loop mode.
-        NSRunLoop::currentRunLoop().runMode_beforeDate(
-            unsafe { NSDefaultRunLoopMode },
-            &NSDate::dateWithTimeIntervalSinceNow(0.02),
-        );
-    }
-    until()
-}
+pub use cocoa_ui::native_test::pump_main_until;
 
 /// One real turn of the main queue — enqueues a marker through the same
 /// dispatch channel completion hops use and returns only once the
