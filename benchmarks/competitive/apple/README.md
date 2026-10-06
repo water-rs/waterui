@@ -72,10 +72,17 @@ XCUITest runner (6 App IDs total: 5 contestant apps + 1 shared
 
 Every cell is measured over METHOD's window (`../WORKLOADS.md`):
 [first owned present + `harness.warmup_ms`, + the workload's
-`duration_s`]. `dev.bench.ready` is a readiness signal only: the runner
-starts the drive at ready + warmup, marking it with a `dev.bench`
-`drive-begin` Points of Interest signpost, and holds the contestant for
-`duration_s` + `harness.anchor_tolerance_ms` (`measure-end`). XCTest runs a
+`duration_s`]: readiness is the contestant's first owned present, read
+from the trace. The trace is only readable once the recording stops, so
+the runner needs a live signal to start a drive on: it starts the drive
+at the app's `dev.bench.ready` post + warmup, marking it with a
+`dev.bench` `drive-begin` Points of Interest signpost, and holds the
+contestant for `duration_s` + `harness.anchor_tolerance_ms`
+(`measure-end`). For a driven cell (tap, wheel, swipe) the drive-begin
+mark must lie within `anchor_tolerance_ms` of the window start; an
+undriven cell (W3, W5) has no drive to align, so its offset is recorded
+but not gated. Every cell fails when the runner released the contestant
+before the window end. XCTest runs a
 measure block once more than `iterationCount` and discards the first
 run; that discarded run is the warmup and the recorded one is the drive
 and hold, so each happens exactly once.
@@ -87,17 +94,31 @@ plus Logging on ios-device) for every contestant. Each recorder is armed
 recorder-go is released, so it covers the app from its launch. The
 contestant's processes are those whose executable lives inside its
 bundle (trace TOC); a `hitches-frame-lifetimes` row is the contestant's
-present (at start + duration) when its swap composited a
+present (at start + duration) when its (display, swap) composited a
 `hitches-updates` row from one of them. The window is computed on that
-trace's clock, the drive-begin signpost must lie within
-`anchor_tolerance_ms` of its start, and frame statistics are clipped to it
-exactly, whenever the runner's measured span closes. On ios-device
+trace's clock and frame statistics are clipped to it exactly, whenever
+the runner's measured span closes. A virtualized macOS host records no
+frame lifetimes at all (Xcode 26.6 on the build VM: every Hitches table
+empty); such a trace fails attribution rather than measuring nothing.
+Each recording also leaves its raw `instruments*.ktrace` (2-4.5 GB per
+W3 recording) in the user's Darwin temp dir, held open by the
+DTServiceHub agent; xctrace offers no option for that scratch, so the
+cell owns it: every recorder runs with `TMPDIR` set to a scratch dir
+under the results dir, and once all recorders of the cell stopped the
+runner deletes every `instruments*.ktrace` that appeared in that dir or
+the user temp dir during the cell and terminates (by pid, after lsof
+names it) the DTServiceHub still holding one, failing the cell when the
+holder is any other process or outlives its SIGTERM. The row records
+what it removed (`instruments_scratch_removed`). On ios-device
 `time-sample` gives the app and `backboardd` CPU over the same window; on
 macOS the host `ps` sampler's window is the trace window carried to the
 host clock through the drive-begin instant both clocks record.
 `bench.py attribution --trace T --app A --platform P --max-fps F` prints a
 trace's attribution evidence (owned pids, the swap join, owned presents
-next to every present on the same display). No in-app CADisplayLink: it
+next to every present on the same display, and every frame on that
+display classified by whose client updates its swap carried — owned,
+owned and foreign, foreign, or none — with the foreign updating
+processes). No in-app CADisplayLink: it
 cannot see Flutter/RN render-thread stalls the same way. Report per step:
 frames, p50/p99 frame interval, % inside the 8.33 ms (120 Hz) and
 16.67 ms (60 Hz) budgets, CPU ms/frame; the capacity number is the
@@ -107,7 +128,8 @@ Every app reads `-bench-workload w1..w6` from launch arguments and posts
 `dev.bench.ready.<bundle-id>.<w>` when the workload view first appears
 (SwiftUI `onAppear`, UIKit/AppKit `viewDidAppear`, WaterUI `on_appear`,
 Flutter's first frame of the workload page, React Native's first content
-appearance); W1's button is `increment-button` for accessibility. Values
+appearance, Electron's `ready-to-show`, where its hidden window is first
+shown); W1's button is `increment-button` for accessibility. Values
 are byte-identical across contestants via the shared corpus.
 
 ## Metrics

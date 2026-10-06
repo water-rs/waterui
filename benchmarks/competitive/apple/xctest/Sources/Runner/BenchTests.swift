@@ -19,15 +19,17 @@
 //                      missing or malformed value fails). The host
 //                      computes the window itself — [first owned present
 //                      + warmup, + BENCH_DURATION] on its all-process
-//                      trace (METHOD); this runner starts the drive at
-//                      readiness + warmup and holds the contestant for
-//                      BENCH_DURATION + BENCH_ANCHOR_TOLERANCE_MS, so the
-//                      window lies inside the held span.
+//                      trace (METHOD); the trace is readable only after
+//                      the recording, so this runner starts the drive at
+//                      the live dev.bench.ready post + warmup and holds
+//                      the contestant for BENCH_DURATION +
+//                      BENCH_ANCHOR_TOLERANCE_MS, so the window lies
+//                      inside the held span.
 //   BENCH_WARMUP_MS  — declared warmup between the contestant's
 //                      dev.bench.ready post and the drive (required, > 0)
-//   BENCH_ANCHOR_TOLERANCE_MS — how far the drive may start from the
-//                      trace's window start (required, > 0); the hold
-//                      extends past the capture by the same amount
+//   BENCH_ANCHOR_TOLERANCE_MS — how far a driven cell's drive may start
+//                      from the trace's window start (required, > 0); the
+//                      hold extends past the capture by the same amount
 //   BENCH_RUN_NONCE  — non-zero u64 the host chose for this invocation;
 //                      the recorder-go handshake matches it, so a latched
 //                      signal from an earlier invocation can never

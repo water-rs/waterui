@@ -25,6 +25,24 @@ target 'RnBench-macOS' do
   post_install do |installer|
     react_native_post_install(installer)
 
+    # RnBench-macOS compiles ObjC++ (AppDelegate.mm), so Xcode links it
+    # through clang++, whose driver already passes -lc++ to ld. The Pods
+    # aggregate xcconfig adds the pods' declared `c++` library on top,
+    # and ld reports "ignoring duplicate libraries: '-lc++'". Drop it
+    # from the aggregate xcconfigs so libc++ is linked once, by the
+    # driver. (The iOS app's AppDelegate is Swift: no clang++ driver, so
+    # its Pods -lc++ is the only one and stays.)
+    installer.aggregate_targets.each do |aggregate|
+      aggregate.xcconfigs.each do |variant, xcconfig|
+        unless xcconfig.libraries.include?('c++')
+          raise "#{aggregate.name} #{variant} xcconfig no longer declares " \
+                "-lc++; re-check the link line before editing it"
+        end
+        xcconfig.libraries.delete('c++')
+        xcconfig.save_as(aggregate.xcconfig_path(variant))
+      end
+    end
+
     # fmt 12.1.0's consteval format-string check does not compile on Apple
     # clang 21 (Xcode 26.4+): https://github.com/fmtlib/fmt/issues/4740
     # Upstream fix is an FMT_USE_CONSTEVAL=0 path for Apple clang; apply the

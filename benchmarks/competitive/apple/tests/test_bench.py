@@ -551,7 +551,7 @@ class TestXctraceExport(unittest.TestCase):
 </node></trace-query-result>"""
 
     def test_rows_keyed_by_mnemonic(self):
-        rows, err = bench.parse_export_rows(self.DOC)
+        rows, err = bench.parse_export_rows(self.DOC, "time-sample")
         self.assertIsNone(err)
         self.assertEqual(rows[0]["time"], "1000000")
         self.assertEqual(rows[0]["thread-state"], "Running")
@@ -561,7 +561,7 @@ class TestXctraceExport(unittest.TestCase):
 
     def test_cell_count_mismatch_is_an_error(self):
         doc = self.DOC.replace("<sentinel/>", "")
-        rows, err = bench.parse_export_rows(doc)
+        rows, err = bench.parse_export_rows(doc, "time-sample")
         self.assertIsNone(rows)
         self.assertIn("schema columns", err)
 
@@ -571,25 +571,39 @@ class TestXctraceExport(unittest.TestCase):
         self.assertIsNone(bench._proc_name(None))
         self.assertEqual(bench._pid_of_process("WaterUI Bench (311)"), 311)
 
-    def test_one_document_many_tables(self):
-        """Every table of a schema comes back, each zipped against its
-        own node's schema; refs resolve across nodes."""
-        doc = """<?xml version="1.0"?>
-<trace-query-result>
-<node xpath="a"><schema name="os-signpost">
+    SIGNPOST_NODE = """<node xpath="a"><schema name="os-signpost">
 <col><mnemonic>time</mnemonic></col><col><mnemonic>name</mnemonic></col>
 </schema>
 <row><event-time id="1">10</event-time><string id="2">drive-begin</string></row>
-</node>
-<node xpath="b"><schema name="os-signpost">
-<col><mnemonic>name</mnemonic></col><col><mnemonic>time</mnemonic></col>
-</schema>
-<row><string ref="2"/><event-time id="3">20</event-time></row>
-</node></trace-query-result>"""
-        rows, err = bench.parse_export_rows(doc)
+</node>"""
+
+    def test_schemaless_auxiliary_node_is_not_a_table(self):
+        """Xcode 26.6 exports the os-signpost table as two nodes, the
+        second without a <schema>: rows come from the schema node."""
+        doc = ("<?xml version=\"1.0\"?><trace-query-result>"
+               + self.SIGNPOST_NODE
+               + '<node xpath="b"/></trace-query-result>')
+        rows, err = bench.parse_export_rows(doc, "os-signpost")
         self.assertIsNone(err)
-        self.assertEqual(rows, [{"time": "10", "name": "drive-begin"},
-                                {"name": "drive-begin", "time": "20"}])
+        self.assertEqual(rows, [{"time": "10", "name": "drive-begin"}])
+
+    def test_exactly_one_schema_node(self):
+        """Two schema nodes mean the xpath named more than one table;
+        none, or one of another schema, names no table of this one."""
+        two = ("<?xml version=\"1.0\"?><trace-query-result>"
+               + self.SIGNPOST_NODE + self.SIGNPOST_NODE.replace('"a"', '"b"')
+               + "</trace-query-result>")
+        rows, err = bench.parse_export_rows(two, "os-signpost")
+        self.assertIsNone(rows)
+        self.assertIn("2 <node>s", err)
+        none = ('<?xml version="1.0"?><trace-query-result><node xpath="b"/>'
+                "</trace-query-result>")
+        rows, err = bench.parse_export_rows(none, "os-signpost")
+        self.assertIsNone(rows)
+        self.assertIn("0 <node>s", err)
+        rows, err = bench.parse_export_rows(self.DOC, "os-signpost")
+        self.assertIsNone(rows)
+        self.assertIn("time-sample", err)
 
 
 class TestFrameAttribution(unittest.TestCase):
@@ -645,14 +659,16 @@ class TestFrameAttribution(unittest.TestCase):
                 "swap-id": str(swap), "display": display}
 
     @staticmethod
-    def update(pid, swap):
-        return {"process": f"P ({pid})", "swap-id": str(swap)}
+    def update(pid, swap, display="1"):
+        return {"process": f"P ({pid})", "swap-id": str(swap),
+                "display": display}
 
     def test_swap_join_keeps_only_owned_frames(self):
         frames = [self.frame(1_000, 500, 1),      # menu bar only
                   self.frame(2_000, 500, 2),      # contestant
                   self.frame(3_000, 500, 3),      # helper (owned)
-                  self.frame(4_000, None, 4)]     # never presented
+                  self.frame(4_000, None, 4),     # never presented
+                  self.frame(5_000, 500, 2, "2")]  # swap 2 of another display
         updates = [self.update(300, 1), self.update(700, 2),
                    self.update(701, 3), self.update(700, 4)]
         j = bench.owned_presents(frames, updates, {700, 701})
@@ -661,6 +677,10 @@ class TestFrameAttribution(unittest.TestCase):
         self.assertEqual(j["updates_owned"], 3)
 
     def test_swap_join_refuses_unattributable(self):
+        # a trace without a single frame lifetime recorded no frames
+        with self.assertRaises(bench.TraceAttributionError) as cm:
+            bench.owned_presents([], [self.update(700, 1)], {700})
+        self.assertIn("0 rows", str(cm.exception))
         with self.assertRaises(bench.TraceAttributionError):
             bench.owned_presents([self.frame(0, 1, 1)],
                                  [self.update(300, 1)], {700})
@@ -669,11 +689,38 @@ class TestFrameAttribution(unittest.TestCase):
                                  [self.update(700, 1)], {700})
         two_displays = [self.frame(0, 1, 1, "1"), self.frame(5, 1, 1, "2")]
         with self.assertRaises(bench.TraceAttributionError):
-            bench.owned_presents(two_displays, [self.update(700, 1)], {700})
+            bench.owned_presents(two_displays,
+                                 [self.update(700, 1, "1"),
+                                  self.update(700, 1, "2")], {700})
         # a schema without the join columns fails, never joins on nothing
         with self.assertRaises(bench.TraceAttributionError):
             bench.owned_presents([{"start": "0", "duration": "1"}],
                                  [self.update(700, 1)], {700})
+
+    def test_frames_classified_by_their_updates(self):
+        """The evidence the attribution rule is decided on: each frame on
+        the contestant's display inside the span, by whose updates its
+        swap carried."""
+        frames = [self.frame(1_000, 10, 1),       # owned only
+                  self.frame(2_000, 10, 2),       # owned + menu bar
+                  self.frame(3_000, 10, 3),       # menu bar only
+                  # no client update, on the surface 700 updated
+                  dict(self.frame(4_000, 10, 4), **{"surface-id": "9"}),
+                  self.frame(4_500, 10, 7),       # no client update
+                  self.frame(5_000, 10, 5, "2"),  # other display
+                  self.frame(9_000, 10, 6)]       # after the span
+        updates = [dict(self.update(700, 1), **{"surface-id": "9"}),
+                   self.update(700, 2),
+                   self.update(300, 2), self.update(300, 3),
+                   self.update(300, 5, "2"), self.update(700, 6)]
+        c = bench.classify_display_frames(frames, updates, {700}, "1",
+                                          1_000, 5_000)
+        self.assertEqual((c["owned"], c["owned+foreign"], c["foreign"],
+                          c["no-client-update"],
+                          c["no-client-update-on-owned-surface"]),
+                         (1, 1, 1, 2, 1))
+        self.assertEqual(c["foreign_updaters"],
+                         [{"process": "P (300)", "frames": 2}])
 
     def test_runner_marks(self):
         rows = [{"time": "100", "name": "drive-begin",
@@ -694,20 +741,31 @@ class TestFrameAttribution(unittest.TestCase):
         presents = [500 * ms, 516 * ms, 532 * ms]
         marks = {"drive-begin": 3_480 * ms, "measure-end": 15_600 * ms}
         w = bench.measurement_window(presents, marks, warmup_ms=3000,
-                                     capture_ms=12000, tolerance_ms=100)
+                                     capture_ms=12000, tolerance_ms=100,
+                                     driven=True)
         self.assertEqual(w["window_start_ms"], 3500.0)
         self.assertEqual(w["window_end_ms"], 15500.0)
         self.assertEqual(w["drive_offset_ms"], -20.0)
         # a drive outside tolerance is not "at window start"
+        late = dict(marks, **{"drive-begin": 3_700 * ms})
         with self.assertRaises(bench.TraceAttributionError):
             bench.measurement_window(
-                presents, dict(marks, **{"drive-begin": 3_700 * ms}),
-                warmup_ms=3000, capture_ms=12000, tolerance_ms=100)
-        # released before the window end: the tail is not the workload
-        with self.assertRaises(bench.TraceAttributionError):
-            bench.measurement_window(
-                presents, dict(marks, **{"measure-end": 15_400 * ms}),
-                warmup_ms=3000, capture_ms=12000, tolerance_ms=100)
+                presents, late, warmup_ms=3000, capture_ms=12000,
+                tolerance_ms=100, driven=True)
+        # an undriven cell (W3/W5) has no drive to align: the offset is
+        # reported, not gated
+        w = bench.measurement_window(
+            presents, late, warmup_ms=3000, capture_ms=12000,
+            tolerance_ms=100, driven=False)
+        self.assertEqual(w["drive_offset_ms"], 200.0)
+        # released before the window end: the tail is not the workload,
+        # driven or not
+        for driven in (True, False):
+            with self.assertRaises(bench.TraceAttributionError):
+                bench.measurement_window(
+                    presents, dict(marks, **{"measure-end": 15_400 * ms}),
+                    warmup_ms=3000, capture_ms=12000, tolerance_ms=100,
+                    driven=driven)
 
     def test_stats_clip_to_trace_window(self):
         """Frame statistics cover exactly the trace window, however long
@@ -718,7 +776,7 @@ class TestFrameAttribution(unittest.TestCase):
         w = bench.measurement_window(
             presents, {"drive-begin": 3_000 * ms,
                        "measure-end": 6_000 * ms},
-            warmup_ms=3000, capture_ms=1000, tolerance_ms=100)
+            warmup_ms=3000, capture_ms=1000, tolerance_ms=100, driven=True)
         st = bench.lib_frames.frame_statistics(
             [t / 1e6 for t in presents], w["window_start_ms"],
             1000.0, 1000.0 / 120)
@@ -749,6 +807,47 @@ class TestPtyLines(unittest.TestCase):
             lines.readline(bench.time.monotonic() + 0.05)
         lines.close()
         os.close(w)
+
+
+class TestInstrumentsScratch(unittest.TestCase):
+    """The cell owns the raw ktrace scratch its recordings leave: what
+    appeared in the user temp dir or a recorder's scratch dir during
+    the cell is removed (real lsof, real files); what predates the cell
+    stays; a holder other than DTServiceHub fails the sweep."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="bench-scratch-"))
+        self.user = self.tmp / "T"
+        self.user.mkdir()
+        self.root = self.tmp / "results"
+        self.root.mkdir()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def test_sweep_removes_the_cells_scratch(self):
+        old = self.user / "instruments-before.ktrace"
+        old.write_bytes(b"x")
+        s = bench.InstrumentsScratch(self.root, self.user)
+        sd = s.scratch_dir("cell-frames")
+        (self.user / "instrumentsAB12.ktrace").write_bytes(b"k" * 10)
+        (sd / "instrumentsCD34.ktrace").write_bytes(b"k")
+        self.assertIsNone(s.sweep())
+        self.assertTrue(old.exists())
+        self.assertFalse((self.user / "instrumentsAB12.ktrace").exists())
+        self.assertFalse(sd.exists())
+        self.assertEqual(sorted(r["bytes"] for r in s.removed), [1, 10])
+
+    def test_foreign_holder_fails_the_sweep(self):
+        s = bench.InstrumentsScratch(self.root, self.user)
+        f = self.user / "instrumentsEF56.ktrace"
+        with open(f, "wb") as held:
+            held.write(b"k")
+            held.flush()
+            err = s.sweep()
+        self.assertIsNotNone(err)
+        self.assertIn("not DTServiceHub", err)
+        self.assertFalse(f.exists())
 
 
 class TestXctestrunInjection(unittest.TestCase):

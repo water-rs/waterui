@@ -76,14 +76,15 @@ app.whenReady().then(async () => {
   }
 });
 
-// Apple legs wait for `dev.bench.ready.<bundle-id>.<w>` to confirm the
-// workload argument arrived — a deep AX query on the 10k-row feed stalls
-// for minutes, so a Darwin notification carries the assertion. Node has
-// no notify binding; `/usr/bin/notifyutil -p` posts the same token.
-const notifyPost =
-  process.platform === 'darwin'
-    ? name => execFile('/usr/bin/notifyutil', ['-p', name], () => {})
-    : () => {};
+// Apple legs wait for `dev.bench.ready.<bundle-id>.<w>`: it is the
+// contestant's readiness (its first frame, ../../WORKLOADS.md METHOD), so
+// it is posted where BENCH_READY is — when the hidden window is first
+// shown with its rendered page — and it also proves the workload
+// argument arrived. The runner starts its drive at this post + warmup
+// and checks that against the first owned present in its trace. Node
+// has no notify binding; `/usr/bin/notifyutil -p` posts the same token,
+// and a failed post fails the launch.
+let readyName = null;
 if (process.platform === 'darwin') {
   // The ready post carries the packaged bundle id — there is no default:
   // if the plist cannot be read the launch fails, never a wrong token.
@@ -103,7 +104,16 @@ if (process.platform === 'darwin') {
     console.error('Info.plist has an empty CFBundleIdentifier');
     process.exit(1);
   }
-  notifyPost(`dev.bench.ready.${bundleID}.${workload}`);
+  readyName = `dev.bench.ready.${bundleID}.${workload}`;
+}
+function postReady() {
+  if (readyName === null) return;
+  execFile('/usr/bin/notifyutil', ['-p', readyName], err => {
+    if (err) {
+      console.error(`notifyutil -p ${readyName} failed: ${err}`);
+      process.exit(1);
+    }
+  });
 }
 
 let win = null;
@@ -131,6 +141,7 @@ app.whenReady().then(() => {
   win.once('ready-to-show', () => {
     win.show();
     process.stdout.write('BENCH_READY\n');
+    postReady();
   });
   win.loadFile('index.html', {
     query: { workload, step },

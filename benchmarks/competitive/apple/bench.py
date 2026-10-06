@@ -1025,15 +1025,28 @@ def _xctrace(args_, timeout=None):
 # event-time columns), so the window, the frames and the runner's marks
 # live on one clock and nothing is mapped through a guessed epoch.
 #
-# The column mnemonics are fixed here; scratchpad recipe
-# s8-apple-trace-discovery.sh prints every schema the template records
-# so they are confirmed against the pinned Xcode.
+# Schemas as Xcode 26.6 (xctrace 16.0) exports them (column mnemonic:
+# engineering type):
+#   hitches-frame-lifetimes  start:start-time duration:duration
+#       display:display-name swap-id:uint32 surface-id:uint32
+#       frame-color layout-qualifier label
+#   hitches-updates  start:start-time duration:duration process:process
+#       display:display-name swap-id:uint32 surface-id:uint32
+#       frame-color containment-level:uint32 label
+#   os-signpost  time:event-time thread process event-type scope
+#       identifier name:signpost-name format-string backtrace
+#       subsystem:subsystem category:category message emit-location
+# An Animation Hitches + Points of Interest recording holds two
+# os-signpost tables (categories InduceCondition and PointsOfInterest);
+# the runner's marks live in the PointsOfInterest one, selected by its
+# TOC attribute.
 
 FRAMES_SCHEMA = "hitches-frame-lifetimes"
 UPDATES_SCHEMA = "hitches-updates"
 SIGNPOST_SCHEMA = "os-signpost"
+SIGNPOST_TABLE = (("category", "PointsOfInterest"),)
 FRAME_COLS = ("start", "duration", "swap-id", "display")
-UPDATE_COLS = ("process", "swap-id")
+UPDATE_COLS = ("process", "swap-id", "display")
 SIGNPOST_COLS = ("time", "name", "subsystem")
 # The runner's own marks, emitted as Points of Interest events: the
 # drive starts at drive-begin; measure-end closes the held span.
@@ -1050,34 +1063,48 @@ class TraceAttributionError(RuntimeError):
     window the METHOD defines is not covered by what the runner held."""
 
 
-def _export_table(trace: Path, schema: str):
-    """`xctrace export` rows of every table with `schema` → (rows, err).
+def _export_table(trace: Path, schema: str,
+                  where: tuple[tuple[str, str], ...] = ()):
+    """`xctrace export` rows of the ONE table with `schema` (and the
+    TOC attributes in `where`, e.g. the os-signpost table of the Points
+    of Interest category) → (rows, err).
 
     Row children carry the column's ENGINEERING TYPE as their tag and
     appear in schema column order (an empty cell is a `<sentinel/>`), so
     each row is zipped against the `<schema><col><mnemonic>` list of
-    the node it belongs to. Elements either define a value (`id` attr,
-    raw text or `fmt`) or repeat one (`ref` attr pointing at an earlier
-    `id` of the same tag) — refs are resolved so every row is
-    self-contained."""
+    its node. Elements either define a value (`id` attr, raw text or
+    `fmt`) or repeat one (`ref` attr pointing at an earlier `id` of the
+    same tag) — refs are resolved so every row is self-contained."""
+    pred = "".join(f'[@{k}="{v}"]' for k, v in where)
     r = _xctrace(["export", "--input", str(trace), "--xpath",
-                  f'/trace-toc/run[@number="1"]/data/table[@schema="{schema}"]'],
+                  f'/trace-toc/run[@number="1"]/data/table'
+                  f'[@schema="{schema}"]{pred}'],
                  timeout=600)
     if r.returncode != 0:
         return None, (r.stderr or "")[-400:]
-    return parse_export_rows(r.stdout)
+    return parse_export_rows(r.stdout, schema)
 
 
-def parse_export_rows(xml_text: str):
+def parse_export_rows(xml_text: str, schema: str):
     """Pure parse of an `xctrace export` table document → (rows, err).
 
-    The document holds one `<node>` per matching table; each node
-    carries its own `<schema>`, and its rows zip against that schema."""
+    The rows come from exactly one `<node>` that carries a `<schema>`
+    named `schema`. xctrace also emits auxiliary nodes without a schema
+    (Xcode 26.6: the os-signpost export of an Animation Hitches trace
+    holds two nodes, the second schema-less) — they hold no rows of the
+    table and are not selected. Zero or several schema nodes mean the
+    export did not name one table, which fails."""
     import xml.etree.ElementTree as ET
     root = ET.fromstring(xml_text)
-    nodes = root.findall(".//node")
-    if not nodes:
-        return None, "export carries no <node>"
+    nodes = root.findall(".//node[schema]")
+    if len(nodes) != 1:
+        return None, (f"export carries {len(nodes)} <node>s with a "
+                      f"<schema>; expected exactly one {schema} table")
+    node = nodes[0]
+    sch = node.find("schema")
+    if sch.get("name") != schema:
+        return None, (f"export node's schema is {sch.get('name')!r}, "
+                      f"not {schema!r}")
     idmap = {}
     for e in root.iter():
         if e.get("id") is not None:
@@ -1091,18 +1118,14 @@ def parse_export_rows(xml_text: str):
             return idmap.get(e.tag, {}).get(e.get("ref"))
         t = (e.text or "").strip()
         return t if t else (e.get("fmt") or "")
+    cols = [c.findtext("mnemonic") for c in sch.findall("col")]
     rows = []
-    for node in nodes:
-        schema = node.find("schema")
-        if schema is None:
-            return None, "export node carries no <schema>"
-        cols = [c.findtext("mnemonic") for c in schema.findall("col")]
-        for row in node.findall("row"):
-            cells = list(row)
-            if len(cells) != len(cols):
-                return None, (f"row has {len(cells)} cells for "
-                              f"{len(cols)} schema columns")
-            rows.append({c: val(e) for c, e in zip(cols, cells)})
+    for row in node.findall("row"):
+        cells = list(row)
+        if len(cells) != len(cols):
+            return None, (f"row has {len(cells)} cells for "
+                          f"{len(cols)} schema columns")
+        rows.append({c: val(e) for c, e in zip(cols, cells)})
     return rows, None
 
 
@@ -1184,37 +1207,65 @@ def _int(v, what: str) -> int:
             from None
 
 
+def _present_ns(f: dict) -> int | None:
+    """Presentation instant of a frame lifetime (start + duration); an
+    open lifetime (no duration) never presented."""
+    if f["duration"] is None:
+        return None
+    return (_int(f["start"], f"{FRAMES_SCHEMA} start")
+            + _int(f["duration"], f"{FRAMES_SCHEMA} duration"))
+
+
+def _updates_by_swap(updates: list[dict]) -> dict:
+    """{(display, swap id): [committing pid, …]} of the client updates.
+    Swap ids are keyed with their display: the tap does not declare
+    them unique across displays, and both tables carry the display."""
+    out: dict = {}
+    for u in updates:
+        if u["swap-id"] is None:
+            continue
+        pid = _pid_of_process(u["process"])
+        if pid is None:
+            raise TraceAttributionError(
+                f"{UPDATES_SCHEMA} process cell without a pid: "
+                f"{u['process']!r}")
+        key = (u["display"], _int(u["swap-id"], f"{UPDATES_SCHEMA} swap-id"))
+        out.setdefault(key, []).append(pid)
+    return out
+
+
 def owned_presents(frames: list[dict], updates: list[dict],
                    owned: set[int]) -> dict:
-    """Join frame lifetimes to the contestant's client updates by swap.
+    """Join frame lifetimes to the contestant's client updates by
+    (display, swap).
 
-    A frame lifetime ends at its presentation (start + duration); an
-    open lifetime (no duration) never presented and is not a present.
     Returns {presents_ns (sorted), display, owned_swaps, frames_total,
-    updates_owned}. Raises when nothing joins or the owned frames span
-    more than one display — swap ids are not proven unique across
-    displays, so a multi-display join is not attribution."""
+    updates_owned}. Raises when the trace recorded no frame at all, when
+    nothing joins, or when the owned frames span more than one display
+    (the frame statistics take one refresh period)."""
+    if not frames:
+        raise TraceAttributionError(
+            f"{FRAMES_SCHEMA} has 0 rows: the Hitches tap recorded no "
+            "frame on any display (a virtualized macOS host records "
+            "none — Xcode 26.6 on the build VM)")
     _require_cols(frames, FRAME_COLS, FRAMES_SCHEMA)
     _require_cols(updates, UPDATE_COLS, UPDATES_SCHEMA)
-    swaps = set()
-    n_upd = 0
-    for u in updates:
-        pid = _pid_of_process(u["process"])
-        if pid in owned and u["swap-id"] is not None:
-            swaps.add(_int(u["swap-id"], f"{UPDATES_SCHEMA} swap-id"))
-            n_upd += 1
+    by_swap = _updates_by_swap(updates)
+    swaps = {k for k, pids in by_swap.items() if owned & set(pids)}
+    n_upd = sum(1 for pids in by_swap.values() for p in pids if p in owned)
     if not swaps:
         raise TraceAttributionError(
             f"no {UPDATES_SCHEMA} row from owned pids {sorted(owned)} "
             f"carries a swap ({len(updates)} updates in the trace)")
     presents, displays = [], set()
     for f in frames:
-        if f["swap-id"] is None or f["duration"] is None:
+        t = _present_ns(f)
+        if t is None or f["swap-id"] is None:
             continue
-        if _int(f["swap-id"], f"{FRAMES_SCHEMA} swap-id") not in swaps:
+        key = (f["display"], _int(f["swap-id"], f"{FRAMES_SCHEMA} swap-id"))
+        if key not in swaps:
             continue
-        presents.append(_int(f["start"], f"{FRAMES_SCHEMA} start")
-                        + _int(f["duration"], f"{FRAMES_SCHEMA} duration"))
+        presents.append(t)
         displays.add(f["display"])
     if not presents:
         raise TraceAttributionError(
@@ -1223,11 +1274,63 @@ def owned_presents(frames: list[dict], updates: list[dict],
     if len(displays) != 1:
         raise TraceAttributionError(
             f"owned frames span displays {sorted(map(str, displays))} — "
-            "swap ids are joined per trace, so the measured contestant "
-            "must present on one display")
+            "the measured contestant must present on one display")
     return {"presents_ns": sorted(presents), "display": displays.pop(),
             "owned_swaps": len(swaps), "frames_total": len(frames),
             "updates_owned": n_upd}
+
+
+def classify_display_frames(frames: list[dict], updates: list[dict],
+                            owned: set[int], display: str,
+                            lo_ns: int, hi_ns: int) -> dict:
+    """Evidence for the attribution rule (not the rule itself): every
+    frame presented on `display` within [lo_ns, hi_ns], classified by
+    the client updates its swap carried — owned only, owned and
+    foreign, foreign only, or none (a frame the render server produced
+    without any client commit, e.g. a Core Animation animation it
+    interpolates). Foreign updaters are counted per process cell, by
+    the number of those frames they put an update in. Frames without a
+    client update are also counted when their surface-id is one an
+    owned update landed on — whether surface ids can attribute
+    render-server frames is part of what this evidence settles."""
+    by_swap = _updates_by_swap(updates)
+    owned_surfaces = {(u["display"], u.get("surface-id")) for u in updates
+                      if _pid_of_process(u["process"]) in owned
+                      and u.get("surface-id") is not None}
+    counts = {"owned": 0, "owned+foreign": 0, "foreign": 0,
+              "no-client-update": 0,
+              "no-client-update-on-owned-surface": 0}
+    foreign_pids: dict[int, int] = {}
+    for f in frames:
+        t = _present_ns(f)
+        if (t is None or f["display"] != display or f["swap-id"] is None
+                or not lo_ns <= t <= hi_ns):
+            continue
+        pids = set(by_swap.get(
+            (display, _int(f["swap-id"], f"{FRAMES_SCHEMA} swap-id")), []))
+        own, foreign = pids & owned, pids - owned
+        if own and foreign:
+            counts["owned+foreign"] += 1
+        elif own:
+            counts["owned"] += 1
+        elif foreign:
+            counts["foreign"] += 1
+        else:
+            counts["no-client-update"] += 1
+            if (display, f.get("surface-id")) in owned_surfaces:
+                counts["no-client-update-on-owned-surface"] += 1
+        for pid in foreign:
+            foreign_pids[pid] = foreign_pids.get(pid, 0) + 1
+    names = {}
+    for u in updates:
+        pid = _pid_of_process(u["process"])
+        if pid in foreign_pids:
+            names[pid] = u["process"]
+    return {"display": display, "span_ns": [lo_ns, hi_ns], **counts,
+            "foreign_updaters": sorted(
+                ({"process": names[p], "frames": n}
+                 for p, n in foreign_pids.items()),
+                key=lambda d: -d["frames"])}
 
 
 def runner_marks(signposts: list[dict]) -> dict:
@@ -1253,12 +1356,17 @@ def runner_marks(signposts: list[dict]) -> dict:
 
 def measurement_window(presents_ns: list[int], marks: dict, *,
                        warmup_ms: float, capture_ms: float,
-                       tolerance_ms: float) -> dict:
+                       tolerance_ms: float, driven: bool) -> dict:
     """METHOD's window on the trace clock: [first owned present +
-    warmup, + capture]. The runner starts the drive at its own
-    readiness + warmup; that start must sit within `tolerance_ms` of the
-    window start (METHOD: the drive starts at window start), and the
-    runner must have held the contestant through the window end.
+    warmup, + capture] — readiness is the contestant's first owned
+    present, read from the trace. The runner must have held the
+    contestant through the window end. A driven cell (tap, wheel,
+    swipe) starts its drive live at the contestant's ready post +
+    warmup — the trace is only readable after the recording stops — so
+    that start must sit within `tolerance_ms` of the window start
+    (METHOD: the drive starts at window start). An undriven cell (W3,
+    W5) has no drive to align: its drive-begin mark only opens the held
+    span, and its offset is reported, not gated.
     Returns milliseconds on the trace clock."""
     first = presents_ns[0] / 1e6
     w0 = first + warmup_ms
@@ -1266,7 +1374,7 @@ def measurement_window(presents_ns: list[int], marks: dict, *,
     drive = marks[MARK_DRIVE_BEGIN] / 1e6
     held = marks[MARK_MEASURE_END] / 1e6
     offset = drive - w0
-    if abs(offset) > tolerance_ms:
+    if driven and abs(offset) > tolerance_ms:
         raise TraceAttributionError(
             f"drive started {offset:+.1f} ms from the window start "
             f"(first owned present {first:.1f} ms + warmup {warmup_ms:g} "
@@ -1280,19 +1388,27 @@ def measurement_window(presents_ns: list[int], marks: dict, *,
             "drive_offset_ms": round(offset, 3), "measure_end_ms": held}
 
 
-def trace_attribution(trace: Path, bundle_name: str,
-                      main_rel: str) -> dict:
-    """Read one all-process trace: owned pids from its TOC, owned
-    presents by the swap join, the runner marks. No window gating — the
-    `attribution` command prints this as evidence."""
-    main_pid, owned = owned_processes(_trace_toc(trace), bundle_name,
-                                      main_rel)
+def trace_tables(trace: Path) -> dict:
+    """{schema: rows} of the three tables attribution reads."""
     tables = {}
-    for schema in (FRAMES_SCHEMA, UPDATES_SCHEMA, SIGNPOST_SCHEMA):
-        rows, err = _export_table(trace, schema)
+    for schema, where in ((FRAMES_SCHEMA, ()), (UPDATES_SCHEMA, ()),
+                          (SIGNPOST_SCHEMA, SIGNPOST_TABLE)):
+        rows, err = _export_table(trace, schema, where)
         if rows is None:
             raise TraceAttributionError(f"{schema}: {err}")
         tables[schema] = rows
+    return tables
+
+
+def trace_attribution(trace: Path, bundle_name: str, main_rel: str,
+                      tables: dict | None = None) -> dict:
+    """Read one all-process trace: owned pids from its TOC, owned
+    presents by the (display, swap) join, the runner marks. No window
+    gating — the `attribution` command prints this as evidence."""
+    main_pid, owned = owned_processes(_trace_toc(trace), bundle_name,
+                                      main_rel)
+    if tables is None:
+        tables = trace_tables(trace)
     joined = owned_presents(tables[FRAMES_SCHEMA], tables[UPDATES_SCHEMA],
                             owned)
     return {"main_pid": main_pid, "owned_pids": sorted(owned),
@@ -1300,7 +1416,8 @@ def trace_attribution(trace: Path, bundle_name: str,
 
 
 def trace_frame_window(trace: Path, bundle_name: str, main_rel: str,
-                       capture_ms: float, refresh_ms: float) -> dict:
+                       capture_ms: float, refresh_ms: float,
+                       driven: bool) -> dict:
     """Frame statistics of the contestant's own presents over METHOD's
     window, plus the window itself (trace ms) and the attribution
     evidence. Raises TraceAttributionError when either is unsound."""
@@ -1310,7 +1427,8 @@ def trace_frame_window(trace: Path, bundle_name: str, main_rel: str,
     win = measurement_window(att["presents_ns"], marks,
                              warmup_ms=float(h["warmup_ms"]),
                              capture_ms=capture_ms,
-                             tolerance_ms=float(h["anchor_tolerance_ms"]))
+                             tolerance_ms=float(h["anchor_tolerance_ms"]),
+                             driven=driven)
     stats = lib_frames.frame_statistics(
         [t / 1e6 for t in att.pop("presents_ns")],
         window_start_ms=win["window_start_ms"], capture_ms=capture_ms,
@@ -1455,7 +1573,7 @@ def collect_pins() -> dict:
     return out
 
 
-def _spawn_pty(cmd: list[str]):
+def _spawn_pty(cmd: list[str], env: dict | None = None):
     """Spawn `cmd` session-led and tracked, its stdout+stderr on a
     pseudo-terminal: a tty line-buffers the child's stdio, so a status
     line it prints is readable the moment it is printed rather than when
@@ -1464,7 +1582,7 @@ def _spawn_pty(cmd: list[str]):
     master, slave = pty.openpty()
     try:
         p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=slave,
-                             stderr=slave, start_new_session=True)
+                             stderr=slave, start_new_session=True, env=env)
     finally:
         os.close(slave)
     _ACTIVE_PROCS.append(p)
@@ -1511,6 +1629,130 @@ class PtyLines:
         os.close(self.fd)
 
 
+class InstrumentsScratch:
+    """The raw kernel-trace scratch files a cell's recordings leave.
+
+    A Deferred-mode recording writes its raw kdebug stream to an
+    `instruments*.ktrace` file and converts it into the .trace at stop.
+    On Xcode 26.6 the file stays in the user's Darwin temp dir after the
+    recording ended (2-4.5 GB per W3 recording on the build VM), held
+    open by the idle DTServiceHub agent that recorded it, so neither the
+    .trace output nor the recorder process owns it. The runner owns it:
+    each recorder runs with TMPDIR set to a scratch dir of its own
+    (`scratch_dir`, removed whole by `sweep`), and every
+    `instruments*.ktrace` that appeared in the user temp dir or a
+    scratch dir between `__init__` (before any recorder of the cell
+    spawns) and `sweep` (after every one of them stopped) is the cell's
+    own. It is unlinked, and the process still holding it open — which
+    must be DTServiceHub — is terminated by pid, so the space comes back
+    now rather than whenever the agent exits. A holder that is anything
+    else, or that outlives its SIGTERM, fails the cell."""
+
+    PATTERN = "instruments*.ktrace"
+    HOLDER = "DTServiceHub"
+
+    @staticmethod
+    def user_temp_dir() -> Path:
+        """The user's Darwin temp dir (confstr DARWIN_USER_TEMP_DIR), the
+        agent's scratch location whatever TMPDIR the recorder sees."""
+        r = subprocess.run(["getconf", "DARWIN_USER_TEMP_DIR"],
+                           capture_output=True, text=True, timeout=30)
+        if r.returncode != 0 or not r.stdout.strip():
+            raise RuntimeError(
+                f"getconf DARWIN_USER_TEMP_DIR failed: rc={r.returncode} "
+                f"{r.stderr.strip()!r}")
+        return Path(r.stdout.strip())
+
+    def __init__(self, root: Path, user_tmp: Path):
+        self.user_tmp = user_tmp
+        self.root = root
+        self.dirs: list[Path] = []
+        # what sweep removed: [{path, bytes, holders {pid: command}}]
+        self.removed: list[dict] = []
+        self.before = set(self.user_tmp.glob(self.PATTERN))
+
+    def scratch_dir(self, name: str) -> Path:
+        d = self.root / f"{name}.xctrace-tmp"
+        shutil.rmtree(d, ignore_errors=True)
+        d.mkdir(parents=True)
+        self.dirs.append(d)
+        return d
+
+    @staticmethod
+    def _holders(f: Path) -> dict[int, str]:
+        """{pid: full command name} of the processes holding `f` open;
+        lsof exits 1 with no output when nothing does."""
+        r = subprocess.run(["lsof", "+c", "0", "-F", "pc", "--", str(f)],
+                           capture_output=True, text=True, timeout=60)
+        if r.returncode not in (0, 1):
+            raise RuntimeError(f"lsof {f}: rc={r.returncode} "
+                               f"{r.stderr.strip()!r}")
+        out, pid = {}, None
+        for line in r.stdout.splitlines():
+            if line.startswith("p"):
+                pid = int(line[1:])
+            elif line.startswith("c") and pid is not None:
+                out[pid] = line[1:]
+        return out
+
+    @staticmethod
+    def _terminate(pid: int, bound_s: float) -> bool:
+        """SIGTERM `pid` and wait for its exit as a kqueue NOTE_EXIT
+        event (it is not our child, so waitpid cannot); True once it
+        exited."""
+        import select
+        kq = select.kqueue()
+        try:
+            try:
+                kq.control([select.kevent(
+                    pid, filter=select.KQ_FILTER_PROC,
+                    flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                    fflags=select.KQ_NOTE_EXIT)], 0, 0)
+            except ProcessLookupError:
+                return True
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                return True
+            return bool(kq.control(None, 1, bound_s))
+        finally:
+            kq.close()
+
+    def sweep(self, bound_s: float = 60.0) -> str | None:
+        """Remove the cell's scratch; an error string when a scratch
+        file cannot be released."""
+        leaked = set(self.user_tmp.glob(self.PATTERN)) - self.before
+        for d in self.dirs:
+            leaked |= set(d.rglob(self.PATTERN))
+        errs = []
+        holders = set()
+        for f in sorted(leaked):
+            held = self._holders(f)
+            self.removed.append({"path": str(f), "bytes": f.stat().st_size,
+                                 "holders": held})
+            f.unlink()
+            for pid, cmd in held.items():
+                if cmd == self.HOLDER:
+                    holders.add(pid)
+                else:
+                    errs.append(f"{f.name} is held open by {cmd} "
+                                f"(pid {pid}), not {self.HOLDER}")
+        for pid in sorted(holders):
+            try:
+                gone = self._terminate(pid, bound_s)
+            except PermissionError:
+                errs.append(f"{self.HOLDER} (pid {pid}) holds a removed "
+                            "ktrace and is not this user's to terminate")
+                continue
+            if not gone:
+                errs.append(f"{self.HOLDER} (pid {pid}) still holds a "
+                            f"removed ktrace {bound_s:.0f}s after SIGTERM")
+        for d in self.dirs:
+            shutil.rmtree(d)
+        self.dirs = []
+        return "; ".join(errs) or None
+
+
 class XctraceRecorder:
     """One `xctrace record --all-processes` session.
 
@@ -1519,12 +1761,14 @@ class XctraceRecorder:
     covers the contestant from its launch), and the contestant's rows
     are selected at export by process. Arming is xctrace's own
     "recording started" line, read from its tty — no attach retry and no
-    sleep standing in for readiness."""
+    sleep standing in for readiness. xctrace runs with TMPDIR set to
+    `scratch`, a dir of the cell's InstrumentsScratch."""
 
     ARMED = "Ctrl-C to stop the recording"
 
     def __init__(self, out: Path, template: str, device_udid: str | None,
-                 time_limit_s: int, instruments: tuple[str, ...] = ()):
+                 time_limit_s: int, scratch: Path,
+                 instruments: tuple[str, ...] = ()):
         cmd = ["xcrun", "xctrace", "record", "--template", template,
                "--all-processes", "--output", str(out),
                "--time-limit", f"{time_limit_s}s"]
@@ -1535,7 +1779,8 @@ class XctraceRecorder:
         self.out = out
         self.template = template
         self.log: list[str] = []
-        self.proc, self.lines = _spawn_pty(cmd)
+        self.proc, self.lines = _spawn_pty(
+            cmd, env={**os.environ, "TMPDIR": f"{scratch}/"})
         self._drain = None
         self._result = None
 
@@ -2146,9 +2391,11 @@ def run_one(plat, contestant_id, app_path: Path, bundle_id, workload,
       the frame lifetimes whose swap composited an update from a process
       inside its bundle; METHOD's window [first owned present + warmup,
       + capture] is computed on that trace's clock, and the runner's
-      drive-begin / measure-end signposts in the same trace prove the
-      drive started within harness.anchor_tolerance_ms of the window
-      start and the contestant was held through its end. On ios-device
+      drive-begin / measure-end signposts in the same trace prove that
+      a driven cell's drive started within harness.anchor_tolerance_ms
+      of the window start and that the contestant was held through its
+      end. The cell's InstrumentsScratch removes the raw ktrace scratch
+      the recordings leave once every recorder stopped. On ios-device
       the app and backboardd CPU come from the same trace and window.
       ios-device also records the Logging template the same way (the
       first-paint marker channel), for every contestant.
@@ -2199,6 +2446,7 @@ def run_one(plat, contestant_id, app_path: Path, bundle_id, workload,
     rec = {}
     sampler = None
     recorders: dict[str, XctraceRecorder] = {}
+    scratch = None
     wheel = None
     t_start = time.time()
     try:
@@ -2224,12 +2472,17 @@ def run_one(plat, contestant_id, app_path: Path, bundle_id, workload,
         try:
             try:
                 if plat in ("macos", "ios-device"):
+                    scratch = InstrumentsScratch(
+                        results_dir, InstrumentsScratch.user_temp_dir())
                     recorders["frames"] = XctraceRecorder(
                         trace, FRAMES_TEMPLATE, device_udid,
-                        XCTRACE_LIMIT_S, instruments=FRAMES_INSTRUMENTS)
+                        XCTRACE_LIMIT_S,
+                        scratch.scratch_dir(f"{tag}-frames"),
+                        instruments=FRAMES_INSTRUMENTS)
                 if plat == "ios-device":
                     recorders["log"] = XctraceRecorder(
-                        fp_trace, "Logging", device_udid, XCTRACE_LIMIT_S)
+                        fp_trace, "Logging", device_udid, XCTRACE_LIMIT_S,
+                        scratch.scratch_dir(f"{tag}-log"))
                 for r in recorders.values():
                     r.arm()
                 if drive == "wheel":
@@ -2293,6 +2546,12 @@ def run_one(plat, contestant_id, app_path: Path, bundle_id, workload,
             for r in recorders.values():
                 if (e := r.stop()) is not None:
                     rec.setdefault("trace_errors", []).append(e)
+            # only after EVERY recorder of the cell stopped: a sweep
+            # between two stops would take the live one's scratch
+            if scratch is not None:
+                if (e := scratch.sweep()) is not None:
+                    rec.setdefault("error", f"instruments scratch: {e}")
+                rec["instruments_scratch_removed"] = scratch.removed
             if sampler is not None:
                 sampler.stop()
                 sampler.join(timeout=10)
@@ -2322,7 +2581,8 @@ def run_one(plat, contestant_id, app_path: Path, bundle_id, workload,
             try:
                 tw = trace_frame_window(
                     trace, app_path.name, main_rel, capture_ms,
-                    refresh_ms=1000.0 / float(device_rec["maxFps"]))
+                    refresh_ms=1000.0 / float(device_rec["maxFps"]),
+                    driven=drive != "none")
                 render = [p["pid"] for p in _trace_toc(trace)
                           if p["name"] == RENDER_NAME[plat]]
             except TraceAttributionError as e:
@@ -3620,21 +3880,25 @@ def cmd_report(args):
 
 def cmd_attribution(args):
     """Print, as JSON, how one all-process Animation Hitches trace
-    attributes frames to one contestant: its owned pids, the swap join,
-    and the owned present series next to every present on the same
-    display, over the whole recording (no window, no gating) — the
-    evidence that the join is sound for that contestant's rendering
-    model. Signposts of the dev.bench subsystem are listed as found."""
+    attributes frames to one contestant: its owned pids, the
+    (display, swap) join, the owned present series next to every
+    present on the same display, and every frame on that display
+    classified by the client updates its swap carried (owned / owned
+    and foreign / foreign / none) with the foreign updating processes —
+    over the owned span of the whole recording (no window, no gating).
+    It is the evidence that decides the attribution rule for a
+    contestant's rendering model. Signposts of the dev.bench subsystem
+    are listed as found."""
     app = Path(args.app)
+    trace = Path(args.trace)
     _, main_rel = bundle_executable(app, args.platform)
-    att = trace_attribution(Path(args.trace), app.name, main_rel)
-    frames, err = _export_table(Path(args.trace), FRAMES_SCHEMA)
-    if frames is None:
-        raise SystemExit(f"{FRAMES_SCHEMA}: {err}")
+    tables = trace_tables(trace)
+    att = trace_attribution(trace, app.name, main_rel, tables)
+    frames, updates = tables[FRAMES_SCHEMA], tables[UPDATES_SCHEMA]
     display_all = sorted(
-        _int(f["start"], "start") + _int(f["duration"], "duration")
-        for f in frames
-        if f["duration"] is not None and f["display"] == att["display"])
+        t for f in frames
+        if f["display"] == att["display"]
+        and (t := _present_ns(f)) is not None)
     owned = att.pop("presents_ns")
     span = (owned[0] / 1e6, (owned[-1] - owned[0]) / 1e6)
     refresh_ms = 1000.0 / args.max_fps
@@ -3649,10 +3913,16 @@ def cmd_attribution(args):
               "process": x.get("process")}
              for x in att.pop("signposts")
              if x.get("subsystem") == MARK_SUBSYSTEM]
+    classified = classify_display_frames(
+        frames, updates, set(att["owned_pids"]), att["display"],
+        owned[0], owned[-1])
     print(json.dumps({**att, "owned_presents": len(owned),
                       "span_ms": span,
                       "owned": stats(owned),
                       "display_all": stats(display_all),
+                      "frames_by_update": classified,
+                      "updates_without_display": sum(
+                          1 for u in updates if u["display"] is None),
                       "dev_bench_signposts": marks},
                      indent=2, default=str))
 
