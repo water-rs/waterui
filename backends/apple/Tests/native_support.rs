@@ -20,10 +20,11 @@ pub use cocoa_ui::native_test::pump_main_until;
 /// answers within a few run-loop turns.
 pub const MAIN_QUEUE_DEADLINE: f64 = 5.0;
 
-/// The least wall-clock time a platform `Animation::Default` scroll
-/// takes from its request to its landing — well under `AppKit`'s 0.25 s
-/// group and `UIKit`'s own scroll animation. A jump lands at once; a
-/// starved main thread only lengthens a native animation.
+/// The least wall-clock time a native `Animation::Default` scroll takes.
+///
+/// Measured from the request to the landing, it is well under `AppKit`'s
+/// 0.25 s group and `UIKit`'s own scroll animation. A jump lands at once;
+/// a starved main thread only lengthens a native animation.
 pub const NATIVE_SCROLL_MIN_DURATION: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// Rows in the list the approach cases scroll — well over the
@@ -322,11 +323,12 @@ pub mod gpu_surface {
     }
 }
 
-/// The minimum environment a real render needs: `dispatch::install`
-/// performs the backend's half of the embedding contract (dispatcher,
-/// window manager, realizations); the theme slots text resolves
-/// through are the framework's. Shared by the `native` and `native_app`
-/// harnesses.
+/// The minimum environment a real render needs.
+///
+/// `dispatch::install` performs the backend's half of the embedding
+/// contract (dispatcher, window manager, realizations); the theme slots
+/// text resolves through are the framework's. Shared by the `native` and
+/// `native_app` harnesses.
 #[must_use]
 pub fn render_environment() -> Environment {
     use waterui::graphics::color::WorkingColor;
@@ -381,10 +383,12 @@ pub type ListSurface = cocoa_ui::appkit::ListTableView;
 #[cfg(target_os = "ios")]
 pub type ListSurface = cocoa_ui::uikit::TableView;
 
-/// The offset that puts `row`'s top edge at the viewport's top, before
-/// any clamp — `rectOfRow`'s origin on `AppKit`; `rectForRowAtIndexPath`'s
-/// origin in section 0 minus the adjusted top inset on `UIKit`, read as
-/// the table stands now, since `UIKit` sizes unseen rows by estimate.
+/// The offset that puts `row`'s top edge at the viewport's top.
+///
+/// Read before any clamp: `rectOfRow`'s origin on `AppKit`;
+/// `rectForRowAtIndexPath`'s origin in section 0 minus the adjusted top
+/// inset on `UIKit`, read as the table stands now, since `UIKit` sizes
+/// unseen rows by estimate.
 #[must_use]
 pub fn list_row_top(table: &ListSurface, row: usize) -> cocoa_ui::Point {
     #[cfg(target_os = "macos")]
