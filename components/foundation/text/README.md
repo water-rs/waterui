@@ -16,14 +16,14 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-waterui-text = "0.1.0"
+waterui-text = "0.5"
 ```
 
 Or use the main WaterUI crate which re-exports text components:
 
 ```toml
 [dependencies]
-waterui = "0.3"
+waterui = "0.5"
 ```
 
 ## Quick Start
@@ -158,6 +158,13 @@ let blue_text = styled.foreground(Color::blue());
 
 ### Syntax Highlighting
 
+`DefaultHighlighter` needs the `highlight` feature:
+
+```toml
+[dependencies]
+waterui-text = { version = "0.5", features = ["highlight"] }
+```
+
 ```rust
 use waterui_text::highlight::{DefaultHighlighter, Language, highlight_text};
 use waterui_core::Str;
@@ -218,7 +225,7 @@ let highlighted = highlight_text(Language::Rust, &code, &mut highlighter);
 
 ## Features
 
-- `highlight` (default) — `DefaultHighlighter`, the bundled syntect/two-face
+- `highlight` — `DefaultHighlighter`, the bundled syntect/two-face
   syntax highlighter, and the `Code` fenced-code widget built on it.
 - `markdown` — `StyledStr::from_markdown` and the `pulldown-cmark` grammar
   behind it.
