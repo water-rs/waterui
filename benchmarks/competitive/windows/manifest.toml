@@ -69,7 +69,10 @@ fling_pause_ms = 350
 # Uniform method for every contestant: one ETW session per run, in file and
 # real-time mode at once, on the performance-counter clock, enabling
 # Microsoft-Windows-DXGI (all keywords) and Microsoft-Windows-Kernel-Process
-# (process events). The same session's real-time stream reports the first
+# (process start/stop: the owned tree by ParentProcessID, each member scoped
+# to its own lifetime, cross-checked against every Job read of the rep — a
+# present is owned only inside an owned lifetime). The same session's
+# real-time stream reports the first
 # owned present the drive is scheduled on; after the rep the .etl is
 # decoded through the same consumer path in log-file mode. Both consumers
 # hand over raw counter stamps, so the two first presents must be the

@@ -25,6 +25,22 @@ source anchors the drive and is parsed from the trace; no other stream is
 consulted. `dropped_pct` counts frame intervals over 1.5× the 60 Hz
 budget.
 
+A present counts as the contestant's only when the trace itself says so.
+Ownership is derived from the same session's Microsoft-Windows-Kernel-Process
+`ProcessStart`/`ProcessStop` events, whose `ProcessID`, `ParentProcessID`
+and `CreateTime` fields are decoded through TDH from the provider's
+manifest. The owned tree is the root's start, identified by its pid and
+its `GetProcessTimes` creation time, plus every process whose parent is
+an owned process alive when it starts. Each member is scoped to its own
+start–stop lifetime. A short-lived owned presenter, such as Electron's
+GPU process, counts for exactly its lifetime. A pid reused outside every
+owned lifetime never counts.
+
+Every read of the Job's process list during the rep must agree with
+that tree. A trace-owned process the Job did not hold, or a Job pid with
+no owned `ProcessStart` in the trace, fails the rep. Each record carries
+the derived `process_tree`.
+
 **Publishable frame-time and memory numbers require a hardware GPU host.**
 The runner records the GPU adapters (`Win32_VideoController`) in
 `results[].machine.gpu`; when every adapter is a software rasterizer (WARP /

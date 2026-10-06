@@ -89,6 +89,7 @@ try:
 except ImportError:
     comtypes = COMMETHOD = GUID = HRESULT = IUnknown = POINTER = None
     wintypes = None
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -689,6 +690,20 @@ class OwnedApp:
         return set(win32job.QueryInformationJobObject(
             self.job, win32job.JobObjectBasicProcessIdList))
 
+    def create_time(self) -> int:
+        """The root's creation time (FILETIME, 100 ns ticks) from
+        GetProcessTimes on the owned handle: with the pid, the identity
+        the root's Kernel-Process ProcessStart carries (CreateTime), so the
+        trace's root is found exactly, never by a reusable pid. Read
+        through ctypes: pywin32 returns CreationTime as a datetime, which
+        drops the last decimal of the 100 ns tick."""
+        times = [_u64() for _ in range(4)]
+        if not kernel32.GetProcessTimes(c_void_p(int(self.hproc)),
+                                        *map(byref, times)):
+            raise OSError(
+                f"GetProcessTimes failed: winerror {kernel32.GetLastError()}")
+        return times[0].value
+
     def terminate(self) -> None:
         """Kill the whole owned tree, then release every resource —
         each step runs even when an earlier one fails."""
@@ -1077,11 +1092,18 @@ class _EventTraceLogfileW(_S):
                 ("Context", _ptr)]
 
 
-# documented x64 sizes (evntrace.h / evntcons.h)
+class _PropertyDataDescriptor(_S):
+    """PROPERTY_DATA_DESCRIPTOR (tdh.h): PropertyName is a pointer to the
+    property's wide-string name, carried as a ULONGLONG."""
+    _fields_ = [("PropertyName", _u64), ("ArrayIndex", _u32),
+                ("Reserved", _u32)]
+
+
+# documented x64 sizes (evntrace.h / evntcons.h / tdh.h)
 ETW_STRUCT_SIZES = {_WnodeHeader: 48, _EventTraceProperties: 120,
                     _EventTrace: 88, _TraceLogfileHeader: 280,
                     _EventHeader: 80, _EventRecord: 112,
-                    _EventTraceLogfileW: 448}
+                    _EventTraceLogfileW: 448, _PropertyDataDescriptor: 16}
 
 DXGI_PROVIDER_GUID = "{CA11C036-0102-4A2D-A6AD-F03CFED5D3C9}"  # Microsoft-Windows-DXGI
 KPROC_PROVIDER_GUID = "{22FB2CD6-0E7B-422B-A0C7-2FAD1FD0E716}"  # Microsoft-Windows-Kernel-Process
@@ -1090,9 +1112,23 @@ KPROC_PROVIDER_GUID = "{22FB2CD6-0E7B-422B-A0C7-2FAD1FD0E716}"  # Microsoft-Wind
 DXGI_KEY = _EtwGuid.parse(DXGI_PROVIDER_GUID).key()
 KPROC_KEY = _EtwGuid.parse(KPROC_PROVIDER_GUID).key()
 WIN_START_OPCODE = 1
-# Kernel-Process ProcessStart: its payload's first UInt32 is the pid of the
-# process that started (the header's ProcessId is its creator's)
+# Kernel-Process ProcessStart / ProcessStop (keyword WINEVENT_KEYWORD_PROCESS
+# 0x10, level 4 — what SESSION_PROVIDERS enables). Their payload fields are
+# read by name through TDH (kproc_field), never at a fixed offset: the
+# provider's manifest carries several template versions of each event
+# (later ones add fields such as the process sequence numbers), so an
+# offset is right for one version only. The header's ProcessId is the
+# event's logging context, not the process the event is about.
 KPROC_PROCESS_START = 1
+KPROC_PROCESS_STOP = 2
+# the payload fields the decode reads, with the byte size TDH must report
+# for each (ProcessStartArgs / ProcessStopArgs in every template version):
+# ProcessID and ParentProcessID are win:UInt32, CreateTime is win:FILETIME —
+# with the pid, CreateTime is a process instance's identity (a pid alone is
+# reused) and pairs each ProcessStop with its ProcessStart
+KPROC_FIELD_SIZES = {"ProcessID": 4, "ParentProcessID": 4, "CreateTime": 8}
+# PROPERTY_DATA_DESCRIPTOR.ArrayIndex for a scalar property
+TDH_ARRAY_INDEX_NONE = 0xFFFFFFFF
 # The frame sources a contestant can declare ([frame_source] in the
 # manifest): the DXGI event whose Start marks one frame submission.
 FRAME_SOURCES = {
@@ -1108,7 +1144,10 @@ FRAME_SOURCES = {
 }
 # the session's providers: (guid, keyword mask, level) — DXGI with every
 # keyword (composition-path presents carry keyword 0), Kernel-Process
-# process events (the root's ProcessStart is the startup timestamp)
+# process events: every ProcessStart and ProcessStop, whose ProcessID /
+# ParentProcessID / CreateTime build the owned tree and each member's
+# lifetime from this very trace (the root's ProcessStart is also the
+# startup timestamp)
 SESSION_PROVIDERS = (
     (DXGI_PROVIDER_GUID, 0xFFFFFFFFFFFFFFFF, 0xFF),
     (KPROC_PROVIDER_GUID, 0x10, 4),
@@ -1162,8 +1201,9 @@ if windll is not None:
     advapi32 = windll.advapi32
     # a 64-bit TRACEHANDLE — the default int restype would truncate it
     advapi32.OpenTraceW.restype = _u64
+    tdh = windll.tdh
 else:
-    advapi32 = None
+    advapi32 = tdh = None
 ETW_EVENT_CALLBACK = (WINFUNCTYPE(None, ctypes.POINTER(_EventRecord))
                       if windll is not None else None)
 
@@ -1445,52 +1485,217 @@ class PresentTrace:
             raise RuntimeError("; ".join(errors))
 
 
-class EtlFrames:
-    """The per-event rule of the .etl decode: Starts of the declared source
-    from the owned pid set (the real-time anchor's frame rule), and every
-    Kernel-Process ProcessStart, all in raw session-clock ticks."""
+@dataclass(frozen=True)
+class TraceProcess:
+    """One process instance as the trace saw it. (pid, create_time) is its
+    identity — the pid alone is reused — parent_pid is its ParentProcessID,
+    and [start, stop] is its lifetime in raw session-clock ticks, from its
+    ProcessStart to its ProcessStop; stop is None when the session stopped
+    while it still ran."""
+    pid: int
+    create_time: int
+    parent_pid: int
+    start: int
+    stop: int | None
 
-    def __init__(self, source: str, owned_pids: set[int]):
+    def alive_at(self, ts: int) -> bool:
+        return self.start <= ts and (self.stop is None or ts <= self.stop)
+
+
+class EtlFrames:
+    """What the .etl decode collects, in raw session-clock ticks: every
+    Start of the declared source from ANY pid, and every Kernel-Process
+    start and stop. Ownership needs the whole trace's process lifetimes,
+    so it is decided once the decode has seen every event (`owned`), never
+    per event against a pid set."""
+
+    def __init__(self, source: str):
         self.frame_id = FRAME_SOURCES[source]["event_id"]
-        self.owned = frozenset(owned_pids)
-        self.stamps: list[int] = []
-        self.proc_starts: dict[int, list[int]] = {}
+        self.frames: list[tuple[int, int]] = []
+        self.starts: dict[tuple[int, int], tuple[int, int]] = {}
+        self.stops: dict[tuple[int, int], int] = {}
 
     def frame(self, provider: tuple, event_id: int, opcode: int, pid: int,
               ts: int) -> None:
-        if pid in self.owned and is_frame_event(provider, event_id, opcode,
-                                                self.frame_id):
-            self.stamps.append(ts)
+        if is_frame_event(provider, event_id, opcode, self.frame_id):
+            self.frames.append((pid, ts))
 
-    def process_start(self, pid: int, ts: int) -> None:
-        self.proc_starts.setdefault(pid, []).append(ts)
+    def process_start(self, pid: int, create_time: int, parent_pid: int,
+                      ts: int) -> None:
+        key = (pid, create_time)
+        if key in self.starts:
+            raise RuntimeError(
+                f"two Kernel-Process starts of pid {pid} with CreateTime "
+                f"{create_time}")
+        self.starts[key] = (parent_pid, ts)
+
+    def process_stop(self, pid: int, create_time: int, ts: int) -> None:
+        key = (pid, create_time)
+        if key in self.stops:
+            raise RuntimeError(
+                f"two Kernel-Process stops of pid {pid} with CreateTime "
+                f"{create_time}")
+        self.stops[key] = ts
+
+    def owned(self, root: tuple[int, int]) -> dict:
+        """The owned tree and its presents, for the root `(pid,
+        CreateTime)` the launch reported.
+
+        The tree is the root's instance — found by its identity, so an
+        earlier holder of its pid is never taken for it — plus, in start
+        order, every instance whose ParentProcessID is the pid of an owned
+        instance alive at its start. An owned pid therefore matches only
+        inside that owned lifetime: a foreign process that reuses it later,
+        and that process's children, stay foreign. A present is owned when
+        an owned instance of its pid is alive at its stamp, so a
+        short-lived owned presenter counts for exactly its lifetime and a
+        reused pid outside every owned lifetime never counts. A stop whose
+        start is not in the trace belongs to a process older than the
+        session, which cannot be owned: the session starts before the
+        root does."""
+        procs = []
+        for (pid, create_time), (parent_pid, start) in self.starts.items():
+            stop = self.stops.get((pid, create_time))
+            if stop is not None and stop < start:
+                raise RuntimeError(
+                    f"pid {pid} (CreateTime {create_time}) stops at raw "
+                    f"tick {stop}, before its start at {start}")
+            procs.append(TraceProcess(pid, create_time, parent_pid, start,
+                                      stop))
+        root_proc = next((p for p in procs
+                          if (p.pid, p.create_time) == root), None)
+        if root_proc is None:
+            raise RuntimeError(
+                f"the trace holds no Kernel-Process start of the root pid "
+                f"{root[0]} with CreateTime {root[1]} — no owned tree and "
+                "no launch timestamp")
+        tree = [root_proc]
+        for p in sorted(procs, key=lambda p: p.start):
+            if p.start > root_proc.start and any(
+                    o.pid == p.parent_pid and o.alive_at(p.start)
+                    for o in tree):
+                tree.append(p)
+        by_pid: dict[int, list[TraceProcess]] = {}
+        for p in tree:
+            by_pid.setdefault(p.pid, []).append(p)
+        stamps = sorted(ts for pid, ts in self.frames
+                        if any(p.alive_at(ts) for p in by_pid.get(pid, ())))
+        return {"tree": tree, "timestamps_qpc": stamps,
+                "present_events": len(stamps)}
 
 
-def read_etl(etl: Path, source: str, owned_pids: set[int],
+def kproc_field(rec_p, name_buf, name: str) -> int:
+    """One named scalar field of a Kernel-Process event, decoded by TDH from
+    the provider's registered manifest at the layout of the event's own
+    template version. A field the event does not carry, or one whose size
+    is not the KPROC_FIELD_SIZES declaration, raises."""
+    desc = _PropertyDataDescriptor(ctypes.addressof(name_buf),
+                                   TDH_ARRAY_INDEX_NONE, 0)
+    d = rec_p.contents.EventHeader.EventDescriptor
+    what = f"Kernel-Process event {d.Id} v{d.Version} field {name}"
+    size = _u32(0)
+    rc = tdh.TdhGetPropertySize(rec_p, 0, None, 1, byref(desc), byref(size))
+    if rc != 0:
+        raise RuntimeError(f"TdhGetPropertySize({what}) failed: {rc}")
+    if size.value != KPROC_FIELD_SIZES[name]:
+        raise RuntimeError(
+            f"{what} is {size.value} bytes; the manifest declares "
+            f"{KPROC_FIELD_SIZES[name]}")
+    value = _u64(0)
+    rc = tdh.TdhGetProperty(rec_p, 0, None, 1, byref(desc), size.value,
+                            byref(value))
+    if rc != 0:
+        raise RuntimeError(f"TdhGetProperty({what}) failed: {rc}")
+    return value.value
+
+
+@dataclass(frozen=True)
+class JobSnapshot:
+    """One read of the Job's pid list, bracketed by the rep-clock readings
+    taken just before and just after it."""
+    before: int
+    after: int
+    pids: frozenset[int]
+
+
+def job_snapshot(clock, job_pids) -> JobSnapshot:
+    before = clock.now()
+    pids = frozenset(job_pids())
+    return JobSnapshot(before, clock.now(), pids)
+
+
+def check_job_agreement(tree: list[TraceProcess],
+                        snapshots: list[JobSnapshot], from_qpc) -> None:
+    """The trace-derived owned tree and the Job must describe the same
+    processes at every Job snapshot the rep took. A process can start or
+    exit while the Job is being read, so inside a snapshot's bracket either
+    answer stands: a Job pid needs an owned instance whose lifetime
+    overlaps the bracket, and an owned instance must be in the Job only
+    when it was alive across the whole bracket. Any other difference is a
+    contradiction and fails the rep: an owned-per-trace process the Job
+    did not hold (it broke away, or the ParentProcessID link is not the
+    Job's), or a Job pid with no owned ProcessStart in the trace."""
+    if not snapshots:
+        raise RuntimeError("no Job snapshot to cross-check the trace with")
+    # lifetimes on the rep clock, the snapshots' timebase
+    spans = [(p.pid, from_qpc(p.start),
+              None if p.stop is None else from_qpc(p.stop)) for p in tree]
+    for snap in snapshots:
+        overlapping = {pid for pid, start, stop in spans
+                       if start <= snap.after
+                       and (stop is None or stop >= snap.before)}
+        unexplained = sorted(snap.pids - overlapping)
+        if unexplained:
+            raise RuntimeError(
+                f"the Job held pid(s) {unexplained} at rep tick "
+                f"{snap.before} with no owned Kernel-Process start in the "
+                "trace — the trace's owned tree and the Job disagree")
+        across = {pid for pid, start, stop in spans
+                  if start < snap.before
+                  and (stop is None or stop > snap.after)}
+        missing = sorted(across - snap.pids)
+        if missing:
+            raise RuntimeError(
+                f"the trace's owned tree holds pid(s) {missing} alive "
+                f"across the Job snapshot at rep tick {snap.before}, and "
+                "the Job did not hold them — the trace's owned tree and "
+                "the Job disagree")
+
+
+def read_etl(etl: Path, source: str, root: tuple[int, int],
              qpc_freq: int) -> dict:
     """Decode the rep's .etl through the same OpenTraceW / ProcessTrace path
     the real-time consumer uses — log-file mode, raw timestamps — so the
     first owned present it yields is bit-for-bit the stamp the real-time
-    stream delivered. The header must record a performance-counter clock at
-    `qpc_freq` (the rep clock's frequency — the one conversion every raw
-    stamp goes through) and no lost buffers or events."""
-    out = EtlFrames(source, owned_pids)
+    stream delivered. Ownership comes from the same trace: the tree under
+    `root` (pid, CreateTime) by ParentProcessID, each member scoped to its
+    own lifetime (EtlFrames.owned). The header must record a
+    performance-counter clock at `qpc_freq` (the rep clock's frequency —
+    the one conversion every raw stamp goes through) and no lost buffers
+    or events."""
+    out = EtlFrames(source)
     errors: list[str] = []
+    names = {n: ctypes.create_unicode_buffer(n) for n in KPROC_FIELD_SIZES}
 
     def on_event(rec_p) -> None:
         try:
-            rec = rec_p.contents
-            h = rec.EventHeader
+            h = rec_p.contents.EventHeader
             provider = h.ProviderId.key()
             if provider == KPROC_KEY:
-                if h.EventDescriptor.Id == KPROC_PROCESS_START:
-                    if rec.UserDataLength < 4:
-                        raise RuntimeError(
-                            "Kernel-Process ProcessStart carries no "
-                            "ProcessID payload")
-                    out.process_start(
-                        ctypes.c_uint32.from_address(rec.UserData).value,
-                        h.TimeStamp)
+                event_id = h.EventDescriptor.Id
+                if event_id in (KPROC_PROCESS_START, KPROC_PROCESS_STOP):
+                    pid = kproc_field(rec_p, names["ProcessID"],
+                                      "ProcessID")
+                    create_time = kproc_field(rec_p, names["CreateTime"],
+                                              "CreateTime")
+                    if event_id == KPROC_PROCESS_START:
+                        out.process_start(
+                            pid, create_time,
+                            kproc_field(rec_p, names["ParentProcessID"],
+                                        "ParentProcessID"),
+                            h.TimeStamp)
+                    else:
+                        out.process_stop(pid, create_time, h.TimeStamp)
                 return
             d = h.EventDescriptor
             out.frame(provider, d.Id, d.Opcode, h.ProcessId, h.TimeStamp)
@@ -1530,14 +1735,7 @@ def read_etl(etl: Path, source: str, owned_pids: set[int],
         raise RuntimeError(
             f"{etl} header records lost data: BuffersLost="
             f"{hdr.BuffersLost}, EventsLost={hdr.Instance.EventsLost}")
-    return {
-        "present_events": len(out.stamps),
-        "source": source,
-        "timestamps_qpc": sorted(out.stamps),
-        "proc_starts_qpc": {p: sorted(t) for p, t in
-                            out.proc_starts.items()},
-        "app_pids": sorted(owned_pids),
-    }
+    return {**out.owned(root), "source": source}
 
 
 # ---------------------------------------------------------------------------
@@ -2052,7 +2250,19 @@ def measure_run(c_key: str, workload: str, rep: int, cfg,
         # every contestant's output is captured — evidence mechanisms
         # read it (hydrolysis adapter line, Electron BENCH_GPUINFO)
         app = (owned_launch or OwnedApp)(c, workload, log_path)
-        root_pid = app.pid
+        # the root's identity in the trace: its pid alone is reusable
+        root = (app.pid, app.create_time())
+        # every read of the Job's pid list (at the first present, by each
+        # memory sample, at the window's end) is kept, bracketed on the rep
+        # clock, and the trace-derived owned tree must agree with each one
+        # (check_job_agreement)
+        job_snapshots: list[JobSnapshot] = []
+        owned_now = app.pids
+
+        def job_pids() -> frozenset[int]:
+            snap = job_snapshot(clock, owned_now)
+            job_snapshots.append(snap)
+            return snap.pids
 
         key = {"w2": "capture_seconds_w2", "w3": "capture_seconds_w3"}.get(
             workload, "capture_seconds_static"
@@ -2073,9 +2283,9 @@ def measure_run(c_key: str, workload: str, rep: int, cfg,
         rt_first = trace.first_present(
             cfg["runner"]["ready_timeout_seconds"])
 
-        owned = app.pids()
+        job_pids()  # the Job at the first present
         sampler = MemorySampler(
-            app.pids, cfg["runner"]["memory_sample_interval_ms"] / 1000,
+            job_pids, cfg["runner"]["memory_sample_interval_ms"] / 1000,
             clock)
         sampler.start()
         bring_to_foreground(hwnd_info[0])
@@ -2125,14 +2335,21 @@ def measure_run(c_key: str, workload: str, rep: int, cfg,
             # reaches the record as an attempt failure
             raise RuntimeError(
                 f"memory sampler failed: {sampler.error}")
-        owned |= app.pids()  # catch descendants spawned late in the run
+        # the tree alive at the end, where the GPU-engine counters were
+        # just sampled — the renderer evidence's attribution set
+        end_pids = job_pids()
 
         trace.stop()
         trace = None
         app.terminate()
         app = None
 
-        frames = read_etl(etl, source, owned, clock.qpc_freq)
+        # frame ownership comes from the trace itself: the root's tree by
+        # ParentProcessID, each member scoped to its own lifetime — and it
+        # must agree with every Job snapshot the rep took
+        frames = read_etl(etl, source, root, clock.qpc_freq)
+        tree = frames["tree"]
+        check_job_agreement(tree, job_snapshots, clock.from_qpc)
         if not frames["timestamps_qpc"]:
             raise RuntimeError(
                 "no owned present events — the measurement window has "
@@ -2159,7 +2376,7 @@ def measure_run(c_key: str, workload: str, rep: int, cfg,
         # measurement outright — under --development as well (no
         # software-GPU measurement route exists in this runner).
         adapter = renderer_evidence(
-            c_key, c, owned, log_path,
+            c_key, c, end_pids, log_path,
             counter_samples=engine_samples)
         # one frame-statistics definition for every leg (METHOD):
         # windowed presents in ms; >100 ms gaps end a run (excluded);
@@ -2174,21 +2391,23 @@ def measure_run(c_key: str, workload: str, rep: int, cfg,
         # startup is launch→first owned present — never from windowed
         # data (first_present anchors the window; it precedes it). Launch
         # is the root's Kernel-Process start in the same session, on the
-        # same clock; the session is live before the launch, so a trace
-        # without it is a failed attempt, never a startup-less row.
-        launches = [t for t in frames["proc_starts_qpc"].get(root_pid, [])
-                    if t <= first_raw]
-        if not launches:
-            raise RuntimeError(
-                f"the trace holds no Kernel-Process start of the root pid "
-                f"{root_pid} before its first present — no launch "
-                "timestamp for startup")
-        startup_ms = (first_present - clock.from_qpc(launches[-1])) \
-            / 10000.0
+        # same clock: the root of the owned tree (read_etl fails the rep
+        # when the trace lacks it), and every owned present lies inside an
+        # owned lifetime, so after it.
+        launch = clock.from_qpc(tree[0].start)
+        startup_ms = (first_present - launch) / 10000.0
 
         rec = {
             "run": rep,
             "startup_ms": startup_ms,
+            # the trace-derived owned tree, on launch-relative ms
+            "process_tree": [
+                {"pid": p.pid, "parent_pid": p.parent_pid,
+                 "start_ms": (clock.from_qpc(p.start) - launch) / 10000.0,
+                 "stop_ms": None if p.stop is None
+                 else (clock.from_qpc(p.stop) - launch) / 10000.0}
+                for p in tree],
+            "job_snapshots": len(job_snapshots),
             "adapter_detected": adapter,
             "memory": mem,
             "frame_rate": {
@@ -2405,8 +2624,16 @@ def _self_test() -> None:
     clock = VirtualClock(133_000_000_000_000_000)
     ts = {"t0": clock.now()}
 
+    # the root's CreateTime as FakeApp reports it; the trace fixtures stamp
+    # the same value on the root's ProcessStart
+    ROOT_CT = 133_100_000_000_000_000
+    # a short-lived owned presenter's [start, stop] offsets from t0, for the
+    # Job of FakeApp subclasses that hold it (see the tree fixtures below)
+    SHORT = (1_500_000, 1_750_000)
+
     class FakeApp:
-        """Same contract as OwnedApp: pid, pids(), terminate(), log."""
+        """Same contract as OwnedApp: pid, create_time(), pids(),
+        terminate(), log."""
         def __init__(self, c, workload, log_path):
             events.append("launch")
             ts["t0"] = clock.now()
@@ -2415,6 +2642,8 @@ def _self_test() -> None:
             self.terminated = False
             if log_path:
                 self.log = open(log_path, "w")
+        def create_time(self):
+            return ROOT_CT
         def pids(self):
             return {os.getpid()}
         def terminate(self):
@@ -2468,27 +2697,58 @@ def _self_test() -> None:
             "name": "Fixture RTX", "device_type": "Gpu",
             "backend": "d3d", "mechanism": "fixture"}
 
-        def _fixture_frames(etl, source, pids, qpc_freq):
-            # anchored at the rep's launch clock — memory samples stamp
-            # the same clock, so the measurement-window trim keeps them
+        # the trace the fixture decode records — `tree` picks the process
+        # tree around the root: "root" (the root alone), "short" (plus a
+        # short-lived owned presenter whose pid a foreign process reuses),
+        # "lingering" (plus an owned child the Job never holds), "no_root"
+        # (the root pid's only start is another instance), "silent" (the
+        # root never presents)
+        trace_cfg = {"tree": "root"}
+        RUNNER, FOREIGN, CHILD = 4000, 4900, 4245
+
+        def _fixture_frames(etl, source, root, qpc_freq):
+            # raw events at the OS boundary, decoded by the real
+            # EtlFrames.owned — anchored at the rep's launch clock; memory
+            # samples stamp the same clock, so the window trim keeps them
             assert qpc_freq == clock.qpc_freq, qpc_freq
+            me = os.getpid()
+            assert root == (me, ROOT_CT), root
             events.append("read_etl")
             t0 = ts["t0"]
-            return {
-                "present_events": 6, "source": source,
-                "timestamps_qpc": [
-                    t0,                  # first owned present → anchor
-                    t0 + 500_000,        # inside warmup → trimmed
-                    t0 + 1_100_000,      # window [t0+warmup, +capture]
-                    t0 + 2_000_000,
-                    t0 + 2_900_000,
-                    t0 + 3_500_000,
-                ],
-                # an earlier holder of the root's pid, then the root
-                "proc_starts_qpc": {os.getpid(): [t0 - 900_000,
-                                                  t0 - 100_000]},
-                "app_pids": sorted(pids),
-            }
+            frame_id = FRAME_SOURCES[source]["event_id"]
+            shape = trace_cfg["tree"]
+            f = EtlFrames(source)
+            # an earlier holder of the root's pid: it started, presented
+            # and exited before the launch — never the root, and its
+            # present (which would precede the anchor) is never owned
+            f.process_start(me, ROOT_CT - 1, FOREIGN, t0 - 900_000)
+            f.frame(DXGI_KEY, frame_id, 1, me, t0 - 600_000)
+            f.process_stop(me, ROOT_CT - 1, t0 - 500_000)
+            f.process_start(me, ROOT_CT + (shape == "no_root"), RUNNER,
+                            t0 - 100_000)
+            if shape != "silent":
+                for dt in (0,               # first owned present → anchor
+                           500_000,         # inside warmup → trimmed
+                           1_100_000,       # window [t0+warmup, +capture]
+                           2_000_000, 2_900_000, 3_500_000):
+                    f.frame(DXGI_KEY, frame_id, 1, me, t0 + dt)
+            if shape == "short":
+                # an owned child presents twice inside the window and
+                # exits 250 ms after it started (ShortChildApp's Job holds
+                # it for exactly that lifetime)
+                f.process_start(CHILD, 7, me, t0 + SHORT[0])
+                f.frame(DXGI_KEY, frame_id, 1, CHILD, t0 + 1_600_000)
+                f.frame(DXGI_KEY, frame_id, 1, CHILD, t0 + 1_700_000)
+                f.process_stop(CHILD, 7, t0 + SHORT[1])
+                # a foreign process reuses the child's pid, and its own
+                # child names that pid as parent — both stay foreign
+                f.process_start(CHILD, 8, FOREIGN, t0 + 2_400_000)
+                f.frame(DXGI_KEY, frame_id, 1, CHILD, t0 + 2_500_000)
+                f.process_start(CHILD + 1, 9, CHILD, t0 + 2_600_000)
+                f.frame(DXGI_KEY, frame_id, 1, CHILD + 1, t0 + 2_700_000)
+            if shape == "lingering":
+                f.process_start(CHILD, 7, me, t0 - 50_000)
+            return {**f.owned(root), "source": source}
         globals()["read_etl"] = _fixture_frames
         snapshot = lambda: {
             os.getpid(): {"name": "fake.exe", "ws_private": 100 << 20,
@@ -2511,9 +2771,17 @@ def _self_test() -> None:
         assert rec["frame_rate"]["present_events"] == 6
         assert rec["frame_rate"]["presents"] == 4
         assert rec["frame_rate"]["source"] == "dxgi_present"
-        # startup runs from the root's latest Kernel-Process start before
-        # its first present, on the rep clock: 100_000 ticks = 10 ms
+        # startup runs from the root's own Kernel-Process start — found by
+        # (pid, CreateTime), never the earlier holder of its pid — on the
+        # rep clock: 100_000 ticks = 10 ms
         assert rec["startup_ms"] == 10.0, rec["startup_ms"]
+        assert rec["process_tree"] == [
+            {"pid": os.getpid(), "parent_pid": RUNNER, "start_ms": 0.0,
+             "stop_ms": None}], rec["process_tree"]
+        # the Job was read at the first present, by each of the 41
+        # sampler ticks over [t0, t0 + 4 s], and at the window's end — and
+        # every read agreed with the trace's owned tree
+        assert rec["job_snapshots"] == 43, rec["job_snapshots"]
         # the windowed presents form one active run; 90/90/60 ms
         # intervals each exceed 1.5 periods → missed-vsync counting
         # follows lib/frame_stats.py (round(i/period)-1 each)
@@ -2646,19 +2914,61 @@ def _self_test() -> None:
         globals()["process_memory_snapshot"] = snapshot
 
         # -- a missing startup timestamp is a failed attempt (M1): a
-        #    trace whose only Kernel-Process start of the root pid comes
-        #    after the first present (a later holder of the pid) has no
-        #    launch timestamp — an error record, not a quiet None
+        #    trace whose Kernel-Process starts of the root pid are all
+        #    other instances of that pid (another CreateTime) holds no
+        #    root, so no owned tree and no launch timestamp — an error
+        #    record, not a quiet None
         events.clear()
-
-        def no_root_start(*a):
-            fr = _fixture_frames(*a)
-            fr["proc_starts_qpc"] = {os.getpid(): [ts["t0"] + 1]}
-            return fr
-        globals()["read_etl"] = no_root_start
+        trace_cfg["tree"] = "no_root"
         rec = run(7)
         assert "no Kernel-Process start of the root pid" in rec["error"], rec
-        globals()["read_etl"] = _fixture_frames
+
+        # -- frame ownership is the trace's own tree, each member scoped
+        #    to its lifetime: a short-lived owned presenter that starts
+        #    and exits between Job snapshots counts, while the foreign
+        #    process that reuses its pid afterwards, and that process's
+        #    child naming the pid as parent, never do
+        class ShortChildApp(FakeApp):
+            # the Job holds the child for exactly its lifetime
+            def pids(self):
+                held = {os.getpid()}
+                if SHORT[0] <= clock.now() - ts["t0"] <= SHORT[1]:
+                    held.add(CHILD)
+                return held
+        events.clear()
+        trace_cfg["tree"] = "short"
+        rec = run(7, launch=ShortChildApp)
+        assert "error" not in rec, rec
+        # 6 root presents + 2 of the child; the reused pid's and its
+        # child's presents are foreign
+        assert rec["frame_rate"]["present_events"] == 8, rec["frame_rate"]
+        # the window [t0 + 100 ms, + 300 ms] holds 4 root presents and
+        # both of the child's
+        assert rec["frame_rate"]["presents"] == 6, rec["frame_rate"]
+        assert [(p["pid"], p["parent_pid"], p["start_ms"], p["stop_ms"])
+                for p in rec["process_tree"]] == [
+            (os.getpid(), RUNNER, 0.0, None),
+            (CHILD, os.getpid(), 160.0, 185.0)], rec["process_tree"]
+
+        # -- an owned-per-trace process the Job never held (alive across
+        #    every snapshot) contradicts the Job and fails the rep
+        events.clear()
+        trace_cfg["tree"] = "lingering"
+        rec = run(7)
+        assert "the Job did not hold them" in rec["error"], rec
+        assert f"[{CHILD}]" in rec["error"], rec
+
+        # -- a Job pid with no owned ProcessStart in the trace
+        #    contradicts the trace and fails the rep
+        class StrayJobApp(FakeApp):
+            def pids(self):
+                return {os.getpid(), CHILD + 2}
+        events.clear()
+        trace_cfg["tree"] = "root"
+        rec = run(7, launch=StrayJobApp)
+        assert "with no owned Kernel-Process start" in rec["error"], rec
+        assert f"[{CHILD + 2}]" in rec["error"], rec
+        assert "terminate" in events and "restore[42]" in events
 
         # -- zero memory samples inside the measurement window is a
         #    failed attempt (M2), not a steady=None success
@@ -2671,13 +2981,10 @@ def _self_test() -> None:
         # -- zero owned presents: no first present exists to anchor the
         #    window on → failed attempt (M3)
         events.clear()
-        globals()["read_etl"] = lambda etl, source, pids, freq: {
-            "present_events": 0, "source": source,
-            "timestamps_qpc": [], "proc_starts_qpc": {},
-            "app_pids": sorted(pids)}
+        trace_cfg["tree"] = "silent"
         rec = run(9)
         assert "no owned present events" in rec["error"], rec
-        globals()["read_etl"] = _fixture_frames
+        trace_cfg["tree"] = "root"
 
         # -- a contestant without a declared frame source fails before
         #    anything launches
@@ -2782,22 +3089,86 @@ def _self_test() -> None:
             else:
                 raise AssertionError(
                     f"anchor mismatch accepted: {trace_first} {rt_first}")
-        # the .etl decode keeps only the declared source's Starts from
-        # owned pids, and every Kernel-Process start per pid
-        etl_frames = EtlFrames("dxgi_present", {7})
-        etl_frames.process_start(7, 900)
+        # the .etl decode keeps only the declared source's Starts, and
+        # ownership is the root's tree by ParentProcessID with each member
+        # scoped to its own [start, stop]
+        etl_frames = EtlFrames("dxgi_present")
+        etl_frames.process_start(7, 70, 1, 900)        # the root
         etl_frames.frame(DXGI_KEY, 42, 1, 7, 1000)
-        etl_frames.frame(DXGI_KEY, 144, 1, 7, 1001)
-        etl_frames.frame(DXGI_KEY, 42, 2, 7, 1002)
-        etl_frames.frame(DXGI_KEY, 42, 1, 9, 1003)
-        etl_frames.frame(KPROC_KEY, 42, 1, 7, 1004)
+        etl_frames.frame(DXGI_KEY, 144, 1, 7, 1001)    # another source
+        etl_frames.frame(DXGI_KEY, 42, 2, 7, 1002)     # a Stop
+        etl_frames.frame(DXGI_KEY, 42, 1, 9, 1003)     # 9 not started yet
+        etl_frames.frame(KPROC_KEY, 42, 1, 7, 1004)    # another provider
+        etl_frames.process_start(9, 90, 7, 1010)       # the root's child
+        etl_frames.process_start(11, 110, 9, 1020)     # its grandchild
+        etl_frames.frame(DXGI_KEY, 42, 1, 11, 1030)
+        etl_frames.process_stop(9, 90, 1040)           # the child exits
+        etl_frames.frame(DXGI_KEY, 42, 1, 9, 1050)     # no 9 alive
+        etl_frames.process_start(9, 91, 5, 1060)       # 9 reused, foreign
+        etl_frames.process_start(12, 120, 9, 1070)     # child of foreign 9
+        etl_frames.frame(DXGI_KEY, 42, 1, 9, 1080)
+        etl_frames.frame(DXGI_KEY, 42, 1, 12, 1090)
+        etl_frames.process_stop(3, 30, 1100)           # older than the trace
         etl_frames.frame(DXGI_KEY, 42, 1, 7, 1200)
-        assert etl_frames.stamps == [1000, 1200], etl_frames.stamps
-        assert etl_frames.proc_starts == {7: [900]}
-        etl_frames = EtlFrames("dxgi_composition_present", {7})
+        owned = etl_frames.owned((7, 70))
+        assert owned["timestamps_qpc"] == [1000, 1030, 1200], owned
+        assert owned["present_events"] == 3, owned
+        owned_tree = owned["tree"]
+        assert [(p.pid, p.create_time, p.stop) for p in owned_tree] == [
+            (7, 70, None), (9, 90, 1040), (11, 110, None)], owned_tree
+        # an earlier instance of the root's pid is not the root
+        try:
+            etl_frames.owned((7, 71))
+            raise AssertionError("another instance taken for the root")
+        except RuntimeError as e:
+            assert "no Kernel-Process start of the root pid 7" in str(e), e
+        # an instance is started once, stopped once, and never stops
+        # before it starts
+        for events_of in (
+                lambda f: (f.process_start(7, 70, 1, 900),
+                           f.process_start(7, 70, 1, 950)),
+                lambda f: (f.process_start(7, 70, 1, 900),
+                           f.process_stop(7, 70, 950),
+                           f.process_stop(7, 70, 960)),
+                lambda f: (f.process_start(7, 70, 1, 900),
+                           f.process_stop(7, 70, 800),
+                           f.owned((7, 70)))):
+            try:
+                events_of(EtlFrames("dxgi_present"))
+                raise AssertionError("inconsistent process events accepted")
+            except RuntimeError:
+                pass
+        etl_frames = EtlFrames("dxgi_composition_present")
+        etl_frames.process_start(7, 70, 1, 900)
         etl_frames.frame(DXGI_KEY, 144, 1, 7, 1001)
         etl_frames.frame(DXGI_KEY, 42, 1, 7, 1000)
-        assert etl_frames.stamps == [1001], etl_frames.stamps
+        assert etl_frames.owned((7, 70))["timestamps_qpc"] == [1001]
+        # the tree agrees with Job snapshots that saw it; a start or exit
+        # inside a snapshot's bracket may land on either side of the read
+        ident = lambda t: t
+        check_job_agreement(owned_tree, [
+            JobSnapshot(1000, 1001, frozenset({7})),
+            JobSnapshot(1025, 1030, frozenset({7, 9, 11})),
+            JobSnapshot(1100, 1101, frozenset({7, 11})),
+            JobSnapshot(1005, 1015, frozenset({7})),
+            JobSnapshot(1005, 1015, frozenset({7, 9})),
+            JobSnapshot(1035, 1045, frozenset({7, 11})),
+            JobSnapshot(1035, 1045, frozenset({7, 9, 11}))], ident)
+        for snaps, msg in (
+                # 9 alive across the read, the Job without it
+                ([JobSnapshot(1025, 1030, frozenset({7, 11}))],
+                 "the Job did not hold them"),
+                # the owned 9 exited at 1040: a Job pid 9 at 1100 has no
+                # owned ProcessStart behind it
+                ([JobSnapshot(1100, 1101, frozenset({7, 9, 11}))],
+                 "with no owned Kernel-Process start"),
+                ([], "no Job snapshot")):
+            try:
+                check_job_agreement(owned_tree, snaps, ident)
+            except RuntimeError as e:
+                assert msg in str(e), (msg, e)
+            else:
+                raise AssertionError(f"contradiction accepted: {snaps}")
         # session buffers are sized from the processor count; any lost
         # event or buffer is a failure naming every counter
         assert session_buffers(8) == (64, 16, 216)
@@ -3199,7 +3570,8 @@ def _native_check() -> int:
       7 the file + real-time ETW session: lossless stop, the .etl
       decoded through the real-time consumer's path on a QPC clock at the
       rep clock's frequency, a launch's Kernel-Process start inside its
-      rep-clock span; 8 process_memory_snapshot NTSTATUS/buffer handling
+      rep-clock span, the trace's owned tree (an exited child included)
+      agreeing with the Job; 8 process_memory_snapshot NTSTATUS/buffer handling
       vs psutil; 9 minimize/restore round-trip.
     """
     if platform.system() != "Windows":
@@ -3228,7 +3600,7 @@ def _native_check() -> int:
             (win32con, ["CREATE_SUSPENDED", "STARTF_USESTDHANDLES",
                         "HANDLE_FLAG_INHERIT"]),
             (win32event, ["WaitForInputIdle", "WaitForSingleObject",
-                          "WAIT_TIMEOUT"]),
+                          "WAIT_TIMEOUT", "WAIT_OBJECT_0", "CreateEvent"]),
             (win32file, ["ReadFile"]),
             (win32pipe, ["CreatePipe"]),
             (win32api, ["CloseHandle", "TerminateProcess",
@@ -3459,33 +3831,77 @@ while u.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
     #     session's life, the stop reports no lost event or buffer, the
     #     .etl decodes through the same consumer path in log-file mode
     #     with a performance-counter clock at the rep clock's frequency,
-    #     and the test app's Kernel-Process start lands in it between two
-    #     rep-clock readings taken around its launch
+    #     and the test app's Kernel-Process start — found by its pid and
+    #     GetProcessTimes CreationTime — lands in it between two rep-clock
+    #     readings taken around its launch. The test app runs a child to
+    #     completion, then starts a sleeping one and signals a named
+    #     event; the Job is read on that event. The owned tree the trace
+    #     yields (ProcessID / ParentProcessID / CreateTime read through
+    #     TDH, starts paired with stops) holds the exited child, which
+    #     no Job read saw, and agrees with the Job read.
+    TREE_APP = """
+import ctypes, subprocess, sys, time
+subprocess.run([sys.executable, '-c', 'pass'], check=True)
+subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)'])
+k = ctypes.windll.kernel32
+h = k.OpenEventW(0x0002, False, sys.argv[1])  # EVENT_MODIFY_STATE
+if not h or not k.SetEvent(h):
+    raise SystemExit(f'cannot signal {sys.argv[1]}: {k.GetLastError()}')
+time.sleep(300)
+"""
+
     def i7():
         clock = SystemClock()
         etl = td / "nc.etl"
         name = f"bench1262_native_{os.getpid()}"
+        script = td / "tree_app.py"
+        script.write_text(TREE_APP)
+        ready_name = f"bench1262-native-ready-{os.getpid()}"
+        ready = win32event.CreateEvent(None, True, False, ready_name)
         trace = PresentTrace(name, etl, "dxgi_present", lambda: set())
         try:
             before = clock.now()
-            app = spawn_test_app(td / "etw.log")
+            app = OwnedApp(
+                {"exe_dir": Path(sys.executable).parent,
+                 "exe": Path(sys.executable).name,
+                 "args": f'"{script}" {ready_name}', "env": {}},
+                "w1", td / "etw.log")
             after = clock.now()
-            app_pid = app.pid
-            app.terminate()
+            try:
+                root = (app.pid, app.create_time())
+                rc = win32event.WaitForSingleObject(ready, 30_000)
+                if rc != win32event.WAIT_OBJECT_0:
+                    raise AssertionError(
+                        f"the test tree never signalled readiness (wait "
+                        f"returned {rc})")
+                snap = job_snapshot(clock, app.pids)
+            finally:
+                app.terminate()
         finally:
             trace.stop()
+            win32api.CloseHandle(ready)
         assert not trace._error, trace._error
-        frames = read_etl(etl, "dxgi_present", set(), clock.qpc_freq)
-        starts = [clock.from_qpc(t)
-                  for t in frames["proc_starts_qpc"].get(app_pid, [])]
-        assert starts, f"test app {app_pid} has no Kernel-Process start"
-        assert any(before <= t <= after for t in starts), (
-            f"test app start {starts} outside the rep-clock launch span "
+        frames = read_etl(etl, "dxgi_present", root, clock.qpc_freq)
+        tree = frames["tree"]
+        launch = clock.from_qpc(tree[0].start)
+        assert before <= launch <= after, (
+            f"root start {launch} outside the rep-clock launch span "
             f"[{before}, {after}]")
+        # the short-lived child: started and stopped (paired by pid +
+        # CreateTime) before the Job was read, so only the trace has it
+        exited = [p for p in tree[1:] if p.stop is not None
+                  and clock.from_qpc(p.stop) < snap.before]
+        assert exited, f"no exited descendant in the owned tree: {tree}"
+        assert snap.pids - {app.pid}, (
+            f"the Job holds no live descendant: {sorted(snap.pids)}")
+        check_job_agreement(tree, [snap], clock.from_qpc)
         rec(7, "PASS",
             f"file + real-time session lossless; .etl decodes on a "
-            f"{clock.qpc_freq} Hz QPC clock; the app's process start lies "
-            "inside its rep-clock launch span")
+            f"{clock.qpc_freq} Hz QPC clock; the root's start (pid + "
+            "CreateTime) lies inside its rep-clock launch span; the owned "
+            f"tree {[(p.pid, p.parent_pid) for p in tree]} (TDH-decoded "
+            f"ProcessStart/Stop, {len(exited)} exited before the Job read) "
+            f"agrees with the Job's {sorted(snap.pids)}")
 
     # 8 — process_memory_snapshot NTSTATUS/buffer handling vs psutil
     def i8():
