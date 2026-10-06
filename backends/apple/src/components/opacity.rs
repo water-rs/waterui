@@ -9,10 +9,8 @@
 use alloc::rc::Rc;
 
 use cocoa_ui::{PlatformView, Rect, view};
-use waterui::animation::Animation;
 use waterui::filter::Opacity;
 use waterui::reactive::Signal;
-use waterui::reactive::watcher::Metadata as WatchMetadata;
 use waterui_core::Metadata;
 use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
 
@@ -24,35 +22,6 @@ use crate::proposal;
 use cocoa_ui::appkit::HostView;
 #[cfg(target_os = "ios")]
 use cocoa_ui::uikit::HostView;
-
-/// `withPlatformAnimation`: the watcher metadata's `Animation` mapped to a
-/// kit timing — `Default` parses to the 0.25s bezier the FFI spells it as.
-fn with_platform_animation(metadata: &WatchMetadata, body: impl FnOnce() + 'static) {
-    let timing = match metadata.try_get::<Animation>() {
-        None => return body(),
-        Some(Animation::Default) => cocoa_ui::core_animation::Timing::Bezier {
-            duration: 0.25,
-            control_points: [0.42, 0.0, 0.58, 1.0],
-        },
-        Some(Animation::Bezier {
-            duration,
-            x1,
-            y1,
-            x2,
-            y2,
-        }) => cocoa_ui::core_animation::Timing::Bezier {
-            duration: duration.as_secs_f64(),
-            control_points: [x1, y1, x2, y2],
-        },
-        Some(Animation::Spring { stiffness, damping }) => {
-            cocoa_ui::core_animation::Timing::Spring {
-                stiffness: f64::from(stiffness),
-                damping: f64::from(damping),
-            }
-        }
-    };
-    cocoa_ui::core_animation::animate_with(timing, body);
-}
 
 /// `applyOpacity`: the alpha lands on the wrapper, then any captured
 /// rendering is invalidated.
@@ -153,7 +122,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         leaf.watch(&value, {
             move |wctx| {
                 let next = *wctx.value();
-                with_platform_animation(wctx.metadata(), {
+                crate::animation::with_platform_animation(wctx.metadata(), {
                     let host = host.clone();
                     move || apply_opacity(next, &host)
                 });

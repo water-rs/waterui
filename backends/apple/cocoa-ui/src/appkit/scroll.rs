@@ -22,24 +22,42 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use objc2::rc::Retained;
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
-use objc2_app_kit::{NSClipView, NSScrollView, NSView, NSViewNoIntrinsicMetric};
+use objc2::rc::{Retained, Weak};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
+use objc2_app_kit::{NSClipView, NSEvent, NSScrollView, NSView, NSViewNoIntrinsicMetric};
 use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize};
 
 use crate::callback::guarded;
 use crate::geometry::{Point, Size};
+use crate::notification::NotificationObserver;
+use crate::scroll_flight::{FlightPlan, ScrollFlight};
 
 /// The handler [`ScrollView`] calls after `AppKit` lays it out.
 type LayoutHandler = Rc<dyn Fn(&ScrollView)>;
 /// The handler [`ScrollView`] calls after `AppKit` tiles the scrollers.
 type TileHandler = Rc<dyn Fn(&ScrollView)>;
 
-/// The per-instance handlers [`ScrollView`] stores.
-#[derive(Default)]
+/// The per-instance state [`ScrollView`] stores.
 pub struct ScrollViewIvars {
     layout: RefCell<Option<LayoutHandler>>,
     tile: RefCell<Option<TileHandler>>,
+    /// The scroll animation state: at most one flight per surface.
+    flight: Rc<ScrollFlight>,
+    /// Ends a flight when the user's live scroll reports a bounds change.
+    live_scroll: RefCell<Vec<NotificationObserver>>,
+}
+
+impl ScrollViewIvars {
+    /// The state for one instance; `mtm` binds the frame clock to the
+    /// main thread.
+    fn new(mtm: MainThreadMarker) -> Self {
+        Self {
+            layout: RefCell::new(None),
+            tile: RefCell::new(None),
+            flight: ScrollFlight::new(mtm),
+            live_scroll: RefCell::new(Vec::new()),
+        }
+    }
 }
 
 impl std::fmt::Debug for ScrollViewIvars {
@@ -94,6 +112,33 @@ define_class!(
             let no_metric = unsafe { NSViewNoIntrinsicMetric };
             NSSize::new(no_metric, no_metric)
         }
+
+        /// Every wheel/trackpad/momentum scroll enters through the scroll
+        /// view's `scrollWheel:` — the user's input supersedes a
+        /// programmatic animation in flight before `AppKit` applies it.
+        /// Momentum phases and knob drags that post no wheel event are
+        /// covered by the live-scroll notifications [`new`](Self::new)
+        /// installs.
+        #[unsafe(method(scrollWheel:))]
+        fn scroll_wheel_override(&self, event: &NSEvent) {
+            guarded("ScrollView scrollWheel", || {
+                self.ivars().flight.cancel();
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), scrollWheel: event] };
+            });
+        }
+
+        /// A view that moves to another window or leaves its window lands
+        /// the flight it was running — a parked flight's clock ticks only
+        /// for the window it armed on.
+        #[unsafe(method(viewDidMoveToWindow))]
+        fn view_did_move_to_window(&self) {
+            guarded("ScrollView viewDidMoveToWindow", || {
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), viewDidMoveToWindow] };
+                self.ivars().flight.land();
+            });
+        }
     }
 );
 
@@ -140,7 +185,7 @@ impl ScrollView {
     /// `vertical` and `horizontal` enable the matching scroll axis.
     #[must_use]
     pub fn new(mtm: MainThreadMarker, vertical: bool, horizontal: bool) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(ScrollViewIvars::default());
+        let this = Self::alloc(mtm).set_ivars(ScrollViewIvars::new(mtm));
         // SAFETY: standard `NSScrollView` init on a main-thread class.
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
         this.setHasVerticalScroller(vertical);
@@ -149,6 +194,9 @@ impl ScrollView {
         this.setDrawsBackground(false);
         let document = FlippedView::new(mtm);
         this.setDocumentView(Some(&document));
+        this.ivars()
+            .live_scroll
+            .replace(this.ivars().flight.watch_user_scroll(&this, mtm));
         this
     }
 
@@ -185,11 +233,62 @@ impl ScrollView {
         self.contentView().bounds().origin.into()
     }
 
-    /// Jumps the scroll position to `point`, top-left origin.
+    /// Jumps the scroll position to `point`, top-left origin — superseding
+    /// any scroll animation in flight.
     pub fn scroll_to(&self, point: Point) {
+        self.ivars().flight.jump_to(self, point);
+    }
+
+    /// The system's animated scroll to `point` — the `AppKit` counterpart
+    /// of `UIKit`'s `setContentOffset(_:animated: true)`: `boundsOrigin`
+    /// through the clip's `animator()` proxy inside an `NSAnimationContext`
+    /// group, which writes the model per frame so bounds observers track
+    /// the flight. The group aims at the clip-constrained target, the same
+    /// clamp the flighted path takes.
+    pub fn scroll_to_animated(&self, point: Point) {
         let clip = self.contentView();
-        clip.scrollToPoint(point.into());
-        self.reflectScrolledClipView(&clip);
+        let to = ScrollFlight::constrained(&clip, point);
+        self.ivars()
+            .flight
+            .scroll_context(&clip, to, ScrollFlight::context_reflect(&clip));
+    }
+
+    /// Drives the scroll position from its current offset to `point`
+    /// along `progress` — elapsed seconds to eased fraction — for
+    /// `duration` seconds, writing the model each display tick so bounds
+    /// observers and lazily built content track the flight. The clip's
+    /// constraint applies once here, and the last tick lands through
+    /// [`scroll_to`](Self::scroll_to) — landing equals the jump.
+    pub fn animate_scroll_to(&self, point: Point, duration: f64, progress: Rc<dyn Fn(f64) -> f64>) {
+        let to = ScrollFlight::constrained(&self.contentView(), point);
+        let from = self.content_offset();
+        let land = {
+            let weak = Weak::from_retained(&self.retain());
+            Rc::new(move || {
+                if let Some(this) = weak.load() {
+                    this.scroll_to(to);
+                }
+            })
+        };
+        self.ivars().flight.begin(
+            self,
+            from,
+            FlightPlan {
+                to: Rc::new(move || to),
+                land,
+                duration,
+                progress,
+                write: ScrollFlight::clip_write(self),
+            },
+        );
+    }
+
+    /// Whether a scroll animation is in flight — the native test suite's
+    /// probe.
+    #[cfg(feature = "native-test")]
+    #[must_use]
+    pub fn scroll_animation_in_flight(&self) -> bool {
+        self.ivars().flight.in_flight()
     }
 
     /// Runs `handler` after every `AppKit` layout pass, replacing the

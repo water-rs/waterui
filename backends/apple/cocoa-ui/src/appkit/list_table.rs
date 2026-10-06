@@ -42,7 +42,7 @@ use objc2::runtime::ProtocolObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
 use objc2_app_kit::{
     NSBezelStyle, NSButton, NSColor, NSControlTextEditingDelegate, NSDragOperation, NSDraggingInfo,
-    NSFont, NSLayoutConstraint, NSPasteboardItem, NSPasteboardType, NSPasteboardWriting,
+    NSEvent, NSFont, NSLayoutConstraint, NSPasteboardItem, NSPasteboardType, NSPasteboardWriting,
     NSRectFill, NSScrollView, NSTableColumn, NSTableRowView, NSTableView,
     NSTableViewAnimationOptions, NSTableViewDataSource, NSTableViewDelegate,
     NSTableViewDropOperation, NSTableViewSelectionHighlightStyle, NSTableViewStyle, NSTextField,
@@ -54,7 +54,9 @@ use objc2_foundation::{
 };
 
 use crate::callback::guarded;
-use crate::geometry::EdgeInsets;
+use crate::geometry::{EdgeInsets, Point};
+use crate::notification::NotificationObserver;
+use crate::scroll_flight::{FlightPlan, ScrollFlight};
 
 /// The table's content-bearing column identifier.
 const COLUMN_IDENTIFIER: &str = "content";
@@ -127,7 +129,6 @@ type LayoutHandler = Rc<dyn Fn(&TableView)>;
 type WindowHandler = Rc<dyn Fn(&TableView)>;
 
 /// The per-instance state [`TableView`] stores.
-#[derive(Default)]
 pub struct TableViewIvars {
     /// The installed row provider.
     source: RefCell<Option<Rc<dyn TableSource>>>,
@@ -141,6 +142,27 @@ pub struct TableViewIvars {
     window: RefCell<Option<WindowHandler>>,
     /// Whether the table draws sidebar chrome.
     sidebar: Cell<bool>,
+    /// The scroll animation state: at most one flight per surface.
+    flight: Rc<ScrollFlight>,
+    /// Ends a flight when the user's live scroll reports a bounds change.
+    live_scroll: RefCell<Vec<NotificationObserver>>,
+}
+
+impl TableViewIvars {
+    /// The state for one instance; `mtm` binds the frame clock to the
+    /// main thread.
+    fn new(mtm: MainThreadMarker) -> Self {
+        Self {
+            source: RefCell::new(None),
+            table: RefCell::new(None),
+            drag_types: RefCell::new(Vec::new()),
+            layout: RefCell::new(None),
+            window: RefCell::new(None),
+            sidebar: Cell::new(false),
+            flight: ScrollFlight::new(mtm),
+            live_scroll: RefCell::new(Vec::new()),
+        }
+    }
 }
 
 impl fmt::Debug for TableViewIvars {
@@ -330,15 +352,32 @@ define_class!(
             });
         }
 
-        /// Window changes swap the consumer's key-state observation.
+        /// Window changes swap the consumer's key-state observation and
+        /// land a flight the window the clock armed on no longer hosts.
         #[unsafe(method(viewDidMoveToWindow))]
         fn view_did_move_to_window(&self) {
             guarded("TableView viewDidMoveToWindow", || {
                 // SAFETY: see the module safety note.
                 let _: () = unsafe { msg_send![super(self), viewDidMoveToWindow] };
+                self.ivars().flight.land();
                 if let Some(handler) = self.ivars().window.borrow().as_ref().cloned() {
                     handler(self);
                 }
+            });
+        }
+
+        /// Every wheel/trackpad/momentum scroll enters through the scroll
+        /// view's `scrollWheel:` — the user's input supersedes a
+        /// programmatic animation in flight before `AppKit` applies it.
+        /// Momentum phases and knob drags that post no wheel event are
+        /// covered by the live-scroll notifications [`new`](Self::new)
+        /// installs.
+        #[unsafe(method(scrollWheel:))]
+        fn scroll_wheel_override(&self, event: &NSEvent) {
+            guarded("TableView scrollWheel", || {
+                self.ivars().flight.cancel();
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), scrollWheel: event] };
             });
         }
 
@@ -364,7 +403,7 @@ impl TableView {
     /// vertical scroller, and a 10pt top content inset that scrolls away.
     #[must_use]
     pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(TableViewIvars::default());
+        let this = Self::alloc(mtm).set_ivars(TableViewIvars::new(mtm));
         // SAFETY: standard `NSScrollView` init on a main-thread class.
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
 
@@ -398,6 +437,9 @@ impl TableView {
             right: 0.0,
         });
         this.ivars().table.replace(Some(table));
+        this.ivars()
+            .live_scroll
+            .replace(this.ivars().flight.watch_user_scroll(&this, mtm));
         this
     }
 
@@ -847,13 +889,83 @@ impl TableView {
         self.table_view().noteHeightOfRowsWithIndexesChanged(&set);
     }
 
+    /// Jumps the clip to `point` in document coordinates, superseding any
+    /// scroll animation in flight.
+    fn scroll_to(&self, point: Point) {
+        self.ivars().flight.jump_to(self, point);
+    }
+
+    /// The clip position that puts `row`'s top edge at the clip's top —
+    /// `rectOfRow` is exact (the table answers `heightOfRow` for every
+    /// row), and the clip's constraint clamps it, so a last-screenful row
+    /// lands at the document's end rather than past it.
+    fn row_top(&self, row: usize) -> Point {
+        self.layoutSubtreeIfNeeded();
+        ScrollFlight::constrained(
+            &self.contentView(),
+            Point::new(0.0, self.rect_of_row(row).origin.y),
+        )
+    }
+
     /// Scrolls `row`'s top edge to the clip's top, unanimated.
     pub fn scroll_row_to_top(&self, row: usize) {
-        self.layoutSubtreeIfNeeded();
-        let top = self.rect_of_row(row).origin.y;
+        let top = self.row_top(row);
+        self.scroll_to(top);
+    }
+
+    /// The system's animated scroll to `row`'s top edge — the `AppKit`
+    /// counterpart of `UIKit`'s `scrollToRowAtIndexPath:atScrollPosition:animated:`.
+    /// `boundsOrigin` through the clip's `animator()` proxy writes the
+    /// model per frame, so bounds observers track the flight.
+    pub fn scroll_row_to_top_animated(&self, row: usize) {
+        let top = self.row_top(row);
         let clip = self.contentView();
-        clip.scrollToPoint(NSPoint::new(0.0, top));
-        self.reflectScrolledClipView(&clip);
+        self.ivars()
+            .flight
+            .scroll_context(&clip, top, ScrollFlight::context_reflect(&clip));
+    }
+
+    /// Drives the clip from its current offset to `row`'s top edge along
+    /// `progress` — elapsed seconds to eased fraction — for `duration`
+    /// seconds, writing the model each display tick. `rectOfRow` is
+    /// exact, so the target resolves once; the last tick lands through
+    /// `scroll_row_to_top` — landing equals the jump.
+    pub fn animate_scroll_row_to_top(
+        &self,
+        row: usize,
+        duration: f64,
+        progress: Rc<dyn Fn(f64) -> f64>,
+    ) {
+        let clip = self.contentView();
+        let from: Point = clip.bounds().origin.into();
+        let to = self.row_top(row);
+        let land = {
+            let weak = objc2::rc::Weak::from_retained(&self.retain());
+            Rc::new(move || {
+                if let Some(this) = weak.load() {
+                    this.scroll_row_to_top(row);
+                }
+            })
+        };
+        self.ivars().flight.begin(
+            self,
+            from,
+            FlightPlan {
+                to: Rc::new(move || to),
+                land,
+                duration,
+                progress,
+                write: ScrollFlight::clip_write(self),
+            },
+        );
+    }
+
+    /// Whether a scroll animation is in flight — the native test suite's
+    /// probe.
+    #[cfg(feature = "native-test")]
+    #[must_use]
+    pub fn scroll_animation_in_flight(&self) -> bool {
+        self.ivars().flight.in_flight()
     }
 
     /// Whether the scroll view is in a window.

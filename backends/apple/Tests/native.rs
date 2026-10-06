@@ -138,6 +138,8 @@ fn trials() -> Vec<Trial> {
     };
     let mut tests = tests;
     tests.extend(migration::trials());
+    tests.extend(scroll::trials());
+    tests.extend(list_scroll::trials());
     tests
 }
 
@@ -145,6 +147,125 @@ fn trials() -> Vec<Trial> {
 /// thread `main` runs on.
 fn mtm() -> MainThreadMarker {
     MainThreadMarker::new().expect("the custom harness runs cases on the process's main thread")
+}
+
+/// The window `attach` hands back, per kit — the scroll suites share it.
+#[cfg(target_os = "macos")]
+type AttachedWindow = cocoa_ui::appkit::Window;
+#[cfg(target_os = "ios")]
+type AttachedWindow = Retained<cocoa_ui::objc2_ui_kit::UIWindow>;
+
+/// Attaches `content` to a harness window and orders it in — the frame
+/// clock ticks only for a view on a screen, so both scroll suites mount
+/// this way.
+fn mount_and_order_front(content: &PlatformView) -> AttachedWindow {
+    let window = leaf::attach(mtm(), content);
+    #[cfg(target_os = "macos")]
+    window.order_front();
+    #[cfg(target_os = "ios")]
+    window.makeKeyAndVisible();
+    window
+}
+
+/// A landed scroll writes the computed target to the view's model
+/// verbatim, so where it ended compares exactly — `f64::to_bits`
+/// asserts the same equality `assert_eq!` did, without
+/// `clippy::float_cmp`.
+fn assert_offset_eq(actual: f64, expected: f64, msg: &str) {
+    assert_eq!(actual.to_bits(), expected.to_bits(), "{msg}");
+}
+
+/// Pumps the main run loop until `in_flight` reports the animation done,
+/// collecting the offset sampled each pass — a flight's trajectory and
+/// its completion signal in one wait.
+///
+/// The pump itself is the completion signal: a flight that never ends
+/// fails the case instead of hanging it. Springs overshoot, so the done
+/// condition is the animation's own report, never proximity to the
+/// target.
+fn pump_flight(in_flight: impl Fn() -> bool, offset: impl Fn() -> f64) -> Vec<f64> {
+    let samples = std::cell::RefCell::new(Vec::new());
+    let landed = waterui_apple::native_test_support::pump_main_until(
+        waterui_apple::native_test_support::MAIN_QUEUE_DEADLINE,
+        || {
+            samples.borrow_mut().push(offset());
+            !in_flight()
+        },
+    );
+    let samples = samples.into_inner();
+    assert!(
+        landed,
+        "the scroll animation must complete; offsets seen: {samples:?}"
+    );
+    samples
+}
+
+/// The distinct offsets a flight moved through, quantized to a tenth of
+/// a point so sub-pixel easing steps count — a jump reports one value,
+/// an animation at least three (start, intermediates, end).
+fn distinct_offsets(samples: &[f64]) -> usize {
+    let mut ys: Vec<u64> = samples
+        .iter()
+        .map(|y| (y * 10.0).round().to_bits())
+        .collect();
+    ys.sort_unstable();
+    ys.dedup();
+    ys.len()
+}
+
+/// The animation cases the scroll suites run: `default` is the
+/// platform's own smooth scroll, the explicit curves ride the frame
+/// clock.
+///
+/// There is deliberately no `UIKit` `Default` arm: the libtest harness
+/// mounts a window with no scene and no `UIApplication`, where the
+/// platform's animated scroll never advances the offset, so nothing
+/// asserts. The explicit curves write the offset themselves every frame
+/// clock tick, so they observe on both kits.
+fn animation_cases() -> Vec<(&'static str, waterui::animation::Animation)> {
+    use std::time::Duration;
+
+    use waterui::animation::Animation;
+
+    #[cfg_attr(
+        not(target_os = "macos"),
+        expect(unused_mut, reason = "AppKit adds an entry")
+    )]
+    let mut cases = vec![
+        (
+            "bezier",
+            Animation::Bezier {
+                duration: Duration::from_millis(500),
+                x1: 0.25,
+                y1: 0.1,
+                x2: 0.25,
+                y2: 1.0,
+            },
+        ),
+        (
+            "spring",
+            Animation::Spring {
+                stiffness: 300.0,
+                damping: 30.0,
+            },
+        ),
+    ];
+    #[cfg(target_os = "macos")]
+    cases.insert(0, ("default", Animation::Default));
+    cases
+}
+
+/// One `Trial` per named case — the table shape the scroll suites emit.
+fn trial_each(named: Vec<(String, Box<dyn FnOnce() + Send>)>) -> Vec<Trial> {
+    named
+        .into_iter()
+        .map(|(name, case)| {
+            Trial::test(name, move || {
+                case();
+                Ok(())
+            })
+        })
+        .collect()
 }
 
 /// `NativeLeaf` mount/watch/bind against real views.
@@ -1781,5 +1902,636 @@ mod owner_lifetimes {
             survivors.is_empty(),
             "the remounted hierarchy must release the same way: {survivors:?}"
         );
+    }
+}
+
+/// `ScrollController` requests against the kit's real scroll surfaces —
+/// the water-rs/waterui#1901 contract: a bare request jumps to its
+/// target, `Animation::Default` plays the platform's smooth scroll, an
+/// explicit animation moves the offset along its timing, and every
+/// flight lands where the jump would have. A request issued mid-flight
+/// takes over.
+mod scroll {
+    use std::time::Duration;
+
+    use objc2::Message;
+    use waterui::animation::Animation;
+    use waterui::layout::frame::Frame;
+    use waterui::layout::scroll::{ScrollController, scroll};
+    use waterui::prelude::text;
+    use waterui::reactive::{Binding, Signal, binding};
+    use waterui_apple::contract::NativeLeaf;
+    use waterui_core::layout::Point;
+
+    use super::{
+        AttachedWindow, Retained, animation_cases, assert_offset_eq, distinct_offsets,
+        mount_and_order_front, pump_flight, resolve::render, trial_each,
+    };
+
+    #[cfg(target_os = "macos")]
+    use cocoa_ui::appkit::ScrollView as ScrollSurface;
+    #[cfg(target_os = "ios")]
+    use cocoa_ui::uikit::ScrollView as ScrollSurface;
+
+    /// A scroll surface mounted in the harness window with a 2000pt
+    /// document — the controller and report binding the suite drives,
+    /// the leaf that owns the watchers, and the window that gives layout
+    /// a real home, all kept alive for the case.
+    struct Fixture {
+        surface: Retained<ScrollSurface>,
+        controller: ScrollController<Point>,
+        offset: Binding<Point>,
+        _leaf: NativeLeaf,
+        _window: AttachedWindow,
+    }
+
+    /// How far the document can travel — extent minus viewport, read
+    /// through each kit's own vocabulary.
+    fn vertical_travel(surface: &ScrollSurface) -> f64 {
+        #[cfg(target_os = "macos")]
+        {
+            surface
+                .document_view()
+                .expect("a laid-out scroll surface has a document")
+                .frame()
+                .size
+                .height
+                - surface.viewport_size().height
+        }
+        #[cfg(target_os = "ios")]
+        {
+            surface.content_extent().height - surface.viewport_size().height
+        }
+    }
+
+    /// The offset the surface reports right now — the value
+    /// `report_offset` publishes. Every animated write moves the model
+    /// (the flight writes it per tick; the platform's animated scroll
+    /// writes it per frame), so the binding tracks the flight.
+    fn reported_y(fixture: &Fixture) -> f64 {
+        f64::from(fixture.offset.snapshot().y)
+    }
+
+    /// The raw `contentOffset` a logical `target_y` lands on — `AppKit`'s
+    /// clip bounds take the request verbatim.
+    #[cfg(target_os = "macos")]
+    const fn raw_target_y(_fixture: &Fixture, target_y: f64) -> f64 {
+        target_y
+    }
+
+    /// The raw `contentOffset` a logical `target_y` lands on — `UIKit`
+    /// subtracts `adjustedContentInset.top` from the request. Asserting
+    /// the raw offset verifies that inset mapping end to end.
+    #[cfg(target_os = "ios")]
+    fn raw_target_y(fixture: &Fixture, target_y: f64) -> f64 {
+        target_y - fixture.surface.adjusted_content_inset().top
+    }
+
+    /// The largest offset the document admits — the clip's constrained
+    /// end on `AppKit`, the inset-adjusted end on `UIKit`.
+    fn end_offset(fixture: &Fixture) -> f64 {
+        #[cfg(target_os = "macos")]
+        {
+            let clip = fixture.surface.clip_view();
+            clip.constrainBoundsRect(cocoa_ui::objc2_foundation::NSRect::new(
+                cocoa_ui::objc2_foundation::NSPoint::new(0.0, 1.0e6),
+                clip.bounds().size,
+            ))
+            .origin
+            .y
+        }
+        #[cfg(target_os = "ios")]
+        {
+            let inset = fixture.surface.adjusted_content_inset();
+            let minimum = -inset.top;
+            (fixture.surface.content_extent().height - fixture.surface.viewport_size().height
+                + inset.bottom)
+                .max(minimum)
+        }
+    }
+
+    /// Mounts a vertical scroll surface driven by a fresh controller.
+    fn mounted() -> Fixture {
+        let controller = ScrollController::new(Point::new(0.0, 0.0));
+        let offset = binding(Point::new(0.0, 0.0));
+        let view = scroll(Frame::new(text("document")).height(2000.0))
+            .scroll_controller(&controller)
+            .report_offset(&offset);
+        let leaf = render(view);
+        let surface = leaf
+            .view()
+            .downcast_ref::<ScrollSurface>()
+            .expect("a ScrollView renders the kit's scroll surface")
+            .retain();
+        let window = mount_and_order_front(leaf.view());
+        surface.set_needs_layout();
+        surface.layout_if_needed();
+        let travel = vertical_travel(&surface);
+        assert!(
+            travel > 1100.0,
+            "the 2000pt document must out-travel a 1000pt target: {travel}"
+        );
+        Fixture {
+            surface,
+            controller,
+            offset,
+            _leaf: leaf,
+            _window: window,
+        }
+    }
+
+    /// No animation on the request: the offset is the target before any
+    /// pumping — the jump it always was.
+    fn a_bare_request_jumps_to_the_target() {
+        let fixture = mounted();
+        fixture.controller.scroll_to(Point::new(0.0, 800.0));
+        assert_offset_eq(
+            fixture.surface.content_offset().y,
+            raw_target_y(&fixture, 800.0),
+            "a jump lands immediately",
+        );
+        assert_offset_eq(
+            reported_y(&fixture),
+            800.0,
+            "the reported offset is the logical target",
+        );
+    }
+
+    /// An animated request moves the reported offset through
+    /// intermediate values — every write lands on the model, so
+    /// `report_offset` publishes the ramp — and ends on the target a
+    /// jump would have taken.
+    fn an_animation_scrolls_to_the_target(name: &'static str, animation: Animation) {
+        let fixture = mounted();
+        fixture
+            .controller
+            .animate_to(Point::new(0.0, 800.0), animation);
+        assert!(
+            fixture.surface.scroll_animation_in_flight(),
+            "the {name} flight must be in progress after the request"
+        );
+        let samples = pump_flight(
+            || fixture.surface.scroll_animation_in_flight(),
+            || reported_y(&fixture),
+        );
+        assert!(
+            distinct_offsets(&samples) >= 3,
+            "the {name} flight must move the reported offset through intermediate values: {samples:?}"
+        );
+        assert_offset_eq(
+            fixture.surface.content_offset().y,
+            raw_target_y(&fixture, 800.0),
+            "the flight lands on the target",
+        );
+        assert_offset_eq(
+            reported_y(&fixture),
+            800.0,
+            "the reported offset ends on the logical target",
+        );
+    }
+
+    /// A target past the document's end lands at the constrained offset —
+    /// the clamp the clocked and `Default` paths compute before
+    /// animating.
+    fn an_animation_past_the_end_lands_at_the_clamped_offset() {
+        let fixture = mounted();
+        fixture.controller.animate_to(
+            Point::new(0.0, 1.0e6),
+            Animation::linear(Duration::from_millis(400)),
+        );
+        pump_flight(
+            || fixture.surface.scroll_animation_in_flight(),
+            || reported_y(&fixture),
+        );
+        assert_offset_eq(
+            fixture.surface.content_offset().y,
+            end_offset(&fixture),
+            "a flight past the end lands at the scrollable end",
+        );
+    }
+
+    /// A second request during a flight replaces it: the offset settles
+    /// on the later target, and the superseded flight never lands.
+    fn a_later_request_takes_over_an_in_flight_animation() {
+        let fixture = mounted();
+        fixture.controller.animate_to(
+            Point::new(0.0, 1000.0),
+            Animation::linear(Duration::from_secs(2)),
+        );
+        // No pump: the two-second flight is provably still in progress
+        // when the new request supersedes it.
+        fixture.controller.animate_to(
+            Point::new(0.0, 200.0),
+            Animation::linear(Duration::from_millis(500)),
+        );
+        let samples = pump_flight(
+            || fixture.surface.scroll_animation_in_flight(),
+            || reported_y(&fixture),
+        );
+        assert!(
+            samples.iter().all(|&y| (y - 1000.0).abs() > 1.0),
+            "the superseded flight must never land: {samples:?}"
+        );
+        assert_offset_eq(
+            fixture.surface.content_offset().y,
+            raw_target_y(&fixture, 200.0),
+            "the later request lands on its own target",
+        );
+    }
+
+    /// A bare request during a flight jumps at once — the in-flight
+    /// animation is cancelled, not resumed, and nothing is left to
+    /// rewrite the offset.
+    fn a_bare_request_takes_over_an_in_flight_animation() {
+        let fixture = mounted();
+        fixture.controller.animate_to(
+            Point::new(0.0, 1000.0),
+            Animation::linear(Duration::from_secs(2)),
+        );
+        fixture.controller.scroll_to(Point::new(0.0, 300.0));
+        assert_offset_eq(
+            fixture.surface.content_offset().y,
+            raw_target_y(&fixture, 300.0),
+            "the interrupting jump lands at once",
+        );
+        assert!(
+            !fixture.surface.scroll_animation_in_flight(),
+            "the cancelled flight must leave no animation running"
+        );
+        assert_offset_eq(
+            reported_y(&fixture),
+            300.0,
+            "the reported offset follows the jump",
+        );
+    }
+
+    /// The user's own scroll wins mid-flight: a bounds change written
+    /// straight to the clip — the write a gesture scroll makes, which
+    /// `NSScrollViewDidLiveScrollNotification` reports — retires the
+    /// animation, and the offset the user's scroll produced stands past
+    /// the flight's original end.
+    ///
+    /// The clip is written directly because `scroll_to` is the suite's
+    /// own cancellation path: driving the user path through it would
+    /// assert that cancellation cancels, not that the user's scroll
+    /// does.
+    #[cfg(target_os = "macos")]
+    fn a_users_scroll_takes_over_an_in_flight_animation() {
+        use cocoa_ui::objc2_app_kit::NSScrollViewDidLiveScrollNotification;
+        use cocoa_ui::objc2_foundation::{NSNotificationCenter, NSPoint};
+        use cocoa_ui::objc2_quartz_core::CACurrentMediaTime;
+        use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
+
+        let fixture = mounted();
+        fixture.controller.animate_to(
+            Point::new(0.0, 1000.0),
+            Animation::linear(Duration::from_secs(2)),
+        );
+        assert!(
+            fixture.surface.scroll_animation_in_flight(),
+            "the flight must be in progress when the user's scroll starts"
+        );
+        let flight_end = CACurrentMediaTime() + 2.0;
+        // The user path as the notification reports it: the clip's bounds
+        // written directly — never `scroll_to`, whose own cancel would
+        // prove nothing — and the live-scroll notification `AppKit` posts
+        // for a user-initiated bounds change.
+        let clip = fixture.surface.contentView();
+        clip.scrollToPoint(NSPoint::new(0.0, 150.0));
+        fixture.surface.reflectScrolledClipView(&clip);
+        // SAFETY: the name is a system constant and the object outlives
+        // posting; the call only enqueues a main-queue delivery.
+        unsafe {
+            NSNotificationCenter::defaultCenter().postNotificationName_object(
+                NSScrollViewDidLiveScrollNotification,
+                Some(&*fixture.surface),
+            );
+        }
+        let cancelled = pump_main_until(5.0, || !fixture.surface.scroll_animation_in_flight());
+        assert!(cancelled, "the live scroll must retire the flight");
+        // Outlast the flight's original schedule: had it survived, its
+        // ticks would still be writing toward 1000 — the user's offset
+        // stands.
+        pump_main_until(MAIN_QUEUE_DEADLINE, || CACurrentMediaTime() >= flight_end);
+        assert_offset_eq(
+            fixture.surface.content_offset().y,
+            150.0,
+            "the user's scroll stands — the retired flight never rewrites the model",
+        );
+    }
+
+    /// The `scroll::` trials — one per animation case plus the takeover
+    /// and clamp cases.
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        let mut named: Vec<(String, Box<dyn FnOnce() + Send>)> = vec![(
+            "scroll::a_bare_request_jumps_to_the_target".to_owned(),
+            Box::new(a_bare_request_jumps_to_the_target),
+        )];
+        named.extend(animation_cases().into_iter().map(|(name, animation)| {
+            let case: Box<dyn FnOnce() + Send> =
+                Box::new(move || an_animation_scrolls_to_the_target(name, animation));
+            (
+                format!("scroll::an_{name}_animation_scrolls_to_the_target"),
+                case,
+            )
+        }));
+        named.push((
+            "scroll::an_animation_past_the_end_lands_at_the_clamped_offset".to_owned(),
+            Box::new(an_animation_past_the_end_lands_at_the_clamped_offset),
+        ));
+        named.push((
+            "scroll::a_later_request_takes_over_an_in_flight_animation".to_owned(),
+            Box::new(a_later_request_takes_over_an_in_flight_animation),
+        ));
+        named.push((
+            "scroll::a_bare_request_takes_over_an_in_flight_animation".to_owned(),
+            Box::new(a_bare_request_takes_over_an_in_flight_animation),
+        ));
+        #[cfg(target_os = "macos")]
+        named.push((
+            "scroll::a_users_scroll_takes_over_an_in_flight_animation".to_owned(),
+            Box::new(a_users_scroll_takes_over_an_in_flight_animation),
+        ));
+        trial_each(named)
+    }
+}
+
+/// `ScrollController<usize>` drives a row target into a mounted list:
+/// a bare request puts the row's top at the clip's top at once, an
+/// animated request lands on the same position — `Animation::Default`
+/// through the platform's animated row scroll, an explicit animation
+/// written to the model each frame-clock tick — and a request issued
+/// mid-flight takes over.
+mod list_scroll {
+    use std::time::Duration;
+
+    use objc2::Message;
+    use waterui::ViewExt;
+    use waterui::animation::Animation;
+    use waterui::component::list::{List, ListItem};
+    use waterui::layout::scroll::ScrollController;
+    use waterui::prelude::text;
+    use waterui_apple::contract::NativeLeaf;
+
+    use super::{
+        AttachedWindow, Retained, animation_cases, assert_offset_eq, distinct_offsets,
+        mount_and_order_front, pump_flight, resolve::render, trial_each,
+    };
+
+    #[cfg(target_os = "macos")]
+    use cocoa_ui::appkit::ListTableView as TableSurface;
+    #[cfg(target_os = "ios")]
+    use cocoa_ui::uikit::TableView as TableSurface;
+
+    /// A list taller than the window by far — row targets past the fold.
+    const ROWS: usize = 200;
+    /// The row the cases aim at.
+    const TARGET: usize = 40;
+
+    /// A mounted list of `ROWS` rows, the controller that drives it, and
+    /// the leaf and window that keep the wiring alive.
+    struct Fixture {
+        table: Retained<TableSurface>,
+        controller: ScrollController<usize>,
+        _leaf: NativeLeaf,
+        _window: AttachedWindow,
+    }
+
+    /// The clip offset the jump's family lands `row` on — `rectOfRow`'s
+    /// origin on `AppKit`; `rectForRowAtIndexPath`'s origin minus the
+    /// adjusted top inset on `UIKit`. `TARGET` sits far from either end,
+    /// where no clamp applies.
+    fn row_top_offset(fixture: &Fixture, row: usize) -> f64 {
+        #[cfg(target_os = "macos")]
+        {
+            fixture.table.rect_of_row(row).origin.y
+        }
+        #[cfg(target_os = "ios")]
+        {
+            use cocoa_ui::objc2_ui_kit::NSIndexPathUIKitAdditions;
+            let index = cocoa_ui::objc2_foundation::NSIndexPath::indexPathForRow_inSection(
+                row.cast_signed(),
+                0,
+            );
+            fixture.table.rectForRowAtIndexPath(&index).origin.y
+                - fixture.table.adjustedContentInset().top
+        }
+    }
+
+    /// The clip's current scroll position.
+    fn offset_y(fixture: &Fixture) -> f64 {
+        #[cfg(target_os = "macos")]
+        {
+            fixture
+                .table
+                .table_view()
+                .enclosingScrollView()
+                .expect("the list table lives in its scroll view")
+                .contentView()
+                .bounds()
+                .origin
+                .y
+        }
+        #[cfg(target_os = "ios")]
+        {
+            fixture.table.contentOffset().y
+        }
+    }
+
+    /// The row body — identical one-line rows; the cases assert
+    /// positions, not labels.
+    fn row_item() -> ListItem {
+        ListItem::new(text("row"))
+    }
+
+    /// A row taller than the rest — mixed heights keep the last row's
+    /// offset an honest measure instead of a multiple of the first.
+    fn tall_row_item() -> ListItem {
+        ListItem::new(text("row").padding_with(24.0))
+    }
+
+    /// Mounts `rows` in a list driven by a fresh `usize` controller.
+    fn mounted_with(rows: Vec<fn() -> ListItem>) -> Fixture {
+        let controller = ScrollController::new(0usize);
+        let view = List::content(rows).scroll_controller(&controller);
+        let leaf = render(view);
+        let table = leaf
+            .view()
+            .downcast_ref::<TableSurface>()
+            .expect("a List renders the kit's table surface")
+            .retain();
+        let window = mount_and_order_front(leaf.view());
+        table.layout_if_needed();
+        let fixture = Fixture {
+            table,
+            controller,
+            _leaf: leaf,
+            _window: window,
+        };
+        assert!(
+            row_top_offset(&fixture, TARGET) > 0.0,
+            "row {TARGET} must sit below the fold"
+        );
+        fixture
+    }
+
+    /// Mounts a uniform list.
+    fn mounted() -> Fixture {
+        mounted_with(vec![row_item as fn() -> ListItem; ROWS])
+    }
+
+    /// Mounts a list whose rows differ in height — every fourth row
+    /// carries padding.
+    fn mounted_mixed_heights() -> Fixture {
+        mounted_with(
+            (0..ROWS)
+                .map(|index| {
+                    if index % 4 == 0 {
+                        tall_row_item as fn() -> ListItem
+                    } else {
+                        row_item as fn() -> ListItem
+                    }
+                })
+                .collect(),
+        )
+    }
+
+    /// No animation on the request: `row`'s top is the clip's top before
+    /// any pumping.
+    fn a_bare_request_scrolls_the_row_to_the_top() {
+        let fixture = mounted();
+        fixture.controller.scroll_to(TARGET);
+        assert_offset_eq(
+            offset_y(&fixture),
+            row_top_offset(&fixture, TARGET),
+            "a jump lands the row's top on the clip's top immediately",
+        );
+    }
+
+    /// An animated request moves the clip through intermediate offsets —
+    /// the model follows each tick, so lazily built rows materialize as
+    /// the flight passes them — and ends exactly where the jump lands.
+    fn an_animation_scrolls_the_row_to_the_top(name: &'static str, animation: Animation) {
+        let fixture = mounted();
+        fixture.controller.animate_to(TARGET, animation);
+        assert!(
+            fixture.table.scroll_animation_in_flight(),
+            "the {name} row flight must be in progress after the request"
+        );
+        let samples = pump_flight(
+            || fixture.table.scroll_animation_in_flight(),
+            || offset_y(&fixture),
+        );
+        assert!(
+            distinct_offsets(&samples) >= 3,
+            "the {name} row flight must move through intermediate offsets: {samples:?}"
+        );
+        assert_offset_eq(
+            offset_y(&fixture),
+            row_top_offset(&fixture, TARGET),
+            "the row flight lands on the jump's position",
+        );
+    }
+
+    /// A row in the last screenful resolves inside the scrollable range:
+    /// the flight lands where the jump lands instead of overshooting
+    /// into the blank space past the end. Rows differ in height so the
+    /// last row's rect is a real measure, not a multiple of the first.
+    fn the_last_rows_animation_lands_where_the_jump_lands() {
+        let fixture = mounted_mixed_heights();
+        fixture
+            .controller
+            .animate_to(ROWS - 1, Animation::linear(Duration::from_millis(400)));
+        pump_flight(
+            || fixture.table.scroll_animation_in_flight(),
+            || offset_y(&fixture),
+        );
+        let landed = offset_y(&fixture);
+        // The real jump to the same row must not move the offset: the
+        // flight's landing is the jump's by construction.
+        fixture.controller.scroll_to(ROWS - 1);
+        assert_offset_eq(
+            offset_y(&fixture),
+            landed,
+            "the row flight lands where the jump lands",
+        );
+    }
+
+    /// A request issued mid-flight replaces the running one: the clip
+    /// settles on the later row, and the superseded flight never lands.
+    fn a_later_request_takes_over_an_in_flight_animation() {
+        let fixture = mounted();
+        fixture
+            .controller
+            .animate_to(150, Animation::linear(Duration::from_secs(2)));
+        // No pump: the two-second flight is provably still in progress
+        // when the new request supersedes it.
+        fixture
+            .controller
+            .animate_to(20, Animation::linear(Duration::from_millis(500)));
+        let samples = pump_flight(
+            || fixture.table.scroll_animation_in_flight(),
+            || offset_y(&fixture),
+        );
+        let far = row_top_offset(&fixture, 150);
+        assert!(
+            samples.iter().all(|&y| (y - far).abs() > 1.0),
+            "the superseded row flight must never land: {samples:?}"
+        );
+        assert_offset_eq(
+            offset_y(&fixture),
+            row_top_offset(&fixture, 20),
+            "the later request lands on its own row",
+        );
+    }
+
+    /// A bare request during a flight jumps at once — the in-flight
+    /// animation is cancelled, not resumed, and nothing is left to
+    /// rewrite the offset.
+    fn a_bare_request_takes_over_an_in_flight_animation() {
+        let fixture = mounted();
+        fixture
+            .controller
+            .animate_to(150, Animation::linear(Duration::from_secs(2)));
+        fixture.controller.scroll_to(10);
+        assert_offset_eq(
+            offset_y(&fixture),
+            row_top_offset(&fixture, 10),
+            "the interrupting jump lands at once",
+        );
+        assert!(
+            !fixture.table.scroll_animation_in_flight(),
+            "the cancelled flight must leave no animation running"
+        );
+    }
+
+    /// The `list_scroll::` trials — one per animation case plus the
+    /// takeover and last-row cases.
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        let mut named: Vec<(String, Box<dyn FnOnce() + Send>)> = vec![(
+            "list_scroll::a_bare_request_scrolls_the_row_to_the_top".to_owned(),
+            Box::new(a_bare_request_scrolls_the_row_to_the_top),
+        )];
+        named.extend(animation_cases().into_iter().map(|(name, animation)| {
+            let case: Box<dyn FnOnce() + Send> =
+                Box::new(move || an_animation_scrolls_the_row_to_the_top(name, animation));
+            (
+                format!("list_scroll::an_{name}_animation_scrolls_the_row_to_the_top"),
+                case,
+            )
+        }));
+        named.push((
+            "list_scroll::the_last_rows_animation_lands_where_the_jump_lands".to_owned(),
+            Box::new(the_last_rows_animation_lands_where_the_jump_lands),
+        ));
+        named.push((
+            "list_scroll::a_later_request_takes_over_an_in_flight_animation".to_owned(),
+            Box::new(a_later_request_takes_over_an_in_flight_animation),
+        ));
+        named.push((
+            "list_scroll::a_bare_request_takes_over_an_in_flight_animation".to_owned(),
+            Box::new(a_bare_request_takes_over_an_in_flight_animation),
+        ));
+        trial_each(named)
     }
 }

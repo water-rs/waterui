@@ -27,7 +27,7 @@ use waterui::component::list::{
 };
 use waterui::id::{Id as RawId, SelfId};
 use waterui::layout::padding::EdgeInsets;
-use waterui::layout::scroll::ScrollController;
+use waterui::layout::scroll::{ScrollController, ScrollRequest};
 use waterui::reactive::Signal;
 use waterui::reactive::binding::Binding;
 use waterui::reactive::collection::CollectionChange;
@@ -527,35 +527,6 @@ impl fmt::Debug for RowPayload {
     }
 }
 
-/// `withPlatformAnimation`: the watcher metadata's `Animation` mapped to a
-/// kit timing — `Default` parses to the 0.25s bezier the FFI spells it as.
-fn with_platform_animation(metadata: &Metadata, body: impl FnOnce() + 'static) {
-    let timing = match metadata.try_get::<Animation>() {
-        None => return body(),
-        Some(Animation::Default) => cocoa_ui::core_animation::Timing::Bezier {
-            duration: 0.25,
-            control_points: [0.42, 0.0, 0.58, 1.0],
-        },
-        Some(Animation::Bezier {
-            duration,
-            x1,
-            y1,
-            x2,
-            y2,
-        }) => cocoa_ui::core_animation::Timing::Bezier {
-            duration: duration.as_secs_f64(),
-            control_points: [x1, y1, x2, y2],
-        },
-        Some(Animation::Spring { stiffness, damping }) => {
-            cocoa_ui::core_animation::Timing::Spring {
-                stiffness: f64::from(stiffness),
-                damping: f64::from(damping),
-            }
-        }
-    };
-    cocoa_ui::core_animation::animate_with(timing, body);
-}
-
 /// Whether `metadata` carries an explicit animation — the `setEditing` /
 /// reload animation switches read it.
 fn metadata_animated(metadata: &Metadata) -> bool {
@@ -675,7 +646,7 @@ fn apply_contents_change(
     let pending_retry = Rc::clone(pending);
     let table_inner = table.clone();
     let metadata_retry = metadata.clone();
-    with_platform_animation(&metadata, move || {
+    crate::animation::with_platform_animation(&metadata, move || {
         let Ok(mut borrowed) = state_inner.try_borrow_mut() else {
             // `Shared` is still borrowed by materialization: the batch goes
             // back behind anything newer and the flush is rescheduled.
@@ -1695,33 +1666,66 @@ const fn platform_weight(weight: waterui::text::font::FontWeight) -> f64 {
 }
 
 /// Wires a `ScrollController<usize>` into the table: a generation bump
-/// scrolls the target row to the top.
+/// scrolls the target row to the top — with the request's animation, if
+/// it carries one: `Animation::Default` is the native animated row
+/// scroll, and an explicit animation drives the offset on the frame
+/// clock along the core curve, landing where the jump would have.
 fn wire_controller(
     leaf: &mut NativeLeaf,
     table: &Retained<TableView>,
     state: &Rc<RefCell<Shared>>,
     controller: &ScrollController<usize>,
 ) {
-    let target = controller.target();
+    let request = controller.request();
     let generation = controller.generation();
-    leaf.watch(&target, |_| {});
-    let apply = |state: &Shared, table: &TableView, target_row: usize| {
+    leaf.watch(&request, |_| {});
+    let apply = |state: &Rc<RefCell<Shared>>, table: &TableView, request: &ScrollRequest<usize>| {
+        // Resolve the row under a short borrow and release it before the
+        // scroll call: driving the table can run `layoutSubviews` → row
+        // measuring, which borrows `state` again — mutably.
         #[cfg(target_os = "ios")]
-        if let Some((section, row)) = index_path_for_flat(&state.groups, target_row) {
-            table.layout_if_needed();
-            table.scroll_to_row(IndexPath { section, row });
-        }
+        let target = index_path_for_flat(&state.borrow().groups, request.target)
+            .map(|(section, row)| IndexPath { section, row });
         #[cfg(target_os = "macos")]
-        if let Some(row) = state
+        let target = state
+            .borrow()
             .flat_layout
             .iter()
-            .position(|entry| *entry == FlatEntry::Row(target_row))
-        {
-            table.scroll_row_to_top(row);
+            .position(|entry| *entry == FlatEntry::Row(request.target));
+        let Some(target) = target else {
+            return;
+        };
+        #[cfg(target_os = "ios")]
+        table.layout_if_needed();
+        match request.animation.as_ref() {
+            #[cfg(target_os = "ios")]
+            None => table.scroll_to_row(target, false),
+            #[cfg(target_os = "ios")]
+            Some(Animation::Default) => table.scroll_to_row(target, true),
+            #[cfg(target_os = "ios")]
+            Some(animation) => {
+                table.animate_scroll_to_row(
+                    target,
+                    animation.duration().as_secs_f64(),
+                    crate::animation::progress(animation),
+                );
+            }
+            #[cfg(target_os = "macos")]
+            None => table.scroll_row_to_top(target),
+            #[cfg(target_os = "macos")]
+            Some(Animation::Default) => table.scroll_row_to_top_animated(target),
+            #[cfg(target_os = "macos")]
+            Some(animation) => {
+                table.animate_scroll_row_to_top(
+                    target,
+                    animation.duration().as_secs_f64(),
+                    crate::animation::progress(animation),
+                );
+            }
         }
     };
     if generation.snapshot() > 0 {
-        apply(&state.borrow(), table, target.snapshot());
+        apply(state, table, &request.snapshot());
     }
     leaf.watch(&generation, {
         let state = Rc::downgrade(state);
@@ -1730,7 +1734,7 @@ fn wire_controller(
             if *ctx.value() > 0
                 && let (Some(state), Some(table)) = (state.upgrade(), table.load())
             {
-                apply(&state.borrow(), &table, target.snapshot());
+                apply(&state, &table, &request.snapshot());
             }
         }
     });

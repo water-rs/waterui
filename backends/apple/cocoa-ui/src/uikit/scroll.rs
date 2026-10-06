@@ -21,9 +21,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use objc2::rc::Retained;
+use objc2::rc::{Retained, Weak};
 use objc2::runtime::ProtocolObject;
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
 use objc2_core_foundation::{CGRect, CGSize};
 use objc2_foundation::NSObjectProtocol;
 use objc2_ui_kit::{
@@ -33,17 +33,31 @@ use objc2_ui_kit::{
 
 use crate::callback::guarded;
 use crate::geometry::{EdgeInsets, Point, Size};
+use crate::scroll_flight::{FlightPlan, ScrollFlight};
 
 /// The handler [`ScrollView`] calls after `UIKit` lays it out.
 type LayoutHandler = Rc<dyn Fn(&ScrollView)>;
 /// The handler [`ScrollView`] calls when its scroll position changes.
 type ScrollHandler = Rc<dyn Fn(&ScrollView)>;
 
-/// The per-instance handlers [`ScrollView`] stores.
-#[derive(Default)]
+/// The per-instance state [`ScrollView`] stores.
 pub struct ScrollViewIvars {
     layout: RefCell<Option<LayoutHandler>>,
     scroll: RefCell<Option<ScrollHandler>>,
+    /// The scroll animation state: at most one flight per surface.
+    flight: Rc<ScrollFlight>,
+}
+
+impl ScrollViewIvars {
+    /// The state for one instance; `mtm` binds the frame clock to the
+    /// main thread.
+    fn new(mtm: MainThreadMarker) -> Self {
+        Self {
+            layout: RefCell::new(None),
+            scroll: RefCell::new(None),
+            flight: ScrollFlight::new(mtm),
+        }
+    }
 }
 
 impl std::fmt::Debug for ScrollViewIvars {
@@ -73,9 +87,32 @@ define_class!(
                 }
             });
         }
+
+        /// A drag is the user's scroll: it takes over from a programmatic
+        /// animation in flight, halting it where it carried the offset.
+        /// `UIKit`'s own `animated:` scroll already yields to a drag
+        /// natively; a clocked flight needs the explicit stop.
+        #[unsafe(method(scrollViewWillBeginDragging:))]
+        fn scroll_view_will_begin_dragging(&self, _scroll_view: &UIScrollView) {
+            guarded("ScrollView scrollViewWillBeginDragging", || {
+                self.ivars().flight.cancel();
+            });
+        }
     }
 
     impl ScrollView {
+        /// A view that moves to another window or leaves its window lands
+        /// the flight it was running — a parked flight's clock ticks only
+        /// for the window it armed on.
+        #[unsafe(method(didMoveToWindow))]
+        fn did_move_to_window(&self) {
+            guarded("ScrollView didMoveToWindow", || {
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), didMoveToWindow] };
+                self.ivars().flight.land();
+            });
+        }
+
         /// Keeps `UIKit`'s layout, then hands layout to the consumer.
         #[unsafe(method(layoutSubviews))]
         fn layout_subviews_override(&self) {
@@ -108,7 +145,7 @@ impl ScrollView {
     /// `vertical` and `horizontal` enable the matching scroll axis.
     #[must_use]
     pub fn new(mtm: MainThreadMarker, vertical: bool, horizontal: bool) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(ScrollViewIvars::default());
+        let this = Self::alloc(mtm).set_ivars(ScrollViewIvars::new(mtm));
         // SAFETY: see the module safety note.
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: CGRect::ZERO] };
         this.setShowsVerticalScrollIndicator(vertical);
@@ -149,9 +186,57 @@ impl ScrollView {
         self.contentOffset().into()
     }
 
-    /// Sets the scroll position.
+    /// Sets the scroll position, unanimated or with `UIKit`'s own smooth
+    /// scroll. Either write takes over from a flight in progress.
     pub fn set_content_offset(&self, offset: Point, animated: bool) {
+        self.ivars().flight.cancel();
         self.setContentOffset_animated(offset.into(), animated);
+    }
+
+    /// Drives the scroll position from its current offset to `offset`
+    /// along `progress` — elapsed seconds to eased fraction — for
+    /// `duration` seconds, writing `contentOffset` each display tick so
+    /// `scrollViewDidScroll:` observers and lazily loaded content track
+    /// the flight. `UIKit`'s own animation or flick deceleration is frozen
+    /// first so it does not fight the clocked writes, and the last tick
+    /// lands through [`set_content_offset`](Self::set_content_offset) —
+    /// landing equals the jump. A later write, a new request, or the
+    /// user's drag ends the flight.
+    pub fn animate_content_offset(
+        &self,
+        offset: Point,
+        duration: f64,
+        progress: Rc<dyn Fn(f64) -> f64>,
+    ) {
+        ScrollFlight::freeze_scroll(self);
+        let from = self.content_offset();
+        let land = {
+            let weak = Weak::from_retained(&self.retain());
+            Rc::new(move || {
+                if let Some(this) = weak.load() {
+                    this.set_content_offset(offset, false);
+                }
+            })
+        };
+        self.ivars().flight.begin(
+            self,
+            from,
+            FlightPlan {
+                to: Rc::new(move || offset),
+                land,
+                duration,
+                progress,
+                write: ScrollFlight::uikit_write(self),
+            },
+        );
+    }
+
+    /// Whether a scroll animation is in flight — the native test suite's
+    /// probe.
+    #[cfg(feature = "native-test")]
+    #[must_use]
+    pub fn scroll_animation_in_flight(&self) -> bool {
+        self.ivars().flight.in_flight()
     }
 
     /// The insets `UIKit` currently applies around the canvas: safe-area and
