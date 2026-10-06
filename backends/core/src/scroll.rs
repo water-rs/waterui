@@ -128,25 +128,28 @@ pub enum ScrollRunOutcome {
     Interrupted,
 }
 
-/// The claim a touch fling holds on the scroll offset, minted by
-/// [`ScrollHandle::begin_fling`].
+/// The claim a touch gesture holds on the scroll offset.
 ///
-/// The fling keeps writing while it feeds the same claim back to
-/// [`ScrollHandle::apply_fling_offset`]; any newer claim — a request, a
-/// jump, user input — owns the offset instead, the refused write ends the
-/// fling rather than overwriting its successor. A membership anchor's
-/// shifted [`ScrollHandle::rebind`] does not claim the offset, so a fling
-/// survives the coordinate shift: the shift it accumulated applies to the
-/// fling's next positions — the fling's origin moved with the content. Like
-/// [`ScrollRun`], the claim carries the issuing scroll view's identity — a
-/// `Weak` pinning its state's allocation — and applying it on another view's
-/// handle panics.
+/// [`ScrollHandle::begin_gesture`] mints it when a touch drag is
+/// recognised; the drag moves the offset through
+/// [`ScrollHandle::apply_gesture_delta`], and the release hands the same
+/// claim to its fling — [`ScrollHandle::begin_fling`], then
+/// [`ScrollHandle::apply_fling_offset`] each tick. Any newer claim — a new
+/// touch, the wheel, the scrollbar, accessibility, a programmatic request,
+/// keyboard clearance — owns the offset instead: the gesture's refused
+/// writes leave its successor's offset alone, and a refused fling write
+/// ends the fling. A [`ScrollHandle::rebind`] never revokes it: neither an
+/// extent change from rows measured mid-gesture nor a membership anchor's
+/// coordinate shift claims the offset, so the gesture's handle going stale
+/// does not stop it. Like [`ScrollRun`], the claim carries the issuing
+/// scroll view's identity — a `Weak` pinning its state's allocation — and
+/// applying it on another view's handle panics.
 #[derive(Clone, Debug)]
-pub struct FlingClaim {
+pub struct GestureClaim {
     /// The issuing scroll view's state, kept alive enough that its address
     /// can never be recycled into a false match.
     state: Weak<RefCell<ScrollState>>,
-    /// The claim counter's value at `begin_fling`: the fling owns the
+    /// The claim counter's value at `begin_gesture`: the gesture owns the
     /// offset exactly while it is still the newest claim.
     offset_epoch: u64,
 }
@@ -200,7 +203,7 @@ struct ScrollState {
     /// deltas/drags, or a wheel glide.
     programmatic: Option<ScrollAnimation>,
     /// The claim counter the offset's owners draw from: a programmatic run
-    /// takes the next value as its token, a touch fling captures it as its
+    /// takes the next value as its token, a touch gesture captures it as its
     /// claim, and every request, jump or user delta bumps it — so a holder
     /// is the offset's owner exactly while no newer claim exists.
     offset_epoch: u64,
@@ -212,8 +215,9 @@ struct ScrollState {
     last_run_outcome: Option<(u64, ScrollRunOutcome)>,
     /// The coordinate shift [`ScrollHandle::rebind`] has applied since the
     /// current fling began — added to its sampled positions so the fling's
-    /// origin moves with the content. Reset by [`ScrollHandle::begin_fling`]
-    /// and never by a claim: a refused fling writes nothing anyway.
+    /// origin moves with the content. Reset by [`ScrollHandle::begin_gesture`]
+    /// and [`ScrollHandle::begin_fling`], never by a claim: a refused fling
+    /// writes nothing anyway.
     fling_shift_x: f64,
     fling_shift_y: f64,
     /// Binding a `ScrollView::report_offset` connected to this scroll view.
@@ -489,23 +493,67 @@ impl ScrollHandle {
         self.state.borrow_mut().retarget_animated_scroll(run, x, y)
     }
 
-    /// Mints the claim a touch fling holds on the offset: the fling takes the
-    /// offset for itself — a live run ends here, a wheel glide's targets are
-    /// dropped, and the fling's recorded outcome is spent — then keeps
-    /// writing while it feeds the claim back to [`Self::apply_fling_offset`]
-    /// each tick, until a newer claim — a request, a jump, user input — owns
-    /// the offset instead and the refused write ends the fling.
-    /// A shifted [`Self::rebind`] translates the fling's coordinate system
-    /// without claiming it, so a membership anchor cannot stop a fling. Call
-    /// it only when a fling actually starts: the mint itself claims the
-    /// offset.
+    /// Mints the claim a touch gesture holds on the offset, once its drag is
+    /// recognised: the gesture takes the offset for user input — a live run
+    /// ends here, a wheel glide's targets are dropped, and a recorded run
+    /// outcome is spent — and the coordinate shift a fling's positions
+    /// accumulate restarts. The drag then moves the offset through
+    /// [`Self::apply_gesture_delta`] and the release hands the same claim to
+    /// [`Self::begin_fling`]; only a newer claim, never a [`Self::rebind`],
+    /// takes the offset from it.
     #[must_use]
-    pub fn begin_fling(&self) -> FlingClaim {
-        let offset_epoch = self.state.borrow_mut().begin_fling();
-        FlingClaim {
+    pub fn begin_gesture(&self) -> GestureClaim {
+        let offset_epoch = self.state.borrow_mut().begin_gesture();
+        GestureClaim {
             state: Rc::downgrade(&self.state),
             offset_epoch,
         }
+    }
+
+    /// Moves the offset by `(dx, dy)` on the scrolled axes for the touch
+    /// gesture `claim` names, clamped to the extents live right now, and
+    /// returns whether it moved. Refused — nothing is written and `false`
+    /// returned — once a newer claim owns the offset. The claim is the
+    /// ownership record, not the handle's generation: a `rebind` for rows
+    /// measured mid-drag does not stop the drag, and the delta claims
+    /// nothing again.
+    ///
+    /// # Panics
+    ///
+    /// When `claim` was minted by a different scroll view's handle.
+    #[must_use]
+    pub fn apply_gesture_delta(&self, claim: &GestureClaim, dx: f64, dy: f64) -> bool {
+        self.assert_same_state(&claim.state, "gesture claim");
+        let changed = {
+            let mut state = self.state.borrow_mut();
+            if state.offset_epoch != claim.offset_epoch {
+                return false;
+            }
+            state.apply_gesture_delta(dx, dy)
+        };
+        self.flush_offset_report();
+        changed
+    }
+
+    /// Starts the released gesture's fling on `claim` and returns whether
+    /// the claim still owns the offset; when it does not, no fling starts.
+    /// The fling then feeds the claim to [`Self::apply_fling_offset`] each
+    /// tick. The coordinate shift its positions accumulate restarts here:
+    /// the fling starts from the release offset, which already carries any
+    /// shift applied during the drag.
+    ///
+    /// # Panics
+    ///
+    /// When `claim` was minted by a different scroll view's handle.
+    #[must_use]
+    pub fn begin_fling(&self, claim: &GestureClaim) -> bool {
+        self.assert_same_state(&claim.state, "gesture claim");
+        let mut state = self.state.borrow_mut();
+        if state.offset_epoch != claim.offset_epoch {
+            return false;
+        }
+        state.reset_fling_shift();
+        true
     }
 
     /// Applies a running touch fling's offset for this tick while `claim`
@@ -521,8 +569,8 @@ impl ScrollHandle {
     ///
     /// When `claim` was minted by a different scroll view's handle.
     #[must_use]
-    pub fn apply_fling_offset(&self, claim: &FlingClaim, x: Option<f64>, y: Option<f64>) -> bool {
-        self.assert_same_state(&claim.state, "fling claim");
+    pub fn apply_fling_offset(&self, claim: &GestureClaim, x: Option<f64>, y: Option<f64>) -> bool {
+        self.assert_same_state(&claim.state, "gesture claim");
         let changed = {
             let mut state = self.state.borrow_mut();
             if state.offset_epoch != claim.offset_epoch {
@@ -534,7 +582,7 @@ impl ScrollHandle {
         changed
     }
 
-    /// Asserts `issuer` names this handle's state. Runs and fling claims
+    /// Asserts `issuer` names this handle's state. Runs and gesture claims
     /// carry the issuing state's `Weak`, which pins its allocation, so an
     /// `Rc` address can never be recycled into a false match.
     fn assert_same_state(&self, issuer: &Weak<RefCell<ScrollState>>, what: &str) {
@@ -640,7 +688,7 @@ impl ScrollState {
     /// Takes the next claim on the offset for a writer — a request, a jump,
     /// a user delta — ending any programmatic run as `Interrupted` and
     /// returning the claim's value: a programmatic run's token, or the epoch
-    /// a fling must still hold to own the offset.
+    /// a touch gesture must still hold to own the offset.
     const fn claim(&mut self) -> u64 {
         self.offset_epoch = self
             .offset_epoch
@@ -670,13 +718,19 @@ impl ScrollState {
         claim
     }
 
-    /// Mints a touch fling's claim: the fling takes the offset as user
-    /// input, and the coordinate shift applied to its positions restarts.
-    const fn begin_fling(&mut self) -> u64 {
+    /// Mints a touch gesture's claim: the gesture takes the offset as user
+    /// input, and the coordinate shift a fling's positions accumulate
+    /// restarts.
+    const fn begin_gesture(&mut self) -> u64 {
         let claim = self.take_for_user();
+        self.reset_fling_shift();
+        claim
+    }
+
+    /// Restarts the coordinate shift a fling's sampled positions carry.
+    const fn reset_fling_shift(&mut self) {
         self.fling_shift_x = 0.0;
         self.fling_shift_y = 0.0;
-        claim
     }
 
     /// Translates the coordinate system by `(dx, dy)` on the scrolled axes
@@ -879,6 +933,13 @@ impl ScrollState {
         self.offset_y = offset_y;
         self.report_offset();
         changed
+    }
+
+    /// Moves the offset by a touch gesture's delta on the scrolled axes,
+    /// clamped, for the gesture that still owns it — the claim was already
+    /// checked by the handle — and reports whether it moved.
+    fn apply_gesture_delta(&mut self, dx: f64, dy: f64) -> bool {
+        self.write_offset(self.offset_x + dx, self.offset_y + dy)
     }
 
     /// Moves the destination of the in-flight programmatic animation without
@@ -1092,6 +1153,129 @@ mod tests {
         ScrollHandle::new(Axis::Vertical, 100.0, 100.0, 100.0, 300.0, None)
     }
 
+    /// A touch gesture released straight into its fling, with no drag in
+    /// between.
+    fn touch_fling(handle: &ScrollHandle) -> GestureClaim {
+        let claim = handle.begin_gesture();
+        assert!(handle.begin_fling(&claim), "a fresh claim owns the offset");
+        claim
+    }
+
+    #[test]
+    fn a_gesture_delta_lands_after_an_extent_changing_rebind() {
+        let mut handle = vertical_handle();
+        let drag_handle = handle.clone();
+        let claim = drag_handle.begin_gesture();
+        assert!(drag_handle.apply_gesture_delta(&claim, 0.0, 50.0));
+        assert_eq!(handle.metrics().offset_y, 50.0);
+
+        // A row measured taller than its estimate grows the content: the
+        // rebind advances the generation, so the handle the drag captured is
+        // stale for per-frame input ...
+        let _ = handle.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 312.0, (0.0, 0.0));
+        assert!(!drag_handle.apply_scroll_delta(0.0, -10.0, false));
+        assert_eq!(handle.metrics().offset_y, 50.0);
+
+        // ... but the gesture still owns the offset, and its delta lands,
+        // clamped to the grown extent.
+        assert!(drag_handle.apply_gesture_delta(&claim, 0.0, 30.0));
+        assert_eq!(handle.metrics().offset_y, 80.0);
+        assert!(drag_handle.apply_gesture_delta(&claim, 0.0, 400.0));
+        assert_eq!(handle.metrics().offset_y, 212.0);
+        // A delta on the axis the view does not scroll moves nothing.
+        assert!(!drag_handle.apply_gesture_delta(&claim, 25.0, 0.0));
+        assert_eq!(handle.metrics().offset_x, 0.0);
+    }
+
+    /// A newer offset owner, named for the assertion messages, and how it
+    /// takes the offset.
+    type Competitor = (&'static str, fn(&ScrollHandle));
+
+    #[test]
+    fn a_newer_claim_refuses_the_gestures_next_delta() {
+        let competitors: [Competitor; 5] = [
+            ("scroll_to", |handle| {
+                let _ = handle.scroll_to(0.0, 100.0);
+            }),
+            ("user_scroll_to", |handle| {
+                let _ = handle.user_scroll_to(0.0, 100.0);
+            }),
+            ("a wheel tick", |handle| {
+                assert!(handle.apply_scroll_delta(0.0, -1.0, true));
+            }),
+            ("a trackpad pixel delta", |handle| {
+                assert!(handle.apply_scroll_delta(0.0, -10.0, false));
+            }),
+            ("scroll_to_animated", |handle| {
+                assert!(
+                    handle
+                        .scroll_to_animated(0.0, 200.0, Animation::default(), Instant::now())
+                        .is_some()
+                );
+            }),
+        ];
+        for (name, compete) in competitors {
+            let handle = vertical_handle();
+            let claim = handle.begin_gesture();
+            assert!(handle.apply_gesture_delta(&claim, 0.0, 40.0), "{name}");
+            compete(&handle);
+            let after_competitor = handle.metrics().offset_y;
+            assert!(
+                !handle.apply_gesture_delta(&claim, 0.0, 20.0),
+                "{name} must refuse the gesture's next delta"
+            );
+            assert_eq!(
+                handle.metrics().offset_y,
+                after_competitor,
+                "a refused gesture delta must write nothing after {name}"
+            );
+            // A new gesture's claim owns the offset again.
+            let next = handle.begin_gesture();
+            assert!(handle.apply_gesture_delta(&next, 0.0, -10.0), "{name}");
+        }
+    }
+
+    #[test]
+    fn begin_fling_on_a_stale_claim_starts_no_fling() {
+        let handle = vertical_handle();
+        let claim = handle.begin_gesture();
+        assert!(handle.apply_gesture_delta(&claim, 0.0, 40.0));
+        let _ = handle.scroll_to(0.0, 100.0);
+        assert!(!handle.begin_fling(&claim));
+        assert!(!handle.apply_fling_offset(&claim, None, Some(150.0)));
+        assert_eq!(handle.metrics().offset_y, 100.0);
+
+        // A newer gesture's claim supersedes an older one's.
+        let first = handle.begin_gesture();
+        let second = handle.begin_gesture();
+        assert!(!handle.begin_fling(&first));
+        assert!(handle.begin_fling(&second));
+    }
+
+    #[test]
+    fn a_shift_during_the_drag_is_not_added_to_the_flings_positions() {
+        let mut handle = vertical_handle();
+        let claim = handle.begin_gesture();
+        assert!(handle.apply_gesture_delta(&claim, 0.0, 50.0));
+        // 40pt of rows land above the viewport mid-drag: the anchor shifts
+        // the offset with the content and the drag keeps owning it.
+        let _ = handle.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 340.0, (0.0, 40.0));
+        assert_eq!(handle.metrics().offset_y, 90.0);
+        assert!(handle.apply_gesture_delta(&claim, 0.0, 10.0));
+        assert_eq!(handle.metrics().offset_y, 100.0);
+
+        // The fling starts from the release offset, which already carries
+        // the drag's shift: its positions are not shifted a second time.
+        assert!(handle.begin_fling(&claim));
+        assert!(handle.apply_fling_offset(&claim, None, Some(120.0)));
+        assert_eq!(handle.metrics().offset_y, 120.0);
+
+        // A shift after the fling began still applies to its positions.
+        let _ = handle.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 360.0, (0.0, 20.0));
+        assert!(handle.apply_fling_offset(&claim, None, Some(130.0)));
+        assert_eq!(handle.metrics().offset_y, 150.0);
+    }
+
     /// A `report_offset` sink that counts every write, for asserting the
     /// backend writes on change only.
     fn counting_report() -> (Binding<Point>, Rc<Cell<usize>>) {
@@ -1269,7 +1453,7 @@ mod tests {
         let flung = handle
             .scroll_to_animated(0.0, 0.0, Animation::default(), start)
             .expect("the run must arm");
-        let claim = handle.begin_fling();
+        let claim = touch_fling(&handle);
         assert_eq!(
             handle.scroll_run_outcome(&flung),
             ScrollRunOutcome::Interrupted
@@ -1287,7 +1471,7 @@ mod tests {
     #[test]
     fn a_fling_write_is_refused_once_the_offset_changes_hands() {
         let handle = vertical_handle();
-        let claim = handle.begin_fling();
+        let claim = touch_fling(&handle);
         // While nothing else claimed the offset, the fling's write applies.
         assert!(handle.apply_fling_offset(&claim, None, Some(50.0)));
         assert_eq!(handle.metrics().offset_y, 50.0);
@@ -1299,13 +1483,13 @@ mod tests {
         assert_eq!(handle.metrics().offset_y, 100.0);
 
         // Same for user input and for an animated request.
-        let claim = handle.begin_fling();
+        let claim = touch_fling(&handle);
         assert!(handle.apply_fling_offset(&claim, None, Some(60.0)));
         let _ = handle.apply_scroll_delta(0.0, -10.0, false);
         assert!(!handle.apply_fling_offset(&claim, None, Some(40.0)));
         assert_eq!(handle.metrics().offset_y, 70.0);
 
-        let claim = handle.begin_fling();
+        let claim = touch_fling(&handle);
         assert!(
             handle
                 .scroll_to_animated(0.0, 200.0, Animation::default(), Instant::now())
@@ -1317,7 +1501,7 @@ mod tests {
     #[test]
     fn a_shifted_rebind_moves_everything_without_claiming_the_offset() {
         let mut handle = vertical_handle();
-        let claim = handle.begin_fling();
+        let claim = touch_fling(&handle);
         assert!(handle.apply_fling_offset(&claim, None, Some(50.0)));
 
         // A membership anchor translates the coordinate system by +40 as 40pt
@@ -1401,7 +1585,7 @@ mod tests {
     fn a_fling_shift_applies_only_to_the_axes_it_samples() {
         let mut handle = ScrollHandle::new(Axis::All, 100.0, 100.0, 300.0, 300.0, None);
         let _ = handle.scroll_to(50.0, 50.0);
-        let claim = handle.begin_fling();
+        let claim = touch_fling(&handle);
         let _ = handle.rebind(Axis::All, 100.0, 100.0, 340.0, 340.0, (40.0, 40.0));
         assert_eq!(
             (handle.metrics().offset_x, handle.metrics().offset_y),
