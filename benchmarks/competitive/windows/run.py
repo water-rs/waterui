@@ -296,7 +296,7 @@ def build_flutter(manifest: dict) -> None:
                 "--project-name", "bench_flutter", "--org", "dev.bench",
                 "--template", "app", str(gen)])
             shutil.copytree(gen / "windows", app / "windows")
-            stamp.write_text(tag + "\n")
+            stamp.write_text(tag + "\n", encoding="utf-8")
     # CreateProcess can't execute .bat directly — go through cmd.
     sh(["cmd", "/c", flutter, "build", "windows", "--release"],
        cwd=app)
@@ -351,6 +351,14 @@ psapi = windll.psapi if windll else None
 kernel32 = windll.kernel32 if windll else None
 user32 = windll.user32 if windll else None
 ntdll = windll.ntdll if windll else None
+if user32 is not None:
+    # HWND_TOPMOST is (HWND)-1: without a prototype ctypes passes -1 as a
+    # 32-bit int, which reaches x64 as 0xFFFFFFFF and fails with 1400.
+    user32.SetWindowPos.argtypes = [
+        wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+        ctypes.c_int, ctypes.c_int, wintypes.UINT,
+    ]
+    user32.SetWindowPos.restype = wintypes.BOOL
 
 
 def minimize_other_windows() -> list[int]:
@@ -3776,7 +3784,7 @@ def _native_check() -> int:
             "subprocess.Popen([sys.executable, '-c', "
             "'import time;time.sleep(300)'])\n"
             "print('CHILD-READY', flush=True)\n"
-            "time.sleep(300)\n")
+            "time.sleep(300)\n", encoding="utf-8")
         return OwnedApp(
             {"exe_dir": Path(sys.executable).parent,
              "exe": Path(sys.executable).name,
@@ -3883,7 +3891,7 @@ while u.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
 
     def i3():
         script = td / "gui_pump.py"
-        script.write_text(GUI_PUMP)
+        script.write_text(GUI_PUMP, encoding="utf-8")
         # pythonw.exe is the GUI-subsystem interpreter: WaitForInputIdle
         # refuses (1471) any console-subsystem image, message loop or not
         app = OwnedApp(
@@ -4010,7 +4018,7 @@ time.sleep(300)
         etl = td / "nc.etl"
         name = f"bench1262_native_{os.getpid()}"
         script = td / "tree_app.py"
-        script.write_text(TREE_APP)
+        script.write_text(TREE_APP, encoding="utf-8")
         ready_name = f"bench1262-native-ready-{os.getpid()}"
         ready = win32event.CreateEvent(None, True, False, ready_name)
         trace = PresentTrace(name, etl, "dxgi_present", lambda: set())
@@ -4229,7 +4237,7 @@ def main() -> None:
     }
 
     def dump() -> None:
-        out.write_text(json.dumps(results, indent=2))
+        out.write_text(json.dumps(results, indent=2), encoding="utf-8")
 
     for key in args.apps:
         c = CONTESTANTS[key]
@@ -4329,7 +4337,7 @@ def main() -> None:
                 results["repetitions_met"] = False
                 out_inc = out.with_name(
                     out.stem + "-INCOMPLETE" + out.suffix)
-                out_inc.write_text(json.dumps(results, indent=2))
+                out_inc.write_text(json.dumps(results, indent=2), encoding="utf-8")
                 print(
                     "repetition requirement not met: "
                     f"{shortfall} — records kept in {out_inc}; "
@@ -4351,7 +4359,7 @@ def main() -> None:
     if stale:
         results["repetitions_met"] = False
         out_inc = out.with_name(out.stem + "-INCOMPLETE" + out.suffix)
-        out_inc.write_text(json.dumps(results, indent=2))
+        out_inc.write_text(json.dumps(results, indent=2), encoding="utf-8")
         print(
             "carried cells below the rep floor: " + ", ".join(stale)
             + f" — records kept in {out_inc}; refusing to emit a "
@@ -4362,7 +4370,7 @@ def main() -> None:
     results["repetitions_met"] = True
     dump()
 
-    out.write_text(json.dumps(results, indent=2))
+    out.write_text(json.dumps(results, indent=2), encoding="utf-8")
     print(f"results -> {out}", flush=True)
 
 
