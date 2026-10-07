@@ -26,13 +26,15 @@ use std::rc::Rc;
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
 use objc2_foundation::{NSArray, NSObjectProtocol, NSString};
 use objc2_ui_kit::{
     UIBarButtonItem, UIBarButtonItemStyle, UIButton, UIControl, UIGestureRecognizer,
     UIGestureRecognizerDelegate, UINavigationBar, UINavigationController,
     UINavigationControllerDelegate, UINavigationItem, UINavigationItemLargeTitleDisplayMode,
-    UISearchController, UISearchResultsUpdating, UIViewController,
+    UISearchController, UISearchResultsUpdating, UITransitionContextFromViewControllerKey,
+    UIViewController, UIViewControllerTransitionCoordinator,
+    UIViewControllerTransitionCoordinatorContext,
 };
 
 /// `viewWillAppear:` listener, called with `UIKit`'s `animated` flag.
@@ -52,6 +54,11 @@ pub struct NavContentControllerIvars {
     search_updater: RefCell<Option<Retained<SearchUpdater>>>,
     /// The page's search drawer, retained for later updates.
     search_controller: RefCell<Option<Retained<UISearchController>>>,
+    /// Whether the stack's toolbar should hide while this page is topmost.
+    /// `set_page` runs before the page is pushed — `navigationController()`
+    /// is nil then — so the intent is recorded here and the owning
+    /// `NavigationController` applies it when the page resolves.
+    toolbar_hidden: Cell<bool>,
 }
 
 impl fmt::Debug for NavContentControllerIvars {
@@ -123,6 +130,7 @@ impl NavContentController {
             search_change: RefCell::new(None),
             search_updater: RefCell::new(None),
             search_controller: RefCell::new(None),
+            toolbar_hidden: Cell::new(true),
         });
         // SAFETY: `initWithNibName:bundle:` is `UIViewController`'s
         // designated initializer; nil names and bundles load nothing.
@@ -211,14 +219,12 @@ impl NavContentController {
         }
         if page.bottom.is_empty() {
             self.setToolbarItems(None);
-            if let Some(nav) = self.navigationController() {
-                nav.setToolbarHidden_animated(true, false);
-            }
         } else {
             self.setToolbarItems(Some(&NSArray::from_retained_slice(&page.bottom)));
-            if let Some(nav) = self.navigationController() {
-                nav.setToolbarHidden_animated(false, false);
-            }
+        }
+        self.ivars().toolbar_hidden.set(page.bottom.is_empty());
+        if let Some(nav) = self.navigationController() {
+            nav.setToolbarHidden_animated(page.bottom.is_empty(), false);
         }
         self.ivars().search_updater.replace(None);
         self.ivars().search_controller.replace(None);
@@ -692,6 +698,15 @@ impl NavBar {
     }
 }
 
+/// Applies `controller`'s recorded toolbar intent to `nav` — the page
+/// records it in `set_page`, possibly before the stack owned it.
+fn apply_toolbar_intent(nav: &NavigationController, controller: &UIViewController, animated: bool) {
+    let hides = controller
+        .downcast_ref::<NavContentController>()
+        .is_none_or(|page| page.ivars().toolbar_hidden.get());
+    nav.setToolbarHidden_animated(hides, animated);
+}
+
 /// The navigation stack's model: the pages and the current pop state.
 /// Called when the user pops one or more pages by gesture or back button:
 /// the count of pages to drop.
@@ -831,9 +846,50 @@ define_class!(
         }
     }
 
-    // SAFETY: `navigationController:didShowViewController:animated:` carries
-    // `UINavigationControllerDelegate`'s signature.
+    // SAFETY: `navigationController:willShowViewController:animated:` and
+    // `navigationController:didShowViewController:animated:` carry
+    // `UINavigationControllerDelegate`'s signatures.
     unsafe impl UINavigationControllerDelegate for NavigationController {
+        // SAFETY: see the module safety note. The incoming page's toolbar
+        // intent applies as the page starts showing — before the
+        // transition — so the bar's hide or show rides the same
+        // animation.
+        #[unsafe(method(navigationController:willShowViewController:animated:))]
+        fn navigation_controller_will_show_view_controller_animated(
+            &self,
+            _navigation_controller: &UINavigationController,
+            view_controller: &UIViewController,
+            animated: bool,
+        ) {
+            apply_toolbar_intent(self, view_controller, animated);
+            // A cancelled interactive transition leaves the incoming
+            // page's intent applied while the outgoing page stays
+            // topmost — when the coordinator reports the cancellation,
+            // re-apply the staying page's intent.
+            if let Some(coordinator) = self.transitionCoordinator()
+                && coordinator.isInteractive()
+            {
+                let nav = self.retain();
+                let block = RcBlock::new(
+                    move |context: core::ptr::NonNull<
+                        ProtocolObject<dyn UIViewControllerTransitionCoordinatorContext>,
+                    >| {
+                        // SAFETY: the transition context outlives the call.
+                        let context = unsafe { context.as_ref() };
+                        // SAFETY: `UIKit` exports the key as a constant
+                        // for the process's lifetime.
+                        let staying_key = unsafe { UITransitionContextFromViewControllerKey };
+                        if context.isCancelled()
+                            && let Some(staying) = context.viewControllerForKey(staying_key)
+                        {
+                            apply_toolbar_intent(&nav, &staying, false);
+                        }
+                    },
+                );
+                coordinator.notifyWhenInteractionChangesUsingBlock(&block);
+            }
+        }
+
         // SAFETY: see the module safety note.
         #[unsafe(method(navigationController:didShowViewController:animated:))]
         fn navigation_controller_did_show_view_controller_animated(
@@ -880,6 +936,8 @@ impl NavigationController {
         if let Some(gesture) = this.interactivePopGestureRecognizer() {
             gesture.setDelegate(Some(ProtocolObject::from_ref(&*this)));
         }
+        // The root page's intent was recorded before the stack owned it.
+        apply_toolbar_intent(&this, root, false);
         this
     }
 
