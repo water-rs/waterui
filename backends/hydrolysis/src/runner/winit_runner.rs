@@ -919,6 +919,7 @@ fn native_window_attributes(
         .with_window_icon(icon)
         .with_title(window.display_title().snapshot().as_str())
         .with_resizable(window.resizable)
+        .with_enabled_buttons(crate::platform::enabled_window_buttons(window.closable))
         .with_visible(false)
         .with_fullscreen(fullscreen.then_some(winit::window::Fullscreen::Borderless(None)))
         .with_maximized(maximized)
@@ -1695,6 +1696,28 @@ mod tests {
             Some(winit::dpi::Size::Logical(winit::dpi::LogicalSize::new(
                 800.0, 300.0
             ))),
+        );
+    }
+
+    #[test]
+    fn window_attributes_disable_only_the_close_button_on_a_non_closable_window() {
+        use winit::window::WindowButtons;
+
+        let mut window = Window::new("", binding(WindowState::Normal), || ());
+        window.closable = false;
+        let env = crate::renderer::tests::test_environment();
+
+        assert_eq!(
+            native_window_attributes(&window, &env, false, None).enabled_buttons,
+            WindowButtons::MINIMIZE | WindowButtons::MAXIMIZE,
+            "a non-closable window drops only the close button"
+        );
+
+        let window = Window::new("", binding(WindowState::Normal), || ());
+        assert_eq!(
+            native_window_attributes(&window, &env, false, None).enabled_buttons,
+            WindowButtons::all(),
+            "a closable window keeps every title-bar button"
         );
     }
 }

@@ -972,8 +972,8 @@ impl HeadlessRuntime {
             let _ = advance_runtime(popup, &self.env, at);
         }
         // A popup whose state flipped `Closed` — its menu group dismissed it
-        // or a close request arrived — leaves the merged tree. Flag the main
-        // window so the update re-emits without it.
+        // — leaves the merged tree. Flag the main window so the update
+        // re-emits without it.
         if self
             .popup_windows
             .iter()
