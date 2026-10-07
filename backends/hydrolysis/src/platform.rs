@@ -3365,6 +3365,9 @@ mod winit_impl {
         transparent: bool,
         /// Whether the window currently asks the compositor to blur what lies
         /// behind it, so the request reaches the platform only on a change.
+        /// Only platforms that realize the request keep it; elsewhere the
+        /// trait's default leaves the window as it is.
+        #[cfg(target_os = "macos")]
         blur_behind: bool,
         /// The behind-window effect view while `blur_behind` holds: the
         /// platform sublayer under the self-drawn content, removed when the
@@ -3452,6 +3455,7 @@ mod winit_impl {
                     applied_properties: None,
                     pending_mapped_request: MappedRequestRetry::default(),
                     transparent: requires_transparency,
+                    #[cfg(target_os = "macos")]
                     blur_behind: false,
                     #[cfg(target_os = "macos")]
                     blur_effect_view: None,
@@ -3521,15 +3525,9 @@ mod winit_impl {
         /// window, or stops asking — the platform sublayer under the
         /// self-drawn content, whose own tint already supplies the level's
         /// colour above it.
+        #[cfg(target_os = "macos")]
         fn apply_blur_behind(&mut self, blur: bool) {
-            #[cfg(target_os = "macos")]
-            {
-                self.macos_apply_blur_behind(blur);
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                let _ = blur;
-            }
+            self.macos_apply_blur_behind(blur);
         }
 
         /// The `AppKit` half of `set_blur_behind`: while the window asks, an
@@ -4533,6 +4531,7 @@ mod winit_impl {
         /// Keeps the compositor's blur-behind request in step with the
         /// resolved background: nothing is pushed while the answer is the
         /// same, so the per-frame application stays free.
+        #[cfg(target_os = "macos")]
         fn set_blur_behind(&mut self, blur: bool) {
             if self.blur_behind == blur {
                 return;
