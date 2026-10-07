@@ -396,12 +396,7 @@ impl CameraFilterRenderer {
     /// The task owns the camera and the stream for the session, so the frame
     /// importer the stream creates is reused for every frame; replacing the
     /// task drops the camera and stops capture.
-    fn start_camera_stream(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        reconnect: bool,
-    ) {
+    fn start_camera_stream(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, reconnect: bool) {
         let status_text = if reconnect {
             "Reconnecting camera stream..."
         } else {
@@ -430,10 +425,7 @@ impl CameraFilterRenderer {
             while let Some(frame) = frames.next().await {
                 match frame {
                     Ok(frame) => {
-                        shared
-                            .lock()
-                            .expect("camera mailbox poisoned")
-                            .latest_frame = Some(frame);
+                        shared.lock().expect("camera mailbox poisoned").latest_frame = Some(frame);
                     }
                     Err(error) => {
                         status.set(format!("Camera stream failed: {error}").into());
@@ -597,9 +589,7 @@ impl GpuContent for CameraFilterContent {
             if self
                 .upright
                 .as_ref()
-                .is_none_or(|texture| {
-                    texture.size() != FrameConverter::upright_size(&camera_frame)
-                })
+                .is_none_or(|texture| texture.size() != FrameConverter::upright_size(&camera_frame))
             {
                 self.upright = Some(FrameConverter::create_output(frame.device, &camera_frame));
                 self.latest_bind_group = None;
