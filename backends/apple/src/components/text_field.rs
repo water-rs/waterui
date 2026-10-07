@@ -26,7 +26,7 @@ use cocoa_ui::{PlatformView, Rect, Retained, focus, view};
 use waterui::Str;
 #[cfg(target_os = "ios")]
 use waterui::component::text_field::KeyboardType;
-use waterui::component::text_field::ResolvedTextFieldConfig;
+use waterui::component::text_field::{ContentType, ResolvedTextFieldConfig};
 use waterui::graphics::color::WorkingColor;
 use waterui::reactive::{Binding, Signal};
 use waterui::resolve::Resolvable;
@@ -369,6 +369,24 @@ const fn keyboard(kind: &KeyboardType) -> platform::Keyboard {
     }
 }
 
+/// The kit `ContentType` a `WaterUI` `ContentType` asks for —
+/// `UITextContentType`/`NSTextContentType` share the vocabulary, so one
+/// table covers both platforms.
+const fn content_type(kind: ContentType) -> cocoa_ui::ContentType {
+    match kind {
+        ContentType::Username => cocoa_ui::ContentType::Username,
+        ContentType::Password => cocoa_ui::ContentType::Password,
+        ContentType::NewPassword => cocoa_ui::ContentType::NewPassword,
+        ContentType::EmailAddress => cocoa_ui::ContentType::EmailAddress,
+        ContentType::PhoneNumber => cocoa_ui::ContentType::PhoneNumber,
+        ContentType::OneTimeCode => cocoa_ui::ContentType::OneTimeCode,
+        ContentType::PersonName => cocoa_ui::ContentType::PersonName,
+        ContentType::PostalAddress => cocoa_ui::ContentType::PostalAddress,
+        ContentType::PostalCode => cocoa_ui::ContentType::PostalCode,
+        ContentType::CreditCardNumber => cocoa_ui::ContentType::CreditCardNumber,
+    }
+}
+
 /// The field's share of a measure — the text height `WuiTextField` reports.
 /// `AppKit` reads `intrinsicContentSize`; `UIKit` floors `sizeThatFits` at
 /// intrinsic so the field never reports shorter than its font needs.
@@ -559,6 +577,13 @@ pub fn install(dispatcher: &mut Dispatcher) {
         };
         #[cfg(target_os = "macos")]
         let field = TextField::new(mtm, config.line_limit.map(core::num::NonZero::get));
+
+        // The declared content type is the whole one-time-code feature on
+        // both kits — `UITextContentType`/`NSTextContentType` is what the
+        // system offers an SMS code for.
+        if let Some(declared) = config.content_type {
+            field.set_content_type(content_type(declared));
+        }
 
         let field_view: &PlatformView = &field;
         host.add_subview(field_view);

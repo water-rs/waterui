@@ -211,6 +211,17 @@ pub fn make_offscreen_window(
             false,
         );
         window.setReleasedWhenClosed(false);
+        // The offscreen render target is an RGBA8 bitmap, so the host
+        // declares `DynamicRange::Standard` on its content view: a leaf
+        // resolving its inherited mode inside this window answers from
+        // the tag rather than the missing display. `apply_to_view`
+        // preserves any local tag content inside the capture carries.
+        if let Some(content) = window.contentView() {
+            crate::dynamic_range::apply_to_view(
+                crate::dynamic_range::DynamicRange::Standard,
+                &content,
+            );
+        }
         window
     }
 }
@@ -306,6 +317,12 @@ pub fn show_capture_window(window: &CaptureWindow, view: &crate::PlatformView, s
     window.setRootViewController(Some(&controller));
     if let Some(content) = controller.view() {
         content.setFrame(Rect::new(0.0, 0.0, size.width, size.height).into());
+        // The offscreen render target is an RGBA8 bitmap, so the host
+        // view declares `DynamicRange::Standard` for the subtree it
+        // hosts — tagged before `view` attaches so window-dependent
+        // dynamic-range resolution answers SDR instead of panicking on
+        // the missing display. `apply_to_view` preserves local tags.
+        crate::dynamic_range::apply_to_view(crate::dynamic_range::DynamicRange::Standard, &content);
         crate::view::add_subview(&content, view);
     }
     window.setHidden(false);

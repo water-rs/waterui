@@ -937,6 +937,7 @@ mod tests {
             None,
             &crate::templates::LocalBackendSources::default(),
         )
+        .with_project_packages(std::collections::BTreeSet::from(["demo".to_string()]))
     }
 
     fn rendered_bin_names(ctx: &TemplateContext, package_name: &str) -> Vec<String> {

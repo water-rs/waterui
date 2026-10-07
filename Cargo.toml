@@ -170,6 +170,7 @@ bitflags = "2.13.2"
 # are one type in the graph.
 color = "0.3.3"
 blocking = "1.7.0"
+cargo_metadata = "0.23.1"
 # FNV-1a that evaluates in a `const` context, which is what the TypeScript
 # props contract hash needs: the same hash is computed by the compiler into the
 # binary and by the CLI from the artifact.

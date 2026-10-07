@@ -29,7 +29,7 @@ mod identity;
 mod input;
 mod interaction_layers;
 mod lifecycle;
-mod material;
+pub mod material;
 mod metadata;
 mod native_measure;
 mod navigation;
@@ -139,6 +139,8 @@ use waterui_controls::label::Label as SemanticLabel;
 use waterui_controls::menu::{CommandRole, ResolvedCommand, ResolvedMenu, ResolvedMenuItem};
 use waterui_controls::slider::SliderConfig;
 use waterui_controls::stepper::StepperConfig;
+#[cfg(feature = "accessibility")]
+use waterui_controls::text_field::ContentType;
 use waterui_controls::text_field::{ResolvedTextFieldConfig, TextField};
 use waterui_controls::toggle::ToggleConfig;
 use waterui_core::dynamic::{Dynamic, DynamicInitialContent};
@@ -354,6 +356,9 @@ pub struct HydrolysisRenderer {
     /// byte-identical.
     #[cfg(feature = "frame-profile")]
     last_layout_signature: Option<u64>,
+    /// The within-window material the window's background names, which the
+    /// window's root is mounted over; `None` for any other background.
+    window_backdrop: Option<crate::renderer::material::WindowBackdrop>,
 }
 
 impl core::ops::Deref for HydrolysisRenderer {
@@ -481,6 +486,21 @@ impl HydrolysisRenderer {
         Self::with_engine(theme, SessionTextEngine::system(family_resolution))
     }
 
+    /// A renderer drawing with `theme`, shaping text against `fonts` — the
+    /// collection [`crate::native_collection`] builds — under
+    /// `family_resolution`.
+    #[must_use]
+    pub fn with_fonts(
+        theme: Rc<dyn crate::engine::WidgetTheme>,
+        fonts: &waterui_text::FontCollection,
+        family_resolution: FontFamilyResolution,
+    ) -> Self {
+        Self::with_engine(
+            theme,
+            SessionTextEngine::from_collection(fonts, family_resolution),
+        )
+    }
+
     /// A renderer drawing with `theme`, shaping through `text` — the
     /// session's text engine the runner built it with.
     pub(crate) fn with_engine(
@@ -512,6 +532,7 @@ impl HydrolysisRenderer {
             frame_stage_times: FrameStageTimes::default(),
             #[cfg(feature = "frame-profile")]
             last_layout_signature: None,
+            window_backdrop: None,
         }
     }
 

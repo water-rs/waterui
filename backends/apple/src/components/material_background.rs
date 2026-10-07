@@ -13,32 +13,22 @@
 use alloc::rc::Rc;
 use core::cell::Cell;
 
-use cocoa_ui::material::{self, MaterialLevel};
+use cocoa_ui::material;
 use cocoa_ui::view;
 use cocoa_ui::{PlatformView, Rect, Retained};
-use waterui::background::{Material, MaterialBackground};
+use waterui::background::MaterialBackground;
 use waterui_core::IgnorableMetadata;
 use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
 
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
 use crate::proposal;
+use crate::window_background::level;
 
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::HostView;
 #[cfg(target_os = "ios")]
 use cocoa_ui::uikit::HostView;
-
-/// The `Material` thickness as the kit's neutral level.
-const fn level(material: Material) -> MaterialLevel {
-    match material {
-        Material::UltraThin => MaterialLevel::UltraThin,
-        Material::Thin => MaterialLevel::Thin,
-        Material::Regular => MaterialLevel::Regular,
-        Material::Thick => MaterialLevel::Thick,
-        Material::UltraThick => MaterialLevel::UltraThick,
-    }
-}
 
 /// The leaf's live state: the mounted child and the effect view, plus the
 /// last placement proposal the wrapper was selected with — the offer the

@@ -250,11 +250,12 @@ fn index_path_for_flat(groups: &[SectionGroup], flat: usize) -> Option<(usize, u
     None
 }
 
-#[cfg(target_os = "ios")]
+#[cfg(all(target_os = "ios", feature = "navigation"))]
 /// `containsNavigationLink`: walk the primary-content chain looking for a
 /// navigation-link wrapper — a matched node gives the row a disclosure
 /// indicator. The Rust path tags the wrapper with an accessibility
-/// identifier rather than a Swift class name.
+/// identifier rather than a Swift class name. Only the `navigation` port
+/// sets that identifier, so the probe exists only alongside it.
 fn contains_navigation_link(view: &cocoa_ui::PlatformView) -> bool {
     let mut current = view::retain_base(view);
     loop {
@@ -1060,7 +1061,12 @@ mod platform_impl {
             let (item_insets, deletable, leaf) = self.state.borrow().render_row(flat);
             let explicit_insets = item_insets.as_ref().map(kit_insets);
             let insets = explicit_insets.unwrap_or_else(|| native_insets(cell));
+            // Without the `navigation` port nothing tags the wrapper, so no
+            // row can carry a link.
+            #[cfg(feature = "navigation")]
             let shows_disclosure = contains_navigation_link(leaf.view());
+            #[cfg(not(feature = "navigation"))]
+            let shows_disclosure = false;
             let mounted = Rc::new(leaf.mount(cell));
             cell.configure(mounted.view(), insets, shows_disclosure);
             let height = mounted.view().heightAnchor().constraintEqualToConstant(0.0);

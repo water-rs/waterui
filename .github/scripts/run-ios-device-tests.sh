@@ -23,13 +23,19 @@
 #     launch.
 #
 # Usage:
-#   WATERUI_DIR=<staged waterui checkout> run-ios-device-tests.sh [example] [simulator-udid]
+#   WATERUI_DIR=<staged waterui checkout> run-ios-device-tests.sh [example] <simulator-udid>
 #
 #   [example]  a project under ${WATERUI_DIR}/examples (e.g. reminders,
 #              navigation), or `ios_test_host` — the backend's own fixture,
 #              a workspace member at backends/apple/Tests/IOSTestHost.
 #              Default: ios_test_host. Pass `none` to run only the native
 #              suite.
+#
+#   <simulator-udid>  REQUIRED, as the second argument or through
+#              SIMULATOR_UDID — the UDID of a simulator the caller created
+#              and owns. The script never picks a device implicitly: the
+#              `nextest-ios-sim.sh` target runner requires a caller-owned
+#              device so a run cannot land on a stale or foreign simulator.
 #
 # Prerequisites: the framework checkout (this repository — the backend is
 # in-tree at backends/apple), plus the `water` CLI and `cargo nextest`:
@@ -41,11 +47,10 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 example="${1:-ios_test_host}"
 simulator_udid="${2:-${SIMULATOR_UDID:-}}"
 if [[ -z "${simulator_udid}" ]]; then
-  simulator_udid="$(xcrun simctl list devices available \
-    | awk -F '[()]' '/iPhone/ {print $2; exit}')"
-fi
-if [[ -z "${simulator_udid}" ]]; then
-  echo "error: no available iPhone simulator" >&2
+  echo "error: a simulator UDID is required — pass it as the second" >&2
+  echo "argument or set SIMULATOR_UDID to the UDID of a simulator the" >&2
+  echo "caller created and owns, e.g.:" >&2
+  echo "  xcrun simctl create <name> <SimDeviceType> <SimRuntime>" >&2
   exit 1
 fi
 
