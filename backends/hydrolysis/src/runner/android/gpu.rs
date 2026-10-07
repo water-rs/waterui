@@ -162,21 +162,23 @@ impl AndroidGpuContext {
         let required_features = crate::platform::required_media_features(adapter.features())
             | (adapter.features()
                 & (wgpu::Features::PIPELINE_CACHE | wgpu::Features::PASSTHROUGH_SHADERS));
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
+        let (device, queue) = waterui_graphics::gpu::device::request_device(
+            &adapter,
+            &wgpu::DeviceDescriptor {
                 label: Some("hydrolysis-android-device"),
                 required_features,
                 required_limits,
                 memory_hints: wgpu::MemoryHints::Performance,
                 experimental_features: wgpu::ExperimentalFeatures::default(),
                 trace: wgpu::Trace::default(),
-            })
-            .await
-            .map_err(|error| {
-                GpuError::new(format!(
-                    "hydrolysis android: failed to request wgpu device: {error}"
-                ))
-            })?;
+            },
+        )
+        .await
+        .map_err(|error| {
+            GpuError::new(format!(
+                "hydrolysis android: failed to request wgpu device: {error}"
+            ))
+        })?;
         let context_id = crate::platform::next_gpu_context_id();
         let shared_device = cherenkov_gpu::interop::SharedDevice {
             instance: instance.clone(),

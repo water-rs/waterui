@@ -43,6 +43,7 @@ gpu = [
     "dep:pollster",
     "dep:shaderloom",
     "dep:event-listener",
+    "dep:wgpu-external-frame",
 ]
 # Offscreen rendering through `Engine<Raster>`: pictures rasterised for hosts
 # whose image views take bitmaps.
@@ -81,6 +82,13 @@ event-listener = { version = "5", optional = true }
 # needs — the shared device asks shaderloom which features its native shader
 # artifacts require (`shaderloom::required_features`).
 shaderloom = { workspace = true, optional = true, features = ["runtime"] }
+
+# `ahardware_buffer::request_device` opens the shared Android device with the
+# hardware-buffer import extensions and the `samplerYcbcrConversion` feature a
+# camera or decoder frame's zero-copy import needs (water-rs/waterui#1902);
+# wgpu never requests them on its own.
+[target.'cfg(target_os = "android")'.dependencies]
+wgpu-external-frame = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Tests record against `cherenkov::testing::Null` engines.
