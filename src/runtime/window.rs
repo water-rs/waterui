@@ -371,9 +371,12 @@ pub enum WindowBackground {
     ///   is the compositor's job. The desktop is blurred where the platform's
     ///   blur-behind is wired — an `NSVisualEffectView` behind the window on
     ///   macOS, the DWM's acrylic system backdrop on Windows 11 22H2 and
-    ///   later, while older Windows keeps a translucent, unblurred window —
-    ///   and shows through tinted but unblurred elsewhere; X11 and Wayland
-    ///   on Linux are water-rs/waterui#1856 and #1857.
+    ///   later, `_KDE_NET_WM_BLUR_BEHIND_REGION` under a window manager that
+    ///   honours it (`KWin`) on X11, and `ext-background-effect-v1` on
+    ///   Wayland, whose compositor applies blur by its own policy — and
+    ///   shows through tinted but unblurred elsewhere: older Windows, other
+    ///   X11 window managers and Wayland compositors not advertising the
+    ///   global.
     /// - **Hydrolysis on Android**: a within-window level is realized as on a
     ///   desktop. Window transparency is not realized on Android yet, so a
     ///   behind-window level renders as an opaque window
