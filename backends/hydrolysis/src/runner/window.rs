@@ -527,6 +527,18 @@ impl SurfaceBackground {
         }
     }
 
+    /// Whether the window asks the compositor to blur what lies behind it:
+    /// exactly a behind-window material — false for every colour and every
+    /// within-window level.
+    pub(super) const fn blurs_behind(self) -> bool {
+        match self.0 {
+            ResolvedWindowBackground::Color(_) => false,
+            ResolvedWindowBackground::Material(material) => {
+                matches!(Blending::of(material), Blending::BehindWindow(_))
+            }
+        }
+    }
+
     /// The within-window material the window's root is mounted over.
     pub(super) const fn backdrop(self) -> Option<WithinWindowLevel> {
         match self.0 {
@@ -580,6 +592,7 @@ pub(super) fn apply_window_background<P: GpuSurfaceWindow>(
 ) -> peniko::Color {
     let background = SurfaceBackground::of(&runtime.window, env);
     runtime.platform.set_transparent(background.transparent());
+    runtime.platform.set_blur_behind(background.blurs_behind());
     runtime.renderer.set_window_backdrop(background.backdrop());
     background.clear(env)
 }

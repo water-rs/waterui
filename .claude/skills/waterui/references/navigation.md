@@ -268,8 +268,9 @@ The `Window` builder, precisely:
   `Binding<WindowBackground>`. A material window background is realized at the window,
   not on the content: `Regular`, `Thick` and `UltraThick` frost the window's own opaque
   background behind the content; `UltraThin` and `Thin` make the window translucent so
-  the desktop shows through — blurred on macOS, tinted with the level's colour but not
-  yet blurred on Hydrolysis desktops. The Kotlin Android runtime realizes no material
+  the desktop shows through — blurred on macOS on the Apple and Hydrolysis
+  backends, tinted with the level's colour but not yet blurred on Hydrolysis's
+  other desktop targets. The Kotlin Android runtime realizes no material
   and draws a material window background as the opaque theme background. The background is reactive:
   setting the binding (or `window.handle().set_background(..)`) re-applies it to the
   open window, e.g. to switch between opaque, a translucent colour and a material.
