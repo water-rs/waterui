@@ -3380,7 +3380,7 @@ mod winit_impl {
         /// behind it, so the request reaches the platform only on a change.
         /// Only platforms that realize the request keep it; elsewhere the
         /// trait's default leaves the window as it is.
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         blur_behind: bool,
         /// The behind-window effect view while `blur_behind` holds: the
         /// platform sublayer under the self-drawn content, removed when the
@@ -3468,7 +3468,7 @@ mod winit_impl {
                     applied_properties: None,
                     pending_mapped_request: MappedRequestRetry::default(),
                     transparent: requires_transparency,
-                    #[cfg(target_os = "macos")]
+                    #[cfg(any(target_os = "macos", target_os = "windows"))]
                     blur_behind: false,
                     #[cfg(target_os = "macos")]
                     blur_effect_view: None,
@@ -3538,9 +3538,12 @@ mod winit_impl {
         /// window, or stops asking — the platform sublayer under the
         /// self-drawn content, whose own tint already supplies the level's
         /// colour above it.
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         fn apply_blur_behind(&mut self, blur: bool) {
+            #[cfg(target_os = "macos")]
             self.macos_apply_blur_behind(blur);
+            #[cfg(target_os = "windows")]
+            windows_apply_blur_behind(&self.window, blur);
         }
 
         /// The `AppKit` half of `set_blur_behind`: while the window asks, an
@@ -4233,6 +4236,115 @@ mod winit_impl {
         }
     }
 
+    /// The Windows build the DWM's system-backdrop attribute exists on:
+    /// Windows 11 22H2.
+    #[cfg(target_os = "windows")]
+    const SYSTEM_BACKDROP_BUILD: u32 = 22621;
+
+    /// Applies or clears the DWM system backdrop that blurs what the desktop
+    /// shows through the window's transparent surface. A behind-window
+    /// `Material` asks for `DWMSBT_TRANSIENTWINDOW` — acrylic, the backdrop
+    /// that blurs whatever lies behind the window — with the frame extended
+    /// into the whole client area so it shows through the surface; the
+    /// level's tint stays the surface's clear colour. Clearing restores
+    /// `DWMSBT_NONE` and zero margins.
+    ///
+    /// The attribute exists on Windows 11 22H2 ([`SYSTEM_BACKDROP_BUILD`])
+    /// and later, decided from the OS build number rather than by probing
+    /// the call: on an older build the window stays translucent and
+    /// unblurred, the decided unsupported case. On a build that has the
+    /// attribute a failed call is unexpected, so the failure panics with the
+    /// HRESULT and the attribute rather than degrading silently.
+    ///
+    /// # Panics
+    /// Panics when a `DwmSetWindowAttribute` or `DwmExtendFrameIntoClientArea`
+    /// call fails on a build that has the attribute, when the window has no
+    /// handle, or when `RtlGetVersion` fails.
+    #[cfg(target_os = "windows")]
+    fn windows_apply_blur_behind(native_window: &NativeWindow, blur: bool) {
+        use windows_sys::Win32::Foundation::HWND;
+        use windows_sys::Win32::Graphics::Dwm::{
+            DWM_SYSTEMBACKDROP_TYPE, DWMSBT_NONE, DWMSBT_TRANSIENTWINDOW,
+            DWMWA_SYSTEMBACKDROP_TYPE, DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
+        };
+        use windows_sys::Win32::UI::Controls::MARGINS;
+
+        if os_build() < SYSTEM_BACKDROP_BUILD {
+            return;
+        }
+        let RawWindowHandle::Win32(win32) = native_window
+            .window_handle()
+            .expect("a winit window on Windows always has a window handle")
+            .as_raw()
+        else {
+            panic!("a winit window on Windows carries a Win32 raw window handle");
+        };
+        let hwnd = win32.hwnd.get() as HWND;
+
+        let backdrop: DWM_SYSTEMBACKDROP_TYPE = if blur {
+            DWMSBT_TRANSIENTWINDOW
+        } else {
+            DWMSBT_NONE
+        };
+        // SAFETY: `hwnd` is the window's live handle for as long as the
+        // `NativeWindow` lives, and `pvAttribute` points at readable memory
+        // of exactly `cbAttribute` bytes, as the API requires.
+        let hr = unsafe {
+            DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_SYSTEMBACKDROP_TYPE as u32,
+                (&raw const backdrop).cast(),
+                u32::try_from(size_of::<DWM_SYSTEMBACKDROP_TYPE>())
+                    .expect("a backdrop's size fits u32"),
+            )
+        };
+        assert_eq!(
+            hr, 0,
+            "DwmSetWindowAttribute(DWMWA_SYSTEMBACKDROP_TYPE) failed: HRESULT {hr:#010x}"
+        );
+
+        // A margin of -1 extends the frame into the whole client area, so the
+        // backdrop shows through the transparent surface; 0 restores the
+        // ordinary frame.
+        let margin = if blur { -1 } else { 0 };
+        let margins = MARGINS {
+            cxLeftWidth: margin,
+            cxRightWidth: margin,
+            cyTopHeight: margin,
+            cyBottomHeight: margin,
+        };
+        // SAFETY: `hwnd` is live as above, and `pmarInset` points at a
+        // readable `MARGINS`, as the API requires.
+        let hr = unsafe { DwmExtendFrameIntoClientArea(hwnd, &raw const margins) };
+        assert_eq!(
+            hr, 0,
+            "DwmExtendFrameIntoClientArea failed: HRESULT {hr:#010x}"
+        );
+    }
+
+    /// The running OS's build number, from `RtlGetVersion` — the version
+    /// source the loader's compatibility lie cannot reach, unlike
+    /// `GetVersionEx`, which reports what the manifest claims.
+    ///
+    /// # Panics
+    /// Panics when `RtlGetVersion` returns a failing `NTSTATUS`.
+    #[cfg(target_os = "windows")]
+    fn os_build() -> u32 {
+        use windows_sys::Wdk::System::SystemServices::RtlGetVersion;
+        use windows_sys::Win32::System::SystemInformation::OSVERSIONINFOW;
+
+        // SAFETY: an all-zeroed `OSVERSIONINFOW` is valid to fill once its
+        // declared size is set, which the line below does.
+        let mut info: OSVERSIONINFOW = unsafe { std::mem::zeroed() };
+        info.dwOSVersionInfoSize =
+            u32::try_from(size_of::<OSVERSIONINFOW>()).expect("a version info's size fits u32");
+        // SAFETY: `info` is a live `OSVERSIONINFOW` of the declared size, as
+        // the API requires.
+        let status = unsafe { RtlGetVersion(&raw mut info) };
+        assert_eq!(status, 0, "RtlGetVersion failed: NTSTATUS {status:#010x}");
+        info.dwBuildNumber
+    }
+
     fn map_cursor_position(position: &PhysicalPosition<f64>, scale_factor: f64) -> (f32, f32) {
         assert!(
             scale_factor.is_finite() && scale_factor > 0.0,
@@ -4549,7 +4661,7 @@ mod winit_impl {
         /// Keeps the compositor's blur-behind request in step with the
         /// resolved background: nothing is pushed while the answer is the
         /// same, so the per-frame application stays free.
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         fn set_blur_behind(&mut self, blur: bool) {
             if self.blur_behind == blur {
                 return;
