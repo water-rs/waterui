@@ -199,7 +199,7 @@ pub enum EventKind {
         /// How many bind groups were dropped.
         dropped: u64,
         /// Why ("buffer growth", "atlas generation", "stamp change",
-        /// "trim", "resize", "destroy").
+        /// "trim", "resize", "destroy", "backdrop resolve").
         reason: &'static str,
     },
     /// An atlas cell was placed without an upload (zero-sized cells).
