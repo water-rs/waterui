@@ -273,12 +273,31 @@ impl<T> std::fmt::Debug for Subscribe<T> {
 }
 
 trait Subscription<T> {
+    /// The source's value now.
+    fn current(&self) -> T;
+
+    /// Whether the subscription can notify: a signal whose guard is
+    /// zero-sized with no drop glue never notifies, per nami's guard
+    /// contract ("when dropped, will unregister the watcher" — nothing
+    /// to unregister, so nothing to register). [`Live::watch`] skips the
+    /// watch of a subscription that cannot fire.
+    fn fires(&self) -> bool;
+
     fn start(self: Box<Self>, watch: Watch<T>) -> Option<Box<dyn Any>>;
 }
 
 struct SignalSubscription<S>(S);
 
 impl<S: Signal> Subscription<S::Output> for SignalSubscription<S> {
+    fn current(&self) -> S::Output {
+        self.0.snapshot()
+    }
+
+    fn fires(&self) -> bool {
+        // The same rule `start` applies to the guard it returns.
+        size_of::<S::Guard>() != 0 || needs_drop::<S::Guard>()
+    }
+
     #[expect(
         clippy::inline_always,
         reason = "erase constant watches after devirtualizing the subscription"
@@ -302,8 +321,7 @@ impl<T> Subscribe<T> {
         reason = "expose the concrete subscription to the recorder's call site"
     )]
     #[inline(always)]
-    // Starts the watch `Live::watch` and the recorder's slot subscriptions
-    // share.
+    // Starts a recorder's slot subscription.
     #[must_use]
     fn start(self, watch: Watch<T>) -> Option<Box<dyn Any>> {
         self.0.and_then(|subscription| subscription.start(watch))
@@ -369,11 +387,23 @@ impl std::fmt::Debug for Binding {
 }
 
 impl<T> Live<T> {
-    /// The value a binding starts from: the constant, or the signal's
-    /// value when the `Live` was made.
+    /// The value when the `Live` was made: the constant, or the signal's
+    /// value at that point. A binding ([`watch`](Self::watch)) of a signal
+    /// starts from the signal's value when it binds instead — unless the
+    /// signal cannot fire, which keeps this stored value.
     #[must_use]
     pub const fn value(&self) -> &T {
         &self.value
+    }
+
+    /// Whether binding this `Live` watches a signal's changes: `false`
+    /// for a constant and for a signal whose subscription cannot fire,
+    /// per [`Subscription::fires`].
+    pub(crate) fn is_signal(&self) -> bool {
+        self.subscription
+            .0
+            .as_ref()
+            .is_some_and(|subscription| subscription.fires())
     }
 
     /// Binds `watcher` to the source signal's later changes — the one
@@ -383,10 +413,15 @@ impl<T> Live<T> {
     /// new target, and an [`Animation`] in its metadata is the animation
     /// the change was made under.
     ///
-    /// Returns the value the binding starts from and the guard keeping
-    /// the subscription alive — `None` for a constant, which never calls
-    /// the watcher, or a signal whose watch needs no storage. Either way
-    /// the binding replaces the property's previous one.
+    /// Returns the value the binding starts from — the constant, or the
+    /// signal's value read immediately before the watch starts, so a
+    /// change made since the `Live` was made is not lost — and the guard
+    /// keeping the subscription alive: `None` for a constant and for a
+    /// signal whose subscription cannot fire. The non-firing case starts
+    /// from the value the `Live` was made with, which differs from
+    /// [`Subscription::current`] only when an impure map ran over a
+    /// constant. Either way the binding replaces the property's previous
+    /// one.
     #[expect(
         clippy::inline_always,
         reason = "expose the concrete subscription to the binding's call site"
@@ -400,16 +435,27 @@ impl<T> Live<T> {
             value,
             subscription,
         } = self;
+        let Some(subscription) = subscription.0 else {
+            return (value, None);
+        };
+        if !subscription.fires() {
+            return (value, None);
+        }
+        // A signal binding snapshots twice per edit: once when the `Live`
+        // was made, once here before the watch starts. A registration-time
+        // emit is not applied.
+        let value = subscription.current();
         let guard = subscription
             .start(Watch::binding(watcher))
             .map(|guard| Binding { _guard: guard });
         (value, guard)
     }
 
-    /// A `Live` of `f` applied to this one's value: `f` maps the value the
-    /// binding starts from now and every later change when the result is
-    /// bound. A change keeps its `Context` metadata, so an [`Animation`] it
-    /// was made under still reaches the binding.
+    /// A `Live` of `f` applied to this one's value: `f` maps the stored
+    /// value now, and the value the binding starts from and every later
+    /// change when the result is bound. A change keeps its `Context`
+    /// metadata, so an [`Animation`] it was made under still reaches the
+    /// binding.
     pub fn map<U: 'static>(self, f: impl Fn(T) -> U + 'static) -> Live<U>
     where
         T: 'static,
@@ -436,6 +482,14 @@ struct MappedSubscription<T, F> {
 }
 
 impl<T: 'static, U: 'static, F: Fn(T) -> U + 'static> Subscription<U> for MappedSubscription<T, F> {
+    fn current(&self) -> U {
+        (self.f)(self.inner.current())
+    }
+
+    fn fires(&self) -> bool {
+        self.inner.fires()
+    }
+
     fn start(self: Box<Self>, watch: Watch<U>) -> Option<Box<dyn Any>> {
         let Self { inner, f } = *self;
         inner.start(Watch::binding(
@@ -666,15 +720,19 @@ pub struct Recorder {
     size: LayoutSize,
     /// The clip, transform and group scopes open around the current call.
     depth: u32,
-    /// The material scope of a recording opened with
-    /// [`Content::record_layered`]; `None` for a plain recording, which
-    /// takes no material.
-    scope: Option<MaterialScope>,
-    /// A layered recording's finished parts: the content recorded before
-    /// each material so far.
-    parts: Vec<Content>,
-    /// A layered recording's materials so far, in recording order.
-    materials: Vec<BackdropMaterial>,
+    /// The state of a recording opened with [`Content::record_layered`];
+    /// `None` for a plain recording, which takes no material.
+    layered: Option<Layered>,
+}
+
+/// A layered recording's state.
+#[derive(Debug)]
+struct Layered {
+    /// The material scope the recording was opened under.
+    scope: MaterialScope,
+    /// Each material so far, in recording order, with the content recorded
+    /// before it.
+    parts: Vec<(Content, BackdropMaterial)>,
 }
 
 impl std::fmt::Debug for Recorder {
@@ -699,9 +757,7 @@ impl Recorder {
             picture,
             size,
             depth: 0,
-            scope: None,
-            parts: Vec::new(),
-            materials: Vec::new(),
+            layered: None,
         }
     }
 
@@ -721,11 +777,7 @@ impl Recorder {
     /// - in a recording not opened with [`Content::record_layered`];
     /// - inside a [`clip`](Draw::clip), [`transform`](Draw::transform) or
     ///   [`group`](Draw::group) scope: a material is allowed only at the
-    ///   top level of a layered recording;
-    /// - when the effect carries more than
-    ///   [`MaterialEffect::MAX_UNIFORMS`] uniforms or a non-finite one.
-    ///   A later change of the effect is checked the same way when it is
-    ///   delivered.
+    ///   top level of a layered recording.
     pub fn backdrop_material<S: Shape>(
         &mut self,
         shape: impl Into<Live<S>>,
@@ -733,23 +785,29 @@ impl Recorder {
         capture: CaptureClass,
         effect: impl Into<Live<MaterialEffect>>,
     ) {
-        let Some(scope) = self.scope else {
+        let Self {
+            layered: Some(layered),
+            list,
+            live,
+            depth,
+            ..
+        } = self
+        else {
             panic!(
                 "a backdrop material can only be recorded into a recording opened with \
                  `Content::record_layered`"
             );
         };
         assert!(
-            self.depth == 0,
+            *depth == 0,
             "a backdrop material can only be recorded at the top level of a layered recording, \
              outside every clip, transform and group scope"
         );
+        // Built before the part is taken: a panic in the caller's
+        // conversions leaves the recording unchanged.
         let shape = shape.into().map(Shape::into_data);
-        let effect = effect.into().map(MaterialEffect::validate);
-        let part = self.take_part();
-        self.parts.push(part);
-        self.materials
-            .push(BackdropMaterial::new(shape, shader, capture, effect, scope));
+        let material = BackdropMaterial::new(shape, shader, capture, effect.into(), layered.scope);
+        layered.parts.push((Self::take_part(list, live), material));
     }
 
     /// Runs a clip, transform or group scope's `body` one scope deeper.
@@ -761,12 +819,12 @@ impl Recorder {
 
     /// Finishes what has been recorded since the last material into a
     /// content of its own, leaving the recorder empty for the next part.
-    fn take_part(&mut self) -> Content {
-        let mut list = std::mem::take(&mut self.list);
+    fn take_part(list: &mut DisplayList, live: &mut Rc<LiveState>) -> Content {
+        let mut list = std::mem::take(list);
         list.trim_spare();
         Content {
             picture: Picture::from_list(list),
-            live: std::mem::take(&mut self.live),
+            live: std::mem::take(live),
             sent: false,
         }
     }
@@ -1094,13 +1152,19 @@ impl Content {
         body: impl FnOnce(&mut Recorder),
     ) -> LayeredContent {
         let mut recorder = Recorder::new(DisplayList::default(), Rc::default(), None, size.clone());
-        recorder.scope = Some(scope);
+        recorder.layered = Some(Layered {
+            scope,
+            parts: Vec::new(),
+        });
         body(&mut recorder);
         // Each material's part is the content recorded before it; the
         // content after the last one is the last run's.
-        let mut above = recorder.take_part();
-        let mut runs = Vec::with_capacity(recorder.materials.len());
-        for (material, before) in recorder.materials.into_iter().zip(recorder.parts).rev() {
+        let mut above = Recorder::take_part(&mut recorder.list, &mut recorder.live);
+        let Some(Layered { parts, .. }) = recorder.layered else {
+            unreachable!("`record_layered` opened the recording with its layered state");
+        };
+        let mut runs = Vec::with_capacity(parts.len());
+        for (before, material) in parts.into_iter().rev() {
             runs.push(MaterialRun { material, above });
             above = before;
         }
@@ -1418,8 +1482,11 @@ mod tests {
         assert_eq!(run.coords.as_ptr(), coords);
     }
 
+    /// The recorder subscribes unconditionally — the `fires` skip is a
+    /// property-binding optimization, so a slot's `watch` runs even when
+    /// the signal's guard is zero-sized.
     #[test]
-    fn a_zero_sized_guard_does_not_skip_the_watch() {
+    fn a_recording_watches_a_signal_with_a_zero_sized_guard() {
         #[derive(Clone)]
         struct Observed(Rc<std::cell::Cell<usize>>);
 

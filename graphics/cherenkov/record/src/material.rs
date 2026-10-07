@@ -51,7 +51,21 @@ use crate::shape::ShapeData;
 /// It is engine-independent: the realizing host registers the source with
 /// every engine it attaches and maps the key to that engine's handle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct MaterialShader(pub u32);
+pub struct MaterialShader(u32);
+
+impl MaterialShader {
+    /// The key with raw value `raw`.
+    #[must_use]
+    pub const fn new(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    /// The key's raw value.
+    #[must_use]
+    pub const fn raw(self) -> u32 {
+        self.0
+    }
+}
 
 /// The key a widget theme chooses for one of its capture classes: a set of
 /// backdrop-group parameters ([`MaterialCapture`]) its materials share.
@@ -61,7 +75,21 @@ pub struct MaterialShader(pub u32);
 /// [`Recorder::backdrop_material`](crate::Recorder::backdrop_material).
 /// Materials of different classes never share a group.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct CaptureClass(pub u32);
+pub struct CaptureClass(u32);
+
+impl CaptureClass {
+    /// The key with raw value `raw`.
+    #[must_use]
+    pub const fn new(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    /// The key's raw value.
+    #[must_use]
+    pub const fn raw(self) -> u32 {
+        self.0
+    }
+}
 
 /// A capture class's backdrop-group parameters. They are theme tokens:
 /// the theme fixes them at registration, and every group of the class is
@@ -92,14 +120,11 @@ pub enum MaterialGrouping {
 /// A material's live per-member parameters, applied in the member's
 /// composite against its group's shared capture.
 ///
-/// Bound as a signal, a change reaches the realized member as an
-/// effect-only backdrop update: the member's group and capture stay.
+/// Bound as a signal, a change reaches the realized member with no
+/// re-recording.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MaterialEffect {
-    /// The shader's uniforms in its declared order, packed four per
-    /// `vec4` and zero-filled. At most [`MaterialEffect::MAX_UNIFORMS`],
-    /// each finite.
-    pub uniforms: Vec<f32>,
+    uniforms: Vec<f32>,
 }
 
 impl MaterialEffect {
@@ -108,30 +133,32 @@ impl MaterialEffect {
     pub const MAX_UNIFORMS: usize = 64;
 
     /// An effect with `uniforms` in the shader's declared order.
+    ///
+    /// # Panics
+    /// Panics, naming the violated rule, unless there are at most
+    /// [`MAX_UNIFORMS`](Self::MAX_UNIFORMS) uniforms and each is finite.
     #[must_use]
-    pub const fn new(uniforms: Vec<f32>) -> Self {
+    pub fn new(uniforms: Vec<f32>) -> Self {
+        assert!(
+            uniforms.len() <= Self::MAX_UNIFORMS,
+            "a backdrop material effect carries {} uniforms; a backdrop shader takes at most {}",
+            uniforms.len(),
+            Self::MAX_UNIFORMS,
+        );
+        if let Some(index) = uniforms.iter().position(|u| !u.is_finite()) {
+            panic!(
+                "backdrop material uniform {index} is {}; every uniform must be finite",
+                uniforms[index]
+            );
+        }
         Self { uniforms }
     }
 
-    /// Checks the effect a material carries: at most
-    /// [`MAX_UNIFORMS`](Self::MAX_UNIFORMS) uniforms, each finite.
-    ///
-    /// # Panics
-    /// Panics naming the violated bound.
-    pub(crate) fn validate(self) -> Self {
-        assert!(
-            self.uniforms.len() <= Self::MAX_UNIFORMS,
-            "a backdrop material carries {} uniforms; a backdrop shader takes at most {}",
-            self.uniforms.len(),
-            Self::MAX_UNIFORMS,
-        );
-        if let Some(index) = self.uniforms.iter().position(|u| !u.is_finite()) {
-            panic!(
-                "backdrop material uniform {index} is {}; every uniform must be finite",
-                self.uniforms[index]
-            );
-        }
-        self
+    /// The uniforms the effect was made with, in the shader's declared
+    /// order: at most [`MAX_UNIFORMS`](Self::MAX_UNIFORMS), each finite.
+    #[must_use]
+    pub fn uniforms(&self) -> &[f32] {
+        &self.uniforms
     }
 }
 
@@ -179,9 +206,7 @@ impl MaterialScope {
 /// The shape and the effect are [`Live`]: the host binds the member's clip
 /// to the shape and its backdrop sample to the effect (through
 /// [`Live::map`]), so a signal change reaches the member with no
-/// re-recording. A `Live` starts observing its signal when it is bound, so
-/// the host binds both before the signals can change again — in the same
-/// turn that recorded them.
+/// re-recording. A binding starts from its signal's value when it binds.
 #[derive(Debug)]
 pub struct BackdropMaterial {
     shape: Live<ShapeData>,
@@ -227,10 +252,7 @@ impl BackdropMaterial {
         self.capture
     }
 
-    /// The member's per-member parameters and their later changes. Every
-    /// value it delivers is checked like the recorded one: a change to
-    /// more than [`MaterialEffect::MAX_UNIFORMS`] uniforms, or to a
-    /// non-finite one, panics when it is delivered.
+    /// The member's per-member parameters and their later changes.
     #[must_use]
     pub const fn effect(&self) -> &Live<MaterialEffect> {
         &self.effect
@@ -279,10 +301,10 @@ pub struct LayeredContent {
 /// The backdrop shaders and capture classes a widget theme declares, under
 /// its own keys.
 ///
-/// A theme fills one once, before any chrome is drawn. The realizing host
-/// registers every shader with each engine it attaches and creates groups
-/// from the capture classes; a material naming a key the registry lacks
-/// panics when it is realized.
+/// A theme fills one once, before any chrome is drawn. The contract a
+/// realizing host follows: it registers every shader with each engine it
+/// attaches, creates groups from the capture classes, and panics when it
+/// realizes a material naming a key the registry lacks.
 #[derive(Clone, Debug, Default)]
 pub struct MaterialRegistry {
     shaders: FxHashMap<MaterialShader, BackdropShaderSource>,
@@ -369,13 +391,13 @@ mod tests {
 
     use super::*;
     use crate::display_list::{Command, Operand};
-    use crate::record::{ContentChange, Draw, Fixed};
+    use crate::record::{ContentChange, Draw};
     use crate::size::LayoutSize;
     use crate::style::Group;
     use crate::{Recorder, WorkingColor};
 
-    const GLASS: MaterialShader = MaterialShader(1);
-    const CHROME: CaptureClass = CaptureClass(7);
+    const GLASS: MaterialShader = MaterialShader::new(1);
+    const CHROME: CaptureClass = CaptureClass::new(7);
 
     fn white() -> WorkingColor {
         WorkingColor::new([1., 1., 1., 1.])
@@ -440,7 +462,7 @@ mod tests {
                 *run.material.shape().value(),
                 ShapeData::Rect(Rect::new(left, 0., left + 10., 10.))
             );
-            assert_eq!(run.material.effect().value().uniforms, [x]);
+            assert_eq!(run.material.effect().value().uniforms(), [x]);
         }
         assert_eq!(fills(&mut below), [Rect::new(0., 0., 1., 1.), rect(1.)]);
         assert_eq!(fills(&mut runs[0].above), [rect(2.)]);
@@ -543,6 +565,38 @@ mod tests {
     }
 
     #[test]
+    fn a_material_effect_binds_from_its_signal_value_at_binding() {
+        let gain = binding(1.0_f32);
+        let LayeredContent { runs, .. } =
+            Content::record_layered(&LayoutSize::new(), MaterialScope::SOLO, |r| {
+                r.backdrop_material(
+                    Rect::new(0., 0., 5., 5.),
+                    GLASS,
+                    CHROME,
+                    gain.clone().map(|g| MaterialEffect::new(vec![g])),
+                );
+            });
+        let (_, effect) = runs
+            .into_iter()
+            .next()
+            .expect("one run")
+            .material
+            .into_live();
+        gain.set(2.);
+        assert_eq!(
+            *effect.value(),
+            MaterialEffect::new(vec![1.]),
+            "the value when the `Live` was made"
+        );
+        let (start, _guard) = effect.watch(|_| {});
+        assert_eq!(
+            start,
+            MaterialEffect::new(vec![2.]),
+            "the binding starts from the change made before it bound"
+        );
+    }
+
+    #[test]
     #[should_panic(expected = "opened with `Content::record_layered`")]
     fn a_material_in_a_plain_recording_panics() {
         let _ = Content::record(&LayoutSize::new(), |r| material(r, 0.));
@@ -582,33 +636,19 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "a backdrop shader takes at most 64")]
-    fn a_material_with_more_than_64_uniforms_panics() {
-        layered(|r| {
-            r.backdrop_material(
-                Rect::new(0., 0., 5., 5.),
-                GLASS,
-                CHROME,
-                MaterialEffect::new(vec![0.; 65]),
-            );
-        });
+    fn an_effect_with_more_than_64_uniforms_panics() {
+        let _ = MaterialEffect::new(vec![0.; 65]);
     }
 
     #[test]
     #[should_panic(expected = "uniform 1 is NaN")]
-    fn a_material_with_a_non_finite_uniform_panics() {
-        layered(|r| {
-            r.backdrop_material(
-                Rect::new(0., 0., 5., 5.),
-                GLASS,
-                CHROME,
-                Fixed(MaterialEffect::new(vec![0., f32::NAN])),
-            );
-        });
+    fn an_effect_with_a_non_finite_uniform_panics() {
+        let _ = MaterialEffect::new(vec![0., f32::NAN]);
     }
 
     #[test]
     #[should_panic(expected = "uniform 0 is inf")]
-    fn a_non_finite_uniform_change_panics_when_delivered() {
+    fn a_non_finite_uniform_change_panics_in_its_signal_map() {
         let gain = binding(1.0_f32);
         let LayeredContent { runs, .. } =
             Content::record_layered(&LayoutSize::new(), MaterialScope::SOLO, |r| {
@@ -663,9 +703,12 @@ mod tests {
             .register_capture_class(CHROME, capture);
         assert!(!registry.is_empty());
         assert_eq!(registry.shader(GLASS).map(|s| s.reach), Some(6.));
-        assert_eq!(registry.shader(MaterialShader(2)).map(|s| s.reach), None);
+        assert_eq!(
+            registry.shader(MaterialShader::new(2)).map(|s| s.reach),
+            None
+        );
         assert_eq!(registry.capture_class(CHROME), Some(&capture));
-        assert_eq!(registry.capture_class(CaptureClass(8)), None);
+        assert_eq!(registry.capture_class(CaptureClass::new(8)), None);
         assert_eq!(registry.shaders().count(), 1);
         assert_eq!(registry.capture_classes().count(), 1);
     }

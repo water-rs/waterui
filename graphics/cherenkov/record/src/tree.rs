@@ -728,7 +728,6 @@ impl SurfaceTree {
             | LayerOp::Clip(id, _)
             | LayerOp::Filter(id, _)
             | LayerOp::Backdrop(id, _)
-            | LayerOp::BackdropEffect(id, _)
             | LayerOp::Content(id, _) => Some((*id, true)),
             LayerOp::Push { parent, .. }
             | LayerOp::Insert { parent, .. }
@@ -807,17 +806,6 @@ impl SurfaceTree {
             LayerOp::Blend(id, blend) => self.set_blend(id, blend),
             LayerOp::Filter(id, filter) => self.node_mut(id).filter = filter,
             LayerOp::Backdrop(id, backdrop) => self.node_mut(id).backdrop = backdrop,
-            LayerOp::BackdropEffect(id, effect) => self
-                .node_mut(id)
-                .backdrop
-                .as_mut()
-                .unwrap_or_else(|| {
-                    panic!(
-                        "an effect-only backdrop update reached layer {}, which samples no group",
-                        id.raw()
-                    )
-                })
-                .set_effect(effect),
             LayerOp::Content(id, _) => {
                 // Validated here; forwarded to the renderer by the loop.
                 assert!(

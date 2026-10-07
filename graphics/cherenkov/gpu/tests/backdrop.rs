@@ -516,10 +516,8 @@ fn shader_effect_lights_the_rim() -> Result<(), Box<dyn std::error::Error>> {
 
 split_test! {
 /// A member bound to a signal of its shader uniforms re-renders with the
-/// new uniforms on the next frame. The change keeps the group and the
-/// shader's reach, so it updates only the member's effect: no
-/// transaction, no new group, and the same capture.
-fn a_bound_shader_effect_change_rerenders_without_replanning_the_group()
+/// new uniforms on the next frame, with no transaction.
+fn a_bound_shader_effect_change_rerenders_the_member()
 -> Result<(), Box<dyn std::error::Error>> {
     use nami::{SignalExt, binding};
 

@@ -756,11 +756,9 @@ fn reduced_rim_lights_the_bilinear_sample_on_the_capture_grid() {
 }
 
 /// A member bound to a signal of its refraction re-renders with the new
-/// parameters on the next frame. The change keeps the group and the
-/// effect's reach (`strength`), so it updates only the member's effect:
-/// no transaction, no new group, and the same capture.
+/// parameters on the next frame, with no transaction.
 #[test]
-fn a_bound_refraction_change_rerenders_without_replanning_the_group() {
+fn a_bound_refraction_change_rerenders_the_member() {
     use nami::{SignalExt, binding};
 
     let engine = engine();

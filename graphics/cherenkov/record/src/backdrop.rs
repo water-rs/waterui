@@ -179,25 +179,6 @@ impl BackdropSample {
     pub const fn effect(&self) -> Option<&BackdropEffect> {
         self.effect.as_ref()
     }
-
-    /// What of the sample shapes its group's capture region: the group,
-    /// and the effect's sampling reach as raw bits. Two samples with equal
-    /// keys differ only in the member's composite.
-    pub(crate) fn region_key(&self) -> (BackdropId, u32) {
-        let reach = self.effect.as_ref().map_or(0.0, BackdropEffect::reach);
-        (self.group, reach.to_bits())
-    }
-
-    /// The per-member effect, consuming the sample.
-    pub(crate) fn into_effect(self) -> Option<BackdropEffect> {
-        self.effect
-    }
-
-    /// Replaces the per-member effect, keeping the group: an effect-only
-    /// update ([`LayerOp::BackdropEffect`](crate::LayerOp::BackdropEffect)).
-    pub(crate) fn set_effect(&mut self, effect: Option<BackdropEffect>) {
-        self.effect = effect;
-    }
 }
 
 nami_core::impl_constant!(BackdropSample);
