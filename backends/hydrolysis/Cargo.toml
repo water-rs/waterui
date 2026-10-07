@@ -196,16 +196,22 @@ x11rb = { version = "0.13", optional = true }
 
 # `GetCursorPos` / `GetMonitorInfoW` for `MonitorSelector::Pointer` and
 # `visible_frame`, `WS_EX_NOACTIVATE` for `Activation::Never`,
-# `DwmGetWindowAttribute(DWMWA_CLOAKED)` for hidden-window occlusion. The
-# version tracks the `windows-sys` release winit 0.30 already builds against.
+# `DwmGetWindowAttribute(DWMWA_CLOAKED)` for hidden-window occlusion,
+# `DwmSetWindowAttribute(DWMWA_SYSTEMBACKDROP_TYPE)` and
+# `DwmExtendFrameIntoClientArea` for the behind-window material's acrylic
+# backdrop, `RtlGetVersion` for the build floor that gates it. The version
+# tracks the `windows-sys` release winit 0.30 already builds against.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", optional = true, features = [
+    "Wdk_System_SystemServices",
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_System_Console",
     "Win32_System_Shutdown",
+    "Win32_System_SystemInformation",
     "Win32_System_Threading",
+    "Win32_UI_Controls",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
