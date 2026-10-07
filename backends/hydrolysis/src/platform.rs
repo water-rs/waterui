@@ -1062,6 +1062,12 @@ pub trait GpuSurfaceWindow: PlatformWindow {
     fn gpu_surface_redraw_handle(&self) -> Option<RedrawHandle> {
         None
     }
+
+    /// Asks the compositor to blur what lies behind the window, or stops
+    /// asking. A target with no compositor blur keeps this default no-op.
+    fn set_blur_behind(&mut self, blur: bool) {
+        let _ = blur;
+    }
 }
 
 /// The adapter, device and queue an [`OffscreenSurface`] renders on.
@@ -3370,6 +3376,17 @@ mod winit_impl {
         /// per-frame background push reaches winit and the surface only when
         /// the background switches between opaque and translucent.
         transparent: bool,
+        /// Whether the window currently asks the compositor to blur what lies
+        /// behind it, so the request reaches the platform only on a change.
+        /// Only platforms that realize the request keep it; elsewhere the
+        /// trait's default leaves the window as it is.
+        #[cfg(target_os = "macos")]
+        blur_behind: bool,
+        /// The behind-window effect view while `blur_behind` holds: the
+        /// platform sublayer under the self-drawn content, removed when the
+        /// window stops asking.
+        #[cfg(target_os = "macos")]
+        blur_effect_view: Option<objc2::rc::Retained<objc2_app_kit::NSVisualEffectView>>,
         /// Explicit `ProMotion` opt-in: declares the 120Hz frame-rate demand to
         /// the window server while redraws are being requested. `None` before
         /// macOS 14.
@@ -3451,6 +3468,10 @@ mod winit_impl {
                     applied_properties: None,
                     pending_mapped_request: MappedRequestRetry::default(),
                     transparent: requires_transparency,
+                    #[cfg(target_os = "macos")]
+                    blur_behind: false,
+                    #[cfg(target_os = "macos")]
+                    blur_effect_view: None,
                 },
                 gpu,
             )
@@ -3511,6 +3532,85 @@ mod winit_impl {
                     UserAttention::Informational => winit::window::UserAttentionType::Informational,
                     UserAttention::Critical => winit::window::UserAttentionType::Critical,
                 }));
+        }
+
+        /// Asks the platform's compositor to blur what lies behind the
+        /// window, or stops asking — the platform sublayer under the
+        /// self-drawn content, whose own tint already supplies the level's
+        /// colour above it.
+        #[cfg(target_os = "macos")]
+        fn apply_blur_behind(&mut self, blur: bool) {
+            self.macos_apply_blur_behind(blur);
+        }
+
+        /// The `AppKit` half of `set_blur_behind`: while the window asks, an
+        /// `NSVisualEffectView` blending behind the window sits in the
+        /// content view's superview directly beneath the view hosting the
+        /// Metal layer; when it stops, the view is removed and dropped.
+        /// `underWindowBackground` is the material for both behind-window
+        /// levels — Hydrolysis's own tint, cleared to under the content,
+        /// supplies the level's colour, so the effect view only needs to
+        /// blur.
+        ///
+        /// Beneath means beneath: a subview of the Metal layer's host draws
+        /// above every layer the host owns, so the effect view goes in as a
+        /// sibling ordered below the host instead.
+        #[cfg(target_os = "macos")]
+        fn macos_apply_blur_behind(&mut self, blur: bool) {
+            use objc2::MainThreadMarker;
+            use objc2_app_kit::{
+                NSAutoresizingMaskOptions, NSView, NSVisualEffectBlendingMode,
+                NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
+                NSWindowOrderingMode,
+            };
+
+            if !blur {
+                if let Some(effect_view) = self.blur_effect_view.take() {
+                    effect_view.removeFromSuperview();
+                }
+                return;
+            }
+            if self.blur_effect_view.is_some() {
+                return;
+            }
+            let content_view = {
+                let handle = self
+                    .window
+                    .window_handle()
+                    .expect("Hydrolysis macOS window must expose an AppKit handle");
+                let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+                    panic!("Hydrolysis macOS window returned a non-AppKit handle");
+                };
+                // SAFETY: winit hands out the window's live `NSView` pointer —
+                // the content view — and the borrow does not outlive the
+                // window handle it came from. AppKit calls run on the main
+                // thread, as every window method on this host does.
+                unsafe { appkit.ns_view.cast::<NSView>().as_ref() }
+            };
+            // SAFETY: the view is alive in its window on the AppKit main
+            // thread.
+            let parent = unsafe { content_view.superview() }
+                .expect("a mapped window's content view has the frame view as its superview");
+            let mtm = MainThreadMarker::new()
+                .expect("Hydrolysis macOS blur-behind must run on the AppKit main thread");
+            let effect_view = NSVisualEffectView::new(mtm);
+            effect_view.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
+            effect_view.setState(NSVisualEffectState::Active);
+            effect_view.setMaterial(NSVisualEffectMaterial::UnderWindowBackground);
+            effect_view.setFrame(content_view.frame());
+            effect_view.setAutoresizingMask(
+                NSAutoresizingMaskOptions::ViewWidthSizable
+                    | NSAutoresizingMaskOptions::ViewHeightSizable,
+            );
+            // Ordered below the content view itself, so the Metal layer the
+            // surface presents into draws the level's tint and the content
+            // above the blur.
+            parent.addSubview_positioned_relativeTo(
+                &effect_view,
+                NSWindowOrderingMode::Below,
+                Some(content_view),
+            );
+            self.blur_effect_view = Some(effect_view);
         }
 
         /// Pushes the requested `WindowState` to the window server. Shared
@@ -4444,6 +4544,18 @@ mod winit_impl {
                     wake.request_redraw();
                 }
             }))
+        }
+
+        /// Keeps the compositor's blur-behind request in step with the
+        /// resolved background: nothing is pushed while the answer is the
+        /// same, so the per-frame application stays free.
+        #[cfg(target_os = "macos")]
+        fn set_blur_behind(&mut self, blur: bool) {
+            if self.blur_behind == blur {
+                return;
+            }
+            self.apply_blur_behind(blur);
+            self.blur_behind = blur;
         }
     }
 

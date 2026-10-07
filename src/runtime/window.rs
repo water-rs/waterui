@@ -369,9 +369,10 @@ pub enum WindowBackground {
     ///   surface transparent and composites the level's colour treatment as
     ///   the closest source-over tint under the content; blurring the desktop
     ///   is the compositor's job. The desktop is blurred where the platform's
-    ///   blur-behind is wired and shows through tinted but unblurred
-    ///   elsewhere; X11 and Wayland on Linux and the system backdrop on
-    ///   Windows are water-rs/waterui#1856, #1857 and #1858.
+    ///   blur-behind is wired — an `NSVisualEffectView` behind the window on
+    ///   macOS — and shows through tinted but unblurred elsewhere; X11 and
+    ///   Wayland on Linux and the system backdrop on Windows are
+    ///   water-rs/waterui#1856, #1857 and #1858.
     /// - **Hydrolysis on Android**: a within-window level is realized as on a
     ///   desktop. Window transparency is not realized on Android yet, so a
     ///   behind-window level renders as an opaque window

@@ -122,6 +122,7 @@ objc2-app-kit = { version = "0.3", optional = true, features = [
     "NSResponder",
     "NSScreen",
     "NSView",
+    "NSVisualEffectView",
     "NSWindow",
     "objc2-quartz-core",
 ] }
