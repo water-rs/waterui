@@ -1521,11 +1521,18 @@ where
         }
         match event {
             InputEvent::CloseRequested => {
-                runtime
-                    .window
-                    .state
-                    .set(waterui::window::WindowState::Closed);
-                should_close = true;
+                // The one close path every request takes — the title-bar
+                // button, which X11 and Wayland keep enabled whatever
+                // `closable` says, a window-manager close and a `WM_CLOSE`
+                // sent straight to a Windows window: a non-closable window
+                // ignores them all.
+                if runtime.window.closable {
+                    runtime
+                        .window
+                        .state
+                        .set(waterui::window::WindowState::Closed);
+                    should_close = true;
+                }
             }
             InputEvent::Moved { x, y } => {
                 let frame =

@@ -11,7 +11,9 @@
 use std::fmt::Write as _;
 
 use serde::Serialize;
-use waterui_testing::{CheckedState, NodeId, NodeSnapshot, Role, SemanticApp, TreeSnapshot};
+use waterui_testing::{
+    CheckedState, ContentType, NodeId, NodeSnapshot, Role, SemanticApp, TreeSnapshot,
+};
 
 /// Lowercases an `AccessKit` `Debug` name into `snake_case` (`CheckBox` becomes
 /// `check_box`); the spelling every role and action prints with.
@@ -143,6 +145,10 @@ struct JsonNode {
     identifier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     value: Option<String>,
+    /// The declared text-field content type — `ContentType`'s camelCase
+    /// serde names, e.g. `"oneTimeCode"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content_type: Option<ContentType>,
     #[serde(skip_serializing_if = "Option::is_none")]
     bounds: Option<JsonBounds>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -181,6 +187,7 @@ impl JsonNode {
             label: node.label().map(ToOwned::to_owned),
             identifier: node.identifier().map(ToOwned::to_owned),
             value: node.value().map(ToOwned::to_owned),
+            content_type: node.content_type(),
             bounds: node.bounds().map(|bounds| JsonBounds {
                 x: bounds.x(),
                 y: bounds.y(),

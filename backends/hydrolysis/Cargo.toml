@@ -229,6 +229,9 @@ tracing-log = "0.2"
 # as JSON.
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+# The published payload's `contentTypes` map serializes `ContentType`
+# (camelCase names) — the provider maps each onto `HintConstants`.
+waterui-controls = { workspace = true, features = ["serde"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # The web runner fetches its fonts while the GPU device comes up; `join!` and

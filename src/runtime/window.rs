@@ -53,7 +53,12 @@ pub struct Window {
     pub title: Computed<Str>,
     /// Whether the window is closable.
     ///
-    /// Notice that it may not be supported on all platforms.
+    /// How each platform honours `false`:
+    ///
+    /// - **macOS and Windows:** the close button is disabled.
+    /// - **Linux (X11 and Wayland):** the button stays drawn and enabled,
+    ///   but the close request it sends is ignored.
+    /// - **iOS, Android and web:** there is no window close.
     pub closable: bool,
     /// Whether the window is resizable.
     ///
