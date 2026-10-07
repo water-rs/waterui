@@ -2153,7 +2153,6 @@ dependencies = [
  "objc2-core-media",
  "objc2-core-text",
  "objc2-foundation 0.3.2",
- "objc2-io-surface",
  "objc2-map-kit",
  "objc2-metal 0.3.2",
  "objc2-quartz-core 0.3.2",
@@ -13080,6 +13079,7 @@ version = "0.5.1"
 dependencies = [
  "executor-core",
  "nami",
+ "serde",
  "thiserror 2.0.21",
  "waterui",
  "waterui-core",
@@ -13550,6 +13550,7 @@ dependencies = [
  "serde_json",
  "tracing",
  "waterui",
+ "waterui-controls",
  "waterui-mcp-protocol",
  "waterui-testing",
 ]

@@ -699,10 +699,52 @@ jobs:
         with:
           tool: cargo-nextest
 
+      # The lane owns its simulator end to end: it resolves a concrete
+      # device type and the newest iOS runtime out of the runner image's
+      # own inventory (failing clearly when no iOS runtime is installed),
+      # creates the device, and deletes it in the always() step below.
+      # nextest-ios-sim.sh requires WATERUI_IOS_SIM_UDID of a caller-owned
+      # device, so nothing here may pick a simulator implicitly.
+      - name: Create and boot the iOS simulator
+        run: |
+          set -euo pipefail
+          runtimes="$(xcrun simctl list runtimes --json)"
+          selection="$(jq -r '
+            [.runtimes[] | select(.platform == "iOS" and (.isAvailable // false))]
+            | sort_by(.version | [split(".")[] | tonumber])
+            | if length == 0 then empty
+              else .[length - 1] as $runtime
+                | [$runtime.identifier,
+                   ([$runtime.supportedDeviceTypes[] | select(.productFamily == "iPhone")] | .[0].identifier)]
+                | @tsv
+              end' <<<"${runtimes}")"
+          if [[ -z "${selection}" ]]; then
+            echo "::error::No available iOS simulator runtime on this runner image."
+            exit 1
+          fi
+          runtime_identifier="$(cut -f1 <<<"${selection}")"
+          device_type="$(cut -f2 <<<"${selection}")"
+          if [[ -z "${device_type}" ]]; then
+            echo "::error::Newest iOS simulator runtime ${runtime_identifier} supports no iPhone device type."
+            exit 1
+          fi
+          simulator_udid="$(xcrun simctl create waterui-ios-device-tests "${device_type}" "${runtime_identifier}")"
+          echo "SIMULATOR_UDID=${simulator_udid}" >> "${GITHUB_ENV}"
+          xcrun simctl bootstatus "${simulator_udid}" -b
+
       - name: Run packaged-app and native iOS tests
         env:
           WATERUI_DIR: ${{ github.workspace }}
-        run: ./.github/scripts/run-ios-device-tests.sh ios_test_host
+        run: ./.github/scripts/run-ios-device-tests.sh ios_test_host "${SIMULATOR_UDID}"
+
+      - name: Delete the iOS simulator
+        if: always()
+        run: |
+          set -euo pipefail
+          if [[ -n "${SIMULATOR_UDID:-}" ]]; then
+            xcrun simctl shutdown "${SIMULATOR_UDID}"
+            xcrun simctl delete "${SIMULATOR_UDID}"
+          fi
 
   # Every shard uploads one startup-times JSON and one memory JSON; the build
   # jobs upload one package-size JSON per platform. This job merges them into

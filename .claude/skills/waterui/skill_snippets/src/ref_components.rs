@@ -4,6 +4,7 @@
 extern crate alloc;
 
 use waterui::Identifiable;
+use waterui::component::text_field::{ContentType, KeyboardType};
 use waterui::prelude::*;
 
 use waterui_icons_lucide as lucide;
@@ -283,6 +284,7 @@ pub fn components_block_12() {
     let address = Binding::container(Str::from(""));
     let query = Binding::container(Str::from(""));
     let name = Binding::container(Str::from(""));
+    let code = Binding::container(Str::from(""));
     let fraction = 0.5_f64;
 
     let _ = {
@@ -334,6 +336,13 @@ pub fn components_block_12() {
     let _ = {
         // placeholder ≠ label
         TextField::new("Username", &name).prompt("Enter your username")
+    };
+    let _ = {
+        // .content_type declares what the field means, for autofill — it is
+        // what makes Apple offer the received SMS code; pair with .keyboard(..)
+        TextField::new("Verification code", &code)
+            .keyboard(KeyboardType::Number)
+            .content_type(ContentType::OneTimeCode)
     };
     let _ = {
         progress(fraction) // impl IntoComputed<f64>

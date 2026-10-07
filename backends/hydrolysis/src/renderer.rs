@@ -139,6 +139,8 @@ use waterui_controls::label::Label as SemanticLabel;
 use waterui_controls::menu::{CommandRole, ResolvedCommand, ResolvedMenu, ResolvedMenuItem};
 use waterui_controls::slider::SliderConfig;
 use waterui_controls::stepper::StepperConfig;
+#[cfg(feature = "accessibility")]
+use waterui_controls::text_field::ContentType;
 use waterui_controls::text_field::{ResolvedTextFieldConfig, TextField};
 use waterui_controls::toggle::ToggleConfig;
 use waterui_core::dynamic::{Dynamic, DynamicInitialContent};

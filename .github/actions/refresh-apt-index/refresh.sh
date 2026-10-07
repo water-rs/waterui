@@ -10,7 +10,14 @@ else
   echo "::error::no Ubuntu archive source file on this runner"
   exit 1
 fi
-sudo apt-get update \
+# A stalled mirror connection otherwise holds the step until the job's own
+# timeout; each fetch gives up after 30 s and the whole refresh after 5 min.
+if ! timeout 300 sudo apt-get update \
   -o Acquire::Retries=10 \
+  -o Acquire::http::Timeout=30 \
+  -o Acquire::https::Timeout=30 \
   -o Dir::Etc::SourceList="$list" \
-  -o Dir::Etc::SourceParts=/dev/null
+  -o Dir::Etc::SourceParts=/dev/null; then
+  echo "::error::refreshing the Ubuntu apt index failed or exceeded its 5 minute deadline"
+  exit 1
+fi

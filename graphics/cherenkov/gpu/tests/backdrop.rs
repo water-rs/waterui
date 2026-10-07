@@ -1559,6 +1559,65 @@ fn staged_resolves_use_one_staging_per_format() -> Result<(), Box<dyn std::error
 }
 }
 
+/// The `backdrop resolve` `BindGroups` events `sink` accumulated, in
+/// order, as dropped counts.
+fn resolve_bind_drops(sink: &cherenkov_gpu::diag::Sink) -> Vec<u64> {
+    sink.take()
+        .iter()
+        .filter_map(|event| match event.kind {
+            cherenkov_gpu::diag::EventKind::BindGroups {
+                dropped,
+                reason: "backdrop resolve",
+            } => Some(dropped),
+            _ => None,
+        })
+        .collect()
+}
+
+split_test! {
+/// A group's direct-resolve cache holds the view it was built on: a
+/// resize replacing the surface's parts must drop the cached bind, or
+/// the retired texture stays alive past the accounting (#2091). The
+/// drop reports through `BindGroups` with reason "backdrop resolve".
+fn a_resized_surface_drops_the_direct_resolve_bind_on_its_part() -> Result<(), Box<dyn std::error::Error>> {
+    let sink = cherenkov_gpu::diag::Sink::new();
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig {
+        alloc_diag: Some(sink.clone()),
+        ..Default::default()
+    }))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
+    // A reduced capture under nothing looked through resolves straight
+    // from its part: its bind caches that view.
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::new(0.5)?);
+    let member = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 64.0, 64.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&member);
+        tx[&member]
+            .clip(Rect::new(8.0, 8.0, 24.0, 24.0))
+            .backdrop(group.sample());
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    assert!(engine.stats().frame.is_some(), "the frame drew");
+    let _ = sink.take();
+    // The resize replaces every part; then the group keeps no region,
+    // so nothing rebuilds the bind — only the resize can drop it.
+    surface.resize((32, 32))?;
+    surface.update(|tx| {
+        tx[surface.root()].remove(&member);
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    assert!(engine.stats().frame.is_some(), "the frame drew");
+    assert_eq!(resolve_bind_drops(&sink), vec![1]);
+    Ok(())
+}
+}
+
 split_test! {
 /// The pyramid's odd-grid partial box as a pixel read: a 33×33
 /// full-scale capture's level 1 is 17 texels wide, its last a partial

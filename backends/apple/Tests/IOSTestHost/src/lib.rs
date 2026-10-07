@@ -4,9 +4,9 @@
 //! linked test bundle can assert every nested text view lands with a real
 //! frame inside its cell.
 //!
-//! `.github/scripts/run-ios-device-tests.sh ios_test_host` packages this
-//! workspace member like a framework example and launches it on a booted
-//! iOS simulator.
+//! `.github/scripts/run-ios-device-tests.sh ios_test_host <udid>` packages
+//! this workspace member like a framework example and launches it on the
+//! iOS simulator the UDID names — a device the caller created and owns.
 
 use waterui::app::App;
 use waterui::component::list::{List, ListItem};

@@ -6,6 +6,8 @@ use accesskit::{
     Rect as AccessibilityRect, Role as AccessibilityRole, Toggled as AccessibilityToggled,
     TreeUpdate as AccessibilityTreeUpdate,
 };
+use hydrolysis::AccessibilityContentTypes;
+use waterui::component::text_field::ContentType;
 
 use crate::selector::{ScopeRelation, Selector};
 
@@ -256,6 +258,7 @@ pub struct NodeSnapshot {
     pub(crate) actions: Vec<AccessibilityAction>,
     pub(crate) scroll_x: Option<f64>,
     pub(crate) scroll_y: Option<f64>,
+    pub(crate) content_type: Option<ContentType>,
 }
 
 impl NodeSnapshot {
@@ -371,7 +374,21 @@ impl NodeSnapshot {
         self.scroll_y
     }
 
-    fn from_accesskit(id: AccessibilityNodeId, node: &AccessibilityNode) -> Self {
+    /// The content type the text field declared for autofill, if any.
+    ///
+    /// The value travels beside the accessibility tree — `accesskit` has no
+    /// node property for it — so it is read from the publish's typed map,
+    /// not from the node.
+    #[must_use]
+    pub const fn content_type(&self) -> Option<ContentType> {
+        self.content_type
+    }
+
+    fn from_accesskit(
+        id: AccessibilityNodeId,
+        node: &AccessibilityNode,
+        content_type: Option<ContentType>,
+    ) -> Self {
         let checked = match node.toggled() {
             Some(AccessibilityToggled::True) => Some(CheckedState::True),
             Some(AccessibilityToggled::False) => Some(CheckedState::False),
@@ -405,6 +422,7 @@ impl NodeSnapshot {
                 .collect(),
             scroll_x: node.scroll_x(),
             scroll_y: node.scroll_y(),
+            content_type,
         }
     }
 }
@@ -429,7 +447,11 @@ impl TreeSnapshot {
         }
     }
 
-    pub(crate) fn from_update(revision: u64, update: AccessibilityTreeUpdate) -> Self {
+    pub(crate) fn from_update(
+        revision: u64,
+        update: AccessibilityTreeUpdate,
+        content_types: &AccessibilityContentTypes,
+    ) -> Self {
         let root = update.tree.as_ref().map_or_else(
             || NodeId::from(AccessibilityNodeId(0)),
             |tree| NodeId::from(tree.root),
@@ -438,7 +460,10 @@ impl TreeSnapshot {
         let mut nodes = BTreeMap::new();
         for (id, node) in update.nodes {
             let stable_id = NodeId::from(id);
-            nodes.insert(stable_id, NodeSnapshot::from_accesskit(id, &node));
+            nodes.insert(
+                stable_id,
+                NodeSnapshot::from_accesskit(id, &node, content_types.get(&id).copied()),
+            );
         }
 
         Self {
