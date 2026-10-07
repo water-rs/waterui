@@ -74,14 +74,21 @@ fn measure(state: &FixedState, proposal: ProposalSize) -> ViewDimensions {
     reason = "the layout contract is f32; kit geometry is f64"
 )]
 fn perform_layout(state: &Rc<RefCell<FixedState>>) {
-    let (host, placements) = {
+    let host = {
         let state = state.borrow();
         if state.children.is_empty() {
             return;
         }
-        let host = state.host.clone();
-        let host_view: &PlatformView = &state.host;
-        let safe_rect = crate::native_layout::safe_area_rect(host_view);
+        state.host.clone()
+    };
+    let host_view: &PlatformView = &host;
+    // The region context is computed once for the pass and handed to
+    // every child's extension rule — the ancestor walk runs at the
+    // boundary, not per child.
+    let context = crate::native_layout::LayoutContext::of(host_view);
+    let safe_rect = context.safe_rect();
+    let placements = {
+        let state = state.borrow();
         // Placed by a Rust parent: the proposal it selected. Natively hosted:
         // the boundary offer for the rect this container fills.
         let proposal = state.selected.get().unwrap_or_else(|| {
@@ -90,7 +97,7 @@ fn perform_layout(state: &Rc<RefCell<FixedState>>) {
                 Some(safe_rect.size.height as f32),
             )
         });
-        let placements = with_memoized_children(&children_of(&state), |children| {
+        with_memoized_children(&children_of(&state), |children| {
             state.layout.place(
                 waterui_core::layout::Rect::new(
                     waterui_core::layout::Point::new(
@@ -105,8 +112,7 @@ fn perform_layout(state: &Rc<RefCell<FixedState>>) {
                 proposal,
                 children,
             )
-        });
-        (host, placements)
+        })
     };
 
     let state = state.borrow();
@@ -128,9 +134,7 @@ fn perform_layout(state: &Rc<RefCell<FixedState>>) {
             frame.is_valid_for_layout(),
             "fixed container received an invalid layout rect for child {index}: {frame:?}"
         );
-        let host_view: &PlatformView = &host;
-        frame = crate::native_layout::extend_child(
-            host_view,
+        frame = context.extend_child(
             child.view(),
             frame,
             state.host.background_slot() == Some(index),
@@ -200,7 +204,10 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let background = (container.as_parts().0 as &dyn core::any::Any)
             .is::<waterui::layout::BackgroundLayout>();
         let leaf = ctx.render(AnyView::new(container.body(ctx.env())));
-        if background && let Some(host) = leaf.view().downcast_ref::<HostView>() {
+        if background {
+            let host = leaf.view().downcast_ref::<HostView>().expect(
+                "a `BackgroundLayout` container must mount a `HostView` — the fill rule marks the background slot on it",
+            );
             host.set_background_slot(Some(0));
         }
         leaf

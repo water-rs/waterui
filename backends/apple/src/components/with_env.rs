@@ -72,7 +72,8 @@ impl SubView for WithEnvSubView {
 /// `wuiContentFrame(of: contentView, in: self)`: the whole bounds when the
 /// content manages its own safe area, the host's safe-area rect otherwise.
 fn content_frame(host: &HostView, child: &PlatformView) -> Rect {
-    crate::native_layout::content_frame(child, host)
+    let host_view: &PlatformView = host;
+    crate::native_layout::LayoutContext::of(host_view).content_frame(child)
 }
 
 /// Installs the `with_env` handler on the dispatcher: `Metadata<Environment>`
@@ -88,9 +89,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // resolved `metadata.content` against `metadata.value` alone.
         let env = metadata.value;
         let mounted = ctx.with_env(&env).render(metadata.content).mount(host_view);
-        // §7.1: a transparent wrapper propagates its child's fill
-        // answer — `Color.opacity(..)` in a background slot stays a fill.
-        host.set_is_fill(crate::native_layout::is_fill(mounted.view()));
+        // §7.1: the fill answer resolves through the `cocoaUiPrimaryContent`
+        // chain — `Color.opacity(..)` in a background slot stays a fill.
         view::set_translates_autoresizing(mounted.view(), true);
 
         let state = Rc::new(WithEnvState { child: mounted });

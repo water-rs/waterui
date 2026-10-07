@@ -159,15 +159,15 @@ mod platform {
                 if !hidden.snapshot() {
                     let size = bar_view
                         .sizeThatFits(cocoa_ui::geometry::Size::new(bounds.size.width, 0.0).into());
-                    // §7.1's chrome split: the bar's surface extends under
-                    // the container region the host's top edge reaches —
-                    // the host's own inset on that edge — while the bar's
-                    // items dock clear of it; the band's inner edge is
-                    // where the hosted content starts.
+                    // §7.1's chrome split: the bar docks clear of the
+                    // container region the host's top edge reaches — the
+                    // host's own inset on that edge — at its intrinsic
+                    // height, and its `TopAttached` background extends
+                    // upward to cover the band.
                     let band = host.safeAreaInsets().top;
                     view::set_frame(
                         &bar_view,
-                        Rect::new(bounds.origin.x, top, bounds.size.width, size.height + band),
+                        Rect::new(bounds.origin.x, top + band, bounds.size.width, size.height),
                     );
                     top += size.height + band;
                 }

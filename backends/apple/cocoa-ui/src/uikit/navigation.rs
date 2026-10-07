@@ -29,8 +29,9 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_foundation::{NSArray, NSObjectProtocol, NSString};
 use objc2_ui_kit::{
-    UIBarButtonItem, UIBarButtonItemStyle, UIButton, UIControl, UIGestureRecognizer,
-    UIGestureRecognizerDelegate, UINavigationBar, UINavigationController,
+    UIBarButtonItem, UIBarButtonItemStyle, UIBarPosition, UIBarPositioning,
+    UIBarPositioningDelegate, UIButton, UIControl, UIGestureRecognizer,
+    UIGestureRecognizerDelegate, UINavigationBar, UINavigationBarDelegate, UINavigationController,
     UINavigationControllerDelegate, UINavigationItem, UINavigationItemLargeTitleDisplayMode,
     UISearchController, UISearchResultsUpdating, UIViewController,
 };
@@ -640,6 +641,22 @@ define_class!(
 
     // SAFETY: `NSObjectProtocol` asks nothing of a `UINavigationBar`.
     unsafe impl NSObjectProtocol for NavBar {}
+
+    // SAFETY: `positionForBar:` carries `UIBarPositioningDelegate`'s
+    // signature. The in-content bar docks clear of the status-bar band
+    // while `TopAttached` extends its background upward to cover it —
+    // §7.1's chrome split for a bar the host itself does not size.
+    unsafe impl UIBarPositioningDelegate for NavBar {
+        // SAFETY: see the module safety note.
+        #[unsafe(method(positionForBar:))]
+        fn position_for_bar(&self, _bar: &ProtocolObject<dyn UIBarPositioning>) -> UIBarPosition {
+            UIBarPosition::TopAttached
+        }
+    }
+
+    // SAFETY: `UINavigationBarDelegate` asks nothing of a `UINavigationBar`
+    // beyond the `UIBarPositioningDelegate` above.
+    unsafe impl UINavigationBarDelegate for NavBar {}
 );
 
 impl NavBar {
@@ -654,6 +671,10 @@ impl NavBar {
         let this: Retained<Self> = unsafe { msg_send![super(this), init] };
         let items = NSArray::from_retained_slice(&[this.ivars().item.clone()]);
         this.setItems(Some(&items));
+        // The bar answers `positionForBar:` as its own delegate — an
+        // assign reference — so its background extends upward over the
+        // status-bar band.
+        this.setDelegate(Some(ProtocolObject::from_ref(&*this)));
         this
     }
 
@@ -846,9 +867,23 @@ define_class!(
         }
     }
 
-    // SAFETY: `navigationController:didShowViewController:animated:` carries
-    // `UINavigationControllerDelegate`'s signature.
+    // SAFETY: `navigationController:willShowViewController:animated:` and
+    // `navigationController:didShowViewController:animated:` carry
+    // `UINavigationControllerDelegate`'s signatures.
     unsafe impl UINavigationControllerDelegate for NavigationController {
+        // SAFETY: see the module safety note. The top page's toolbar intent
+        // applies as the page starts showing — before the transition — so the
+        // bar's hide or show rides the same animation.
+        #[unsafe(method(navigationController:willShowViewController:animated:))]
+        fn navigation_controller_will_show_view_controller_animated(
+            &self,
+            _navigation_controller: &UINavigationController,
+            _view_controller: &UIViewController,
+            animated: bool,
+        ) {
+            apply_toolbar_intent(self, animated);
+        }
+
         // SAFETY: see the module safety note.
         #[unsafe(method(navigationController:didShowViewController:animated:))]
         fn navigation_controller_did_show_view_controller_animated(
@@ -857,7 +892,6 @@ define_class!(
             _view_controller: &UIViewController,
             _animated: bool,
         ) {
-            apply_toolbar_intent(self, _animated);
             let depth = self.viewControllers().count();
             let expected = self.ivars().expected_depth.replace(depth);
             if let Some(show) = self.ivars().show.borrow().as_ref() {
@@ -896,6 +930,7 @@ impl NavigationController {
         if let Some(gesture) = this.interactivePopGestureRecognizer() {
             gesture.setDelegate(Some(ProtocolObject::from_ref(&*this)));
         }
+        // The first page's intent was recorded before the stack owned it.
         apply_toolbar_intent(&this, false);
         this
     }
@@ -949,7 +984,6 @@ impl NavigationController {
             ),
             animated,
         );
-        apply_toolbar_intent(self, animated);
     }
 
     /// Pops `count` pages, animating the transition; reports `true` when
@@ -967,7 +1001,6 @@ impl NavigationController {
         // SAFETY: `popToViewController:animated:` is a main-thread stack
         // update on a live navigation controller.
         let _: () = unsafe { msg_send![self, popToViewController: &*target, animated: animated] };
-        apply_toolbar_intent(self, animated);
         true
     }
 

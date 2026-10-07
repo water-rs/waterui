@@ -120,7 +120,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
             let state = Rc::clone(&state);
             move |host| {
                 let host_view: &PlatformView = host;
-                let frame = crate::native_layout::content_frame(state.child.view(), host_view);
+                let frame = crate::native_layout::LayoutContext::of(host_view)
+                    .content_frame(state.child.view());
                 view::set_frame(state.child.view(), frame);
             }
         });

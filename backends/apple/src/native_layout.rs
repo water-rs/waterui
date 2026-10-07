@@ -51,10 +51,7 @@ fn owns_safe_area(view: &PlatformView) -> bool {
         return true;
     }
     #[cfg(target_os = "ios")]
-    if view
-        .downcast_ref::<cocoa_ui::objc2_ui_kit::UIScrollView>()
-        .is_some()
-    {
+    if view::is_scroll_surface(view) {
         return true;
     }
     if view.respondsToSelector(objc2::sel!(cocoaUiManagesSafeArea)) {
@@ -65,21 +62,19 @@ fn owns_safe_area(view: &PlatformView) -> bool {
     }
 }
 
-/// Whether `view` is a scroll surface — the boundary at which both region
-/// measurement and the released-mask accumulation stop.
+/// Whether `view` is a fill — it declares `cocoaUiIsFill` itself, or a
+/// transparent wrapper forwards the declaration through its
+/// `cocoaUiPrimaryContent` chain: `Color.opacity(..)` in a background
+/// slot stays a fill without the wrapper copying the bit.
 #[cfg(target_os = "ios")]
-fn is_scroll_surface(view: &PlatformView) -> bool {
-    view.downcast_ref::<cocoa_ui::objc2_ui_kit::UIScrollView>()
-        .is_some()
-}
-
-/// Whether `view` declares itself a fill through `cocoaUiIsFill` — the
-/// color, gradient and material leaves do, and a transparent wrapper
-/// propagates its child's answer; every other view does not.
 pub fn is_fill(view: &PlatformView) -> bool {
-    view.respondsToSelector(objc2::sel!(cocoaUiIsFill))
+    if view.respondsToSelector(objc2::sel!(cocoaUiIsFill))
         // SAFETY: cocoa-ui's classes declare this selector as a boolean query.
         && unsafe { objc2::msg_send![view, cocoaUiIsFill] }
+    {
+        return true;
+    }
+    view::primary_content(view).is_some_and(|child| is_fill(&child))
 }
 
 /// Whether `view` is an ignore-safe-area wrapper — it declared through
@@ -96,7 +91,13 @@ fn declared_mask(view: &PlatformView) -> u16 {
     if view.respondsToSelector(objc2::sel!(cocoaUiIgnoredSafeAreaEdges)) {
         // SAFETY: cocoa-ui declares this selector as an NSInteger edge mask.
         let mask: isize = unsafe { objc2::msg_send![view, cocoaUiIgnoredSafeAreaEdges] };
-        u16::try_from(mask & 0x1ff).unwrap_or(0)
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the AND keeps only the nine declared bits, so no value is lost"
+        )]
+        let bits = (mask & 0x1ff) as u16;
+        bits
     } else {
         0
     }
@@ -108,7 +109,7 @@ fn declared_mask(view: &PlatformView) -> u16 {
 fn inside_scroll_surface(view: &PlatformView) -> bool {
     let mut ancestor = view::superview(view);
     while let Some(current) = ancestor {
-        if is_scroll_surface(&current) {
+        if view::is_scroll_surface(&current) {
             return true;
         }
         ancestor = view::superview(&current);
@@ -122,24 +123,13 @@ fn window_frame(view: &PlatformView) -> CGRect {
     view.convertRect_toView(view.bounds(), None)
 }
 
-/// The keyboard's frame in the view's window coordinates, tracked by the
-/// window root from `UIKit`'s keyboard notifications; `CGRect::ZERO` when
-/// there is no keyboard, no window, or no tracking root.
+/// The keyboard's frame in the view's window coordinates — the frame the
+/// window's keyboard owner tracks (`keyboard::window_keyboard` finds the
+/// owner and panics when a windowed view has none). `CGRect::ZERO` only
+/// while the view is outside any window, where there is no keyboard.
 #[cfg(target_os = "ios")]
 fn keyboard_rect(view: &PlatformView) -> CGRect {
-    let Some(window) = view::window(view) else {
-        return CGRect::ZERO;
-    };
-    let Some(root) = window.rootViewController().and_then(|c| c.view()) else {
-        return CGRect::ZERO;
-    };
-    if root.respondsToSelector(objc2::sel!(cocoaUiKeyboardFrame)) {
-        // SAFETY: the kit's window root declares this selector as a `CGRect`
-        // read of its tracked keyboard frame.
-        unsafe { objc2::msg_send![&*root, cocoaUiKeyboardFrame] }
-    } else {
-        CGRect::ZERO
-    }
+    cocoa_ui::uikit::keyboard::window_keyboard(view).map_or(CGRect::ZERO, |(frame, _)| frame)
 }
 
 /// The depth `band` eats into `frame` on each edge — positive only where
@@ -218,12 +208,43 @@ const fn covered_release_mask(mask: u16) -> u16 {
     mask * 0x11
 }
 
+/// The band `candidate` covers inside its subtree on each edge — a view
+/// whose `safeAreaInsets` on an edge run deeper than the window's
+/// container inset hosts a chrome band there (the tab bar's band inside
+/// `UITabBarController`'s pane, the navigation bar's band inside a
+/// pushed page); everything inside is covered by it.
+#[cfg(target_os = "ios")]
+fn cover_contribution(covered: &mut Covered, candidate: &PlatformView, context: &WindowContext) {
+    let insets: EdgeInsets = candidate.safeAreaInsets().into();
+    let frame = window_frame(candidate);
+    for edge in 0..4u16 {
+        let depth = depth_at(&insets, edge);
+        if depth <= depth_at(&context.container, edge) + 0.5 {
+            continue;
+        }
+        // The band's inner edge: the candidate's own safe boundary on
+        // this edge, in window space — the deepest one wins.
+        let pos = match edge {
+            0 => frame.origin.y + insets.top,
+            1 => frame.origin.x + insets.left,
+            2 => frame.origin.y + frame.size.height - insets.bottom,
+            _ => frame.origin.x + frame.size.width - insets.right,
+        };
+        let bit = 1 << edge;
+        covered.pos[edge as usize] = if covered.mask & bit == 0 {
+            pos
+        } else {
+            match edge {
+                0 | 1 => covered.pos[edge as usize].max(pos),
+                _ => covered.pos[edge as usize].min(pos),
+            }
+        };
+        covered.mask |= bit;
+    }
+}
+
 /// The covered bands `view` and its ancestors reserve past the window's
-/// container region, per edge — a view whose `safeAreaInsets` on an edge
-/// run deeper than the window's container inset hosts a chrome band
-/// there (the tab bar's band inside `UITabBarController`'s pane, the
-/// navigation bar's band inside a pushed page); everything inside is
-/// covered by it. Inside a scroll surface there is no chrome reach.
+/// container region — inside a scroll surface there is no chrome reach.
 #[cfg(target_os = "ios")]
 fn covered_bands(view: &PlatformView, context: &WindowContext) -> Covered {
     let mut covered = Covered::default();
@@ -232,32 +253,7 @@ fn covered_bands(view: &PlatformView, context: &WindowContext) -> Covered {
     }
     let mut current: Option<Retained<PlatformView>> = Some(Retained::from(view));
     while let Some(candidate) = current {
-        let insets: EdgeInsets = candidate.safeAreaInsets().into();
-        let frame = window_frame(&candidate);
-        for edge in 0..4u16 {
-            let depth = depth_at(&insets, edge);
-            if depth <= depth_at(&context.container, edge) + 0.5 {
-                continue;
-            }
-            // The band's inner edge: the candidate's own safe boundary on
-            // this edge, in window space — the deepest one wins.
-            let pos = match edge {
-                0 => frame.origin.y + insets.top,
-                1 => frame.origin.x + insets.left,
-                2 => frame.origin.y + frame.size.height - insets.bottom,
-                _ => frame.origin.x + frame.size.width - insets.right,
-            };
-            let bit = 1 << edge;
-            covered.pos[edge as usize] = if covered.mask & bit == 0 {
-                pos
-            } else {
-                match edge {
-                    0 | 1 => covered.pos[edge as usize].max(pos),
-                    _ => covered.pos[edge as usize].min(pos),
-                }
-            };
-            covered.mask |= bit;
-        }
+        cover_contribution(&mut covered, &candidate, context);
         current = view::superview(&candidate);
     }
     covered
@@ -286,10 +282,14 @@ impl WindowContext {
                 keyboard: EdgeInsets::ZERO,
             };
         };
+        let container = window
+            .rootViewController()
+            .and_then(|controller| controller.view())
+            .map_or_else(|| window.safeAreaInsets(), |root| root.safeAreaInsets());
         let window: &PlatformView = &window;
         Self {
             window: window.bounds(),
-            container: EdgeInsets::from(window.safeAreaInsets()),
+            container: EdgeInsets::from(container),
             // `keyboard_rect` resolves the window from the view it is
             // given: a `UIWindow` is inside no window, so the lookup must
             // run on `view` itself.
@@ -398,7 +398,7 @@ fn ignorer_chain(view: &PlatformView) -> Vec<(u16, CGRect)> {
     let mut chain = Vec::new();
     let mut ancestor = view::superview(view);
     while let Some(current) = ancestor {
-        if is_scroll_surface(&current) {
+        if view::is_scroll_surface(&current) {
             break;
         }
         let mask = declared_mask(&current);
@@ -442,42 +442,6 @@ fn fold_released(
     released
 }
 
-/// The regions released above `view` — its ignorer ancestors'
-/// declarations, gated by each ancestor's laid-out frame and vetoed on
-/// `view`'s covered edges.
-#[cfg(target_os = "ios")]
-fn released_mask(view: &PlatformView, context: &WindowContext, covered: &Covered) -> u16 {
-    fold_released(
-        &ignorer_chain(view),
-        context,
-        covered,
-        touch_tolerance(view),
-    )
-}
-
-/// The regions `view`'s subtree sees released: the ancestors' gated set
-/// plus `view`'s own declaration where its frame touches the boundary the
-/// ancestors left.
-#[cfg(target_os = "ios")]
-fn context_mask(view: &PlatformView, context: &WindowContext, covered: &Covered) -> u16 {
-    let mut chain = ignorer_chain(view);
-    let own = declared_mask(view);
-    if own & IGNORER_MARK != 0 {
-        chain.push((own & !IGNORER_MARK, window_frame(view)));
-    }
-    fold_released(&chain, context, covered, touch_tolerance(view))
-}
-
-/// The regions a parent applies when it extends `view`: the ancestors'
-/// gated set plus `view`'s own declaration — unconditional here because
-/// the extension is what decides whether the frame touched the boundary —
-/// vetoed on the covered edges either way.
-#[cfg(target_os = "ios")]
-fn accumulated_mask(view: &PlatformView, context: &WindowContext, covered: &Covered) -> u16 {
-    (released_mask(view, context, covered) | (declared_mask(view) & !IGNORER_MARK))
-        & !covered_release_mask(covered.mask)
-}
-
 /// Half a physical pixel on `view`'s display — the distance at which a
 /// laid-out frame counts as ending on a boundary (§7.1 "touches").
 fn touch_tolerance(view: &PlatformView) -> f64 {
@@ -491,117 +455,204 @@ pub fn manages_safe_area(view: &PlatformView) -> bool {
     view::primary_content(view).is_some_and(|child| manages_safe_area(&child))
 }
 
-#[cfg(target_os = "macos")]
-pub fn safe_area_rect(view: &PlatformView) -> Rect {
-    view.safeAreaRect().into()
-}
-
-/// The rect `view`'s subtree lays out inside: `view`'s bounds clipped to
-/// the boundary the regions it does not ignore leave — container,
-/// keyboard and covered chrome bands alike.
+/// The region context one host's layout pass works in: the window's
+/// region depths, the chrome bands covering the host's subtree and the
+/// ignorer chain the host's children fold over — computed once at the
+/// top of the pass, then handed to every child the pass places instead
+/// of walking ancestors per child.
 #[cfg(target_os = "ios")]
-pub fn safe_area_rect(view: &PlatformView) -> Rect {
-    if inside_scroll_surface(view) {
-        return view::bounds(view);
-    }
-    let context = WindowContext::of(view);
-    let covered = covered_bands(view, &context);
-    let mask = context_mask(view, &context, &covered);
-    let rect = context.boundary_rect(view, mask, &covered);
-    let bounds = view::bounds(view);
-    let x = bounds.origin.x.max(rect.origin.x);
-    let y = bounds.origin.y.max(rect.origin.y);
-    let width = (bounds.origin.x + bounds.size.width).min(rect.origin.x + rect.size.width) - x;
-    let height = (bounds.origin.y + bounds.size.height).min(rect.origin.y + rect.size.height) - y;
-    if width <= 0.0 || height <= 0.0 {
-        Rect::new(bounds.origin.x, bounds.origin.y, 0.0, 0.0)
-    } else {
-        Rect::new(x, y, width, height)
-    }
+pub struct LayoutContext<'a> {
+    /// The host the pass belongs to — the children it places mount
+    /// directly on it.
+    host: &'a PlatformView,
+    /// Whether the host sits inside a scroll surface — inside one,
+    /// nothing touches an edge and every region reads zero.
+    inside_scroll: bool,
+    /// The window-level region depths.
+    window: WindowContext,
+    /// The chrome bands covering the host's subtree — the host's own
+    /// bands included: a deeper `safeAreaInsets` on an edge is a band
+    /// for everything placed inside.
+    covered: Covered,
+    /// The ignorer chain the host's children fold over: the host's
+    /// ignorer ancestors plus the host's own declaration when it is one,
+    /// outermost first, each with its laid-out window frame.
+    chain: Vec<(u16, CGRect)>,
+    /// The fold result for the host itself — what `context_mask` was.
+    released: u16,
+    /// The sub-pixel touch slack for the host's display.
+    tolerance: f64,
 }
 
-/// The frame `frame` extended by `child`'s extension rule: an ignorer
-/// reaches the deepest boundary its accumulated declaration releases; a
-/// scroll surface and a background-slot fill reach the window edge on the
-/// edges they touch; a safe-area manager reaches `host`'s bounds. On an
-/// edge no region releases, the target is the boundary itself, so an edge
-/// with no extension stays where it was laid out.
 #[cfg(target_os = "ios")]
-pub fn extend_child(
-    host: &PlatformView,
-    child: &PlatformView,
-    frame: Rect,
-    fill_slot: bool,
-) -> Rect {
-    // Inside a scroll surface nothing touches an edge — the surface owns
-    // its subtree's safe-area contract.
-    if inside_scroll_surface(child) {
-        return frame;
-    }
-    let context = WindowContext::of(host);
-    let covered = covered_bands(child, &context);
-    let tolerance = touch_tolerance(host);
-    let within = context.boundary_rect(host, released_mask(child, &context, &covered), &covered);
-    if is_ignorer(child) {
-        let target =
-            context.boundary_rect(host, accumulated_mask(child, &context, &covered), &covered);
-        frame.extended_through(within, target, tolerance)
-    } else if is_scroll_surface(child) || (fill_slot && is_fill(child)) {
-        frame.extended_through(within, context.window_rect(host), tolerance)
-    } else if manages_safe_area(child) {
-        frame.extended_through(within, view::bounds(host), tolerance)
-    } else {
-        frame
-    }
-}
-
-/// `AppKit` keeps the container region only: a safe-area manager extends
-/// to `host`'s bounds on the edges it touches, as before.
-#[cfg(target_os = "macos")]
-pub fn extend_child(
-    host: &PlatformView,
-    child: &PlatformView,
-    frame: Rect,
-    _fill_slot: bool,
-) -> Rect {
-    if manages_safe_area(child) {
-        frame.extended_through(
-            safe_area_rect(host),
-            view::bounds(host),
-            touch_tolerance(host),
-        )
-    } else {
-        frame
-    }
-}
-
-/// The frame a host hands its single content view: the bounds when the
-/// content manages its own safe area — an ignorer's bounds still released
-/// only as far as its accumulated declaration reaches — the remaining
-/// safe-area rect otherwise.
-pub fn content_frame(content: &PlatformView, host: &PlatformView) -> Rect {
-    #[cfg(target_os = "macos")]
-    {
-        if manages_safe_area(content) {
-            view::bounds(host)
-        } else {
-            safe_area_rect(host)
+impl<'a> LayoutContext<'a> {
+    /// Computes the region context for `host`'s upcoming layout pass.
+    pub fn of(host: &'a PlatformView) -> Self {
+        let inside_scroll = inside_scroll_surface(host);
+        let window = WindowContext::of(host);
+        let covered = covered_bands(host, &window);
+        let mut chain = ignorer_chain(host);
+        let own = declared_mask(host);
+        if own & IGNORER_MARK != 0 {
+            chain.push((own & !IGNORER_MARK, window_frame(host)));
+        }
+        let tolerance = touch_tolerance(host);
+        let released = fold_released(&chain, &window, &covered, tolerance);
+        Self {
+            host,
+            inside_scroll,
+            window,
+            covered,
+            chain,
+            released,
+            tolerance,
         }
     }
-    #[cfg(target_os = "ios")]
-    {
+
+    /// The bands one `child` adds on top of the host's own — the
+    /// subject-side half of the covered-edge veto.
+    fn child_covered(&self, child: &PlatformView) -> Covered {
+        let mut covered = self.covered;
+        cover_contribution(&mut covered, child, &self.window);
+        covered
+    }
+
+    /// The regions the ancestors plus `child`'s own declaration release
+    /// — unconditional on `child`'s declaration because the extension
+    /// itself decides whether the frame touched the boundary — vetoed
+    /// on the covered edges either way.
+    fn accumulated(child: &PlatformView, covered: &Covered, released: u16) -> u16 {
+        (released | (declared_mask(child) & !IGNORER_MARK)) & !covered_release_mask(covered.mask)
+    }
+
+    /// The rect the host's subtree lays out inside: the host's bounds
+    /// clipped to the boundary the regions it does not ignore leave —
+    /// container, keyboard and covered chrome bands alike.
+    #[must_use]
+    pub fn safe_rect(&self) -> Rect {
+        if self.inside_scroll {
+            return view::bounds(self.host);
+        }
+        let rect = self
+            .window
+            .boundary_rect(self.host, self.released, &self.covered);
+        let bounds = view::bounds(self.host);
+        let x = bounds.origin.x.max(rect.origin.x);
+        let y = bounds.origin.y.max(rect.origin.y);
+        let width = (bounds.origin.x + bounds.size.width).min(rect.origin.x + rect.size.width) - x;
+        let height =
+            (bounds.origin.y + bounds.size.height).min(rect.origin.y + rect.size.height) - y;
+        if width <= 0.0 || height <= 0.0 {
+            Rect::new(bounds.origin.x, bounds.origin.y, 0.0, 0.0)
+        } else {
+            Rect::new(x, y, width, height)
+        }
+    }
+
+    /// The frame `frame` extended by `child`'s extension rule: an
+    /// ignorer reaches the deepest boundary its accumulated declaration
+    /// releases; a scroll surface and a background-slot fill reach the
+    /// window edge on the edges they touch; a safe-area manager reaches
+    /// the host's bounds. On an edge no region releases, the target is
+    /// the boundary itself, so an edge with no extension stays where it
+    /// was laid out.
+    #[must_use]
+    pub fn extend_child(&self, child: &PlatformView, frame: Rect, fill_slot: bool) -> Rect {
+        // Inside a scroll surface nothing touches an edge — the surface
+        // owns its subtree's safe-area contract.
+        if self.inside_scroll {
+            return frame;
+        }
+        let covered = self.child_covered(child);
+        let released = fold_released(&self.chain, &self.window, &covered, self.tolerance);
+        let within = self.window.boundary_rect(self.host, released, &covered);
+        if is_ignorer(child) {
+            let target = self.window.boundary_rect(
+                self.host,
+                Self::accumulated(child, &covered, released),
+                &covered,
+            );
+            frame.extended_through(within, target, self.tolerance)
+        } else if view::is_scroll_surface(child) || (fill_slot && is_fill(child)) {
+            frame.extended_through(within, self.window.window_rect(self.host), self.tolerance)
+        } else if manages_safe_area(child) {
+            frame.extended_through(within, view::bounds(self.host), self.tolerance)
+        } else {
+            frame
+        }
+    }
+
+    /// The frame the host hands its single content view: the bounds when
+    /// the content manages its own safe area — an ignorer's bounds still
+    /// released only as far as its accumulated declaration reaches — the
+    /// safe-area rect otherwise.
+    #[must_use]
+    pub fn content_frame(&self, content: &PlatformView) -> Rect {
         if is_ignorer(content) {
-            let win = WindowContext::of(host);
-            let covered = covered_bands(content, &win);
-            safe_area_rect(host).extended_through(
-                win.boundary_rect(host, released_mask(content, &win, &covered), &covered),
-                win.boundary_rect(host, accumulated_mask(content, &win, &covered), &covered),
-                touch_tolerance(host),
+            let covered = self.child_covered(content);
+            let released = fold_released(&self.chain, &self.window, &covered, self.tolerance);
+            self.safe_rect().extended_through(
+                self.window.boundary_rect(self.host, released, &covered),
+                self.window.boundary_rect(
+                    self.host,
+                    Self::accumulated(content, &covered, released),
+                    &covered,
+                ),
+                self.tolerance,
             )
         } else if manages_safe_area(content) {
-            view::bounds(host)
+            view::bounds(self.host)
         } else {
-            safe_area_rect(host)
+            self.safe_rect()
+        }
+    }
+}
+
+/// The region context one host's layout pass works in. `AppKit` keeps
+/// the container region only, so the context carries the host alone.
+#[cfg(target_os = "macos")]
+pub struct LayoutContext<'a> {
+    host: &'a PlatformView,
+}
+
+#[cfg(target_os = "macos")]
+impl<'a> LayoutContext<'a> {
+    /// Computes the region context for `host`'s upcoming layout pass.
+    pub const fn of(host: &'a PlatformView) -> Self {
+        Self { host }
+    }
+
+    /// The rect the host's subtree lays out inside — `AppKit`'s
+    /// `safeAreaRect`.
+    #[must_use]
+    pub fn safe_rect(&self) -> Rect {
+        self.host.safeAreaRect().into()
+    }
+
+    /// `AppKit` keeps the container region only: a safe-area manager
+    /// extends to the host's bounds on the edges it touches.
+    #[must_use]
+    pub fn extend_child(&self, child: &PlatformView, frame: Rect, _fill_slot: bool) -> Rect {
+        if manages_safe_area(child) {
+            frame.extended_through(
+                self.safe_rect(),
+                view::bounds(self.host),
+                touch_tolerance(self.host),
+            )
+        } else {
+            frame
+        }
+    }
+
+    /// The frame the host hands its single content view: the bounds when
+    /// the content manages its own safe area, the safe-area rect
+    /// otherwise.
+    #[must_use]
+    pub fn content_frame(&self, content: &PlatformView) -> Rect {
+        if manages_safe_area(content) {
+            view::bounds(self.host)
+        } else {
+            self.safe_rect()
         }
     }
 }

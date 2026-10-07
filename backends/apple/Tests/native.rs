@@ -2607,16 +2607,18 @@ mod controller_bounds {
 mod safe_area {
     use cocoa_ui::objc2_core_foundation::{CGPoint, CGRect, CGSize};
     use cocoa_ui::objc2_foundation::{
-        NSDictionary, NSNotificationCenter, NSNumber, NSString, NSValue,
+        NSDictionary, NSNotificationCenter, NSNumber, NSObjectProtocol, NSString, NSValue,
     };
     use cocoa_ui::objc2_ui_kit::{
-        UIKeyboardAnimationCurveUserInfoKey, UIKeyboardAnimationDurationUserInfoKey,
+        UIEdgeInsets, UIKeyboardAnimationCurveUserInfoKey, UIKeyboardAnimationDurationUserInfoKey,
         UIKeyboardFrameEndUserInfoKey, UIKeyboardWillChangeFrameNotification,
         UIKeyboardWillHideNotification, UIKeyboardWillShowNotification, UINavigationBar, UITabBar,
+        UITextView,
     };
     use cocoa_ui::uikit::{ColorView, Label, ScrollView, TableView, TextField};
     use cocoa_ui::{PlatformView, Retained, view};
     use objc2::runtime::AnyObject;
+    use objc2::{MainThreadOnly, msg_send};
     use waterui::component::list::{List, ListItem};
     use waterui::graphics::color::Srgb;
     use waterui::id::SelfId;
@@ -2629,7 +2631,8 @@ mod safe_area {
     use waterui::reactive::{Binding, binding};
     use waterui::{AnyView, Color, Str};
     use waterui_apple::native_test_support::{
-        MAIN_QUEUE_DEADLINE, UIKitMount, mount_uikit, pump_main_until, render_environment,
+        MAIN_QUEUE_DEADLINE, UIKitMount, mount_uikit_with_insets, pump_main_until,
+        render_environment,
     };
 
     use super::mtm;
@@ -2841,6 +2844,20 @@ mod safe_area {
                     Ok(())
                 },
             ),
+            libtest_mimic::Trial::test(
+                "safe_area::a_scroll_above_a_composer_keeps_a_zero_keyboard_inset",
+                || {
+                    a_scroll_above_a_composer_keeps_a_zero_keyboard_inset();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "safe_area::a_text_view_inside_the_tree_is_not_a_scroll_surface",
+                || {
+                    a_text_view_inside_the_tree_is_not_a_scroll_surface();
+                    Ok(())
+                },
+            ),
         ]
     }
 
@@ -2864,11 +2881,29 @@ mod safe_area {
     /// Frame-comparison slack — within one point of the expected edge.
     const TOLERANCE: f64 = 1.0;
 
+    /// The container bands every trial mounts with: a status-bar band
+    /// above and a home-indicator band below. A spawned `UIWindow`
+    /// reports no ambient insets, so the mount installs them on the root
+    /// controller's `additionalSafeAreaInsets` — the covered chrome bands,
+    /// the navigation bar's band and the home indicator stay exercised.
+    const TEST_INSETS: UIEdgeInsets = UIEdgeInsets {
+        top: 59.0,
+        left: 0.0,
+        bottom: 34.0,
+        right: 0.0,
+    };
+
     /// Mounts `content` through the real embedding path and lays the
     /// window out once.
     fn mount(content: impl View) -> UIKitMount {
         let env = render_environment();
-        let mount = mount_uikit(mtm(), AnyView::new(content), &env, WINDOW_FRAME);
+        let mount = mount_uikit_with_insets(
+            mtm(),
+            AnyView::new(content),
+            &env,
+            WINDOW_FRAME,
+            TEST_INSETS,
+        );
         mount.window.layoutIfNeeded();
         mount
     }
@@ -2936,16 +2971,16 @@ mod safe_area {
         view::subviews(&fanned(&leaf(mount)))
     }
 
-    /// The container region's top boundary: the window's own
-    /// `safeAreaInsets` (a spawned test window reports 0 — the assertions
-    /// derive boundaries from it rather than hardcoding device values).
+    /// The container region's top boundary: the root host's
+    /// `safeAreaInsets` — `TEST_INSETS` on the controller plus whatever
+    /// `UIKit` adds — the same boundary the layout's region context reads.
     fn container_top(mount: &UIKitMount) -> f64 {
-        mount.window.safeAreaInsets().top
+        mount.host.safeAreaInsets().top
     }
 
     /// The container region's bottom boundary.
     fn container_bottom(mount: &UIKitMount) -> f64 {
-        mount.window.bounds().size.height - mount.window.safeAreaInsets().bottom
+        mount.host.bounds().size.height - mount.host.safeAreaInsets().bottom
     }
 
     /// The keyboard region's top boundary — `window.height` once the
@@ -2982,19 +3017,36 @@ mod safe_area {
         unsafe { Retained::cast_unchecked(dict) }
     }
 
+    /// The animation a real keyboard notification reports: 250 ms on
+    /// the keyboard's own curve — `UIViewAnimationCurveKeyboard`, which
+    /// `UIKit` posts for keyboard transitions.
+    const KEYBOARD_ANIMATION: (f64, i64) = (0.25, 7);
+
     /// Posts a keyboard `notification` with `end_frame` — the way `UIKit`
-    /// announces the keyboard — and pumps the main queue until the window
-    /// root has applied it and relaid out.
+    /// announces the keyboard, duration and curve included — and pumps
+    /// the main queue until the window root has applied it and relaid
+    /// out. `UIKit` posts `UIKeyboardWillChangeFrameNotification` for
+    /// every transition alongside the semantic name, so the helpers post
+    /// both when the semantic name is not the frame change itself.
     fn post_keyboard(mount: &UIKitMount, name: &'static NSString, end_frame: CGRect) {
-        let user_info = keyboard_user_info(end_frame, 0.0, 0);
+        let user_info = keyboard_user_info(end_frame, KEYBOARD_ANIMATION.0, KEYBOARD_ANIMATION.1);
+        // SAFETY: `UIKit` exports the name as a constant.
+        let frame_change: &'static NSString = unsafe { UIKeyboardWillChangeFrameNotification };
+        let names: &[&'static NSString] = if std::ptr::eq(name, frame_change) {
+            &[name]
+        } else {
+            &[name, frame_change]
+        };
         // SAFETY: a real keyboard notification — a name `UIKit` exports,
         // the `userInfo` shape it documents.
-        unsafe {
-            NSNotificationCenter::defaultCenter().postNotificationName_object_userInfo(
-                name,
-                None,
-                Some(&user_info),
-            );
+        for notification in names {
+            unsafe {
+                NSNotificationCenter::defaultCenter().postNotificationName_object_userInfo(
+                    notification,
+                    None,
+                    Some(&user_info),
+                );
+            }
         }
         let landed = pump_main_until(MAIN_QUEUE_DEADLINE, || {
             mount.window.layoutIfNeeded();
@@ -3285,6 +3337,84 @@ mod safe_area {
             (top - expected).abs() <= TOLERANCE,
             "{note}: top {top} differs from {expected} by more than {TOLERANCE}"
         );
+    }
+
+    /// The scroll above the composer ends above the keyboard band — the
+    /// band covers none of its frame — so its content inset takes no
+    /// keyboard contribution and stays zero, and the delta-write never
+    /// rewrites another `contentInset.bottom` term.
+    fn a_scroll_above_a_composer_keeps_a_zero_keyboard_inset() {
+        let draft = binding(Str::from(""));
+        let mount = mount(conversation_panel(&draft));
+        let surface = find_view::<ScrollView>(&mount.host).expect("scroll mounts a UIScrollView");
+        let scroll_view = surface
+            .downcast_ref::<ScrollView>()
+            .expect("the found view is a scroll view");
+        show_keyboard(&mount, KEYBOARD_END);
+        assert!(
+            window_bottom(&surface) <= keyboard_top(&mount) + TOLERANCE,
+            "precondition: the scroll ends above the keyboard band — bottom {}, band top {}",
+            window_bottom(&surface),
+            keyboard_top(&mount),
+        );
+        assert!(
+            scroll_view.contentInset().bottom.abs() <= f64::EPSILON,
+            "the scroll keeps a zero keyboard inset — contentInset {:?}",
+            scroll_view.contentInset(),
+        );
+    }
+
+    /// A `UITextView` is a `UIScrollView` but not a kit scroll surface —
+    /// the `cocoaUiIsScrollSurface` marker, not the class chain, is what
+    /// counts. Parked around a real surface it must not claim the
+    /// enclosing-surface role: the inner surface still computes its own
+    /// keyboard inset and still clears a focused field.
+    fn a_text_view_inside_the_tree_is_not_a_scroll_surface() {
+        let value = binding(Str::from(""));
+        let mount = mount(scroll(vstack((
+            spacer().size(390.0, 560.0),
+            field("Message", &value).size(350.0, 44.0),
+            spacer().size(390.0, 380.0),
+        ))));
+        let surface = find_view::<ScrollView>(&mount.host).expect("scroll mounts a UIScrollView");
+        let scroll_view = surface
+            .downcast_ref::<ScrollView>()
+            .expect("the found view is a scroll view");
+        let field = find_view::<TextField>(&mount.host).expect("the form mounts the field");
+
+        // A raw `UITextView` wrapped around the surface, spanning the
+        // window — a foreign `UIScrollView` the surface check must not
+        // count as an enclosing scroll surface.
+        let text_view: Retained<UITextView> = unsafe {
+            msg_send![
+                UITextView::alloc(mtm()),
+                initWithFrame: CGRect::new(CGPoint::ZERO, CGSize::new(390.0, 844.0))
+            ]
+        };
+        mount.host.addSubview(&text_view);
+        let frame = window_frame(&surface);
+        surface.removeFromSuperview();
+        text_view.addSubview(&surface);
+        // The text view's bounds share the window's origin, so the
+        // surface's window frame is its frame in the new parent.
+        view::set_frame(&surface, frame.into());
+
+        assert!(
+            !text_view.respondsToSelector(cocoa_ui::objc2::sel!(cocoaUiIsScrollSurface)),
+            "a `UITextView` does not answer the kit scroll-surface marker",
+        );
+        show_keyboard(&mount, KEYBOARD_END);
+        let cover = window_bottom(&surface) - keyboard_top(&mount);
+        let want = (cover - surface.safeAreaInsets().bottom).max(0.0);
+        // The foreign parent is invisible to the region-layout cascade,
+        // so the surface's own pass is driven directly — the pass must
+        // still apply the inset: `nested_in_scroll` must not count the
+        // `UITextView` as an enclosing surface.
+        scroll_view.setNeedsLayout();
+        pump_layout(&mount, || {
+            (scroll_view.contentInset().bottom - want).abs() <= TOLERANCE
+        });
+        focus_and_clear(&mount, &field, || keyboard_top(&mount));
     }
 
     /// §7.1 "Layout avoids the regions": the root leaf's children lay

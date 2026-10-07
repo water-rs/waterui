@@ -624,6 +624,21 @@ pub fn primary_content(view: &PlatformView) -> Option<Retained<PlatformView>> {
     }
 }
 
+/// Whether `view` declares itself a kit scroll surface through
+/// `cocoaUiIsScrollSurface`.
+///
+/// The `ScrollView` and `TableView` classes answer `true`; a foreign
+/// `UIScrollView` such as `UITextView` does not answer it, so a view
+/// nested inside one keeps its own region contract.
+#[cfg(target_os = "ios")]
+#[must_use]
+pub fn is_scroll_surface(view: &PlatformView) -> bool {
+    view.respondsToSelector(objc2::sel!(cocoaUiIsScrollSurface))
+        // SAFETY: kit classes declaring `cocoaUiIsScrollSurface` declare
+        // it `-> bool`.
+        && unsafe { objc2::msg_send![view, cocoaUiIsScrollSurface] }
+}
+
 /// The scroll-surface candidates `view` declares through
 /// `cocoaUiScrollSurfaceCandidates`.
 ///

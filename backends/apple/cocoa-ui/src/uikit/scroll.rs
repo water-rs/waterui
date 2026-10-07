@@ -124,7 +124,7 @@ define_class!(
                 self.ivars().flight.land();
                 self.ivars().keyboard.clear();
                 if self.window().is_some() {
-                    self.ivars().keyboard.observe(self, self.mtm());
+                    self.ivars().keyboard.attach(self, self.mtm());
                 }
             });
         }
@@ -142,7 +142,46 @@ define_class!(
                 if let Some(handler) = handler {
                     handler(self);
                 }
+                // The keyboard inset and the focused-field clearance are
+                // layout work: they recompute from the window owner's
+                // tracked keyboard frame on every pass, so they follow
+                // the surface's frame however it moves (§7.1).
+                self.ivars().keyboard.apply_layout(self);
             });
+        }
+
+        /// The kit scroll-surface marker — only `ScrollView` and
+        /// `TableView` answer it, so a `UIScrollView` that is not one of
+        /// ours (`UITextView`) never counts as a scroll surface (§7.1).
+        /// SAFETY: see the module safety note.
+        #[unsafe(method(cocoaUiIsScrollSurface))]
+        fn is_scroll_surface_override(&self) -> bool {
+            true
+        }
+
+        /// SAFETY: see the module safety note. Whether the surface owns
+        /// its window's keyboard state itself — true only while no
+        /// tracker exists above it (an orphaned surface under a foreign
+        /// or fixture root); under a kit host the owner answers instead.
+        #[unsafe(method(cocoaUiTracksKeyboard))]
+        fn tracks_keyboard_override(&self) -> bool {
+            self.ivars().keyboard.tracks()
+        }
+
+        /// SAFETY: see the module safety note. The keyboard frame the
+        /// surface's own observer stored — read by
+        /// `keyboard::window_keyboard` only while `cocoaUiTracksKeyboard`
+        /// reports true.
+        #[unsafe(method(cocoaUiKeyboardFrame))]
+        fn keyboard_frame_override(&self) -> CGRect {
+            self.ivars().keyboard.tracked_frame()
+        }
+
+        /// SAFETY: see the module safety note. The animation duration
+        /// paired with `cocoaUiKeyboardFrame`.
+        #[unsafe(method(cocoaUiKeyboardDuration))]
+        fn keyboard_duration_override(&self) -> f64 {
+            self.ivars().keyboard.tracked_duration()
         }
 
         /// The scroll view offers no intrinsic size: it fills the space its
