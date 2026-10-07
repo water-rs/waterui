@@ -13079,6 +13079,7 @@ version = "0.5.1"
 dependencies = [
  "executor-core",
  "nami",
+ "serde",
  "thiserror 2.0.21",
  "waterui",
  "waterui-core",
@@ -13549,6 +13550,7 @@ dependencies = [
  "serde_json",
  "tracing",
  "waterui",
+ "waterui-controls",
  "waterui-mcp-protocol",
  "waterui-testing",
 ]

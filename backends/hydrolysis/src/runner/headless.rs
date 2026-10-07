@@ -5,7 +5,9 @@ use super::*;
 use crate::platform::SurfaceProvider as _;
 use crate::renderer::MenuShortcutRegistry;
 #[cfg(feature = "accessibility")]
-use crate::renderer::accessibility::AccessibilityActivationPointError;
+use crate::renderer::accessibility::{
+    AccessibilityActivationPointError, AccessibilityContentTypes, WINDOW_ID_STRIDE,
+};
 
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
@@ -178,6 +180,10 @@ pub struct HeadlessPumpResult {
     #[cfg(feature = "accessibility")]
     /// The accessibility tree update the frame produced.
     pub tree_update: Option<AccessibilityTreeUpdate>,
+    #[cfg(feature = "accessibility")]
+    /// The content types the emitted tree's text fields declared — the map
+    /// the update publishes beside it.
+    pub content_types: AccessibilityContentTypes,
     /// The captured frame snapshot, when capture was requested.
     pub snapshot: Option<HeadlessSnapshot>,
     #[cfg(feature = "accessibility")]
@@ -634,11 +640,7 @@ impl HeadlessRuntime {
     /// already closed.
     #[cfg(feature = "accessibility")]
     pub fn perform_accessibility_action(&mut self, request: AccessibilityActionRequest) -> bool {
-        /// The same id range
-        /// [`SemanticCore::take_merged_accessibility_tree_update`] assigns
-        /// each popup.
-        const WINDOW_ID_STRIDE: u64 = 1 << 32;
-
+        // Popup ranges are the shared `WINDOW_ID_STRIDE` the merge assigns.
         let target = request.target_node.0;
         let (window, request) = if target >= WINDOW_ID_STRIDE {
             let index = target / WINDOW_ID_STRIDE - 1;
@@ -678,11 +680,14 @@ impl HeadlessRuntime {
     /// tree.
     #[cfg(feature = "accessibility")]
     pub fn accessibility_tree(&mut self) -> Option<AccessibilityTreeUpdate> {
-        self.runtime.renderer.accessibility_tree(
-            self.popup_windows
-                .iter_mut()
-                .map(|popup| &mut *popup.renderer),
-        )
+        self.runtime
+            .renderer
+            .accessibility_tree(
+                self.popup_windows
+                    .iter_mut()
+                    .map(|popup| &mut *popup.renderer),
+            )
+            .map(|merged| merged.tree_update)
     }
 
     /// The point a pointer could actually reach inside `node`'s accessibility
@@ -728,11 +733,7 @@ impl HeadlessRuntime {
         x_fraction: f64,
         y_fraction: f64,
     ) -> Result<kurbo::Point, AccessibilityActivationPointError> {
-        /// The same id range
-        /// [`SemanticCore::take_merged_accessibility_tree_update`] assigns
-        /// each popup.
-        const WINDOW_ID_STRIDE: u64 = 1 << 32;
-
+        // Popup ranges are the shared `WINDOW_ID_STRIDE` the merge assigns.
         let target = node_id.0;
         if target >= WINDOW_ID_STRIDE {
             let index = target / WINDOW_ID_STRIDE - 1;
@@ -1061,6 +1062,18 @@ impl HeadlessRuntime {
         profile.phases.animation = animation;
         profile.phases.executor_after = executor_after;
 
+        #[cfg(feature = "accessibility")]
+        let merged = self.runtime.renderer.take_merged_accessibility_tree_update(
+            self.popup_windows
+                .iter_mut()
+                .map(|popup| &mut *popup.renderer),
+        );
+        #[cfg(feature = "accessibility")]
+        let (tree_update, content_types) = merged
+            .map_or((None, AccessibilityContentTypes::new()), |merged| {
+                (Some(merged.tree_update), merged.content_types)
+            });
+
         HeadlessPumpResult {
             rebuilt: rebuilt
                 || render_result.as_ref().is_some_and(|result| result.rebuilt)
@@ -1074,11 +1087,9 @@ impl HeadlessRuntime {
                     result.stages
                 }),
             #[cfg(feature = "accessibility")]
-            tree_update: self.runtime.renderer.take_merged_accessibility_tree_update(
-                self.popup_windows
-                    .iter_mut()
-                    .map(|popup| &mut *popup.renderer),
-            ),
+            tree_update,
+            #[cfg(feature = "accessibility")]
+            content_types,
             snapshot: render_result.and_then(|result| result.snapshot),
             #[cfg(feature = "accessibility")]
             ui_focus: self.runtime.renderer.focused_ui_node(),

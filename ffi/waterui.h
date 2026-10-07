@@ -895,6 +895,60 @@ typedef enum WuiKeyboardType {
 } WuiKeyboardType;
 
 /**
+ * C ABI mirror of `Option<ContentType>` — `None` declares no content type.
+ *
+ * Written by hand rather than through `into_ffi!` because the FFI side
+ * carries the option inside the enum: `WuiContentType_None` is the value a
+ * field without a declared content type sends.
+ */
+typedef enum WuiContentType {
+  /**
+   * The field declares no content type.
+   */
+  WuiContentType_None,
+  /**
+   * Mirrors `ContentType::Username`.
+   */
+  WuiContentType_Username,
+  /**
+   * Mirrors `ContentType::Password`.
+   */
+  WuiContentType_Password,
+  /**
+   * Mirrors `ContentType::NewPassword`.
+   */
+  WuiContentType_NewPassword,
+  /**
+   * Mirrors `ContentType::EmailAddress`.
+   */
+  WuiContentType_EmailAddress,
+  /**
+   * Mirrors `ContentType::PhoneNumber`.
+   */
+  WuiContentType_PhoneNumber,
+  /**
+   * Mirrors `ContentType::OneTimeCode`.
+   */
+  WuiContentType_OneTimeCode,
+  /**
+   * Mirrors `ContentType::PersonName`.
+   */
+  WuiContentType_PersonName,
+  /**
+   * Mirrors `ContentType::PostalAddress`.
+   */
+  WuiContentType_PostalAddress,
+  /**
+   * Mirrors `ContentType::PostalCode`.
+   */
+  WuiContentType_PostalCode,
+  /**
+   * Mirrors `ContentType::CreditCardNumber`.
+   */
+  WuiContentType_CreditCardNumber,
+} WuiContentType;
+
+/**
  *C ABI mirror of `ToggleStyle`.
  */
 typedef enum WuiToggleStyle {
@@ -5361,6 +5415,11 @@ typedef struct WuiTextField {
    * The on-screen keyboard variant to present while editing.
    */
   enum WuiKeyboardType keyboard;
+  /**
+   * The semantic content type the field declares for autofill —
+   * `WuiContentType_None` when it declares none.
+   */
+  enum WuiContentType content_type;
   /**
    * Context menu items offered when the user selects text in the field.
    */
