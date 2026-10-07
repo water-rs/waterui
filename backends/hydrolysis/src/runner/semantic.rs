@@ -391,8 +391,8 @@ impl SemanticRuntime {
             advance_semantic_window(popup, &self.env, at);
         }
         // A popup whose state flipped `Closed` — its menu group dismissed it
-        // or a close request arrived — leaves the tree. Flag the main window
-        // so the merged update re-emits without it.
+        // — leaves the tree. Flag the main window so the merged update
+        // re-emits without it.
         if self
             .popup_windows
             .iter()
@@ -509,11 +509,15 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
         suppress_key_text = false;
         let changed = match event {
             InputEvent::CloseRequested => {
-                window
-                    .window
-                    .state
-                    .set(waterui::window::WindowState::Closed);
-                should_close = true;
+                // The rendered runner's close gate (`handle_input_events`):
+                // a non-closable window ignores every close request.
+                if window.window.closable {
+                    window
+                        .window
+                        .state
+                        .set(waterui::window::WindowState::Closed);
+                    should_close = true;
+                }
                 true
             }
             InputEvent::Moved { x, y } => {
@@ -906,6 +910,38 @@ mod tests {
             store.hits.snapshot(),
             1,
             "the item action did not reach the injected store"
+        );
+    }
+
+    /// The semantic runner's close path is gated like the rendered one: a
+    /// close request leaves a non-closable window open and closes a
+    /// closable one.
+    #[test]
+    fn a_close_request_closes_only_a_closable_window() {
+        let builder = AnyViewBuilder::<AnyView>::new(|| AnyView::new(vstack(((),))));
+        let mut runtime = SemanticRuntime::new(
+            semantic_environment(),
+            builder,
+            800,
+            600,
+            FontFamilyResolution::Strict,
+        );
+        runtime.window.window.closable = false;
+        runtime.push_input_event(InputEvent::CloseRequested);
+        runtime.pump();
+        assert_eq!(
+            runtime.window.window.state.snapshot(),
+            waterui::window::WindowState::Normal,
+            "a non-closable window must ignore a close request"
+        );
+
+        runtime.window.window.closable = true;
+        runtime.push_input_event(InputEvent::CloseRequested);
+        runtime.pump();
+        assert_eq!(
+            runtime.window.window.state.snapshot(),
+            waterui::window::WindowState::Closed,
+            "a closable window must close on a close request"
         );
     }
 

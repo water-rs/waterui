@@ -915,6 +915,18 @@ pub fn validated_window_frame(frame: waterui_core::layout::Rect) -> waterui_core
     frame
 }
 
+/// Resolves the title-bar buttons `Window::closable` leaves enabled.
+///
+/// Only the close button toggles: minimize and maximize are always enabled.
+#[cfg(hydrolysis_winit)]
+pub fn enabled_window_buttons(closable: bool) -> winit::window::WindowButtons {
+    if closable {
+        winit::window::WindowButtons::all()
+    } else {
+        winit::window::WindowButtons::MINIMIZE | winit::window::WindowButtons::MAXIMIZE
+    }
+}
+
 /// Window host-services contract consumed by hydrolysis runner: window
 /// metrics, property application, input delivery, redraw wakeup, IME state
 /// sync and cursor chrome.
@@ -2252,8 +2264,8 @@ mod winit_impl {
     use super::{
         CursorStyle, DeviceLoss, GpuSurfaceWindow, InputEvent, KeyCode, KeyState, Modifiers,
         PlatformWindow, PointerButton, PointerKind, RedrawHandle, SurfaceError, SurfaceFrame,
-        SurfaceProvider, TextInputPurpose, TextInputState, TouchPhase, reclaim_device,
-        validated_window_frame,
+        SurfaceProvider, TextInputPurpose, TextInputState, TouchPhase, enabled_window_buttons,
+        reclaim_device, validated_window_frame,
     };
 
     #[derive(Clone, Debug)]
@@ -3273,6 +3285,7 @@ mod winit_impl {
     struct AppliedWindowProperties {
         title: waterui::Str,
         resizable: bool,
+        closable: bool,
         decorations: bool,
         /// Whether the key went down (`Pressed`) or came up (`Released`).
         state: WindowState,
@@ -4198,6 +4211,7 @@ mod winit_impl {
             let properties = AppliedWindowProperties {
                 title,
                 resizable: window.resizable,
+                closable: window.closable,
                 decorations,
                 state,
                 frame,
@@ -4215,6 +4229,10 @@ mod winit_impl {
             }
             if applied.is_none_or(|p| p.resizable != properties.resizable) {
                 self.window.set_resizable(properties.resizable);
+            }
+            if applied.is_none_or(|p| p.closable != properties.closable) {
+                self.window
+                    .set_enabled_buttons(enabled_window_buttons(properties.closable));
             }
             if applied.is_none_or(|p| p.decorations != properties.decorations) {
                 self.window.set_decorations(properties.decorations);
