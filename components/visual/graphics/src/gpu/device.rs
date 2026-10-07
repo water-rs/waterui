@@ -29,6 +29,11 @@ use wgpu_external_frame::ahardware_buffer::{self, DeviceRequestError, DeviceRequ
 /// `AHardwareBuffer` import on that device fails fast with
 /// `wgpu_external_frame`'s own error.
 ///
+/// The device also requests `TEXTURE_FORMAT_NV12` when the adapter offers
+/// it: a driver that maps imported camera buffers to a Vulkan format aliases
+/// them as NV12 textures, which importing producers such as `waterkit-camera`
+/// require of the device.
+///
 /// # Errors
 ///
 /// [`DeviceRequestError`] when `descriptor` asks for features or limits the
@@ -40,7 +45,10 @@ pub async fn request_device(
     match check_import_requirements(adapter) {
         Ok(()) => {
             tracing::info!("opening the wgpu device with the AHardwareBuffer import requirements");
-            ahardware_buffer::request_device(adapter, descriptor)
+            let mut descriptor = descriptor.clone();
+            descriptor.required_features |=
+                adapter.features() & wgpu::Features::TEXTURE_FORMAT_NV12;
+            ahardware_buffer::request_device(adapter, &descriptor)
         }
         Err(reason) => {
             tracing::info!(

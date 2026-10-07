@@ -7,9 +7,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use futures::{FutureExt, StreamExt, future::LocalBoxFuture};
+use futures::StreamExt;
 use shaderloom::CompiledShader;
-use waterkit_camera::Camera;
+use waterkit_camera::{Camera, FrameConverter};
 use waterkit_permission::{Permission, PermissionStatus, check, request};
 use waterui::app::App;
 use waterui::graphics::{Context, Frame, GpuContent, GpuContentView, bytemuck};
@@ -17,6 +17,7 @@ use waterui::prelude::slider::slider;
 use waterui::prelude::theme_color::Surface;
 use waterui::prelude::*;
 use waterui::preview;
+use waterui::task::spawn_local;
 
 #[state]
 #[derive(Clone)]
@@ -295,35 +296,35 @@ struct CameraShared {
     gpu_handles: Option<(wgpu::Device, wgpu::Queue)>,
     /// The newest filter parameters the bindings produced.
     uniforms: FilterUniforms,
-    /// The newest camera frame the UI side pulled; `None` once the render
-    /// side took it.
-    latest_texture: Option<wgpu::Texture>,
+    /// The newest camera frame the stream task delivered; `None` once the
+    /// render side took it.
+    latest_frame: Option<waterkit_camera::Frame>,
 }
 
-/// UI-side half of the camera filter: owns the camera, its open future, and
-/// the bindings — all of them confined to the UI thread.
+/// UI-side half of the camera filter: owns the bindings and the task that
+/// opens the camera and drains its frame stream — all confined to the UI
+/// thread.
 struct CameraFilterRenderer {
     active_filter: Binding<usize>,
     filter_strength: Binding<f64>,
     reconnect_ticket: Binding<usize>,
     preview_status: Binding<Str>,
     last_reconnect_ticket: usize,
-    camera_started: bool,
 
-    camera: Option<Camera>,
-    camera_open_task: Option<LocalBoxFuture<'static, Result<Camera, String>>>,
+    camera_task: Option<executor_core::AnyLocalExecutorTask<()>>,
     shared: Arc<Mutex<CameraShared>>,
 }
 
-/// Render-side half of the camera filter: pipelines, resources and the
-/// newest camera texture — all `Send`.
+/// Render-side half of the camera filter: pipelines, resources, the frame
+/// converter and the newest converted camera texture — all `Send`.
 struct CameraFilterContent {
     shared: Arc<Mutex<CameraShared>>,
     pipeline: Option<wgpu::RenderPipeline>,
     bind_group_layout: Option<wgpu::BindGroupLayout>,
     sampler: Option<wgpu::Sampler>,
     uniform_buffer: Option<wgpu::Buffer>,
-    latest_texture: Option<wgpu::Texture>,
+    converter: Option<FrameConverter>,
+    upright: Option<wgpu::Texture>,
     latest_bind_group: Option<wgpu::BindGroup>,
     pipeline_format: Option<wgpu::TextureFormat>,
 }
@@ -341,13 +342,11 @@ impl CameraFilterRenderer {
             reconnect_ticket,
             preview_status,
             last_reconnect_ticket: 0,
-            camera_started: false,
-            camera: None,
-            camera_open_task: None,
+            camera_task: None,
             shared: Arc::new(Mutex::new(CameraShared {
                 gpu_handles: None,
                 uniforms: FilterUniforms(filter_params(0, 0.75)),
-                latest_texture: None,
+                latest_frame: None,
             })),
         }
     }
@@ -361,7 +360,8 @@ impl CameraFilterRenderer {
             bind_group_layout: None,
             sampler: None,
             uniform_buffer: None,
-            latest_texture: None,
+            converter: None,
+            upright: None,
             latest_bind_group: None,
             pipeline_format: None,
         })
@@ -383,88 +383,66 @@ impl CameraFilterRenderer {
         };
 
         let reconnect_ticket = self.reconnect_ticket.snapshot();
-        if !self.camera_started || reconnect_ticket != self.last_reconnect_ticket {
+        if self.camera_task.is_none() || reconnect_ticket != self.last_reconnect_ticket {
+            let reconnect = self.camera_task.is_some();
             self.last_reconnect_ticket = reconnect_ticket;
-            self.start_camera_open(&device, &queue, self.camera_started);
-            self.camera_started = true;
+            self.start_camera_stream(&device, &queue, reconnect);
         }
-
-        self.poll_camera_open();
-        self.pull_latest_frame();
     }
 
-    fn start_camera_open(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, reconnect: bool) {
-        let status = if reconnect {
+    /// (Re)opens the default camera on the render device and spawns the task
+    /// that drains its frames into the shared mailbox.
+    ///
+    /// The task owns the camera and the stream for the session, so the frame
+    /// importer the stream creates is reused for every frame; replacing the
+    /// task drops the camera and stops capture.
+    fn start_camera_stream(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        reconnect: bool,
+    ) {
+        let status_text = if reconnect {
             "Reconnecting camera stream..."
         } else {
             "Opening camera stream..."
         };
-        self.preview_status.set(status.to_string().into());
-        self.camera = None;
+        self.preview_status.set(status_text.to_string().into());
         self.shared
             .lock()
             .expect("camera mailbox poisoned")
-            .latest_texture = None;
+            .latest_frame = None;
 
         let device = Arc::new(device.clone());
         let queue = Arc::new(queue.clone());
-        self.camera_open_task = Some(Box::pin(async move {
-            Camera::open_default(device, queue)
-                .await
-                .map_err(|error| error.to_string())
+        let shared = Arc::clone(&self.shared);
+        let status = self.preview_status.clone();
+        self.camera_task = Some(spawn_local(async move {
+            let camera = match Camera::open_default(device, queue).await {
+                Ok(camera) => camera,
+                Err(error) => {
+                    status.set(format!("Failed to open camera stream: {error}").into());
+                    return;
+                }
+            };
+            status.set(Str::from("Camera stream active."));
+            let mut frames = Box::pin(camera.frames());
+            while let Some(frame) = frames.next().await {
+                match frame {
+                    Ok(frame) => {
+                        shared
+                            .lock()
+                            .expect("camera mailbox poisoned")
+                            .latest_frame = Some(frame);
+                    }
+                    Err(error) => {
+                        status.set(format!("Camera stream failed: {error}").into());
+                        return;
+                    }
+                }
+            }
+            status.set(Str::from("Camera stream ended unexpectedly."));
         }));
-    }
-
-    fn poll_camera_open(&mut self) {
-        let Some(mut task) = self.camera_open_task.take() else {
-            return;
-        };
-
-        match task.as_mut().now_or_never() {
-            Some(Ok(camera)) => {
-                self.camera = Some(camera);
-                self.preview_status.set(Str::from("Camera stream active."));
-            }
-            Some(Err(error)) => {
-                self.preview_status
-                    .set(format!("Failed to open camera stream: {error}").into());
-            }
-            None => {
-                self.camera_open_task = Some(task);
-            }
-        };
-    }
-
-    fn pull_latest_frame(&mut self) {
-        let Some(camera) = self.camera.as_ref() else {
-            return;
-        };
-
-        let poll_result = {
-            let mut frame_stream = camera.frames().boxed_local();
-            let waker = futures::task::noop_waker_ref();
-            let mut cx = std::task::Context::from_waker(waker);
-            frame_stream.as_mut().poll_next(&mut cx)
-        };
-
-        match poll_result {
-            std::task::Poll::Ready(Some(frame)) => {
-                self.shared
-                    .lock()
-                    .expect("camera mailbox poisoned")
-                    .latest_texture = Some(frame.into_texture());
-            }
-            std::task::Poll::Ready(None) => {
-                self.camera = None;
-                self.shared
-                    .lock()
-                    .expect("camera mailbox poisoned")
-                    .latest_texture = None;
-                self.preview_status
-                    .set(Str::from("Camera stream ended unexpectedly."));
-            }
-            std::task::Poll::Pending => {}
-        }
     }
 }
 
@@ -579,6 +557,7 @@ impl CameraFilterContent {
 impl GpuContent for CameraFilterContent {
     fn setup(&mut self, context: &Context<'_>) {
         self.ensure_pipeline(context);
+        self.converter = Some(FrameConverter::new(context.device));
         self.shared
             .lock()
             .expect("camera mailbox poisoned")
@@ -588,12 +567,8 @@ impl GpuContent for CameraFilterContent {
     fn render(&mut self, frame: &mut Frame<'_>) {
         let (incoming, uniforms) = {
             let mut shared = self.shared.lock().expect("camera mailbox poisoned");
-            (shared.latest_texture.take(), shared.uniforms)
+            (shared.latest_frame.take(), shared.uniforms)
         };
-        if incoming.is_some() {
-            self.latest_texture = incoming;
-            self.latest_bind_group = None;
-        }
 
         if let Some(uniform_buffer) = &self.uniform_buffer {
             let FilterUniforms([brightness, saturation, contrast, tint, vignette]) = uniforms;
@@ -605,11 +580,41 @@ impl GpuContent for CameraFilterContent {
                 .write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&uniforms));
         }
 
+        let mut encoder = frame
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Camera Filter Encoder"),
+            });
+
+        // Convert the newest camera frame to one upright RGBA texture on the
+        // GPU — its planes alias the camera's own buffers — then drop the
+        // frame so its buffer returns to the camera's pool.
+        if let Some(camera_frame) = incoming {
+            let converter = self
+                .converter
+                .as_mut()
+                .expect("the frame converter is created in setup");
+            if self
+                .upright
+                .as_ref()
+                .is_none_or(|texture| {
+                    texture.size() != FrameConverter::upright_size(&camera_frame)
+                })
+            {
+                self.upright = Some(FrameConverter::create_output(frame.device, &camera_frame));
+                self.latest_bind_group = None;
+            }
+            let upright = self.upright.as_ref().expect("the output was just created");
+            converter
+                .encode(frame.device, &mut encoder, &camera_frame, upright)
+                .expect("the camera frame converts on the device it was imported into");
+        }
+
         if let (Some(layout), Some(sampler), Some(uniform_buffer), Some(texture)) = (
             &self.bind_group_layout,
             &self.sampler,
             &self.uniform_buffer,
-            &self.latest_texture,
+            &self.upright,
         ) && self.latest_bind_group.is_none()
         {
             let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -633,12 +638,6 @@ impl GpuContent for CameraFilterContent {
                     ],
                 }));
         }
-
-        let mut encoder = frame
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Camera Filter Encoder"),
-            });
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

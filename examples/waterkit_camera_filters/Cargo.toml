@@ -19,6 +19,7 @@ waterkit-camera.workspace = true
 waterkit-permission.workspace = true
 shaderloom = { workspace = true, features = ["runtime"] }
 futures.workspace = true
+executor-core.workspace = true
 wgpu.workspace = true
 
 [build-dependencies]
