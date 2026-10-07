@@ -314,12 +314,12 @@ fn file_menu(dirty: &Binding<bool>) -> Menu {
         (
             Command::builder("Save")
                 .action(|| {})
-                .shortcut(Shortcut::new("s").command())
+                .shortcut(Shortcut::new('s').command())
                 .disabled(dirty.clone().not()),
             Divider,
             Command::builder("Close")
                 .action(|| {})
-                .shortcut(Shortcut::new("w").command().shift()),
+                .shortcut(Shortcut::new('w').command().shift()),
         ),
     )
 }

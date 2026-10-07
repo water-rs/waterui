@@ -21,6 +21,7 @@ waterui-locale.workspace = true
 waterui-icon.workspace = true
 executor-core.workspace = true
 serde = { workspace = true, optional = true, features = ["derive"] }
+thiserror = { version = "2.0.20", default-features = false }
 
 
 [features]

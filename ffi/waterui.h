@@ -189,6 +189,20 @@ typedef enum WuiEvent {
 } WuiEvent;
 
 /**
+ * Which kind of key a [`WuiShortcutKey`] carries.
+ */
+typedef enum WuiShortcutKeyTag {
+  /**
+   * A key that produces one character, in `character`.
+   */
+  WuiShortcutKeyTag_Character = 0,
+  /**
+   * A named key, its W3C `KeyboardEvent.key` name in `name`.
+   */
+  WuiShortcutKeyTag_Named = 1,
+} WuiShortcutKeyTag;
+
+/**
  * FFI-safe menu item tag.
  */
 typedef enum WuiMenuItemTag {
@@ -3937,6 +3951,26 @@ typedef struct WuiSystemIcon {
 } WuiSystemIcon;
 
 /**
+ * FFI-safe shortcut key: one character, or a named key from the W3C
+ * `KeyboardEvent.key` vocabulary.
+ */
+typedef struct WuiShortcutKey {
+  /**
+   * Which of `character` and `name` holds the key.
+   */
+  enum WuiShortcutKeyTag tag;
+  /**
+   * The key's Unicode scalar value for `Character`; 0 for `Named`.
+   */
+  uint32_t character;
+  /**
+   * The W3C key name (`Delete`, `F5`, `ArrowLeft`, …) for `Named`; empty
+   * for `Character`.
+   */
+  struct WuiStr name;
+} WuiShortcutKey;
+
+/**
  * FFI-safe shortcut modifier flags.
  */
 typedef struct WuiShortcutModifiers {
@@ -3963,9 +3997,9 @@ typedef struct WuiShortcutModifiers {
  */
 typedef struct WuiShortcut {
   /**
-   * The key equivalent.
+   * The key the shortcut fires on.
    */
-  struct WuiStr key;
+  struct WuiShortcutKey key;
   /**
    * The shortcut modifiers.
    */

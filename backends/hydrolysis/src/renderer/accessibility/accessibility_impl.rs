@@ -1609,7 +1609,7 @@ impl SemanticCore {
         } else {
             return true;
         };
-        let _ = handle.scroll_to(metrics.offset_x, target);
+        let _ = handle.user_scroll_to(metrics.offset_x, target);
         true
     }
 

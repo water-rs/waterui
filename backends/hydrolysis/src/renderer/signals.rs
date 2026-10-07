@@ -224,8 +224,7 @@ impl SemanticCore {
         // plain signal read, so a refresh is sufficient here.
         let Some(identity) = signal.identity() else {
             // Identity-less signal: subscribe fresh each read, retained for one frame.
-            let signals = self.signals.clone();
-            let guard = subscribe_signal(signal, move |_| signals.request_refresh());
+            let guard = self.refresh_watch(signal);
             self.lifecycle.current_frame_retain.push(guard);
             return;
         };
@@ -236,11 +235,28 @@ impl SemanticCore {
         if self.lifecycle.signal_watches.mark_seen(key, signal_type) {
             return;
         }
-        let signals = self.signals.clone();
-        let guard = subscribe_signal(signal, move |_| signals.request_refresh());
+        let guard = self.refresh_watch(signal);
         self.lifecycle
             .signal_watches
             .insert(key, signal_type, Box::new(signal.clone()), guard);
+    }
+
+    /// Subscribes `signal` so every update requests a refresh through this
+    /// core's frame signals — the same wake `watch_signal`'s subscriptions
+    /// carry — and answers the [`Retain`] the caller keeps for as long as
+    /// the signal must be observed.
+    ///
+    /// `watch_signal`'s subscriptions live for the frame that registers
+    /// them; a binding that must stay subscribed across idle frames — the
+    /// window declaration's own signals, which the runner watches for the
+    /// window's whole lifetime — cannot reach a frame to re-register from,
+    /// so it takes this path and holds the guard itself.
+    pub(crate) fn refresh_watch<S>(&self, signal: &S) -> Retain
+    where
+        S: Signal + Clone + 'static,
+    {
+        let signals = self.signals.clone();
+        subscribe_signal(signal, move |_| signals.request_refresh())
     }
 
     pub(crate) fn read_signal<S>(&mut self, signal: &S) -> S::Output

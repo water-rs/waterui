@@ -100,6 +100,30 @@ impl IntoBackground for Glass {
     }
 }
 
+/// A material group metadata: the backdrop materials in the wrapped subtree
+/// form one group.
+///
+/// The members of one group share one capture of what lies behind the
+/// group, so a member does not see another member of its group. Where the
+/// realization's style supports it, members may also merge into one shape
+/// where they come close. Whether and how they merge, and the distance
+/// over which they do, belong to the style and its theme tokens, never to
+/// the view.
+///
+/// The nearest enclosing group wins: a group nested in another starts a
+/// group of its own, and its materials do not join the outer one. A
+/// material outside every group is a group of its own.
+///
+/// This is ignorable metadata, like [`MaterialBackground`]: a realization
+/// whose style does not group materials renders the content unchanged.
+///
+/// Use via [`material_group`](crate::ViewExt::material_group) rather than
+/// directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MaterialGroup;
+
+impl MetadataKey for MaterialGroup {}
+
 impl<V: View> IntoBackground for V {
     type Output<Content: View> = BackgroundView<Content, V>;
 
@@ -131,10 +155,11 @@ pub enum Background {
 /// Materials create translucent blur effects that allow content behind the view
 /// to show through with varying degrees of blur and vibrancy.
 ///
-/// The mainline backends, Apple and Hydrolysis, realize `Material`. It travels
-/// as ignorable metadata, so a backend that does not realize it, such as an
-/// experimental one, draws the content without it. The levels fall in two
-/// groups:
+/// The mainline backends, Apple and Hydrolysis, realize `Material`. As a
+/// view's background it travels as ignorable metadata, so a backend that does
+/// not realize it, such as an experimental one, draws the content without it;
+/// as a window's background see [`WindowBackground::Material`]. The levels
+/// fall in two groups:
 ///
 /// - **Within-window levels** — [`Regular`](Self::Regular),
 ///   [`Thick`](Self::Thick) and [`UltraThick`](Self::UltraThick) — are a
@@ -147,16 +172,22 @@ pub enum Background {
 ///   included. Hydrolysis's HWUI render target (water-rs/waterui#1899) must
 ///   realize the same treatment when it lands.
 /// - **Behind-window levels** — [`UltraThin`](Self::UltraThin) and
-///   [`Thin`](Self::Thin) — blur what lies behind the window, which needs the
-///   compositor's blur-behind protocol and is therefore defined per platform.
-///   Apple platforms realize them natively: macOS blends them behind the
-///   window, and iOS, with nothing behind its windows, over the app's own
-///   content. On X11 the compositor's KDE blur-behind region, on Wayland
-///   `ext-background-effect-v1`, and on Windows the DWM system backdrop carry
-///   them. On a compositor with none of these protocols the backend does not
-///   ignore the level or substitute another: it fails fast with a panic that
-///   names the level and the platform. Hydrolysis does not realize these
-///   levels yet and panics when one reaches it (water-rs/waterui#1855).
+///   [`Thin`](Self::Thin) — blur what lies behind the window, which is the
+///   compositor's work and is therefore defined per platform. Apple platforms
+///   realize them natively: macOS blends them behind the window, and iOS,
+///   with nothing behind its windows, over the app's own content.
+///
+///   On Hydrolysis a behind-window level is realized as a window's
+///   background ([`WindowBackground::Material`]): the window is translucent
+///   and tinted with the level's colour treatment. The desktop behind it is
+///   blurred where the platform's blur-behind is wired and shows through
+///   unblurred elsewhere; X11 and Wayland on Linux and the system backdrop on
+///   Windows are water-rs/waterui#1856, water-rs/waterui#1857 and
+///   water-rs/waterui#1858. As a view's background, a behind-window level is
+///   unsupported on Hydrolysis and panics naming the level
+///   (water-rs/waterui#1853).
+///
+/// [`WindowBackground::Material`]: crate::window::WindowBackground::Material
 ///
 /// # Examples
 ///

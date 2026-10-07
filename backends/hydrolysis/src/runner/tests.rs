@@ -1,9 +1,9 @@
 use super::headless::HeadlessPlatformWindow;
 use super::{
-    FrameMode, RenderDiagnosticsConfig, RuntimeWindow, acquire_surface_frame, advance_runtime,
-    axes_whose_limits_changed, clamp_window_size, handle_input_events, pump_window_semantics,
-    render_window, reports_ui_idle, schedule_animation_update, schedule_redraw_or_refresh,
-    surface_error_requires_reconfigure,
+    FrameMode, FrameReader, RenderDiagnosticsConfig, RuntimeWindow, acquire_surface_frame,
+    advance_runtime, axes_whose_limits_changed, clamp_window_size, handle_input_events,
+    pump_window_semantics, render_window, render_window_with_capture, reports_ui_idle,
+    schedule_animation_update, schedule_redraw_or_refresh, surface_error_requires_reconfigure,
 };
 use crate::platform::{
     GpuSurfaceWindow as _, InputEvent, OffscreenSurface, PlatformWindow as _, SurfaceError,
@@ -20,8 +20,10 @@ use waterui::component::list::{List, ListItem};
 use waterui::window::{Window, WindowState};
 use waterui::{Binding, Signal, ViewExt as _};
 use waterui_backend_core::widget::TextCaretMotion;
+use waterui_core::animation::Animation;
 use waterui_core::id::SelfId;
 use waterui_core::{AnyView, Environment, binding};
+use waterui_graphics::Color;
 use waterui_layout::scroll::ScrollController;
 
 #[test]
@@ -795,7 +797,9 @@ fn rapid_resize_events_keep_the_retained_tree_at_the_latest_size() {
         move || build_count.set(build_count.get() + 1)
     });
     let mut runtime = runtime_window_for(window);
-    let env = Environment::new();
+    // The rendered idle-drive below resolves the window's background through
+    // the theme, so the test runs against the installed test theme.
+    let env = crate::renderer::tests::test_environment();
     let _ = pump_window_semantics(&mut runtime, &env);
     assert_eq!(build_count.get(), 1);
 
@@ -822,6 +826,79 @@ fn rapid_resize_events_keep_the_retained_tree_at_the_latest_size() {
     assert_eq!(runtime.platform.surface().size(), (640, 480));
     approx::assert_relative_eq!(runtime.window.frame.snapshot().width(), 640.0);
     approx::assert_relative_eq!(runtime.window.frame.snapshot().height(), 480.0);
+
+    // The runtime's own `frame` write on a resize must not loop
+    // (water-rs/waterui#2131): the declaration's subscription requests one
+    // bounded refresh, then the window goes idle and stays idle.
+    let mut now = Instant::now();
+    let settle = drive_until_idle(&mut runtime, &env, &mut now, 60);
+    assert!(
+        settle < 60,
+        "the resize must not loop: the window stayed awake for {settle} frames"
+    );
+}
+
+/// A window declaration input changed while the pump is parked must still
+/// reach it: `RuntimeWindow` holds a subscription on every reactive input
+/// of the declaration for the window's lifetime, so `handle().set_background`
+/// or a `title` write on an idle window requests a frame — and the frame the
+/// background write produces paints the new clear colour (water-rs/waterui#2131).
+#[test]
+fn an_idle_window_repaints_when_its_background_changes() {
+    let title = binding(waterui_core::Str::from("old title"));
+    let window = Window::new(title.clone(), binding(WindowState::Normal), || ());
+    let handle = window.handle();
+    let mut runtime = runtime_window_sized(window, 16, 16);
+    let env = crate::renderer::tests::test_environment();
+    let mut now = Instant::now();
+
+    let idle_frames = drive_until_idle(&mut runtime, &env, &mut now, 60);
+    assert!(idle_frames < 60, "the window never went idle");
+
+    handle.set_background(Color::srgb(255, 0, 0));
+    assert!(
+        runtime.renderer.has_pending_semantic_update(),
+        "a write to the window's background binding must request a frame"
+    );
+
+    // The flag becomes a scheduled refresh on the next advance, and the
+    // frame it runs paints the new clear colour behind the (empty) content.
+    now += Duration::from_millis(16);
+    let _ = advance_runtime(&mut runtime, &env, now);
+    assert!(
+        runtime.mode.is_pending(),
+        "the binding's update must arm a refresh frame"
+    );
+    let snapshot =
+        render_window_with_capture(&mut runtime, &env, FrameReader::Snapshot, &mut || false)
+            .snapshot
+            .expect("the refresh frame captures a snapshot");
+    let pixel = &snapshot.rgba8[0..4];
+    assert!(
+        pixel[0] > 200 && pixel[1] < 60 && pixel[2] < 60 && pixel[3] == 255,
+        "the snapshot must show the new background colour, got {pixel:?}"
+    );
+
+    // The repaint is one bounded frame: the window settles and stays idle.
+    let settle = drive_until_idle(&mut runtime, &env, &mut now, 60);
+    assert!(
+        settle < 60,
+        "the window never went idle after the background repaint"
+    );
+
+    // `title` is a declaration input too — the pump only `.snapshot()`s it
+    // per frame, so its subscription is the only thing that wakes an idle
+    // window for a rename.
+    title.set(waterui_core::Str::from("new title"));
+    assert!(
+        runtime.renderer.has_pending_semantic_update(),
+        "a write to the window's title must request a frame"
+    );
+    let settle = drive_until_idle(&mut runtime, &env, &mut now, 60);
+    assert!(
+        settle < 60,
+        "the window never went idle after the title rename"
+    );
 }
 
 #[test]
@@ -902,15 +979,15 @@ fn runtime_window_sized(
     )
 }
 
-/// An animated `List` jump must keep the window awake until it settles.
+/// An animated `List` scroll must keep the window awake until it settles.
 ///
 /// This drives the runtime the way the winit loop does — a frame runs only while
-/// the runtime is still asking to be woken — so a jump that fails to schedule
+/// the runtime is still asking to be woken — so a scroll that fails to schedule
 /// its own animation frames shows up as the loop going idle almost immediately.
 /// Pumping frames unconditionally cannot see that, because it supplies the very
 /// frames the bug withholds.
 #[test]
-fn an_animated_list_jump_keeps_the_window_awake_until_it_settles() {
+fn an_animated_list_scroll_keeps_the_window_awake_until_it_settles() {
     const ROWS: usize = 200;
     const TARGET_ROW: usize = 40;
     /// Hard stop so a runaway loop fails loudly instead of hanging.
@@ -938,9 +1015,9 @@ fn an_animated_list_jump_keeps_the_window_awake_until_it_settles() {
         "the window never went idle before the jump"
     );
 
-    controller.scroll_to(TARGET_ROW);
+    controller.animate_to(TARGET_ROW, Animation::default());
     // The frame the button press itself produces: the loop is already running an
-    // iteration for that input, and this is where the jump gets armed.
+    // iteration for that input, and this is where the scroll gets armed.
     now += Duration::from_millis(16);
     let _ = advance_runtime(&mut runtime, &env, now);
     render_window(&mut runtime, &env, &mut || false);
@@ -950,15 +1027,15 @@ fn an_animated_list_jump_keeps_the_window_awake_until_it_settles() {
 
     assert!(
         animation_frames < MAX_FRAMES,
-        "the jump never settled: the window stayed awake for {animation_frames} frames"
+        "the scroll never settled: the window stayed awake for {animation_frames} frames"
     );
-    // The approach eases with a ~180ms time constant, so a real animation spans
-    // many frames. A jump that teleported, or one whose frames were never
-    // scheduled, would idle again almost at once.
+    // `Animation::default()` resolves to a 250ms ease-in-out, so a real
+    // animation spans many frames. A scroll that teleported, or one whose
+    // frames were never scheduled, would idle again almost at once.
     assert!(
         animation_frames >= 8,
-        "an animated jump should span many frames; the window went idle after \
-         {animation_frames}, so the jump landed without animating"
+        "an animated scroll should span many frames; the window went idle after \
+         {animation_frames}, so the scroll landed without animating"
     );
 }
 

@@ -14,6 +14,12 @@ use std::rc::{Rc, Weak};
 pub struct Compositor {
     pub(crate) render_layers: Vec<RenderLayer>,
     pub active_scene_layers: Vec<ActiveSceneLayer>,
+    /// The `.material_group()` scope stack the flush keeps: a group wrapper
+    /// pushes its node's render identity while its child flushes, so a
+    /// material member's enclosing scope is the stack's top — or `None`
+    /// outside every group. An anchored-overlay flush starts with the stack
+    /// empty, so overlay content never joins a scope the window tree opened.
+    pub(crate) material_scopes: Vec<crate::renderer::retained::RenderId>,
 }
 
 #[derive(Clone)]
@@ -134,14 +140,22 @@ pub struct FilteredLayer {
 }
 
 /// A `Material` background presenting this frame: a keyed member mount that
-/// samples the material's backdrop group inside the view's bounds. The
-/// content the view wraps draws in the layers after it.
+/// samples its material scope's shared backdrop group — or a group of its own
+/// — inside the view's bounds. The content the view wraps draws in the layers
+/// after it.
 #[derive(Clone)]
 pub struct MaterialLayer {
     /// The mount identity: which wrapper node presents this material.
     pub(crate) key: crate::renderer::retained::RenderKey,
-    /// The node-owned colour stage and blur radius the backdrop group runs.
-    pub(crate) runtime: Rc<crate::renderer::material::MaterialRuntime>,
+    /// The render identity of the nearest enclosing `.material_group()` node
+    /// — the stack's top at the member's flush — `None` when the member is a
+    /// backdrop group of its own.
+    pub(crate) scope: Option<crate::renderer::retained::RenderId>,
+    /// The member's resolved colour scheme at flush — a subtree may
+    /// install its own scheme, so the backdrop group's key carries it.
+    pub(crate) scheme: waterui::theme::ColorScheme,
+    /// The member's within-window level — part of its backdrop-group key.
+    pub(crate) level: crate::renderer::material::WithinWindowLevel,
     /// Placement transform mapping `bounds` into scene space.
     pub(crate) transform: kurbo::Affine,
     /// The view's rect in its own space: the member's clip.
@@ -180,7 +194,8 @@ pub enum RenderLayer {
     /// A `FilteredView` wrapper: a keyed layer carrying a `Filter`, with its
     /// child layers mounted underneath.
     Filtered(FilteredLayer),
-    /// A `Material` background: a keyed layer sampling its backdrop group.
+    /// A `Material` background: a keyed layer sampling its material scope's
+    /// backdrop group — or a group of its own outside every group.
     Material(MaterialLayer),
     #[cfg(hydrolysis_macos_system_webview)]
     NativeView(NativeViewLayer),
@@ -694,14 +709,19 @@ impl FrameInstall<'_> {
                     // material costs no capture or blur.
                     let visible = scopes.iter().all(|scope| scope.opacity != 0.0);
                     if visible {
-                        let surface = self.surface;
                         let display_scale = self.display_scale;
-                        self.mounts.set_backdrop(tx, layer.key, display_scale, || {
-                            surface.backdrop_group(
-                                layer.runtime.chain(display_scale),
-                                crate::renderer::material::capture_scale(),
-                            )
-                        });
+                        self.mounts.set_backdrop(
+                            self.surface,
+                            tx,
+                            layer.key,
+                            crate::renderer::retained::mount::MemberScope {
+                                scope: layer.scope,
+                                scheme: layer.scheme,
+                                canvas: scope.parent_key(),
+                            },
+                            display_scale,
+                            layer.level,
+                        );
                     } else {
                         self.mounts.clear_backdrop(tx, layer.key);
                     }

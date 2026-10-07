@@ -23,6 +23,19 @@
 //! layer rather than the surface root — so the same `RenderKey` identity
 //! works at any depth.
 //!
+//! Material members hold **backdrop group** memberships in a table beside
+//! the mounts rather than on them: a `Material` layer's key is `(scope,
+//! within-window level, colour scheme, install canvas)` — the
+//! `.material_group()` node's render identity, or the member's own mount
+//! when it wraps in no group — so the members of one modifier instance at
+//! one level under one scheme on one canvas share one `BackdropGroup`, one
+//! capture and one chain, and a member in a filtered view's canvas, under a
+//! subtree-installed appearance, or in an anchored overlay (whose flush
+//! starts with an empty scope stack) never joins them. A group builds on
+//! its first visible member of a frame, rebuilds on a display-scale change
+//! by re-pointing every member before the old group drops, and releases at
+//! the commit of the first frame with no visible member.
+//!
 //! Wrapper layers are never destroyed while their mount lives: a
 //! shrinking ancestry detaches its excess wrappers and parks them for
 //! reuse instead of dropping them. A shrunken chain's handles stay alive
@@ -31,7 +44,9 @@
 //! One persistent overlay layer sits above every other child for the
 //! frame's transient scene (popups, menus and capture/transition content).
 
-use super::identity::RenderKey;
+use std::collections::hash_map::Entry;
+
+use super::identity::{RenderId, RenderKey};
 use rustc_hash::{FxHashMap, FxHashSet};
 use waterui_graphics::HeldResources;
 
@@ -94,18 +109,104 @@ struct KeyedMount {
     /// The group's segment layers and committed order, allocated when the
     /// first filtered child mounts under `content`.
     group: Option<GroupBody>,
-    /// The backdrop group `content` samples, for a material mount.
-    backdrop: Option<MountedBackdrop>,
 }
 
-/// A backdrop group a keyed mount's content layer is a member of, with the
-/// display scale its chain was built for.
+/// Which backdrop group a material member joins: the tuple `(scope,
+/// within-window level, colour scheme, install canvas)`. Materials share a
+/// capture only inside one compositing canvas and one appearance, so the
+/// canvas and the resolved colour scheme are part of the key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct BackdropGroupKey {
+    /// The nearest enclosing `.material_group()` node's render identity the
+    /// members share, or the member's own mount when it wraps in no group.
+    scope: BackdropScope,
+    /// The members' within-window level: one group runs one level's chain,
+    /// so members of different levels never share a capture.
+    level: crate::renderer::material::WithinWindowLevel,
+    /// The members' colour scheme, resolved at flush: a subtree may
+    /// install its own scheme, so members at one level in one scope can
+    /// differ — the group runs one constant scheme's chain.
+    scheme: waterui::theme::ColorScheme,
+    /// The install canvas the members' content layers mount on: `None`
+    /// under the surface root, `Some(parent)` under a filtered group's
+    /// mount.
+    canvas: Option<RenderKey>,
+}
+
+/// The member-side terms of a [`BackdropGroupKey`]: the scope, the
+/// resolved colour scheme and the install canvas a material member mounts
+/// under. The remaining term — the within-window level — is the member's
+/// `MaterialLayer` level, a separate [`set_backdrop`][Self::set_backdrop]
+/// argument.
+#[derive(Clone, Copy, Debug)]
+pub struct MemberScope {
+    /// The nearest enclosing `.material_group()` node's render identity
+    /// the member flushed under, or `None` outside every group.
+    pub scope: Option<RenderId>,
+    /// The member's resolved colour scheme at flush: a subtree may install
+    /// its own scheme, so members at one level in one scope can differ —
+    /// each scheme keys its own group.
+    pub scheme: waterui::theme::ColorScheme,
+    /// The install canvas the member's content layer mounts on: `None`
+    /// under the surface root, `Some(parent)` under a filtered group's
+    /// mount. Materials share a capture only inside one compositing
+    /// canvas, so the canvas is part of the group key.
+    pub canvas: Option<RenderKey>,
+}
+
+/// What a shared backdrop group is scoped to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum BackdropScope {
+    /// A member outside every `.material_group()`: it is a group of its
+    /// own, keyed by its own mount — two ungrouped members never share.
+    Solo(RenderKey),
+    /// The `.material_group()` wrapper node's render identity: two
+    /// modifier instances are two groups.
+    Scoped(RenderId),
+}
+
+/// One live backdrop group in the mount table: the group itself, the
+/// runtime its chain was built from, the display scale the chain was
+/// built for, and the member mounts sampling it. The runtime is the key's
+/// level and colour scheme resolved once — as plain values — and an
+/// appearance flip re-keys the member's install instead, so the scheme
+/// change reaches the filter through a new group.
 struct MountedBackdrop {
     /// Held for its lifetime: dropping it unregisters the group.
-    _group: cherenkov::BackdropGroup,
+    group: cherenkov::BackdropGroup,
+    /// The runtime the group's chain runs: kept so a display-scale rebuild
+    /// re-runs the same treatment and the test accessors answer what the
+    /// group runs.
+    runtime: crate::renderer::material::MaterialRuntime,
     /// `f64::to_bits` of the display scale: a scale change rebuilds the
     /// group, since its chain's parameters are in capture texels.
     display_scale: u64,
+    /// The member mounts sampling the group: joins and visibility clears
+    /// edit it during install, and the order sync drops the members whose
+    /// mounts left the frame. An empty set releases the group at the
+    /// sync's commit.
+    members: FxHashSet<RenderKey>,
+}
+
+impl MountedBackdrop {
+    /// Builds the group running `runtime`'s chain at `display_scale` —
+    /// `f64::to_bits` of the display scale — for `members`.
+    fn new(
+        surface: &cherenkov::Surface<cherenkov_gpu::Gpu>,
+        runtime: crate::renderer::material::MaterialRuntime,
+        display_scale: u64,
+        members: FxHashSet<RenderKey>,
+    ) -> Self {
+        Self {
+            group: surface.backdrop_group(
+                runtime.chain(f64::from_bits(display_scale)),
+                crate::renderer::material::capture_scale(),
+            ),
+            runtime,
+            display_scale,
+            members,
+        }
+    }
 }
 
 impl KeyedMount {
@@ -132,6 +233,14 @@ pub struct Mounts {
     segment_held: Vec<Option<HeldResources>>,
     /// Identity-bearing mounts, keyed by the visual node's [`RenderKey`].
     keyed: FxHashMap<RenderKey, KeyedMount>,
+    /// Every live backdrop group on this surface, solo and scoped alike.
+    /// A group builds on its first visible member of a frame and releases
+    /// at the commit of the first frame with no visible member — the same
+    /// commit the members' detach or clear rides, so no frame samples the
+    /// released group.
+    backdrop_groups: FxHashMap<BackdropGroupKey, MountedBackdrop>,
+    /// Which backdrop group each member mount currently samples.
+    backdrop_members: FxHashMap<RenderKey, BackdropGroupKey>,
     /// The overlay layer, created on first transient scene and kept.
     overlay: Option<cherenkov::Layer>,
     /// The registrations the overlay's installed content names.
@@ -164,6 +273,8 @@ impl Mounts {
             segments: Vec::new(),
             segment_held: Vec::new(),
             keyed: FxHashMap::default(),
+            backdrop_groups: FxHashMap::default(),
+            backdrop_members: FxHashMap::default(),
             overlay: None,
             overlay_held: None,
             order_ids: Vec::new(),
@@ -210,7 +321,6 @@ impl Mounts {
                             content: surface.layer(),
                             held: None,
                             group: None,
-                            backdrop: None,
                         }
                     })
                     .content
@@ -301,70 +411,209 @@ impl Mounts {
         }
     }
 
-    /// Makes `key`'s content layer a member of the backdrop group `group`
-    /// builds for a surface at `display_scale` device pixels per point.
+    /// Installs `member`'s membership in the backdrop group its `(scope,
+    /// level, colour scheme, install canvas)` key names, building the
+    /// group on the key's first visible member of a frame, on the surface
+    /// the mount belongs to.
     ///
-    /// The group is built on the mount's first call and rebuilt when the
-    /// display scale changes; it lives until the mount drops or
-    /// [`Self::clear_backdrop`] releases it, on the surface the mount
-    /// belongs to. A replaced group is released here, before the commit
-    /// that moves the member to its successor is applied — the engine
-    /// applies a frame's commits before it renders, so no frame samples
-    /// the released group.
+    /// `member_scope.scope` is the render identity of the
+    /// `.material_group()` node nearest enclosing the member, `None` when
+    /// it wraps in no group — a scope-less member is a group of its own,
+    /// keyed by its own mount. `member_scope.scheme` is the member's
+    /// colour scheme, resolved at flush: a subtree may install its own
+    /// scheme, so two members at one level in one scope can differ — each
+    /// scheme keys its own group. `member_scope.canvas`
+    /// is the member's install canvas ([`InstallScope::parent_key`]):
+    /// materials share a capture only inside one compositing canvas, so
+    /// it is part of the key. `level` is the member's within-window
+    /// level, the `Material` wrapper's payload: members of different
+    /// levels never share a capture.
+    ///
+    /// A member still holding membership in the same key takes no work. A
+    /// member joining a different key leaves its old group first, and a
+    /// group whose membership empties releases at the order sync's commit.
+    /// A display-scale change rebuilds the group — its chain's parameters
+    /// are in capture texels — and re-points every member's content layer
+    /// at the new group before the old one drops. Ordering is safe: the
+    /// engine applies a frame's commits before it renders, so no frame
+    /// samples the released group. The group's chain is a `MaterialRuntime`
+    /// built from the key's level and colour scheme — both plain values;
+    /// an appearance flip re-keys the member's install, so the change
+    /// reaches the filter through the new group at the commit, snapping
+    /// rather than animating.
+    ///
+    /// [`InstallScope::parent_key`]:
+    ///     crate::renderer::render::compositor::InstallScope::parent_key
     pub(crate) fn set_backdrop(
         &mut self,
+        surface: &cherenkov::Surface<cherenkov_gpu::Gpu>,
         tx: &mut cherenkov::Transaction<'_, cherenkov_gpu::Gpu>,
-        key: RenderKey,
+        member: RenderKey,
+        member_scope: MemberScope,
         display_scale: f64,
-        group: impl FnOnce() -> cherenkov::BackdropGroup,
+        level: crate::renderer::material::WithinWindowLevel,
     ) {
-        let mount = self
-            .keyed
-            .get_mut(&key)
-            .expect("hydrolysis mounts: backdrop for an uncreated mount");
-        let display_scale = display_scale.to_bits();
-        if mount
-            .backdrop
-            .as_ref()
-            .is_some_and(|backdrop| backdrop.display_scale == display_scale)
+        assert!(
+            self.keyed.contains_key(&member),
+            "hydrolysis mounts: backdrop for an uncreated mount"
+        );
+        let key = BackdropGroupKey {
+            scope: member_scope
+                .scope
+                .map_or(BackdropScope::Solo(member), BackdropScope::Scoped),
+            level,
+            scheme: member_scope.scheme,
+            canvas: member_scope.canvas,
+        };
+        if self.backdrop_members.get(&member) == Some(&key)
+            && self
+                .backdrop_groups
+                .get(&key)
+                .is_some_and(|group| group.display_scale == display_scale.to_bits())
         {
             return;
         }
-        let group = group();
-        tx[&mount.content].backdrop(group.sample());
-        mount.backdrop = Some(MountedBackdrop {
-            _group: group,
-            display_scale,
-        });
+        self.leave_backdrop(member);
+        let display_scale = display_scale.to_bits();
+        let group = match self.backdrop_groups.entry(key) {
+            Entry::Occupied(mut entry) => {
+                if entry.get().display_scale != display_scale {
+                    // A display-scale change rebuilds the group — its
+                    // chain's parameters are in capture texels — and
+                    // re-points every member at the new group before the
+                    // old one drops. The chain re-runs on the group's own
+                    // constant-scheme runtime.
+                    let replacement = MountedBackdrop::new(
+                        surface,
+                        entry.get().runtime,
+                        display_scale,
+                        core::mem::take(&mut entry.get_mut().members),
+                    );
+                    for &other in &replacement.members {
+                        let mount = self
+                            .keyed
+                            .get(&other)
+                            .expect("hydrolysis mounts: backdrop for an uncreated mount");
+                        tx[&mount.content].backdrop(replacement.group.sample());
+                    }
+                    *entry.get_mut() = replacement;
+                }
+                entry.into_mut()
+            }
+            // First visible member of a frame: the group's chain runs on
+            // the key's own runtime — the level and the resolved colour
+            // scheme, both plain values. Members under one key share both
+            // terms, and an appearance flip re-keys them into a new group.
+            Entry::Vacant(entry) => entry.insert(MountedBackdrop::new(
+                surface,
+                crate::renderer::material::MaterialRuntime::new(key.level, key.scheme),
+                display_scale,
+                FxHashSet::default(),
+            )),
+        };
+        {
+            let mount = self
+                .keyed
+                .get(&member)
+                .expect("hydrolysis mounts: backdrop for an uncreated mount");
+            tx[&mount.content].backdrop(group.group.sample());
+        }
+        group.members.insert(member);
+        self.backdrop_members.insert(member, key);
     }
 
-    /// Releases `key`'s backdrop group, if it holds one, and clears its
-    /// content layer's membership, so the engine neither captures nor
-    /// filters for it until [`Self::set_backdrop`] builds a new one.
-    pub(crate) fn clear_backdrop(
-        &mut self,
-        tx: &mut cherenkov::Transaction<'_, cherenkov_gpu::Gpu>,
-        key: RenderKey,
-    ) {
-        let mount = self
-            .keyed
-            .get_mut(&key)
-            .expect("hydrolysis mounts: backdrop for an uncreated mount");
-        if mount.backdrop.take().is_some() {
-            tx[&mount.content].clear_backdrop();
+    /// Takes `member` out of its backdrop group's membership. The member's
+    /// content layer is untouched — the join or clear that follows sets it.
+    fn leave_backdrop(&mut self, member: RenderKey) {
+        if let Some(key) = self.backdrop_members.remove(&member) {
+            // Membership always names a live group: the order sync drops
+            // a member's table entry before it releases the emptied group.
+            let group = self
+                .backdrop_groups
+                .get_mut(&key)
+                .expect("hydrolysis mounts: a member's backdrop key must name a live group");
+            group.members.remove(&member);
         }
     }
 
-    /// The display scale `key`'s held backdrop group was built for, `None`
-    /// while the mount holds none.
+    /// Releases `member`'s membership in its backdrop group, if it holds
+    /// one, and clears its content layer's membership, so the engine
+    /// neither captures nor filters for it until [`Self::set_backdrop`]
+    /// builds a new one.
+    pub(crate) fn clear_backdrop(
+        &mut self,
+        tx: &mut cherenkov::Transaction<'_, cherenkov_gpu::Gpu>,
+        member: RenderKey,
+    ) {
+        if !self.backdrop_members.contains_key(&member) {
+            return;
+        }
+        self.leave_backdrop(member);
+        let mount = self
+            .keyed
+            .get(&member)
+            .expect("hydrolysis mounts: backdrop for an uncreated mount");
+        tx[&mount.content].clear_backdrop();
+    }
+
+    /// The display scale `member`'s backdrop group was built for, `None`
+    /// while the member holds no membership.
     #[cfg(test)]
-    pub(crate) fn backdrop_display_scale(&self, key: RenderKey) -> Option<f64> {
-        self.keyed
-            .get(&key)
-            .expect("hydrolysis mounts: backdrop for an uncreated mount")
-            .backdrop
-            .as_ref()
-            .map(|backdrop| f64::from_bits(backdrop.display_scale))
+    pub(crate) fn backdrop_display_scale(&self, member: RenderKey) -> Option<f64> {
+        let key = self.backdrop_members.get(&member)?;
+        self.backdrop_groups
+            .get(key)
+            .map(|group| f64::from_bits(group.display_scale))
+    }
+
+    /// The id of the backdrop group `member` samples — `None` while the
+    /// member holds no membership. Two members answering the same id share
+    /// one capture. A test-facing answer.
+    #[cfg(test)]
+    pub(crate) fn backdrop_group_id(&self, member: RenderKey) -> Option<cherenkov::BackdropId> {
+        let key = self.backdrop_members.get(&member)?;
+        self.backdrop_groups.get(key).map(|group| group.group.id())
+    }
+
+    /// How many live backdrop groups the table holds — a test-facing
+    /// answer.
+    #[cfg(test)]
+    pub(crate) fn backdrop_group_count(&self) -> usize {
+        self.backdrop_groups.len()
+    }
+
+    /// The colour scheme `member`'s backdrop group is keyed by — `None`
+    /// while the member holds no membership. A test-facing answer.
+    #[cfg(test)]
+    pub(crate) fn backdrop_scheme(&self, member: RenderKey) -> Option<waterui::theme::ColorScheme> {
+        self.backdrop_members.get(&member).map(|key| key.scheme)
+    }
+
+    /// The colour-stage parameters `member`'s backdrop group runs —
+    /// `None` while the member holds no membership. The answer is the
+    /// group's own runtime: the key's level and colour scheme resolved
+    /// once, so two groups under different schemes run different tones. A
+    /// test-facing answer.
+    #[cfg(test)]
+    pub(crate) fn backdrop_tone(&self, member: RenderKey) -> Option<[f32; 7]> {
+        let key = self.backdrop_members.get(&member)?;
+        self.backdrop_groups
+            .get(key)
+            .map(|group| group.runtime.tone_params())
+    }
+
+    /// The chain `member`'s backdrop group runs, rebuilt from the runtime
+    /// the group holds at the group's own display scale — `None` while the
+    /// member holds no membership. A test-facing answer.
+    #[cfg(test)]
+    pub(crate) fn backdrop_chain(
+        &self,
+        member: RenderKey,
+    ) -> Option<crate::renderer::material::MaterialChain> {
+        let key = self.backdrop_members.get(&member)?;
+        self.backdrop_groups
+            .get(key)
+            .map(|group| group.runtime.chain(f64::from_bits(group.display_scale)))
     }
 
     /// The segment layer `key`'s group orders group child `index` under,
@@ -536,6 +785,18 @@ impl Mounts {
         let keyed_before = self.keyed.len();
         self.keyed.retain(|key, _| live_keys.contains(key));
         self.frame_removed += (keyed_before - self.keyed.len()) as u64;
+
+        // Backdrop groups release at this commit: the members whose mounts
+        // left the frame drop out of their groups' membership, and a group
+        // with no visible member is dropped with them — the same ordering
+        // argument `set_backdrop` documents applies, since the engine
+        // applies a frame's commits before it renders.
+        self.backdrop_members
+            .retain(|member, _| live_keys.contains(member));
+        self.backdrop_groups.retain(|_, group| {
+            group.members.retain(|member| live_keys.contains(member));
+            !group.members.is_empty()
+        });
 
         let segment_count = order
             .iter()

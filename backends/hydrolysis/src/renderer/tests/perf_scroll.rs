@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
+use waterui_core::animation::Animation;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
 use waterui_core::layout::Point;
@@ -36,8 +37,9 @@ const WINDOW_WIDTH: u32 = 400;
 const WINDOW_HEIGHT: u32 = 640;
 const ROW_HEIGHT: f32 = 44.0;
 const SCROLL_FRAMES: u32 = 24;
-/// Frames to run an indexed jump for. The approach eases with a ~180ms time
-/// constant, so this is comfortably past the point it snaps to its target.
+/// Frames to run a programmatic scroll request for. A jump lands on the next
+/// pump and `Animation::default()` runs 250ms, so this is comfortably past
+/// either settling.
 const FRAMES_TO_SETTLE_JUMP: u32 = 60;
 
 /// A vertically-scrolling lazy list of `rows` fixed-height rows.
@@ -164,8 +166,14 @@ fn coordinate_jump_over_lazy_stack_materializes_only_the_target_window() {
     );
 }
 
-#[test]
-fn indexed_list_jump_materializes_only_the_target_window() {
+/// The materialization bound every indexed scroll request must hold: no
+/// frame may realize more than a viewport's worth of rows, and the target
+/// row must intersect the viewport once the request settles. `issue`
+/// supplies the request — a jump or an animated one — against the same
+/// 100,000-row list.
+fn assert_indexed_scroll_materializes_only_the_target_window(
+    issue: impl FnOnce(&ScrollController<usize>),
+) {
     const ROWS: usize = 100_000;
     const TARGET_ROW: usize = 90_000;
 
@@ -204,12 +212,10 @@ fn indexed_list_jump_materializes_only_the_target_window() {
     let _ = runtime.pump_at(false, start);
     let initial_materialized = materialized.load(Ordering::Relaxed);
 
-    // An indexed jump eases into place instead of teleporting, so the target
-    // arrives over several frames rather than on the next one. Only the final
-    // approach is animated — a distant target is closed instantly first — so
-    // the whole jump still costs a bounded number of viewports, which is what
-    // this test is really guarding.
-    controller.scroll_to(TARGET_ROW);
+    // The rows between the viewport and the target are never materialized —
+    // what this guards is that no frame in the sequence realizes more than a
+    // viewport's worth of them.
+    issue(&controller);
     #[cfg_attr(
         not(feature = "accessibility"),
         allow(unused_mut, unused_variables, reason = "labels need the a11y tree")
@@ -240,19 +246,36 @@ fn indexed_list_jump_materializes_only_the_target_window() {
         initial_materialized < 128,
         "initial List viewport materialized {initial_materialized} rows"
     );
-    // The jump eases in, so cost is spread over frames rather than landing on
-    // one. What must hold is that no single frame ever materializes more than a
-    // viewport: that is what proves the glide is not dragging the list through
-    // the 90,000 rows between here and the target.
+    // No single frame may materialize more than a viewport — that is what
+    // proves the request does not drag the list through the 90,000 rows
+    // between here and the target.
     assert!(
         worst_frame < 128,
-        "a frame of the indexed List jump materialized {worst_frame} rows instead of one viewport"
+        "a frame of the indexed List request materialized {worst_frame} rows instead of one viewport"
     );
     #[cfg(feature = "accessibility")]
     assert!(
         saw_target,
-        "the indexed target row must intersect the viewport once the jump settles"
+        "the indexed target row must intersect the viewport once the request settles"
     );
+}
+
+#[test]
+fn indexed_list_jump_materializes_only_the_target_window() {
+    // A jump lands on the next pump.
+    assert_indexed_scroll_materializes_only_the_target_window(|controller| {
+        controller.scroll_to(90_000);
+    });
+}
+
+#[test]
+fn indexed_list_animate_to_materializes_only_the_target_window() {
+    // An animated request teleports to within 100 rows of the target and
+    // glides only that last stretch — the per-frame bound still holds while
+    // the viewport moves.
+    assert_indexed_scroll_materializes_only_the_target_window(|controller| {
+        controller.animate_to(90_000, Animation::default());
+    });
 }
 
 #[test]
