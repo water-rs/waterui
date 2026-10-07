@@ -39,7 +39,7 @@ pub(super) enum WaylandBlurSupport {
     /// and unblurred.
     Unsupported,
     /// The bound manager, queue and surface-effect state.
-    Bound(WaylandBlur),
+    Bound(Box<WaylandBlur>),
 }
 
 /// The dispatch state type for the borrowed connection's own queue — this

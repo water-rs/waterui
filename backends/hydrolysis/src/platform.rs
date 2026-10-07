@@ -3994,10 +3994,10 @@ mod winit_impl {
                         );
                     };
                     if blur && matches!(self.wayland_blur, WaylandBlurSupport::NotAsked) {
-                        self.wayland_blur = match WaylandBlur::new(display.display.as_ptr()) {
-                            Some(bound) => WaylandBlurSupport::Bound(bound),
-                            None => WaylandBlurSupport::Unsupported,
-                        };
+                        self.wayland_blur = WaylandBlur::new(display.display.as_ptr())
+                            .map_or(WaylandBlurSupport::Unsupported, |bound| {
+                                WaylandBlurSupport::Bound(Box::new(bound))
+                            });
                     }
                     if let WaylandBlurSupport::Bound(wayland_blur) = &mut self.wayland_blur {
                         wayland_blur.set_blur(blur, surface);
