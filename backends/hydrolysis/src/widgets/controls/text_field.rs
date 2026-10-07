@@ -283,6 +283,10 @@ pub fn render_text_field_parts(
                 line_limit,
             }),
         ) {
+            if let Some(content_type) = state.config.content_type {
+                ctx.renderer_mut()
+                    .register_accessibility_content_type(node_id, content_type);
+            }
             ctx.renderer_mut()
                 .push_pending_text_input_accessibility_node(node_id);
         }
@@ -1145,6 +1149,9 @@ pub fn emit_text_field_accessibility(
                 line_limit,
             }),
         ) {
+            if let Some(content_type) = state.config.content_type {
+                renderer.register_accessibility_content_type(node_id, content_type);
+            }
             renderer.push_pending_text_input_accessibility_node(node_id);
         }
         if !disabled {

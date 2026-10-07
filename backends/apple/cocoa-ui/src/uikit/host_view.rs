@@ -111,6 +111,8 @@ pub struct HostViewIvars {
     /// target stays alive and a replacement can detach it.
     hover_recognizer: RefCell<Option<Retained<UIHoverGestureRecognizer>>>,
     key: RefCell<Option<KeyHandler>>,
+    /// The capturable surface the mounted leaf stored on this view.
+    capturable: crate::capture::CapturableSlot,
     /// The display-scale registration serving backing-scale subscribers.
     backing_changed: RefCell<Option<TraitChangeObservation>>,
 }
@@ -469,6 +471,17 @@ impl HostView {
     /// set before. This is where subviews are given their frames.
     pub fn set_layout_handler(&self, handler: impl Fn(&Self) + 'static) {
         self.ivars().layout.replace(Some(Rc::new(handler)));
+    }
+
+    /// The capturable surface a mounted leaf stored on this view, if any.
+    #[must_use]
+    pub fn capturable(&self) -> Option<Rc<dyn crate::capture::CapturableSurface>> {
+        self.ivars().capturable.get()
+    }
+
+    /// The view's capturable slot — install once, clear on unmount.
+    pub fn capturable_slot(&self) -> &crate::capture::CapturableSlot {
+        &self.ivars().capturable
     }
 
     /// Calls `handler` with the new size every time the view's size changes,

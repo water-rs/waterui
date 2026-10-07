@@ -27,8 +27,18 @@ use waterui::theme::color::Background;
 use waterui::window::ResolvedWindowBackground;
 use waterui_backend_core::Environment;
 
-use crate::components::material_background::level;
 use crate::contract::KeepAlive;
+
+/// The `Material` thickness as the kit's neutral level.
+pub const fn level(material: Material) -> material::MaterialLevel {
+    match material {
+        Material::UltraThin => material::MaterialLevel::UltraThin,
+        Material::Thin => material::MaterialLevel::Thin,
+        Material::Regular => material::MaterialLevel::Regular,
+        Material::Thick => material::MaterialLevel::Thick,
+        Material::UltraThick => material::MaterialLevel::UltraThick,
+    }
+}
 
 /// The colour painted behind the window's content while `material` is its
 /// background, given the theme background `theme`.
