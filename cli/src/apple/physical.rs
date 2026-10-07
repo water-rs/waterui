@@ -23,8 +23,13 @@ use smol::{
 };
 use tracing::info;
 
+#[cfg(unix)]
+use crate::device::{TERMINATION_GRACE_PERIOD, TerminationOutcome, await_termination, within};
 use crate::{
-    device::{ApplicationExit, Artifact, Device, DeviceEvent, FailToRun, Running},
+    device::{
+        ApplicationExit, Artifact, Crash, CrashCause, Device, DeviceEvent, FailToRun, PanicInfo,
+        Running, StopRequest, extract_panic, join_output, report_monitor_error,
+    },
     toolchain::Host,
     utils::parse_semver_version,
 };
@@ -368,7 +373,11 @@ async fn install_device_app(
 /// our bundle has the app binary's name as the last component of its
 /// executable path.
 #[cfg(unix)]
-fn find_remote_pid(host: &Host, selector: &str, process_name: &str) -> Option<u32> {
+async fn find_remote_pid(
+    host: &Host,
+    selector: &str,
+    process_name: &str,
+) -> eyre::Result<Option<u32>> {
     #[derive(Deserialize)]
     struct ProcessList {
         result: ProcessListResult,
@@ -387,7 +396,7 @@ fn find_remote_pid(host: &Host, selector: &str, process_name: &str) -> Option<u3
     }
 
     let output = host
-        .std_command("xcrun")
+        .command("xcrun")
         .args([
             "devicectl",
             "device",
@@ -398,52 +407,80 @@ fn find_remote_pid(host: &Host, selector: &str, process_name: &str) -> Option<u3
             "--json-output",
             "-",
         ])
+        .kill_on_drop(true)
         .output()
-        .ok()?;
+        .await
+        .wrap_err("Could not run devicectl device info processes")?;
     if !output.status.success() {
-        return None;
+        bail!(
+            "devicectl device info processes failed with status {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
-    let list: ProcessList = serde_json::from_slice(&output.stdout).ok()?;
+    let list: ProcessList = serde_json::from_slice(&output.stdout)
+        .wrap_err("Could not parse devicectl device info processes JSON")?;
     let suffix = format!("/{process_name}");
-    list.result
+    Ok(list
+        .result
         .running_processes
         .into_iter()
         .find(|process| process.executable.ends_with(&suffix))
-        .map(|process| process.process_identifier)
+        .map(|process| process.process_identifier))
 }
 
-/// Send a signal to a spawned child.
+/// Send a signal to the process owned by this monitor.
 #[cfg(unix)]
-fn signal_child(child: &std::process::Child, signal: nix::sys::signal::Signal) {
-    let pid = nix::unistd::Pid::from_raw(
-        i32::try_from(child.id()).expect("process identifiers fit in i32"),
-    );
-    let _ = nix::sys::signal::kill(pid, signal);
+fn signal_child(
+    child: &smol::process::Child,
+    signal: nix::sys::signal::Signal,
+    sender: &Sender<DeviceEvent>,
+) {
+    let Ok(raw_pid) = i32::try_from(child.id()) else {
+        report_monitor_error(
+            sender,
+            "devicectl PID does not fit in nix::unistd::Pid".to_string(),
+        );
+        return;
+    };
+    if let Err(error) = nix::sys::signal::kill(nix::unistd::Pid::from_raw(raw_pid), signal) {
+        report_monitor_error(
+            sender,
+            format!("Could not signal devicectl process: {error}"),
+        );
+    }
 }
 
-/// Terminate a `--console`-attached devicectl session and the app it drives.
-///
-/// Catchable signals sent to `devicectl --console` are forwarded to the app,
-/// so the graceful path is SIGTERM to our own child. If the app ignores it,
-/// the fallback resolves the remote pid and issues `process terminate
-/// --kill`, then SIGKILLs devicectl itself.
+/// Bounds finding the app's remote PID and killing it with
+/// `devicectl device process terminate --kill`, together. The local SIGKILL
+/// to `devicectl` and its reap follow.
 #[cfg(unix)]
-fn stop_console_session(
-    mut child: std::process::Child,
+const KILL_BOUND: Duration = Duration::from_secs(10);
+
+#[cfg(unix)]
+async fn kill_console_session(
+    child: &mut smol::process::Child,
     host: &Host,
     selector: &str,
     process_name: &str,
-) {
-    signal_child(&child, nix::sys::signal::Signal::SIGTERM);
-    for _ in 0..40 {
-        if matches!(child.try_wait(), Ok(Some(_))) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    if let Some(pid) = find_remote_pid(host, selector, process_name) {
-        let _ = host
-            .std_command("xcrun")
+    sender: &Sender<DeviceEvent>,
+) -> std::io::Result<std::process::ExitStatus> {
+    let remote_kill = async {
+        let pid = match find_remote_pid(host, selector, process_name).await {
+            Ok(Some(pid)) => pid,
+            Ok(None) => return,
+            Err(error) => {
+                report_monitor_error(
+                    sender,
+                    format!(
+                        "Could not look up the app's pid on the device; it may still be running there: {error}"
+                    ),
+                );
+                return;
+            }
+        };
+        let terminate = host
+            .command("xcrun")
             .args([
                 "devicectl",
                 "device",
@@ -455,23 +492,153 @@ fn stop_console_session(
                 "--pid",
                 &pid.to_string(),
             ])
-            .output();
+            .kill_on_drop(true)
+            .output()
+            .await;
+        match terminate {
+            Ok(output) if output.status.success() => {}
+            Ok(output) => report_monitor_error(
+                sender,
+                format!(
+                    "devicectl process terminate failed with status {}: {}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ),
+            ),
+            Err(error) => report_monitor_error(
+                sender,
+                format!("devicectl process terminate failed: {error}"),
+            ),
+        }
+    };
+    if within(KILL_BOUND, remote_kill).await.is_none() {
+        report_monitor_error(
+            sender,
+            format!("Killing the app on the device did not finish within {KILL_BOUND:?}"),
+        );
     }
-    signal_child(&child, nix::sys::signal::Signal::SIGKILL);
-    let _ = child.wait();
+    signal_child(child, nix::sys::signal::Signal::SIGKILL, sender);
+    child.status().await
 }
 
-/// `devicectl` is macOS-only; on other platforms killing the child is the
-/// whole of it.
+struct ConsoleMonitorChannels {
+    control: smol::channel::Receiver<StopRequest>,
+    eof: smol::channel::Receiver<()>,
+    panic: smol::channel::Receiver<PanicInfo>,
+}
+
+async fn monitor_console_session(
+    mut child: smol::process::Child,
+    host: Host,
+    selector: String,
+    process_name: String,
+    channels: ConsoleMonitorChannels,
+    sender: Sender<DeviceEvent>,
+) {
+    let ConsoleMonitorChannels {
+        control,
+        eof,
+        panic,
+    } = channels;
+    // Held until the terminal event is sent, so the supervisor's requests
+    // keep being delivered while the session ends.
+    let mut control = Some(control);
+    let status = wait_for_console_status(
+        &mut child,
+        &host,
+        &selector,
+        &process_name,
+        &mut control,
+        &sender,
+    )
+    .await;
+    let console_closed = async {
+        let _ = eof.recv().await;
+        let _ = eof.recv().await;
+    };
+    let _ = join_output(console_closed, &mut control).await;
+    if let Err(error) = status {
+        report_monitor_error(
+            &sender,
+            format!("Could not wait for devicectl console: {error}"),
+        );
+    }
+    let event = panic.try_recv().map_or_else(
+        |_| DeviceEvent::Exited(ApplicationExit::user_closed()),
+        |panic| DeviceEvent::Crashed(Crash::new(CrashCause::Panic(panic))),
+    );
+    let _ = sender.try_send(event);
+    drop(control);
+}
+
+/// Wait for the console session to end, carrying out stop requests.
+///
+/// Returns the session's exit status.
+#[cfg(unix)]
+async fn wait_for_console_status(
+    child: &mut smol::process::Child,
+    host: &Host,
+    selector: &str,
+    process_name: &str,
+    control: &mut Option<smol::channel::Receiver<StopRequest>>,
+    sender: &Sender<DeviceEvent>,
+) -> std::io::Result<std::process::ExitStatus> {
+    use futures_util::future::{Either, select};
+
+    loop {
+        let status = std::pin::pin!(child.status());
+        let Some(control_receiver) = control.as_mut() else {
+            return status.await;
+        };
+        let request = std::pin::pin!(control_receiver.recv());
+        match select(status, request).await {
+            Either::Left((status, _)) => return status,
+            Either::Right((Err(_), _)) => *control = None,
+            Either::Right((Ok(StopRequest::Terminate), _)) => {
+                signal_child(child, nix::sys::signal::Signal::SIGTERM, sender);
+                if let TerminationOutcome::Exited(status) =
+                    await_termination(child, control, TERMINATION_GRACE_PERIOD, sender).await
+                {
+                    return status;
+                }
+                return kill_console_session(child, host, selector, process_name, sender).await;
+            }
+            Either::Right((Ok(StopRequest::Kill), _)) => {
+                return kill_console_session(child, host, selector, process_name, sender).await;
+            }
+        }
+    }
+}
+
+/// Wait for the console session to end, carrying out stop requests.
+///
+/// Returns the session's exit status.
 #[cfg(not(unix))]
-fn stop_console_session(
-    mut child: std::process::Child,
+async fn wait_for_console_status(
+    child: &mut smol::process::Child,
     _host: &Host,
     _selector: &str,
     _process_name: &str,
-) {
-    let _ = child.kill();
-    let _ = child.wait();
+    control: &mut Option<smol::channel::Receiver<StopRequest>>,
+    _sender: &Sender<DeviceEvent>,
+) -> std::io::Result<std::process::ExitStatus> {
+    use futures_util::future::{Either, select};
+
+    loop {
+        let status = std::pin::pin!(child.status());
+        let Some(control_receiver) = control.as_mut() else {
+            return status.await;
+        };
+        let request = std::pin::pin!(control_receiver.recv());
+        match select(status, request).await {
+            Either::Left((status, _)) => return status,
+            Either::Right((Err(_), _)) => *control = None,
+            Either::Right((Ok(StopRequest::Terminate | StopRequest::Kill), _)) => {
+                let _ = child.kill();
+                return child.status().await;
+            }
+        }
+    }
 }
 
 impl Device for ApplePhysicalDevice {
@@ -527,14 +694,16 @@ impl Device for ApplePhysicalDevice {
         // `--console` attaches the app's standard streams to devicectl's and
         // waits for the app to exit: one child gives stdout/stderr streaming,
         // exit detection, and signal forwarding (a signal to devicectl is
-        // delivered to the app) in a single process. `std::process::Command`,
-        // not `smol`'s: the drop handler waits on it synchronously.
+        // delivered to the app) in a single process.
         //
         // The dev-server URL travels in the `-e` environment dictionary; a
         // `--waterui-dev-url=` process argument repeats it, so `dev_url()`
         // still finds it if a device-side launch path ever strips the
         // environment.
-        let mut command = host.std_command("xcrun");
+        #[cfg(unix)]
+        let mut command = host.command_in_own_process_group("xcrun");
+        #[cfg(not(unix))]
+        let mut command = host.command("xcrun");
         command.args([
             "devicectl",
             "device",
@@ -557,7 +726,8 @@ impl Device for ApplePhysicalDevice {
         command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
         let mut child = command
             .spawn()
             .map_err(|error| FailToRun::Launch(eyre!("Failed to launch app: {error}")))?;
@@ -571,39 +741,22 @@ impl Device for ApplePhysicalDevice {
             .take()
             .expect("stderr is piped for the devicectl console");
 
-        let (running, sender) = Running::new({
-            let host = host.clone();
-            let selector = self.selector().to_string();
-            move || stop_console_session(child, &host, &selector, &process_name)
-        });
+        let (running, sender, control) = Running::new();
 
-        // devicectl writes the app's stdout to its stdout and the app's
-        // stderr to its stderr. A panic message on the stderr side is
-        // reported as a crash once the console detaches.
-        let (panic_tx, panic_rx) = smol::channel::bounded::<String>(1);
-        let (eof_tx, eof_rx) = smol::channel::bounded::<()>(2);
-
-        spawn(stream_console(
-            smol::Unblock::new(stdout),
-            ConsoleTarget {
-                sender: sender.clone(),
-                eof: eof_tx.clone(),
-                panic: None,
-                is_err: false,
+        let (panic_rx, eof_rx) = spawn_console_streams(stdout, stderr, &sender);
+        spawn(monitor_console_session(
+            child,
+            host.clone(),
+            self.selector().to_string(),
+            process_name,
+            ConsoleMonitorChannels {
+                control,
+                eof: eof_rx,
+                panic: panic_rx,
             },
+            sender,
         ))
         .detach();
-        spawn(stream_console(
-            smol::Unblock::new(stderr),
-            ConsoleTarget {
-                sender: sender.clone(),
-                eof: eof_tx,
-                panic: Some(panic_tx),
-                is_err: true,
-            },
-        ))
-        .detach();
-        spawn(classify_exit(eof_rx, panic_rx, sender)).detach();
 
         Ok(running)
     }
@@ -613,12 +766,52 @@ impl Device for ApplePhysicalDevice {
     }
 }
 
+/// Forward devicectl's console pipes to `sender`.
+///
+/// devicectl writes the app's stdout to its stdout and the app's stderr to
+/// its stderr. A panic message on the stderr side is reported as a crash
+/// once the console detaches. Returns the panic channel and the end-of-file
+/// signal each pipe sends once.
+fn spawn_console_streams(
+    stdout: smol::process::ChildStdout,
+    stderr: smol::process::ChildStderr,
+    sender: &Sender<DeviceEvent>,
+) -> (
+    smol::channel::Receiver<PanicInfo>,
+    smol::channel::Receiver<()>,
+) {
+    let (panic_tx, panic_rx) = smol::channel::bounded::<PanicInfo>(1);
+    let (eof_tx, eof_rx) = smol::channel::bounded::<()>(2);
+
+    spawn(stream_console(
+        stdout,
+        ConsoleTarget {
+            sender: sender.clone(),
+            eof: eof_tx.clone(),
+            panic: None,
+            is_err: false,
+        },
+    ))
+    .detach();
+    spawn(stream_console(
+        stderr,
+        ConsoleTarget {
+            sender: sender.clone(),
+            eof: eof_tx,
+            panic: Some(panic_tx),
+            is_err: true,
+        },
+    ))
+    .detach();
+    (panic_rx, eof_rx)
+}
+
 /// Output channel for one console pipe: the user's event sender plus the
 /// end-of-file signal the exit classifier waits on.
 struct ConsoleTarget {
     sender: Sender<DeviceEvent>,
     eof: Sender<()>,
-    panic: Option<Sender<String>>,
+    panic: Option<Sender<PanicInfo>>,
     is_err: bool,
 }
 
@@ -628,10 +821,10 @@ async fn stream_console(stream: impl smol::io::AsyncRead + Unpin, target: Consol
     let mut lines = BufReader::new(stream).lines();
     while let Some(Ok(line)) = lines.next().await {
         if target.is_err
-            && line.contains("panicked at")
             && let Some(panic) = &target.panic
+            && let Some(info) = extract_panic(std::slice::from_ref(&line))
         {
-            let _ = panic.try_send(line.clone());
+            let _ = panic.try_send(info);
         }
         let event = if target.is_err {
             DeviceEvent::Stderr { message: line }
@@ -645,26 +838,12 @@ async fn stream_console(stream: impl smol::io::AsyncRead + Unpin, target: Consol
     let _ = target.eof.try_send(());
 }
 
-/// Both console pipes close when devicectl exits; classify the run's end from
-/// whatever the stderr reader captured.
-async fn classify_exit(
-    eof_rx: smol::channel::Receiver<()>,
-    panic_rx: smol::channel::Receiver<String>,
-    sender: Sender<DeviceEvent>,
-) {
-    let _ = eof_rx.recv().await;
-    let _ = eof_rx.recv().await;
-    let event = panic_rx.try_recv().map_or_else(
-        |_| DeviceEvent::Exited(ApplicationExit::user_closed()),
-        DeviceEvent::Crashed,
-    );
-    let _ = sender.try_send(event);
-}
-
 #[cfg(test)]
 mod tests {
     use super::{ApplePhysicalDevice, DeviceUnusable, Transport, TunnelState, environment_json};
     use crate::device::Device as _;
+    #[cfg(unix)]
+    use crate::workflows::device::test_support::{ProcessGroupGuard, term_ignoring_fixture};
 
     const DEVICE_LIST_JSON: &str = include_str!("physical_list_sample.json");
 
@@ -691,6 +870,40 @@ mod tests {
                 .iter()
                 .all(|device| device.udid != "3C6AEFDA-0324-4C6E-9352-4A2DAF059AF0"),
             "the simulated iPhone 17 entry must stay out of the physical device list"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn find_remote_pid_reports_invalid_json_and_missing_process() {
+        let invalid_machine = crate::toolchain::testing::TestMachine::new();
+        invalid_machine.install("xcrun");
+        invalid_machine.respond("XCRUN_DEVICE_INFO_PROCESSES", "not json");
+        let invalid_host = invalid_machine.host(Vec::<(String, String)>::new());
+        assert!(
+            smol::block_on(super::find_remote_pid(
+                &invalid_host,
+                "test-device",
+                "test-app"
+            ))
+            .is_err()
+        );
+
+        let empty_machine = crate::toolchain::testing::TestMachine::new();
+        empty_machine.install("xcrun");
+        empty_machine.respond(
+            "XCRUN_DEVICE_INFO_PROCESSES",
+            r#"{"result":{"runningProcesses":[]}}"#,
+        );
+        let empty_host = empty_machine.host(Vec::<(String, String)>::new());
+        assert_eq!(
+            smol::block_on(super::find_remote_pid(
+                &empty_host,
+                "test-device",
+                "test-app"
+            ))
+            .expect("the process-list JSON is valid"),
+            None
         );
     }
 
@@ -721,5 +934,192 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("env json parses");
         assert_eq!(parsed["WATERUI_DEV_URL"], "http://10.0.0.2:5173/");
         assert_eq!(parsed["WATERUI_LOG"], "debug");
+    }
+
+    #[cfg(unix)]
+    fn console_run(
+        machine: &crate::toolchain::testing::TestMachine,
+    ) -> (
+        crate::device::Running,
+        async_channel::Sender<()>,
+        async_channel::Receiver<()>,
+        ProcessGroupGuard,
+    ) {
+        use std::process::Stdio;
+
+        use crate::device::Running;
+
+        machine.install("xcrun");
+        machine.respond(
+            "XCRUN_DEVICE_INFO_PROCESSES",
+            r#"{"result":{"runningProcesses":[]}}"#,
+        );
+        let script = term_ignoring_fixture(machine);
+        let host = machine.host(Vec::<(String, String)>::new());
+        let mut child = host
+            .command_in_own_process_group(&script)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn the TERM-ignoring fixture");
+        let pid = i32::try_from(child.id()).expect("child pid fits in i32");
+        let group_guard = ProcessGroupGuard::default();
+        group_guard.set(nix::unistd::Pid::from_raw(pid));
+        let stdout = child.stdout.take().expect("fixture stdout is piped");
+        let stderr = child.stderr.take().expect("fixture stderr is piped");
+        let (running, sender, control) = Running::new();
+        let (panic, eof) = super::spawn_console_streams(stdout, stderr, &sender);
+        smol::spawn(super::monitor_console_session(
+            child,
+            host,
+            "test-device".to_string(),
+            "ignore-term".to_string(),
+            super::ConsoleMonitorChannels {
+                control,
+                eof,
+                panic,
+            },
+            sender,
+        ))
+        .detach();
+        let (interrupt_tx, interrupt_rx) = async_channel::unbounded();
+        (running, interrupt_tx, interrupt_rx, group_guard)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn console_grace_overrun_reports_an_error_then_kills() {
+        use futures_util::future::{Either, select};
+        use smol::stream::StreamExt as _;
+        use std::time::Duration;
+
+        use crate::device::DeviceEvent;
+
+        let machine = crate::toolchain::testing::TestMachine::new();
+        let (running, interrupt_tx, interrupt_rx, group_guard) = console_run(&machine);
+        let exercise = async move {
+            let _group_guard = group_guard;
+            let mut events = std::pin::pin!(running.supervise(interrupt_rx));
+            let mut armed = false;
+            let mut monitor_error = None;
+            let mut stopped = false;
+            let mut pid = None;
+            while let Some(event) = events.next().await {
+                match event {
+                    DeviceEvent::Stderr { message } => {
+                        if let Some(found) = message
+                            .strip_prefix("pid=")
+                            .and_then(|pid| pid.parse::<i32>().ok())
+                        {
+                            pid = Some(nix::unistd::Pid::from_raw(found));
+                        }
+                        if !armed && message.contains("trap-armed") {
+                            armed = true;
+                            interrupt_tx.try_send(()).expect("request termination");
+                        }
+                    }
+                    DeviceEvent::MonitorError { message } => monitor_error = Some(message),
+                    DeviceEvent::Stopped => {
+                        stopped = true;
+                        break;
+                    }
+                    DeviceEvent::Exited(_) | DeviceEvent::Crashed(_) => break,
+                    _ => {}
+                }
+            }
+            (armed, monitor_error, stopped, pid)
+        };
+        let deadline = std::pin::pin!(smol::Timer::after(Duration::from_secs(30)));
+        let (armed, monitor_error, stopped, pid) = smol::block_on(async {
+            match select(Box::pin(exercise), deadline).await {
+                Either::Left((result, _)) => result,
+                Either::Right(_) => panic!("console grace overrun exceeded 30 seconds"),
+            }
+        });
+        assert!(armed, "fixture trap arms before the interrupt");
+        let monitor_error = monitor_error.expect("the grace overrun is reported before Stopped");
+        assert!(
+            monitor_error.contains("termination grace period"),
+            "the error names the grace overrun: {monitor_error}"
+        );
+        assert!(stopped, "the overrun still ends in Stopped");
+        let pid = pid.expect("fixture prints its pid");
+        assert_eq!(
+            nix::sys::signal::kill(pid, None),
+            Err(nix::errno::Errno::ESRCH),
+            "Stopped follows the confirmed child exit and reap"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn console_second_interrupt_kills_without_an_error() {
+        use futures_util::future::{Either, select};
+        use smol::stream::StreamExt as _;
+        use std::time::Duration;
+
+        use crate::device::DeviceEvent;
+
+        let machine = crate::toolchain::testing::TestMachine::new();
+        let (running, interrupt_tx, interrupt_rx, group_guard) = console_run(&machine);
+        let exercise = async move {
+            let _group_guard = group_guard;
+            let mut events = std::pin::pin!(running.supervise(interrupt_rx));
+            let mut armed = false;
+            let mut term_seen = false;
+            let mut monitor_error = false;
+            let mut stopped = false;
+            let mut pid = None;
+            while let Some(event) = events.next().await {
+                match event {
+                    DeviceEvent::Stderr { message } => {
+                        if let Some(found) = message
+                            .strip_prefix("pid=")
+                            .and_then(|pid| pid.parse::<i32>().ok())
+                        {
+                            pid = Some(nix::unistd::Pid::from_raw(found));
+                        }
+                        if !armed && message.contains("trap-armed") {
+                            armed = true;
+                            interrupt_tx.try_send(()).expect("request termination");
+                        }
+                        if !term_seen && message.contains("term-seen") {
+                            term_seen = true;
+                            interrupt_tx.try_send(()).expect("request immediate kill");
+                        }
+                    }
+                    DeviceEvent::MonitorError { .. } => monitor_error = true,
+                    DeviceEvent::Stopped => {
+                        stopped = true;
+                        break;
+                    }
+                    DeviceEvent::Exited(_) | DeviceEvent::Crashed(_) => break,
+                    _ => {}
+                }
+            }
+            (armed, term_seen, monitor_error, stopped, pid)
+        };
+        let deadline = std::pin::pin!(smol::Timer::after(Duration::from_secs(30)));
+        let (armed, term_seen, monitor_error, stopped, pid) = smol::block_on(async {
+            match select(Box::pin(exercise), deadline).await {
+                Either::Left((result, _)) => result,
+                Either::Right(_) => panic!("console TERM escalation exceeded 30 seconds"),
+            }
+        });
+        assert!(armed, "fixture trap arms before the first interrupt");
+        assert!(term_seen, "fixture receives SIGTERM and remains alive");
+        assert!(stopped, "second interrupt waits for the monitor's kill ack");
+        assert!(
+            !monitor_error,
+            "a kill the user asked for is not a monitor error"
+        );
+        let pid = pid.expect("fixture prints its pid");
+        assert_eq!(
+            nix::sys::signal::kill(pid, None),
+            Err(nix::errno::Errno::ESRCH),
+            "Stopped follows the confirmed child exit and reap"
+        );
     }
 }

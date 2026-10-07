@@ -7,6 +7,7 @@
 //! and no runtime choice. Each backend names its own shaper behind the same
 //! traits.
 
+mod declared;
 mod engine;
 mod input;
 mod parley_engine;
@@ -14,6 +15,7 @@ mod service;
 #[cfg(test)]
 mod tests;
 
+pub use declared::DeclaredFonts;
 #[cfg(test)]
 pub use engine::Affinity;
 pub use engine::FontFamilyResolution;

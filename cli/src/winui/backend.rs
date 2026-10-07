@@ -76,15 +76,17 @@ impl WinUiBackend {
             .chars()
             .filter(|c| c.is_alphanumeric())
             .collect::<String>();
+        let framework = project.resolved_framework().await?;
         Ok(TemplateContext::for_project_manifest(
             manifest,
             project.crate_name().clone(),
             app_name,
-            &project.resolved_framework().await?,
+            &framework,
             project.local_sources(),
         )
         .with_backend_project_path(project.backend_path::<Self>())
-        .with_project_root_path(project.root().to_path_buf()))
+        .with_project_root_path(project.root().to_path_buf())
+        .with_project_packages(project.project_packages(&framework).await?))
     }
 }
 

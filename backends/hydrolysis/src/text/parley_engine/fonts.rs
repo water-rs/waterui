@@ -17,6 +17,9 @@
 use parley::fontique::{Collection, FallbackKey, FamilyId, FontInfo, GenericFamily, Script};
 use waterui_text::FontCollection;
 
+#[cfg(not(target_arch = "wasm32"))]
+use super::super::DeclaredFonts;
+
 #[cfg(target_os = "android")]
 pub use super::android_fonts::android_collection;
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
@@ -128,18 +131,22 @@ impl ResourceFontFamilies {
 }
 
 /// The system's fonts plus every `.ttf`/`.otf` under the application's staged
-/// fonts directory, with the recognized script fallbacks installed.
+/// fonts directory and every file of the environment's [`DeclaredFonts`],
+/// with the recognized script fallbacks installed.
 ///
-/// `resources` is the application's own [`waterui_core::ResourceContext`]: the
-/// fonts directory is owned by that context and is never probed from the
-/// process's working directory or executable location, so an embedded host's
-/// fonts come from the roots it installed.
+/// The fonts directory is the one owned by the environment's required
+/// [`waterui_core::ResourceContext`] and is never probed from the process's
+/// working directory or executable location, so an embedded host's fonts come
+/// from the roots it installed.
+///
+/// # Panics
+///
+/// Panics if the environment carries no `ResourceContext`, or if the fonts
+/// directory or a declared font file cannot be read, naming the path.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn native_collection(resources: &waterui_core::ResourceContext) -> FontCollection {
-    use parley::fontique::Blob;
-    use std::sync::Arc;
-
-    let root = resources.fonts();
+#[must_use]
+pub fn native_collection(env: &waterui_core::Environment) -> FontCollection {
+    let root = waterui_core::ResourceContext::from_environment(env).fonts();
     let mut font_cx = parley::FontContext::new();
     let mut resource_fonts = ResourceFontFamilies::default();
     if root.is_dir() {
@@ -163,35 +170,54 @@ pub fn native_collection(resources: &waterui_core::ResourceContext) -> FontColle
             if !extension.eq_ignore_ascii_case("ttf") && !extension.eq_ignore_ascii_case("otf") {
                 continue;
             }
-            let font_data = std::fs::read(&path).unwrap_or_else(|error| {
-                panic!(
-                    "hydrolysis native font loader failed to read `{}`: {error}",
-                    path.display()
-                )
-            });
-            let families = font_cx
-                .collection
-                .register_fonts(Blob::new(Arc::new(font_data)), None);
-            let file_name = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or_else(|| {
-                    panic!(
-                        "hydrolysis native font loader found a font path without UTF-8 file name: `{}`",
-                        path.display()
-                    )
-                });
-            resource_fonts.classify(file_name, &families);
-            tracing::debug!(
-                target: "waterui::hydrolysis::fonts",
-                path = %path.display(),
-                families = families.len(),
-                "registered native Hydrolysis font"
-            );
+            register_font_file(&mut font_cx, &mut resource_fonts, &path);
+        }
+    }
+    if let Some(declared) = env.get::<DeclaredFonts>() {
+        for path in declared.paths() {
+            register_font_file(&mut font_cx, &mut resource_fonts, path);
         }
     }
     resource_fonts.install(&mut font_cx.collection);
     FontCollection::new(font_cx)
+}
+
+/// Registers the font file at `path` into `font_cx` and classifies its
+/// families into `resource_fonts` by file name.
+#[cfg(not(target_arch = "wasm32"))]
+fn register_font_file(
+    font_cx: &mut parley::FontContext,
+    resource_fonts: &mut ResourceFontFamilies,
+    path: &std::path::Path,
+) {
+    use parley::fontique::Blob;
+    use std::sync::Arc;
+
+    let font_data = std::fs::read(path).unwrap_or_else(|error| {
+        panic!(
+            "hydrolysis native font loader failed to read `{}`: {error}",
+            path.display()
+        )
+    });
+    let families = font_cx
+        .collection
+        .register_fonts(Blob::new(Arc::new(font_data)), None);
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_else(|| {
+            panic!(
+                "hydrolysis native font loader found a font path without UTF-8 file name: `{}`",
+                path.display()
+            )
+        });
+    resource_fonts.classify(file_name, &families);
+    tracing::debug!(
+        target: "waterui::hydrolysis::fonts",
+        path = %path.display(),
+        families = families.len(),
+        "registered native Hydrolysis font"
+    );
 }
 
 /// A collection carrying only the faces fontique discovers on the system —

@@ -47,6 +47,20 @@ struct SemanticWindow {
     /// signal write from an event) so the next pump re-emits even when no
     /// reactive request reached the core.
     refresh_requested: bool,
+    /// Subscriptions on every reactive input of the window declaration,
+    /// installed once by `new` through `subscribe_window_declaration_signals`
+    /// and held for the window's lifetime: `title`, `frame`, `state`,
+    /// `level`, `attention`, `style`, `background`, and `resize_increments`,
+    /// `min_size` and `max_size` when present. A write while the pump is
+    /// parked requests a refresh through the core's frame signals, so the
+    /// next pump re-emits.
+    ///
+    /// Declared last so the guards drop after `core` — the subscriptions
+    /// outlive every frame-scoped watch the core's `signal_watches` holds,
+    /// the same tail position the frame-level `lifecycle` teardown takes
+    /// inside a flush (water-rs/waterui#1213). Never read again — the
+    /// `Retain`s exist only to keep the subscriptions alive.
+    _declaration_watches: Vec<Retain>,
 }
 
 impl SemanticWindow {
@@ -66,11 +80,13 @@ impl SemanticWindow {
             core.use_semantic_keyboard_activation();
             core.use_semantic_walk();
         }
+        let declaration_watches = subscribe_window_declaration_signals(&window, &core);
         Self {
             window,
             core,
             pending_events: VecDeque::new(),
             refresh_requested: true,
+            _declaration_watches: declaration_watches,
         }
     }
 
@@ -132,11 +148,14 @@ impl SemanticRuntime {
         // page has no synchronous resource directory to scan, so the semantic
         // runtime there shapes with the default collection alone.
         #[cfg(not(target_arch = "wasm32"))]
-        return Self::on_env(env, content, width, height, family_resolution, |env| {
-            crate::text::fonts::native_collection(waterui_core::ResourceContext::from_environment(
-                env,
-            ))
-        });
+        return Self::on_env(
+            env,
+            content,
+            width,
+            height,
+            family_resolution,
+            crate::text::fonts::native_collection,
+        );
         #[cfg(target_arch = "wasm32")]
         Self::on_env(env, content, width, height, family_resolution, |_| {
             crate::text::fonts::system_collection()
@@ -634,18 +653,15 @@ fn advance_semantic_window(window: &mut SemanticWindow, env: &Environment, now: 
 /// window's `body()` when none exists, otherwise patches and re-emits it when
 /// work is pending. Returns whether the tree was emitted this pump.
 fn pump_semantic_window(window: &mut SemanticWindow, env: &Environment) -> bool {
-    // The rendered pump subscribes to the window's frame/state signals every
-    // frame (`render_window_with_capture`): the semantic pump holds the same
-    // subscriptions so a `frame`/`state` change re-emits here too, and so their
-    // watch guards roll over through `signal_watches` in the same teardown
-    // order the renderer releases them in (water-rs/waterui#1213).
-    let _ = window.core.read_signal(&window.window.frame);
-    let _ = window.core.read_signal(&window.window.state);
-    let _ = window.core.read_signal(&window.window.level);
-    let _ = window.core.read_signal(&window.window.attention);
-    if let Some(increments) = window.window.resize_increments.as_ref() {
-        let _ = window.core.read_signal(increments);
-    }
+    // The declaration's reactive inputs are subscribed once on the
+    // `SemanticWindow` and held for its lifetime through
+    // `subscribe_window_declaration_signals` — the same shared
+    // subscription the rendered `RuntimeWindow` installs — so a write while
+    // the pump is parked arms `core`'s refresh flag and this pump re-emits.
+    // The guards never enter `signal_watches`: they drop with the window
+    // after `core` has released every frame-scoped subscription, so the
+    // teardown order the renderer releases watch guards in
+    // (water-rs/waterui#1213) is unchanged.
     #[cfg(feature = "accessibility")]
     window
         .core
@@ -1396,6 +1412,45 @@ mod tests {
         assert!(
             a_hits.snapshot().is_empty() && b_hits.snapshot().is_empty(),
             "a sibling's on_key_press heard a key that does not bubble through it"
+        );
+    }
+
+    /// The semantic-window counterpart of the rendered idle-repaint test:
+    /// `SemanticWindow` holds a subscription on every reactive input of the
+    /// window declaration for its lifetime, so a `set_background` — or a
+    /// `title` change — on a settled window arms the core's refresh flag and
+    /// the next pump re-emits (water-rs/waterui#2131).
+    #[test]
+    fn a_settled_window_repumps_when_a_declaration_input_changes() {
+        let builder = AnyViewBuilder::<AnyView>::new(move || AnyView::new(text("probe")));
+        let mut runtime = SemanticRuntime::new(
+            semantic_environment(),
+            builder,
+            800,
+            600,
+            FontFamilyResolution::Strict,
+        );
+        let _ = pump_until_settled(&mut runtime).expect("the initial pump emitted no tree update");
+        assert!(runtime.is_settled(), "the window never went idle");
+
+        runtime
+            .window
+            .window
+            .handle()
+            .set_background(waterui_graphics::Color::srgb(255, 0, 0));
+        assert!(
+            runtime.has_pending_semantic_update(),
+            "a write to the window's background binding must request a pump"
+        );
+        let result = runtime.pump();
+        assert!(
+            result.tree_update.is_some(),
+            "the pump after a declaration write must re-emit the tree"
+        );
+        let _ = pump_until_settled(&mut runtime);
+        assert!(
+            runtime.is_settled(),
+            "the window never went idle after the background repaint"
         );
     }
 }

@@ -1,9 +1,9 @@
 use super::headless::HeadlessPlatformWindow;
 use super::{
-    FrameMode, RenderDiagnosticsConfig, RuntimeWindow, acquire_surface_frame, advance_runtime,
-    axes_whose_limits_changed, clamp_window_size, handle_input_events, pump_window_semantics,
-    render_window, reports_ui_idle, schedule_animation_update, schedule_redraw_or_refresh,
-    surface_error_requires_reconfigure,
+    FrameMode, FrameReader, RenderDiagnosticsConfig, RuntimeWindow, acquire_surface_frame,
+    advance_runtime, axes_whose_limits_changed, clamp_window_size, handle_input_events,
+    pump_window_semantics, render_window, render_window_with_capture, reports_ui_idle,
+    schedule_animation_update, schedule_redraw_or_refresh, surface_error_requires_reconfigure,
 };
 use crate::platform::{
     GpuSurfaceWindow as _, InputEvent, OffscreenSurface, PlatformWindow as _, SurfaceError,
@@ -23,6 +23,7 @@ use waterui_backend_core::widget::TextCaretMotion;
 use waterui_core::animation::Animation;
 use waterui_core::id::SelfId;
 use waterui_core::{AnyView, Environment, binding};
+use waterui_graphics::Color;
 use waterui_layout::scroll::ScrollController;
 
 #[test]
@@ -796,7 +797,9 @@ fn rapid_resize_events_keep_the_retained_tree_at_the_latest_size() {
         move || build_count.set(build_count.get() + 1)
     });
     let mut runtime = runtime_window_for(window);
-    let env = Environment::new();
+    // The rendered idle-drive below resolves the window's background through
+    // the theme, so the test runs against the installed test theme.
+    let env = crate::renderer::tests::test_environment();
     let _ = pump_window_semantics(&mut runtime, &env);
     assert_eq!(build_count.get(), 1);
 
@@ -823,6 +826,79 @@ fn rapid_resize_events_keep_the_retained_tree_at_the_latest_size() {
     assert_eq!(runtime.platform.surface().size(), (640, 480));
     approx::assert_relative_eq!(runtime.window.frame.snapshot().width(), 640.0);
     approx::assert_relative_eq!(runtime.window.frame.snapshot().height(), 480.0);
+
+    // The runtime's own `frame` write on a resize must not loop
+    // (water-rs/waterui#2131): the declaration's subscription requests one
+    // bounded refresh, then the window goes idle and stays idle.
+    let mut now = Instant::now();
+    let settle = drive_until_idle(&mut runtime, &env, &mut now, 60);
+    assert!(
+        settle < 60,
+        "the resize must not loop: the window stayed awake for {settle} frames"
+    );
+}
+
+/// A window declaration input changed while the pump is parked must still
+/// reach it: `RuntimeWindow` holds a subscription on every reactive input
+/// of the declaration for the window's lifetime, so `handle().set_background`
+/// or a `title` write on an idle window requests a frame — and the frame the
+/// background write produces paints the new clear colour (water-rs/waterui#2131).
+#[test]
+fn an_idle_window_repaints_when_its_background_changes() {
+    let title = binding(waterui_core::Str::from("old title"));
+    let window = Window::new(title.clone(), binding(WindowState::Normal), || ());
+    let handle = window.handle();
+    let mut runtime = runtime_window_sized(window, 16, 16);
+    let env = crate::renderer::tests::test_environment();
+    let mut now = Instant::now();
+
+    let idle_frames = drive_until_idle(&mut runtime, &env, &mut now, 60);
+    assert!(idle_frames < 60, "the window never went idle");
+
+    handle.set_background(Color::srgb(255, 0, 0));
+    assert!(
+        runtime.renderer.has_pending_semantic_update(),
+        "a write to the window's background binding must request a frame"
+    );
+
+    // The flag becomes a scheduled refresh on the next advance, and the
+    // frame it runs paints the new clear colour behind the (empty) content.
+    now += Duration::from_millis(16);
+    let _ = advance_runtime(&mut runtime, &env, now);
+    assert!(
+        runtime.mode.is_pending(),
+        "the binding's update must arm a refresh frame"
+    );
+    let snapshot =
+        render_window_with_capture(&mut runtime, &env, FrameReader::Snapshot, &mut || false)
+            .snapshot
+            .expect("the refresh frame captures a snapshot");
+    let pixel = &snapshot.rgba8[0..4];
+    assert!(
+        pixel[0] > 200 && pixel[1] < 60 && pixel[2] < 60 && pixel[3] == 255,
+        "the snapshot must show the new background colour, got {pixel:?}"
+    );
+
+    // The repaint is one bounded frame: the window settles and stays idle.
+    let settle = drive_until_idle(&mut runtime, &env, &mut now, 60);
+    assert!(
+        settle < 60,
+        "the window never went idle after the background repaint"
+    );
+
+    // `title` is a declaration input too — the pump only `.snapshot()`s it
+    // per frame, so its subscription is the only thing that wakes an idle
+    // window for a rename.
+    title.set(waterui_core::Str::from("new title"));
+    assert!(
+        runtime.renderer.has_pending_semantic_update(),
+        "a write to the window's title must request a frame"
+    );
+    let settle = drive_until_idle(&mut runtime, &env, &mut now, 60);
+    assert!(
+        settle < 60,
+        "the window never went idle after the title rename"
+    );
 }
 
 #[test]

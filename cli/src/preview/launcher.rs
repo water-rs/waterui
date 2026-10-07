@@ -3,6 +3,7 @@
 //! Handles launching the preview app on the target platform and
 //! establishing TCP connection.
 
+use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -27,7 +28,9 @@ use crate::build::BuildProgress;
 
 use crate::apple::dynamic_runtime;
 use crate::build::{BuildOptions, BuildProfile, BuiltTarget, RustBuild, RustLinkage};
-use crate::device::{Device, DeviceEvent, Local, LogLevel, RunOptions, Running};
+use crate::device::{
+    Crash, Device, DeviceEvent, Local, LogLevel, RunOptions, Running, StopRequest,
+};
 use crate::framework::ResolvedFramework;
 use crate::platform::TargetPlatform;
 use crate::project::{ManagedBackends, Project};
@@ -65,6 +68,11 @@ struct PreviewRequirements {
     runtime_features: Vec<String>,
     app_crate_name: crate::project_types::CrateName,
     app_path: PathBuf,
+    /// The previewed project's own packages — the app crate plus its path
+    /// dependencies outside the framework checkout — the `[profile.dev
+    /// .package.<name>]` overrides the support manifests write, so the
+    /// module's rebuild keeps the app unoptimized with line tables.
+    project_packages: BTreeSet<String>,
 }
 
 #[derive(Debug)]
@@ -73,6 +81,7 @@ struct ResolvedPreviewMetadata {
     framework: ResolvedFramework,
     app_crate_name: crate::project_types::CrateName,
     app_path: PathBuf,
+    project_packages: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,8 +218,9 @@ impl PreviewSession {
     pub async fn shutdown(&mut self) -> Result<()> {
         if self.owns_app {
             let result = self.client.shutdown().await;
-            // Dropping `running` will terminate the app if still alive.
-            self.running.take();
+            if let Some(running) = self.running.take() {
+                Pin::into_inner(running).shutdown(StopRequest::Kill).await;
+            }
             self.owns_app = false;
             result?;
         }
@@ -958,7 +968,7 @@ async fn build_preview_session_from_launch(
 ) -> Result<PreviewSession> {
     info!("Preview app launched, waiting for TCP connection...");
     let mut running = Box::pin(running);
-    match wait_for_connection_or_crash(
+    let failure = match wait_for_connection_or_crash(
         &mut running,
         platform,
         tcp_config,
@@ -967,45 +977,47 @@ async fn build_preview_session_from_launch(
     )
     .await
     {
-        ConnectionWaitResult::Ready(client) => Ok(PreviewSession {
-            client,
-            platform,
-            dylib_path: None,
-            running: Some(running),
-            owns_app: true,
-            sccache_path,
-            runtime_fingerprint: expected_fingerprint,
-        }),
-        ConnectionWaitResult::Crashed(message) => {
-            bail!(
+        ConnectionWaitResult::Ready(client) => {
+            return Ok(PreviewSession {
+                client,
+                platform,
+                dylib_path: None,
+                running: Some(running),
+                owns_app: true,
+                sccache_path,
+                runtime_fingerprint: expected_fingerprint,
+            });
+        }
+        ConnectionWaitResult::Crashed(crash) => {
+            eyre::eyre!(
                 "Preview app crashed:
-{message}"
-            );
+{crash}"
+            )
         }
         ConnectionWaitResult::Exited => {
-            bail!(
+            eyre::eyre!(
                 "Preview app exited unexpectedly.
 Check the app logs for more information."
-            );
+            )
         }
         ConnectionWaitResult::Rejected(rejection) => {
-            bail!(
+            eyre::eyre!(
                 "The preview app this run just launched rejected the protocol handshake:
 {rejection}"
-            );
+            )
         }
         // An app that answered and was turned away is not a connection problem,
         // and listing connection problems in front of it is how this timeout
         // once sent two debugging sessions at the network.
         ConnectionWaitResult::Timeout(Some(rejection)) => {
-            bail!(
+            eyre::eyre!(
                 "Preview app started but no compatible app ever answered within {} seconds.
 {rejection}",
                 STARTUP_DEADLINE.as_secs()
-            );
+            )
         }
         ConnectionWaitResult::Timeout(None) => {
-            bail!(
+            eyre::eyre!(
                 "Preview app is still running after {} seconds but never accepted a connection.
 Possible causes:
 - The TCP server failed to start
@@ -1016,17 +1028,19 @@ Try running with WATERUI_CRASH_DEBUG=1 for more details.",
                 STARTUP_DEADLINE.as_secs(),
                 tcp_config.port_start,
                 tcp_config.ports().end()
-            );
+            )
         }
-    }
+    };
+    Pin::into_inner(running).shutdown(StopRequest::Kill).await;
+    Err(failure)
 }
 
 /// Result of waiting for preview-app readiness.
 enum ConnectionWaitResult {
     /// Preview app accepted a connection and completed the protocol handshake.
     Ready(PreviewAppClient),
-    /// App crashed with error message.
-    Crashed(String),
+    /// App crashed.
+    Crashed(Crash),
     /// App exited without crash.
     Exited,
     /// The app stayed alive but never became reachable before the hang backstop.
@@ -1340,6 +1354,10 @@ async fn preview_connection_result_from_device_event(
             info!("App exited after {}ms", start.elapsed().as_millis());
             Some(ConnectionWaitResult::Exited)
         }
+        DeviceEvent::MonitorError { message } => {
+            error!("{message}");
+            None
+        }
         DeviceEvent::Log { level, message } => {
             info!("Preview app log event: {message}");
             if level == tracing::Level::ERROR {
@@ -1395,6 +1413,7 @@ async fn drain_terminal_preview_event(
         match event {
             DeviceEvent::Crashed(message) => return ConnectionWaitResult::Crashed(message),
             DeviceEvent::Exited(_) => return ConnectionWaitResult::Exited,
+            DeviceEvent::MonitorError { message } => error!("{message}"),
             _ => {}
         }
     }
@@ -1501,6 +1520,7 @@ async fn scaffold_preview_module(project: &Project, platform: PreviewPlatform) -
         // root now — the managed manifest replaces it once the support
         // project scaffolds — or `cargo metadata` on the module resolves
         // without any `[patch]` and picks registry `waterui-*` copies (#197).
+        let framework = project.resolved_framework().await?;
         let patches = match runtime_path.as_deref() {
             Some(root) => {
                 let root = root.to_path_buf();
@@ -1509,12 +1529,13 @@ async fn scaffold_preview_module(project: &Project, platform: PreviewPlatform) -
                 })
                 .await?
             }
-            None => project.resolved_framework().await?.patches(),
+            None => framework.patches(),
         };
         crate::project_model::templates::ffi::write_workspace_root_manifest(
             &workspace_root,
             patches,
             Some(project.root()),
+            Some(&project.project_packages(&framework).await?),
         )
         .await?;
     }
@@ -1597,7 +1618,8 @@ async fn scaffold_preview_app(path: &Path, requirements: &PreviewRequirements) -
     .with_preview_app_dependency(
         requirements.app_crate_name.clone(),
         requirements.app_path.clone(),
-    );
+    )
+    .with_project_packages(requirements.project_packages.clone());
 
     crate::templates::preview::scaffold(project.root(), &ctx)
         .await
@@ -1645,7 +1667,7 @@ fn preview_signature(requirements: &PreviewRequirements) -> String {
             |path| path.display().to_string()
         ),
         requirements.runtime_fingerprint,
-        crate::templates::preview::template_fingerprint(),
+        crate::templates::preview::template_fingerprint(&requirements.project_packages),
     )
 }
 
@@ -1666,6 +1688,7 @@ async fn resolve_preview_requirements(
         &resolved.app_crate_name,
         &resolved.app_path,
         &resolved.framework,
+        &resolved.project_packages,
     )
     .await?
     {
@@ -1703,6 +1726,7 @@ async fn resolve_preview_requirements(
             runtime_features,
             app_crate_name: resolved.app_crate_name,
             app_path: resolved.app_path,
+            project_packages: resolved.project_packages,
         });
     } else {
         let source = waterui
@@ -1736,6 +1760,7 @@ async fn resolve_preview_requirements(
         runtime_features,
         app_crate_name: resolved.app_crate_name,
         app_path: resolved.app_path,
+        project_packages: resolved.project_packages,
     })
 }
 
@@ -1746,6 +1771,7 @@ async fn resolve_preview_requirements_from_manifest(
     app_crate_name: &crate::project_types::CrateName,
     app_path: &Path,
     framework: &ResolvedFramework,
+    project_packages: &BTreeSet<String>,
 ) -> Result<Option<PreviewRequirements>> {
     let manifest_open_start = Instant::now();
     let manifest = crate::project::Manifest::open(project_path.join("Water.toml"))
@@ -1806,6 +1832,7 @@ async fn resolve_preview_requirements_from_manifest(
         runtime_features: runtime_features.to_vec(),
         app_crate_name: app_crate_name.clone(),
         app_path: app_path.to_path_buf(),
+        project_packages: project_packages.clone(),
     }))
 }
 
@@ -1821,6 +1848,7 @@ async fn resolve_preview_metadata(
         .join("Cargo.toml");
     let app_crate_name = project.crate_name().clone();
     let app_path = project.root().to_path_buf();
+    let project_packages = project.project_packages(&framework).await?;
     let metadata_start = Instant::now();
     let metadata_manifest_path = manifest_path.clone();
     let abi_feature = PreviewLinkMode::for_platform(platform)
@@ -1845,6 +1873,7 @@ async fn resolve_preview_metadata(
         framework,
         app_crate_name,
         app_path,
+        project_packages,
     })
 }
 
