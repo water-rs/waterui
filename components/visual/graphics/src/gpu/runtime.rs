@@ -44,6 +44,11 @@ pub enum GpuRuntimeError {
     /// The adapter refused the device.
     #[error(transparent)]
     Device(#[from] wgpu::RequestDeviceError),
+    /// The Android device request failed, whether the device was opened
+    /// with the `AHardwareBuffer` import requirements or plainly.
+    #[cfg(target_os = "android")]
+    #[error(transparent)]
+    DeviceRequest(#[from] wgpu_external_frame::ahardware_buffer::DeviceRequestError),
 }
 
 /// What creating or presenting a hosted engine layer's frame can fail with.
@@ -226,17 +231,19 @@ impl SharedGpuContext {
         {
             return Err(GpuRuntimeError::PassthroughShadersUnsupported { backend });
         }
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("waterui GpuRuntime"),
-                required_features,
-                // The adapter's own limits, not wgpu's defaults: a default
-                // that exceeds the adapter's ceiling fails the request
-                // outright (iOS simulator: default 16 > adapter 15).
-                required_limits: adapter.limits(),
-                ..Default::default()
-            })
-            .await?;
+        let descriptor = wgpu::DeviceDescriptor {
+            label: Some("waterui GpuRuntime"),
+            required_features,
+            // The adapter's own limits, not wgpu's defaults: a default
+            // that exceeds the adapter's ceiling fails the request
+            // outright (iOS simulator: default 16 > adapter 15).
+            required_limits: adapter.limits(),
+            ..Default::default()
+        };
+        #[cfg(target_os = "android")]
+        let (device, queue) = super::device::request_device(&adapter, &descriptor).await?;
+        #[cfg(not(target_os = "android"))]
+        let (device, queue) = adapter.request_device(&descriptor).await?;
         let device_loss = DeviceLoss::observe(&device);
         Ok(Self {
             generation,

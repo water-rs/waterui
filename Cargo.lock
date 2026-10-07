@@ -13234,6 +13234,7 @@ dependencies = [
  "waterui-core",
  "waterui-testing",
  "wgpu 30.0.1",
+ "wgpu-external-frame",
 ]
 
 [[package]]
