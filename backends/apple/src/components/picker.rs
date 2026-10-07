@@ -249,14 +249,11 @@ impl SubView for PickerSubView {
         } else {
             intrinsic_width
         };
-        let height = if wheel {
-            intrinsic_height
-        } else {
-            proposal
-                .height
-                .map_or(intrinsic_height, |h| f64::from(h).max(intrinsic_height))
-        };
-        ViewDimensions::new(Size::new(width as f32, height as f32))
+        // A picker never stretches vertically (`StretchAxis::None`): its
+        // height answer is its own intrinsic extent under every proposal,
+        // never the offered height echoed back — the same non-stretch
+        // contract `TextFieldSubView` keeps on its cross axis.
+        ViewDimensions::new(Size::new(width as f32, intrinsic_height as f32))
     }
 
     fn stretch_axis(&self) -> StretchAxis {

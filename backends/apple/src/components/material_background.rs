@@ -115,9 +115,12 @@ pub fn install(dispatcher: &mut Dispatcher) {
         view::set_translates_autoresizing(&blur, true);
         view::set_translates_autoresizing(mounted.view(), true);
 
-        // `WuiSafeAreaManaging`: a material is chrome, not content — the
-        // blur runs behind the status bar and the home indicator while the
-        // content keeps its own safe-area insets.
+        // A material's whole painted surface is the blur — one fill.
+        // `UIKit`: the fill rule extends it into the touched edge's regions
+        // when a background slot holds it. `AppKit`: it stays a safe-area
+        // manager so the blur still runs behind the window chrome.
+        host.set_is_fill(true);
+        #[cfg(target_os = "macos")]
         host.set_manages_safe_area(true);
 
         let state = Rc::new(MaterialBackgroundState {
@@ -152,8 +155,10 @@ pub fn install(dispatcher: &mut Dispatcher) {
                     f64::from(size.width),
                     f64::from(size.height),
                 );
+                // The content centers on its negotiated size; the blur is
+                // the fill surface and covers the whole extended frame.
                 view::set_frame(state.child.view(), rect);
-                view::set_frame(&state.blur, rect);
+                view::set_frame(&state.blur, bounds);
             }
         });
 

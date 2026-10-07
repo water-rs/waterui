@@ -87,6 +87,9 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let mtm = ctx.mtm();
         let host = HostView::new(mtm, Rect::ZERO);
         let mounted = ctx.render(metadata.content).mount(&host);
+        // §7.1: a transparent wrapper propagates its child's fill
+        // answer — `Color.opacity(..)` in a background slot stays a fill.
+        host.set_is_fill(crate::native_layout::is_fill(mounted.view()));
         crate::primary_content::forward(&host, mounted.view());
         view::set_translates_autoresizing(mounted.view(), true);
 

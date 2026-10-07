@@ -5,11 +5,11 @@
 //! measure, stretch, priority and the placement proposal all answer for the
 //! mounted child — that answers `cocoaUiManagesSafeArea`, the
 //! `WuiSafeAreaManaging` conformance the Swift leaf declared, so a holder
-//! hands it the full bounds rather than the safe-area part. On `UIKit` the
-//! wrapper reports its ignored edges through `cocoaUiIgnoredSafeAreaEdges`,
-//! which the fallback's `wuiSafeAreaRect` erases on its ancestor walk —
-//! the `erasingIgnoredEdges(from:)` the Swift leaf answered — and stops
-//! `UIKit` from double-insetting its layout margins.
+//! hands it the bounds its declaration reaches rather than the safe-area
+//! part. On `UIKit` the wrapper reports its ignored regions and edges
+//! through `cocoaUiIgnoredSafeAreaEdges`, which the sibling backend's
+//! region math releases on the edges the wrapper's laid-out frame touches,
+//! and stops `UIKit` from double-insetting its layout margins.
 
 use alloc::rc::Rc;
 
@@ -88,13 +88,21 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         #[cfg(target_os = "ios")]
         {
+            // A declaration names regions × edges: `EdgeSet` alone means
+            // both regions (`SafeAreaRegions::ALL`); `KEYBOARD` names only
+            // the keyboard region, so the container region keeps its hold
+            // on the same edge.
+            let regions = metadata.value.regions;
             let edges = metadata.value.edges;
-            host.set_ignored_safe_area_edges(cocoa_ui::geometry::Edges::new(
-                edges.top,
-                edges.leading,
-                edges.bottom,
-                edges.trailing,
-            ));
+            let named = |region: bool| {
+                cocoa_ui::geometry::Edges::new(
+                    region && edges.top,
+                    region && edges.leading,
+                    region && edges.bottom,
+                    region && edges.trailing,
+                )
+            };
+            host.set_ignored_safe_area_edges(named(regions.container()), named(regions.keyboard()));
             // The wrapper manages the safe area itself; `UIKit`'s own margin
             // inset would double-count it.
             view::set_insets_layout_margins_from_safe_area(host_view, false);

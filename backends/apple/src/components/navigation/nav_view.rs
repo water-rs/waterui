@@ -104,6 +104,12 @@ mod platform {
             return leaf;
         }
 
+        // The page owns chrome: the host extends under the regions of the
+        // edge its bar touches — a managing leaf — so the bar's surface
+        // covers the container band while the bar itself docks clear of
+        // it, and the hosted content stays clear of both regions (§7.1).
+        host.set_manages_safe_area(true);
+
         let bar = BarState::new(&mut view.bar, ctx);
         let bar_view = NavBar::new(mtm);
         view::add_subview(&host, &bar_view);
@@ -153,11 +159,17 @@ mod platform {
                 if !hidden.snapshot() {
                     let size = bar_view
                         .sizeThatFits(cocoa_ui::geometry::Size::new(bounds.size.width, 0.0).into());
+                    // §7.1's chrome split: the bar's surface extends under
+                    // the container region the host's top edge reaches —
+                    // the host's own inset on that edge — while the bar's
+                    // items dock clear of it; the band's inner edge is
+                    // where the hosted content starts.
+                    let band = host.safeAreaInsets().top;
                     view::set_frame(
                         &bar_view,
-                        Rect::new(bounds.origin.x, top, bounds.size.width, size.height),
+                        Rect::new(bounds.origin.x, top, bounds.size.width, size.height + band),
                     );
-                    top += size.height;
+                    top += size.height + band;
                 }
                 if let Some(field) = &search_bar {
                     let size = field

@@ -52,6 +52,11 @@ pub struct NavContentControllerIvars {
     search_updater: RefCell<Option<Retained<SearchUpdater>>>,
     /// The page's search drawer, retained for later updates.
     search_controller: RefCell<Option<Retained<UISearchController>>>,
+    /// Whether the stack's toolbar should hide while this page is topmost.
+    /// `set_page` runs before the page is pushed — `navigationController()`
+    /// is nil then — so the intent is recorded here and the owning
+    /// `NavigationController` applies it when the page resolves.
+    toolbar_hidden: Cell<bool>,
 }
 
 impl fmt::Debug for NavContentControllerIvars {
@@ -123,6 +128,7 @@ impl NavContentController {
             search_change: RefCell::new(None),
             search_updater: RefCell::new(None),
             search_controller: RefCell::new(None),
+            toolbar_hidden: Cell::new(true),
         });
         // SAFETY: `initWithNibName:bundle:` is `UIViewController`'s
         // designated initializer; nil names and bundles load nothing.
@@ -211,14 +217,12 @@ impl NavContentController {
         }
         if page.bottom.is_empty() {
             self.setToolbarItems(None);
-            if let Some(nav) = self.navigationController() {
-                nav.setToolbarHidden_animated(true, false);
-            }
         } else {
             self.setToolbarItems(Some(&NSArray::from_retained_slice(&page.bottom)));
-            if let Some(nav) = self.navigationController() {
-                nav.setToolbarHidden_animated(false, false);
-            }
+        }
+        self.ivars().toolbar_hidden.set(page.bottom.is_empty());
+        if let Some(nav) = self.navigationController() {
+            nav.setToolbarHidden_animated(page.bottom.is_empty(), false);
         }
         self.ivars().search_updater.replace(None);
         self.ivars().search_controller.replace(None);
@@ -692,6 +696,17 @@ impl NavBar {
     }
 }
 
+/// Applies the top page's toolbar intent to `nav` — the page records it
+/// in `set_page`, possibly before the stack owned it.
+fn apply_toolbar_intent(nav: &NavigationController, animated: bool) {
+    let hides = nav
+        .viewControllers()
+        .lastObject()
+        .and_then(|top| top.downcast::<NavContentController>().ok())
+        .is_none_or(|page| page.ivars().toolbar_hidden.get());
+    nav.setToolbarHidden_animated(hides, animated);
+}
+
 /// The navigation stack's model: the pages and the current pop state.
 /// Called when the user pops one or more pages by gesture or back button:
 /// the count of pages to drop.
@@ -842,6 +857,7 @@ define_class!(
             _view_controller: &UIViewController,
             _animated: bool,
         ) {
+            apply_toolbar_intent(self, _animated);
             let depth = self.viewControllers().count();
             let expected = self.ivars().expected_depth.replace(depth);
             if let Some(show) = self.ivars().show.borrow().as_ref() {
@@ -880,6 +896,7 @@ impl NavigationController {
         if let Some(gesture) = this.interactivePopGestureRecognizer() {
             gesture.setDelegate(Some(ProtocolObject::from_ref(&*this)));
         }
+        apply_toolbar_intent(&this, false);
         this
     }
 
@@ -932,6 +949,7 @@ impl NavigationController {
             ),
             animated,
         );
+        apply_toolbar_intent(self, animated);
     }
 
     /// Pops `count` pages, animating the transition; reports `true` when
@@ -949,6 +967,7 @@ impl NavigationController {
         // SAFETY: `popToViewController:animated:` is a main-thread stack
         // update on a live navigation controller.
         let _: () = unsafe { msg_send![self, popToViewController: &*target, animated: animated] };
+        apply_toolbar_intent(self, animated);
         true
     }
 

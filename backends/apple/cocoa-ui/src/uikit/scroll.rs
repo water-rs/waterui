@@ -34,6 +34,7 @@ use objc2_ui_kit::{
 use crate::callback::guarded;
 use crate::geometry::{EdgeInsets, Point, Size};
 use crate::scroll_flight::{FlightPlan, ScrollFlight};
+use crate::uikit::keyboard::KeyboardTracking;
 
 /// The handler [`ScrollView`] calls after `UIKit` lays it out.
 type LayoutHandler = Rc<dyn Fn(&ScrollView)>;
@@ -46,6 +47,10 @@ pub struct ScrollViewIvars {
     scroll: RefCell<Option<ScrollHandler>>,
     /// The scroll animation state: at most one flight per surface.
     flight: Rc<ScrollFlight>,
+    /// The keyboard tracking (§7.1 scroll surfaces): the band's depth
+    /// becomes the bottom content inset and a focused field inside
+    /// scrolls clear.
+    keyboard: Rc<KeyboardTracking>,
 }
 
 impl ScrollViewIvars {
@@ -56,6 +61,7 @@ impl ScrollViewIvars {
             layout: RefCell::new(None),
             scroll: RefCell::new(None),
             flight: ScrollFlight::new(mtm),
+            keyboard: Rc::new(KeyboardTracking::new()),
         }
     }
 }
@@ -107,13 +113,19 @@ define_class!(
     impl ScrollView {
         /// A view that moves to another window or leaves its window lands
         /// the flight it was running — a parked flight's clock ticks only
-        /// for the window it armed on.
+        /// for the window it armed on. The keyboard observers follow the
+        /// window: installed once the view has one, dropped when it leaves
+        /// one.
         #[unsafe(method(didMoveToWindow))]
         fn did_move_to_window(&self) {
             guarded("ScrollView didMoveToWindow", || {
                 // SAFETY: see the module safety note.
                 let _: () = unsafe { msg_send![super(self), didMoveToWindow] };
                 self.ivars().flight.land();
+                self.ivars().keyboard.clear();
+                if self.window().is_some() {
+                    self.ivars().keyboard.observe(self, self.mtm());
+                }
             });
         }
 
@@ -294,10 +306,12 @@ impl crate::teardown::HandlerSlots for ScrollView {
     /// Each `set_*_handler` slot answers `None` afterwards, so a callback
     /// `UIKit` delivers to this view does nothing by construction rather
     /// than reaching state the owner released, and the handlers no longer
-    /// keep that state alive: layout and scroll.
+    /// keep that state alive: layout and scroll — and the keyboard and
+    /// focus observers, so the center no longer holds the view's entries.
     fn clear_handlers(&self) {
         let ivars = self.ivars();
         ivars.layout.replace(None);
         ivars.scroll.replace(None);
+        ivars.keyboard.clear();
     }
 }

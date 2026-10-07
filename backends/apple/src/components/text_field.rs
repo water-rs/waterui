@@ -527,10 +527,11 @@ impl SubView for TextFieldSubView {
         let width = proposal
             .width
             .map_or(min_width, |w| f64::from(w).max(min_width));
-        let height = proposal
-            .height
-            .map_or(intrinsic_height, |h| f64::from(h).max(intrinsic_height));
-        ViewDimensions::new(Size::new(width as f32, height as f32))
+        // The field stretches horizontally only: its height answer is its
+        // own intrinsic extent under every proposal — never the offered
+        // height echoed back, which would let a stack's finite offers
+        // (§4.2's `select`) claim the band the field was placed in.
+        ViewDimensions::new(Size::new(width as f32, intrinsic_height as f32))
     }
 
     fn stretch_axis(&self) -> StretchAxis {

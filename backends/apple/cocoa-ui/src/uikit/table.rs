@@ -55,6 +55,7 @@ use crate::EdgeInsets;
 use crate::callback::guarded;
 use crate::geometry::{IndexPath, Point};
 use crate::scroll_flight::{FlightPlan, ScrollFlight};
+use crate::uikit::keyboard::KeyboardTracking;
 
 /// Whether a header-footer view presents a section's header or footer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -150,6 +151,10 @@ pub struct TableViewIvars {
     source: RefCell<Option<Rc<dyn TableSource>>>,
     /// The scroll animation state: at most one flight per surface.
     flight: Rc<ScrollFlight>,
+    /// The keyboard tracking (§7.1 scroll surfaces): the band's depth
+    /// becomes the bottom content inset and a focused field inside
+    /// scrolls clear.
+    keyboard: Rc<KeyboardTracking>,
 }
 
 impl TableViewIvars {
@@ -159,6 +164,7 @@ impl TableViewIvars {
         Self {
             source: RefCell::new(None),
             flight: ScrollFlight::new(mtm),
+            keyboard: Rc::new(KeyboardTracking::new()),
         }
     }
 
@@ -450,6 +456,10 @@ define_class!(
                 // SAFETY: see the module safety note.
                 let _: () = unsafe { msg_send![super(self), didMoveToWindow] };
                 self.ivars().flight.land();
+                self.ivars().keyboard.clear();
+                if self.window().is_some() {
+                    self.ivars().keyboard.observe(self, self.mtm());
+                }
             });
         }
     }
