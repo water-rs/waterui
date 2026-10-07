@@ -16,6 +16,8 @@ pub mod resources;
 
 #[cfg(any(platform_timing, frame_progress))]
 mod animation;
+#[cfg(feature = "gpu_surface")]
+pub(crate) mod capture_image;
 pub(crate) mod components;
 pub(crate) mod first_paint;
 pub(crate) mod fonts;

@@ -1,10 +1,10 @@
 //! The `view_renderer` service: the environment's `ViewRenderer` —
 //! `WuiViewRenderer.swift`'s `renderViewToRGBA`, ported.
 //!
-//! An offscreen window hosts the rendered leaf at its measured size, the
-//! subtree is laid out, mounted GPU surfaces are waited on for their first
-//! presented frame, and the hierarchy is rasterized into a premultiplied
-//! RGBA8 bitmap — the `CustomViewRenderer` contract.
+//! The rendered leaf is laid out at its measured size, then captured once
+//! into premultiplied RGBA8 — through the central native+GPU capture under
+//! `gpu_surface`, the plain offscreen bitmap path in a native-only build —
+//! the `CustomViewRenderer` contract.
 
 use waterui_backend_core::Environment;
 use waterui_core::AnyView;
@@ -39,9 +39,8 @@ impl CustomViewRenderer for AppleViewRenderer {
         size: RenderSize,
     ) -> Result<RenderResult, RenderError> {
         let leaf = self.renderer.render(view);
-        let (pixels, width, height) = capture_leaf_to_rgba(&leaf, size, self.mtm)
-            .await
-            .map_err(|error| RenderError::Capture(Box::new(error)))?;
+        let (pixels, width, height) =
+            capture_leaf_to_rgba(&leaf, self.renderer.context().env(), size, self.mtm).await?;
         Ok(RenderResult {
             rgba_data: pixels,
             width,
@@ -51,6 +50,7 @@ impl CustomViewRenderer for AppleViewRenderer {
 }
 
 /// Why the platform capture produced no bitmap.
+#[cfg(not(feature = "gpu_surface"))]
 #[derive(Debug, thiserror::Error)]
 enum CaptureError {
     /// Core Graphics refused the destination bitmap context.
@@ -70,10 +70,32 @@ enum CaptureError {
     NoWindowScene,
 }
 
+/// The `RenderError` a central-capture failure answers.
+///
+/// A failed GPU surface and a readback target the device refused are
+/// failures of the GPU work behind the capture, so they report
+/// [`RenderError::Gpu`]; a missing window scene is the platform withholding
+/// a resource the capture needs, so it reports [`RenderError::Capture`].
+#[cfg(feature = "gpu_surface")]
+fn render_error(failure: crate::capture_image::CaptureFailure) -> RenderError {
+    use crate::capture_image::CaptureFailure;
+    match failure {
+        CaptureFailure::GpuSurfaceFailed(_)
+        | CaptureFailure::CompositionFailed { .. }
+        | CaptureFailure::TargetAllocation { .. } => RenderError::Gpu(Box::new(failure)),
+        #[cfg(target_os = "ios")]
+        CaptureFailure::NoWindowScene => RenderError::Capture(Box::new(failure)),
+    }
+}
+
 /// The environment's `ViewRenderer`, replacing
 /// `waterui_env_install_view_renderer`.
 ///
 /// Installs the native snapshot renderer into this environment.
+///
+/// # Panics
+///
+/// On a failure to confirm the main thread.
 pub fn install_service(env: &mut Environment) {
     let mtm = cocoa_ui::MainThreadMarker::new().expect("main thread");
     let renderer =
@@ -83,17 +105,32 @@ pub fn install_service(env: &mut Environment) {
 
 /// Captures `leaf` into premultiplied RGBA8 under `size`'s proposal —
 /// `captureViewToRGBA`.
-#[allow(
+#[expect(
     clippy::future_not_send,
-    clippy::unused_async,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
+    reason = "the capture borrows the main-thread leaf across its await"
+)]
+#[cfg_attr(
+    not(feature = "gpu_surface"),
+    expect(
+        clippy::unused_async,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the synchronous fallback keeps the async contract; a clamped positive extent fits"
+    )
 )]
 async fn capture_leaf_to_rgba(
     leaf: &NativeLeaf,
+    #[cfg_attr(
+        not(feature = "gpu_surface"),
+        expect(
+            unused_variables,
+            reason = "only the central GPU capture reads the environment"
+        )
+    )]
+    env: &Environment,
     size: RenderSize,
     mtm: cocoa_ui::MainThreadMarker,
-) -> Result<(alloc::vec::Vec<u8>, u32, u32), CaptureError> {
+) -> Result<(alloc::vec::Vec<u8>, u32, u32), RenderError> {
     let view = leaf.view();
     let proposed = cocoa_ui::Size::new(f64::from(size.width), f64::from(size.height));
 
@@ -134,19 +171,30 @@ async fn capture_leaf_to_rgba(
     cocoa_ui::view::layout_immediately(view);
 
     let scale = cocoa_ui::view::backing_scale_factor(view);
-    let pixel_width = usize::try_from((actual.width * scale).ceil().max(1.0) as u64)
-        .unwrap_or(usize::MAX)
-        .min((usize::MAX - 3) / 4);
-    let pixel_height = usize::try_from((actual.height * scale).ceil().max(1.0) as u64)
-        .unwrap_or(usize::MAX)
-        .min((usize::MAX - 3) / 4);
-
     #[cfg(feature = "gpu_surface")]
-    wait_for_surfaces(view).await;
-    capture::capture(view, actual, scale, pixel_width, pixel_height, mtm)
+    {
+        // The central capture owns the native+GPU composite and its
+        // window/lifecycle — a first-frame wait here could deadlock under
+        // link-only delivery on the screenless capture window.
+        let captured = crate::capture_image::capture_rgba(view, env, scale, mtm)
+            .await
+            .map_err(render_error)?;
+        Ok((captured.pixels, captured.width, captured.height))
+    }
+    #[cfg(not(feature = "gpu_surface"))]
+    {
+        let pixel_width = usize::try_from((actual.width * scale).ceil().max(1.0) as u64)
+            .unwrap_or(usize::MAX)
+            .min((usize::MAX - 3) / 4);
+        let pixel_height = usize::try_from((actual.height * scale).ceil().max(1.0) as u64)
+            .unwrap_or(usize::MAX)
+            .min((usize::MAX - 3) / 4);
+        capture::capture(view, actual, scale, pixel_width, pixel_height, mtm)
+            .map_err(|error| RenderError::Capture(Box::new(error)))
+    }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(feature = "gpu_surface")))]
 mod capture {
     use alloc::vec::Vec;
 
@@ -195,7 +243,7 @@ mod capture {
     }
 }
 
-#[cfg(target_os = "ios")]
+#[cfg(all(target_os = "ios", not(feature = "gpu_surface")))]
 mod capture {
     use alloc::vec::Vec;
 
@@ -233,14 +281,4 @@ mod capture {
         cocoa_ui::bitmap::close_capture_window(&window);
         Ok((pixels, pixel_width as u32, pixel_height as u32))
     }
-}
-
-/// Waits until every mounted GPU surface inside `view`'s subtree has
-/// presented a frame — `view.ready()`: the surfaces present through
-/// `IOSurface` contents, which the layer-capture paths draw like any other
-/// layer content.
-#[cfg(feature = "gpu_surface")]
-#[allow(clippy::future_not_send)]
-async fn wait_for_surfaces(view: &cocoa_ui::PlatformView) {
-    crate::components::gpu_surface::wait_for_first_frames(view).await;
 }
