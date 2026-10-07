@@ -17,6 +17,31 @@ const LOG_LEVEL_ENV: &str = "WATERUI_LOG";
 /// One-time process startup. Returns the inspector runtime when the
 /// environment asked for one, for [`crate::entry`] to install.
 pub fn initialize() -> Option<InspectorRuntime> {
+    initialize_inner(false)
+}
+
+/// [`initialize`] for the preview entry: identical bring-up, plus the
+/// stderr console layer `WATERUI_LOG` would have asked for —
+/// [`crate::preview`]'s contract is that a panic message and any error
+/// reach stderr without it.
+///
+/// Once per process: the first call performs the bring-up and returns the
+/// inspector runtime; later calls skip it — the panic hook, the stderr
+/// layer and the executors are already installed process-wide. The
+/// preview suite is the only caller that repeats `run`.
+#[cfg(all(target_os = "macos", feature = "preview"))]
+pub fn initialize_for_preview() -> Option<InspectorRuntime> {
+    static BRING_UP: std::sync::Once = std::sync::Once::new();
+    let mut inspector = None;
+    BRING_UP.call_once(|| {
+        inspector = initialize_inner(true);
+    });
+    inspector
+}
+
+/// One-time process startup. Returns the inspector runtime when the
+/// environment asked for one, for [`crate::entry`] to install.
+fn initialize_inner(stderr: bool) -> Option<InspectorRuntime> {
     ignore_sigpipe();
     let inspector = waterui::inspector::maybe_init_from_env("apple");
 
@@ -27,6 +52,7 @@ pub fn initialize() -> Option<InspectorRuntime> {
         inspector
             .as_ref()
             .map(waterui::inspector::InspectorRuntime::tracing_layer),
+        stderr,
     );
 
     executor_core::init_global_executor(native_executor::NativeExecutor::new());
@@ -150,11 +176,12 @@ fn env_filter() -> tracing_subscriber::EnvFilter {
 
 /// Sends `tracing` records to `os_log`, plus stderr when `WATERUI_LOG` asked
 /// for a level — a physical iOS device's unified log is unreachable from the
-/// host, and `devicectl --console` only carries stderr.
-fn init_tracing(inspector: Option<waterui::inspector::InspectorLayer>) {
+/// host, and `devicectl --console` only carries stderr. `stderr` forces the
+/// console layer on regardless — the preview entry's contract.
+fn init_tracing(inspector: Option<waterui::inspector::InspectorLayer>, stderr: bool) {
     use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-    let console_layer = std::env::var_os(LOG_LEVEL_ENV).map(|_| {
+    let console_layer = (stderr || std::env::var_os(LOG_LEVEL_ENV).is_some()).then(|| {
         tracing_subscriber::fmt::layer()
             .with_writer(std::io::stderr)
             .without_time()

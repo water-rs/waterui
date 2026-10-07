@@ -186,10 +186,11 @@ pub enum PngError {
 /// The alpha convention a capture's RGBA8 bytes carry — [`write_png`]
 /// needs it to flatten correctly.
 ///
-/// Both captures the protocol serves today produce
-/// [`Alpha::Premultiplied`]: Apple's `CGBitmapContext` readout and
-/// Hydrolysis's `readback_rgba8`, which presents into the offscreen
-/// target with `OutputAlpha::Premultiplied`.
+/// The convention comes from the surface that produced the bytes, not
+/// from a comment: Apple's `CGBitmapContext` readout is
+/// [`Alpha::Premultiplied`], while a Hydrolysis `HeadlessSnapshot`
+/// reports its surface's `OutputAlpha` — `Straight` on the offscreen
+/// path today.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Alpha {
     /// Colour channels carry colour premultiplied by alpha.
@@ -293,4 +294,32 @@ pub fn write_png(
         path: output.to_path_buf(),
         source,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Alpha, flatten_alpha_over_white};
+
+    /// A translucent straight-alpha pixel whose colour channel exceeds its
+    /// alpha — the anti-aliased light-ink case the premultiplied formula
+    /// would panic on. Flattened over white its red lands at
+    /// (200·128 + 255·127 + 127)/255 ≈ 227 and its zero channels at 127.
+    #[test]
+    fn straight_alpha_flattens_channels_past_alpha() {
+        let mut pixels = vec![200_u8, 0, 0, 128];
+        flatten_alpha_over_white(&mut pixels, Alpha::Straight);
+        assert_eq!(
+            pixels,
+            [227, 127, 127, 255],
+            "a straight channel above its alpha flattens without a panic"
+        );
+    }
+
+    /// The same pixel under the premultiplied convention is a contract
+    /// violation — the invariant documents itself by panicking.
+    #[test]
+    #[should_panic(expected = "a premultiplied channel never exceeds its alpha")]
+    fn premultiplied_rejects_a_channel_above_alpha() {
+        flatten_alpha_over_white(&mut [200, 0, 0, 128], Alpha::Premultiplied);
+    }
 }

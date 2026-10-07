@@ -43,6 +43,20 @@ impl ActivationPolicy {
             Self::Prohibited => NSApplicationActivationPolicy::Prohibited,
         }
     }
+
+    /// The policy a native `NSApplicationActivationPolicy` reads —
+    /// [`Self::native`]'s inverse.
+    fn from_native(policy: NSApplicationActivationPolicy) -> Self {
+        if policy == NSApplicationActivationPolicy::Regular {
+            Self::Regular
+        } else if policy == NSApplicationActivationPolicy::Accessory {
+            Self::Accessory
+        } else {
+            // `Prohibited`, and anything the platform adds later — an
+            // unlisted policy is at least as hidden.
+            Self::Prohibited
+        }
+    }
 }
 
 /// How urgently an attention request presents itself —
@@ -187,6 +201,12 @@ impl Application {
         Self {
             app: NSApplication::sharedApplication(mtm),
         }
+    }
+
+    /// The policy the process currently holds — `activationPolicy`.
+    #[must_use]
+    pub fn activation_policy(&self) -> ActivationPolicy {
+        ActivationPolicy::from_native(self.app.activationPolicy())
     }
 
     /// Sets how the application presents itself.

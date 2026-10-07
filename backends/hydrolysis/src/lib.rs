@@ -85,6 +85,10 @@ pub use runner::run;
 pub use runner::{FrameCounters, FramePhases, FrameProfile, SemanticPumpResult, SemanticRuntime};
 #[cfg(not(target_arch = "wasm32"))]
 pub use runner::{HeadlessPumpResult, HeadlessRuntime, HeadlessSnapshot};
+/// The alpha convention a [`HeadlessSnapshot`]'s pixels read — what the
+/// producing surface presented with.
+#[cfg(not(target_arch = "wasm32"))]
+pub use cherenkov_gpu::interop::OutputAlpha;
 pub use text::FontFamilyResolution;
 pub use view_renderer::HydrolysisViewRenderer;
 #[cfg(hydrolysis_macos_system_webview)]

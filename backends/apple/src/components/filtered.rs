@@ -194,7 +194,11 @@ impl fmt::Debug for FilteredState {
 /// The host bounds in physical pixels.
 fn pixel_size(view: &PlatformView, scale: f64) -> (u32, u32) {
     let bounds = cocoa_ui::view::bounds(view);
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the `.max(0.0)` clamp keeps the product positive, and a view's pixel size at its scale fits u32"
+    )]
     let (w, h) = (
         (bounds.size.width * scale).max(0.0) as u32,
         (bounds.size.height * scale).max(0.0) as u32,
@@ -411,8 +415,16 @@ fn initialize_gpu(state: &Rc<FilteredState>) {
     let Some(scale) = window_scale(&state.view) else {
         return;
     };
-    if !prepare_presentation(state, scale) {
-        return;
+    // Skipped and refused both land here the same way: the filter gets no
+    // attach. The reason still matters on the normal attach path, so it is
+    // logged — the capture drive also surfaces it as an error.
+    match prepare_presentation(state, scale) {
+        PrepareOutcome::Prepared => {}
+        PrepareOutcome::Empty => return,
+        PrepareOutcome::Refused(reason) => {
+            tracing::debug!("filtered view presentation refused: {reason}");
+            return;
+        }
     }
     // Attaching waits for a window that can present: a filter in a covered
     // window never captures anything, so the capture texture is only bought
@@ -423,24 +435,36 @@ fn initialize_gpu(state: &Rc<FilteredState>) {
     attach(state);
 }
 
+/// What `prepare_presentation` concluded for one filtered host.
+enum PrepareOutcome {
+    /// Presentation is configured — the filter may attach and render.
+    Prepared,
+    /// Zero bounds — the filter has nothing to composite; never awaited.
+    Empty,
+    /// Presentation could not be configured — `reason` names why.
+    Refused(&'static str),
+}
+
 /// The geometry and dynamic-range half of `initialize_gpu` — the part the
 /// capture drive shares. `scale` is the scale the presentation renders at:
 /// the window's backing scale on screen, the capture's off it.
-fn prepare_presentation(state: &Rc<FilteredState>, scale: f64) -> bool {
+fn prepare_presentation(state: &Rc<FilteredState>, scale: f64) -> PrepareOutcome {
     let bounds = cocoa_ui::view::bounds(&state.view);
     if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
-        return false;
+        return PrepareOutcome::Empty;
     }
     if cocoa_ui::view::window(&state.view).is_none() {
-        return false;
+        return PrepareOutcome::Refused("the filtered view is not inside a window");
     }
     let dynamic_range = cocoa_ui::dynamic_range::require_inherited(&state.view);
     if !prepare_dynamic_range(state, dynamic_range) {
-        return false;
+        return PrepareOutcome::Refused(
+            "a dynamic-range change is parked behind a frame in flight",
+        );
     }
     state.current_scale.set(scale);
     update_output_frame(state);
-    true
+    PrepareOutcome::Prepared
 }
 
 /// The attach the `can_attach_now` gate defers: one explicit live context
@@ -466,13 +490,19 @@ fn attach(state: &Rc<FilteredState>) {
 /// behind a window that can show it, driven anyway because the capture is
 /// the only presentation a never-ordered window gets. `scale` is the
 /// capture's pixel scale — the caller's bitmap decides it, not the window.
-pub fn present_for_capture(state: &Rc<FilteredState>, scale: f64) {
+#[cfg(target_os = "macos")]
+fn present_for_capture(state: &Rc<FilteredState>, scale: f64) -> CaptureDrive {
     state.capture_presenting.set(true);
-    if !prepare_presentation(state, scale) {
-        return;
+    match prepare_presentation(state, scale) {
+        PrepareOutcome::Prepared => {}
+        PrepareOutcome::Empty => return CaptureDrive::Empty,
+        PrepareOutcome::Refused(reason) => return CaptureDrive::Refused(reason),
     }
     attach(state);
     request_render(state);
+    // A device-lost `attach` parks the frame on the runtime's bounded
+    // rebuild rather than delivering nothing — accepted either way.
+    CaptureDrive::Accepted
 }
 
 /// `updateOutputLayerFrame`.
@@ -1206,31 +1236,84 @@ pub fn filter_needs_frame(state: &Rc<FilteredState>, waker: std::task::Waker) ->
     !state.output_revealed.get()
 }
 
-/// Drives every registered filter inside `view`'s subtree through one
-/// presented frame — the drive half of [`wait_for_capture_frames`] under a
-/// window that never orders in. `scale` is the capture's pixel scale.
-pub fn present_first_frames(view: &PlatformView, scale: f64) {
-    collect_filters(view, &mut |state| present_for_capture(state, scale));
+/// The participation a capture drive records: the filters it accepted —
+/// exactly what [`wait_for_presented`] may cover — the ones it skipped,
+/// and the reasons any refused.
+///
+/// A zero-size filtered view is skipped outright: it has nothing to
+/// composite, so no frame is owed and no wait may cover it. Every other
+/// refusal is a `CaptureError` the caller reports rather than waiting on.
+#[cfg(target_os = "macos")]
+pub struct Presentation {
+    /// The filters that accepted the drive and owe the capture a frame.
+    ///
+    /// A device loss on the way parks the frame on the runtime's bounded
+    /// rebuild: the wait ends with the rebuilt context's frame, or with
+    /// the process when rebuilds give up.
+    pub accepted: Vec<Rc<FilteredState>>,
+    /// Why a filter refused the drive — each is a `CaptureError` the
+    /// caller reports instead of waiting on.
+    pub refused: Vec<&'static str>,
+    /// The filters skipped for having nothing to draw.
+    pub empty: usize,
 }
 
-/// Waits until every registered filter inside `view`'s subtree has revealed
-/// its first presented frame — the capture half of
-/// `gpu_surface::wait_for_first_frames` under a window that never orders in,
-/// where `filter_needs_frame`'s visible-window participation gate never
-/// answers.
+/// What `present_for_capture` did with one filtered host — the answer
+/// [`Presentation`] folds into `accepted`, `empty` or `refused`.
+#[cfg(target_os = "macos")]
+enum CaptureDrive {
+    /// The filter took the drive: a frame is owed and the wait may cover
+    /// it — every deferral that frame can take is itself bounded.
+    Accepted,
+    /// Zero bounds — nothing to composite; skipped, never awaited.
+    Empty,
+    /// The filter refused — `reason` names why no frame is coming.
+    Refused(&'static str),
+}
+
+/// Drives every registered filter inside `view`'s subtree through one
+/// presented frame — the drive half of [`wait_for_presented`] under a
+/// window that never orders in. `scale` is the capture's pixel scale.
+///
+/// The returned [`Presentation`] is the participation record: only
+/// `accepted` filters may be awaited — each owes the capture a frame —
+/// and `refused` filters are failures the caller reports rather than
+/// waiting on.
+#[cfg(target_os = "macos")]
+pub fn present_first_frames(view: &PlatformView, scale: f64) -> Presentation {
+    let mut presentation = Presentation {
+        accepted: Vec::new(),
+        refused: Vec::new(),
+        empty: 0,
+    };
+    collect_filters(view, &mut |state| match present_for_capture(state, scale) {
+        CaptureDrive::Accepted => presentation.accepted.push(Rc::clone(state)),
+        CaptureDrive::Empty => presentation.empty += 1,
+        CaptureDrive::Refused(reason) => presentation.refused.push(reason),
+    });
+    presentation
+}
+
+/// Waits until every filter [`present_first_frames`] accepted has revealed
+/// its first presented output — the capture's wait, covering only the
+/// accepted set. Each accepted filter owes a frame whose every deferral
+/// — an in-flight capture, a deferred child, a parked device-loss
+/// rebuild — ends in a frame, or in the panic a rebuild gives up with:
+/// the wait always has an end condition.
+#[cfg(target_os = "macos")]
 #[expect(
     clippy::future_not_send,
-    reason = "the wait runs on the main thread; the Retained view it borrows is not Sync"
+    reason = "the wait runs on the main thread; the Rc states it holds are not Send"
 )]
-pub async fn wait_for_capture_frames(view: &PlatformView) {
+pub async fn wait_for_presented(filters: &[Rc<FilteredState>]) {
     core::future::poll_fn(|cx| {
         let mut pending = false;
-        collect_filters(view, &mut |state| {
+        for state in filters {
             if !state.output_revealed.get() {
                 state.ready_waiters.borrow_mut().push(cx.waker().clone());
                 pending = true;
             }
-        });
+        }
         if pending {
             core::task::Poll::Pending
         } else {

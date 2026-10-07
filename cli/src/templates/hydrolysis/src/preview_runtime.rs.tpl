@@ -175,17 +175,15 @@ fn run_scenario(
 }
 
 fn write_snapshot_png(snapshot: hydrolysis::HeadlessSnapshot, path: &Path) {
-    // `readback_rgba8` presents into the offscreen target with
-    // `OutputAlpha::Premultiplied` — the convention the writer declares
-    // for this capture.
-    write_png(
-        path,
-        snapshot.width,
-        snapshot.height,
-        snapshot.rgba8,
-        Alpha::Premultiplied,
-    )
-    .unwrap_or_else(|error| panic!("hydrolysis preview: {error}"));
+    // The alpha convention comes from the surface that presented the
+    // capture — `Opaque` reads like `Straight` to the flattener, and
+    // nothing else is produced.
+    let alpha = match snapshot.output_alpha {
+        hydrolysis::OutputAlpha::Premultiplied => Alpha::Premultiplied,
+        hydrolysis::OutputAlpha::Opaque | hydrolysis::OutputAlpha::Straight => Alpha::Straight,
+    };
+    write_png(path, snapshot.width, snapshot.height, snapshot.rgba8, alpha)
+        .unwrap_or_else(|error| panic!("hydrolysis preview: {error}"));
 }
 
 fn input_event(event: ScenarioEvent) -> InputEvent {

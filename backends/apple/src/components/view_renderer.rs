@@ -58,10 +58,9 @@ pub fn install_service(env: &mut Environment) {
 
 /// Captures `leaf` into premultiplied RGBA8 under `size`'s proposal —
 /// `captureViewToRGBA`.
-#[allow(
+#[expect(
     clippy::future_not_send,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
+    reason = "the capture runs on the main thread; the Retained kit objects it holds across the wait are not Send"
 )]
 async fn capture_leaf_to_rgba(
     leaf: &NativeLeaf,
@@ -134,15 +133,20 @@ mod capture {
 
 #[cfg(target_os = "ios")]
 mod capture {
-    use alloc::vec::Vec;
-
     use waterui_core::view_renderer::RenderResult;
 
     use crate::capture::CaptureError;
 
     /// `UIKit`: offscreen `UIWindow`, `layer.render` into the context — the
     /// `UIKit` half of `captureViewToRGBA`.
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the clamped pixel counts fit usize and u32"
+    )]
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "the `.max(1.0)` clamp keeps the measured size positive"
+    )]
     #[expect(
         clippy::future_not_send,
         reason = "the capture runs on the main thread; the Retained UIKit objects it holds across the wait are not Send"

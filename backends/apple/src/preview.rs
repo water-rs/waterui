@@ -50,26 +50,59 @@ pub enum PreviewError {
 /// `application()` fallback. `config` is the run configuration
 /// `WATERUI_PREVIEW_RUN_CONFIG` named.
 ///
+/// The process's stderr contract: once bring-up runs, every failure —
+/// the `Err` the run answers and every panic inside it — reaches stderr
+/// through `tracing`: the entry installs a stderr layer at error level
+/// for the preview process regardless of `WATERUI_LOG`, and the returned
+/// `Err` is logged at error level. An error returned before bring-up —
+/// an unsupported mode — reaches stderr through `main`'s `Result`
+/// propagation instead.
+///
 /// # Errors
 ///
 /// [`PreviewError::UnsupportedMode`] for `Scenario` and `Semantic` runs —
 /// the Apple preview captures images only. [`PreviewError::Capture`] when
-/// `AppKit` cannot mount, present or rasterize the view.
-/// [`PreviewError::Write`] when the PNG cannot be encoded or written.
-/// [`PreviewError::RunLoopExited`] when the main run loop returns without
-/// the capture's result — a return is never success on its own.
+/// `AppKit` cannot mount, present or rasterize the view, or a view refuses
+/// the presentation drive. [`PreviewError::Write`] when the PNG cannot be
+/// encoded or written. [`PreviewError::RunLoopExited`] when the main run
+/// loop returns without the capture's result — a return is never success
+/// on its own.
 ///
 /// # Panics
 ///
 /// Panics off the main thread, or when `AppKit` refuses the `Prohibited`
 /// activation policy before launch — the constraint the entry exists to
 /// keep, so a refusal is fatal rather than a fallback.
+///
+/// Re-entrant in one process: process bring-up happens on the first call
+/// (`initialize_for_preview` is once-only); every later call re-runs the
+/// environment, mount and capture — the suite's error trials rely on it.
 pub fn run(
     compose: impl FnOnce(Environment) -> Environment + 'static,
     view: impl FnOnce() -> waterui::AnyView + 'static,
     resources: ResourceContext,
     config: PreviewRunConfig,
 ) -> Result<(), PreviewError> {
+    let result = drive(compose, view, resources, config);
+    if let Err(error) = &result {
+        tracing::error!("preview run failed: {error}");
+    }
+    result
+}
+
+/// `run`'s body — the single `Result` boundary [`run`] reports through.
+fn drive(
+    compose: impl FnOnce(Environment) -> Environment + 'static,
+    view: impl FnOnce() -> waterui::AnyView + 'static,
+    resources: ResourceContext,
+    config: PreviewRunConfig,
+) -> Result<(), PreviewError> {
+    let mtm = MainThreadMarker::new().expect("preview runs on the main thread");
+    // Startup before anything else can panic or error — the panic hook and
+    // the unconditional stderr layer are what the contract guarantees
+    // everything else through.
+    let inspector = crate::startup::initialize_for_preview();
+
     let output = match config.mode {
         PreviewRunMode::Image { output } => output,
         PreviewRunMode::Scenario { .. } => {
@@ -79,44 +112,31 @@ pub fn run(
     };
     let size = cocoa_ui::Size::new(f64::from(config.width), f64::from(config.height));
 
-    let mtm = MainThreadMarker::new().expect("preview runs on the main thread");
-    // The keepers live on `run`'s frame, which outlives the capture.
+    // The keepers live on `drive`'s frame and are declared before `env`, so
+    // `env` drops first and `keepers` — the theme, appearance observer,
+    // locale and font registrations `prepare` requires to outlive `env` —
+    // drops last.
     let mut keepers = crate::contract::KeepAlive::default();
-    let mut env = prepare(mtm, resources, &mut keepers);
-    let _keepers = keepers;
+    let mut env = prepare(mtm, resources, &mut keepers, inspector);
 
     let env_ptr = &raw mut env;
     let outcome = Rc::new(RefCell::new(None::<Result<(), PreviewError>>));
-    // SAFETY: `env` is lent for the process — `prepare` hands it to the
-    // completion, which renders, deposits the run's result in `outcome`
-    // and stops the run loop this thread drives; nothing else reads it.
+    // SAFETY: `env` is lent to `drive`'s frame — the completion below
+    // renders, deposits the run's result in `outcome` and stops the run
+    // loop `drive` blocks in, so the borrow ends before the frame returns;
+    // nothing else drains the main queue after a `RunLoopExited` return.
     unsafe {
         crate::gpu_runtime::prepare(env_ptr, {
             let outcome = Rc::clone(&outcome);
             move || {
-                // `run` lent `env` for the process; this closure is the
+                // `drive` lent `env` for its frame; this closure is the
                 // only consumer and runs once, on the main thread.
                 let env = &mut *env_ptr;
                 crate::embedding::install_services(env);
                 let env = compose(env.clone());
                 executor_core::spawn_local(async move {
-                    let result = render(&env, mtm, view, size)
-                        .await
-                        .map_err(PreviewError::from)
-                        .and_then(|result| {
-                            // Apple's bitmap context reads premultiplied
-                            // RGBA8 — the convention `write_png` declares
-                            // for the Apple capture.
-                            waterui_preview_protocol::run::write_png(
-                                &output,
-                                result.width,
-                                result.height,
-                                result.rgba_data,
-                                Alpha::Premultiplied,
-                            )
-                            .map_err(PreviewError::from)
-                        });
-                    *outcome.borrow_mut() = Some(result);
+                    *outcome.borrow_mut() =
+                        Some(render_and_write(&env, mtm, view, size, &output).await);
                     CFRunLoop::current()
                         .expect("the render task runs on a thread that has a run loop")
                         .stop();
@@ -135,40 +155,21 @@ pub fn run(
         .ok_or(PreviewError::RunLoopExited)?
 }
 
-/// The backend bring-up `entry::run` performs, minus menus, window
-/// realization and the termination machine — shared by [`run`] and the
-/// native-test harness so the capture path is exercised exactly once.
+/// The backend bring-up `entry::run` performs, minus startup, menus, window
+/// realization and the termination machine.
 ///
-/// Sets the `Prohibited` activation policy before `AppKit` finishes
-/// launching: a capture never shows a window, takes focus or puts an
-/// icon in the Dock, and a refusal only happens when the process arrived
-/// bundled some other way, so it is fatal rather than a fallback. The
-/// environment's keepers — theme, appearance observation, locale, font
+/// Process startup is not idempotent — tracing, the executors and the
+/// panic hook install once — so the caller passes the inspector
+/// [`crate::startup::initialize_for_preview`] answered. Sets the
+/// `Prohibited` activation policy before `AppKit` finishes launching: a
+/// capture never shows a window, takes focus or puts an icon in the Dock.
+/// The environment's keepers — theme, appearance observation, locale, font
 /// registrations — land on `keepers`, which must outlive `env`.
 ///
 /// # Panics
 ///
 /// Panics when `AppKit` refuses the `Prohibited` activation policy.
 pub(crate) fn prepare(
-    mtm: MainThreadMarker,
-    resources: ResourceContext,
-    keepers: &mut crate::contract::KeepAlive,
-) -> Environment {
-    let inspector = crate::startup::initialize();
-    environment(mtm, resources, keepers, inspector)
-}
-
-/// The environment half of [`prepare`], minus `startup::initialize`.
-///
-/// Process startup is not idempotent — tracing, the executors and the
-/// panic hook install once — so a caller that already ran it (the
-/// native-test harness's `initialize_process`) passes the inspector it
-/// answered here instead.
-///
-/// # Panics
-///
-/// Panics when `AppKit` refuses the `Prohibited` activation policy.
-pub(crate) fn environment(
     mtm: MainThreadMarker,
     resources: ResourceContext,
     keepers: &mut crate::contract::KeepAlive,
@@ -184,16 +185,17 @@ pub(crate) fn environment(
     env.insert(crate::first_paint::FirstPaint::default());
 
     let application = Application::shared(mtm);
-    // `AppKit` must be told before launch completes. The set is
-    // best-effort — a bundle that already declares `UIElement` or an
-    // unbundled process arrives `Prohibited` and refuses a redundant
-    // change — so the invariant asserted is the policy itself.
-    let _ = application.set_activation_policy(ActivationPolicy::Prohibited);
-    assert_eq!(
-        cocoa_ui::objc2_app_kit::NSApplication::sharedApplication(mtm).activationPolicy(),
-        cocoa_ui::objc2_app_kit::NSApplicationActivationPolicy::Prohibited,
-        "the preview process must hold the Prohibited activation policy before AppKit finishes launching"
-    );
+    // `AppKit` must be told before launch completes; a bundle that already
+    // declares `UIElement`, or an unbundled process, arrives `Prohibited`
+    // and may refuse a redundant change — so the set runs only when the
+    // policy is not already there, and a refusal fails at the call that
+    // refused it.
+    if application.activation_policy() != ActivationPolicy::Prohibited {
+        assert!(
+            application.set_activation_policy(ActivationPolicy::Prohibited),
+            "the preview process must hold the Prohibited activation policy before AppKit finishes launching"
+        );
+    }
     let theme = Rc::new(crate::theme::install(&mut env, application.color_scheme()));
     let appearance = application.observe_color_scheme({
         let theme = Rc::clone(&theme);
@@ -207,11 +209,45 @@ pub(crate) fn environment(
     env
 }
 
+/// Renders `view` under `env` inside a never-ordered window, captures the
+/// presented subtree and writes its PNG — the one tail [`run`] runs and
+/// every capture the entry performs ends in.
+///
+/// Apple's bitmap context reads premultiplied RGBA8 — the convention the
+/// writer declares for the capture.
+///
+/// # Errors
+///
+/// Returns [`crate::capture::CaptureError`] when `AppKit` cannot mount,
+/// present or rasterize the view, and [`waterui_preview_protocol::run::PngError`]
+/// when the PNG cannot be encoded or written.
+#[expect(
+    clippy::future_not_send,
+    reason = "the capture runs on the main thread; the Retained AppKit objects it holds across the wait are not Send"
+)]
+pub(crate) async fn render_and_write(
+    env: &Environment,
+    mtm: MainThreadMarker,
+    view: impl FnOnce() -> waterui::AnyView,
+    size: cocoa_ui::Size,
+    output: &std::path::Path,
+) -> Result<(), PreviewError> {
+    let result = render(env, mtm, view, size).await?;
+    waterui_preview_protocol::run::write_png(
+        output,
+        result.width,
+        result.height,
+        result.rgba_data,
+        Alpha::Premultiplied,
+    )?;
+    Ok(())
+}
+
 /// Mounts `view` under `env` and captures the presented subtree.
 ///
-/// The view mounts on a root `HostView` inside a never-ordered window
-/// sized `size` — `run`'s render half, factored so the native-test
-/// harness drives the identical path.
+/// The view mounts on a root `HostView` inside the capture window —
+/// `cocoa_ui::bitmap::capture_window` builds the one never-ordered
+/// construction both capture paths share — sized `size`.
 ///
 /// # Errors
 ///
@@ -221,22 +257,18 @@ pub(crate) fn environment(
     clippy::future_not_send,
     reason = "the capture runs on the main thread; the Retained AppKit objects it holds across the wait are not Send"
 )]
-pub(crate) async fn render(
+async fn render(
     env: &Environment,
     mtm: MainThreadMarker,
     view: impl FnOnce() -> waterui::AnyView,
     size: cocoa_ui::Size,
 ) -> Result<waterui_core::view_renderer::RenderResult, crate::capture::CaptureError> {
-    let window = cocoa_ui::appkit::Window::new(
-        mtm,
-        cocoa_ui::Rect::new(0.0, 0.0, size.width, size.height),
-        cocoa_ui::appkit::WindowStyle::empty(),
-    );
+    let window = cocoa_ui::bitmap::capture_window(mtm, size);
     let root = cocoa_ui::appkit::HostView::new(
         mtm,
         cocoa_ui::Rect::new(0.0, 0.0, size.width, size.height),
     );
-    window.set_content_view(&root);
+    window.setContentView(Some(&*root));
     let mut keepalive = crate::contract::KeepAlive::default();
     let _content = crate::embedding::mount_content(&root, view(), env, &mut keepalive);
     crate::first_paint::mark(&root, env);

@@ -6,6 +6,12 @@
 
 extern crate alloc;
 
+/// The offscreen capture shared by `view_renderer` and the macOS
+/// `preview` entry — nothing else references it.
+#[cfg(any(
+    feature = "view_renderer",
+    all(target_os = "macos", feature = "preview")
+))]
 pub(crate) mod capture;
 pub mod contract;
 pub mod dispatch;
@@ -13,7 +19,7 @@ pub mod embedding;
 pub mod entry;
 mod native_layout;
 mod native_log;
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "preview"))]
 pub mod preview;
 pub mod resources;
 

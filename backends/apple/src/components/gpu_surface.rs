@@ -844,7 +844,11 @@ fn initialize_gpu(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
 /// The geometry and dynamic-range half of `initialize_gpu` — the part the
 /// capture drive shares. `scale` is the scale the presentation renders at:
 /// the window's backing scale on screen, the capture's off it.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the zero-bound guard keeps bounds positive, and a window's pixel size at its scale fits u32"
+)]
 fn prepare_presentation(
     state: &Rc<SurfaceState>,
     view: &Retained<SurfaceView>,
@@ -1522,8 +1526,12 @@ fn install_input(
 
 // MARK: - Capturable (WuiMetalViewCapture's surface half)
 
-/// The registered surface, for `ViewCapture`'s resolver and `view.ready()`.
-struct Capturable {
+/// The registered surface, for `ViewCapture`'s resolver, `view.ready()`
+/// and the capture drive's [`Presentation`].
+///
+/// `pub` so [`Presentation::accepted`] can name it; the type only escapes
+/// the crate through the module's `pub(crate)` visibility.
+pub struct Capturable {
     state: Rc<SurfaceState>,
     view: Retained<SurfaceView>,
 }
@@ -1838,7 +1846,10 @@ fn unregister_capturable(view: &cocoa_ui::PlatformView) {
 
 /// Waits until every mounted GPU surface inside `view`'s subtree has
 /// presented a frame — `WuiAnyView.ready()`.
-#[allow(clippy::future_not_send)]
+#[expect(
+    clippy::future_not_send,
+    reason = "the wait runs on the main thread; the Retained view it borrows is not Sync"
+)]
 pub async fn wait_for_first_frames(view: &cocoa_ui::PlatformView) {
     core::future::poll_fn(|cx| {
         let mut pending = false;
@@ -1863,13 +1874,91 @@ pub async fn wait_for_first_frames(view: &cocoa_ui::PlatformView) {
     .await;
 }
 
+/// The participation a capture drive records: the surfaces it accepted —
+/// exactly what [`wait_for_presented`] may cover — the ones it skipped,
+/// and the reasons any refused.
+///
+/// A zero-size surface is skipped outright: it has nothing to draw, so no
+/// frame is owed and no wait may cover it. Every other refusal is a
+/// `CaptureError` the caller reports rather than waiting on.
+#[cfg(target_os = "macos")]
+pub struct Presentation {
+    /// The surfaces that accepted the drive and owe the capture a frame.
+    ///
+    /// A device loss on the way parks the frame on the runtime's bounded
+    /// rebuild: the wait ends with the rebuilt context's frame, or with
+    /// the process when rebuilds give up.
+    pub accepted: Vec<Rc<Capturable>>,
+    /// Why a surface refused the drive — each is a `CaptureError` the
+    /// caller reports instead of waiting on.
+    pub refused: Vec<&'static str>,
+    /// The surfaces skipped for having nothing to draw.
+    pub empty: usize,
+}
+
+/// What `Capturable::present_for_capture` did with one surface — the
+/// answer [`Presentation`] folds into `accepted`, `empty` or `refused`.
+#[cfg(target_os = "macos")]
+enum CaptureDrive {
+    /// The surface took the drive: a frame is owed and the wait may cover
+    /// it — every deferral that frame can take is itself bounded.
+    Accepted,
+    /// Zero bounds — nothing to draw; skipped, never awaited.
+    Empty,
+    /// The surface refused — `reason` names why no frame is coming.
+    Refused(&'static str),
+}
+
 /// Drives every registered surface inside `view`'s subtree to present its
-/// first frame — the drive half of [`wait_for_first_frames`] under a window
+/// first frame — the drive half of [`wait_for_presented`] under a window
 /// that never orders in. `scale` is the capture's pixel scale.
-pub fn present_first_frames(view: &cocoa_ui::PlatformView, scale: f64) {
-    collect_unpresented(view, &mut |capturable| {
-        capturable.present_for_capture(scale);
+///
+/// The returned [`Presentation`] is the participation record: only
+/// `accepted` surfaces may be awaited — each owes the capture a frame —
+/// and `refused` surfaces are failures the caller reports rather than
+/// waiting on.
+#[cfg(target_os = "macos")]
+pub fn present_first_frames(view: &cocoa_ui::PlatformView, scale: f64) -> Presentation {
+    let mut presentation = Presentation {
+        accepted: Vec::new(),
+        refused: Vec::new(),
+        empty: 0,
+    };
+    collect_unpresented(view, &mut |capturable| match capturable.present_for_capture(scale) {
+        CaptureDrive::Accepted => presentation.accepted.push(Rc::clone(capturable)),
+        CaptureDrive::Empty => presentation.empty += 1,
+        CaptureDrive::Refused(reason) => presentation.refused.push(reason),
     });
+    presentation
+}
+
+/// Waits until every surface [`present_first_frames`] accepted has
+/// presented its first frame — the capture's wait, covering only the
+/// accepted set. Each accepted surface owes a frame whose every deferral
+/// — an in-flight replay, a parked device-loss rebuild — ends in a
+/// frame, or in the panic a rebuild gives up with: the wait always has
+/// an end condition.
+#[cfg(target_os = "macos")]
+#[expect(
+    clippy::future_not_send,
+    reason = "the wait runs on the main thread; the Rc surfaces it holds are not Send"
+)]
+pub async fn wait_for_presented(surfaces: &[Rc<Capturable>]) {
+    core::future::poll_fn(|cx| {
+        let mut pending = false;
+        for capturable in surfaces {
+            if !capturable.buffers_presented() {
+                capturable.register_waiter(cx.waker().clone());
+                pending = true;
+            }
+        }
+        if pending {
+            core::task::Poll::Pending
+        } else {
+            core::task::Poll::Ready(())
+        }
+    })
+    .await;
 }
 
 impl Capturable {
@@ -1878,11 +1967,23 @@ impl Capturable {
     /// capture is the only presentation a never-ordered window gets.
     /// `scale` is the capture's pixel scale — the caller's bitmap decides
     /// it, not the window.
-    fn present_for_capture(&self, scale: f64) {
+    #[cfg(target_os = "macos")]
+    fn present_for_capture(&self, scale: f64) -> CaptureDrive {
         if !prepare_presentation(&self.state, &self.view, scale) {
-            return;
+            // Zero bounds: there is nothing to draw and no frame is owed —
+            // the skip is explicit so the wait never covers it.
+            return CaptureDrive::Empty;
+        }
+        if self.state.failed.get() {
+            return CaptureDrive::Refused(
+                "the surface's renderer is failed under the live context generation",
+            );
         }
         attach_presentation(&self.state, &self.view);
+        if !self.state.attached.get() {
+            return CaptureDrive::Refused("no presentation ring is configured to drive");
+        }
+        CaptureDrive::Accepted
     }
 
     fn buffers_presented(&self) -> bool {
