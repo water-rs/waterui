@@ -3553,24 +3553,6 @@ mod winit_impl {
                 }));
         }
 
-        /// Asks the platform's compositor to blur what lies behind the
-        /// window, or stops asking — the platform sublayer under the
-        /// self-drawn content, whose own tint already supplies the level's
-        /// colour above it.
-        #[cfg(any(
-            target_os = "macos",
-            target_os = "windows",
-            hydrolysis_wayland_platform
-        ))]
-        fn apply_blur_behind(&mut self, blur: bool) {
-            #[cfg(target_os = "macos")]
-            self.macos_apply_blur_behind(blur);
-            #[cfg(target_os = "windows")]
-            windows_apply_blur_behind(&self.window, blur);
-            #[cfg(hydrolysis_wayland_platform)]
-            self.linux_apply_blur_behind(blur);
-        }
-
         /// The `AppKit` half of `set_blur_behind`: while the window asks, an
         /// `NSVisualEffectView` blending behind the window sits in the
         /// content view's superview directly beneath the view hosting the
@@ -4784,7 +4766,11 @@ mod winit_impl {
 
         /// Keeps the compositor's blur-behind request in step with the
         /// resolved background: nothing is pushed while the answer is the
-        /// same, so the per-frame application stays free.
+        /// same, so the per-frame application stays free. A change asks the
+        /// platform's compositor to blur what lies behind the window, or
+        /// stops asking — the platform sublayer under the self-drawn
+        /// content, whose own tint already supplies the level's colour above
+        /// it.
         #[cfg(any(
             target_os = "macos",
             target_os = "windows",
@@ -4794,7 +4780,12 @@ mod winit_impl {
             if self.blur_behind == blur {
                 return;
             }
-            self.apply_blur_behind(blur);
+            #[cfg(target_os = "macos")]
+            self.macos_apply_blur_behind(blur);
+            #[cfg(target_os = "windows")]
+            windows_apply_blur_behind(&self.window, blur);
+            #[cfg(hydrolysis_wayland_platform)]
+            self.linux_apply_blur_behind(blur);
             self.blur_behind = blur;
         }
     }
