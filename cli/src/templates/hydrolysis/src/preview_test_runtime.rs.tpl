@@ -27,8 +27,11 @@ fn run_semantic(width: f32, height: f32) {
     // the styled mount applies the preview style's tokens exactly as `main`'s
     // `hydrolysis::run` style does — component bodies that read Material
     // tokens resolve them.
+    let mut env = preview_test::app_environment();
+    // The CLI staged the graph's declared fonts into the resource directory.
+    env.insert(hydrolysis::DeclaredFonts::default());
     let mut app = ui()
-        .environment(preview_test::app_environment())
+        .environment(env)
         .theme(preview_test::preview_style())
         .viewport(dimension_to_u32(width), dimension_to_u32(height))
         .mount(preview_test::load_preview_view);

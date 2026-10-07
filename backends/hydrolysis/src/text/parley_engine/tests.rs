@@ -142,8 +142,8 @@ fn glyph_bounds_fast_path_agrees_with_drawn_outline() {
     // family name — the same lookup the strict family-resolution gate makes.
     let mut font_cx = parley::FontContext::new();
     let family = font_cx.collection.family_by_name("Pacifico").expect(
-        "font family `Pacifico` is not installed; install the style package's fonts \
-         with its font install script",
+        "font family `Pacifico` is not installed; install the test fonts with \
+         `uv run backends/hydrolysis/test-fonts/install.py`",
     );
     let face = family
         .fonts()

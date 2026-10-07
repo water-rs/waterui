@@ -564,9 +564,9 @@ fn push_text_style(
 /// The [`FontFamilyResolution::Strict`] gate on one CSS `font-family` list:
 /// every *named* entry must resolve in the collection — generic families
 /// always resolve, so they are skipped, as is the generic fallback a missing
-/// family list defaults to. A named family the host does not carry means the
-/// style package's fonts were never installed; panic naming it rather than
-/// measuring a substitute face.
+/// family list defaults to. A named family that is neither installed on the
+/// host nor provided by a declared font file is a missing declaration;
+/// panic naming it rather than measuring a substitute face.
 fn assert_family_list_installed(
     collection: &mut parley::fontique::Collection,
     family: Option<&str>,
@@ -582,8 +582,10 @@ fn assert_family_list_installed(
             && collection.family_by_name(&name).is_none()
         {
             panic!(
-                "font family `{name}` is not installed; install the style package's \
-                 fonts with its font install script"
+                "font family `{name}` is neither installed on this host nor provided by a \
+                 declared font file; declare it with `local_path` under \
+                 `[[package.metadata.waterui.assets.font]]` in the crate that names it (fonts \
+                 declared by registry name or `remote_path` are staged only by the `water` CLI)"
             );
         }
     }
