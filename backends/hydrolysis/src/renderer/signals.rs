@@ -157,18 +157,19 @@ pub(super) struct LayoutDependencies {
     /// `BuiltSubview` reads it once per flush: `true` forces its layout pass
     /// to re-run, so the next flush's `begin_pass` clears it.
     dirty: Rc<Cell<bool>>,
-    /// Refresh requester the dependency subscriptions' update callbacks use.
-    signals: FrameSignals,
+    /// The sub-view's own cell — the node a dependency's update marks for
+    /// re-layout (the `Layout::watch_invalidation` row of §B.1).
+    cell: Weak<NodeCell>,
 }
 
 impl LayoutDependencies {
     /// An empty set for a sub-view whose layout has not run yet.
-    pub(super) fn new(signals: FrameSignals) -> Self {
+    pub(super) fn new(cell: Weak<NodeCell>) -> Self {
         Self {
             identities: SignalWatchRegistry::default(),
             anonymous: Vec::new(),
             dirty: Rc::new(Cell::new(false)),
-            signals,
+            cell,
         }
     }
 
@@ -213,20 +214,22 @@ impl LayoutDependencies {
         }
     }
 
-    /// One subscription marking the set dirty on an update. A refresh is
-    /// requested only on the dirty edge — the owning `BuiltSubview` folds the
-    /// flag into `needs_layout` on that frame, so a busy signal read by a
-    /// sub-view whose layout stays cached (hidden off-screen, or yet to
-    /// settle) requests one frame, not one per write.
+    /// One subscription marking the set dirty on an update. The owning cell
+    /// is marked for re-layout only on the dirty edge — the owning
+    /// `BuiltSubview` folds the flag into `needs_layout` on that frame, so a
+    /// busy signal read by a sub-view whose layout stays cached (hidden
+    /// off-screen, or yet to settle) requests one frame, not one per write.
     fn subscribe<S>(&self, signal: &S) -> Retain
     where
         S: Signal + Clone + 'static,
     {
         let dirty = Rc::clone(&self.dirty);
-        let signals = self.signals.clone();
+        let cell = self.cell.clone();
         subscribe_signal(signal, move |_| {
-            if !dirty.replace(true) {
-                signals.request_refresh();
+            if !dirty.replace(true)
+                && let Some(cell) = cell.upgrade()
+            {
+                cell.mark_layout();
             }
         })
     }

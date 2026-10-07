@@ -599,7 +599,7 @@ impl RenderNode {
                     viewport: Size::zero(),
                     non_scrolling_minimum: Cell::new(None),
                     env: env.clone(),
-                    surface: safe_area::ScrollSurfaceArea::default(),
+                    surface: std::rc::Rc::default(),
                 }));
             }
             Err(view) => view,
@@ -1127,8 +1127,8 @@ impl RenderNode {
 
     /// Build a `GpuContentView` node owning its [`GpuContentRuntime`] — the
     /// view keeps its UI-side hooks (input, frame pump, ime caret, a11y); the
-    /// producer inside is taken exactly once, when the node's first
-    /// `GpuContentLayer` installs it on the window's engine.
+    /// producer inside is taken exactly once, when the node's install layer
+    /// first commits it on the window's engine.
     fn build_gpu_content(view: GpuContentView, renderer: &SemanticCore) -> Self {
         Self::GpuContent(Box::new(GpuContentNode {
             accessibility_identity: Rc::new(()),

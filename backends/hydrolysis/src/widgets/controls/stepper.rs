@@ -228,8 +228,12 @@ pub fn render_stepper_parts(
     if label_bounds.width() > 0.0 {
         // A disabled control dims its label to the theme's disabled-content
         // alpha (Material: on-surface at 38% for default-colored labels).
-        ctx.with_clip_rect_scope_if(
+        ctx.with_scope_if(
             disabled,
+            crate::renderer::mount::ScopeKey {
+                role: "label-dim",
+                item: 0,
+            },
             theme.disabled_content_alpha(),
             label_bounds,
             |ctx| {
@@ -238,7 +242,7 @@ pub fn render_stepper_parts(
                 let label_view = &mut state.label_view;
                 ctx.renderer_mut()
                     .with_suppressed_accessibility(|renderer| {
-                        label_view.flush_in_rect(
+                        label_view.place(
                             renderer,
                             render_ctx,
                             env,
@@ -274,8 +278,12 @@ pub fn render_stepper_parts(
         .bind_control_interaction_target(plus_interaction_key, plus_hit_bounds, env, disabled);
     let minus_interaction = local_interaction_state(minus_interaction, hit_transform);
     let plus_interaction = local_interaction_state(plus_interaction, hit_transform);
-    ctx.with_clip_rect_scope_if(
+    ctx.with_scope_if(
         disabled,
+        crate::renderer::mount::ScopeKey {
+            role: "controls-dim",
+            item: 0,
+        },
         theme.disabled_content_alpha(),
         controls_bounds,
         |ctx| {

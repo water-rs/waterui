@@ -105,13 +105,12 @@ pub fn window_root_layout(
 /// composition of the content-rect origin the paint transform folds in.
 fn safe_area_context(
     content: kurbo::Rect,
-    transform: kurbo::Affine,
     hit_transform: kurbo::Affine,
 ) -> (RenderContext, kurbo::Affine) {
     let shift = kurbo::Affine::translate((content.x0, content.y0));
     (
         RenderContext {
-            local: transform * shift,
+            local: shift,
             bounds: kurbo::Rect::new(0.0, 0.0, content.width(), content.height()),
         },
         hit_transform * shift,
@@ -496,21 +495,22 @@ impl HydrolysisRenderer {
         // floats over; drawing it only on the one-time build path would
         // leave it visible for a single frame.
         let host = self.core.presentation_hosts.text_overlay.clone();
-        self.with_reader(&host, ReaderPhase::Record, |renderer| {
+        self.record_host(&host, |renderer| {
             renderer.render_active_text_context_menu_overlay(env, transform);
+            renderer.prepare_transient_text_input_overlay(env, transform);
         });
         // Same for an open `.context_menu` presentation: its dim backdrop,
         // lifted preview and anchored accessory re-encode per frame and the
         // pass is where dismiss_requests/menu-close is observed.
         let host = self.core.presentation_hosts.context_menu.clone();
-        self.with_reader(&host, ReaderPhase::Record, |renderer| {
+        self.record_host(&host, |renderer| {
             renderer.render_context_menu_presentation(transform, safe_area);
         });
         // Anchored overlays (`.anchored_overlay`) draw above all content:
         // the flush registered each anchor's live bounds, so the placement
         // contract re-runs per frame and the overlay follows moves/resizes.
         let host = self.core.presentation_hosts.anchored.clone();
-        self.with_reader(&host, ReaderPhase::Record, |renderer| {
+        self.record_host(&host, |renderer| {
             renderer.render_anchored_overlays(transform, safe_area);
         });
     }
@@ -559,7 +559,7 @@ impl HydrolysisRenderer {
         #[cfg(feature = "frame-profile")]
         let update_started_at = Instant::now();
         self.set_window_viewport(bounds, transform);
-        let (ctx, hit_delta) = safe_area_context(content_rect, transform, hit_transform);
+        let (ctx, hit_delta) = safe_area_context(content_rect, hit_transform);
         // The tree is built once and persists. A later "rebuild" request reuses
         // it — applying pending Dynamic patches, relaying out, and re-flushing —
         // rather than rebuilding (which would re-connect each `Dynamic`, and a
@@ -589,10 +589,10 @@ impl HydrolysisRenderer {
             // Window-level registrations — payloads emitted with no
             // enclosing node — record under the root's own record.
             let root = self.core.root_core.clone();
-            self.with_reader(&root, ReaderPhase::Record, |renderer| {
+            self.record_host(&root, |renderer| {
                 tree.flush(renderer, ctx, env, hit_delta);
             });
-            self.record_presentation_hosts(env, transform, &safe_area);
+            self.record_presentation_hosts(env, kurbo::Affine::IDENTITY, &safe_area);
             self.core.finish_emit_pass();
             #[cfg(feature = "frame-profile")]
             {
@@ -626,10 +626,10 @@ impl HydrolysisRenderer {
         let encode_started_at = Instant::now();
         self.core.begin_emit_pass();
         let root = self.core.root_core.clone();
-        self.with_reader(&root, ReaderPhase::Record, |renderer| {
+        self.record_host(&root, |renderer| {
             node.flush(renderer, ctx, env, hit_delta);
         });
-        self.record_presentation_hosts(env, transform, &safe_area);
+        self.record_presentation_hosts(env, kurbo::Affine::IDENTITY, &safe_area);
         self.core.finish_emit_pass();
         #[cfg(feature = "frame-profile")]
         {
@@ -707,17 +707,16 @@ impl HydrolysisRenderer {
         let encode_span = tracing::debug_span!("hydrolysis_scene_encode").entered();
         #[cfg(feature = "frame-profile")]
         let encode_started_at = Instant::now();
-        let (ctx, hit_delta) = safe_area_context(content_rect, transform, hit_transform);
+        let (ctx, hit_delta) = safe_area_context(content_rect, hit_transform);
         self.core.begin_emit_pass();
         // Window-level registrations — payloads emitted with no
         // enclosing node — record under the root's own record.
         let root = self.core.root_core.clone();
-        self.with_reader(&root, ReaderPhase::Record, |renderer| {
+        self.record_host(&root, |renderer| {
             tree.flush(renderer, ctx, env, hit_delta);
         });
-        self.record_presentation_hosts(env, transform, &safe_area);
+        self.record_presentation_hosts(env, kurbo::Affine::IDENTITY, &safe_area);
         self.core.finish_emit_pass();
-        self.flush_scene_layer();
         drop(encode_span);
         #[cfg(feature = "frame-profile")]
         {
@@ -745,6 +744,7 @@ impl HydrolysisRenderer {
         // accessibility tree.
         self.validate_focused_text_input_after_flush();
         self.relocate_dropped_focus();
+        self.clear_focused_fields();
         #[cfg(feature = "accessibility")]
         self.finalize_accessibility_tree_update();
         self.render_tree = Some(tree);

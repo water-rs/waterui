@@ -205,7 +205,7 @@ pub fn render_gradient_parts(
     let paint = transform_paint(gradient.borrow().paint().clone(), Some(unit));
     let transform = ctx.local;
     ctx.renderer_mut()
-        .scene
+        .scene_mut()
         .fill_paint(peniko::Fill::NonZero, transform, paint, &bounds);
 }
 
@@ -253,7 +253,7 @@ pub fn render_shape_parts(
     let fill = waterui_graphics::draw::Paint::Solid(ctx.renderer_mut().read_signal(&fill_signal));
     let transform = ctx.local;
     ctx.renderer_mut()
-        .scene
+        .scene_mut()
         .fill_paint(peniko::Fill::NonZero, transform, fill, &path);
 }
 
@@ -314,7 +314,7 @@ pub fn render_morph_shape_parts(
         )
     };
     renderer
-        .scene
+        .scene_mut()
         .fill_paint(peniko::Fill::NonZero, transform, fill, &path);
 }
 
@@ -408,7 +408,7 @@ pub fn render_str_parts(
 ) {
     let styled = StyledStr::plain(text.borrow().clone());
     let render_ctx = ctx.render_context();
-    let (state, scene) = ctx.renderer_mut().state_and_scene_mut();
+    let (state, scene) = ctx.renderer_mut().state_and_run_mut();
     HydrolysisRenderer::render_styled_text(
         state,
         scene,

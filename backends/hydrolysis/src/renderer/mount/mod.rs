@@ -6,17 +6,27 @@
 //! [`cell`](self::cell) — the node cells, [`Dirty`] marks and [`NodeCore`]
 //! embedding; [`placement`](self::placement) — the placement mirror that
 //! hit testing and GPU pixel coverage resolve instead of accumulated
-//! context transforms. The layer set (`layers.rs`), recording target
-//! (`program.rs`), generic target seam (`target.rs`) and retained
-//! registries (`registry.rs`) land in the commits that introduce them.
+//! context transforms; [`program`](self::program) — the per-node record;
+//! [`layers`](self::layers) — the retained layer set and the one
+//! [`Mount`] a window commits through; [`target`](self::target) — the
+//! target seam; [`registry`](self::registry) — the retained registries;
+//! `animated` — animated-scalar and morph-progress sampling.
 
+mod animated;
 pub mod cell;
+pub mod layers;
 pub mod placement;
+pub mod program;
 pub mod registry;
 pub mod scopes;
+pub mod target;
 
 pub use cell::{Dirty, NodeCell, NodeCore};
+pub use layers::{Mount, MountStats};
 pub use placement::{HitClasses, HitGate, Placement, PlacementClock, ScopeDelta};
+pub use program::{
+    MaterialRequest, ProducerContent, ProgramBuilder, SceneContentSource, ScopeKey, ScopeProps,
+};
 #[cfg(feature = "accessibility")]
 pub use registry::Region;
 pub use registry::{
@@ -24,6 +34,7 @@ pub use registry::{
     RetainedRegistry, SetRegistrationOwner,
 };
 pub use scopes::RetainedScopes;
+pub use target::CherenkovHost;
 
 /// Identity of a producer owner: a counter the renderer hands out through
 /// `producer_wake` — never a pointer, so a dropped cell's address cannot

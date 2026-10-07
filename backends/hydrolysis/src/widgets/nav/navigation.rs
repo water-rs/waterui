@@ -5,8 +5,8 @@ use crate::renderer::ROOT_NAVIGATION_IDENTITY;
 use crate::renderer::SafeAreaLayout;
 use crate::renderer::bounded_proposal;
 use crate::renderer::{
-    CapturedScenePlacement, Edge, HydroNativeView, HydroState, HydrolysisRenderer, RenderContext,
-    RetainedSubview, WidgetRenderContext, measure_navigation_view_intrinsic,
+    Edge, HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
+    WidgetRenderContext, measure_navigation_view_intrinsic,
     measure_owned_navigation_view_with_proposal, measure_transient_view_with_proposal,
     navigation_back_button_rect, navigation_base_bar_height_for_display_mode,
     normalize_layout_view, split_compact_threshold,
@@ -708,7 +708,7 @@ pub fn render_navigation_view_parts(
                 let render_ctx = ctx.render_context();
                 let field_area = ctx.safe_area_for(search_rect);
                 if let Some(field) = state.borrow_mut().search_field.as_mut() {
-                    field.flush_in_rect(
+                    field.place(
                         ctx.renderer_mut(),
                         render_ctx,
                         env,
@@ -734,7 +734,7 @@ pub fn render_navigation_view_parts(
         // and clears on the edges the bars leave reachable, and an
         // `.ignore_safe_area` inside still releases there.
         let content_area = ctx.content_area_for(content_rect);
-        state.borrow_mut().content.flush_in_rect(
+        state.borrow_mut().content.place(
             ctx.renderer_mut(),
             render_ctx,
             env,
@@ -835,7 +835,7 @@ fn flush_toolbar_group(
         if rect.width() > 0.0 && rect.height() > 0.0 {
             let render_ctx = ctx.render_context();
             let item_area = ctx.safe_area_for(rect);
-            item.flush_in_rect(
+            item.place(
                 ctx.renderer_mut(),
                 render_ctx,
                 env,
@@ -883,7 +883,7 @@ fn flush_title_and_subtitle(
     if title_rect.height() > 0.0 {
         let render_ctx = ctx.render_context();
         let title_area = ctx.safe_area_for(title_rect);
-        state.title.flush_in_rect(
+        state.title.place(
             ctx.renderer_mut(),
             render_ctx,
             env,
@@ -895,7 +895,7 @@ fn flush_title_and_subtitle(
     if state.subtitle_present && subtitle_rect.height() > 0.0 {
         let render_ctx = ctx.render_context();
         let subtitle_area = ctx.safe_area_for(subtitle_rect);
-        state.subtitle.flush_in_rect(
+        state.subtitle.place(
             ctx.renderer_mut(),
             render_ctx,
             env,
@@ -1454,7 +1454,7 @@ pub fn render_navigation_split_parts(
         // A split column is chrome-hosted content, like navigation content:
         // it inherits the widget's boundaries edge by edge.
         let primary_area = ctx.content_area_for(primary_rect);
-        state.borrow_mut().primary.flush_in_rect(
+        state.borrow_mut().primary.place(
             ctx.renderer_mut(),
             render_ctx,
             env,
@@ -1511,7 +1511,7 @@ fn render_compact_split(
         } else {
             let render_ctx = ctx.render_context();
             let pane_area = ctx.content_area_for(bounds);
-            state.borrow_mut().primary.flush_in_rect(
+            state.borrow_mut().primary.place(
                 ctx.renderer_mut(),
                 render_ctx,
                 env,
@@ -1526,7 +1526,7 @@ fn render_compact_split(
     } else {
         let render_ctx = ctx.render_context();
         let pane_area = ctx.content_area_for(bounds);
-        state.borrow_mut().primary.flush_in_rect(
+        state.borrow_mut().primary.place(
             ctx.renderer_mut(),
             render_ctx,
             env,
@@ -1570,7 +1570,7 @@ fn render_split_content(
             .as_mut()
             .expect("selected split content must be retained")
             .2
-            .flush_in_rect(
+            .place(
                 ctx.renderer_mut(),
                 render_ctx,
                 env,
@@ -1581,7 +1581,7 @@ fn render_split_content(
     } else {
         let render_ctx = ctx.render_context();
         let pane_area = ctx.content_area_for(bounds);
-        state.borrow_mut().placeholder.flush_in_rect(
+        state.borrow_mut().placeholder.place(
             ctx.renderer_mut(),
             render_ctx,
             env,
@@ -1610,7 +1610,7 @@ fn render_split_detail(
             .as_mut()
             .expect("selected split detail must be retained")
             .2
-            .flush_in_rect(
+            .place(
                 ctx.renderer_mut(),
                 render_ctx,
                 env,
@@ -1621,7 +1621,7 @@ fn render_split_detail(
     } else {
         let render_ctx = ctx.render_context();
         let pane_area = ctx.content_area_for(bounds);
-        state.borrow_mut().placeholder.flush_in_rect(
+        state.borrow_mut().placeholder.place(
             ctx.renderer_mut(),
             render_ctx,
             env,
@@ -1696,47 +1696,80 @@ fn navigation_entry_identity(
         .identity
 }
 
+/// How the stack presents one page this frame.
+struct PagePresentation {
+    /// The page scope's layer transform in the stack's record space.
+    layer: kurbo::Affine,
+    alpha: f32,
+    clip: Option<kurbo::Rect>,
+    /// The space `clip` is given in.
+    clip_space: kurbo::Affine,
+    /// Whether the page takes input: only the active page does.
+    hit: bool,
+    /// The matched elements a transition lists outside this page.
+    matched: Vec<(bool, Id)>,
+}
+
+/// Records one page into its `("page", identity)` scope: its background,
+/// the page's retained root, and the back chevron on top of a pushed page.
 #[expect(
     clippy::too_many_arguments,
-    reason = "the call carries the page render's inputs; the safe-area context is the §7.1 addition that tips the count"
+    reason = "the call carries the page record's inputs; the safe-area context is the §7.1 addition that tips the count"
 )]
-fn render_navigation_page_scene(
+fn record_navigation_page(
     renderer: &mut HydrolysisRenderer,
     state: &Rc<RefCell<NavigationStackRenderState>>,
     slot_key: &crate::renderer::NavigationKey,
     identity: u64,
     env: &Environment,
-    placement: CapturedScenePlacement,
-    inactive: bool,
+    size: LayoutSize,
     safe_area: Option<SafeAreaLayout>,
-) -> crate::renderer::navigation_state::NavigationCapturedScene {
-    let size = placement.size;
+    presented: PagePresentation,
+) -> crate::renderer::navigation_state::NavigationRecordedPage {
+    let bounds = kurbo::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height));
     let background = state.borrow().background();
-    let mut captured = if identity == 0 {
-        let mut state = state.borrow_mut();
-        if inactive {
-            state
-                .root_mut()
-                .render_built_navigation_scene_inactive(renderer, env, placement, safe_area)
-        } else {
-            state
-                .root_mut()
-                .render_built_scene(renderer, env, placement, safe_area)
-        }
+    let background = Paint::Solid(renderer.read_signal(&background));
+    let clip = presented.clip.map(crate::renderer::ScopeClip::Rect);
+    renderer.open_scope_with(
+        crate::renderer::mount::ScopeKey {
+            role: "page",
+            item: identity,
+        },
+        presented.layer,
+        presented.alpha,
+        clip.as_ref(),
+        presented.clip_space,
+        crate::renderer::mount::ScopeDelta::RECORD_SPACE,
+        presented.hit,
+    );
+    #[cfg(feature = "accessibility")]
+    if !presented.hit {
+        renderer.push_accessibility_suppression();
+    }
+    renderer.begin_navigation_page(presented.matched);
+    let origin = renderer.program().origin();
+    renderer
+        .scene_mut()
+        .fill_paint(peniko::Fill::NonZero, origin, background, &bounds);
+    if identity == 0 {
+        state
+            .borrow_mut()
+            .root_mut()
+            .record_built_page(renderer, env, size, safe_area);
     } else {
         let (entries, pending_removed) = {
             let slot = renderer
                 .navigation
                 .slots
                 .get(slot_key)
-                .expect("Hydrolysis navigation slot missing during page scene render");
+                .expect("Hydrolysis navigation slot missing during page record");
             (Rc::clone(&slot.entries), Rc::clone(&slot.pending_removed))
         };
         let mut entries = entries.borrow_mut();
         let mut pending_removed = pending_removed.borrow_mut();
         // A pop's departing entry has already moved to `pending_removed`; it
         // stays retained there until the transaction completes, so it is
-        // still a valid render source.
+        // still a valid page.
         let entry = entries
             .iter_mut()
             .chain(pending_removed.iter_mut())
@@ -1744,45 +1777,299 @@ fn render_navigation_page_scene(
             .unwrap_or_else(|| {
                 panic!("Hydrolysis navigation entry identity {identity} is not retained")
             });
-        if inactive {
-            entry
-                .content
-                .render_built_navigation_scene_inactive(renderer, env, placement, safe_area)
-        } else {
-            entry
-                .content
-                .render_built_scene(renderer, env, placement, safe_area)
-        }
+        entry
+            .content
+            .record_built_page(renderer, env, size, safe_area);
+        let context = RenderContext {
+            local: origin,
+            bounds,
+        };
+        let theme = renderer.theme();
+        renderer.draw_context(context, |draw| {
+            theme.draw_navigation_back_button(
+                draw,
+                navigation_back_button_rect(bounds, theme.navigation_metrics()),
+            );
+        });
+    }
+    let page = renderer.finish_navigation_page();
+    #[cfg(feature = "accessibility")]
+    if !presented.hit {
+        renderer.pop_accessibility_suppression();
+    }
+    renderer.close_scope();
+    page
+}
+
+/// The stack inputs every page record of one frame shares.
+struct PageRecorder<'a> {
+    state: &'a Rc<RefCell<NavigationStackRenderState>>,
+    slot_key: &'a crate::renderer::NavigationKey,
+    size: LayoutSize,
+}
+
+impl PageRecorder<'_> {
+    fn record(
+        &self,
+        renderer: &mut HydrolysisRenderer,
+        identity: u64,
+        env: &Environment,
+        safe_area: Option<SafeAreaLayout>,
+        presented: PagePresentation,
+    ) -> crate::renderer::navigation_state::NavigationRecordedPage {
+        record_navigation_page(
+            renderer,
+            self.state,
+            self.slot_key,
+            identity,
+            env,
+            self.size,
+            safe_area,
+            presented,
+        )
+    }
+}
+
+/// One matched-geometry transition frame.
+struct MatchedFrame {
+    id: Id,
+    direction: NavigationTransitionDirection,
+    progress: f64,
+    /// The stack's record space.
+    transform: kurbo::Affine,
+    paint_bounds: kurbo::Rect,
+    active_identity: u64,
+}
+
+/// Presents a matched-geometry frame: both pages fade in their page scopes
+/// and the element travels between them in its `matched-from`/`matched-to`
+/// scopes.
+fn present_matched_transition(
+    renderer: &mut HydrolysisRenderer,
+    pages: &PageRecorder<'_>,
+    page_area: Option<SafeAreaLayout>,
+    [(from_identity, from_env), (to_identity, to_env)]: [(u64, &Environment); 2],
+    MatchedFrame {
+        id,
+        direction,
+        progress,
+        transform,
+        paint_bounds,
+        active_identity,
+    }: MatchedFrame,
+) {
+    use crate::renderer::interpolate_rect;
+    let (from_source, to_source) = match direction {
+        NavigationTransitionDirection::Push => (true, false),
+        NavigationTransitionDirection::Pop => (false, true),
     };
-    let bounds = kurbo::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height));
-    let background = Paint::Solid(renderer.read_signal(&background));
-    let page_layers = core::mem::take(&mut captured.layers);
-    // The page as the stack presents it: its background, the page's own
-    // layers above it, and the back chevron on top of a pushed page.
-    captured.layers = renderer.capture_layers(|renderer| {
-        renderer.scene_mut().fill_paint(
-            peniko::Fill::NonZero,
-            kurbo::Affine::IDENTITY,
-            background,
-            &bounds,
-        );
-        renderer.present_layers(&page_layers, kurbo::Affine::IDENTITY);
-        if identity != 0 {
-            let context = RenderContext {
-                local: kurbo::Affine::IDENTITY,
-                bounds,
-            };
-            let theme = renderer.theme();
-            renderer.draw_context(context, |draw| {
-                theme.draw_navigation_back_button(
-                    draw,
-                    navigation_back_button_rect(bounds, theme.navigation_metrics()),
-                );
-            });
-        }
+    let incoming = crate::num_cast::f64_as_f32(progress);
+    let fade = |alpha: f32, identity: u64, source: bool| PagePresentation {
+        layer: transform,
+        alpha,
+        clip: Some(paint_bounds),
+        clip_space: transform,
+        hit: identity == active_identity,
+        matched: vec![(source, id)],
+    };
+    let from_page = pages.record(
+        renderer,
+        from_identity,
+        from_env,
+        page_area.clone(),
+        fade(1.0 - incoming, from_identity, from_source),
+    );
+    let to_page = pages.record(
+        renderer,
+        to_identity,
+        to_env,
+        page_area,
+        fade(incoming, to_identity, to_source),
+    );
+    let from_element = from_page.element(from_source, id).unwrap_or_else(|| {
+        panic!("navigation zoom source {id:?} is not present in the outgoing page")
     });
-    captured.leading_reserve = navigation_leading_reserve(env);
-    captured
+    let to_element = to_page.element(to_source, id).unwrap_or_else(|| {
+        panic!("navigation zoom destination {id:?} is not present in the incoming page")
+    });
+    assert!(
+        from_element.bounds.width() > 0.0
+            && from_element.bounds.height() > 0.0
+            && to_element.bounds.width() > 0.0
+            && to_element.bounds.height() > 0.0,
+        "navigation zoom geometry must have a positive size"
+    );
+    let target = interpolate_rect(from_element.bounds, to_element.bounds, progress);
+    let item = matched_scope_item(id);
+    present_matched_element(
+        renderer,
+        crate::renderer::mount::ScopeKey {
+            role: "matched-from",
+            item,
+        },
+        transform,
+        from_element,
+        target,
+        1.0 - incoming,
+    );
+    present_matched_element(
+        renderer,
+        crate::renderer::mount::ScopeKey {
+            role: "matched-to",
+            item,
+        },
+        transform,
+        to_element,
+        target,
+        incoming,
+    );
+}
+
+/// Lists a matched element in its own scope (§D.2): the element keeps its
+/// structural placement for hit testing while its paint parent moves to the
+/// scope, which flies it from its page frame onto `target`.
+fn present_matched_element(
+    renderer: &mut HydrolysisRenderer,
+    key: crate::renderer::mount::ScopeKey,
+    transform: kurbo::Affine,
+    element: &crate::renderer::navigation_state::NavigationMatchedElement,
+    target: kurbo::Rect,
+    alpha: f32,
+) {
+    let local = crate::renderer::matched_element_transform(element.bounds, target);
+    renderer.open_scope_with(
+        key,
+        transform * local * element.to_page * element.frame.inverse(),
+        alpha,
+        Some(&crate::renderer::ScopeClip::Rect(target)),
+        transform,
+        crate::renderer::mount::ScopeDelta::RECORD_SPACE,
+        false,
+    );
+    let placement = renderer.current_placement();
+    element
+        .cell
+        .placement()
+        .set_paint_parent(Some(Rc::clone(&placement)));
+    *element.cell.retained().anchor.borrow_mut() = Some(placement);
+    renderer.program().push_node(Rc::clone(&element.cell));
+    renderer.close_scope();
+}
+
+fn matched_scope_item(id: Id) -> u64 {
+    use core::hash::{Hash, Hasher};
+    let mut hasher = rustc_hash::FxHasher::default();
+    id.hash(&mut hasher);
+    hasher.finish()
+}
+
+type NavigationPresentationFrame = (
+    AnyNavigationTransition,
+    NavigationTransitionDirection,
+    f64,
+    crate::renderer::navigation_state::NavigationPage,
+    crate::renderer::navigation_state::NavigationPage,
+);
+
+/// Records the pages the stack shows this frame, each in its page scope:
+/// the active page alone, or a transition's two pages under their layers.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the call carries the stack's per-frame presentation inputs"
+)]
+fn present_navigation_pages(
+    ctx: &mut WidgetRenderContext<'_>,
+    state: &Rc<RefCell<NavigationStackRenderState>>,
+    slot_key: &crate::renderer::NavigationKey,
+    stack_env: &Environment,
+    active_identity: u64,
+    size: LayoutSize,
+    page_area: Option<SafeAreaLayout>,
+    motion: waterui_backend_core::widget::NavigationMotion,
+    presentation: Option<NavigationPresentationFrame>,
+) {
+    use crate::renderer::{
+        NavigationPresentation, navigation_presentation, transition_layer_transform,
+    };
+    let transform = ctx.local;
+    let bounds = ctx.bounds;
+    // The transition's page clips and the stack's backdrop fill cover the
+    // same reach — `chrome_paint_bounds` — so an extended bar surface is
+    // never clipped mid-animation. `bounds` stays the scale-centre reference.
+    let paint_bounds = ctx.chrome_paint_bounds();
+    let theme = ctx.theme();
+    let renderer = ctx.renderer_mut();
+    let Some((style, direction, progress, from, to)) = presentation else {
+        let env = presented_page_env(stack_env, active_identity, &theme);
+        record_navigation_page(
+            renderer,
+            state,
+            slot_key,
+            active_identity,
+            &env,
+            size,
+            page_area,
+            PagePresentation {
+                layer: transform,
+                alpha: 1.0,
+                clip: None,
+                clip_space: transform,
+                hit: true,
+                matched: Vec::new(),
+            },
+        );
+        return;
+    };
+    let from_env = presented_page_env(stack_env, from.identity, &theme);
+    let to_env = presented_page_env(stack_env, to.identity, &theme);
+    match navigation_presentation(&style, motion, direction, progress, paint_bounds.width()) {
+        NavigationPresentation::Matched(id) => present_matched_transition(
+            renderer,
+            &PageRecorder {
+                state,
+                slot_key,
+                size,
+            },
+            page_area,
+            [(from.identity, &from_env), (to.identity, &to_env)],
+            MatchedFrame {
+                id,
+                direction,
+                progress,
+                transform,
+                paint_bounds,
+                active_identity,
+            },
+        ),
+        NavigationPresentation::Layers(resolved) => {
+            let outgoing = (&from, &from_env, resolved.outgoing);
+            let incoming = (&to, &to_env, resolved.incoming);
+            let order = match direction {
+                NavigationTransitionDirection::Push => [outgoing, incoming],
+                NavigationTransitionDirection::Pop => [incoming, outgoing],
+            };
+            for (page, env, layer) in order {
+                let local = transition_layer_transform(bounds, paint_bounds, layer);
+                record_navigation_page(
+                    renderer,
+                    state,
+                    slot_key,
+                    page.identity,
+                    env,
+                    size,
+                    page_area.clone(),
+                    PagePresentation {
+                        layer: transform * local,
+                        alpha: layer.opacity,
+                        clip: Some(local.transform_rect_bbox(paint_bounds)),
+                        clip_space: transform,
+                        hit: page.identity == active_identity,
+                        matched: Vec::new(),
+                    },
+                );
+            }
+        }
+    }
 }
 
 impl HydroNativeView for Native<NavigationStack<(), ()>> {
@@ -1923,10 +2210,6 @@ pub fn render_navigation_stack_node(
 }
 
 #[expect(
-    clippy::float_cmp,
-    reason = "the comparison is exact by design — the value originates from a literal fixture, not accumulated arithmetic"
-)]
-#[expect(
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
@@ -1981,12 +2264,10 @@ pub fn render_navigation_stack_parts(
     // transform; the hit targets and accessibility bounds a page registers
     // while it records are live, so they anchor at the stack's placement —
     // the inactive ones under their unhittable scope, which gates them out.
-    let page_placement = CapturedScenePlacement {
-        size: LayoutSize::new(
-            crate::num_cast::f64_as_f32(ctx.bounds.width()),
-            crate::num_cast::f64_as_f32(ctx.bounds.height()),
-        ),
-    };
+    let page_size = LayoutSize::new(
+        crate::num_cast::f64_as_f32(ctx.bounds.width()),
+        crate::num_cast::f64_as_f32(ctx.bounds.height()),
+    );
     // A captured page is chrome-hosted content: it inherits the stack's
     // boundaries, so a scroll surface inside a page extends to the window
     // edge on the edges it touches and `.ignore_safe_area` inside releases
@@ -2014,58 +2295,9 @@ pub fn render_navigation_stack_parts(
     ctx.renderer_mut()
         .activate_navigation_root_if_needed(&slot_key, &local_env);
 
-    if let Some((previous_identity, _)) = navigation_change {
-        // The departing page is validated — and re-recorded when stale —
-        // against the env *it* is presented under, not the new top's: a pop
-        // to root keeps the departing page's reserve, a push leaves the root
-        // reserve-less. A pop has already moved the departing entry to
-        // `pending_removed`, where it stays renderable until the transaction
-        // completes.
-        let departing_env = presented_page_env(&stack_env, previous_identity, &ctx.theme());
-        let previous_scene_is_cached = ctx
-            .renderer_mut()
-            .navigation
-            .slots
-            .get(&slot_key)
-            .expect("Hydrolysis navigation slot missing")
-            .scene_cache
-            .get(&previous_identity)
-            .is_some_and(|scene| {
-                scene.leading_reserve == navigation_leading_reserve(&departing_env)
-            });
-        if !previous_scene_is_cached {
-            // Missing or recorded under a different leading reserve: re-record —
-            // `render_navigation_page_scene` panics if the page is not retained.
-            let previous_scene = render_navigation_page_scene(
-                ctx.renderer_mut(),
-                state,
-                &slot_key,
-                previous_identity,
-                &departing_env,
-                page_placement,
-                true,
-                page_area.clone(),
-            );
-            ctx.renderer_mut()
-                .navigation
-                .slots
-                .get_mut(&slot_key)
-                .expect("Hydrolysis navigation slot missing")
-                .scene_cache
-                .insert(previous_identity, previous_scene);
-        }
-    }
-
-    let active_scene = render_navigation_page_scene(
-        ctx.renderer_mut(),
-        state,
-        &slot_key,
-        active_identity,
-        &local_env,
-        page_placement,
-        false,
-        page_area.clone(),
-    );
+    let active_page = crate::renderer::navigation_state::NavigationPage {
+        identity: active_identity,
+    };
 
     let now = ctx.renderer_mut().frame_instant();
     let (transition_frame, complete_transaction) = {
@@ -2087,11 +2319,9 @@ pub fn render_navigation_stack_parts(
                 } else {
                     NavigationTransitionDirection::Pop
                 };
-                let from_scene = slot
-                    .scene_cache
-                    .get(&previous_identity)
-                    .cloned()
-                    .expect("hydrolysis navigation transition requires previous scene");
+                let from_page = crate::renderer::navigation_state::NavigationPage {
+                    identity: previous_identity,
+                };
                 // A destination may declare how it arrives, and a matched
                 // transition has to: the pair it names differs per destination,
                 // so the stack cannot name it once for all of them. The moving
@@ -2124,8 +2354,8 @@ pub fn render_navigation_stack_parts(
                     crate::renderer::navigation_state::NavigationTransitionState::new(
                         style,
                         direction,
-                        from_scene,
-                        active_scene.clone(),
+                        from_page,
+                        active_page.clone(),
                         now,
                         transition_motion.transition_duration,
                     ),
@@ -2142,13 +2372,11 @@ pub fn render_navigation_stack_parts(
                 transition.style.clone(),
                 transition.direction,
                 transition.eased_progress(now, transition_motion),
-                transition.from_scene.clone(),
-                transition.to_scene.clone(),
+                transition.from_page.clone(),
+                transition.to_page.clone(),
             )
         });
-        slot.scene_cache
-            .insert(active_identity, active_scene.clone());
-        slot.last_scene = Some(active_scene.clone());
+        slot.last_page = Some(active_page.clone());
         let complete = slot.transition.is_none() && slot.pending_transaction_id.is_some();
         (frame, complete)
     };
@@ -2171,21 +2399,36 @@ pub fn render_navigation_stack_parts(
                 progress,
                 completed,
                 cancelled,
-                interactive.from_scene.clone(),
-                interactive.to_scene.clone(),
+                interactive.from_page.clone(),
+                interactive.to_page.clone(),
             )
         })
     };
 
-    if let Some((progress, completed, cancelled, from_scene, to_scene)) = interactive_frame {
-        ctx.draw_navigation_transition(
-            transition_style,
-            transition_motion,
-            NavigationTransitionDirection::Pop,
-            progress,
-            &from_scene,
-            &to_scene,
-        );
+    let presentation = interactive_frame
+        .as_ref()
+        .map(|(progress, _, _, from_page, to_page)| {
+            (
+                transition_style.clone(),
+                NavigationTransitionDirection::Pop,
+                *progress,
+                from_page.clone(),
+                to_page.clone(),
+            )
+        })
+        .or(transition_frame);
+    present_navigation_pages(
+        ctx,
+        state,
+        &slot_key,
+        &stack_env,
+        active_identity,
+        page_size,
+        page_area,
+        transition_motion,
+        presentation,
+    );
+    if let Some((_, completed, cancelled, _, _)) = interactive_frame {
         if completed || cancelled {
             let slot = ctx
                 .renderer_mut()
@@ -2209,17 +2452,6 @@ pub fn render_navigation_stack_parts(
                 .clone();
             controller.request_pop(1);
         }
-    } else if let Some((style, direction, progress, from_scene, to_scene)) = transition_frame {
-        ctx.draw_navigation_transition(
-            style,
-            transition_motion,
-            direction,
-            progress,
-            &from_scene,
-            &to_scene,
-        );
-    } else {
-        ctx.present_layers(&active_scene.composed());
     }
 
     if depth == 0 {
@@ -2231,40 +2463,9 @@ pub fn render_navigation_stack_parts(
     } else {
         navigation_entry_identity(&entries, depth - 2)
     };
-    // The page an interactive pop would reveal is validated against the env
-    // *it* is presented under — a gesture that pops to root reveals the
-    // reserve-less root.
-    let landing_env = presented_page_env(&stack_env, previous_identity, &ctx.theme());
-    let previous_scene = ctx
-        .renderer_mut()
-        .navigation
-        .slots
-        .get(&slot_key)
-        .expect("Hydrolysis navigation slot missing")
-        .scene_cache
-        .get(&previous_identity)
-        .filter(|scene| scene.leading_reserve == navigation_leading_reserve(&landing_env))
-        .cloned();
-    let previous_scene = previous_scene.unwrap_or_else(|| {
-        let scene = render_navigation_page_scene(
-            ctx.renderer_mut(),
-            state,
-            &slot_key,
-            previous_identity,
-            &landing_env,
-            page_placement,
-            true,
-            page_area,
-        );
-        ctx.renderer_mut()
-            .navigation
-            .slots
-            .get_mut(&slot_key)
-            .expect("Hydrolysis navigation slot missing")
-            .scene_cache
-            .insert(previous_identity, scene.clone());
-        scene
-    });
+    let previous_page = crate::renderer::navigation_state::NavigationPage {
+        identity: previous_identity,
+    };
 
     let metrics = ctx.theme().navigation_metrics();
     let edge_rect = kurbo::Rect::new(
@@ -2278,12 +2479,12 @@ pub fn render_navigation_stack_parts(
     // at invoke time — a mid-transition re-record leaves the recorded
     // transform stale.
     let placement = ctx.renderer_mut().current_placement();
-    let active_scene_for_gesture = active_scene;
-    let previous_scene_for_gesture = previous_scene;
+    let active_page_for_gesture = active_page;
+    let previous_page_for_gesture = previous_page;
     let navigation_width = ctx.bounds.width();
     let drag_slot_key = slot_key.clone();
-    let back_from_scene = active_scene_for_gesture.clone();
-    let back_to_scene = previous_scene_for_gesture.clone();
+    let back_from_page = active_page_for_gesture.clone();
+    let back_to_page = previous_page_for_gesture.clone();
     let controller = ctx
         .renderer_mut()
         .navigation
@@ -2316,8 +2517,8 @@ pub fn render_navigation_stack_parts(
                     crate::renderer::navigation_state::NavigationInteractivePop::new(
                         point.x,
                         navigation_width,
-                        active_scene_for_gesture.clone(),
-                        previous_scene_for_gesture.clone(),
+                        active_page_for_gesture.clone(),
+                        previous_page_for_gesture.clone(),
                     ),
                 );
                 return true;
@@ -2337,8 +2538,8 @@ pub fn render_navigation_stack_parts(
             owner: std::rc::Weak::new(),
             slot_key: slot_key.clone(),
             width: navigation_width,
-            from_scene: back_from_scene,
-            to_scene: back_to_scene,
+            from_page: back_from_page,
+            to_page: back_to_page,
             controller: controller.clone(),
         },
     );
@@ -2581,10 +2782,7 @@ mod tests {
     fn painted_text_leading_edge(runtime: &HeadlessRuntime) -> f64 {
         let renderer = runtime.renderer();
         let mut leftmost = f64::INFINITY;
-        for recording in renderer
-            .painted_recordings()
-            .chain(std::iter::once(renderer.scene()))
-        {
+        for recording in std::iter::once(&renderer.painted_scene()) {
             for (transform, glyphs) in recording.glyph_runs() {
                 for glyph in glyphs {
                     let point = transform * Point::new(f64::from(glyph.x), f64::from(glyph.y));

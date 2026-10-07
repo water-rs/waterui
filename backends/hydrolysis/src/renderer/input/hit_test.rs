@@ -415,8 +415,8 @@ pub struct HitTestState {
     pub(crate) gesture_occluders: Vec<(kurbo::Rect, usize)>,
     /// The clip stack of the paint layers currently open, in window hit-test
     /// space. Every entry is already intersected with the ones below it, so
-    /// the top is the effective clip. [`HydrolysisRenderer::push_layer_rect`]
-    /// pushes the same rect it clips paint to and `pop_layer` pops it, so a
+    /// the top is the effective clip. A clip scope a program opens pushes the
+    /// same rect it clips paint to and its close pops it, so a
     /// hit region flushed inside a scroll viewport can't outlive the paint
     /// clip (water-rs/hydrolysis#252).
     /// The window's logical bounds — the outermost clip every hittable point
@@ -3891,32 +3891,6 @@ impl SemanticCore {
         );
     }
 
-    /// Records a native subview that the host platform hit-tests for itself, so
-    /// the content drawn above it can take its own clicks back.
-    ///
-    /// `bounds` is the subview's rect in window hit-test space; `sink` is the
-    /// channel the platform's view host reads the occluding rects from. See
-    /// [`NativeViewOcclusion`].
-    #[cfg(hydrolysis_macos_system_webview)]
-    pub(crate) fn register_native_view_occlusion(
-        &mut self,
-        bounds: kurbo::Rect,
-        sink: Rc<RefCell<Vec<kurbo::Rect>>>,
-    ) {
-        // The retained record resolves the subview's slot in paint order at
-        // materialization, which is what makes "registered later" mean
-        // "painted above".
-        self.register_retained(
-            NativeViewOcclusion {
-                bounds,
-                order: 0,
-                sink,
-            },
-            bounds,
-            |regs| &mut regs.native_view_occlusions,
-        );
-    }
-
     pub(crate) fn register_pointer_target_action(
         &mut self,
         bounds: kurbo::Rect,
@@ -4725,9 +4699,14 @@ impl SemanticCore {
         let Some(fling) = self.hit_test.touch_fling.take() else {
             return false;
         };
+        // A fling whose scroll view no registered target holds any more
+        // ends with it.
+        let Some(owner) = self.try_scroll_target_owner(fling.handle().cache_key()) else {
+            return false;
+        };
         let tick = fling.tick(now);
         if tick.changed {
-            self.mark_scroll_owner(fling.handle(), Dirty::LAYOUT);
+            Self::mark_owner(&owner, Dirty::LAYOUT);
         }
         if tick.running {
             self.hit_test.touch_fling = Some(fling);

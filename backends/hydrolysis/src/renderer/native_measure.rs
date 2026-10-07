@@ -70,10 +70,11 @@ impl HydroNativeView for Native<MapConfig> {
     }
 }
 
-/// Reaching `WebView` on a build without `hydrolysis_macos_system_webview`
-/// means neither a `Hook<WebView>` engine realization nor the platform bridge
-/// is present — the backend has nothing to draw a page with.
-#[cfg(not(hydrolysis_macos_system_webview))]
+/// Reaching `WebView` without a `Hook<WebView>` engine realization means
+/// the backend has nothing to draw a page with: a build without
+/// `hydrolysis_macos_system_webview` bridges no engine, and the macOS
+/// bridge's record has no native-view layer to present the `WKWebView`
+/// through.
 pub fn unsupported_webview() -> ! {
     panic!(
         "WebView is unsupported on this Hydrolysis build because no web engine is bridged; \

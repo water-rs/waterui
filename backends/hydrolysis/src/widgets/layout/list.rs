@@ -320,7 +320,7 @@ pub struct ListRenderState {
     /// bounds layout computed once (the scroll handle is rebound with
     /// them inside [`Self::bind_scroll`]), plus the focused-field state
     /// the flush drives.
-    pub(crate) surface: crate::renderer::ScrollSurfaceArea,
+    pub(crate) surface: std::rc::Rc<crate::renderer::ScrollSurfaceArea>,
     /// Collection membership watcher.
     _guard: BoxWatcherGuard,
 }
@@ -433,7 +433,7 @@ impl ListRenderState {
             sections: RefCell::new(Vec::new()),
             sections_resolved_for: Cell::new(None),
             rows_snapshot,
-            surface: crate::renderer::ScrollSurfaceArea::default(),
+            surface: std::rc::Rc::default(),
             _guard: guard,
         }
     }
@@ -1461,7 +1461,14 @@ pub fn render_list_parts(
         &handle,
     );
     if needs_viewport_clip {
-        ctx.push_layer_rect(1.0, surface_viewport);
+        ctx.open_scope(
+            crate::renderer::mount::ScopeKey {
+                role: "viewport",
+                item: 0,
+            },
+            1.0,
+            surface_viewport,
+        );
     }
 
     let span = state
@@ -1985,7 +1992,7 @@ pub fn render_list_parts(
                 });
                 // A list row is scroll content: it lays out with no
                 // §7.1 context (its surface owns the edges).
-                subview.flush_in_rect(
+                subview.place(
                     ctx.renderer_mut(),
                     render_ctx,
                     &subtree_env,
@@ -2055,15 +2062,15 @@ pub fn render_list_parts(
     state.borrow().record_viewport_anchor(metrics, row_count);
 
     if needs_viewport_clip {
-        ctx.pop_layer();
+        ctx.close_scope();
     }
 
-    // The focused-field clearance reads this frame's input targets — the
-    // rows' flush above just emitted them (§7.1).
+    // The focused-field clearance runs after recording, over the retained
+    // input targets (§7.1).
     state
         .borrow()
         .surface
-        .end_flush(ctx.renderer_mut(), &handle);
+        .register_clearance(ctx.renderer_mut(), &handle);
 
     draw_scroll_indicators(
         ctx,

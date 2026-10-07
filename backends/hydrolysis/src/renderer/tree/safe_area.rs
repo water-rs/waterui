@@ -662,8 +662,36 @@ impl ScrollSurfaceArea {
         }
     }
 
-    /// Runs after the surface's content flushes: the focus-change branch —
-    /// a field this subtree's own registrations reported gaining focus
+    /// Registers this surface for the frame's post-record focus clearance
+    /// ([`HydrolysisRenderer::clear_focused_fields`]). The registration is
+    /// retained: a clean surface that does not record keeps it, so a field
+    /// gaining focus under it is still scrolled clear.
+    pub fn register_clearance(
+        self: &std::rc::Rc<Self>,
+        renderer: &HydrolysisRenderer,
+        handle: &ScrollHandle,
+    ) {
+        let scope = renderer
+            .reader_cell()
+            .expect("hydrolysis: a surface registers its focus clearance under its own record");
+        let cell = std::rc::Rc::downgrade(&scope);
+        let mut surfaces = renderer.text_editing.clearance_surfaces.borrow_mut();
+        let entry = crate::renderer::input::text_editing::ClearanceSurface {
+            cell,
+            area: std::rc::Rc::downgrade(self),
+            handle: handle.clone(),
+        };
+        match surfaces
+            .iter_mut()
+            .find(|surface| surface.cell.ptr_eq(&entry.cell))
+        {
+            Some(surface) => *surface = entry,
+            None => surfaces.push(entry),
+        }
+    }
+
+    /// The post-record focus-change branch — a field the registrations
+    /// of `scope`'s subtree reported gaining focus
     /// scrolls the minimum distance to `min(keyboard top, surface bottom)`,
     /// eased while the keyboard is settled and directly while it moves.
     /// The cleared field is refreshed for the next frame's early pass, and
@@ -676,21 +704,23 @@ impl ScrollSurfaceArea {
     /// [`HydrolysisRenderer::focused_field_frame_in_scope`] reads the
     /// focused field out of the buckets the cells under this surface's own
     /// record wrote, so it answers exactly dev's set.
-    pub fn end_flush(&self, renderer: &HydrolysisRenderer, handle: &ScrollHandle) {
+    fn clear_focused_field(
+        &self,
+        renderer: &HydrolysisRenderer,
+        scope: &std::rc::Rc<crate::renderer::mount::cell::NodeCell>,
+        handle: &ScrollHandle,
+    ) {
         let Some(facts) = self.facts.get() else {
             self.cleared.replace(None);
             return;
         };
         let offset_y = handle.metrics().offset_y;
-        let scope = renderer
-            .reader_cell()
-            .expect("hydrolysis: a surface's end_flush runs under its own record");
         // Only an outermost surface holds facts (a surface's content lays
         // out without a safe-area context), so the field a surface finds
         // here is always one it alone covers — nested surfaces clear the
         // same field once through the outer surface.
         let field = renderer
-            .focused_field_frame_in_scope(&scope)
+            .focused_field_frame_in_scope(scope)
             .map(|(key, rect)| ClearedField {
                 key,
                 rect,
@@ -719,7 +749,7 @@ impl ScrollSurfaceArea {
     /// change since — a user scroll or a previous clearance — translates
     /// it back. This assumes the field did not move inside the content
     /// between frames — a relayout that moves it re-captures through
-    /// `end_flush` before the next keyboard-moving pass reads it.
+    /// `clear_focused_field` before the next keyboard-moving pass reads it.
     fn field_window_rect(&self, offset_y: f64) -> Option<kurbo::Rect> {
         self.cleared
             .borrow()
@@ -773,4 +803,33 @@ pub fn released_size(size: Size, released: EdgeOffsets) -> Size {
         size.width + (released.horizontal() as f32),
         size.height + (released.vertical() as f32),
     )
+}
+
+impl HydrolysisRenderer {
+    /// The frame's post-record focus clearance (§B step 7): every live
+    /// registered surface clears the focused field its subtree holds,
+    /// reading the retained registrations after recording, so a focus
+    /// change under a surface that did not record still scrolls the field
+    /// clear. Surfaces whose node or area dropped leave the list.
+    pub(crate) fn clear_focused_fields(&self) {
+        let live: Vec<_> = {
+            let mut surfaces = self.text_editing.clearance_surfaces.borrow_mut();
+            surfaces.retain(|surface| {
+                surface.cell.strong_count() > 0 && surface.area.strong_count() > 0
+            });
+            surfaces
+                .iter()
+                .filter_map(|surface| {
+                    Some((
+                        surface.cell.upgrade()?,
+                        surface.area.upgrade()?,
+                        surface.handle.clone(),
+                    ))
+                })
+                .collect()
+        };
+        for (scope, area, handle) in live {
+            area.clear_focused_field(self, &scope, &handle);
+        }
+    }
 }

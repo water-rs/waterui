@@ -51,6 +51,7 @@ mod material;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod menu_shortcuts;
 mod mid_flush_subview;
+pub mod mirror;
 mod navigation_back;
 mod navigation_layers;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
@@ -3320,7 +3321,7 @@ fn secure_text_context_menu_excludes_copy_and_cut() {
 }
 
 #[test]
-fn bare_text_at_window_root_renders_into_scene() {
+fn bare_text_at_window_root_renders_into_page() {
     let mut renderer = test_renderer();
     let env = test_environment();
 
@@ -3333,14 +3334,14 @@ fn bare_text_at_window_root_renders_into_scene() {
         Affine::IDENTITY,
     );
     assert!(
-        !renderer.scene_is_empty(),
+        renderer.commit_mirror().created > 0,
         "a bare text view at the window root must draw glyphs"
     );
     renderer.finish_rebuild_frame();
 }
 
 #[test]
-fn bare_str_at_window_root_renders_into_scene() {
+fn bare_str_at_window_root_renders_into_page() {
     let mut renderer = test_renderer();
     let env = test_environment();
 
@@ -3353,7 +3354,7 @@ fn bare_str_at_window_root_renders_into_scene() {
         Affine::IDENTITY,
     );
     assert!(
-        !renderer.scene_is_empty(),
+        renderer.commit_mirror().created > 0,
         "a bare string view at the window root must draw glyphs"
     );
     renderer.finish_rebuild_frame();
@@ -3413,7 +3414,7 @@ fn resolved_text_fast_path_matches_the_recursive_measure() {
 }
 
 #[test]
-fn bare_str_renders_into_scene() {
+fn bare_str_renders_into_page() {
     let mut renderer = test_renderer();
     let env = test_environment();
 
@@ -3427,7 +3428,7 @@ fn bare_str_renders_into_scene() {
         Affine::IDENTITY,
     );
     assert!(
-        !renderer.scene_is_empty(),
+        renderer.commit_mirror().created > 0,
         "a bare string must build a text node and draw glyphs"
     );
     renderer.finish_rebuild_frame();

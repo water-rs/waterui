@@ -12,13 +12,7 @@ mod text_service;
 mod view_helpers;
 
 pub use compositor::HydrolysisRenderTarget;
-#[cfg(hydrolysis_macos_system_webview)]
-pub(crate) use compositor::NativeViewLayer;
-pub use compositor::{
-    ActiveSceneLayer, CapturedLayers, CherenkovWindow, Compositor, EngineFrame, ExternalFrameLayer,
-    FilteredLayer, FrameRenderTarget, GpuContentLayer, LayerShape, MaterialLayer, RenderLayer,
-    SceneContentLayer,
-};
+pub use compositor::{CherenkovWindow, EngineFrame, FrameRenderTarget};
 pub use measurement::*;
 pub use measurement_cache::{MeasurementCaches, MemoGate, NodeMeasureEntry};
 pub use render_context::RenderContext;

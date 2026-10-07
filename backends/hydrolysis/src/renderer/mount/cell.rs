@@ -44,8 +44,13 @@ impl Dirty {
     pub const LAYOUT: Self = Self(1 << 1);
     /// Recorded drawing changed: the node re-records its runs.
     pub const PAINT: Self = Self(1 << 2);
+    /// The node's placement props changed: its frame's layer props are
+    /// rewritten without re-recording.
+    pub const PLACE: Self = Self(1 << 3);
     /// A GPU/external-frame producer published work for the install layer.
     pub const PRODUCER: Self = Self(1 << 4);
+    /// The node holds a finished program the commit has not lowered yet.
+    pub const COMMIT: Self = Self(1 << 5);
 
     /// Whether every bit in `other` is set in `self`.
     pub const fn contains(self, other: Self) -> bool {
@@ -55,6 +60,11 @@ impl Dirty {
     /// Whether no bit is set.
     pub const fn is_empty(self) -> bool {
         self.0 == 0
+    }
+
+    /// `self` with every bit in `other` cleared.
+    pub const fn without(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
     }
 }
 
@@ -104,6 +114,9 @@ pub struct NodeCell {
     /// (§B.3) — a partial descent replays them so a re-recording child sees
     /// the same ancestor state.
     pub scopes: RefCell<RetainedScopes>,
+    /// The owning node's retained layer state (held strongly by its
+    /// [`NodeCore`], so the layers drop with the node, not the cell).
+    retained: RefCell<std::rc::Weak<super::layers::NodeRetained>>,
     /// The registrations the node's last record emitted — the retained
     /// entries its materialization replays (`None` until the first record
     /// registers, or after a purge). Purging the cell's bucket is the
@@ -153,6 +166,25 @@ pub struct NodeCell {
 }
 
 impl NodeCell {
+    /// The owning node's retained layer state.
+    ///
+    /// # Panics
+    /// Panics when the node was dropped while its cell is still listed in
+    /// a program — a program never outlives the frame that recorded it.
+    pub(crate) fn retained(&self) -> Rc<super::layers::NodeRetained> {
+        self.retained
+            .borrow()
+            .upgrade()
+            .expect("hydrolysis commit: a program lists a node that was dropped before its commit")
+    }
+
+    /// The owning node's retained layer state while the node lives —
+    /// `None` once it dropped. A child a `committed` list reaches may be
+    /// dead already: its drop queued the layer removal before this commit.
+    pub(crate) fn try_retained(&self) -> Option<Rc<super::layers::NodeRetained>> {
+        self.retained.borrow().upgrade()
+    }
+
     /// A cell with no parent and no marks. The caller attaches it to its
     /// parent via [`set_parent`](Self::set_parent).
     pub fn new(frames: FrameSignals, placement: Rc<Placement>) -> Rc<Self> {
@@ -163,6 +195,7 @@ impl NodeCell {
             frames,
             placement,
             scopes: RefCell::new(RetainedScopes::default()),
+            retained: RefCell::new(std::rc::Weak::new()),
             registrations: RefCell::new(None),
             registered: Cell::new(false),
             children: RefCell::new(Vec::new()),
@@ -200,6 +233,38 @@ impl NodeCell {
                 true
             })
         });
+    }
+
+    /// Decision 3's teardown for one cell: drops its `NodeLayers` —
+    /// every `Layer`'s drop queues that layer's `Remove` on the shared
+    /// surface, so this runs in the update phase and never inside a commit
+    /// transaction body (§A.2) — and sets `PAINT|COMMIT` on the cell, so a
+    /// later record remounts the node from scratch. The bits stay `own`:
+    /// an unmounted subtree is not pending work for its live ancestors —
+    /// raising `below` would hold the root dirty forever on a cell no
+    /// flush visits — so the bits wait for the cell's own next record or
+    /// re-attach, where `set_parent` propagates them up the new chain.
+    /// The cell keeps its node and its retained scopes: only the engine
+    /// memory follows off screen. A cell whose `NodeRetained` already died
+    /// has no layers left to drop.
+    pub(crate) fn unmount(&self) {
+        if let Some(retained) = self.retained.borrow().upgrade() {
+            let _ = retained.layers.borrow_mut().take();
+        }
+        self.own
+            .set(self.own.get() | Dirty::PAINT | Dirty::COMMIT);
+    }
+
+    /// [`unmount`](Self::unmount) over this cell's whole subtree: every
+    /// descendant the `set_parent` links reach — render children, and the
+    /// `RetainedSubview` roots attached under it, which live in
+    /// `children` alongside them.
+    pub(crate) fn unmount_subtree(self: &Rc<Self>) {
+        let mut stack = vec![Rc::clone(self)];
+        while let Some(cell) = stack.pop() {
+            cell.unmount();
+            cell.children(&mut stack);
+        }
     }
 
     /// Stamps that this cell's placement was linked under record `seq` —
@@ -333,6 +398,13 @@ impl NodeCell {
         self.own.set(Dirty::NONE);
         self.below.set(Dirty::NONE);
     }
+
+    /// Clears the `bits` the mount commit consumed, keeping every other
+    /// pending mark.
+    pub fn clear_bits(&self, bits: Dirty) {
+        self.own.set(self.own.get().without(bits));
+        self.below.set(self.below.get().without(bits));
+    }
 }
 
 /// The mount state every render node embeds: its cell and the signal
@@ -353,6 +425,8 @@ impl NodeCell {
 pub struct NodeCore {
     /// The node's cell: identity, marks and placement mirror.
     pub cell: Rc<NodeCell>,
+    /// The node's retained layers and pending program (§A).
+    pub retained: Rc<super::layers::NodeRetained>,
     /// Signal guards from the node's last record (paint phase). `Rc` so the
     /// live reader can point a store clone at it while the guard closures
     /// run.
@@ -364,8 +438,12 @@ pub struct NodeCore {
 impl NodeCore {
     /// A fresh core with an unattached cell.
     pub fn new(frames: FrameSignals, placement: Rc<Placement>) -> Self {
+        let cell = NodeCell::new(frames, placement);
+        let retained = Rc::new(super::layers::NodeRetained::default());
+        *cell.retained.borrow_mut() = Rc::downgrade(&retained);
         Self {
-            cell: NodeCell::new(frames, placement),
+            cell,
+            retained,
             subscriptions: Rc::new(RefCell::new(Vec::new())),
             layout_subscriptions: Rc::new(RefCell::new(Vec::new())),
         }
@@ -375,8 +453,15 @@ impl NodeCore {
     /// window root's own record read through it, each with their own
     /// subscription stores.
     pub(crate) fn for_cell(cell: &Rc<NodeCell>) -> Self {
+        let live = cell.retained.borrow().upgrade();
+        let retained = live.unwrap_or_else(|| {
+            let retained = Rc::new(super::layers::NodeRetained::default());
+            *cell.retained.borrow_mut() = Rc::downgrade(&retained);
+            retained
+        });
         Self {
             cell: Rc::clone(cell),
+            retained,
             subscriptions: Rc::new(RefCell::new(Vec::new())),
             layout_subscriptions: Rc::new(RefCell::new(Vec::new())),
         }

@@ -251,6 +251,9 @@ web-sys = { version = "0.3", optional = true, features = [
 # `SceneView` before it reaches layout. The tests still author canvases, which
 # is what keeps that resolution honest.
 waterui-canvas.workspace = true
+# The tests' `MirrorTarget` implements `Queue`, whose `ChangeSet` the engine
+# crate does not re-export.
+cherenkov-record.workspace = true
 # The wayland examples need a widget theme; m3 is independently maintained.
 hydrolysis-m3.workspace = true
 waterui-testing.workspace = true

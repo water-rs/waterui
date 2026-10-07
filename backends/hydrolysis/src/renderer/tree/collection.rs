@@ -625,11 +625,27 @@ impl CollectionNode {
             transform: delta,
             hit_alpha: factor,
         };
-        renderer.with_clip_rect_scope(factor, child_ctx.local, clip, scope, |renderer| {
-            entry
-                .node
-                .flush(renderer, child_ctx, env, kurbo::Affine::IDENTITY);
-        });
+        let key = crate::renderer::mount::ScopeKey {
+            role: "entry",
+            item: {
+                use core::hash::{Hash, Hasher};
+                let mut hasher = rustc_hash::FxHasher::default();
+                entry.id.hash(&mut hasher);
+                hasher.finish()
+            },
+        };
+        renderer.with_scope(
+            key,
+            factor,
+            child_ctx.local,
+            &crate::renderer::frame::ScopeClip::Rect(clip),
+            scope,
+            |renderer| {
+                entry
+                    .node
+                    .flush(renderer, child_ctx, env, kurbo::Affine::IDENTITY);
+            },
+        );
     }
 
     /// Apply a membership change: keep each surviving id's node (and its
@@ -1103,7 +1119,8 @@ impl LazyStackNode {
             .lazy_viewport_stack
             .last()
             .map_or(ctx.bounds, |viewport| {
-                (ctx.local.inverse() * viewport.transform).transform_rect_bbox(viewport.bounds)
+                (renderer.record_world(ctx.local).inverse() * viewport.transform)
+                    .transform_rect_bbox(viewport.bounds)
             });
         let (visible_start, visible_end) = match &self.axis {
             LazyStackAxisConfig::Vertical { .. } => {
@@ -1173,7 +1190,7 @@ impl LazyStackNode {
                 // `SafeAreaLayout::hosted_frame`.
                 let item_area = stack_area
                     .map(|area| area.with_frame(area.hosted_frame(ctx.bounds, child_rect)));
-                subview.flush_in_rect(renderer, ctx, env, proposal, child_rect, item_area);
+                subview.place(renderer, ctx, env, proposal, child_rect, item_area);
             }
             cursor += extent;
             if index + 1 < count {

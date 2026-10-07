@@ -196,8 +196,12 @@ pub fn render_toggle_parts(
         // alpha (Material: on-surface at 38% for default-colored labels).
         // The label's semantics are merged into the toggle's own node by
         // `toggle_accessibility`, so the sub-view flushes visual-only.
-        ctx.with_clip_rect_scope_if(
+        ctx.with_scope_if(
             disabled,
+            crate::renderer::mount::ScopeKey {
+                role: "label-dim",
+                item: 0,
+            },
             theme.disabled_content_alpha(),
             label_bounds,
             |ctx| {
@@ -206,7 +210,7 @@ pub fn render_toggle_parts(
                 let label_view = &mut state.label_view;
                 ctx.renderer_mut()
                     .with_suppressed_accessibility(|renderer| {
-                        label_view.flush_in_rect(
+                        label_view.place(
                             renderer,
                             render_ctx,
                             env,

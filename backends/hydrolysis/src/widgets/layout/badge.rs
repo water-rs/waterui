@@ -115,7 +115,7 @@ pub fn render_badge_parts(
         let render_ctx = ctx.render_context();
         let mut state = state.borrow_mut();
         let content_area = ctx.safe_area_for(bounds);
-        state.content.flush_in_rect(
+        state.content.place(
             ctx.renderer_mut(),
             render_ctx,
             env,
@@ -214,7 +214,7 @@ pub fn render_badge_parts(
         local: ctx.local,
         bounds: text_rect,
     };
-    let (hydro, scene) = ctx.renderer_mut().state_and_scene_mut();
+    let (hydro, scene) = ctx.renderer_mut().state_and_run_mut();
     HydrolysisRenderer::render_styled_text(
         hydro,
         scene,

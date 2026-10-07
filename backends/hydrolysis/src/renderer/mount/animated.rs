@@ -1,26 +1,18 @@
-//! Animated-scalar resolution and morph-progress sampling for the retained render
-//! tree. These re-sample animated transform/opacity/morph signals every flush so
-//! the node tree's transform/opacity/morph nodes stay live without re-dispatching.
+//! Animated-scalar resolution and morph-progress sampling: the animated
+//! transform/opacity/morph inputs a node re-samples when it records.
 
-pub mod mount;
-pub use mount::{MountSlot, Mounts};
+use std::cell::Cell;
+use std::rc::Rc;
 
-use super::signals::SubscribedSnapshot;
-// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
-#[allow(clippy::wildcard_imports)]
-use super::*;
-#[cfg(test)]
-use crate::renderer::frame::scene_has_content;
+use nami::Signal;
 
-impl HydrolysisRenderer {
-    #[cfg(test)]
-    pub(crate) const fn scene_is_empty(&self) -> bool {
-        !scene_has_content(&self.scene)
-    }
-}
+use super::Dirty;
+use crate::animation::AnimationKey;
+use crate::renderer::signals::SubscribedSnapshot;
+use crate::renderer::{Retain, SemanticCore};
 
 impl SemanticCore {
-    pub(super) fn resolve_animated_scalar_with_discriminator<S>(
+    pub fn resolve_animated_scalar_with_discriminator<S>(
         &mut self,
         signal: &S,
         discriminator: usize,
@@ -62,7 +54,7 @@ impl SemanticCore {
     /// off node identity and survives across frames and structural changes — unlike a
     /// positional `render_depth`, which shifts when a sibling subtree's node count
     /// changes and would restart the morph mid-animation.
-    pub(crate) fn sample_morph_progress(
+    pub fn sample_morph_progress(
         &mut self,
         animation: waterui_shape::MorphAnimation,
         node_id: usize,

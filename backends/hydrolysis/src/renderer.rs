@@ -36,7 +36,6 @@ mod native_measure;
 mod navigation;
 pub mod recording;
 mod render;
-mod retained;
 
 mod signals;
 #[cfg(test)]
@@ -323,6 +322,18 @@ pub struct PresentationHosts {
     pub(crate) anchored: NodeCore,
 }
 
+impl PresentationHosts {
+    /// §F's teardown before a remount: every host subtree drops its
+    /// `NodeLayers` with the outgoing engine window, each cell marked
+    /// `PAINT|COMMIT` like [`RenderNode::unmount`] leaves the window's own
+    /// tree.
+    pub(crate) fn unmount(&self) {
+        for host in [&self.text_overlay, &self.context_menu, &self.anchored] {
+            host.cell.unmount_subtree();
+        }
+    }
+}
+
 /// One platform-view sink record resolved at materialization: the table
 /// the placement publishes into plus the window-space frame and clip its
 /// paint chain computed — staged so `record` calls run once per frame in
@@ -486,7 +497,7 @@ pub struct SemanticCore {
     /// and resolved through placements; `hit_test`'s flat lists are the
     /// materialized view consumers read.
     retained: mount::RetainedRegistry,
-    /// The placement scopes the open `push_layer_rect` levels created —
+    /// The placement scopes the open clip scopes created —
     /// child placements of the placement they were pushed under.
     /// Registrations resolve through the top of the stack.
     placement_scope_stack: Vec<Rc<Placement>>,
@@ -521,9 +532,6 @@ pub struct HydrolysisRenderer {
     /// The widget theme the runtime's style supplies to layout and encode.
     /// Never installed into the environment: build and patch cannot reach it.
     theme: Rc<dyn crate::engine::WidgetTheme>,
-    scene: Recording,
-    transient_scene: Option<Recording>,
-    compositor: Compositor,
     window_bounds: kurbo::Rect,
     /// The transform the window's root content is flushed under: logical layout
     /// units onto the target's physical pixel grid. Stored alongside
@@ -531,7 +539,9 @@ pub struct HydrolysisRenderer {
     /// is in device pixels, which is what
     /// [`HydrolysisRenderer::push_gpu_surface_layer`] tests a full-window GPU
     /// surface against.
-    window_root_transform: kurbo::Affine,
+    /// The window's display transform: the window layer's (§A), the only
+    /// place the display scale is applied.
+    window_display_transform: kurbo::Affine,
     /// Wake target supplied when this renderer itself is hosted inside
     /// another GPU host. Renderer-owned redraws use it to wake the parent host
     /// without polling frames.
@@ -540,27 +550,24 @@ pub struct HydrolysisRenderer {
     /// the stable mounts under it and the resource registrations its content
     /// names. Entries whose device was reported lost are pruned at the next
     /// presented frame.
-    cherenkov_windows: rustc_hash::FxHashMap<u64, crate::renderer::render::CherenkovWindow>,
+    cherenkov_window: Option<crate::renderer::render::CherenkovWindow>,
+    /// The engine work the last commit did, with the live mounted counts.
+    last_mount_stats: mount::MountStats,
+    /// The tests' [`MirrorTarget`](tests::mirror::MirrorTarget) mount.
+    #[cfg(test)]
+    mirror: Option<tests::mirror::MirrorWindow>,
+    /// The node programs open while recording, innermost last (§C).
+    program: Vec<mount::ProgramBuilder>,
     /// The engine's frame scheduling answer from the last presented frame.
     /// The pump follows it: `Next::Idle` means no animation is running and
     /// the display link may sleep.
     engine_next: Option<cherenkov::Next>,
-    frame_clip_layers: u32,
-    frame_max_clip_depth: u32,
-    /// The clip/opacity scopes the captures in progress set aside: content a
-    /// capture records is presented under them, so they count toward its
-    /// clip depth.
-    captured_clip_depth: usize,
-    frame_filtered_count: u32,
     /// Per-frame applied-filter telemetry the render thread's `EngineEffect`
     /// calls accumulate into; reset before each `Engine::render` and read back
     /// into the `frame_applied_filter_*` fields after it.
     applied_filter_metrics: Arc<crate::renderer::effects::AppliedFilterMetrics>,
     frame_applied_filter_count: u32,
     frame_applied_filter_effect: Duration,
-    /// In-flight navigation scene captures (screenshots of outgoing pages
-    /// during a transition).
-    navigation_captures: Vec<NavigationSceneCapture>,
     /// CPU stage times accumulated by `flush_window_tree`, plus the GPU spans
     /// the render pass resolves; drained per pump by `take_frame_stage_times`.
     /// `pub(crate)` so the runner's readback timing can add its stage in.
@@ -810,6 +817,21 @@ impl SemanticCore {
     /// off the render tree, so `mark`'s early-exit can trust `below`.
     /// Bridge sweep — the dirty-guided descent consumes marks per node and
     /// this per-frame walk is deleted with it (commit 4).
+    /// Clears the placement and commit bits on every live cell once the
+    /// mount has lowered the frame's programs and placements. Bridge sweep
+    /// like [`Self::clear_all_marks`]; the dirty-guided commit consumes them
+    /// per node (commit 4).
+    pub(crate) fn clear_commit_marks(&self) {
+        let bits = Dirty::PLACE | Dirty::COMMIT;
+        self.root.clear_bits(bits);
+        self.cells.borrow_mut().retain(|weak| {
+            weak.upgrade().is_some_and(|cell| {
+                cell.clear_bits(bits);
+                true
+            })
+        });
+    }
+
     pub(crate) fn clear_all_marks(&self) {
         self.cells.borrow_mut().retain(|weak| {
             weak.upgrade().is_some_and(|cell| {
@@ -995,12 +1017,13 @@ impl SemanticCore {
     }
 
     /// Retires the whole subtrees under `roots`: every descendant cell's
-    /// retained registrations purge and its emitted a11y nodes leave the
-    /// shared accessibility state in one batch. A cell already retired and
-    /// not placed since is skipped with its subtree — nothing under it can
-    /// have registered without placing it — so a hidden subtree costs
-    /// nothing on later frames. Commit 3 extends this to drop the
-    /// subtree's layers too (decision 3). O(newly retired nodes).
+    /// retained registrations purge, its emitted a11y nodes leave the
+    /// shared accessibility state in one batch, and its `NodeLayers` drop
+    /// (decision 3 — the cell keeps its node while the engine memory
+    /// follows what is on screen). A cell already retired and not placed
+    /// since is skipped with its subtree — nothing under it can have
+    /// registered without placing it — so a hidden subtree costs nothing
+    /// on later frames. O(newly retired nodes).
     #[cfg_attr(
         not(feature = "accessibility"),
         expect(
@@ -1017,6 +1040,7 @@ impl SemanticCore {
                 continue;
             }
             self.purge_registrations(&cell);
+            cell.unmount();
             #[cfg(feature = "accessibility")]
             {
                 ids.append(&mut cell.a11y_emitted.borrow_mut());
@@ -1216,6 +1240,9 @@ impl SemanticCore {
             placement.set_parent(Some(parent));
             placement.set_index(index);
         }
+        if placement.transform() != delta {
+            core.cell.mark_quiet(Dirty::PLACE | Dirty::COMMIT);
+        }
         placement.set_transform(delta);
         core.cell.mark_placed(self.record_seq);
     }
@@ -1235,6 +1262,9 @@ impl SemanticCore {
     ) {
         let placement = core.cell.placement();
         placement.set_parent(anchor);
+        if placement.transform() != delta {
+            core.cell.mark_quiet(Dirty::PLACE | Dirty::COMMIT);
+        }
         placement.set_transform(delta);
         placement.set_index(index);
         core.cell.mark_placed(self.record_seq);
@@ -1667,6 +1697,18 @@ impl HydrolysisRenderer {
         self.core.link_placement(core, delta);
     }
 
+    /// The window's fixed host frames in paint order: the content root,
+    /// then the context menu, anchored overlay and text overlay hosts.
+    pub(crate) fn mount_roots(&self) -> [Rc<NodeCell>; 4] {
+        let hosts = &self.core.presentation_hosts;
+        [
+            Rc::clone(&self.core.root_core.cell),
+            Rc::clone(&hosts.context_menu.cell),
+            Rc::clone(&hosts.anchored.cell),
+            Rc::clone(&hosts.text_overlay.cell),
+        ]
+    }
+
     /// [`SemanticCore::link_placement_to`].
     pub(crate) fn link_placement_to(
         &self,
@@ -1715,23 +1757,19 @@ impl HydrolysisRenderer {
         Self {
             core: SemanticCore::new(frame_instant, family_resolution),
             theme,
-            scene: Recording::new(),
-            transient_scene: None,
-            compositor: Compositor::default(),
             window_bounds: kurbo::Rect::ZERO,
-            window_root_transform: kurbo::Affine::IDENTITY,
+            window_display_transform: kurbo::Affine::IDENTITY,
             host_redraw_handle: None,
 
-            cherenkov_windows: rustc_hash::FxHashMap::default(),
+            cherenkov_window: None,
+            last_mount_stats: mount::MountStats::default(),
+            #[cfg(test)]
+            mirror: None,
+            program: Vec::new(),
             engine_next: None,
-            frame_clip_layers: 0,
-            frame_max_clip_depth: 0,
-            captured_clip_depth: 0,
-            frame_filtered_count: 0,
             applied_filter_metrics: Arc::default(),
             frame_applied_filter_count: 0,
             frame_applied_filter_effect: Duration::ZERO,
-            navigation_captures: Vec::new(),
             #[cfg(feature = "frame-profile")]
             frame_stage_times: FrameStageTimes::default(),
             #[cfg(feature = "frame-profile")]

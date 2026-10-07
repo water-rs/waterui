@@ -52,8 +52,17 @@ pub enum TextInputModel {
 /// focus, caret and selection migrate to a different field whenever flush order
 /// changes (a row inserted above a focused field, a `when(...)` revealing an
 /// earlier one).
+/// A scroll surface registered for the post-record focus clearance.
+pub struct ClearanceSurface {
+    pub(crate) cell: std::rc::Weak<crate::renderer::mount::cell::NodeCell>,
+    pub(crate) area: std::rc::Weak<crate::renderer::ScrollSurfaceArea>,
+    pub(crate) handle: crate::scroll::ScrollHandle,
+}
+
 #[derive(Default)]
 pub struct TextEditingState {
+    /// The scroll surfaces the post-record focus clearance runs over.
+    pub(crate) clearance_surfaces: RefCell<Vec<ClearanceSurface>>,
     pub(crate) text_input_targets: Vec<TextInputTarget>,
     pub(crate) active_text_selection_drag: Option<ActiveTextSelectionDrag>,
     pub(crate) last_text_selection_click: Option<TextSelectionClickState>,
@@ -1129,7 +1138,7 @@ impl HydrolysisRenderer {
                 }
             });
         }
-        self.transient_scene = Some(scene);
+        self.scene_mut().append(&scene, kurbo::Affine::IDENTITY);
     }
 }
 
@@ -1472,7 +1481,7 @@ impl HydrolysisRenderer {
         let theme = self.theme();
         let metrics = theme.text_context_menu_metrics();
         {
-            self.scene.record_picture(transform, |draw| {
+            self.scene_mut().record_picture(transform, |draw| {
                 theme.draw_text_context_menu_panel(&mut *draw, overlay.bounds);
             });
         }
@@ -1492,7 +1501,7 @@ impl HydrolysisRenderer {
                     row.bounds.x1 - metrics.separator_horizontal_inset,
                     row.bounds.y1,
                 );
-                self.scene.record_picture(transform, |draw| {
+                self.scene_mut().record_picture(transform, |draw| {
                     theme.draw_text_context_menu_separator(&mut *draw, separator);
                 });
             }
@@ -1513,7 +1522,7 @@ impl HydrolysisRenderer {
                         kurbo::Affine::translate((text_rect.x0, text_rect.y0)),
                         kurbo::Rect::new(0.0, 0.0, text_rect.width(), text_rect.height()),
                     );
-                    let (state, scene) = self.state_and_scene_mut();
+                    let (state, scene) = self.state_and_run_mut();
                     Self::render_styled_text(
                         state,
                         scene,
@@ -1534,7 +1543,7 @@ impl HydrolysisRenderer {
                             .separator_thickness
                             .mul_add(0.5, f64::mul_add(row.bounds.height(), 0.5, row.bounds.y0)),
                     );
-                    self.scene.record_picture(transform, |draw| {
+                    self.scene_mut().record_picture(transform, |draw| {
                         theme.draw_text_context_menu_separator(&mut *draw, separator);
                     });
                 }

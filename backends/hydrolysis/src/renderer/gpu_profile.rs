@@ -31,8 +31,7 @@ pub struct FrameStageTimes {
     pub update: Duration,
     /// Measure and layout of the retained tree.
     pub layout: Duration,
-    /// The retained tree's flush into `Recording` and the scene-layer
-    /// bookkeeping up to `flush_scene_layer`.
+    /// The retained tree's record into its nodes' programs.
     pub encode: Duration,
     /// Timestamped span covering the frame's layer-content submits — the
     /// engine's render and the effect passes around it. `None` when the
@@ -200,8 +199,9 @@ impl HydrolysisRenderer {
         queue: &wgpu::Queue,
     ) {
         let Some(profiler) = self
-            .cherenkov_windows
-            .get(&gpu_context_id)
+            .cherenkov_window
+            .as_ref()
+            .filter(|window| window.context_id() == gpu_context_id)
             .and_then(|window| window.gpu_profiler.as_ref())
         else {
             return;

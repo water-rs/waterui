@@ -609,7 +609,7 @@ pub fn render_button_parts(
             let label_area = ctx.safe_area_for(label_target);
             ctx.renderer_mut()
                 .with_suppressed_accessibility(|renderer| {
-                    subview.flush_in_rect(
+                    subview.place(
                         renderer,
                         render_ctx,
                         env,
@@ -772,7 +772,7 @@ pub fn render_menu_parts(
                 let label_area = ctx.safe_area_for(label_bounds);
                 ctx.renderer_mut()
                     .with_suppressed_accessibility(|renderer| {
-                        subview.flush_in_rect(
+                        subview.place(
                             renderer,
                             render_ctx,
                             env,

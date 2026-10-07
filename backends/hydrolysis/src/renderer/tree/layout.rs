@@ -362,7 +362,7 @@ impl RenderNode {
     /// build contexts carry no theme — and builds the retained sub-views its
     /// measure path then reads. Called once at each layout or measure entry
     /// point (`RetainedSubview::{measure_intrinsic, patch_and_measure,
-    /// flush_in_rect, flush_in_ctx, render_built_scene}` and the window's
+    /// place, place_in_ctx}` and the window's
     /// layout pump), before any node is measured. A semantic runtime never
     /// runs this pass, so no theme reaches it.
     pub(in crate::renderer) fn prepare_for_measure(&mut self, renderer: &mut HydrolysisRenderer) {

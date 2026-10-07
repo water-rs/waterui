@@ -66,12 +66,6 @@ impl_widget_behavior!(
     crate::renderer::measure_morph_shape_node
     ; a11y: crate::renderer::views::emit_graphics_leaf_accessibility
 );
-#[cfg(hydrolysis_macos_system_webview)]
-impl_widget_behavior!(
-    crate::widgets::platform::webview::WebViewRenderState,
-    crate::widgets::platform::webview::render_webview_node,
-    crate::widgets::platform::webview::measure_webview_node
-);
 impl_widget_behavior!(
     Spacer,
     crate::widgets::layout::spacer::render_spacer_node,
@@ -271,31 +265,11 @@ impl RenderNode {
         Self::build_widget(renderer, shape, stretch, env)
     }
 
-    /// Build a persistent webview node for the platform bridge: retain the
-    /// semantic `WebView` and its `MacSystemWebViewHandle` so the AppKit view
-    /// host keeps drawing it across flushes. Stretches to fill the proposal.
-    #[cfg(hydrolysis_macos_system_webview)]
-    pub(super) fn build_webview(
-        webview: WebView,
-        env: &Environment,
-        renderer: &mut SemanticCore,
-    ) -> RenderNode {
-        use crate::widgets::platform::webview::WebViewRenderState;
-        let stretch = waterui_core::View::stretch_axis(&webview);
-        let mut state = WebViewRenderState::from_view(webview, env);
-        // See build_controls: the prebuild runs under this widget's
-        // cell as the record reader, so its subviews attach to it.
-        let core = renderer.new_core();
-        renderer.with_probe_reader(&core, ReaderPhase::Record, |renderer| {
-            state.prebuild(renderer, env);
-        });
-        let state = Rc::new(RefCell::new(state));
-        Self::build_widget_with_core(state, stretch, env, core)
-    }
-
-    /// Without the platform bridge a `WebView` reaching the backend has no
-    /// engine to draw it — a missing realization, not a drawable stand-in.
-    #[cfg(not(hydrolysis_macos_system_webview))]
+    /// A `WebView` reaching the backend without a `Hook<WebView>` engine has
+    /// nothing to draw it — a missing realization, not a drawable stand-in.
+    /// The macOS bridge is no different: `hydrolysis_macos_system_webview`'s
+    /// record has no native-view layer to present the `WKWebView` through,
+    /// so it panics at build like every other engine-less path.
     pub(super) fn build_webview(
         _webview: WebView,
         _env: &Environment,

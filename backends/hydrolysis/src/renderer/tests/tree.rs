@@ -100,10 +100,8 @@ fn render_node_container_lays_out_and_flushes_text() {
         bounds,
     };
     node.flush(&mut renderer, ctx, &env, kurbo::Affine::IDENTITY);
-    // Check before `finish_rebuild_frame`, which moves the scene into the
-    // compositor's layer stack (leaving `renderer.scene` reset).
     assert!(
-        !renderer.scene_is_empty(),
+        renderer.commit_mirror().created > 0,
         "flushing two text nodes must draw glyphs into the scene"
     );
     renderer.finish_rebuild_frame();
@@ -203,7 +201,7 @@ fn opacity_wrapper_builds_and_flushes_via_dsl() {
     };
     node.flush(&mut renderer, ctx, &env, kurbo::Affine::IDENTITY);
     assert!(
-        !renderer.scene_is_empty(),
+        renderer.commit_mirror().created > 0,
         "an opacity-wrapped text must still draw glyphs"
     );
     renderer.finish_rebuild_frame();
@@ -225,7 +223,7 @@ fn capture_window_tree_renders_mixed_widgets() {
     renderer.begin_rebuild_frame();
     renderer.capture_window_tree(view, &env, bounds, Affine::IDENTITY, Affine::IDENTITY);
     assert!(
-        !renderer.scene_is_empty(),
+        renderer.commit_mirror().created > 0,
         "the render-tree path must draw a mixed text + widget view"
     );
     renderer.finish_rebuild_frame();
@@ -250,7 +248,7 @@ fn flush_window_tree_reuses_retained_tree() {
     // scene into the compositor's layer stack), so verify a scene segment resulted.
     let flushed = renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY);
     assert!(flushed, "a retained tree must be present to flush");
-    let scene_layers = renderer.render_layer_stats().scene_segments;
+    let scene_layers = renderer.commit_mirror().scene_segments;
     assert!(
         scene_layers > 0,
         "re-flushing the retained tree must produce a scene segment layer"
@@ -1210,7 +1208,7 @@ fn applied_filter_renders_through_retained_tree() {
     let flushed = renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY);
     assert!(flushed, "the retained tree must re-flush");
     assert_eq!(
-        renderer.render_layer_stats().filtered_subtrees,
+        renderer.commit_mirror().filtered,
         1,
         "a .blur() view must mount a node-owned filtered layer on the retained tree, \
          not fall through to a dispatch/capture path"
@@ -1221,7 +1219,7 @@ fn applied_filter_renders_through_retained_tree() {
     let flushed = renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY);
     assert!(flushed, "the retained tree must re-flush a second time");
     assert_eq!(
-        renderer.render_layer_stats().filtered_subtrees,
+        renderer.commit_mirror().filtered,
         1,
         "the node-owned filter mount must survive a geometry-static re-flush \
          (the retained FilteredView node keeps owning it across frames)"

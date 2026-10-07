@@ -4,12 +4,14 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::renderer::frame::ScopeClip;
 use waterui_graphics::draw::Draw as _;
 
 impl HydrolysisRenderer {
-    /// Apply a clip-shape layer around the given content render. Shared by the
-    /// dispatch handler and the retained `Wrapper` node so the clip effect lives
-    /// in exactly one place.
+    /// Apply a clip-shape prop on the recording node's own frame layer (§A.1):
+    /// the wrapper's `frame` carries the clip, not a `("clip", 0)` scope layer.
+    /// Callers must be layer nodes — a pass-through would clip the enclosing
+    /// node's whole program.
     pub(super) fn apply_clip_shape(
         renderer: &mut Self,
         ctx: RenderContext,
@@ -22,43 +24,27 @@ impl HydrolysisRenderer {
         // non-square rect makes every circular corner elliptical.
         let clip_path = shape_kind_path(value.kind(), ctx.bounds)
             .unwrap_or_else(|| path_commands_to_path(value.commands(), ctx.bounds));
-        if let Some(regular_clip) = kind_clip_shape(value.kind(), ctx.bounds)
+        let clip = if let Some(regular_clip) = kind_clip_shape(value.kind(), ctx.bounds)
             .or_else(|| regular_clip_shape(value.commands(), ctx.bounds))
         {
             match regular_clip {
-                RegularClipShape::Rect(rect) => {
-                    renderer.with_clip_rect_scope(
-                        1.0,
-                        ctx.local,
-                        rect,
-                        crate::renderer::ScopeDelta::RECORD_SPACE,
-                        render_content,
-                    );
-                }
-                RegularClipShape::RoundedRect {
+                RegularClipShape::Rect(rect) => ScopeClip::Rect(rect),
+                RegularClipShape::RoundedRect { rect, .. } => ScopeClip::RoundedRect {
+                    path: clip_path,
                     rect,
-                    corner_width,
-                    corner_height,
-                } => renderer.with_clip_rounded_rect_scope(
-                    1.0,
-                    ctx.local,
-                    clip_path,
-                    rect,
-                    corner_width,
-                    corner_height,
-                    crate::renderer::ScopeDelta::RECORD_SPACE,
-                    render_content,
-                ),
+                },
             }
         } else {
-            renderer.with_clip_path_scope(
-                1.0,
-                ctx.local,
-                clip_path,
-                crate::renderer::ScopeDelta::RECORD_SPACE,
-                render_content,
-            );
-        }
+            ScopeClip::Path(clip_path)
+        };
+        // The layer clip in the frame's content space — the node's own
+        // bounds — with the conservative hit bound the placement scope
+        // used to carry now on the node's placement itself.
+        renderer.program().program_mut().clip = Some(clip.in_space(kurbo::Affine::IDENTITY));
+        renderer
+            .current_placement()
+            .set_clip(Some(clip.hit_bounds()));
+        render_content(renderer);
     }
 
     /// Render the given content then stroke the border over it, mirroring the
@@ -86,7 +72,7 @@ impl HydrolysisRenderer {
                 kurbo::RoundedRect::from_rect(ctx.bounds, f64::from(border.corner_radius));
             let stroke = kurbo::Stroke::new(width);
             renderer
-                .scene
+                .scene_mut()
                 .stroke_paint(&stroke, ctx.local, paint(), &rounded);
             return;
         }
@@ -99,7 +85,7 @@ impl HydrolysisRenderer {
                 ctx.bounds.y0 + width,
             );
             renderer
-                .scene
+                .scene_mut()
                 .fill_paint(peniko::Fill::NonZero, ctx.local, paint(), &top);
         }
         if border.edges.bottom {
@@ -110,7 +96,7 @@ impl HydrolysisRenderer {
                 ctx.bounds.y1,
             );
             renderer
-                .scene
+                .scene_mut()
                 .fill_paint(peniko::Fill::NonZero, ctx.local, paint(), &bottom);
         }
         if border.edges.leading {
@@ -121,7 +107,7 @@ impl HydrolysisRenderer {
                 ctx.bounds.y1,
             );
             renderer
-                .scene
+                .scene_mut()
                 .fill_paint(peniko::Fill::NonZero, ctx.local, paint(), &leading);
         }
         if border.edges.trailing {
@@ -132,7 +118,7 @@ impl HydrolysisRenderer {
                 ctx.bounds.y1,
             );
             renderer
-                .scene
+                .scene_mut()
                 .fill_paint(peniko::Fill::NonZero, ctx.local, paint(), &trailing);
         }
     }
@@ -169,7 +155,7 @@ impl HydrolysisRenderer {
             None => None,
         };
         match uniform_radius {
-            Some(corner_radius) => renderer.scene.blurred_rounded_rect(
+            Some(corner_radius) => renderer.scene_mut().blurred_rounded_rect(
                 ctx.local,
                 shadow_rect,
                 shadow_color,
@@ -211,7 +197,7 @@ impl HydrolysisRenderer {
         let placement = transform * kurbo::Affine::translate((rect.x0, rect.y0));
 
         if blur <= 0.0 {
-            renderer.scene.fill_paint(
+            renderer.scene_mut().fill_paint(
                 peniko::Fill::NonZero,
                 placement,
                 Paint::Solid(color),
@@ -223,7 +209,7 @@ impl HydrolysisRenderer {
         // `blur` is already in device pixels; the engine scales `sigma` by
         // the transform's axis length, so the path arrives pre-transformed
         // and the op transform is identity.
-        renderer.scene.shadow(
+        renderer.scene_mut().shadow(
             kurbo::Affine::IDENTITY,
             &(placement * &local_path),
             blur,
@@ -246,7 +232,7 @@ impl HydrolysisRenderer {
     ) {
         {
             let theme = renderer.theme();
-            renderer.scene.record_picture(ctx.local, |draw| {
+            renderer.scene_mut().record_picture(ctx.local, |draw| {
                 theme.draw_text_context_menu_panel(&mut *draw, ctx.bounds);
             });
         }

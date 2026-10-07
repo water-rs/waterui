@@ -33,7 +33,7 @@ enum RetainedSubviewState {
     /// The source view, taken on first build (`AnyView` is move-only).
     Unbuilt { source: AnyView },
     /// The built sub-view: the node and the layout bookkeeping its flushes own.
-    Built(BuiltSubview),
+    Built(Box<BuiltSubview>),
 }
 
 /// Everything [`RetainedSubviewState::Built`] carries: the persistent node and
@@ -192,15 +192,17 @@ impl RetainedSubview {
         // view (stack/spacer/etc.) inside a label lowers to its native form.
         let view = normalize_layout_view(view, env);
         let node = RenderNode::build(view, env, renderer);
-        self.state = RetainedSubviewState::Built(BuiltSubview {
+        let layout_dependencies =
+            Some(LayoutDependencies::new(Rc::downgrade(&node.core().cell)));
+        self.state = RetainedSubviewState::Built(Box::new(BuiltSubview {
             node,
             laid_out: Size::zero(),
             laid_out_proposal: None,
             needs_layout: true,
             laid_out_area: None,
-            layout_dependencies: Some(LayoutDependencies::new(renderer.signals.clone())),
+            layout_dependencies,
             default_a11y_label,
-        });
+        }));
         // The current reader — the record or layout pass this build runs
         // inside — is the owning widget's cell; a build with no reader
         // attaches to the window root.
@@ -429,7 +431,7 @@ impl RetainedSubview {
     /// host's context inherited with `Covered` edges where its chrome sits for
     /// chrome content (`NavigationView`, `Tabs`), `None` for a scroll
     /// surface's context-free content.
-    pub(crate) fn flush_in_rect(
+    pub(crate) fn place(
         &mut self,
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
@@ -443,7 +445,7 @@ impl RetainedSubview {
         else {
             return;
         };
-        let built = self.expect_built_mut("flush_in_rect");
+        let built = self.expect_built_mut("place");
         // Record the sub-view's root as the owner of whatever its flush
         // registers: a press the caller registered for the whole sub-view
         // carries the same owner, and the ancestry check tells a gesture
@@ -457,12 +459,12 @@ impl RetainedSubview {
         }
     }
 
-    /// [`flush_in_rect`](Self::flush_in_rect) for a subtree displayed outside
+    /// [`place`](Self::place) for a subtree displayed outside
     /// the walk recording it (context menus, anchored overlays): the
     /// sub-view's registrations resolve in window space through the IDENTITY
     /// window anchor, the same answer the deleted
     /// `hit_transform = kurbo::Affine::IDENTITY` entry points gave.
-    pub(crate) fn flush_in_rect_detached(
+    pub(crate) fn place_detached(
         &mut self,
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
@@ -482,13 +484,18 @@ impl RetainedSubview {
         // current placement is the presentation host's own.
         let anchor = renderer.current_placement();
         let index = anchor.take_item();
-        self.expect_built_mut("flush_in_rect_detached")
-            .node
-            .flush_anchored(renderer, child_ctx, env, Some(anchor), delta, index);
+        self.expect_built_mut("place_detached").node.flush_anchored(
+            renderer,
+            child_ctx,
+            env,
+            Some(anchor),
+            delta,
+            index,
+        );
     }
 
-    /// The shared head of [`flush_in_rect`](Self::flush_in_rect) and
-    /// [`flush_in_rect_detached`](Self::flush_in_rect_detached): build on
+    /// The shared head of [`place`](Self::place) and
+    /// [`place_detached`](Self::place_detached): build on
     /// first use, apply pending patches, lay the sub-view out at `rect`'s
     /// size when anything changed, and return the child context and the
     /// delta that places it at `rect`. `None` for a zero-area rect, which
@@ -544,7 +551,7 @@ impl RetainedSubview {
         clippy::too_many_arguments,
         reason = "threads the full flush context; grouping into a struct would not improve clarity"
     )]
-    pub(crate) fn flush_in_ctx(
+    pub(crate) fn place_in_ctx(
         &mut self,
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
@@ -558,7 +565,7 @@ impl RetainedSubview {
             return;
         }
         self.ensure_built(renderer, env);
-        let built = self.expect_built_mut("flush_in_ctx");
+        let built = self.expect_built_mut("place_in_ctx");
         let structural = Self::patch_built(&mut built.node, renderer);
         built.node.prepare_for_measure(renderer);
         built.needs_layout |= structural | built.node.take_layout_dirty();
@@ -572,96 +579,42 @@ impl RetainedSubview {
         }
     }
 
-    /// Build (once), lay out at `placement.size`, and capture the sub-view's
-    /// flush as [`CapturedLayers`] in identity (local) coordinates, for a node
-    /// that must survive across flushes (a navigation-stack page). The capture
-    /// holds every layer the page presents, so it can be presented at the
-    /// stack's place and replayed by the navigation transition (cross-fade
-    /// `from`/`to`) without re-dispatch.
-    ///
-    /// Only the drawing is local. Hit targets and accessibility bounds the
-    /// flush registers are not replayed — they are live for this frame — so
-    /// they land in window hit-test space through the placement chain the
-    /// capture anchors at, the same space the captured layers are
-    /// presented in.
-    pub(crate) fn render_built_scene(
+    /// Builds, lays out and records a navigation page into the open page
+    /// scope, anchored at the scope's placement.
+    pub(crate) fn record_built_page(
         &mut self,
         renderer: &mut HydrolysisRenderer,
         env: &Environment,
-        placement: CapturedScenePlacement,
+        size: Size,
         safe_area: Option<safe_area::SafeAreaLayout>,
-    ) -> NavigationCapturedScene {
-        let CapturedScenePlacement { size } = placement;
+    ) {
         self.ensure_built(renderer, env);
-        let built = self.expect_built_mut("render_built_scene");
+        let built = self.expect_built_mut("record_built_page");
         let structural = Self::patch_built(&mut built.node, renderer);
         built.node.prepare_for_measure(renderer);
         built.needs_layout |= structural | built.node.take_layout_dirty();
         let proposal = ProposalSize::new(Some(size.width), Some(size.height));
         built.layout_if_needed(renderer, env, safe_area, proposal, size);
+        let anchor = renderer.current_placement();
         let local_ctx = RenderContext {
-            local: kurbo::Affine::IDENTITY,
+            local: renderer.program().origin(),
             bounds: kurbo::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
         };
-        renderer.begin_navigation_scene_capture();
         renderer.push_lazy_viewport(LazyViewport {
             bounds: local_ctx.bounds,
-            transform: local_ctx.local,
+            transform: anchor.resolved_transform(true),
         });
-        // The captured subtree roots at the current placement with an
-        // identity delta: the placement's resolved transform IS
-        // `hit_transform` (the caller computed it from this chain), but
-        // the chain keeps every ancestor scope — an inactive page's
-        // unhittable scope and its clips gate its registrations, which
-        // the window anchor bypassed. The page claims the anchor's next
-        // item slot — its stack position in the parent's record.
-        let anchor = renderer.current_placement();
         let index = anchor.take_item();
-        let layers = renderer.capture_layers(|renderer| {
-            built.node.flush_anchored(
-                renderer,
-                local_ctx,
-                env,
-                Some(anchor),
-                kurbo::Affine::IDENTITY,
-                index,
-            );
-        });
-        renderer.pop_lazy_viewport("retained scene capture");
-        renderer.finish_navigation_scene_capture(layers)
+        built.node.flush_anchored(
+            renderer,
+            local_ctx,
+            env,
+            Some(anchor),
+            kurbo::Affine::IDENTITY,
+            index,
+        );
+        renderer.pop_lazy_viewport("retained page record");
     }
-
-    /// Renders a retained navigation page that is not currently interactive.
-    /// This is used to prepare the immediately preceding page for an edge-swipe
-    /// pop without registering hidden hit-test or accessibility targets.
-    pub(crate) fn render_built_navigation_scene_inactive(
-        &mut self,
-        renderer: &mut HydrolysisRenderer,
-        env: &Environment,
-        placement: CapturedScenePlacement,
-        safe_area: Option<safe_area::SafeAreaLayout>,
-    ) -> NavigationCapturedScene {
-        // An inactive page registers nothing hittable.
-        renderer.push_hit_gate_scope(crate::renderer::HitGate::Inactive);
-        #[cfg(feature = "accessibility")]
-        renderer.push_accessibility_suppression();
-        let scene = self.render_built_scene(renderer, env, placement, safe_area);
-        #[cfg(feature = "accessibility")]
-        renderer.pop_accessibility_suppression();
-        renderer.pop_placement_scope();
-        scene
-    }
-}
-
-/// Where a scene captured by [`RetainedSubview::render_built_scene`] is
-/// presented: the size its content lays out at. The drawing is recorded
-/// local and placed by whoever replays it; the hit targets and
-/// accessibility bounds are registered live and resolve through the
-/// placement the capture anchored at — the recording point's own chain.
-#[derive(Clone, Copy, Debug)]
-pub struct CapturedScenePlacement {
-    /// The size the captured content lays out at.
-    pub size: Size,
 }
 
 /// A cache of retained node sub-views for a *virtualized* collection (a lazy
@@ -1208,7 +1161,7 @@ pub struct ScrollNode {
     /// §7.1's scroll-surface bookkeeping: the extension and clearance
     /// bounds layout computed once (the handle is rebound exactly once per
     /// layout with them), plus the focused-field state the flush drives.
-    pub(super) surface: safe_area::ScrollSurfaceArea,
+    pub(super) surface: std::rc::Rc<safe_area::ScrollSurfaceArea>,
 }
 
 pub struct RetainNode {
@@ -1238,8 +1191,8 @@ pub struct SceneViewNode {
     pub(super) invalidator: waterui_graphics::SceneInvalidator,
     /// The engine resource-table identity `content` last recorded against —
     /// `None` until its first mount, a `Weak` that expires with the pooled
-    /// engine's table. Shared into each frame's `SceneContentLayer` so every
-    /// mount sees the same recorded identity.
+    /// engine's table. Shared into the node's recorded run so every commit
+    /// sees the same recorded identity.
     pub(super) association:
         Rc<RefCell<Option<std::rc::Weak<crate::renderer::recording::SceneResources>>>>,
 }

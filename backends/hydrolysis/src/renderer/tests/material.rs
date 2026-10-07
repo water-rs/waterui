@@ -1,7 +1,6 @@
 //! A within-window `Material` background through the whole frame path: the
-//! tree builds a material wrapper, its flush presents a
-//! [`RenderLayer::Material`] under the view's ancestry, and the install pass
-//! makes the mount a member of a backdrop group the engine captures at a
+//! tree builds a material wrapper, its node's frame layer commits under the
+//! view's ancestry, and `LayerTarget::mount_material` makes the frame a member of a backdrop group the engine captures at a
 //! quarter of device resolution and runs through the level's colour stage
 //! and then its blur. Under a fully transparent ancestry the mount holds no
 //! group, so the engine captures nothing for it.
@@ -16,9 +15,13 @@ use waterui_graphics::filtrate::{
 };
 use waterui_layout::stack::zstack;
 
-use super::{MinimalTestTheme, pumped_test_environment};
+use super::{MinimalTestTheme, pumped_test_environment, test_environment, test_renderer};
 use crate::HeadlessRuntime;
-use crate::renderer::{MaterialLayer, RenderLayer};
+use std::rc::Rc;
+
+use crate::renderer::material::MaterialRuntime;
+use crate::renderer::mount::layers::{LayerVisitor, NodeLayers, visit};
+use crate::renderer::mount::target::GpuMaterial;
 
 /// The window, in points; the material fills it.
 const WIDTH: u32 = 160;
@@ -65,42 +68,47 @@ fn rendered(opacity: f32) -> HeadlessRuntime {
     runtime
 }
 
-/// The frame's only material layer.
-fn material_layer(runtime: &HeadlessRuntime) -> &MaterialLayer {
-    let layers: Vec<_> = runtime
-        .renderer()
-        .compositor
-        .render_layers
-        .iter()
-        .filter_map(|layer| match layer {
-            RenderLayer::Material(layer) => Some(layer),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(layers.len(), 1, "the frame presents one material layer");
-    layers[0]
+/// The frame's only material frame: the opacities it is presented under,
+/// its runtime, and the display scale its backdrop group was built for.
+fn material_frame(runtime: &HeadlessRuntime) -> (Vec<f32>, Rc<MaterialRuntime>, Option<f64>) {
+    struct Frames(Vec<(Vec<f32>, Rc<MaterialRuntime>, Option<f64>)>);
+    impl LayerVisitor for Frames {
+        fn node(&mut self, layers: &NodeLayers, _world: kurbo::Affine, alphas: &[f32]) {
+            if let Some(runtime) = layers.material_runtime() {
+                self.0.push((
+                    alphas.to_vec(),
+                    Rc::clone(runtime),
+                    layers
+                        .material::<GpuMaterial>()
+                        .map(GpuMaterial::display_scale),
+                ));
+            }
+        }
+    }
+    let mut frames = Frames(Vec::new());
+    visit(&runtime.renderer().mount_roots(), &mut frames);
+    assert_eq!(frames.0.len(), 1, "the frame presents one material layer");
+    frames.0.remove(0)
 }
 
 /// The opacity scopes the frame's material layer is presented under.
 fn ancestry_alphas(runtime: &HeadlessRuntime) -> Vec<f32> {
-    material_layer(runtime)
-        .active_layers
-        .iter()
-        .map(|scope| scope.alpha)
-        .collect()
+    material_frame(runtime).0
 }
 
 /// What the install left behind: the display scale the material mount's
 /// backdrop group was built for, and the engine's backdrop capture bytes
 /// and format.
 fn installed(runtime: &HeadlessRuntime) -> (Option<f64>, u64, Option<&'static str>) {
-    let key = std::rc::Rc::as_ptr(&material_layer(runtime).owner) as usize;
-    let mut windows = runtime.renderer().cherenkov_windows.values();
-    let window = windows.next().expect("the frame installed into a window");
-    assert!(windows.next().is_none(), "the test renders one window");
+    let scale = material_frame(runtime).2;
+    let window = runtime
+        .renderer()
+        .cherenkov_window
+        .as_ref()
+        .expect("the frame installed into a window");
     let memory = window.state.engine.memory();
     (
-        window.mounts.backdrop_display_scale(key),
+        scale,
         memory.backdrop_captures.0,
         memory.backdrop_capture_format,
     )
@@ -119,7 +127,7 @@ fn a_material_installs_a_quarter_scale_colour_then_blur_backdrop_group() {
 
     // The chain the install builds runs the colour stage, then the blur's
     // two passes, all in encoded sRGB.
-    let chain = material_layer(&runtime).runtime.chain(DISPLAY_SCALE);
+    let chain = material_frame(&runtime).1.chain(DISPLAY_SCALE);
     let mut stages = Stages::default();
     chain.collect_stages(&mut stages);
     assert_eq!(
@@ -157,4 +165,44 @@ fn a_material_under_a_transparent_ancestry_captures_nothing() {
     let (scale, bytes, _) = installed(&runtime);
     assert_eq!(scale, None, "a hidden material holds no backdrop group");
     assert_eq!(bytes, 0, "a hidden material costs no capture");
+}
+
+/// The material frame's backdrop membership as the mirror target records it:
+/// a member at the mount's display scale while shown, none under a fully
+/// transparent ancestry.
+#[test]
+fn a_material_frame_is_a_backdrop_member_only_while_visible() {
+    let members = |opacity: f32| {
+        let mut renderer = test_renderer();
+        let window = kurbo::Rect::new(0.0, 0.0, f64::from(WIDTH_PT), f64::from(HEIGHT_PT));
+        renderer.begin_rebuild_frame();
+        renderer.capture_window_tree(
+            AnyView::new(
+                ().size(WIDTH_PT, HEIGHT_PT)
+                    .background(Material::Regular)
+                    .opacity(opacity),
+            ),
+            &test_environment(),
+            window,
+            kurbo::Affine::IDENTITY,
+            kurbo::Affine::IDENTITY,
+        );
+        renderer.finish_rebuild_frame();
+        renderer.commit_mirror();
+        renderer
+            .mirror()
+            .backdrops()
+            .into_iter()
+            .map(|(_, scale)| scale)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        members(1.0),
+        [1.0],
+        "a shown material joins one backdrop group"
+    );
+    assert!(
+        members(0.0).is_empty(),
+        "a hidden material holds no backdrop group"
+    );
 }

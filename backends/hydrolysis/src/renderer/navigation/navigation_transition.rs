@@ -5,69 +5,54 @@ use waterui::navigation::{
 };
 use waterui_backend_core::widget::NavigationMotion;
 
-use super::{NavigationCapturedScene, NavigationMatchedElement};
-use crate::renderer::{CapturedLayers, HydrolysisRenderer};
-
-pub struct NavigationTransitionFrame<'a> {
-    pub(crate) renderer: &'a mut HydrolysisRenderer,
-    /// The transform placing the stack's local space in the scene.
-    pub(crate) transform: kurbo::Affine,
-    pub(crate) bounds: kurbo::Rect,
-    /// `bounds` grown by the page area's touched-edge offsets: what the
-    /// pages actually paint, since their bar surfaces reach the window edge
-    /// (§7.1). The clip rect and the slide-offset space use it — a clip on
-    /// `bounds` would cut the extended surfaces, and an offset counted
-    /// against `bounds` would leave part of an off-screen page inside the
-    /// window.
-    pub(crate) paint_bounds: kurbo::Rect,
-    pub(crate) style: AnyNavigationTransition,
-    pub(crate) motion: NavigationMotion,
-    pub(crate) direction: NavigationTransitionDirection,
-    pub(crate) progress: f64,
-    pub(crate) from_scene: &'a NavigationCapturedScene,
-    pub to_scene: &'a NavigationCapturedScene,
+/// How a transition presents its two pages this frame.
+pub enum NavigationPresentation {
+    /// Both pages cross-fade while the matched element pair flies between
+    /// its two frames.
+    Matched(waterui_core::id::Id),
+    /// Each page draws under its own transition layer.
+    Layers(ResolvedNavigationTransitionFrame),
 }
 
-pub fn draw_navigation_transition(frame: NavigationTransitionFrame<'_>) {
-    // Dispatch on the retained capability, never on the native projection: a
-    // custom transition may report a platform-native projection for Apple and
-    // Android while still resolving its own frames here.
-    let retained = frame.style.retained();
-    #[allow(clippy::cast_possible_truncation)]
-    let progress = frame.progress as f32;
-    let resolved = match retained {
+pub fn navigation_presentation(
+    style: &AnyNavigationTransition,
+    motion: NavigationMotion,
+    direction: NavigationTransitionDirection,
+    progress: f64,
+    viewport_width: f64,
+) -> NavigationPresentation {
+    let progress = crate::num_cast::f64_as_f32(progress);
+    let resolved = match style.retained() {
         RetainedNavigationTransition::MatchedGeometry(id) => {
-            draw_matched_navigation_transition(frame, id);
-            return;
+            return NavigationPresentation::Matched(id);
         }
         RetainedNavigationTransition::PlatformDefault => material_shared_axis_x_frame(
             progress,
-            frame.direction,
-            frame.motion.shared_axis_slide_distance,
-            frame.paint_bounds.width(),
-            frame.motion.fade_through_threshold,
+            direction,
+            motion.shared_axis_slide_distance,
+            viewport_width,
+            motion.fade_through_threshold,
         ),
         RetainedNavigationTransition::None => ResolvedNavigationTransitionFrame::IDENTITY,
-        RetainedNavigationTransition::Frames => frame.style.frame(progress, frame.direction),
+        RetainedNavigationTransition::Frames => style.frame(progress, direction),
     };
-    let from_scene = frame.from_scene.composed();
-    let to_scene = frame.to_scene.composed();
-    let outgoing = (&from_scene, resolved.outgoing);
-    let incoming = (&to_scene, resolved.incoming);
-    let layers = match frame.direction {
-        NavigationTransitionDirection::Push => [outgoing, incoming],
-        NavigationTransitionDirection::Pop => [incoming, outgoing],
-    };
-    for (scene, layer) in layers {
-        append_scene_layer(
-            frame.renderer,
-            frame.transform,
-            frame.bounds,
-            frame.paint_bounds,
-            scene,
-            layer,
-        );
-    }
+    NavigationPresentation::Layers(resolved)
+}
+
+/// A transition layer's transform of its page: the offset as a fraction of
+/// `paint_bounds`, then the scale about the centre of `bounds`.
+pub fn transition_layer_transform(
+    bounds: kurbo::Rect,
+    paint_bounds: kurbo::Rect,
+    layer: NavigationTransitionLayer,
+) -> kurbo::Affine {
+    let center = bounds.center();
+    kurbo::Affine::translate((
+        f64::from(layer.offset_x) * paint_bounds.width(),
+        f64::from(layer.offset_y) * paint_bounds.height(),
+    )) * kurbo::Affine::translate((center.x, center.y))
+        * kurbo::Affine::scale(f64::from(layer.scale))
+        * kurbo::Affine::translate((-center.x, -center.y))
 }
 
 fn material_shared_axis_x_frame(
@@ -112,79 +97,7 @@ fn material_shared_axis_x_frame(
     }
 }
 
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
-)]
-fn draw_matched_navigation_transition(
-    frame: NavigationTransitionFrame<'_>,
-    id: waterui_core::id::Id,
-) {
-    let (from_element, to_element, from_is_source, to_is_source) = match frame.direction {
-        NavigationTransitionDirection::Push => (
-            frame.from_scene.sources.get(&id),
-            frame.to_scene.destinations.get(&id),
-            true,
-            false,
-        ),
-        NavigationTransitionDirection::Pop => (
-            frame.from_scene.destinations.get(&id),
-            frame.to_scene.sources.get(&id),
-            false,
-            true,
-        ),
-    };
-    let from_element = from_element.unwrap_or_else(|| {
-        panic!("navigation zoom source {id:?} is not present in the outgoing page")
-    });
-    let to_element = to_element.unwrap_or_else(|| {
-        panic!("navigation zoom destination {id:?} is not present in the incoming page")
-    });
-    assert!(
-        from_element.bounds.width() > 0.0
-            && from_element.bounds.height() > 0.0
-            && to_element.bounds.width() > 0.0
-            && to_element.bounds.height() > 0.0,
-        "navigation zoom geometry must have a positive size"
-    );
-
-    let from_page = frame.from_scene.composed_without(from_is_source, id);
-    let to_page = frame.to_scene.composed_without(to_is_source, id);
-    append_scene_with_opacity(
-        frame.renderer,
-        frame.transform,
-        frame.bounds,
-        frame.paint_bounds,
-        &from_page,
-        1.0 - crate::num_cast::f64_as_f32(frame.progress),
-    );
-    append_scene_with_opacity(
-        frame.renderer,
-        frame.transform,
-        frame.bounds,
-        frame.paint_bounds,
-        &to_page,
-        crate::num_cast::f64_as_f32(frame.progress),
-    );
-
-    let bounds = interpolate_rect(from_element.bounds, to_element.bounds, frame.progress);
-    append_matched_element(
-        frame.renderer,
-        frame.transform,
-        from_element,
-        bounds,
-        1.0 - crate::num_cast::f64_as_f32(frame.progress),
-    );
-    append_matched_element(
-        frame.renderer,
-        frame.transform,
-        to_element,
-        bounds,
-        crate::num_cast::f64_as_f32(frame.progress),
-    );
-}
-
-fn interpolate_rect(from: kurbo::Rect, to: kurbo::Rect, progress: f64) -> kurbo::Rect {
+pub fn interpolate_rect(from: kurbo::Rect, to: kurbo::Rect, progress: f64) -> kurbo::Rect {
     let interpolate = |from: f64, to: f64| (to - from).mul_add(progress, from);
     kurbo::Rect::new(
         interpolate(from.x0, to.x0),
@@ -194,83 +107,14 @@ fn interpolate_rect(from: kurbo::Rect, to: kurbo::Rect, progress: f64) -> kurbo:
     )
 }
 
-fn append_matched_element(
-    renderer: &mut HydrolysisRenderer,
-    transform: kurbo::Affine,
-    element: &NavigationMatchedElement,
-    target: kurbo::Rect,
-    opacity: f32,
-) {
-    if opacity <= 0.0 {
-        return;
-    }
-    let local = kurbo::Affine::translate((target.x0, target.y0))
+/// Maps a matched element's page-space `bounds` onto `target`.
+pub fn matched_element_transform(bounds: kurbo::Rect, target: kurbo::Rect) -> kurbo::Affine {
+    kurbo::Affine::translate((target.x0, target.y0))
         * kurbo::Affine::scale_non_uniform(
-            target.width() / element.bounds.width(),
-            target.height() / element.bounds.height(),
+            target.width() / bounds.width(),
+            target.height() / bounds.height(),
         )
-        * kurbo::Affine::translate((-element.bounds.x0, -element.bounds.y0));
-    renderer.with_paint_clip_rect(opacity, transform, target, |renderer| {
-        renderer.present_layers(&element.layers, transform * local);
-    });
-}
-
-fn append_scene_with_opacity(
-    renderer: &mut HydrolysisRenderer,
-    transform: kurbo::Affine,
-    bounds: kurbo::Rect,
-    paint_bounds: kurbo::Rect,
-    content: &CapturedLayers,
-    opacity: f32,
-) {
-    append_scene_layer(
-        renderer,
-        transform,
-        bounds,
-        paint_bounds,
-        content,
-        NavigationTransitionLayer {
-            opacity,
-            ..NavigationTransitionLayer::IDENTITY
-        },
-    );
-}
-
-fn append_scene_layer(
-    renderer: &mut HydrolysisRenderer,
-    transform: kurbo::Affine,
-    bounds: kurbo::Rect,
-    paint_bounds: kurbo::Rect,
-    content: &CapturedLayers,
-    layer: NavigationTransitionLayer,
-) {
-    if layer.opacity <= 0.0 {
-        return;
-    }
-    // `NavigationTransitionLayer` offsets are fractions of the painted
-    // viewport, not of `bounds`: an offset of 1 must move the page's whole
-    // painted reach — extended surfaces included — off the window, and the
-    // default slide divides by the same width to keep its absolute
-    // distance. The scale centre is `bounds`'s centre either way.
-    let center = bounds.center();
-    let local = kurbo::Affine::translate((
-        f64::from(layer.offset_x) * paint_bounds.width(),
-        f64::from(layer.offset_y) * paint_bounds.height(),
-    )) * kurbo::Affine::translate((center.x, center.y))
-        * kurbo::Affine::scale(f64::from(layer.scale))
-        * kurbo::Affine::translate((-center.x, -center.y));
-    // The clip covers the page's painted reach — its bar surfaces extend
-    // past `bounds` to the window edge (§7.1) — and follows the page's
-    // slide and scale.
-    let transformed_bounds = local.transform_rect_bbox(paint_bounds);
-    // The scope's opacity reaches every layer the page presents, but each
-    // keyed layer and each run of drawing between them is faded on its own
-    // engine layer rather than as one flattened group, so translucent
-    // content that overlaps across those layers blends slightly differently
-    // mid-transition than it would flattened.
-    renderer.with_paint_clip_rect(layer.opacity, transform, transformed_bounds, |renderer| {
-        renderer.present_layers(content, transform * local);
-    });
+        * kurbo::Affine::translate((-bounds.x0, -bounds.y0))
 }
 
 #[cfg(test)]

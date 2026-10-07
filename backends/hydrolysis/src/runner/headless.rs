@@ -1408,6 +1408,7 @@ mod generation_tests {
         runtime.pump_at(true, t0);
         assert_eq!(rebuilds.get(), 0, "first mount must not rebuild");
         assert!(builds.get() >= 1, "first frame records the scene");
+        let builds_before_replacement = builds.get();
         assert_eq!(installs.get(), 1, "mount installs the invalidator once");
 
         // Destroy the actual device through wgpu, then drive the device's own
@@ -1469,7 +1470,7 @@ mod generation_tests {
         runtime.pump_at(true, t0 + Duration::from_millis(48));
         assert_eq!(rebuilds.get(), 1, "later frames do not rebuild again");
         assert!(
-            builds.get() >= 3,
+            builds.get() > builds_before_replacement,
             "semantic view state survives replacement"
         );
 

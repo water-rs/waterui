@@ -1,15 +1,10 @@
-use super::{CapturedLayers, HydrolysisRenderer, TailMark};
+use super::{HydrolysisRenderer, TailMark};
 
 use crate::renderer::Edge;
 use crate::renderer::EdgeOffsets;
 use crate::renderer::HydroState;
 use crate::renderer::SafeAreaLayout;
 use crate::renderer::grow_rect;
-use crate::renderer::navigation::{
-    NavigationCapturedScene, NavigationTransitionFrame, draw_navigation_transition,
-};
-use waterui::navigation::{AnyNavigationTransition, NavigationTransitionDirection};
-use waterui_backend_core::widget::NavigationMotion;
 use waterui_core::Environment;
 use waterui_core::layout::HorizontalAlignment;
 use waterui_text::styled::StyledStr;
@@ -208,48 +203,56 @@ impl<'a> WidgetRenderContext<'a> {
         &mut self.renderer.state
     }
 
-    pub(crate) fn push_layer_rect(&mut self, alpha: f32, clip: kurbo::Rect) {
-        self.renderer.push_layer_rect(
+    /// Opens the named scope `key` clipped to `clip` at `alpha`, through
+    /// this context's transform.
+    pub(crate) fn open_scope(
+        &mut self,
+        key: crate::renderer::mount::ScopeKey,
+        alpha: f32,
+        clip: kurbo::Rect,
+    ) {
+        self.renderer.open_scope(
+            key,
             alpha,
             self.local,
-            clip,
+            &crate::renderer::frame::ScopeClip::Rect(clip),
             crate::renderer::ScopeDelta::RECORD_SPACE,
         );
     }
 
-    pub(crate) fn pop_layer(&mut self) {
-        self.renderer.pop_layer();
+    pub(crate) fn close_scope(&mut self) {
+        self.renderer.close_scope();
     }
 
-    /// The [`HydrolysisRenderer::with_clip_rect_scope`] pairing through this
-    /// context's transforms.
-    pub(crate) fn with_clip_rect_scope(
+    /// [`Self::open_scope`] around `f`.
+    pub(crate) fn with_scope(
         &mut self,
+        key: crate::renderer::mount::ScopeKey,
         alpha: f32,
         clip: kurbo::Rect,
         f: impl FnOnce(&mut Self),
     ) {
-        self.push_layer_rect(alpha, clip);
+        self.open_scope(key, alpha, clip);
         f(self);
-        self.pop_layer();
+        self.close_scope();
     }
 
-    /// [`Self::with_clip_rect_scope`] when the scope only exists conditionally
-    /// (a disabled-control alpha group, a viewport clip that only out-scrolls
-    /// need): pairing stays lexical either way.
-    pub(crate) fn with_clip_rect_scope_if(
+    /// [`Self::with_scope`] when the scope only exists conditionally (a
+    /// disabled-control alpha group): pairing stays lexical either way.
+    pub(crate) fn with_scope_if(
         &mut self,
         enabled: bool,
+        key: crate::renderer::mount::ScopeKey,
         alpha: f32,
         clip: kurbo::Rect,
         f: impl FnOnce(&mut Self),
     ) {
         if enabled {
-            self.push_layer_rect(alpha, clip);
+            self.open_scope(key, alpha, clip);
         }
         f(self);
         if enabled {
-            self.pop_layer();
+            self.close_scope();
         }
     }
 
@@ -276,7 +279,7 @@ impl<'a> WidgetRenderContext<'a> {
             kurbo::Rect::new(0.0, 0.0, bounds.width(), bounds.height()),
         );
         let renderer = self.renderer_mut();
-        let (state, scene) = renderer.state_and_scene_mut();
+        let (state, scene) = renderer.state_and_run_mut();
         HydrolysisRenderer::render_styled_text_limited(
             state,
             scene,
@@ -299,42 +302,9 @@ impl<'a> WidgetRenderContext<'a> {
             kurbo::Rect::new(0.0, 0.0, bounds.width(), bounds.height()),
         );
         let renderer = self.renderer_mut();
-        let (state, scene) = renderer.state_and_scene_mut();
+        let (state, scene) = renderer.state_and_run_mut();
         HydrolysisRenderer::render_styled_text_single_line_centered(
             state, scene, child_ctx, styled, env,
         );
-    }
-
-    /// Presents captured layers at this context's transform.
-    pub(crate) fn present_layers(&mut self, layers: &CapturedLayers) {
-        self.renderer.present_layers(layers, self.local);
-    }
-
-    pub(crate) fn draw_navigation_transition(
-        &mut self,
-        style: AnyNavigationTransition,
-        motion: NavigationMotion,
-        direction: NavigationTransitionDirection,
-        progress: f64,
-        from_scene: &NavigationCapturedScene,
-        to_scene: &NavigationCapturedScene,
-    ) {
-        // The transition's page clips and the stack's backdrop fill cover
-        // the same reach — `chrome_paint_bounds` — so an extended bar
-        // surface is never clipped mid-animation. `bounds` stays the
-        // scale-centre reference.
-        let paint_bounds = self.chrome_paint_bounds();
-        draw_navigation_transition(NavigationTransitionFrame {
-            renderer: self.renderer,
-            transform: self.local,
-            bounds: self.bounds,
-            paint_bounds,
-            style,
-            motion,
-            direction,
-            progress,
-            from_scene,
-            to_scene,
-        });
     }
 }

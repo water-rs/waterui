@@ -213,29 +213,31 @@ impl HydrolysisRenderer {
                 self.register_hit_test_occluder(frame);
             }
 
-            // A slot binds only when its node encodes — an animation the
+            // A slot binds only when its node records — an animation the
             // content started in response to the dismissal does not exist in
-            // the controller until this frame's flush. So an exiting overlay
-            // swaps the window scene for a scratch scene, flushes into it
-            // under a dead placement scope, and only then decides: a scope
-            // with a running slot commits the frame and keeps the overlay
-            // presented; one with nothing left animating discards it — the
-            // overlay draws no frame past its last animation.
-            let scratch = exiting.then(|| {
-                self.push_hit_gate_scope(crate::renderer::HitGate::Inactive);
-                (
-                    core::mem::take(&mut self.scene),
-                    core::mem::take(&mut self.compositor.render_layers),
-                    core::mem::take(&mut self.compositor.active_scene_layers),
-                    self.transient_scene.take(),
-                )
-            });
-
-            // Flush inside the overlay's animation scope so every slot the
+            // the controller until this frame's record. So an exiting overlay
+            // records into its scope, inert to input, and only then decides:
+            // a scope with a running slot stays presented; one with nothing
+            // left animating is dropped and the overlay unmounts.
+            let key = crate::renderer::mount::ScopeKey {
+                role: "anchored",
+                item: u64::try_from(Rc::as_ptr(&entry.marker).addr())
+                    .expect("hydrolysis anchored overlay: a marker address fits u64"),
+            };
+            self.open_scope_with(
+                key,
+                kurbo::Affine::IDENTITY,
+                1.0,
+                None,
+                kurbo::Affine::IDENTITY,
+                crate::renderer::ScopeDelta::RECORD_SPACE,
+                !exiting,
+            );
+            // Record inside the overlay's animation scope so every slot the
             // content binds is attributed to it — that attribution is what
             // the exit lifecycle waits on.
             self.animation_controller.begin_animation_scope(scope);
-            content.flush_in_rect_detached(
+            content.place_detached(
                 self,
                 RenderContext {
                     local: transform,
@@ -250,41 +252,12 @@ impl HydrolysisRenderer {
                 Some(safe_area.with_frame(frame)),
             );
             self.animation_controller.end_animation_scope();
-
-            if let Some((
-                parent_scene,
-                parent_render_layers,
-                parent_active_layers,
-                parent_transient_scene,
-            )) = scratch
-            {
-                self.pop_placement_scope();
-                let overlay_scene = core::mem::replace(&mut self.scene, parent_scene);
-                let overlay_render_layers =
-                    core::mem::replace(&mut self.compositor.render_layers, parent_render_layers);
-                debug_assert!(
-                    self.compositor.active_scene_layers.is_empty(),
-                    "hydrolysis anchored overlay exit left an unclosed scene layer"
-                );
-                self.compositor.active_scene_layers = parent_active_layers;
-                let overlay_transient_scene = self.transient_scene.take();
-                self.transient_scene = parent_transient_scene;
-
-                if !self.animation_controller.scope_is_active(scope, now) {
-                    self.animation_controller.drop_animation_scope(scope);
-                    *entry.content.borrow_mut() = Some(content);
-                    continue;
-                }
-                self.scene.append(&overlay_scene, kurbo::Affine::IDENTITY);
-                self.compositor.render_layers.extend(overlay_render_layers);
-                if let Some(transient) = overlay_transient_scene {
-                    match &mut self.transient_scene {
-                        Some(parent) => {
-                            parent.append(&transient, kurbo::Affine::IDENTITY);
-                        }
-                        None => self.transient_scene = Some(transient),
-                    }
-                }
+            self.close_scope();
+            if exiting && !self.animation_controller.scope_is_active(scope, now) {
+                self.program().discard_last_scope();
+                self.animation_controller.drop_animation_scope(scope);
+                *entry.content.borrow_mut() = Some(content);
+                continue;
             }
             *entry.content.borrow_mut() = Some(content);
 

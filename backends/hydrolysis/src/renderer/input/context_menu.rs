@@ -532,7 +532,7 @@ impl HydrolysisRenderer {
         // itself). The menu and accessory panels draw opaque over the dim —
         // their corner wedges stay scrim and their elevation shadows land on
         // it, so no square hole is punched for them.
-        self.scene.with_group(
+        self.scene_mut().with_group(
             peniko::Fill::NonZero,
             peniko::BlendMode::default(),
             1.0,
@@ -585,7 +585,7 @@ impl HydrolysisRenderer {
         // container colour, radius and elevation — the same Material surface
         // the drawn text context menu gets.
         {
-            self.scene.record_picture(transform, |draw| {
+            self.scene_mut().record_picture(transform, |draw| {
                 theme.draw_text_context_menu_panel(&mut *draw, presentation.menu_frame);
                 if let Some(accessory_frame) = presentation.accessory_frame {
                     theme.draw_text_context_menu_panel(&mut *draw, accessory_frame);
@@ -601,7 +601,7 @@ impl HydrolysisRenderer {
             self.register_hit_test_occluder(frame);
         }
 
-        presentation.menu.flush_in_rect_detached(
+        presentation.menu.place_detached(
             self,
             RenderContext {
                 local: transform,
@@ -619,7 +619,7 @@ impl HydrolysisRenderer {
         if let Some(preview) = presentation.preview.as_mut() {
             self.with_suppressed_accessibility(|renderer| {
                 renderer.with_preview_targets_suppressed(|renderer| {
-                    preview.flush_in_rect_detached(
+                    preview.place_detached(
                         renderer,
                         RenderContext {
                             local: transform,
@@ -637,7 +637,7 @@ impl HydrolysisRenderer {
         if let Some(accessory) = presentation.accessory.as_mut() {
             let frame = presentation.accessory_frame.unwrap_or(layout.lift);
             let content = inset_rect(frame, metrics.horizontal_padding, metrics.vertical_padding);
-            accessory.flush_in_rect_detached(
+            accessory.place_detached(
                 self,
                 RenderContext {
                     local: transform,

@@ -61,7 +61,7 @@ pub struct TableRenderState {
     /// bounds layout computed once (the scroll handle is rebound with
     /// them inside [`Self::bind_scroll`]), plus the focused-field state
     /// the flush drives.
-    pub(crate) surface: crate::renderer::ScrollSurfaceArea,
+    pub(crate) surface: std::rc::Rc<crate::renderer::ScrollSurfaceArea>,
 }
 
 impl TableRenderState {
@@ -71,7 +71,7 @@ impl TableRenderState {
             slot: RefCell::new(LazyTableSlot::default()),
             scroll: RefCell::new(None),
             item_cache: RefCell::new(VisibleSubviewCache::new()),
-            surface: crate::renderer::ScrollSurfaceArea::default(),
+            surface: std::rc::Rc::default(),
         }
     }
 
@@ -563,7 +563,14 @@ pub fn render_table_parts(
             resolve_visible_column_window(&slot.column_widths, column_span.start, column_span.end);
     }
 
-    ctx.push_layer_rect(1.0, surface_viewport);
+    ctx.open_scope(
+        crate::renderer::mount::ScopeKey {
+            role: "viewport",
+            item: 0,
+        },
+        1.0,
+        surface_viewport,
+    );
     // Register before the cells flush: scroll-target dispatch walks the
     // frame's targets newest-first, so a scroll region inside a cell wins the
     // delta until it hits its own edge, where it falls through to the table.
@@ -674,14 +681,14 @@ pub fn render_table_parts(
     // Evict content sub-views for cells no longer in the visible window.
     state.borrow().item_cache.borrow_mut().end_frame();
 
-    ctx.pop_layer();
+    ctx.close_scope();
 
-    // The focused-field clearance reads this frame's input targets — the
-    // cells' flush above just emitted them (§7.1).
+    // The focused-field clearance runs after recording, over the retained
+    // input targets (§7.1).
     state
         .borrow()
         .surface
-        .end_flush(ctx.renderer_mut(), &handle);
+        .register_clearance(ctx.renderer_mut(), &handle);
 
     draw_scroll_indicators(
         ctx,
@@ -721,7 +728,7 @@ fn flush_cell_subview(
         let subview = cache.entry(key, move || view);
         // A table cell is scroll content: it lays out with no §7.1
         // context (its surface owns the edges).
-        subview.flush_in_rect(
+        subview.place(
             ctx.renderer_mut(),
             render_ctx,
             env,

@@ -4650,6 +4650,7 @@ dependencies = [
  "cfg_aliases",
  "cherenkov",
  "cherenkov-gpu",
+ "cherenkov-record",
  "cookie",
  "criterion",
  "ctrlc",

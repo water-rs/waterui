@@ -250,7 +250,7 @@ pub fn render_date_picker_parts(
         );
         let render_ctx = ctx.render_context();
         let label_area = ctx.safe_area_for(label_bounds);
-        state.label_view.flush_in_rect(
+        state.label_view.place(
             ctx.renderer_mut(),
             render_ctx,
             env,

@@ -281,8 +281,12 @@ pub fn render_slider_parts(
         // `slider_accessibility_parts`, so the sub-view flushes visual-only.
         // The min/max value labels below stay exposed: their text (e.g.
         // "Dark"/"Bright") is not carried by the slider node.
-        ctx.with_clip_rect_scope_if(
+        ctx.with_scope_if(
             disabled,
+            crate::renderer::mount::ScopeKey {
+                role: "label-dim",
+                item: 0,
+            },
             theme.disabled_content_alpha(),
             label_rect,
             |ctx| {
@@ -291,7 +295,7 @@ pub fn render_slider_parts(
                 let label_view = &mut state.label_view;
                 ctx.renderer_mut()
                     .with_suppressed_accessibility(|renderer| {
-                        label_view.flush_in_rect(
+                        label_view.place(
                             renderer,
                             render_ctx,
                             env,
@@ -346,14 +350,18 @@ pub fn render_slider_parts(
             track_rect,
             f64::from(min_label_size.height),
         );
-        ctx.with_clip_rect_scope_if(
+        ctx.with_scope_if(
             disabled,
+            crate::renderer::mount::ScopeKey {
+                role: "min-label-dim",
+                item: 0,
+            },
             theme.disabled_content_alpha(),
             min_label_rect,
             |ctx| {
                 let render_ctx = ctx.render_context();
                 let label_area = ctx.safe_area_for(min_label_rect);
-                state.min_value_label.flush_in_rect(
+                state.min_value_label.place(
                     ctx.renderer_mut(),
                     render_ctx,
                     env,
@@ -372,14 +380,18 @@ pub fn render_slider_parts(
             track_rect,
             f64::from(max_label_size.height),
         );
-        ctx.with_clip_rect_scope_if(
+        ctx.with_scope_if(
             disabled,
+            crate::renderer::mount::ScopeKey {
+                role: "max-label-dim",
+                item: 0,
+            },
             theme.disabled_content_alpha(),
             max_label_rect,
             |ctx| {
                 let render_ctx = ctx.render_context();
                 let label_area = ctx.safe_area_for(max_label_rect);
-                state.max_value_label.flush_in_rect(
+                state.max_value_label.place(
                     ctx.renderer_mut(),
                     render_ctx,
                     env,
@@ -502,7 +514,7 @@ pub fn render_slider_parts(
             local: ctx.local,
             bounds: text_rect,
         };
-        let (hydro, scene) = ctx.renderer_mut().state_and_scene_mut();
+        let (hydro, scene) = ctx.renderer_mut().state_and_run_mut();
         HydrolysisRenderer::render_styled_text(
             hydro,
             scene,

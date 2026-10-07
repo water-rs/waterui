@@ -505,15 +505,23 @@ pub fn render_text_field_parts(
         selection
     };
     if content_alpha > 0.0 {
-        ctx.with_clip_rect_scope(content_alpha, text_clip_bounds, |ctx| {
-            ctx.render_styled_text_limited(
-                display_styled,
-                HorizontalAlignment::Leading,
-                env,
-                text_bounds,
-                line_limit,
-            );
-        });
+        ctx.with_scope(
+            crate::renderer::mount::ScopeKey {
+                role: "text-clip",
+                item: 0,
+            },
+            content_alpha,
+            text_clip_bounds,
+            |ctx| {
+                ctx.render_styled_text_limited(
+                    display_styled,
+                    HorizontalAlignment::Leading,
+                    env,
+                    text_bounds,
+                    line_limit,
+                );
+            },
+        );
     }
     // While composing, the caret the platform cares about is the live
     // composition caret inside the marked text, mapped through the display
@@ -813,15 +821,23 @@ pub fn render_secure_field_parts(
         selection
     };
     if content_alpha > 0.0 {
-        ctx.with_clip_rect_scope(content_alpha, text_clip_bounds, |ctx| {
-            ctx.render_styled_text_limited(
-                masked_display,
-                HorizontalAlignment::Leading,
-                env,
-                text_bounds,
-                Some(1),
-            );
-        });
+        ctx.with_scope(
+            crate::renderer::mount::ScopeKey {
+                role: "text-clip",
+                item: 0,
+            },
+            content_alpha,
+            text_clip_bounds,
+            |ctx| {
+                ctx.render_styled_text_limited(
+                    masked_display,
+                    HorizontalAlignment::Leading,
+                    env,
+                    text_bounds,
+                    Some(1),
+                );
+            },
+        );
     }
     let cursor_geometry = selection.focus().geometry(&committed_layout, 1.0);
     let cursor_area = material_input_cursor_rect(
@@ -979,7 +995,7 @@ fn flush_material_label(
         ctx.safe_area_for(transform.transform_rect_bbox(kurbo::Rect::new(0.0, 0.0, width, height)));
     ctx.renderer_mut()
         .with_suppressed_accessibility(|renderer| {
-            label_view.flush_in_ctx(
+            label_view.place_in_ctx(
                 renderer,
                 child,
                 env,
@@ -1024,7 +1040,7 @@ fn flush_material_prompt_label(
         kurbo::Rect::new(0.0, 0.0, width, label_height / scale),
     );
     let renderer = ctx.renderer_mut();
-    let (state, scene) = renderer.state_and_scene_mut();
+    let (state, scene) = renderer.state_and_run_mut();
     HydrolysisRenderer::render_styled_text_limited(
         state,
         scene,

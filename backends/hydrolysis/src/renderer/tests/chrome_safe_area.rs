@@ -73,6 +73,7 @@ fn render_frame_in(
     renderer.begin_rebuild_frame();
     renderer.capture_window_tree(view, env, window, Affine::IDENTITY, Affine::IDENTITY);
     renderer.finish_rebuild_frame();
+    renderer.commit_mirror();
 }
 
 fn render_frame(renderer: &mut HydrolysisRenderer, view: AnyView, env: &Environment) {
@@ -109,10 +110,7 @@ fn capture_in(
 /// got.
 fn content_extents(renderer: &HydrolysisRenderer) -> (Vec<f64>, Vec<Rect>) {
     let mut ys = Vec::new();
-    for recording in renderer
-        .painted_recordings()
-        .chain(std::iter::once(renderer.scene()))
-    {
+    for recording in std::iter::once(&renderer.painted_scene()) {
         for (transform, glyphs) in recording.glyph_runs() {
             for glyph in glyphs {
                 let point = transform * Point::new(f64::from(glyph.x), f64::from(glyph.y));
@@ -515,9 +513,7 @@ fn a_transitioning_page_clip_covers_the_extended_surfaces() {
         // Every clip scope the frame pushed, in window space — the page
         // scopes among them are stack-sized and must cover the edges their
         // surfaces paint to.
-        let clips: Vec<Rect> = renderer
-            .painted_recordings()
-            .chain(std::iter::once(renderer.scene()))
+        let clips: Vec<Rect> = std::iter::once(&renderer.painted_scene())
             .flat_map(crate::renderer::recording::Recording::clip_scopes)
             .map(|(transform, clip)| transform.transform_rect_bbox(clip))
             .collect();
@@ -536,9 +532,7 @@ fn a_transitioning_page_clip_covers_the_extended_surfaces() {
     // The stack's backdrop fill covers the same reach the clips do — a
     // stack-sized fill that reaches the window edges, so an extended bar
     // surface never lands on the window background.
-    let fills: Vec<Rect> = renderer
-        .painted_recordings()
-        .chain(std::iter::once(renderer.scene()))
+    let fills: Vec<Rect> = std::iter::once(&renderer.painted_scene())
         .flat_map(crate::renderer::recording::Recording::fill_bounds)
         .map(|(transform, shape)| transform.transform_rect_bbox(shape))
         .collect();
@@ -590,9 +584,7 @@ fn a_transitioning_page_clip_covers_the_extended_surfaces() {
             .expect("test frame instant overflow"),
     );
     render_frame(&mut renderer, AnyView::new(()), &env);
-    let clips: Vec<Rect> = renderer
-        .painted_recordings()
-        .chain(std::iter::once(renderer.scene()))
+    let clips: Vec<Rect> = std::iter::once(&renderer.painted_scene())
         .flat_map(crate::renderer::recording::Recording::clip_scopes)
         .map(|(transform, clip)| transform.transform_rect_bbox(clip))
         .collect();

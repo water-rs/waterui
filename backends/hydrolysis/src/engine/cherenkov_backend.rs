@@ -182,7 +182,7 @@ const fn pipeline_cache_path(_adapter: &wgpu::Adapter) -> Option<std::path::Path
 /// post-resize without draining is the stale-attachment case the plan bans.
 pub struct CherenkovSurface {
     engine: Rc<GpuEngine>,
-    surface: cherenkov::Surface<cherenkov_gpu::Gpu>,
+    surface: Rc<cherenkov::Surface<cherenkov_gpu::Gpu>>,
     textures: mpsc::Receiver<wgpu::Texture>,
     texture: Option<(wgpu::Texture, wgpu::TextureView)>,
     presenter: cherenkov_gpu::interop::Presenter,
@@ -257,7 +257,7 @@ impl CherenkovSurface {
             .expect("hydrolysis renderer: shader delivery unsupported on this device");
         Self {
             engine,
-            surface,
+            surface: Rc::new(surface),
             textures,
             texture: None,
             presenter: cherenkov_gpu::interop::Presenter::new(device, delivery),
@@ -275,8 +275,14 @@ impl CherenkovSurface {
 
     /// The engine surface behind this output target — mount, edit and
     /// transaction calls route through it.
-    pub const fn engine_surface(&self) -> &cherenkov::Surface<cherenkov_gpu::Gpu> {
+    pub fn engine_surface(&self) -> &cherenkov::Surface<cherenkov_gpu::Gpu> {
         &self.surface
+    }
+
+    /// The engine surface as the window's retained mount holds it: weak, so
+    /// the mount never extends the surface past its window.
+    pub fn engine_surface_weak(&self) -> std::rc::Weak<cherenkov::Surface<cherenkov_gpu::Gpu>> {
+        Rc::downgrade(&self.surface)
     }
 
     /// Queues a resize when `size` changed; the next [`Self::render`] drains

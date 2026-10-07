@@ -288,13 +288,52 @@ impl Placement {
         self.resolution(true).removes.intersects(class)
     }
 
-    /// Sets the node's transform in its parent's space.
+    /// The placement's own transform into its parent's space.
+    pub const fn transform(&self) -> kurbo::Affine {
+        self.transform.get()
+    }
+
     pub fn set_transform(&self, transform: kurbo::Affine) {
         self.transform.set(transform);
         self.clock.bump();
     }
 
     /// Sets the clip bounding box in the node's own space.
+    pub fn set_content_offset(&self, offset: kurbo::Vec2) {
+        self.content_offset.set(offset);
+        self.clock.bump();
+    }
+
+    /// Redirects the paint chain through `parent` (`None` follows the
+    /// structural parent again).
+    pub fn set_paint_parent(&self, parent: Option<Rc<Self>>) {
+        *self.paint_parent.borrow_mut() = parent;
+        self.clock.bump();
+    }
+
+    /// The paint-space transform from this placement's frame to
+    /// `anchor`'s content space: this level's transform, then every
+    /// intermediate level's transform and content offset, up to (not
+    /// including) `anchor`. A layer frame under `anchor` takes it as its
+    /// layer transform.
+    ///
+    /// # Panics
+    /// Panics when `anchor` is not on this placement's paint chain.
+    pub fn paint_delta_to(&self, anchor: &Rc<Self>) -> kurbo::Affine {
+        let mut transform = self.transform.get();
+        let mut parent = self.parent_for(false);
+        while let Some(placement) = parent {
+            if Rc::ptr_eq(&placement, anchor) {
+                return transform;
+            }
+            transform = placement.transform.get()
+                * kurbo::Affine::translate(placement.content_offset.get())
+                * transform;
+            parent = placement.parent_for(false);
+        }
+        panic!("hydrolysis placement: a layer's anchor is not on its paint chain")
+    }
+
     pub fn set_clip(&self, clip: Option<kurbo::Rect>) {
         self.clip.set(clip);
         self.clock.bump();
@@ -393,15 +432,16 @@ impl Placement {
             .chain(std::iter::once(self))
         {
             removes = removes.union(placement.removes.get());
-            transform *= placement.transform.get()
-                * kurbo::Affine::translate(placement.content_offset.get());
+            transform *= placement.transform.get();
             alpha *= placement.alpha.get();
             if let Some(rect) = placement.clip.get() {
-                // The clip lives in the placement's own space: compose the
-                // chain up to this level, then intersect in window space.
+                // The clip lives in the placement's own frame, outside its
+                // content offset: compose the chain up to this level, then
+                // intersect in window space.
                 let window_clip = crate::renderer::transformed_rect(transform, rect);
                 clip = Some(clip.map_or(window_clip, |c| c.intersect(window_clip)));
             }
+            transform *= kurbo::Affine::translate(placement.content_offset.get());
         }
         ChainResolution {
             transform,

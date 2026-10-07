@@ -299,6 +299,18 @@ impl RenderNode {
         });
     }
 
+    /// Unmounts the subtree's engine layers (§F): drops every
+    /// `NodeLayers` below this node and sets `PAINT|COMMIT` on each cell,
+    /// keeping the nodes and their retained state. Decision 3 runs it for
+    /// content leaving the screen, and the engine-window replacement runs
+    /// it on the whole tree before the remount. The cell walk below
+    /// reaches widget-attached `RetainedSubview` roots too — navigation
+    /// pages, lazy items and overlay content — so nothing keeps a stale
+    /// mount.
+    pub(crate) fn unmount(&self) {
+        self.core().cell.unmount_subtree();
+    }
+
     /// Pre-order collection of every node's cell in the subtree, in tree
     /// order (a collection entry's own cell precedes its node). Holding the
     /// `Rc`s keeps retired addresses un-reused across a comparison.
