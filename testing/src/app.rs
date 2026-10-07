@@ -1439,7 +1439,7 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     fn apply_pump_result(&mut self, outcome: DriverPumpResult) -> Option<Snapshot> {
         self.ui_focus = outcome.ui_focus;
         if let Some(update) = outcome.tree_update {
-            self.tree = TreeSnapshot::from_update(self.revision, update);
+            self.tree = TreeSnapshot::from_update(self.revision, update, &outcome.content_types);
             self.revision = self
                 .revision
                 .checked_add(1)

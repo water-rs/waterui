@@ -136,6 +136,9 @@ pub use selector::{ElementAnchor, ElementRef, ElementSet, Selector};
 pub use semantics::{CheckedState, NodeBounds, NodeId, NodeSnapshot, Role, TreeSnapshot};
 pub use snapshot::{Snapshot, TestHost};
 pub use wait::{Expectation, WaitOptions, WaitResult};
+/// The content-type vocabulary [`NodeSnapshot::content_type`],
+/// [`Selector::content_type`] and [`Query::content_type`] speak.
+pub use waterui::component::text_field::ContentType;
 
 /// Internal async bridge used by `#[waterui::test(...)]` expansion.
 pub fn block_on<F>(future: F) -> F::Output

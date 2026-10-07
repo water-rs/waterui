@@ -881,6 +881,60 @@ typedef enum WuiKeyboardType {
 } WuiKeyboardType;
 
 /**
+ * C ABI mirror of `Option<ContentType>` — `None` declares no content type.
+ *
+ * Written by hand rather than through `into_ffi!` because the FFI side
+ * carries the option inside the enum: `WuiContentType_None` is the value a
+ * field without a declared content type sends.
+ */
+typedef enum WuiContentType {
+  /**
+   * The field declares no content type.
+   */
+  WuiContentType_None,
+  /**
+   * Mirrors `ContentType::Username`.
+   */
+  WuiContentType_Username,
+  /**
+   * Mirrors `ContentType::Password`.
+   */
+  WuiContentType_Password,
+  /**
+   * Mirrors `ContentType::NewPassword`.
+   */
+  WuiContentType_NewPassword,
+  /**
+   * Mirrors `ContentType::EmailAddress`.
+   */
+  WuiContentType_EmailAddress,
+  /**
+   * Mirrors `ContentType::PhoneNumber`.
+   */
+  WuiContentType_PhoneNumber,
+  /**
+   * Mirrors `ContentType::OneTimeCode`.
+   */
+  WuiContentType_OneTimeCode,
+  /**
+   * Mirrors `ContentType::PersonName`.
+   */
+  WuiContentType_PersonName,
+  /**
+   * Mirrors `ContentType::PostalAddress`.
+   */
+  WuiContentType_PostalAddress,
+  /**
+   * Mirrors `ContentType::PostalCode`.
+   */
+  WuiContentType_PostalCode,
+  /**
+   * Mirrors `ContentType::CreditCardNumber`.
+   */
+  WuiContentType_CreditCardNumber,
+} WuiContentType;
+
+/**
  *C ABI mirror of `ToggleStyle`.
  */
 typedef enum WuiToggleStyle {
@@ -4456,10 +4510,15 @@ typedef struct WuiGradient {
   float end_y;
   /**
    * Start radius (radial) or start angle in radians (angular).
+   *
+   * A radial radius is a fraction of the shorter side of the view's
+   * bounds and draws a circle: on a `w`x`h` box it spans `r * min(w, h)`
+   * points, so `0.5` reaches the nearer edge.
    */
   float start_value;
   /**
-   * End radius (radial) or end angle in radians (angular).
+   * End radius (radial) or end angle in radians (angular), in the same
+   * units as [`start_value`](Self::start_value).
    */
   float end_value;
 } WuiGradient;
@@ -5322,6 +5381,11 @@ typedef struct WuiTextField {
    * The on-screen keyboard variant to present while editing.
    */
   enum WuiKeyboardType keyboard;
+  /**
+   * The semantic content type the field declares for autofill —
+   * `WuiContentType_None` when it declares none.
+   */
+  enum WuiContentType content_type;
   /**
    * Context menu items offered when the user selects text in the field.
    */

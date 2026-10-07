@@ -20,10 +20,14 @@ waterui-text.workspace = true
 waterui-locale.workspace = true
 waterui-icon.workspace = true
 executor-core.workspace = true
+serde = { workspace = true, optional = true, features = ["derive"] }
 
 
 [features]
 default = []
+# Serialize `ContentType` (camelCase names) — the Hydrolysis Android publish
+# and the MCP snapshot tree both cross a JSON boundary with it.
+serde = ["dep:serde"]
 
 [dev-dependencies]
 waterui = { path = "../../.." }

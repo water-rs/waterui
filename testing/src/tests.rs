@@ -29,6 +29,7 @@ impl RuntimeDriver for NoopDriver {
             rebuilt: false,
             profile: hydrolysis::FrameProfile::default(),
             tree_update: None,
+            content_types: hydrolysis::AccessibilityContentTypes::new(),
             snapshot: None,
             ui_focus: None,
         }
@@ -83,6 +84,7 @@ fn node(
         actions: Vec::new(),
         scroll_x: None,
         scroll_y: None,
+        content_type: None,
     }
 }
 

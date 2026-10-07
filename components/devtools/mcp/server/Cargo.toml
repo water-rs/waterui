@@ -14,6 +14,8 @@ categories.workspace = true
 [dependencies]
 waterui-mcp-protocol.workspace = true
 waterui-testing = { version = "0.5.1", path = "../../../../testing" }
+# The JSON tree serializes `ContentType` directly — its camelCase names.
+waterui-controls = { workspace = true, features = ["serde"] }
 accesskit = "0.25"
 aither-core.workspace = true
 aither-mcp = { workspace = true, features = ["server"] }

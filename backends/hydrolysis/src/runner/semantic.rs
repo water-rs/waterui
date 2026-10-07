@@ -13,6 +13,10 @@
 
 use super::executor::{DrainExecutorOnDrop, HeadlessMainThreadExecutor};
 use super::*;
+#[cfg(feature = "accessibility")]
+use crate::renderer::accessibility::{
+    AccessibilityContentTypes, MergedAccessibilityUpdate, WINDOW_ID_STRIDE,
+};
 use crate::renderer::{MenuShortcutRegistry, SemanticCore, WindowId};
 #[cfg(target_arch = "wasm32")]
 use std::sync::Arc;
@@ -31,6 +35,10 @@ pub struct SemanticPumpResult {
     #[cfg(feature = "accessibility")]
     /// The accessibility tree update the frame produced.
     pub tree_update: Option<AccessibilityTreeUpdate>,
+    #[cfg(feature = "accessibility")]
+    /// The content types the emitted tree's text fields declared — the map
+    /// the update publishes beside it.
+    pub content_types: AccessibilityContentTypes,
     #[cfg(feature = "accessibility")]
     /// The accessibility node holding UI focus.
     pub ui_focus: Option<accesskit::NodeId>,
@@ -260,10 +268,7 @@ impl SemanticRuntime {
     /// in which case the next pump re-emits.
     #[cfg(feature = "accessibility")]
     pub fn perform_accessibility_action(&mut self, request: AccessibilityActionRequest) -> bool {
-        /// The same id range [`Self::take_merged_accessibility_tree_update`]
-        /// assigns each popup.
-        const WINDOW_ID_STRIDE: u64 = 1 << 32;
-
+        // Popup ranges are the shared `WINDOW_ID_STRIDE` the merge assigns.
         let target = request.target_node.0;
         let (window, request) = if target >= WINDOW_ID_STRIDE {
             let index = target / WINDOW_ID_STRIDE - 1;
@@ -392,6 +397,14 @@ impl SemanticRuntime {
         let drained_after = self.local_executor.drain();
         let executor_after = executor_after_started_at.elapsed();
 
+        #[cfg(feature = "accessibility")]
+        let merged = self.take_merged_accessibility_tree_update();
+        #[cfg(feature = "accessibility")]
+        let (tree_update, content_types) = merged
+            .map_or((None, AccessibilityContentTypes::new()), |merged| {
+                (Some(merged.tree_update), merged.content_types)
+            });
+
         SemanticPumpResult {
             rebuilt: rebuilt || drained_before || drained_after,
             profile: FrameProfile {
@@ -406,7 +419,9 @@ impl SemanticRuntime {
             }
             .with_total(frame_started_at.elapsed()),
             #[cfg(feature = "accessibility")]
-            tree_update: self.take_merged_accessibility_tree_update(),
+            tree_update,
+            #[cfg(feature = "accessibility")]
+            content_types,
             #[cfg(feature = "accessibility")]
             ui_focus: self.window.core.focused_ui_node(),
         }
@@ -440,7 +455,7 @@ impl SemanticRuntime {
     /// to the main root so the result is one tree — the same merge the
     /// rendered [`HeadlessRuntime`](crate::HeadlessRuntime) applies.
     #[cfg(feature = "accessibility")]
-    fn take_merged_accessibility_tree_update(&mut self) -> Option<AccessibilityTreeUpdate> {
+    fn take_merged_accessibility_tree_update(&mut self) -> Option<MergedAccessibilityUpdate> {
         self.window.core.take_merged_accessibility_tree_update(
             self.popup_windows.iter_mut().map(|popup| &mut popup.core),
         )
@@ -455,6 +470,7 @@ impl SemanticRuntime {
         self.window
             .core
             .accessibility_tree(self.popup_windows.iter_mut().map(|popup| &mut popup.core))
+            .map(|merged| merged.tree_update)
     }
 }
 
