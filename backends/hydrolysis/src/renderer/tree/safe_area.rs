@@ -22,10 +22,13 @@ use super::*;
 use core::cell::{Cell, RefCell};
 use core::ops::Range;
 
+use waterui_core::animation::Animation;
 use waterui_core::layout::{Rect, Size};
 use waterui_layout::padding::EdgeInsets;
 use waterui_layout::safe_area::{EdgeSet, IgnoreSafeArea, SafeAreaRegions};
 use waterui_layout::scroll::Axis as ScrollAxis;
+
+use crate::scroll::ScrollRunOutcome;
 
 /// One of the four edges §7.1's regions sit on.
 #[derive(Clone, Copy)]
@@ -1131,7 +1134,16 @@ impl ScrollSurfaceArea {
         let metrics = handle.metrics();
         let target_y = (metrics.offset_y + distance).clamp(0.0, metrics.max_y);
         let scrolled = if animated {
-            handle.scroll_to_animated(metrics.offset_x, target_y)
+            // A glide needs frames while it runs; a request that needed no
+            // travel already landed, so nothing further has to present.
+            handle
+                .scroll_to_animated(
+                    metrics.offset_x,
+                    target_y,
+                    Animation::default(),
+                    renderer.frame_instant(),
+                )
+                .is_some_and(|run| handle.scroll_run_outcome(&run) == ScrollRunOutcome::Running)
         } else {
             handle.scroll_to(metrics.offset_x, target_y)
         };

@@ -49,6 +49,7 @@ mod list_row_metrics;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod list_visibility;
 mod material;
+mod material_group;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod menu_shortcuts;
 mod mid_flush_subview;
@@ -252,6 +253,44 @@ fn themed_test_environment() -> Environment {
     env.insert(crate::renderer::MenuShortcutRegistry::default());
     env.insert(BadgeDrawLog(Rc::new(RefCell::new(Vec::new()))));
     env
+}
+
+/// Every `MaterialLayer` the frame presents, flush order — including the
+/// members inside filtered groups, which nest under `FilteredLayer`.
+pub fn material_layers(runtime: &crate::HeadlessRuntime) -> Vec<&MaterialLayer> {
+    fn collect<'a>(layers: &'a [RenderLayer], found: &mut Vec<&'a MaterialLayer>) {
+        for layer in layers {
+            match layer {
+                RenderLayer::Material(layer) => found.push(layer),
+                RenderLayer::Filtered(layer) => collect(&layer.children, found),
+                _ => {}
+            }
+        }
+    }
+    let mut layers = Vec::new();
+    collect(&runtime.renderer().compositor.render_layers, &mut layers);
+    layers
+}
+
+/// The window's mount table — the test renders one window.
+pub fn mounts(runtime: &crate::HeadlessRuntime) -> &Mounts {
+    let mut windows = runtime.renderer().cherenkov_windows.values();
+    let window = windows.next().expect("the frame installed into a window");
+    assert!(windows.next().is_none(), "the test renders one window");
+    &window.mounts
+}
+
+/// The engine's current backdrop-capture bytes.
+pub fn capture_bytes(runtime: &crate::HeadlessRuntime) -> u64 {
+    let mut windows = runtime.renderer().cherenkov_windows.values();
+    windows
+        .next()
+        .expect("the frame installed into a window")
+        .state
+        .engine
+        .memory()
+        .backdrop_captures
+        .0
 }
 
 /// Every badge indicator rect the test theme was asked to draw, in window

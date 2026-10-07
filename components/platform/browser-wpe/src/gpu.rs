@@ -286,12 +286,19 @@ fn render_browser_frame(gpu: &mut GpuState, mut incoming: DmaBufFrame, frame: &F
         .source
         .as_ref()
         .expect("WPE source texture must exist before import");
-    let import = gpu.importer.copy_into(&mut incoming, &source.texture);
-    let mut encoder = import.encoder;
-    let guard = import.guard;
+    let mut import = gpu.importer.copy_into(&mut incoming, &source.texture);
     incoming.presented();
-    encode_browser_blit(gpu, &bind_group, frame, &mut encoder);
-    frame.queue.submit([encoder.finish()]);
+    encode_browser_blit(gpu, &bind_group, frame, &mut import.encoder);
+    // The Vulkan import records its queue-family acquire/copy/release into
+    // `command_buffers`; they go ahead of the blit encoder in one submission
+    // (the GLES path leaves it empty and has already run its copy).
+    frame.queue.submit(
+        import
+            .command_buffers
+            .into_iter()
+            .chain([import.encoder.finish()]),
+    );
+    let guard = import.guard;
     frame.queue.on_submitted_work_done(move || {
         drop(guard);
         incoming.release(None);

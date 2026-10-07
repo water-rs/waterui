@@ -2248,7 +2248,7 @@ impl SemanticCore {
         env: &Environment,
         press: &KeyPress,
     ) -> KeyPressOutcome {
-        if self.handle_keyboard_key_down(key, modifiers, env) {
+        if self.handle_keyboard_key_down(key, &press.key, modifiers, env) {
             return KeyPressOutcome::Consumed;
         }
         if self.handle_key(key, modifiers) {
