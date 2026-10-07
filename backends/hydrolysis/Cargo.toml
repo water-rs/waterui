@@ -193,6 +193,16 @@ muda = { version = "0.20", optional = true, default-features = false }
 [target.'cfg(all(unix, not(any(target_os = "macos", target_os = "ios", target_os = "android", target_os = "emscripten", target_os = "redox"))))'.dependencies]
 x11-dl = { version = "2.21", optional = true }
 x11rb = { version = "0.13", optional = true }
+# `ext-background-effect-v1` blur behind a Wayland window, bound on the
+# `wl_display` winit already owns — borrowed through the raw display handle,
+# never a second connection. `staging` carries the ext-* protocols, and
+# wayland-client's `system` feature turns on wayland-backend's
+# `client_system`, which `Backend::from_foreign_display` and
+# `ObjectId::from_ptr` need — winit happens to enable it, but the borrow
+# must not rely on that. Both crates track the versions winit 0.30 already
+# pulls in.
+wayland-client = { version = "0.31", features = ["system"], optional = true }
+wayland-protocols = { version = "0.32", features = ["client", "staging"], optional = true }
 
 # `GetCursorPos` / `GetMonitorInfoW` for `MonitorSelector::Pointer` and
 # `visible_frame`, `WS_EX_NOACTIVATE` for `Activation::Never`,
@@ -369,6 +379,8 @@ winit = [
     "dep:muda",
     "dep:x11-dl",
     "dep:x11rb",
+    "dep:wayland-client",
+    "dep:wayland-protocols",
     "dep:windows-sys",
 ]
 web = [

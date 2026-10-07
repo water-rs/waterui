@@ -181,12 +181,15 @@ pub enum Background {
 ///   background ([`WindowBackground::Material`]): the window is translucent
 ///   and tinted with the level's colour treatment. The desktop behind it is
 ///   blurred where the platform's blur-behind is wired — an
-///   `NSVisualEffectView` blends it behind the window on macOS, and the
+///   `NSVisualEffectView` blends it behind the window on macOS, the
 ///   DWM's acrylic system backdrop blurs it on Windows 11 22H2 and later,
-///   where older Windows keeps a translucent, unblurred window — and shows
-///   through unblurred elsewhere; X11 and Wayland on Linux are
-///   water-rs/waterui#1856 and water-rs/waterui#1857. As a view's
-///   background, a behind-window level is
+///   an X11 window manager honouring `_KDE_NET_WM_BLUR_BEHIND_REGION`
+///   (`KWin`) blurs it, and so does a Wayland compositor advertising
+///   `ext-background-effect-v1` and applying its blur by its own policy —
+///   and shows through unblurred elsewhere: older Windows, other X11
+///   window managers and Wayland compositors not advertising the global
+///   keep the window translucent and unblurred. As a view's background, a
+///   behind-window level is
 ///   unsupported on Hydrolysis and panics naming the level
 ///   (water-rs/waterui#1853).
 ///
