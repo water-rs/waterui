@@ -67,6 +67,20 @@ pub(super) struct RuntimeWindow<P: PlatformWindow> {
         Option<waterui_core::layout::Size>,
         Option<waterui_core::layout::Size>,
     )>,
+    /// Subscriptions on every reactive input of the window declaration,
+    /// installed once by `new` through `subscribe_window_declaration_signals`
+    /// and held for the window's lifetime: `title`, `frame`, `state`,
+    /// `level`, `attention`, `style`, `background`, and `resize_increments`,
+    /// `min_size` and `max_size` when present. A write while the pump is
+    /// parked requests a refresh through the renderer's frame signals, so
+    /// the next pump applies it.
+    ///
+    /// Declared last so the guards drop after `renderer` — the subscriptions
+    /// outlive every frame-scoped watch the core holds, the same tail
+    /// position the frame-level `lifecycle` teardown takes inside a flush
+    /// (water-rs/waterui#1213). Never read again — the `Retain`s exist only
+    /// to keep the subscriptions alive.
+    _declaration_watches: Vec<Retain>,
 }
 
 // `RuntimeWindow` is generic over the host-services contract; the GPU
@@ -83,6 +97,7 @@ impl<P: GpuSurfaceWindow> RuntimeWindow<P> {
         if let Some(handle) = platform.gpu_surface_redraw_handle() {
             renderer.set_host_redraw_handle(handle);
         }
+        let declaration_watches = subscribe_window_declaration_signals(&window, &renderer);
         Self {
             window,
             platform,
@@ -94,6 +109,7 @@ impl<P: GpuSurfaceWindow> RuntimeWindow<P> {
             render_diagnostics: RenderDiagnostics::new(render_diagnostics_config),
             refresh_rate_hz: None,
             applied_size_limits: None,
+            _declaration_watches: declaration_watches,
         }
     }
 }
@@ -189,8 +205,9 @@ pub(super) const fn reports_ui_idle(
 }
 
 /// Applies the window's effective inner-size limits to the platform window:
-/// the explicit `Window::min_size`/`max_size` signals when set (read through
-/// the renderer so a change schedules a frame). The minimum defaults to the
+/// the explicit `Window::min_size`/`max_size` signals when set (read by
+/// snapshot — the declaration's lifetime subscriptions on the window are
+/// what schedule the frame a change needs). The minimum defaults to the
 /// content's measured minimum; the maximum stays unbounded unless the app
 /// pins one — content never contributes one, since content that does not
 /// stretch on an axis is laid out inside a larger offer per the layout spec
@@ -209,13 +226,13 @@ pub(super) fn apply_window_size_limits<P: PlatformWindow>(
     let explicit_min = runtime
         .window
         .min_size
-        .clone()
-        .map(|signal| validated_min_size(runtime.renderer.read_signal(&signal)));
+        .as_ref()
+        .map(|signal| validated_min_size(signal.snapshot()));
     let explicit_max = runtime
         .window
         .max_size
-        .clone()
-        .map(|signal| validated_max_size(runtime.renderer.read_signal(&signal)));
+        .as_ref()
+        .map(|signal| validated_max_size(signal.snapshot()));
     let min = match explicit_min {
         Some(min) => Some(min),
         None => runtime.renderer.measure_content_minimum(env),
@@ -800,21 +817,10 @@ pub(super) fn pump_window_semantics<P: GpuSurfaceWindow>(
     runtime: &mut RuntimeWindow<P>,
     env: &Environment,
 ) -> bool {
-    // `frame`, `state`, `level`, `attention`, `resize_increments` and
-    // `style` drive `apply_properties` below: keep them subscribed so an
-    // app write to any of these bindings schedules a pump instead of
-    // needing an unrelated event to wake the loop.
-    let _ = runtime.renderer.read_signal(&runtime.window.frame);
-    let _ = runtime.renderer.read_signal(&runtime.window.state);
-    let _ = runtime.renderer.read_signal(&runtime.window.level);
-    let _ = runtime.renderer.read_signal(&runtime.window.attention);
-    if let Some(increments) = runtime.window.resize_increments.as_ref() {
-        let _ = runtime.renderer.read_signal(increments);
-    }
-    let _ = runtime.renderer.read_signal(&runtime.window.style);
-    // A replaced background repaints with a new clear colour and may switch
-    // the surface between opaque and translucent.
-    let _ = runtime.renderer.read_signal(&runtime.window.background);
+    // The declaration's reactive inputs — `title`, `frame`, `state`,
+    // `level`, `attention`, `style`, `background`, and `resize_increments`,
+    // `min_size`/`max_size` when present — are subscribed once on the
+    // `RuntimeWindow` for its lifetime; the pump only consumes the values.
     runtime.platform.apply_properties(&runtime.window);
     #[cfg(hydrolysis_winit)]
     runtime
@@ -1049,13 +1055,6 @@ crate::engine::cfg_async_fn! {
         drain_local_tasks: &mut dyn FnMut() -> bool,
     ) -> RenderWindowResult {
     let capture_snapshot = reader.captures();
-    let _ = runtime.renderer.read_signal(&runtime.window.frame);
-    let _ = runtime.renderer.read_signal(&runtime.window.state);
-    let _ = runtime.renderer.read_signal(&runtime.window.level);
-    let _ = runtime.renderer.read_signal(&runtime.window.attention);
-    if let Some(increments) = runtime.window.resize_increments.as_ref() {
-        let _ = runtime.renderer.read_signal(increments);
-    }
     runtime.platform.apply_properties(&runtime.window);
     #[cfg(hydrolysis_winit)]
     runtime
