@@ -27,6 +27,12 @@ fn main() {
             )
         },
         hydrolysis_wayland_platform: { all(feature = "winit", free_unix, not(target_os = "redox")) },
+        // The winit desktops, whose windows the application closes itself
+        // (Close Window, ⌘W/Ctrl+W). On iOS and the web the system or the
+        // page owns the window, so the runner offers no close primitive.
+        hydrolysis_closable_windows: {
+            all(hydrolysis_winit, any(target_os = "macos", target_os = "windows", free_unix))
+        },
         // The macOS `WKWebView` bridge needs a real window: it is composed into
         // the winit window's AppKit view as a native subview, so a headless
         // build (the renderer `waterui-testing` drives, a `web` build) has

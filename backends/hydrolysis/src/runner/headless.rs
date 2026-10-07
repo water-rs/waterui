@@ -496,6 +496,7 @@ impl HeadlessRuntime {
                 .expect("install_headless_window_managers seeds MenuShortcutRegistry")
                 .mint_window_id(),
         );
+        renderer.set_window_closable(window.closable);
 
         Self {
             env,
@@ -542,6 +543,7 @@ impl HeadlessRuntime {
                 .expect("install_headless_window_managers seeds MenuShortcutRegistry")
                 .mint_window_id(),
         );
+        renderer.set_window_closable(window.closable);
         RuntimeWindow::new(
             window,
             platform,

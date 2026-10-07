@@ -493,3 +493,75 @@ pub fn row_list(
         .retain();
     (leaf, table)
 }
+
+/// Reads the standard menu bar as `menus::install` builds it — for the
+/// native suite to assert the standard items' rows without an `AppKit`
+/// handle of its own.
+#[cfg(target_os = "macos")]
+pub mod menus {
+    use cocoa_ui::MainThreadMarker;
+    use cocoa_ui::appkit::Application;
+    use cocoa_ui::objc2_app_kit::{NSApplication, NSEventModifierFlags};
+    use cocoa_ui::objc2_foundation::NSString;
+    use waterui::component::menu::{CloseWindowPlacement, Shortcut};
+
+    /// One row of a built menu — what a case asserts without touching
+    /// `NSMenuItem`.
+    #[derive(Debug)]
+    pub struct MenuRow {
+        /// The row's title.
+        pub title: String,
+        /// Its key equivalent — `""` for none.
+        pub key_equivalent: String,
+        /// The modifiers its key equivalent takes.
+        pub modifiers: NSEventModifierFlags,
+        /// The name of the selector the row sends, when it sends one —
+        /// `performClose:` on the standard Close item.
+        pub action: Option<String>,
+        /// Whether the row reports enabled after a validation pass.
+        pub enabled: bool,
+        /// Whether the row is a separator.
+        pub separator: bool,
+    }
+
+    /// The Window menu's rows in the standard bar `menus::install` builds.
+    ///
+    /// Installs that bar — the default menus plus nothing declared, with
+    /// `close_chord` the chord its Close item carries — then runs an
+    /// `update()` validation pass on the Window menu, so `enabled`
+    /// answers what the responder chain can take.
+    #[must_use]
+    pub fn window_menu_rows(
+        mtm: MainThreadMarker,
+        close_window: CloseWindowPlacement,
+        close_chord: Option<&Shortcut>,
+    ) -> Vec<MenuRow> {
+        let application = Application::shared(mtm);
+        crate::menus::install(mtm, &application, &[], close_window, close_chord);
+        let main = NSApplication::sharedApplication(mtm)
+            .mainMenu()
+            .expect("install sets the main menu");
+        let window_menu = main
+            .itemWithTitle(&NSString::from_str("Window"))
+            .and_then(|item| item.submenu())
+            .expect("the standard bar's Window item opens a submenu");
+        window_menu.update();
+        window_menu
+            .itemArray()
+            .iter()
+            .map(|item| MenuRow {
+                title: item.title().to_string(),
+                key_equivalent: item.keyEquivalent().to_string(),
+                modifiers: item.keyEquivalentModifierMask(),
+                action: item.action().map(|sel| {
+                    sel.name()
+                        .to_str()
+                        .expect("selector names are ASCII")
+                        .into()
+                }),
+                enabled: item.isEnabled(),
+                separator: item.isSeparatorItem(),
+            })
+            .collect()
+    }
+}

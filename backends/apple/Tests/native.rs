@@ -108,18 +108,7 @@ fn trials() -> Vec<Trial> {
     #[cfg(all(target_os = "macos", feature = "native-test"))]
     let tests = {
         let mut tests = tests;
-        tests.extend([
-            Trial::test("window::manager_installs_into_the_environment", || {
-                window::manager_installs_into_the_environment(mtm());
-                Ok(())
-            }),
-            Trial::test("window::bind_root_window_wires_a_live_window", || {
-                window::bind_root_window_wires_a_live_window(mtm());
-                Ok(())
-            }),
-        ]);
-        #[cfg(feature = "gpu_surface")]
-        tests.extend(gpu_surface::trials());
+        tests.extend(macos_native_trials());
         tests
     };
     #[cfg(target_os = "ios")]
@@ -134,6 +123,39 @@ fn trials() -> Vec<Trial> {
     tests.extend(owner_lifetimes::trials());
     tests.extend(scroll::trials());
     tests.extend(list_scroll::trials());
+    tests
+}
+
+/// The macOS trials that need the crate's `native-test` reach: window
+/// lifecycle and the standard menu bar.
+#[cfg(all(target_os = "macos", feature = "native-test"))]
+fn macos_native_trials() -> Vec<Trial> {
+    let mut tests = vec![
+        Trial::test("window::manager_installs_into_the_environment", || {
+            window::manager_installs_into_the_environment(mtm());
+            Ok(())
+        }),
+        Trial::test("window::bind_root_window_wires_a_live_window", || {
+            window::bind_root_window_wires_a_live_window(mtm());
+            Ok(())
+        }),
+        Trial::test(
+            "menus::the_window_menu_opens_with_the_standard_close_item",
+            || {
+                menus::the_window_menu_opens_with_the_standard_close_item();
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "menus::a_pull_down_validates_its_callback_rows_from_their_command",
+            || {
+                menus::a_pull_down_validates_its_callback_rows_from_their_command();
+                Ok(())
+            },
+        ),
+    ];
+    #[cfg(feature = "gpu_surface")]
+    tests.extend(gpu_surface::trials());
     tests
 }
 
@@ -1493,6 +1515,97 @@ mod window {
     pub use waterui_apple::native_test_support::{
         bind_root_window_wires_a_live_window, manager_installs_into_the_environment,
     };
+}
+
+/// The standard menu bar's content, read back off the installed `NSMenu`s.
+#[cfg(all(target_os = "macos", feature = "native-test"))]
+mod menus {
+    use std::rc::Rc;
+
+    use cocoa_ui::appkit::{Command, Menu, MenuButton, MenuItem};
+    use cocoa_ui::objc2_app_kit::{NSApplication, NSEventModifierFlags};
+    use waterui::component::menu::{CloseWindowPlacement, Shortcut};
+    use waterui_apple::native_test_support::menus::window_menu_rows;
+
+    use crate::mtm;
+
+    /// `build_default`'s Window menu starts with the standard Close item —
+    /// ⌘W, untargeted `performClose:`, disabled while no key window takes
+    /// it — unless a declared menu carries Close, when the Window menu has
+    /// none.
+    pub fn the_window_menu_opens_with_the_standard_close_item() {
+        let rows = window_menu_rows(
+            mtm(),
+            CloseWindowPlacement::WindowMenu,
+            Some(Shortcut::new('w').command()).as_ref(),
+        );
+        let first = rows.first().expect("the Window menu has rows");
+        assert_eq!(first.title, "Close");
+        assert_eq!(first.key_equivalent, "w");
+        assert_eq!(first.action.as_deref(), Some("performClose:"));
+        assert!(first.modifiers.contains(NSEventModifierFlags::Command));
+        assert!(!first.enabled, "no key window takes `performClose:`");
+
+        let declared = window_menu_rows(mtm(), CloseWindowPlacement::Declared, None);
+        assert!(!declared.is_empty(), "the Window menu keeps its other rows");
+        assert!(
+            declared
+                .iter()
+                .all(|row| row.title != "Close" && row.action.as_deref() != Some("performClose:")),
+            "a declared Close is never repeated in the Window menu: {declared:?}"
+        );
+    }
+
+    /// A mounted pull-down validates its rows each time it opens, and a
+    /// callback row answers from its command's enabled state — set on the
+    /// item before or after its action, or carried by the [`Command`].
+    pub fn a_pull_down_validates_its_callback_rows_from_their_command() {
+        let mtm = mtm();
+        // Validation asks the application for each row's target, as it
+        // does in a launched app.
+        let _app = NSApplication::sharedApplication(mtm);
+        let button = MenuButton::new(mtm);
+        let menu = Menu::new(mtm, "");
+        menu.add_item(MenuItem::new(mtm, "", None, ""));
+        menu.add_item(
+            MenuItem::new(mtm, "on", None, "")
+                .with_enabled(true)
+                .with_action(|| {}),
+        );
+        menu.add_item(
+            MenuItem::new(mtm, "off", None, "")
+                .with_enabled(false)
+                .with_action(|| {}),
+        );
+        menu.add_item(
+            MenuItem::new(mtm, "off after", None, "")
+                .with_action(|| {})
+                .with_enabled(false),
+        );
+        let off_command = Command {
+            label: "off command".to_owned(),
+            enabled: false,
+            ..Command::default()
+        };
+        menu.add_item(MenuItem::command(mtm, &off_command, Rc::new(|| {})));
+        button.set_menu(&menu);
+
+        let native = menu.menu();
+        assert!(
+            native.autoenablesItems(),
+            "the pull-down validates its rows"
+        );
+        native.update();
+        let enabled: Vec<bool> = (1..native.numberOfItems())
+            .map(|index| {
+                native
+                    .itemAtIndex(index)
+                    .expect("a row at every index")
+                    .isEnabled()
+            })
+            .collect();
+        assert_eq!(enabled, [true, false, false, false]);
+    }
 }
 
 /// GPU-surface ownership regression coverage (#1725): a real mounted

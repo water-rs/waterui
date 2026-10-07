@@ -251,6 +251,13 @@ fn themed_test_environment() -> Environment {
     // The runners seed the chord table; a test that mounts menus resolves
     // shortcuts through the same path (water-rs/hydrolysis#247).
     env.insert(crate::renderer::MenuShortcutRegistry::default());
+    // `App::into_parts` installs the application's decided Close Window
+    // chord; the test environment installs the same value over an empty
+    // bar, so a Close Window item reads the free ⌘W / Ctrl+W.
+    env.insert(waterui_controls::menu::CloseWindowChord::new(
+        &nami::Computed::constant(Vec::new()),
+        &env,
+    ));
     env.insert(BadgeDrawLog(Rc::new(RefCell::new(Vec::new()))));
     env
 }
@@ -3311,7 +3318,7 @@ fn secure_text_context_menu_excludes_copy_and_cut() {
 
     let mut env = test_environment();
     crate::localization::install(&mut env);
-    let nodes = SemanticCore::build_text_context_menu_nodes(&target, &env);
+    let nodes = SemanticCore::build_text_context_menu_nodes(&target, &env, true);
     let labels = nodes
         .iter()
         .filter_map(|node| match node {

@@ -3394,6 +3394,15 @@ mod winit_impl {
                 .0
         }
 
+        /// Queues a close request on the same path the OS close button
+        /// takes — a menu's Close Window asks through here, so the window's
+        /// `closable` gate in `handle_input_events` decides it exactly as it
+        /// does a title-bar click.
+        #[cfg(hydrolysis_closable_windows)]
+        pub(crate) fn request_close(&mut self) {
+            self.pending_events.push(InputEvent::CloseRequested);
+        }
+
         /// Creates the surface for `window`, reusing `shared_gpu`'s device
         /// chain when given and returning the [`WinitGpuContext`] in use so
         /// the caller can hand it to the next surface.

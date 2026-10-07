@@ -17,21 +17,35 @@ pub fn call_action_discarding_result<T: 'static>(action: &SharedAction<T>, env: 
 
 /// Resolved menu items as popup-menu nodes. A declared `MenuItem::Quit`
 /// becomes the row of the quit command [`Quit::command`] builds, and is
-/// omitted where `env` carries no application quit.
-pub fn popup_menu_nodes(items: &[ResolvedMenuItem], env: &Environment) -> Vec<PopupMenuNode> {
+/// omitted where `env` carries no application quit; a declared
+/// `MenuItem::CloseWindow` becomes the row [`close_window_command`] builds
+/// — disabled for a non-closable `owner_closable` — and is omitted where
+/// the host's windows cannot be closed.
+pub fn popup_menu_nodes(
+    items: &[ResolvedMenuItem],
+    env: &Environment,
+    owner_closable: bool,
+) -> Vec<PopupMenuNode> {
     items
         .iter()
         .cloned()
-        .filter_map(|item| popup_menu_node(item, env))
+        .filter_map(|item| popup_menu_node(item, env, owner_closable))
         .collect()
 }
 
-fn popup_menu_node(item: ResolvedMenuItem, env: &Environment) -> Option<PopupMenuNode> {
+fn popup_menu_node(
+    item: ResolvedMenuItem,
+    env: &Environment,
+    owner_closable: bool,
+) -> Option<PopupMenuNode> {
     match item {
         ResolvedMenuItem::Command(command) => Some(command_node(command)),
         ResolvedMenuItem::Quit => env
             .get::<Quit>()
             .map(|quit| command_node(quit.command(env))),
+        ResolvedMenuItem::CloseWindow => {
+            close_window_command(env, owner_closable).map(command_node)
+        }
         ResolvedMenuItem::Divider => Some(PopupMenuNode::Divider),
         ResolvedMenuItem::Menu(menu) => {
             let styled = menu.label.content.snapshot() + StyledStr::plain(" ›");
@@ -47,7 +61,7 @@ fn popup_menu_node(item: ResolvedMenuItem, env: &Environment) -> Option<PopupMen
             Some(PopupMenuNode::Menu {
                 label,
                 plain_label,
-                items: popup_menu_nodes(&menu.items.snapshot(), env),
+                items: popup_menu_nodes(&menu.items.snapshot(), env, owner_closable),
             })
         }
     }
