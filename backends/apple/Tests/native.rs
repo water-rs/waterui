@@ -2202,6 +2202,10 @@ mod filtered {
                 a_deferred_capture_pauses_the_link_until_the_child_redraws,
             ),
             Trial::test(
+                "filtered::a_lost_context_parks_the_link_until_the_publication",
+                a_lost_context_parks_the_link_until_the_publication,
+            ),
+            Trial::test(
                 "filtered::a_view_collapsed_mid_capture_renders_transparent",
                 a_view_collapsed_mid_capture_renders_transparent,
             ),
@@ -2285,6 +2289,61 @@ mod filtered {
         assert!(
             pump_main_until(MAIN_QUEUE_DEADLINE, || filtered.frame_presented()),
             "the nested setup's redraw re-arms the link and the owed frame lands"
+        );
+        Ok(())
+    }
+
+    /// A GPU device loss while the filtered view is attached: the
+    /// delivered frame parks the leaf — the link pauses, one publication
+    /// watch arms, and a delivery that still arrives while parked drops
+    /// without rendering — and the rebuilt context's publication wakes
+    /// the wait, re-arms the link and lands the owed frame.
+    pub fn a_lost_context_parks_the_link_until_the_publication() -> Result<(), libtest_mimic::Failed>
+    {
+        let mtm = mtm();
+        let filtered = pollster::block_on(MountedFilteredSurface::mount_filling(mtm))
+            .map_err(|error| format!("a mounted filling filtered surface: {error}"))?;
+        filtered.ensure_attached();
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || filtered.frame_presented()),
+            "the attached filtered view presents its first frame"
+        );
+        let encoded = filtered.encoded_frames();
+        let lost = filtered.current_generation();
+
+        // The link has demand again when the loss lands, so the next
+        // delivered frame hits `render_frame`'s lost-context arm.
+        filtered.request_render();
+        filtered.lose_device("test device loss");
+        assert!(
+            filtered.deliver_frame(0.0),
+            "a drawable checks out for the frame"
+        );
+        assert!(
+            filtered.parked() && filtered.link_paused(),
+            "the lost context parks the leaf: the link pauses and the publication watch arms"
+        );
+
+        // A delivery still arriving while parked drops unpresented:
+        // nothing renders and the one outstanding watch stays
+        // outstanding — no per-vsync re-arm.
+        assert!(
+            filtered.deliver_frame(0.0),
+            "a drawable checks out for the parked leaf"
+        );
+        assert!(
+            filtered.parked() && filtered.link_paused() && filtered.encoded_frames() == encoded,
+            "a parked leaf renders nothing and keeps its one outstanding watch"
+        );
+
+        // The rebuild's publication wakes the parked wait: the hold
+        // clears, the link re-arms, and the owed frame renders on the
+        // new generation — the encode count is the render's own record.
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || filtered.current_generation() > lost
+                && !filtered.parked()
+                && filtered.encoded_frames() > encoded),
+            "the publication wake re-arms the link and the owed frame renders"
         );
         Ok(())
     }
@@ -2385,11 +2444,11 @@ mod filtered {
 
         let (log, errors) = ErrorLog::new("waterui_apple::components::filtered");
         tracing::subscriber::with_default(log, || {
-            filtered.settle_failed_capture(generation, first);
+            filtered.settle_failed_capture(generation, &first);
             // A later redraw of the failed child lands the same
             // terminal outcome on the same generation — logged once.
             let repeat = failed_child_carrier(&filtered.child);
-            filtered.settle_failed_capture(generation, repeat);
+            filtered.settle_failed_capture(generation, &repeat);
         });
         assert_eq!(
             errors.load(Ordering::SeqCst),
