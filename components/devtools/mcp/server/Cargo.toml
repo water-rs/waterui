@@ -14,7 +14,8 @@ categories.workspace = true
 [dependencies]
 waterui-mcp-protocol.workspace = true
 waterui-testing = { version = "0.5.1", path = "../../../../testing" }
-# The JSON tree serializes `ContentType` directly — its camelCase names.
+# Enables `ContentType`'s serde derive: the JSON tree serializes the type
+# (reached through `waterui-testing`'s re-export) by its camelCase names.
 waterui-controls = { workspace = true, features = ["serde"] }
 accesskit = "0.25"
 aither-core.workspace = true
@@ -32,3 +33,7 @@ hydrolysis-m3.workspace = true
 
 [lints]
 workspace = true
+
+# `waterui-controls` is declared only to enable its `serde` feature.
+[package.metadata.cargo-machete]
+ignored = ["waterui-controls"]
