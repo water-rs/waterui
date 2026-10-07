@@ -777,14 +777,15 @@ pub async fn package_apple(
     )
     .await?;
 
-    // The shared-runtime development linkage ships `libwaterui_dylib` and the
-    // Rust standard library inside the bundle's Frameworks directory; a
-    // statically linked package carries neither.
+    // The shared-runtime development linkage ships the `waterui_dylib`
+    // runtime images and the Rust standard library inside the bundle's
+    // Frameworks directory; a statically linked package carries neither.
     let shared_runtime = if options.uses_shared_rust_runtime() {
         let bin_built = BuiltTarget {
             profile_dir: built.profile_dir.clone(),
             artifact: layout.executable_file(&product_name),
             shared_runtime: built.shared_runtime.clone(),
+            shared_runtime_libraries: built.shared_runtime_libraries.clone(),
             app_library: None,
         };
         let libraries = RustDynamicLibraries::resolve(&bin_built, &triple, project).await?;

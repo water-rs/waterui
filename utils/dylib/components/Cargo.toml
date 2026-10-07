@@ -1,0 +1,34 @@
+[package]
+name = "waterui-dylib-components"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+description = "Optional components layer of the layered waterui dylib chain"
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+# The rlib is load-bearing, not redundant: Apple's host crate is built as a
+# `staticlib`, and rustc requires every Rust dependency of a staticlib to be
+# available in rlib form. Dropping it breaks `water preview` and `water run`
+# on Apple targets.
+crate-type = ["dylib", "rlib"]
+
+[dependencies]
+waterui-dylib-widgets = { path = "../widgets" }
+waterui-canvas = { workspace = true, optional = true }
+waterui-chart = { workspace = true, optional = true }
+waterui-barcode = { workspace = true, optional = true }
+waterui-particle = { workspace = true, optional = true }
+
+[features]
+canvas = ["dep:waterui-canvas"]
+chart = ["dep:waterui-chart"]
+barcode = ["dep:waterui-barcode"]
+particle = ["dep:waterui-particle"]
+
+[lints]
+workspace = true

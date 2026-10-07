@@ -13111,7 +13111,92 @@ dependencies = [
 name = "waterui-dylib"
 version = "0.5.1"
 dependencies = [
+ "waterui-dylib-components",
+ "waterui-dylib-foundation",
+ "waterui-dylib-graphics",
+ "waterui-dylib-markdown",
+ "waterui-dylib-media",
+ "waterui-dylib-webview",
+ "waterui-dylib-widgets",
  "waterui-internal",
+]
+
+[[package]]
+name = "waterui-dylib-components"
+version = "0.5.1"
+dependencies = [
+ "waterui-barcode",
+ "waterui-canvas",
+ "waterui-chart",
+ "waterui-dylib-widgets",
+ "waterui-particle",
+]
+
+[[package]]
+name = "waterui-dylib-foundation"
+version = "0.5.1"
+dependencies = [
+ "executor-core",
+ "lazy_static",
+ "nami",
+ "native-executor",
+ "pastey 0.2.3",
+ "quick-xml 0.42.0",
+ "regex",
+ "waterui-core",
+ "waterui-locale",
+ "waterui-url",
+ "waterui-watcher-set",
+]
+
+[[package]]
+name = "waterui-dylib-graphics"
+version = "0.5.1"
+dependencies = [
+ "waterui-dylib-foundation",
+ "waterui-graphics",
+ "waterui-shape",
+ "waterui-svg",
+]
+
+[[package]]
+name = "waterui-dylib-markdown"
+version = "0.5.1"
+dependencies = [
+ "pulldown-cmark",
+ "waterui-dylib-widgets",
+ "waterui-math",
+]
+
+[[package]]
+name = "waterui-dylib-media"
+version = "0.5.1"
+dependencies = [
+ "waterui-dylib-widgets",
+ "waterui-media",
+ "waterui-video",
+ "waterui-video-gpu",
+]
+
+[[package]]
+name = "waterui-dylib-webview"
+version = "0.5.1"
+dependencies = [
+ "waterui-dylib-widgets",
+ "waterui-webview",
+]
+
+[[package]]
+name = "waterui-dylib-widgets"
+version = "0.5.1"
+dependencies = [
+ "waterui-controls",
+ "waterui-dylib-graphics",
+ "waterui-form",
+ "waterui-icon",
+ "waterui-layout",
+ "waterui-navigation",
+ "waterui-text",
 ]
 
 [[package]]

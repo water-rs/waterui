@@ -157,9 +157,14 @@ pub struct BuiltTarget {
     /// its own `compiler-artifact` message, not a name reconstructed under
     /// the profile root.
     pub artifact: PathBuf,
-    /// The `waterui-dylib` dynamic library Cargo reported, when this build
-    /// produced one.
+    /// The `waterui-dylib` dynamic library Cargo reported — the top image of
+    /// the layered shared-runtime chain — when this build produced one.
     pub shared_runtime: Option<PathBuf>,
+    /// Every dynamic library Cargo reported for the build: the `waterui-dylib`
+    /// top image plus each layer dylib of the shared runtime it links
+    /// (water-rs/waterui#1615). Empty when the build produced no `dylib`
+    /// artifact.
+    pub shared_runtime_libraries: Vec<PathBuf>,
     /// The library artifact this build's dependency graph produced for the
     /// project crate — the `deps/` rlib, staticlib, or dylib whose symbol
     /// table carries the `waterui_meta_*` statics and `waterui_preview_*`
@@ -278,13 +283,20 @@ impl StagedDynamicLibrary {
 /// Dynamic Rust libraries required by a shared-runtime development build.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RustDynamicLibraries {
+    /// The shared runtime's top image — the `waterui-dylib` artifact
+    /// consumers link and retarget.
     waterui: StagedDynamicLibrary,
+    /// Every other `dylib` image the build produced — the layered chain
+    /// `waterui-dylib` loads (water-rs/waterui#1615) — each staged under the
+    /// name a linked consumer's dynamic section records.
+    waterui_layers: Vec<StagedDynamicLibrary>,
     standard_library: StagedDynamicLibrary,
     triple: Triple,
 }
 
 impl RustDynamicLibraries {
-    /// Resolve the shared `WaterUI` runtime and target Rust standard library.
+    /// Resolve the shared `WaterUI` runtime images and the target Rust
+    /// standard library.
     ///
     /// Each library is staged under the name the artifact's own dynamic
     /// section records: a `dylib` unit from a git or registry source compiles
@@ -296,6 +308,12 @@ impl RustDynamicLibraries {
     /// under it is a packaging error naming what was searched for and where
     /// (water-rs/cli#184). An artifact that records no matching dependency —
     /// a statically linked runtime — keeps the reported path's own name.
+    ///
+    /// The runtime is a set, not one library: `BuiltTarget::shared_runtime`
+    /// names the `waterui-dylib` top image and `shared_runtime_libraries`
+    /// every `dylib` artifact Cargo reported — the layered chain the top
+    /// image loads (water-rs/waterui#1615). Each layer resolves through the
+    /// same recorded-name rule as the top.
     ///
     /// The prebuilt `libstd` comes from the toolchain `project` selects — the
     /// one [`RustBuild`] compiled the runtime under — so the runtime and the
@@ -338,8 +356,13 @@ impl RustDynamicLibraries {
                 )?;
                 StagedDynamicLibrary::needed(name, source)
             }
-            None => StagedDynamicLibrary::reported(reported)?,
+            None => StagedDynamicLibrary::reported(reported.clone())?,
         };
+
+        // Every other `dylib` artifact Cargo reported is a runtime image the
+        // top one loads; each resolves under the name a consumer records.
+        let waterui_layers =
+            Self::resolve_waterui_layers(built, &reported, &needed, &deps_dir, lib_dir).await?;
 
         // A `-Zbuild-std` build publishes its freshly compiled `libstd` into
         // the profile's `deps/` directory via the rustc wrapper; that copy —
@@ -390,9 +413,94 @@ impl RustDynamicLibraries {
 
         Ok(Self {
             waterui,
+            waterui_layers,
             standard_library,
             triple: triple.clone(),
         })
+    }
+
+    /// Every `dylib` artifact Cargo reported besides the top image is a
+    /// runtime image some consumer in the chain loads. The artifact's own
+    /// dynamic section names only the images it links directly, so the
+    /// matching pool adds the top image's record — it names every layer of
+    /// the chain — and each layer resolves under the name a consumer
+    /// records, never a hardcoded list of layer names.
+    ///
+    /// # Errors
+    /// Returns an error when a recorded library is absent or ambiguous, or
+    /// when the top image's dynamic dependencies cannot be read.
+    async fn resolve_waterui_layers(
+        built: &BuiltTarget,
+        reported: &Path,
+        needed: &[String],
+        deps_dir: &Path,
+        lib_dir: &Path,
+    ) -> eyre::Result<Vec<StagedDynamicLibrary>> {
+        let mut recorded = needed.to_vec();
+        recorded.extend(
+            unblock({
+                let top = reported.to_path_buf();
+                move || needed_shared_libraries(&top)
+            })
+            .await
+            .map_err(|error| {
+                eyre::eyre!(
+                    "failed to read the dynamic dependencies of {}: {error}",
+                    reported.display()
+                )
+            })?,
+        );
+        let mut waterui_layers = Vec::new();
+        for library in &built.shared_runtime_libraries {
+            // The top image reports under more than one name — the unhashed
+            // uplift beside its hashed `deps/` twin — so dedup on its stem,
+            // not the reported path.
+            if *library == reported
+                || dylib_library_stem(library).as_deref() == Some("waterui_dylib")
+            {
+                continue;
+            }
+            waterui_layers.push(Self::resolve_waterui_layer(
+                library,
+                &recorded,
+                deps_dir,
+                lib_dir,
+                &built.artifact,
+            )?);
+        }
+        Ok(waterui_layers)
+    }
+
+    /// The [`StagedDynamicLibrary`] one reported layer artifact becomes:
+    /// under the name a consumer's dynamic section records when one names
+    /// the artifact's crate, or under the name Cargo reported.
+    ///
+    /// # Errors
+    /// Returns an error when the recorded name is absent or ambiguous in
+    /// the searched directories, or the reported artifact is unusable.
+    fn resolve_waterui_layer(
+        library: &Path,
+        recorded: &[String],
+        deps_dir: &Path,
+        lib_dir: &Path,
+        artifact: &Path,
+    ) -> eyre::Result<StagedDynamicLibrary> {
+        let recorded_name = dylib_library_stem(library).and_then(|stem| {
+            recorded
+                .iter()
+                .find(|name| needed_library_matches(name, &stem))
+        });
+        match recorded_name {
+            Some(name) => Ok(StagedDynamicLibrary::needed(
+                name,
+                needed_library_source(
+                    name,
+                    &[deps_dir.to_path_buf(), lib_dir.to_path_buf()],
+                    artifact,
+                )?,
+            )),
+            None => StagedDynamicLibrary::reported(library.to_path_buf()),
+        }
     }
 
     /// Shared `WaterUI` runtime path.
@@ -473,9 +581,15 @@ impl RustDynamicLibraries {
 
     /// Iterate over every library that must be staged with the application.
     pub fn iter(&self) -> impl Iterator<Item = &Path> {
-        [&self.waterui, &self.standard_library]
-            .into_iter()
-            .map(|library| library.source.as_path())
+        self.libraries().map(|library| library.source.as_path())
+    }
+
+    /// Every staged library in staging order: the top image, its layers, and
+    /// the target Rust standard library.
+    fn libraries(&self) -> impl Iterator<Item = &StagedDynamicLibrary> {
+        std::iter::once(&self.waterui)
+            .chain(&self.waterui_layers)
+            .chain(std::iter::once(&self.standard_library))
     }
 
     /// Copy all required dynamic libraries into a runtime search directory.
@@ -494,13 +608,13 @@ impl RustDynamicLibraries {
         // hashed `deps/` dylib staged beside a binary that lives there too —
         // so the staged-copy cleanup must leave sources alone and the copy
         // must not rewrite a library over itself.
-        let libraries = [&self.waterui, &self.standard_library];
+        let libraries: Vec<&StagedDynamicLibrary> = self.libraries().collect();
         let sources: Vec<PathBuf> = libraries
             .iter()
             .map(|library| library.source.clone())
             .collect();
         Self::remove_staged_except(destination, &self.triple, &sources).await?;
-        for library in &libraries {
+        for library in libraries {
             let staged = destination.join(&library.staged_name);
             if library.source == staged {
                 continue;
@@ -559,8 +673,9 @@ impl RustDynamicLibraries {
             // clears them here so the dist directory is left clean.
             let is_shader_compiler = triple.operating_system == OperatingSystem::Windows
                 && matches!(file_name.as_ref(), "dxcompiler.dll" | "dxil.dll");
-            // `waterui_dylib` matches with or without a `-<metadata>` suffix
-            // so a superseded hashed staging is removed with the unhashed one.
+            // `waterui_dylib` matches the top image and every layer image
+            // (`waterui_dylib_*`), with or without a `-<metadata>` suffix, so a
+            // superseded hashed staging is removed with the unhashed one.
             if has_dynamic_extension
                 && (is_waterui_dylib_file_name(&file_name)
                     || is_shader_compiler
@@ -661,14 +776,28 @@ fn needed_file_name(recorded_name: &str) -> &str {
 }
 
 /// Whether `file_name` — an already validated library name, `lib` prefix and
-/// platform extension included — names `waterui_dylib`, optionally carrying a
+/// platform extension included — names a `waterui_dylib` runtime image: the
+/// top `waterui_dylib` or any `waterui_dylib_*` layer, optionally carrying a
 /// `-<metadata>` hash.
 fn is_waterui_dylib_file_name(file_name: &str) -> bool {
     let Some((stem, _)) = file_name.rsplit_once('.') else {
         return false;
     };
     let stem = stem.strip_prefix("lib").unwrap_or(stem);
-    stem == "waterui_dylib" || stem.starts_with("waterui_dylib-")
+    stem.starts_with("waterui_dylib_")
+        || stem == "waterui_dylib"
+        || stem.starts_with("waterui_dylib-")
+}
+
+/// The crate stem a dynamic-library artifact path carries: the basename minus
+/// the platform `lib` prefix and Cargo's trailing `-<metadata>` hash. Crate
+/// names use `_`, never `-`, so the last `-` always separates the hash; an
+/// unhashed `<profile>/lib<crate>` name is its own stem.
+fn dylib_library_stem(path: &Path) -> Option<String> {
+    let stem = path.file_stem()?.to_str()?;
+    let stem = stem.strip_prefix("lib").unwrap_or(stem);
+    let stem = stem.rsplit_once('-').map_or(stem, |(name, _)| name);
+    Some(stem.to_owned())
 }
 
 /// Whether a recorded dynamic dependency names the `crate_name` library —
@@ -1838,6 +1967,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
         .await?;
 
         let shared_runtime = reported_shared_runtime(&output.stdout)?;
+        let shared_runtime_libraries = reported_shared_runtimes(&output.stdout)?;
         let app_library = match self.project.as_ref() {
             Some(project) => {
                 app_library_artifact(&output.stdout, &project.root().join("Cargo.toml"))?
@@ -1848,6 +1978,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
             profile_dir,
             artifact,
             shared_runtime,
+            shared_runtime_libraries,
             app_library,
         })
     }
@@ -2757,6 +2888,32 @@ pub(crate) fn compiler_artifacts(
     Ok(artifacts)
 }
 
+/// Every dynamic library Cargo reported for the build — the shared-runtime
+/// image set: the `waterui-dylib` top image plus each layer dylib of the
+/// layered chain (water-rs/waterui#1615). Selected by `crate_types` alone, so
+/// no layer name is ever hardcoded; sorted for a deterministic staging order.
+fn reported_shared_runtimes(stdout: &[u8]) -> Result<Vec<PathBuf>, RustBuildError> {
+    let mut reported = Vec::new();
+    for artifact in compiler_artifacts(stdout)? {
+        if !artifact
+            .target
+            .crate_types
+            .contains(&cargo_metadata::CrateType::DyLib)
+        {
+            continue;
+        }
+        for filename in &artifact.filenames {
+            let path = filename.as_std_path();
+            if is_dynamic_library(path) {
+                reported.push(path.to_path_buf());
+            }
+        }
+    }
+    reported.sort();
+    reported.dedup();
+    Ok(reported)
+}
+
 fn reported_shared_runtime(stdout: &[u8]) -> Result<Option<PathBuf>, RustBuildError> {
     let mut reported = Vec::new();
     for artifact in compiler_artifacts(stdout)? {
@@ -3567,8 +3724,8 @@ mod tests {
         BuildOptions, BuildProfile, BuiltTarget, CargoTarget, CompileEvent, RustBuild,
         RustDynamicLibraries, RustLinkage, classify_compile_line, combined_build_output,
         dynamic_library_file_name, executable_suffix, lib_extension_for_triple,
-        marked_binary_deps_path, reported_shared_runtime, resolve_dxc_runtime_in,
-        resolve_rust_standard_library_in,
+        marked_binary_deps_path, reported_shared_runtime, reported_shared_runtimes,
+        resolve_dxc_runtime_in, resolve_rust_standard_library_in,
     };
 
     fn shared_runtime_artifact_json(
@@ -3644,6 +3801,7 @@ mod tests {
             profile_dir: profile_dir.clone(),
             artifact: temporary.path().join("app"),
             shared_runtime: None,
+            shared_runtime_libraries: Vec::new(),
             app_library: None,
         }
         .shared_runtime()
@@ -3651,6 +3809,48 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("waterui-dylib"));
         assert!(message.contains(&profile_dir.display().to_string()));
+    }
+
+    /// The shared-runtime image set is every `dylib` artifact Cargo reports —
+    /// the `waterui-dylib` top image plus each layer dylib — selected by crate
+    /// type alone, never by a hardcoded list of layer names.
+    #[test]
+    fn reported_shared_runtimes_collects_every_dylib_artifact() {
+        let temporary = tempdir().expect("tempdir");
+        let debug = temporary.path().join("target/debug");
+        let top = debug.join("deps/waterui_dylib-0123456789abcdef.dll");
+        let foundation = debug.join("deps/waterui_dylib_foundation-0123456789abcdef.dll");
+        let graphics = debug.join("deps/waterui_dylib_graphics-0123456789abcdef.dll");
+        let unrelated_manifest = temporary.path().join("app/Cargo.toml");
+        let stdout = format!(
+            "{}\n{}\n{}\n{}\n{}\n",
+            shared_runtime_artifact_json(&unrelated_manifest, &debug.join("app.exe"), "app",),
+            shared_runtime_artifact_json(
+                &temporary.path().join("utils/dylib/Cargo.toml"),
+                &top,
+                "waterui-dylib",
+            ),
+            shared_runtime_artifact_json(
+                &temporary.path().join("utils/dylib/foundation/Cargo.toml"),
+                &foundation,
+                "waterui-dylib-foundation",
+            ),
+            shared_runtime_artifact_json(
+                &temporary.path().join("utils/dylib/graphics/Cargo.toml"),
+                &graphics,
+                "waterui-dylib-graphics",
+            ),
+            // Only dynamic-library filenames join the set — an `.rlib` or an
+            // executable a `dylib`-typed unit also emits never does.
+            shared_runtime_artifact_json(
+                &unrelated_manifest,
+                &debug.join("deps/libapp.rlib"),
+                "app",
+            ),
+        );
+
+        let runtimes = reported_shared_runtimes(stdout.as_bytes()).expect("runtime set");
+        assert_eq!(runtimes, vec![top, foundation, graphics]);
     }
 
     #[test]
@@ -4741,6 +4941,7 @@ mod tests {
             );
             super::RustDynamicLibraries {
                 waterui,
+                waterui_layers: Vec::new(),
                 standard_library,
                 triple,
             }
@@ -4778,6 +4979,7 @@ mod tests {
     fn canonical_staging_libraries(source: PathBuf) -> super::RustDynamicLibraries {
         super::RustDynamicLibraries {
             waterui: super::StagedDynamicLibrary::reported(source).expect("reported name"),
+            waterui_layers: Vec::new(),
             standard_library: super::StagedDynamicLibrary::reported(PathBuf::from(
                 "/deps/libstd-0123456789abcdef.dylib",
             ))

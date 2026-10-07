@@ -92,9 +92,11 @@ jobs:
       #
       # waterui-dylib is the dynamic-link anchor — a Rust `dylib` on purpose, so
       # the preview system can share one copy of the framework across
-      # dynamically loaded preview libraries. That exports every Rust symbol,
-      # 290k of them, and a PE export table stops at 65535. The preview system
-      # targets macOS, the iOS Simulator and Android, not Windows.
+      # dynamically loaded preview libraries. On Windows it is the top image
+      # of the layered dylib chain (#1615) — the dedicated export-budget step
+      # in the `all-features` job links it in both feature shapes. It carries
+      # no test target, so the workspace passes still exclude it. The preview
+      # system targets macOS, the iOS Simulator and Android, not Windows.
       #
       # waterui-browser-cef links cef_sandbox from a CEF binary distribution the
       # runner does not stage. It is still compiled in the lint job below,
@@ -157,18 +159,17 @@ jobs:
   #
   # Two passes, because the root crate cannot join a workspace-wide
   # `--all-features` here: that turns on `dynamic_linking`, which pulls in
-  # `waterui-dylib`, and that crate exports 77k symbols against a PE export
-  # table limit of 65535 — it cannot link on Windows, which is why the
-  # workspace pass in `test` excludes it. So the root `waterui` crate runs on
-  # its own under `--features all` (every feature but that one), and the rest
-  # of the workspace runs under `--all-features` with the root and the dylib
-  # excluded, plus the same four exclusions the Linux `all-features` job in
-  # test.yml carries for crates whose feature sets are mutually exclusive by
-  # construction (#276), `filtrate` — whose `webgl` feature is a deliberate
-  # `compile_error!` off wasm32 (the wasm job lints it where it is legal) —
-  # and `skill_snippets`, whose `dev` feature would turn `dynamic_linking`
-  # back on and whose `compile-gate-tests` transcriptions must never run
-  # (see the Linux job). The two excluded crates with
+  # `waterui-dylib` — a Rust `dylib` with no test target, covered on Windows
+  # by this job's export-budget step (#1615) rather than by nextest. So the
+  # root `waterui` crate runs on its own under `--features all` (every feature
+  # but that one), and the rest of the workspace runs under `--all-features`
+  # with the root and the dylib excluded, plus the same four exclusions the
+  # Linux `all-features` job in test.yml carries for crates whose feature sets
+  # are mutually exclusive by construction (#276), `filtrate` — whose `webgl`
+  # feature is a deliberate `compile_error!` off wasm32 (the wasm job lints it
+  # where it is legal) — and `skill_snippets`, whose `dev` feature would turn
+  # `dynamic_linking` back on and whose `compile-gate-tests` transcriptions
+  # must never run (see the Linux job). The two excluded crates with
   # platform-specific code in their feature shapes run afterwards in the
   # shapes they have.
   all-features:
@@ -217,6 +218,21 @@ jobs:
             -E 'not binary(/^trybuild_/)'
       - name: Test (waterui-core, every stable feature)
         run: cargo nextest run --locked -p waterui-core --features std,serde --profile ci
+      # #1615: the layered dylib chain must keep every produced image under
+      # the PE export-table cap — the budget is 80% of 65,535. This job is the
+      # only lane that resolves the full feature graph, so it is the only
+      # place the chain is built in both shapes. `-Cprefer-dynamic` makes the
+      # top crate resolve its crate-type-dylib deps through the layer DLLs;
+      # without it the top would embed the whole chain and the check would be
+      # meaningless. Scoped to this step only — workspace-wide it would make
+      # every built binary import the toolchain's std-<hash>.dll.
+      - name: Check dylib export budget
+        run: |
+          $env:RUSTFLAGS = "-Cprefer-dynamic"
+          cargo build --locked -p waterui-dylib
+          .github/scripts/check-dylib-exports.ps1
+          cargo build --locked -p waterui-dylib --all-features
+          .github/scripts/check-dylib-exports.ps1
       - name: Upload Test Snapshots
         if: always()
         uses: actions/upload-artifact@v4
