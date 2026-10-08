@@ -3,27 +3,34 @@
 # requires-python = ">=3.10"
 # dependencies = []
 # ///
-"""Fetch `gradle-wrapper.jar` for each Gradle wrapper in this tree.
+"""Materialize the Gradle wrapper assets this tree carries.
 
 The wrapper JARs are binary assets and stay out of the repository; this
-script materializes them where `./gradlew` expects them:
+script installs them where `./gradlew` expects them:
 
     uv run backends/hydrolysis/scripts/fetch-gradle-wrapper.py
 
-For each wrapper directory it reads the Gradle version from the adjacent
-`gradle/wrapper/gradle-wrapper.properties`, downloads the pinned
-`gradle-<version>-bin.zip` from services.gradle.org verified against the
-published `-bin.zip.sha256`, extracts the `gradle-wrapper.jar` template the
-`wrapper` task writes (a resource inside `gradle-wrapper-main-<version>.jar`),
-and verifies it byte-for-byte against the published `-wrapper.jar.sha256`
-(<https://gradle.org/release-checksums/>) before installing it. Both layers
-are hash-verified: the distribution and the jar.
+Each wrapper's `distributionUrl` derives from a declaration, never a literal
+kept in step by hand: the in-tree host follows `[package.metadata.waterui]`'s
+`android-gradle-version` in the repository's root manifest — the release the
+scaffolded `gradle-wrapper.properties` renders — while the bench reference
+is a frozen import whose `toolchain-lock.json` records the Gradle its
+fixtures ran under (`ci_environment.reference_app.gradle`). For each wrapper
+directory this script rewrites `distributionUrl` from its declaration, then
+downloads the pinned `gradle-<version>-bin.zip` from services.gradle.org
+verified against the published `-bin.zip.sha256`, extracts the
+`gradle-wrapper.jar` template the `wrapper` task writes (a resource inside
+`gradle-wrapper-main-<version>.jar`), and verifies it byte-for-byte against
+the published `-wrapper.jar.sha256` (<https://gradle.org/release-checksums/>)
+before installing it. Both layers are hash-verified: the distribution and
+the jar.
 """
 
 from __future__ import annotations
 
 import hashlib
 import io
+import json
 import re
 import sys
 import urllib.request
@@ -75,7 +82,72 @@ def fetch_sha256(url: str) -> str:
     return text.split()[0]
 
 
+def declared_gradle_version() -> str:
+    """`[package.metadata.waterui].android-gradle-version` in the root
+    manifest — the one declaration the in-tree host follows and the
+    scaffolded `gradle-wrapper.properties` renders."""
+    manifest = (REPO.parent.parent / "Cargo.toml").read_text()
+    table = re.search(
+        r"(?ms)^\[package\.metadata\.waterui\]\n(.*?)(?=^\[|\Z)", manifest
+    )
+    if table is None:
+        raise SystemExit(
+            "the root manifest declares no [package.metadata.waterui] table"
+        )
+    match = re.search(
+        r'^android-gradle-version\s*=\s*"([^"]+)"', table.group(1), re.M
+    )
+    if match is None:
+        raise SystemExit(
+            "[package.metadata.waterui] declares no android-gradle-version"
+        )
+    return match.group(1)
+
+
+def bench_reference_gradle_version() -> str:
+    """The Gradle the frozen bench baseline recorded: the reference tree is
+    imported verbatim and hash-pinned by `toolchain-lock.json`, so its
+    wrapper follows the lock's `reference_app.gradle`, not the manifest."""
+    lock = json.loads(
+        (REPO / "bench" / "android" / "toolchain-lock.json").read_text()
+    )
+    return lock["ci_environment"]["reference_app"]["gradle"]
+
+
+# Which declaration each wrapper's `distributionUrl` derives from.
+WRAPPER_PINS = {
+    REPO / "android": declared_gradle_version,
+    REPO / "bench" / "android" / "reference": bench_reference_gradle_version,
+}
+
+
+def pin_wrapper(properties_path: Path, version: str) -> None:
+    """Rewrite `distributionUrl` from the wrapper's declared release,
+    leaving the file untouched when it already pins it — a no-diff run is a
+    clean tree."""
+    properties = properties_path.read_text()
+    url = (
+        "distributionUrl=https\\\\://services.gradle.org/distributions/"
+        f"gradle-{version}-bin.zip"
+    )
+    pinned = re.sub(r"(?m)^distributionUrl=.*$", url, properties)
+    if "distributionUrl=" not in pinned:
+        raise SystemExit(f"no distributionUrl in {properties_path}")
+    if pinned != properties:
+        properties_path.write_text(pinned)
+        print(
+            f"  pinned {properties_path.relative_to(REPO.parent.parent)} "
+            f"at gradle-{version}"
+        )
+
+
 def main() -> None:
+    for project, pin in WRAPPER_PINS.items():
+        pin_wrapper(
+            project / "gradle" / "wrapper" / "gradle-wrapper.properties",
+            pin(),
+        )
+
     for project in WRAPPERS:
         wrapper_dir = project / "gradle" / "wrapper"
         properties = (wrapper_dir / "gradle-wrapper.properties").read_text()

@@ -847,6 +847,17 @@ impl TemplateContext {
             .unwrap_or_else(|error| panic!("{error:#}"))
     }
 
+    /// The Gradle release the scaffolded `gradle-wrapper.properties` pins —
+    /// the `android-gradle-version` the selected framework's metadata
+    /// declares, so a generated project's `./gradlew` downloads the release
+    /// the framework's own Android host builds with.
+    #[must_use]
+    pub fn android_gradle_version(&self) -> &str {
+        self.framework
+            .android_gradle_version()
+            .unwrap_or_else(|error| panic!("{error:#}"))
+    }
+
     /// The JDK major version the generated app compiles against, rendered as
     /// `JavaVersion.VERSION_{value}` — the value `water doctor` enforces on the
     /// installed JDK, from the same `[package.metadata.waterui-scaffold]` key.
@@ -1417,6 +1428,7 @@ define_scaffold_templates! {
     AndroidApplicationTemplate => (Android, "src/templates/android/app/src/main/java/WaterUiApplication.kt.tpl"),
     AndroidStringsTemplate => (Android, "src/templates/android/app/src/main/res/values/strings.xml.tpl"),
     AndroidSettingsTemplate => (Android, "src/templates/android/settings.gradle.kts.tpl"),
+    AndroidSharedGradleWrapperTemplate => (AndroidShared, "src/templates/android_shared/gradle/wrapper/gradle-wrapper.properties.tpl"),
     AndroidEmbeddedSettingsTemplate => (AndroidEmbedded, "src/templates/android_embedded/settings.gradle.kts.tpl"),
     AndroidEmbeddedModuleTemplate => (AndroidEmbedded, "src/templates/android_embedded/waterui/build.gradle.kts.tpl"),
     AndroidEmbeddedManifestTemplate => (AndroidEmbedded, "src/templates/android_embedded/waterui/src/main/AndroidManifest.xml.tpl"),
@@ -2446,6 +2458,42 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(error.contains("backends/apple"), "{error}");
+    }
+
+    /// The scaffolded `gradle-wrapper.properties` renders the framework's
+    /// declared `android-gradle-version` — never a template literal — so a
+    /// generated project's `./gradlew` downloads the release the in-tree
+    /// Hydrolysis host and bench wrappers pin (#2276).
+    #[test]
+    fn android_shared_wrapper_renders_the_declared_gradle_version() {
+        let mut ctx = project_ctx();
+        // A sentinel version proves the scaffold renders the resolved
+        // framework's `android-gradle-version`, not a template literal.
+        let mut persisted: toml::Value =
+            toml::from_str(&toml::to_string(&ctx.framework).unwrap()).unwrap();
+        persisted["metadata"]["android-gradle-version"] = toml::Value::String("8.8.8".to_owned());
+        ctx.framework = persisted.try_into().unwrap();
+
+        let template = embedded::ANDROID_SHARED
+            .get_file("gradle/wrapper/gradle-wrapper.properties.tpl")
+            .expect("android shared wrapper template must exist")
+            .contents_utf8()
+            .expect("wrapper template must be utf-8");
+
+        let rendered = render_scaffold_template(
+            TemplateNamespace::AndroidShared,
+            std::path::Path::new("gradle/wrapper/gradle-wrapper.properties.tpl"),
+            template,
+            &ctx,
+        )
+        .expect("wrapper properties render");
+
+        assert!(
+            rendered.contains(
+                "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.8.8-bin.zip"
+            ),
+            "the scaffolded wrapper pins the declared Gradle release: {rendered}"
+        );
     }
 
     #[test]
