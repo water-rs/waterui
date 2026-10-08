@@ -13,8 +13,7 @@ use rustc_hash::FxHashMap;
 use kurbo::{Affine, Vec2};
 
 use crate::animation::{
-    Animatable, Animation, AnimationTrack, Lanes, clamp_to_rect, curve_value, decay_step,
-    rubber_band_spring, settled, spring_step,
+    Animatable, Animation, AnimationTrack, Lanes, clamp_to_rect, eval_lanes, rubber_band_spring,
 };
 use crate::backdrop::BackdropSample;
 use crate::display_list::{Operand, SlotUpdate, blends_within, translucent_within};
@@ -164,8 +163,9 @@ impl LayerNode {
     }
 
     /// Describes all running tracks together. Returns `None` for scroll,
-    /// projective or nonlinear component motion, or an unsampled track.
-    /// An empty description means that no property is moving.
+    /// projective or nonlinear component motion, or a track whose start is
+    /// still unknown — one that carries no host-given start and has never
+    /// been sampled. An empty description means that no property is moving.
     #[must_use]
     pub fn animations(&self) -> Option<LayerAnimations> {
         if self.projective || self.scroll_track.is_some() {
@@ -290,8 +290,9 @@ struct Track<T: Animatable> {
     target: T,
     /// The animation driving the track.
     animation: Animation,
-    /// The time the track started; `None` until first sampled, so a track
-    /// committed between frames starts at the next presentation time.
+    /// The time the track started. `Some` when the prop gave a start on
+    /// the host's clock; `None` until first sampled, so a track committed
+    /// between frames starts at the next presentation time.
     start: Option<Instant>,
     /// The last sampled `(time, position, velocity)`, for retarget
     /// continuity.
@@ -318,7 +319,13 @@ impl<T: Animatable> Track<T> {
         })
     }
 
-    fn new(from: T::Lanes, velocity: T::Lanes, target: T, animation: Animation) -> Self {
+    fn new(
+        from: T::Lanes,
+        velocity: T::Lanes,
+        target: T,
+        animation: Animation,
+        start: Option<Instant>,
+    ) -> Self {
         debug_assert!(
             !matches!(animation, Animation::Decay(_)) || T::Lanes::N == 2,
             "Decay is only legal on scroll_offset"
@@ -328,7 +335,7 @@ impl<T: Animatable> Track<T> {
             velocity,
             target,
             animation,
-            start: None,
+            start,
             last: None,
         }
     }
@@ -338,36 +345,33 @@ impl<T: Animatable> Track<T> {
     fn sample(&mut self, t: Instant) -> (T::Lanes, T::Lanes, bool) {
         let start = *self.start.get_or_insert(t);
         let dt = t.duration_since(start).as_secs_f64();
-        let target = self.target.into_lanes();
-        let (pos, vel, done) = match &self.animation {
-            Animation::Spring(spring) => {
-                let (pos, vel) = spring_step(self.from, self.velocity, target, spring, dt);
-                if settled(pos, vel, target) {
-                    (target, T::Lanes::zero(), true)
-                } else {
-                    (pos, vel, false)
-                }
-            }
-            Animation::Curve(curve) => {
-                let duration = curve.duration.as_secs_f64();
-                let t01 = if duration <= 0.0 { 1.0 } else { dt / duration };
-                let delta = target.sub(&self.from);
-                let pos = self.from.add_scaled(&delta, curve_value(curve, t01));
-                // v = Δ·e′(t)/duration so a retarget can inherit it.
-                let vel = if duration > 0.0 {
-                    delta.scale(crate::animation::curve_slope(curve, t01) / duration)
-                } else {
-                    T::Lanes::zero()
-                };
-                (pos, vel, t01 >= 1.0)
-            }
-            Animation::Decay(decay) => {
-                let (pos, vel) = decay_step(self.from, self.velocity, decay.deceleration, dt);
-                (pos, vel, vel.max_abs() < 1e-3)
-            }
-        };
+        let (pos, vel, done) = eval_lanes(
+            self.from,
+            self.velocity,
+            self.target.into_lanes(),
+            &self.animation,
+            dt,
+        );
         self.last = Some((t, pos, vel));
         (pos, vel, done)
+    }
+
+    /// The `(position, velocity)` the track's evaluation reports at `t`,
+    /// without sampling it: what a retarget with a host-given start
+    /// continues from. An unstarted track is evaluated as though `t` were
+    /// its first frame.
+    fn value_at(&self, t: Instant) -> (T::Lanes, T::Lanes) {
+        let dt = self
+            .start
+            .map_or(0.0, |start| t.duration_since(start).as_secs_f64());
+        let (pos, vel, _) = eval_lanes(
+            self.from,
+            self.velocity,
+            self.target.into_lanes(),
+            &self.animation,
+            dt,
+        );
+        (pos, vel)
     }
 
     /// Whether the still-running track needs the fast rate class. A decay
@@ -1013,20 +1017,34 @@ fn set_prop<T: Animatable>(track: &mut Option<Track<T>>, value: &mut T, prop: &P
                 velocity,
                 prop.target,
                 animation,
+                prop.start,
             ));
         }
         Some(animation) => {
             let (from, velocity, last) = track.as_ref().map_or_else(
                 || ((*value).into_lanes(), T::Lanes::zero(), None),
                 |old| {
-                    (
-                        old.last.map_or(old.from, |(_, pos, _)| pos),
-                        old.last.map_or(old.velocity, |(_, _, vel)| vel),
-                        old.last,
+                    prop.start.map_or_else(
+                        || {
+                            (
+                                old.last.map_or(old.from, |(_, pos, _)| pos),
+                                old.last.map_or(old.velocity, |(_, _, vel)| vel),
+                                old.last,
+                            )
+                        },
+                        // A host-given start anchors the new track to `t`, so
+                        // it continues from the previous track evaluated at
+                        // `t`, not from its last sample — the sampler may not
+                        // have drawn a frame since the host's clock issued the
+                        // change.
+                        |start| {
+                            let (pos, vel) = old.value_at(start);
+                            (pos, vel, None)
+                        },
                     )
                 },
             );
-            let mut next = Track::new(from, velocity, prop.target, animation);
+            let mut next = Track::new(from, velocity, prop.target, animation, prop.start);
             next.last = last;
             *track = Some(next);
         }
@@ -1128,6 +1146,7 @@ mod hierarchy_tests {
             Prop {
                 target: Affine::translate((10., 0.)),
                 animation: Some(Curve::linear(Duration::from_secs(1)).into()),
+                start: None,
             },
         ));
         tree.sample(start, 1.0);
@@ -1146,6 +1165,7 @@ mod hierarchy_tests {
             Prop {
                 target: Vec2::ZERO,
                 animation: Some(Decay::new(Vec2::new(0., 400.)).into()),
+                start: None,
             },
         ));
         tree.sample(start + Duration::from_millis(100), 1.0);
@@ -1163,6 +1183,7 @@ mod hierarchy_tests {
             Prop {
                 target: 0.5,
                 animation: Some(Curve::linear(Duration::from_secs(1)).into()),
+                start: None,
             },
         ));
         tree.sample(start + Duration::from_millis(500), 1.0);
@@ -1178,6 +1199,7 @@ mod hierarchy_tests {
             Prop {
                 target: 0.5,
                 animation: Some(Curve::linear(Duration::from_secs(1)).into()),
+                start: None,
             },
         ));
         assert!(tree.layer(root).animations().is_none());
@@ -1190,11 +1212,125 @@ mod hierarchy_tests {
             Prop {
                 target: 2.0,
                 animation: None,
+                start: None,
             },
         ));
         assert!(tree.layer(root).animations().is_none());
         tree.apply(LayerOp::ClearProjection(root));
         assert!(tree.layer(root).animations().is_some());
+    }
+
+    #[test]
+    fn a_track_given_a_start_samples_identically_to_the_shared_evaluation() {
+        let mut tree = SurfaceTree::new();
+        let root = tree.root();
+        let start = Instant::now() + Duration::from_millis(10);
+        tree.apply(LayerOp::Transform(
+            root,
+            Prop {
+                target: Affine::translate((100., 20.)),
+                animation: Some(Curve::linear(Duration::from_millis(500)).into()),
+                start: Some(start),
+            },
+        ));
+        // The description is complete before the first sample: the track's
+        // start was given, not taken from a frame.
+        let track = tree
+            .layer(root)
+            .animations()
+            .and_then(|a| a.transform)
+            .expect("a track with a start is describable unsampled");
+        assert_eq!(track.start, start);
+        // Before `start` and on every frame to completion, the sampled
+        // value is the shared evaluation at that instant.
+        let t0 = start.checked_sub(Duration::from_millis(10)).unwrap();
+        for step in 0..=11 {
+            let t = t0 + Duration::from_millis(step * 50);
+            tree.sample(t, 1.0);
+            let (position, _, done) = track.sample(t);
+            assert_eq!(tree.layer(root).transform, position, "at {t:?}");
+            assert_eq!(done, step == 11, "a curve is done at start + duration");
+        }
+    }
+
+    #[test]
+    fn a_retarget_with_a_start_continues_from_the_previous_track_at_that_instant() {
+        let mut tree = SurfaceTree::new();
+        let root = tree.root();
+        let start = Instant::now();
+        tree.apply(LayerOp::Transform(
+            root,
+            Prop {
+                target: Affine::translate((100., 0.)),
+                animation: Some(Curve::linear(Duration::from_secs(1)).into()),
+                start: Some(start),
+            },
+        ));
+        let first = tree
+            .layer(root)
+            .animations()
+            .and_then(|a| a.transform)
+            .expect("running track");
+        // Sampled once, then retargeted at a later instant on the host's
+        // clock: the new track's start state is the old track's evaluation
+        // there, not its last sample.
+        tree.sample(start + Duration::from_millis(100), 1.0);
+        let retarget_at = start + Duration::from_millis(250);
+        tree.apply(LayerOp::Transform(
+            root,
+            Prop {
+                target: Affine::translate((50., 0.)),
+                animation: Some(Curve::linear(Duration::from_millis(500)).into()),
+                start: Some(retarget_at),
+            },
+        ));
+        let track = tree
+            .layer(root)
+            .animations()
+            .and_then(|a| a.transform)
+            .expect("retargeted track");
+        let (position, velocity, _) = first.sample(retarget_at);
+        assert_eq!(track.from, position);
+        assert_eq!(track.velocity, velocity);
+        assert_eq!(track.start, retarget_at);
+        // And the new track keeps sampling identically to its description.
+        let t = retarget_at + Duration::from_millis(200);
+        tree.sample(t, 1.0);
+        assert_eq!(tree.layer(root).transform, track.sample(t).0);
+    }
+
+    #[test]
+    fn an_unstarted_old_track_evaluates_at_the_retarget_instant_as_its_start() {
+        let mut tree = SurfaceTree::new();
+        let root = tree.root();
+        let start = Instant::now();
+        tree.apply(LayerOp::Transform(
+            root,
+            Prop {
+                target: Affine::translate((100., 0.)),
+                animation: Some(Curve::linear(Duration::from_secs(1)).into()),
+                start: None,
+            },
+        ));
+        // The first track was never sampled: a retarget with a start
+        // continues from where it would have begun.
+        let retarget_at = start + Duration::from_millis(250);
+        tree.apply(LayerOp::Transform(
+            root,
+            Prop {
+                target: Affine::translate((50., 0.)),
+                animation: Some(Spring::smooth().into()),
+                start: Some(retarget_at),
+            },
+        ));
+        let track = tree
+            .layer(root)
+            .animations()
+            .and_then(|a| a.transform)
+            .expect("retargeted track");
+        assert_eq!(track.from, Affine::IDENTITY);
+        assert_eq!(track.velocity, [0.0; 6]);
+        assert_eq!(track.start, retarget_at);
     }
 
     #[test]
@@ -1216,6 +1352,7 @@ mod hierarchy_tests {
             Prop {
                 target: Vec2::ZERO,
                 animation: Some(Decay::new(Vec2::new(0., 10.)).into()),
+                start: None,
             },
         ));
         tree.apply(LayerOp::Transform(
@@ -1223,6 +1360,7 @@ mod hierarchy_tests {
             Prop {
                 target: Affine::translate((100., 0.)),
                 animation: Some(Curve::linear(std::time::Duration::from_secs(1)).into()),
+                start: None,
             },
         ));
         let sampled = tree.sample(Instant::now(), 1.0);
@@ -1443,6 +1581,7 @@ mod hierarchy_tests {
             Prop {
                 target: 0.0,
                 animation: Some(Curve::linear(Duration::from_secs(2)).into()),
+                start: None,
             },
         ));
         tree.sample(start, 1.0);
@@ -1454,6 +1593,7 @@ mod hierarchy_tests {
             Prop {
                 target: 0.8,
                 animation: Some(Spring::smooth().into()),
+                start: None,
             },
         ));
         tree.sample(start + Duration::from_secs(1), 1.0);
@@ -1483,6 +1623,7 @@ mod hierarchy_tests {
             Prop {
                 target: Affine::translate((37., -12.)),
                 animation: None,
+                start: None,
             },
         ));
         assert_eq!(stamp, tree.composition_stamp(|id| id == layer));

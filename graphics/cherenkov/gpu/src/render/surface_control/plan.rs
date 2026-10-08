@@ -855,6 +855,7 @@ mod tests {
         Prop {
             target,
             animation: None,
+            start: None,
         }
     }
 

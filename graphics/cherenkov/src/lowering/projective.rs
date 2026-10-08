@@ -780,6 +780,7 @@ mod tests {
         let prop = |target| crate::Prop {
             target,
             animation: None,
+            start: None,
         };
         tree.apply(LayerOp::Pivot(root, prop(pivot)));
         tree.apply(LayerOp::Projection(
