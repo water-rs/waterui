@@ -64,9 +64,9 @@ class PlatformViewRegistry internal constructor(
     internal fun publishIfPending() {
         val session = session ?: return
         val json =
-            NativeBridge.nativePlatformViewFrames(
-                session.nativePtr(NativeBridge::nativePlatformViewFrames.name),
-            ) ?: return
+            session.withNativePtr(NativeBridge::nativePlatformViewFrames.name) { ptr ->
+                NativeBridge.nativePlatformViewFrames(ptr)
+            } ?: return
         // The JNI side always serializes the current set, and onLayout pulls
         // it once per layout pass — re-applying an unchanged frame would
         // re-request layout inside the very pass that read it, forever.

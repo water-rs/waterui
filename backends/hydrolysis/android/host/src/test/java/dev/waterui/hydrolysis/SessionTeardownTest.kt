@@ -3,6 +3,7 @@ package dev.waterui.hydrolysis
 import android.app.Activity
 import android.content.Context
 import android.os.Looper
+import android.view.View
 import android.view.ViewGroup
 import java.time.Duration
 import org.junit.Assert.assertEquals
@@ -89,6 +90,82 @@ class SessionTeardownTest {
     }
 
     @Test
+    fun aCloseThatTearsTheSessionDownRunsAfterTheFrame() {
+        val activity = Robolectric.buildActivity(ClosingActivity::class.java).setup().get()
+        val session = HydrolysisSession(activity)
+        val host = HydrolysisHostView(activity, session)
+        activity.setContentView(host)
+        activity.onFinish = {
+            // An app's close handler: end the session, then drop the view.
+            session.destroy()
+            (host.parent as ViewGroup).removeView(host)
+        }
+        ShadowNativeBridge.onFrame = {
+            session.onNativeCloseRequested()
+            // The handler runs after the frame: the runner keeps using the
+            // session after the request.
+            assertTrue(host.isAttachedToWindow)
+            assertFalse(ShadowNativeBridge.destroyed)
+            // The next frame is queued behind the close: it must never
+            // reach the session the close ends.
+            WANTS_NEXT_FRAME
+        }
+
+        session.onNativeRequestRedraw()
+        shadowOf(Looper.getMainLooper()).idleFor(FRAME_WINDOW)
+
+        assertTrue(ShadowNativeBridge.destroyed)
+        assertFalse(host.isAttachedToWindow)
+        assertEquals(1, ShadowNativeBridge.frames)
+    }
+
+    @Test
+    fun aTeardownRequestedInsideANativeCallWaitsForItToReturn() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val session = HydrolysisSession(activity)
+        val host = HydrolysisHostView(activity, session)
+        activity.setContentView(host)
+        ShadowNativeBridge.onFrame = {
+            // A callback that ends the session synchronously, mid-frame.
+            session.destroy()
+            (host.parent as ViewGroup).removeView(host)
+            assertFalse(ShadowNativeBridge.destroyed)
+            HAS_DEADLINE
+        }
+
+        session.onNativeRequestRedraw()
+        shadowOf(Looper.getMainLooper()).idleFor(FRAME_WINDOW)
+
+        assertTrue(ShadowNativeBridge.destroyed)
+        assertEquals(1, ShadowNativeBridge.frames)
+        assertEquals(0, ShadowNativeBridge.deadlineQueries)
+    }
+
+    @Test
+    fun childrenDetachBeforeTheDeferredTeardown() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val session = HydrolysisSession(activity)
+        val host = HydrolysisHostView(activity, session)
+        var childReachedSession = false
+        host.addView(
+            object : View(activity) {
+                override fun onDetachedFromWindow() {
+                    session.setVisible(false)
+                    childReachedSession = true
+                    super.onDetachedFromWindow()
+                }
+            },
+        )
+        activity.setContentView(host)
+
+        session.destroy()
+        (host.parent as ViewGroup).removeView(host)
+
+        assertTrue(childReachedSession)
+        assertTrue(ShadowNativeBridge.destroyed)
+    }
+
+    @Test
     fun aCallAfterDestroyIsANamedError() {
         val session = HydrolysisSession(context)
         session.destroy()
@@ -100,10 +177,28 @@ class SessionTeardownTest {
     private companion object {
         /** Long enough for Robolectric's Choreographer to run a posted frame. */
         val FRAME_WINDOW: Duration = Duration.ofSeconds(1)
+
+        /** `nativeOnFrame`'s outcome bits: more work, a deadline frame due. */
+        const val WANTS_NEXT_FRAME = 1L
+        const val HAS_DEADLINE = 4L
     }
 }
 
-/** The Rust runner's stand-in: a fake session pointer and a frame count. */
+/** An activity whose `finish` runs the test's close handler synchronously. */
+class ClosingActivity : Activity() {
+    var onFinish: () -> Unit = {}
+
+    override fun finish() {
+        onFinish()
+        super.finish()
+    }
+}
+
+/**
+ * The Rust runner's stand-in: a fake session pointer and a frame count.
+ * Every entry asserts the session is still live, as the runner's borrow of
+ * it would require.
+ */
 @Implements(NativeBridge::class, isInAndroidSdk = false)
 @DoNotInstrument
 class ShadowNativeBridge {
@@ -116,13 +211,26 @@ class ShadowNativeBridge {
         var destroyed = false
             private set
 
+        var deadlineQueries = 0
+            private set
+
         /** Runs inside `nativeDestroySession`, as the runner's drop does. */
         var onDestroy: () -> Unit = {}
+
+        /** Runs inside `nativeOnFrame`; its result is the frame's outcome. */
+        var onFrame: () -> Long = { 0L }
 
         fun reset() {
             frames = 0
             destroyed = false
+            deadlineQueries = 0
             onDestroy = {}
+            onFrame = { 0L }
+        }
+
+        private fun assertLive(sessionPtr: Long) {
+            assertEquals(SESSION_PTR, sessionPtr)
+            assertFalse("a native call reached a destroyed session", destroyed)
         }
 
         @JvmStatic
@@ -136,7 +244,7 @@ class ShadowNativeBridge {
         @JvmStatic
         @Implementation
         fun nativeDestroySession(sessionPtr: Long) {
-            assertEquals(SESSION_PTR, sessionPtr)
+            assertLive(sessionPtr)
             onDestroy()
             destroyed = true
         }
@@ -144,9 +252,29 @@ class ShadowNativeBridge {
         @JvmStatic
         @Implementation
         fun nativeOnFrame(sessionPtr: Long, @Suppress("UNUSED_PARAMETER") vsyncNanos: Long): Long {
-            assertEquals(SESSION_PTR, sessionPtr)
+            assertLive(sessionPtr)
             frames += 1
+            return onFrame()
+        }
+
+        @JvmStatic
+        @Implementation
+        fun nativeFrameDeadlineInNanos(sessionPtr: Long): Long {
+            assertLive(sessionPtr)
+            deadlineQueries += 1
             return 0L
+        }
+
+        @JvmStatic
+        @Implementation
+        fun nativeSetVisible(sessionPtr: Long, @Suppress("UNUSED_PARAMETER") visible: Boolean) {
+            assertLive(sessionPtr)
+        }
+
+        @JvmStatic
+        @Implementation
+        fun nativeSetHighRefresh(sessionPtr: Long, @Suppress("UNUSED_PARAMETER") fps: Float) {
+            assertLive(sessionPtr)
         }
     }
 }

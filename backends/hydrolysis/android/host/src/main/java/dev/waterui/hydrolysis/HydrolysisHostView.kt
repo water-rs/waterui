@@ -183,9 +183,9 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     override fun onDetachedFromWindow() {
         // Nothing this view queued may reach the session after the detach:
         // a destroyed session tears down inside `unbind` below. The IMM
-        // closes the connection only later, from its own queue, and a
-        // posted restart would pull editing state.
-        inputConnection?.detach()
+        // closes its connections only later, from its own queue — they
+        // refuse once this view is off its window — and a posted restart
+        // would pull editing state.
         inputConnection = null
         removeCallbacks(restartInput)
         inputRestartPosted = false
@@ -272,26 +272,28 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         lastMinFlingVelocity = minFlingVelocity
         lastMaxFlingVelocity = maxFlingVelocity
         lastScrollFriction = scrollFriction
-        NativeBridge.nativeSetMetrics(
-            session.nativePtr(NativeBridge::nativeSetMetrics.name),
-            width,
-            height,
-            metrics.density,
-            configuration.fontScale,
-            refreshHz,
-            containerEdges[0],
-            containerEdges[1],
-            containerEdges[2],
-            containerEdges[3],
-            keyboardEdges[0],
-            keyboardEdges[1],
-            keyboardEdges[2],
-            keyboardEdges[3],
-            touchSlop,
-            minFlingVelocity,
-            maxFlingVelocity,
-            scrollFriction,
-        )
+        session.withNativePtr(NativeBridge::nativeSetMetrics.name) { ptr ->
+            NativeBridge.nativeSetMetrics(
+                ptr,
+                width,
+                height,
+                metrics.density,
+                configuration.fontScale,
+                refreshHz,
+                containerEdges[0],
+                containerEdges[1],
+                containerEdges[2],
+                containerEdges[3],
+                keyboardEdges[0],
+                keyboardEdges[1],
+                keyboardEdges[2],
+                keyboardEdges[3],
+                touchSlop,
+                minFlingVelocity,
+                maxFlingVelocity,
+                scrollFriction,
+            )
+        }
     }
 
     // ------------------------------------------------------------------
@@ -317,11 +319,7 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     }
 
     // ------------------------------------------------------------------
-    // Frame scheduling — native asks through the session bridge.
-
-    internal fun requestFrame() {
-        session?.frameScheduler?.requestFrame("redraw-request")
-    }
+    // Close — native asks through the session bridge.
 
     internal fun closeRequested() {
         (context as? android.app.Activity)?.finish()
@@ -344,22 +342,26 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
                     event.actionButton == MotionEvent.BUTTON_TERTIARY -> 2
                 else -> 0
             }
-        NativeBridge.nativePointerEvent(
-            session.nativePtr(NativeBridge::nativePointerEvent.name),
-            action,
-            event.getPointerId(index),
-            event.getX(index),
-            event.getY(index),
-            toolType,
-            button,
-        )
-        when (action) {
-            MotionEvent.ACTION_DOWN -> {
-                requestFocus()
-                session.frameScheduler.setInteractionActive(true)
+        // One scope for the event and its refresh demand: both reach the
+        // session the event did.
+        session.withNativePtr(NativeBridge::nativePointerEvent.name) { ptr ->
+            NativeBridge.nativePointerEvent(
+                ptr,
+                action,
+                event.getPointerId(index),
+                event.getX(index),
+                event.getY(index),
+                toolType,
+                button,
+            )
+            when (action) {
+                MotionEvent.ACTION_DOWN -> {
+                    requestFocus()
+                    session.frameScheduler.setInteractionActive(true)
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                    session.frameScheduler.setInteractionActive(false)
             }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
-                session.frameScheduler.setInteractionActive(false)
         }
         return true
     }
@@ -377,13 +379,9 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
             val dy =
                 event.getAxisValue(MotionEvent.AXIS_VSCROLL) *
                     wheelConfiguration.scaledVerticalScrollFactor
-            NativeBridge.nativeScrollEvent(
-                session.nativePtr(NativeBridge::nativeScrollEvent.name),
-                event.x,
-                event.y,
-                dx,
-                dy,
-            )
+            session.withNativePtr(NativeBridge::nativeScrollEvent.name) { ptr ->
+                NativeBridge.nativeScrollEvent(ptr, event.x, event.y, dx, dy)
+            }
             return true
         }
         return super.onGenericMotionEvent(event)
@@ -398,15 +396,17 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     private fun dispatchKey(event: KeyEvent, pressed: Boolean): Boolean {
         val session = session ?: return false
         val key = w3cKey(event) ?: return false
-        NativeBridge.nativeKeyEvent(
-            session.nativePtr(NativeBridge::nativeKeyEvent.name),
-            key,
-            pressed,
-            event.isShiftPressed,
-            event.isCtrlPressed,
-            event.isAltPressed,
-            event.isMetaPressed,
-        )
+        session.withNativePtr(NativeBridge::nativeKeyEvent.name) { ptr ->
+            NativeBridge.nativeKeyEvent(
+                ptr,
+                key,
+                pressed,
+                event.isShiftPressed,
+                event.isCtrlPressed,
+                event.isAltPressed,
+                event.isMetaPressed,
+            )
+        }
         return true
     }
 
@@ -524,9 +524,9 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     /** The session's authoritative editing state, pulled synchronously. */
     private fun editingState(): EditingStatePayload? {
         val session = session ?: return null
-        return NativeBridge.nativeEditingState(
-            session.nativePtr(NativeBridge::nativeEditingState.name),
-        )?.let(::EditingStatePayload)
+        return session.withNativePtr(NativeBridge::nativeEditingState.name) { ptr ->
+            NativeBridge.nativeEditingState(ptr)
+        }?.let(::EditingStatePayload)
     }
 
     /** The session's authoritative editing push — the connection adopts it. */

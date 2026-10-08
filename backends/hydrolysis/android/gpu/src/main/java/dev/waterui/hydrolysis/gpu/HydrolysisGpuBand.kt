@@ -72,21 +72,16 @@ constructor(
     private fun attemptAttach() {
         val surface = holder.surface
         if (surface == null || !surface.isValid) return
-        // Outside the retry: a destroyed session is a named error, not an
-        // attach failure to retry.
-        val sessionPtr = session.nativePtr(NativeBridge::nativeSurfaceAttached.name)
+        // The accessor sits outside the retry: a destroyed session is a
+        // named error, not an attach failure to retry.
         val attached =
-            try {
-                NativeBridge.nativeSurfaceAttached(
-                    sessionPtr,
-                    surface,
-                    width,
-                    height,
-                    generation,
-                )
-            } catch (error: RuntimeException) {
-                retryAttachOrThrow(error)
-                return
+            session.withNativePtr(NativeBridge::nativeSurfaceAttached.name) { ptr ->
+                try {
+                    NativeBridge.nativeSurfaceAttached(ptr, surface, width, height, generation)
+                } catch (error: RuntimeException) {
+                    retryAttachOrThrow(error)
+                    return
+                }
             }
         if (!attached) {
             retryAttachOrThrow(
@@ -109,21 +104,17 @@ constructor(
     }
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-        NativeBridge.nativeSurfaceChanged(
-            session.nativePtr(NativeBridge::nativeSurfaceChanged.name),
-            width,
-            height,
-            generation,
-        )
+        session.withNativePtr(NativeBridge::nativeSurfaceChanged.name) { ptr ->
+            NativeBridge.nativeSurfaceChanged(ptr, width, height, generation)
+        }
     }
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         attachPending = false
         Choreographer.getInstance().removeFrameCallback(attachRetry)
-        NativeBridge.nativeSurfaceDestroyed(
-            session.nativePtr(NativeBridge::nativeSurfaceDestroyed.name),
-            generation,
-        )
+        session.withNativePtr(NativeBridge::nativeSurfaceDestroyed.name) { ptr ->
+            NativeBridge.nativeSurfaceDestroyed(ptr, generation)
+        }
     }
 
     private companion object {

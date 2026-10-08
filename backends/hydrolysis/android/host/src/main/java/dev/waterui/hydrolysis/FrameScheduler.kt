@@ -78,10 +78,9 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
     }
 
     private fun setHighRefresh(active: Boolean) {
-        NativeBridge.nativeSetHighRefresh(
-            session.nativePtr(NativeBridge::nativeSetHighRefresh.name),
-            if (active) -1f else 0f,
-        )
+        session.withNativePtr(NativeBridge::nativeSetHighRefresh.name) { ptr ->
+            NativeBridge.nativeSetHighRefresh(ptr, if (active) -1f else 0f)
+        }
     }
 
     override fun doFrame(vsyncNanos: Long) {
@@ -90,16 +89,18 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
         val cause = wakeCause ?: "external"
         wakeCause = null
         val outcome =
-            NativeBridge.nativeOnFrame(
-                session.nativePtr(NativeBridge::nativeOnFrame.name),
-                vsyncNanos,
-            )
+            session.withNativePtr(NativeBridge::nativeOnFrame.name) { ptr ->
+                NativeBridge.nativeOnFrame(ptr, vsyncNanos)
+            }
+        // The frame can end the session: a teardown requested inside it ran
+        // as the frame returned and stopped this scheduler.
+        if (stopped) return
         val wantsNext = outcome and WANTS_NEXT_FRAME != 0L
         val deadlineNanos =
             if (outcome and HAS_DEADLINE != 0L) {
-                NativeBridge.nativeFrameDeadlineInNanos(
-                    session.nativePtr(NativeBridge::nativeFrameDeadlineInNanos.name),
-                )
+                session.withNativePtr(NativeBridge::nativeFrameDeadlineInNanos.name) { ptr ->
+                    NativeBridge.nativeFrameDeadlineInNanos(ptr)
+                }
             } else {
                 -1L
             }

@@ -113,9 +113,9 @@ internal class HydrolysisAccessibilityProvider(
         dirty = false
         val session = session ?: return
         val json =
-            NativeBridge.nativeAccessibilityTree(
-                session.nativePtr(NativeBridge::nativeAccessibilityTree.name),
-            ) ?: return
+            session.withNativePtr(NativeBridge::nativeAccessibilityTree.name) { ptr ->
+                NativeBridge.nativeAccessibilityTree(ptr)
+            } ?: return
         // The envelope is a serde struct — a missing field is a mismatched
         // host, and propagating the error beats serving a half-read tree.
         val payload = JSONObject(json)
@@ -203,11 +203,9 @@ internal class HydrolysisAccessibilityProvider(
     private fun hitTest(x: Float, y: Float): Long {
         val session = session ?: return INVALID_ID
         val density = host.resources.displayMetrics.density
-        return NativeBridge.nativeAccessibilityHitTest(
-            session.nativePtr(NativeBridge::nativeAccessibilityHitTest.name),
-            x / density,
-            y / density,
-        )
+        return session.withNativePtr(NativeBridge::nativeAccessibilityHitTest.name) { ptr ->
+            NativeBridge.nativeAccessibilityHitTest(ptr, x / density, y / density)
+        }
     }
 
     private fun childIds(node: JSONObject): List<Long> {
@@ -519,15 +517,17 @@ internal class HydrolysisAccessibilityProvider(
         val mapped = mapAction(node, action, arguments) ?: return false
         val session = session ?: return false
         val handled =
-            NativeBridge.nativeAccessibilityAction(
-                session.nativePtr(NativeBridge::nativeAccessibilityAction.name),
-                id,
-                mapped.index,
-                mapped.arg1,
-                mapped.arg2,
-                mapped.text.orEmpty(),
-                mapped.numeric ?: Double.NaN,
-            )
+            session.withNativePtr(NativeBridge::nativeAccessibilityAction.name) { ptr ->
+                NativeBridge.nativeAccessibilityAction(
+                    ptr,
+                    id,
+                    mapped.index,
+                    mapped.arg1,
+                    mapped.arg2,
+                    mapped.text.orEmpty(),
+                    mapped.numeric ?: Double.NaN,
+                )
+            }
         if (handled) {
             host.sendAccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
         }
@@ -758,15 +758,9 @@ internal class HydrolysisAccessibilityProvider(
         val node = nodes[id] ?: return false
         if (!isEditable(node) || !hasAction(node, AK_SET_VALUE)) return false
         val session = session ?: return false
-        return NativeBridge.nativeAccessibilityAction(
-            session.nativePtr(NativeBridge::nativeAccessibilityAction.name),
-            id,
-            AK_SET_VALUE,
-            -1,
-            -1,
-            text,
-            Double.NaN,
-        )
+        return session.withNativePtr(NativeBridge::nativeAccessibilityAction.name) { ptr ->
+            NativeBridge.nativeAccessibilityAction(ptr, id, AK_SET_VALUE, -1, -1, text, Double.NaN)
+        }
     }
 
     /**

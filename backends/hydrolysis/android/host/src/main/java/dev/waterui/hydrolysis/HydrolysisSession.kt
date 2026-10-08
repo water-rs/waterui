@@ -1,6 +1,8 @@
 package dev.waterui.hydrolysis
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 
@@ -18,20 +20,32 @@ import androidx.lifecycle.LifecycleOwner
 class HydrolysisSession internal constructor(context: Context) {
     /**
      * The opaque native pointer, owned on the UI thread only. It is never
-     * read directly: every Kotlin→native call takes it through [nativePtr],
-     * which refuses it once [destroy] has handed it to the native side.
+     * read directly: every Kotlin→native call takes it through
+     * [withNativePtr], which refuses it once [destroy] has handed it to the
+     * native side.
      */
     private val livePtr: Long =
         NativeBridge.nativeCreateSession(this, context, NativeBridge.uiThreadServices)
 
-    /** [destroy] has handed [livePtr] to `nativeDestroySession`. */
+    /** [destroy] ran; a second call is a named error. */
+    private var destroyRequested = false
+
+    /** The native teardown waits for the outermost native call to return. */
+    private var tearDownPending = false
+
+    /** [tearDown] has handed [livePtr] to `nativeDestroySession`. */
     private var destroyed = false
 
     /**
-     * [destroy] ran while the host view was still attached; the native
-     * teardown waits for that view's detach.
+     * The Kotlin→native calls on the UI thread's stack. A native call can
+     * call back into Kotlin, and that callback can make further native
+     * calls, so the depth exceeds one; the native side holds the session
+     * borrowed until the outermost call returns.
      */
-    private var destroyOnDetach = false
+    private var nativeDepth = 0
+
+    /** Delivers the native requests that must not run inside a native call. */
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     /**
      * The session's frame pump. It belongs to the session, not to a host
@@ -43,18 +57,43 @@ class HydrolysisSession internal constructor(context: Context) {
     internal val frameScheduler: FrameScheduler = FrameScheduler(this)
 
     /**
-     * The native session pointer for the JNI entry named [call] — the one
-     * accessor every Kotlin→native call that takes the session goes
-     * through, host-family modules (the GPU band, painters) included.
+     * Runs [block] with the native session pointer for the JNI entry named
+     * [call] — the one accessor every Kotlin→native call that takes the
+     * session goes through, host-family modules (the GPU band, painters)
+     * included. One scope covers a sequence of calls that must reach the
+     * same live session.
      *
-     * From the moment [destroy] hands the pointer to the native side, a
+     * From the moment [tearDown] hands the pointer to the native side, a
      * call that still arrives throws [IllegalStateException] naming
      * itself: a freed session is never reachable from Kotlin, so a late
-     * call is a named error instead of a use-after-free.
+     * call is a named error instead of a use-after-free. A teardown
+     * requested while a scope is open — a callback the native side makes
+     * mid-call that destroys the session and detaches its view — runs when
+     * the outermost scope closes, never under a native frame that still
+     * holds the session.
      */
-    fun nativePtr(call: String): Long {
+    inline fun <R> withNativePtr(call: String, block: (ptr: Long) -> R): R {
+        val ptr = enterNative(call)
+        try {
+            return block(ptr)
+        } finally {
+            exitNative()
+        }
+    }
+
+    /** [withNativePtr]'s entry: refuses a destroyed session, then counts the call. */
+    @PublishedApi
+    internal fun enterNative(call: String): Long {
         check(!destroyed) { "hydrolysis: $call reached a destroyed HydrolysisSession" }
+        nativeDepth += 1
         return livePtr
+    }
+
+    /** [withNativePtr]'s exit: the outermost return runs a pending teardown. */
+    @PublishedApi
+    internal fun exitNative() {
+        nativeDepth -= 1
+        if (nativeDepth == 0 && tearDownPending) tearDown()
     }
 
     /** The view currently presenting this session, or none between bindings. */
@@ -79,7 +118,7 @@ class HydrolysisSession internal constructor(context: Context) {
     internal fun unbind(view: HydrolysisHostView) {
         if (hostView !== view) return
         hostView = null
-        if (destroyOnDetach) tearDown()
+        if (destroyRequested) requestTearDown()
     }
 
     /**
@@ -89,10 +128,9 @@ class HydrolysisSession internal constructor(context: Context) {
      * the one current frame.
      */
     internal fun setVisible(visible: Boolean) {
-        NativeBridge.nativeSetVisible(
-            nativePtr(NativeBridge::nativeSetVisible.name),
-            visible,
-        )
+        withNativePtr(NativeBridge::nativeSetVisible.name) { ptr ->
+            NativeBridge.nativeSetVisible(ptr, visible)
+        }
     }
 
     /**
@@ -104,17 +142,21 @@ class HydrolysisSession internal constructor(context: Context) {
      * and the removal itself destroys the band's surface and releases
      * focused platform views. While a host view is attached the native
      * teardown therefore waits for its detach; with none attached it runs
-     * now. Either way no host call follows it.
+     * as soon as no native call is on the stack. Either way no host call
+     * follows it.
      */
     fun destroy() {
-        check(!destroyOnDetach) { "hydrolysis: HydrolysisSession.destroy() called twice" }
-        if (hostView?.isAttachedToWindow == true) {
-            // A second destroy after the teardown is a named error too.
-            nativePtr(NativeBridge::nativeDestroySession.name)
-            destroyOnDetach = true
-        } else {
-            tearDown()
-        }
+        check(!destroyRequested) { "hydrolysis: HydrolysisSession.destroy() called twice" }
+        destroyRequested = true
+        if (hostView?.isAttachedToWindow != true) requestTearDown()
+    }
+
+    /**
+     * Runs [tearDown] now, or — inside a native call — when the outermost
+     * one returns: the native frame on the stack still holds the session.
+     */
+    private fun requestTearDown() {
+        if (nativeDepth == 0) tearDown() else tearDownPending = true
     }
 
     /**
@@ -131,11 +173,14 @@ class HydrolysisSession internal constructor(context: Context) {
      * steps have run.
      */
     private fun tearDown() {
-        val ptr = nativePtr(NativeBridge::nativeDestroySession.name)
+        check(nativeDepth == 0) { "hydrolysis: teardown ran inside a native call" }
+        check(!destroyed) { "hydrolysis: HydrolysisSession torn down twice" }
+        tearDownPending = false
         destroyed = true
         try {
-            NativeBridge.nativeDestroySession(ptr)
+            NativeBridge.nativeDestroySession(livePtr)
         } finally {
+            mainHandler.removeCallbacksAndMessages(null)
             frameScheduler.stop()
         }
     }
@@ -154,19 +199,21 @@ class HydrolysisSession internal constructor(context: Context) {
 
     /** Forwards one system-back phase to the native session. */
     internal fun dispatchBack(phase: Int, edge: Int, progress: Double) {
-        NativeBridge.nativeBackEvent(
-            nativePtr(NativeBridge::nativeBackEvent.name),
-            phase,
-            edge,
-            progress,
-        )
+        withNativePtr(NativeBridge::nativeBackEvent.name) { ptr ->
+            NativeBridge.nativeBackEvent(ptr, phase, edge, progress)
+        }
     }
 
     // ---- native → host callbacks (names are the JNI contract) ----
 
+    /**
+     * The scheduler belongs to the session, so a request made while no
+     * view is bound — between a configuration change's unbind and the new
+     * view's bind — still queues its frame.
+     */
     @CalledFromNative
     fun onNativeRequestRedraw() {
-        hostView?.requestFrame()
+        frameScheduler.requestFrame("redraw-request")
     }
 
     @CalledFromNative
@@ -195,9 +242,16 @@ class HydrolysisSession internal constructor(context: Context) {
         throw IllegalStateException(message)
     }
 
+    /**
+     * The native side requests a close from inside its frame and keeps
+     * using the session after the request, so the close is posted: a
+     * handler that destroys the session and detaches the view must run
+     * after the frame returns, not under it. Teardown removes a close
+     * still queued.
+     */
     @CalledFromNative
     fun onNativeCloseRequested() {
-        hostView?.closeRequested()
+        mainHandler.post { hostView?.closeRequested() }
     }
 
     /** Native pushes the authoritative editing state for the IME mirror. */
