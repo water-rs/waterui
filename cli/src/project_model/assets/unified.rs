@@ -23,7 +23,7 @@ use super::icon::{
 use crate::artifact_symbols::ArtifactSymbols;
 use crate::project::Project;
 
-const ASSET_ROOT_DIR: &str = "waterui_assets";
+pub const ASSET_ROOT_DIR: &str = "waterui_assets";
 /// The accent every platform falls back to when `[theme]` names none.
 const DEFAULT_ACCENT: HexColor = HexColor::from_rgb([0x0A, 0x84, 0xFF]);
 /// Point size of the iOS launch image, rendered at 1x, 2x and 3x.
@@ -261,8 +261,9 @@ pub async fn stage_for_android(
 /// the app-level `res`/`theme`/launcher artwork belongs to the host.
 /// `symbols` is the target build's app library — see [`stage_for_apple`].
 ///
-/// Returns the manifest and the directory the assets were staged into, so
-/// callers name the staged root instead of re-deriving its layout.
+/// Returns the manifest and the assets root the bundle was staged under —
+/// the `waterui_assets` directory itself lives at
+/// `<root>/waterui_assets`.
 pub async fn stage_for_android_library(
     project: &Project,
     module_dir: &Path,
@@ -270,12 +271,13 @@ pub async fn stage_for_android_library(
     dev_server: bool,
 ) -> eyre::Result<(BundleManifest, PathBuf)> {
     let manifest = build_manifest(project, symbols, dev_server).await?;
-    let assets_dest = module_dir.join("src/main/assets").join(ASSET_ROOT_DIR);
+    let assets_root = module_dir.join("src/main/assets");
+    let assets_dest = assets_root.join(ASSET_ROOT_DIR);
     reset_dir(&assets_dest).await?;
     copy_manifest_assets(&manifest, &assets_dest).await?;
     write_manifest_stamp(&manifest, &assets_dest).await?;
 
-    Ok((manifest, assets_dest))
+    Ok((manifest, assets_root))
 }
 
 /// Renders the project's macOS `.icns` app icon for hand-assembled bundles

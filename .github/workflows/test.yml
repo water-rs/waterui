@@ -875,18 +875,23 @@ jobs:
   # The Android host library's own lint (`warningsAsErrors`): the Kotlin
   # half of the Android runner, which no cargo pass reaches (#2047), plus
   # the `preview` module's instrumentation the CLI drives for
-  # `water preview --platform android` (#2216). It needs no Rust build —
-  # lint analyses the Kotlin sources against `compileSdk` — so it runs
-  # beside the cross-target clippy above on the same scope. The wrapper JAR
-  # is not committed (the CLI materializes it), so the distribution the
-  # wrapper pins is installed directly. Measured locally: 10 s warm, ~70 s
-  # with no build outputs and a warm dependency cache; a cold runner adds
-  # the Gradle and AGP downloads.
+  # `water preview --platform android` (#2216). Lint itself needs no Rust
+  # build — it analyses the Kotlin sources against `compileSdk` — so it
+  # runs beside the cross-target clippy above on the same scope. The job
+  # also assembles the generated preview-host app: the composite project
+  # is rendered by the CLI's own scaffold test into
+  # `backends/hydrolysis/android-preview-host` (never committed), then
+  # `:app:assembleDebug` compiles it against the in-tree host checkout —
+  # the only place the generated app's Kotlin↔Gradle wiring is checked.
+  # The wrapper JAR is not committed (the CLI materializes it), so the
+  # distribution the wrapper pins is installed directly. Measured locally:
+  # 10 s warm, ~70 s with no build outputs and a warm dependency cache; a
+  # cold runner adds the Gradle and AGP downloads.
   hydrolysis-android-host:
     name: Hydrolysis Android host lint
     if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis')
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: backends/hydrolysis/android
@@ -906,6 +911,25 @@ jobs:
         with:
           gradle-version: ${{ steps.gradle-version.outputs.version }}
       - run: gradle :host:lintDebug :preview:lintDebug
+      - uses: ./.github/actions/setup-rust
+        with:
+          components: ""
+      # Reads the shared `cargo-sources` archive the lint lane owns on
+      # Linux, like every other read-only lane — the render test compiles
+      # waterui-cli once.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
+      # The CLI's own scaffold test renders the composite exactly as
+      # `ensure_preview_host_apk` does — the project is generated, never
+      # hand-written.
+      - name: Render the generated preview-host app
+        working-directory: ${{ github.workspace }}
+        env:
+          WATERUI_PREVIEW_HOST_OUT: ${{ github.workspace }}/backends/hydrolysis/android-preview-host
+        run: cargo test --locked --profile ci-check -p waterui-cli the_preview_host_composite_renders_for_ci -- --ignored
+      - name: Assemble the generated preview-host app
+        working-directory: backends/hydrolysis/android-preview-host
+        run: gradle :app:assembleDebug
 
   # Hydrolysis's Windows leg, beside the Android one for the same reason:
   # `cfg(target_os = "windows")` code — the winit platform's cursor,

@@ -12,11 +12,8 @@ use jni::sys::jint;
 use super::jni::{JniError, guard, guard_val, init_process, publish_application_context};
 
 /// Incremented in lock-step with `PreviewBridge.SCHEMA` in the host's
-/// `preview` module. History:
-///  - 1: `nativeInit(schema, logLevel)` + `nativeRunPreview(context)`;
-///  - 2: `nativeInit(schema)` — the schema argument is checked, and the log
-///    level reads the usual `RUST_LOG` environment rather than a JNI extra.
-pub const PREVIEW_JNI_SCHEMA: jint = 2;
+/// `preview` module.
+pub const PREVIEW_JNI_SCHEMA: jint = 1;
 
 static PREVIEW_ENTRY: OnceLock<fn()> = OnceLock::new();
 
@@ -35,8 +32,7 @@ pub fn register_preview(entry: fn()) {
 /// Schema handshake plus the shared process setup. A library built against a
 /// different schema reports so rather than letting the host call entry
 /// points that changed underneath it — the host sends the schema it speaks
-/// and is rejected here when it differs, in addition to checking the value
-/// this call reports back.
+/// and is rejected here when it differs.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_preview_PreviewBridge_nativeInit(
     mut env: JNIEnv,

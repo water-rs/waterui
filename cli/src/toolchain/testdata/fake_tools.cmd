@@ -344,8 +344,6 @@ call :contains args --version && (echo 5.0 & exit /b 0)
 exit /b 0
 
 :adb
-if defined WATERUI_FAKE_ADB_LOG (>>"%WATERUI_FAKE_ADB_LOG%" echo %*)
-if defined WATERUI_FAKE_ADB_HANG goto :hang
 if "%*"=="version" (echo Android Debug Bridge version 1.0.41 & echo Version %WATERUI_FAKE_ADB_VERSION% & exit /b 0)
 if "%*"=="devices -l" (echo List of devices attached & call :respond_or_empty ADB_DEVICES & exit /b 0)
 if "%*"=="start-server" (if defined WATERUI_FAKE_ADB_START_SERVER_STATUS (exit /b %WATERUI_FAKE_ADB_START_SERVER_STATUS%) else (exit /b 0))
@@ -353,18 +351,7 @@ set "args=%*"
 call :contains args "emu avd name" && (call :respond_or_empty ADB_EMU_AVD_NAME & exit /b 0)
 call :contains args getprop && (call :respond_or_empty ADB_GETPROP & exit /b 0)
 call :contains args wait-for-device && exit /b 0
-call :contains args "pm list packages" && (call :respond_or_empty ADB_PM_PACKAGES & exit /b 0)
-call :contains args " install " && (if defined WATERUI_FAKE_ADB_INSTALL_STATUS (exit /b %WATERUI_FAKE_ADB_INSTALL_STATUS%) else (exit /b 0))
-call :contains args logcat && (call :respond_or_empty ADB_LOGCAT & exit /b 0)
-call :contains args "run-as" && (call :contains args "cat" && (call :respond_or_empty ADB_CAT & exit /b 0))
-call :contains args "run-as" && (if defined WATERUI_FAKE_ADB_RUN_AS_STATUS (exit /b %WATERUI_FAKE_ADB_RUN_AS_STATUS%) else (exit /b 0))
-call :contains args "date" && (if defined WATERUI_FAKE_ADB_DATE (echo %WATERUI_FAKE_ADB_DATE%) else (echo 01-01 00:00:00.000) & exit /b 0)
-call :contains args "instrument" && (call :respond_or_empty ADB_AM_INSTRUMENT & exit /b 0)
-call :contains args "shell" && (if defined WATERUI_FAKE_ADB_SHELL_STATUS (exit /b %WATERUI_FAKE_ADB_SHELL_STATUS%) else (exit /b 0))
 exit /b 0
-
-:hang
-goto :hang
 
 :emulator
 set "args=%*"

@@ -14,17 +14,14 @@ import android.content.Context
 object PreviewBridge {
     /**
      * Incremented in lock-step with `PREVIEW_JNI_SCHEMA` on the launcher
-     * side. History:
-     *  - 1: `nativeInit(schema, logLevel)` + `nativeRunPreview(context)`;
-     *  - 2: `nativeInit(schema)` — the cdylib checks the argument it is
-     *    handed instead of trusting it, and the run's log level reads the
-     *    usual `RUST_LOG` environment.
+     * side.
      */
-    const val SCHEMA = 2
+    const val SCHEMA = 1
 
     /**
      * Load the staged libraries in order — `libc++_shared.so` first when the
      * CLI staged it — run the schema handshake, then the registered preview.
+     * A launcher built against a different schema throws out of `nativeInit`.
      */
     fun run(
         libraries: List<String>,
@@ -33,10 +30,7 @@ object PreviewBridge {
         for (library in libraries) {
             loadStagedLibrary(library)
         }
-        val reported = nativeInit(SCHEMA)
-        check(reported == SCHEMA) {
-            "hydrolysis preview: the launcher cdylib speaks schema $reported but this host speaks $SCHEMA"
-        }
+        nativeInit(SCHEMA)
         nativeRunPreview(context)
     }
 

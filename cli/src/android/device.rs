@@ -79,9 +79,10 @@ impl Device for AndroidDevice {
 
     async fn launch(&self, host: &Host) -> eyre::Result<()> {
         let adb = Adb::locate(host).await?;
-        // A connected device answers instantly; the bound only catches a
-        // wedged transport — `wait-for-device` itself never returns without
-        // one.
+        // `wait-for-device` returns only once the device is online — a
+        // device mid-boot legitimately spends the bound; the timeout is the
+        // backstop for a transport that never comes up, not the expected
+        // wait.
         run_bounded_adb_command(
             host,
             &adb,

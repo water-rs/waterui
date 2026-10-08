@@ -32,6 +32,7 @@ use walkdir::WalkDir;
 pub const CLI_COMMIT: &str = env!("WATERUI_CLI_COMMIT");
 
 const BUILD_CACHE_DIR_NAME: &str = "build_cache";
+const LOCKS_DIR_NAME: &str = "locks";
 const MANAGED_BACKENDS_DIR_NAME: &str = "managed_backends";
 const SHARED_TARGET_DIR_NAME: &str = "target";
 const CONFIG_FILE_NAME: &str = "config.toml";
@@ -589,6 +590,64 @@ async fn require_exclusive_shared_target_lease(target_dir: &Path) -> eyre::Resul
                 target_dir.display()
             )
         })
+}
+
+/// `~/.water/locks/` — the cross-process advisory locks that guard a
+/// shared resource rather than a directory's contents, so they live beside
+/// the build cache instead of inside it.
+fn locks_dir_in(water_home: &Path) -> PathBuf {
+    water_home.join(LOCKS_DIR_NAME)
+}
+
+/// Take an exclusive advisory lock on `path`, creating its parent
+/// directory and the file itself, and waiting until the lock is granted.
+///
+/// Like `.build-lease` a lock file is never deleted — it is the thing
+/// being locked, not a signal — so the granted lock always guards the live
+/// inode and needs no liveness re-check. The returned file holds the lock
+/// until it drops.
+///
+/// # Errors
+/// Returns an error if the parent directory or the lock file cannot be
+/// created, or the lock cannot be taken.
+pub async fn exclusive_lock_file(path: PathBuf) -> eyre::Result<std::fs::File> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).await.wrap_err_with(|| {
+            format!("Failed to create the lock directory {}", parent.display())
+        })?;
+    }
+    smol::unblock(move || -> eyre::Result<std::fs::File> {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .wrap_err_with(|| format!("Failed to open the lock {}", path.display()))?;
+        FileExt::lock(&file)
+            .wrap_err_with(|| format!("Failed to take the lock {}", path.display()))?;
+        Ok(file)
+    })
+    .await
+}
+
+/// The lock serializing `water preview --platform android` runs on one adb
+/// serial.
+///
+/// `am instrument` force-stops the preview host package and a concurrent
+/// install replaces it, so one device serves one preview render at a time:
+/// a second run on the same serial waits here until the first has pulled
+/// its output.
+///
+/// # Errors
+/// Returns an error if the Water home cannot be resolved or the lock
+/// cannot be taken.
+pub async fn android_preview_device_lock(
+    host: &crate::toolchain::Host,
+    serial: &str,
+) -> eyre::Result<std::fs::File> {
+    let water_home = water_home_dir_in(host)?;
+    let name = format!("android-preview-{}.lock", sanitize_os_str(serial.as_ref()));
+    exclusive_lock_file(locks_dir_in(&water_home).join(name)).await
 }
 
 /// Return the managed build-cache directory for a project.

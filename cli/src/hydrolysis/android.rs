@@ -741,13 +741,34 @@ fn preview_host_dir(backend_path: &Path) -> PathBuf {
 /// for — a match plus a resolvable APK skips the Gradle build entirely.
 const PREVIEW_HOST_STAMP_FILE: &str = ".waterui-preview-host-fingerprint";
 
+/// The sha256 a preview-host fingerprint carries — typed so its
+/// `versionCode` projection needs no re-parse.
+struct PreviewHostFingerprint([u8; 32]);
+
+impl PreviewHostFingerprint {
+    /// The APK `versionCode` this fingerprint installs as: its first 4
+    /// bytes, big-endian, folded into `1..=2_000_000_000` so the code stays
+    /// below the platform ceiling and never zero.
+    const fn version_code(&self) -> u32 {
+        u32::from_be_bytes([self.0[0], self.0[1], self.0[2], self.0[3]]) % 2_000_000_000 + 1
+    }
+}
+
+impl std::fmt::Display for PreviewHostFingerprint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&hex::encode(self.0))
+    }
+}
+
 /// The sha256 of everything a preview host APK bakes in: the host's
 /// rendered scaffold (`rendered_outputs` with `versionCode` held constant,
 /// so the hash covers the inputs — template trees, `minSdk`, host path —
-/// not the fingerprint's own projection), every source file of the pinned
-/// host's `preview` module (its `build/` and `.gradle/` outputs excluded),
-/// and the host's `settings.gradle.kts` — hashed sorted by relative path,
-/// each entry length-prefixed so no pair of inputs can alias.
+/// not the fingerprint's own projection), the declared input set of the
+/// pinned host's `preview` module — `src/` plus `build.gradle.kts`, plus
+/// its manifest when it lives outside `src/`, so a `.DS_Store` or IDE file
+/// dropped beside them cannot force a rebuild — and the host's
+/// `settings.gradle.kts` — hashed sorted by relative path, each entry
+/// length-prefixed so no pair of inputs can alias.
 ///
 /// # Errors
 ///
@@ -755,7 +776,7 @@ const PREVIEW_HOST_STAMP_FILE: &str = ".waterui-preview-host-fingerprint";
 fn preview_host_fingerprint(
     host_project_dir: &Path,
     rendered: &[(PathBuf, Vec<u8>)],
-) -> eyre::Result<String> {
+) -> eyre::Result<PreviewHostFingerprint> {
     use sha2::Digest as _;
 
     let mut fingerprint_inputs: Vec<(String, Vec<u8>)> = rendered
@@ -769,31 +790,35 @@ fn preview_host_fingerprint(
         .collect();
 
     let preview_module = host_project_dir.join("preview");
-    for entry in walkdir::WalkDir::new(&preview_module)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|entry| !matches!(entry.file_name().to_str(), Some("build" | ".gradle")))
-    {
-        let entry = entry.wrap_err_with(|| {
-            format!(
-                "failed to walk the preview host module {}",
-                preview_module.display()
-            )
-        })?;
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let relative = entry
-            .path()
+    let mut hash_module_file = |path: &Path| -> eyre::Result<()> {
+        let relative = path
             .strip_prefix(host_project_dir)
             .map_err(|error| eyre::eyre!("{error}"))?
             .to_string_lossy()
             .replace('\\', "/");
         fingerprint_inputs.push((
             relative,
-            std::fs::read(entry.path())
-                .wrap_err_with(|| format!("failed to read {}", entry.path().display()))?,
+            std::fs::read(path).wrap_err_with(|| format!("failed to read {}", path.display()))?,
         ));
+        Ok(())
+    };
+
+    for entry in walkdir::WalkDir::new(preview_module.join("src")).follow_links(false) {
+        let entry = entry.wrap_err_with(|| {
+            format!(
+                "failed to walk the preview host module {}",
+                preview_module.display()
+            )
+        })?;
+        if entry.file_type().is_file() {
+            hash_module_file(entry.path())?;
+        }
+    }
+    for name in ["build.gradle.kts", "AndroidManifest.xml"] {
+        let path = preview_module.join(name);
+        if path.is_file() {
+            hash_module_file(&path)?;
+        }
     }
     let settings = host_project_dir.join("settings.gradle.kts");
     fingerprint_inputs.push((
@@ -814,22 +839,7 @@ fn preview_host_fingerprint(
         hasher.update((contents.len() as u64).to_le_bytes());
         hasher.update(contents);
     }
-    Ok(hex::encode(hasher.finalize()))
-}
-
-/// The APK `versionCode` a fingerprint installs as: its first 4 bytes,
-/// big-endian, folded into `1..=2_000_000_000` so the code stays below the
-/// platform ceiling and never zero.
-#[must_use]
-pub(crate) fn preview_host_version_code(fingerprint: &str) -> u32 {
-    let high = u32::from_str_radix(
-        fingerprint
-            .get(..8)
-            .expect("a preview host fingerprint is a sha256 hex digest"),
-        16,
-    )
-    .expect("a sha256 hex digest's first word parses");
-    high % 2_000_000_000 + 1
+    Ok(PreviewHostFingerprint(hasher.finalize().into()))
 }
 
 /// Build — or reuse — the `water preview --platform android` host APK.
@@ -853,7 +863,10 @@ pub async fn ensure_preview_host_apk(
     let resolved = project.resolved_framework().await?;
     let host_project_dir = host_root.join(resolved.hydrolysis_android_host_subdirectory()?);
     let preview_module = host_project_dir.join("preview");
-    if !preview_module.is_dir() {
+    if !fs::metadata(&preview_module)
+        .await
+        .is_ok_and(|meta| meta.is_dir())
+    {
         bail!(
             "the hydrolysis android host at {} ships no `preview` module: {} does not exist",
             host_root.display(),
@@ -888,7 +901,7 @@ pub async fn ensure_preview_host_apk(
         move || preview_host_fingerprint(&host_project_dir, &rendered)
     })
     .await?;
-    let version_code = preview_host_version_code(&fingerprint);
+    let version_code = fingerprint.version_code();
 
     let ctx = HydrolysisBackend::template_context(project)
         .await?
@@ -898,7 +911,7 @@ pub async fn ensure_preview_host_apk(
     let stamp = host_dir.join(PREVIEW_HOST_STAMP_FILE);
     if fs::read_to_string(&stamp)
         .await
-        .is_ok_and(|contents| contents.trim() == fingerprint)
+        .is_ok_and(|contents| contents.trim() == fingerprint.to_string())
         && let Ok(apk) = packaged_artifact(&host_dir, OutputKind::Apk, "debug").await
     {
         return Ok((apk, version_code));
@@ -906,14 +919,17 @@ pub async fn ensure_preview_host_apk(
 
     info!("Building the hydrolysis preview host APK");
     run_gradle_tasks(&host_dir, &[":app:assembleDebug"], &[]).await?;
-    fs::write(&stamp, &fingerprint).await?;
+    fs::write(&stamp, fingerprint.to_string()).await?;
     let apk = packaged_artifact(&host_dir, OutputKind::Apk, "debug").await?;
     Ok((apk, version_code))
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, path::Path};
+    use std::{
+        collections::BTreeMap,
+        path::{Path, PathBuf},
+    };
 
     use super::*;
     use crate::{
@@ -1367,6 +1383,47 @@ mod tests {
                 project.ffi_crate_path().join("Cargo.toml").exists(),
                 "the packaging path rendered the companion manifest it reads"
             );
+        });
+    }
+
+    /// Render the preview-host composite where `WATERUI_PREVIEW_HOST_OUT`
+    /// names it — the same `scaffold` call `ensure_preview_host_apk` makes,
+    /// against this checkout's own `backends/hydrolysis/android`. The
+    /// `hydrolysis-android-host` workflow job invokes it to assemble the
+    /// generated `:app` without a device; `cargo test` carries no argv, so
+    /// the output root arrives through the environment and the test is
+    /// `ignore`d for every ordinary run.
+    #[test]
+    #[ignore = "CI entry point: renders the composite into WATERUI_PREVIEW_HOST_OUT"]
+    fn the_preview_host_composite_renders_for_ci() {
+        smol::block_on(async {
+            let out = std::env::var_os("WATERUI_PREVIEW_HOST_OUT")
+                .map(PathBuf::from)
+                .expect("WATERUI_PREVIEW_HOST_OUT names the scaffold output");
+            let host_project_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../backends/hydrolysis/android")
+                .canonicalize()
+                .expect("the in-tree hydrolysis android host exists");
+            let relative_host = pathdiff::diff_paths(&host_project_dir, &out)
+                .expect("the host dir is expressible relative to the output");
+
+            let (_temporary, project) = fixture_project("").await;
+            let min_api_level = project
+                .resolved_framework()
+                .await
+                .and_then(|resolved| resolved.android_min_api_level())
+                .expect("the framework's api floor resolves");
+            let ctx = HydrolysisBackend::template_context(&project)
+                .await
+                .expect("the preview template context builds")
+                .with_hydrolysis_android_preview(HydrolysisAndroidPreviewTemplateEntry {
+                    host_project_dir: relative_host.to_string_lossy().replace('\\', "/"),
+                    min_api_level,
+                    version_code: 1,
+                });
+            templates::hydrolysis_android_preview::scaffold(&out, &ctx)
+                .await
+                .expect("the preview host composite renders");
         });
     }
 

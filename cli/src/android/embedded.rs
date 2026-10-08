@@ -154,10 +154,6 @@ async fn stage_embedded_assets(
     let (manifest, assets_dir) =
         assets::stage_project_assets_for_android_library(project, module_dir, symbols, false)
             .await?;
-    let assets_dir = assets_dir
-        .parent()
-        .expect("the staged assets dir has a parent")
-        .to_path_buf();
 
     let font_declarations =
         assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml")).await?;

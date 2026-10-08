@@ -1950,6 +1950,10 @@ fn sha256_hex(s: &str) -> String {
 
 pub use unified::{build_manifest as plan_library_resources, write_library_resources};
 
+/// The directory name the staged asset bundle carries inside an Android
+/// `src/main/assets/` root.
+pub use unified::ASSET_ROOT_DIR as ANDROID_ASSET_BUNDLE_DIR;
+
 /// Stage project assets for Apple packaging (Asset Catalog + raw resources).
 ///
 /// `symbols` is the library artifact the target build already produced
@@ -1983,7 +1987,9 @@ pub async fn stage_project_assets_for_android(
 /// `symbols` is the target build's app library — see
 /// [`stage_project_assets_for_apple`].
 ///
-/// Returns the manifest and the directory the assets were staged into.
+/// Returns the manifest and the assets root the bundle was staged under —
+/// the `waterui_assets` directory itself lives at
+/// `<root>/waterui_assets`.
 pub async fn stage_project_assets_for_android_library(
     project: &Project,
     module_dir: &Path,

@@ -71,6 +71,15 @@ pub(crate) enum AdbCommandError {
         /// Formatted stdout/stderr tail.
         details: String,
     },
+    /// The command succeeded but produced no output where a payload was
+    /// expected.
+    #[error("{operation} produced no output running `{command}`")]
+    EmptyOutput {
+        /// Human-readable name of the operation.
+        operation: String,
+        /// The adb invocation that produced nothing.
+        command: String,
+    },
 }
 
 /// `adb` from the platform-tools on a host, its server already running.
@@ -147,6 +156,30 @@ impl Adb {
         Ok(())
     }
 
+    /// The shared `shell` argv build-and-run behind [`Self::shell`] and
+    /// [`Self::shell_run`]: `words` joined with `shlex` so callers never
+    /// hand a pre-quoted line, returning the full output and the rendered
+    /// invocation for [`check_bounded_output`].
+    async fn shell_output(
+        &self,
+        host: &Host,
+        serial: &str,
+        words: &[&str],
+        timeout: Duration,
+    ) -> eyre::Result<(Output, String)> {
+        let joined = shlex::try_join(words.iter().copied())
+            .map_err(|error| eyre::eyre!("cannot quote the adb shell words {words:?}: {error}"))?;
+        Ok(self
+            .device_output(
+                host,
+                serial,
+                [OsStr::new("shell"), OsStr::new(joined.as_str())],
+                "running a shell command on the device",
+                timeout,
+            )
+            .await?)
+    }
+
     /// `adb -s <serial> shell <words>` — `words` is an argv, joined with
     /// `shlex` so callers never hand a pre-quoted line. Returns the full
     /// output: the caller judges the status (`am instrument` reports results
@@ -161,18 +194,7 @@ impl Adb {
         words: &[&str],
         timeout: Duration,
     ) -> eyre::Result<Output> {
-        let joined = shlex::try_join(words.iter().copied())
-            .map_err(|error| eyre::eyre!("cannot quote the adb shell words {words:?}: {error}"))?;
-        Ok(self
-            .device_output(
-                host,
-                serial,
-                [OsStr::new("shell"), OsStr::new(joined.as_str())],
-                "running a shell command on the device",
-                timeout,
-            )
-            .await?
-            .0)
+        Ok(self.shell_output(host, serial, words, timeout).await?.0)
     }
 
     /// [`Self::shell`] failing on a non-zero exit and returning stdout —
@@ -187,18 +209,9 @@ impl Adb {
         words: &[&str],
         timeout: Duration,
     ) -> eyre::Result<String> {
-        let output = self.shell(host, serial, words, timeout).await?;
-        if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout).to_string())
-        } else {
-            Err(eyre::eyre!(
-                "adb -s {serial} shell {} failed with status {}: {}{}",
-                words.join(" "),
-                output.status,
-                String::from_utf8_lossy(&output.stderr),
-                String::from_utf8_lossy(&output.stdout)
-            ))
-        }
+        let (output, command) = self.shell_output(host, serial, words, timeout).await?;
+        check_bounded_output(&output, "running a shell command on the device", &command)?;
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
     /// `adb -s <serial> shell run-as <package> <words>` — a command inside
@@ -244,7 +257,7 @@ impl Adb {
         let joined = shlex::try_join(["run-as", package, "cat", path]).map_err(|error| {
             eyre::eyre!("cannot quote the run-as cat words for {path}: {error}")
         })?;
-        let (output, _) = self
+        let (output, command) = self
             .device_output(
                 host,
                 serial,
@@ -257,13 +270,17 @@ impl Adb {
                 timeout,
             )
             .await?;
-        if !output.status.success() || output.stdout.is_empty() {
-            eyre::bail!(
-                "`run-as {package} cat {path}` on {serial} failed with status {}: {}{}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr),
-                String::from_utf8_lossy(&output.stdout)
-            );
+        check_bounded_output(
+            &output,
+            "reading a file from the preview host's private data",
+            &command,
+        )?;
+        if output.stdout.is_empty() {
+            return Err(AdbCommandError::EmptyOutput {
+                operation: "reading a file from the preview host's private data".to_owned(),
+                command,
+            }
+            .into());
         }
         Ok(output.stdout)
     }
@@ -346,7 +363,8 @@ impl Adb {
         let (output, command) = self
             .device_output(host, serial, args, operation, timeout)
             .await?;
-        check_bounded_output(&output, operation, &command)
+        check_bounded_output(&output, operation, &command)?;
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 }
 
@@ -420,7 +438,8 @@ where
         .collect::<Vec<_>>();
     let command = command_string(adb.path(), &args);
     let output = run_bounded_adb_output(host, adb, args, operation, timeout).await?;
-    check_bounded_output(&output, operation, &command)
+    check_bounded_output(&output, operation, &command)?;
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 /// One line naming the invocation an [`AdbCommandError`] reports.
@@ -433,15 +452,17 @@ fn command_string(adb: &Path, args: &[OsString]) -> String {
     command
 }
 
-/// The non-zero-status branch shared by [`run_bounded_adb_command`] and
-/// [`Adb::device_command`].
+/// The non-zero-status branch shared by every bounded adb call —
+/// [`run_bounded_adb_command`], [`Adb::device_command`], [`Adb::shell_run`]
+/// and [`Adb::run_as_cat`] — so a failure carries one wording and one error
+/// type no matter which verb produced it.
 fn check_bounded_output(
     output: &Output,
     operation: &str,
     command: &str,
-) -> Result<String, AdbCommandError> {
+) -> Result<(), AdbCommandError> {
     if output.status.success() {
-        return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+        return Ok(());
     }
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
