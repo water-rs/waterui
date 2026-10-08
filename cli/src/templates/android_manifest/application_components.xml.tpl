@@ -44,6 +44,29 @@
 {%- endmacro -%}
 
 {{ begin|safe }}
+{%- for activity in activities %}
+        <activity
+            android:name="{{ activity.name }}"
+            android:exported="{{ activity.exported }}"
+{%- if let Some(theme) = activity.theme %}
+            android:theme="{{ theme }}"
+{%- endif %}
+{%- if let Some(exclude_from_recents) = activity.exclude_from_recents %}
+            android:excludeFromRecents="{{ exclude_from_recents }}"
+{%- endif %}
+{%- if let Some(launch_mode) = activity.launch_mode %}
+            android:launchMode="{{ launch_mode }}"
+{%- endif %}
+{%- if let Some(config_changes) = activity.config_changes_attribute() %}
+            android:configChanges="{{ config_changes }}"
+{%- endif %}
+{%- if activity.intent_filter.is_empty() && activity.meta_data.is_empty() %} />
+{%- else %}>
+{%- call intent_filters(activity.intent_filter) %}{%- endcall %}
+{%- call component_meta_data(activity.meta_data) %}{%- endcall %}
+        </activity>
+{%- endif %}
+{%- endfor %}
 {%- for provider in providers %}
         <provider
             android:name="{{ provider.name }}"

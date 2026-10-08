@@ -154,8 +154,8 @@ struct WaterUIMetadata {
 /// dex and the Maven coordinates the helpers need. The generated Gradle
 /// module performs the compile — the crate's build script does not. A crate
 /// whose platform code needs an entry inside the manifest's `<application>`
-/// declares it as a `[[provider]]`, `[[service]]`, `[[receiver]]` or
-/// `[[meta-data]]` table (see [`android_manifest`]). A crate whose platform
+/// declares it as an `[[activity]]`, `[[provider]]`, `[[service]]`,
+/// `[[receiver]]` or `[[meta-data]]` table (see [`android_manifest`]). A crate whose platform
 /// code needs a Gradle plugin applied to the application module declares it
 /// as a `[[gradle-plugin]]` table (see [`gradle_plugins`]).
 ///
@@ -172,6 +172,9 @@ struct AndroidMetadata {
     /// run against.
     #[serde(default)]
     maven: Vec<String>,
+    /// `<activity>` entries for the generated manifest.
+    #[serde(default)]
+    activity: Vec<android_manifest::Activity>,
     /// `<provider>` entries for the generated manifest.
     #[serde(default)]
     provider: Vec<android_manifest::Provider>,
@@ -539,6 +542,7 @@ fn collect_android_declarations(
         );
         let android = parsed.android;
         let components = android_manifest::DeclaredComponents {
+            activities: android.activity,
             providers: android.provider,
             services: android.service,
             receivers: android.receiver,
