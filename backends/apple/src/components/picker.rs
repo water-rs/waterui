@@ -249,10 +249,6 @@ impl SubView for PickerSubView {
         } else {
             intrinsic_width
         };
-        // A picker never stretches vertically (`StretchAxis::None`): its
-        // height answer is its own intrinsic extent under every proposal,
-        // never the offered height echoed back — the same non-stretch
-        // contract `TextFieldSubView` keeps on its cross axis.
         ViewDimensions::new(Size::new(width as f32, intrinsic_height as f32))
     }
 

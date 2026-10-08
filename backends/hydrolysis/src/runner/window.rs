@@ -367,14 +367,19 @@ pub(super) const fn schedule_animation_update<P: PlatformWindow>(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// A captured headless frame: raw pixels plus dimensions.
+/// A captured headless frame: raw pixels, the alpha convention the
+/// producing surface reports, plus dimensions.
 pub struct HeadlessSnapshot {
     /// Snapshot width in pixels.
     pub width: u32,
     /// Snapshot height in pixels.
     pub height: u32,
-    /// Raw RGBA8 pixel data, `width * height * 4` bytes, top-left origin.
+    /// Raw RGBA8 pixel data, `width * height * 4` bytes, top-left origin,
+    /// in the alpha convention [`Self::output_alpha`] reports.
     pub rgba8: Vec<u8>,
+    /// The alpha convention the producing surface presented with — the
+    /// convention `rgba8` reads, not a comment's claim about it.
+    pub output_alpha: cherenkov_gpu::interop::OutputAlpha,
 }
 
 #[derive(Debug)]
@@ -986,6 +991,7 @@ crate::engine::cfg_async_fn! {
                             waterui_core::Error::from(error)
                         )
                     }),
+                output_alpha,
             }
         });
         #[cfg(feature = "frame-profile")]

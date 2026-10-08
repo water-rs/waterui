@@ -368,6 +368,7 @@ pub fn run(app: App, style: impl crate::Style) {
             SessionTextEngine::from_collection(&fonts, FontFamilyResolution::Lenient),
         );
         renderer.set_window_id(shortcuts.mint_window_id());
+        renderer.set_window_closable(window.closable);
         let mut runtime = RuntimeWindow::new(window, platform, renderer, render_diagnostics_config);
         render_window(&mut runtime, &env, &mut || local_executor.drain());
         pending_windows.extend(pending_window_queue.borrow_mut().drain(..));

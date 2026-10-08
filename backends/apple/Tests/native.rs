@@ -68,6 +68,20 @@ fn trials() -> Vec<Trial> {
                 window::bind_root_window_wires_a_live_window(mtm());
                 Ok(())
             }),
+            Trial::test(
+                "menus::the_window_menu_opens_with_the_standard_close_item",
+                || {
+                    menus::the_window_menu_opens_with_the_standard_close_item();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "menus::a_pull_down_validates_its_callback_rows_from_their_command",
+                || {
+                    menus::a_pull_down_validates_its_callback_rows_from_their_command();
+                    Ok(())
+                },
+            ),
         ]);
         #[cfg(feature = "gpu_surface")]
         {
@@ -143,6 +157,13 @@ fn base_trials() -> Vec<Trial> {
             "resolve::unclaimed_wrappers_panic_while_claimed_render",
             || {
                 resolve::unclaimed_wrappers_panic_while_claimed_render();
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "resolve::control_leaves_answer_their_intrinsic_height",
+            || {
+                resolve::control_leaves_answer_their_intrinsic_height();
                 Ok(())
             },
         ),
@@ -694,8 +715,15 @@ mod leaf {
 /// to hand it back to), so a spurious empty render could not masquerade as
 /// a pass.
 mod resolve {
+    use waterui::Str;
+    use waterui::ViewExt as _;
+    use waterui::component::form::picker::{PickerItem, picker};
+    use waterui::component::form::secure::{Secure, SecureField};
+    use waterui::component::slider::slider;
+    use waterui::component::text_field::TextField;
     use waterui::filter::Opacity;
     use waterui::layout::Spacer;
+    use waterui::reactive::binding;
     use waterui_apple::contract::NativeLeaf;
     use waterui_backend_core::{AnyView, View};
     use waterui_core::layout::{ProposalSize, Size, StretchAxis};
@@ -831,6 +859,51 @@ mod resolve {
         render(());
         render(Spacer::new(8.0));
         render(IgnorableMetadata::new((), Unregistered));
+    }
+
+    /// §6's control contract: a finite height offer is advice, not an
+    /// allocation. The slider, the default-style picker and both text
+    /// fields answer their intrinsic height to it — a `VStack` above them
+    /// cannot starve a trailing `ScrollView` by handing out space that
+    /// only exists because the control claimed it.
+    pub fn control_leaves_answer_their_intrinsic_height() {
+        let volume = binding(0.5_f64);
+        let selection = binding("Alpha");
+        let text_value = binding(Str::from(""));
+        let secret = binding(Secure::new(String::new()));
+        let items: Vec<PickerItem<&'static str>> = vec![
+            waterui::text!("Alpha").tag("Alpha"),
+            waterui::text!("Beta").tag("Beta"),
+            waterui::text!("Gamma").tag("Gamma"),
+        ];
+        let leaves = [
+            ("slider", render(slider("Volume", &volume))),
+            ("picker", render(picker("Letter", items, &selection))),
+            ("text field", render(TextField::new("Name", &text_value))),
+            (
+                "secure field",
+                render(SecureField::new("Password", &secret)),
+            ),
+        ];
+        for (name, leaf) in leaves {
+            let offered = leaf
+                .layout()
+                .measure(ProposalSize::new(Some(300.0), Some(500.0)))
+                .size;
+            let unspecified = leaf
+                .layout()
+                .measure(ProposalSize::new(Some(300.0), None))
+                .size;
+            assert_eq!(
+                offered.height.to_bits(),
+                unspecified.height.to_bits(),
+                "{name} answers a finite height offer with its intrinsic height"
+            );
+            assert!(
+                offered.height < 500.0,
+                "{name} must not grow into the offered height"
+            );
+        }
     }
 }
 
@@ -1519,6 +1592,97 @@ mod window {
     pub use waterui_apple::native_test_support::{
         bind_root_window_wires_a_live_window, manager_installs_into_the_environment,
     };
+}
+
+/// The standard menu bar's content, read back off the installed `NSMenu`s.
+#[cfg(all(target_os = "macos", feature = "native-test"))]
+mod menus {
+    use std::rc::Rc;
+
+    use cocoa_ui::appkit::{Command, Menu, MenuButton, MenuItem};
+    use cocoa_ui::objc2_app_kit::{NSApplication, NSEventModifierFlags};
+    use waterui::component::menu::{CloseWindowPlacement, Shortcut};
+    use waterui_apple::native_test_support::menus::window_menu_rows;
+
+    use crate::mtm;
+
+    /// `build_default`'s Window menu starts with the standard Close item —
+    /// ⌘W, untargeted `performClose:`, disabled while no key window takes
+    /// it — unless a declared menu carries Close, when the Window menu has
+    /// none.
+    pub fn the_window_menu_opens_with_the_standard_close_item() {
+        let rows = window_menu_rows(
+            mtm(),
+            CloseWindowPlacement::WindowMenu,
+            Some(Shortcut::new('w').command()).as_ref(),
+        );
+        let first = rows.first().expect("the Window menu has rows");
+        assert_eq!(first.title, "Close");
+        assert_eq!(first.key_equivalent, "w");
+        assert_eq!(first.action.as_deref(), Some("performClose:"));
+        assert!(first.modifiers.contains(NSEventModifierFlags::Command));
+        assert!(!first.enabled, "no key window takes `performClose:`");
+
+        let declared = window_menu_rows(mtm(), CloseWindowPlacement::Declared, None);
+        assert!(!declared.is_empty(), "the Window menu keeps its other rows");
+        assert!(
+            declared
+                .iter()
+                .all(|row| row.title != "Close" && row.action.as_deref() != Some("performClose:")),
+            "a declared Close is never repeated in the Window menu: {declared:?}"
+        );
+    }
+
+    /// A mounted pull-down validates its rows each time it opens, and a
+    /// callback row answers from its command's enabled state — set on the
+    /// item before or after its action, or carried by the [`Command`].
+    pub fn a_pull_down_validates_its_callback_rows_from_their_command() {
+        let mtm = mtm();
+        // Validation asks the application for each row's target, as it
+        // does in a launched app.
+        let _app = NSApplication::sharedApplication(mtm);
+        let button = MenuButton::new(mtm);
+        let menu = Menu::new(mtm, "");
+        menu.add_item(MenuItem::new(mtm, "", None, ""));
+        menu.add_item(
+            MenuItem::new(mtm, "on", None, "")
+                .with_enabled(true)
+                .with_action(|| {}),
+        );
+        menu.add_item(
+            MenuItem::new(mtm, "off", None, "")
+                .with_enabled(false)
+                .with_action(|| {}),
+        );
+        menu.add_item(
+            MenuItem::new(mtm, "off after", None, "")
+                .with_action(|| {})
+                .with_enabled(false),
+        );
+        let off_command = Command {
+            label: "off command".to_owned(),
+            enabled: false,
+            ..Command::default()
+        };
+        menu.add_item(MenuItem::command(mtm, &off_command, Rc::new(|| {})));
+        button.set_menu(&menu);
+
+        let native = menu.menu();
+        assert!(
+            native.autoenablesItems(),
+            "the pull-down validates its rows"
+        );
+        native.update();
+        let enabled: Vec<bool> = (1..native.numberOfItems())
+            .map(|index| {
+                native
+                    .itemAtIndex(index)
+                    .expect("a row at every index")
+                    .isEnabled()
+            })
+            .collect();
+        assert_eq!(enabled, [true, false, false, false]);
+    }
 }
 
 /// GPU-surface ownership regression coverage (#1725): a real mounted

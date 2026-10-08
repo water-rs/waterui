@@ -29,9 +29,8 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
 use objc2_foundation::{NSArray, NSObjectProtocol, NSString};
 use objc2_ui_kit::{
-    UIBarButtonItem, UIBarButtonItemStyle, UIBarPosition, UIBarPositioning,
-    UIBarPositioningDelegate, UIButton, UIControl, UIGestureRecognizer,
-    UIGestureRecognizerDelegate, UINavigationBar, UINavigationBarDelegate, UINavigationController,
+    UIBarButtonItem, UIBarButtonItemStyle, UIButton, UIControl, UIGestureRecognizer,
+    UIGestureRecognizerDelegate, UINavigationBar, UINavigationController,
     UINavigationControllerDelegate, UINavigationItem, UINavigationItemLargeTitleDisplayMode,
     UISearchController, UISearchResultsUpdating, UITransitionContextFromViewControllerKey,
     UIViewController, UIViewControllerTransitionCoordinator,
@@ -224,7 +223,13 @@ impl NavContentController {
             self.setToolbarItems(Some(&NSArray::from_retained_slice(&page.bottom)));
         }
         self.ivars().toolbar_hidden.set(page.bottom.is_empty());
-        if let Some(nav) = self.navigationController() {
+        // Only the topmost page owns the stack's toolbar: a page further
+        // down records its intent and applies it when it shows again.
+        if let Some(nav) = self.navigationController()
+            && nav
+                .topViewController()
+                .is_some_and(|top| core::ptr::eq(Retained::as_ptr(&top), &raw const **self))
+        {
             nav.setToolbarHidden_animated(page.bottom.is_empty(), false);
         }
         self.ivars().search_updater.replace(None);
@@ -643,22 +648,6 @@ define_class!(
 
     // SAFETY: `NSObjectProtocol` asks nothing of a `UINavigationBar`.
     unsafe impl NSObjectProtocol for NavBar {}
-
-    // SAFETY: `positionForBar:` carries `UIBarPositioningDelegate`'s
-    // signature. The in-content bar docks clear of the status-bar band
-    // while `TopAttached` extends its background upward to cover it —
-    // §7.1's chrome split for a bar the host itself does not size.
-    unsafe impl UIBarPositioningDelegate for NavBar {
-        // SAFETY: see the module safety note.
-        #[unsafe(method(positionForBar:))]
-        fn position_for_bar(&self, _bar: &ProtocolObject<dyn UIBarPositioning>) -> UIBarPosition {
-            UIBarPosition::TopAttached
-        }
-    }
-
-    // SAFETY: `UINavigationBarDelegate` asks nothing of a `UINavigationBar`
-    // beyond the `UIBarPositioningDelegate` above.
-    unsafe impl UINavigationBarDelegate for NavBar {}
 );
 
 impl NavBar {
@@ -673,10 +662,6 @@ impl NavBar {
         let this: Retained<Self> = unsafe { msg_send![super(this), init] };
         let items = NSArray::from_retained_slice(&[this.ivars().item.clone()]);
         this.setItems(Some(&items));
-        // The bar answers `positionForBar:` as its own delegate — an
-        // assign reference — so its background extends upward over the
-        // status-bar band.
-        this.setDelegate(Some(ProtocolObject::from_ref(&*this)));
         this
     }
 

@@ -57,6 +57,10 @@ pub trait Style: WidgetTheme + 'static {
     /// application's own entries still win in the assembled environment.
     fn install_tokens(&self, env: &mut Environment);
 }
+/// The alpha convention a [`HeadlessSnapshot`]'s pixels read — what the
+/// producing surface presented with.
+#[cfg(not(target_arch = "wasm32"))]
+pub use cherenkov_gpu::interop::OutputAlpha;
 /// The W3C UI Events key vocabulary this backend speaks, re-exported so hosts
 /// that synthesize key events use the same version of it.
 pub use keyboard_types;
