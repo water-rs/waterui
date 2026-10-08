@@ -1451,12 +1451,9 @@ async fn ensure_font_scan_manifests(
         scope.is_none_or(|backend| backend == crate::platform::TargetBackend::Apple);
     if apple_scanned {
         let manifest = project.apple_crate_path().join("Cargo.toml");
-        project
-            .scaffold_apple_companion(true)
-            .await
-            .map_err(|error| {
-                eyre::eyre!("could not scaffold the Apple companion crate: {error}")
-            })?;
+        project.scaffold_apple_companion().await.map_err(|error| {
+            eyre::eyre!("could not scaffold the Apple companion crate: {error}")
+        })?;
         manifests.push(manifest);
     }
 

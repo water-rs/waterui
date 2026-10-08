@@ -371,11 +371,10 @@ pub struct TemplateContext {
     pub bundle_identifier: BundleIdentifier,
     /// The author name
     pub author: String,
-    /// Whether the project selected the Apple backend for this invocation —
-    /// the Apple companion only depends on `waterui-apple` and declares its
-    /// entry-owning bin when this is set, so a build without Apple never
-    /// resolves the Apple backend crate.
-    pub apple_backend_selected: bool,
+    /// Whether this host can build the Apple backend — the Apple companion
+    /// only depends on `waterui-apple` when this is set, so a host that
+    /// cannot produce an Apple build never resolves the Apple backend crate.
+    pub apple_backend_buildable: bool,
     /// Path to local `WaterUI` repository (for dev mode)
     pub waterui_path: Option<PathBuf>,
     /// Local checkouts of the experimental backends the host points at.
@@ -462,7 +461,7 @@ impl TemplateContext {
             crate_name,
             bundle_identifier: options.bundle_identifier.clone(),
             author: options.author.clone(),
-            apple_backend_selected: false,
+            apple_backend_buildable: false,
             waterui_path,
             backend_checkouts: BackendDevCheckouts::from_host(host),
             local_sources: local_sources.clone(),
@@ -506,7 +505,7 @@ impl TemplateContext {
             bundle_identifier: manifest.package.bundle_identifier.clone(),
             author: String::new(),
             // Selected at invocation, never from declared config.
-            apple_backend_selected: false,
+            apple_backend_buildable: false,
             waterui_path: manifest.waterui_path.as_ref().map(PathBuf::from),
             backend_checkouts: BackendDevCheckouts::from_host(host),
             local_sources: local_sources.clone(),
@@ -565,7 +564,7 @@ impl TemplateContext {
             crate_name,
             bundle_identifier,
             author: String::new(),
-            apple_backend_selected: false,
+            apple_backend_buildable: false,
             waterui_path,
             backend_checkouts: BackendDevCheckouts::from_host(host),
             local_sources: local_sources.clone(),
@@ -603,12 +602,11 @@ impl TemplateContext {
         self
     }
 
-    /// Set whether the project selected the Apple backend — the Apple
-    /// companion only emits its `waterui-apple` dependency and entry-owning
-    /// bin when this is set.
+    /// Set whether this host can build the Apple backend — the Apple
+    /// companion only emits its `waterui-apple` dependency when this is set.
     #[must_use]
-    pub const fn with_apple_backend_selected(mut self, selected: bool) -> Self {
-        self.apple_backend_selected = selected;
+    pub const fn with_apple_backend_buildable(mut self, buildable: bool) -> Self {
+        self.apple_backend_buildable = buildable;
         self
     }
 
@@ -1456,7 +1454,7 @@ mod tests {
             bundle_identifier: BundleIdentifier::try_from("com.example.test")
                 .expect("test bundle identifier must be valid"),
             author: String::new(),
-            apple_backend_selected: true,
+            apple_backend_buildable: true,
             waterui_path,
             backend_checkouts: super::BackendDevCheckouts::default(),
             local_sources,
@@ -5149,10 +5147,10 @@ async fn configure_apple_target_tables(
     // `waterui_apple::export_app!`. It does not live in the `WaterUI`
     // workspace, so it resolves against the Apple backend checkout the
     // project already uses — never the framework registry source the
-    // `waterui` edge above applies. Only a project that selected the Apple
-    // backend depends on it: an Android-only build never resolves,
-    // fetches, or compiles `waterui-apple`.
-    if ctx.apple_backend_selected {
+    // `waterui` edge above applies. Only a host that can build the Apple
+    // backend depends on it: elsewhere the companion's manifest never
+    // resolves, fetches, or compiles `waterui-apple`.
+    if ctx.apple_backend_buildable {
         let mut waterui_apple = ctx.waterui_apple_dependency()?;
         waterui_apple.features.extend(
             waterui_apple_features

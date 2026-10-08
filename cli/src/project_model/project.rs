@@ -1340,19 +1340,14 @@ impl Project {
     /// package read one context so their generated dependency tables cannot
     /// drift.
     ///
-    /// `apple_selected` is whether this invocation selected the Apple
-    /// backend — an Apple-unselected render emits a companion with no
-    /// `waterui-apple` dependency, entry-owning bin, or entry file, and
-    /// removes a stale entry file a previous apple-selected render left
-    /// behind. Apple pieces are also omitted on hosts that cannot run an
-    /// Apple build: a host that cannot produce one must not resolve the
-    /// Apple backend crate merely because the project selected it.
+    /// The `waterui-apple` dependency is omitted on hosts that cannot run an
+    /// Apple build: a host that cannot produce one must not resolve the Apple
+    /// backend crate merely because a command rendered the companion.
     async fn apple_managed_crate_context(
         &self,
-        apple_selected: bool,
         backend_project_path: PathBuf,
     ) -> Result<(TemplateContext, ResolvedFramework), crate::backend::FailToInitBackend> {
-        let apple_selected = apple_selected && cfg!(target_os = "macos");
+        let apple_buildable = cfg!(target_os = "macos");
         let manifest = self.manifest();
         let app_name = manifest
             .package
@@ -1391,7 +1386,7 @@ impl Project {
                 .await
                 .map_err(crate::backend::FailToInitBackend::Config)?,
         )
-        .with_apple_backend_selected(apple_selected)
+        .with_apple_backend_buildable(apple_buildable)
         .with_webview_enabled(webview_enabled)
         .with_chromium_enabled(chromium_enabled)
         .with_browser_engine(browser_engine);
@@ -1426,10 +1421,9 @@ impl Project {
     /// Returns an error when the generated crate cannot be written.
     pub(crate) async fn scaffold_apple_companion(
         &self,
-        apple_selected: bool,
     ) -> Result<(), crate::backend::FailToInitBackend> {
         let (ctx, framework) = self
-            .apple_managed_crate_context(apple_selected, self.apple_crate_path())
+            .apple_managed_crate_context(self.apple_crate_path())
             .await?;
 
         templates::apple_companion::scaffold(
@@ -1460,7 +1454,7 @@ impl Project {
         &self,
     ) -> Result<(), crate::backend::FailToInitBackend> {
         let (ctx, framework) = self
-            .apple_managed_crate_context(true, self.apple_preview_crate_path())
+            .apple_managed_crate_context(self.apple_preview_crate_path())
             .await?;
 
         templates::apple_preview::scaffold(
@@ -2023,12 +2017,12 @@ impl Project {
 
         if !skip_backend_init && open_mode == OpenMode::Full {
             // The Apple companion is rendered before `init` runs — `init`
-            // reads its manifest, so a companion left over from a different
-            // selection must never be the one it sees.
+            // reads its manifest, so a companion left over from an earlier
+            // open must never be the one it sees.
             if backends.apple() {
                 let apple_companion_start = std::time::Instant::now();
                 project
-                    .scaffold_apple_companion(backends.apple())
+                    .scaffold_apple_companion()
                     .await
                     .map_err(FailToOpenProject::BackendInit)?;
                 info!(
@@ -4014,6 +4008,25 @@ mod scaffold_tests {
                 "{platform:?}: Apple companion scaffolded"
             );
         }
+    }
+
+    /// The companion's `waterui-apple` dependency exists only where an Apple
+    /// build can run: a render on a host that cannot produce one emits no
+    /// `waterui-apple` — the manifest it writes must resolve on the host that
+    /// rendered it.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn apple_companion_carries_no_apple_backend_off_macos() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path().join("water-example");
+        let project = create_project(&root, dir.path(), true);
+
+        smol::block_on(project.scaffold_apple_companion())
+            .expect("the companion scaffold must succeed off macOS");
+
+        let rendered = std::fs::read_to_string(project.apple_crate_path().join("Cargo.toml"))
+            .expect("the rendered companion manifest");
+        assert!(!rendered.contains("waterui-apple"), "{rendered}");
     }
 
     /// Packaged executables stage under the project's own managed backend
