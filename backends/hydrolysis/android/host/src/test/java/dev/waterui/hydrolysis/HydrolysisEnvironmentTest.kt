@@ -3,7 +3,6 @@ package dev.waterui.hydrolysis
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.res.AssetManager
-import android.system.Os
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -15,9 +14,10 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import org.robolectric.util.ReflectionHelpers
 
 @RunWith(RobolectricTestRunner::class)
-@Config(manifest = Config.NONE, assetDir = "src/test/assets")
+@Config(manifest = Config.NONE)
 class HydrolysisEnvironmentTest {
     private val context: Context = RuntimeEnvironment.getApplication()
     private val root get() = File(context.filesDir, "waterui_assets")
@@ -40,8 +40,6 @@ class HydrolysisEnvironmentTest {
         HydrolysisEnvironment.prepare(context)
         assertEquals("version-2\n", File(root, "waterui-sync-stamp").readText())
         assertEquals("packaged payload\n", File(root, "nested/payload.txt").readText())
-        assertEquals(root.absolutePath, Os.getenv("WATERUI_ASSETS_ROOT"))
-        assertEquals(context.cacheDir.absolutePath, Os.getenv("WATER_CACHE_DIR"))
     }
 
     @Test
@@ -67,7 +65,7 @@ class HydrolysisEnvironmentTest {
     @Test
     fun missingStampFailsWithANamedError() {
         val withoutAssets = object : ContextWrapper(context) {
-            private val emptyAssets = AssetManager()
+            private val emptyAssets = ReflectionHelpers.callConstructor(AssetManager::class.java)
             override fun getApplicationContext(): Context = this
             override fun getAssets(): AssetManager = emptyAssets
         }

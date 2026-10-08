@@ -19,6 +19,7 @@ android {
     }
 
     testOptions {
+        unitTests.isIncludeAndroidResources = true
         // Robolectric's API 36 runtime writes raw FileDescriptor fields
         // through `jdk.internal.access`, which JDK 17+ keeps closed.
         unitTests.all { it.jvmArgs("--add-opens=java.base/jdk.internal.access=ALL-UNNAMED") }
