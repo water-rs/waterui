@@ -23,15 +23,16 @@ use crate::PlatformView;
 use objc2::rc::Retained;
 use objc2::runtime::{NSObject, NSObjectProtocol};
 use objc2::sel;
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_foundation::NSSet;
 use objc2_quartz_core::CAMetalLayer;
 use objc2_ui_kit::{
     UIGestureRecognizer, UIGestureRecognizerDelegate, UIGestureRecognizerState,
     UIHoverGestureRecognizer, UIPanGestureRecognizer, UIPinchGestureRecognizer, UIScrollView,
-    UITapGestureRecognizer, UITouch, UITraitCollection, UIView,
+    UITapGestureRecognizer, UITouch, UITraitDisplayScale, UIView,
 };
 
+use super::trait_change::{TraitChangeObservation, register_trait_change};
 use crate::callback::{emit, forward, guarded};
 use crate::input::{EventPhase, GesturePhase, PointerInteraction};
 
@@ -46,7 +47,8 @@ type InteractionHandler = Rc<dyn Fn(PointerInteraction)>;
 pub struct SurfaceViewIvars {
     on_layout: RefCell<Option<LifecycleHandler>>,
     on_window_changed: RefCell<Option<LifecycleHandler>>,
-    on_backing_changed: RefCell<Option<LifecycleHandler>>,
+    /// The display-scale registration serving backing-scale subscribers.
+    backing_changed: RefCell<Option<TraitChangeObservation>>,
     on_visibility_changed: RefCell<Option<LifecycleHandler>>,
     on_interaction: RefCell<Option<InteractionHandler>>,
     /// The layer the renderer presents frames into, a sublayer of `layer`.
@@ -283,19 +285,6 @@ define_class!(
         }
 
         // SAFETY: see the module safety note.
-        #[unsafe(method(traitCollectionDidChange:))]
-        fn trait_collection_did_change(&self, previous: Option<&UITraitCollection>) {
-            forward(
-                "SurfaceView traitCollectionDidChange:",
-                || {
-                    // SAFETY: see the module safety note.
-                    let _: () = unsafe { msg_send![super(self), traitCollectionDidChange: previous] };
-                },
-                &self.ivars().on_backing_changed,
-            );
-        }
-
-        // SAFETY: see the module safety note.
         #[unsafe(method(touchesBegan:withEvent:))]
         fn touches_began(&self, touches: &NSSet<UITouch>, event: Option<&objc2_ui_kit::UIEvent>) {
             guarded("SurfaceView touchesBegan:withEvent:", || {
@@ -514,12 +503,16 @@ impl SurfaceView {
             .replace(Some(Rc::new(handler)));
     }
 
-    /// Registers `handler` for backing-property changes (screen scale,
-    /// dynamic range).
+    /// Calls `handler` when the view's display scale changes — the
+    /// `UITraitDisplayScale` trait, which a backing-scale change rides on.
+    /// The handler decides whether the change matters to it. Replaces any
+    /// handler set before.
     pub fn set_backing_changed_handler(&self, handler: impl Fn() + 'static) {
-        self.ivars()
-            .on_backing_changed
-            .replace(Some(Rc::new(handler)));
+        let registration =
+            register_trait_change(self, UITraitDisplayScale::class().as_ref(), move |_| {
+                handler();
+            });
+        self.ivars().backing_changed.replace(Some(registration));
     }
 
     /// Registers `handler` for window attach/detach transitions.
