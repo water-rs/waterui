@@ -75,7 +75,42 @@ struct Key {
 #[derive(Default)]
 pub struct Executor {
     module: Option<wgpu::ShaderModule>,
+    /// The union-linked twin of `module` — created on the first union
+    /// or outer-band range, like the plain module on the first draw.
+    module_union: Option<wgpu::ShaderModule>,
     pipelines: FxHashMap<Key, wgpu::RenderPipeline>,
+}
+
+/// One tile composition metallib with the executor's fixed entry set.
+///
+/// SAFETY of the passthrough load: `build.rs` validates the shared WGSL
+/// and compiles the native interfaces against it. Bindings and colour
+/// slots match this executor's fixed layout and pipeline key.
+fn tile_module(device: &wgpu::Device, bytes: &'static [u8]) -> wgpu::ShaderModule {
+    let mut entries: Vec<wgpu::PassthroughShaderEntryPoint<'static>> =
+        ["vs_main", "tile_clear_vertex"]
+            .into_iter()
+            .map(|name| wgpu::PassthroughShaderEntryPoint {
+                name: Cow::Borrowed(name),
+                workgroup_size: (0, 0, 0),
+            })
+            .collect();
+    for target in 0..4 {
+        for source in ["simple", "shadow", "clear", "0", "1", "2", "3"] {
+            entries.push(wgpu::PassthroughShaderEntryPoint {
+                name: Cow::Owned(format!("tile_{target}_{source}")),
+                workgroup_size: (0, 0, 0),
+            });
+        }
+    }
+    unsafe {
+        device.create_shader_module_passthrough(wgpu::ShaderModuleDescriptorPassthrough {
+            label: Some("tile composition"),
+            metallib: Some(Cow::Borrowed(bytes)),
+            entry_points: Cow::Owned(entries),
+            ..Default::default()
+        })
+    }
 }
 
 impl Executor {
@@ -85,43 +120,26 @@ impl Executor {
         layout: &wgpu::PipelineLayout,
         key: Key,
     ) -> &wgpu::RenderPipeline {
-        let module = self.module.get_or_insert_with(|| {
-            let mut entries: Vec<wgpu::PassthroughShaderEntryPoint<'static>> =
-                ["vs_main", "tile_clear_vertex"]
-                    .into_iter()
-                    .map(|name| wgpu::PassthroughShaderEntryPoint {
-                        name: Cow::Borrowed(name),
-                        workgroup_size: (0, 0, 0),
-                    })
-                    .collect();
-            for target in 0..4 {
-                for source in ["simple", "shadow", "clear", "0", "1", "2", "3"] {
-                    entries.push(wgpu::PassthroughShaderEntryPoint {
-                        name: Cow::Owned(format!("tile_{target}_{source}")),
-                        workgroup_size: (0, 0, 0),
-                    });
-                }
-            }
-            // SAFETY: build.rs validates the shared WGSL and compiles the
-            // native interfaces against it. Bindings and colour slots match
-            // this executor's fixed layout and pipeline key.
-            unsafe {
-                device.create_shader_module_passthrough(wgpu::ShaderModuleDescriptorPassthrough {
-                    label: Some("tile composition"),
-                    metallib: Some(Cow::Borrowed(include_bytes!(concat!(
-                        env!("OUT_DIR"),
-                        "/engine_tile.metallib"
-                    )))),
-                    entry_points: Cow::Owned(entries),
-                    ..Default::default()
-                })
-            }
-        });
+        let module = if key.variant == 4 {
+            self.module_union.get_or_insert_with(|| {
+                tile_module(
+                    device,
+                    include_bytes!(concat!(env!("OUT_DIR"), "/engine_tile_union.metallib")),
+                )
+            })
+        } else {
+            self.module.get_or_insert_with(|| {
+                tile_module(
+                    device,
+                    include_bytes!(concat!(env!("OUT_DIR"), "/engine_tile.metallib")),
+                )
+            })
+        };
         self.pipelines.entry(key).or_insert_with(|| {
             let entry = match key.variant {
                 0 => format!("tile_{}_simple", key.target),
                 1 => format!("tile_{}_shadow", key.target),
-                2 => format!("tile_{}_{}", key.target, key.source),
+                2 | 4 => format!("tile_{}_{}", key.target, key.source),
                 3 => format!("tile_{}_clear", key.target),
                 _ => unreachable!("closed tile shader set"),
             };
@@ -293,6 +311,7 @@ pub fn encode(
                 ShaderVariant::Simple => 0,
                 ShaderVariant::Shadow => 1,
                 ShaderVariant::Full => 2,
+                ShaderVariant::Union => 4,
             };
             pass.set_pipeline(executor.pipeline(
                 resources.device,

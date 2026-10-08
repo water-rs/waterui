@@ -71,10 +71,19 @@ fn union_field(base: u32, ord: u32, pixel: vec2<f32>) -> UnionField {
     for (var j = 0u; j < n; j = j + 1u) {
         order[j] = j;
     }
+    // Insertion sort by total order — `f32::total_cmp` semantics, so
+    // -0.0 sorts before +0.0 exactly like the CPU and oracle folds:
+    // equal distances keep paint order, and a signed-zero pair resolves
+    // to the same owner everywhere.
     for (var a = 1u; a < n; a = a + 1u) {
         var b = a;
         loop {
-            if (b == 0u || ds[order[b - 1u]] <= ds[order[b]]) {
+            if (b == 0u) {
+                break;
+            }
+            let prev = ds[order[b - 1u]];
+            let cur = ds[order[b]];
+            if (prev < cur || (prev == cur && bitcast<i32>(prev) <= bitcast<i32>(cur))) {
                 break;
             }
             let t = order[b - 1u];

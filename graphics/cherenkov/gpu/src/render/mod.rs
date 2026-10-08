@@ -857,6 +857,17 @@ impl SurfaceState {
     }
 }
 
+/// A registered backdrop effect shader. Registration builds only the
+/// plain-variant `SrcOver` pipelines (slots `format_i` — one per distinct
+/// target format); the union-linked module is stored so a union-field
+/// member's pipeline (`slot format_i + 2`) is built on its first use —
+/// lazily inside encode on native targets, ahead of encode by
+/// `prepare_union_pipelines` on wasm.
+struct BackdropShaderEntry {
+    union_module: wgpu::ShaderModule,
+    pipelines: [Option<wgpu::RenderPipeline>; 4],
+}
+
 /// All render-thread state.
 pub struct GpuRenderer {
     instance: wgpu::Instance,
@@ -916,7 +927,10 @@ pub struct GpuRenderer {
     /// pipelines are built once (#170). A `None` cell is created at first
     /// use — preparation is measured on the frame that needs it (#170 B3).
     /// `[space][format][ShaderVariant]` — a fourth variant slot holds
-    /// the union-field module for backdrop-union members.
+    /// the union-field pipelines for backdrop-union members. Slot 3 is
+    /// never built at init: the variant-3 module and pipeline are
+    /// created on the first union or outer-band member (on wasm, by
+    /// `prepare_union_pipelines` before the frame that needs them).
     pipelines: [[[Option<wgpu::RenderPipeline>; 4]; 2]; 2],
     /// `[opaque, partial]` coverage pipelines, same cell policy as the
     /// core set: built at init under `core_pipelines_eager()` (always,
@@ -928,11 +942,15 @@ pub struct GpuRenderer {
     tile_executor: composite::metal::Executor,
     /// The configured pipeline cache, opened once for the whole set.
     pipeline_cache: Option<wgpu::PipelineCache>,
-    /// Registered backdrop effect shaders, by raw id — one `SrcOver`
-    /// pipeline per `(target format, union variant)`, slot
-    /// `format_i + 2 * union`, compiled at registration: a union-field
-    /// member runs the same effect on the union module.
-    backdrop_shaders: FxHashMap<u64, [Option<wgpu::RenderPipeline>; 4]>,
+    /// Registered backdrop effect shaders, by raw id — see
+    /// [`BackdropShaderEntry`].
+    backdrop_shaders: FxHashMap<u64, BackdropShaderEntry>,
+    /// The union-linked engine module, created on the first frame that
+    /// draws a union or outer-band member (async preparation cannot
+    /// run inside the synchronous encode loop, so the module materializes
+    /// in `prepare_union_pipelines`).
+    #[cfg(target_arch = "wasm32")]
+    union_module: Option<wgpu::ShaderModule>,
     /// The configured isolation texture format.
     scratch_format: wgpu::TextureFormat,
     layout0: wgpu::BindGroupLayout,
@@ -2152,7 +2170,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
         // and Metal these are the embedded passthrough binaries (#57).
         let shader_delivery = shaders::delivery(info.backend, &device)?;
         let modules = core_pipelines_eager()
-            .then(|| [0usize, 1, 2, 3].map(|v| shader_delivery.engine_module(&device, v)));
+            .then(|| [0usize, 1, 2].map(|v| shader_delivery.engine_module(&device, v)));
         fire_probe(
             &config,
             CreationPhase::ShaderModules,
@@ -2473,7 +2491,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
     // dispatch to fs_simple/fs_shadow/fs_full. WebGPU keeps WGSL (#57).
     let shader_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let shader_delivery = shaders::delivery(info.backend, &device)?;
-    let modules = [0usize, 1, 2, 3].map(|v| shader_delivery.engine_module(&device, v));
+    let modules = [0usize, 1, 2].map(|v| shader_delivery.engine_module(&device, v));
     if let Some(error) = shader_scope.pop().await {
         return Err(EngineError::Backend(error.to_string()));
     }
@@ -2671,6 +2689,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         shader_delivery,
         shaders: paint::Registry::default(),
         backdrop_shaders: FxHashMap::default(),
+        union_module: None,
         filters: filter::Registry::default(),
         shadow_blur: None,
         resolve: None,
@@ -4226,6 +4245,11 @@ impl GpuRenderer {
                     frame.time.0.saturating_duration_since(origin).as_secs_f32(),
                 )?;
                 self.prepare_filters(sf.id).await?;
+                // wasm cannot create pipelines inside encode — the
+                // variant-3 cells a union or outer-band member needs are
+                // prepared here, once the frame is lowered.
+                #[cfg(target_arch = "wasm32")]
+                self.prepare_union_pipelines(sf.id).await?;
             }
             diag::set_phase("encode");
             let t = Instant::now();
@@ -4623,16 +4647,15 @@ impl GpuRenderer {
                 )
                 .map_err(|e| ResourceError::Shader(e.to_string()))
             };
-        // One pipeline per (distinct target format, union variant) —
-        // equal formats share the slot-0 pipeline (#170). Slot order is
-        // `format_i + 2 * union`.
+        // One pipeline per distinct target format on the plain variant
+        // — equal formats share the slot-0 pipeline (#170). Slot order is
+        // `format_i + 2 * union`; the union-shaped slots stay empty and
+        // the first union use builds them from the stored module.
         let mut pipelines = [None, None, None, None];
-        for union in [false, true] {
-            for format in [TARGET_FORMAT, self.scratch_format] {
-                let slot = usize::from(format != TARGET_FORMAT) + 2 * usize::from(union);
-                if pipelines[slot].is_none() {
-                    pipelines[slot] = Some(make(&modules[usize::from(union)], format));
-                }
+        for format in [TARGET_FORMAT, self.scratch_format] {
+            let slot = usize::from(format != TARGET_FORMAT);
+            if pipelines[slot].is_none() {
+                pipelines[slot] = Some(make(&modules[0], format));
             }
         }
         let scope_error = pollster::block_on(scope.pop());
@@ -4641,15 +4664,16 @@ impl GpuRenderer {
         if let Some(error) = scope_error {
             return Err(ResourceError::Shader(format!("{error}")));
         }
-        let [a, b, c, d] = pipelines;
+        let [a, b, _, _] = pipelines;
         self.backdrop_shaders.insert(
             id.raw(),
-            [
-                a.transpose()?,
-                b.transpose()?,
-                c.transpose()?,
-                d.transpose()?,
-            ],
+            BackdropShaderEntry {
+                union_module: {
+                    let [_, union] = modules;
+                    union
+                },
+                pipelines: [a.transpose()?, b.transpose()?, None, None],
+            },
         );
         Ok(())
     }
@@ -4673,28 +4697,28 @@ impl GpuRenderer {
                     source: wgpu::ShaderSource::Wgsl(backdrop_effect_text(&source.source, union)),
                 })
         });
-        // One pipeline per (distinct target format, union variant) —
-        // equal formats share the slot-0 pipeline (#170). Slot order is
-        // `format_i + 2 * union`.
+        // One pipeline per distinct target format on the plain variant
+        // — equal formats share the slot-0 pipeline (#170). Slot order is
+        // `format_i + 2 * union`; the union-shaped slots stay empty and
+        // `prepare_union_pipelines` fills them on the first frame a union
+        // or outer-band member is planned.
         let mut pipelines = [None, None, None, None];
-        for union in [false, true] {
-            for format in [TARGET_FORMAT, self.scratch_format] {
-                let slot = usize::from(format != TARGET_FORMAT) + 2 * usize::from(union);
-                if pipelines[slot].is_none() {
-                    pipelines[slot] = Some(
-                        create_pipeline(
-                            &self.device,
-                            &self.config,
-                            &self.pipeline_layout,
-                            self.pipeline_cache.as_ref(),
-                            &modules[usize::from(union)],
-                            format,
-                            CoveragePass::Painter(false),
-                        )
-                        .await
-                        .map_err(|e| ResourceError::Shader(e.to_string())),
-                    );
-                }
+        for format in [TARGET_FORMAT, self.scratch_format] {
+            let slot = usize::from(format != TARGET_FORMAT);
+            if pipelines[slot].is_none() {
+                pipelines[slot] = Some(
+                    create_pipeline(
+                        &self.device,
+                        &self.config,
+                        &self.pipeline_layout,
+                        self.pipeline_cache.as_ref(),
+                        &modules[0],
+                        format,
+                        CoveragePass::Painter(false),
+                    )
+                    .await
+                    .map_err(|e| ResourceError::Shader(e.to_string())),
+                );
             }
         }
         // The scope is popped before `?` propagates: an early return must
@@ -4705,15 +4729,16 @@ impl GpuRenderer {
         if let Some(error) = scope_error {
             return Err(ResourceError::Shader(format!("{error}")));
         }
-        let [a, b, c, d] = pipelines;
+        let [a, b, _, _] = pipelines;
         self.backdrop_shaders.insert(
             id.raw(),
-            [
-                a.transpose()?,
-                b.transpose()?,
-                c.transpose()?,
-                d.transpose()?,
-            ],
+            BackdropShaderEntry {
+                union_module: {
+                    let [_, union] = modules;
+                    union
+                },
+                pipelines: [a.transpose()?, b.transpose()?, None, None],
+            },
         );
         Ok(())
     }
@@ -8422,18 +8447,50 @@ impl GpuRenderer {
                         unreachable!("engine want")
                     };
                     let pipe = match kind {
-                        PipelineKind::Effect(id) => self
-                            .backdrop_shaders
-                            .get(&id)
-                            .and_then(|p| {
-                                p[format_i + 2 * usize::from(variant == ShaderVariant::Union)]
-                                    .as_ref()
-                            })
-                            .ok_or_else(|| {
+                        PipelineKind::Effect(id) => {
+                            let union = variant == ShaderVariant::Union;
+                            let slot = format_i + 2 * usize::from(union);
+                            let entry = self.backdrop_shaders.get_mut(&id).ok_or_else(|| {
                                 RenderError::Render(format!(
                                     "backdrop shader {id} is not registered"
                                 ))
-                            })?,
+                            })?;
+                            if entry.pipelines[slot].is_none() {
+                                // The union-shaped pipeline builds at the
+                                // first union use — wasm fills it ahead
+                                // of encode in `prepare_union_pipelines`.
+                                #[cfg(not(target_arch = "wasm32"))]
+                                {
+                                    debug_assert!(
+                                        union,
+                                        "plain effect pipelines are built at registration"
+                                    );
+                                    entry.pipelines[slot] = Some(
+                                        create_pipeline(
+                                            &self.device,
+                                            &self.config,
+                                            &self.pipeline_layout,
+                                            self.pipeline_cache.as_ref(),
+                                            &entry.union_module,
+                                            target_format,
+                                            CoveragePass::Painter(false),
+                                        )
+                                        .map_err(|e| {
+                                            RenderError::Render(format!(
+                                                "backdrop shader {id}: {e}"
+                                            ))
+                                        })?,
+                                    );
+                                }
+                                #[cfg(target_arch = "wasm32")]
+                                return Err(RenderError::Render(format!(
+                                    "backdrop shader {id}'s union pipeline was not prepared"
+                                )));
+                            }
+                            entry.pipelines[slot]
+                                .as_ref()
+                                .expect("effect pipeline ready")
+                        }
                         kind => core_pipeline(
                             &mut self.pipelines,
                             &factory,
@@ -9542,6 +9599,100 @@ impl GpuRenderer {
                     },
                 )
                 .await?;
+        }
+        Ok(())
+    }
+
+    /// wasm: the variant-3 pipelines a frame's lowered passes need —
+    /// core `(format, replace)` cells for `ShaderVariant::Union` ranges
+    /// and the union-shaped slots of any backdrop effect they draw —
+    /// prepared ahead of encode, which cannot await pipeline creation.
+    /// The union engine module materializes here too, on the first
+    /// frame that actually draws a union or outer-band member.
+    #[cfg(target_arch = "wasm32")]
+    #[expect(
+        clippy::future_not_send,
+        reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+    )]
+    async fn prepare_union_pipelines(&mut self, surface: SurfaceId) -> Result<(), RenderError> {
+        let surface = &self.surfaces[&surface];
+        // (format index, replace) core cells and (shader id, format
+        // index) effect slots the frame draws through the union variant.
+        let mut core = FxHashSet::default();
+        let mut effects = FxHashSet::default();
+        for pass in &surface.frame.passes {
+            let format = match pass.target {
+                Target::Scratch(depth) => surface.scratch[&depth].texture.format(),
+                Target::Backdrop { group, region } => surface.backdrop_groups[&group].captures
+                    [region as usize]
+                    .target
+                    .texture
+                    .format(),
+                Target::Part(_) | Target::Projected(_) | Target::Plane(_) => TARGET_FORMAT,
+            };
+            let format_i = usize::from(format != TARGET_FORMAT);
+            for range in &pass.ranges {
+                if range.variant == ShaderVariant::Union {
+                    if let PipelineKind::Effect(id) = range.pipeline {
+                        effects.insert((id, format_i));
+                    } else {
+                        core.insert((format_i, range.pipeline == PipelineKind::Replace));
+                    }
+                }
+            }
+        }
+        if core.is_empty() && effects.is_empty() {
+            return Ok(());
+        }
+        let module = self
+            .union_module
+            .get_or_insert_with(|| self.shader_delivery.engine_module(&self.device, 3));
+        for (format_i, replace) in core {
+            let cell = &mut self.pipelines[format_i][usize::from(replace)][3];
+            if cell.is_none() {
+                *cell = Some(
+                    create_pipeline(
+                        &self.device,
+                        &self.config,
+                        &self.pipeline_layout,
+                        self.pipeline_cache.as_ref(),
+                        module,
+                        if format_i == 0 {
+                            TARGET_FORMAT
+                        } else {
+                            self.scratch_format
+                        },
+                        CoveragePass::Painter(replace),
+                    )
+                    .await
+                    .map_err(|e| RenderError::Render(e.to_string()))?,
+                );
+            }
+        }
+        for (id, format_i) in effects {
+            let slot = format_i + 2;
+            let Some(entry) = self.backdrop_shaders.get_mut(&id) else {
+                continue;
+            };
+            if entry.pipelines[slot].is_none() {
+                entry.pipelines[slot] = Some(
+                    create_pipeline(
+                        &self.device,
+                        &self.config,
+                        &self.pipeline_layout,
+                        self.pipeline_cache.as_ref(),
+                        &entry.union_module,
+                        if format_i == 0 {
+                            TARGET_FORMAT
+                        } else {
+                            self.scratch_format
+                        },
+                        CoveragePass::Painter(false),
+                    )
+                    .await
+                    .map_err(|e| RenderError::Render(e.to_string()))?,
+                );
+            }
         }
         Ok(())
     }

@@ -509,7 +509,7 @@ struct Member {
     /// sampling reach.
     bounds: Rect,
     /// The member's draw bounds: `bounds` further inflated by the
-    /// union's `r(n)` and `outer` plus 1px of antialiasing, so bridge
+    /// union's `r(n)` and `outer` plus 1.5px of antialiasing, so bridge
     /// pixels between members are captured and painted.
     draw: Rect,
     /// The member's own clip flattened to device-space edges, when the
@@ -661,7 +661,10 @@ fn member_effect(
 fn degenerate_clip(clip: &ShapeData) -> bool {
     match clip {
         ShapeData::Circle(c) => c.radius <= 0.0,
-        ShapeData::Ellipse(e) => e.radii().x <= 0.0,
+        ShapeData::Ellipse(e) => {
+            let r = e.radii();
+            r.x <= 0.0 || r.y <= 0.0
+        }
         ShapeData::Line(_) => true,
         _ => false,
     }
@@ -1052,7 +1055,8 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 scope: scopes.last().copied(),
             });
             plan.union = plan.union.union(member);
-            let ord = u32::try_from(plan.order.len()).unwrap_or(u32::MAX);
+            let ord = u32::try_from(plan.order.len())
+                .expect("a group's members never exceed MAX_MEMBERS");
             plan.order.push(id);
             plan.members.insert(
                 id,
@@ -1118,7 +1122,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
         }
         let h = self.height;
         // Union fields: inflate every member's draw bounds by `r(n) +
-        // outer` plus 1px of antialiasing so bridge pixels between
+        // outer` plus 1.5px of antialiasing so bridge pixels between
         // members and the `outer` band are captured and drawn, then
         // recompute the capture's union from the inflated bounds. The
         // member edges, in paint order, become the fold's operands.
@@ -1191,7 +1195,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
     }
 
     /// Inflates a backdrop plan's members for the union field: draw bounds
-    /// grow by `r(n) + outer` plus 1px of antialiasing so bridge pixels
+    /// grow by `r(n) + outer` plus 1.5px of antialiasing so bridge pixels
     /// between members and the `outer` band are captured and drawn, and the
     /// capture's union recomputes from the inflated bounds. The member
     /// edges, in paint order, become the fold's operands.
@@ -1213,26 +1217,35 @@ impl<'a, 'b> Lowering<'a, 'b> {
             f64::NEG_INFINITY,
             f64::NEG_INFINITY,
         );
-        let mut members = Vec::with_capacity(n);
+        // Member edges are fold operands, so they are collected only
+        // when the group has a union — a non-union member's outer band
+        // runs against its own field at raster time and no other
+        // member's edges exist.
+        let mut members = Vec::new();
+        if union_spec.is_some() {
+            members.reserve_exact(n);
+        }
         for &id in &plan.order {
             let member = plan
                 .members
                 .get_mut(&id)
                 .expect("order lists planned members");
             let pad = if union_spec.is_some() || member.outer > 0.0 {
-                r + f64::from(member.outer) + 1.0
+                r + f64::from(member.outer) + 1.5
             } else {
                 // No field: the member is not inflated at all.
                 0.0
             };
             member.draw = member.bounds.inflate(pad, pad);
             union = union.union(member.draw);
-            members.push(
-                member
-                    .edges
-                    .clone()
-                    .expect("union members carry clip edges"),
-            );
+            if union_spec.is_some() {
+                members.push(
+                    member
+                        .edges
+                        .clone()
+                        .expect("union members carry clip edges"),
+                );
+            }
         }
         plan.union = union;
         #[expect(

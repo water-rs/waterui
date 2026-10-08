@@ -1380,7 +1380,12 @@ impl<'a> Lowering<'a> {
             let record = (spec.union_field().is_some() || outer > 0.0)
                 .then(|| {
                     box_shape(clip)
-                        .map_err(|_| RenderError::Unsupported(names::BACKDROP_EFFECT_SDF_PATH))?
+                        .map_err(|e| match e {
+                            RenderError::Unsupported(names::PATH) => {
+                                RenderError::Unsupported(names::BACKDROP_EFFECT_SDF_PATH)
+                            }
+                            other => other,
+                        })?
                         .ok_or(RenderError::Unsupported(
                             names::BACKDROP_UNION_DEGENERATE_MEMBER,
                         ))
@@ -2136,7 +2141,7 @@ impl<'a> Lowering<'a> {
         (self.transform, self.width, self.height, self.clip) = saved;
         self.depth -= 1;
         self.begin_pass(self.current_target(), None);
-        let mut instance = self.base(KIND_SPAN, affine(Affine::IDENTITY));
+        let mut instance = Self::base(KIND_SPAN, affine(Affine::IDENTITY), self.clip);
         instance.bounds = [0.0, 0.0, self.width, self.height];
         instance.meta[1] = PAINT_TEXTURE;
         instance.grad[0] = -(px as f32);
@@ -2374,6 +2379,16 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Whether `member` draws against group `gid`'s union field: its
+    /// sample's instance clip carries the ancestors only, so a
+    /// non-destructive member may emit it outside the member clip scope.
+    fn union_member(&self, gid: u64, member: LayerId) -> bool {
+        self.backdrops
+            .get(&gid)
+            .and_then(|plan| plan.members.get(&member))
+            .is_some_and(|entry| entry.union.is_some())
+    }
+
     /// Emits a member's composite of the shared capture as the
     /// bottom-most draw inside its clip, covering `member ∩ region`,
     /// at full strength — the member's own scope attenuates it at
@@ -2424,12 +2439,9 @@ impl<'a> Lowering<'a> {
             // A union-field member's instance clip carries the ancestors
             // only: the member's own clip is in its union record, and the
             // ownership-weighted field replaces its coverage term.
-            let mut inst = Instance::new(KIND_SPAN);
-            inst.affine = affine(Affine::IDENTITY);
-            Self::apply_clip(&mut inst, ancestors);
-            inst
+            Self::base(KIND_SPAN, affine(Affine::IDENTITY), ancestors)
         } else {
-            self.base(KIND_SPAN, affine(Affine::IDENTITY))
+            Self::base(KIND_SPAN, affine(Affine::IDENTITY), self.clip)
         };
         inst.bounds = [
             f32_f64(bounds.x0),
@@ -2533,7 +2545,7 @@ impl<'a> Lowering<'a> {
         // into a half-covered rim — wrong under a non-Normal blend.
         // Bounds are device-space for spans and the texture paint reads
         // `pixel`, so the affine is irrelevant.
-        let mut inst = self.base(KIND_SPAN, affine(Affine::IDENTITY));
+        let mut inst = Self::base(KIND_SPAN, affine(Affine::IDENTITY), self.clip);
         inst.bounds = [rx, ry, rx + rw, ry + rh];
         inst.meta[1] = PAINT_TEXTURE;
         inst.params[1] = opacity;
@@ -2569,10 +2581,13 @@ impl<'a> Lowering<'a> {
     }
 
     /// An instance of `kind` under the current transform and clip.
-    const fn base(&self, kind: u32, local_to_device: [f32; 8]) -> Instance {
+    /// A bare instance in `kind` with `clip` applied — callers that do
+    /// not pass `self.clip` override the clip state, like the union
+    /// member whose instance clip carries only the ancestors.
+    const fn base(kind: u32, local_to_device: [f32; 8], clip: Option<DeviceClip>) -> Instance {
         let mut inst = Instance::new(kind);
         inst.affine = local_to_device;
-        Self::apply_clip(&mut inst, self.clip);
+        Self::apply_clip(&mut inst, clip);
         inst
     }
 
@@ -2818,6 +2833,10 @@ impl<'a> Lowering<'a> {
         clippy::too_many_arguments,
         reason = "the layer walk's fixed context, not real complexity"
     )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the union-member scope cases each need their own few lines"
+    )]
     fn layer_body(
         &mut self,
         id: LayerId,
@@ -2869,11 +2888,30 @@ impl<'a> Lowering<'a> {
                     cherenkov::BlendSpace::Linear,
                     |s, glyphs| {
                         let ancestors = s.clip;
+                        // As in the `None` arm below: a union member's
+                        // sample composites under the ancestors only, so
+                        // it emits before the member clip scope opens —
+                        // a member clip that isolates cannot clip its
+                        // bridge and band to the member's own shape.
+                        let union_member = node
+                            .backdrop
+                            .as_ref()
+                            .is_some_and(|sample| s.union_member(sample.group().raw(), id));
+                        if union_member && let Some(sample) = &node.backdrop {
+                            s.emit_backdrop_sample(
+                                sample.group().raw(),
+                                id,
+                                sample.effect(),
+                                ancestors,
+                            )?;
+                        }
                         s.with_clip(
                             clip,
                             |s, glyphs| {
                                 s.transform = content_space;
-                                if let Some(sample) = &node.backdrop {
+                                if let Some(sample) = &node.backdrop
+                                    && !union_member
+                                {
                                     s.emit_backdrop_sample(
                                         sample.group().raw(),
                                         id,
@@ -2891,12 +2929,34 @@ impl<'a> Lowering<'a> {
             }
             None => {
                 let ancestors = self.clip;
+                // A union member's sample composites under the ancestors
+                // only — the ownership-weighted union field replaces its
+                // clip coverage — so a non-destructive member emits it
+                // before the member clip scope opens: a member clip that
+                // isolates (a masked ancestor clip it cannot merge, or a
+                // non-rect clip) cannot clip the bridge and band to the
+                // member's own shape. A destructive member's sample stays
+                // inside: its operator domain is the member clip.
+                let outside = node
+                    .backdrop
+                    .as_ref()
+                    .is_some_and(|sample| self.union_member(sample.group().raw(), id))
+                    && !is_destructive(blend);
+                if outside && let Some(sample) = &node.backdrop {
+                    self.emit_backdrop_sample(
+                        sample.group().raw(),
+                        id,
+                        sample.effect(),
+                        ancestors,
+                    )?;
+                }
                 self.with_clip(
                     clip,
                     |s, glyphs| {
                         s.transform = content_space;
                         if let Some(sample) = &node.backdrop
                             && (node.filter.is_some() || !isolates)
+                            && !outside
                         {
                             // An opaque `Normal`-blended filtered member's
                             // sample — or one nothing isolates — lands in
@@ -2920,6 +2980,7 @@ impl<'a> Lowering<'a> {
                                 |s, glyphs| {
                                     if let Some(sample) = &node.backdrop
                                         && node.filter.is_none()
+                                        && !outside
                                     {
                                         // An unfiltered member's sample is
                                         // its canvas's bottom-most content.
@@ -3098,7 +3159,7 @@ impl<'a> Lowering<'a> {
                 open.backdrop_copy = Some([x0, y0, x1 - x0, y1 - y0]);
             }
         }
-        let mut inst = self.base(KIND_SPAN, affine(Affine::IDENTITY));
+        let mut inst = Self::base(KIND_SPAN, affine(Affine::IDENTITY), self.clip);
         inst.bounds = [x0 as f32, y0 as f32, x1 as f32, y1 as f32];
         inst.meta[1] = PAINT_PROJECTIVE;
         inst.params[1] = opacity;
@@ -3171,7 +3232,7 @@ impl<'a> Lowering<'a> {
                 );
                 if let Some(boxed) = box_shape(&ShapeData::Rect(bounds))? {
                     let transform = self.transform * boxed.extra;
-                    let mut inst = self.base(KIND_FILL, affine(transform));
+                    let mut inst = Self::base(KIND_FILL, affine(transform), self.clip);
                     let margin = self.margin(self.transform);
                     let b = boxed.bounds.inflate(margin, margin);
                     inst.bounds = [f32_f64(b.x0), f32_f64(b.y0), f32_f64(b.x1), f32_f64(b.y1)];
@@ -3675,7 +3736,7 @@ impl<'a> Lowering<'a> {
                 if b.width() <= 0.0 || b.height() <= 0.0 {
                     return Ok(());
                 }
-                let mut inst = self.base(*kind, affine(self.transform * *local));
+                let mut inst = Self::base(*kind, affine(self.transform * *local), self.clip);
                 inst.bounds = [f32_f64(b.x0), f32_f64(b.y0), f32_f64(b.x1), f32_f64(b.y1)];
                 inst.shape = *shape;
                 if let Some(inner) = inner {
@@ -3701,7 +3762,7 @@ impl<'a> Lowering<'a> {
             } => {
                 let margin = sigma_eff.mul_add(3.0, 1.0) + self.margin(self.transform * *ambient);
                 let b = bounds.inflate(margin, margin);
-                let mut inst = self.base(KIND_SHADOW, affine(self.transform * *local));
+                let mut inst = Self::base(KIND_SHADOW, affine(self.transform * *local), self.clip);
                 inst.bounds = [f32_f64(b.x0), f32_f64(b.y0), f32_f64(b.x1), f32_f64(b.y1)];
                 inst.shape = *shape;
                 inst.params[0] = f32_f64(*sigma_eff);
@@ -3871,7 +3932,7 @@ impl<'a> Lowering<'a> {
         let to_device = transform * boxed.extra;
         let margin = self.margin(transform);
         let bounds = boxed.bounds.inflate(margin, margin);
-        let mut inst = self.base(KIND_FILL, affine(to_device));
+        let mut inst = Self::base(KIND_FILL, affine(to_device), self.clip);
         inst.bounds = [
             f32_f64(bounds.x0),
             f32_f64(bounds.y0),
@@ -4164,7 +4225,7 @@ impl<'a> Lowering<'a> {
         let paint = shader_data
             .copied()
             .unwrap_or_else(|| self.resolved_paint(paint));
-        let mut template = self.base(KIND_SPAN, affine(self.transform));
+        let mut template = Self::base(KIND_SPAN, affine(self.transform), self.clip);
         template.color = paint.color;
         template.grad = paint.grad;
         template.grad2 = paint.grad2;
@@ -4423,7 +4484,7 @@ impl<'a> Lowering<'a> {
             self.transform,
         )?;
         for (entry, pending, rect) in entries {
-            let mut inst = self.base(KIND_GLYPH, affine(self.transform));
+            let mut inst = Self::base(KIND_GLYPH, affine(self.transform), self.clip);
             inst.grad = data.grad;
             inst.grad2 = data.grad2;
             inst.meta[1] = data.kind;
@@ -4485,7 +4546,7 @@ impl<'a> Lowering<'a> {
                 continue;
             }
             let mut inst = *template.get_or_insert_with(|| {
-                let mut inst = self.base(KIND_GLYPH, affine(self.transform));
+                let mut inst = Self::base(KIND_GLYPH, affine(self.transform), self.clip);
                 let data = self.resolved_paint(paint);
                 inst.color = data.color;
                 inst.grad = data.grad;
@@ -4594,8 +4655,8 @@ fn push_union_record(stops: &mut Vec<Stop>, record: DeviceClip) {
 
 /// Inflates a backdrop plan's members for the union field and writes
 /// the group's member records: a union-field member's draw bounds grow
-/// by `r(n) + outer + 1px` and its aproned footprint by `reach + r(n) +
-/// outer + 1px`, and the capture union rebuilds from the footprints. A
+/// by `r(n) + outer + 1.5px` and its aproned footprint by `reach + r(n) +
+/// outer + 1.5px`, and the capture union rebuilds from the footprints. A
 /// member with no union behind it and no `outer` extent is not
 /// inflated. A union group's members then share one `[k, n, 0, 0]`-headed
 /// run of clip records in `stops` (one header `Stop`, two per member);
@@ -4627,7 +4688,7 @@ fn plan_union(plan: &mut BackdropPlan, stops: &mut Vec<Stop>) -> Result<(), Rend
         // Union-field members inflate by `r(n) + outer + 1`; members
         // with no field behind them are not inflated at all.
         let pad = if union_spec.is_some() || entry.outer > 0.0 {
-            r + f64::from(entry.outer) + 1.0
+            r + f64::from(entry.outer) + 1.5
         } else {
             0.0
         };
@@ -4660,8 +4721,14 @@ fn plan_union(plan: &mut BackdropPlan, stops: &mut Vec<Stop>) -> Result<(), Rend
         }
     } else {
         // A lone `outer` member of a non-union group still draws
-        // against its own field: a one-member record run.
-        for entry in plan.members.values_mut() {
+        // against its own field: a one-member record run, pushed in
+        // paint order like the union branch above.
+        for i in 0..plan.aproned.len() {
+            let id = plan.aproned[i].0;
+            let entry = plan
+                .members
+                .get_mut(&id)
+                .expect("an aproned member is planned");
             if entry.outer > 0.0 {
                 let base = stops.len() as u32;
                 stops.push(Stop {

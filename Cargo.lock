@@ -1815,7 +1815,6 @@ dependencies = [
 name = "cherenkov-oracle"
 version = "0.0.0"
 dependencies = [
- "cherenkov",
  "cherenkov-scene",
  "half",
  "kurbo 0.13.1",

@@ -73,6 +73,11 @@ use crate::color::{linear_p3_to_linear_srgb, linear_srgb_to_linear_p3, to_workin
 use crate::coverage::Coverage;
 use crate::glyphs;
 use crate::image::{F32Image, Image};
+/// The union member cap — the same file `cherenkov::BackdropUnion`
+/// reads, pulled in by path so the oracle stays independent of the
+/// engine crates.
+#[path = "../../src/union_cap.rs"]
+mod union_cap;
 use crate::paint::{eval_paint, sample_image};
 use crate::path::{edges, shape_polylines, stroke_polylines_device};
 use crate::resources::Resources;
@@ -424,7 +429,7 @@ impl Renderer {
             &mut out,
         )?;
         for members in out.values() {
-            if members.len() > cherenkov::BackdropUnion::MAX_MEMBERS as usize {
+            if members.len() > union_cap::UNION_MAX_MEMBERS as usize {
                 return Err(RenderError::Backdrop("backdrop-union-members".to_string()));
             }
         }
@@ -1505,7 +1510,7 @@ fn sample_backdrop(
 fn union_member_clip_error(clip: &cherenkov_scene::Shape) -> RenderError {
     let degenerate = match clip {
         cherenkov_scene::Shape::Circle(c) => c.radius <= 0.0,
-        cherenkov_scene::Shape::Ellipse(e) => e.radii().x <= 0.0,
+        cherenkov_scene::Shape::Ellipse(e) => e.radii().x <= 0.0 || e.radii().y <= 0.0,
         cherenkov_scene::Shape::Line(_) => true,
         _ => false,
     };

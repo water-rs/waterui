@@ -7,6 +7,12 @@ use naga::valid::{Capabilities, ValidationFlags, Validator};
 use naga::{Module, front::wgsl};
 
 const SHADER: &str = include_str!("../src/render/shader.wgsl");
+/// The build-time outputs the runtime assembles modules from: the
+/// `// union-stub`-stripped shader and the `UNION_MAX_MEMBERS`
+/// fragment — read from `OUT_DIR` so the test cannot drift from what
+/// `build.rs` ships.
+const SHADER_NO_UNION: &str = include_str!(concat!(env!("OUT_DIR"), "/shader_no_union.wgsl"));
+const UNION_MAX: &str = include_str!(concat!(env!("OUT_DIR"), "/union_max_members.wgsl"));
 const SHARED: &str = include_str!("../src/render/shared.wgsl");
 const UNION: &str = include_str!("../src/render/union.wgsl");
 const BLEND: &str = include_str!("../src/render/blend.wgsl");
@@ -18,36 +24,15 @@ const RESOLVE: &str = include_str!("../src/render/resolve.wgsl");
 /// (10.13 → 2.0), which is where `instance_id` and friends became legal.
 const MSL_VERSION: (u8, u8) = (2, 0);
 
-/// Removes every `// <marker>`-bracketed span — the same transform
-/// `build.rs`'s `drop_marked` applies to write `shader_no_union.wgsl`.
-fn drop_marked(source: &str, marker: &str) -> String {
-    let tag = format!("// {marker}");
-    let mut out = String::with_capacity(source.len());
-    let mut rest = source;
-    while let Some((head, tail)) = rest.split_once(tag.as_str()) {
-        out.push_str(head);
-        rest = tail.split_once(tag.as_str()).map_or(tail, |(_, tail)| tail);
-    }
-    out.push_str(rest);
-    out
-}
-
 fn composed(variant: u32) -> (Module, naga::valid::ModuleInfo) {
     // The engine module is `shared.wgsl`, `shader.wgsl` then `blend.wgsl`,
     // as in build.rs: the union variant additionally prepends
-    // `UNION_MAX_MEMBERS` and links `union.wgsl`; the plain variants drop
-    // every `// union-stub` span.
+    // `UNION_MAX_MEMBERS` and links `union.wgsl`; the plain variants use
+    // the shipped `shader_no_union.wgsl`.
     let (cap, shader, union) = if variant == 3 {
-        (
-            format!(
-                "const UNION_MAX_MEMBERS: u32 = {}u;\n",
-                cherenkov::BackdropUnion::MAX_MEMBERS
-            ),
-            SHADER.to_string(),
-            UNION,
-        )
+        (UNION_MAX, SHADER, UNION)
     } else {
-        (String::new(), drop_marked(SHADER, "union-stub"), "")
+        ("", SHADER_NO_UNION, "")
     };
     let source =
         format!("const VARIANT: u32 = {variant}u;\n{cap}{SHARED}\n{shader}\n{union}{BLEND}");

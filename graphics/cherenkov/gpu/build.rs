@@ -30,6 +30,12 @@ mod deployment;
 
 #[path = "build_tile.rs"]
 mod tile;
+/// The union member cap the WGSL fold compiles against — the same
+/// definition `cherenkov::BackdropUnion::MAX_MEMBERS` re-exports, kept
+/// free of a crate dependency so this build script does not link the
+/// engine.
+#[path = "../src/union_cap.rs"]
+mod union_cap;
 
 use std::env;
 use std::num::NonZeroU32;
@@ -81,15 +87,28 @@ struct AppleTarget {
 /// the text between an opening and closing marker is a specialization's
 /// optional block (the union field today), dropped wholesale by variants
 /// that do not carry it.
+///
+/// Only a whole trimmed line equal to the marker toggles the span — a
+/// marker inside other text is not a marker. An unpaired marker is a
+/// build bug and panics. The stripped output must carry neither
+/// `union_field` nor `backdrop_field`: the check fails loudly if the
+/// spans drift from what the marker is supposed to remove.
 fn drop_marked(source: &str, marker: &str) -> String {
     let tag = format!("// {marker}");
     let mut out = String::with_capacity(source.len());
-    let mut rest = source;
-    while let Some((head, tail)) = rest.split_once(tag.as_str()) {
-        out.push_str(head);
-        rest = tail.split_once(tag.as_str()).map_or(tail, |(_, tail)| tail);
+    let mut dropping = false;
+    for line in source.split_inclusive('\n') {
+        if line.trim() == tag {
+            dropping = !dropping;
+        } else if !dropping {
+            out.push_str(line);
+        }
     }
-    out.push_str(rest);
+    assert!(!dropping, "unpaired `{tag}` marker");
+    assert!(
+        !out.contains("union_field") && !out.contains("backdrop_field"),
+        "`{tag}` stripping left union code in the output"
+    );
     out
 }
 
@@ -142,14 +161,14 @@ fn main() {
     .map(read);
 
     // The union member cap the WGSL fold is compiled against:
-    // `BackdropUnion::MAX_MEMBERS` prepended like `VARIANT`, so the
+    // `union_cap::UNION_MAX_MEMBERS` prepended like `VARIANT`, so the
     // Rust constant stays the single definition. The runtime assembles
     // the union module from this fragment and the non-union variants
     // from `shader_no_union.wgsl` — `shader.wgsl` minus every
     // `// union-stub`-bracketed span.
     let union_max = format!(
         "const UNION_MAX_MEMBERS: u32 = {}u;\n",
-        cherenkov::BackdropUnion::MAX_MEMBERS
+        union_cap::UNION_MAX_MEMBERS
     );
     std::fs::write(out_dir.join("union_max_members.wgsl"), &union_max).unwrap();
     let shader_no_union = drop_marked(&shader, "union-stub");
@@ -286,14 +305,22 @@ fn compile_specs(out_dir: &Path, specs: &[Spec]) {
         compile(out_dir, spec, apple.as_ref(), wasm, spirv);
     }
     if let Some(apple) = apple.as_ref() {
-        let spec = Spec {
-            name: "engine_tile".into(),
-            source: specs[2].source.clone(),
-            groups: bindings::ENGINE_GROUPS,
-            metal: true,
-            merge_pair: None,
-        };
-        compile(out_dir, &spec, Some(apple), false, false);
+        // The tile executor's composition shaders — one module per
+        // engine specialization the tile path draws: the stripped
+        // no-union variant and the union-linked variant.
+        for (name, source) in [
+            ("engine_tile", specs[2].source.as_str()),
+            ("engine_tile_union", specs[3].source.as_str()),
+        ] {
+            let spec = Spec {
+                name: name.into(),
+                source: source.to_string(),
+                groups: bindings::ENGINE_GROUPS,
+                metal: true,
+                merge_pair: None,
+            };
+            compile(out_dir, &spec, Some(apple), false, false);
+        }
         let fixture = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
             .join("tests/shaders/attachment_read.metal");
         std::io::Write::write_fmt(
@@ -329,7 +356,7 @@ fn compile(out_dir: &Path, spec: &Spec, apple: Option<&AppleTarget>, wasm: bool,
             e.emit_to_string(&spec.source)
         )
     });
-    if spec.name == "engine_tile" {
+    if spec.name.starts_with("engine_tile") {
         tile::attachment_inputs(&mut module);
     }
     let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
@@ -744,7 +771,7 @@ fn write_metal(out_dir: &Path, spec: &Spec, module: &naga::Module, apple: Option
     let options = msl::Options {
         // The floor Metal language version wgpu selects on supported
         // hardware; the shader test covers the same value.
-        lang_version: if spec.name == "engine_tile" {
+        lang_version: if spec.name.starts_with("engine_tile") {
             (3, 0)
         } else {
             (2, 0)
@@ -796,13 +823,30 @@ fn write_metal(out_dir: &Path, spec: &Spec, module: &naga::Module, apple: Option
     std::fs::write(&metal, &source).unwrap();
 
     if let Some(apple) = apple {
-        let input = if spec.name == "engine_tile" {
-            let scaffold = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
-                .join("src/render/composite/attachment.metal");
-            println!("cargo::rerun-if-changed={}", scaffold.display());
-            scaffold
-        } else {
-            metal
+        let input = match spec.name.as_str() {
+            "engine_tile" => {
+                let scaffold = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
+                    .join("src/render/composite/attachment.metal");
+                println!("cargo::rerun-if-changed={}", scaffold.display());
+                scaffold
+            }
+            "engine_tile_union" => {
+                // The tile driver's union twin: the same native stage
+                // interfaces, including the union-linked engine module.
+                let scaffold = out_dir.join("attachment_union.metal");
+                let source = std::fs::read_to_string(
+                    PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
+                        .join("src/render/composite/attachment.metal"),
+                )
+                .unwrap()
+                .replace(
+                    "#include \"engine_tile.metal\"",
+                    "#include \"engine_tile_union.metal\"",
+                );
+                std::fs::write(&scaffold, source).unwrap();
+                scaffold
+            }
+            _ => metal,
         };
         compile_metal(out_dir, &spec.name, &input, apple, options.lang_version);
     }

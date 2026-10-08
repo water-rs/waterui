@@ -305,7 +305,9 @@ impl BackdropSample {
     /// An outer extent of `extent`: the member's composite covers where
     /// its field is below it, not only where the clip covers — a band
     /// that wide beyond the clip edge, antialiased from the field.
-    /// [`BackdropOuter::ZERO`] keeps today's coverage.
+    /// [`BackdropOuter::ZERO`] keeps today's coverage on a standalone
+    /// member; under a union the member's coverage is its ownership
+    /// weight times `field < outer` either way.
     #[must_use]
     pub fn outer(self, extent: BackdropOuter) -> Self {
         Self {

@@ -98,8 +98,10 @@ impl BackdropUnion {
     ///
     /// Groups larger than this are rejected with the
     /// `backdrop-union-members` `Unsupported` error on every
-    /// implementation.
-    pub const MAX_MEMBERS: u32 = 32;
+    /// implementation. The single definition lives in
+    /// `union_cap::UNION_MAX_MEMBERS`, which the gpu build script and
+    /// the oracle read directly — neither depends on this crate.
+    pub const MAX_MEMBERS: u32 = crate::union_cap::UNION_MAX_MEMBERS;
 
     /// A union field smoothed over `smoothing` device pixels.
     ///

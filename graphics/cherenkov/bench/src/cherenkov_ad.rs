@@ -1248,10 +1248,10 @@ fn prep_layer(
             .as_ref()
             .map(crate::convert::backdrop_effect)
             .transpose()?,
-        backdrop_outer: crate::convert::backdrop_outer(
-            layer.backdrop_outer,
-            layer.backdrop.unwrap_or(0),
-        )?,
+        backdrop_outer: match layer.backdrop {
+            Some(group) => crate::convert::backdrop_outer(layer.backdrop_outer, group)?,
+            None => cherenkov::BackdropOuter::ZERO,
+        },
         // A `Motion::Paint` animates a content operand, not a layer
         // property — `paint_motion` binds it inside the content run.
         motion: match &layer.motion {

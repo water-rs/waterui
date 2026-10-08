@@ -830,9 +830,12 @@ fn fs_full(in: VsOut) -> vec4<f32> {
     if in.meta_.y == PAINT_BACKDROP && (flags & FLAG_UNION) != 0u {
         // A union member's instance clip carries the ancestors only; the
         // member's own coverage term is the ownership-weighted union
-        // field `w_own · AA(field < outer)`, `outer` in params.x.
-        let base = bitcast<u32>(in.cell.z);
-        let ord = bitcast<u32>(in.cell.w);
+        // field `w_own · AA(field < outer)`, `outer` in params.x. The
+        // record base and member index arrive bitcast in `uv.xy` — read
+        // from `instances` storage, not a varying: the small u32s are
+        // subnormals as f32 and could flush to zero.
+        let base = bitcast<u32>(instances[i].uv.x);
+        let ord = bitcast<u32>(instances[i].uv.y);
         backdrop_field = union_field(base, ord, in.device);
         cov *= union_coverage(backdrop_field, instances[i].params.x);
     }

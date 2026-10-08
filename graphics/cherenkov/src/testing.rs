@@ -3015,12 +3015,7 @@ pub fn circle_field(px: f32, py: f32, cx: f32, cy: f32, r: f32) -> (f32, [f32; 2
 #[must_use]
 pub fn ownership(members: &[(f32, [f32; 2])], member: usize) -> f32 {
     let mut order: Vec<usize> = (0..members.len()).collect();
-    order.sort_by(|&a, &b| {
-        members[a]
-            .0
-            .partial_cmp(&members[b].0)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    order.sort_by(|&a, &b| members[a].0.total_cmp(&members[b].0));
     let mut sum = 0.0f32;
     let mut own = 0.0f32;
     for (j, &(dj, gj)) in members.iter().enumerate() {

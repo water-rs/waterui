@@ -669,12 +669,14 @@ fn union_field_at(
         grads[i] = (nx, ny);
     }
     let ord = union.ord as usize;
-    // Insertion sort of member indexes by distance; stable, so exact
-    // ties keep paint order.
+    // Insertion sort of member indexes by distance in `total_cmp`
+    // order — like the oracle's `sort_by` and the GPU fold: exact ties
+    // keep paint order, and a −0.0/+0.0 pair resolves the same on every
+    // engine.
     let mut order = [0usize; MAX];
     for i in 0..count {
         let mut j = i;
-        while j > 0 && dists[order[j - 1]] > dists[i] {
+        while j > 0 && dists[order[j - 1]].total_cmp(&dists[i]) == std::cmp::Ordering::Greater {
             order[j] = order[j - 1];
             j -= 1;
         }
@@ -2126,13 +2128,16 @@ impl Band<'_> {
                 // the field is also what SDF effects read.
                 let mut field = (0.0f32, 0.0f32, 0.0f32, 1.0f32, 1.0f32);
                 let mut cc = clip_cov(clip, self.w, px, py);
+                if cc <= 0.0 {
+                    continue;
+                }
                 if let Some(u) = union {
                     field = union_field_at(u, px as f32 + 0.5, py as f32 + 0.5);
                     let (_, _, _, w_own, w) = field;
                     cc *= w_own * (0.5 - (field.0 - u.outer) / w).clamp(0.0, 1.0);
-                }
-                if cc <= 0.0 {
-                    continue;
+                    if cc <= 0.0 {
+                        continue;
+                    }
                 }
                 let (d, nx, ny) = match union {
                     Some(_) => (field.0, field.1, field.2),

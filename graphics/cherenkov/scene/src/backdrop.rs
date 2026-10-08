@@ -48,10 +48,12 @@ use serde::{Deserialize, Serialize};
 /// [`crate::Scene::load`] validates it) makes every member composite
 /// against one shared field: the quadratic smooth minimum of all member
 /// distances, folded in ascending order with `k`. Each member's
-/// composite coverage becomes its antialiased ownership weight — the
-/// pixel-space weight `0.5 + (d₂ − d_own) / (2·w)` clamped to `0..=1`,
-/// `d₂` the smallest distance among the other members, `w` the field's
-/// pixel width — times the antialiased coverage of `field < outer`,
+/// composite coverage becomes its antialiased ownership weight — member
+/// `i` has `f_i = d₂ − d_i` (`d₂` the smallest distance among the other
+/// members) and weight `a_i = clamp(0.5 + f_i/|∇f_i|, 0, 1)`,
+/// `|∇f_i| = |∇d₂ − ∇d_i|` the ownership boundary's own slope,
+/// normalized to `a_i/Σ_j a_j` so the weights partition unity — times
+/// the antialiased coverage of `field < outer`,
 /// replacing the member's clip coverage (the member's own content stays
 /// clipped; see [`crate::Layer::backdrop_outer`]). Every member needs an
 /// analytic clip — a path clip fails `backdrop-effect-sdf-path`.

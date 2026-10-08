@@ -798,3 +798,267 @@ fn refraction_on_a_path_clip_is_the_named_error() {
         Ok(_) => panic!("path clip with an SDF effect must fail"),
     }
 }
+
+// Backdrop union contracts: local copies of the engines' shared field
+// helpers so the oracle's test suite stays independent of the engine.
+
+/// Signed distance and unit outward normal of a circle's analytic SDF.
+fn circle_field(px: f64, py: f64, cx: f64, cy: f64, r: f64) -> (f64, [f64; 2]) {
+    let dx = px - cx;
+    let dy = py - cy;
+    let len = dx.hypot(dy).max(1e-6);
+    (len - r, [dx / len, dy / len])
+}
+
+/// The ownership weight of `members[member]` under the union contract:
+/// `a_i = clamp(0.5 + f_i/|∇f_i|, 0, 1)`, normalized `a_i / Σ a_j`. Where
+/// the boundary degenerates, ownership is a hard step, an exact tie going
+/// to the earlier member in paint order (`total_cmp` order, so −0.0 and
+/// +0.0 tie the same everywhere).
+fn ownership(members: &[(f64, [f64; 2])], member: usize) -> f64 {
+    let mut order: Vec<usize> = (0..members.len()).collect();
+    order.sort_by(|&a, &b| members[a].0.total_cmp(&members[b].0));
+    let mut sum = 0.0f64;
+    let mut own = 0.0f64;
+    for (j, &(dj, gj)) in members.iter().enumerate() {
+        let other = if order[0] == j { order[1] } else { order[0] };
+        let (do2, go2) = members[other];
+        let f = do2 - dj;
+        let slope = (go2[0] - gj[0]).hypot(go2[1] - gj[1]);
+        let a = if slope < 1e-6 {
+            if f > 0.0 || (f == 0.0 && j == order[0]) {
+                1.0
+            } else {
+                0.0
+            }
+        } else {
+            (0.5 + f / slope).clamp(0.0, 1.0)
+        };
+        sum += a;
+        if j == member {
+            own = a;
+        }
+    }
+    own / sum
+}
+
+/// `union_circles` on the oracle: circle members of a union group at the
+/// given opacities over a 0.5-alpha red root — the CPU/GPU suites'
+/// counterpart.
+fn union_circles(circles: &[(f64, f64, f64)], opacities: &[f32]) -> cherenkov_oracle::F32Image {
+    let mut b = Scene::builder(48, 40).clear(Color::srgb(0.0, 0.0, 0.0).with_alpha(0.0));
+    b.backdrop_union_group(1, vec![], 1.0, 1, 20.0);
+    b.root().fill(
+        Shape::Rect(Rect::new(0.0, 0.0, 48.0, 40.0)),
+        Paint::Solid(Color::srgb(1.0, 0.0, 0.0).with_alpha(0.5)),
+    );
+    for (&(cx, cy, r), &opacity) in circles.iter().zip(opacities.iter()) {
+        b.root().layer(|m| {
+            m.clip(Shape::Circle(kurbo::Circle::new((cx, cy), r)));
+            m.backdrop(1);
+            m.opacity(f64::from(opacity));
+        });
+    }
+    let scene = b.build();
+    Renderer::new(48, 40)
+        .render(&scene, &tmp())
+        .expect("oracle render")
+}
+
+/// The two ownership weights on a seam ramp across one pixel and sum to
+/// 1 — the oracle's counterpart of the CPU/GPU seam-weight test.
+#[expect(clippy::cast_precision_loss, reason = "pixel coords stay small")]
+#[test]
+fn the_seam_weights_ramp_across_one_pixel() {
+    const CIRCLES: &[(f64, f64, f64)] = &[(12.3, 16.0, 16.0), (32.3, 16.0, 16.0)];
+    let only_a = union_circles(CIRCLES, &[0.5, 0.0]);
+    let only_b = union_circles(CIRCLES, &[0.0, 0.5]);
+    let px = |img: &cherenkov_oracle::F32Image, col: usize, row: usize| img.pixels[row * 48 + col];
+    let fields = |col: usize, row: usize| {
+        let (px, py) = (col as f64 + 0.5, row as f64 + 0.5);
+        [
+            circle_field(px, py, 12.3, 16.0, 16.0),
+            circle_field(px, py, 32.3, 16.0, 16.0),
+        ]
+    };
+    for row in 8..24usize {
+        for col in 20..25usize {
+            let members = fields(col, row);
+            let wa = ownership(&members, 0);
+            let wb = ownership(&members, 1);
+            assert!(
+                (wa + wb - 1.0).abs() <= 1e-3,
+                "weights at ({col}, {row}) sum to {}",
+                wa + wb
+            );
+            let deposit_a = f64::from(px(&only_a, col, row)[3]) - 0.5;
+            let deposit_b = f64::from(px(&only_b, col, row)[3]) - 0.5;
+            // The weights partition the actual deposit.
+            let sum = deposit_a + deposit_b;
+            assert!(
+                wa.mul_add(-sum, deposit_a).abs() <= 3e-3,
+                "pixel ({col}, {row}): member a's deposit {deposit_a} != {wa}·{sum}"
+            );
+            assert!(
+                wb.mul_add(-sum, deposit_b).abs() <= 3e-3,
+                "pixel ({col}, {row}): member b's deposit {deposit_b} != {wb}·{sum}"
+            );
+        }
+    }
+    // The ramp is one pixel wide: column 21 saturates to member a and
+    // column 23 to member b; the straddling column 22 is fractional.
+    let wa = |col: usize| ownership(&fields(col, 16), 0);
+    assert!(wa(21) > 0.95, "w_a at column 21: {}", wa(21));
+    assert!(wa(23) < 0.05, "w_a at column 23: {}", wa(23));
+    let mid = wa(22);
+    assert!(
+        (0.05..0.95).contains(&mid),
+        "the seam column carries a fractional weight: {mid}"
+    );
+}
+
+/// Near a triple point the three ownership weights partition unity.
+#[expect(clippy::cast_precision_loss, reason = "pixel coords stay small")]
+#[test]
+fn the_three_weights_sum_to_one_near_a_triple_point() {
+    const CIRCLES: &[(f64, f64, f64)] =
+        &[(24.0, 13.04, 12.0), (29.0, 22.5, 12.0), (19.0, 22.5, 12.0)];
+    let mut alones = Vec::new();
+    for i in 0..3 {
+        let mut opacities = [0.0f32; 3];
+        opacities[i] = 0.5;
+        alones.push(union_circles(CIRCLES, &opacities));
+    }
+    for row in 14..26usize {
+        for col in 20..29usize {
+            let (px, py) = (col as f64 + 0.5, row as f64 + 0.5);
+            let members: [(f64, [f64; 2]); 3] = std::array::from_fn(|i| {
+                let (cx, cy, r) = CIRCLES[i];
+                circle_field(px, py, cx, cy, r)
+            });
+            let mut wsum = 0.0f64;
+            let mut deposits = Vec::new();
+            for alone in &alones {
+                deposits.push(f64::from(alone.pixels[row * 48 + col][3]) - 0.5);
+            }
+            let sum: f64 = deposits.iter().sum();
+            for (i, &w_deposit) in deposits.iter().enumerate() {
+                let w = ownership(&members, i);
+                wsum += w;
+                assert!(
+                    w.mul_add(-sum, w_deposit).abs() <= 3e-3,
+                    "pixel ({col}, {row}): member {i}'s deposit {w_deposit} != {w}·{sum}"
+                );
+            }
+            assert!(
+                (wsum - 1.0).abs() <= 1e-3,
+                "weights at ({col}, {row}) sum to {wsum}"
+            );
+        }
+    }
+}
+
+/// In a backdrop group with no union field, a member carrying an outer
+/// band and a plain member mix: the band member draws its band and the
+/// plain member is not inflated.
+#[test]
+fn a_plain_member_in_a_mixed_group_is_not_inflated() {
+    let mut b = Scene::builder(48, 32);
+    b.backdrop_group(1, vec![], 1.0, 1);
+    b.root().fill(
+        Shape::Rect(Rect::new(0.0, 0.0, 48.0, 32.0)),
+        Paint::Solid(Color::srgb(1.0, 0.0, 0.0)),
+    );
+    b.root().layer(|m| {
+        m.clip(Shape::Rect(Rect::new(4.0, 8.0, 20.0, 24.0)));
+        m.backdrop(1);
+        m.backdrop_effect(cherenkov_scene::BackdropEffectSpec::ColorMatrix {
+            matrix: [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+        });
+        m.backdrop_outer(4.5);
+    });
+    b.root().layer(|m| {
+        m.clip(Shape::Rect(Rect::new(26.0, 8.0, 42.0, 24.0)));
+        m.backdrop(1);
+        m.backdrop_effect(cherenkov_scene::BackdropEffectSpec::ColorMatrix {
+            matrix: [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+        });
+    });
+    let scene = b.build();
+    let img = Renderer::new(48, 32)
+        .render(&scene, &tmp())
+        .expect("oracle render");
+    let px = |col: usize, row: usize| img.pixels[row * 48 + col];
+    // The untouched clear region's red is the working-space baseline.
+    let red = px(47, 4);
+    // The banded member fills its band (clip x1 = 20, band to 24.5).
+    assert!(px(22, 16)[0] > 0.99, "band member's band: {:?}", px(22, 16));
+    // The plain member draws only its clip — no band at (44, 16).
+    assert!(
+        px(40, 16)[0] > 0.99,
+        "plain member interior: {:?}",
+        px(40, 16)
+    );
+    for col in [44usize, 46] {
+        assert_eq!(
+            px(col, 16),
+            red,
+            "plain member inflated at ({col}, 16): {:?}",
+            px(col, 16)
+        );
+    }
+}
+
+/// Members whose clip's analytic SDF degenerates cannot fold into the
+/// union field and reject by name — a zero-radius circle and an ellipse
+/// collapsed in either radius.
+#[test]
+fn a_degenerate_union_member_is_unsupported() {
+    for clip in [
+        Shape::Circle(kurbo::Circle::new((16.0, 16.0), 0.0)),
+        Shape::Ellipse(kurbo::Ellipse::new((16.0, 16.0), (4.0, 0.0), 0.0)),
+        Shape::Ellipse(kurbo::Ellipse::new((16.0, 16.0), (0.0, 4.0), 0.0)),
+    ] {
+        let mut b = Scene::builder(48, 32);
+        b.backdrop_union_group(1, vec![], 1.0, 1, 20.0);
+        b.root().layer(|m| {
+            m.clip(Shape::Rect(Rect::new(4.0, 8.0, 20.0, 24.0)));
+            m.backdrop(1);
+        });
+        b.root().layer(|m| {
+            m.clip(clip.clone());
+            m.backdrop(1);
+        });
+        let scene = b.build();
+        let result = Renderer::new(48, 32).render(&scene, &tmp());
+        match result {
+            Err(e) => assert!(
+                e.to_string().contains("backdrop-union-degenerate-member"),
+                "clip {clip:?}: unexpected error {e}"
+            ),
+            Ok(_) => panic!("clip {clip:?} is degenerate and must fail"),
+        }
+    }
+}
+
+/// A union group past the member cap rejects by name.
+#[test]
+fn union_members_past_the_cap_are_unsupported() {
+    let mut b = Scene::builder(48, 32);
+    b.backdrop_union_group(1, vec![], 1.0, 1, 20.0);
+    for _ in 0..=32 {
+        b.root().layer(|m| {
+            m.clip(Shape::Rect(Rect::new(4.0, 8.0, 20.0, 24.0)));
+            m.backdrop(1);
+        });
+    }
+    let scene = b.build();
+    let result = Renderer::new(48, 32).render(&scene, &tmp());
+    match result {
+        Err(e) => assert!(
+            e.to_string().contains("backdrop-union-members"),
+            "unexpected error {e}"
+        ),
+        Ok(_) => panic!("33 union members exceed the cap and must fail"),
+    }
+}

@@ -6476,7 +6476,7 @@ fn run() -> Result<(), SceneError> {
     // The outer extent: a lone member samples its backdrop in an 8-px
     // band outside its own clip (group 1), and two union members carry
     // 6-px bands whose outer silhouette is the union field's (group 2) —
-    // the band runs around the bridged shape, not each clip.
+    // the band runs around the union field's outer edge, not each clip.
     corpus.scene_setup("backdrop-outer-band", 256, 256, white, |b| {
         b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 6.0 }], 1.0, 1);
         b.backdrop_union_group(

@@ -1,6 +1,6 @@
 //! Backdrop groups: bounded f16 captures sampled by member layers.
 
-use cherenkov::kurbo::{Circle, Rect, RoundedRect};
+use cherenkov::kurbo::{Circle, Ellipse, Rect, RoundedRect};
 use cherenkov::{__engine_fn as split_fn, __engine_test as split_test, __engine_wait as wait};
 use cherenkov::{
     BackdropOuter, Bytes, Draw, Engine, FrameTime, Offscreen, OffscreenFormat, WorkingColor,
@@ -1857,7 +1857,7 @@ fn union_members_partition_the_bridge_alpha() -> Result<(), Box<dyn std::error::
     let a_clip = Rect::new(4.0, 8.0, 20.0, 24.0);
     let b_clip = Rect::new(26.0, 8.0, 42.0, 24.0);
     let bg = 0.5;
-for row in 10..22usize {
+    for row in 10..22usize {
         for col in 18..30usize {
             let (px, py) = (f32::from(u16::try_from(col).unwrap()) + 0.5, f32::from(u16::try_from(row).unwrap()) + 0.5);
             let dist_a = rect_sdf(px, py, a_clip);
@@ -2245,6 +2245,324 @@ fn bridge_pixel_reads_the_union_field() -> Result<(), Box<dyn std::error::Error>
     assert!((sdf - -2.0125).abs() <= 0.05, "px.sdf {sdf}, expected −2.0125");
     assert!((own - 2.5).abs() <= 0.05, "px.own_sdf {own}, expected 2.5");
     assert!((nx - 1.0).abs() <= 0.05, "px.normal.x {nx}, expected +1");
+    Ok(())
+}
+}
+
+/// `union_circles` with a per-member blend mode — an isolating member
+/// must still reach the union zone outside its own clip.
+fn union_circles_blended(
+    engine: &Engine<Gpu>,
+    circles: &[(f64, f64, f64)],
+    opacities: &[f32],
+    blends: &[cherenkov::BlendMode],
+) -> Result<cherenkov::Readback, Box<dyn std::error::Error>> {
+    let surface =
+        wait!(engine.surface(Offscreen::new((48, 40), OffscreenFormat::LinearF32), || {}))?;
+    let group = surface.backdrop_group_unfiltered(
+        cherenkov::BackdropSpec::FULL.union(cherenkov::BackdropUnion::new(20.0).expect("union")),
+    );
+    let members: Vec<_> = circles.iter().map(|_| surface.layer()).collect();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 48.0, 40.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 0.5]),
+            );
+        }));
+        for (member, ((&(cx, cy, radius), &opacity), &blend)) in members
+            .iter()
+            .zip(circles.iter().zip(opacities.iter()).zip(blends.iter()))
+        {
+            tx[surface.root()].push(member);
+            tx[member]
+                .clip(Circle::new((cx, cy), radius))
+                .backdrop(group.sample())
+                .blend(blend)
+                .opacity(opacity);
+        }
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    Ok(wait!(surface.readback())?)
+}
+
+split_test! {
+/// An isolating union member — here blending `Screen` — must still
+/// composite into the union zone outside its own clip: the bridge and
+/// the band belong to the field, not to the member shape.
+fn a_screen_member_bridges_outside_its_clip() -> Result<(), Box<dyn std::error::Error>> {
+    const CIRCLES: &[(f64, f64, f64)] = &[(12.3, 16.0, 16.0), (32.3, 16.0, 16.0)];
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let only_a = union_circles_blended(
+        &engine,
+        CIRCLES,
+        &[0.5, 0.0],
+        &[cherenkov::BlendMode::Screen, cherenkov::BlendMode::Normal],
+    )?;
+    #[expect(clippy::cast_precision_loss, reason = "pixel coords stay small")]
+    let members_at = |col: usize, row: usize| {
+        let px = col as f32 + 0.5;
+        let py = row as f32 + 0.5;
+        [
+            circle_field(px, py, 12.3, 16.0, 16.0),
+            circle_field(px, py, 32.3, 16.0, 16.0),
+        ]
+    };
+    // Screen composites with SrcOver's alpha, so a's alpha deposit is
+    // `0.125·w_a·cov` as under a normal blend — including where the
+    // union zone lies outside a's clip (the fan below the overlap). The
+    // assert region is the fully-covered zone outside a's clip, where
+    // `field < -0.5` keeps the coverage model exact: a member isolated
+    // under its own clip would deposit 0 there.
+    let mut outside_clip = false;
+    for row in 20..38usize {
+        for col in 14..30usize {
+            let members = members_at(col, row);
+            let field = smin(
+                members[0].0.min(members[1].0),
+                members[0].0.max(members[1].0),
+                20.0,
+            );
+            if !(members[0].0 > 0.5 && field < -0.5) {
+                continue;
+            }
+            outside_clip = true;
+            let wa = ownership(&members, 0);
+            let want = 0.125 * wa;
+            let got = pixel(&only_a, col, row)[3] - 0.5;
+            assert!(
+                (got - want).abs() <= 3e-3,
+                "pixel ({col}, {row}): deposit {got} != {want} (w_a = {wa})"
+            );
+        }
+    }
+    assert!(
+        outside_clip,
+        "no pixel outside member a's clip carried a's deposit"
+    );
+    Ok(())
+}
+}
+
+split_test! {
+/// In a backdrop group with no union field, a member carrying an outer
+/// band and a plain member mix: the band member draws its band and the
+/// plain member is not inflated.
+fn a_plain_member_in_a_mixed_group_is_not_inflated() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((48, 32), OffscreenFormat::LinearF32), || {}))?;
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
+    let banded = surface.layer();
+    let plain = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 48.0, 32.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&banded);
+        tx[surface.root()].push(&plain);
+        // Solid-white effects make coverage readable as whiteness.
+        tx[&banded]
+            .clip(Rect::new(4.0, 8.0, 20.0, 24.0))
+            .backdrop(
+                group
+                    .sample_with(cherenkov::ColorMatrix([
+                        0.0, 0.0, 0.0, 1.0, //
+                        0.0, 0.0, 0.0, 1.0, //
+                        0.0, 0.0, 0.0, 1.0,
+                    ]))
+                    .outer(cherenkov::BackdropOuter::new(4.5).expect("valid")),
+            );
+        tx[&plain]
+            .clip(Rect::new(26.0, 8.0, 42.0, 24.0))
+            .backdrop(group.sample_with(cherenkov::ColorMatrix([
+                0.0, 0.0, 0.0, 1.0, //
+                0.0, 0.0, 0.0, 1.0, //
+                0.0, 0.0, 0.0, 1.0,
+            ])));
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    let readback = wait!(surface.readback())?;
+    // The banded member fills its band (clip x1 = 20, band to 24.5).
+    assert_pixel(pixel(&readback, 22, 16), [1.0, 1.0, 1.0, 1.0], 1e-3);
+    // The plain member draws only its clip — no band at (44, 16).
+    assert_pixel(pixel(&readback, 40, 16), [1.0, 1.0, 1.0, 1.0], 1e-3);
+    assert_pixel(pixel(&readback, 44, 16), [1.0, 0.0, 0.0, 1.0], 1e-3);
+    assert_pixel(pixel(&readback, 46, 16), [1.0, 0.0, 0.0, 1.0], 1e-3);
+    Ok(())
+}
+}
+
+split_test! {
+/// Union members carrying an outer band keep ownership weights summing
+/// to one at the field's outer antialiased edge.
+fn the_seam_weights_sum_to_one_at_the_outer_edge() -> Result<(), Box<dyn std::error::Error>> {
+    const CIRCLES: &[(f64, f64, f64)] = &[(12.3, 16.0, 16.0), (32.3, 16.0, 16.0)];
+    const OUTER: f32 = 4.0;
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((48, 40), OffscreenFormat::LinearF32), || {}))?;
+    let group = surface.backdrop_group_unfiltered(
+        cherenkov::BackdropSpec::FULL.union(cherenkov::BackdropUnion::new(20.0).expect("union")),
+    );
+    let members: Vec<_> = CIRCLES.iter().map(|_| surface.layer()).collect();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 48.0, 40.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 0.5]),
+            );
+        }));
+        for (member, &(cx, cy, radius)) in members.iter().zip(CIRCLES.iter()) {
+            tx[surface.root()].push(member);
+            tx[member]
+                .clip(Circle::new((cx, cy), radius))
+                .backdrop(
+                    group
+                        .sample()
+                        .outer(cherenkov::BackdropOuter::new(OUTER).expect("valid")),
+                );
+        }
+    });
+    let render = |opacities: &[f32]| {
+        surface.update(|tx| {
+            for (member, &opacity) in members.iter().zip(opacities.iter()) {
+                tx[member].opacity(opacity);
+            }
+        });
+        wait!(engine.render(FrameTime::now()))?;
+        Ok::<_, Box<dyn std::error::Error>>(wait!(surface.readback())?)
+    };
+    let only_a = render(&[0.5, 0.0])?;
+    let only_b = render(&[0.0, 0.5])?;
+    let mut edge_pixels = 0usize;
+    #[expect(clippy::cast_precision_loss, reason = "pixel coords stay small")]
+    for row in 4..38usize {
+        for col in 4..44usize {
+            let px = col as f32 + 0.5;
+            let py = row as f32 + 0.5;
+            let members = [
+                circle_field(px, py, 12.3, 16.0, 16.0),
+                circle_field(px, py, 32.3, 16.0, 16.0),
+            ];
+            let field = smin(
+                members[0].0.min(members[1].0),
+                members[0].0.max(members[1].0),
+                20.0,
+            );
+            // The band's coverage is `field < outer`: at its outer AA
+            // edge coverage is fractional.
+            let cov = cover(field - OUTER);
+            if !(0.02..0.98).contains(&cov) {
+                continue;
+            }
+            edge_pixels += 1;
+            let wa = ownership(&members, 0);
+            let wb = ownership(&members, 1);
+            assert!(
+                (wa + wb - 1.0).abs() <= 1e-3,
+                "weights at ({col}, {row}) sum to {}",
+                wa + wb
+            );
+            let deposit_a = pixel(&only_a, col, row)[3] - 0.5;
+            let deposit_b = pixel(&only_b, col, row)[3] - 0.5;
+            // The ownership weights partition the actual deposit: each
+            // member carries its share of the total, so a member whose
+            // draw bound clipped the band would leave the sum short.
+            let sum = deposit_a + deposit_b;
+            assert!(
+                wa.mul_add(-sum, deposit_a).abs() <= 3e-3,
+                "pixel ({col}, {row}): member a's deposit {deposit_a} != {wa}·{sum}"
+            );
+            assert!(
+                wb.mul_add(-sum, deposit_b).abs() <= 3e-3,
+                "pixel ({col}, {row}): member b's deposit {deposit_b} != {wb}·{sum}"
+            );
+            // Well inside the edge's ramp the deposit is unmistakably
+            // nonzero — a draw bound one pixel short would cut these.
+            if cov > 0.3 {
+                assert!(
+                    sum > 1e-3,
+                    "pixel ({col}, {row}): no deposit at the outer edge (cov = {cov})"
+                );
+            }
+        }
+    }
+    assert!(edge_pixels > 0, "the outer antialiased edge had no pixels");
+    Ok(())
+}
+}
+
+split_test! {
+/// Members whose clip's analytic SDF degenerates cannot fold into the
+/// union field and reject by name — a zero-radius circle and an ellipse
+/// collapsed in either radius.
+fn a_degenerate_union_member_is_unsupported() -> Result<(), Box<dyn std::error::Error>> {
+    for clip in [
+        cherenkov::ShapeData::Circle(Circle::new((16.0, 16.0), 0.0)),
+        cherenkov::ShapeData::Ellipse(Ellipse::new((16.0, 16.0), (4.0, 0.0), 0.0)),
+        cherenkov::ShapeData::Ellipse(Ellipse::new((16.0, 16.0), (0.0, 4.0), 0.0)),
+    ] {
+        let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+        let surface =
+            wait!(engine.surface(Offscreen::new((48, 32), OffscreenFormat::LinearF32), || {}))?;
+        let group = surface.backdrop_group_unfiltered(
+            cherenkov::BackdropSpec::FULL
+                .union(cherenkov::BackdropUnion::new(20.0).expect("union")),
+        );
+        let ok = surface.layer();
+        let degenerate = surface.layer();
+        surface.update(|tx| {
+            tx[surface.root()].push(&ok);
+            tx[&ok]
+                .clip(Rect::new(4.0, 8.0, 20.0, 24.0))
+                .backdrop(group.sample());
+            tx[surface.root()].push(&degenerate);
+            tx[&degenerate].clip(clip.clone()).backdrop(group.sample());
+        });
+        let result = wait!(engine.render(FrameTime::now()));
+        assert!(
+            matches!(
+                result,
+                Err(cherenkov::RenderError::Unsupported(name))
+                    if name == "backdrop-union-degenerate-member"
+            ),
+            "degenerate clip {clip:?}: {result:?}"
+        );
+    }
+    Ok(())
+}
+}
+
+split_test! {
+/// A union group past `BackdropUnion::MAX_MEMBERS` rejects by name.
+fn union_members_past_the_cap_are_unsupported() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface =
+        wait!(engine.surface(Offscreen::new((48, 32), OffscreenFormat::LinearF32), || {}))?;
+    let group = surface.backdrop_group_unfiltered(
+        cherenkov::BackdropSpec::FULL.union(cherenkov::BackdropUnion::new(20.0).expect("union")),
+    );
+    let members: Vec<_> = (0..=cherenkov::BackdropUnion::MAX_MEMBERS)
+        .map(|_| surface.layer())
+        .collect();
+    surface.update(|tx| {
+        for member in &members {
+            tx[surface.root()].push(member);
+            tx[member]
+                .clip(Rect::new(4.0, 8.0, 20.0, 24.0))
+                .backdrop(group.sample());
+        }
+    });
+    let result = wait!(engine.render(FrameTime::now()));
+    assert!(
+        matches!(
+            result,
+            Err(cherenkov::RenderError::Unsupported(name)) if name == "backdrop-union-members"
+        ),
+        "{result:?}"
+    );
     Ok(())
 }
 }

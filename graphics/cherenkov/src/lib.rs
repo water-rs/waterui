@@ -36,6 +36,7 @@ mod message;
 mod resource;
 mod surface;
 mod text;
+mod union_cap;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
