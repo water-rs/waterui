@@ -157,6 +157,56 @@ impl Host {
         self.home.as_deref()
     }
 
+    /// Per-user cache directory for this host.
+    ///
+    /// `dirs::cache_dir` semantics read through the host's environment:
+    /// `XDG_CACHE_HOME` on Unix, `LOCALAPPDATA` on Windows, `~/Library/Caches`
+    /// on macOS, `$HOME/.cache` elsewhere — `None` when the host declares
+    /// neither the variable nor a home.
+    #[must_use]
+    pub fn cache_dir(&self) -> Option<PathBuf> {
+        #[cfg(target_os = "windows")]
+        {
+            self.env("LOCALAPPDATA").map(PathBuf::from)
+        }
+        #[cfg(target_os = "macos")]
+        {
+            self.home_dir().map(|home| home.join("Library/Caches"))
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            self.env("XDG_CACHE_HOME")
+                .map(PathBuf::from)
+                .or_else(|| self.home_dir().map(|home| home.join(".cache")))
+        }
+        #[cfg(not(any(unix, target_os = "windows")))]
+        {
+            None
+        }
+    }
+
+    /// Temporary directory for this host.
+    ///
+    /// `std::env::temp_dir` semantics read through the host's environment:
+    /// `TMPDIR` on Unix; `TMP`, `TEMP`, or `USERPROFILE` on Windows; the
+    /// platform default only when the host declares none.
+    #[must_use]
+    pub fn temp_dir(&self) -> PathBuf {
+        for key in ["TMPDIR", "TMP", "TEMP"] {
+            if let Some(value) = self.env(key).filter(|v| !v.is_empty()) {
+                return PathBuf::from(value);
+            }
+        }
+        #[cfg(unix)]
+        {
+            PathBuf::from("/tmp")
+        }
+        #[cfg(not(unix))]
+        {
+            std::env::temp_dir()
+        }
+    }
+
     /// Path of the running `water` executable.
     ///
     /// A fact about this process rather than the declared machine — every
@@ -260,9 +310,9 @@ impl Host {
     ///
     /// This is the deliberate exception to the null-stdin default of
     /// [`Host::command`] — for the tools that interact with the user's
-    /// terminal: the `create vite` framework picker, `<pm> install` and
-    /// `<pm> run build`, `espflash flash --monitor`, QEMU's `-nographic`
-    /// serial console, and launchers that take the TTY over entirely. The
+    /// terminal: the `create vite` framework picker, `<pm> install`,
+    /// `espflash flash --monitor`, QEMU's `-nographic` serial console, and
+    /// launchers that take the TTY over entirely. The
     /// `std` type is returned so callers that `exec` or group the child can;
     /// async callers wrap it with `smol::process::Command::from`.
     #[must_use]
@@ -270,6 +320,23 @@ impl Host {
         let mut command = self.std_command(program);
         command
             .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+        command
+    }
+
+    /// A [`std::process::Command`] that inherits the terminal for output but
+    /// reads nothing.
+    ///
+    /// For tools whose progress and errors the user watches live but that
+    /// never read stdin — `cargo nextest`, the package manager's
+    /// non-interactive runs — in contrast to [`Host::interactive_command`],
+    /// which owns the whole terminal.
+    #[must_use]
+    pub fn monitored_command(&self, program: impl AsRef<OsStr>) -> std::process::Command {
+        let mut command = self.std_command(program);
+        command
+            .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
         command

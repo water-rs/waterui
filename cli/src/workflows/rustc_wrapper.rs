@@ -55,11 +55,12 @@ pub const BUILD_STD_DYLIB_DIR_ENV: &str = "WATERUI_BUILD_STD_DYLIB_DIR";
 /// process with it. `None` means this is an ordinary CLI invocation.
 #[must_use]
 pub fn wrapper_main() -> Option<i32> {
-    std::env::var_os(WRAPPER_MODE_ENV)?;
+    crate::toolchain::Host::current().env(WRAPPER_MODE_ENV)?;
     Some(run_wrapper())
 }
 
 fn run_wrapper() -> i32 {
+    let host = crate::toolchain::Host::current();
     let mut invocation = std::env::args_os();
     let _self = invocation.next();
     let Some(rustc) = invocation.next() else {
@@ -67,7 +68,9 @@ fn run_wrapper() -> i32 {
         return 1;
     };
     let args: Vec<OsString> = invocation.collect();
-    let target = std::env::var_os(BUILD_STD_TARGET_ENV).unwrap_or_default();
+    let target = host
+        .env(BUILD_STD_TARGET_ENV)
+        .map_or_else(OsString::new, OsString::from);
     let rewritten = rewrite_args(&args, &target, ARTIFACT_WAIT_TIMEOUT);
     // A unit that needed the shared `std` dylib and never saw it complete
     // fails here: invoking rustc would produce a statically linked artifact
@@ -77,8 +80,7 @@ fn run_wrapper() -> i32 {
         return 1;
     }
 
-    let host = crate::toolchain::Host::current();
-    let status = match std::env::var_os(WRAPPER_CHAIN_ENV) {
+    let status = match host.env(WRAPPER_CHAIN_ENV) {
         Some(chain) => host
             .std_command(chain)
             .arg(&rustc)
@@ -97,7 +99,7 @@ fn run_wrapper() -> i32 {
     if status.success()
         && rewritten.emits_std_dylib
         && emits_linked_output(&args)
-        && let Some(publish_dir) = std::env::var_os(BUILD_STD_DYLIB_DIR_ENV)
+        && let Some(publish_dir) = host.env(BUILD_STD_DYLIB_DIR_ENV)
     {
         let out_dir = arg_value(&args, "--out-dir");
         if let Err(error) = publish_std_dylib(Path::new(out_dir), Path::new(&publish_dir)) {

@@ -20,7 +20,7 @@ use crate::{
     esp32::{backend::Esp32Backend, chip::Esp32Chip},
     platform::{PackageOptions, TargetPlatform},
     project::Project,
-    utils::{command, run_command_os},
+    utils::command,
 };
 
 const ESP32_INIT_HINT: &str = "water run --platform esp32s3";
@@ -575,7 +575,7 @@ pub async fn clean_esp32(project: &Project) -> eyre::Result<()> {
         "--target-dir".into(),
         backend_target_dir.as_os_str().to_owned(),
     ];
-    run_command_os("cargo", args).await?;
+    project.host().run("cargo", args).await?;
 
     let dist_dir = backend_path.join("dist");
     if dist_dir.exists() {

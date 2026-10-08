@@ -17,7 +17,6 @@ use crate::{
     device::Artifact,
     platform::{PackageOptions, TargetPlatform},
     project::Project,
-    utils::run_command_os,
     winui::backend::WinUiBackend,
 };
 
@@ -58,19 +57,15 @@ pub async fn build_winui(project: &Project, options: BuildOptions) -> eyre::Resu
     )
     .await?;
 
-    let mut build = RustBuild::new(
-        project.host(),
-        &backend_path,
-        TargetPlatform::Windows.triple(),
-    )
-    .with_project(project)
-    .with_target_dir(project.water_target_dir(options.linkage()).await?)
-    .with_linkage(
-        options.linkage(),
-        &format!("{}/dev", project.crate_name()),
-        &[],
-    )
-    .with_envs(options.cargo_envs().iter().cloned());
+    let mut build =
+        RustBuild::for_project(project, &backend_path, TargetPlatform::Windows.triple())
+            .with_target_dir(project.water_target_dir(options.linkage()).await?)
+            .with_linkage(
+                options.linkage(),
+                &format!("{}/dev", project.crate_name()),
+                &[],
+            )
+            .with_envs(options.cargo_envs().iter().cloned());
     if let Some(sccache_path) = options.sccache_path() {
         build = build.with_sccache(sccache_path.to_path_buf());
     }
@@ -129,7 +124,7 @@ pub async fn clean_winui(project: &Project) -> eyre::Result<()> {
             "--package".into(),
             project.winui_backend_crate_name().as_str().into(),
         ];
-        run_command_os("cargo", args).await?;
+        project.host().run("cargo", args).await?;
     }
 
     Ok(())
@@ -270,7 +265,7 @@ async fn copy_assets_and_fonts(
 
     // Scan and resolve dependency fonts
     let font_declarations = assets::scan_fonts(project, &backend_path.join("Cargo.toml")).await?;
-    let mut resolved_fonts = assets::resolve_fonts(font_declarations).await?;
+    let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
 
     if !resolved_fonts.is_empty() {

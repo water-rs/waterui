@@ -454,9 +454,13 @@ fn packaged_binary_finds_every_shared_library_it_records() {
             app_library: None,
             cef_helper: None,
         };
-        let project = Project::open(&app_dir, ManagedBackends::NONE)
-            .await
-            .expect("open fixture project");
+        let project = Project::open(
+            &waterui_cli::toolchain::Host::current(),
+            &app_dir,
+            ManagedBackends::NONE,
+        )
+        .await
+        .expect("open fixture project");
 
         let libraries = RustDynamicLibraries::resolve(&built, &triple, &project)
             .await
@@ -498,9 +502,13 @@ fn run_built_binary_finds_every_shared_library_it_records() {
         .build_binary("backend", false)
         .await
         .expect("build the fixture backend binary");
-        let project = Project::open(&app_dir, ManagedBackends::NONE)
-            .await
-            .expect("open fixture project");
+        let project = Project::open(
+            &waterui_cli::toolchain::Host::current(),
+            &app_dir,
+            ManagedBackends::NONE,
+        )
+        .await
+        .expect("open fixture project");
 
         let libraries = RustDynamicLibraries::resolve(&built, &triple, &project)
             .await
@@ -684,9 +692,13 @@ fn restaging_replaces_a_stale_hashed_shared_runtime() {
         let (app_dir, backend_dir) = scaffold_run_fixture(root);
         let triple = Triple::host();
         let target_dir = root.join("target");
-        let project = Project::open(&app_dir, ManagedBackends::NONE)
-            .await
-            .expect("open fixture project");
+        let project = Project::open(
+            &waterui_cli::toolchain::Host::current(),
+            &app_dir,
+            ManagedBackends::NONE,
+        )
+        .await
+        .expect("open fixture project");
 
         let built = RustBuild::new(
             &waterui_cli::toolchain::Host::current(),

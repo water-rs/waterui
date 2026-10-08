@@ -118,8 +118,8 @@ pub async fn build_xcframework(
     architecture: Option<Architecture>,
 ) -> Result<EmbeddedArtifact> {
     let selected = slices(architecture)?;
-    let host = Host::current();
-    check_toolchain(&host, &selected).await?;
+    let host = project.host();
+    check_toolchain(host, &selected).await?;
     let package_parent = project.root().join("target/package");
     fs::create_dir_all(&package_parent).await?;
     let temporary_parent = package_parent.clone();
@@ -139,7 +139,7 @@ pub async fn build_xcframework(
     )
     .await?;
     let (links, manifests) =
-        assemble_slices(project, options, &host, &selected, temporary.path()).await?;
+        assemble_slices(project, options, host, &selected, temporary.path()).await?;
     stage_resources(project, &source.join("Resources"), manifests).await?;
     write_package(project, &package, &links).await?;
     let destination = package_parent.join(format!("{}-apple", project.crate_name()));
@@ -266,7 +266,7 @@ async fn stage_resources(
     assets::write_library_resources(&manifest, destination).await?;
     let declarations =
         assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml")).await?;
-    let mut fonts = assets::resolve_fonts(declarations).await?;
+    let mut fonts = assets::resolve_fonts(project.host(), declarations).await?;
     fonts.extend(assets::scan_project_font_assets(&manifest)?);
     let font_dir = destination.join("fonts");
     fs::create_dir_all(&font_dir).await?;

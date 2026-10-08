@@ -135,6 +135,7 @@ impl AppleBackend {
             has_image: launch.has_artwork(),
         };
         Ok(TemplateContext::for_project_manifest(
+            project.host(),
             manifest,
             crate_name_for_template,
             app_name,
@@ -347,6 +348,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let root = dir.path().join("water-example");
         smol::block_on(Project::create(
+            &crate::toolchain::Host::current(),
             &root,
             CreateOptions {
                 name: "Water Example".to_string(),
@@ -366,6 +368,7 @@ mod tests {
         vendor_offline_resolution(&root, &dir.path().join("vendor"));
 
         let project = smol::block_on(Project::open(
+            &crate::toolchain::Host::current(),
             &root,
             ManagedBackends::for_backend(TargetBackend::Apple),
         ))
@@ -416,6 +419,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let root = dir.path().join("menu-example");
         let project = smol::block_on(Project::create(
+            &crate::toolchain::Host::current(),
             &root,
             CreateOptions {
                 name: "Menu Example".to_string(),
@@ -448,6 +452,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let root = dir.path().join("liquid-glass");
         smol::block_on(Project::create(
+            &crate::toolchain::Host::current(),
             &root,
             CreateOptions {
                 name: "Liquid Glass".to_string(),
@@ -467,6 +472,7 @@ mod tests {
         vendor_offline_resolution(&root, &dir.path().join("vendor"));
 
         let project = smol::block_on(Project::open(
+            &crate::toolchain::Host::current(),
             &root,
             ManagedBackends::for_backend(TargetBackend::Apple),
         ))
@@ -495,6 +501,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let root = dir.path().join("water-example");
         smol::block_on(Project::create(
+            &crate::toolchain::Host::current(),
             &root,
             CreateOptions {
                 name: "Water Example".to_string(),
@@ -514,6 +521,7 @@ mod tests {
         vendor_offline_resolution(&root, &dir.path().join("vendor"));
 
         let project = smol::block_on(Project::open(
+            &crate::toolchain::Host::current(),
             &root,
             ManagedBackends::for_backend(TargetBackend::Apple),
         ))

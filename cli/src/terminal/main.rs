@@ -121,7 +121,8 @@ fn main() -> Result<()> {
     .expect("failed to set Ctrl+C handler");
 
     smol::block_on(async move {
-        waterui_cli::water_dir::ensure_global_config().await?;
+        waterui_cli::water_dir::ensure_global_config(&waterui_cli::toolchain::Host::current())
+            .await?;
 
         // The passive update check stays off the `build`/`run` hot path,
         // off machine-consumed output (`mcp`, `completions`), and never
@@ -192,7 +193,10 @@ fn main() -> Result<()> {
 
         if result.is_ok()
             && off_update_hot_path
-            && let Some(notice) = waterui_cli::self_update::passive_update_notice().await
+            && let Some(notice) = waterui_cli::self_update::passive_update_notice(
+                &waterui_cli::toolchain::Host::current(),
+            )
+            .await
         {
             crate::note!(shell, "{notice}");
         }

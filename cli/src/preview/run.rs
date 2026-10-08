@@ -70,11 +70,11 @@ pub async fn run_preview_binary(
 }
 
 /// `path` as an absolute path, resolved against the current directory.
-pub fn absolute_output_path(path: &Path) -> Result<PathBuf> {
+pub fn absolute_output_path(host: &crate::toolchain::Host, path: &Path) -> PathBuf {
     if path.is_absolute() {
-        return Ok(path.to_path_buf());
+        return path.to_path_buf();
     }
-    Ok(std::env::current_dir()?.join(path))
+    host.cwd().join(path)
 }
 
 /// Checks the preview wrote a non-empty `what` at `path`.

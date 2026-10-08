@@ -1,6 +1,5 @@
 //! Utility functions for the CLI.
 
-use std::ffi::OsStr;
 use std::{
     io,
     path::Path,
@@ -11,8 +10,6 @@ use std::{
 use semver::Version;
 use smol::{process::Command, unblock};
 use thiserror::Error;
-
-use crate::toolchain::Host;
 
 /// An external command could not be executed or exited unsuccessfully.
 #[derive(Debug, Error)]
@@ -96,37 +93,6 @@ pub(crate) fn command(command: &mut Command) -> &mut Command {
         } else {
             Stdio::piped()
         })
-}
-
-/// Run a command with the specified name and arguments.
-///
-/// Always captures output. When `STD_OUTPUT` is enabled, also prints to terminal.
-///
-/// Return the standard output as a `String` if successful.
-/// # Errors
-/// - [`CommandError::Spawn`] if the command cannot be spawned.
-/// - [`CommandError::Failed`] if the command exits with a non-zero status.
-pub(crate) async fn run_command(
-    name: &str,
-    args: impl IntoIterator<Item = &str>,
-) -> Result<String, CommandError> {
-    run_command_os(name, args).await
-}
-
-/// Run a command with the specified name and arguments.
-///
-/// Like `run_command`, but supports non-UTF8 executable paths and arguments.
-///
-/// # Errors
-/// - [`CommandError::Spawn`] if the command cannot be spawned.
-/// - [`CommandError::Failed`] if the command exits with a non-zero status.
-pub(crate) async fn run_command_os<N, A, S>(name: N, args: A) -> Result<String, CommandError>
-where
-    N: AsRef<OsStr>,
-    A: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    Host::current().run(name, args).await
 }
 
 /// Number of trailing lines reported from each captured stream when a command fails.

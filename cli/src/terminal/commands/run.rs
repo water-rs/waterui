@@ -561,7 +561,12 @@ async fn run_tui_app(shell: &Shell, args: Args) -> Result<()> {
     }
 
     let project_path = crate::project_path::canonicalize(&args.path)?;
-    let project = Box::pin(Project::open(&project_path, ManagedBackends::NONE)).await?;
+    let project = Box::pin(Project::open(
+        &waterui_cli::toolchain::Host::current(),
+        &project_path,
+        ManagedBackends::NONE,
+    ))
+    .await?;
     let launcher_dir = Box::pin(waterui_cli::tui::ensure_launcher(&project)).await?;
 
     let sccache_path = detect_sccache_path(shell, &waterui_cli::toolchain::Host::current()).await;
@@ -594,7 +599,12 @@ async fn prepare_run_context(shell: &Shell, args: &Args) -> Result<Option<RunCon
         Some(args.backend.unwrap_or_else(|| default_backend(platform))),
     )?;
     let managed_backends = managed_backends(platform, backend);
-    let mut project = Box::pin(Project::open(&project_path, managed_backends)).await?;
+    let mut project = Box::pin(Project::open(
+        &waterui_cli::toolchain::Host::current(),
+        &project_path,
+        managed_backends,
+    ))
+    .await?;
     if project.manifest().package.embedded {
         bail!(
             "`water run` does not apply to embedded projects: the crate is a library the host app embeds — build the artifact with `water build` and run the host app"
@@ -1293,7 +1303,9 @@ const fn device_memory_key(backend: TargetBackend, platform: TargetPlatform) -> 
 /// The device last used for `key`, if the config records one. A config read
 /// failure is a warning, not a run failure.
 async fn remembered_device(key: &str) -> Option<String> {
-    match waterui_cli::water_dir::ensure_global_config().await {
+    match waterui_cli::water_dir::ensure_global_config(&waterui_cli::toolchain::Host::current())
+        .await
+    {
         Ok(config) => config.last_used_device.get(key).cloned(),
         Err(error) => {
             tracing::warn!("could not read the Water config for device memory: {error:#}");
@@ -1305,7 +1317,9 @@ async fn remembered_device(key: &str) -> Option<String> {
 /// Record `id` as the last-used device for `key`. Best-effort: a config
 /// write failure must not break a run.
 async fn persist_device_choice(key: &str, id: &str) {
-    match waterui_cli::water_dir::ensure_global_config().await {
+    match waterui_cli::water_dir::ensure_global_config(&waterui_cli::toolchain::Host::current())
+        .await
+    {
         Ok(mut config) => {
             if config.last_used_device.get(key).map(String::as_str) == Some(id) {
                 return;
@@ -1313,7 +1327,12 @@ async fn persist_device_choice(key: &str, id: &str) {
             config
                 .last_used_device
                 .insert(key.to_owned(), id.to_owned());
-            if let Err(error) = waterui_cli::water_dir::write_global_config(&config).await {
+            if let Err(error) = waterui_cli::water_dir::write_global_config(
+                &waterui_cli::toolchain::Host::current(),
+                &config,
+            )
+            .await
+            {
                 tracing::warn!("could not persist the last-used device: {error:#}");
             }
         }

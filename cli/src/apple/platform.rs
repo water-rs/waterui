@@ -14,8 +14,6 @@ use tracing::info;
 use crate::browser_runtime;
 #[cfg(target_os = "macos")]
 use crate::macos_bundle::{package_cef_helper_app, remove_cef_helper_apps};
-#[cfg(target_os = "macos")]
-use crate::utils::run_command_os;
 use crate::{
     apple::app_bundle,
     apple::backend::AppleBackend,
@@ -309,7 +307,7 @@ pub(crate) async fn build_rust_lib_with_links(
     // for crates like fontawesome7 that need it during build.rs
     let font_declarations =
         crate::assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml")).await?;
-    let _resolved_fonts = crate::assets::resolve_fonts(font_declarations).await?;
+    let _resolved_fonts = crate::assets::resolve_fonts(project.host(), font_declarations).await?;
     let browser_runtime_plan = project
         .browser_runtime_plan(platform, TargetBackend::Apple)
         .await?;
@@ -317,8 +315,7 @@ pub(crate) async fn build_rust_lib_with_links(
     let target = triple.to_string();
     let target_underscore = target.replace('-', "_");
     let host_library = AppleHostLibrary::for_linkage(options.linkage());
-    let mut build = RustBuild::new(project.host(), project.ffi_crate_path(), triple.clone())
-        .with_project(project)
+    let mut build = RustBuild::for_project(project, project.ffi_crate_path(), triple.clone())
         .with_features(
             apple_build_features(project, browser_runtime_plan, options.linkage()).await?,
         )
@@ -422,9 +419,10 @@ pub(crate) async fn build_rust_lib_with_links(
                 // install name; retarget while the canonical copy still
                 // carries it. Both rewrites read the recorded names first
                 // and leave an already-canonical dylib untouched.
-                dynamic_runtime::retarget_module(&dest_lib, &staged_runtime).await?;
+                dynamic_runtime::retarget_module(project.host(), &dest_lib, &staged_runtime)
+                    .await?;
                 // The executable binds the app dylib by its install name.
-                dynamic_runtime::canonicalize_install_name(&dest_lib).await?;
+                dynamic_runtime::canonicalize_install_name(project.host(), &dest_lib).await?;
                 // Only once the copy's rewrites completed may the preimage
                 // name the artifact again — a failure before this leaves
                 // it stale and the next build recopies.
@@ -432,7 +430,7 @@ pub(crate) async fn build_rust_lib_with_links(
                     record_staged_source(&built_target.artifact, &dest_lib).await?;
                 }
             }
-            dynamic_runtime::prepare_host_runtime(&staged_runtime).await?;
+            dynamic_runtime::prepare_host_runtime(project.host(), &staged_runtime).await?;
         }
     } else if host_library == AppleHostLibrary::Dynamic {
         // Without an output directory the link's runtime search dir is the
@@ -444,7 +442,7 @@ pub(crate) async fn build_rust_lib_with_links(
         runtime_link_name =
             dynamic_runtime::runtime_link_name(&libraries.waterui_staged_name().to_string_lossy());
         let staged_runtime = libraries.stage_apple_canonical(&deps_dir).await?;
-        dynamic_runtime::prepare_host_runtime(&staged_runtime).await?;
+        dynamic_runtime::prepare_host_runtime(project.host(), &staged_runtime).await?;
     }
 
     if project.manifest().package.embedded {
@@ -467,7 +465,7 @@ pub(crate) async fn build_rust_lib_with_links(
         // The rlib's codegen units also export `rust_eh_personality`. The
         // copy lives in the build dir and is only consumed by this link, so
         // localize it in place.
-        localize_archive_symbols(&ffi_rlib, &["rust_eh_personality"]).await?;
+        localize_archive_symbols(project.host(), &ffi_rlib, &["rust_eh_personality"]).await?;
     }
 
     let mut executable = build
@@ -547,21 +545,26 @@ fn link_search_flag(dir: &OsStr) -> String {
 /// so the symbols still resolve for the member's own internal references
 /// while stopping `ld`'s duplicate-symbol diagnostics.
 #[cfg(target_os = "macos")]
-async fn localize_archive_symbols(archive: &Path, symbols: &[&str]) -> eyre::Result<()> {
+async fn localize_archive_symbols(
+    host: &crate::toolchain::Host,
+    archive: &Path,
+    symbols: &[&str],
+) -> eyre::Result<()> {
     let scratch = archive.with_extension("localize-work");
     fs::create_dir_all(&scratch).await?;
-    let members = run_command_os(
-        "ar",
-        ["t".into(), archive.as_os_str().to_owned()].map(OsString::from),
-    )
-    .await?;
+    let members = host
+        .run(
+            "ar",
+            ["t".into(), archive.as_os_str().to_owned()].map(OsString::from),
+        )
+        .await?;
     for member in members
         .lines()
         .map(str::trim)
         .filter(|member| !member.is_empty() && *member != "__.SYMDEF")
     {
         let member_path = scratch.join(member);
-        run_command_os(
+        host.run(
             "sh",
             [
                 OsString::from("-c"),
@@ -574,7 +577,8 @@ async fn localize_archive_symbols(archive: &Path, symbols: &[&str]) -> eyre::Res
             ],
         )
         .await?;
-        let nm = run_command_os("nm", [member_path.as_os_str().to_owned()])
+        let nm = host
+            .run("nm", [member_path.as_os_str().to_owned()])
             .await
             .unwrap_or_default();
         let mut args = vec![member_path.as_os_str().to_owned()];
@@ -594,8 +598,9 @@ async fn localize_archive_symbols(archive: &Path, symbols: &[&str]) -> eyre::Res
         }
         args.push("-o".into());
         args.push(member_path.as_os_str().to_owned());
-        run_command_os("ld", std::iter::once(OsString::from("-r")).chain(args)).await?;
-        run_command_os(
+        host.run("ld", std::iter::once(OsString::from("-r")).chain(args))
+            .await?;
+        host.run(
             "ar",
             [
                 "r".into(),
@@ -693,18 +698,20 @@ pub(crate) fn apple_deployment_target_env(
 /// Returns an error when the backend source cannot be located.
 pub(crate) async fn apple_backend_source_root(project: &Project) -> eyre::Result<PathBuf> {
     let manifest_path_arg: OsString = project.ffi_crate_path().join("Cargo.toml").into();
-    let output = crate::utils::run_command_os(
-        "cargo",
-        [
-            OsString::from("metadata"),
-            OsString::from("--format-version"),
-            OsString::from("1"),
-            OsString::from("--manifest-path"),
-            manifest_path_arg,
-        ],
-    )
-    .await
-    .wrap_err("cargo metadata failed to resolve the Apple backend source")?;
+    let output = project
+        .host()
+        .run(
+            "cargo",
+            [
+                OsString::from("metadata"),
+                OsString::from("--format-version"),
+                OsString::from("1"),
+                OsString::from("--manifest-path"),
+                manifest_path_arg,
+            ],
+        )
+        .await
+        .wrap_err("cargo metadata failed to resolve the Apple backend source")?;
     let metadata: serde_json::Value =
         serde_json::from_str(&output).wrap_err("cargo metadata returned unparseable JSON")?;
     let manifest_path = metadata
@@ -874,13 +881,16 @@ pub async fn package_apple(
     apple_declarations.merge_into_info_plist(&mut info_plist)?;
 
     app_bundle::assemble_app_bundle(
+        project.host(),
         &layout,
         executable,
         &product_name,
         &staging_dir,
         &info_plist,
-        sdk_name,
-        &deployment_target,
+        &app_bundle::AppleSdkSpec {
+            sdk_name,
+            deployment_target: &deployment_target,
+        },
     )
     .await?;
 
@@ -906,9 +916,13 @@ pub async fn package_apple(
             .await?;
         // Redirect the executable's recorded runtime dependency to the
         // canonical `@rpath` name of the staged Rust runtime.
-        dynamic_runtime::retarget_module(&layout.executable_file(&product_name), &staged_runtime)
-            .await?;
-        dynamic_runtime::prepare_host_runtime(&staged_runtime).await?;
+        dynamic_runtime::retarget_module(
+            project.host(),
+            &layout.executable_file(&product_name),
+            &staged_runtime,
+        )
+        .await?;
+        dynamic_runtime::prepare_host_runtime(project.host(), &staged_runtime).await?;
         Some(libraries)
     } else {
         RustDynamicLibraries::remove_staged(&layout.frameworks_dir, &triple).await?;
@@ -975,7 +989,7 @@ async fn copy_assets_and_fonts(
     // Scan and resolve dependency fonts
     let font_declarations =
         assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml")).await?;
-    let mut resolved_fonts = assets::resolve_fonts(font_declarations).await?;
+    let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
 
     if !resolved_fonts.is_empty() {

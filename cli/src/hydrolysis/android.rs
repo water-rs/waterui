@@ -388,7 +388,7 @@ async fn resolve_declared_fonts(project: &Project) -> eyre::Result<()> {
             .join("Cargo.toml"),
     )
     .await?;
-    let _resolved = assets::resolve_fonts(declarations).await?;
+    let _resolved = assets::resolve_fonts(project.host(), declarations).await?;
     Ok(())
 }
 
@@ -770,9 +770,13 @@ mod tests {
             .exec()
             .expect("offline metadata resolves the patched project");
 
-        let project = Project::open(&root, ManagedBackends::NONE)
-            .await
-            .expect("fixture project opens");
+        let project = Project::open(
+            &crate::toolchain::Host::current(),
+            &root,
+            ManagedBackends::NONE,
+        )
+        .await
+        .expect("fixture project opens");
         (temporary, project)
     }
 

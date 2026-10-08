@@ -56,7 +56,7 @@ pub async fn configure_compilation_cache(
     command: &mut Command,
     sccache_path: &Path,
 ) -> eyre::Result<()> {
-    let water_home = crate::project_model::water_dir::water_home_dir().ok();
+    let water_home = crate::project_model::water_dir::water_home_dir_in(host).ok();
     #[cfg(unix)]
     let env = compilation_cache_env_in(sccache_path, water_home.as_deref())?;
     #[cfg(not(unix))]

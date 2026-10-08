@@ -67,6 +67,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     );
 
     serve_mcp(McpSessionRequest {
+        host: waterui_cli::toolchain::Host::current(),
         project_path,
         width,
         height,

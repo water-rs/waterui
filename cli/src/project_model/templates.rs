@@ -341,6 +341,10 @@ pub struct TemplateContext {
     pub apple_backend_selected: bool,
     /// Path to local `WaterUI` repository (for dev mode)
     pub waterui_path: Option<PathBuf>,
+    /// `WATERUI_WINUI_PATH` read from the host (the winui backend dev hatch).
+    pub winui_path: Option<PathBuf>,
+    /// `WATERUI_TUI_PATH` read from the host (the tui backend dev hatch).
+    pub tui_path: Option<PathBuf>,
     /// The canonical local backend sources the `waterui_path` checkout
     /// supplies, resolved before the context was built.
     pub local_sources: LocalBackendSources,
@@ -407,6 +411,7 @@ impl TemplateContext {
     /// Build a template context for a new root project scaffold.
     #[must_use]
     pub fn for_create_options(
+        host: &crate::toolchain::Host,
         options: &crate::project::CreateOptions,
         crate_name: CrateName,
         framework: &ResolvedFramework,
@@ -422,6 +427,8 @@ impl TemplateContext {
             author: options.author.clone(),
             apple_backend_selected: false,
             waterui_path,
+            winui_path: host.env("WATERUI_WINUI_PATH").map(PathBuf::from),
+            tui_path: host.env("WATERUI_TUI_PATH").map(PathBuf::from),
             local_sources: local_sources.clone(),
             framework: framework.clone(),
             browser: BrowserTemplateContext::default(),
@@ -448,6 +455,7 @@ impl TemplateContext {
     /// checkout carrying a malformed canonical slot already failed there.
     #[must_use]
     pub fn for_project_manifest(
+        host: &crate::toolchain::Host,
         manifest: &crate::project::Manifest,
         crate_name: CrateName,
         app_name: impl Into<String>,
@@ -464,6 +472,8 @@ impl TemplateContext {
             // Selected at invocation, never from declared config.
             apple_backend_selected: false,
             waterui_path: manifest.waterui_path.as_ref().map(PathBuf::from),
+            winui_path: host.env("WATERUI_WINUI_PATH").map(PathBuf::from),
+            tui_path: host.env("WATERUI_TUI_PATH").map(PathBuf::from),
             local_sources: local_sources.clone(),
             framework: framework.clone(),
             browser: BrowserTemplateContext::default(),
@@ -491,6 +501,7 @@ impl TemplateContext {
     /// Build a context for the CLI's own support applications.
     #[must_use]
     pub fn for_support_app(
+        host: &crate::toolchain::Host,
         identity: SupportAppIdentity,
         waterui_path: Option<PathBuf>,
         framework: &ResolvedFramework,
@@ -521,6 +532,8 @@ impl TemplateContext {
             author: String::new(),
             apple_backend_selected: false,
             waterui_path,
+            winui_path: host.env("WATERUI_WINUI_PATH").map(PathBuf::from),
+            tui_path: host.env("WATERUI_TUI_PATH").map(PathBuf::from),
             local_sources: local_sources.clone(),
             framework: framework.clone(),
             browser: BrowserTemplateContext::default(),
@@ -1426,6 +1439,8 @@ mod tests {
             author: String::new(),
             apple_backend_selected: true,
             waterui_path,
+            winui_path: None,
+            tui_path: None,
             local_sources,
             framework: stable_framework(),
             browser: BrowserTemplateContext::default(),
@@ -1579,6 +1594,7 @@ mod tests {
             ))
             .expect("fixture checkout resolves canonical backend sources");
             TemplateContext::for_project_manifest(
+                &crate::toolchain::Host::current(),
                 manifest,
                 CrateName::try_from("demo").expect("crate name"),
                 "Demo",
@@ -1649,6 +1665,7 @@ mod tests {
         // them, through `manifest_permissions`, so the template sees the
         // fully qualified names a real build hands it.
         let ctx = TemplateContext::for_project_manifest(
+            &crate::toolchain::Host::current(),
             &manifest,
             CrateName::try_from("demo").expect("crate name"),
             "Demo",
@@ -1730,6 +1747,7 @@ mod tests {
 
     fn support_ctx() -> TemplateContext {
         TemplateContext::for_support_app(
+            &crate::toolchain::Host::current(),
             SupportAppIdentity {
                 display_name: "WaterUIApp".to_string(),
                 crate_name: CrateName::try_from("waterui_app")
@@ -2369,7 +2387,11 @@ mod tests {
             Some(PathBuf::from("managed_backends/apple")),
             None,
         );
-        context.framework = smol::block_on(ResolvedFramework::for_local_checkout(&root)).unwrap();
+        context.framework = smol::block_on(ResolvedFramework::for_local_checkout(
+            &crate::toolchain::Host::current(),
+            &root,
+        ))
+        .unwrap();
 
         let error = context
             .waterui_apple_dependency()
@@ -3262,12 +3284,11 @@ mod tests {
     /// fails instead of forwarding the unfiltered set.
     #[test]
     fn resolved_forward_tables_reads_the_resolved_package_from_cargo_metadata() {
-        use std::process::Command as StdCommand;
-
         let tempdir = tempdir().expect("temporary probe fixture dir");
 
         let git = |dir: &Path, args: &[&str]| {
-            let output = StdCommand::new("git")
+            let output = crate::toolchain::Host::current()
+                .std_command("git")
                 .arg("-C")
                 .arg(dir)
                 .args(args)
@@ -5628,7 +5649,7 @@ pub mod winui {
     /// it by patching `gpu-allocator` to the same git revision or checkout the
     /// backend dependency itself resolved to, so both come out of one source.
     fn winui_backend_dependency(ctx: &TemplateContext) -> io::Result<(Dependency, Dependency)> {
-        if let Some(path) = std::env::var_os("WATERUI_WINUI_PATH") {
+        if let Some(path) = ctx.winui_path.as_deref() {
             let path = dunce::canonicalize(path)?;
             return Ok((
                 path_dependency(&path),
@@ -6386,7 +6407,7 @@ pub mod tui {
     /// itself), a `water-rs/tui` checkout beside a local `waterui_path`, and
     /// the pinned backend revision otherwise.
     fn tui_backend_dependency(ctx: &TemplateContext) -> io::Result<Dependency> {
-        if let Some(path) = std::env::var_os("WATERUI_TUI_PATH") {
+        if let Some(path) = ctx.tui_path.as_deref() {
             return Ok(path_dependency(&dunce::canonicalize(path)?));
         }
         if let Some(root) = ctx
@@ -8545,6 +8566,7 @@ pub mod inspector {
                     .expect("inspector app crate dir");
                 let app = temporary.path().join("app");
                 let ctx = crate::templates::TemplateContext::for_support_app(
+                    &crate::toolchain::Host::current(),
                     crate::templates::SupportAppIdentity {
                         display_name: "WaterUI Inspector".to_string(),
                         crate_name: crate::project_types::CrateName::try_from("waterui_inspector")

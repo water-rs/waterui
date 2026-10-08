@@ -18,7 +18,7 @@ use target_lexicon::{Environment, OperatingSystem, Triple};
 use tracing::{info, warn};
 
 use crate::project::Project;
-use crate::utils::{run_command, std_output_enabled};
+use crate::utils::std_output_enabled;
 
 /// Get the dynamic library extension for a target triple.
 #[must_use]
@@ -57,7 +57,7 @@ const fn is_apple_triple(triple: &Triple) -> bool {
 /// # Errors
 /// Returns an error when rustup resolves no toolchain for the project.
 pub async fn project_toolchain(project: &Project) -> eyre::Result<String> {
-    Ok(crate::toolchain::rust::project_rustup_toolchain(project.root()).await?)
+    Ok(crate::toolchain::rust::project_rustup_toolchain(project.host(), project.root()).await?)
 }
 
 /// Resolve the Rust standard-library directory for a target triple under
@@ -65,9 +65,13 @@ pub async fn project_toolchain(project: &Project) -> eyre::Result<String> {
 ///
 /// # Errors
 /// Returns an error if rustc cannot resolve an existing target library directory.
-pub async fn rust_target_libdir(triple: &Triple, toolchain: &str) -> eyre::Result<PathBuf> {
+pub async fn rust_target_libdir(
+    host: &crate::toolchain::Host,
+    triple: &Triple,
+    toolchain: &str,
+) -> eyre::Result<PathBuf> {
     let target = triple.to_string();
-    let host = crate::toolchain::Host::current().with_env("RUSTUP_TOOLCHAIN", toolchain);
+    let host = host.with_env("RUSTUP_TOOLCHAIN", toolchain);
     let output = host
         .run(
             "rustc",
@@ -465,7 +469,7 @@ impl RustDynamicLibraries {
             }
             Some(name) => {
                 let toolchain = project_toolchain(project).await?;
-                let target_libdir = rust_target_libdir(triple, &toolchain).await?;
+                let target_libdir = rust_target_libdir(project.host(), triple, &toolchain).await?;
                 StagedDynamicLibrary::needed(
                     name,
                     needed_library_source(
@@ -485,7 +489,8 @@ impl RustDynamicLibraries {
                     Ok(path) => StagedDynamicLibrary::reported(path)?,
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                         let toolchain = project_toolchain(project).await?;
-                        let target_libdir = rust_target_libdir(triple, &toolchain).await?;
+                        let target_libdir =
+                            rust_target_libdir(project.host(), triple, &toolchain).await?;
                         let resolution_triple = triple.clone();
                         let path = unblock(move || {
                             resolve_rust_standard_library_in(&target_libdir, &resolution_triple)
@@ -1598,6 +1603,17 @@ impl RustBuild {
         }
     }
 
+    /// Create a build on behalf of `project` — [`Self::new`] with the
+    /// project's host — in one call, so the host is named once.
+    pub(crate) fn for_project(project: &Project, path: impl AsRef<Path>, triple: Triple) -> Self {
+        Self::new(project.host(), path, triple).with_project(project)
+    }
+
+    /// The host this build's spawned tools run under.
+    pub(crate) const fn host(&self) -> &crate::toolchain::Host {
+        &self.host
+    }
+
     /// Build on behalf of `project`: its framework prepares the crate, and
     /// cargo runs under the rustup toolchain the project's own directory
     /// selects — the generated crate sits in the build cache, outside the
@@ -2597,7 +2613,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
         // outside the shared root must not touch `~/.water` at all — the
         // ensure would stamp the shared target's metadata for a build that
         // never enters it, and that write races other processes on Windows.
-        let shared_root = crate::water_dir::shared_target_dir_path()
+        let shared_root = crate::water_dir::shared_target_dir_path(self.host())
             .await
             .map_err(|error| {
                 RustBuildError::FailToBuildRustLibrary(std::io::Error::other(format!(
@@ -2607,7 +2623,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
         if !target_dir.starts_with(&shared_root) {
             return Ok(None);
         }
-        let shared_root = crate::water_dir::shared_target_dir()
+        let shared_root = crate::water_dir::shared_target_dir(self.host())
             .await
             .map_err(|error| {
                 RustBuildError::FailToBuildRustLibrary(std::io::Error::other(format!(
@@ -2703,7 +2719,9 @@ Automatic meson installation failed: {install_err}\n\n{}",
         };
 
         // Get SDK path using xcrun
-        let sdk_path = run_command("xcrun", ["--sdk", sdk_name, "--show-sdk-path"])
+        let sdk_path = self
+            .host
+            .run("xcrun", ["--sdk", sdk_name, "--show-sdk-path"])
             .await
             .ok()
             .map(|s| s.trim().to_string())?;
@@ -3897,7 +3915,7 @@ mod tests {
         .with_build_std(toolchain)
         .with_target_dir(target_dir.clone())
         .with_sccache(std::path::PathBuf::from("/fake/sccache"));
-        let mut cmd = smol::process::Command::new("cargo");
+        let mut cmd = crate::toolchain::Host::current().command("cargo");
         smol::block_on(build.with_build_std_envs(&mut cmd, false)).expect("build-std envs apply");
 
         let env = |key: &str| -> Option<Option<OsString>> {
@@ -3940,9 +3958,11 @@ mod tests {
             "a configured sccache chains behind the shim"
         );
         // A workspace wrapper would replace RUSTC_WRAPPER on exactly the
-        // link-emitting member units, so both spellings must be removed.
-        assert_eq!(env("RUSTC_WORKSPACE_WRAPPER"), Some(None));
-        assert_eq!(env("CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER"), Some(None));
+        // link-emitting member units. A host command clears the ambient
+        // environment — the removal below is belt and braces against a caller
+        // who set the spellings on the command itself.
+        assert_eq!(env("RUSTC_WORKSPACE_WRAPPER"), None);
+        assert_eq!(env("CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER"), None);
     }
 
     #[test]
@@ -5586,6 +5606,7 @@ mod tests {
             let temporary = tempdir().expect("tempdir");
             let root = temporary.path().join("release-app");
             let project = crate::project::Project::create(
+                &crate::toolchain::Host::current(),
                 &root,
                 crate::project::CreateOptions {
                     name: "Release App".to_string(),

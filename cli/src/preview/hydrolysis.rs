@@ -67,6 +67,8 @@ pub struct HydrolysisPreviewScenario {
 /// Common inputs for driving the managed Hydrolysis preview backend.
 #[derive(Debug, Clone)]
 pub struct HydrolysisPreviewRequest<'a> {
+    /// The host the preview spawns on.
+    pub host: &'a crate::toolchain::Host,
     /// `WaterUI` project directory.
     pub project_path: &'a Path,
     /// Preview view source.
@@ -100,6 +102,7 @@ pub async fn render_preview_with_hydrolysis(
     stage_hydrolysis_resources(&project, theme, &built.app_symbols()?).await?;
     stage_hydrolysis_shared_runtime(&project, &built, request.platform).await?;
     run_preview_binary(
+        request.host,
         &project,
         built.executable()?,
         width,
@@ -134,7 +137,8 @@ async fn build_preview_session(
     request: &HydrolysisPreviewRequest<'_>,
     automation_body: Option<&str>,
 ) -> Result<(Project, BuiltTarget)> {
-    let project = crate::hydrolysis::backend::open_ready(request.project_path).await?;
+    let project =
+        crate::hydrolysis::backend::open_ready(request.host, request.project_path).await?;
     write_preview_bindings(&project, request.source, request.theme, automation_body).await?;
 
     let mut build_options = BuildOptions::development(BuildProfile::Debug);
@@ -171,6 +175,7 @@ async fn build_preview_session(
 /// Returns an error when the preview build fails or its artifact cannot be
 /// parsed.
 pub async fn discover_hydrolysis_preview_exports(
+    host: &crate::toolchain::Host,
     project_path: &Path,
     theme: HydrolysisPreviewTheme,
     platform: TargetPlatform,
@@ -178,6 +183,7 @@ pub async fn discover_hydrolysis_preview_exports(
     progress: Option<BuildProgress>,
 ) -> Result<Vec<String>> {
     let request = HydrolysisPreviewRequest {
+        host,
         project_path,
         source: PreviewSource::Expression("text(\"\")"),
         theme,
@@ -210,7 +216,7 @@ pub async fn stage_hydrolysis_resources(
     let mut font_declarations =
         assets::scan_fonts(project, &backend_path.join("Cargo.toml")).await?;
     font_declarations.extend(theme.font_declarations());
-    let mut resolved_fonts = assets::resolve_fonts(font_declarations).await?;
+    let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
     if resolved_fonts.is_empty() {
         return Ok(());
@@ -252,6 +258,7 @@ async fn write_preview_bindings(
 }
 
 async fn run_preview_binary(
+    host: &crate::toolchain::Host,
     project: &Project,
     binary_path: &Path,
     width: f32,
@@ -259,16 +266,16 @@ async fn run_preview_binary(
     output_path: &Path,
     scenario: Option<&HydrolysisPreviewScenario>,
 ) -> Result<()> {
-    let mode = match scenario {
-        Some(scenario) => PreviewRunMode::Scenario {
-            output_dir: absolute_output_path(&scenario.output_dir)?,
+    let mode = scenario.map_or_else(
+        || PreviewRunMode::Image {
+            output: absolute_output_path(host, output_path),
+        },
+        |scenario| PreviewRunMode::Scenario {
+            output_dir: absolute_output_path(host, &scenario.output_dir),
             captures_ms: scenario.captures_ms.clone(),
             events: scenario.events.clone(),
         },
-        None => PreviewRunMode::Image {
-            output: absolute_output_path(output_path)?,
-        },
-    };
+    );
     let config = PreviewRunConfig {
         width,
         height,

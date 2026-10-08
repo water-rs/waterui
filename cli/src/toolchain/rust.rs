@@ -669,9 +669,10 @@ pub(crate) async fn selected_rustup_toolchain(host: &Host) -> Result<String, Unf
 /// Returns an error when rustup is missing or resolves no toolchain for the
 /// project directory.
 pub(crate) async fn project_rustup_toolchain(
+    host: &Host,
     project_root: &Path,
 ) -> Result<String, UnfixableToolchain> {
-    selected_rustup_toolchain(&Host::current().with_cwd(project_root)).await
+    selected_rustup_toolchain(&host.clone().with_cwd(project_root)).await
 }
 
 /// Targets installed on `toolchain`, via `rustup target list --installed`.

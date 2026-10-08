@@ -224,11 +224,11 @@ impl DistributionSigning {
 /// bundle, or when notarization rejects the app.
 #[cfg(target_os = "macos")]
 pub async fn sign_macos_app(
+    host: &crate::toolchain::Host,
     app_path: &Path,
     bundle_id: &AppleBundleIdentifier,
     signing: &MacOsSigning,
 ) -> eyre::Result<()> {
-    let host = crate::toolchain::Host::current();
     match signing {
         MacOsSigning::Development {
             requires_stable_identity,
@@ -291,7 +291,6 @@ pub async fn sign_staged_device_libraries(
     // `codesign` reports the signature on stderr, and the `Authority=` chain
     // only appears at `-vvv`; its first line is the leaf certificate that
     // signed the app.
-    let host = Host::current();
     let output = host
         .output(
             "codesign",

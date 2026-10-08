@@ -343,6 +343,16 @@ pub(crate) fn rewrite_patch_tables(
     Ok(())
 }
 
+/// The seeded-lock inputs a resolved build is validated against.
+struct SeededLock<'a> {
+    /// Locked packages the seed is allowed to resolve.
+    allowed: &'a BTreeSet<LockedPackage>,
+    /// Canonical lock bytes the channel certifies.
+    canonical: Option<&'a [u8]>,
+    /// The project lockfile the seed replaces.
+    lock_path: &'a Path,
+}
+
 impl ResolvedFramework {
     /// The checkout root a local `waterui_path` framework resolves to —
     /// `None` for a channel selection, whose packages all have non-path
@@ -378,6 +388,7 @@ impl ResolvedFramework {
     /// saved selection is incompatible with this CLI, or the local checkout's
     /// framework facts cannot be read.
     pub(crate) async fn for_manifest(
+        host: &crate::toolchain::Host,
         manifest: &crate::project::Manifest,
         project_root: &Path,
     ) -> Result<Self> {
@@ -395,14 +406,17 @@ impl ResolvedFramework {
                  to select one or point `waterui_path` at a checkout"
             );
         };
-        Self::for_local_checkout(&project_root.join(waterui_path)).await
+        Self::for_local_checkout(host, &project_root.join(waterui_path)).await
     }
 
     /// The framework facts a local checkout supplies: its own
     /// `[package.metadata.waterui]` table, the scaffold requirements its
     /// `[workspace.dependencies]` declares, and the backend/workspace pins its
     /// gitlinks and lockfile record.
-    pub(crate) async fn for_local_checkout(root: &Path) -> Result<Self> {
+    pub(crate) async fn for_local_checkout(
+        host: &crate::toolchain::Host,
+        root: &Path,
+    ) -> Result<Self> {
         let manifest: toml::Value = toml::from_str(
             &smol::fs::read_to_string(root.join("Cargo.toml"))
                 .await
@@ -417,7 +431,7 @@ impl ResolvedFramework {
         let minimum_cli_version = minimum_cli_version(&metadata)?;
         let rust_version = manifest_rust_version(&manifest)?;
         if let Some(minimum) = &minimum_cli_version {
-            validate_installed_cli(minimum, &checkout_cli_update())?;
+            validate_installed_cli(host, minimum, &checkout_cli_update())?;
         }
         let mut scaffold = framework_scaffold(&manifest)?;
         let lock: Lockfile = smol::fs::read_to_string(root.join("Cargo.lock"))
@@ -481,12 +495,12 @@ impl ResolvedFramework {
     ) -> Result<(Self, Option<Vec<u8>>)> {
         let repository = framework_repository();
         let slug = repository_slug(repository)?;
-        let certification = load_manifest(path, repository).await?;
+        let certification = load_manifest(host, path, repository).await?;
         let revision = certification.revision.clone();
         Self::construct(host, repository, slug, &revision, Some(certification)).await
     }
 
-    pub(crate) fn validate_cli(&self) -> Result<()> {
+    pub(crate) fn validate_cli(&self, host: &crate::toolchain::Host) -> Result<()> {
         if let Some(minimum) = &self.minimum_cli_version {
             let update = match &self.source {
                 Source::Stable { .. } => registry_cli_update(minimum),
@@ -494,7 +508,7 @@ impl ResolvedFramework {
                     checkout_cli_update()
                 }
             };
-            validate_installed_cli(minimum, &update)?;
+            validate_installed_cli(host, minimum, &update)?;
         }
         Ok(())
     }
@@ -1096,7 +1110,7 @@ impl ResolvedFramework {
         directory: &std::path::Path,
         features: &[String],
     ) -> Result<()> {
-        self.validate_cli()?;
+        self.validate_cli(project.host())?;
         let project_lockfile = project.lockfile_path().await?;
         let project_lock: Lockfile = smol::fs::read_to_string(&project_lockfile).await?.parse()?;
         // Cargo resolves a member's lockfile at the workspace root, so the
@@ -1178,12 +1192,15 @@ impl ResolvedFramework {
         let result = match seeded {
             Ok(()) => {
                 self.validate_seeded_build(
+                    project.host(),
                     directory,
                     features,
                     allow_new,
-                    &allowed,
-                    canonical.as_deref(),
-                    &lock_path,
+                    &SeededLock {
+                        allowed: &allowed,
+                        canonical: canonical.as_deref(),
+                        lock_path: &lock_path,
+                    },
                 )
                 .await
             }
@@ -1214,12 +1231,11 @@ impl ResolvedFramework {
     /// failure rolls the seeded lock and its stamp back together.
     async fn validate_seeded_build(
         &self,
+        host: &crate::toolchain::Host,
         root: &Path,
         features: &[String],
         allow_new: bool,
-        allowed: &BTreeSet<LockedPackage>,
-        canonical: Option<&[u8]>,
-        lock_path: &Path,
+        seeded: &SeededLock<'_>,
     ) -> Result<()> {
         // A previous lock resolved without the canonical pins can carry a
         // generation the seeded locks contradict — an `accesskit_winit`
@@ -1231,15 +1247,15 @@ impl ResolvedFramework {
             .map_err(|error| {
                 eyre!(
                     "the managed crate's lock at {} conflicts with the channel's pins and does not resolve ({error}); remove it and `Cargo.lock.seed` and build again to regenerate them from the channel's resolution",
-                    lock_path.display()
+                    seeded.lock_path.display()
                 )
             })?;
-        validate_resolved_cli(&metadata)?;
+        validate_resolved_cli(host, &metadata)?;
         if !allow_new {
             for package in &metadata.packages {
                 if package.source.is_some()
                     && replaces_locked_package(
-                        allowed,
+                        seeded.allowed,
                         &package.name,
                         &package.version,
                         package.source.as_ref().map(|source| source.repr.as_str()),
@@ -1252,7 +1268,7 @@ impl ResolvedFramework {
                 }
             }
         }
-        if let Some(canonical) = canonical {
+        if let Some(canonical) = seeded.canonical {
             self.validate_dependencies(&metadata, canonical)?;
         }
         Ok(())
@@ -1540,7 +1556,7 @@ impl ResolvedFramework {
                 FrameworkChannel::Stable => registry_cli_update(minimum),
                 FrameworkChannel::Dev | FrameworkChannel::Nightly => checkout_cli_update(),
             };
-            validate_installed_cli(minimum, &update)?;
+            validate_installed_cli(host, minimum, &update)?;
         }
 
         // `.gitmodules` names each submodule path's repository at the
@@ -2193,14 +2209,19 @@ fn registry_cli_update(minimum: &cargo_toml::SemVer) -> String {
     )
 }
 
-fn validate_installed_cli(minimum: &cargo_toml::SemVer, update: &str) -> Result<()> {
+fn validate_installed_cli(
+    host: &crate::toolchain::Host,
+    minimum: &cargo_toml::SemVer,
+    update: &str,
+) -> Result<()> {
     let current = env!("CARGO_PKG_VERSION")
         .parse()
         .expect("CLI package version is valid");
-    validate_cli_version(minimum, &current, update)
+    validate_cli_version(host, minimum, &current, update)
 }
 
 fn validate_cli_version(
+    host: &crate::toolchain::Host,
     minimum: &cargo_toml::SemVer,
     current: &cargo_toml::SemVer,
     update: &str,
@@ -2209,7 +2230,7 @@ fn validate_cli_version(
         // The fallback command is what a registry or git source already
         // selected; the detected install source may replace it with `water
         // update` or `brew upgrade water`.
-        let update = crate::self_update::cli_update_command(update);
+        let update = crate::self_update::cli_update_command(host, update);
         bail!(
             "This WaterUI framework requires waterui-cli >= {minimum}, but the running CLI is {current}.\nUpdate the CLI: {update}\nThen verify the installed version with `water --version`."
         );
@@ -2266,16 +2287,19 @@ fn require_framework_members(metadata: &toml::Table, origin: &str) -> Result<()>
     );
 }
 
-pub(crate) async fn validate_local_cli(root: &Path) -> Result<()> {
+pub(crate) async fn validate_local_cli(host: &crate::toolchain::Host, root: &Path) -> Result<()> {
     let contents = smol::fs::read_to_string(root.join("Cargo.toml")).await?;
     let manifest = toml::from_str(&contents)?;
     if let Some(minimum) = minimum_cli_version(&framework_metadata(&manifest)?)? {
-        validate_installed_cli(&minimum, &checkout_cli_update())?;
+        validate_installed_cli(host, &minimum, &checkout_cli_update())?;
     }
     Ok(())
 }
 
-pub(crate) fn validate_resolved_cli(metadata: &cargo_metadata::Metadata) -> Result<()> {
+pub(crate) fn validate_resolved_cli(
+    host: &crate::toolchain::Host,
+    metadata: &cargo_metadata::Metadata,
+) -> Result<()> {
     for package in metadata
         .packages
         .iter()
@@ -2299,7 +2323,7 @@ pub(crate) fn validate_resolved_cli(metadata: &cargo_metadata::Metadata) -> Resu
             Some(source) if !source.is_git() => registry_cli_update(&minimum),
             Some(_) | None => checkout_cli_update(),
         };
-        validate_installed_cli(&minimum, &update)?;
+        validate_installed_cli(host, &minimum, &update)?;
     }
     Ok(())
 }
@@ -3104,7 +3128,7 @@ async fn latest_certification(
     if certification.tag != tag {
         bail!("{channel} certification does not match its release");
     }
-    verify_certification(&certification, release.as_ref(), repository)?;
+    verify_certification(host, &certification, release.as_ref(), repository)?;
     certifies_channel(&certification, channel)?;
     Ok(certification)
 }
@@ -3252,13 +3276,17 @@ fn certification_asset(release: &Release) -> Result<&ReleaseAsset> {
 /// Read and verify a `framework.json` from disk: the same schema, channel,
 /// repository, revision and CLI checks a downloaded manifest passes, with no
 /// release for the tag to be checked against.
-async fn load_manifest(path: &Path, repository: &str) -> Result<Certification> {
+async fn load_manifest(
+    host: &crate::toolchain::Host,
+    path: &Path,
+    repository: &str,
+) -> Result<Certification> {
     let contents = smol::fs::read(path)
         .await
         .wrap_err_with(|| format!("failed to read framework manifest {}", path.display()))?;
     let certification = parse_certification(&contents)
         .wrap_err_with(|| format!("invalid framework manifest {}", path.display()))?;
-    verify_certification(&certification, None, repository)?;
+    verify_certification(host, &certification, None, repository)?;
     Ok(certification)
 }
 
@@ -3267,6 +3295,7 @@ async fn load_manifest(path: &Path, repository: &str) -> Result<Certification> {
 /// disk via `--framework-manifest`, where there is no release to check the
 /// tag against.
 fn verify_certification(
+    host: &crate::toolchain::Host,
     certification: &Certification,
     release: Option<&Release>,
     repository: &str,
@@ -3298,7 +3327,7 @@ fn verify_certification(
             FrameworkChannel::Stable => registry_cli_update(minimum),
             FrameworkChannel::Dev | FrameworkChannel::Nightly => checkout_cli_update(),
         };
-        validate_installed_cli(minimum, &update)?;
+        validate_installed_cli(host, minimum, &update)?;
     }
     // The certification carries the framework's metadata verbatim, so a
     // framework this CLI cannot scaffold is rejected before its tree is
@@ -4355,7 +4384,7 @@ mod tests {
             let minimum = minimum.parse().unwrap();
             let current = current.parse().unwrap();
             let update = registry_cli_update(&minimum);
-            let result = validate_cli_version(&minimum, &current, &update);
+            let result = validate_cli_version(&Host::current(), &minimum, &current, &update);
             assert_eq!(result.is_ok(), compatible, "{current} against {minimum}");
             if let Err(error) = result {
                 let message = error.to_string();
@@ -4413,8 +4442,12 @@ mod tests {
         });
         manifest.framework = Some(framework);
 
-        let error = smol::block_on(ResolvedFramework::for_manifest(&manifest, Path::new(".")))
-            .expect_err("the saved framework record is missing required metadata");
+        let error = smol::block_on(ResolvedFramework::for_manifest(
+            &crate::toolchain::Host::current(),
+            &manifest,
+            Path::new("."),
+        ))
+        .expect_err("the saved framework record is missing required metadata");
         let message = error.to_string();
         assert!(
             message.contains("does not declare package.metadata.waterui.android-min-api-level"),
@@ -4435,7 +4468,10 @@ mod tests {
         framework.minimum_cli_version = Some(minimum.clone());
         let contents = toml::to_string(&framework).unwrap();
         let framework: ResolvedFramework = toml::from_str(&contents).unwrap();
-        let error = framework.validate_cli().unwrap_err().to_string();
+        let error = framework
+            .validate_cli(&crate::toolchain::Host::current())
+            .unwrap_err()
+            .to_string();
         assert!(error.contains(&registry_cli_update(&minimum)));
         assert_eq!(framework.minimum_cli_version, Some(minimum));
     }
@@ -5515,7 +5551,7 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
 
         let dev = certification(FrameworkChannel::Dev, "dev");
         assert!(
-            verify_certification(&dev, None, repository)
+            verify_certification(&crate::toolchain::Host::current(), &dev, None, repository)
                 .unwrap_err()
                 .to_string()
                 .contains("dev")
@@ -5524,10 +5560,15 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
         let mut wrong_schema = certification(FrameworkChannel::Stable, "v0.4.1");
         wrong_schema.schema_version = 1;
         assert!(
-            verify_certification(&wrong_schema, None, repository)
-                .unwrap_err()
-                .to_string()
-                .contains("schema")
+            verify_certification(
+                &crate::toolchain::Host::current(),
+                &wrong_schema,
+                None,
+                repository
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("schema")
         );
         let nightly_on_a_stable_tag = certification(FrameworkChannel::Nightly, "v0.4.1");
         let error = certifies_channel(&nightly_on_a_stable_tag, FrameworkChannel::Stable)
@@ -5552,25 +5593,47 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
         let mut wrong_repository = certification(FrameworkChannel::Stable, "v0.4.1");
         wrong_repository.repository = "water-rs/android-backend".to_owned();
         assert!(
-            verify_certification(&wrong_repository, None, repository)
-                .unwrap_err()
-                .to_string()
-                .contains("water-rs/android-backend")
+            verify_certification(
+                &crate::toolchain::Host::current(),
+                &wrong_repository,
+                None,
+                repository
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("water-rs/android-backend")
         );
 
         let wrong_tag = certification(FrameworkChannel::Stable, "v0.4.0");
         assert!(
-            verify_certification(&wrong_tag, Some(&release), repository)
-                .unwrap_err()
-                .to_string()
-                .contains("does not match its release")
+            verify_certification(
+                &crate::toolchain::Host::current(),
+                &wrong_tag,
+                Some(&release),
+                repository
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("does not match its release")
         );
 
         // A manifest read from disk has no release; the tag check is skipped.
-        verify_certification(&wrong_tag, None, repository).unwrap();
+        verify_certification(
+            &crate::toolchain::Host::current(),
+            &wrong_tag,
+            None,
+            repository,
+        )
+        .unwrap();
 
         let stable = certification(FrameworkChannel::Stable, "v0.4.1");
-        verify_certification(&stable, Some(&release), repository).unwrap();
+        verify_certification(
+            &crate::toolchain::Host::current(),
+            &stable,
+            Some(&release),
+            repository,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -5604,12 +5667,24 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
         });
         std::fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
         let repository = framework_repository();
-        let certification = smol::block_on(load_manifest(&path, repository)).unwrap();
+        let certification = smol::block_on(load_manifest(
+            &crate::toolchain::Host::current(),
+            &path,
+            repository,
+        ))
+        .unwrap();
         assert_eq!(certification.channel, FrameworkChannel::Stable);
         assert_eq!(certification.tag, "v0.4.1");
 
         std::fs::write(&path, b"not json").unwrap();
-        assert!(smol::block_on(load_manifest(&path, repository)).is_err());
+        assert!(
+            smol::block_on(load_manifest(
+                &crate::toolchain::Host::current(),
+                &path,
+                repository
+            ))
+            .is_err()
+        );
     }
 
     /// The Rust scaffold derivation and `framework_manifest.py`'s must produce
@@ -5921,7 +5996,11 @@ hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "d887
         let root = directory.path().join("waterui");
         write_local_checkout(&root);
 
-        let framework = smol::block_on(ResolvedFramework::for_local_checkout(&root)).unwrap();
+        let framework = smol::block_on(ResolvedFramework::for_local_checkout(
+            &crate::toolchain::Host::current(),
+            &root,
+        ))
+        .unwrap();
         assert_eq!(framework.member_path(APPLE_BACKEND), Some("backends/apple"));
         assert!(framework.git_source().is_none());
     }
@@ -5937,9 +6016,12 @@ hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "d887
         let root = directory.path().join("waterui");
         write_apple_pathless_checkout(&root);
 
-        let error = smol::block_on(ResolvedFramework::for_local_checkout(&root))
-            .unwrap_err()
-            .to_string();
+        let error = smol::block_on(ResolvedFramework::for_local_checkout(
+            &crate::toolchain::Host::current(),
+            &root,
+        ))
+        .unwrap_err()
+        .to_string();
         assert!(
             error.contains("declares no `apple-backend-path`:"),
             "{error}"
@@ -5957,7 +6039,11 @@ hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "d887
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("waterui");
         write_local_checkout(&root);
-        let framework = smol::block_on(ResolvedFramework::for_local_checkout(&root)).unwrap();
+        let framework = smol::block_on(ResolvedFramework::for_local_checkout(
+            &crate::toolchain::Host::current(),
+            &root,
+        ))
+        .unwrap();
         assert_eq!(framework.channel(), None);
         assert_eq!(
             framework.scaffold_value("hydrolysis-path"),

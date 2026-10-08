@@ -108,6 +108,7 @@ fn sanitize_target_name(target: &str) -> String {
 /// The CLI-served `preview` tool.
 #[derive(Debug)]
 pub struct PreviewTool {
+    host: crate::toolchain::Host,
     project_path: PathBuf,
     sccache_path: Option<PathBuf>,
 }
@@ -115,8 +116,13 @@ pub struct PreviewTool {
 impl PreviewTool {
     /// Binds the tool to a project directory.
     #[must_use]
-    pub const fn new(project_path: PathBuf, sccache_path: Option<PathBuf>) -> Self {
+    pub const fn new(
+        host: crate::toolchain::Host,
+        project_path: PathBuf,
+        sccache_path: Option<PathBuf>,
+    ) -> Self {
         Self {
+            host,
             project_path,
             sccache_path,
         }
@@ -137,7 +143,7 @@ impl PreviewTool {
     /// The deterministic output path for a request:
     /// `<build-cache container>/mcp/preview/<sanitized target>-<W>x<H>.png`.
     async fn output_path(&self, request: &PreviewRequest) -> Result<PathBuf> {
-        let dir = crate::water_dir::build_cache_container_for(&self.project_path)
+        let dir = crate::water_dir::build_cache_container_for(&self.host, &self.project_path)
             .await?
             .join("mcp")
             .join("preview");
@@ -155,13 +161,14 @@ impl PreviewTool {
     async fn run(&self, args: &PreviewArgs) -> Result<(PathBuf, Vec<u8>)> {
         let crate_name = read_project_crate_name(&self.project_path).await?;
         let request = args.resolve(&crate_name)?;
-        request::check_toolchain_for_backend(request.backend).await?;
+        request::check_toolchain_for_backend(&self.host, request.backend).await?;
         let output_path = self.output_path(&request).await?;
 
         match request.backend {
             ResolvedPreviewBackend::Hydrolysis(platform) => {
                 Box::pin(render_preview_with_hydrolysis(
                     HydrolysisPreviewRequest {
+                        host: &self.host,
                         project_path: &self.project_path,
                         source: request.target.source(),
                         theme: request
@@ -183,6 +190,7 @@ impl PreviewTool {
             ResolvedPreviewBackend::Apple => {
                 render_preview_with_apple(
                     ApplePreviewRequest {
+                        host: &self.host,
                         project_path: &self.project_path,
                         source: request.target.source(),
                         width: request.width,
@@ -234,6 +242,7 @@ impl PreviewTool {
         output_path: &Path,
     ) -> Result<()> {
         let mut session = Box::pin(launch_preview_session(
+            &self.host,
             &self.project_path,
             preview_platform,
             self.sccache_path.clone(),

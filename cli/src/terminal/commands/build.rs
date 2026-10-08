@@ -284,7 +284,12 @@ async fn prepare_build_context(shell: &Shell, args: &Args) -> Result<Option<Buil
         } else {
             ManagedBackends::for_platform(lib_platform(args.platform))
         };
-    let mut project = Project::open(&project_path, managed_backends).await?;
+    let mut project = Project::open(
+        &waterui_cli::toolchain::Host::current(),
+        &project_path,
+        managed_backends,
+    )
+    .await?;
 
     if backend.is_experimental()
         && !super::confirm_experimental_backend(shell, backend_name(backend), args.yes)?

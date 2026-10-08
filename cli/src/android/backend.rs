@@ -109,6 +109,7 @@ impl Backend for AndroidBackend {
         let android_permissions = manifest_permissions(manifest);
 
         let ctx = TemplateContext::for_project_manifest(
+            project.host(),
             manifest,
             project.crate_name().clone(),
             app_name,
@@ -218,6 +219,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let root = dir.path().join("liquid-glass");
         let project = smol::block_on(Project::create(
+            &crate::toolchain::Host::current(),
             &root,
             CreateOptions {
                 name: "Liquid Glass".to_string(),

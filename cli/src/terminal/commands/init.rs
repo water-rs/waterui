@@ -290,6 +290,7 @@ async fn scaffold_shell(
 
     let spinner = shell.spinner("Scaffolding the Rust shell...");
     let project = Project::init(
+        &waterui_cli::toolchain::Host::current(),
         root,
         CreateOptions {
             name,

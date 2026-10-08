@@ -26,7 +26,7 @@ use crate::{
     platform::{PackageOptions, TargetPlatform},
     project::Project,
     toolchain::{ToolchainError, windows_arm64_llvm::WindowsArm64LlvmToolchain},
-    utils::{command, run_command_os},
+    utils::command,
 };
 #[cfg(target_os = "macos")]
 use crate::{
@@ -184,8 +184,7 @@ pub async fn build_hydrolysis_with_envs_and_features(
             }
         })?;
 
-    let mut build = RustBuild::new(project.host(), &backend_path, platform.triple())
-        .with_project(project)
+    let mut build = RustBuild::for_project(project, &backend_path, platform.triple())
         .with_target_dir(project.water_target_dir(options.linkage()).await?)
         .with_features(extra_features.iter().copied())
         .with_linkage(
@@ -325,7 +324,7 @@ pub async fn clean_hydrolysis(project: &Project) -> eyre::Result<()> {
             "--package".into(),
             project.hydrolysis_backend_crate_name().as_str().into(),
         ];
-        run_command_os("cargo", clean_args).await?;
+        project.host().run("cargo", clean_args).await?;
     }
     let dist_web = backend_path.join("dist/web");
     if dist_web.exists() {
@@ -428,7 +427,14 @@ pub async fn package_hydrolysis(
         &platform.triple(),
     )
     .await?;
-    browser_runtime::stage(runtime_plan, platform, profile_directory, &runtime_dir).await?;
+    browser_runtime::stage(
+        project.host(),
+        runtime_plan,
+        platform,
+        profile_directory,
+        &runtime_dir,
+    )
+    .await?;
 
     // Ship the binary under the product name; the tagged Cargo artifact name
     // is internal to the shared target directory.
@@ -640,7 +646,7 @@ async fn copy_assets_and_fonts(
         assets::stage_project_assets_for_gtk(project, &resources_dir, symbols, dev_server).await?;
 
     let font_declarations = assets::scan_fonts(project, &backend_path.join("Cargo.toml")).await?;
-    let mut resolved_fonts = assets::resolve_fonts(font_declarations).await?;
+    let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
     if !resolved_fonts.is_empty() {
         let fonts_dest = resources_dir.join("fonts");
@@ -982,6 +988,7 @@ mod tests {
 
     fn demo_context() -> TemplateContext {
         TemplateContext::for_support_app(
+            &crate::toolchain::Host::current(),
             crate::templates::SupportAppIdentity {
                 display_name: "Demo".to_string(),
                 crate_name: CrateName::try_from("demo").expect("crate name must be valid"),
@@ -1082,9 +1089,13 @@ mod tests {
             )
             .expect("fixture font");
 
-            let project = Project::open(&root, ManagedBackends::NONE)
-                .await
-                .expect("fixture project opens");
+            let project = Project::open(
+                &crate::toolchain::Host::current(),
+                &root,
+                ManagedBackends::NONE,
+            )
+            .await
+            .expect("fixture project opens");
             // The managed backend crate the build compiles, kept dependency-
             // free so its `cargo metadata` resolves without the network.
             let backend_path =

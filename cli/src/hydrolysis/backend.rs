@@ -15,7 +15,6 @@ use crate::{
     platform::{PackageOptions, TargetBackend, TargetPlatform},
     project::{ManagedBackends, Project},
     templates::{self, TemplateContext},
-    toolchain::Host,
 };
 
 /// Configuration for the hydrolysis backend in a `WaterUI` project.
@@ -92,6 +91,7 @@ impl HydrolysisBackend {
             .collect::<String>();
         let framework = project.resolved_framework().await?;
         Ok(TemplateContext::for_project_manifest(
+            project.host(),
             manifest,
             project.crate_name().clone(),
             app_name,
@@ -169,7 +169,7 @@ impl Backend for HydrolysisBackend {
         if platform == TargetPlatform::Android {
             return crate::hydrolysis::android::build(
                 project,
-                &Host::current(),
+                project.host(),
                 AndroidAbi::Arm64V8a,
                 options,
             )
@@ -192,7 +192,7 @@ impl Backend for HydrolysisBackend {
             let prepared = crate::android::signing::PreparedSigning::resolve(project, &options)?;
             return crate::hydrolysis::android::package_with_abis(
                 project,
-                &Host::current(),
+                project.host(),
                 crate::hydrolysis::android::resolve_painter(project, None),
                 &options,
                 &[AndroidAbi::Arm64V8a],
@@ -220,8 +220,12 @@ impl Backend for HydrolysisBackend {
 ///
 /// Returns an error when the project cannot be opened or the backend cannot
 /// be regenerated.
-pub async fn open_ready(project_path: &Path) -> eyre::Result<Project> {
+pub async fn open_ready(
+    host: &crate::toolchain::Host,
+    project_path: &Path,
+) -> eyre::Result<Project> {
     let project = Project::open(
+        host,
         project_path,
         ManagedBackends::for_backend(TargetBackend::Hydrolysis),
     )

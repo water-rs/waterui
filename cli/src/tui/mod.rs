@@ -30,9 +30,11 @@ use crate::{
 /// including for application projects — because an experimental backend never
 /// writes into the project's own tree.
 async fn launcher_dir(project: &Project) -> eyre::Result<PathBuf> {
-    Ok(water_dir::project_build_cache_dir(project.root())
-        .await?
-        .join("tui"))
+    Ok(
+        water_dir::project_build_cache_dir(project.host(), project.root())
+            .await?
+            .join("tui"),
+    )
 }
 
 async fn template_context(project: &Project, dir: &Path) -> eyre::Result<TemplateContext> {
@@ -45,6 +47,7 @@ async fn template_context(project: &Project, dir: &Path) -> eyre::Result<Templat
         .collect::<String>();
     let framework = project.resolved_framework().await?;
     Ok(TemplateContext::for_project_manifest(
+        project.host(),
         manifest,
         project.crate_name().clone(),
         app_name,
@@ -109,8 +112,7 @@ pub async fn build(
     sccache_path: Option<PathBuf>,
     progress: Option<BuildProgress>,
 ) -> eyre::Result<BuiltTarget> {
-    let mut build = RustBuild::new(project.host(), launcher_dir, target_lexicon::Triple::host())
-        .with_project(project)
+    let mut build = RustBuild::for_project(project, launcher_dir, target_lexicon::Triple::host())
         .with_target_dir(project.water_target_dir(RustLinkage::Static).await?);
     if let Some(sccache_path) = sccache_path {
         build = build.with_sccache(sccache_path);
