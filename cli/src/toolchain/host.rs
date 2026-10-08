@@ -183,10 +183,6 @@ impl Host {
             self.absolute_env_path("XDG_CACHE_HOME")
                 .or_else(|| self.home_dir().map(|home| home.join(".cache")))
         }
-        #[cfg(not(any(unix, target_os = "windows")))]
-        {
-            None
-        }
     }
 
     /// Temporary directory for this host.
@@ -194,9 +190,8 @@ impl Host {
     /// `std::env::temp_dir` rules, with every variable read from this host's
     /// environment and never the process's:
     /// - Unix: `TMPDIR` when set; otherwise the per-user directory
-    ///   `confstr(_CS_DARWIN_USER_TEMP_DIR)` reports on Apple platforms
-    ///   (`/tmp` if it reports none), `/data/local/tmp` on Android, and
-    ///   `/tmp` elsewhere.
+    ///   `confstr(_CS_DARWIN_USER_TEMP_DIR)` reports on macOS (`/tmp` if it
+    ///   reports none), `/data/local/tmp` on Android, and `/tmp` elsewhere.
     /// - Windows (`GetTempPath2W`): the first of `TMP`, `TEMP` and
     ///   `USERPROFILE` that is set and non-empty, else the Windows directory
     ///   (`SystemRoot`, which every host carries as spawn plumbing).
@@ -225,10 +220,6 @@ impl Host {
         {
             self.env("TMPDIR")
                 .map_or_else(unix_default_temp_dir, PathBuf::from)
-        }
-        #[cfg(not(any(unix, target_os = "windows")))]
-        {
-            unimplemented!("Host::temp_dir has no definition for this platform")
         }
     }
 

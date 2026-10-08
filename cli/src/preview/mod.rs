@@ -36,10 +36,11 @@ pub use request::{
     CliHydrolysisPreviewTheme, CliPreviewBackend, CliPreviewPlatform, PreviewRequest, PreviewTarget,
 };
 
-/// The cache root preview support assets live under on `host`, resolved the
-/// way the support app resolves its own: `WATER_CACHE_DIR` when set, the
-/// host's cache directory joined with `waterui`, else `waterui-cache` in the
-/// host's temporary directory.
+/// The cache root preview support assets live under on `host`:
+/// `WATER_CACHE_DIR` when set, the host's cache directory joined with
+/// `waterui`, else `waterui-cache` in the host's temporary directory. The
+/// spawned support app is handed this root through `WATER_CACHE_DIR`, so it
+/// registers where the CLI watches, whatever its own default would be.
 fn water_cache_dir(host: &crate::toolchain::Host) -> std::path::PathBuf {
     if let Some(dir) = host.env("WATER_CACHE_DIR") {
         return std::path::PathBuf::from(dir);
@@ -50,9 +51,8 @@ fn water_cache_dir(host: &crate::toolchain::Host) -> std::path::PathBuf {
     host.temp_dir().join("waterui-cache")
 }
 
-/// Root of the preview support assets on `host` — the directory the spawned
-/// support app is pointed at through `WATER_CACHE_DIR`.
-pub(crate) fn preview_cache_root_dir(host: &crate::toolchain::Host) -> std::path::PathBuf {
+/// Root of the preview support assets on `host`.
+fn preview_cache_root_dir(host: &crate::toolchain::Host) -> std::path::PathBuf {
     waterui_preview_protocol::registry::preview_cache_root_dir_in(&water_cache_dir(host))
 }
 

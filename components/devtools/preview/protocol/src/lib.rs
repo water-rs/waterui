@@ -143,16 +143,6 @@ pub mod registry {
     }
 
     #[must_use]
-    /// Path of the JSON registry file for a support app instance under
-    /// `registry_dir`.
-    pub fn preview_instance_registry_path_in(
-        registry_dir: &std::path::Path,
-        instance: &PreviewAppInstance,
-    ) -> PathBuf {
-        registry_dir.join(format!("{}-{}.json", instance.pid, instance.port))
-    }
-
-    #[must_use]
     /// Root cache directory for preview support assets, resolved from the
     /// process environment.
     pub fn preview_cache_root_dir() -> PathBuf {
@@ -170,7 +160,7 @@ pub mod registry {
     /// Path of the JSON registry file for a support app instance, resolved
     /// from the process environment.
     pub fn preview_instance_registry_path(instance: &PreviewAppInstance) -> PathBuf {
-        preview_instance_registry_path_in(&preview_instance_registry_dir(), instance)
+        preview_instance_registry_dir().join(format!("{}-{}.json", instance.pid, instance.port))
     }
 }
 
