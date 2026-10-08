@@ -43,6 +43,18 @@ use serde::{Deserialize, Serialize};
 /// texels present. Members read deeper levels through
 /// [`BackdropEffectSpec::Level`]'s trilinear sample, which a variable-blur
 /// material needs; `1` is the single-level capture.
+///
+/// A `union` smoothing distance `k` (device pixels, finite and above 0 —
+/// [`crate::Scene::load`] validates it) makes every member composite
+/// against one shared field: the quadratic smooth minimum of all member
+/// distances, folded in ascending order with `k`. Each member's
+/// composite coverage becomes its antialiased ownership weight — the
+/// pixel-space weight `0.5 + (d₂ − d_own) / (2·w)` clamped to `0..=1`,
+/// `d₂` the smallest distance among the other members, `w` the field's
+/// pixel width — times the antialiased coverage of `field < outer`,
+/// replacing the member's clip coverage (the member's own content stays
+/// clipped; see [`crate::Layer::backdrop_outer`]). Every member needs an
+/// analytic clip — a path clip fails `backdrop-effect-sdf-path`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BackdropGroup {
     /// The id member layers reference.
@@ -58,6 +70,11 @@ pub struct BackdropGroup {
     /// capture.
     #[serde(default = "default_levels", skip_serializing_if = "is_default_levels")]
     pub levels: u32,
+    /// The union field's smoothing distance `k` in device pixels
+    /// ([`crate::Scene::load`] validates it above 0); `None` composites
+    /// every member against its own clip only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub union: Option<f64>,
 }
 
 impl BackdropGroup {

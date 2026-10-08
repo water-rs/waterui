@@ -81,6 +81,9 @@ half = "2"
 # The WGSL engine shaders are compiled once at build time (issue #57), at
 # the naga version wgpu 30 links.
 naga = { version = "30.0.1", features = ["wgsl-in", "spv-out", "msl-out"] }
+# `UNION_MAX_MEMBERS` is `BackdropUnion::MAX_MEMBERS` verbatim, prepended
+# to the union-variant modules the way `VARIANT` is.
+cherenkov = { path = ".." }
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 # `tests/planes.rs` stands Core Animation's own renderer in for the window

@@ -11,6 +11,7 @@ publish = false
 workspace = true
 
 [dependencies]
+cherenkov = { path = ".." }
 cherenkov-scene = { path = "../scene" }
 half = "2"
 kurbo = "0.13"

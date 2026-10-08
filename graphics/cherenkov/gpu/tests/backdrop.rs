@@ -1,8 +1,10 @@
 //! Backdrop groups: bounded f16 captures sampled by member layers.
 
-use cherenkov::kurbo::{Rect, RoundedRect};
+use cherenkov::kurbo::{Circle, Rect, RoundedRect};
 use cherenkov::{__engine_fn as split_fn, __engine_test as split_test, __engine_wait as wait};
-use cherenkov::{Bytes, Draw, Engine, FrameTime, Offscreen, OffscreenFormat, WorkingColor};
+use cherenkov::{
+    BackdropOuter, Bytes, Draw, Engine, FrameTime, Offscreen, OffscreenFormat, WorkingColor,
+};
 use cherenkov_gpu::{Gpu, GpuConfig};
 
 fn pixel(readback: &cherenkov::Readback, x: usize, y: usize) -> [f32; 4] {
@@ -576,9 +578,9 @@ split_test! {
 fn shader_effect_lights_the_rim() -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let shader = engine.backdrop_shader(cherenkov::BackdropShaderSource::wgsl(
-        "fn backdrop_effect(p: vec2<f32>, sdf: f32, normal: vec2<f32>, size: vec2<f32>, params: array<vec4<f32>, 16>) -> vec4<f32> {
-            let rim = clamp(1.0 + sdf / 4.0, 0.0, 1.0);
-            return vec4<f32>(backdrop_sample(p).rgb * (1.0 + params[0].x * rim), backdrop_sample(p).a);
+        "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+            let rim = clamp(1.0 + px.sdf / 4.0, 0.0, 1.0);
+            return vec4<f32>(backdrop_sample(px.p).rgb * (1.0 + params[0].x * rim), backdrop_sample(px.p).a);
         }",
     ))?;
     let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
@@ -611,8 +613,8 @@ split_test! {
 fn shader_effect_size_is_the_unclipped_member_size() -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let shader = engine.backdrop_shader(cherenkov::BackdropShaderSource::wgsl(
-        "fn backdrop_effect(p: vec2<f32>, sdf: f32, normal: vec2<f32>, size: vec2<f32>, params: array<vec4<f32>, 16>) -> vec4<f32> {
-            return vec4<f32>(size.x / 256.0, size.y / 256.0, 0.0, 1.0);
+        "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+            return vec4<f32>(px.size.x / 256.0, px.size.y / 256.0, 0.0, 1.0);
         }",
     ))?;
     let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
@@ -645,7 +647,7 @@ split_test! {
 fn invalid_backdrop_shader_source_is_a_shader_error() {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default())).expect("engine");
     let result = engine.backdrop_shader(cherenkov::BackdropShaderSource::wgsl(
-        "fn backdrop_effect(p: vec2<f32> {",
+        "fn backdrop_effect(px: BackdropPixel {",
     ));
     assert!(
         matches!(result, Err(cherenkov::ResourceError::Shader(_))),
@@ -698,8 +700,8 @@ fn dropped_backdrop_shader_fails_the_frame() -> Result<(), Box<dyn std::error::E
     let member = surface.layer();
     {
         let shader = engine.backdrop_shader(cherenkov::BackdropShaderSource::wgsl(
-            "fn backdrop_effect(p: vec2<f32>, sdf: f32, normal: vec2<f32>, size: vec2<f32>, params: array<vec4<f32>, 16>) -> vec4<f32> {
-                return backdrop_sample(p);
+            "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+                return backdrop_sample(px.p);
             }",
         ))?;
         surface.update(|tx| {
@@ -757,8 +759,8 @@ fn a_shaders_reach_grows_the_capture_region() -> Result<(), Box<dyn std::error::
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let shader = engine.backdrop_shader(
         cherenkov::BackdropShaderSource::wgsl(
-            "fn backdrop_effect(p: vec2<f32>, sdf: f32, normal: vec2<f32>, size: vec2<f32>, params: array<vec4<f32>, 16>) -> vec4<f32> {
-                return backdrop_sample(p);
+            "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+                return backdrop_sample(px.p);
             }",
         )
         .reach(8.0),
@@ -924,9 +926,9 @@ fn a_released_backdrop_shader_stays_while_a_member_samples_it()
 -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let shader = engine.backdrop_shader(cherenkov::BackdropShaderSource::wgsl(
-        "fn backdrop_effect(p: vec2<f32>, sdf: f32, normal: vec2<f32>, size: vec2<f32>, params: array<vec4<f32>, 16>) -> vec4<f32> {
-            let rim = clamp(1.0 + sdf / 4.0, 0.0, 1.0);
-            return vec4<f32>(backdrop_sample(p).rgb * (1.0 + params[0].x * rim), backdrop_sample(p).a);
+        "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+            let rim = clamp(1.0 + px.sdf / 4.0, 0.0, 1.0);
+            return vec4<f32>(backdrop_sample(px.p).rgb * (1.0 + params[0].x * rim), backdrop_sample(px.p).a);
         }",
     ))?;
     let effect = shader.effect(vec![3.0]);
@@ -1220,8 +1222,8 @@ split_test! {
 fn sample_level_mixes_the_pyramid_trilinearly() -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let shader = engine.backdrop_shader(cherenkov::BackdropShaderSource::wgsl(
-        "fn backdrop_effect(p: vec2<f32>, sdf: f32, normal: vec2<f32>, size: vec2<f32>, params: array<vec4<f32>, 16>) -> vec4<f32> {
-            return backdrop_sample_level(p, params[0].x);
+        "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+            return backdrop_sample_level(px.p, params[0].x);
         }",
     ))?;
     let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
@@ -1439,6 +1441,469 @@ fn render(engine: &Engine<Gpu>, with_plain: bool) -> Result<cherenkov::Readback,
             );
         }
     }
+    Ok(())
+}
+}
+
+// `smin`, `rect_sdf`, `cover`, `circle_field` and `ownership` live in
+// `cherenkov::testing`, shared with the CPU suite. `union_bridge` stays
+// per-suite: its engine call shape differs (`wait!`-driven `&Engine<Gpu>`
+// here vs a fresh sync `Engine<Raster>` in the CPU file).
+use cherenkov::testing::{circle_field, cover, ownership, rect_sdf, smin};
+
+/// Two bridge members 6 px apart on the shared field (`k = 20` joins a
+/// gap below `k/2`), rendered with the given member opacities and paint
+/// order.
+fn union_bridge(
+    engine: &Engine<Gpu>,
+    a_opacity: f32,
+    b_opacity: f32,
+    swap: bool,
+) -> Result<cherenkov::Readback, Box<dyn std::error::Error>> {
+    let surface =
+        wait!(engine.surface(Offscreen::new((48, 32), OffscreenFormat::LinearF32), || {}))?;
+    let group = surface.backdrop_group_unfiltered(
+        cherenkov::BackdropSpec::FULL.union(cherenkov::BackdropUnion::new(20.0).expect("union")),
+    );
+    let a = surface.layer();
+    let b = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 48.0, 32.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 0.5]),
+            );
+        }));
+        let (first, second) = if swap { (&b, &a) } else { (&a, &b) };
+        tx[surface.root()].push(first);
+        tx[surface.root()].push(second);
+        tx[&a]
+            .clip(Rect::new(4.0, 8.0, 20.0, 24.0))
+            .backdrop(group.sample())
+            .opacity(a_opacity);
+        tx[&b]
+            .clip(Rect::new(26.0, 8.0, 42.0, 24.0))
+            .backdrop(group.sample())
+            .opacity(b_opacity);
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    Ok(wait!(surface.readback())?)
+}
+
+split_test! {
+fn union_members_composite_identically_in_any_order() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let ab = union_bridge(&engine, 0.5, 0.5, false)?;
+    let ba = union_bridge(&engine, 0.5, 0.5, true)?;
+    assert_eq!(
+        ab.pixels, ba.pixels,
+        "the union composite depends on member order"
+    );
+    Ok(())
+}
+}
+
+split_test! {
+fn union_members_partition_the_bridge_alpha() -> Result<(), Box<dyn std::error::Error>> {
+    // Each member at opacity 0.5 over a 0.5-alpha capture: member i's
+    // deposit above the root is `w_i · c · 0.5 · 0.5`. The ownership
+    // weights sum to 1, so the deposits sum to `0.25 · c` — exactly
+    // what one member covering the field deposits.
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let only_a = union_bridge(&engine, 0.5, 0.0, false)?;
+    let only_b = union_bridge(&engine, 0.0, 0.5, false)?;
+    let both = union_bridge(&engine, 0.5, 0.5, false)?;
+    let a_clip = Rect::new(4.0, 8.0, 20.0, 24.0);
+    let b_clip = Rect::new(26.0, 8.0, 42.0, 24.0);
+    let bg = 0.5;
+for row in 10..22usize {
+        for col in 18..30usize {
+            let (px, py) = (f32::from(u16::try_from(col).unwrap()) + 0.5, f32::from(u16::try_from(row).unwrap()) + 0.5);
+            let dist_a = rect_sdf(px, py, a_clip);
+            let dist_b = rect_sdf(px, py, b_clip);
+            let field = smin(dist_a.min(dist_b), dist_a.max(dist_b), 20.0);
+            let cov = cover(field);
+            let weight_a = (0.5 + (dist_b - dist_a) / 2.0).clamp(0.0, 1.0);
+            let weight_b = 1.0 - weight_a;
+            let single = 0.125 * cov;
+            let deposit_a = pixel(&only_a, col, row)[3] - bg;
+            let deposit_b = pixel(&only_b, col, row)[3] - bg;
+            assert!(
+                single.mul_add(-weight_a, deposit_a).abs() <= 2e-3,
+                "pixel ({col}, {row}): member a's deposit {deposit_a} != {single}·w_a"
+            );
+            assert!(
+                single.mul_add(-weight_b, deposit_b).abs() <= 2e-3,
+                "pixel ({col}, {row}): member b's deposit {deposit_b} != {single}·w_b"
+            );
+            assert!(
+                (deposit_a + deposit_b - single).abs() <= 2e-3,
+                "pixel ({col}, {row}): deposits {deposit_a} + {deposit_b} != a single member's {single}"
+            );
+            // Never drawn twice: both members together deposit no more
+            // than a single member; never left open: no less than the
+            // larger share.
+            let both_a = pixel(&both, col, row)[3];
+            assert!(
+                both_a <= bg + single + 2e-3,
+                "pixel ({col}, {row}): alpha {both_a} above a single member's {single}"
+            );
+            assert!(
+                both_a >= single.mul_add(weight_a.max(weight_b), bg) - 2e-3,
+                "pixel ({col}, {row}): alpha {both_a} below the seam's larger share"
+            );
+        }
+    }
+    Ok(())
+}
+}
+
+/// Circle members of a union group at the given opacities — `circles` is
+/// `(cx, cy, r)` in paint order. The `union_bridge` counterpart for the
+/// ownership-boundary tests, where non-parallel member normals give the
+/// seam a real slope.
+fn union_circles(
+    engine: &Engine<Gpu>,
+    circles: &[(f64, f64, f64)],
+    opacities: &[f32],
+) -> Result<cherenkov::Readback, Box<dyn std::error::Error>> {
+    let surface =
+        wait!(engine.surface(Offscreen::new((48, 40), OffscreenFormat::LinearF32), || {}))?;
+    let group = surface.backdrop_group_unfiltered(
+        cherenkov::BackdropSpec::FULL.union(cherenkov::BackdropUnion::new(20.0).expect("union")),
+    );
+    let members: Vec<_> = circles.iter().map(|_| surface.layer()).collect();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 48.0, 40.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 0.5]),
+            );
+        }));
+        for (member, (&(cx, cy, radius), &opacity)) in
+            members.iter().zip(circles.iter().zip(opacities.iter()))
+        {
+            tx[surface.root()].push(member);
+            tx[member]
+                .clip(Circle::new((cx, cy), radius))
+                .backdrop(group.sample())
+                .opacity(opacity);
+        }
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    Ok(wait!(surface.readback())?)
+}
+
+split_test! {
+/// The two ownership weights on a seam ramp across one pixel and sum to
+/// 1. Two facing circles (`k = 20` joins them) share the ownership
+/// boundary along their bisector x = 22.3, so the pixel column at x = 22
+/// carries the fractional weight and its neighbours saturate.
+fn the_seam_weights_ramp_across_one_pixel() -> Result<(), Box<dyn std::error::Error>> {
+    const CIRCLES: &[(f64, f64, f64)] = &[(12.3, 16.0, 16.0), (32.3, 16.0, 16.0)];
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let only_a = union_circles(&engine, CIRCLES, &[0.5, 0.0])?;
+    let only_b = union_circles(&engine, CIRCLES, &[0.0, 0.5])?;
+    #[expect(clippy::cast_precision_loss, reason = "pixel coords stay small")]
+    let fields = |col: usize, row: usize| {
+        let px = col as f32 + 0.5;
+        let py = row as f32 + 0.5;
+        let (da, ga) = circle_field(px, py, 12.3, 16.0, 16.0);
+        let (db, gb) = circle_field(px, py, 32.3, 16.0, 16.0);
+        [(da, ga), (db, gb)]
+    };
+    for row in 8..24usize {
+        for col in 20..25usize {
+            let members = fields(col, row);
+            let field = smin(members[0].0.min(members[1].0), members[0].0.max(members[1].0), 20.0);
+            let cov = cover(field);
+            let wa = ownership(&members, 0);
+            let wb = ownership(&members, 1);
+            assert!(
+                (wa + wb - 1.0).abs() <= 1e-3,
+                "weights at ({col}, {row}) sum to {}",
+                wa + wb
+            );
+            let single = 0.125 * cov;
+            let deposit_a = pixel(&only_a, col, row)[3] - 0.5;
+            let deposit_b = pixel(&only_b, col, row)[3] - 0.5;
+            assert!(
+                single.mul_add(-wa, deposit_a).abs() <= 2e-3,
+                "pixel ({col}, {row}): member a's deposit {deposit_a} != {single}·w_a={wa}"
+            );
+            assert!(
+                single.mul_add(-wb, deposit_b).abs() <= 2e-3,
+                "pixel ({col}, {row}): member b's deposit {deposit_b} != {single}·w_b={wb}"
+            );
+            // Never drawn twice or left open: the deposits partition
+            // a single member's coverage.
+            assert!(
+                (deposit_a + deposit_b - single).abs() <= 2e-3,
+                "pixel ({col}, {row}): deposits {deposit_a} + {deposit_b} != {single}"
+            );
+        }
+    }
+    // The ramp is one pixel wide: column 21 saturates to member a and
+    // column 23 to member b; the straddling column 22 is fractional.
+    let wa = |col: usize| ownership(&fields(col, 16), 0);
+    assert!(wa(21) > 0.95, "w_a at column 21: {}", wa(21));
+    assert!(wa(23) < 0.05, "w_a at column 23: {}", wa(23));
+    let mid = wa(22);
+    assert!(
+        (0.05..0.95).contains(&mid),
+        "the seam column carries a fractional weight: {mid}"
+    );
+    Ok(())
+}
+}
+
+split_test! {
+/// Near a triple point the three ownership weights partition unity:
+/// three mutually overlapping circles meet around their circumcentre and
+/// every sampled pixel's `a_i / Σ a_j` weights sum to 1, so no member is
+/// starved and none is drawn twice.
+fn the_three_weights_sum_to_one_near_a_triple_point() -> Result<(), Box<dyn std::error::Error>> {
+    // Centres on a ~equilateral triangle, r = 12: the circumcentre at
+    // about (24, 19.7) sits inside all three members, the pixel
+    // neighbourhood where all three weights are of order 1/3.
+    const CIRCLES: &[(f64, f64, f64)] = &[
+        (24.0, 13.04, 12.0),
+        (29.0, 22.5, 12.0),
+        (19.0, 22.5, 12.0),
+    ];
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let mut alones = Vec::new();
+    for i in 0..3 {
+        let mut opacities = [0.0f32; 3];
+        opacities[i] = 0.5;
+        alones.push(union_circles(&engine, CIRCLES, &opacities)?);
+    }
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        reason = "pixel coords and circle dims stay small"
+    )]
+    for row in 14..26usize {
+        for col in 20..29usize {
+            let px = col as f32 + 0.5;
+            let py = row as f32 + 0.5;
+            let members: [(f32, [f32; 2]); 3] = std::array::from_fn(|i| {
+                let (cx, cy, r) = CIRCLES[i];
+                circle_field(px, py, cx as f32, cy as f32, r as f32)
+            });
+            let mut ds = members.map(|(d, _)| d);
+            ds.sort_by(f32::total_cmp);
+            let field = smin(smin(ds[0], ds[1], 20.0), ds[2], 20.0);
+            let cov = cover(field);
+            let single = 0.125 * cov;
+            let mut wsum = 0.0f32;
+            for (i, alone) in alones.iter().enumerate() {
+                let w = ownership(&members, i);
+                wsum += w;
+                let deposit = pixel(alone, col, row)[3] - 0.5;
+                assert!(
+                    single.mul_add(-w, deposit).abs() <= 3e-3,
+                    "pixel ({col}, {row}): member {i}'s deposit {deposit} != {single}·w (w = {w})"
+                );
+            }
+            assert!(
+                (wsum - 1.0).abs() <= 1e-3,
+                "weights at ({col}, {row}) sum to {wsum}"
+            );
+        }
+    }
+    Ok(())
+}
+}
+
+split_test! {
+fn outer_extent_draws_exactly_the_band_without_a_union() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((48, 32), OffscreenFormat::LinearF32), || {}))?;
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
+    let member = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 48.0, 32.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&member);
+        // A solid-white effect makes the composite's coverage readable
+        // as the pixel's whiteness: clip plus a 4.5 px band.
+        tx[&member]
+            .clip(Rect::new(16.0, 8.0, 32.0, 24.0))
+            .backdrop(group.sample_with(cherenkov::ColorMatrix([
+                0.0, 0.0, 0.0, 1.0, //
+                0.0, 0.0, 0.0, 1.0, //
+                0.0, 0.0, 0.0, 1.0,
+            ])).outer(BackdropOuter::new(4.5).expect("valid")));
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    let readback = wait!(surface.readback())?;
+    // Inside the clip and inside the band the white is full.
+    assert_pixel(pixel(&readback, 24, 16), [1.0, 1.0, 1.0, 1.0], 1e-3);
+    assert_pixel(pixel(&readback, 34, 16), [1.0, 1.0, 1.0, 1.0], 1e-3);
+    assert_pixel(pixel(&readback, 35, 16), [1.0, 1.0, 1.0, 1.0], 1e-3);
+    // At the band's outer edge (`d = outer` at pixel centre) the
+    // coverage is half — half white over the red.
+    assert_pixel(pixel(&readback, 36, 16), [1.0, 0.5, 0.5, 1.0], 2e-3);
+    // Beyond `outer` the root's red survives untouched.
+    assert_pixel(pixel(&readback, 37, 16), [1.0, 0.0, 0.0, 1.0], 1e-3);
+    assert_pixel(pixel(&readback, 8, 16), [1.0, 0.0, 0.0, 1.0], 1e-3);
+    Ok(())
+}
+}
+
+split_test! {
+fn union_member_with_a_path_clip_is_unsupported() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((48, 32), OffscreenFormat::LinearF32), || {}))?;
+    let group = surface.backdrop_group_unfiltered(
+        cherenkov::BackdropSpec::FULL
+            .union(cherenkov::BackdropUnion::new(20.0).expect("union")),
+    );
+    let rect = surface.layer();
+    let path = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].push(&rect);
+        tx[&rect]
+            .clip(Rect::new(4.0, 8.0, 20.0, 24.0))
+            .backdrop(group.sample());
+        tx[surface.root()].push(&path);
+        tx[&path]
+            .clip(cherenkov::ShapeData::Path {
+                elements: vec![
+                    cherenkov::kurbo::PathEl::MoveTo((26.0, 8.0).into()),
+                    cherenkov::kurbo::PathEl::LineTo((42.0, 8.0).into()),
+                    cherenkov::kurbo::PathEl::LineTo((42.0, 24.0).into()),
+                    cherenkov::kurbo::PathEl::ClosePath,
+                ]
+                .into(),
+                rule: cherenkov::FillRule::NonZero,
+            })
+            .backdrop(group.sample());
+    });
+    let result = wait!(engine.render(FrameTime::now()));
+    assert!(
+        matches!(
+            result,
+            Err(cherenkov::RenderError::Unsupported(name)) if name == "backdrop-effect-sdf-path"
+        ),
+        "unexpected result {result:?}"
+    );
+    Ok(())
+}
+}
+
+split_test! {
+/// Behavioural: a member's shape change re-renders the neighbour's
+/// bridge pixels across frames — a changed surface lowers again in
+/// full (the engine has no damage rects for this to leak through).
+fn a_member_shape_change_redraws_the_neighbours_bridge() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((48, 32), OffscreenFormat::LinearF32), || {}))?;
+    let group = surface.backdrop_group_unfiltered(
+        cherenkov::BackdropSpec::FULL
+            .union(cherenkov::BackdropUnion::new(20.0).expect("union")),
+    );
+    let a = surface.layer();
+    let b = surface.layer();
+    let scene = |a_right: f64| {
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(|r| {
+                r.fill(
+                    Rect::new(0.0, 0.0, 48.0, 32.0),
+                    WorkingColor::new([0.25, 0.0, 0.0, 1.0]),
+                );
+            }));
+            tx[surface.root()].push(&a);
+            tx[&a]
+                .clip(Rect::new(4.0, 8.0, a_right, 24.0))
+                .backdrop(group.sample_with(cherenkov::Rim {
+                    width: 4.0,
+                    color: [0.0, 1.0, 0.0, 1.0],
+                    gain: 2.0,
+                }));
+            tx[surface.root()].push(&b);
+            tx[&b]
+                .clip(Rect::new(26.0, 8.0, 42.0, 24.0))
+                .backdrop(group.sample_with(cherenkov::Rim {
+                    width: 4.0,
+                    color: [0.0, 1.0, 0.0, 1.0],
+                    gain: 2.0,
+                }));
+        });
+    };
+    scene(14.0);
+    wait!(engine.render(FrameTime::now()))?;
+    let first = wait!(surface.readback())?;
+    scene(20.0);
+    wait!(engine.render(FrameTime::now()))?;
+    let second = wait!(surface.readback())?;
+    assert_ne!(
+        first.pixels, second.pixels,
+        "the neighbour's bridge pixels stayed stale across frames"
+    );
+    Ok(())
+}
+}
+
+split_test! {
+/// A bridge pixel's `px.sdf`, `px.own_sdf` and `px.normal` against the
+/// analytic fold: at (22.5, 16.5) member `a` owns the pixel outright,
+/// `m = min(d_a, d_b) − h²·k/4`, and the normal is the folded gradient.
+fn bridge_pixel_reads_the_union_field() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let shader = engine.backdrop_shader(cherenkov::BackdropShaderSource::wgsl(
+        "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+            return vec4<f32>(
+                (px.sdf + 10.0) / 20.0,
+                (px.own_sdf + 10.0) / 20.0,
+                px.normal.x * 0.5 + 0.5,
+                0.5
+            );
+        }",
+    ))?;
+    let surface = wait!(engine.surface(Offscreen::new((48, 32), OffscreenFormat::LinearF32), || {}))?;
+    let group = surface.backdrop_group_unfiltered(
+        cherenkov::BackdropSpec::FULL
+            .union(cherenkov::BackdropUnion::new(20.0).expect("union")),
+    );
+    let a = surface.layer();
+    let b = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 48.0, 32.0),
+                WorkingColor::new([0.0, 0.0, 0.0, 0.0]),
+            );
+        }));
+        tx[surface.root()].push(&a);
+        tx[&a]
+            .clip(Rect::new(4.0, 8.0, 20.0, 24.0))
+            .backdrop(group.sample_with(shader.effect(Vec::new())));
+        tx[surface.root()].push(&b);
+        tx[&b]
+            .clip(Rect::new(26.0, 8.0, 42.0, 24.0))
+            .backdrop(group.sample());
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    let readback = wait!(surface.readback())?;
+    // At (22.5, 16.5): d_a = 2.5, d_b = 3.5 — a owns the pixel (w_a = 1)
+    // at coverage 1, so the premultiplied encoding lands verbatim.
+    // m = 2.5 − (19/20)²·5 = −2.0125; the folded gradient is
+    // (1 − h/2)·∇a + (h/2)·∇b = (0.525·(+1) + 0.475·(−1), 0) → +x.
+    let px = pixel(&readback, 22, 16);
+    let (sdf, own, nx) = (
+        px[0].mul_add(20.0, -10.0),
+        px[1].mul_add(20.0, -10.0),
+        px[2].mul_add(2.0, -1.0),
+    );
+    assert!((sdf - -2.0125).abs() <= 0.05, "px.sdf {sdf}, expected −2.0125");
+    assert!((own - 2.5).abs() <= 0.05, "px.own_sdf {own}, expected 2.5");
+    assert!((nx - 1.0).abs() <= 0.05, "px.normal.x {nx}, expected +1");
     Ok(())
 }
 }

@@ -270,6 +270,13 @@ struct Backdrops<'a> {
     spaces: usize,
     /// The composition space each group's first member was found in.
     member_space: HashMap<u32, usize>,
+    /// Each union group's member clip boxes — `(box shape,
+    /// device-from-box-local)` — in paint order, collected ahead of the
+    /// walk because a member's field reads every member's distance.
+    unions: HashMap<u32, Vec<(crate::sdf::BoxShape, Affine)>>,
+    /// Per-group count of members already sampled: the next member's
+    /// index in the group's paint order.
+    ords: HashMap<u32, usize>,
 }
 
 impl Backdrops<'_> {
@@ -359,15 +366,18 @@ impl Renderer {
             space: BlendSpace::Linear,
             semantic: true,
         }];
+        let root_tf = scene.root.transform
+            * Affine::translate((-scene.root.scroll_offset.x, -scene.root.scroll_offset.y));
+        let unions = self.union_members(scene, root_tf)?;
         let mut backdrops = Backdrops {
             groups: &scene.backdrop_groups,
             captures: HashMap::new(),
             space: 0,
             spaces: 0,
             member_space: HashMap::new(),
+            unions,
+            ords: HashMap::new(),
         };
-        let root_tf = scene.root.transform
-            * Affine::translate((-scene.root.scroll_offset.x, -scene.root.scroll_offset.y));
         self.render_items(
             &scene.root.items,
             root_tf,
@@ -382,6 +392,108 @@ impl Renderer {
             height: self.height,
             pixels: canvas.pixels,
         })
+    }
+
+    /// Every union group's member clip boxes — `(box shape,
+    /// device-from-box-local)` — in paint order. A member's union field
+    /// reads every member's distance, so the list is collected ahead of
+    /// the walk on the same traversal the walk itself makes. A union
+    /// member whose clip has no analytic SDF fails with
+    /// `backdrop-effect-sdf-path`, as it does at sample time on every
+    /// implementation.
+    fn union_members(
+        &self,
+        scene: &Scene,
+        root_tf: Affine,
+    ) -> Result<HashMap<u32, Vec<(crate::sdf::BoxShape, Affine)>>, RenderError> {
+        let union: std::collections::HashSet<u32> = scene
+            .backdrop_groups
+            .iter()
+            .filter(|g| g.union.is_some())
+            .map(|g| g.id)
+            .collect();
+        let mut out = HashMap::new();
+        if union.is_empty() {
+            return Ok(out);
+        }
+        self.collect_members(
+            &scene.root.items,
+            root_tf,
+            (self.width, self.height),
+            &union,
+            &mut out,
+        )?;
+        for members in out.values() {
+            if members.len() > cherenkov::BackdropUnion::MAX_MEMBERS as usize {
+                return Err(RenderError::Backdrop("backdrop-union-members".to_string()));
+            }
+        }
+        Ok(out)
+    }
+
+    /// The member-collection traversal: the paint-order walk's
+    /// transform accumulation, recording union-group members' clip
+    /// boxes. Display-list groups hold no layers, so they hold no
+    /// members; a projective layer's members live in its local image's
+    /// texel space, which the same placement math reaches. `dims` is
+    /// the enclosing renderer's pixel size — a projective placement is
+    /// computed against it.
+    fn collect_members(
+        &self,
+        items: &[Item],
+        tf: Affine,
+        dims: (usize, usize),
+        union: &std::collections::HashSet<u32>,
+        out: &mut HashMap<u32, Vec<(crate::sdf::BoxShape, Affine)>>,
+    ) -> Result<(), RenderError> {
+        use crate::projective::{domain, place, pose, to_raster};
+        for item in items {
+            let Item::Layer(child) = item else {
+                continue;
+            };
+            let ctf = tf * child.transform;
+            if let Some(gid) = child.backdrop
+                && union.contains(&gid)
+            {
+                let clip = child.clip.as_ref().ok_or_else(|| {
+                    RenderError::Backdrop(format!("backdrop group {gid} member layer has no clip"))
+                })?;
+                let member = crate::sdf::box_params(clip)
+                    .map(|(shape, extra)| (shape, ctf * extra))
+                    .ok_or_else(|| union_member_clip_error(clip))?;
+                out.entry(gid).or_default().push(member);
+            }
+            let scroll = Affine::translate((-child.scroll_offset.x, -child.scroll_offset.y));
+            if let Some(projection) = &child.projection {
+                let clip = child
+                    .clip
+                    .as_ref()
+                    .ok_or_else(|| RenderError::Projective("projective-unclipped".into()))?;
+                let pose = pose(projection, child.transform).map_err(RenderError::Projective)?;
+                let homography = to_raster(&pose, tf);
+                if let Some(placement) = place(
+                    &homography,
+                    domain(clip),
+                    dims,
+                    self.reconstruction.refine(),
+                )
+                .map_err(RenderError::Projective)?
+                {
+                    let local = Self::new(placement.width, placement.height)
+                        .with_reconstruction(self.reconstruction);
+                    local.collect_members(
+                        &child.items,
+                        placement.local_to_texel * scroll,
+                        (placement.width, placement.height),
+                        union,
+                        out,
+                    )?;
+                }
+            } else {
+                self.collect_members(&child.items, ctf * scroll, dims, union, out)?;
+            }
+        }
+        Ok(())
     }
 
     /// Render `items` (a layer's contents) into the canvas on top of
@@ -889,14 +1001,22 @@ impl Renderer {
         )
     }
 
-    /// Draw the member's shared group capture into `canvas` under the
-    /// member clip's exact coverage, source-over, at full strength —
-    /// the member's own scope attenuates it at composite. `clips` is
-    /// the enclosing clip stack; the member's own clip is the sampled
-    /// shape.
+    /// Draw the member's shared group capture into `canvas`,
+    /// source-over, at full strength — the member's own scope
+    /// attenuates it at composite. `clips` is the enclosing clip stack;
+    /// the member's own clip is the sampled shape.
+    ///
+    /// A union member's composite coverage is its antialiased ownership
+    /// weight times the antialiased coverage of `field < outer`,
+    /// evaluated at pixel centres against the group's shared field —
+    /// it replaces the member's clip coverage here only; the member's
+    /// own content stays clipped as today. A lone member with `outer >
+    /// 0` folds to its own field. SDF built-ins read the field's
+    /// distance and normal, the same way a shader effect does.
     ///
     /// # Errors
-    /// `RenderError::Backdrop` when the member has no clip.
+    /// `RenderError::Backdrop` when the member has no clip, or a union
+    /// member's clip has no analytic SDF.
     fn backdrop_sample(
         &self,
         child: &Layer,
@@ -904,26 +1024,59 @@ impl Renderer {
         clips: &[Vec<Segment>],
         canvas: &mut Canvas,
         space: BlendSpace,
-        backdrops: &Backdrops<'_>,
+        backdrops: &mut Backdrops<'_>,
     ) -> Result<(), RenderError> {
         let gid = child.backdrop.expect("callers check backdrop membership");
         let clip = child.clip.as_ref().ok_or_else(|| {
             RenderError::Backdrop(format!("backdrop group {gid} member layer has no clip"))
         })?;
-        let coverage = self.shape_coverage(clip, FillRule::NonZero, tf, clips);
+        let union = backdrops.group(gid)?.union;
+        let outer = child.backdrop_outer;
+        let field_member = union.is_some() || outer > 0.0;
+        // The union composite's clip is the ancestors' alone; the
+        // member's own clip enters through the field below.
+        let coverage = if field_member {
+            self.shape_coverage(
+                &Shape::Rect(self.scene_rect),
+                FillRule::NonZero,
+                Affine::IDENTITY,
+                clips,
+            )
+        } else {
+            self.shape_coverage(clip, FillRule::NonZero, tf, clips)
+        };
         if let Some(capture) = backdrops.captures.get(&gid) {
             let cap_space = capture.space;
-            // SDF effects need the member clip's analytic box (the GPU
-            // errors the same name for a mask or path clip).
+            // SDF effects and field members need the member clip's
+            // analytic box (the GPU errors the same name for a mask or
+            // path clip).
             let sdf_clip = match &child.backdrop_effect {
-                None | Some(cherenkov_scene::BackdropEffectSpec::ColorMatrix { .. }) => None,
-                Some(_) => Some(
+                None | Some(cherenkov_scene::BackdropEffectSpec::ColorMatrix { .. })
+                    if !field_member =>
+                {
+                    None
+                }
+                _ => Some(
                     crate::sdf::box_params(clip)
                         .map(|(shape, extra)| (shape, tf * extra))
                         .ok_or_else(|| {
-                            RenderError::Backdrop("backdrop-effect-sdf-path".to_string())
+                            if field_member {
+                                union_member_clip_error(clip)
+                            } else {
+                                RenderError::Backdrop("backdrop-effect-sdf-path".to_string())
+                            }
                         })?,
                 ),
+            };
+            // The member's position in the group's paint order — the
+            // ownership tie-break's `ord`.
+            let ord = if union.is_some() {
+                let next = backdrops.ords.entry(gid).or_insert(0);
+                let ord = *next;
+                *next += 1;
+                ord
+            } else {
+                0
             };
             let cw = canvas.width;
             #[expect(
@@ -931,16 +1084,34 @@ impl Renderer {
                 reason = "pixel indices are far below 2^53"
             )]
             for (i, dst) in canvas.pixels.iter_mut().enumerate() {
-                let c = coverage[i];
+                let p = [(i % cw) as f64 + 0.5, (i / cw) as f64 + 0.5];
+                // The field's coverage factor: `w_own · coverage(field −
+                // outer, w)` for a union member, `coverage(d − outer, 1)`
+                // for a lone `outer` member (an own field's gradient is
+                // unit), 1 otherwise.
+                let (field_cov, field) = if let Some(k) = union {
+                    let members = backdrops
+                        .unions
+                        .get(&gid)
+                        .expect("union members are collected before sampling");
+                    let (d, n, w_own, w) = union_field(members, k, ord, p);
+                    (
+                        w_own * (0.5 - (d - outer) / w).clamp(0.0, 1.0),
+                        Some((d, n)),
+                    )
+                } else if outer > 0.0 {
+                    let (shape, clip_tf) =
+                        sdf_clip.as_ref().expect("outer members carry a box clip");
+                    let (d, _) = crate::sdf::distance_and_normal(shape, clip_tf, p);
+                    ((0.5 - (d - outer)).clamp(0.0, 1.0), None)
+                } else {
+                    (1.0, None)
+                };
+                let c = coverage[i] * field_cov;
                 if c == 0.0 {
                     continue;
                 }
-                let src = sample_backdrop(
-                    child,
-                    capture,
-                    [(i % cw) as f64 + 0.5, (i / cw) as f64 + 0.5],
-                    sdf_clip.as_ref(),
-                );
+                let src = sample_backdrop(child, capture, p, sdf_clip.as_ref(), field);
                 *dst = src_over(*dst, move_space(src.map(|v| v * c), cap_space, space));
             }
         }
@@ -1210,7 +1381,9 @@ impl Renderer {
 /// opacity. The capture is `width × height` texels at `scale` against
 /// device pixels: a device point `q` samples it bilinearly at `q · scale`.
 /// `sdf_clip` is the member clip's box shape and box → box-local inverse,
-/// `Some` whenever the effect reads the clip's SDF.
+/// `Some` whenever the effect reads the clip's SDF. `field` is the
+/// union field's `(distance, normal)` at `p` — `Some` exactly when the
+/// group has one, and then it is what the SDF effects read.
 #[allow(clippy::many_single_char_names)] // p/q/c/t/d/n name points and pixel values
 #[expect(
     clippy::cast_possible_truncation,
@@ -1222,6 +1395,7 @@ fn sample_backdrop(
     capture: &Capture,
     p: [f64; 2],
     sdf_clip: Option<&(crate::sdf::BoxShape, Affine)>,
+    field: Option<(f64, [f64; 2])>,
 ) -> [f64; 4] {
     use cherenkov_scene::BackdropEffectSpec as E;
     let (base, levels, scale) = (&capture.canvas, &capture.levels, capture.scale);
@@ -1252,6 +1426,14 @@ fn sample_backdrop(
         let t = lc - k0;
         std::array::from_fn(|i| (hi[i] - lo[i]).mul_add(t, lo[i]))
     };
+    // The SDF effects' `(d, n)`: the union field when the group has
+    // one, else the member's own box SDF — evaluated once, lazily.
+    let dn = || {
+        field.unwrap_or_else(|| {
+            let (shape, clip_tf) = sdf_clip.expect("SDF effects carry a box clip");
+            crate::sdf::distance_and_normal(shape, clip_tf, p)
+        })
+    };
     match &layer.backdrop_effect {
         // `bilinear` at a texel centre is the texel: a 1:1 capture keeps
         // the exact pre-effect read.
@@ -1281,8 +1463,7 @@ fn sample_backdrop(
             ]
         }
         Some(E::Refraction { depth, strength }) => {
-            let (shape, clip_tf) = sdf_clip.expect("SDF effects carry a box clip");
-            let (d, n) = crate::sdf::distance_and_normal(shape, clip_tf, p);
+            let (d, n) = dn();
             let t = (1.0 + d / depth).clamp(0.0, 1.0);
             let q = [
                 (-n[0] * strength).mul_add(t * t, p[0]),
@@ -1295,8 +1476,7 @@ fn sample_backdrop(
             color,
             gain,
         }) => {
-            let (shape, clip_tf) = sdf_clip.expect("SDF effects carry a box clip");
-            let (d, _) = crate::sdf::distance_and_normal(shape, clip_tf, p);
+            let (d, _) = dn();
             let t = (1.0 + d / rim_w).clamp(0.0, 1.0);
             let mut c = at(p);
             let k = color[3] * gain * t * t;
@@ -1310,12 +1490,106 @@ fn sample_backdrop(
             edge_level,
             interior_level,
         }) => {
-            let (shape, clip_tf) = sdf_clip.expect("SDF effects carry a box clip");
-            let (d, _) = crate::sdf::distance_and_normal(shape, clip_tf, p);
+            let (d, _) = dn();
             let t = (1.0 + d / depth).clamp(0.0, 1.0);
             at_level(p, (edge_level - interior_level).mul_add(t, *interior_level))
         }
     }
+}
+
+/// The `Backdrop` error for a union member whose clip gives
+/// [`crate::sdf::box_params`] no shape: `backdrop-union-degenerate-member`
+/// for a degenerate box (a zero-radius circle or ellipse, or a line —
+/// the cases `box_shape` maps to `None`), `backdrop-effect-sdf-path`
+/// for a clip with no analytic boundary at all (a path).
+fn union_member_clip_error(clip: &cherenkov_scene::Shape) -> RenderError {
+    let degenerate = match clip {
+        cherenkov_scene::Shape::Circle(c) => c.radius <= 0.0,
+        cherenkov_scene::Shape::Ellipse(e) => e.radii().x <= 0.0,
+        cherenkov_scene::Shape::Line(_) => true,
+        _ => false,
+    };
+    RenderError::Backdrop(if degenerate {
+        "backdrop-union-degenerate-member".to_string()
+    } else {
+        "backdrop-effect-sdf-path".to_string()
+    })
+}
+
+/// A union group's field at device pixel centre `p`, in f64:
+/// `(field, normal, w_own, w)` — every member's distance and outward
+/// normal folded in ascending order with the quadratic smin
+/// `m ← min(m, d) − h²·k/4`, `h = max(k − |m − d|, 0)/k` (the fold is
+/// sorted, so `|m − d| = d − m`), the folded gradient's unit normal,
+/// member `ord`'s ownership weight `a_ord / Σ_j a_j`, and the folded
+/// gradient's length `w` (the field's pixel width).
+///
+/// `a_i` is the antialiased ownership of member `i` against its nearest
+/// competitor: `f_i = d₂ − d_i`, `a_i = clamp(0.5 + f_i/|∇d₂ − ∇d_i|,
+/// 0, 1)`, where `d₂` is the smallest distance among the *other*
+/// members — the ownership boundary's own slope, which does not cancel
+/// between facing edges. Only where `|∇d₂ − ∇d_i| < 1e-6` (coincident
+/// shapes) is ownership a hard step, an exact `f_i == 0` tie going to
+/// the earliest member in paint order — which `order[0]` names, the
+/// stable sort keeping ties in that order. The weights partition unity,
+/// including near a triple point.
+fn union_field(
+    members: &[(crate::sdf::BoxShape, Affine)],
+    smoothing: f64,
+    ord: usize,
+    pixel: [f64; 2],
+) -> (f64, [f64; 2], f64, f64) {
+    let count = members.len();
+    let mut dists = Vec::with_capacity(count);
+    let mut grads = Vec::with_capacity(count);
+    for (shape, clip_tf) in members {
+        let (dist, grad) = crate::sdf::distance_and_normal(shape, clip_tf, pixel);
+        dists.push(dist);
+        grads.push(grad);
+    }
+    // Ascending by distance; `sort_by` is stable, keeping exact ties in
+    // paint order.
+    let mut order: Vec<usize> = (0..count).collect();
+    order.sort_by(|&a, &b| dists[a].total_cmp(&dists[b]));
+    let mut field = dists[order[0]];
+    let mut grad = grads[order[0]];
+    for &j in &order[1..] {
+        let blend = (smoothing - (dists[j] - field)).max(0.0) / smoothing;
+        field = (blend * blend * smoothing).mul_add(-0.25, field);
+        let share = 0.5 * blend;
+        grad[0] = share.mul_add(grads[j][0] - grad[0], grad[0]);
+        grad[1] = share.mul_add(grads[j][1] - grad[1], grad[1]);
+    }
+    let width = grad[0].hypot(grad[1]).max(1e-6);
+    let nrm = [grad[0] / width, grad[1] / width];
+    // `a_j` per member, against its nearest competitor `order[0]` (or
+    // `order[1]` when `j` itself is the argmin).
+    let w_own = if count == 1 {
+        1.0
+    } else {
+        let mut sum = 0.0f64;
+        let mut own = 0.0f64;
+        for j in 0..count {
+            let other = if order[0] == j { order[1] } else { order[0] };
+            let f = dists[other] - dists[j];
+            let slope = (grads[other][0] - grads[j][0]).hypot(grads[other][1] - grads[j][1]);
+            let a = if slope < 1e-6 {
+                if f > 0.0 || (f == 0.0 && j == order[0]) {
+                    1.0
+                } else {
+                    0.0
+                }
+            } else {
+                (0.5 + f / slope).clamp(0.0, 1.0)
+            };
+            sum += a;
+            if j == ord {
+                own = a;
+            }
+        }
+        own / sum
+    };
+    (field, nrm, w_own, width)
 }
 
 /// The capture grid of `canvas` at `scale` (`0 < s < 1`): texel `(i, j)`

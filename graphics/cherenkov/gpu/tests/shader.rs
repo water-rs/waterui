@@ -8,6 +8,7 @@ use naga::{Module, front::wgsl};
 
 const SHADER: &str = include_str!("../src/render/shader.wgsl");
 const SHARED: &str = include_str!("../src/render/shared.wgsl");
+const UNION: &str = include_str!("../src/render/union.wgsl");
 const BLEND: &str = include_str!("../src/render/blend.wgsl");
 const PROJECTIVE: &str = include_str!("../src/render/projective.wgsl");
 const MIP: &str = include_str!("../src/render/mip.wgsl");
@@ -17,10 +18,39 @@ const RESOLVE: &str = include_str!("../src/render/resolve.wgsl");
 /// (10.13 → 2.0), which is where `instance_id` and friends became legal.
 const MSL_VERSION: (u8, u8) = (2, 0);
 
+/// Removes every `// <marker>`-bracketed span — the same transform
+/// `build.rs`'s `drop_marked` applies to write `shader_no_union.wgsl`.
+fn drop_marked(source: &str, marker: &str) -> String {
+    let tag = format!("// {marker}");
+    let mut out = String::with_capacity(source.len());
+    let mut rest = source;
+    while let Some((head, tail)) = rest.split_once(tag.as_str()) {
+        out.push_str(head);
+        rest = tail.split_once(tag.as_str()).map_or(tail, |(_, tail)| tail);
+    }
+    out.push_str(rest);
+    out
+}
+
 fn composed(variant: u32) -> (Module, naga::valid::ModuleInfo) {
     // The engine module is `shared.wgsl`, `shader.wgsl` then `blend.wgsl`,
-    // as in build.rs.
-    let source = format!("const VARIANT: u32 = {variant}u;\n{SHARED}\n{SHADER}\n{BLEND}");
+    // as in build.rs: the union variant additionally prepends
+    // `UNION_MAX_MEMBERS` and links `union.wgsl`; the plain variants drop
+    // every `// union-stub` span.
+    let (cap, shader, union) = if variant == 3 {
+        (
+            format!(
+                "const UNION_MAX_MEMBERS: u32 = {}u;\n",
+                cherenkov::BackdropUnion::MAX_MEMBERS
+            ),
+            SHADER.to_string(),
+            UNION,
+        )
+    } else {
+        (String::new(), drop_marked(SHADER, "union-stub"), "")
+    };
+    let source =
+        format!("const VARIANT: u32 = {variant}u;\n{cap}{SHARED}\n{shader}\n{union}{BLEND}");
     let module = wgsl::parse_str(&source).unwrap_or_else(|e| panic!("variant {variant}: {e}"));
     let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
         .validate(&module)
@@ -30,7 +60,7 @@ fn composed(variant: u32) -> (Module, naga::valid::ModuleInfo) {
 
 split_test! {
 fn every_variant_emits_msl() {
-    for variant in 0..3 {
+    for variant in 0..4 {
         let (module, info) = composed(variant);
         let options = msl::Options {
             lang_version: MSL_VERSION,
@@ -44,7 +74,7 @@ fn every_variant_emits_msl() {
 
 split_test! {
 fn every_variant_emits_spirv() {
-    for variant in 0..3 {
+    for variant in 0..4 {
         let (module, info) = composed(variant);
         let mut writer = spv::Writer::new(&spv::Options::default())
             .unwrap_or_else(|e| panic!("variant {variant}: spv: {e}"));
@@ -59,7 +89,7 @@ fn every_variant_emits_spirv() {
 
 split_test! {
 fn every_variant_emits_hlsl() {
-    for variant in 0..3 {
+    for variant in 0..4 {
         let (module, info) = composed(variant);
         let options = hlsl::Options::default();
         let mut out = String::new();
@@ -78,7 +108,15 @@ fn every_variant_emits_hlsl() {
 /// renderer feeds `create_shader_module`, so an invalid module surfaces
 /// here before any device exists.
 fn effect_module(name: &str, user: &str) -> (Module, naga::valid::ModuleInfo) {
-    let text = cherenkov_gpu::backdrop_effect_text(user);
+    // A member may draw under a union: the union-shape module validates
+    // on the same user source before the plain one is emitted below.
+    let union_text = cherenkov_gpu::backdrop_effect_text(user, true);
+    let union_module =
+        wgsl::parse_str(&union_text).unwrap_or_else(|e| panic!("{name} (union): {e}"));
+    Validator::new(ValidationFlags::all(), Capabilities::empty())
+        .validate(&union_module)
+        .unwrap_or_else(|e| panic!("{name} (union): {e:?}"));
+    let text = cherenkov_gpu::backdrop_effect_text(user, false);
     let module = wgsl::parse_str(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
     let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
         .validate(&module)
@@ -123,8 +161,8 @@ fn backdrop_effect_text_emits() {
         // BackdropEffect::Color: a premultiplied matrix multiply.
         (
             "color-matrix",
-            "fn backdrop_effect(p: vec2<f32>, sdf: f32, normal: vec2<f32>, size: vec2<f32>, params: array<vec4<f32>, 16>) -> vec4<f32> {
-                let c = backdrop_sample(p);
+            "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+                let c = backdrop_sample(px.p);
                 return vec4<f32>(
                     c.rgb * params[0].xyz + params[1].xyz * c.a,
                     c.a
@@ -134,24 +172,24 @@ fn backdrop_effect_text_emits() {
         // BackdropEffect::Refraction: displaced sample along the normal.
         (
             "refraction-displace",
-            "fn backdrop_effect(p: vec2<f32>, sdf: f32, normal: vec2<f32>, size: vec2<f32>, params: array<vec4<f32>, 16>) -> vec4<f32> {
-                let t = clamp(1.0 + sdf / params[0].y, 0.0, 1.0);
-                return backdrop_sample(p - normal * params[0].x * t * t);
+            "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+                let t = clamp(1.0 + px.sdf / params[0].y, 0.0, 1.0);
+                return backdrop_sample(px.p - px.normal * params[0].x * t * t);
             }",
         ),
         // BackdropEffect::Rim: a highlight scaled by the inside distance.
         (
             "rim-light",
-            "fn backdrop_effect(p: vec2<f32>, sdf: f32, normal: vec2<f32>, size: vec2<f32>, params: array<vec4<f32>, 16>) -> vec4<f32> {
-                let rim = clamp(1.0 + sdf / 4.0, 0.0, 1.0);
-                return vec4<f32>(backdrop_sample(p).rgb * (1.0 + params[0].x * rim), backdrop_sample(p).a);
+            "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+                let rim = clamp(1.0 + px.sdf / 4.0, 0.0, 1.0);
+                return vec4<f32>(backdrop_sample(px.p).rgb * (1.0 + params[0].x * rim), backdrop_sample(px.p).a);
             }",
         ),
         // A representative BackdropEffect::Shader source.
         (
             "user-size",
-            "fn backdrop_effect(p: vec2<f32>, sdf: f32, normal: vec2<f32>, size: vec2<f32>, params: array<vec4<f32>, 16>) -> vec4<f32> {
-                return vec4<f32>(size.x / 256.0, size.y / 256.0, 0.0, 1.0);
+            "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+                return vec4<f32>(px.size.x / 256.0, px.size.y / 256.0, 0.0, 1.0);
             }",
         ),
     ];

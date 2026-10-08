@@ -44,6 +44,7 @@ const FLAG_HAS_MASK: u32 = 4u;      // clip coverage x atlas mask cell
 const FLAG_MASK_TEXTURE: u32 = 8u;  // mask sampled from `mask_tex`, not the atlas
 const FLAG_TEX_SRGB: u32 = 16u;     // PAINT_TEXTURE source stores encoded pixels
 const FLAG_BLEND_SRC: u32 = 32u;    // the composite blends in the source's space
+const FLAG_UNION: u32 = 64u;        // PAINT_BACKDROP member reads the union field
 
 // A rounded box centred at the origin. `radii` are the corner radii along x
 // in the order top-left, top-right, bottom-right, bottom-left; the radius
@@ -275,6 +276,19 @@ fn sdf_sample(s: Shape, p: vec2<f32>, specialize_quadratic: bool) -> DistanceSam
     return DistanceSample(max(a.x, a.y), vec4<f32>(sgn * g, 0.0, 0.0));
 }
 
+// The signed distance and unit outward normal at device point `pixel`
+// of the clip shape `s` inverse-mapped by `ci` — the member-clip math
+// `paint_backdrop` applies to the member's own clip and the union fold
+// applies to every member's record.
+fn device_sdf(ci: array<vec4<f32>, 2>, s: Shape, pixel: vec2<f32>) -> vec4<f32> {
+    let pc = apply(ci, pixel);
+    let sample = sdf_sample(s, pc, false);
+    let g = sample.gradient;
+    let dg = vec2<f32>(ci[0].x * g.x + ci[0].y * g.y, ci[0].z * g.x + ci[0].w * g.y);
+    let len = max(length(dg), 1e-6);
+    return vec4<f32>(sample.distance / len, dg / len, 0.0);
+}
+
 // Device-space gradient of a signed distance, for the local -> device
 // affine `m` (J^-T g), before its length is scaled into per-pixel change.
 fn device_grad_vec(m: array<vec4<f32>, 2>, g: vec2<f32>) -> vec2<f32> {
@@ -466,6 +480,7 @@ fn shape_coverage(s: Shape, p: vec2<f32>, m: array<vec4<f32>, 2>, specialize_qua
         g.z,
     );
 }
+
 
 // Coverage of the instance's clip shape and mask at `in.device`: the
 // geometric clip SDF times the atlas-or-texture mask texel, matching

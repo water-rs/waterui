@@ -447,6 +447,8 @@ struct PrepLayer {
     backdrop: Option<u32>,
     /// The member's per-member backdrop effect, if any.
     backdrop_effect: Option<cherenkov::BackdropEffect>,
+    /// The member's outer extent in device pixels (`0` for none).
+    backdrop_outer: cherenkov::BackdropOuter,
 }
 
 /// An engine layer plus the ops it records each frame.
@@ -548,6 +550,8 @@ fn cherenkov_features() -> Vec<Feature> {
         Feature::BackdropEffect,
         Feature::BackdropScale,
         Feature::BackdropLevels,
+        Feature::BackdropUnion,
+        Feature::BackdropOuter,
         Feature::Projective,
         // `sRGB` maps to `SrgbEncoded`; `linear-p3` and `linear-srgb` are
         // both linear interpolation, which is the working space already.
@@ -976,6 +980,10 @@ fn prep_layer(
             .as_ref()
             .map(crate::convert::backdrop_effect)
             .transpose()?,
+        backdrop_outer: crate::convert::backdrop_outer(
+            layer.backdrop_outer,
+            layer.backdrop.unwrap_or(0),
+        )?,
     };
     // A text layer records its source through the engine's parley
     // adapter; its items are the reference lowering the oracle draws.
@@ -1173,14 +1181,11 @@ fn build_layer(
         }
         if let Some(id) = prep.backdrop {
             let group = &groups[&id];
-            match &prep.backdrop_effect {
-                None => {
-                    edit.backdrop(group.sample());
-                }
-                Some(effect) => {
-                    edit.backdrop(group.sample_with(effect.clone()));
-                }
-            }
+            let sample = prep.backdrop_effect.as_ref().map_or_else(
+                || group.sample(),
+                |effect| group.sample_with(effect.clone()),
+            );
+            edit.backdrop(sample.outer(prep.backdrop_outer));
         }
     }
     if let Some(parent) = parent {

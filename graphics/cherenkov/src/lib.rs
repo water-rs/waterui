@@ -53,8 +53,8 @@ pub use crate::animation::{
     settled, spring_step,
 };
 pub use crate::backdrop::{
-    BackdropShaderSource, BackdropSpec, CaptureLevels, CaptureLevelsError, CaptureScale,
-    CaptureScaleError,
+    BackdropShaderSource, BackdropSpec, BackdropUnion, BackdropUnionError, CaptureLevels,
+    CaptureLevelsError, CaptureScale, CaptureScaleError,
 };
 pub use crate::backend::{
     Backend, Display, Frame, FrameRedraw, Renderer, SurfaceFrame, SurfaceInfo, Visibility,
@@ -108,11 +108,11 @@ pub use crate::text::{TextLayout, draw_text};
 // The moved layer-tree types: re-exported at the root exactly like the
 // rest of `cherenkov-record`.
 pub use cherenkov_record::{
-    BackdropEffect, BackdropId, BackdropSample, BackdropSampling, BackdropShaderEffect,
-    BackdropShaderId, ColorMatrix, ContentOp, GpuInstalls, ImageLimits, Install, Layer,
-    LayerAnimations, LayerContent, LayerEdit, LayerId, LayerNode, LayerOwner, LevelRamp,
-    LevelRampError, Projective, ProjectiveError, ProjectiveLayers, Prop, Queue, Realize,
-    Refraction, RefreshRange, ResourceId, Rim, Shared, SurfaceId, SurfaceTree, Target, Transaction,
-    snap_animating,
+    BackdropEffect, BackdropId, BackdropOuter, BackdropOuterError, BackdropSample,
+    BackdropSampling, BackdropShaderEffect, BackdropShaderId, ColorMatrix, ContentOp, GpuInstalls,
+    ImageLimits, Install, Layer, LayerAnimations, LayerContent, LayerEdit, LayerId, LayerNode,
+    LayerOwner, LevelRamp, LevelRampError, Projective, ProjectiveError, ProjectiveLayers, Prop,
+    Queue, Realize, Refraction, RefreshRange, ResourceId, Rim, Shared, SurfaceId, SurfaceTree,
+    Target, Transaction, snap_animating,
 };
 pub use kurbo::Stroke;
