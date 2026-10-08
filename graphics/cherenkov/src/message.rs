@@ -117,7 +117,7 @@ impl std::fmt::Debug for FontData {
 pub type RenderOutcome<B> = Result<
     (
         Next,
-        rustc_hash::FxHashMap<SurfaceId, Next>,
+        rustc_hash::FxHashMap<SurfaceId, (Next, bool)>,
         FrameStats,
         <<B as Backend>::Renderer as Renderer>::FrameCommit,
     ),

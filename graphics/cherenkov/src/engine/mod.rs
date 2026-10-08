@@ -17,6 +17,8 @@ use std::sync::Arc;
 
 use crate::backend::{Backend, Visibility};
 use crate::frame::{FrameTime, Next};
+use std::cell::Cell;
+
 use cherenkov_record::{ChangeSet, Shared, SurfaceId};
 
 /// A live surface's engine-side entry: its shared UI-thread queue state
@@ -29,6 +31,8 @@ pub struct SurfaceEntry<B: Backend> {
     pub waker: Arc<SurfaceWaker>,
     /// The cell `Surface::next_frame` reads.
     pub next_frame: Weak<RefCell<Next>>,
+    /// The cell `Surface::presentation_pending` reads.
+    pub present_pending: Weak<Cell<bool>>,
 }
 
 /// The engine's surfaces, by their shared UI-thread state.
@@ -79,16 +83,20 @@ fn drain_visible<B: Backend>(
 /// frame's keyed map, so publication is linear in the surface count.
 fn publish_next<B: Backend>(
     surfaces: &Surfaces<B>,
-    frame_next: &rustc_hash::FxHashMap<SurfaceId, Next>,
+    frame_next: &rustc_hash::FxHashMap<SurfaceId, (Next, bool)>,
 ) {
     for entry in surfaces {
-        let (Some(shared), Some(next_frame)) = (entry.shared.upgrade(), entry.next_frame.upgrade())
-        else {
+        let (Some(shared), Some(next_frame), Some(present_pending)) = (
+            entry.shared.upgrade(),
+            entry.next_frame.upgrade(),
+            entry.present_pending.upgrade(),
+        ) else {
             continue;
         };
-        let next = frame_next
+        let (next, pending) = frame_next
             .get(&shared.borrow().id)
-            .map_or(Next::Idle, Clone::clone);
+            .map_or((Next::Idle, false), Clone::clone);
         next_frame.replace(next);
+        present_pending.set(pending);
     }
 }
