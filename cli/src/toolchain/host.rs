@@ -15,6 +15,7 @@ use std::{
     process::{Output, Stdio},
 };
 
+use cargo_metadata::{Metadata, MetadataCommand};
 use smol::{io::AsyncReadExt as _, process::Command, unblock};
 
 use crate::utils::{CommandError, format_failure_stream, std_output_enabled};
@@ -507,6 +508,51 @@ impl Host {
                 ),
             })
         }
+    }
+
+    /// `cargo metadata` as `command` configures it, run on this host.
+    ///
+    /// [`MetadataCommand::exec`] spawns cargo with the process's own
+    /// environment. This takes the invocation `command` describes — its
+    /// arguments, working directory and environment overrides — and runs it
+    /// through [`Host::command`] instead, so cargo is found on this host's
+    /// `PATH` and sees this host's environment. The output contract is
+    /// `exec`'s: a failed run is [`cargo_metadata::Error::CargoMetadata`]
+    /// carrying cargo's stderr, and the metadata is the first stdout line
+    /// that opens a JSON object, parsed on the blocking pool.
+    ///
+    /// # Errors
+    /// Every error [`MetadataCommand::exec`] reports.
+    pub async fn cargo_metadata(
+        &self,
+        command: &MetadataCommand,
+    ) -> Result<Metadata, cargo_metadata::Error> {
+        let invocation = command.cargo_command();
+        let mut cargo = self.command("cargo");
+        cargo.args(invocation.get_args()).kill_on_drop(true);
+        if let Some(dir) = invocation.get_current_dir() {
+            cargo.current_dir(dir);
+        }
+        for (key, value) in invocation.get_envs() {
+            match value {
+                Some(value) => cargo.env(key, value),
+                None => cargo.env_remove(key),
+            };
+        }
+        let output = cargo.output().await?;
+        unblock(move || {
+            if !output.status.success() {
+                return Err(cargo_metadata::Error::CargoMetadata {
+                    stderr: String::from_utf8(output.stderr)?,
+                });
+            }
+            let json = std::str::from_utf8(&output.stdout)?
+                .lines()
+                .find(|line| line.starts_with('{'))
+                .ok_or(cargo_metadata::Error::NoJson)?;
+            MetadataCommand::parse(json)
+        })
+        .await
     }
 
     /// Run `program` to completion with nothing of this process in its hands:

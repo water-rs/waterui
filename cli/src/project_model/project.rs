@@ -2196,9 +2196,14 @@ impl Project {
             .apple_managed_crate_context(self.ffi_crate_path(), &ffi_companion_targets())
             .await?;
 
-        templates::ffi::scaffold(&self.ffi_crate_path(), &ctx, &self.ffi_crate_name())
-            .await
-            .map_err(crate::backend::FailToInitBackend::Io)?;
+        templates::ffi::scaffold(
+            self.host(),
+            &self.ffi_crate_path(),
+            &ctx,
+            &self.ffi_crate_name(),
+        )
+        .await
+        .map_err(crate::backend::FailToInitBackend::Io)?;
 
         self.seed_managed_crate_lock(&self.ffi_crate_path(), &framework)
             .await
@@ -2227,6 +2232,7 @@ impl Project {
             .await?;
 
         templates::apple_preview::scaffold(
+            self.host(),
             &self.apple_preview_crate_path(),
             &ctx,
             &self.apple_preview_crate_name(),
@@ -2270,9 +2276,14 @@ impl Project {
         .with_project_root_path(self.root.clone());
 
         let crate_path = self.preview_ffi_crate_path(workspace_root);
-        templates::preview_ffi::scaffold(&crate_path, &ctx, &self.preview_ffi_crate_name())
-            .await
-            .map_err(crate::backend::FailToInitBackend::Io)?;
+        templates::preview_ffi::scaffold(
+            self.host(),
+            &crate_path,
+            &ctx,
+            &self.preview_ffi_crate_name(),
+        )
+        .await
+        .map_err(crate::backend::FailToInitBackend::Io)?;
         Ok(crate_path)
     }
 
@@ -2894,23 +2905,18 @@ async fn resolve_cargo_layout(
     framework: Option<ResolvedFramework>,
     mode: CargoResolution,
 ) -> eyre::Result<CargoLayout> {
-    let root = current_dir.to_path_buf();
-    let metadata_host = host.clone();
-    let metadata = unblock(move || {
-        let mut command = cargo_metadata::MetadataCommand::new();
-        command.current_dir(root);
-        match mode {
-            CargoResolution::Local => {
-                command.no_deps();
-            }
-            CargoResolution::Locked => {
-                command.other_options(vec!["--locked".to_string()]);
-            }
-            CargoResolution::Update => {}
+    let mut command = cargo_metadata::MetadataCommand::new();
+    command.current_dir(current_dir);
+    match mode {
+        CargoResolution::Local => {
+            command.no_deps();
         }
-        metadata_on(&metadata_host, &command)
-    })
-    .await?;
+        CargoResolution::Locked => {
+            command.other_options(vec!["--locked".to_string()]);
+        }
+        CargoResolution::Update => {}
+    }
+    let metadata = host.cargo_metadata(&command).await?;
     validate_resolved_cli(host, &metadata)?;
     if let Some(framework) = framework
         && framework.channel() != Some(FrameworkChannel::Stable)
@@ -2951,33 +2957,6 @@ fn package_at_manifest<'a>(
                 application_manifest.display()
             )
         })
-}
-
-/// `cargo metadata` as `command` configures it, run on `host` — its `PATH`,
-/// environment and working directory, the command's own `current_dir`
-/// taking precedence — with [`cargo_metadata::MetadataCommand::exec`]'s
-/// error semantics.
-pub(crate) fn metadata_on(
-    host: &Host,
-    command: &cargo_metadata::MetadataCommand,
-) -> Result<cargo_metadata::Metadata, cargo_metadata::Error> {
-    let spec = command.cargo_command();
-    let mut cargo = host.std_command("cargo");
-    cargo.args(spec.get_args());
-    if let Some(dir) = spec.get_current_dir() {
-        cargo.current_dir(dir);
-    }
-    let output = cargo.output()?;
-    if !output.status.success() {
-        return Err(cargo_metadata::Error::CargoMetadata {
-            stderr: String::from_utf8(output.stderr)?,
-        });
-    }
-    let stdout = std::str::from_utf8(&output.stdout)?
-        .lines()
-        .find(|line| line.starts_with('{'))
-        .ok_or(cargo_metadata::Error::NoJson)?;
-    cargo_metadata::MetadataCommand::parse(stdout)
 }
 
 /// Run `cargo tree` for the application package rooted at `project_root`'s
@@ -5306,10 +5285,11 @@ mod scaffold_tests {
         // `Project::open` resolves the project's layout with `cargo metadata
         // --locked`; a plain offline resolve records the patched sources in
         // the lock first.
-        cargo_metadata::MetadataCommand::new()
+        let mut command = cargo_metadata::MetadataCommand::new();
+        command
             .manifest_path(&manifest_path)
-            .other_options(vec!["--offline".to_string()])
-            .exec()
+            .other_options(vec!["--offline".to_string()]);
+        smol::block_on(host.cargo_metadata(&command))
             .expect("offline metadata resolves the patched project");
 
         project

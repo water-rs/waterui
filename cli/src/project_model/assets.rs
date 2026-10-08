@@ -383,29 +383,21 @@ pub async fn seed_managed_crate_lock(
     Ok(true)
 }
 
-/// `cargo metadata` on a manifest, run under `host` on the blocking pool.
-/// `features` mirrors the feature selection the build invokes with —
-/// optional dependencies (and the metadata they declare) only enter the
-/// resolved graph under it; an empty slice resolves the manifest's
-/// default feature set.
+/// `cargo metadata` on a manifest, run on `host`. `features` mirrors the
+/// feature selection the build invokes with — optional dependencies (and the
+/// metadata they declare) only enter the resolved graph under it; an empty
+/// slice resolves the manifest's default feature set.
 pub async fn crate_metadata(
     host: &crate::toolchain::Host,
     build_manifest: &Path,
     features: &[String],
 ) -> eyre::Result<cargo_metadata::Metadata> {
-    let manifest_path = build_manifest.to_path_buf();
-    let features = features.to_vec();
-    let host = host.clone();
-    smol::unblock(move || {
-        let mut command = cargo_metadata::MetadataCommand::new();
-        command.manifest_path(&manifest_path);
-        if !features.is_empty() {
-            command.features(cargo_metadata::CargoOpt::SomeFeatures(features));
-        }
-        crate::project::metadata_on(&host, &command)
-    })
-    .await
-    .map_err(Into::into)
+    let mut command = cargo_metadata::MetadataCommand::new();
+    command.manifest_path(build_manifest);
+    if !features.is_empty() {
+        command.features(cargo_metadata::CargoOpt::SomeFeatures(features.to_vec()));
+    }
+    host.cargo_metadata(&command).await.map_err(Into::into)
 }
 
 /// The features cargo resolved on each package of `metadata`'s graph — what
@@ -3534,6 +3526,20 @@ mod permission_audit_tests {
         assert!(message.contains("`other-push`"), "{message}");
     }
 
+    /// The iOS development entitlements `declarations` merge into an empty
+    /// table.
+    fn signed_entitlements(declarations: &AppleDeclarations) -> plist::Dictionary {
+        let mut entitlements = plist::Dictionary::new();
+        declarations
+            .merge_into_entitlements(
+                &mut entitlements,
+                crate::platform::TargetPlatform::IOS,
+                SigningEnvironment::Development,
+            )
+            .expect("merge entitlements");
+        entitlements
+    }
+
     /// Apple declarations are collected across the resolved graph: a
     /// `feature.<name>` table whose cargo feature is disabled contributes
     /// nothing, the same table with the feature on reaches the entitlements
@@ -3563,29 +3569,14 @@ mod permission_audit_tests {
             "app-enabled",
             "[dependencies]\npush = { path = \"../push\", features = [\"remote\"] }\n",
         );
+        let host = crate::toolchain::Host::current();
         let collect = |manifest: &Path| {
-            let metadata = smol::block_on(crate_metadata(
-                &crate::toolchain::Host::current(),
-                manifest,
-                &[],
-            ))
-            .expect("resolve the fixture graph");
+            let metadata = smol::block_on(crate_metadata(&host, manifest, &[]))
+                .expect("resolve the fixture graph");
             collect_apple_declarations(&metadata)
         };
-        let signed = |declarations: &AppleDeclarations| {
-            let mut entitlements = plist::Dictionary::new();
-            declarations
-                .merge_into_entitlements(
-                    &mut entitlements,
-                    crate::platform::TargetPlatform::IOS,
-                    SigningEnvironment::Development,
-                )
-                .expect("merge entitlements");
-            entitlements
-        };
-
         let gated = collect(&gated).expect("collect the gated graph");
-        assert!(signed(&gated).is_empty());
+        assert!(signed_entitlements(&gated).is_empty());
         let mut plist = plist::Dictionary::new();
         gated
             .merge_into_info_plist(&mut plist)
@@ -3593,7 +3584,7 @@ mod permission_audit_tests {
         assert!(plist.is_empty());
 
         let enabled = collect(&enabled).expect("collect the enabled graph");
-        let entitlements = signed(&enabled);
+        let entitlements = signed_entitlements(&enabled);
         assert_eq!(
             entitlements.get("aps-environment"),
             Some(&plist::Value::String("development".to_owned()))

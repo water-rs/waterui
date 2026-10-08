@@ -3528,8 +3528,12 @@ mod tests {
                 tempdir.path().join("app"),
             );
 
-        smol::block_on(crate::templates::preview::scaffold(tempdir.path(), &ctx))
-            .expect("preview scaffold should succeed");
+        smol::block_on(crate::templates::preview::scaffold(
+            &crate::toolchain::Host::current(),
+            tempdir.path(),
+            &ctx,
+        ))
+        .expect("preview scaffold should succeed");
 
         let cargo_toml = std::fs::read_to_string(tempdir.path().join("Cargo.toml"))
             .expect("preview Cargo.toml should be written");
@@ -3578,8 +3582,13 @@ mod tests {
             Some(project_root.clone()),
         );
 
-        smol::block_on(crate::templates::ffi::scaffold(&ffi_dir, &ctx, "app-ffi"))
-            .expect("ffi scaffold should succeed");
+        smol::block_on(crate::templates::ffi::scaffold(
+            &crate::toolchain::Host::current(),
+            &ffi_dir,
+            &ctx,
+            "app-ffi",
+        ))
+        .expect("ffi scaffold should succeed");
 
         let cargo_toml = std::fs::read_to_string(ffi_dir.join("Cargo.toml"))
             .expect("ffi Cargo.toml should be written");
@@ -3747,8 +3756,13 @@ mod tests {
             Some(tempdir.path().join("app")),
         );
 
-        smol::block_on(crate::templates::ffi::scaffold(&ffi_dir, &ctx, "app-ffi"))
-            .expect("ffi scaffold should succeed");
+        smol::block_on(crate::templates::ffi::scaffold(
+            &crate::toolchain::Host::current(),
+            &ffi_dir,
+            &ctx,
+            "app-ffi",
+        ))
+        .expect("ffi scaffold should succeed");
 
         let manifest: toml::Table = std::fs::read_to_string(ffi_dir.join("Cargo.toml"))
             .expect("ffi Cargo.toml should be written")
@@ -3770,6 +3784,27 @@ mod tests {
         );
     }
 
+    /// Run `git -C dir args` for a fixture checkout and return its trimmed
+    /// stdout.
+    fn probe_git(dir: &Path, args: &[&str]) -> String {
+        let output = crate::toolchain::Host::current()
+            .std_command("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .expect("git runs the fixture commands");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .expect("git stdout is utf-8")
+            .trim()
+            .to_string()
+    }
+
     /// The channel path answers through real `cargo metadata`: a
     /// `waterui-ffi` pinned at a git revision — the dev/nightly channel
     /// shape — resolves through a local `file://` checkout, so the learned
@@ -3780,25 +3815,6 @@ mod tests {
     #[test]
     fn resolved_forward_tables_reads_the_resolved_package_from_cargo_metadata() {
         let tempdir = tempdir().expect("temporary probe fixture dir");
-
-        let git = |dir: &Path, args: &[&str]| {
-            let output = crate::toolchain::Host::current()
-                .std_command("git")
-                .arg("-C")
-                .arg(dir)
-                .args(args)
-                .output()
-                .expect("git runs the fixture commands");
-            assert!(
-                output.status.success(),
-                "git {args:?} failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            String::from_utf8(output.stdout)
-                .expect("git stdout is utf-8")
-                .trim()
-                .to_string()
-        };
 
         // A committed `waterui-ffi` checkout returns the revision a channel
         // manifest pins on.
@@ -3811,7 +3827,7 @@ mod tests {
                 .expect("fixture manifest")
                 .replace("0.0.0", version);
             std::fs::write(&manifest_path, manifest).expect("fixture manifest");
-            git(&dir, &["init", "-b", "fixture"]);
+            probe_git(&dir, &["init", "-b", "fixture"]);
             let rev = crate::framework::test_fixtures::git_commit_all(&dir, "fixture");
             (format!("file://{}", dir.display()), rev)
         };
@@ -3840,7 +3856,7 @@ mod tests {
         // The probe clones the `file://` fixtures like any `git` source, so
         // it resolves under a per-test `CARGO_HOME` rather than the
         // developer's real one.
-        let cargo_home = crate::toolchain::Host::current()
+        let host = crate::toolchain::Host::current()
             .with_env("CARGO_HOME", tempdir.path().join("cargo-home"));
         for (dir_name, version, features) in [
             ("ffi-0.5.2", "0.5.2", vec!["c-api", "media"]),
@@ -3849,7 +3865,7 @@ mod tests {
             let (git_url, rev) = write_ffi(dir_name, version, &features);
             let manifest = manifest_for(&git_url, &rev);
             let tables = smol::block_on(super::resolved_forward_tables(
-                &cargo_home,
+                &host,
                 &manifest,
                 tempdir.path(),
                 &["waterui-ffi"],
@@ -3874,7 +3890,7 @@ mod tests {
             "0000000000000000000000000000000000000000",
         );
         let error = smol::block_on(super::resolved_forward_tables(
-            &cargo_home,
+            &host,
             &manifest,
             tempdir.path(),
             &["waterui-ffi"],
@@ -3922,8 +3938,13 @@ mod tests {
              forked = { path = \"vendor/forked\" }\n",
         );
 
-        smol::block_on(crate::templates::ffi::scaffold(&ffi_dir, &ctx, "app-ffi"))
-            .expect("ffi scaffold should succeed");
+        smol::block_on(crate::templates::ffi::scaffold(
+            &crate::toolchain::Host::current(),
+            &ffi_dir,
+            &ctx,
+            "app-ffi",
+        ))
+        .expect("ffi scaffold should succeed");
 
         let manifest = std::fs::read_to_string(ffi_dir.join("Cargo.toml"))
             .expect("ffi Cargo.toml should be written")
@@ -3964,8 +3985,13 @@ mod tests {
              [patch.crates-io]\nwaterui-core = { path = \"../elsewhere/core\" }\n",
         );
 
-        smol::block_on(crate::templates::ffi::scaffold(&ffi_dir, &ctx, "app-ffi"))
-            .expect("ffi scaffold should succeed");
+        smol::block_on(crate::templates::ffi::scaffold(
+            &crate::toolchain::Host::current(),
+            &ffi_dir,
+            &ctx,
+            "app-ffi",
+        ))
+        .expect("ffi scaffold should succeed");
 
         let manifest = std::fs::read_to_string(ffi_dir.join("Cargo.toml"))
             .expect("ffi Cargo.toml should be written")
@@ -4031,6 +4057,7 @@ mod tests {
         )));
 
         smol::block_on(crate::templates::ffi::scaffold(
+            &crate::toolchain::Host::current(),
             &ffi_dir,
             &ctx,
             "chromium-ffi",
@@ -4156,6 +4183,7 @@ mod tests {
         .with_apple_pieces(false);
 
         smol::block_on(crate::templates::ffi::scaffold(
+            &crate::toolchain::Host::current(),
             &ffi_dir,
             &ctx,
             "android-ffi",
@@ -4468,6 +4496,7 @@ mod tests {
         );
 
         smol::block_on(crate::templates::preview_ffi::scaffold(
+            &crate::toolchain::Host::current(),
             &preview_ffi_dir,
             &ctx,
             "app-preview-ffi",
@@ -4566,8 +4595,13 @@ mod tests {
             Some(project_root),
         );
 
-        smol::block_on(crate::templates::ffi::scaffold(&ffi_dir, &ctx, "app-ffi"))
-            .expect("ffi scaffold should succeed");
+        smol::block_on(crate::templates::ffi::scaffold(
+            &crate::toolchain::Host::current(),
+            &ffi_dir,
+            &ctx,
+            "app-ffi",
+        ))
+        .expect("ffi scaffold should succeed");
 
         let manifest = std::fs::read_to_string(ffi_dir.join("Cargo.toml"))
             .expect("ffi Cargo.toml should be written")
@@ -4618,8 +4652,13 @@ mod tests {
             Some(project_root),
         );
 
-        smol::block_on(crate::templates::ffi::scaffold(&ffi_dir, &ctx, "app-ffi"))
-            .expect("ffi scaffold should succeed");
+        smol::block_on(crate::templates::ffi::scaffold(
+            &crate::toolchain::Host::current(),
+            &ffi_dir,
+            &ctx,
+            "app-ffi",
+        ))
+        .expect("ffi scaffold should succeed");
 
         let build_script = std::fs::read_to_string(ffi_dir.join("build.rs"))
             .expect("ffi build.rs should be written");
@@ -4646,8 +4685,13 @@ mod tests {
             Some(project_root),
         );
 
-        smol::block_on(crate::templates::ffi::scaffold(&ffi_dir, &ctx, "app-ffi"))
-            .expect("ffi scaffold should succeed");
+        smol::block_on(crate::templates::ffi::scaffold(
+            &crate::toolchain::Host::current(),
+            &ffi_dir,
+            &ctx,
+            "app-ffi",
+        ))
+        .expect("ffi scaffold should succeed");
 
         let manifest = std::fs::read_to_string(ffi_dir.join("Cargo.toml"))
             .expect("ffi Cargo.toml should be written")
@@ -4681,8 +4725,13 @@ mod tests {
             Some(project_root),
         );
 
-        smol::block_on(crate::templates::ffi::scaffold(&ffi_dir, &ctx, "app-ffi"))
-            .expect("ffi scaffold should succeed");
+        smol::block_on(crate::templates::ffi::scaffold(
+            &crate::toolchain::Host::current(),
+            &ffi_dir,
+            &ctx,
+            "app-ffi",
+        ))
+        .expect("ffi scaffold should succeed");
 
         let manifest = std::fs::read_to_string(ffi_dir.join("Cargo.toml"))
             .expect("ffi Cargo.toml should be written")
@@ -5658,12 +5707,13 @@ async fn write_generated_cargo_toml(base_dir: &Path, toml_string: String) -> io:
 /// probe that learns the resolved tables runs on the manifest being
 /// written, so every dependency and patch must already be in place.
 async fn configure_capability_forwards(
+    host: &crate::toolchain::Host,
     manifest: &mut cargo_toml::Manifest<()>,
     ctx: &TemplateContext,
     base_dir: &Path,
 ) -> io::Result<()> {
     let tables = Box::pin(resolved_forward_tables(
-        &ctx.host,
+        host,
         manifest,
         base_dir,
         &forward_targets(manifest),
@@ -5694,6 +5744,7 @@ async fn configure_capability_forwards(
 /// resolved feature tables runs on the manifest being written, so every
 /// dependency and patch must already be in place.
 async fn configure_apple_target_tables(
+    host: &crate::toolchain::Host,
     manifest: &mut cargo_toml::Manifest<()>,
     ctx: &TemplateContext,
     base_dir: &Path,
@@ -5780,7 +5831,7 @@ async fn configure_apple_target_tables(
         smol::unblock(move || generated_crate_patches(&ctx)).await?
     };
 
-    configure_capability_forwards(manifest, ctx, base_dir).await
+    configure_capability_forwards(host, manifest, ctx, base_dir).await
 }
 
 /// Apple backend templates.
@@ -8085,7 +8136,7 @@ async fn probe_forward_tables(
     probe.example.clear();
     absolutize_probe_paths(&mut probe, manifest_dir, unresolved);
 
-    let probe_dir = tempfile::tempdir()?;
+    let probe_dir = tempfile::tempdir_in(host.temp_dir())?;
     let manifest_path = probe_dir.path().join("Cargo.toml");
     let toml_string = toml::to_string_pretty(&probe)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
@@ -8186,11 +8237,12 @@ pub mod ffi {
     ///
     /// Returns an error if file operations fail.
     pub async fn scaffold(
+        host: &crate::toolchain::Host,
         base_dir: &Path,
         ctx: &TemplateContext,
         package_name: &str,
     ) -> io::Result<()> {
-        generate_cargo_toml(base_dir, ctx, package_name).await?;
+        generate_cargo_toml(host, base_dir, ctx, package_name).await?;
         scaffold_dir(TemplateNamespace::Ffi, &embedded::FFI, base_dir, ctx).await?;
         // A previous render carrying the Apple pieces leaves the entry
         // binary behind; a render without them must not ship a file naming
@@ -8207,6 +8259,7 @@ pub mod ffi {
     }
 
     async fn generate_cargo_toml(
+        host: &crate::toolchain::Host,
         base_dir: &Path,
         ctx: &TemplateContext,
         package_name: &str,
@@ -8263,7 +8316,7 @@ pub mod ffi {
         // `configure_apple_target_tables`.
         insert_waterui_ffi_dependency(&mut manifest, ctx)?;
 
-        super::configure_apple_target_tables(&mut manifest, ctx, base_dir, &[]).await?;
+        super::configure_apple_target_tables(host, &mut manifest, ctx, base_dir, &[]).await?;
 
         // This crate roots the workspace that also holds preview modules. A preview
         // module is loaded into the support application and resolves its `WaterUI`
@@ -8408,11 +8461,12 @@ pub mod apple_preview {
     ///
     /// Returns an error if file operations fail.
     pub async fn scaffold(
+        host: &crate::toolchain::Host,
         base_dir: &Path,
         ctx: &TemplateContext,
         package_name: &str,
     ) -> io::Result<()> {
-        generate_cargo_toml(base_dir, ctx, package_name).await?;
+        generate_cargo_toml(host, base_dir, ctx, package_name).await?;
         let crate_name_ident = ctx.crate_name.rust_ident();
         let rendered = ApplePreviewMainTemplate {
             crate_name_ident: crate_name_ident.as_str(),
@@ -8424,6 +8478,7 @@ pub mod apple_preview {
     }
 
     async fn generate_cargo_toml(
+        host: &crate::toolchain::Host,
         base_dir: &Path,
         ctx: &TemplateContext,
         package_name: &str,
@@ -8451,7 +8506,8 @@ pub mod apple_preview {
             Dependency::Detailed(Box::new(preview_protocol)),
         );
 
-        super::configure_apple_target_tables(&mut manifest, ctx, base_dir, &["preview"]).await?;
+        super::configure_apple_target_tables(host, &mut manifest, ctx, base_dir, &["preview"])
+            .await?;
 
         let toml_string = toml::to_string_pretty(&manifest)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
@@ -8746,9 +8802,13 @@ pub mod preview {
     /// # Errors
     ///
     /// Returns an error if file operations fail.
-    pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
+    pub async fn scaffold(
+        host: &crate::toolchain::Host,
+        base_dir: &Path,
+        ctx: &TemplateContext,
+    ) -> io::Result<()> {
         // Generate Cargo.toml programmatically
-        generate_cargo_toml(base_dir, ctx).await?;
+        generate_cargo_toml(host, base_dir, ctx).await?;
 
         // Scaffold remaining template files (lib.rs)
         scaffold_dir(
@@ -8770,18 +8830,18 @@ pub mod preview {
     /// `components/devtools/preview/runtime`): a stale path makes the scaffold's
     /// `cargo metadata` fail and aborts the whole preview build.
     pub(super) async fn resolve_workspace_member_dir(
+        host: &crate::toolchain::Host,
         workspace_root: &Path,
         package_name: &str,
     ) -> io::Result<std::path::PathBuf> {
-        let manifest = workspace_root.join("Cargo.toml");
-        let metadata = smol::unblock(move || {
-            cargo_metadata::MetadataCommand::new()
-                .manifest_path(&manifest)
-                .no_deps()
-                .exec()
-        })
-        .await
-        .map_err(io::Error::other)?;
+        let mut command = cargo_metadata::MetadataCommand::new();
+        command
+            .manifest_path(workspace_root.join("Cargo.toml"))
+            .no_deps();
+        let metadata = host
+            .cargo_metadata(&command)
+            .await
+            .map_err(io::Error::other)?;
         let member = metadata
             .packages
             .iter()
@@ -8808,7 +8868,11 @@ pub mod preview {
     }
 
     /// Generate preview app Cargo.toml programmatically.
-    async fn generate_cargo_toml(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
+    async fn generate_cargo_toml(
+        host: &crate::toolchain::Host,
+        base_dir: &Path,
+        ctx: &TemplateContext,
+    ) -> io::Result<()> {
         use std::collections::BTreeMap;
 
         let mut dependencies = BTreeMap::new();
@@ -8831,7 +8895,7 @@ pub mod preview {
             // Resolve `waterui-preview` from the workspace metadata so the path
             // tracks the crate if it is moved within the workspace.
             let preview_path =
-                resolve_workspace_member_dir(waterui_path, "waterui-preview").await?;
+                resolve_workspace_member_dir(host, waterui_path, "waterui-preview").await?;
             dependencies.insert(
                 "waterui-preview".to_string(),
                 dependency_path(&preview_path),
@@ -8928,11 +8992,12 @@ pub mod preview_ffi {
     ///
     /// Returns an error if file operations fail.
     pub async fn scaffold(
+        host: &crate::toolchain::Host,
         base_dir: &Path,
         ctx: &TemplateContext,
         package_name: &str,
     ) -> io::Result<()> {
-        generate_cargo_toml(base_dir, ctx, package_name).await?;
+        generate_cargo_toml(host, base_dir, ctx, package_name).await?;
         scaffold_dir(
             TemplateNamespace::PreviewFfi,
             &embedded::PREVIEW_FFI,
@@ -8943,6 +9008,7 @@ pub mod preview_ffi {
     }
 
     async fn generate_cargo_toml(
+        host: &crate::toolchain::Host,
         base_dir: &Path,
         ctx: &TemplateContext,
         package_name: &str,
@@ -8994,7 +9060,7 @@ pub mod preview_ffi {
                 Dependency::Detailed(Box::new(ffi_dependency)),
             );
 
-        let preview_dependency = preview_dependency(ctx, base_dir).await?;
+        let preview_dependency = preview_dependency(host, ctx, base_dir).await?;
         manifest.dependencies.insert(
             "waterui-preview".to_string(),
             Dependency::Detailed(Box::new(preview_dependency)),
@@ -9003,7 +9069,7 @@ pub mod preview_ffi {
         // Every forward names a feature of `waterui-ffi`, so only its table is
         // learned — the resolved package's, not an assumed spelling.
         let tables = Box::pin(super::resolved_forward_tables(
-            &ctx.host,
+            host,
             &manifest,
             base_dir,
             &["waterui-ffi"],
@@ -9045,6 +9111,7 @@ pub mod preview_ffi {
     /// Locate the `waterui-preview` workspace member in the pinned checkout, or
     /// fall back to the framework registry source when no checkout is pinned.
     async fn preview_dependency(
+        host: &crate::toolchain::Host,
         ctx: &TemplateContext,
         base_dir: &Path,
     ) -> io::Result<DependencyDetail> {
@@ -9060,9 +9127,12 @@ pub mod preview_ffi {
             } else {
                 base_dir.join(waterui_root)
             };
-            let preview_path =
-                super::preview::resolve_workspace_member_dir(&waterui_root, "waterui-preview")
-                    .await?;
+            let preview_path = super::preview::resolve_workspace_member_dir(
+                host,
+                &waterui_root,
+                "waterui-preview",
+            )
+            .await?;
             Ok(DependencyDetail {
                 path: Some(super::normalize_path_for_config(&preview_path)),
                 optional: true,

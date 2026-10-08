@@ -1168,10 +1168,12 @@ mod tests {
         // `Project::open` resolves the project's layout with `cargo metadata
         // --locked`; a plain offline resolve records the patched sources in
         // the lock first.
-        cargo_metadata::MetadataCommand::new()
+        let mut command = cargo_metadata::MetadataCommand::new();
+        command
             .manifest_path(&manifest_path)
-            .other_options(vec!["--offline".to_string()])
-            .exec()
+            .other_options(vec!["--offline".to_string()]);
+        host.cargo_metadata(&command)
+            .await
             .expect("offline metadata resolves the patched project");
 
         // The ffi companion's feature probe and the Gradle staging resolve
