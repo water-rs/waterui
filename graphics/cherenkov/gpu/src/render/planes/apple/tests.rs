@@ -128,7 +128,7 @@ fn every_finite_affine_is_expressible() {
 mod hosted {
     use kurbo::{Affine, Rect, Size, Vec2};
     use objc2::rc::Retained;
-    use objc2_core_foundation::CGPoint;
+    use objc2_core_foundation::{CGPoint, CGRect, CGSize};
     use objc2_quartz_core::{CALayer, CAMetalLayer};
     use rustc_hash::FxHashMap;
 
@@ -163,7 +163,6 @@ mod hosted {
     fn scene(parts: usize) -> LayerScene {
         LayerScene {
             _window: Box::new(NoWindow),
-            host: CALayer::new(),
             root: anchored(),
             parts: (0..parts).map(|_| CAMetalLayer::new()).collect(),
             planes: Vec::new(),
@@ -199,7 +198,7 @@ mod hosted {
         web.setBounds(CGRect::new(CGPoint::new(5.0, 7.0), CGSize::new(1.0, 1.0)));
         web.setPosition(CGPoint::new(90.0, 40.0));
         let mut nodes = FxHashMap::default();
-        host(&mut nodes, vec![(WEB, web.clone(), EXTENT)], mtm());
+        host(&mut nodes, vec![(WEB, web.clone(), EXTENT)]);
         assert_eq!(superlayer(&web), Some(holder(&nodes, WEB)));
         let bounds = web.bounds();
         assert_eq!(
@@ -225,16 +224,15 @@ mod hosted {
         let _tx = Transaction::begin();
         let (web, next) = (CALayer::new(), CALayer::new());
         let mut nodes = FxHashMap::default();
-        host(&mut nodes, vec![(WEB, web.clone(), EXTENT)], mtm());
+        host(&mut nodes, vec![(WEB, web.clone(), EXTENT)]);
         let first = holder(&nodes, WEB);
         host(
             &mut nodes,
             vec![(WEB, web.clone(), Size::new(640.0, 480.0))],
-            mtm(),
         );
         assert_eq!(holder(&nodes, WEB), first);
         assert!((web.bounds().size.width - 640.0).abs() < f64::EPSILON);
-        host(&mut nodes, vec![(WEB, next.clone(), EXTENT)], mtm());
+        host(&mut nodes, vec![(WEB, next.clone(), EXTENT)]);
         assert_eq!(holder(&nodes, WEB), first);
         assert_eq!(superlayer(&web), None, "the replaced object leaves");
         assert_eq!(superlayer(&next), Some(first));
@@ -247,13 +245,13 @@ mod hosted {
         let _tx = Transaction::begin();
         let web = CALayer::new();
         let (mut here, mut there) = (FxHashMap::default(), FxHashMap::default());
-        host(&mut here, vec![(WEB, web.clone(), EXTENT)], mtm());
-        host(&mut there, vec![(OTHER, web.clone(), EXTENT)], mtm());
+        host(&mut here, vec![(WEB, web.clone(), EXTENT)]);
+        host(&mut there, vec![(OTHER, web.clone(), EXTENT)]);
         assert_eq!(superlayer(&web), Some(holder(&there, OTHER)));
-        host(&mut here, Vec::new(), mtm());
+        host(&mut here, Vec::new());
         assert!(here.is_empty());
         assert_eq!(superlayer(&web), Some(holder(&there, OTHER)));
-        host(&mut there, Vec::new(), mtm());
+        host(&mut there, Vec::new());
         assert_eq!(superlayer(&web), None);
     }
 
@@ -290,14 +288,8 @@ mod hosted {
         let _tx = Transaction::begin();
         let web = CALayer::new();
         let mut scene = scene(2);
-        host(&mut scene.hosted, vec![(WEB, web.clone(), EXTENT)], mtm());
-        scene.place(
-            &[placement(Vec2::new(10.0, 20.0))],
-            (800, 600),
-            2.0,
-            2,
-            mtm(),
-        );
+        host(&mut scene.hosted, vec![(WEB, web.clone(), EXTENT)]);
+        scene.place(&[placement(Vec2::new(10.0, 20.0))], (800, 600), 2.0, 2);
         // SAFETY: the array is read at once, while nothing mutates the
         // root's sublayers.
         let sublayers = unsafe { scene.root.sublayers() };
@@ -325,13 +317,7 @@ mod hosted {
         let holder_bounds = scene.hosted[&WEB].holder.bounds();
         assert!((holder_bounds.size.width - 300.5).abs() < f64::EPSILON);
 
-        scene.place(
-            &[placement(Vec2::new(64.0, 8.0))],
-            (800, 600),
-            2.0,
-            2,
-            mtm(),
-        );
+        scene.place(&[placement(Vec2::new(64.0, 8.0))], (800, 600), 2.0, 2);
         assert_eq!(
             Retained::as_ptr(&scene.planes[0].top),
             top,
