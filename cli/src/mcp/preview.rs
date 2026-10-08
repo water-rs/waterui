@@ -163,7 +163,7 @@ impl PreviewTool {
                 render_preview_with_hydrolysis(
                     HydrolysisPreviewRequest {
                         project_path: &self.project_path,
-                        source: request.target.hydrolysis_source(),
+                        source: request.target.source(),
                         theme: request
                             .hydrolysis_theme
                             .expect("resolve guarantees a theme for hydrolysis"),
@@ -184,7 +184,7 @@ impl PreviewTool {
                 render_preview_with_apple(
                     ApplePreviewRequest {
                         project_path: &self.project_path,
-                        source: request.target.hydrolysis_source(),
+                        source: request.target.source(),
                         width: request.width,
                         height: request.height,
                         sccache_path: self.sccache_path.clone(),

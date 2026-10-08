@@ -56,7 +56,7 @@ async fn run_preview_test(shell: &Shell, args: PreviewTestArgs) -> Result<()> {
         let output = test_preview_with_hydrolysis(
             HydrolysisPreviewRequest {
                 project_path: &project_path,
-                source: target.hydrolysis_source(),
+                source: target.source(),
                 theme: args.theme.into(),
                 platform: target_platform,
                 width,
@@ -230,7 +230,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         render_preview_with_hydrolysis(
             HydrolysisPreviewRequest {
                 project_path: &project_path,
-                source: request.target.hydrolysis_source(),
+                source: request.target.source(),
                 theme: request
                     .hydrolysis_theme
                     .expect("hydrolysis preview theme must be resolved"),
@@ -268,7 +268,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         render_preview_with_apple(
             ApplePreviewRequest {
                 project_path: &project_path,
-                source: request.target.hydrolysis_source(),
+                source: request.target.source(),
                 width: request.width,
                 height: request.height,
                 sccache_path,

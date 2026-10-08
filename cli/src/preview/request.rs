@@ -14,9 +14,7 @@ use serde::Deserialize;
 use crate::apple::toolchain::AppleSdk;
 use crate::platform::TargetPlatform;
 use crate::preview::protocol::{AppError, DylibId, function_path_to_symbol};
-use crate::preview::{
-    HydrolysisPreviewSource, HydrolysisPreviewTheme, PreviewPlatform, PreviewSession,
-};
+use crate::preview::{HydrolysisPreviewTheme, PreviewPlatform, PreviewSession, PreviewSource};
 use crate::toolchain_checks;
 
 /// Default frame size shared by `water preview --frame` and the MCP `preview`
@@ -127,12 +125,12 @@ impl PreviewTarget {
         }
     }
 
-    /// The [`HydrolysisPreviewSource`] for this target.
+    /// The [`PreviewSource`] for this target.
     #[must_use]
-    pub fn hydrolysis_source(&self) -> HydrolysisPreviewSource<'_> {
+    pub fn source(&self) -> PreviewSource<'_> {
         match self {
-            Self::Function { symbol, .. } => HydrolysisPreviewSource::Symbol(symbol),
-            Self::Expression { expression } => HydrolysisPreviewSource::Expression(expression),
+            Self::Function { symbol, .. } => PreviewSource::Symbol(symbol),
+            Self::Expression { expression } => PreviewSource::Expression(expression),
         }
     }
 }

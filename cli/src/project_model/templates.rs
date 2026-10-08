@@ -1894,7 +1894,7 @@ mod tests {
                 "hydrolysis {relative} must take its environment from the generated `app_environment()` binding"
             );
         }
-        let preview_bindings = include_str!("../preview/hydrolysis_preview_bindings.rs.tpl");
+        let preview_bindings = include_str!("../templates/preview_target.rs.tpl");
         assert!(
             preview_bindings.contains("waterui::configure_environment!")
                 && preview_bindings.contains("::app(env)"),
@@ -3179,6 +3179,33 @@ mod tests {
         );
         assert_eq!(
             super::ffi_feature_forwards("chromium", &manifest, &tables),
+            Vec::<String>::new()
+        );
+
+        // A companion manifest declares `waterui-ffi`: when the resolved
+        // package lacks the feature, the feature is not emitted — it must
+        // not fall back to the `waterui` facade, which routes only
+        // manifests that declare no `waterui-ffi` dependency at all.
+        let mut companion = cargo_toml::Manifest::<()>::default();
+        companion.dependencies.insert(
+            "waterui-ffi".to_string(),
+            cargo_toml::Dependency::Simple(super::cargo_version_req("0.0.0")),
+        );
+        companion.dependencies.insert(
+            "waterui".to_string(),
+            cargo_toml::Dependency::Simple(super::cargo_version_req("0.0.0")),
+        );
+        let mut companion_tables = super::FeatureTables::new();
+        companion_tables.insert(
+            "waterui-ffi".to_string(),
+            std::iter::once("c-api").map(str::to_string).collect(),
+        );
+        companion_tables.insert(
+            "waterui".to_string(),
+            std::iter::once("media").map(str::to_string).collect(),
+        );
+        assert_eq!(
+            super::ffi_feature_forwards("media", &companion, &companion_tables),
             Vec::<String>::new()
         );
     }
@@ -6874,12 +6901,12 @@ fn ffi_feature_forwards(
     }
     // The `waterui` facade forwards ride with the native Apple runtime: the
     // manifest declares `waterui-apple` exactly when that backend was
-    // selected. A managed crate that skipped `waterui-ffi` — the Apple
-    // preview package — reaches the same facade feature directly instead,
-    // so the feature means the same thing whichever manifest carries it.
+    // selected. A manifest that declares no `waterui-ffi` dependency at all
+    // — the Apple preview package — routes to the facade instead, so the
+    // feature means the same thing whichever manifest carries it.
     let facade_route = (APPLE_RUNTIME_FEATURE_FORWARDS.contains(&name)
         && declared_dependency(manifest, "waterui-apple").is_some())
-        || !ffi_declares;
+        || declared_dependency(manifest, "waterui-ffi").is_none();
     if facade_route
         && declared_dependency(manifest, "waterui").is_some()
         && declares(tables, "waterui", name)
@@ -7456,7 +7483,7 @@ pub mod apple_preview {
         let mut package = Package::new(package_name.to_string(), cargo_semver("0.1.0"));
         package.edition = cargo_toml::Inheritable::Set(cargo_toml::Edition::E2024);
         manifest.package = Some(package);
-        manifest.profile = generated_profiles();
+        manifest.profile = generated_profiles(ctx.project_packages.as_ref())?;
 
         let preview_protocol = generated_dependency_from_spec(
             ctx,

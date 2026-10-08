@@ -9,21 +9,20 @@
 use std::path::{Path, PathBuf};
 
 use askama::Template;
-use eyre::{Context as _, Result, bail};
+use eyre::{Context as _, Result};
 
 use crate::apple::dynamic_runtime;
 use crate::apple::platform::apple_build_features;
 use crate::artifact_symbols::ArtifactSymbols;
 use crate::build::{BuildProgress, RustBuild, RustDynamicLibraries, RustLinkage};
 use crate::platform::{TargetBackend, TargetPlatform};
-use crate::preview::HydrolysisPreviewSource;
-use crate::preview::hydrolysis::{absolute_output_path, expect_nonempty_output, write_run_config};
 use crate::preview::launcher::ensure_project_dev_feature_for_preview;
+use crate::preview::run::{self, absolute_output_path, expect_nonempty_output, write_run_config};
+use crate::preview::{PreviewSource, PreviewTargetTemplate};
 use crate::project::Project;
 use crate::project_model::assets;
-use crate::utils::command;
 
-use waterui_preview_protocol::run::{PREVIEW_RUN_CONFIG_ENV, PreviewRunConfig, PreviewRunMode};
+use waterui_preview_protocol::run::{PreviewRunConfig, PreviewRunMode};
 
 /// Request for Apple in-process preview rendering.
 #[derive(Debug, Clone)]
@@ -31,7 +30,7 @@ pub struct ApplePreviewRequest<'a> {
     /// Path to the project to preview.
     pub project_path: &'a Path,
     /// Source used to produce the preview view.
-    pub source: HydrolysisPreviewSource<'a>,
+    pub source: PreviewSource<'a>,
     /// Preview width in logical pixels.
     pub width: f32,
     /// Preview height in logical pixels.
@@ -47,32 +46,11 @@ pub struct ApplePreviewRequest<'a> {
 ///
 /// Written through `write_file_if_changed`: a run that repeats a target
 /// leaves the binary's own unit alone in the shared target directory.
-async fn write_apple_preview_target(
-    project: &Project,
-    source: &HydrolysisPreviewSource<'_>,
-) -> Result<()> {
-    #[derive(Template)]
-    #[template(path = "src/templates/apple_preview_target.rs.tpl", escape = "none")]
-    struct ApplePreviewTargetTemplate<'a> {
-        expression_mode: bool,
-        preview_symbol: &'a str,
-        preview_expression: &'a str,
-        crate_name_ident: &'a str,
-    }
-
+async fn write_apple_preview_target(project: &Project, source: &PreviewSource<'_>) -> Result<()> {
     let crate_name_ident = project.crate_name().rust_ident();
-    let (expression_mode, preview_symbol, preview_expression) = match source {
-        HydrolysisPreviewSource::Symbol(symbol) => (false, *symbol, ""),
-        HydrolysisPreviewSource::Expression(expression) => (true, "", *expression),
-    };
-    let rendered = ApplePreviewTargetTemplate {
-        expression_mode,
-        preview_symbol,
-        preview_expression,
-        crate_name_ident: crate_name_ident.as_str(),
-    }
-    .render()
-    .map_err(eyre::Report::new)?;
+    let rendered = PreviewTargetTemplate::apple(*source, crate_name_ident.as_str())
+        .render()
+        .map_err(eyre::Report::new)?;
     crate::project_model::templates::write_file_if_changed(
         &project
             .apple_preview_crate_path()
@@ -121,29 +99,7 @@ async fn run_preview_binary(
         },
     };
     let run_config_path = write_run_config(&crate_dir, &run_config).await?;
-
-    let mut child = smol::process::Command::new(binary);
-    let child = command(&mut child);
-    child.current_dir(&crate_dir);
-    child.env(PREVIEW_RUN_CONFIG_ENV, &run_config_path);
-
-    let output = child
-        .output()
-        .await
-        .wrap_err_with(|| format!("Failed to run Apple preview binary {}", binary.display()))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let details = if !stderr.is_empty() {
-            stderr
-        } else if !stdout.is_empty() {
-            stdout
-        } else {
-            format!("exit status {}", output.status)
-        };
-        bail!("Apple preview binary failed: {details}");
-    }
+    run::run_preview_binary(&crate_dir, binary, &run_config_path, "Apple preview").await?;
     Ok(())
 }
 
