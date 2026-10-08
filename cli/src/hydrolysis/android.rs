@@ -367,7 +367,8 @@ pub async fn scaffold_android_project(
     let backend_path = project.backend_path::<HydrolysisBackend>();
     project.scaffold_ffi_companion(false).await?;
     let ctx = android_template_context(project, painter, host_project_dir).await?;
-    templates::hydrolysis_android::scaffold(&android_dir(&backend_path), &ctx).await?;
+    templates::hydrolysis_android::scaffold(project.host(), &android_dir(&backend_path), &ctx)
+        .await?;
     Ok(())
 }
 
@@ -948,6 +949,9 @@ pub async fn render_preview_host(
 /// built once from one framework resolution — the only place its host path
 /// and `minSdk` are assembled. Only the `versionCode` varies per render.
 struct PreviewHostComposite {
+    /// The machine the project was opened on; the scaffold's Android SDK
+    /// probe runs on it.
+    toolchain_host: crate::toolchain::Host,
     out: PathBuf,
     /// The host checkout's Gradle root the composite `includeBuild`s.
     host_project_dir: PathBuf,
@@ -990,6 +994,7 @@ impl PreviewHostComposite {
             version_code: 0,
         };
         Ok(Self {
+            toolchain_host: project.host().clone(),
             out: out.to_path_buf(),
             host_project_dir,
             context: HydrolysisBackend::template_context(project, &resolved).await?,
@@ -1009,8 +1014,12 @@ impl PreviewHostComposite {
 
     /// Write the composite stamped with `version_code` into `out`.
     async fn write(&self, version_code: u32) -> eyre::Result<()> {
-        templates::hydrolysis_android_preview::scaffold(&self.out, &self.context(version_code))
-            .await?;
+        templates::hydrolysis_android_preview::scaffold(
+            &self.toolchain_host,
+            &self.out,
+            &self.context(version_code),
+        )
+        .await?;
         Ok(())
     }
 }

@@ -129,11 +129,15 @@ impl Backend for AndroidBackend {
                     .await
                     .map_err(crate::backend::FailToInitBackend::Config)?,
             );
-            templates::android_embedded::scaffold(&project.backend_path::<Self>(), &ctx)
-                .await
-                .map_err(crate::backend::FailToInitBackend::Io)?;
+            templates::android_embedded::scaffold(
+                project.host(),
+                &project.backend_path::<Self>(),
+                &ctx,
+            )
+            .await
+            .map_err(crate::backend::FailToInitBackend::Io)?;
         } else {
-            templates::android::scaffold(&project.backend_path::<Self>(), &ctx)
+            templates::android::scaffold(project.host(), &project.backend_path::<Self>(), &ctx)
                 .await
                 .map_err(crate::backend::FailToInitBackend::Io)?;
         }

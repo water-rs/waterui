@@ -5519,7 +5519,11 @@ pub mod android {
     ///
     /// # Errors
     /// Returns an error if file operations fail.
-    pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
+    pub async fn scaffold(
+        host: &crate::toolchain::Host,
+        base_dir: &Path,
+        ctx: &TemplateContext,
+    ) -> io::Result<()> {
         scaffold_dir(
             TemplateNamespace::Android,
             &embedded::ANDROID,
@@ -5559,7 +5563,7 @@ pub mod android {
         }
 
         // Generate local.properties with Android SDK path
-        if let Some(sdk_path) = AndroidSdk::detect_path(&crate::toolchain::Host::current()) {
+        if let Some(sdk_path) = AndroidSdk::detect_path(host) {
             let local_props = base_dir.join("local.properties");
             let content = format!("sdk.dir={}\n", normalize_path_for_config(&sdk_path));
             write_file_if_changed(&local_props, content.as_bytes()).await?;
@@ -5586,7 +5590,11 @@ pub mod android_embedded {
     /// # Errors
     ///
     /// Returns an error if file operations fail.
-    pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
+    pub async fn scaffold(
+        host: &crate::toolchain::Host,
+        base_dir: &Path,
+        ctx: &TemplateContext,
+    ) -> io::Result<()> {
         scaffold_dir(
             TemplateNamespace::AndroidEmbedded,
             &embedded::ANDROID_EMBEDDED,
@@ -5623,7 +5631,7 @@ pub mod android_embedded {
         }
 
         // Generate local.properties with Android SDK path
-        if let Some(sdk_path) = AndroidSdk::detect_path(&crate::toolchain::Host::current()) {
+        if let Some(sdk_path) = AndroidSdk::detect_path(host) {
             let local_props = base_dir.join("local.properties");
             let content = format!("sdk.dir={}\n", normalize_path_for_config(&sdk_path));
             write_file_if_changed(&local_props, content.as_bytes()).await?;
@@ -6430,6 +6438,7 @@ fn hydrolysis_android_rendered_outputs(
 /// nothing new dirties no Gradle input, then finish with `gradlew`'s
 /// executable bit and `local.properties`.
 async fn scaffold_hydrolysis_android_project(
+    host: &crate::toolchain::Host,
     base_dir: &Path,
     namespace: TemplateNamespace,
     module: &Dir<'static>,
@@ -6442,7 +6451,7 @@ async fn scaffold_hydrolysis_android_project(
         }
         write_file_if_changed(&path, &contents).await?;
     }
-    finish_hydrolysis_android_scaffold(base_dir).await
+    finish_hydrolysis_android_scaffold(host, base_dir).await
 }
 
 pub mod hydrolysis_android {
@@ -6453,8 +6462,13 @@ pub mod hydrolysis_android {
     /// # Errors
     ///
     /// Returns an error if file operations fail.
-    pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
+    pub async fn scaffold(
+        host: &crate::toolchain::Host,
+        base_dir: &Path,
+        ctx: &TemplateContext,
+    ) -> io::Result<()> {
         super::scaffold_hydrolysis_android_project(
+            host,
             base_dir,
             TemplateNamespace::HydrolysisAndroid,
             &embedded::HYDROLYSIS_ANDROID,
@@ -6495,8 +6509,13 @@ pub mod hydrolysis_android_preview {
     /// # Errors
     ///
     /// Returns an error if template rendering or file writing fails.
-    pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
+    pub async fn scaffold(
+        host: &crate::toolchain::Host,
+        base_dir: &Path,
+        ctx: &TemplateContext,
+    ) -> io::Result<()> {
         super::scaffold_hydrolysis_android_project(
+            host,
             base_dir,
             TemplateNamespace::HydrolysisAndroidPreview,
             &embedded::HYDROLYSIS_ANDROID_PREVIEW,
@@ -6525,7 +6544,10 @@ pub mod hydrolysis_android_preview {
 ///
 /// `gradle-wrapper.jar` materializes at first Gradle run, so no binary lands
 /// in the worktree.
-async fn finish_hydrolysis_android_scaffold(base_dir: &Path) -> io::Result<()> {
+async fn finish_hydrolysis_android_scaffold(
+    host: &crate::toolchain::Host,
+    base_dir: &Path,
+) -> io::Result<()> {
     // Make gradlew executable
     #[cfg(unix)]
     {
@@ -6539,9 +6561,7 @@ async fn finish_hydrolysis_android_scaffold(base_dir: &Path) -> io::Result<()> {
     }
 
     // Generate local.properties with Android SDK path
-    if let Some(sdk_path) =
-        crate::android::toolchain::AndroidSdk::detect_path(&crate::toolchain::Host::current())
-    {
+    if let Some(sdk_path) = crate::android::toolchain::AndroidSdk::detect_path(host) {
         let local_props = base_dir.join("local.properties");
         let content = format!("sdk.dir={}\n", normalize_path_for_config(&sdk_path));
         write_file_if_changed(&local_props, content.as_bytes()).await?;
