@@ -454,6 +454,21 @@ pub fn components_command_builder_prose() {
 }
 
 // ---------------------------------------------------------------------------
+// components.md § "## Menus, commands, context menus" (prose): the platform
+// items `MenuItem::Quit` and `MenuItem::CloseWindow` — Close Window's chord
+// is decided once for the application from its menu bar (⌘W, or ⇧⌘W/none
+// when declared commands bind it). Not counted as a rust block.
+// ---------------------------------------------------------------------------
+pub fn components_platform_menu_items_prose(env: Environment) -> waterui::app::App {
+    use waterui::component::menu::MenuItem;
+
+    waterui::app::App::new(move || text("demo"), env).menu_bar(Menu::new(
+        "File",
+        vec![MenuItem::CloseWindow, MenuItem::Divider, MenuItem::Quit],
+    ))
+}
+
+// ---------------------------------------------------------------------------
 // components.md § "## Menus, commands, context menus" — rust block 15/29
 // ---------------------------------------------------------------------------
 pub fn components_block_15() -> impl View {

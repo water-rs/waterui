@@ -50,6 +50,14 @@ impl fmt::Debug for Command {
 pub enum MenuTreeNode {
     /// A command and its action.
     Command(Command, Rc<dyn Fn()>),
+    /// A standard item — a platform command sent untargeted up the
+    /// responder chain, the way `AppKit`'s own menu items act: Close
+    /// Window sends `performClose:` so the key window closes exactly as
+    /// its close button would, and the item greys out while no responder
+    /// can take it. A [`Command`]'s presentation fields apply the same
+    /// way, except `enabled`, which the responder chain answers instead.
+    #[cfg(target_os = "macos")]
+    Standard(Command, crate::appkit::MenuAction),
     /// A separator line.
     Divider,
     /// A nested menu.
@@ -60,6 +68,12 @@ impl fmt::Debug for MenuTreeNode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Command(command, _) => f.debug_tuple("Command").field(command).finish(),
+            #[cfg(target_os = "macos")]
+            Self::Standard(command, action) => f
+                .debug_tuple("Standard")
+                .field(command)
+                .field(action)
+                .finish(),
             Self::Divider => f.write_str("Divider"),
             Self::Submenu(command, children) => f
                 .debug_tuple("Submenu")
