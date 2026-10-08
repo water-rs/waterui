@@ -2726,13 +2726,18 @@ async fn marked_binary_artifact(
 
     // `rename` may do nothing when source and destination are links to
     // the same file — macOS takes that no-op branch — which would leave
-    // the staging name behind on a same-inode relink. And Cargo rewrites
-    // the shared uplift on every run — `fresh` units included — so a
-    // different inode is not a different artifact: identical bytes mean the
-    // marked path already names this run's output, and keeping it preserves
-    // the variant's inode and mtime for whatever watches `deps/` (#2073).
+    // the staging name behind on a same-inode relink. `same_file` catches
+    // a marked path still linked to the uplift's inode; an uplift Cargo
+    // rewrote with identical output keeps the mtime it stamped, so the
+    // size+mtime check reads it as already naming this run's output
+    // without reading either binary, and keeping the marked path preserves
+    // the variant's inode for whatever watches `deps/` (#2073).
+    let marked_bytes = marked_path.clone();
+    let uplift_bytes = uplift.to_path_buf();
     if same_file(uplift, &marked_path).await?
-        || file_contents_identical(uplift, &marked_path).await?
+        || smol::unblock(move || crate::utils::files_identical(&uplift_bytes, &marked_bytes))
+            .await
+            .map_err(RustBuildError::FailToBuildRustLibrary)?
     {
         remove_staging_link(&staging).await?;
         return Ok(marked_path);
@@ -2754,19 +2759,6 @@ async fn remove_staging_link(staging: &Path) -> Result<(), RustBuildError> {
     match smol::fs::remove_file(staging).await {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(RustBuildError::FailToBuildRustLibrary(error)),
-    }
-}
-
-/// Whether `a` and `b` hold the same bytes — `false` when `b` does not
-/// exist, an error for any other read failure.
-async fn file_contents_identical(a: &Path, b: &Path) -> Result<bool, RustBuildError> {
-    match smol::fs::read(b).await {
-        Ok(contents) => Ok(contents
-            == smol::fs::read(a)
-                .await
-                .map_err(RustBuildError::FailToBuildRustLibrary)?),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(RustBuildError::FailToBuildRustLibrary(error)),
     }
 }
@@ -4296,10 +4288,17 @@ mod tests {
 
             // A second relink — as a same-variant build performs it —
             // replaces the marked path with the new run's bytes atomically
-            // through the same-directory temporary and `rename`.
-            smol::fs::write(&uplift, b"second bytes")
+            // through the same-directory temporary and `rename`. The uplift
+            // is replaced with a new inode carrying different bytes, as a
+            // rebuild leaves it: writing through the shared inode would
+            // change the marked link's bytes without exercising the relink.
+            let replacement = profile_dir.join("probe_bin.next");
+            smol::fs::write(&replacement, b"second bytes")
                 .await
                 .expect("rewrite uplift");
+            smol::fs::rename(&replacement, &uplift)
+                .await
+                .expect("replace the uplift with a new inode");
             let relinked = super::marked_binary_artifact(
                 &uplift,
                 &profile_dir,
@@ -4310,6 +4309,12 @@ mod tests {
             .await
             .expect("the marked link is replaced");
             assert_eq!(marked, relinked);
+            assert!(
+                super::same_file(&uplift, &relinked)
+                    .await
+                    .expect("compare the relinked artifact"),
+                "the marked path relinks to the new uplift's inode"
+            );
             assert_eq!(
                 smol::fs::read(&relinked).await.expect("marked artifact"),
                 b"second bytes"

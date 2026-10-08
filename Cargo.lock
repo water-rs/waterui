@@ -13021,6 +13021,7 @@ dependencies = [
  "dirs 7.0.0",
  "dunce",
  "eyre",
+ "filetime",
  "flate2",
  "fontcull-klippa",
  "fontcull-skrifa",

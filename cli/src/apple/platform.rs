@@ -425,7 +425,7 @@ pub(crate) async fn build_rust_lib_with_links(
             .with_final_rustc_arg(format!("-Clink-arg=-l{runtime_link_name}"));
     }
     // The entry `[[bin]]`'s own `BuiltTarget` rides on this build's result
-    // so packaging reads its reported `executable`, never a name
+    // so packaging reads its marked `deps/` artifact, never a name
     // reconstructed under the profile directory.
     built_target.entry_binary = Some(Box::new(
         executable
@@ -763,7 +763,11 @@ pub async fn package_apple(
     let ctx = AppleBackend::template_context(project).await?;
     let layout = app_bundle::AppleAppLayout::for_app(&app_path, sdk_name);
 
-    let executable = built
+    // Packaging reads the variant-stable `deps/<name>-<marker>` link, not
+    // the reported `executable`: the `<profile>/<name>` uplift is shared
+    // between variants and a same-named build can re-uplift it once the
+    // binary artifact lock is gone.
+    let executable = &built
         .entry_binary
         .as_deref()
         .ok_or_else(|| {
@@ -771,7 +775,7 @@ pub async fn package_apple(
                 "the build produced no `{APPLE_ENTRY_BINARY_NAME}` entry binary; package the result of `build_rust_lib`"
             )
         })?
-        .executable()?;
+        .artifact;
     let mut info_plist = app_bundle::apple_info_plist(
         &ctx,
         project,

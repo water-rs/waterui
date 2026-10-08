@@ -3770,7 +3770,8 @@ mod tests {
             pins_v1_with_ffi
         );
 
-        // The project re-resolved: the managed crate follows it, and the
+        // The project re-resolved: the managed crate follows it — the new
+        // pin replaces the previous lock's stale `pins` entry — and the
         // entries only the managed crate resolves stay put.
         std::fs::write(&project_lock, &pins_v2).expect("project lock");
         seed();
@@ -3778,10 +3779,9 @@ mod tests {
             managed(),
             std::collections::BTreeSet::from([
                 ("ffi-entries".to_owned(), "0.1.0".to_owned()),
-                ("pins".to_owned(), "1.0.0".to_owned()),
                 ("pins".to_owned(), "2.0.0".to_owned()),
             ]),
-            "the previous lock's own entries stay beside the new project pins"
+            "the project's new pin replaces the previous lock's; entries only the managed crate resolves stay put"
         );
 
         // A managed lockfile that went missing is re-seeded from the current pins.
@@ -3854,6 +3854,67 @@ mod tests {
                 .expect("managed lock mtime"),
             epoch,
             "an unchanged seed input must leave the managed lock's mtime alone"
+        );
+    }
+
+    /// A post-seed failure restores the `Cargo.lock`/`Cargo.lock.seed` pair
+    /// to the bytes the run found — the stamp included. Restoring the lock
+    /// alone would leave the stamp claiming the failed run's inputs already
+    /// seeded, and the next prepare's `seed_lockfile` would early-return
+    /// over a lock that no longer carries them.
+    #[test]
+    fn a_failed_post_seed_step_leaves_the_next_seed_to_rerun() {
+        let tempdir = tempdir().expect("temporary ffi seed dir");
+        let project_lock = tempdir.path().join("Cargo.lock");
+        let ffi_dir = tempdir.path().join("managed_backends/ffi");
+        std::fs::create_dir_all(&ffi_dir).expect("ffi dir");
+        let managed_lock = ffi_dir.join("Cargo.lock");
+        let seed = || {
+            smol::block_on(crate::templates::seed_lockfile(
+                &ffi_dir,
+                &project_lock,
+                None,
+            ))
+            .expect("seeding the managed lockfile should succeed");
+        };
+        let lock = |version: &str| {
+            format!("version = 4\n\n[[package]]\nname = \"pins\"\nversion = \"{version}\"\n")
+        };
+
+        std::fs::write(&project_lock, lock("1.0.0")).expect("project lock");
+        seed();
+        let found_lock = std::fs::read(&managed_lock).expect("managed Cargo.lock");
+        let found_stamp =
+            std::fs::read(ffi_dir.join(crate::templates::LOCKFILE_SEED)).expect("seed stamp");
+
+        // The project re-pinned, the seed ran — and the post-seed
+        // resolution failed, so the error path restores the pair the run
+        // found.
+        std::fs::write(&project_lock, lock("2.0.0")).expect("project lock");
+        seed();
+        smol::block_on(crate::templates::restore_seeded_lockfile(
+            &ffi_dir,
+            Some(&found_lock),
+            Some(&found_stamp),
+        ))
+        .expect("restoring the pre-seed pair should succeed");
+
+        // The next prepare re-seeds: the restored stamp names the earlier
+        // inputs, so the gate cannot pass for the new ones.
+        seed();
+        let reseeded: cargo_lock::Lockfile = std::fs::read_to_string(&managed_lock)
+            .expect("managed Cargo.lock")
+            .parse()
+            .expect("the managed lock parses");
+        let versions: Vec<String> = reseeded
+            .packages
+            .iter()
+            .map(|package| package.version.to_string())
+            .collect();
+        assert_eq!(
+            versions,
+            ["2.0.0"],
+            "a restored stamp must not pass for the new inputs"
         );
     }
 
@@ -6581,6 +6642,14 @@ pub fn with_project_patches(
 /// beside the crate's own `Cargo.lock`.
 pub const LOCKFILE_SEED: &str = "Cargo.lock.seed";
 
+/// The seed-merge format a [`LOCKFILE_SEED`] stamp was written under,
+/// recorded in the stamp itself. The merge rules in
+/// [`crate::framework::seed_packages`] are an input to the seed the same
+/// way the project lock is: a CLI whose rules differ must re-seed once
+/// rather than trust a stamp an older merge wrote. Bump this when the
+/// merge — or the stamp's own layout — changes.
+const LOCKFILE_SEED_FORMAT: u32 = 1;
+
 /// Seed a managed crate's `Cargo.lock` from the application's lockfile.
 ///
 /// A managed crate is its own Cargo workspace, so left alone it resolves its
@@ -6660,17 +6729,53 @@ pub async fn seed_lockfile(
     write_file_if_changed(&seed_copy, &stamp).await
 }
 
+/// Restore a managed crate's `Cargo.lock` and its [`LOCKFILE_SEED`] stamp
+/// to the bytes a failed post-seed step found — or remove each file when
+/// the run found none.
+///
+/// [`seed_lockfile`] writes the pair together; an error path that restored
+/// the lock alone would leave the stamp claiming the failed run's inputs
+/// already seeded, and the next build would skip the seed the restored
+/// lock no longer carries.
+///
+/// # Errors
+///
+/// Returns an error when a file cannot be written or removed.
+pub async fn restore_seeded_lockfile(
+    base_dir: &Path,
+    previous_lock: Option<&[u8]>,
+    previous_stamp: Option<&[u8]>,
+) -> io::Result<()> {
+    restore_seeded_file(&base_dir.join("Cargo.lock"), previous_lock).await?;
+    restore_seeded_file(&base_dir.join(LOCKFILE_SEED), previous_stamp).await
+}
+
+/// The per-file half of [`restore_seeded_lockfile`]: the recorded bytes
+/// back through [`write_file_if_changed`] — a file the seed never touched
+/// stays untouched — or the file removed when the run recorded none.
+async fn restore_seeded_file(path: &Path, previous: Option<&[u8]>) -> io::Result<()> {
+    match previous {
+        Some(bytes) => write_file_if_changed(path, bytes).await,
+        None => match fs::remove_file(path).await {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        },
+    }
+}
+
 /// The [`LOCKFILE_SEED`] stamp recording the last seed's inputs: the
-/// project's lock bytes followed by a comment naming the canonical lock's
-/// checksum, so the stamp still parses as the lockfile it copies. A changed
-/// project lock or canonical checksum fails the byte comparison and
-/// re-seeds.
+/// project's lock bytes followed by comments naming the seed-merge format
+/// and the canonical lock's checksum, so the stamp still parses as the
+/// lockfile it copies. A changed project lock, canonical checksum or merge
+/// format fails the byte comparison and re-seeds.
 fn seed_stamp(project_lock: &[u8], canonical: Option<&cargo_lock::Lockfile>) -> Vec<u8> {
     use sha2::Digest as _;
     let mut stamp = project_lock.to_vec();
     if !stamp.ends_with(b"\n") {
         stamp.push(b'\n');
     }
+    stamp.extend_from_slice(format!("# seed-format: {LOCKFILE_SEED_FORMAT}\n").as_bytes());
     stamp.extend_from_slice(b"# canonical-lock-sha256: ");
     match canonical {
         Some(canonical) => stamp.extend_from_slice(

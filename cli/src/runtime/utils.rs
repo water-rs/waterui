@@ -356,16 +356,15 @@ fn copy_file_overwriting(from: &Path, to: &Path) -> io::Result<()> {
 /// `reflink_or_copy` plus the source's mtime stamped on the copy: the
 /// destination's metadata then says which source state it carries, the
 /// stamp `files_identical` compares against without reading either file.
+/// The copy keeps the source's mode, which may be read-only, so the time
+/// is set by path — no write handle is needed.
 fn reflink_or_copy_stamped(
     from: &Path,
     to: &Path,
     from_modified: std::time::SystemTime,
 ) -> io::Result<()> {
     reflink_copy::reflink_or_copy(from, to).map(|_| ())?;
-    std::fs::File::options()
-        .write(true)
-        .open(to)?
-        .set_modified(from_modified)
+    filetime::set_file_mtime(to, filetime::FileTime::from_system_time(from_modified))
 }
 
 /// Whether `to` still stages `from`'s bytes: same size and the same mtime
@@ -373,7 +372,7 @@ fn reflink_or_copy_stamped(
 /// whose metadata matches has no reason to be read, so a no-change build
 /// neither reads nor rewrites the staged copy — `false` when `to` does not
 /// exist, an error for any other stat failure on either side.
-fn files_identical(from: &Path, to: &Path) -> io::Result<bool> {
+pub(crate) fn files_identical(from: &Path, to: &Path) -> io::Result<bool> {
     let from_meta = std::fs::metadata(from)?;
     let to_meta = match std::fs::metadata(to) {
         Ok(meta) => meta,
@@ -391,6 +390,35 @@ mod tests {
         MAX_REPORTED_OUTPUT_LINES, format_failure_stream, parse_semver_version,
         parse_whitespace_separated_u32s,
     };
+
+    /// A read-only source copies fine: `reflink_or_copy` keeps the 0444
+    /// mode, so stamping the mtime must not need a write handle on the
+    /// copy.
+    #[test]
+    fn copy_file_stamps_the_mtime_of_a_read_only_copy() {
+        let temporary = tempfile::tempdir().expect("tempdir");
+        let source = temporary.path().join("source.bin");
+        let staged = temporary.path().join("staged.bin");
+        let staged_again = temporary.path().join("staged-again.bin");
+        std::fs::write(&source, b"read only").expect("write source");
+        let mut permissions = std::fs::metadata(&source)
+            .expect("source metadata")
+            .permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&source, permissions).expect("mark the source read-only");
+
+        smol::block_on(super::copy_file(&source, &staged))
+            .expect("copying a read-only source should succeed");
+        smol::block_on(super::copy_file_if_changed(&source, &staged_again))
+            .expect("copying a read-only source should succeed");
+        for copy in [&staged, &staged_again] {
+            assert_eq!(std::fs::read(copy).expect("staged copy"), b"read only");
+            assert!(
+                super::files_identical(&source, copy).expect("compare the copy"),
+                "the copy carries the source's mtime stamp"
+            );
+        }
+    }
 
     #[test]
     fn parse_semver_version_accepts_major_minor() {

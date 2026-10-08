@@ -1145,6 +1145,14 @@ impl ResolvedFramework {
                 .chain(canonical_lock.iter().flat_map(|lock| lock.packages.iter()))
                 .chain(project_lock.packages.iter()),
         );
+        // The stamp is part of the state the error path below restores —
+        // read what `seed_lockfile` is about to rewrite before it does.
+        let previous_stamp =
+            match smol::fs::read(workspace_root.join(crate::templates::LOCKFILE_SEED)).await {
+                Ok(contents) => Some(contents),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error.into()),
+            };
         // The seed merge itself lives in `templates::seed_lockfile`; its
         // `Cargo.lock.seed` stamp gates the write on the inputs — the
         // project lock and the canonical checksum — because the pruned lock
@@ -1156,56 +1164,83 @@ impl ResolvedFramework {
             canonical_lock.as_ref(),
         )
         .await?;
-        let root = directory.to_path_buf();
-        let features = features.to_vec();
-        let result = async {
-            // A previous lock resolved without the canonical pins can carry a
-            // generation the seeded locks contradict — an `accesskit_winit`
-            // wanting an `accesskit` newer than the pin the channel certifies
-            // (#203). That is the project's state, not something to resolve
-            // past: name it and say how the seed is regenerated.
-            let metadata = managed_crate_metadata(&root, &features)
-                .await
-                .map_err(|error| {
-                    eyre!(
-                        "the managed crate's lock at {} conflicts with the channel's pins and does not resolve ({error}); remove it and `Cargo.lock.seed` and build again to regenerate them from the channel's resolution",
-                        lock_path.display()
-                    )
-                })?;
-            validate_resolved_cli(&metadata)?;
-            if !allow_new {
-                for package in &metadata.packages {
-                    if package.source.is_some()
-                        && replaces_locked_package(
-                            &allowed,
-                            &package.name,
-                            &package.version,
-                            package.source.as_ref().map(|source| source.repr.as_str()),
-                        )
-                    {
-                        bail!("generated build would change locked dependency {}; update the framework channel explicitly", package.name);
-                    }
-                }
-            }
-            if let Some(canonical) = canonical {
-                self.validate_dependencies(&metadata, &canonical)?;
-            }
-            Ok(())
-        }.await;
+        let result = self
+            .validate_seeded_build(
+                directory,
+                features,
+                allow_new,
+                &allowed,
+                canonical.as_deref(),
+                &lock_path,
+            )
+            .await;
         if let Err(error) = &result {
-            let restore = if let Some(previous) = &previous_lock {
-                // Restore the lock's recorded bytes — not a re-serialisation,
-                // which would drop its `[[patch.unused]]` layout and any
-                // comments the file carried.
-                crate::templates::write_file_if_changed(&lock_path, previous.as_bytes()).await
-            } else {
-                smol::fs::remove_file(&lock_path).await
-            };
-            restore.wrap_err_with(|| {
+            // Restore the lock's recorded bytes — not a re-serialisation,
+            // which would drop its `[[patch.unused]]` layout and any
+            // comments the file carried. The stamp rolls back with it: a
+            // stamp naming the failed run's inputs would gate off the
+            // re-seed the restored lock needs.
+            crate::templates::restore_seeded_lockfile(
+                &workspace_root,
+                previous_lock.as_ref().map(String::as_bytes),
+                previous_stamp.as_deref(),
+            )
+            .await
+            .wrap_err_with(|| {
                 format!("failed to preserve the previous lock after resolution failed: {error}")
             })?;
         }
         result
+    }
+
+    /// The post-seed half of [`Self::prepare_build`]: resolve the managed
+    /// crate's metadata against the seeded lock and gate it on the
+    /// channel's lock rules. The caller keeps it a separate step so a
+    /// failure rolls the seeded lock and its stamp back together.
+    async fn validate_seeded_build(
+        &self,
+        root: &Path,
+        features: &[String],
+        allow_new: bool,
+        allowed: &BTreeSet<LockedPackage>,
+        canonical: Option<&[u8]>,
+        lock_path: &Path,
+    ) -> Result<()> {
+        // A previous lock resolved without the canonical pins can carry a
+        // generation the seeded locks contradict — an `accesskit_winit`
+        // wanting an `accesskit` newer than the pin the channel certifies
+        // (#203). That is the project's state, not something to resolve
+        // past: name it and say how the seed is regenerated.
+        let metadata = managed_crate_metadata(root, features)
+            .await
+            .map_err(|error| {
+                eyre!(
+                    "the managed crate's lock at {} conflicts with the channel's pins and does not resolve ({error}); remove it and `Cargo.lock.seed` and build again to regenerate them from the channel's resolution",
+                    lock_path.display()
+                )
+            })?;
+        validate_resolved_cli(&metadata)?;
+        if !allow_new {
+            for package in &metadata.packages {
+                if package.source.is_some()
+                    && replaces_locked_package(
+                        allowed,
+                        &package.name,
+                        &package.version,
+                        package.source.as_ref().map(|source| source.repr.as_str()),
+                    )
+                {
+                    bail!(
+                        "generated build would change locked dependency {}; update the framework channel explicitly",
+                        package.name
+                    );
+                }
+            }
+        }
+        if let Some(canonical) = canonical {
+            self.validate_dependencies(&metadata, canonical)?;
+        }
+        Ok(())
     }
 
     /// The channel's certified lock — `Water.lock` at the pinned revision,
@@ -1741,21 +1776,32 @@ pub(crate) fn seed_packages(
         .into_iter()
         .flat_map(|lock| lock.packages.iter().map(|package| package.name.as_str()))
         .collect();
+    let project_names: BTreeSet<&str> = project
+        .packages
+        .iter()
+        .map(|package| package.name.as_str())
+        .collect();
     let mut packages: Vec<cargo_lock::Package> = canonical
         .into_iter()
         .flat_map(|lock| lock.packages.iter().cloned())
         .collect();
-    let mut rest: BTreeMap<LockedDependency, cargo_lock::Package> = BTreeMap::new();
-    for package in project
-        .packages
-        .iter()
-        .chain(previous.into_iter().flat_map(|lock| lock.packages.iter()))
-    {
-        if !canonical_names.contains(package.name.as_str()) {
-            rest.insert(LockedDependency::from(package), package.clone());
-        }
-    }
-    packages.extend(rest.into_values());
+    packages.extend(
+        project
+            .packages
+            .iter()
+            .filter(|package| !canonical_names.contains(package.name.as_str()))
+            .cloned(),
+    );
+    packages.extend(
+        previous
+            .into_iter()
+            .flat_map(|lock| lock.packages.iter())
+            .filter(|package| {
+                !canonical_names.contains(package.name.as_str())
+                    && !project_names.contains(package.name.as_str())
+            })
+            .cloned(),
+    );
     packages
 }
 
@@ -3836,7 +3882,8 @@ mod tests {
     /// channel certifies — the union seed handed Cargo the project's
     /// divergent `wasm-bindgen`/`js-sys` pair beside the pin and no
     /// resolution then satisfied `Water.lock` (#177) — while a name the
-    /// canonical lock does not record keeps every input lock's entries.
+    /// canonical lock does not record keeps the project's entries, the
+    /// previous lock filling in only what neither names.
     #[test]
     fn the_seed_resolves_a_canonical_name_to_the_pinned_identity() {
         let registry = Some("registry+https://github.com/rust-lang/crates.io-index");
@@ -3881,7 +3928,9 @@ mod tests {
         assert_eq!(versions("cc"), ["1.4.5"]);
         assert_eq!(versions("app"), ["0.1.0"]);
         assert_eq!(versions("toml"), ["0.9.5"]);
-        assert_eq!(versions("annotate-snippets"), ["0.11.5", "0.12.16"]);
+        // The project owns the `annotate-snippets` name: the previous
+        // lock's second entry cannot stand beside the project's pin.
+        assert_eq!(versions("annotate-snippets"), ["0.12.16"]);
         assert_eq!(versions("bindgen"), ["0.72.0"]);
 
         // Without a canonical lock — the stable channel — every input
@@ -3891,6 +3940,44 @@ mod tests {
             package.name.as_str() == "wasm-bindgen" && package.version.to_string() == "0.2.105"
         }));
         assert_eq!(seed.iter().filter(|p| p.name.as_str() == "app").count(), 1);
+    }
+
+    /// A `cargo update -p serde` in the project re-pins the name: the seed
+    /// carries the project's new pin, and the previous managed lock's stale
+    /// entry — which a union keyed on the locked identity would have kept
+    /// beside it — drops. Entries only the managed crate resolved stay.
+    #[test]
+    fn the_seed_lets_a_project_update_replace_the_previous_pin() {
+        let registry = Some("registry+https://github.com/rust-lang/crates.io-index");
+        let lock = |packages| Lockfile {
+            packages,
+            version: cargo_lock::ResolveVersion::V4,
+            root: None,
+            metadata: BTreeMap::default(),
+            patch: cargo_lock::Patch::default(),
+        };
+        let project = lock(vec![
+            package("app", "0.1.0", None),
+            package("serde", "1.0.228", registry),
+        ]);
+        let previous = lock(vec![
+            package("serde", "1.0.219", registry),
+            package("backend-only-dep", "0.3.0", registry),
+        ]);
+
+        let seed = seed_packages(None, &project, Some(&previous));
+        let versions = |name: &str| {
+            let mut versions: Vec<_> = seed
+                .iter()
+                .filter(|package| package.name.as_str() == name)
+                .map(|package| package.version.to_string())
+                .collect();
+            versions.sort();
+            versions
+        };
+        assert_eq!(versions("serde"), ["1.0.228"]);
+        assert_eq!(versions("backend-only-dep"), ["0.3.0"]);
+        assert_eq!(versions("app"), ["0.1.0"]);
     }
 
     /// The divergence hydroterm hit: the previous generated lock, the
