@@ -4714,7 +4714,7 @@ fn plan_union(plan: &mut BackdropPlan, stops: &mut Vec<Stop>) -> Result<(), Rend
         // Union-field members inflate by `r(n) + outer + 1.5`; members
         // with no field behind them are not inflated at all.
         let pad = if union_spec.is_some() || entry.outer > 0.0 {
-            r + f64::from(entry.outer) + 1.0
+            r + f64::from(entry.outer) + 1.5
         } else {
             0.0
         };
