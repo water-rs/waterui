@@ -14,8 +14,10 @@ use std::time::{Duration, Instant};
 use accesskit::Role;
 #[cfg(feature = "accessibility")]
 use nami::collection::SignalCollection;
+use nami::collection::List as Membership;
 use nami::{Binding, Computed, SignalExt as _};
 use waterui::FilterViewExt as _;
+use waterui::animation::Animation;
 use waterui::ViewExt as _;
 use waterui::background::Material;
 #[cfg(feature = "accessibility")]
@@ -31,6 +33,7 @@ use waterui_core::env::Store;
 use waterui_core::extract::Use;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
+use waterui_layout::collection_transition::collection_transition;
 use waterui_layout::scroll;
 use waterui_layout::stack::{VStack, hstack, vstack, zstack};
 
@@ -1105,22 +1108,28 @@ fn a_partial_re_record_keeps_the_scope_anchored() {
 /// A `.material_group()` toggled between a `when` branch's scope list
 /// and a `zstack` child list keeps exactly one anchor registration —
 /// the previous list's keys are compare-removed by layer, so the move
-/// never leaves a second owner or a stale registration.
+/// A `.material_group()` row that leaves a `collection_transition` stack
+/// moves between two mount lists mid-flight: while its exit transition
+/// runs, the row's scope cell flushes inside the departing entry's
+/// `Item::Scope` list instead of the collection's item list. The scope's
+/// anchor registration must keep exactly one owner throughout — the
+/// exited list's registration is compare-removed by layer — and the
+/// engine's window child list stays the mirror's commit (water-rs/
+/// waterui#2097, MEDIUM-1).
 #[test]
 fn a_scope_moving_between_lists_keeps_one_owner() {
-    let nested = Binding::container(true);
+    let rows: Membership<SelfId<u64>> = Membership::from(vec![SelfId::new(1)]);
     let mut runtime = {
-        let nested = nested.clone();
+        let rows = rows.clone();
         let builder = AnyViewBuilder::<AnyView>::new(move || {
-            AnyView::new(zstack((
-                Color::srgb(230, 38, 38),
-                when(nested.clone(), || {
-                    vstack((member(Material::Regular).material_group(),))
-                }),
-                when(nested.clone().map(|n| !n), || {
-                    member(Material::Regular).material_group()
-                }),
-            )))
+            let rows = rows.clone();
+            let collection = VStack::for_each(rows, move |_| {
+                AnyView::new(member(Material::Regular).material_group())
+            });
+            AnyView::new(collection_transition(
+                collection,
+                Animation::linear(Duration::from_millis(1_000)),
+            ))
         });
         let mut runtime = HeadlessRuntime::new_for_tests(
             pumped_test_environment(),
@@ -1135,41 +1144,37 @@ fn a_scope_moving_between_lists_keeps_one_owner() {
     };
     assert_eq!(material_layers(&runtime).len(), 1);
     assert_eq!(mounts(&runtime).anchor_registration_count(), 1);
-    let before = mounts(&runtime).backdrop_anchor(material_layers(&runtime)[0]);
 
-    nested.set(false);
-    pump_until_settled(&mut runtime);
-    let layers = material_layers(&runtime);
-    assert_eq!(layers.len(), 1);
-    // `when` rebuilds its child wholesale, so the exited branch's scope
-    // unmounted with it: exactly one live registration remains — the
-    // moved member's own, under the live branch's list — and it is not
-    // the anchor the exited list registered.
+    // Removing the row moves its scope cell from the collection's item
+    // list into the departing entry's `Item::Scope` list — pump one frame
+    // into the exit transition, before the entry retires.
+    let _ = rows.remove(0);
+    pump(&mut runtime);
     let registrations = mounts(&runtime).anchor_registrations();
     assert_eq!(
         registrations.len(),
         1,
-        "one live registration: the exited list's compare-removed by layer"
+        "one live registration while the row exits inside its scope item"
     );
+    let member_layer = material_layers(&runtime)[0];
     assert_eq!(
-        mounts(&runtime).backdrop_anchor(layers[0]),
+        mounts(&runtime).backdrop_anchor(member_layer),
         Some(registrations[0].2),
-        "the member anchors at its new list's anchor layer"
+        "the departing member still anchors at its own scope's layer"
     );
-    assert_ne!(
-        mounts(&runtime).backdrop_anchor(layers[0]),
-        before,
-        "the exited list's anchor is not the member's anchor"
-    );
-    // The engine's window child list is structurally the mirror's own
-    // commit: a stale anchor layer would show as an extra child skewing
-    // `reconcile`'s insert indices.
     runtime.renderer_mut().commit_mirror();
     assert_eq!(
         window_mount(&runtime).window_children().len(),
         runtime.renderer().mirror().window_children().len(),
         "the engine's window child list matches the mirror's"
     );
+
+    // Once the transition retires the entry, nothing stands: no member,
+    // no group, no registration.
+    pump_until_settled(&mut runtime);
+    assert!(material_layers(&runtime).is_empty());
+    assert_eq!(mounts(&runtime).backdrop_group_count(), 0);
+    assert_eq!(mounts(&runtime).anchor_registration_count(), 0);
 }
 
 /// A scope unmounted and re-mounted gets a fresh anchor layer: the group
