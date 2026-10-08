@@ -697,3 +697,68 @@ fn a_group_anchor_at_a_projective_layer_is_rejected() {
         scene.validate()
     );
 }
+
+/// A backdrop group anchored at a `Layer::id` no layer carries is
+/// rejected: the anchor must name a mounted layer.
+#[test]
+fn a_group_anchor_at_an_unknown_layer_is_rejected() {
+    let mut b = Scene::builder(8, 8);
+    b.backdrop_group(BackdropGroup {
+        anchor: Some(NONZERO),
+        ..BackdropGroup::new(1, Vec::new(), 1.0, 1)
+    });
+    let scene = b.build();
+    assert!(
+        matches!(
+            scene.validate(),
+            Err(cherenkov_scene::SceneError::UnknownBackdropAnchor(1))
+        ),
+        "unexpected result {:?}",
+        scene.validate()
+    );
+}
+
+/// Two layers carrying the same `id` are rejected unconditionally — an
+/// anchor could not tell them apart.
+#[test]
+fn a_duplicate_anchor_layer_id_is_rejected() {
+    let mut b = Scene::builder(8, 8);
+    b.root().layer(|m| {
+        m.id(NONZERO);
+    });
+    b.root().layer(|m| {
+        m.id(NONZERO);
+    });
+    let scene = b.build();
+    assert!(
+        matches!(
+            scene.validate(),
+            Err(cherenkov_scene::SceneError::DuplicateBackdropAnchor(1))
+        ),
+        "unexpected result {:?}",
+        scene.validate()
+    );
+}
+
+/// A layer `id` of `0` in `scene.json` is a parse error, not a silent
+/// `None`: the field is a `NonZeroU32`.
+#[test]
+fn a_zero_layer_id_is_a_parse_error() {
+    let dir = std::env::temp_dir().join(format!(
+        "cherenkov-scene-zero-id-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    Scene::builder(8, 8).build().save(&dir).unwrap();
+    let path = dir.join("scene.json");
+    let mut json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    json["root"]["id"] = serde_json::json!(0);
+    std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
+    let result = Scene::load(&dir);
+    assert!(
+        matches!(result, Err(cherenkov_scene::SceneError::Json(_))),
+        "a zero id must fail parsing, got {result:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

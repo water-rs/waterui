@@ -59,7 +59,7 @@
 //! member's sample and earlier content. A member without a clip or
 //! referencing an undeclared group id is a render error.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use cherenkov_scene::{
     BackdropFilter, BackdropGroup, BlendMode, BlendSpace, Draw, FillRule, GroupItem, Item, Layer,
@@ -313,6 +313,7 @@ fn walk_anchor_positions(
     canvas: Option<usize>,
     anchor_of: &HashMap<u32, u32>,
     anchor_pos: &mut HashMap<u32, (Option<usize>, usize)>,
+    projective: &mut HashSet<u32>,
     member_pos: &mut MemberPositions,
     order: &mut usize,
 ) {
@@ -324,6 +325,9 @@ fn walk_anchor_positions(
         let idx = *order;
         if let Some(id) = child.id {
             anchor_pos.insert(id.get(), (canvas, idx));
+            if child.projection.is_some() {
+                projective.insert(id.get());
+            }
         }
         if let Some(gid) = child.backdrop
             && anchor_of.contains_key(&gid)
@@ -340,7 +344,15 @@ fn walk_anchor_positions(
         } else {
             canvas
         };
-        walk_anchor_positions(child, canvas, anchor_of, anchor_pos, member_pos, order);
+        walk_anchor_positions(
+            child,
+            canvas,
+            anchor_of,
+            anchor_pos,
+            projective,
+            member_pos,
+            order,
+        );
     }
 }
 
@@ -514,22 +526,30 @@ impl Renderer {
         // paint-order index; members' the same — the canvas is the
         // nearest enclosing filtered, blended or projective layer.
         let mut anchor_pos: HashMap<u32, (Option<usize>, usize)> = HashMap::new();
+        let mut projective: HashSet<u32> = HashSet::new();
         let mut member_pos: MemberPositions = HashMap::new();
         walk_anchor_positions(
             &scene.root,
             None,
             &anchor_of,
             &mut anchor_pos,
+            &mut projective,
             &mut member_pos,
             &mut 0,
         );
         let mut anchored: Vec<(&u32, &u32)> = anchor_of.iter().collect();
         anchored.sort_unstable();
         for &(gid, anchor) in &anchored {
-            let Some(&(anchor_canvas, anchor_order)) = anchor_pos.get(anchor) else {
+            if scene.root.id.is_some_and(|id| id.get() == *anchor) {
+                return Err(RenderError::Backdrop("backdrop-anchor-at-root".into()));
+            }
+            if projective.contains(anchor) {
                 return Err(RenderError::Backdrop(
-                    "backdrop-member-outside-anchor-canvas".into(),
+                    "backdrop-anchor-projective".into(),
                 ));
+            }
+            let Some(&(anchor_canvas, anchor_order)) = anchor_pos.get(anchor) else {
+                return Err(RenderError::Backdrop("backdrop-unknown-anchor".into()));
             };
             for &(canvas, order) in member_pos.get(gid).into_iter().flatten() {
                 if canvas == anchor_canvas && order > anchor_order {

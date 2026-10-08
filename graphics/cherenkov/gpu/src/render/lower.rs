@@ -1384,7 +1384,7 @@ impl<'a> Lowering<'a> {
                 }
             }
         }
-        self.plan_anchors(start)
+        self.plan_anchors(start, tree)
     }
 
     /// Validates every anchored group's member range, then builds each
@@ -1395,7 +1395,7 @@ impl<'a> Lowering<'a> {
     /// canvas — the anchor's descendants or its later siblings there; an
     /// anchored group never falls
     /// back to a capture at the member.
-    fn plan_anchors(&mut self, root: LayerId) -> Result<(), RenderError> {
+    fn plan_anchors(&mut self, root: LayerId, tree: &SurfaceTree) -> Result<(), RenderError> {
         let mut gids: Vec<u64> = self
             .backdrops
             .iter()
@@ -1410,12 +1410,27 @@ impl<'a> Lowering<'a> {
                 if anchor == root {
                     return Err(RenderError::Unsupported(names::BACKDROP_ANCHOR_AT_ROOT));
                 }
+                if self.projects(anchor, tree) {
+                    return Err(RenderError::Unsupported(names::BACKDROP_ANCHOR_PROJECTIVE));
+                }
                 let Some(&(anchor_canvas, anchor_order)) = self.anchor_pos.get(&anchor) else {
+                    // The anchor is outside this walk: inside another
+                    // projective image its members here are outside its
+                    // canvas; an `id` nothing carries names nothing.
                     return Err(RenderError::Unsupported(
-                        names::BACKDROP_MEMBER_OUTSIDE_ANCHOR_CANVAS,
+                        if tree.layers().any(|(id, _)| id.raw() == anchor.raw()) {
+                            names::BACKDROP_MEMBER_OUTSIDE_ANCHOR_CANVAS
+                        } else {
+                            names::BACKDROP_UNKNOWN_ANCHOR
+                        },
                     ));
                 };
-                for &(canvas, order) in plan.pos.values() {
+                // The first offending member in paint order names the
+                // error — `pos` is a hash map, so it is sorted first.
+                let mut positions: Vec<(Option<LayerId>, usize)> =
+                    plan.pos.values().copied().collect();
+                positions.sort_unstable_by_key(|&(_, order)| order);
+                for (canvas, order) in positions {
                     if canvas == anchor_canvas && order > anchor_order {
                         continue;
                     }

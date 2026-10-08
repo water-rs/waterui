@@ -8,7 +8,7 @@ mod union_cap;
 use cherenkov_oracle::color::{linear_srgb_to_linear_p3, to_working};
 use cherenkov_oracle::{Renderer, metrics};
 use cherenkov_scene::{
-    BackdropGroup, Color, Extend, GradientStop, LinearGradient, Paint, Scene, Shape,
+    BackdropGroup, BlendMode, Color, Extend, GradientStop, LinearGradient, Paint, Scene, Shape,
 };
 use kurbo::Rect;
 
@@ -1272,5 +1272,138 @@ fn an_isolating_anchor_rejects_its_member_children() {
             "unexpected error {e}"
         ),
         Ok(_) => panic!("a member child of an isolating anchor must fail"),
+    }
+}
+
+/// An anchor at the scene's root has nothing beneath it: the oracle
+/// names `backdrop-anchor-at-root`, the same error the engines report.
+#[test]
+fn an_anchor_at_the_root_is_unsupported() {
+    let mut b = Scene::builder(W, H);
+    b.backdrop_group(BackdropGroup {
+        anchor: Some(std::num::NonZeroU32::MIN),
+        ..BackdropGroup::new(1, vec![], 1.0, 1)
+    });
+    b.root().id(std::num::NonZeroU32::MIN);
+    b.root().layer(|m| {
+        m.backdrop(1);
+    });
+    let scene = b.build();
+    match Renderer::new(W as usize, H as usize).render(&scene, &tmp()) {
+        Err(e) => assert!(
+            e.to_string().contains("backdrop-anchor-at-root"),
+            "unexpected error {e}"
+        ),
+        Ok(_) => panic!("an anchor at the root must fail"),
+    }
+}
+
+/// An anchor on a projective layer is a flattening boundary: the
+/// oracle names `backdrop-anchor-projective` even though `Scene::validate`
+/// was never run.
+#[test]
+fn an_anchor_at_a_projective_layer_is_unsupported() {
+    use cherenkov_scene::Projection;
+    let mut b = Scene::builder(W, H);
+    b.backdrop_group(BackdropGroup {
+        anchor: Some(std::num::NonZeroU32::MIN),
+        ..BackdropGroup::new(1, vec![], 1.0, 1)
+    });
+    b.root().layer(|a| {
+        a.id(std::num::NonZeroU32::MIN);
+        a.projection(Projection {
+            matrix: Projection::perspective(100.0),
+            ..Projection::default()
+        });
+    });
+    b.root().layer(|m| {
+        m.backdrop(1);
+    });
+    let scene = b.build();
+    match Renderer::new(W as usize, H as usize).render(&scene, &tmp()) {
+        Err(e) => assert!(
+            e.to_string().contains("backdrop-anchor-projective"),
+            "unexpected error {e}"
+        ),
+        Ok(_) => panic!("an anchor on a projective layer must fail"),
+    }
+}
+
+/// An anchor naming a layer id nothing carries has no paint position:
+/// `backdrop-unknown-anchor`, the same error the engines report.
+#[test]
+fn an_anchor_at_an_unknown_layer_is_unsupported() {
+    let mut b = Scene::builder(W, H);
+    b.backdrop_group(BackdropGroup {
+        anchor: Some(std::num::NonZeroU32::MIN),
+        ..BackdropGroup::new(1, vec![], 1.0, 1)
+    });
+    b.root().layer(|m| {
+        m.backdrop(1);
+    });
+    let scene = b.build();
+    match Renderer::new(W as usize, H as usize).render(&scene, &tmp()) {
+        Err(e) => assert!(
+            e.to_string().contains("backdrop-unknown-anchor"),
+            "unexpected error {e}"
+        ),
+        Ok(_) => panic!("an anchor at an unknown layer must fail"),
+    }
+}
+
+/// A blended anchor's children paint in the blend's own canvas, not the
+/// anchor's — a blended isolating anchor rejects its member children,
+/// exactly like a filtered one.
+#[test]
+fn a_blended_isolating_anchor_rejects_its_member_children() {
+    let mut b = Scene::builder(W, H);
+    b.backdrop_group(BackdropGroup {
+        anchor: Some(std::num::NonZeroU32::MIN),
+        ..BackdropGroup::new(1, vec![], 1.0, 1)
+    });
+    b.root().layer(|a| {
+        a.id(std::num::NonZeroU32::MIN);
+        a.blend(BlendMode::Screen);
+        a.layer(|inner| {
+            inner.backdrop(1);
+        });
+    });
+    let scene = b.build();
+    match Renderer::new(W as usize, H as usize).render(&scene, &tmp()) {
+        Err(e) => assert!(
+            e.to_string()
+                .contains("backdrop-member-outside-anchor-canvas"),
+            "unexpected error {e}"
+        ),
+        Ok(_) => panic!("a member child of a blended anchor must fail"),
+    }
+}
+
+/// A blended descendant of the anchor is its own canvas too: a member
+/// inside it is the anchor's descendant but outside its canvas.
+#[test]
+fn a_member_inside_the_anchors_blended_child_is_unsupported() {
+    let mut b = Scene::builder(W, H);
+    b.backdrop_group(BackdropGroup {
+        anchor: Some(std::num::NonZeroU32::MIN),
+        ..BackdropGroup::new(1, vec![], 1.0, 1)
+    });
+    b.root().layer(|a| {
+        a.id(std::num::NonZeroU32::MIN);
+        a.layer(|d| {
+            d.blend(BlendMode::Screen);
+            d.layer(|inner| {
+                inner.backdrop(1);
+            });
+        });
+    });
+    let scene = b.build();
+    match Renderer::new(W as usize, H as usize).render(&scene, &tmp()) {
+        Err(e) => assert!(
+            e.to_string()
+                .contains("backdrop-member-outside-anchor-canvas"),
+            "unexpected error {e}"
+        ),
+        Ok(_) => panic!("a member inside a blended descendant must fail"),
     }
 }

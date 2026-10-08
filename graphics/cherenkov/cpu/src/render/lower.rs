@@ -1203,7 +1203,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             }
             plan.place(footprint, (self.width, h));
         }
-        self.plan_anchors(start)?;
+        self.plan_anchors(start, tree)?;
         // The apron a scope needs around each band — its own filter's
         // footprint, or `capture apron + reach` for scopes a capture
         // lands directly in.
@@ -1270,7 +1270,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
     /// falls back to a capture at the member.
     /// `backdrops` is a hash map: the anchored gids are sorted first so
     /// the validation error and `anchor_groups` order are deterministic.
-    fn plan_anchors(&mut self, root: LayerId) -> Result<(), RenderError> {
+    fn plan_anchors(&mut self, root: LayerId, tree: &SurfaceTree) -> Result<(), RenderError> {
         let mut gids: Vec<u64> = self
             .backdrops
             .iter()
@@ -1279,27 +1279,47 @@ impl<'a, 'b> Lowering<'a, 'b> {
             .collect();
         gids.sort_unstable();
         for gid in gids {
-            let plan = self.backdrops.get_mut(&gid).expect("listed above");
-            let anchor = plan.spec.anchor_layer().expect("anchored above");
-            if anchor == root {
-                return Err(RenderError::Unsupported(names::BACKDROP_ANCHOR_AT_ROOT));
-            }
-            let Some(&(anchor_canvas, anchor_order, anchor_scope)) = self.anchor_pos.get(&anchor)
-            else {
-                return Err(RenderError::Unsupported(
-                    names::BACKDROP_MEMBER_OUTSIDE_ANCHOR_CANVAS,
-                ));
-            };
-            for &(canvas, order) in plan.pos.values() {
-                if canvas == anchor_canvas && order > anchor_order {
-                    continue;
+            let (anchor, anchor_scope) = {
+                let plan = &self.backdrops[&gid];
+                let anchor = plan.spec.anchor_layer().expect("anchored above");
+                if anchor == root {
+                    return Err(RenderError::Unsupported(names::BACKDROP_ANCHOR_AT_ROOT));
                 }
-                return Err(RenderError::Unsupported(if canvas == anchor_canvas {
-                    names::BACKDROP_MEMBER_BEFORE_ANCHOR
-                } else {
-                    names::BACKDROP_MEMBER_OUTSIDE_ANCHOR_CANVAS
-                }));
-            }
+                if self.projects(anchor, tree) {
+                    return Err(RenderError::Unsupported(names::BACKDROP_ANCHOR_PROJECTIVE));
+                }
+                let Some(&(anchor_canvas, anchor_order, anchor_scope)) =
+                    self.anchor_pos.get(&anchor)
+                else {
+                    // The anchor is outside this walk: inside another
+                    // projective image its members here are outside its
+                    // canvas; an `id` nothing carries names nothing.
+                    return Err(RenderError::Unsupported(
+                        if tree.layers().any(|(id, _)| id.raw() == anchor.raw()) {
+                            names::BACKDROP_MEMBER_OUTSIDE_ANCHOR_CANVAS
+                        } else {
+                            names::BACKDROP_UNKNOWN_ANCHOR
+                        },
+                    ));
+                };
+                // The first offending member in paint order names the
+                // error — `pos` is a hash map, so it is sorted first.
+                let mut positions: Vec<(Option<LayerId>, usize)> =
+                    plan.pos.values().copied().collect();
+                positions.sort_unstable_by_key(|&(_, order)| order);
+                for (canvas, order) in positions {
+                    if canvas == anchor_canvas && order > anchor_order {
+                        continue;
+                    }
+                    return Err(RenderError::Unsupported(if canvas == anchor_canvas {
+                        names::BACKDROP_MEMBER_BEFORE_ANCHOR
+                    } else {
+                        names::BACKDROP_MEMBER_OUTSIDE_ANCHOR_CANVAS
+                    }));
+                }
+                (anchor, anchor_scope)
+            };
+            let plan = self.backdrops.get_mut(&gid).expect("listed above");
             // The capture lands at the anchor — its scope is the
             // anchor's, not the first member's.
             plan.scope = anchor_scope;

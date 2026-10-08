@@ -5872,6 +5872,43 @@ fn run() -> Result<(), SceneError> {
         });
     });
 
+    corpus.scene_setup("backdrop-anchor-filtered-canvas", 256, 256, white, |b| {
+        // An anchor inside a filtered canvas captures that canvas as it
+        // stands at the anchor's paint position — empty at order 0 — so
+        // each member's copy beneath it holds nothing: no member shows
+        // another member or the unfiltered background. The canvas's own
+        // blur still composites the members over the split fill.
+        b.backdrop_group(BackdropGroup {
+            anchor: Some(std::num::NonZeroU32::MIN),
+            ..BackdropGroup::new(1, vec![BackdropFilter::GaussianBlur { sigma: 4.0 }], 1.0, 1)
+        });
+        let l = &mut b.root();
+        backdrop_background(l);
+        l.layer(|f| {
+            f.filter(LayerFilter::GaussianBlur { sigma: 6.0 });
+            f.layer(|a| {
+                a.id(std::num::NonZeroU32::MIN);
+            });
+            f.layer(|m| {
+                let clip = Shape::RoundedRect(RoundedRect::new(40.0, 40.0, 140.0, 140.0, 14.0));
+                m.clip(clip);
+                m.backdrop(1);
+                m.fill(
+                    Shape::rect(42.0, 42.0, 138.0, 138.0),
+                    solid(srgba(1.0, 1.0, 1.0, 0.35)),
+                );
+            });
+            f.layer(|m| {
+                m.clip(Shape::circle(170.0, 170.0, 60.0));
+                m.backdrop(1);
+                m.fill(
+                    Shape::rect(110.0, 110.0, 230.0, 230.0),
+                    solid(srgba(1.0, 1.0, 1.0, 0.35)),
+                );
+            });
+        });
+    });
+
     corpus.scene_setup("backdrop-transform", 256, 256, white, |b| {
         // A saturation-boost colour matrix on premultiplied colour
         // (luminance-preserving, s = 1.6).
