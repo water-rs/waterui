@@ -39,7 +39,8 @@ private val LOG_TAG = HydrolysisWebViewClient.LOG_TAG
  * block as newline-joined `Name: value` lines, and the body.
  *
  * Constructed by `nativeAssetRespond` on the Rust side by name; the keep
- * annotation preserves the constructor's signature through R8.
+ * annotation plus the `<init>` signature rule in
+ * `webview/consumer-rules.pro` preserve the constructor through R8.
  */
 class AssetResponse
 @CalledFromNative
@@ -122,7 +123,7 @@ private constructor(
     private var nativeHandle: Long = 0
 
     /**
-     * The `Arc<AssetServer>` `create` was handed; its last reference drops
+     * The `Box<AssetServer>` `create` was handed; its last reference drops
      * in `release` after `destroy`. Guarded by [assetServerLock]:
      * `destroy()` does not join Chromium's IO threads, so a
      * `shouldInterceptRequest` can still be mid-dispatch — the read lock
