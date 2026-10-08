@@ -615,11 +615,6 @@ pub struct TemplateContext {
     /// Hydrolysis Android preview host parameters — set only while the
     /// `hydrolysis_android_preview` templates render.
     pub hydrolysis_android_preview: Option<HydrolysisAndroidPreviewTemplateEntry>,
-    /// The host the manifest-generation probes run on — the `cargo
-    /// metadata` the feature-forward resolution issues against the
-    /// manifest being written goes through this host's `PATH` and
-    /// environment, never the bare process.
-    pub host: crate::toolchain::Host,
 }
 
 impl TemplateContext {
@@ -667,7 +662,6 @@ impl TemplateContext {
             launch: LaunchTemplateEntry::default(),
             hydrolysis_android: None,
             hydrolysis_android_preview: None,
-            host: host.clone(),
         }
     }
 
@@ -717,7 +711,6 @@ impl TemplateContext {
             launch: LaunchTemplateEntry::default(),
             hydrolysis_android: None,
             hydrolysis_android_preview: None,
-            host: host.clone(),
         }
     }
 
@@ -774,7 +767,6 @@ impl TemplateContext {
             launch: LaunchTemplateEntry::default(),
             hydrolysis_android: None,
             hydrolysis_android_preview: None,
-            host: host.clone(),
         }
     }
 
@@ -1730,7 +1722,6 @@ mod tests {
             hydrolysis_android: None,
             hydrolysis_android_preview: None,
             launch: LaunchTemplateEntry::default(),
-            host: crate::toolchain::Host::current(),
         }
     }
 
@@ -5709,7 +5700,6 @@ async fn write_generated_cargo_toml(base_dir: &Path, toml_string: String) -> io:
 async fn configure_capability_forwards(
     host: &crate::toolchain::Host,
     manifest: &mut cargo_toml::Manifest<()>,
-    ctx: &TemplateContext,
     base_dir: &Path,
 ) -> io::Result<()> {
     let tables = Box::pin(resolved_forward_tables(
@@ -5831,7 +5821,7 @@ async fn configure_apple_target_tables(
         smol::unblock(move || generated_crate_patches(&ctx)).await?
     };
 
-    configure_capability_forwards(host, manifest, ctx, base_dir).await
+    configure_capability_forwards(host, manifest, base_dir).await
 }
 
 /// Apple backend templates.

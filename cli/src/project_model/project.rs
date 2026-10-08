@@ -1214,15 +1214,12 @@ impl Project {
                 async move {
                     let metadata = {
                         let _permit = permits.acquire_arc().await;
-                        unblock(move || {
-                            let mut command = cargo_metadata::MetadataCommand::new();
-                            command.manifest_path(&build_manifest).other_options(vec![
-                                "--filter-platform".to_string(),
-                                target.to_string(),
-                            ]);
-                            metadata_on(&host, &command)
-                        })
-                        .await
+                        let mut command = cargo_metadata::MetadataCommand::new();
+                        command.manifest_path(&build_manifest).other_options(vec![
+                            "--filter-platform".to_string(),
+                            target.to_string(),
+                        ]);
+                        host.cargo_metadata(&command).await
                     }
                     .map_err(|error| error.to_string())?;
                     let mut features: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -3093,17 +3090,12 @@ async fn application_package_spec(
     locked: bool,
 ) -> eyre::Result<String> {
     let application_manifest = dunce::canonicalize(project_root.join("Cargo.toml"))?;
-    let metadata_manifest = application_manifest.clone();
-    let host_for_metadata = host.clone();
-    let metadata = unblock(move || {
-        let mut command = cargo_metadata::MetadataCommand::new();
-        command.no_deps().manifest_path(metadata_manifest);
-        if locked {
-            command.other_options(vec!["--locked".to_string()]);
-        }
-        metadata_on(&host_for_metadata, &command)
-    })
-    .await?;
+    let mut command = cargo_metadata::MetadataCommand::new();
+    command.no_deps().manifest_path(&application_manifest);
+    if locked {
+        command.other_options(vec!["--locked".to_string()]);
+    }
+    let metadata = host.cargo_metadata(&command).await?;
     Ok(package_at_manifest(&metadata, &application_manifest)?
         .id
         .to_string())
