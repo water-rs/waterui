@@ -57,6 +57,13 @@ pub struct Args {
     path: PathBuf,
 }
 
+impl Args {
+    /// The project directory this command works on.
+    pub(crate) fn project_dir(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
 /// Run the inspector command.
 pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     let platform = InspectorPlatform::from(args.platform);

@@ -49,9 +49,9 @@ pub struct PreviewArgs {
     #[serde(default)]
     pub frame: Option<String>,
 
-    /// Rendering backend: `apple`, `android`, or `hydrolysis`. Defaults to the
-    /// platform's native backend (`apple` on macOS/iOS, `android` on Android,
-    /// `hydrolysis` on Linux and Windows).
+    /// Rendering backend: `apple` or `hydrolysis`. Defaults to the
+    /// platform's native backend (`apple` on macOS/iOS, `hydrolysis` on
+    /// Linux, Windows, and Android).
     #[serde(default)]
     pub backend: Option<CliPreviewBackend>,
 

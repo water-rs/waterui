@@ -1,0 +1,7 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- A previewed view may fetch (images, data) exactly as under `water run`. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <instrumentation
+        android:name="dev.waterui.hydrolysis.preview.HydrolysisPreviewInstrumentation"
+        android:targetPackage="${applicationId}" />
+</manifest>

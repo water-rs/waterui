@@ -73,8 +73,9 @@ pub struct HydrolysisPreviewRequest<'a> {
     pub source: PreviewSource<'a>,
     /// Theme package the preview runtimes are constructed with.
     pub theme: HydrolysisPreviewTheme,
-    /// Desktop platform the preview binary builds and stages for — the same
-    /// target `water run` compiles the managed backend for on this host.
+    /// Platform the preview renders for — the desktop target `water run`
+    /// compiles the managed backend for on this host, or
+    /// `TargetPlatform::Android` for the device-side instrumentation render.
     pub platform: TargetPlatform,
     /// Viewport width in logical units.
     pub width: f32,
@@ -86,7 +87,12 @@ pub struct HydrolysisPreviewRequest<'a> {
     pub progress: Option<BuildProgress>,
 }
 
-/// Render a preview via the managed Hydrolysis backend binary.
+/// Render a preview via the managed Hydrolysis backend.
+///
+/// A desktop `platform` builds and execs the backend binary; `Android`
+/// renders inside the preview host's instrumentation on a device — the
+/// request shape is identical, the dispatch lives here so every caller
+/// resolves one way.
 ///
 /// # Errors
 /// Returns an error if the managed backend cannot be prepared, built, or executed.
@@ -95,6 +101,16 @@ pub async fn render_preview_with_hydrolysis(
     output_path: &Path,
     scenario: Option<&HydrolysisPreviewScenario>,
 ) -> Result<()> {
+    if request.platform == TargetPlatform::Android {
+        return Box::pin(
+            crate::preview::hydrolysis_android::render_preview_with_hydrolysis_android(
+                &request,
+                output_path,
+                scenario,
+            ),
+        )
+        .await;
+    }
     let (width, height, theme) = (request.width, request.height, request.theme);
     let (project, built) = build_preview_session(&request, None).await?;
     stage_hydrolysis_resources(&project, theme, &built.app_symbols()?).await?;
@@ -221,7 +237,7 @@ pub async fn stage_hydrolysis_resources(
     Ok(())
 }
 
-async fn write_preview_bindings(
+pub async fn write_preview_bindings(
     project: &Project,
     source: PreviewSource<'_>,
     theme: HydrolysisPreviewTheme,
@@ -330,6 +346,6 @@ async fn run_preview_test_binary(
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn scenario_frame_path(output_dir: &Path, capture_ms: u64) -> PathBuf {
+pub fn scenario_frame_path(output_dir: &Path, capture_ms: u64) -> PathBuf {
     output_dir.join(format!("frame-{capture_ms:04}ms.png"))
 }

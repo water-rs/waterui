@@ -151,10 +151,9 @@ async fn stage_embedded_assets(
     module_dir: &Path,
     symbols: &crate::artifact_symbols::ArtifactSymbols,
 ) -> Result<()> {
-    let manifest =
+    let (manifest, staged) =
         assets::stage_project_assets_for_android_library(project, module_dir, symbols, false)
             .await?;
-    let assets_dir = module_dir.join("src/main/assets");
 
     let font_declarations =
         assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml")).await?;
@@ -162,7 +161,7 @@ async fn stage_embedded_assets(
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
 
     if !resolved_fonts.is_empty() {
-        let fonts_dest = assets_dir.join("fonts");
+        let fonts_dest = staged.root.join("fonts");
         assets::copy_fonts(&resolved_fonts, &fonts_dest).await?;
         assets::write_font_manifest(&resolved_fonts, &fonts_dest, None).await?;
         info!("Copied {} fonts to embedded module", resolved_fonts.len());

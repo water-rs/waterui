@@ -20,6 +20,11 @@
 //! Session create/destroy, metrics, surface attach/resize/destroy, frame
 //! transactions and input then arrive through `NativeBridge`'s JNI calls —
 //! the Kotlin side never touches this module's internals directly.
+//!
+//! `water preview --platform android` creates no session at all: a
+//! preview-mode cdylib registers `preview_runtime::run` through
+//! [`register_preview`] instead of an app factory, and the preview
+//! host's instrumentation invokes it through `PreviewBridge`'s JNI calls.
 
 mod accessibility;
 mod gpu;
@@ -27,6 +32,7 @@ mod host;
 mod ime;
 mod jni;
 mod platform_views;
+mod preview;
 
 use std::rc::Rc;
 use std::sync::OnceLock;
@@ -34,6 +40,8 @@ use std::sync::OnceLock;
 use tracing::level_filters::LevelFilter;
 use tracing_log::AsLog;
 use waterui::app::App;
+
+pub use preview::register_preview;
 
 /// The app factory the Kotlin host instantiates per session create.
 ///
