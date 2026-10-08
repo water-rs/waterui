@@ -656,9 +656,8 @@ mod tests {
         let host = machine.host(Vec::<(String, String)>::new());
         smol::block_on(async {
             let mut child = host
-                .command_in_own_process_group("/bin/sh")
-                .arg("-c")
-                .arg("/bin/sleep 60")
+                .command_in_own_process_group("/bin/sleep")
+                .arg("60")
                 .kill_on_drop(true)
                 .spawn()
                 .expect("spawn a child through the process-group seam");
