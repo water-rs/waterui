@@ -9,7 +9,7 @@
 //! `set_enabled`, the label mounts above the field and names it to
 //! assistive technology, and `on_submit` fires on Return. The measure is
 //! `WuiTextField.sizeThatFits`: a 100pt-width floor, the label stacked
-//! over the field with 4pt of spacing, height always at least intrinsic.
+//! over the field with 4pt of spacing, always the intrinsic height.
 //!
 //! The field is also this subtree's focus anchor — the kit marks it so
 //! `Metadata<Focused>` resolves it the way `installWuiFocusTarget` marked
@@ -494,8 +494,8 @@ fn layout_children(view: &PlatformView, state: &FieldState) {
 }
 
 /// The container's layout face: reports `WuiTextField.sizeThatFits`'s
-/// answer — the proposed width floored at `max(label, 100pt)` and height
-/// never below intrinsic — stretching horizontally at priority 0.
+/// answer — the proposed width floored at `max(label, 100pt)` and always
+/// the intrinsic height — stretching horizontally at priority 0.
 struct TextFieldSubView {
     state: Rc<FieldState>,
 }
@@ -545,10 +545,7 @@ impl SubView for TextFieldSubView {
         let width = proposal
             .width
             .map_or(min_width, |w| f64::from(w).max(min_width));
-        let height = proposal
-            .height
-            .map_or(intrinsic_height, |h| f64::from(h).max(intrinsic_height));
-        ViewDimensions::new(Size::new(width as f32, height as f32))
+        ViewDimensions::new(Size::new(width as f32, intrinsic_height as f32))
     }
 
     fn stretch_axis(&self) -> StretchAxis {

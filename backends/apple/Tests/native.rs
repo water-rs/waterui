@@ -159,6 +159,13 @@ fn base_trials() -> Vec<Trial> {
             },
         ),
         Trial::test(
+            "resolve::control_leaves_answer_their_intrinsic_height",
+            || {
+                resolve::control_leaves_answer_their_intrinsic_height();
+                Ok(())
+            },
+        ),
+        Trial::test(
             "picture::a_laid_out_picture_rasterizes_at_its_bounds",
             || {
                 picture::a_laid_out_picture_rasterizes_at_its_bounds();
@@ -699,8 +706,15 @@ mod leaf {
 /// to hand it back to), so a spurious empty render could not masquerade as
 /// a pass.
 mod resolve {
+    use waterui::Str;
+    use waterui::ViewExt as _;
+    use waterui::component::form::picker::{PickerItem, picker};
+    use waterui::component::form::secure::{Secure, SecureField};
+    use waterui::component::slider::slider;
+    use waterui::component::text_field::TextField;
     use waterui::filter::Opacity;
     use waterui::layout::Spacer;
+    use waterui::reactive::binding;
     use waterui_apple::contract::NativeLeaf;
     use waterui_backend_core::{AnyView, View};
     use waterui_core::layout::{ProposalSize, Size, StretchAxis};
@@ -836,6 +850,51 @@ mod resolve {
         render(());
         render(Spacer::new(8.0));
         render(IgnorableMetadata::new((), Unregistered));
+    }
+
+    /// §6's control contract: a finite height offer is advice, not an
+    /// allocation. The slider, the default-style picker and both text
+    /// fields answer their intrinsic height to it — a `VStack` above them
+    /// cannot starve a trailing `ScrollView` by handing out space that
+    /// only exists because the control claimed it.
+    pub fn control_leaves_answer_their_intrinsic_height() {
+        let volume = binding(0.5_f64);
+        let selection = binding("Alpha");
+        let text_value = binding(Str::from(""));
+        let secret = binding(Secure::new(String::new()));
+        let items: Vec<PickerItem<&'static str>> = vec![
+            waterui::text!("Alpha").tag("Alpha"),
+            waterui::text!("Beta").tag("Beta"),
+            waterui::text!("Gamma").tag("Gamma"),
+        ];
+        let leaves = [
+            ("slider", render(slider("Volume", &volume))),
+            ("picker", render(picker("Letter", items, &selection))),
+            ("text field", render(TextField::new("Name", &text_value))),
+            (
+                "secure field",
+                render(SecureField::new("Password", &secret)),
+            ),
+        ];
+        for (name, leaf) in leaves {
+            let offered = leaf
+                .layout()
+                .measure(ProposalSize::new(Some(300.0), Some(500.0)))
+                .size;
+            let unspecified = leaf
+                .layout()
+                .measure(ProposalSize::new(Some(300.0), None))
+                .size;
+            assert_eq!(
+                offered.height.to_bits(),
+                unspecified.height.to_bits(),
+                "{name} answers a finite height offer with its intrinsic height"
+            );
+            assert!(
+                offered.height < 500.0,
+                "{name} must not grow into the offered height"
+            );
+        }
     }
 }
 
