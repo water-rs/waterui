@@ -49,7 +49,8 @@ pub trait LayerTarget: cherenkov::Target {
     /// Joins `layer` to the backdrop group `key` names, sharing the
     /// group's filtered capture with every member under the same key,
     /// rebuilding it when `display_scale` changes. The membership the
-    /// layer's node holds ends with its layers.
+    /// layer's node holds ends with its layers; its owner link is how a
+    /// rebuild re-points every member at the replacement group.
     fn mount_material(
         host: &Self::Host,
         tx: &mut Transaction<'_, Self>,
@@ -57,7 +58,7 @@ pub trait LayerTarget: cherenkov::Target {
         layer: &Layer,
         key: BackdropGroupKey,
         display_scale: f64,
-        membership: &mut Option<MaterialMembership>,
+        membership: &MaterialMembership,
     );
 
     /// Clears the backdrop membership [`mount_material`](Self::mount_material)
@@ -159,7 +160,7 @@ impl LayerTarget for cherenkov_gpu::Gpu {
         layer: &Layer,
         key: BackdropGroupKey,
         display_scale: f64,
-        membership: &mut Option<MaterialMembership>,
+        membership: &MaterialMembership,
     ) {
         let surface = host
             .surface

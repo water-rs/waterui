@@ -17,7 +17,7 @@ use cherenkov::{Layer, LayerId, Transaction};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::renderer::material::{MaterialRuntime, WithinWindowLevel};
-use crate::renderer::mount::MaterialRequest;
+use crate::renderer::mount::{MaterialRequest, NodeCell};
 
 /// What a shared backdrop group is scoped to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -77,19 +77,36 @@ impl BackdropGroupKey {
 /// The membership a member's `NodeLayers` holds: a marker the groups
 /// table keeps weakly, so a member whose layers drop — an unmounted
 /// subtree — ends its membership at the next sweep without anyone
-/// reaching the table.
+/// reaching the table — and the member's cell, the link a group rebuild
+/// follows to re-point the member's frame layer at the replacement group
+/// without waiting for the member's own commit.
 pub struct MaterialMembership {
-    _marker: Rc<MemberMarker>,
+    marker: Rc<MemberMarker>,
+    owner: Weak<NodeCell>,
+}
+
+impl MaterialMembership {
+    /// A membership for `owner`'s node — `Weak::new()` for the window
+    /// layer's own membership, which the mount owns directly.
+    pub(crate) fn new(owner: Weak<NodeCell>) -> Self {
+        Self {
+            marker: Rc::new(MemberMarker),
+            owner,
+        }
+    }
 }
 
 /// The liveness token behind a member's `Weak` entry.
 struct MemberMarker;
 
-/// One member's table entry: its group key and the weak side of the
-/// membership its `NodeLayers` holds.
+/// One member's table entry: its group key, the weak side of the
+/// membership its `NodeLayers` holds, and the cell owning those layers —
+/// the link a group rebuild follows to re-point the member's frame layer
+/// at the replacement group without waiting for the member's own commit.
 struct MemberEntry {
     key: BackdropGroupKey,
     marker: Weak<MemberMarker>,
+    owner: Weak<NodeCell>,
 }
 
 /// One live backdrop group in the table: the target's group object, the
@@ -132,7 +149,10 @@ impl<G> BackdropGroups<G> {
     /// re-keying on any term change, and rebuilding the group on a
     /// display-scale change — its chain's parameters are in capture
     /// texels — re-pointing every member at the rebuilt group before the
-    /// old one drops.
+    /// old one drops. `membership` is the member's hold the rebuild
+    /// resolves the other members' live `NodeLayers` through, so no
+    /// member samples a released group even if its own commit does not
+    /// run in this transaction.
     ///
     /// `hooks` packs the target's two callbacks: `create` builds the
     /// target's group object from the runtime the key resolves to and the
@@ -145,7 +165,7 @@ impl<G> BackdropGroups<G> {
         member: &Layer,
         key: BackdropGroupKey,
         display_scale: f64,
-        membership: &mut Option<MaterialMembership>,
+        membership: &MaterialMembership,
         hooks: (
             impl Fn(&MaterialRuntime, f64) -> G,
             impl Fn(&mut Transaction<'_, T>, &Layer, &G),
@@ -153,11 +173,10 @@ impl<G> BackdropGroups<G> {
     ) {
         let (create, apply) = hooks;
         let bits = display_scale.to_bits();
-        if membership.is_some()
-            && self
-                .members
-                .get(&member.id())
-                .is_some_and(|entry| entry.key == key)
+        if self
+            .members
+            .get(&member.id())
+            .is_some_and(|entry| entry.key == key)
             && self
                 .groups
                 .get(&key)
@@ -170,18 +189,38 @@ impl<G> BackdropGroups<G> {
             Entry::Occupied(mut entry) => {
                 if entry.get().display_scale != bits {
                     // A display-scale change rebuilds the group: its chain's
-                    // parameters are in capture texels. The other members'
-                    // entries drop here — each member's own join re-points
-                    // it at the new group as the same commit walks on, so
-                    // no member samples a released group.
+                    // parameters are in capture texels. Every member keeps
+                    // its entry and is re-pointed at the new group here —
+                    // never left to the member's own commit, which a
+                    // partial commit may not run — so no member samples a
+                    // released group.
                     let runtime = entry.get().runtime;
-                    *entry.get_mut() = MountedBackdrop {
+                    let rebuilt = MountedBackdrop {
                         group: create(&runtime, display_scale),
                         runtime,
                         display_scale: bits,
-                        members: FxHashSet::default(),
+                        members: std::mem::take(&mut entry.get_mut().members),
                     };
-                    self.members.retain(|_, member| member.key != key);
+                    for other in &rebuilt.members {
+                        let Some(retained) = self
+                            .members
+                            .get(other)
+                            .and_then(|entry| entry.owner.upgrade())
+                            .and_then(|cell| cell.try_retained())
+                        else {
+                            // An unmounted member's marker is dead; the
+                            // sweep drops its entry.
+                            continue;
+                        };
+                        // A member mid-commit — on this commit's
+                        // ancestor stack — holds its layers outside the
+                        // cell; only the joining member can be one, and
+                        // its `apply` below covers it.
+                        if let Some(layers) = &*retained.layers.borrow() {
+                            apply(tx, layers.frame(), &rebuilt.group);
+                        }
+                    }
+                    *entry.get_mut() = rebuilt;
                 }
                 entry.into_mut()
             }
@@ -201,15 +240,14 @@ impl<G> BackdropGroups<G> {
         };
         apply(tx, member, &group.group);
         group.members.insert(member.id());
-        let marker = Rc::new(MemberMarker);
         self.members.insert(
             member.id(),
             MemberEntry {
                 key,
-                marker: Rc::downgrade(&marker),
+                marker: Rc::downgrade(&membership.marker),
+                owner: membership.owner.clone(),
             },
         );
-        *membership = Some(MaterialMembership { _marker: marker });
     }
 
     /// Takes `member` out of its group's membership. The member's layer

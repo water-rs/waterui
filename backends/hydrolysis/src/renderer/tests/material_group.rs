@@ -149,9 +149,10 @@ fn members_of_different_schemes_share_no_group() {
     let layers = material_layers(&runtime);
     assert_eq!(layers.len(), 2, "the frame presents both members");
     assert!(
-        layers
-            .iter()
-            .all(|layer| { member_scope(&runtime, *layer) == member_scope(&runtime, layers[0]) }),
+        layers.iter().all(|layer| {
+            member_scope(&runtime, *layer).is_some()
+                && member_scope(&runtime, *layer) == member_scope(&runtime, layers[0])
+        }),
         "both members flushed under the group's scope"
     );
     let mounts = mounts(&runtime);
@@ -188,9 +189,10 @@ fn materials_in_one_group_share_one_backdrop_group() {
     let layers = material_layers(&runtime);
     assert_eq!(layers.len(), 2, "the frame presents both members");
     assert!(
-        layers
-            .iter()
-            .all(|layer| { member_scope(&runtime, *layer) == member_scope(&runtime, layers[0]) }),
+        layers.iter().all(|layer| {
+            member_scope(&runtime, *layer).is_some()
+                && member_scope(&runtime, *layer) == member_scope(&runtime, layers[0])
+        }),
         "both members flushed under the group's scope"
     );
     let mounts = mounts(&runtime);
@@ -557,9 +559,10 @@ fn a_group_wrapping_a_lazy_stack_groups_every_flushed_row() {
     let layers = material_layers(&runtime);
     assert!(!layers.is_empty(), "the lazy stack flushed its first rows");
     assert!(
-        layers
-            .iter()
-            .all(|layer| { member_scope(&runtime, *layer) == member_scope(&runtime, layers[0]) }),
+        layers.iter().all(|layer| {
+            member_scope(&runtime, *layer).is_some()
+                && member_scope(&runtime, *layer) == member_scope(&runtime, layers[0])
+        }),
         "every row flushed under the outer group's scope"
     );
     let group = mounts(&runtime).backdrop_group_id(layers[0]);
@@ -587,9 +590,10 @@ fn a_group_wrapping_a_lazy_stack_groups_every_flushed_row() {
     assert!(!layers.is_empty(), "the panned stack flushed rows");
     let mounts = mounts(&runtime);
     assert!(
-        layers
-            .iter()
-            .all(|layer| { member_scope(&runtime, *layer) == member_scope(&runtime, layers[0]) }),
+        layers.iter().all(|layer| {
+            member_scope(&runtime, *layer).is_some()
+                && member_scope(&runtime, *layer) == member_scope(&runtime, layers[0])
+        }),
         "rows entering after the pan flushed under the outer scope"
     );
     assert!(

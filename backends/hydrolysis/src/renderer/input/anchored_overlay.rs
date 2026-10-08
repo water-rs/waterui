@@ -127,7 +127,7 @@ impl HydrolysisRenderer {
         // `.material_group()` scope the anchors' ancestry opened can
         // reach overlay content: the stack is empty by construction.
         assert!(
-            self.compositor.material_scopes.is_empty(),
+            self.material_group_scopes.is_empty(),
             "hydrolysis renderer: the anchored-overlay pass must start \
              with an empty material-scope stack — the tree flush leaves \
              no scope open"
@@ -265,6 +265,13 @@ impl HydrolysisRenderer {
             if exiting && !self.animation_controller.scope_is_active(scope, now) {
                 self.program().discard_last_scope();
                 self.animation_controller.drop_animation_scope(scope);
+                // The scope left the program: retire the content's
+                // subtree now — the same retire an unplaced sub-view's
+                // gets — instead of leaving its layers alive and
+                // detached until the next host record.
+                if let Some(node) = content.node() {
+                    self.retire_subtrees(vec![Rc::clone(&node.core().cell)]);
+                }
                 *entry.content.borrow_mut() = Some(content);
                 continue;
             }

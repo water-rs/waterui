@@ -13,7 +13,7 @@
 //!   re-measures, and re-places the subtree, caching each container's child
 //!   frames. A reactive value change that alters a leaf's size therefore reflows
 //!   its ancestors with no `body()` rebuild.
-//! - [`RenderNode::flush`] re-encodes the subtree into the renderer's scene from
+//! - [`RenderNode::flush`] records the subtree into the nodes' programs from
 //!   the cached placements. Steady-state visual animation frames run only this
 //!   step; they do not repeat layout or window-size-limit negotiation.
 //!

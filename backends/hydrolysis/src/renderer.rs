@@ -7,8 +7,10 @@
 //! - [`frame`]: frame lifecycle, layer stack, frame triggers, statistics
 //! - [`FrameSignals`]: the shared frame trigger handle (lives in
 //!   `waterui-backend-core`, shared with other self-drawn backends)
-//! - [`retained`]: retained scene — replayable draws, `Dynamic` placements,
-//!   reactive patching, scroll caches, window-frame capture/replay
+//! - [`tree`]: the persistent render tree — `RenderNode` build, patch,
+//!   layout and flush
+//! - [`mount`]: per-node cells, programs and retained layers, and the one
+//!   `Mount` a window commits through
 //! - [`signals`]: signal watching and animated-value sampling
 //! - [`effects`]: applied filters, view effects, embedded GPU surfaces
 //! - [`views`] / [`metadata`]: raw view and metadata handlers
@@ -533,8 +535,8 @@ impl std::fmt::Debug for SemanticCore {
     }
 }
 
-/// Core hydrolysis renderer state: a [`SemanticCore`] plus the GPU-side scene,
-/// compositor and surface state the layout/encode pass needs.
+/// Core hydrolysis renderer state: a [`SemanticCore`] plus the GPU-side scene
+/// and surface state the layout/encode pass needs.
 pub struct HydrolysisRenderer {
     core: SemanticCore,
     /// The widget theme the runtime's style supplies to layout and encode.
@@ -589,8 +591,13 @@ pub struct HydrolysisRenderer {
     /// The within-window material the window's background names, which the
     /// window's root is mounted over; `None` for any other background.
     window_backdrop: Option<crate::renderer::material::WindowBackdrop>,
-    /// The `.material_group()` scope stack the flush keeps.
-    pub(crate) compositor: render::Compositor,
+    /// The `.material_group()` scope stack the flush keeps: a group
+    /// wrapper pushes its node's cell while its child flushes, so a
+    /// material member's enclosing scope is the stack's top — or `None`
+    /// outside every group. An anchored-overlay flush starts with the
+    /// stack empty, so overlay content never joins a scope the window
+    /// tree opened.
+    pub(crate) material_group_scopes: Vec<Rc<NodeCell>>,
 }
 
 impl core::ops::Deref for HydrolysisRenderer {
@@ -1811,7 +1818,7 @@ impl HydrolysisRenderer {
             #[cfg(feature = "frame-profile")]
             last_layout_signature: None,
             window_backdrop: None,
-            compositor: render::Compositor::default(),
+            material_group_scopes: Vec::new(),
         }
     }
 

@@ -438,11 +438,12 @@ impl SemanticCore {
     /// outside any node — and answers the [`Retain`] the caller keeps for
     /// as long as the signal must be observed.
     ///
-    /// `watch_signal`'s subscriptions live for the frame that registers
-    /// them; a binding that must stay subscribed across idle frames — the
-    /// window declaration's own signals, which the runner watches for the
-    /// window's whole lifetime — cannot reach a frame to re-register from,
-    /// so it takes this path and holds the guard itself.
+    /// `watch_signal` ties each subscription to the store the read
+    /// attributed it to — the reading node's guard slots, or the
+    /// outside-read sweep — so a binding that must stay subscribed for as
+    /// long as its watcher lives — the window declaration's own signals,
+    /// which the runner observes for the window's whole lifetime — takes
+    /// this path and holds the guard itself.
     pub(crate) fn refresh_watch<S>(&self, signal: &S) -> Retain
     where
         S: Signal + Clone + 'static,

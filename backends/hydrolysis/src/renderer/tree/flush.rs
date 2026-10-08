@@ -1,5 +1,5 @@
-//! Per-frame flush: [`RenderNode::flush`] re-encodes the laid-out subtree
-//! into the renderer's scene using the cached placements.
+//! Per-frame flush: [`RenderNode::flush`] records the laid-out subtree
+//! into the nodes' programs using the cached placements.
 
 #[cfg(feature = "accessibility")]
 use super::layout::kurbo_rect;
@@ -8,12 +8,12 @@ use super::layout::kurbo_rect;
 use super::*;
 
 impl RenderNode {
-    /// Re-encode this subtree into the renderer's scene using the cached
+    /// Records this subtree into the nodes' programs using the cached
     /// placements. Runs every frame.
     // `_focus_node` is bound only for the accessibility surface-input path; on
     // builds without the feature the bindings stay dormant, which is why they keep
     // the underscore marker.
-    /// Records this node into the scene. `placement_delta` is the transform
+    /// Records this node into its program. `placement_delta` is the transform
     /// from the enclosing placement's frame to this node's own — the value a
     /// matching [`RenderContext::child`] composed into `ctx.local`. The node
     /// links its [`crate::renderer::Placement`] to the current placement
@@ -102,7 +102,7 @@ impl RenderNode {
     /// [`flush`](Self::flush) anchored at an explicit placement instead of
     /// the current one — the entry point for subtrees recorded outside the
     /// walk they display in (context menus, anchored overlays, navigation
-    /// scene captures), whose hit space the caller supplies as the delta.
+    /// pages), whose hit space the caller supplies as the delta.
     /// `index` is the position the grafted subtree claims among the
     /// anchor's items — the caller's `anchor.take_item()` or an explicit
     /// stack slot.
@@ -371,8 +371,7 @@ impl RenderNode {
                             renderer.read_signal(&waterui::theme::current_color_scheme(child_env));
                         let visible = renderer.record_alpha() != 0.0;
                         let scope = renderer
-                            .compositor
-                            .material_scopes
+                            .material_group_scopes
                             .last()
                             .map(Rc::as_ptr)
                             .map(|cell| cell as usize);
@@ -393,12 +392,11 @@ impl RenderNode {
                         // while the child flushes, then pop, so the
                         // members inside join its shared backdrop group.
                         renderer
-                            .compositor
-                            .material_scopes
+                            .material_group_scopes
                             .push(Rc::clone(&node.core.cell));
                         node.child
                             .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
-                        renderer.compositor.material_scopes.pop();
+                        renderer.material_group_scopes.pop();
                     }
                     WrapperEffect::PopupMenuSurface => {
                         HydrolysisRenderer::apply_popup_menu_surface(renderer, ctx, |r| {

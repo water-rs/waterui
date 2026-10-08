@@ -273,6 +273,18 @@ fn a_within_window_material_window_mounts_its_root_over_the_backdrop_group() {
         [(window_mount(&runtime).window().id(), DISPLAY_SCALE)],
         "the window's backdrop is the frame's only material member"
     );
+    // The window layer's clip is the window rect: the backdrop covers the
+    // window.
+    assert_eq!(
+        window_mount(&runtime).window_clip(),
+        Some(&cherenkov::ShapeData::of(&kurbo::Rect::new(
+            0.0,
+            0.0,
+            f64::from(WIDTH_PT),
+            f64::from(HEIGHT_PT)
+        ))),
+        "the backdrop covers the window"
+    );
 
     // The mount holds the level's group, captured at a quarter of the
     // 320×240 device pixels.

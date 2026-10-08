@@ -1,11 +1,12 @@
 //! water-rs/hydrolysis#252 — a row straddling the scroll viewport's edge
 //! keeps only the painted part of its hit bounds.
 //!
-//! Paint is clipped to the viewport (`push_layer_rect(1.0, viewport)` around
-//! the content flush) but hit regions were registered from the unclipped
-//! rects, so a row scrolled half under the sibling chrome above still took
-//! taps up there. The fix clips every hit region — gestures, pointer
-//! targets, row hit bounds — to the clip stack the paint layers push.
+//! Paint is clipped to the viewport (the scroll node's clipped inner layer
+//! carries the content flush) but hit regions were registered from the
+//! unclipped rects, so a row scrolled half under the sibling chrome above
+//! still took taps up there. The fix clips every hit region — gestures,
+//! pointer targets, row hit bounds — to the clip stack the paint layers
+//! push.
 
 use std::cell::RefCell;
 use std::rc::Rc;

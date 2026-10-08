@@ -128,7 +128,7 @@ impl LayerTarget for MirrorTarget {
         layer: &Layer,
         key: crate::renderer::mount::backdrop::BackdropGroupKey,
         display_scale: f64,
-        membership: &mut Option<crate::renderer::mount::backdrop::MaterialMembership>,
+        membership: &crate::renderer::mount::backdrop::MaterialMembership,
     ) {
         groups.join(
             tx,

@@ -169,6 +169,12 @@ pub struct NodeLayers {
 }
 
 impl NodeLayers {
+    /// The node's frame layer — the layer a backdrop-group rebuild
+    /// re-points the membership onto.
+    pub(crate) const fn frame(&self) -> &Layer {
+        &self.frame
+    }
+
     /// The member's frame layer id when the node holds a backdrop-group
     /// membership — a test-facing answer.
     #[cfg(test)]
@@ -321,6 +327,14 @@ impl<T: LayerTarget> Mount<T> {
         &self.window
     }
 
+    /// The window layer's clip as last committed — `Some` over the window
+    /// rect while its backdrop request bounds the window's material.
+    /// A test-facing answer.
+    #[cfg(test)]
+    pub(crate) const fn window_clip(&self) -> Option<&ShapeData> {
+        self.window_props.clip.as_ref()
+    }
+
     pub fn take_stats(&mut self) -> MountStats {
         std::mem::take(&mut self.stats)
     }
@@ -378,6 +392,11 @@ impl<T: LayerTarget> Mount<T> {
                 },
             );
             if let Some(request) = window_request {
+                // The window member is a group of its own — the only
+                // member its rebuild can re-point is the window layer
+                // itself — so its membership carries no cell.
+                let membership =
+                    window_state.get_or_insert_with(|| MaterialMembership::new(Weak::new()));
                 T::mount_material(
                     host,
                     tx,
@@ -385,7 +404,7 @@ impl<T: LayerTarget> Mount<T> {
                     window,
                     BackdropGroupKey::new(window.id(), request, None),
                     display_scale,
-                    window_state,
+                    membership,
                 );
             } else if window_state.is_some() {
                 groups.clear(window.id());
@@ -405,7 +424,7 @@ impl<T: LayerTarget> Mount<T> {
                 wakes,
             };
             for cell in roots {
-                commit_cell(&mut cx, cell, None);
+                commit_cell(&mut cx, cell, None, false);
             }
             let retained: Vec<_> = roots.iter().map(|cell| cell.retained()).collect();
             let guards: Vec<_> = retained.iter().map(|r| r.layers.borrow()).collect();
@@ -538,11 +557,17 @@ fn install_transform(bounds: kurbo::Rect, pixels: (u32, u32)) -> kurbo::Affine {
 /// Commits one node: its frame props, producer, and every list.
 /// `canvas` is the install canvas the node's frame mounts under — the
 /// nearest enclosing filtered frame's layer, `None` at the surface root —
-/// part of the backdrop-group key a material member joins.
+/// part of the backdrop-group key a material member joins. `listed` is
+/// whether the commit reached the cell through a program's items: a listed
+/// cell has recorded at least once, so it carries a pending or lowered
+/// program — only the window's fixed roots may commit before their first
+/// record (the root's own program is still open on the renderer's stack
+/// while the commit runs).
 pub fn commit_cell<T: LayerTarget>(
     cx: &mut CommitCx<'_, '_, '_, T>,
     cell: &Rc<NodeCell>,
     canvas: Option<LayerId>,
+    listed: bool,
 ) {
     let retained = cell.retained();
     let mut program = retained.pending.borrow_mut().take();
@@ -560,6 +585,11 @@ pub fn commit_cell<T: LayerTarget>(
                 // re-lowers the program it last lowered: `layers` gone
                 // leaves `lowered` as the only record of what it held.
                 program = retained.lowered.borrow_mut().take();
+                assert!(
+                    !(listed && program.is_none()),
+                    "hydrolysis commit: a program lists cell {cell:p}, which never recorded one",
+                    cell = Rc::as_ptr(cell)
+                );
             }
             let frame = cx.layer();
             NodeLayers {
@@ -607,7 +637,7 @@ pub fn commit_cell<T: LayerTarget>(
             .then(|| layers.frame.id())
             .or(canvas);
         for child in committed_cells(&layers) {
-            commit_cell(cx, &child, child_canvas);
+            commit_cell(cx, &child, child_canvas, true);
         }
         *retained.layers.borrow_mut() = Some(layers);
         return;
@@ -738,6 +768,9 @@ fn commit_material<T: LayerTarget>(
     layers.material_request = material.copied();
     if let Some(request) = material.filter(|request| request.visible) {
         let key = BackdropGroupKey::new(layers.frame.id(), request, canvas);
+        let membership = layers
+            .material
+            .get_or_insert_with(|| MaterialMembership::new(layers.token.owner.clone()));
         T::mount_material(
             cx.host,
             cx.tx,
@@ -745,7 +778,7 @@ fn commit_material<T: LayerTarget>(
             &layers.frame,
             key,
             cx.display_scale,
-            &mut layers.material,
+            membership,
         );
     } else if layers.material.is_some() {
         cx.groups.clear(layers.frame.id());
@@ -1012,7 +1045,7 @@ fn lower_list<T: LayerTarget>(
                 }
             }
             Item::Node(child) => {
-                commit_cell(cx, child, canvas);
+                commit_cell(cx, child, canvas, true);
                 slots.push(Slot::Node(Rc::clone(child)));
             }
             Item::Scope {

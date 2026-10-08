@@ -7,19 +7,6 @@ use super::*;
 use std::rc::Rc;
 use std::sync::Arc;
 
-/// The record-side frame state the flush threads: the `.material_group()`
-/// scope stack.
-#[derive(Default)]
-pub struct Compositor {
-    /// The `.material_group()` scope stack the flush keeps: a group
-    /// wrapper pushes its node's cell while its child flushes, so a
-    /// material member's enclosing scope is the stack's top — or `None`
-    /// outside every group. An anchored-overlay flush starts with the
-    /// stack empty, so overlay content never joins a scope the window
-    /// tree opened.
-    pub(crate) material_scopes: Vec<Rc<mount::NodeCell>>,
-}
-
 /// presentation texture (or `None` for a readback-only render) and the
 /// colour under the scene's content.
 ///
