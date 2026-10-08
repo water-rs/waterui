@@ -122,6 +122,11 @@ impl ChromeGroupKey {
             canvas,
         }
     }
+
+    /// The members' capture class.
+    pub(crate) const fn class(&self) -> CaptureClass {
+        self.class
+    }
 }
 
 /// The membership a member's `NodeLayers` holds: a marker the groups
@@ -195,34 +200,31 @@ struct MountedBackdrop<P, G> {
     members: FxHashSet<LayerId>,
 }
 
-/// What [`BackdropGroups::join`] did with the member's membership,
-/// reported so the caller can bind the member's sample only when it
-/// must.
+/// When [`BackdropGroups::join`] binds the joining member's sample.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum JoinOutcome {
-    /// The member joined a group it was not in — a new group or a
-    /// re-keyed one. Its layer samples nothing of the group yet: bind.
-    Joined,
-    /// Its group was rebuilt on a display-scale change; every member was
-    /// re-pointed inside the join, this member's bind is still the
-    /// caller's.
-    Rebuilt,
-    /// Same group, same display scale — nothing of the membership
-    /// changed.
-    Unchanged,
+pub enum MemberBind {
+    /// Always — a lowering, whose member carries a freshly recorded
+    /// payload: the payload is built, stored and bound on every join.
+    Always,
+    /// Only when the membership changed — a commit with no new program:
+    /// a new or re-keyed membership, a rebuilt group, or a stale bind.
+    /// An unchanged member keeps its bind and its stored payload, and the
+    /// payload is never built.
+    OnChange,
 }
 
 /// The member side of a [`BackdropGroups::join`]: the joining layer, its
 /// node's membership hold, and the resolver a group rebuild re-points
 /// the other members' live layers with.
-pub struct MemberJoin<'a, R, M> {
+pub struct MemberJoin<'a, R, F> {
     /// The member's frame layer.
     pub layer: &'a Layer,
     /// Its node's hold on the group: the rebuild sweeps through it.
     pub membership: &'a MaterialMembership,
-    /// The member's own binding payload, stored on its entry so a group
-    /// rebuild rebinds each member's own terms.
-    pub payload: M,
+    /// Builds the member's own binding payload, stored on its entry so
+    /// a group rebuild rebinds each member's own terms. Called only when
+    /// the join binds the member.
+    pub payload: F,
     /// Finds another member's live layer inside its node's layers.
     pub resolve: R,
 }
@@ -254,9 +256,6 @@ pub type MaterialBackdropGroups<G> = BackdropGroups<BackdropGroupKey, MaterialRu
 /// key — binds the member's own, never the joining member's.
 #[derive(Debug)]
 pub struct ChromeMemberPayload<S> {
-    /// The member's capture class — the union conversion names it in its
-    /// panic.
-    pub class: CaptureClass,
     /// The shader's engine handle, resolved at attach.
     pub shader: S,
     /// The member's live effect: the sample's uniforms re-read as it
@@ -276,31 +275,33 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M> BackdropGroups<K, P, G, M> {
         }
     }
 
-    /// Makes `member`'s frame layer a member of the group `key` names:
-    /// re-keying on any term change, and rebuilding the group on a
-    /// display-scale change — its chain's parameters are in capture
-    /// texels — re-pointing every member at the rebuilt group before the
-    /// old one drops. `membership` is the member's hold the rebuild
-    /// resolves the other members' live `NodeLayers` through, so no
-    /// member samples a released group even if its own commit does not
+    /// Makes `member`'s frame layer a member of the group `key` names and
+    /// binds its sample: re-keying on any term change, and rebuilding the
+    /// group on a display-scale change — its chain's parameters are in
+    /// capture texels — re-pointing every member at the rebuilt group
+    /// before the old one drops. `membership` is the member's hold the
+    /// rebuild resolves the other members' live `NodeLayers` through, so
+    /// no member samples a released group even if its own commit does not
     /// run in this transaction.
     ///
     /// `member` packs the member side of the join: its layer, its node's
-    /// hold, and `resolve`, which finds another member's live layer
-    /// inside its node's layers when a rebuilt group re-points it — the
-    /// member is the frame layer for material members, a
-    /// `ChromeMaterial` member layer for chrome.
+    /// hold, the builder of its payload, and `resolve`, which finds
+    /// another member's live layer inside its node's layers when a rebuilt
+    /// group re-points it — the member is the frame layer for material
+    /// members, a `ChromeMaterial` member layer for chrome.
     ///
     /// `hooks` packs the target's two callbacks: `create` builds the
     /// target's group object from the parameters the key resolves to and
     /// the display scale; `apply` installs a member layer on a group from
     /// the member's own payload, handed the display scale the group was
-    /// built for — a member's device-pixel terms convert at that scale,
-    /// and a scale rebuild re-runs it for every *other* member with the
-    /// payload its entry holds. The joining member's own bind is the
-    /// caller's step: `join` returns a [`JoinOutcome`] and the caller
-    /// applies when the outcome — or the fresh payload it carries —
-    /// asks for it.
+    /// built for — a member's device-pixel terms convert at that scale.
+    /// A scale rebuild runs it for every *other* member with the payload
+    /// its entry holds; `bind` decides whether the joining member's own
+    /// payload is built, stored and applied.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one join hands the member, the group terms and the target's hooks at once"
+    )]
     pub(crate) fn join<T: cherenkov::Target>(
         &mut self,
         tx: &mut Transaction<'_, T>,
@@ -310,13 +311,14 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M> BackdropGroups<K, P, G, M> {
         member: MemberJoin<
             '_,
             impl for<'a> Fn(&'a super::layers::NodeLayers, LayerId) -> Option<&'a Layer>,
-            M,
+            impl FnOnce() -> M,
         >,
         hooks: (
             impl Fn(&P, f64) -> G,
             impl Fn(&mut Transaction<'_, T>, &Layer, &M, &G, f64),
         ),
-    ) -> JoinOutcome {
+        bind: MemberBind,
+    ) {
         let (create, apply) = hooks;
         let MemberJoin {
             layer: member,
@@ -325,27 +327,25 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M> BackdropGroups<K, P, G, M> {
             resolve,
         } = member;
         let bits = display_scale.to_bits();
-        if self
+        if let Some(entry) = self
             .members
-            .get(&member.id())
-            .is_some_and(|entry| entry.key == key && !entry.stale)
-            && self
+            .get_mut(&member.id())
+            .filter(|entry| entry.key == key && !entry.stale)
+            && let Some(group) = self
                 .groups
                 .get(&key)
-                .is_some_and(|group| group.display_scale == bits)
+                .filter(|group| group.display_scale == bits)
         {
-            // Membership unchanged: store the (possibly new) payload for a
-            // later rebuild, bind nothing — the caller decides whether the
-            // member's sample rebinds (`lower_*` always does, `commit_*`
-            // only on a new membership or a rebuild).
-            self.members
-                .get_mut(&member.id())
-                .expect("the entry the check found")
-                .payload = payload;
-            return JoinOutcome::Unchanged;
+            // Membership unchanged: a lowering stores and binds its fresh
+            // payload; a commit with no new program keeps the bind and
+            // the stored payload, and builds nothing.
+            if bind == MemberBind::Always {
+                entry.payload = payload();
+                apply(tx, member, &entry.payload, &group.group, display_scale);
+            }
+            return;
         }
         self.leave(member.id());
-        let mut outcome = JoinOutcome::Joined;
         let group = match self.groups.entry(key) {
             Entry::Occupied(mut entry) => {
                 if entry.get().display_scale != bits {
@@ -362,7 +362,6 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M> BackdropGroups<K, P, G, M> {
                         display_scale: bits,
                         members: std::mem::take(&mut entry.get_mut().members),
                     };
-                    outcome = JoinOutcome::Rebuilt;
                     for other in &rebuilt.members {
                         let Some(retained) = self
                             .members
@@ -374,34 +373,24 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M> BackdropGroups<K, P, G, M> {
                             // sweep drops its entry.
                             continue;
                         };
-                        // A member mid-commit — on this commit's
-                        // ancestor stack — holds its layers outside the
-                        // cell; only the joining member can be one, and
-                        // its `apply` below covers it. Each member keeps
-                        // its own payload: the rebuild rebinds the
-                        // member's own sample, never the joiner's.
-                        // its `apply` below covers it. Each member keeps
-                        // its own payload: the rebuild rebinds the
-                        // member's own sample, never the joiner's.
-                        let entry_payload = &self
+                        // Each member rebinds its own stored payload,
+                        // never the joiner's. A member whose cell is
+                        // mid-commit — on this commit's ancestor stack —
+                        // holds its layers outside the cell, so its live
+                        // layer is out of reach here.
+                        let own = self
                             .members
-                            .get(other)
-                            .expect("a member's entry outlives its membership")
-                            .payload;
+                            .get_mut(other)
+                            .expect("a member's entry outlives its membership");
                         if let Some(layers) = &*retained.layers.borrow()
                             && let Some(member) = resolve(layers, *other)
                         {
-                            apply(tx, member, entry_payload, &rebuilt.group, display_scale);
+                            apply(tx, member, &own.payload, &rebuilt.group, display_scale);
                         } else {
-                            // The member's own cell is mid-commit or its
-                            // layers are elsewhere: mark it stale so its
-                            // next join re-binds its own payload rather
-                            // than reporting Unchanged over a bind that
-                            // still samples the released group.
-                            self.members
-                                .get_mut(other)
-                                .expect("a member's entry outlives its membership")
-                                .stale = true;
+                            // Its next join re-binds its own payload rather
+                            // than keeping a bind that still samples the
+                            // released group.
+                            own.stale = true;
                         }
                     }
                     *entry.get_mut() = rebuilt;
@@ -420,31 +409,21 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M> BackdropGroups<K, P, G, M> {
             }),
         };
         group.members.insert(member.id());
-        self.members.insert(
-            member.id(),
-            MemberEntry {
+        // A new, re-keyed, rebuilt or stale membership binds under
+        // either `bind` — the member's layer samples nothing of this group
+        // yet, so even a commit with no new program builds its payload.
+        let entry = self
+            .members
+            .entry(member.id())
+            .insert_entry(MemberEntry {
                 key,
-                payload,
+                payload: payload(),
                 stale: false,
                 marker: Rc::downgrade(&membership.marker),
                 owner: membership.owner.clone(),
-            },
-        );
-        outcome
-    }
-
-    /// The group object `key` joined, for the caller's binding step:
-    /// [`join`](Self::join) handles membership and reports the outcome;
-    /// binding the member's sample is the caller's (`lower_*` always,
-    /// `commit_*` on [`JoinOutcome::Joined`] or [`JoinOutcome::Rebuilt`]).
-    pub(crate) fn group(&self, key: &K) -> Option<&G> {
-        self.groups.get(key).map(|mounted| &mounted.group)
-    }
-
-    /// The binding payload `member`'s entry holds — the joiner's own
-    /// after a [`join`](Self::join), for the caller's binding step.
-    pub(crate) fn payload(&self, member: LayerId) -> Option<&M> {
-        self.members.get(&member).map(|entry| &entry.payload)
+            })
+            .into_mut();
+        apply(tx, member, &entry.payload, &group.group, display_scale);
     }
 
     /// Takes `member` out of its group's membership. The member's layer

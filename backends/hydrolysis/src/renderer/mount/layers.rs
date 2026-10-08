@@ -20,7 +20,7 @@ use waterui_graphics::HeldResources;
 
 use super::backdrop::{
     BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, MaterialBackdropGroups,
-    MaterialMembership,
+    MaterialMembership, MemberBind,
 };
 use super::cell::NodeCell;
 use super::placement::Placement;
@@ -515,7 +515,7 @@ impl<T: LayerTarget> Mount<T> {
                     BackdropGroupKey::new(window.id(), request, None),
                     display_scale,
                     membership,
-                    false,
+                    MemberBind::OnChange,
                 );
             } else if window_state.is_some() {
                 groups.clear(window.id());
@@ -898,7 +898,7 @@ fn commit_material<T: LayerTarget>(
             key,
             cx.display_scale,
             membership,
-            false,
+            MemberBind::OnChange,
         );
     } else if layers.material.is_some() {
         cx.groups.clear(layers.frame.id());
@@ -1650,9 +1650,9 @@ fn lower_chrome<T: LayerTarget>(
         let membership = member
             .membership
             .get_or_insert_with(|| MaterialMembership::new(token.owner.clone()));
-        let payload = chrome_member_payload::<T>(cx.host, chrome, class);
+        let host = cx.host;
         T::mount_chrome(
-            cx.host,
+            host,
             cx.tx,
             cx.chrome_groups,
             &member.layer,
@@ -1660,8 +1660,8 @@ fn lower_chrome<T: LayerTarget>(
             params,
             cx.display_scale,
             membership,
-            payload,
-            true,
+            || chrome_member_payload::<T>(host, chrome),
+            MemberBind::Always,
         );
         member.params = Some(params);
     } else {
@@ -1674,14 +1674,13 @@ fn lower_chrome<T: LayerTarget>(
     members.len() - 1
 }
 
-/// The member's own binding payload (water-rs/waterui#1788): its capture
-/// class, the shader's engine handle and its live effect — the terms the
-/// group table stores on the member's entry so a group rebuild rebinds
-/// each member's own sample.
+/// The member's own binding payload (water-rs/waterui#1788): the
+/// shader's engine handle and its live effect — the terms the group table
+/// stores on the member's entry so a group rebuild rebinds each member's
+/// own sample.
 fn chrome_member_payload<T: LayerTarget>(
     host: &T::Host,
     chrome: &ChromeMaterial,
-    class: cherenkov_record::CaptureClass,
 ) -> super::backdrop::ChromeMemberPayload<T::Shader> {
     let shader = T::material_terms(host)
         .shaders
@@ -1695,7 +1694,6 @@ fn chrome_member_payload<T: LayerTarget>(
         })
         .clone();
     super::backdrop::ChromeMemberPayload {
-        class,
         shader,
         effect: chrome.material.effect().clone(),
     }
@@ -1736,12 +1734,12 @@ fn commit_chrome<T: LayerTarget>(
             params.grouping,
             canvas,
         );
-        let payload = chrome_member_payload::<T>(cx.host, chrome, class);
         // A no-program commit binds only a new membership or a rebuilt
-        // group — an unchanged member keeps its bind and queues no
-        // `LayerOp::Backdrop`.
+        // group — an unchanged member keeps its bind and its stored
+        // payload, builds none and queues no `LayerOp::Backdrop`.
+        let host = cx.host;
         T::mount_chrome(
-            cx.host,
+            host,
             cx.tx,
             cx.chrome_groups,
             &member.layer,
@@ -1749,8 +1747,8 @@ fn commit_chrome<T: LayerTarget>(
             params,
             cx.display_scale,
             membership,
-            payload,
-            false,
+            || chrome_member_payload::<T>(host, chrome),
+            MemberBind::OnChange,
         );
     }
 }

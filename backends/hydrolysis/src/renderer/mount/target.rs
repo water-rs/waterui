@@ -12,8 +12,8 @@ use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use crate::renderer::ProducerWake;
 use crate::renderer::effects::{AppliedFilterMetrics, FilteredRuntime};
 use crate::renderer::mount::backdrop::{
-    BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, ChromeMemberPayload, JoinOutcome,
-    MaterialBackdropGroups, MaterialMembership, MemberJoin,
+    BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, ChromeMemberPayload,
+    MaterialBackdropGroups, MaterialMembership, MemberBind, MemberJoin,
 };
 use crate::renderer::recording::SceneResources;
 
@@ -66,7 +66,8 @@ pub trait LayerTarget: cherenkov::Target {
     /// group's filtered capture with every member under the same key,
     /// rebuilding it when `display_scale` changes. The membership the
     /// layer's node holds ends with its layers; its owner link is how a
-    /// rebuild re-points every member at the replacement group.
+    /// rebuild re-points every member at the replacement group. `bind`
+    /// says when the layer's sample binds.
     #[expect(
         clippy::too_many_arguments,
         reason = "one mount step per parameter; bundling them obscures the target contract"
@@ -79,7 +80,7 @@ pub trait LayerTarget: cherenkov::Target {
         key: BackdropGroupKey,
         display_scale: f64,
         membership: &MaterialMembership,
-        always_bind: bool,
+        bind: MemberBind,
     );
 
     /// Clears the backdrop membership [`mount_material`](Self::mount_material)
@@ -98,9 +99,10 @@ pub trait LayerTarget: cherenkov::Target {
     /// `key` names, sharing the group's unfiltered capture with every
     /// member under the same `(scope, class, canvas)` key, rebuilding it
     /// when `display_scale` changes. `params` is the class's registered
-    /// capture terms; `payload` carries the member's own class, shader
-    /// handle and live effect — the terms the member binds and a group
-    /// rebuild rebinds (water-rs/waterui#1788).
+    /// capture terms; `payload` builds the member's own shader handle and
+    /// live effect — the terms the member binds and a group rebuild
+    /// rebinds — and runs only when `bind` binds the member
+    /// (water-rs/waterui#1788).
     #[expect(
         clippy::too_many_arguments,
         reason = "one install hands the group's whole context at once"
@@ -114,8 +116,8 @@ pub trait LayerTarget: cherenkov::Target {
         params: cherenkov_record::MaterialCapture,
         display_scale: f64,
         membership: &MaterialMembership,
-        payload: ChromeMemberPayload<Self::Shader>,
-        always_bind: bool,
+        payload: impl FnOnce() -> ChromeMemberPayload<Self::Shader>,
+        bind: MemberBind,
     );
 
     /// Clears the backdrop membership [`mount_chrome`](Self::mount_chrome)
@@ -285,20 +287,13 @@ impl LayerTarget for cherenkov_gpu::Gpu {
         key: BackdropGroupKey,
         display_scale: f64,
         membership: &MaterialMembership,
-        always_bind: bool,
+        bind: MemberBind,
     ) {
         let surface = host
             .surface
             .upgrade()
             .expect("hydrolysis material: the engine surface was dropped during its commit");
-        let apply = |tx: &mut Transaction<'_, Self>,
-                     member: &Layer,
-                     _payload: &(),
-                     group: &cherenkov::BackdropGroup,
-                     _scale: f64| {
-            tx[member].backdrop(group.sample());
-        };
-        let outcome = groups.join(
+        groups.join(
             tx,
             key,
             key.runtime(),
@@ -306,7 +301,7 @@ impl LayerTarget for cherenkov_gpu::Gpu {
             MemberJoin {
                 layer,
                 membership,
-                payload: (),
+                payload: || (),
                 resolve: super::layers::NodeLayers::frame_layer,
             },
             (
@@ -316,15 +311,16 @@ impl LayerTarget for cherenkov_gpu::Gpu {
                         crate::renderer::material::capture_scale(),
                     )
                 },
-                apply,
+                |tx: &mut Transaction<'_, Self>,
+                 member: &Layer,
+                 _payload: &(),
+                 group: &cherenkov::BackdropGroup,
+                 _scale: f64| {
+                    tx[member].backdrop(group.sample());
+                },
             ),
+            bind,
         );
-        if always_bind || outcome != JoinOutcome::Unchanged {
-            let group = groups
-                .group(&key)
-                .expect("a join leaves its key's group mounted");
-            apply(tx, layer, &(), group, display_scale);
-        }
     }
 
     fn clear_material(tx: &mut Transaction<'_, Self>, layer: &Layer) {
@@ -344,29 +340,14 @@ impl LayerTarget for cherenkov_gpu::Gpu {
         params: cherenkov_record::MaterialCapture,
         display_scale: f64,
         membership: &MaterialMembership,
-        payload: ChromeMemberPayload<cherenkov::BackdropShader>,
-        always_bind: bool,
+        payload: impl FnOnce() -> ChromeMemberPayload<cherenkov::BackdropShader>,
+        bind: MemberBind,
     ) {
         let surface = host
             .surface
             .upgrade()
             .expect("hydrolysis materials: the engine surface was dropped during its commit");
-        let class = payload.class;
-        let apply = |tx: &mut Transaction<'_, Self>,
-                     member: &Layer,
-                     payload: &ChromeMemberPayload<cherenkov::BackdropShader>,
-                     group: &cherenkov::BackdropGroup,
-                     scale: f64| {
-            let id = group.id();
-            let shader = payload.shader.clone();
-            tx[member].backdrop(
-                payload
-                    .effect
-                    .rebound()
-                    .map(move |effect| group_sample_with(id, &shader, &effect, scale)),
-            );
-        };
-        let outcome = groups.join(
+        groups.join(
             tx,
             key,
             params,
@@ -380,23 +361,21 @@ impl LayerTarget for cherenkov_gpu::Gpu {
             (
                 move |params, scale| {
                     let mut spec = cherenkov::BackdropSpec::new(params.scale, params.levels);
-                    if let Some(union) = union_of(params, scale, class) {
+                    if let Some(union) = union_of(params, scale, key.class()) {
                         spec = spec.union(union);
                     }
                     surface.backdrop_group_unfiltered(spec)
                 },
-                apply,
+                |tx: &mut Transaction<'_, Self>,
+                 member: &Layer,
+                 payload: &ChromeMemberPayload<cherenkov::BackdropShader>,
+                 group: &cherenkov::BackdropGroup,
+                 scale: f64| {
+                    tx[member].backdrop(chrome_sample(payload, group.id(), scale));
+                },
             ),
+            bind,
         );
-        if always_bind || outcome != JoinOutcome::Unchanged {
-            let group = groups
-                .group(&key)
-                .expect("a join leaves its key's group mounted");
-            let payload = groups
-                .payload(layer.id())
-                .expect("a join leaves its member's entry mounted");
-            apply(tx, layer, payload, group, display_scale);
-        }
     }
 
     fn clear_chrome(tx: &mut Transaction<'_, Self>, layer: &Layer) {
@@ -445,6 +424,22 @@ pub fn outer_of(extent: cherenkov_record::OuterExtent, scale: f64) -> cherenkov:
             extent.get(),
         )
     })
+}
+
+/// The live backdrop sample a `ChromeMaterial` member binds on the group
+/// `id`, built for `scale`: the member's effect rebound from its value
+/// now — a stored payload never restarts stale — and mapped through
+/// [`group_sample_with`].
+pub fn chrome_sample(
+    payload: &ChromeMemberPayload<cherenkov::BackdropShader>,
+    id: cherenkov::BackdropId,
+    scale: f64,
+) -> cherenkov_record::SharedLive<cherenkov::BackdropSample> {
+    let shader = payload.shader.clone();
+    payload
+        .effect
+        .rebound()
+        .map(move |effect| group_sample_with(id, &shader, &effect, scale))
 }
 
 /// The live backdrop sample a `ChromeMaterial` member binds: the group's

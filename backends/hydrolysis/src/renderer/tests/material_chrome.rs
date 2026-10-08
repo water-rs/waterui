@@ -1189,6 +1189,88 @@ fn a_scale_rebuild_keeps_each_members_own_effect() {
     );
 }
 
+/// A display-scale rebuild re-points members whose cells the commit does
+/// not have open: two cells under one `.material_group()` scope and one
+/// canvas, each holding both of the plan's members. A commit at a new
+/// scale with no program staged anywhere joins no member with a fresh
+/// payload, so the first joiner's rebuild is the only bind the other
+/// cell's members get — and each must keep its own uniforms, never the
+/// joiner's (water-rs/waterui#1788).
+#[test]
+fn a_scale_rebuild_rebinds_members_of_other_cells_with_their_own_effect() {
+    let mut renderer = test_renderer_with_theme(MinimalTestTheme {
+        chrome: glass_plan(vec![
+            chrome_draw(GLASS, GLASS_SHADER, vec![1.0, 0.0]),
+            chrome_draw(GLASS, GLASS_SHADER, vec![0.0, 1.0]),
+        ]),
+        ..Default::default()
+    });
+    let view = || {
+        waterui_core::AnyView::new(
+            waterui_layout::stack::zstack((
+                waterui_core::AnyView::new(tap_color("#18181B").opacity(0.5)),
+                waterui_core::AnyView::new(tap_color("#27272A").opacity(0.5)),
+            ))
+            .material_group(),
+        )
+    };
+    let env = chrome_env();
+    renderer.reset_scene();
+    renderer.begin_rebuild_frame();
+    renderer.capture_window_tree(
+        view(),
+        &env,
+        Rect::new(0.0, 0.0, f64::from(WIDTH), f64::from(HEIGHT)),
+        Affine::IDENTITY,
+        Affine::IDENTITY,
+    );
+    renderer.finish_rebuild_frame();
+    assert_eq!(
+        chrome_cells(&renderer).len(),
+        2,
+        "each member records into a cell of its own",
+    );
+    renderer.commit_mirror_at(DISPLAY_SCALE);
+    let members = mirror_chrome_layers(&renderer);
+    assert_eq!(members.len(), 4, "each cell mounts both draws");
+    let groups = renderer.mirror().chrome_groups();
+    assert_eq!(
+        groups.chrome_group_count(),
+        1,
+        "one scope, one class, one canvas: one group",
+    );
+    assert_eq!(renderer.mirror().union_log().len(), 1);
+
+    // Nothing is staged: every cell commits with no program.
+    renderer.commit_mirror_at(DISPLAY_SCALE * 2.0);
+    assert_eq!(
+        renderer.mirror().union_log().len(),
+        2,
+        "the scale change rebuilt the shared group",
+    );
+    let uniforms: Vec<Vec<f32>> = mirror_chrome_layers(&renderer)
+        .iter()
+        .map(|member| {
+            let node = mirrored_node(&renderer, *member);
+            let sample = node.backdrop.as_ref().expect("the member binds a sample");
+            let Some(BackdropEffect::Shader(effect)) = sample.effect() else {
+                panic!("the member's effect is its shader effect")
+            };
+            effect.uniforms.clone()
+        })
+        .collect();
+    assert_eq!(
+        uniforms,
+        [
+            vec![1.0, 0.0],
+            vec![0.0, 1.0],
+            vec![1.0, 0.0],
+            vec![0.0, 1.0]
+        ],
+        "each member kept its own uniforms across the rebuild",
+    );
+}
+
 /// A signal-driven effect changed after recording: the next commit with
 /// no new program, and a commit at a new display scale, must both leave
 /// the member bound to the signal's current value — the rebind reads a
