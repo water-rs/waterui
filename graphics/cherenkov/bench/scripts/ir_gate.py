@@ -267,7 +267,13 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup):
 
 
 def load(out, tag, scene):
-    return json.loads((pathlib.Path(out) / f'{tag}-{scene}.result.json').read_text())
+    # `batch` writes each tag into its own subdirectory (--out per tag); a
+    # flat out dir with the files side by side is accepted too.
+    for root in (pathlib.Path(out) / tag, pathlib.Path(out)):
+        candidate = root / f'{tag}-{scene}.result.json'
+        if candidate.exists():
+            return json.loads(candidate.read_text())
+    raise FileNotFoundError(f'no result for {tag}/{scene} under {out}')
 
 
 def batch(args):
