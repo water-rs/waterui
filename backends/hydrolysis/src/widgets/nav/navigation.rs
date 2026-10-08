@@ -1405,7 +1405,7 @@ pub fn render_navigation_split_parts(
             ctx,
             state,
             env,
-            CompactSplitSelection {
+            &CompactSplitSelection {
                 primary,
                 secondary,
                 primary_binding: primary_selection,
@@ -1493,26 +1493,118 @@ struct CompactSplitSelection {
     three_column: bool,
 }
 
+/// The pane a collapsed navigation split puts in front — the collapsed
+/// mode's single visible column, decided the same way by the rendered and
+/// the semantic emit paths.
+enum CompactSplitFront {
+    /// Only the sidebar shows; there is nothing to navigate back to.
+    Sidebar,
+    /// The middle column — three-column splits only.
+    Content,
+    /// The trailing detail column.
+    Detail,
+}
+
+/// Resolves which pane a collapsed split presents and, when a pane is in
+/// front, the selection binding its back button clears to reveal the pane
+/// beneath it — the decision `render_compact_split` and the semantic emit
+/// share so both presentation paths show the same column.
+fn compact_split_front(
+    selection: &CompactSplitSelection,
+) -> (CompactSplitFront, Option<nami::Binding<Option<Id>>>) {
+    if selection.three_column {
+        if selection.secondary.is_some() {
+            (
+                CompactSplitFront::Detail,
+                selection.secondary_binding.clone(),
+            )
+        } else if selection.primary.is_some() {
+            (
+                CompactSplitFront::Content,
+                Some(selection.primary_binding.clone()),
+            )
+        } else {
+            (CompactSplitFront::Sidebar, None)
+        }
+    } else if selection.primary.is_some() {
+        (
+            CompactSplitFront::Detail,
+            Some(selection.primary_binding.clone()),
+        )
+    } else {
+        (CompactSplitFront::Sidebar, None)
+    }
+}
+
+/// The back button a collapsed split presents: a Button-role node with the
+/// Focus/Click actions every actionable control carries, labeled like the
+/// stack's back affordance.
+#[cfg(feature = "accessibility")]
+fn split_back_accessibility_node(env: &Environment) -> AccessibilityNode {
+    let mut node =
+        AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+            env,
+            AccessibilityNodeRole::Button,
+        ));
+    node.set_label(crate::localization::text(env, "back"));
+    node.add_action(AccessibilityAction::Focus);
+    node.add_action(AccessibilityAction::Click);
+    node
+}
+
+/// The `Activate` target behind a collapsed split's back node: clearing the
+/// front pane's selection binding is what presents the pane beneath it —
+/// the same navigation the pointer target performs, so `Click` needs no
+/// bounds.
+#[cfg(feature = "accessibility")]
+fn split_back_action_target(selection: nami::Binding<Option<Id>>) -> AccessibilityActionTarget {
+    AccessibilityActionTarget::Activate {
+        action: Rc::new(RefCell::new(
+            move |_renderer: &mut crate::renderer::SemanticCore, _env: &Environment| {
+                selection.set(None);
+                true
+            },
+        )),
+    }
+}
+
 fn render_compact_split(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<NavigationSplitRenderState>>,
     env: &Environment,
-    selection: CompactSplitSelection,
+    selection: &CompactSplitSelection,
 ) {
     let bounds = ctx.bounds;
-    let mut back_selection = None;
     let mut compact_env = env.clone();
     compact_env.insert(NavigationLeadingReserve(back_button_title_reserve(
         &ctx.theme(),
     )));
-    if selection.three_column {
-        if selection.secondary.is_some() {
-            render_split_detail(ctx, state, &compact_env, selection.secondary, true, bounds);
-            back_selection = selection.secondary_binding;
-        } else if selection.primary.is_some() {
+    let (front, back_selection) = compact_split_front(selection);
+    #[cfg(feature = "accessibility")]
+    if let Some(back_binding) = back_selection.clone() {
+        let back_rect = navigation_back_button_rect(bounds, ctx.theme().navigation_metrics());
+        // The back node precedes the front pane's nodes in the tree, the
+        // same order the navigation stack emits its back button in.
+        let _ = ctx.renderer_mut().register_accessibility_node(
+            split_back_accessibility_node(env),
+            back_rect,
+            env,
+            Some(split_back_action_target(back_binding)),
+        );
+    }
+    match front {
+        CompactSplitFront::Detail => {
+            let detail_selection = if selection.three_column {
+                selection.secondary
+            } else {
+                selection.primary
+            };
+            render_split_detail(ctx, state, &compact_env, detail_selection, true, bounds);
+        }
+        CompactSplitFront::Content => {
             render_split_content(ctx, state, &compact_env, selection.primary, true, bounds);
-            back_selection = Some(selection.primary_binding);
-        } else {
+        }
+        CompactSplitFront::Sidebar => {
             let render_ctx = ctx.render_context();
             let pane_area = ctx.content_area_for(bounds);
             state.borrow_mut().primary.place(
@@ -1524,20 +1616,6 @@ fn render_compact_split(
                 pane_area,
             );
         }
-    } else if selection.primary.is_some() {
-        render_split_detail(ctx, state, &compact_env, selection.primary, true, bounds);
-        back_selection = Some(selection.primary_binding);
-    } else {
-        let render_ctx = ctx.render_context();
-        let pane_area = ctx.content_area_for(bounds);
-        state.borrow_mut().primary.place(
-            ctx.renderer_mut(),
-            render_ctx,
-            env,
-            bounded_proposal(bounds),
-            bounds,
-            pane_area,
-        );
     }
 
     if let Some(selection) = back_selection {
@@ -2619,23 +2697,102 @@ pub fn emit_navigation_view_accessibility(
 }
 
 /// Emits a retained navigation split's accessibility nodes for the semantic
-/// walk: the sidebar, the selected content (resolved through `ensure_content`
-/// exactly as the rendered path), and the selected detail or placeholder.
-/// Column visibility is presentation — every retained pane emits.
+/// walk — the panes the platform presents, and only those. Expanded, the
+/// sidebar, the selected content, and the selected detail or placeholder all
+/// emit. Collapsed, only the frontmost pane emits, with the back button that
+/// presents the pane beneath it — the shape `render_compact_split` produces
+/// by placing a single pane. A pane that is never emitted stays unplaced, so
+/// its subtree retires and never reaches the accessibility tree, exactly as
+/// in the rendered path.
 #[cfg(feature = "accessibility")]
 pub fn emit_navigation_split_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     state: &Rc<RefCell<NavigationSplitRenderState>>,
     env: &Environment,
 ) {
+    let (selection, compact) = {
+        let state = state.borrow();
+        let three_column = state.is_three_column();
+        let visibility = renderer.read_signal(&state.visibility);
+        let primary_selection = renderer.read_signal(&state.primary_selection);
+        let secondary_binding = state.secondary_selection.clone();
+        let secondary_selection = secondary_binding
+            .as_ref()
+            .and_then(|binding| renderer.read_signal(binding));
+        // The rendered path resolves the mode from the split's laid-out
+        // width; the semantic walk has no layout, so the declared window
+        // frame stands in — a root split reads identically either way.
+        let desired_column_width = resolved_split_column_width(state.column_width, state.style);
+        let automatic_compact = renderer.window_frame().width()
+            < split_compact_threshold(desired_column_width * if three_column { 2.0 } else { 1.0 });
+        let compact = automatic_compact
+            || matches!(
+                visibility,
+                waterui::navigation::NavigationSplitColumnVisibility::DetailOnly
+            );
+        (
+            CompactSplitSelection {
+                primary: primary_selection,
+                secondary: secondary_selection,
+                primary_binding: state.primary_selection.clone(),
+                secondary_binding,
+                three_column,
+            },
+            compact,
+        )
+    };
     let mut state = state.borrow_mut();
+    if compact {
+        let (front, back_binding) = compact_split_front(&selection);
+        // The back node precedes the front pane's nodes in the tree, the
+        // same order the rendered path registers it in.
+        if let Some(back_binding) = back_binding {
+            let _ = renderer.register_accessibility_node_semantic(
+                split_back_accessibility_node(env),
+                env,
+                Some(split_back_action_target(back_binding)),
+            );
+        }
+        match front {
+            CompactSplitFront::Detail => {
+                let selected = if selection.three_column {
+                    selection.secondary
+                } else {
+                    selection.primary
+                }
+                .expect("a detail front implies a selection");
+                state.ensure_detail(selected, true, renderer, env);
+                state
+                    .detail
+                    .as_mut()
+                    .expect("selected split detail must be retained")
+                    .2
+                    .emit_accessibility(renderer, env);
+            }
+            CompactSplitFront::Content => {
+                let selected = selection
+                    .primary
+                    .expect("a content front implies a primary selection");
+                state.ensure_content(selected, true, renderer, env);
+                state
+                    .content
+                    .as_mut()
+                    .expect("selected split content must be retained")
+                    .2
+                    .emit_accessibility(renderer, env);
+            }
+            CompactSplitFront::Sidebar => {
+                state.primary.emit_accessibility(renderer, env);
+            }
+        }
+        return;
+    }
     state.primary.emit_accessibility(renderer, env);
-    let primary_selection = renderer.read_signal(&state.primary_selection);
     // The middle column exists only on a three-column split; a two-column
     // split's primary selection drives the detail column, exactly as the
     // rendered path routes it.
     if state.is_three_column()
-        && let Some(selected) = primary_selection
+        && let Some(selected) = selection.primary
     {
         state.ensure_content(selected, false, renderer, env);
         state
@@ -2646,12 +2803,9 @@ pub fn emit_navigation_split_accessibility(
             .emit_accessibility(renderer, env);
     }
     let detail_selection = if state.is_three_column() {
-        state
-            .secondary_selection
-            .as_ref()
-            .and_then(|binding| renderer.read_signal(binding))
+        selection.secondary
     } else {
-        primary_selection
+        selection.primary
     };
     if let Some(selected) = detail_selection {
         state.ensure_detail(selected, false, renderer, env);
