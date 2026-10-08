@@ -322,20 +322,23 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
     })
 }
 
+/// Frees the session. A panic while its state drops is reported to the
+/// Kotlin caller as `IllegalStateException`, like every other entry point:
+/// a teardown that failed halfway is a defect to see, not one to discard.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeDestroySession(
-    _env: JNIEnv,
+    mut env: JNIEnv,
     _class: JClass,
     session_ptr: jlong,
 ) {
-    if session_ptr == 0 {
-        return;
-    }
-    // SAFETY: the pointer came from nativeCreateSession and this is the
-    // single destroy call per session, on the UI thread.
-    let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
-        drop(Box::from_raw(session_ptr as *mut AndroidSession));
-    }));
+    guard(&mut env, |_env| {
+        assert!(session_ptr != 0, "hydrolysis android: null session pointer");
+        // SAFETY: the pointer came from nativeCreateSession, and the Kotlin
+        // session hands it here exactly once, on the UI thread, after
+        // closing its accessor — no other reference to the session exists.
+        drop(unsafe { Box::from_raw(session_ptr as *mut AndroidSession) });
+        Ok(())
+    });
 }
 
 #[unsafe(no_mangle)]
@@ -407,15 +410,13 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeOnFrame(
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeFrameDeadlineInNanos(
-    _env: JNIEnv,
+    mut env: JNIEnv,
     _class: JClass,
     session_ptr: jlong,
 ) -> jlong {
-    if session_ptr == 0 {
-        -1
-    } else {
-        session(session_ptr).frame_deadline_in_nanos()
-    }
+    guard_val(&mut env, -1, |_env| {
+        Ok(session(session_ptr).frame_deadline_in_nanos())
+    })
 }
 
 #[unsafe(no_mangle)]
