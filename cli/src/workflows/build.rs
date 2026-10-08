@@ -1648,7 +1648,7 @@ impl RustBuild {
     /// - `RustBuildError::FailToExecuteCargoBuild`: If there was an error executing the cargo build command.
     /// - `RustBuildError::FailToBuildRustLibrary`: If there was an error building the Rust library.
     pub async fn dev_build(&self) -> Result<BuiltTarget, RustBuildError> {
-        self.build_lib(false).await
+        Box::pin(self.build_lib(false)).await
     }
 
     /// Build rust library in release mode.
@@ -1657,7 +1657,7 @@ impl RustBuild {
     /// - `RustBuildError::FailToExecuteCargoBuild`: If there was an error executing the cargo build command.
     /// - `RustBuildError::FailToBuildRustLibrary`: If there was an error building the Rust library.
     pub async fn release_build(&self) -> Result<BuiltTarget, RustBuildError> {
-        self.build_lib(true).await
+        Box::pin(self.build_lib(true)).await
     }
 
     /// Build the crate's library target.
@@ -1671,8 +1671,7 @@ impl RustBuild {
     /// - `RustBuildError::FailToExecuteCargoBuild`: If there was an error executing the cargo build command.
     /// - `RustBuildError::FailToBuildRustLibrary`: If there was an error building the Rust library.
     pub async fn build_lib(&self, release: bool) -> Result<BuiltTarget, RustBuildError> {
-        self.build_inner(release, CargoTarget::Lib, self.lib_artifact_extension())
-            .await
+        Box::pin(self.build_inner(release, CargoTarget::Lib, self.lib_artifact_extension())).await
     }
 
     /// Build a dynamic library (cdylib) and return Cargo's reported build result.
@@ -1685,11 +1684,11 @@ impl RustBuild {
     /// - `RustBuildError::FailToExecuteCargoBuild`: If there was an error executing the cargo build command.
     /// - `RustBuildError::FailToBuildRustLibrary`: If the library was not found after building.
     pub async fn build_dylib(&self, release: bool) -> Result<BuiltTarget, RustBuildError> {
-        self.build_inner(
+        Box::pin(self.build_inner(
             release,
             CargoTarget::Lib,
             Some(lib_extension_for_triple(&self.triple)),
-        )
+        ))
         .await
     }
 
@@ -1706,11 +1705,11 @@ impl RustBuild {
     /// - `RustBuildError::FailToExecuteCargoBuild`: If there was an error executing the cargo build command.
     /// - `RustBuildError::FailToBuildRustLibrary`: If the library was not found after building.
     pub async fn build_staticlib(&self, release: bool) -> Result<BuiltTarget, RustBuildError> {
-        self.build_inner(
+        Box::pin(self.build_inner(
             release,
             CargoTarget::Lib,
             crate_type_artifact_extension("staticlib", &self.triple),
-        )
+        ))
         .await
     }
 
@@ -1729,8 +1728,7 @@ impl RustBuild {
         binary_name: &str,
         release: bool,
     ) -> Result<BuiltTarget, RustBuildError> {
-        self.build_inner(release, CargoTarget::Binary(binary_name), None)
-            .await
+        Box::pin(self.build_inner(release, CargoTarget::Binary(binary_name), None)).await
     }
 
     /// Compute the expected dylib output path without building.

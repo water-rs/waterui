@@ -447,7 +447,7 @@ const fn resolve_platform(platform_override: Option<TargetPlatform>) -> TargetPl
 pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<()>) -> Result<()> {
     if args.tui {
         return Box::pin(crate::until_interrupt(
-            run_tui_app(shell, args),
+            Box::pin(run_tui_app(shell, args)),
             &interrupts,
         ))
         .await
@@ -467,18 +467,23 @@ pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<
             return Ok(None);
         }
         if context.platform.esp32_chip().is_some() {
-            run_esp32_app(shell, &context.project, args.device.as_deref()).await?;
+            Box::pin(run_esp32_app(
+                shell,
+                &context.project,
+                args.device.as_deref(),
+            ))
+            .await?;
             return Ok(None);
         }
 
-        let selection = select_run_device(
+        let selection = Box::pin(select_run_device(
             shell,
             &host,
             context.platform,
             context.backend,
             &context.project,
             args.device.as_deref(),
-        )
+        ))
         .await?;
         let config = build_run_config(shell, &host, &args, &context.project, context.backend).await;
 
@@ -568,17 +573,17 @@ async fn run_tui_app(shell: &Shell, args: Args) -> Result<()> {
     }
 
     let project_path = crate::project_path::canonicalize(&args.path)?;
-    let project = Project::open(&project_path, ManagedBackends::NONE).await?;
-    let launcher_dir = waterui_cli::tui::ensure_launcher(&project).await?;
+    let project = Box::pin(Project::open(&project_path, ManagedBackends::NONE)).await?;
+    let launcher_dir = Box::pin(waterui_cli::tui::ensure_launcher(&project)).await?;
 
     let sccache_path = detect_sccache_path(shell, &waterui_cli::toolchain::Host::current()).await;
     let binary = shell
-        .display_output(waterui_cli::tui::build(
+        .display_output(Box::pin(waterui_cli::tui::build(
             &project,
             &launcher_dir,
             sccache_path,
             Some(shell.build_progress()),
-        ))
+        )))
         .await?;
 
     note!(
@@ -601,7 +606,7 @@ async fn prepare_run_context(shell: &Shell, args: &Args) -> Result<Option<RunCon
         Some(args.backend.unwrap_or_else(|| default_backend(platform))),
     )?;
     let managed_backends = managed_backends(platform, backend);
-    let mut project = Project::open(&project_path, managed_backends).await?;
+    let mut project = Box::pin(Project::open(&project_path, managed_backends)).await?;
     if project.manifest().package.embedded {
         bail!(
             "`water run` does not apply to embedded projects: the crate is a library the host app embeds — build the artifact with `water build` and run the host app"
@@ -632,7 +637,7 @@ async fn prepare_run_context(shell: &Shell, args: &Args) -> Result<Option<RunCon
         project.set_esp32_chip(chip).await?;
     }
 
-    let project = super::ensure_generated_backend(shell, project, backend).await?;
+    let project = Box::pin(super::ensure_generated_backend(shell, project, backend)).await?;
 
     Ok(Some(RunContext {
         project,
@@ -694,7 +699,7 @@ async fn run_esp32_app(shell: &Shell, project: &Project, device: Option<&str>) -
 
     let _ = shell.status(">", "Building ESP32 firmware...");
     shell
-        .display_output(run_esp32(project, build_options, device))
+        .display_output(Box::pin(run_esp32(project, build_options, device)))
         .await
 }
 
@@ -910,12 +915,12 @@ async fn build_and_run(
         .transpose()?;
 
     let _ = shell.status(">", "Building...");
-    let built = build_for_backend(
+    let built = Box::pin(build_for_backend(
         project,
         backend,
         &build_plan,
         build_options(&config).with_progress(shell.build_progress()),
-    )
+    ))
     .await?;
 
     // A declared `include_web!` mount is served by the bundler's own dev
@@ -929,7 +934,7 @@ async fn build_and_run(
     };
 
     let _ = shell.status(">", "Packaging...");
-    let artifact = package_for_backend(
+    let artifact = Box::pin(package_for_backend(
         project,
         backend,
         &build_plan,
@@ -937,7 +942,7 @@ async fn build_and_run(
         package_options,
         prepared_signing.as_ref(),
         config.painter,
-    )
+    ))
     .await?;
 
     if selection.needs_launch {
@@ -1099,35 +1104,35 @@ async fn build_for_backend(
     build_options: BuildOptions,
 ) -> Result<waterui_cli::build::BuiltTarget> {
     match backend {
-        TargetBackend::Apple => build_rust_lib(project, plan.lib_platform, build_options).await,
+        TargetBackend::Apple => {
+            Box::pin(build_rust_lib(project, plan.lib_platform, build_options)).await
+        }
         TargetBackend::Android => {
             let abi = plan
                 .android_abi
                 .ok_or_else(|| eyre::eyre!("Internal error: missing Android ABI for build"))?;
             AndroidPlatform::clean_jni_libs(project).await?;
-            AndroidPlatform::new(abi)
-                .build(project, build_options)
-                .await
+            Box::pin(AndroidPlatform::new(abi).build(project, build_options)).await
         }
-        TargetBackend::Gtk4 => build_gtk4(project, build_options).await,
+        TargetBackend::Gtk4 => Box::pin(build_gtk4(project, build_options)).await,
         TargetBackend::Hydrolysis => {
             if plan.lib_platform == LibTargetPlatform::Android {
                 let abi = plan
                     .android_abi
                     .ok_or_else(|| eyre::eyre!("Internal error: missing Android ABI for build"))?;
                 hydrolysis_android::clean_jni_libs(project).await?;
-                hydrolysis_android::build(
+                Box::pin(hydrolysis_android::build(
                     project,
                     &waterui_cli::toolchain::Host::current(),
                     abi,
                     build_options,
-                )
+                ))
                 .await
             } else {
-                build_hydrolysis(project, plan.lib_platform, build_options).await
+                Box::pin(build_hydrolysis(project, plan.lib_platform, build_options)).await
             }
         }
-        TargetBackend::WinUi => build_winui(project, build_options).await,
+        TargetBackend::WinUi => Box::pin(build_winui(project, build_options)).await,
         TargetBackend::Dew => {
             panic!("esp32 run should not enter build_and_run")
         }
@@ -1152,13 +1157,19 @@ async fn package_for_backend(
 ) -> Result<Artifact> {
     match backend {
         TargetBackend::Apple => {
-            package_apple(project, plan.lib_platform, package_options, built).await
+            Box::pin(package_apple(
+                project,
+                plan.lib_platform,
+                package_options,
+                built,
+            ))
+            .await
         }
         TargetBackend::Android => {
             let abi = plan
                 .android_abi
                 .ok_or_else(|| eyre::eyre!("Internal error: missing Android ABI for packaging"))?;
-            AndroidPlatform::package_with_abis(
+            Box::pin(AndroidPlatform::package_with_abis(
                 project,
                 package_options,
                 &[abi],
@@ -1166,16 +1177,16 @@ async fn package_for_backend(
                 prepared_signing.ok_or_else(|| {
                     eyre::eyre!("Internal error: Android packaging has no signing plan")
                 })?,
-            )
+            ))
             .await
         }
-        TargetBackend::Gtk4 => package_gtk4(project, package_options, built).await,
+        TargetBackend::Gtk4 => Box::pin(package_gtk4(project, package_options, built)).await,
         TargetBackend::Hydrolysis => {
             if plan.lib_platform == LibTargetPlatform::Android {
                 let abi = plan.android_abi.ok_or_else(|| {
                     eyre::eyre!("Internal error: missing Android ABI for packaging")
                 })?;
-                hydrolysis_android::package_with_abis(
+                Box::pin(hydrolysis_android::package_with_abis(
                     project,
                     &waterui_cli::toolchain::Host::current(),
                     painter,
@@ -1185,13 +1196,19 @@ async fn package_for_backend(
                     prepared_signing.ok_or_else(|| {
                         eyre::eyre!("Internal error: Android packaging has no signing plan")
                     })?,
-                )
+                ))
                 .await
             } else {
-                package_hydrolysis(project, plan.lib_platform, package_options, Some(built)).await
+                Box::pin(package_hydrolysis(
+                    project,
+                    plan.lib_platform,
+                    package_options,
+                    Some(built),
+                ))
+                .await
             }
         }
-        TargetBackend::WinUi => package_winui(project, package_options, built).await,
+        TargetBackend::WinUi => Box::pin(package_winui(project, package_options, built)).await,
         TargetBackend::Dew => panic!("esp32 run should not enter build_and_run"),
     }
 }

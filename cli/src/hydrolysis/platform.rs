@@ -80,7 +80,14 @@ pub async fn build_hydrolysis(
     platform: TargetPlatform,
     options: BuildOptions,
 ) -> eyre::Result<BuiltTarget> {
-    build_hydrolysis_with_envs_and_features(project, platform, options, &[], &[]).await
+    Box::pin(build_hydrolysis_with_envs_and_features(
+        project,
+        platform,
+        options,
+        &[],
+        &[],
+    ))
+    .await
 }
 
 /// Build hydrolysis binary for the host platform with extra Cargo environment variables.
@@ -93,7 +100,14 @@ pub async fn build_hydrolysis_with_envs(
     options: BuildOptions,
     extra_envs: &[(String, OsString)],
 ) -> eyre::Result<BuiltTarget> {
-    build_hydrolysis_with_envs_and_features(project, platform, options, extra_envs, &[]).await
+    Box::pin(build_hydrolysis_with_envs_and_features(
+        project,
+        platform,
+        options,
+        extra_envs,
+        &[],
+    ))
+    .await
 }
 
 /// Build hydrolysis binary for the host platform with extra Cargo environment variables and features.
@@ -187,13 +201,12 @@ pub async fn build_hydrolysis_with_envs_and_features(
     if let Some(progress) = options.progress() {
         build = build.with_progress(progress.clone());
     }
-    let built_target = build
-        .build_binary(
-            project.hydrolysis_backend_crate_name().as_str(),
-            options.is_release(),
-        )
-        .await
-        .wrap_err("Failed to build hydrolysis backend with cargo")?;
+    let built_target = Box::pin(build.build_binary(
+        project.hydrolysis_backend_crate_name().as_str(),
+        options.is_release(),
+    ))
+    .await
+    .wrap_err("Failed to build hydrolysis backend with cargo")?;
 
     // The generated manifest declares the CEF helper as a second `[[bin]]`
     // when the application links the CEF engine crate; a `--bin <main>`
@@ -202,13 +215,12 @@ pub async fn build_hydrolysis_with_envs_and_features(
     // `waterui-chromium` link alone declares no helper bin, and asking
     // Cargo for it would fail with `no bin target`.
     if project.declares_cef_helper().await? {
-        build
-            .build_binary(
-                &hydrolysis_cef_helper_name(project.hydrolysis_backend_crate_name().as_str()),
-                options.is_release(),
-            )
-            .await
-            .wrap_err("Failed to build the hydrolysis CEF helper with cargo")?;
+        Box::pin(build.build_binary(
+            &hydrolysis_cef_helper_name(project.hydrolysis_backend_crate_name().as_str()),
+            options.is_release(),
+        ))
+        .await
+        .wrap_err("Failed to build the hydrolysis CEF helper with cargo")?;
     }
 
     copy_assets_and_fonts(
