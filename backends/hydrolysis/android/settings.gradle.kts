@@ -19,4 +19,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "hydrolysis-android"
-include(":host", ":gpu", ":preview", ":test-app")
+include(":host", ":gpu", ":preview", ":webview", ":test-app")

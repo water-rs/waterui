@@ -777,6 +777,18 @@ impl AndroidSession {
         // window reads the same state to gate its soft-input pushes.
         let platform_view_focus = crate::platform_view::PlatformViewFocus::default();
 
+        // The system-WebView controller joins the same environment: a
+        // `WebView` opened through it mounts as a platform-view *instance*
+        // the registry resolves by id. Resolving the wrapper class must
+        // happen here, on the JNI thread — a thread that did not enter from
+        // Java cannot resolve app classes later.
+        #[cfg(hydrolysis_android_system_webview)]
+        crate::widgets::platform::webview::install_controller(
+            &mut env,
+            jni_env,
+            bridge.host_view.clone(),
+        )?;
+
         let mut windows = VecDeque::from(windows);
         let window = windows
             .pop_front()
