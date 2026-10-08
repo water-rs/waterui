@@ -283,7 +283,7 @@ impl<T> Watch<T> {
 /// would be counted on every draw call's operand. A `Live` a recording
 /// stores for later rebinding — a material's shape or effect — goes
 /// through [`into_shared`](Live::into_shared), which moves the factory
-/// into the `Rc` a [`SharedLive`] shares across bindings.
+/// into the shared form a [`SharedLive`] binds any number of times.
 struct Subscribe<T>(Option<Box<dyn Subscription<T>>>);
 
 impl<T> std::fmt::Debug for Subscribe<T> {
@@ -292,11 +292,21 @@ impl<T> std::fmt::Debug for Subscribe<T> {
     }
 }
 
+/// An owned subscription — what a [`Live`] carries: started once,
+/// consuming the box.
 trait Subscription<T> {
-    /// Starts the watch on an owned subscription, consuming the box.
+    /// Starts the watch, consuming the box.
     fn start_owned(self: Box<Self>, watch: Watch<T>) -> Option<Box<dyn Any>>;
-    /// Starts the watch on a shared subscription, consuming this `Rc`
-    /// handle; the subscription stays alive through its other handles.
+    /// Moves the subscription into the shared form a [`SharedLive`]
+    /// carries.
+    fn into_shared(self: Box<Self>) -> Rc<dyn SharedSubscription<T>>;
+}
+
+/// A shared subscription — what a [`SharedLive`] carries: started once
+/// per binding, each start consuming one `Rc` handle.
+trait SharedSubscription<T> {
+    /// Starts the watch, consuming this `Rc` handle; the subscription
+    /// stays alive through its other handles.
     fn start_shared(self: Rc<Self>, watch: Watch<T>) -> Option<Box<dyn Any>>;
     /// The source's value now: for rebinding a stored `Live` — a change
     /// the signal made between the `Live`'s making and the rebind folded
@@ -334,6 +344,12 @@ impl<S: Signal> Subscription<S::Output> for SignalSubscription<S> {
         self.start_watch(watch)
     }
 
+    fn into_shared(self: Box<Self>) -> Rc<dyn SharedSubscription<S::Output>> {
+        Rc::new(*self)
+    }
+}
+
+impl<S: Signal> SharedSubscription<S::Output> for SignalSubscription<S> {
     #[expect(
         clippy::inline_always,
         reason = "erase constant watches after devirtualizing the subscription"
@@ -362,6 +378,76 @@ impl<T> Subscribe<T> {
     }
 }
 
+/// The subscription handle a [`Live`] or a [`SharedLive`] carries: the
+/// one seam their shared `watch` and `map` run through.
+trait Handle<T>: Sized {
+    /// The same kind of handle over a mapped value.
+    type Mapped<U: 'static>;
+    /// Starts the watch on this handle.
+    fn start(self, watch: Watch<T>) -> Option<Box<dyn Any>>;
+    /// A handle whose changes pass through `f`.
+    fn map<U: 'static>(self, f: impl Fn(T) -> U + 'static) -> Self::Mapped<U>
+    where
+        T: 'static;
+}
+
+impl<T> Handle<T> for Box<dyn Subscription<T>> {
+    type Mapped<U: 'static> = Box<dyn Subscription<U>>;
+
+    #[expect(
+        clippy::inline_always,
+        reason = "expose the concrete subscription to the binding's call site"
+    )]
+    #[inline(always)]
+    fn start(self, watch: Watch<T>) -> Option<Box<dyn Any>> {
+        self.start_owned(watch)
+    }
+
+    fn map<U: 'static>(self, f: impl Fn(T) -> U + 'static) -> Box<dyn Subscription<U>>
+    where
+        T: 'static,
+    {
+        Box::new(OwnedMapped { inner: self, f })
+    }
+}
+
+impl<T> Handle<T> for Rc<dyn SharedSubscription<T>> {
+    type Mapped<U: 'static> = Rc<dyn SharedSubscription<U>>;
+
+    fn start(self, watch: Watch<T>) -> Option<Box<dyn Any>> {
+        self.start_shared(watch)
+    }
+
+    fn map<U: 'static>(self, f: impl Fn(T) -> U + 'static) -> Rc<dyn SharedSubscription<U>>
+    where
+        T: 'static,
+    {
+        Rc::new(SharedMapped {
+            inner: self,
+            f: Rc::new(f),
+        })
+    }
+}
+
+/// [`Live::watch`] and [`SharedLive::watch`]: starts `watcher` on
+/// `subscription`, returning the value the binding starts from and the
+/// guard keeping it alive.
+#[expect(
+    clippy::inline_always,
+    reason = "expose the concrete subscription to the binding's call site"
+)]
+#[inline(always)]
+fn watch_handle<T>(
+    value: T,
+    subscription: Option<impl Handle<T>>,
+    watcher: impl Fn(nami_core::watcher::Context<T>) + 'static,
+) -> (T, Option<Binding>) {
+    let guard = subscription
+        .and_then(|subscription| subscription.start(Watch::binding(watcher)))
+        .map(|guard| Binding { _guard: guard });
+    (value, guard)
+}
+
 /// A value accepted by [`Recorder`]: a [`Fixed`] value, or the current value
 /// of a nami signal with the subscription that reports its later changes.
 ///
@@ -370,9 +456,9 @@ impl<T> Subscribe<T> {
 /// signal keeps updating the property with no further transaction.
 ///
 /// A `Live` the recording stores to bind later — a material's shape or
-/// effect — is shared ([`into_shared`](Self::into_shared) or
-/// [`map`](Self::map)) so [`SharedLive::rebound`] and `Clone` can give
-/// every binding a watch of the same subscription.
+/// effect — is shared ([`into_shared`](Self::into_shared)) so
+/// [`SharedLive::rebound`] and `Clone` can give every binding a watch of
+/// the same subscription.
 pub struct Live<T> {
     value: T,
     subscription: Subscribe<T>,
@@ -451,7 +537,7 @@ impl<T> Live<T> {
         } = self;
         SharedLive {
             value,
-            subscription: subscription.0.map(Rc::from),
+            subscription: subscription.0.map(Subscription::into_shared),
         }
     }
 
@@ -478,38 +564,22 @@ impl<T> Live<T> {
         self,
         watcher: impl Fn(nami_core::watcher::Context<T>) + 'static,
     ) -> (T, Option<Binding>) {
-        let Self {
-            value,
-            subscription,
-        } = self;
-        let guard = subscription
-            .start(Watch::binding(watcher))
-            .map(|guard| Binding { _guard: guard });
-        (value, guard)
+        watch_handle(self.value, self.subscription.0, watcher)
     }
 
     /// A `Live` of `f` applied to this one's value: `f` maps the stored
     /// value now, and the value the binding starts from and every later
     /// change when the result is bound. A change keeps its `Context`
     /// metadata, so an [`Animation`] it was made under still reaches the
-    /// binding.
+    /// binding. The mapped subscription is one allocation, owning this
+    /// one's.
     pub fn map<U: 'static>(self, f: impl Fn(T) -> U + 'static) -> Live<U>
     where
         T: 'static,
     {
-        let Self {
-            value,
-            subscription,
-        } = self;
-        let value = f(value);
         Live {
-            value,
-            subscription: Subscribe(subscription.0.map(|inner| {
-                Box::new(MappedSubscription {
-                    inner: Rc::from(inner),
-                    f: Rc::new(f),
-                }) as Box<dyn Subscription<U>>
-            })),
+            value: f(self.value),
+            subscription: Subscribe(self.subscription.0.map(|inner| inner.map(f))),
         }
     }
 }
@@ -521,7 +591,7 @@ impl<T> Live<T> {
 /// of the one subscription.
 pub struct SharedLive<T> {
     value: T,
-    subscription: Option<Rc<dyn Subscription<T>>>,
+    subscription: Option<Rc<dyn SharedSubscription<T>>>,
 }
 
 impl<T: std::fmt::Debug> std::fmt::Debug for SharedLive<T> {
@@ -575,34 +645,15 @@ impl<T: 'static> SharedLive<T> {
         self,
         watcher: impl Fn(nami_core::watcher::Context<T>) + 'static,
     ) -> (T, Option<Binding>) {
-        let Self {
-            value,
-            subscription,
-        } = self;
-        let guard = subscription
-            .and_then(|subscription| subscription.start_shared(Watch::binding(watcher)))
-            .map(|guard| Binding { _guard: guard });
-        (value, guard)
+        watch_handle(self.value, self.subscription, watcher)
     }
 
     /// A `SharedLive` of `f` applied to this one's value — see
     /// [`Live::map`].
-    pub fn map<U: 'static>(self, f: impl Fn(T) -> U + 'static) -> SharedLive<U>
-    where
-        T: 'static,
-    {
-        let Self {
-            value,
-            subscription,
-        } = self;
+    pub fn map<U: 'static>(self, f: impl Fn(T) -> U + 'static) -> SharedLive<U> {
         SharedLive {
-            value: f(value),
-            subscription: subscription.map(|inner| {
-                Rc::new(MappedSubscription {
-                    inner,
-                    f: Rc::new(f),
-                }) as Rc<dyn Subscription<U>>
-            }),
+            value: f(self.value),
+            subscription: self.subscription.map(|inner| inner.map(f)),
         }
     }
 
@@ -610,15 +661,11 @@ impl<T: 'static> SharedLive<T> {
     /// take `Live`, so a shared operand hands over a `Live` wrapping the
     /// same subscription.
     pub(crate) fn into_live(self) -> Live<T> {
-        let Self {
-            value,
-            subscription,
-        } = self;
         Live {
-            value,
+            value: self.value,
             subscription: Subscribe(
-                subscription
-                    .map(|inner| Box::new(SharedSubscription(inner)) as Box<dyn Subscription<T>>),
+                self.subscription
+                    .map(|inner| Box::new(SharedHandle(inner)) as Box<dyn Subscription<T>>),
             ),
         }
     }
@@ -633,47 +680,57 @@ impl<T: 'static> From<SharedLive<T>> for Live<T> {
 
 /// A shared subscription wrapped to bind where a `Live` is expected —
 /// every clone of the `Rc` keeps the subscription alive.
-struct SharedSubscription<T>(Rc<dyn Subscription<T>>);
+struct SharedHandle<T>(Rc<dyn SharedSubscription<T>>);
 
-impl<T: 'static> Subscription<T> for SharedSubscription<T> {
+impl<T: 'static> Subscription<T> for SharedHandle<T> {
     fn start_owned(self: Box<Self>, watch: Watch<T>) -> Option<Box<dyn Any>> {
         self.0.start_shared(watch)
     }
 
-    fn start_shared(self: Rc<Self>, watch: Watch<T>) -> Option<Box<dyn Any>> {
-        Rc::clone(&self.0).start_shared(watch)
-    }
-
-    fn current(&self) -> T {
-        self.0.current()
+    fn into_shared(self: Box<Self>) -> Rc<dyn SharedSubscription<T>> {
+        self.0
     }
 }
 
-/// A subscription whose changes pass through a map before they reach the
-/// watch: what [`Live::map`] leaves.
-struct MappedSubscription<T, F> {
-    inner: Rc<dyn Subscription<T>>,
+/// An owned subscription whose changes pass through `f` before they reach
+/// the watch: what [`Live::map`] leaves. Started, it moves `f` into the
+/// watch; shared, it becomes a [`SharedMapped`].
+struct OwnedMapped<T, F> {
+    inner: Box<dyn Subscription<T>>,
+    f: F,
+}
+
+impl<T: 'static, U: 'static, F: Fn(T) -> U + 'static> Subscription<U> for OwnedMapped<T, F> {
+    fn start_owned(self: Box<Self>, watch: Watch<U>) -> Option<Box<dyn Any>> {
+        let Self { inner, f } = *self;
+        inner.start_owned(Watch::binding(
+            move |context: nami_core::watcher::Context<T>| {
+                watch.notify(context.map(&f));
+            },
+        ))
+    }
+
+    fn into_shared(self: Box<Self>) -> Rc<dyn SharedSubscription<U>> {
+        let Self { inner, f } = *self;
+        inner.into_shared().map(f)
+    }
+}
+
+/// A shared subscription whose changes pass through `f` before they
+/// reach each watch: what [`SharedLive::map`] leaves.
+struct SharedMapped<T, F> {
+    inner: Rc<dyn SharedSubscription<T>>,
     f: Rc<F>,
 }
 
-impl<T: 'static, U: 'static, F: Fn(T) -> U + 'static> MappedSubscription<T, F> {
-    fn start_watch(&self, watch: Watch<U>) -> Option<Box<dyn Any>> {
+impl<T: 'static, U: 'static, F: Fn(T) -> U + 'static> SharedSubscription<U> for SharedMapped<T, F> {
+    fn start_shared(self: Rc<Self>, watch: Watch<U>) -> Option<Box<dyn Any>> {
         let f = Rc::clone(&self.f);
         Rc::clone(&self.inner).start_shared(Watch::binding(
             move |context: nami_core::watcher::Context<T>| {
                 watch.notify(context.map(&*f));
             },
         ))
-    }
-}
-
-impl<T: 'static, U: 'static, F: Fn(T) -> U + 'static> Subscription<U> for MappedSubscription<T, F> {
-    fn start_owned(self: Box<Self>, watch: Watch<U>) -> Option<Box<dyn Any>> {
-        self.start_watch(watch)
-    }
-
-    fn start_shared(self: Rc<Self>, watch: Watch<U>) -> Option<Box<dyn Any>> {
-        self.start_watch(watch)
     }
 
     fn current(&self) -> U {
