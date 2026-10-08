@@ -321,9 +321,11 @@ pub async fn copy_file(from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Resu
 /// The comparison is the size first and then the bytes themselves — every
 /// file under a Cargo registry source carries the same deterministic
 /// mtime, so a metadata check would read two different files as unchanged.
-/// A copy that does get written keeps the write's own mtime: stamping the
-/// source's could move it backwards, and nothing downstream needs the
-/// copy's metadata to name a source state.
+/// A copy that does get written keeps whatever mtime the copy mechanism
+/// leaves — `reflink_or_copy` is `clonefile` on macOS, which carries the
+/// source's mtime over, while a plain byte write stamps its own — so
+/// nothing downstream may read the copy's metadata as a source state; the
+/// byte compare is the only guarantee.
 ///
 /// An existing `to` that cannot be read is an error — only `NotFound`
 /// counts as absent, matching `write_file_if_changed`.
@@ -361,9 +363,12 @@ fn copy_file_overwriting(from: &Path, to: &Path) -> io::Result<()> {
 
 /// Remove `to` and copy `from`'s bytes in its place — `reflink_or_copy`
 /// refuses to overwrite, and every caller expects `to` to carry `from`'s
-/// contents afterwards. The write sets the copy's own modification time:
-/// [`copy_file_if_changed_sync`]'s byte-compare reads the copy's contents,
-/// never its mtime, so nothing stamps over it.
+/// contents afterwards. The copy's modification time is whatever the copy
+/// mechanism leaves: `clonefile` on macOS preserves the source's mtime
+/// while a plain write stamps the write's own. [`copy_file_if_changed_sync`]'s
+/// byte-compare reads the copy's contents, never its mtime, so the
+/// difference is inert; a caller needing a named mtime stamps it
+/// explicitly the way [`copy_file_overwriting`] does.
 fn replace_with_copy(from: &Path, to: &Path) -> io::Result<()> {
     match std::fs::remove_file(to) {
         Ok(()) => {}

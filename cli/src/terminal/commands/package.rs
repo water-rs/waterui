@@ -393,13 +393,13 @@ async fn build_packaging_artifacts(
                 .await
         }
         TargetBackend::Hydrolysis => {
-            build_hydrolysis_packaging_artifacts(
+            Box::pin(build_hydrolysis_packaging_artifacts(
                 shell,
                 &context.project,
                 args.platform,
                 &args.arch,
                 context.build_options.clone(),
-            )
+            ))
             .await
         }
         TargetBackend::WinUi => {
@@ -524,11 +524,11 @@ async fn build_hydrolysis_packaging_artifacts(
 
     let spinner = shell.spinner("Building hydrolysis app...");
     let built = shell
-        .display_output(build_hydrolysis(
+        .display_output(Box::pin(build_hydrolysis(
             project,
             hydrolysis_platform(platform),
             build_options,
-        ))
+        )))
         .await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();

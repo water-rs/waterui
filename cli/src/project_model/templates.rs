@@ -4444,6 +4444,10 @@ pub async fn write_file_if_changed(path: &Path, contents: &[u8]) -> io::Result<(
 /// file in the same directory that [`tempfile::NamedTempFile::persist`]
 /// then renames over `path`, so a crash mid-write — or a reader racing
 /// it — sees the old file or the new one, never a torn file.
+///
+/// `NamedTempFile::new_in` creates the temporary `0600`; the managed
+/// files this writes are regular project files, so the persisted file
+/// keeps the replaced file's mode, or `0644` for a new one.
 async fn write_file_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
     use std::io::Write as _;
 
@@ -4453,8 +4457,21 @@ async fn write_file_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
         let directory = path
             .parent()
             .ok_or_else(|| io::Error::other(format!("`{}` has no directory", path.display())))?;
+        #[cfg(unix)]
+        let permissions = {
+            use std::os::unix::fs::PermissionsExt as _;
+            match std::fs::metadata(&path) {
+                Ok(metadata) => metadata.permissions(),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    std::fs::Permissions::from_mode(0o644)
+                }
+                Err(error) => return Err(error),
+            }
+        };
         let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
         temporary.write_all(&contents)?;
+        #[cfg(unix)]
+        temporary.as_file().set_permissions(permissions)?;
         temporary
             .persist(&path)
             .map(|_| ())
@@ -6785,11 +6802,20 @@ pub async fn restore_seeded_lockfile(
 }
 
 /// The per-file half of [`restore_seeded_lockfile`]: the recorded bytes
-/// back through [`write_file_if_changed`] — a file the seed never touched
-/// stays untouched — or the file removed when the run recorded none.
+/// back through [`write_file_atomic`] — a file already carrying them is
+/// left untouched, while a plain write could tear the lock under a
+/// mid-restore crash and fail every later build's parse — or the file
+/// removed when the run recorded none.
 async fn restore_seeded_file(path: &Path, previous: Option<&[u8]>) -> io::Result<()> {
     match previous {
-        Some(bytes) => write_file_if_changed(path, bytes).await,
+        Some(bytes) => match fs::read(path).await {
+            Ok(existing) if existing == bytes => Ok(()),
+            Ok(_) => write_file_atomic(path, bytes).await,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                write_file_atomic(path, bytes).await
+            }
+            Err(error) => Err(error),
+        },
         None => match fs::remove_file(path).await {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),

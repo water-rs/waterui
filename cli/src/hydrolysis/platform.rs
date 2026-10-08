@@ -18,7 +18,8 @@ use tracing::info;
 use crate::{
     assets, browser_runtime,
     build::{
-        BuildOptions, BuiltTarget, RustBuild, RustDynamicLibraries, RustLinkage, stage_dxc_runtime,
+        ArtifactLockScope, BuildOptions, BuiltTarget, RustBuild, RustDynamicLibraries, RustLinkage,
+        stage_dxc_runtime,
     },
     device::Artifact,
     hydrolysis::backend::HydrolysisBackend,
@@ -205,7 +206,12 @@ pub async fn build_hydrolysis_with_envs_and_features(
     // — the marked `deps/` artifact path it reports is the only spelling
     // that names this variant's helper.
     if project.declares_cef_helper().await? {
+        // Packaging reads the helper's marked `deps/` artifact; nothing
+        // execs its shared `<profile>/<name>` uplift, so the artifact lock
+        // is released once the marked link exists rather than held while
+        // this `BuiltTarget` rides through packaging.
         let helper = build
+            .with_artifact_lock_scope(ArtifactLockScope::UntilMarked)
             .build_binary(
                 &hydrolysis_cef_helper_name(project.hydrolysis_backend_crate_name().as_str()),
                 options.is_release(),

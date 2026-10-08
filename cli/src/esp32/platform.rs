@@ -16,7 +16,7 @@ use smol::unblock;
 use tracing::info;
 
 use crate::{
-    build::{BuildOptions, BuildProgress, BuiltTarget},
+    build::{BuildOptions, BuildProgress, BuiltTarget, SharedExecutable},
     device::Artifact,
     esp32::{backend::Esp32Backend, chip::Esp32Chip},
     platform::{PackageOptions, TargetPlatform},
@@ -310,8 +310,7 @@ pub async fn build_esp32(project: &Project, options: BuildOptions) -> eyre::Resu
     Ok(BuiltTarget {
         profile_dir: profile_dir.to_path_buf(),
         artifact: artifact.clone(),
-        executable: Some(artifact),
-        binary_artifact_lock: None,
+        executable: Some(SharedExecutable::unlocked(artifact)),
         entry_binary: None,
         shared_runtime: None,
         app_library: crate::build::app_library_artifact(

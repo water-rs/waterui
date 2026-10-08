@@ -30,7 +30,8 @@ use target_lexicon::Triple;
 use tempfile::{TempDir, tempdir};
 
 use waterui_cli::build::{
-    BuiltTarget, RustBuild, RustDynamicLibraries, RustLinkage, needed_shared_libraries,
+    BuiltTarget, RustBuild, RustDynamicLibraries, RustLinkage, SharedExecutable,
+    needed_shared_libraries,
 };
 use waterui_cli::project::{ManagedBackends, Project};
 
@@ -447,8 +448,7 @@ fn packaged_binary_finds_every_shared_library_it_records() {
         let built = BuiltTarget {
             profile_dir: profile_dir.clone(),
             artifact: executable.clone(),
-            executable: Some(executable.clone()),
-            binary_artifact_lock: None,
+            executable: Some(SharedExecutable::unlocked(executable.clone())),
             entry_binary: None,
             shared_runtime: Some(shared_runtime),
             app_library: None,

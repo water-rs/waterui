@@ -21,7 +21,10 @@ use crate::{
     apple::backend::AppleBackend,
     apple::dynamic_runtime,
     assets,
-    build::{BuildOptions, BuiltTarget, RustBuild, RustDynamicLibraries, RustLinkage},
+    build::{
+        ArtifactLockScope, BuildOptions, BuiltTarget, RustBuild, RustDynamicLibraries, RustLinkage,
+        SharedExecutable,
+    },
     device::Artifact,
     platform::{PackageOptions, TargetBackend, TargetPlatform},
     project::{BrowserRuntimePlan, Project, ResolvedWebViewBackend},
@@ -497,9 +500,14 @@ pub(crate) async fn build_rust_lib_with_links(
     }
     // The entry `[[bin]]`'s own `BuiltTarget` rides on this build's result
     // so packaging reads its marked `deps/` artifact, never a name
-    // reconstructed under the profile directory.
+    // reconstructed under the profile directory. Nothing execs the shared
+    // `<profile>/waterui-apple-main` uplift — its lock file sits in the
+    // shared profile directory for every Apple project — so the lock is
+    // released once the marked link exists instead of riding a `BuiltTarget`
+    // a `water run` holds through packaging and launch.
     built_target.entry_binary = Some(Box::new(
         executable
+            .with_artifact_lock_scope(ArtifactLockScope::UntilMarked)
             .build_binary(APPLE_ENTRY_BINARY_NAME, options.is_release())
             .await?,
     ));
@@ -513,6 +521,7 @@ pub(crate) async fn build_rust_lib_with_links(
         let helper = build
             .clone()
             .with_final_rustc_arg("-Clink-arg=-Wl,-rpath,@executable_path/../Frameworks")
+            .with_artifact_lock_scope(ArtifactLockScope::UntilMarked)
             .build_binary(
                 &crate::project_model::project_types::cef_helper_binary_name(
                     project.ffi_crate_name().as_str(),
@@ -875,8 +884,9 @@ pub async fn package_apple(
         let bin_built = BuiltTarget {
             profile_dir: built.profile_dir.clone(),
             artifact: layout.executable_file(&product_name),
-            executable: Some(layout.executable_file(&product_name)),
-            binary_artifact_lock: None,
+            executable: Some(SharedExecutable::unlocked(
+                layout.executable_file(&product_name),
+            )),
             entry_binary: None,
             shared_runtime: built.shared_runtime.clone(),
             app_library: None,

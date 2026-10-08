@@ -15,7 +15,7 @@ use eyre::{Context as _, bail};
 use futures_util::StreamExt as _;
 use smol::{io::AsyncReadExt as _, process::Command, unblock};
 use target_lexicon::{Environment, OperatingSystem, Triple};
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::project::Project;
 use crate::utils::{run_command, std_output_enabled};
@@ -174,15 +174,7 @@ pub struct BuiltTarget {
     /// executable. Launchers execute this path, never the `deps/` artifact:
     /// the staged shared runtime sits beside the uplift in the profile
     /// directory, so `@executable_path`/`$ORIGIN` resolves it.
-    pub executable: Option<PathBuf>,
-    /// The exclusive per-binary artifact lock `build_inner` took before
-    /// Cargo's invocation — `Some` only for a `--bin` build. The shared
-    /// `<profile>/<name>` uplift at `executable` keeps this run's bytes
-    /// while the lock lives, so a launcher must keep this `BuiltTarget`
-    /// alive until the child process is spawned — or the `exec` happened,
-    /// the lock fd being closed-on-exec — before a concurrent same-named
-    /// build may re-uplift (#2073).
-    pub binary_artifact_lock: Option<std::fs::File>,
+    pub executable: Option<SharedExecutable>,
     /// The entry `[[bin]]` an Apple build produces beside the companion
     /// library — `Some` only on a non-embedded Apple build. Its own
     /// `BuiltTarget` carries the reported `artifact` — the marked
@@ -202,16 +194,23 @@ impl BuiltTarget {
     /// `<profile>/<name>` uplift a launcher executes so the staged shared
     /// runtime resolves beside it.
     ///
+    /// How long the uplift keeps this run's bytes depends on the artifact
+    /// lock this value still holds — see [`SharedExecutable`] and
+    /// [`RustBuild::with_artifact_lock_scope`].
+    ///
     /// # Errors
     /// Returns an error when this build selected no binary target or Cargo
     /// reported no executable for it.
     pub fn executable(&self) -> eyre::Result<&Path> {
-        self.executable.as_deref().ok_or_else(|| {
-            eyre::eyre!(
-                "Cargo reported no executable for the build in {}",
-                self.profile_dir.display()
-            )
-        })
+        self.executable
+            .as_ref()
+            .map(SharedExecutable::path)
+            .ok_or_else(|| {
+                eyre::eyre!(
+                    "Cargo reported no executable for the build in {}",
+                    self.profile_dir.display()
+                )
+            })
     }
 
     /// Return the shared `WaterUI` runtime Cargo reported for this build.
@@ -242,6 +241,74 @@ impl BuiltTarget {
             |library| crate::artifact_symbols::ArtifactSymbols::read(library),
         )
     }
+}
+
+/// The `<profile>/<name>` uplift a `--bin` build's `executable` report
+/// names, carried together with the artifact lock that bounds how long the
+/// shared slot keeps this build's bytes.
+///
+/// Keeping the reported path cannot keep the lock by accident: `lock` is
+/// `Some` only while the launcher that executes this path may still spawn
+/// or `exec` it — the fd closes on `exec`, releasing the lock exactly when
+/// the new image loads. A build nothing launches through the shared uplift
+/// — the Apple entry `[[bin]]`, the CEF helper — reports the path with
+/// `lock: None`, so a `BuiltTarget` held for packaging or for a whole run
+/// session blocks no other project's same-named build.
+#[derive(Debug)]
+pub struct SharedExecutable {
+    path: PathBuf,
+    _lock: Option<ArtifactLock>,
+}
+
+impl SharedExecutable {
+    /// An `executable` report carrying no artifact lock — the bundled
+    /// executable and ESP32 firmware paths platform packaging hands out
+    /// itself, which no same-named build can re-uplift under it.
+    #[must_use]
+    pub const fn unlocked(path: PathBuf) -> Self {
+        Self { path, _lock: None }
+    }
+
+    /// The `<profile>/<name>` uplift path itself.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+/// The guard holding fs4's exclusive lock on a `<profile>/<name>` uplift
+/// slot: while it lives, a same-named build cannot re-uplift the shared
+/// path a launcher is about to exec.
+///
+/// The fd is closed-on-exec, so an `exec`ing launcher releases the lock in
+/// the kernel's image swap; elsewhere dropping the guard closes it — which
+/// is why the guard lives inside [`SharedExecutable`] rather than as a bare
+/// `File` a caller could keep past the launch.
+#[derive(Debug)]
+pub struct ArtifactLock {
+    _file: std::fs::File,
+}
+
+/// How long `build_inner` keeps a `--bin` build's artifact lock, resolved
+/// against which path the binary is launched through.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ArtifactLockScope {
+    /// Until the launched image is mapped: the returned [`BuiltTarget`]
+    /// carries the lock inside its `executable`, so the shared
+    /// `<profile>/<name>` uplift keeps this build's bytes until the
+    /// launcher's child is spawned — or the `exec` happened. The scope for
+    /// every binary the CLI execs in place: the TUI launcher, the
+    /// Hydrolysis and Apple previews, the MCP proxy.
+    #[default]
+    UntilLaunch,
+    /// Until the `deps/<name>-<marker>` link exists: the lock is released
+    /// as `build_inner` ends, for binaries nothing execs through the shared
+    /// uplift — the Apple entry `[[bin]]` and the CEF helper, whose
+    /// packaging reads the marked `deps/` artifact. Their lock file lives
+    /// in the shared profile directory and is the same for every project;
+    /// a `water run` holding it across packaging and launch would block a
+    /// `water build` of another same-named binary until the run exits.
+    UntilMarked,
 }
 
 /// Selects how Rust dependencies are linked into a native application.
@@ -993,6 +1060,8 @@ pub struct RustBuild {
     envs: Vec<(String, OsString)>,
     /// Sink compile progress is reported to while cargo runs.
     progress: Option<BuildProgress>,
+    /// How long a `--bin` build's artifact lock outlives `build_inner`.
+    artifact_lock_scope: ArtifactLockScope,
 }
 
 /// The optimization/debug-info trade-off a Cargo build selects.
@@ -1522,6 +1591,7 @@ impl RustBuild {
             build_std_toolchain: None,
             envs: Vec::new(),
             progress: None,
+            artifact_lock_scope: ArtifactLockScope::default(),
         }
     }
 
@@ -1679,6 +1749,22 @@ impl RustBuild {
         self
     }
 
+    /// How long a `--bin` build's artifact lock outlives `build_inner`.
+    ///
+    /// The default, [`ArtifactLockScope::UntilLaunch`], hands the lock to
+    /// whoever executes the shared `<profile>/<name>` uplift the returned
+    /// [`BuiltTarget::executable`] names. [`ArtifactLockScope::UntilMarked`]
+    /// releases it where the `deps/<name>-<marker>` link exists — the scope
+    /// for binaries nothing execs through the uplift, like the Apple entry
+    /// `[[bin]]` and the CEF helper, whose lock file sits in the shared
+    /// profile directory and would block every other project's same-named
+    /// build for as long as a `water run` kept it.
+    #[must_use]
+    pub const fn with_artifact_lock_scope(mut self, scope: ArtifactLockScope) -> Self {
+        self.artifact_lock_scope = scope;
+        self
+    }
+
     /// Get the target triple for this build.
     #[must_use]
     pub const fn triple(&self) -> &Triple {
@@ -1812,12 +1898,12 @@ impl RustBuild {
         let profile_dir = self.lib_output_dir(release).await?;
         // The shared-target lease is a *shared* lease — concurrent `water`
         // builds in this target directory are expected. For a `--bin` unit,
-        // hold an exclusive per-binary lock from before Cargo's invocation;
-        // the `BuiltTarget` carries it on, so the lock covers the
-        // `deps/<name>-<marker>` relink and reaches a launcher's spawn: a
-        // same-named binary build uplifts the same `<profile>/<name>`, so
-        // without the lock it could replace this run's bytes in the window
-        // between Cargo exiting and the launcher exec'ing the uplift.
+        // hold an exclusive per-binary lock from before Cargo's invocation,
+        // covering at least the `deps/<name>-<marker>` relink; where it
+        // ends is `artifact_lock_scope`'s call — inside the returned
+        // `BuiltTarget`'s `executable` for a binary a launcher execs
+        // through the shared `<profile>/<name>` spelling, or dropped once
+        // the marked link exists for an uplift nobody execs (#2073).
         let artifact_lock = match cargo_target {
             CargoTarget::Binary(name) => Some(binary_artifact_lock(&profile_dir, name).await?),
             CargoTarget::Lib => None,
@@ -1905,6 +1991,19 @@ Automatic meson installation failed: {install_err}\n\n{}",
             }
             CargoTarget::Lib => artifact,
         };
+        // The `deps/<name>-<marker>` link exists now. An uplift nobody
+        // launches — the Apple entry `[[bin]]`, the CEF helper — releases
+        // its lock here rather than letting a `BuiltTarget` a `water run`
+        // holds through packaging and launch block every other project's
+        // same-named build; the lock file is per-name in the shared
+        // profile directory.
+        let artifact_lock = match self.artifact_lock_scope {
+            ArtifactLockScope::UntilLaunch => artifact_lock,
+            ArtifactLockScope::UntilMarked => {
+                drop(artifact_lock);
+                None
+            }
+        };
 
         let shared_runtime = reported_shared_runtime(&output.stdout)?;
         let app_library = match self.project.as_ref() {
@@ -1916,8 +2015,10 @@ Automatic meson installation failed: {install_err}\n\n{}",
         Ok(BuiltTarget {
             profile_dir,
             artifact,
-            executable,
-            binary_artifact_lock: artifact_lock,
+            executable: executable.map(|path| SharedExecutable {
+                path,
+                _lock: artifact_lock,
+            }),
             entry_binary: None,
             shared_runtime,
             app_library,
@@ -2679,18 +2780,24 @@ pub(crate) fn reported_artifact(
 /// `shared_target_lease` is a *shared* lease — concurrent `water` builds
 /// into this target directory are expected — so this lock file takes fs4's
 /// exclusive lock from before Cargo's invocation, through the reported
-/// executable's relink by [`marked_binary_artifact`], and on inside the
-/// returned [`BuiltTarget`] until the launcher that executes the uplift
-/// has spawned its child. A second same-named build then uplifts
+/// executable's relink by [`marked_binary_artifact`], and — under the
+/// default [`ArtifactLockScope`] — on inside the returned
+/// [`SharedExecutable`] until the launcher that executes the uplift has
+/// spawned its child. A second same-named build then uplifts
 /// `<profile>/<name>` only after this build's launch read its bytes, and
 /// its own `executable` report names its own output. The lock is per
 /// binary name: unrelated builds proceed in parallel.
+///
+/// A contended wait announces which artifact it waits on before blocking:
+/// fs4's lock has no timeout, so the message is the only sign the build is
+/// queued behind another `water` process rather than compiling.
 async fn binary_artifact_lock(
     profile_dir: &Path,
     binary_name: &str,
-) -> Result<std::fs::File, RustBuildError> {
+) -> Result<ArtifactLock, RustBuildError> {
     let lock_path = profile_dir.join(format!(".water-artifact-{binary_name}.lock"));
     let profile_dir = profile_dir.to_path_buf();
+    let binary_name = binary_name.to_owned();
     smol::unblock(move || {
         std::fs::create_dir_all(&profile_dir).map_err(RustBuildError::FailToBuildRustLibrary)?;
         let file = std::fs::OpenOptions::new()
@@ -2700,8 +2807,21 @@ async fn binary_artifact_lock(
             .truncate(false)
             .open(&lock_path)
             .map_err(RustBuildError::FailToBuildRustLibrary)?;
-        fs4::FileExt::lock(&file).map_err(RustBuildError::FailToBuildRustLibrary)?;
-        Ok(file)
+        match fs4::FileExt::try_lock(&file) {
+            Ok(()) => {}
+            Err(fs4::TryLockError::WouldBlock) => {
+                info!(
+                    artifact = binary_name.as_str(),
+                    lock = %lock_path.display(),
+                    "waiting for the binary artifact lock"
+                );
+                fs4::FileExt::lock(&file).map_err(RustBuildError::FailToBuildRustLibrary)?;
+            }
+            Err(fs4::TryLockError::Error(error)) => {
+                return Err(RustBuildError::FailToBuildRustLibrary(error));
+            }
+        }
+        Ok(ArtifactLock { _file: file })
     })
     .await
 }
@@ -3703,7 +3823,6 @@ mod tests {
             profile_dir: profile_dir.clone(),
             artifact: temporary.path().join("app"),
             executable: None,
-            binary_artifact_lock: None,
             entry_binary: None,
             shared_runtime: None,
             app_library: None,

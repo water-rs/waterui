@@ -1809,8 +1809,21 @@ pub(crate) fn seed_packages(
 /// one slot could never both satisfy a resolution.
 fn same_seed_slot(taken: &cargo_lock::Package, candidate: &cargo_lock::Package) -> bool {
     taken.name == candidate.name
-        && taken.source == candidate.source
+        && same_source(taken.source.as_ref(), candidate.source.as_ref())
         && same_caret_family(&taken.version, &candidate.version)
+}
+
+/// Whether two `source` fields name the same source the way Cargo's own
+/// `SourceId` equality does — URL, kind and registry name — without the
+/// `#<commit>` fragment: a `?branch=` dependency's locked commit moves with
+/// every push, and treating two commits of the same tracked branch as
+/// different slots would seed the stale commit beside the new one.
+fn same_source(
+    taken: Option<&cargo_lock::SourceId>,
+    candidate: Option<&cargo_lock::SourceId>,
+) -> bool {
+    taken.map(|source| source.with_precise(None))
+        == candidate.map(|source| source.with_precise(None))
 }
 
 /// `dev` has no certification; the repository tree's own gitlinks record which
@@ -4026,6 +4039,57 @@ mod tests {
         // lock's stale 2.0.100 drops — while the `^1` slot keeps the only
         // entry any lock names for it.
         assert_eq!(versions, ["1.0.109", "2.0.106"]);
+    }
+
+    /// A `?branch=` dependency's locked `#<commit>` moves with every push:
+    /// Cargo's own `SourceId` comparison ignores that fragment, so the
+    /// project's commit and the previous lock's stale commit are the same
+    /// resolution slot — the seed keeps only the project's entry, never
+    /// both commits of the tracked branch.
+    #[test]
+    fn the_seed_compares_git_sources_without_the_precise_commit() {
+        let lock = |packages| Lockfile {
+            packages,
+            version: cargo_lock::ResolveVersion::V4,
+            root: None,
+            metadata: BTreeMap::default(),
+            patch: cargo_lock::Patch::default(),
+        };
+        let commit_b = "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1";
+        let commit_a = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0";
+        let project = lock(vec![
+            package("app", "0.1.0", None),
+            package(
+                "kit",
+                "0.4.2",
+                Some(&format!(
+                    "git+https://github.com/water-rs/kit?branch=main#{commit_b}"
+                )),
+            ),
+        ]);
+        let previous = lock(vec![package(
+            "kit",
+            "0.4.2",
+            Some(&format!(
+                "git+https://github.com/water-rs/kit?branch=main#{commit_a}"
+            )),
+        )]);
+
+        let seed = seed_packages(None, &project, Some(&previous));
+        let kits: Vec<_> = seed
+            .iter()
+            .filter(|package| package.name.as_str() == "kit")
+            .collect();
+        assert_eq!(kits.len(), 1, "one slot keeps one entry: {kits:?}");
+        let source = kits[0]
+            .source
+            .as_ref()
+            .expect("a git dependency carries a source")
+            .to_string();
+        assert!(
+            source.ends_with(&format!("#{commit_b}")),
+            "the project's commit seeds, not the stale one: {source}"
+        );
     }
 
     /// The divergence hydroterm hit: the previous generated lock, the
