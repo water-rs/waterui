@@ -59,6 +59,9 @@ pub struct NavContentControllerIvars {
     /// is nil then — so the intent is recorded here and the owning
     /// `NavigationController` applies it when the page resolves.
     toolbar_hidden: Cell<bool>,
+    /// Whether the stack's navigation bar should hide while this page is
+    /// topmost — recorded like `toolbar_hidden` and applied the same way.
+    bar_hidden: Cell<bool>,
 }
 
 impl fmt::Debug for NavContentControllerIvars {
@@ -131,6 +134,7 @@ impl NavContentController {
             search_updater: RefCell::new(None),
             search_controller: RefCell::new(None),
             toolbar_hidden: Cell::new(true),
+            bar_hidden: Cell::new(false),
         });
         // SAFETY: `initWithNibName:bundle:` is `UIViewController`'s
         // designated initializer; nil names and bundles load nothing.
@@ -223,14 +227,10 @@ impl NavContentController {
             self.setToolbarItems(Some(&NSArray::from_retained_slice(&page.bottom)));
         }
         self.ivars().toolbar_hidden.set(page.bottom.is_empty());
-        // Only the topmost page owns the stack's toolbar: a page further
-        // down records its intent and applies it when it shows again.
-        if let Some(nav) = self.navigationController()
-            && nav
-                .topViewController()
-                .is_some_and(|top| core::ptr::eq(Retained::as_ptr(&top), &raw const **self))
-        {
+        self.ivars().bar_hidden.set(page.hidden);
+        if let Some(nav) = self.topmost_navigation_controller() {
             nav.setToolbarHidden_animated(page.bottom.is_empty(), false);
+            nav.setNavigationBarHidden_animated(page.hidden, false);
         }
         self.ivars().search_updater.replace(None);
         self.ivars().search_controller.replace(None);
@@ -274,8 +274,28 @@ impl NavContentController {
         } else {
             item.setSearchController(None);
         }
-        if let Some(nav) = self.navigationController() {
-            nav.setNavigationBarHidden_animated(page.hidden, false);
+    }
+
+    /// The stack's navigation controller while this page is its top —
+    /// the only state in which a page may write the shared bars. A page
+    /// further down records its intent and applies it when it shows
+    /// again.
+    fn topmost_navigation_controller(&self) -> Option<Retained<UINavigationController>> {
+        let nav = self.navigationController()?;
+        nav.topViewController()
+            .is_some_and(|top| core::ptr::eq(Retained::as_ptr(&top), &raw const **self))
+            .then_some(nav)
+    }
+
+    /// Records `hidden` as this page's navigation-bar intent and, when
+    /// the page is topmost, writes the stack's bar — the reactive
+    /// counterpart of [`set_page`](Self::set_page)'s `NavPage::hidden`
+    /// flag. A buried page's intent waits for the transition that shows
+    /// it.
+    pub fn set_bar_hidden(&self, hidden: bool, animated: bool) {
+        self.ivars().bar_hidden.set(hidden);
+        if let Some(nav) = self.topmost_navigation_controller() {
+            nav.setNavigationBarHidden_animated(hidden, animated);
         }
     }
 
@@ -704,13 +724,22 @@ impl NavBar {
     }
 }
 
-/// Applies `controller`'s recorded toolbar intent to `nav` — the page
-/// records it in `set_page`, possibly before the stack owned it.
-fn apply_toolbar_intent(nav: &NavigationController, controller: &UIViewController, animated: bool) {
-    let hides = controller
-        .downcast_ref::<NavContentController>()
-        .is_none_or(|page| page.ivars().toolbar_hidden.get());
-    nav.setToolbarHidden_animated(hides, animated);
+/// Applies `controller`'s recorded bar intents to `nav` — the page
+/// records them in `set_page`, possibly before the stack owned it. A
+/// controller the stack does not own gets the defaults: toolbar hidden,
+/// navigation bar shown.
+fn apply_bar_intent(nav: &NavigationController, controller: &UIViewController, animated: bool) {
+    let (toolbar_hides, bar_hides) =
+        controller
+            .downcast_ref::<NavContentController>()
+            .map_or((true, false), |page| {
+                (
+                    page.ivars().toolbar_hidden.get(),
+                    page.ivars().bar_hidden.get(),
+                )
+            });
+    nav.setToolbarHidden_animated(toolbar_hides, animated);
+    nav.setNavigationBarHidden_animated(bar_hides, animated);
 }
 
 /// The navigation stack's model: the pages and the current pop state.
@@ -856,9 +885,9 @@ define_class!(
     // `navigationController:didShowViewController:animated:` carry
     // `UINavigationControllerDelegate`'s signatures.
     unsafe impl UINavigationControllerDelegate for NavigationController {
-        // SAFETY: see the module safety note. The incoming page's toolbar
+        // SAFETY: see the module safety note. The incoming page's bar
         // intent applies as the page starts showing — before the
-        // transition — so the bar's hide or show rides the same
+        // transition — so each bar's hide or show rides the same
         // animation.
         #[unsafe(method(navigationController:willShowViewController:animated:))]
         fn navigation_controller_will_show_view_controller_animated(
@@ -867,7 +896,7 @@ define_class!(
             view_controller: &UIViewController,
             animated: bool,
         ) {
-            apply_toolbar_intent(self, view_controller, animated);
+            apply_bar_intent(self, view_controller, animated);
             // A cancelled interactive transition leaves the incoming
             // page's intent applied while the outgoing page stays
             // topmost — when the coordinator reports the cancellation,
@@ -888,7 +917,7 @@ define_class!(
                         if context.isCancelled()
                             && let Some(staying) = context.viewControllerForKey(staying_key)
                         {
-                            apply_toolbar_intent(&nav, &staying, false);
+                            apply_bar_intent(&nav, &staying, false);
                         }
                     },
                 );
@@ -943,7 +972,7 @@ impl NavigationController {
             gesture.setDelegate(Some(ProtocolObject::from_ref(&*this)));
         }
         // The root page's intent was recorded before the stack owned it.
-        apply_toolbar_intent(&this, root, false);
+        apply_bar_intent(&this, root, false);
         this
     }
 
@@ -957,13 +986,6 @@ impl NavigationController {
     /// settles — model and native pops alike.
     pub fn set_show_handler(&self, handler: impl Fn(usize) + 'static) {
         self.ivars().show.replace(Some(Rc::new(handler)));
-    }
-
-    /// Whether the navigation bar is hidden, optionally animating the
-    /// change. The top page's `hidden` flag applies through
-    /// [`NavContentController::set_page`]; this is the direct override.
-    pub fn set_bar_hidden(&self, hidden: bool, animated: bool) {
-        self.setNavigationBarHidden_animated(hidden, animated);
     }
 
     /// `navigationBar.prefersLargeTitles`: the gate each page's
