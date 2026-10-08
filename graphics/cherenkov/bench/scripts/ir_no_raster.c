@@ -142,9 +142,15 @@ VKAPI_ATTR void VKAPI_CALL layer_destroy_instance(VkInstance inst,
                                                   const VkAllocationCallbacks *alloc) {
     PFN_vkGetInstanceProcAddr gipa = inst_gipa(inst);
     if (!gipa) {
-        fprintf(stderr, "%s: vkDestroyInstance on unregistered instance %p\n",
+        // An instance created outside the layer's vkCreateInstance hook
+        // (a second loader path, or a create the layer was not chained
+        // into) is torn down the same way it came up: skipping the
+        // destroy call leaks the handle, which is harmless — the process
+        // is already mid-teardown under Callgrind, and aborting here
+        // kills the run before it ever reaches the pause frame.
+        fprintf(stderr, "%s: vkDestroyInstance on unregistered instance %p; skipping\n",
                 LAYER_NAME, (void *)inst);
-        abort();
+        return;
     }
     PFN_vkDestroyInstance next =
         (PFN_vkDestroyInstance)gipa(inst, "vkDestroyInstance");
@@ -161,9 +167,9 @@ VKAPI_ATTR void VKAPI_CALL layer_destroy_device(VkDevice dev,
                                                 const VkAllocationCallbacks *alloc) {
     PFN_vkGetDeviceProcAddr gdpa = dev_gdpa(dev);
     if (!gdpa) {
-        fprintf(stderr, "%s: vkDestroyDevice on unregistered device %p\n",
+        fprintf(stderr, "%s: vkDestroyDevice on unregistered device %p; skipping\n",
                 LAYER_NAME, (void *)dev);
-        abort();
+        return;
     }
     PFN_vkDestroyDevice next = (PFN_vkDestroyDevice)gdpa(dev, "vkDestroyDevice");
     for (int i = 0; i < MAX_LINKS; i++)
