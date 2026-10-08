@@ -432,11 +432,14 @@ enum NavigationPhase {
     Open { url: Url, committed: bool },
     /// The last navigation ended before it finished: a blocked redirect, a
     /// main-frame error, an SSL refusal, or `stop`. Its last event was
-    /// already reported, so what the engine still says about it — the
-    /// cancellation's error, the error page it commits at `url`, the
-    /// stopped load's progress — is dropped until the next navigation
-    /// opens.
-    Ended { url: Url },
+    /// already reported, so what the engine still says about *it* — the
+    /// cancellation's error, its progress — is dropped until the next
+    /// navigation opens. `error_page` is set only when it ended in an
+    /// error: the engine then still commits its error page at `url`, one
+    /// commit the tracker drops as still that navigation's. After a
+    /// `stop` or a blocked redirect nothing more of it commits, so even a
+    /// same-URL `onPageStarted` is a new navigation.
+    Ended { url: Url, error_page: bool },
 }
 
 /// What a main-frame `shouldOverrideUrlLoading` resolves to: the events it
@@ -564,7 +567,10 @@ impl NavigationTracker {
             to: url.clone(),
         }];
         if !self.redirects_enabled {
-            self.phase = NavigationPhase::Ended { url };
+            self.phase = NavigationPhase::Ended {
+                url,
+                error_page: false,
+            };
             return RequestDecision {
                 events,
                 block: true,
@@ -585,8 +591,8 @@ impl NavigationTracker {
     /// `onPageStarted`: a main-frame document committed at `url`, with the
     /// page's progress at that moment. A commit nothing announced — a form
     /// `POST`, a page's own `location.reload()` — opens its navigation here;
-    /// the error page an ended navigation commits at its own URL is part of
-    /// that navigation and reports nothing.
+    /// the error page a navigation that ended in an error commits at its own
+    /// URL is part of that navigation and reports nothing.
     pub fn page_started(&mut self, url: Url, progress: u8) -> Vec<WebViewEvent> {
         let mut events = match &mut self.phase {
             NavigationPhase::Open {
@@ -597,7 +603,16 @@ impl NavigationTracker {
                 open.clone_from(&url);
                 Vec::new()
             }
-            NavigationPhase::Ended { url: ended } if *ended == url => return Vec::new(),
+            NavigationPhase::Ended {
+                url: ended,
+                error_page,
+            } if *ended == url && *error_page => {
+                // The error page is the ended navigation's own last
+                // commit — dropped once, so a later commit at the same URL
+                // still opens a new navigation.
+                *error_page = false;
+                return Vec::new();
+            }
             NavigationPhase::Idle
             | NavigationPhase::Open { .. }
             | NavigationPhase::Ended { .. } => {
@@ -660,14 +675,17 @@ impl NavigationTracker {
     }
 
     /// A main-frame `onReceivedError` for the request at `url` — the native
-    /// drops every subframe error. It ends the navigation with it; one for a
-    /// navigation that already ended — the cancellation a blocked redirect
-    /// or `stop` causes — is dropped.
+    /// drops every subframe error. It ends the navigation with it; one for
+    /// the request its navigation already ended on — the cancellation a
+    /// blocked redirect or `stop` causes — is dropped.
     pub fn received_error(&mut self, url: Url, error: WebViewError) -> Vec<WebViewEvent> {
-        if matches!(self.phase, NavigationPhase::Ended { .. }) {
+        if matches!(&self.phase, NavigationPhase::Ended { url: ended, .. } if *ended == url) {
             return Vec::new();
         }
-        self.phase = NavigationPhase::Ended { url };
+        self.phase = NavigationPhase::Ended {
+            url,
+            error_page: true,
+        };
         vec![WebViewEvent::Error(error)]
     }
 
@@ -680,7 +698,10 @@ impl NavigationTracker {
                 if let NavigationPhase::Open { url: open, .. } = &self.phase
                     && *open == url
                 {
-                    self.phase = NavigationPhase::Ended { url: url.clone() };
+                    self.phase = NavigationPhase::Ended {
+                        url: url.clone(),
+                        error_page: true,
+                    };
                 }
                 WebViewError::Ssl { url, message }
             }
@@ -693,7 +714,10 @@ impl NavigationTracker {
     /// event — the `WKWebView` bridge drops the cancellation the same way.
     pub fn stopped(&mut self) {
         if let NavigationPhase::Open { url, .. } = &self.phase {
-            self.phase = NavigationPhase::Ended { url: url.clone() };
+            self.phase = NavigationPhase::Ended {
+                url: url.clone(),
+                error_page: false,
+            };
         }
     }
 }
@@ -1672,6 +1696,75 @@ mod tests {
         );
     }
 
+    #[test]
+    fn navigation_an_ended_navigation_drops_only_its_own_errors() {
+        // After `stop` the cancellation of that same request is dropped, but
+        // an error for a different request still reports — a form `POST`
+        // never reaches `shouldOverrideUrlLoading`, so its failure arrives
+        // here unannounced.
+        let mut drive = Drive::new();
+        drive.open("https://a.dev/").progress(20);
+        drive.tracker.stopped();
+        drive.error("https://a.dev/", "net::ERR_ABORTED");
+        drive.error("https://a.dev/form", "net::ERR_FAILED");
+        assert_eq!(
+            drive.take(),
+            [
+                will_navigate("https://a.dev/"),
+                loading(0),
+                loading(20),
+                WebViewEvent::Error(WebViewError::Network(Str::from_static("net::ERR_FAILED"))),
+            ]
+        );
+    }
+
+    #[test]
+    fn navigation_a_same_url_commit_after_stop_opens_a_new_navigation() {
+        // `stop` produces no error page: a commit at the stopped URL — the
+        // page's own `location.reload()` — is a new navigation, not the
+        // ended one's remains.
+        let mut drive = Drive::new();
+        drive.open("https://a.dev/").progress(30);
+        drive.tracker.stopped();
+        drive.error("https://a.dev/", "net::ERR_ABORTED");
+        drive.started("https://a.dev/", 0).progress(100);
+        assert_eq!(
+            drive.take(),
+            [
+                will_navigate("https://a.dev/"),
+                loading(0),
+                loading(30),
+                will_navigate("https://a.dev/"),
+                loading(0),
+                loading(100),
+                WebViewEvent::Loaded,
+            ]
+        );
+    }
+
+    #[test]
+    fn navigation_the_error_page_is_dropped_once_then_same_url_commits_report() {
+        // After a main-frame error the engine commits its error page at the
+        // failed URL — still that navigation, so it reports nothing — but a
+        // second commit at the same URL is a new navigation.
+        let mut drive = Drive::new();
+        drive
+            .open("https://a.dev/")
+            .error("https://a.dev/", "net::ERR_FAILED");
+        drive.started("https://a.dev/", 10).progress(100);
+        drive.take();
+        drive.started("https://a.dev/", 0).progress(100);
+        assert_eq!(
+            drive.take(),
+            [
+                will_navigate("https://a.dev/"),
+                loading(0),
+                loading(100),
+                WebViewEvent::Loaded,
+            ]
+        );
+    }
+
     // ---- the WEBVIEW_METHODS ↔ HydrolysisWebView.kt agreement ----
 
     /// The wrapper methods android.webkit.WebView already declares — JNI
@@ -1840,4 +1933,5 @@ mod tests {
             "every member Rust calls on HydrolysisWebView/AssetResponse needs a matching @CalledFromNative member in HydrolysisWebView.kt, and vice versa"
         );
     }
+
 }
