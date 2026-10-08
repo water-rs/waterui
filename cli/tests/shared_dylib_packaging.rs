@@ -41,10 +41,11 @@ fn write(path: &Path, contents: &str) {
     std::fs::write(path, contents).expect("write file");
 }
 
-/// A fresh `CARGO_HOME` under `root`, installed in the test's
-/// environment so every `cargo` the fixture spawns — directly or inside
-/// the CLI, which inherits this environment — is hermetic with respect
-/// to the machine's global Cargo configuration. A
+/// A fresh `CARGO_HOME` and home directory under `root`, installed in
+/// the test's environment so every `cargo` the fixture spawns — directly
+/// or inside the CLI, which inherits this environment — is hermetic with
+/// respect to the machine's global Cargo configuration, and a project's
+/// build cache lands under the scratch root rather than `~/.water`. A
 /// `target.<triple|cfg>.rustflags` table in `$CARGO_HOME/config.toml`
 /// — e.g. a linker selection like `-C link-arg=-fuse-ld=mold` —
 /// outranks the fixture's own `[build] rustflags` (Cargo's rustflags
@@ -59,6 +60,13 @@ fn hermetic_cargo_home(root: &Path) {
     // on the test's only thread before `smol::block_on` spawns the
     // executor threads that could read the environment concurrently.
     unsafe { std::env::set_var("CARGO_HOME", home) };
+    let water_home = root.join("water-home");
+    std::fs::create_dir_all(&water_home).expect("create hermetic home");
+    // SAFETY: same per-process contract as `CARGO_HOME` above.
+    unsafe {
+        std::env::set_var("HOME", &water_home);
+        std::env::set_var("USERPROFILE", &water_home);
+    }
 }
 
 /// Run a fixture command to success or fail the test with its output.

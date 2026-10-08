@@ -33,6 +33,7 @@ pub const CLI_COMMIT: &str = env!("WATERUI_CLI_COMMIT");
 
 const BUILD_CACHE_DIR_NAME: &str = "build_cache";
 const MANAGED_BACKENDS_DIR_NAME: &str = "managed_backends";
+const GRAPH_CACHE_DIR_NAME: &str = "dependency_graph";
 const SHARED_TARGET_DIR_NAME: &str = "target";
 const CONFIG_FILE_NAME: &str = "config.toml";
 const METADATA_FILE_NAME: &str = "metadata.toml";
@@ -613,6 +614,26 @@ pub async fn project_build_cache_dir_on(
     project_build_cache_dir_from_home(project_root, &water_home).await
 }
 
+/// Return the persisted `cargo tree` answers' directory for a project under
+/// `host`'s Water home.
+///
+/// The directory sits beside `managed_backends` inside the project's cache
+/// container — its entries are cached graph answers, not a generated backend,
+/// so they do not live inside the backends' directory. This resolves the path
+/// only; it creates nothing.
+///
+/// # Errors
+/// Returns an error if the host has no home directory or no ancestor of
+/// `project_root` can be canonicalized.
+pub fn project_graph_cache_dir_on(
+    host: &crate::toolchain::Host,
+    project_root: &Path,
+) -> eyre::Result<PathBuf> {
+    let water_home = water_home_dir_in(host)?;
+    let cache_root = water_home.join(BUILD_CACHE_DIR_NAME);
+    Ok(build_cache_container_for_in(project_root, &cache_root)?.join(GRAPH_CACHE_DIR_NAME))
+}
+
 async fn project_build_cache_dir_from_home(
     project_root: &Path,
     water_home: &Path,
@@ -685,10 +706,27 @@ fn build_cache_container_for_in(project_root: &Path, cache_root: &Path) -> eyre:
 /// # Errors
 /// Returns an error if the project root cannot be canonicalized, config loading fails, or cache directories cannot be created.
 pub async fn ensure_project_build_cache(project_root: &Path) -> eyre::Result<PathBuf> {
+    ensure_project_build_cache_on(&crate::toolchain::Host::current(), project_root).await
+}
+
+/// Ensure the managed build-cache directory exists for a project under
+/// `host`'s Water home and return it.
+///
+/// The host-scoped [`ensure_project_build_cache`], so a test host never
+/// writes to the real `~/.water` and its own tools answer the
+/// `gc build-cache` spawn.
+///
+/// # Errors
+/// Returns an error if the project root cannot be canonicalized, config loading
+/// fails, or cache directories cannot be created.
+pub async fn ensure_project_build_cache_on(
+    host: &crate::toolchain::Host,
+    project_root: &Path,
+) -> eyre::Result<PathBuf> {
     let project_root = canonicalize_project_root(project_root)?;
-    let water_home = water_home_dir()?;
+    let water_home = water_home_dir_in(host)?;
     let (config, cache_root) = resolved_build_cache_root_in(&water_home).await?;
-    if let Err(error) = spawn_build_cache_cleanup_process(&project_root).await {
+    if let Err(error) = spawn_build_cache_cleanup_process_on(host, &project_root).await {
         warn!(
             current_project_root = %project_root.display(),
             "Failed to spawn build-cache cleanup process: {error}"
@@ -711,13 +749,17 @@ pub async fn cleanup_stale_build_caches_for_project(
     cleanup_stale_caches_if_idle(&cache_root, &project_root, &config).await
 }
 
-async fn spawn_build_cache_cleanup_process(project_root: &Path) -> eyre::Result<()> {
-    let current_executable = std::env::current_exe()
+async fn spawn_build_cache_cleanup_process_on(
+    host: &crate::toolchain::Host,
+    project_root: &Path,
+) -> eyre::Result<()> {
+    let current_executable = crate::toolchain::Host::current_exe()
         .wrap_err("Failed to resolve current water executable for build-cache cleanup")?;
     let project_root = project_root.to_path_buf();
+    let host = host.clone();
 
     smol::unblock(move || -> eyre::Result<()> {
-        std::process::Command::new(&current_executable)
+        host.std_command(&current_executable)
             .arg("gc")
             .arg("build-cache")
             .arg("--path")

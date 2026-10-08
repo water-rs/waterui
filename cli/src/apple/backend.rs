@@ -343,8 +343,10 @@ mod tests {
     #[test]
     fn scaffold_without_xcode_project_still_detects_staleness() {
         let dir = tempfile::tempdir().expect("temp dir");
+        let host = crate::toolchain::testing::real_toolchain_host(dir.path());
         let root = dir.path().join("water-example");
-        smol::block_on(Project::create(
+        smol::block_on(Project::create_on(
+            &host,
             &root,
             CreateOptions {
                 name: "Water Example".to_string(),
@@ -363,7 +365,8 @@ mod tests {
 
         vendor_offline_resolution(&root, &dir.path().join("vendor"));
 
-        let project = smol::block_on(Project::open(
+        let project = smol::block_on(Project::open_on(
+            &host,
             &root,
             ManagedBackends::for_backend(TargetBackend::Apple),
         ))
@@ -412,8 +415,10 @@ mod tests {
     #[test]
     fn template_context_rejects_an_apple_invalid_bundle_identifier() {
         let dir = tempfile::tempdir().expect("temp dir");
+        let host = crate::toolchain::testing::real_toolchain_host(dir.path());
         let root = dir.path().join("menu-example");
-        let project = smol::block_on(Project::create(
+        let project = smol::block_on(Project::create_on(
+            &host,
             &root,
             CreateOptions {
                 name: "Menu Example".to_string(),
@@ -444,8 +449,10 @@ mod tests {
     #[test]
     fn apple_backend_accepts_and_preserves_a_hyphenated_bundle_identifier() {
         let dir = tempfile::tempdir().expect("temp dir");
+        let host = crate::toolchain::testing::real_toolchain_host(dir.path());
         let root = dir.path().join("liquid-glass");
-        smol::block_on(Project::create(
+        smol::block_on(Project::create_on(
+            &host,
             &root,
             CreateOptions {
                 name: "Liquid Glass".to_string(),
@@ -464,7 +471,8 @@ mod tests {
 
         vendor_offline_resolution(&root, &dir.path().join("vendor"));
 
-        let project = smol::block_on(Project::open(
+        let project = smol::block_on(Project::open_on(
+            &host,
             &root,
             ManagedBackends::for_backend(TargetBackend::Apple),
         ))
@@ -491,8 +499,10 @@ mod tests {
     #[test]
     fn ios_info_plist_opts_out_of_the_promotion_frame_cap() {
         let dir = tempfile::tempdir().expect("temp dir");
+        let host = crate::toolchain::testing::real_toolchain_host(dir.path());
         let root = dir.path().join("water-example");
-        smol::block_on(Project::create(
+        smol::block_on(Project::create_on(
+            &host,
             &root,
             CreateOptions {
                 name: "Water Example".to_string(),
@@ -511,7 +521,8 @@ mod tests {
 
         vendor_offline_resolution(&root, &dir.path().join("vendor"));
 
-        let project = smol::block_on(Project::open(
+        let project = smol::block_on(Project::open_on(
+            &host,
             &root,
             ManagedBackends::for_backend(TargetBackend::Apple),
         ))

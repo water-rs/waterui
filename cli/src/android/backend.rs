@@ -197,8 +197,10 @@ mod tests {
     #[test]
     fn init_rejects_an_android_invalid_bundle_identifier() {
         let dir = tempfile::tempdir().expect("temp dir");
+        let host = crate::toolchain::testing::real_toolchain_host(dir.path());
         let root = dir.path().join("liquid-glass");
-        let project = smol::block_on(Project::create(
+        let project = smol::block_on(Project::create_on(
+            &host,
             &root,
             CreateOptions {
                 name: "Liquid Glass".to_string(),

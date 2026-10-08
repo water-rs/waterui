@@ -5555,7 +5555,8 @@ mod tests {
                 );
             let temporary = tempdir().expect("tempdir");
             let root = temporary.path().join("release-app");
-            let project = crate::project::Project::create(
+            let project = crate::project::Project::create_on(
+                &crate::toolchain::testing::real_toolchain_host(temporary.path()),
                 &root,
                 crate::project::CreateOptions {
                     name: "Release App".to_string(),

@@ -827,7 +827,8 @@ mod tests {
         // the framework mirror's `git` pins through the project's host, so
         // point cargo at a per-test `CARGO_HOME`: a fetch into the real
         // one is exactly the machine leak this seam exists to prevent.
-        let host = Host::current().with_env("CARGO_HOME", temporary.path().join("cargo-home"));
+        let host = crate::toolchain::testing::real_toolchain_host(temporary.path())
+            .with_env("CARGO_HOME", temporary.path().join("cargo-home"));
         let project = Project::open_on(&host, &root, ManagedBackends::NONE)
             .await
             .expect("fixture project opens");

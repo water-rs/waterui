@@ -598,8 +598,10 @@ mod tests {
     #[test]
     fn prepared_signing_resolves_and_validates_for_a_real_project() {
         let dir = tempdir().expect("temp dir");
+        let host = crate::toolchain::testing::real_toolchain_host(dir.path());
         let root = dir.path().join("water-example");
-        let project = smol::block_on(crate::project::Project::create(
+        let project = smol::block_on(crate::project::Project::create_on(
+            &host,
             &root,
             crate::project::CreateOptions {
                 name: "Water Example".to_string(),
@@ -640,7 +642,8 @@ mod tests {
         // it is an error at the API boundary, not a transplant.
         let other_dir = tempdir().expect("temp dir");
         let other_root = other_dir.path().join("other-app");
-        let other = smol::block_on(crate::project::Project::create(
+        let other = smol::block_on(crate::project::Project::create_on(
+            &crate::toolchain::testing::real_toolchain_host(other_dir.path()),
             &other_root,
             crate::project::CreateOptions {
                 name: "Other App".to_string(),
