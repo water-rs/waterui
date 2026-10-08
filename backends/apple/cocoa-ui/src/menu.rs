@@ -119,4 +119,24 @@ impl KeyModifiers {
         }
         flags
     }
+
+    /// The `UIKeyModifierFlags` equivalent.
+    #[cfg(target_os = "ios")]
+    #[must_use]
+    pub(crate) fn native(self) -> objc2_ui_kit::UIKeyModifierFlags {
+        let mut flags = objc2_ui_kit::UIKeyModifierFlags::empty();
+        if self.contains(Self::COMMAND) {
+            flags |= objc2_ui_kit::UIKeyModifierFlags::Command;
+        }
+        if self.contains(Self::OPTION) {
+            flags |= objc2_ui_kit::UIKeyModifierFlags::Alternate;
+        }
+        if self.contains(Self::SHIFT) {
+            flags |= objc2_ui_kit::UIKeyModifierFlags::Shift;
+        }
+        if self.contains(Self::CONTROL) {
+            flags |= objc2_ui_kit::UIKeyModifierFlags::Control;
+        }
+        flags
+    }
 }

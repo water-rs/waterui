@@ -25,11 +25,13 @@ use objc2::{
 };
 use objc2_foundation::{NSDictionary, NSObjectProtocol, NSString};
 use objc2_ui_kit::{
-    UIApplication, UIApplicationDelegate, UIApplicationLaunchOptionsKey, UIMainMenuSystem, UIMenu,
-    UIMenuBuilder, UIMenuRoot, UIResponder, UIScene, UISceneConnectionOptions, UISceneDelegate,
-    UISceneSession, UIWindow, UIWindowScene, UIWindowSceneDelegate,
+    UIApplication, UIApplicationDelegate, UIApplicationLaunchOptionsKey, UICommand,
+    UIMainMenuSystem, UIMenu, UIMenuBuilder, UIMenuRoot, UIResponder, UIScene,
+    UISceneConnectionOptions, UISceneDelegate, UISceneSession, UIWindow, UIWindowScene,
+    UIWindowSceneDelegate,
 };
 
+use super::menu::menu_command_target;
 use super::window::Window;
 use crate::callback::guarded;
 
@@ -244,6 +246,20 @@ define_class!(
                 if let Some(handler) = &self.ivars().build_menus {
                     handler(&MenuBuilder { builder });
                 }
+            });
+        }
+
+        // `UIKeyCommand`s cannot carry a block: `UIKit` sends the command's
+        // action untargeted up the responder chain, which ends here. The
+        // sender retains the `MenuCommandTarget` owning the command's Rust
+        // callback as an associated object.
+        // SAFETY: see the module safety note.
+        #[unsafe(method(cocoaUiMenuCommandFired:))]
+        fn menu_command_fired(&self, sender: &UICommand) {
+            guarded("cocoaUiMenuCommandFired:", || {
+                menu_command_target(sender.as_super())
+                    .expect("a `cocoaUiMenuCommandFired:` sender carries a `MenuCommandTarget`")
+                    .fire();
             });
         }
     }

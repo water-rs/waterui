@@ -271,9 +271,10 @@ pub(super) fn build_menu(
     platform::Menu::new(mtm, title, icon, false, &children)
 }
 
-/// `buildUIKitMenuElements`: one element per item — `UIAction`s for
-/// commands carrying title, subtitle, icon, disabled/destructive
-/// attributes, on-state and handler; nested menus recurse.
+/// `buildUIKitMenuElements`: one element per item — `UIAction`s, or
+/// `UIKeyCommand`s when the command declares a shortcut, carrying title,
+/// subtitle, icon, disabled/destructive attributes, on-state and handler;
+/// nested menus recurse.
 #[cfg(all(target_os = "ios", feature = "menu"))]
 fn menu_elements(
     items: &[ResolvedMenuItem],
@@ -293,14 +294,9 @@ fn menu_elements(
                 let action = command.action.clone();
                 let env = env.clone();
                 Some(platform::MenuElement::Action(
-                    platform::MenuAction::new(mtm, &kit.label, move || {
+                    platform::MenuAction::command(mtm, &kit, move || {
                         action.call(&env);
-                    })
-                    .with_subtitle(kit.subtitle.as_deref())
-                    .with_icon(kit.symbol.as_deref())
-                    .with_disabled(!kit.enabled)
-                    .with_destructive(kit.destructive)
-                    .with_selected(kit.selected),
+                    }),
                 ))
             }
             ResolvedMenuItem::Menu(submenu) => {
