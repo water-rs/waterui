@@ -456,7 +456,7 @@ impl FrameColor {
         reference_white: 203.0,
         hlg_peak: 0.0,
     };
-    /// BT.2020 full-range video with PQ transfer on BT.2020 primaries.
+    /// BT.2020 studio-range video with PQ transfer on BT.2020 primaries.
     pub const BT2020_PQ: Self = Self {
         matrix: YuvMatrix::Bt2020,
         range: YuvRange::Video,
@@ -1412,5 +1412,18 @@ pub mod web {
             return Err(InvalidWebTexture::Unusable);
         }
         Ok(wrapped)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FrameColor, YuvRange};
+
+    /// BT.2020 PQ video ships studio-range codes: `FrameColor::BT2020_PQ`
+    /// names that convention — the former "full-range" doc was the typo,
+    /// not a value to align (#2109).
+    #[test]
+    fn bt2020_pq_is_studio_range() {
+        assert_eq!(FrameColor::BT2020_PQ.range, YuvRange::Video);
     }
 }
