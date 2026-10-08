@@ -719,40 +719,22 @@ pub(crate) fn apple_deployment_target_env(
 /// # Errors
 /// Returns an error when the backend source cannot be located.
 pub(crate) async fn apple_backend_source_root(project: &Project) -> eyre::Result<PathBuf> {
-    let manifest_path_arg: OsString = project.ffi_crate_path().join("Cargo.toml").into();
-    let output = project
+    let mut command = cargo_metadata::MetadataCommand::new();
+    command.manifest_path(project.ffi_crate_path().join("Cargo.toml"));
+    let metadata = project
         .host()
-        .run(
-            "cargo",
-            [
-                OsString::from("metadata"),
-                OsString::from("--format-version"),
-                OsString::from("1"),
-                OsString::from("--manifest-path"),
-                manifest_path_arg,
-            ],
-        )
+        .cargo_metadata(&command)
         .await
         .wrap_err("cargo metadata failed to resolve the Apple backend source")?;
-    let metadata: serde_json::Value =
-        serde_json::from_str(&output).wrap_err("cargo metadata returned unparseable JSON")?;
-    let manifest_path = metadata
-        .get("packages")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|packages| {
-            packages.iter().find_map(|package| {
-                (package.get("name").and_then(serde_json::Value::as_str) == Some("waterui-apple"))
-                    .then(|| {
-                    package
-                        .get("manifest_path")
-                        .and_then(serde_json::Value::as_str)
-                })?
-            })
-        })
+    let package = metadata
+        .packages
+        .iter()
+        .find(|package| package.name.as_str() == "waterui-apple")
         .ok_or_else(|| eyre::eyre!("the ffi crate does not depend on a `waterui-apple` package"))?;
-    PathBuf::from(manifest_path)
+    package
+        .manifest_path
         .parent()
-        .map(Path::to_path_buf)
+        .map(|directory| directory.as_std_path().to_path_buf())
         .ok_or_else(|| eyre::eyre!("`waterui-apple` manifest path has no parent"))
 }
 
