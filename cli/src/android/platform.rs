@@ -502,19 +502,21 @@ impl AndroidPlatform {
         project: &Project,
         options: BuildOptions,
     ) -> eyre::Result<BuiltTarget> {
-        // Only an app that will `dlopen` WaterUI modules — the preview support
-        // app — ships the shared Rust runtime. `-Cprefer-dynamic` on Android
-        // cannot resolve `std` to rustup's prebuilt `libstd.so` (its LOAD
-        // segments are 4 KB-aligned and 16 KB-page devices reject the whole
-        // package), so the shared-runtime path below builds `std` from source
-        // under the page-size link flag instead. Every other build links the
-        // runtime in, which is what a packaged build already does.
-        let options = if options.loads_dynamic_modules() {
-            options
-        } else {
-            options.with_static_runtime()
-        };
+        Self::prepare_for_build(project).await?;
+        self.build_prepared(project, options).await
+    }
 
+    /// The shared prologue every Android Rust build needs: render the FFI
+    /// companion this build compiles, audit the permissions its graph
+    /// declares, and stage the font assets its crates' `build.rs` scripts
+    /// read. Nothing in it depends on the ABI, so a build over several
+    /// ABIs runs it once and then [`build_prepared`](Self::build_prepared)
+    /// per ABI.
+    ///
+    /// # Errors
+    /// Returns an error if the companion scaffold, the permission audit,
+    /// or the font resolution fails.
+    pub async fn prepare_for_build(project: &Project) -> eyre::Result<()> {
         // The ffi companion is the crate this builds — render it for the
         // graph its `cfg` tables serve before anything reads its manifest.
         project.scaffold_ffi_companion().await?;
@@ -533,7 +535,33 @@ impl AndroidPlatform {
         // Resolve fonts BEFORE cargo build - this ensures icons.json is present
         // for crates like fontawesome7 that need it during build.rs
         let font_declarations = crate::assets::scan_fonts(project, &ffi_manifest).await?;
-        let _resolved_fonts = crate::assets::resolve_fonts(font_declarations).await?;
+        crate::assets::resolve_fonts(font_declarations).await?;
+        Ok(())
+    }
+
+    /// `build` for a caller that already ran
+    /// [`prepare_for_build`](Self::prepare_for_build) — a multi-ABI loop
+    /// runs the prologue once, then this per ABI.
+    ///
+    /// # Errors
+    /// Returns an error if the build fails.
+    pub async fn build_prepared(
+        &self,
+        project: &Project,
+        options: BuildOptions,
+    ) -> eyre::Result<BuiltTarget> {
+        // Only an app that will `dlopen` WaterUI modules — the preview support
+        // app — ships the shared Rust runtime. `-Cprefer-dynamic` on Android
+        // cannot resolve `std` to rustup's prebuilt `libstd.so` (its LOAD
+        // segments are 4 KB-aligned and 16 KB-page devices reject the whole
+        // package), so the shared-runtime path below builds `std` from source
+        // under the page-size link flag instead. Every other build links the
+        // runtime in, which is what a packaged build already does.
+        let options = if options.loads_dynamic_modules() {
+            options
+        } else {
+            options.with_static_runtime()
+        };
 
         let abi = self.abi();
         let triple = self.triple();
@@ -849,7 +877,10 @@ pub(crate) async fn android_ffi_dependency_features(
             "the Android FFI feature set",
             crate::project::GraphSection {
                 manifest: "the generated FFI companion manifest",
-                table: "cfg(target_os = \"android\")",
+                table: "the Android `--features` list and the Gradle classpath",
+                remedy: "the dependency graph answers differently per target, so those \
+                         consumers need a per-target answer — resolve the set for \
+                         each ABI's own serving set instead of one shared list",
             },
             |features: &Vec<String>| features.join(", "),
             |project, target| {

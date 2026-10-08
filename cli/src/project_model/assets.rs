@@ -1465,8 +1465,9 @@ async fn seed_font_cache_scoped(
 /// are the generated crates': the theme crate's
 /// `[package.metadata.waterui.assets.font]` entries are reachable only
 /// through the backend manifest that depends on it. Apple and Android builds
-/// scan the FFI companion, which `Project::open` scaffolds whenever either
-/// backend is managed; if it is still absent it is scaffolded here. Each of
+/// scan the FFI companion, which the build itself scaffolds — the Apple
+/// companion render and the Android `prepare_for_build` prologue — so if it
+/// is still absent it is scaffolded here. Each of
 /// the GTK4, Hydrolysis and `WinUI` crates is re-scaffolded with the
 /// current templates when missing or stale, exactly as the build and preview
 /// paths regenerate it. Scaffolding writes template files — nothing
@@ -3186,7 +3187,7 @@ mod permission_audit_tests {
         std::fs::create_dir_all(directory.path().join("src")).expect("src dir");
         std::fs::write(directory.path().join("src/lib.rs"), "").expect("src lib");
         let project = smol::block_on(crate::project::Project::open_on(
-            &crate::toolchain::Host::current(),
+            &crate::toolchain::testing::real_toolchain_host(directory.path()),
             directory.path(),
             crate::project::ManagedBackends::NONE,
         ))
