@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use eyre::{self, WrapErr as _, bail};
+use futures_util::FutureExt as _;
 use smol::{fs, unblock};
 use target_lexicon::{
     Aarch64Architecture, Architecture, BinaryFormat, Environment, OperatingSystem, Triple, Vendor,
@@ -441,6 +442,16 @@ pub const ALL_ABIS: &[AndroidAbi] = &[
     AndroidAbi::X86,
 ];
 
+/// The Rust triples the four ABIs produce — the target set a generated
+/// manifest's `cfg(target_os = "android")` table serves, resolved one
+/// `cargo tree --target` evaluation per ABI.
+pub(crate) fn android_target_triples() -> Vec<Triple> {
+    ALL_ABIS
+        .iter()
+        .map(|abi| AndroidPlatform::new(*abi).triple())
+        .collect()
+}
+
 impl AndroidPlatform {
     /// Returns all supported Android platforms (all architectures).
     #[must_use]
@@ -499,11 +510,24 @@ impl AndroidPlatform {
         } else {
             options.with_static_runtime()
         };
+
+        // The ffi companion is the crate this builds — render it for the
+        // graph its `cfg` tables serve before anything reads its manifest.
+        project.scaffold_ffi_companion().await?;
+
+        // Android is where a missing declaration actually breaks things, so
+        // surface anything a dependency needs that the app has not enabled.
+        // The audit resolves the ffi companion's graph — the crate the
+        // Android build compiles — so it runs on the render this build made.
+        let ffi_manifest = project.ffi_crate_path().join("Cargo.toml");
+        let required = crate::assets::scan_required_permissions(&ffi_manifest).await?;
+        crate::assets::warn_missing_permissions(project, &required, |key| {
+            key.android_permission_name().is_some()
+        });
+
         // Resolve fonts BEFORE cargo build - this ensures icons.json is present
         // for crates like fontawesome7 that need it during build.rs
-        let font_declarations =
-            crate::assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml"))
-                .await?;
+        let font_declarations = crate::assets::scan_fonts(project, &ffi_manifest).await?;
         let _resolved_fonts = crate::assets::resolve_fonts(font_declarations).await?;
 
         let abi = self.abi();
@@ -578,6 +602,10 @@ impl AndroidPlatform {
         // an error, never a signing decision.
         let release_signing = prepared.release_signing_for(project.root(), &options)?;
 
+        // The ffi companion is the crate the staged declarations are read
+        // from — render it before the manifest is scanned.
+        project.scaffold_ffi_companion().await?;
+
         // The identifier becomes the app's Java package name in the Gradle
         // build below — reject an Android-invalid one before the SDK runs.
         let _ = project
@@ -607,7 +635,14 @@ impl AndroidPlatform {
             &project.ffi_crate_path().join("Cargo.toml"),
             &backend_path.join("app"),
             crate::assets::AndroidDependencyScope::Implementation,
-            &android_ffi_dependency_features(project).await?,
+            &android_ffi_dependency_features(
+                project,
+                &abis
+                    .iter()
+                    .map(|abi| Self::new(*abi).triple())
+                    .collect::<Vec<_>>(),
+            )
+            .await?,
         )
         .await?;
 
@@ -797,20 +832,43 @@ async fn resolve_android_sdk_paths(host: &Host) -> eyre::Result<(PathBuf, PathBu
 /// # Errors
 ///
 /// Returns an error when the project's enabled capabilities cannot be resolved.
+/// `targets` is the serving set of the feature list — the ABI triples the
+/// Gradle package the caller renders embeds. The answers are read from each
+/// triple's own graph and must agree, because the Gradle classpath and the
+/// ABI `cargo build`s they forward to cannot express a per-ABI difference.
 pub(crate) async fn android_ffi_dependency_features(
     project: &Project,
+    targets: &[Triple],
 ) -> eyre::Result<Vec<String>> {
     let build_manifest = project.ffi_crate_path().join("Cargo.toml");
-    let mut features = vec!["android-jni".to_string()];
-    features.extend(
-        crate::project_model::assets::capability_ffi_features(project, &build_manifest).await?,
-    );
-    // Android has no player or map WaterUI bridges, so it draws both itself.
-    features.extend(
-        crate::project_model::assets::self_drawn_realization_features(project, &build_manifest)
-            .await?,
-    );
-    Ok(features)
+    project
+        .unanimous_graph_answer(targets, "the Android FFI feature set", |project, target| {
+            let project = project.clone();
+            let build_manifest = build_manifest.clone();
+            async move {
+                let mut features = vec!["android-jni".to_string()];
+                features.extend(
+                    crate::project_model::assets::capability_ffi_features(
+                        &project,
+                        &build_manifest,
+                        &target,
+                    )
+                    .await?,
+                );
+                // Android has no player or map WaterUI bridges, so it draws both itself.
+                features.extend(
+                    crate::project_model::assets::self_drawn_realization_features(
+                        &project,
+                        &build_manifest,
+                        &target,
+                    )
+                    .await?,
+                );
+                Ok(features)
+            }
+            .boxed()
+        })
+        .await
 }
 
 async fn configure_android_rust_build(
@@ -824,7 +882,9 @@ async fn configure_android_rust_build(
     // type instead of also archiving the whole dependency graph into a staticlib.
     let mut build = RustBuild::new(project.ffi_crate_path(), triple.clone())
         .with_project(project)
-        .with_features(android_ffi_dependency_features(project).await?)
+        .with_features(
+            android_ffi_dependency_features(project, std::slice::from_ref(triple)).await?,
+        )
         .with_crate_type_override("cdylib")
         .with_rustc_flag(ANDROID_MAX_PAGE_SIZE_LINK_ARG);
     if options.linkage() == RustLinkage::SharedRuntime {

@@ -356,7 +356,7 @@ pub async fn scaffold_android_project(
     host_project_dir: &Path,
 ) -> eyre::Result<()> {
     let backend_path = project.backend_path::<HydrolysisBackend>();
-    project.scaffold_ffi_companion(false).await?;
+    project.scaffold_ffi_companion().await?;
     let ctx = android_template_context(project, painter, host_project_dir).await?;
     templates::hydrolysis_android::scaffold(&android_dir(&backend_path), &ctx).await?;
     Ok(())
@@ -567,7 +567,14 @@ pub async fn package_with_abis(
         &project.ffi_crate_path().join("Cargo.toml"),
         &android_dir.join("app"),
         crate::assets::AndroidDependencyScope::Implementation,
-        &android_ffi_dependency_features(project).await?,
+        &android_ffi_dependency_features(
+            project,
+            &abis
+                .iter()
+                .map(|abi| crate::android::platform::AndroidPlatform::new(*abi).triple())
+                .collect::<Vec<_>>(),
+        )
+        .await?,
     )
     .await?;
 
@@ -686,13 +693,80 @@ mod tests {
 
     use super::*;
     use crate::{
-        framework::test_fixtures::stable_checkout_framework,
+        framework::ResolvedFramework,
         project::{ManagedBackends, Manifest},
         toolchain::testing::{TestMachine, tool_file_name},
     };
 
+    /// The stable resolution `fixture_project` records, pinned to a fixture
+    /// mirror of the framework repository under `dir`: `write_local_checkout`'s
+    /// manifest and lock plus the member crates a generated manifest resolves
+    /// (`waterui` at the root, `waterui-ffi` at `ffi`, `waterui-apple` at
+    /// `backends/apple`, `hydrolysis` at `backends/hydrolysis` — every
+    /// directory `[workspace] members` names). The mirror's own commit is the
+    /// release revision, so `git`-pinned member dependencies like
+    /// `waterui-apple` — a precise source `[patch]` cannot redirect — fetch
+    /// from the mirror the way a real build fetches the channel's revision.
+    fn stable_checkout_framework_mirror(dir: &Path) -> ResolvedFramework {
+        use crate::framework::test_fixtures::{write_local_checkout, write_vendor_stub};
+
+        let waterui_root = dir.join("waterui");
+        write_local_checkout(&waterui_root);
+        std::fs::create_dir_all(waterui_root.join("src")).expect("waterui src");
+        std::fs::write(waterui_root.join("src/lib.rs"), "").expect("waterui lib");
+        write_vendor_stub(
+            &waterui_root.join("ffi"),
+            "waterui-ffi",
+            &[
+                "android-jni",
+                "c-api",
+                "chromium",
+                "dev",
+                "gpu",
+                "inspector",
+                "map",
+                "media",
+                "video",
+                "webview",
+                "webview-cef",
+            ],
+        );
+        write_vendor_stub(
+            &waterui_root.join("backends/apple"),
+            "waterui-apple",
+            &["map", "media", "webview"],
+        );
+        write_vendor_stub(&waterui_root.join("backends/hydrolysis"), "hydrolysis", &[]);
+        let git = |args: &[&str]| -> String {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&waterui_root)
+                .args(args)
+                .output()
+                .expect("git must run");
+            assert!(output.status.success(), "git {args:?} failed");
+            String::from_utf8(output.stdout).expect("git output is utf-8")
+        };
+        git(&["add", "-A"]);
+        git(&[
+            "-c",
+            "user.name=waterui-test",
+            "-c",
+            "user.email=waterui-test@waterui.dev",
+            "commit",
+            "-qm",
+            "stage member crates",
+        ]);
+        let revision = git(&["rev-parse", "HEAD"]).trim().to_owned();
+        crate::framework::test_fixtures::stable_checkout_framework_at(
+            &format!("file://{}", waterui_root.display()),
+            &revision,
+        )
+    }
+
     /// A minimal project whose `Water.toml` records the stable framework
-    /// resolution so `resolved_framework` answers offline.
+    /// resolution so `resolved_framework` answers offline — the release
+    /// provenance pointing at a fixture mirror `fixture_project` stages.
     async fn fixture_project(extra_manifest: &str) -> (tempfile::TempDir, Project) {
         let temporary = tempfile::tempdir().expect("tempdir");
         let root = temporary.path().join("fixture");
@@ -701,7 +775,7 @@ mod tests {
             "[package]\nname = \"Fixture\"\nbundle_identifier = \"dev.waterui.fixture\"\n{extra_manifest}"
         ))
         .expect("Water.toml parses");
-        manifest.framework = Some(stable_checkout_framework());
+        manifest.framework = Some(stable_checkout_framework_mirror(temporary.path()));
         std::fs::write(
             root.join("Water.toml"),
             toml::to_string(&manifest).expect("manifest serializes"),
@@ -835,17 +909,15 @@ mod tests {
                 .await
                 .expect("host materializes");
             // The checkout clones the framework repository itself at the
-            // selected revision — the host lives inside it.
-            let revision = "a".repeat(40);
+            // selected revision — the host lives inside it — and the stamp
+            // records the revision the checkout directory names.
+            let revision =
+                std::fs::read_to_string(checkout.join(HOST_STAMP_FILE)).expect("stamp file");
             assert!(checkout.ends_with(&revision));
             assert!(
                 checkout
                     .join("backends/hydrolysis/android/gpu/build.gradle.kts")
                     .is_file()
-            );
-            assert_eq!(
-                std::fs::read_to_string(checkout.join(HOST_STAMP_FILE)).expect("stamp file"),
-                revision
             );
 
             // A stamped checkout short-circuits before any fetch: remove the

@@ -18,6 +18,7 @@ use eyre::{Context, OptionExt};
 use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use smol::fs;
+use target_lexicon::Triple;
 use tracing::{debug, info, warn};
 use walkdir::WalkDir;
 
@@ -1492,19 +1493,12 @@ async fn ensure_font_scan_manifests(
     });
     if ffi_scanned {
         let manifest = project.ffi_crate_path().join("Cargo.toml");
-        // Same selection rule `Project::open` applies: the companion on
-        // disk is rendered for this invocation's scope before it is read —
-        // a companion a different selection left behind is not the
-        // manifest this scan resolves. `scaffold_ffi_companion` itself
-        // drops the Apple pieces on hosts an Apple build cannot run.
-        let apple_selected =
-            scope.is_none_or(|backend| matches!(backend, crate::platform::TargetBackend::Apple));
-        project
-            .scaffold_ffi_companion(apple_selected)
-            .await
-            .map_err(|error| {
-                eyre::eyre!("could not scaffold the Apple/Android FFI companion crate: {error}")
-            })?;
+        // The companion on disk is re-rendered for the scan — the manifest
+        // a build produces, so the font declarations the scan sees are the
+        // ones the build's resolve carries.
+        project.scaffold_ffi_companion().await.map_err(|error| {
+            eyre::eyre!("could not scaffold the Apple/Android FFI companion crate: {error}")
+        })?;
         manifests.push(manifest);
     }
 
@@ -2270,7 +2264,8 @@ const OPTIONAL_CAPABILITIES: &[Capability] = &[
 /// components whose symbols the dylib does export.
 ///
 /// `build_manifest` is the manifest of the crate being built — the resolved
-/// graph the feature check reads.
+/// graph the feature check reads — and `target` the triple that build's
+/// `cargo tree` resolves.
 ///
 /// # Errors
 ///
@@ -2279,6 +2274,7 @@ pub async fn capability_enabled(
     project: &Project,
     build_manifest: &Path,
     capability: &str,
+    target: &Triple,
 ) -> eyre::Result<bool> {
     let capability = OPTIONAL_CAPABILITIES
         .iter()
@@ -2289,7 +2285,11 @@ pub async fn capability_enabled(
             seed_managed_crate_lock(project, build_manifest).await?;
             package_feature_enabled(build_manifest, capability.package, feature).await
         }
-        None => project.links_runtime_package(capability.package).await,
+        None => {
+            project
+                .links_runtime_package(target, capability.package)
+                .await
+        }
     }
 }
 
@@ -2308,7 +2308,8 @@ pub async fn capability_enabled(
 /// the app's manifest.
 ///
 /// `build_manifest` is the manifest of the crate being built — the FFI
-/// companion for Apple and Android builds.
+/// companion for Apple and Android builds — and `target` the triple that
+/// build resolves its graph for.
 ///
 /// # Errors
 ///
@@ -2316,10 +2317,11 @@ pub async fn capability_enabled(
 pub async fn capability_ffi_features(
     project: &Project,
     build_manifest: &Path,
+    target: &Triple,
 ) -> eyre::Result<Vec<String>> {
     let mut features = Vec::new();
     for capability in OPTIONAL_CAPABILITIES {
-        if capability_enabled(project, build_manifest, capability.name).await? {
+        if capability_enabled(project, build_manifest, capability.name, target).await? {
             features.push(capability.name.to_string());
         }
     }
@@ -2345,7 +2347,8 @@ pub async fn capability_ffi_features(
 /// selects it.
 ///
 /// `build_manifest` is the manifest of the crate being built — the FFI
-/// companion whose `video` feature this list feeds.
+/// companion whose `video` feature this list feeds — and `target` the
+/// triple that build resolves its graph for.
 ///
 /// # Errors
 ///
@@ -2353,11 +2356,14 @@ pub async fn capability_ffi_features(
 pub async fn self_drawn_realization_features(
     project: &Project,
     build_manifest: &Path,
+    target: &Triple,
 ) -> eyre::Result<Vec<String>> {
     let mut features = Vec::new();
     seed_managed_crate_lock(project, build_manifest).await?;
     let opted_in = package_feature_enabled(build_manifest, "waterui", "video-gpu").await?
-        || project.links_runtime_package("waterui-video-gpu").await?;
+        || project
+            .links_runtime_package(target, "waterui-video-gpu")
+            .await?;
     if opted_in {
         features.push("video".to_string());
     }

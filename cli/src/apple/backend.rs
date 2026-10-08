@@ -124,9 +124,6 @@ impl AppleBackend {
                     })
             })
             .collect();
-        let webview_enabled = project.uses_standard_webview().await?;
-        let chromium_enabled = project.links_runtime_package("waterui-chromium").await?;
-        let browser_engine = project.linked_browser_engine().await?;
         // The generated project names the launch assets the catalog will
         // hold, so the two are decided from the same resolution.
         let launch = crate::assets::project_launch_assets(project)?;
@@ -144,9 +141,6 @@ impl AppleBackend {
         .with_backend_project_path(project.backend_path::<Self>())
         .with_project_root_path(project.root().to_path_buf())
         .with_ios_permissions(ios_permissions)
-        .with_webview_enabled(webview_enabled)
-        .with_chromium_enabled(chromium_enabled)
-        .with_browser_engine(browser_engine)
         .with_launch(launch_entry))
     }
 
@@ -217,8 +211,12 @@ impl Backend for AppleBackend {
         platform: TargetPlatform,
         options: BuildOptions,
     ) -> eyre::Result<crate::build::BuiltTarget> {
+        let triple = options
+            .target_triple()
+            .cloned()
+            .unwrap_or_else(|| platform.triple());
         project
-            .browser_runtime_plan(platform, TargetBackend::Apple)
+            .browser_runtime_plan(platform, TargetBackend::Apple, &triple)
             .await?;
         build_rust_lib(project, platform, options).await
     }

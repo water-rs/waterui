@@ -218,7 +218,7 @@ pub async fn build_hydrolysis_with_envs_and_features(
     // helper through its own `BuiltTarget`, kept here on the application's
     // — the marked `deps/` artifact path it reports is the only spelling
     // that names this variant's helper.
-    if project.declares_cef_helper().await? {
+    if project.declares_cef_helper(&platform.triple()).await? {
         // Packaging reads the helper's marked `deps/` artifact; nothing
         // execs its shared `<profile>/<name>` uplift, so the artifact lock
         // is released once the marked link exists rather than held while
@@ -379,7 +379,11 @@ pub async fn package_hydrolysis(
     let final_binary_path = &built.artifact;
     let profile_directory = built.profile_dir.as_path();
     let runtime_plan = project
-        .browser_runtime_plan(platform, crate::platform::TargetBackend::Hydrolysis)
+        .browser_runtime_plan(
+            platform,
+            crate::platform::TargetBackend::Hydrolysis,
+            &platform.triple(),
+        )
         .await?;
     let shared_libraries = if options.uses_shared_rust_runtime() {
         Some(RustDynamicLibraries::resolve(built, &platform.triple(), project).await?)
@@ -547,7 +551,7 @@ async fn package_hydrolysis_macos(
     .await?;
     browser_runtime::stage_macos_app(runtime_plan, profile_directory, &app_path.join("Contents"))
         .await?;
-    if project.declares_cef_helper().await? {
+    if project.declares_cef_helper(&platform.triple()).await? {
         let helper_binary = cef_helper_binary(cef_helper)?;
         // The helper apps are named after the shipped executable, so they
         // derive from the packaged copy — not the tagged Cargo artifact.
@@ -1134,13 +1138,11 @@ mod tests {
 
         // Chromium linked, no engine crate: the runtime plan requires CEF
         // but the manifest declares only the main binary.
-        let ctx = demo_context().with_chromium_enabled(true);
+        let ctx = demo_context();
         assert_eq!(rendered_bin_names(&ctx, package_name), [package_name]);
 
         // Chromium plus a non-CEF engine is the same shape.
-        let ctx = demo_context()
-            .with_chromium_enabled(true)
-            .with_browser_engine(Some(ResolvedWebViewBackend::Wpe));
+        let ctx = demo_context().with_browser_engine(Some(ResolvedWebViewBackend::Wpe));
         assert_eq!(rendered_bin_names(&ctx, package_name), [package_name]);
 
         // The predicate the build and packaging gates consult agrees with

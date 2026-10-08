@@ -468,6 +468,76 @@ impl TargetPlatform {
     }
 }
 
+/// The Apple platforms the generated manifests' `cfg(target_vendor =
+/// "apple")` tables serve — every Apple platform this CLI produces.
+const APPLE_PLATFORMS: &[TargetPlatform] = &[
+    TargetPlatform::MacOS,
+    TargetPlatform::IOS,
+    TargetPlatform::IOSSimulator,
+    TargetPlatform::MacCatalyst,
+    TargetPlatform::TvOS,
+    TargetPlatform::TvOSSimulator,
+    TargetPlatform::WatchOS,
+    TargetPlatform::WatchOSSimulator,
+    TargetPlatform::VisionOS,
+    TargetPlatform::VisionOSSimulator,
+];
+
+/// Parse a target triple a generated manifest's serving set names.
+fn serving_triple(triple: &str) -> Triple {
+    Triple::from_str(triple)
+        .unwrap_or_else(|_| panic!("{triple} must remain a valid target triple"))
+}
+
+/// The Apple triples a `cfg(target_vendor = "apple")` table of a generated
+/// manifest serves — every Apple platform a `water` build can produce,
+/// device and simulator alike.
+#[must_use]
+pub(crate) fn apple_target_triples() -> Vec<Triple> {
+    APPLE_PLATFORMS.iter().map(TargetPlatform::triple).collect()
+}
+
+/// The desktop triples a generated manifest's
+/// `cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))`
+/// table serves — the macOS, Linux and Windows triples `water` builds
+/// produce on every host they run on.
+#[must_use]
+pub(crate) fn native_target_triples() -> Vec<Triple> {
+    vec![
+        TargetPlatform::MacOS.triple(),
+        serving_triple("x86_64-unknown-linux-gnu"),
+        serving_triple("aarch64-unknown-linux-gnu"),
+        serving_triple("x86_64-pc-windows-msvc"),
+        serving_triple("aarch64-pc-windows-msvc"),
+    ]
+}
+
+/// The Linux triples the GTK4 backend crate serves — the Linux targets a
+/// `water` build produces on any Linux host.
+#[must_use]
+pub(crate) fn linux_target_triples() -> Vec<Triple> {
+    vec![
+        serving_triple("x86_64-unknown-linux-gnu"),
+        serving_triple("aarch64-unknown-linux-gnu"),
+    ]
+}
+
+/// The Windows triples the `WinUI` backend crate serves.
+#[must_use]
+pub(crate) fn windows_target_triples() -> Vec<Triple> {
+    vec![
+        serving_triple("x86_64-pc-windows-msvc"),
+        serving_triple("aarch64-pc-windows-msvc"),
+    ]
+}
+
+/// The WebAssembly triple a generated manifest's `cfg(target_arch =
+/// "wasm32")` table serves.
+#[must_use]
+pub(crate) fn wasm_target_triples() -> Vec<Triple> {
+    vec![TargetPlatform::Web.triple()]
+}
+
 /// Reject a desktop platform label that does not name the host OS.
 ///
 /// `macos`, `linux` and `windows` platforms require a matching host OS.

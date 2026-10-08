@@ -267,8 +267,6 @@ pub struct HydrolysisAndroidTemplateEntry {
 pub struct BrowserTemplateContext {
     /// Whether the packaged application links the standard `WebView` component.
     pub webview_enabled: bool,
-    /// Whether the packaged application links the independent Chromium component.
-    pub chromium_enabled: bool,
     /// The browser engine crate the application links, if any.
     pub engine: Option<ResolvedWebViewBackend>,
 }
@@ -576,13 +574,6 @@ impl TemplateContext {
     #[must_use]
     pub const fn with_webview_enabled(mut self, enabled: bool) -> Self {
         self.browser.webview_enabled = enabled;
-        self
-    }
-
-    /// Set whether the application runtime graph links `waterui-chromium`.
-    #[must_use]
-    pub const fn with_chromium_enabled(mut self, enabled: bool) -> Self {
-        self.browser.chromium_enabled = enabled;
         self
     }
 
@@ -3516,7 +3507,6 @@ mod tests {
             Some(ffi_dir.clone()),
             Some(tempdir.path().to_path_buf()),
         )
-        .with_chromium_enabled(true)
         .with_browser_engine(Some(ResolvedWebViewBackend::Cef));
 
         smol::block_on(crate::templates::ffi::scaffold(

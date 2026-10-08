@@ -86,10 +86,21 @@ impl Gtk4Backend {
         )
         .with_backend_project_path(project.backend_path::<Self>())
         .with_project_root_path(project.root().to_path_buf())
-        .with_project_packages(project.project_packages(&framework).await?)
-        .with_webview_enabled(project.uses_standard_webview().await?)
-        .with_chromium_enabled(project.links_runtime_package("waterui-chromium").await?)
-        .with_browser_engine(project.linked_browser_engine().await?))
+        .with_project_packages(
+            project
+                .project_packages_for(&framework, &crate::platform::linux_target_triples())
+                .await?,
+        )
+        .with_webview_enabled(
+            project
+                .uses_standard_webview_for(&crate::platform::linux_target_triples())
+                .await?,
+        )
+        .with_browser_engine(
+            project
+                .linked_browser_engine_for(&crate::platform::linux_target_triples())
+                .await?,
+        ))
     }
 }
 
@@ -139,7 +150,11 @@ impl Backend for Gtk4Backend {
         options: BuildOptions,
     ) -> eyre::Result<crate::build::BuiltTarget> {
         project
-            .browser_runtime_plan(TargetPlatform::Linux, TargetBackend::Gtk4)
+            .browser_runtime_plan(
+                TargetPlatform::Linux,
+                TargetBackend::Gtk4,
+                &TargetPlatform::Linux.triple(),
+            )
             .await?;
         build_gtk4(project, options).await
     }

@@ -27,6 +27,17 @@ tool=${tool%.cmd}
 tool=${tool%.bat}
 tool=${tool%.exe}
 
+# WATERUI_FAKE_LOG names a file every fake invocation appends itself to —
+# `<tool> <args>` one per line — the seam tests use to assert which tools
+# ran and with which arguments.
+if [ -n "${WATERUI_FAKE_LOG-}" ]; then
+    printf '%s' "$tool" >> "$WATERUI_FAKE_LOG"
+    for _log_arg in "$@"; do
+        printf ' %s' "$_log_arg" >> "$WATERUI_FAKE_LOG"
+    done
+    printf '\n' >> "$WATERUI_FAKE_LOG"
+fi
+
 # print_file <path>: emit a file's contents using only builtins. `|| [ -n ... ]`
 # keeps a final unterminated line.
 print_file() {
@@ -239,6 +250,26 @@ cargo)
         metadata)
             # `cargo metadata` prints the staged CARGO_METADATA JSON and fails when none is staged.
             respond CARGO_METADATA
+            ;;
+        tree)
+            # The graph is resolved per build target: `cargo tree --target
+            # <triple>` answers `CARGO_TREE_<triple>` when a per-target
+            # response file is staged, else `CARGO_TREE` — and fails when
+            # neither exists, so a target-less call can never pass as the
+            # host graph.
+            _tree_target=""
+            _tree_prev=""
+            for _tree_arg in "$@"; do
+                if [ "$_tree_prev" = "--target" ]; then
+                    _tree_target="$_tree_arg"
+                fi
+                _tree_prev="$_tree_arg"
+            done
+            if [ -n "$_tree_target" ] && [ -f "${WATERUI_FAKE_RESPONSES:-/nonexistent}/CARGO_TREE_$_tree_target" ]; then
+                respond_file "CARGO_TREE_$_tree_target"
+            else
+                respond CARGO_TREE
+            fi
             ;;
         install | binstall)
             # `cargo install <crate>` drops the crate's binary beside cargo —

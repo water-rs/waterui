@@ -118,7 +118,14 @@ pub async fn build_aar(
         &project.ffi_crate_path().join("Cargo.toml"),
         &module_dir,
         crate::assets::AndroidDependencyScope::Api,
-        &android_ffi_dependency_features(project).await?,
+        &android_ffi_dependency_features(
+            project,
+            &abis
+                .iter()
+                .map(|abi| AndroidPlatform::new(*abi).triple())
+                .collect::<Vec<_>>(),
+        )
+        .await?,
     )
     .await?;
 

@@ -21,6 +21,11 @@ rem builtins, so the restricted PATH is still honored.
 setlocal EnableDelayedExpansion
 set "tool=%~n0"
 
+rem WATERUI_FAKE_LOG names a file every fake invocation appends itself to -
+rem `<tool> <args>` one per line - the seam tests use to assert which tools
+rem ran and with which arguments.
+if defined WATERUI_FAKE_LOG echo %tool% %*>> "%WATERUI_FAKE_LOG%"
+
 rem Defaults matching the .sh `${VAR:-default}` expansions; a declared value
 rem always wins.
 if not defined WATERUI_FAKE_RUSTC_VERSION set "WATERUI_FAKE_RUSTC_VERSION=1.0.0"
@@ -287,9 +292,23 @@ if not defined WATERUI_FAKE_CARGO_VERSION set "WATERUI_FAKE_CARGO_VERSION=1.95.0
 if "%1"=="--version" (echo cargo %WATERUI_FAKE_CARGO_VERSION% ^(waterui-test^) & exit /b 0)
 rem `cargo metadata` prints the staged CARGO_METADATA JSON and fails when none is staged.
 if "%1"=="metadata" (call :respond CARGO_METADATA & exit /b !errorlevel!)
+if "%1"=="tree" goto :cargo_tree
 if "%1"=="install" goto :cargo_install
 if "%1"=="binstall" goto :cargo_install
 exit /b 0
+
+rem The graph is resolved per build target: `cargo tree --target <triple>`
+rem answers `CARGO_TREE_<triple>` when a per-target response file is staged,
+rem else `CARGO_TREE` - and fails when neither exists.
+:cargo_tree
+set "tree_target="
+set "prev="
+for %%a in (%*) do (
+    if "!prev!"=="--target" set "tree_target=%%a"
+    set "prev=%%a"
+)
+if defined tree_target if exist "%WATERUI_FAKE_RESPONSES%\CARGO_TREE_!tree_target!" (type "%WATERUI_FAKE_RESPONSES%\CARGO_TREE_!tree_target!" & exit /b 0)
+call :respond CARGO_TREE & exit /b !errorlevel!
 
 rem `cargo install <crate>` drops the crate's binary beside cargo - model that
 rem by copying this dispatcher under the crate's name.

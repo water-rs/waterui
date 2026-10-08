@@ -25,6 +25,9 @@ android-backend-revision = "cccccccccccccccccccccccccccccccccccccccc"
 hydrolysis-android-host-subdirectory = "backends/hydrolysis/android"
 scaffold-packages = ["hydrolysis-m3", "waterui-dew", "waterui-gtk", "waterui-winui"]
 
+[workspace]
+members = ["ffi", "backends/apple", "backends/hydrolysis"]
+
 [workspace.dependencies]
 hydrolysis = { version = "0.2.1", path = "backends/hydrolysis", default-features = false }
 hydrolysis-m3 = "0.2.1"

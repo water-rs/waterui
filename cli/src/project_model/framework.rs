@@ -2758,6 +2758,24 @@ pub(crate) mod test_fixtures {
         }
     }
 
+    /// The stable resolution [`stable_checkout_framework`] emits, except the
+    /// certified release names `repository` at `revision` — a fixture mirror
+    /// a render that resolves framework members fetches `waterui-apple`'s
+    /// `git` pin from. A `rev`-pinned dependency is a precise source Cargo's
+    /// `[patch]` cannot redirect, so only a real repository and commit make
+    /// the generated manifest resolvable offline.
+    pub fn stable_checkout_framework_at(repository: &str, revision: &str) -> ResolvedFramework {
+        let mut framework = stable_checkout_framework();
+        framework.source = Source::Stable {
+            release: Some(FrameworkRelease {
+                repository: repository.to_owned(),
+                revision: revision.to_owned(),
+                tag: "v0.4.1".to_owned(),
+            }),
+        };
+        framework
+    }
+
     /// A `dev`-channel resolution: the manifest's scaffold facts — including
     /// the git-pinned packages `stable` withholds, which `dev` distributes
     /// through `scaffold`.

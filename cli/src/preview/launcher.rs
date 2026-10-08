@@ -310,14 +310,21 @@ async fn configure_preview_module_build(
                 .with_rustc_flag(crate::android::platform::ANDROID_MAX_PAGE_SIZE_LINK_ARG)
                 .with_build_std(nightly)
                 .with_features(
-                    crate::android::platform::android_ffi_dependency_features(&support_project)
-                        .await?,
+                    crate::android::platform::android_ffi_dependency_features(
+                        &support_project,
+                        std::slice::from_ref(&triple),
+                    )
+                    .await?,
                 ),
             Some(toolchain_identity),
         ))
     } else {
         let browser_runtime = support_project
-            .browser_runtime_plan(target, crate::platform::TargetBackend::Apple)
+            .browser_runtime_plan(
+                target,
+                crate::platform::TargetBackend::Apple,
+                &target.triple(),
+            )
             .await?;
         // The deployment-target env the module once carried explicitly now
         // comes from the triple inside `cargo_build_output`, so a module and
@@ -327,6 +334,7 @@ async fn configure_preview_module_build(
                 crate::apple::platform::apple_dependency_features(
                     &support_project,
                     browser_runtime,
+                    &target.triple(),
                 )
                 .await?,
             ),
@@ -805,6 +813,21 @@ const fn preview_target_platform(platform: PreviewPlatform) -> TargetPlatform {
         PreviewPlatform::Ios => TargetPlatform::IOS,
         PreviewPlatform::Android => TargetPlatform::Android,
     }
+}
+
+/// Every triple the preview support app and its module workspace can build
+/// for — the serving set of the support manifest's shared `[profile]`
+/// overrides and the workspace root that carries them.
+fn preview_targets() -> Vec<target_lexicon::Triple> {
+    [
+        PreviewPlatform::Macos,
+        PreviewPlatform::IosSimulator,
+        PreviewPlatform::Ios,
+    ]
+    .iter()
+    .map(|platform| preview_target_platform(*platform).triple())
+    .chain(crate::android::platform::android_target_triples())
+    .collect()
 }
 
 async fn open_preview_support_project(
@@ -1535,7 +1558,11 @@ async fn scaffold_preview_module(project: &Project, platform: PreviewPlatform) -
             &workspace_root,
             patches,
             Some(project.root()),
-            Some(&project.project_packages(&framework).await?),
+            Some(
+                &project
+                    .project_packages_for(&framework, &preview_targets())
+                    .await?,
+            ),
         )
         .await?;
     }
@@ -1848,7 +1875,9 @@ async fn resolve_preview_metadata(
         .join("Cargo.toml");
     let app_crate_name = project.crate_name().clone();
     let app_path = project.root().to_path_buf();
-    let project_packages = project.project_packages(&framework).await?;
+    let project_packages = project
+        .project_packages_for(&framework, &preview_targets())
+        .await?;
     let metadata_start = Instant::now();
     let metadata_manifest_path = manifest_path.clone();
     let abi_feature = PreviewLinkMode::for_platform(platform)

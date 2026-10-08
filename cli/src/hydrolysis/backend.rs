@@ -18,6 +18,16 @@ use crate::{
     toolchain::Host,
 };
 
+/// Every triple the generated launcher crate's manifest serves — the
+/// desktop triples of its native table, the Android ABIs and `wasm32`.
+fn hydrolysis_targets() -> Vec<target_lexicon::Triple> {
+    crate::platform::native_target_triples()
+        .into_iter()
+        .chain(crate::android::platform::android_target_triples())
+        .chain(crate::platform::wasm_target_triples())
+        .collect()
+}
+
 /// Configuration for the hydrolysis backend in a `WaterUI` project.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HydrolysisBackend {
@@ -100,10 +110,21 @@ impl HydrolysisBackend {
         )
         .with_backend_project_path(project.backend_path::<Self>())
         .with_project_root_path(project.root().to_path_buf())
-        .with_project_packages(project.project_packages(&framework).await?)
-        .with_webview_enabled(project.uses_standard_webview().await?)
-        .with_chromium_enabled(project.links_runtime_package("waterui-chromium").await?)
-        .with_browser_engine(project.linked_browser_engine().await?))
+        .with_project_packages(
+            project
+                .project_packages_for(&framework, &hydrolysis_targets())
+                .await?,
+        )
+        .with_webview_enabled(
+            project
+                .uses_standard_webview_for(&crate::platform::native_target_triples())
+                .await?,
+        )
+        .with_browser_engine(
+            project
+                .linked_browser_engine_for(&crate::platform::native_target_triples())
+                .await?,
+        ))
     }
 }
 
@@ -176,7 +197,7 @@ impl Backend for HydrolysisBackend {
             .await;
         }
         project
-            .browser_runtime_plan(platform, TargetBackend::Hydrolysis)
+            .browser_runtime_plan(platform, TargetBackend::Hydrolysis, &platform.triple())
             .await?;
         build_hydrolysis(project, platform, options).await
     }
