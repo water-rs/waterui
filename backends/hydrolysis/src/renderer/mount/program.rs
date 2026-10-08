@@ -115,10 +115,24 @@ pub struct SceneContentSource {
     pub bounds: kurbo::Rect,
 }
 
-/// A material wrapper's backdrop request.
+/// A material wrapper's backdrop request: the member's backdrop-group
+/// terms and clip. The group it joins is keyed by `(scope, level,
+/// scheme, install canvas)` — the canvas is resolved at commit — and one
+/// group runs one key's chain (water-rs/waterui#1999).
+#[derive(Clone, Copy)]
 pub struct MaterialRequest {
-    pub runtime: Rc<crate::renderer::material::MaterialRuntime>,
+    /// The nearest enclosing `.material_group()` node's identity — the
+    /// address of its cell — or `None` for a group of the member's own.
+    pub scope: Option<usize>,
+    /// The member's within-window level — part of its backdrop-group key.
+    pub level: crate::renderer::material::WithinWindowLevel,
+    /// The member's resolved colour scheme at flush: a subtree may
+    /// install its own scheme, so the scheme keys the backdrop group.
+    pub scheme: waterui::theme::ColorScheme,
+    /// The view's rect in its own space: the member's clip.
     pub bounds: kurbo::Rect,
+    /// Whether the member presents this frame: an invisible member
+    /// releases its membership instead of joining a group.
     pub visible: bool,
 }
 

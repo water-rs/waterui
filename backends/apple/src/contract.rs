@@ -81,11 +81,14 @@ impl KeepAlive {
 /// A rendered component: its platform view, its layout face, and what keeps
 /// its reactivity alive.
 ///
-/// Dropping a leaf first clears every handler its `HostView` holds, which
-/// releases the state those handlers capture; then watchers and children
-/// stop, the layout face drops next and the platform view last (field
-/// order). Dropping a leaf does not detach its view from a superview; mount
-/// it through [`NativeLeaf::mount`] for that.
+/// Dropping a leaf first clears the handler slots of a leaf view that is a
+/// `HostView`, which releases the state those handlers capture. The
+/// keepalive drops next, in reverse order of keeping: a component whose own
+/// view holds handler slots keeps a `cocoa_ui::HandlerTeardown` guard there,
+/// which clears those slots at its position in that order. The layout face
+/// drops after the keepalive and the platform view last (field order).
+/// Dropping a leaf does not detach its view from a superview; mount it
+/// through [`NativeLeaf::mount`] for that.
 pub struct NativeLeaf {
     keepalive: KeepAlive,
     layout: Rc<dyn SubView>,
@@ -225,13 +228,16 @@ impl NativeLeaf {
 }
 
 impl Drop for NativeLeaf {
-    /// The leaf's release boundary: every handler slot its `HostView`
-    /// holds is cleared, so the state those handlers capture is released
-    /// with the leaf whichever owner lets go of it — a `Mounted`, a
-    /// window's keepalive, a navigation page — and a callback the platform
-    /// delivers to a view that outlives the leaf finds `None`. The view
-    /// stays where it is: removing it from its superview is the owner's
-    /// job, as [`Mounted`] does.
+    /// The leaf's release boundary: when the leaf view is a `HostView`, its
+    /// handler slots clear here (the teardown water-rs/waterui#1860 added), so
+    /// the state those handlers capture is released with the leaf whichever
+    /// owner lets go of it — a `Mounted`, a window's keepalive, a navigation
+    /// page — and a callback the platform delivers to a view that outlives
+    /// the leaf finds `None`. Other handler-holding views clear through the
+    /// `cocoa_ui::HandlerTeardown` guard their component keeps in
+    /// `keepalive`, which drops after this and before the layout face and the
+    /// view. The view stays where it is: removing it from its superview is
+    /// the owner's job, as [`Mounted`] does.
     fn drop(&mut self) {
         if let Some(host) = self.view.downcast_ref::<HostView>() {
             host.clear_handlers();

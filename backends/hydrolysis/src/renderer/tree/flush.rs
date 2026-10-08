@@ -358,20 +358,47 @@ impl RenderNode {
                             node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
                         });
                     }
-                    WrapperEffect::Material(runtime) => {
+                    WrapperEffect::Material(level) => {
                         // Everything painted so far is the material's
-                        // backdrop: close that segment, present the keyed
-                        // member mount, and flush the content above it.
+                        // backdrop. The member's scope is the stack's top —
+                        // the nearest enclosing `.material_group()` — or
+                        // none; the resolved scheme keys the backdrop group
+                        // — a subtree-installed appearance must not share a
+                        // capture. `read_signal` subscribes the flush, so an
+                        // appearance flip requests a refresh and re-keys the
+                        // member.
+                        let scheme =
+                            renderer.read_signal(&waterui::theme::current_color_scheme(child_env));
                         let visible = renderer.record_alpha() != 0.0;
+                        let scope = renderer
+                            .compositor
+                            .material_scopes
+                            .last()
+                            .map(Rc::as_ptr)
+                            .map(|cell| cell as usize);
                         let program = renderer.program().program_mut();
                         program.clip = Some(waterui_graphics::draw::ShapeData::of(&ctx.bounds));
                         program.material = Some(mount::MaterialRequest {
-                            runtime: Rc::clone(runtime),
+                            scope,
+                            level: *level,
+                            scheme,
                             bounds: ctx.bounds,
                             visible,
                         });
                         node.child
                             .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
+                    }
+                    WrapperEffect::MaterialGroup => {
+                        // The node's cell is the group scope: push it
+                        // while the child flushes, then pop, so the
+                        // members inside join its shared backdrop group.
+                        renderer
+                            .compositor
+                            .material_scopes
+                            .push(Rc::clone(&node.core.cell));
+                        node.child
+                            .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
+                        renderer.compositor.material_scopes.pop();
                     }
                     WrapperEffect::PopupMenuSurface => {
                         HydrolysisRenderer::apply_popup_menu_surface(renderer, ctx, |r| {
@@ -991,7 +1018,14 @@ impl RenderNode {
                 let handle = {
                     let mut slot = node.handle.borrow_mut();
                     let handle = if let Some(handle) = slot.as_mut() {
-                        handle.rebind(node.axis, 0.0, 0.0, f64::INFINITY, f64::INFINITY)
+                        handle.rebind(
+                            node.axis,
+                            0.0,
+                            0.0,
+                            f64::INFINITY,
+                            f64::INFINITY,
+                            (0.0, 0.0),
+                        )
                     } else {
                         ScrollHandle::new(
                             node.axis,
@@ -1009,8 +1043,12 @@ impl RenderNode {
                 if let Some(controller) = &node.controller {
                     let generation = renderer.read_signal(&controller.generation());
                     if generation != node.applied_scroll_generation.get() {
-                        let target = renderer.read_signal(&controller.target());
-                        let _ = handle.scroll_to(f64::from(target.x), f64::from(target.y));
+                        let request = renderer.read_signal(&controller.request());
+                        // The semantic domain has no frame pump to advance an
+                        // animation, so a request lands in place whether or
+                        // not it carries one.
+                        let _ = handle
+                            .scroll_to(f64::from(request.target.x), f64::from(request.target.y));
                         node.applied_scroll_generation.set(generation);
                     }
                 }

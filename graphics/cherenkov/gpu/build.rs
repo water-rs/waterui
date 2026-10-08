@@ -100,51 +100,39 @@ const UNCHECKED: naga::proc::BoundsCheckPolicies = naga::proc::BoundsCheckPolici
 fn main() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let shader_path = manifest.join("src/render/shader.wgsl");
-    let present_path = manifest.join("src/render/present.wgsl");
-    let shared_path = manifest.join("src/render/shared.wgsl");
-    let external_path = manifest.join("src/render/external.wgsl");
-    let blend_path = manifest.join("src/render/blend.wgsl");
-    let projective_path = manifest.join("src/render/projective.wgsl");
-    let mip_path = manifest.join("src/render/mip.wgsl");
-    let resolve_path = manifest.join("src/render/resolve.wgsl");
-    for path in [
-        &shader_path,
-        &present_path,
-        &shared_path,
-        &external_path,
-        &blend_path,
-        &projective_path,
-        &mip_path,
-        &resolve_path,
-    ] {
-        println!("cargo::rerun-if-changed={}", path.display());
-    }
     println!(
         "cargo::rerun-if-changed={}",
         manifest.join("src/render/bindings.rs").display()
     );
-
-    let shared = std::fs::read_to_string(&shared_path)
-        .unwrap_or_else(|e| panic!("{}: {e}", shared_path.display()));
-    let shader = std::fs::read_to_string(&shader_path)
-        .unwrap_or_else(|e| panic!("{}: {e}", shader_path.display()));
-    let present = std::fs::read_to_string(&present_path)
-        .unwrap_or_else(|e| panic!("{}: {e}", present_path.display()));
-    let external = std::fs::read_to_string(&external_path)
-        .unwrap_or_else(|e| panic!("{}: {e}", external_path.display()));
-    let blend = std::fs::read_to_string(&blend_path)
-        .unwrap_or_else(|e| panic!("{}: {e}", blend_path.display()));
-    let projective = std::fs::read_to_string(&projective_path)
-        .unwrap_or_else(|e| panic!("{}: {e}", projective_path.display()));
-    let mip = std::fs::read_to_string(&mip_path)
-        .unwrap_or_else(|e| panic!("{}: {e}", mip_path.display()));
-    let resolve = std::fs::read_to_string(&resolve_path)
-        .unwrap_or_else(|e| panic!("{}: {e}", resolve_path.display()));
-    let native_path = manifest.join("src/render/external_native.wgsl");
-    println!("cargo::rerun-if-changed={}", native_path.display());
-    let native = std::fs::read_to_string(&native_path)
-        .unwrap_or_else(|e| panic!("{}: {e}", native_path.display()));
+    let read = |name: &str| {
+        let path = manifest.join(format!("src/render/{name}.wgsl"));
+        println!("cargo::rerun-if-changed={}", path.display());
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    };
+    let [
+        shared,
+        shader,
+        present,
+        external,
+        blend,
+        projective,
+        mip,
+        resolve,
+        reduce,
+        native,
+    ] = [
+        "shared",
+        "shader",
+        "present",
+        "external",
+        "blend",
+        "projective",
+        "mip",
+        "resolve",
+        "reduce",
+        "external_native",
+    ]
+    .map(read);
 
     // The three VARIANT specializations of shader.wgsl plus present.wgsl,
     // external.wgsl, projective.wgsl, mip.wgsl and resolve.wgsl — the
@@ -204,6 +192,13 @@ fn main() {
         name: "resolve".into(),
         source: resolve,
         groups: bindings::RESOLVE_GROUPS,
+        metal: true,
+        merge_pair: None,
+    });
+    specs.push(Spec {
+        name: "reduce".into(),
+        source: reduce,
+        groups: bindings::REDUCE_GROUPS,
         metal: true,
         merge_pair: None,
     });

@@ -216,15 +216,21 @@ scroll_both(content)
 
 Programmatic scrolling goes through a `ScrollController`, which is explicit and
 repeatable. `List` addresses item indices; `ScrollView` addresses content coordinates.
+A request carries an optional animation: `scroll_to` jumps, `animate_to` moves
+along the animation's curve. An `animate_to` on a `List` further than 100 rows
+away jumps to within 100 rows of the target first and animates only the final
+stretch — it never flies the viewport through the rows between.
 
 ```rust
 let rows = ScrollController::<usize>::new(0);
 let list = List::for_each(records, row_view).scroll_controller(&rows);
-rows.scroll_to(50_000);                       // does not materialize rows 0..50_000
+rows.scroll_to(50_000);                          // jump — does not materialize rows 0..50_000
+rows.animate_to(50_000, Animation::default());   // glide with the platform's smooth scroll
 
 let offset = ScrollController::<Point>::new(Point::zero());
 let view = scroll(content).scroll_controller(&offset);
 offset.scroll_to(Point::new(0.0, 2_400.0));
+offset.animate_to(Point::new(0.0, 2_400.0), Animation::ease_in_out(Duration::from_millis(400)));
 ```
 
 ## Controls
@@ -265,6 +271,11 @@ stepper("Items", &count).range(0..=100).step(5)   // range: impl RangeBounds<i32
 field("Email", &address)                    // &Binding<Str>
 field("Search", &query).on_submit(handler)  // Return in a line-limited field runs it
 TextField::new("Username", &name).prompt("Enter your username")   // placeholder ≠ label
+// .content_type declares what the field means, for autofill — it is what
+// makes Apple offer the received SMS code; pair it with .keyboard(..)
+TextField::new("Verification code", &code)
+    .keyboard(KeyboardType::Number)
+    .content_type(ContentType::OneTimeCode)
 progress(fraction)                          // impl IntoComputed<f64>
 progress(fraction).label("Downloading")     // its label is a modifier — the one exception
 loading()                                   // indeterminate progress
@@ -312,7 +323,9 @@ Menu::new("Choose an Option", (
 That `"Option A".action(..)` is `CommandExt`, blanket-implemented for every
 `impl IntoLabel`: the receiver is the *label* and the result is a `Command` — not a
 button. `Command` has its own builder chain: `.state(&value)`, `.disabled(signal)`,
-`.selected(signal)`, `.shortcut(Shortcut)`. A `Button` also converts into `MenuItem` and
+`.selected(signal)`, `.shortcut(Shortcut)` — the key is a char or a W3C `NamedKey`:
+`Shortcut::new('s').command()`, `Shortcut::new(NamedKey::Delete)`. A `Button` also
+converts into `MenuItem` and
 `Command`, so one definition can serve a toolbar, a menu, and a keyboard shortcut.
 
 `.context_menu(items)` attaches a long-press / right-click menu to ANY view and takes the

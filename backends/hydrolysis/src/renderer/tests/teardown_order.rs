@@ -29,6 +29,7 @@ use waterui_text::text;
 
 use crate::renderer::navigation::navigation_state::{NavigationKey, NavigationSlot};
 use crate::renderer::{FontFamilyResolution, SemanticCore};
+use crate::text::SessionTextEngine;
 
 /// Logs `tag` into `drops` when its last owner drops it.
 struct DropTag {
@@ -78,7 +79,10 @@ fn semantic_flush_releases_frame_state_in_renderer_order() {
             })
         }
     };
-    let mut core = SemanticCore::new(Instant::now(), FontFamilyResolution::Strict);
+    let mut core = SemanticCore::new(
+        Instant::now(),
+        SessionTextEngine::system(FontFamilyResolution::Strict),
+    );
     core.capture_window_semantics(AnyView::new(view), &env);
 
     // A navigation slot whose retained owner left the tree dies at

@@ -2,8 +2,11 @@
 //!
 //! A gradient is authored in unit space — `[0, 1]` on both axes, `(0, 0)` the
 //! top-left of the view — and the backend maps it onto the bounds it lays the
-//! view out at. Radii and the mesh's control points follow the same
-//! convention: a radius of `0.5` reaches the nearer edge from the centre.
+//! view out at. The mesh's control points follow the same convention. A radial
+//! radius is a circle, never an ellipse: on a `w` × `h` box a radius `r` is a
+//! circle of `r * min(w, h)` points, so a radius of `0.5` from the centre
+//! reaches the nearer edge and stops short of the farther one on a non-square
+//! box.
 
 extern crate alloc;
 
@@ -133,6 +136,11 @@ impl Gradient {
     }
 
     /// A gradient whose colours run outward from `center`, between two radii.
+    ///
+    /// `center` is in unit space. Both radii are fractions of the shorter side
+    /// of the box the view is laid out at: on a `w` × `h` box each radius `r`
+    /// is a circle of `r * min(w, h)` points around `center` mapped onto the
+    /// box. A non-square box does not stretch the circle into an ellipse.
     ///
     /// # Panics
     /// When a radius is negative or not finite.

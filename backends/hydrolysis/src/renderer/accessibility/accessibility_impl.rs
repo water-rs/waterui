@@ -202,6 +202,36 @@ pub const ACCESSIBILITY_ROOT_NODE_ID: AccessibilityNodeId = AccessibilityNodeId(
 #[cfg(feature = "accessibility")]
 pub const ACCESSIBILITY_FIRST_NODE_ID: u64 = 1;
 
+/// The id range the merged multi-window tree assigns each popup window:
+/// popup `i`'s node ids shift up by `(i + 1) * WINDOW_ID_STRIDE`, and the
+/// action-dispatch side indexes popups back by `id / WINDOW_ID_STRIDE - 1`.
+/// The stride is part of the merged tree's contract — every window's core
+/// numbers nodes from the same space.
+#[cfg(feature = "accessibility")]
+pub const WINDOW_ID_STRIDE: u64 = 1 << 32;
+
+/// The content types a merged accessibility tree's text fields declare,
+/// keyed by accesskit `NodeId`.
+///
+/// `accesskit` has no property for what a text field's content *means*, so
+/// the declaration travels beside the tree instead of on the node: every
+/// publish carries this map next to the merged `TreeUpdate`, with popup ids
+/// offset by [`WINDOW_ID_STRIDE`] exactly as the tree's are.
+#[cfg(feature = "accessibility")]
+pub type AccessibilityContentTypes = BTreeMap<AccessibilityNodeId, ContentType>;
+
+/// The accessibility payload one publish carries: the merged `TreeUpdate`
+/// plus the content types its text-field nodes declared.
+#[cfg(feature = "accessibility")]
+#[derive(Debug)]
+pub struct MergedAccessibilityUpdate {
+    /// The merged `accesskit::TreeUpdate`.
+    pub tree_update: AccessibilityTreeUpdate,
+    /// The declared content type of each merged node — keyed by the merged
+    /// id, so popup entries carry the same offset as the tree's nodes.
+    pub content_types: AccessibilityContentTypes,
+}
+
 #[cfg(feature = "accessibility")]
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct AccessibilityNodeKey {
@@ -425,6 +455,11 @@ pub struct AccessibilityBuilder {
     /// contract `collapse_single_child_container` keeps when a real child
     /// exists.
     suppressed_leaf_bounds: BTreeMap<AccessibilityNodeId, kurbo::Rect>,
+    /// The content type each text-field node declared this frame, keyed by
+    /// the node id it registered under — the side-band that carries the
+    /// declaration to platforms whose tree has no property for it
+    /// (water-rs/waterui#1874). Cleared and republished with the tree.
+    pub(crate) content_types: AccessibilityContentTypes,
     pub(crate) pending_tree_update: Option<AccessibilityTreeUpdate>,
 }
 
@@ -460,6 +495,7 @@ impl Default for AccessibilityBuilder {
             consumed_identifier_scopes: BTreeSet::new(),
             consumed_semantics_scopes: BTreeSet::new(),
             suppressed_leaf_bounds: BTreeMap::new(),
+            content_types: BTreeMap::new(),
             pending_tree_update: None,
         }
     }
@@ -509,6 +545,7 @@ impl AccessibilityBuilder {
         self.consumed_identifier_scopes.clear();
         self.consumed_semantics_scopes.clear();
         self.suppressed_leaf_bounds.clear();
+        self.content_types.clear();
     }
 
     pub(crate) fn begin_rebuild_frame(&mut self) {
@@ -1184,7 +1221,7 @@ impl SemanticCore {
     pub fn take_merged_accessibility_tree_update<'a>(
         &mut self,
         popups: impl IntoIterator<Item = &'a mut Self>,
-    ) -> Option<AccessibilityTreeUpdate> {
+    ) -> Option<MergedAccessibilityUpdate> {
         self.merged_accessibility_tree_update(popups, false, |core| {
             core.take_accessibility_tree_update()
         })
@@ -1202,7 +1239,7 @@ impl SemanticCore {
     pub fn accessibility_tree<'a>(
         &mut self,
         popups: impl IntoIterator<Item = &'a mut Self>,
-    ) -> Option<AccessibilityTreeUpdate> {
+    ) -> Option<MergedAccessibilityUpdate> {
         self.merged_accessibility_tree_update(popups, true, |core| {
             core.peek_accessibility_tree_update().cloned()
         })
@@ -1214,19 +1251,19 @@ impl SemanticCore {
     /// read path describe the tree regardless. A window without a pending
     /// update contributes its live registry, rebuilt only once the merge is
     /// known to emit, so a quiet publish costs no tree construction.
+    ///
+    /// The content types ride the same merge: each window's builder map is
+    /// keyed by that core's node ids, so a popup's entries shift by the same
+    /// [`WINDOW_ID_STRIDE`] its tree nodes do.
     #[cfg(feature = "accessibility")]
     fn merged_accessibility_tree_update<'a>(
         &mut self,
         popups: impl IntoIterator<Item = &'a mut Self>,
         when_quiet: bool,
         mut pending: impl FnMut(&mut Self) -> Option<AccessibilityTreeUpdate>,
-    ) -> Option<AccessibilityTreeUpdate> {
+    ) -> Option<MergedAccessibilityUpdate> {
         use accesskit::NodeId as AccessibilityNodeId;
 
-        /// Node ids are unique per core, so each window gets its own range.
-        /// The action-dispatch side indexes popups by `id / STRIDE - 1`, so
-        /// this stride is part of the merged tree's contract.
-        const WINDOW_ID_STRIDE: u64 = 1 << 32;
         const ROOT: AccessibilityNodeId = AccessibilityNodeId(0);
 
         let main_pending = pending(self);
@@ -1245,8 +1282,12 @@ impl SemanticCore {
         }
 
         let mut merged = main_pending.or_else(|| self.current_accessibility_tree_update())?;
+        let mut content_types = self.accessibility.content_types.clone();
         if popups.is_empty() {
-            return Some(merged);
+            return Some(MergedAccessibilityUpdate {
+                tree_update: merged,
+                content_types,
+            });
         }
 
         let mut root_children = merged
@@ -1266,6 +1307,9 @@ impl SemanticCore {
             let offset = (index as u64 + 1) * WINDOW_ID_STRIDE;
             if update.focus != ROOT {
                 focused_popup = Some(AccessibilityNodeId(update.focus.0 + offset));
+            }
+            for (id, content_type) in &popup.accessibility.content_types {
+                content_types.insert(AccessibilityNodeId(id.0 + offset), *content_type);
             }
             for (id, mut node) in update.nodes {
                 let children: Vec<_> = node
@@ -1288,7 +1332,10 @@ impl SemanticCore {
         if let Some(focus) = focused_popup {
             merged.focus = focus;
         }
-        Some(merged)
+        Some(MergedAccessibilityUpdate {
+            tree_update: merged,
+            content_types,
+        })
     }
 
     /// Borrows the pending tree update without consuming it.
@@ -1708,7 +1755,7 @@ impl SemanticCore {
         } else {
             return true;
         };
-        if handle.scroll_to(metrics.offset_x, target) {
+        if handle.user_scroll_to(metrics.offset_x, target) {
             self.mark_scroll_owner_of_node(handle, node, Dirty::LAYOUT);
         }
         true
@@ -2157,6 +2204,21 @@ impl SemanticCore {
             .entry(parent)
             .and_modify(|acc| *acc = acc.union(bounds))
             .or_insert(bounds);
+    }
+
+    /// Records that `node_id` — just registered — is a text field declaring
+    /// `content_type` for autofill. The entry rides the merged publish as
+    /// [`AccessibilityContentTypes`], the channel for a declaration the
+    /// accesskit node has no property for (water-rs/waterui#1874).
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn register_accessibility_content_type(
+        &mut self,
+        node_id: AccessibilityNodeId,
+        content_type: ContentType,
+    ) {
+        self.accessibility
+            .content_types
+            .insert(node_id, content_type);
     }
 
     /// The semantic counterpart of [`Self::register_accessibility_node`]: the

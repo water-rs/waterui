@@ -1,6 +1,12 @@
 //! Semantic menu and command APIs shared by popup menus and future system chrome.
 
-use alloc::{rc::Rc, vec, vec::Vec};
+use alloc::{
+    format,
+    rc::Rc,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
 
 use nami::{
     Computed, Signal, SignalExt, SignalIdentity, impl_constant,
@@ -8,11 +14,13 @@ use nami::{
     watcher::{BoxWatcherGuard, Context, WatcherGuard},
 };
 use waterui_core::Str;
+pub use waterui_core::key::NamedKey;
 use waterui_core::{
     AnyView, Environment, View,
     extract::State,
     handler::{Handler, SharedAction, shared_action},
     interaction::Disabled,
+    key::Key,
     layout::StretchAxis,
     raw_view,
 };
@@ -68,19 +76,171 @@ impl ShortcutModifiers {
     }
 }
 
+/// The key a [`Shortcut`] fires on: one character, or a named key from the
+/// W3C `KeyboardEvent.key` vocabulary — the same [`NamedKey`] that
+/// `SurfaceInputEvent::Key` carries.
+///
+/// The variants are public so backends can match on them; constructing one
+/// directly bypasses validation — a `Named` modifier or lock key, or a
+/// `Character` control character, names a key no press reports, so build
+/// keys through the `From`/`FromStr` conversions that refuse them.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ShortcutKey {
+    /// A key that produces one character. Letters match regardless of case;
+    /// Shift is a separate modifier.
+    Character(char),
+    /// A named key such as `Delete`, `Enter`, `F5` or `ArrowLeft`.
+    Named(NamedKey),
+}
+
+impl ShortcutKey {
+    /// Whether a key press reporting `key` fires this shortcut key. A
+    /// character matches case-insensitively, so `Shift` stays a separate
+    /// modifier rather than changing which key a chord names.
+    #[must_use]
+    pub fn matches(&self, key: &Key) -> bool {
+        match (self, key) {
+            (Self::Character(expected), Key::Character(pressed)) => {
+                let mut chars = pressed.chars();
+                chars.next().is_some_and(|pressed| {
+                    chars.next().is_none() && expected.to_lowercase().eq(pressed.to_lowercase())
+                })
+            }
+            (Self::Named(expected), Key::Named(pressed)) => expected == pressed,
+            _ => false,
+        }
+    }
+
+    /// The W3C key value of a press that fires this shortcut key.
+    #[must_use]
+    pub fn to_key(&self) -> Key {
+        match self {
+            Self::Character(character) => Key::Character(character.to_string()),
+            Self::Named(named) => Key::Named(*named),
+        }
+    }
+}
+
+/// Whether `key` can name a shortcut: `Unidentified` and `Dead` are reported
+/// for presses the layout could not or did not resolve, and a modifier or
+/// lock key only changes the presses around it, so a chord on any of them
+/// could never fire.
+#[expect(
+    deprecated,
+    reason = "the legacy `Hyper` and `Super` still parse from their W3C names, so they are refused \
+              like the other modifiers"
+)]
+const fn named_key_fires(key: NamedKey) -> bool {
+    !matches!(
+        key,
+        NamedKey::Unidentified
+            | NamedKey::Dead
+            | NamedKey::Alt
+            | NamedKey::AltGraph
+            | NamedKey::CapsLock
+            | NamedKey::Control
+            | NamedKey::Fn
+            | NamedKey::FnLock
+            | NamedKey::Meta
+            | NamedKey::NumLock
+            | NamedKey::ScrollLock
+            | NamedKey::Shift
+            | NamedKey::Symbol
+            | NamedKey::SymbolLock
+            | NamedKey::Hyper
+            | NamedKey::Super
+    )
+}
+
+/// The named key a control character stands for, when it has one.
+const fn named_key_for_control(character: char) -> Option<NamedKey> {
+    match character {
+        '\u{8}' => Some(NamedKey::Backspace),
+        '\t' => Some(NamedKey::Tab),
+        '\n' | '\r' => Some(NamedKey::Enter),
+        '\u{1b}' => Some(NamedKey::Escape),
+        '\u{7f}' => Some(NamedKey::Delete),
+        _ => None,
+    }
+}
+
+impl From<char> for ShortcutKey {
+    /// # Panics
+    ///
+    /// Panics on a control character: a press reports the key it stands for
+    /// as a named key (`'\t'` is `NamedKey::Tab`), never as that character.
+    fn from(character: char) -> Self {
+        assert!(
+            !character.is_control(),
+            "{character:?} is a control character, not a shortcut key: {}",
+            named_key_for_control(character).map_or_else(
+                || String::from("no key press reports it, so the shortcut could never fire"),
+                |named| format!("the key press reports it as `NamedKey::{named}`, so use that"),
+            )
+        );
+        Self::Character(character)
+    }
+}
+
+impl From<NamedKey> for ShortcutKey {
+    /// # Panics
+    ///
+    /// Panics on `NamedKey::Unidentified`, `NamedKey::Dead` and the modifier
+    /// and lock keys: a shortcut on them could never fire.
+    fn from(key: NamedKey) -> Self {
+        assert!(
+            named_key_fires(key),
+            "`NamedKey::{key}` is not a valid shortcut key: it is unidentified, dead, a modifier \
+             or a lock key, so the shortcut could never fire"
+        );
+        Self::Named(key)
+    }
+}
+
+/// Parses a single character or a W3C named key; anything else is an error.
+impl core::str::FromStr for ShortcutKey {
+    type Err = InvalidShortcutKey;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let mut chars = value.chars();
+        if let (Some(character), None) = (chars.next(), chars.next()) {
+            if character.is_control() {
+                return Err(InvalidShortcutKey(value.to_string()));
+            }
+            return Ok(Self::Character(character));
+        }
+        value
+            .parse::<NamedKey>()
+            .ok()
+            .filter(|key| named_key_fires(*key))
+            .map(Self::Named)
+            .ok_or_else(|| InvalidShortcutKey(value.to_string()))
+    }
+}
+
+/// A string that is neither a single character nor a W3C named key.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("`{0}` is neither a single character nor a W3C KeyboardEvent.key name")]
+pub struct InvalidShortcutKey(pub String);
+
 /// Keyboard shortcut metadata attached to a command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shortcut {
-    /// The key equivalent used to trigger the command.
-    pub key: Str,
+    /// The key the shortcut fires on.
+    pub key: ShortcutKey,
     /// Modifier flags required alongside the key.
     pub modifiers: ShortcutModifiers,
 }
 
 impl Shortcut {
-    /// Creates a shortcut from a key equivalent.
+    /// Creates a shortcut on `key` — a `char` or a [`NamedKey`].
+    ///
+    /// A backend whose platform menu cannot arm `key` — as an `AppKit` key
+    /// equivalent, a `UIKit` key command, a muda accelerator or an Android
+    /// menu shortcut character — panics when it builds the menu item, so
+    /// choose a key the target platforms' menus support.
     #[must_use]
-    pub fn new(key: impl Into<Str>) -> Self {
+    pub fn new(key: impl Into<ShortcutKey>) -> Self {
         Self {
             key: key.into(),
             modifiers: ShortcutModifiers::default(),
@@ -262,7 +422,7 @@ impl Command {
 
     /// Attaches keyboard shortcut metadata to the command.
     #[must_use]
-    pub fn shortcut(mut self, shortcut: Shortcut) -> Self {
+    pub const fn shortcut(mut self, shortcut: Shortcut) -> Self {
         self.shortcut = Some(shortcut);
         self
     }
@@ -734,24 +894,19 @@ impl ResolvedCommand {
             return;
         };
         let reserved = [
-            (Shortcut::new("q").command(), "⌘Q", "Quit"),
-            (Shortcut::new("h").command(), "⌘H", "Hide"),
-            (Shortcut::new("h").command().option(), "⌥⌘H", "Hide Others"),
+            (Shortcut::new('q').command(), "⌘Q", "Quit"),
+            (Shortcut::new('h').command(), "⌘H", "Hide"),
+            (Shortcut::new('h').command().option(), "⌥⌘H", "Hide Others"),
         ];
         for (chord, chord_text, item) in reserved {
-            if chord.modifiers == shortcut.modifiers
-                && chord
-                    .key
-                    .as_str()
-                    .eq_ignore_ascii_case(shortcut.key.as_str())
-            {
-                panic!(
-                    "a menu command in the macOS menu bar may not use the {chord_text} chord — it \
-                     belongs to the standard {item} item; declare `MenuItem::Quit` for Quit \
-                     behavior and `App::on_terminate` for shutdown work instead of redeclaring \
-                     the chord"
-                );
-            }
+            assert!(
+                !(chord.modifiers == shortcut.modifiers
+                    && shortcut.key.matches(&chord.key.to_key())),
+                "a menu command in the macOS menu bar may not use the {chord_text} chord — it \
+                 belongs to the standard {item} item; declare `MenuItem::Quit` for Quit \
+                 behavior and `App::on_terminate` for shutdown work instead of redeclaring the \
+                 chord"
+            );
         }
     }
 }
@@ -820,6 +975,56 @@ mod tests {
     use core::cell::Cell;
     use nami::Signal;
     use waterui_icon::system_icon;
+
+    #[test]
+    fn shortcut_key_parses_characters_and_w3c_named_keys() {
+        assert_eq!("q".parse(), Ok(ShortcutKey::Character('q')));
+        assert_eq!("Q".parse(), Ok(ShortcutKey::Character('Q')));
+        assert_eq!("Delete".parse(), Ok(ShortcutKey::Named(NamedKey::Delete)));
+        assert_eq!("F5".parse(), Ok(ShortcutKey::Named(NamedKey::F5)));
+        for rejected in ["", "ab", "Unidentified", "Dead", "\t", "Shift", "CapsLock"] {
+            assert_eq!(
+                rejected.parse::<ShortcutKey>(),
+                Err(InvalidShortcutKey(rejected.to_string())),
+                "`{rejected}` is not a shortcut key"
+            );
+        }
+    }
+
+    #[test]
+    fn shortcut_key_matches_letters_regardless_of_case() {
+        let lower = ShortcutKey::from('q');
+        let upper = ShortcutKey::from('Q');
+        for pressed in ["q", "Q"] {
+            let pressed = Key::Character(pressed.to_string());
+            assert!(lower.matches(&pressed));
+            assert!(upper.matches(&pressed));
+        }
+        assert!(!lower.matches(&Key::Character("w".to_string())));
+        assert!(!lower.matches(&Key::Character("qq".to_string())));
+        assert!(!lower.matches(&Key::Named(NamedKey::Delete)));
+        let delete = ShortcutKey::from(NamedKey::Delete);
+        assert!(delete.matches(&Key::Named(NamedKey::Delete)));
+        assert!(!delete.matches(&Key::Named(NamedKey::Backspace)));
+    }
+
+    #[test]
+    #[should_panic(expected = "is not a valid shortcut key")]
+    fn shortcut_key_refuses_a_named_key_no_press_resolves_to() {
+        let _ = ShortcutKey::from(NamedKey::Unidentified);
+    }
+
+    #[test]
+    #[should_panic(expected = "is not a valid shortcut key")]
+    fn shortcut_key_refuses_a_modifier_key() {
+        let _ = ShortcutKey::from(NamedKey::Shift);
+    }
+
+    #[test]
+    #[should_panic(expected = "`NamedKey::Tab`")]
+    fn shortcut_key_refuses_a_control_character_naming_its_key() {
+        let _ = ShortcutKey::from('\t');
+    }
 
     #[test]
     fn menu_view_accepts_plain_buttons() {

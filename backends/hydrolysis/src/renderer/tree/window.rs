@@ -585,6 +585,7 @@ impl HydrolysisRenderer {
             }
             #[cfg(feature = "frame-profile")]
             let encode_started_at = Instant::now();
+            self.present_window_backdrop(bounds, env);
             self.core.begin_emit_pass();
             // Window-level registrations — payloads emitted with no
             // enclosing node — record under the root's own record.
@@ -624,6 +625,7 @@ impl HydrolysisRenderer {
         }
         #[cfg(feature = "frame-profile")]
         let encode_started_at = Instant::now();
+        self.present_window_backdrop(bounds, env);
         self.core.begin_emit_pass();
         let root = self.core.root_core.clone();
         self.record_host(&root, |renderer| {
@@ -708,6 +710,7 @@ impl HydrolysisRenderer {
         #[cfg(feature = "frame-profile")]
         let encode_started_at = Instant::now();
         let (ctx, hit_delta) = safe_area_context(content_rect, hit_transform);
+        self.present_window_backdrop(bounds, env);
         self.core.begin_emit_pass();
         // Window-level registrations — payloads emitted with no
         // enclosing node — record under the root's own record.

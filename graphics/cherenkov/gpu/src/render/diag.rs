@@ -61,8 +61,10 @@ impl Class {
             "glyph atlas" => Self::Atlas,
             "clip mask" => Self::MaskTexture,
             "image" => Self::Image,
-            "surface target" | "isolation scratch" | "blend backdrop" | "backdrop capture"
-            | "dummy source" | "source texture" | "projective image" => Self::Target,
+            "surface target" | "isolation scratch" | "blend backdrop" | "backdrop staging"
+            | "backdrop capture" | "dummy source" | "source texture" | "projective image" => {
+                Self::Target
+            }
             _ => Self::Other,
         }
     }
@@ -197,7 +199,7 @@ pub enum EventKind {
         /// How many bind groups were dropped.
         dropped: u64,
         /// Why ("buffer growth", "atlas generation", "stamp change",
-        /// "trim", "resize", "destroy").
+        /// "trim", "resize", "destroy", "backdrop resolve").
         reason: &'static str,
     },
     /// An atlas cell was placed without an upload (zero-sized cells).

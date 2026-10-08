@@ -13,6 +13,7 @@
 //! `animated` — animated-scalar and morph-progress sampling.
 
 mod animated;
+pub mod backdrop;
 pub mod cell;
 pub mod layers;
 pub mod placement;

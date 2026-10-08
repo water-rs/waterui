@@ -12,7 +12,10 @@
 //! the key-dispatch modifier early return and before the focused text input
 //! sees the key; a matching chord claims the event, a disabled command claims
 //! it without firing, and the most recently registered source wins a
-//! conflict.
+//! conflict. A press without Control, Alt or Super reaches the registry only
+//! while no text editor holds focus — while one does the press is typing, so
+//! a bare character or named-key chord leaves the field its key
+//! (water-rs/waterui#2118).
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
@@ -20,23 +23,76 @@ use std::rc::{Rc, Weak};
 use nami::{Computed, Signal as _};
 use waterui::app::Quit;
 use waterui::window::WindowState;
-use waterui_controls::menu::{CommandExt as _, ResolvedCommand, ResolvedMenuItem, Shortcut};
+use waterui_controls::menu::{NamedKey, ResolvedCommand, ResolvedMenuItem, Shortcut, ShortcutKey};
 use waterui_core::Environment;
 use waterui_core::Str;
 use waterui_core::handler::SharedAction;
 
 use super::popup_menu::{PopupMenuNode, PopupMenuStateGroup};
 use crate::HydrolysisRenderer;
-use crate::platform::{KeyCode, Modifiers};
+use crate::platform::Modifiers;
 use crate::renderer::call_action_discarding_result;
 use crate::widgets::controls::button::MenuRenderState;
+
+/// The label a menu hint draws for a shortcut key: a letter in upper case,
+/// the space bar as `Space`, and a named key in the platform's own notation —
+/// the `⌦`/`↩`/`←` glyphs of macOS menus, the `Del`/`Enter`/`Left` text of
+/// Windows and Linux menus. A named key without a platform abbreviation
+/// shows its W3C name, which is already the label those menus print (`F5`,
+/// `Home`).
+fn shortcut_key_label(key: &ShortcutKey) -> String {
+    match key {
+        ShortcutKey::Character(' ') => String::from("Space"),
+        ShortcutKey::Character(character) => character.to_uppercase().collect(),
+        ShortcutKey::Named(named) => {
+            named_key_label(*named).map_or_else(|| named.to_string(), String::from)
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+const fn named_key_label(key: NamedKey) -> Option<&'static str> {
+    Some(match key {
+        NamedKey::Delete => "⌦",
+        NamedKey::Backspace => "⌫",
+        NamedKey::Enter => "↩",
+        NamedKey::Escape => "⎋",
+        NamedKey::Tab => "⇥",
+        NamedKey::ArrowUp => "↑",
+        NamedKey::ArrowDown => "↓",
+        NamedKey::ArrowLeft => "←",
+        NamedKey::ArrowRight => "→",
+        NamedKey::PageUp => "⇞",
+        NamedKey::PageDown => "⇟",
+        NamedKey::Home => "↖",
+        NamedKey::End => "↘",
+        NamedKey::Clear => "⌧",
+        _ => return None,
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+const fn named_key_label(key: NamedKey) -> Option<&'static str> {
+    Some(match key {
+        NamedKey::Delete => "Del",
+        NamedKey::Insert => "Ins",
+        NamedKey::Escape => "Esc",
+        NamedKey::PageUp => "PgUp",
+        NamedKey::PageDown => "PgDn",
+        NamedKey::ArrowUp => "Up",
+        NamedKey::ArrowDown => "Down",
+        NamedKey::ArrowLeft => "Left",
+        NamedKey::ArrowRight => "Right",
+        _ => return None,
+    })
+}
 
 /// The trailing hint a menu row draws for a `Command`'s shortcut — `⌃⌥⇧⌘`
 /// symbols on macOS, `Ctrl+Alt+Shift+` text elsewhere (where the command
 /// modifier is control, the platform's menu accelerator).
 pub fn shortcut_hint_text(shortcut: &Shortcut) -> Str {
     let modifiers = shortcut.modifiers;
-    let key = shortcut.key.to_uppercase();
+    let key = shortcut_key_label(&shortcut.key);
     #[cfg(target_os = "macos")]
     {
         let mut hint = String::new();
@@ -108,13 +164,13 @@ impl ChordModifiers {
     }
 }
 
-/// One command's chord: the normalized modifier set and lowercased key, the
-/// action it runs, its live disabled flag, the label a conflict warning names
+/// One command's chord: the normalized modifier set and the key, the action
+/// it runs, its live disabled flag, the label a conflict warning names
 /// it by, and the rendered hint text.
 #[derive(Clone)]
 struct MenuShortcut {
     modifiers: ChordModifiers,
-    key: Str,
+    key: ShortcutKey,
     action: SharedAction<()>,
     disabled: Computed<bool>,
     label: Str,
@@ -130,7 +186,7 @@ impl MenuShortcut {
     ) -> Self {
         Self {
             modifiers: ChordModifiers::of(shortcut),
-            key: shortcut.key.to_lowercase().into(),
+            key: shortcut.key.clone(),
             action,
             disabled,
             label,
@@ -138,12 +194,12 @@ impl MenuShortcut {
         }
     }
 
-    fn matches(&self, key: &str, pressed: Modifiers) -> bool {
+    fn matches(&self, key: &keyboard_types::Key, pressed: Modifiers) -> bool {
         self.modifiers.control == pressed.control
             && self.modifiers.alt == pressed.alt
             && self.modifiers.shift == pressed.shift
             && self.modifiers.super_key == pressed.super_key
-            && key.eq_ignore_ascii_case(&self.key)
+            && self.key.matches(key)
     }
 }
 
@@ -153,33 +209,6 @@ impl MenuShortcut {
 pub const MISSING_MENU_SHORTCUT_REGISTRY: &str = "menu shortcuts require the runner to seed a MenuShortcutRegistry into the window's \
      environment — the winit runner, headless run and HeadlessRuntime, SemanticRuntime and \
      the web runner all install one; a renderer built outside a runner seeds its own";
-
-/// The command a declared `MenuItem::Quit` stands for wherever Hydrolysis
-/// renders it — a popup-menu row, a chord in the shortcut table, an item in
-/// the Windows menu bar: the platform's word for quitting, its quit chord
-/// (⌘Q on macOS; Ctrl+Q elsewhere through [`ChordModifiers`]'
-/// command→control mapping) and a cancellable termination request filed
-/// through the `Quit` service, so `App::on_quit_request` still decides.
-///
-/// `None` when `env` carries no `Quit`: the host has no application quit —
-/// only a runner that starts the termination machine installs one — and the
-/// item is omitted.
-pub fn quit_command(env: &Environment) -> Option<ResolvedCommand> {
-    let quit = env.get::<Quit>()?.clone();
-    // "Exit" is the Windows menu convention; "Quit" is macOS's and what
-    // Linux desktops (GTK/Qt) use.
-    let label = if cfg!(target_os = "windows") {
-        "Exit"
-    } else {
-        "Quit"
-    };
-    Some(
-        label
-            .action(move || quit.request())
-            .shortcut(Shortcut::new("q").command())
-            .resolve(env),
-    )
-}
 
 /// A window's identity for menu-chord dispatch: the runner assigns one when it
 /// creates the window and hands it to the window's renderer, so the shared
@@ -225,7 +254,7 @@ impl HydrolysisRenderer {
 /// The commands of a `Menu` resolve into shortcut entries through the items
 /// signal, so a menu whose items change mounts its new chords on the next
 /// lookup without any registration churn. A declared Quit arms the chord of
-/// [`quit_command`], and nothing where `env` has no application quit.
+/// [`Quit::command`], and nothing where `env` has no application quit.
 fn collect_menu_shortcuts(
     items: &[ResolvedMenuItem],
     env: &Environment,
@@ -235,7 +264,7 @@ fn collect_menu_shortcuts(
         match item {
             ResolvedMenuItem::Command(command) => collect_command_shortcut(command, out),
             ResolvedMenuItem::Quit => {
-                if let Some(command) = quit_command(env) {
+                if let Some(command) = env.get::<Quit>().map(|quit| quit.command(env)) {
                     collect_command_shortcut(&command, out);
                 }
             }
@@ -463,19 +492,17 @@ impl MenuShortcutRegistry {
         });
     }
 
-    /// Dispatch a pressed key for `window` against the registry. Returns
-    /// `true` when a chord matched and claimed the event — whether or not its
-    /// command fired (disabled commands claim without firing).
+    /// Dispatch a pressed key — its W3C `KeyboardEvent.key` — for `window`
+    /// against the registry. Returns `true` when a chord matched and claimed
+    /// the event — whether or not its command fired (disabled commands claim
+    /// without firing).
     pub(crate) fn dispatch(
         &self,
         window: WindowId,
-        key: &KeyCode,
+        pressed: &keyboard_types::Key,
         modifiers: Modifiers,
         env: &Environment,
     ) -> bool {
-        let KeyCode::Character(pressed) = key else {
-            return false;
-        };
         let mut winner: Option<(MenuShortcut, Option<PopupMenuStateGroup>, Environment)> = None;
         let mut conflicts: Vec<Str> = Vec::new();
         {

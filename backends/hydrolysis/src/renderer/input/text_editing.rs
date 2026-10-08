@@ -1,6 +1,7 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::text::{SessionTextLayout, TextLayout as _, TextPosition, TextSelection};
 use unicode_segmentation::UnicodeSegmentation;
 use waterui_graphics::draw::Draw as _;
 
@@ -208,7 +209,7 @@ pub struct TextInputTarget {
     pub(crate) text_bounds: kurbo::Rect,
     pub(crate) text_clip_bounds: kurbo::Rect,
     pub(crate) content_alpha: f32,
-    pub(crate) layout: std::sync::Arc<parley::Layout<[u8; 4]>>,
+    pub(crate) layout: SessionTextLayout,
     /// The string the IME-visible layout was typeset from — the committed
     /// text with the live pre-edit spliced in (a text field) or the mask
     /// glyphs (a secure field) — and that layout, in `text_bounds`
@@ -229,7 +230,7 @@ pub struct TextInputTarget {
             reason = "read by the Android editing session and its tests"
         )
     )]
-    pub(crate) display_layout: std::sync::Arc<parley::Layout<[u8; 4]>>,
+    pub(crate) display_layout: SessionTextLayout,
     pub(crate) purpose: TextInputPurpose,
     pub(crate) depth: usize,
     pub(crate) order: usize,
@@ -360,7 +361,7 @@ pub struct FocusedEditorSnapshot {
     /// The text `display_layout` describes — committed + pre-edit for a
     /// field, the mask glyphs for a secure field.
     pub(crate) display_text: String,
-    pub(crate) display_layout: std::sync::Arc<parley::Layout<[u8; 4]>>,
+    pub(crate) display_layout: SessionTextLayout,
 }
 
 pub struct TextInputTargetRegistration {
@@ -371,7 +372,7 @@ pub struct TextInputTargetRegistration {
     pub(crate) text_bounds: kurbo::Rect,
     pub(crate) text_clip_bounds: kurbo::Rect,
     pub(crate) content_alpha: f32,
-    pub(crate) layout: std::sync::Arc<parley::Layout<[u8; 4]>>,
+    pub(crate) layout: SessionTextLayout,
     /// See [`TextInputTarget::display_text`].
     #[cfg_attr(
         not(any(target_os = "android", test)),
@@ -388,7 +389,7 @@ pub struct TextInputTargetRegistration {
             reason = "read by the Android editing session and its tests"
         )
     )]
-    pub(crate) display_layout: std::sync::Arc<parley::Layout<[u8; 4]>>,
+    pub(crate) display_layout: SessionTextLayout,
     pub(crate) purpose: TextInputPurpose,
     pub(crate) model: TextInputModel,
     pub(crate) selection: Rc<RefCell<TextSelectionSlot>>,
@@ -1013,9 +1014,9 @@ pub fn execute_text_context_menu_action(
 
 fn selection_for_target_layout(
     model: &TextInputModel,
-    layout: &parley::Layout<[u8; 4]>,
+    layout: &SessionTextLayout,
     slot: &TextSelectionSlot,
-) -> parley::Selection {
+) -> TextSelection {
     assert!(
         slot.initialized,
         "hydrolysis registered a text-input target before initializing its selection"
@@ -1026,24 +1027,13 @@ fn selection_for_target_layout(
     let layout_len = model.layout_len_for_plain_text(plain_text.as_str());
     let anchor_layout = model.layout_index_from_plain_index(anchor);
     let focus_layout = model.layout_index_from_plain_index(focus);
-    let anchor_affinity = if anchor_layout >= layout_len {
-        parley::Affinity::Upstream
-    } else {
-        parley::Affinity::Downstream
-    };
-    let focus_affinity = if focus_layout >= layout_len {
-        parley::Affinity::Upstream
-    } else {
-        parley::Affinity::Downstream
-    };
-    parley::Selection::new(
-        parley::Cursor::from_byte_index(layout, anchor_layout, anchor_affinity),
-        parley::Cursor::from_byte_index(layout, focus_layout, focus_affinity),
+    layout.selection(
+        TextPosition::in_text(anchor_layout, layout_len),
+        TextPosition::in_text(focus_layout, layout_len),
     )
-    .refresh(layout)
 }
 
-fn refreshed_target_selection(target: &TextInputTarget) -> parley::Selection {
+fn refreshed_target_selection(target: &TextInputTarget) -> TextSelection {
     let slot = target.selection.borrow();
     // The transient overlay may run after the model changes but before the next
     // retained-tree refresh replaces `target.layout`. Project the source
@@ -1122,7 +1112,7 @@ impl HydrolysisRenderer {
                                         draw.fill(target.cursor_area, paint.clone());
                                     }
                                 } else {
-                                    for (rect, _) in selection.geometry(&target.layout) {
+                                    target.layout.selection_rects(selection, |rect| {
                                         let highlight = kurbo::Rect::new(
                                             target.text_bounds.x0 + rect.x0,
                                             target.text_bounds.y0 + rect.y0,
@@ -1130,7 +1120,7 @@ impl HydrolysisRenderer {
                                             target.text_bounds.y0 + rect.y1,
                                         );
                                         draw.fill(highlight, selection_paint.clone());
-                                    }
+                                    });
                                 }
                             },
                         );
@@ -1685,7 +1675,7 @@ impl SemanticCore {
             cursor_area: target.cursor_area,
             text_bounds: target.text_bounds,
             display_text: target.display_text.to_string(),
-            display_layout: std::sync::Arc::clone(&target.display_layout),
+            display_layout: target.display_layout.clone(),
         })
     }
 
@@ -1800,11 +1790,8 @@ impl SemanticCore {
     ) -> usize {
         let local_x = crate::num_cast::f64_as_f32(point.x - target.text_bounds.x0);
         let local_y = crate::num_cast::f64_as_f32(point.y - target.text_bounds.y0);
-        let selection =
-            parley::Selection::from_point(&target.layout, local_x, local_y).refresh(&target.layout);
-        target
-            .model
-            .plain_index_from_layout_index(selection.focus().index())
+        let position = target.layout.hit_test(local_x, local_y);
+        target.model.plain_index_from_layout_index(position.index)
     }
 
     pub(crate) fn text_selection_range_from_point_with_click_count(
@@ -1815,18 +1802,17 @@ impl SemanticCore {
         let local_x = crate::num_cast::f64_as_f32(point.x - target.text_bounds.x0);
         let local_y = crate::num_cast::f64_as_f32(point.y - target.text_bounds.y0);
         let selection = match click_count {
-            2 => parley::Selection::word_from_point(&target.layout, local_x, local_y),
-            3.. => parley::Selection::line_from_point(&target.layout, local_x, local_y),
-            _ => parley::Selection::from_point(&target.layout, local_x, local_y),
-        }
-        .refresh(&target.layout);
+            2 => target.layout.word_at(local_x, local_y),
+            3.. => target.layout.line_at(local_x, local_y),
+            _ => TextSelection::collapsed(target.layout.hit_test(local_x, local_y)),
+        };
         (
             target
                 .model
-                .plain_index_from_layout_index(selection.anchor().index()),
+                .plain_index_from_layout_index(selection.anchor.index),
             target
                 .model
-                .plain_index_from_layout_index(selection.focus().index()),
+                .plain_index_from_layout_index(selection.focus.index),
         )
     }
 
@@ -1894,8 +1880,8 @@ impl SemanticCore {
     /// while a double/triple-click drag keeps the word/line it snapped to as
     /// the anchor and extends by whole units — so the pointer release (or a
     /// sub-pixel jiggle inside the same word) cannot collapse the gesture's
-    /// selection back to a caret. Mirrors parley's `Selection::extend_to_point`
-    /// in plain-index space.
+    /// selection back to a caret. Extends in plain-index space, the way a
+    /// word- or line-anchored selection extends to a point.
     pub(crate) fn update_text_selection_drag(&mut self, index: usize, point: kurbo::Point) -> bool {
         let Some(drag) = self.text_editing.active_text_selection_drag.clone() else {
             return false;
@@ -1916,7 +1902,7 @@ impl SemanticCore {
                     point,
                     drag.click_count,
                 );
-            // Same merge parley's `extend_selection` performs: union of the
+            // The extend merge: union of the
             // hovered unit and the armed anchor range, with the anchor kept on
             // the side opposite the drag direction.
             let extending_right = target_anchor >= drag.anchor;
@@ -2047,12 +2033,12 @@ impl SemanticCore {
         let mut slot = selection.borrow_mut();
         let current = selection_for_target_layout(&model, &target.layout, &slot);
         let next = if backward {
-            current.previous_visual(&target.layout, extend)
+            target.layout.previous_visual(current, extend)
         } else {
-            current.next_visual(&target.layout, extend)
+            target.layout.next_visual(current, extend)
         };
-        let anchor = model.plain_index_from_layout_index(next.anchor().index());
-        let focus = model.plain_index_from_layout_index(next.focus().index());
+        let anchor = model.plain_index_from_layout_index(next.anchor.index);
+        let focus = model.plain_index_from_layout_index(next.focus.index);
         let changed = slot.anchor != anchor || slot.focus != focus || !slot.initialized;
         slot.anchor = anchor;
         slot.focus = focus;
@@ -2328,7 +2314,7 @@ impl SemanticCore {
         env: &Environment,
         press: &KeyPress,
     ) -> KeyPressOutcome {
-        if self.handle_keyboard_key_down(key, modifiers, env) {
+        if self.handle_keyboard_key_down(key, &press.key, modifiers, env) {
             return KeyPressOutcome::Consumed;
         }
         if self.handle_key(key, modifiers) {
@@ -2546,6 +2532,7 @@ impl SemanticCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::text::{SessionTextEngine, TextEngine as _};
 
     fn empty_selection_menu() -> nami::Computed<Vec<ResolvedMenuItem>> {
         nami::Computed::new(Vec::new())
@@ -2679,7 +2666,7 @@ mod tests {
     #[test]
     fn stale_transient_layout_does_not_rewind_the_model_selection() {
         let model = text_field_model("l", Some(1));
-        let layout = parley::Layout::new();
+        let layout = SessionTextEngine::system(FontFamilyResolution::Strict).empty_layout();
         let slot = TextSelectionSlot {
             anchor: 1,
             focus: 1,
@@ -2688,7 +2675,7 @@ mod tests {
 
         let display_selection = selection_for_target_layout(&model, &layout, &slot);
 
-        assert_eq!(display_selection.focus().index(), 0);
+        assert_eq!(display_selection.focus.index, 0);
         assert_eq!((slot.anchor, slot.focus), (1, 1));
     }
 

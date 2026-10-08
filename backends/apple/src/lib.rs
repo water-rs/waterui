@@ -14,6 +14,10 @@ mod native_layout;
 mod native_log;
 pub mod resources;
 
+#[cfg(any(platform_timing, frame_progress))]
+mod animation;
+#[cfg(feature = "gpu_surface")]
+pub(crate) mod capture_image;
 pub(crate) mod components;
 pub(crate) mod first_paint;
 pub(crate) mod fonts;
@@ -40,6 +44,8 @@ pub(crate) mod menus;
 mod presentation_time;
 pub(crate) mod primary_content;
 pub(crate) mod proposal;
+#[cfg(feature = "gpu_surface")]
+mod publication_park;
 mod registry;
 #[cfg(any(target_os = "ios", test))]
 mod scene_registry;
@@ -49,6 +55,7 @@ mod termination;
 pub(crate) mod theme;
 #[cfg(target_os = "macos")]
 mod toolbar;
+pub(crate) mod window_background;
 pub(crate) mod windows;
 
 /// Harness-only internals for `Tests/native.rs`: private `windows` and

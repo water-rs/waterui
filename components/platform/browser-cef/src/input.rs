@@ -209,6 +209,9 @@ impl CefSurfaceInput {
         if delta_x == 0.0 && delta_y == 0.0 {
             return;
         }
+        // Chromium WebMouseWheelEvent is positive up/left; SurfaceInputEvent uses the W3C sign.
+        let delta_x = -delta_x;
+        let delta_y = -delta_y;
         let multiplier = match unit {
             ScrollUnit::Line => CEF_WHEEL_DELTA,
             ScrollUnit::Pixel => 1.0,

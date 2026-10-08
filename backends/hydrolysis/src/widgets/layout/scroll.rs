@@ -291,7 +291,7 @@ pub fn draw_scroll_indicators(
                     grab
                 });
                 let target = ((pointer - grab) / geometry.travel).clamp(0.0, 1.0) * metrics.max_y;
-                let changed = handle.scroll_to(metrics.offset_x, target);
+                let changed = handle.user_scroll_to(metrics.offset_x, target);
                 if changed {
                     renderer.mark_scroll_owner(&handle, crate::renderer::Dirty::LAYOUT);
                 }
@@ -336,7 +336,7 @@ pub fn draw_scroll_indicators(
                     grab
                 });
                 let target = ((pointer - grab) / geometry.travel).clamp(0.0, 1.0) * metrics.max_x;
-                let changed = handle.scroll_to(target, metrics.offset_y);
+                let changed = handle.user_scroll_to(target, metrics.offset_y);
                 if changed {
                     renderer.mark_scroll_owner(&handle, crate::renderer::Dirty::LAYOUT);
                 }

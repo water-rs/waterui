@@ -18,6 +18,7 @@ use cherenkov::{FilterId, Layer, LayerId, ShapeData, Shared, Transaction};
 
 use waterui_graphics::HeldResources;
 
+use super::backdrop::{BackdropGroupKey, BackdropGroups, MaterialMembership};
 use super::cell::NodeCell;
 use super::placement::Placement;
 use super::program::{
@@ -148,37 +149,38 @@ pub struct NodeLayers {
     install: Option<(Layer, LayerProps)>,
     /// Whether `install` holds a GPU producer (the census counts them).
     install_gpu: bool,
-    /// The material runtime the frame was last committed with.
-    #[cfg(test)]
-    material_runtime: Option<Rc<crate::renderer::material::MaterialRuntime>>,
     runs: Vec<RunLayer>,
     inner_runs: Vec<RunLayer>,
     scopes: Vec<ScopeLayer>,
     committed: Committed,
     inner_committed: Committed,
     content_held: Option<HeldResources>,
-    /// The target's backdrop state (`LayerTarget::Material`).
-    material: Option<Box<dyn Any>>,
+    /// The frame's material request as last lowered — the terms a
+    /// no-program commit re-keys its membership by (the mount's display
+    /// scale is the one term that can change without a re-flush). `None`
+    /// for a frame no lowered program ever carried a material for.
+    material_request: Option<MaterialRequest>,
+    /// The frame's backdrop-group membership (water-rs/waterui#1999):
+    /// the mount's table keeps it weakly, so an unmount's `layers.take()`
+    /// ends the membership at the next sweep.
+    material: Option<MaterialMembership>,
     /// The layer the frame is attached under.
     attached: Cell<Option<LayerId>>,
 }
 
 impl NodeLayers {
-    /// The target's material state.
+    /// The member's frame layer id when the node holds a backdrop-group
+    /// membership — a test-facing answer.
     #[cfg(test)]
-    pub const fn material_runtime(
-        &self,
-    ) -> Option<&Rc<crate::renderer::material::MaterialRuntime>> {
-        self.material_runtime.as_ref()
+    pub(crate) fn material_member(&self) -> Option<LayerId> {
+        self.material.as_ref().map(|_| self.frame.id())
     }
 
+    /// The material request the frame last lowered, whether or not it is
+    /// currently visible — a test-facing answer.
     #[cfg(test)]
-    pub fn material<M: 'static>(&self) -> Option<&M> {
-        self.material.as_ref().map(|material| {
-            material
-                .downcast_ref::<M>()
-                .expect("hydrolysis layers: material state of another target")
-        })
+    pub(crate) const fn material_request(&self) -> Option<MaterialRequest> {
+        self.material_request
     }
 }
 
@@ -214,6 +216,13 @@ pub struct Mount<T: LayerTarget> {
     window_props: LayerProps,
     window_committed: Committed,
     window_token: Rc<LayerToken>,
+    /// The window's backdrop-group table (water-rs/waterui#1999,
+    /// re-expressed per mount): the material members' frame layers share
+    /// their `(scope, level, scheme, canvas)` group's filtered capture.
+    groups: BackdropGroups<T::Group>,
+    /// The window layer's own backdrop membership: the window material
+    /// the root mounts over, when the window background names one.
+    window_material: Option<MaterialMembership>,
     attached: bool,
     stats: MountStats,
 }
@@ -226,6 +235,9 @@ pub struct CommitCx<'m, 'tx, 's, T: LayerTarget> {
     mount: u64,
     window_transform: kurbo::Affine,
     display_scale: f64,
+    /// The mount's backdrop-group table: material members join and leave
+    /// through it, and the commit's sweep releases emptied groups.
+    groups: &'m mut BackdropGroups<T::Group>,
     graveyard: &'m mut Vec<Box<dyn Any>>,
     stats: &'m mut MountStats,
     wakes: &'m mut dyn FnMut(&Rc<NodeCell>) -> ProducerWake,
@@ -294,6 +306,8 @@ impl<T: LayerTarget> Mount<T> {
             window_props: LayerProps::DEFAULT,
             window_committed: Vec::new(),
             window_token: Rc::new(LayerToken { owner: Weak::new() }),
+            groups: BackdropGroups::new(),
+            window_material: None,
             attached: false,
             stats: MountStats {
                 created: 1,
@@ -311,8 +325,18 @@ impl<T: LayerTarget> Mount<T> {
         std::mem::take(&mut self.stats)
     }
 
+    /// The mount's backdrop-group table.
+    #[cfg(test)]
+    pub(crate) const fn groups(&self) -> &BackdropGroups<T::Group> {
+        &self.groups
+    }
+
     /// Lowers every pending program under `roots` (the window's fixed
     /// host frames, in paint order) in one transaction.
+    ///
+    /// `window_material` is the window background's material request
+    /// (#1855): the window layer is the member, joined before the roots
+    /// so the root's content mounts over its backdrop group.
     pub fn commit(
         &mut self,
         host: &T::Host,
@@ -320,6 +344,7 @@ impl<T: LayerTarget> Mount<T> {
         display_scale: f64,
         roots: &[Rc<NodeCell>],
         wakes: &mut dyn FnMut(&Rc<NodeCell>) -> ProducerWake,
+        window_material: Option<&MaterialRequest>,
     ) {
         let shared = Rc::clone(&self.shared);
         let mut graveyard: Vec<Box<dyn Any>> = Vec::new();
@@ -330,6 +355,8 @@ impl<T: LayerTarget> Mount<T> {
             window_props,
             window_committed,
             window_token,
+            groups,
+            window_material: window_state,
             attached,
             stats,
             ..
@@ -339,15 +366,32 @@ impl<T: LayerTarget> Mount<T> {
                 tx[&*root].push(window);
                 *attached = true;
             }
+            let window_request = window_material.filter(|request| request.visible);
             write_props(
                 tx,
                 window,
                 window_props,
                 LayerProps {
                     transform: window_transform,
+                    clip: window_request.map(|request| ShapeData::of(&request.bounds)),
                     ..LayerProps::DEFAULT
                 },
             );
+            if let Some(request) = window_request {
+                T::mount_material(
+                    host,
+                    tx,
+                    groups,
+                    window,
+                    BackdropGroupKey::new(window.id(), request, None),
+                    display_scale,
+                    window_state,
+                );
+            } else if window_state.is_some() {
+                groups.clear(window.id());
+                T::clear_material(tx, window);
+                *window_state = None;
+            }
             let mut cx = CommitCx {
                 tx,
                 host,
@@ -355,12 +399,13 @@ impl<T: LayerTarget> Mount<T> {
                 mount: *id,
                 window_transform,
                 display_scale,
+                groups,
                 graveyard: &mut graveyard,
                 stats,
                 wakes,
             };
             for cell in roots {
-                commit_cell(&mut cx, cell);
+                commit_cell(&mut cx, cell, None);
             }
             let retained: Vec<_> = roots.iter().map(|cell| cell.retained()).collect();
             let guards: Vec<_> = retained.iter().map(|r| r.layers.borrow()).collect();
@@ -369,6 +414,7 @@ impl<T: LayerTarget> Mount<T> {
                 .map(|guard| node_want(guard))
                 .collect::<Vec<_>>();
             reconcile(cx.tx, window, &wants, window_committed, window_token);
+            cx.groups.sweep();
         });
         drop(graveyard);
     }
@@ -490,7 +536,14 @@ fn install_transform(bounds: kurbo::Rect, pixels: (u32, u32)) -> kurbo::Affine {
 }
 
 /// Commits one node: its frame props, producer, and every list.
-pub fn commit_cell<T: LayerTarget>(cx: &mut CommitCx<'_, '_, '_, T>, cell: &Rc<NodeCell>) {
+/// `canvas` is the install canvas the node's frame mounts under — the
+/// nearest enclosing filtered frame's layer, `None` at the surface root —
+/// part of the backdrop-group key a material member joins.
+pub fn commit_cell<T: LayerTarget>(
+    cx: &mut CommitCx<'_, '_, '_, T>,
+    cell: &Rc<NodeCell>,
+    canvas: Option<LayerId>,
+) {
     let retained = cell.retained();
     let mut program = retained.pending.borrow_mut().take();
     let anchor = retained.anchor.borrow().clone();
@@ -525,8 +578,7 @@ pub fn commit_cell<T: LayerTarget>(cx: &mut CommitCx<'_, '_, '_, T>, cell: &Rc<N
                 inner_committed: Vec::new(),
                 content_held: None,
                 install_gpu: false,
-                #[cfg(test)]
-                material_runtime: None,
+                material_request: None,
                 material: None,
                 attached: Cell::new(None),
             }
@@ -541,12 +593,50 @@ pub fn commit_cell<T: LayerTarget>(cx: &mut CommitCx<'_, '_, '_, T>, cell: &Rc<N
             ..layers.frame_props.clone()
         };
         write_props(cx.tx, &layers.frame, &mut layers.frame_props, props);
+        // No program staged: the last lowered request still governs the
+        // frame's material membership — re-key it when the mount's terms
+        // (display scale) changed without a re-flush.
+        let request = layers.material_request;
+        commit_material(cx, &mut layers, request.as_ref(), canvas);
+        // ...and the mount's terms reach every mounted descendant the
+        // same way.
+        let child_canvas = layers
+            .frame_props
+            .filter
+            .is_some()
+            .then(|| layers.frame.id())
+            .or(canvas);
+        for child in committed_cells(&layers) {
+            commit_cell(cx, &child, child_canvas);
+        }
         *retained.layers.borrow_mut() = Some(layers);
         return;
     };
-    lower_program(cx, cell, &mut layers, transform, &program);
+    lower_program(cx, cell, &mut layers, transform, &program, canvas);
     *retained.lowered.borrow_mut() = Some(program);
     *retained.layers.borrow_mut() = Some(layers);
+}
+
+/// The mounted child cells a node's `committed` lists reach — its own
+/// list, its inner layer's, and its scopes'. Entries carrying `token`
+/// are the node's own inner, install, run and scope layers, not nodes.
+/// A `committed` entry's dead token or dead owner skips itself: the
+/// child unmounted already.
+fn committed_cells(layers: &NodeLayers) -> Vec<Rc<NodeCell>> {
+    layers
+        .committed
+        .iter()
+        .chain(layers.inner_committed.iter())
+        .chain(
+            layers
+                .scopes
+                .iter()
+                .flat_map(|scope| scope.committed.iter()),
+        )
+        .filter_map(|(_, weak)| weak.upgrade())
+        .filter(|token| !Rc::ptr_eq(token, &layers.token))
+        .filter_map(|token| token.owner.upgrade())
+        .collect()
 }
 
 fn lower_program<T: LayerTarget>(
@@ -555,6 +645,7 @@ fn lower_program<T: LayerTarget>(
     layers: &mut NodeLayers,
     transform: kurbo::Affine,
     program: &Program,
+    canvas: Option<LayerId>,
 ) {
     let Program {
         opacity,
@@ -584,11 +675,22 @@ fn lower_program<T: LayerTarget>(
             scroll: kurbo::Vec2::ZERO,
         },
     );
-    commit_material(cx, layers, material.as_ref());
+    commit_material(cx, layers, material.as_ref(), canvas);
+    // The children's install canvas: this frame when it carries a
+    // filter — a backdrop group never shares a capture across filtered
+    // boundaries — otherwise the canvas the frame itself mounts under.
+    let child_canvas = filter.is_some().then(|| layers.frame.id()).or(canvas);
 
     let mut scopes_old = std::mem::take(&mut layers.scopes);
     let mut scopes_new = Vec::new();
-    lower_inner(cx, layers, inner.as_ref(), &mut scopes_old, &mut scopes_new);
+    lower_inner(
+        cx,
+        layers,
+        inner.as_ref(),
+        &mut scopes_old,
+        &mut scopes_new,
+        child_canvas,
+    );
 
     assert!(
         items.is_empty() || !matches!(producer, Some(ProducerContent::Scene(_))),
@@ -615,6 +717,7 @@ fn lower_program<T: LayerTarget>(
         &mut scopes_new,
         &mut layers.committed,
         &layers.token,
+        child_canvas,
     );
     for scope in scopes_old {
         cx.retire_scope(scope);
@@ -622,34 +725,32 @@ fn lower_program<T: LayerTarget>(
     layers.scopes = scopes_new;
 }
 
-/// Mounts or releases the frame's backdrop membership through the target.
+/// Mounts the frame's backdrop membership through the mount's shared
+/// group table — the member joins the group its request terms key,
+/// releasing its membership and the group's leftover when the request
+/// turns absent or invisible.
 fn commit_material<T: LayerTarget>(
     cx: &mut CommitCx<'_, '_, '_, T>,
     layers: &mut NodeLayers,
     material: Option<&MaterialRequest>,
+    canvas: Option<LayerId>,
 ) {
-    if let Some(request) = material {
-        #[cfg(test)]
-        {
-            layers.material_runtime = Some(Rc::clone(&request.runtime));
-        }
-        let mut state = layers.material.take().map(|state| {
-            *state
-                .downcast::<T::Material>()
-                .expect("hydrolysis layers: material state of another target")
-        });
+    layers.material_request = material.copied();
+    if let Some(request) = material.filter(|request| request.visible) {
+        let key = BackdropGroupKey::new(layers.frame.id(), request, canvas);
         T::mount_material(
             cx.host,
             cx.tx,
+            cx.groups,
             &layers.frame,
-            &request.runtime,
+            key,
             cx.display_scale,
-            request.visible,
-            &mut state,
+            &mut layers.material,
         );
-        layers.material = state.map(|state| Box::new(state) as Box<dyn Any>);
-    } else if let Some(state) = layers.material.take() {
-        cx.graveyard.push(state);
+    } else if layers.material.is_some() {
+        cx.groups.clear(layers.frame.id());
+        T::clear_material(cx.tx, &layers.frame);
+        layers.material = None;
     }
 }
 
@@ -661,6 +762,7 @@ fn lower_inner<T: LayerTarget>(
     inner: Option<&InnerProgram>,
     scopes_old: &mut Vec<ScopeLayer>,
     scopes_new: &mut Vec<ScopeLayer>,
+    canvas: Option<LayerId>,
 ) {
     if let Some(inner) = inner {
         if layers.inner.is_none() {
@@ -690,6 +792,7 @@ fn lower_inner<T: LayerTarget>(
             scopes_new,
             &mut layers.inner_committed,
             &layers.token,
+            canvas,
         );
     } else {
         if let Some((layer, _)) = layers.inner.take() {
@@ -885,6 +988,7 @@ fn lower_list<T: LayerTarget>(
     scopes_new: &mut Vec<ScopeLayer>,
     committed: &mut Committed,
     token: &Rc<LayerToken>,
+    canvas: Option<LayerId>,
 ) {
     let mut old_runs = std::mem::take(runs);
     let had_own = old_runs.iter().any(|run| run.layer.is_none());
@@ -908,7 +1012,7 @@ fn lower_list<T: LayerTarget>(
                 }
             }
             Item::Node(child) => {
-                commit_cell(cx, child);
+                commit_cell(cx, child, canvas);
                 slots.push(Slot::Node(Rc::clone(child)));
             }
             Item::Scope {
@@ -923,6 +1027,7 @@ fn lower_list<T: LayerTarget>(
                     scopes_old,
                     scopes_new,
                     token,
+                    canvas,
                 );
                 slots.push(Slot::Scope(at));
             }
@@ -1031,6 +1136,7 @@ fn lower_scope<T: LayerTarget>(
     scopes_old: &mut Vec<ScopeLayer>,
     scopes_new: &mut Vec<ScopeLayer>,
     token: &Rc<LayerToken>,
+    canvas: Option<LayerId>,
 ) -> usize {
     let mut scope = scopes_old
         .iter()
@@ -1074,6 +1180,7 @@ fn lower_scope<T: LayerTarget>(
         scopes_new,
         committed,
         token,
+        canvas,
     );
     scopes_new.push(scope);
     scopes_new.len() - 1

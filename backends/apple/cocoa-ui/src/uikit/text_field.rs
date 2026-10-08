@@ -114,6 +114,17 @@ impl TextField {
         self.setAttributedPlaceholder(Some(placeholder));
     }
 
+    /// The declared content type — `UITextContentType` is what autofill and
+    /// the one-time-code suggestion above the keyboard key on.
+    pub fn set_content_type(&self, content_type: crate::ContentType) {
+        // SAFETY: `setTextContentType:` is a `UITextInputTraits` setter on
+        // `UITextField` — see `send_trait_setter`. The constants are
+        // framework statics, so passing one cannot alias.
+        unsafe {
+            send_trait_setter(self, sel!(setTextContentType:), Some(content_type.native()));
+        }
+    }
+
     /// The on-screen keyboard the field requests while editing.
     pub fn set_keyboard(&self, keyboard: Keyboard) {
         // SAFETY: `setKeyboardType:` is a `UITextInputTraits` setter on

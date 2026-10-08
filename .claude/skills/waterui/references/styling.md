@@ -157,7 +157,9 @@ view.background(Material::Regular)        // platform blur material
 view.background(RoundedRectangle::new(0.18).fill(Surface))   // any view is a valid background
 ```
 
-`Material` is the content-layer frosted pane (SwiftUI's `.regularMaterial`); Liquid Glass
+`Material` is the content-layer frosted pane (SwiftUI's `.regularMaterial`). `UltraThin` and
+`Thin` blend what lies behind the window: Hydrolysis realizes them only as a window's
+background (`Window::background`), and panics on them as a view's background. Liquid Glass
 is a separate type, `Glass`, because it is a different surface with its own parameters,
 not a sixth thickness. Glass carries its own outline — a capsule unless you say
 otherwise — because a mask over glass would destroy its refraction; do not `.clip()` it.

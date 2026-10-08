@@ -29,7 +29,7 @@ mod identity;
 mod input;
 mod interaction_layers;
 mod lifecycle;
-mod material;
+pub mod material;
 mod metadata;
 pub mod mount;
 mod native_measure;
@@ -57,7 +57,9 @@ pub use native_measure::*;
 #[cfg(test)]
 pub use recording::assert_well_formed_image;
 pub use recording::{Glyph, GlyphRun, Recording, working_color};
-pub use tree::safe_area::{Edge, EdgeOffsets, SafeAreaLayout, ScrollSurfaceArea, grow_rect};
+pub use tree::safe_area::{
+    ChromeBar, Edge, EdgeOffsets, SafeAreaLayout, ScrollSurfaceArea, grow_rect,
+};
 pub use tree::*;
 pub use views::*;
 pub use waterui_backend_core::frame_signals::FrameSignals;
@@ -110,7 +112,7 @@ use waterui::accessibility::{
     AccessibilityRole, AccessibilityState, AccessibilityStateSignal, AccessibilityValue,
 };
 use waterui::animation::Animation;
-use waterui::background::{Background, MaterialBackground};
+use waterui::background::{Background, MaterialBackground, MaterialGroup};
 use waterui::border::Border;
 use waterui::component::badge::BadgeConfig;
 use waterui::component::focus::Focused;
@@ -132,7 +134,6 @@ use waterui::navigation::{
     NavigationTransitionSource, NavigationView,
 };
 use waterui::style::{Offset, Rotation, Scale, Shadow};
-use waterui::theme;
 use waterui::widget::Divider;
 use waterui::window::{Window, WindowState, WindowStyle};
 use waterui_controls::button::{Button, ButtonConfig};
@@ -140,6 +141,8 @@ use waterui_controls::label::Label as SemanticLabel;
 use waterui_controls::menu::{CommandRole, ResolvedCommand, ResolvedMenu, ResolvedMenuItem};
 use waterui_controls::slider::SliderConfig;
 use waterui_controls::stepper::StepperConfig;
+#[cfg(feature = "accessibility")]
+use waterui_controls::text_field::ContentType;
 use waterui_controls::text_field::{ResolvedTextFieldConfig, TextField};
 use waterui_controls::toggle::ToggleConfig;
 use waterui_core::dynamic::{Dynamic, DynamicInitialContent};
@@ -176,8 +179,7 @@ use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
 use waterui_map::MapConfig;
 use waterui_shape::{ClipShape, PathCommand, ResolvedMorphShape, ResolvedShape, ShapeKind};
-use waterui_text::font::FontWeight as TextFontWeight;
-use waterui_text::styled::{Style as TextStyle, StyledStr};
+use waterui_text::styled::StyledStr;
 use waterui_text::{Text, TextConfig};
 use waterui_webview::WebView;
 
@@ -191,6 +193,7 @@ use crate::platform::{
 };
 #[cfg(feature = "accessibility")]
 use crate::scroll::ScrollHandle;
+use crate::text::SessionTextEngine;
 use crate::time::Instant;
 use crate::widgets::inset_rect;
 
@@ -514,6 +517,11 @@ pub struct SemanticCore {
     /// The placement epoch `hit_test`'s flat lists last materialized
     /// against — they rebuild when it lags or `retained.stale` is set.
     materialized_epoch: u64,
+    /// The window material request the current frame presents: written
+    /// when the window's backdrop lands and cleared after the commit
+    /// consumes it, so a material view flush sees the scope the window
+    /// declares (always `None` — the window's own backdrop mounts solo).
+    pub(crate) window_material: Option<mount::program::MaterialRequest>,
 }
 
 // The state members are engine internals (gesture/hit-test/executor state)
@@ -578,6 +586,11 @@ pub struct HydrolysisRenderer {
     /// byte-identical.
     #[cfg(feature = "frame-profile")]
     last_layout_signature: Option<u64>,
+    /// The within-window material the window's background names, which the
+    /// window's root is mounted over; `None` for any other background.
+    window_backdrop: Option<crate::renderer::material::WindowBackdrop>,
+    /// The `.material_group()` scope stack the flush keeps.
+    pub(crate) compositor: render::Compositor,
 }
 
 impl core::ops::Deref for HydrolysisRenderer {
@@ -630,7 +643,7 @@ impl SemanticCore {
             .and_then(|link| link.parent.clone());
     }
 
-    pub(crate) fn new(frame_instant: Instant, family_resolution: FontFamilyResolution) -> Self {
+    pub(crate) fn new(frame_instant: Instant, text: SessionTextEngine) -> Self {
         let signals = FrameSignals::new(frame_instant);
         let placement_clock = PlacementClock::new();
         let root = NodeCell::new(signals.clone(), Placement::new(&placement_clock));
@@ -672,7 +685,7 @@ impl SemanticCore {
             anchored: host(),
         };
         Self {
-            state: HydroState::new(family_resolution),
+            state: HydroState::new(text),
             hit_test: HitTestState::default(),
             gesture_engine: GestureEngine::default(),
             gesture_group_ids: BTreeMap::new(),
@@ -719,6 +732,7 @@ impl SemanticCore {
             saved_emit_owners: Vec::new(),
             record_seq: 0,
             materialized_epoch: 0,
+            window_material: None,
         }
     }
 
@@ -1744,18 +1758,40 @@ impl HydrolysisRenderer {
         self.core.current_hit_transform()
     }
 
-    /// A renderer drawing with `theme`. `family_resolution` decides whether a
-    /// named font family the collection cannot resolve is skipped
-    /// ([`FontFamilyResolution::Lenient`], applications) or fails the shape
-    /// naming it ([`FontFamilyResolution::Strict`], test hosts).
+    /// A renderer drawing with `theme`, shaping text against the system font
+    /// collection under `family_resolution`.
     #[must_use]
     pub fn new(
         theme: Rc<dyn crate::engine::WidgetTheme>,
         family_resolution: FontFamilyResolution,
     ) -> Self {
+        Self::with_engine(theme, SessionTextEngine::system(family_resolution))
+    }
+
+    /// A renderer drawing with `theme`, shaping text against `fonts` — the
+    /// collection [`crate::native_collection`] builds — under
+    /// `family_resolution`.
+    #[must_use]
+    pub fn with_fonts(
+        theme: Rc<dyn crate::engine::WidgetTheme>,
+        fonts: &waterui_text::FontCollection,
+        family_resolution: FontFamilyResolution,
+    ) -> Self {
+        Self::with_engine(
+            theme,
+            SessionTextEngine::from_collection(fonts, family_resolution),
+        )
+    }
+
+    /// A renderer drawing with `theme`, shaping through `text` — the
+    /// session's text engine the runner built it with.
+    pub(crate) fn with_engine(
+        theme: Rc<dyn crate::engine::WidgetTheme>,
+        text: SessionTextEngine,
+    ) -> Self {
         let frame_instant = Instant::now();
         Self {
-            core: SemanticCore::new(frame_instant, family_resolution),
+            core: SemanticCore::new(frame_instant, text),
             theme,
             window_bounds: kurbo::Rect::ZERO,
             window_display_transform: kurbo::Affine::IDENTITY,
@@ -1774,6 +1810,8 @@ impl HydrolysisRenderer {
             frame_stage_times: FrameStageTimes::default(),
             #[cfg(feature = "frame-profile")]
             last_layout_signature: None,
+            window_backdrop: None,
+            compositor: render::Compositor::default(),
         }
     }
 

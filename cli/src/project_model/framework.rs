@@ -339,6 +339,18 @@ pub(crate) fn rewrite_patch_tables(
 }
 
 impl ResolvedFramework {
+    /// The checkout root a local `waterui_path` framework resolves to —
+    /// `None` for a channel selection, whose packages all have non-path
+    /// sources. The path is the manifest's `waterui_path` joined to the
+    /// project root, so it needs canonicalizing before comparison.
+    #[must_use]
+    pub fn local_checkout_root(&self) -> Option<&Path> {
+        match &self.source {
+            Source::Local { root } => Some(root.as_path()),
+            Source::Stable { .. } | Source::Dev { .. } | Source::Nightly { .. } => None,
+        }
+    }
+
     /// The selected distribution channel — `None` for a local checkout, which
     /// is a filesystem source rather than a channel.
     #[must_use]
@@ -357,17 +369,20 @@ impl ResolvedFramework {
     /// explicit channel selection creates the record.
     ///
     /// # Errors
-    /// Returns an error when the manifest records no framework source, or the
-    /// local checkout's framework facts cannot be read.
+    /// Returns an error when the manifest records no framework source, its
+    /// saved selection is incompatible with this CLI, or the local checkout's
+    /// framework facts cannot be read.
     pub(crate) async fn for_manifest(
         manifest: &crate::project::Manifest,
         project_root: &Path,
     ) -> Result<Self> {
         if let Some(framework) = &manifest.framework {
-            return framework.clone().validated().wrap_err(
-                "the recorded framework selection predates a metadata key this CLI \
-                 requires; re-run `water channel` to resolve it again",
-            );
+            return framework.clone().validated().map_err(|error| {
+                eyre!(
+                    "Water.toml records a framework selection waterui-cli {} cannot scaffold: {error:#}",
+                    env!("CARGO_PKG_VERSION")
+                )
+            });
         }
         let Some(waterui_path) = &manifest.waterui_path else {
             bail!(
@@ -433,6 +448,7 @@ impl ResolvedFramework {
     /// reaches a template context has passed here, so a template accessor
     /// failing on it is an internal invariant, not an input error.
     fn validated(mut self) -> Result<Self> {
+        require_framework_members(&self.metadata, &self.origin())?;
         self.android_min_api_level()?;
         // The stable split is an invariant of the source, not of the writer:
         // a selection persisted before `experimental-packages` existed keeps
@@ -646,7 +662,20 @@ impl ResolvedFramework {
     /// declare a valid `android-min-api-level` integer.
     pub(crate) fn android_min_api_level(&self) -> Result<u32> {
         const KEY: &str = "package.metadata.waterui.android-min-api-level";
-        let origin = match &self.source {
+        let value = self
+            .metadata
+            .get("android-min-api-level")
+            .ok_or_else(|| eyre!("{} does not declare {KEY}", self.origin()))?;
+        value
+            .as_integer()
+            .and_then(|level| u32::try_from(level).ok())
+            .ok_or_else(|| eyre!("{} declares an invalid {KEY}: {value}", self.origin()))
+    }
+
+    /// The framework manifest the selection's metadata was read from, as a
+    /// diagnostic names it.
+    fn origin(&self) -> String {
+        match &self.source {
             Source::Stable { release } => release.as_ref().map_or_else(
                 || "the stable framework manifest".to_owned(),
                 |release| format!("the framework manifest certified by {}", release.tag),
@@ -662,15 +691,7 @@ impl ResolvedFramework {
                 ..
             } => format!("the framework manifest at {repository}@{revision}"),
             Source::Local { root } => format!("{}", root.join("Cargo.toml").display()),
-        };
-        let value = self
-            .metadata
-            .get("android-min-api-level")
-            .ok_or_else(|| eyre!("{origin} does not declare {KEY}"))?;
-        value
-            .as_integer()
-            .and_then(|level| u32::try_from(level).ok())
-            .ok_or_else(|| eyre!("{origin} declares an invalid {KEY}: {value}"))
+        }
     }
 
     pub(crate) fn patches(&self) -> PatchSet {
@@ -2113,6 +2134,55 @@ fn validate_cli_version(
     Ok(())
 }
 
+/// The first `waterui-cli` version that scaffolds the Apple and Hydrolysis
+/// backends as members of the framework tree ([`FRAMEWORK_MEMBERS`]). It is
+/// the CLI half of the contract whose framework half is a `{name}-path`
+/// declaration for each member: a framework published before the members
+/// moved in declares none, pins its backends as separate repositories —
+/// the Swift `apple-backend` package, a registry `hydrolysis` — and is
+/// scaffolded by the CLI line before this version.
+const FRAMEWORK_MEMBERS_CLI_VERSION: &str = "0.4.4";
+
+/// Hold a framework to the tree layout this CLI scaffolds: every
+/// [`FRAMEWORK_MEMBERS`] crate declared under its `path_key`. The templates
+/// generate code against those members, so a framework without them cannot
+/// produce a project on any backend; it is rejected before anything resolves
+/// or is written, naming the framework, the keys it lacks and the two ways
+/// forward — a framework revision that carries the members, or the CLI line
+/// that scaffolds this one.
+fn require_framework_members(metadata: &toml::Table, origin: &str) -> Result<()> {
+    let missing: Vec<String> = FRAMEWORK_MEMBERS
+        .iter()
+        .filter(|member| {
+            metadata
+                .get(member.path_key)
+                .and_then(toml::Value::as_str)
+                .is_none()
+        })
+        .map(|member| format!("`{}`", member.path_key))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    // The CLI line that scaffolds the framework starts at the floor the
+    // framework itself declares and ends where the members became required.
+    let floor =
+        minimum_cli_version(metadata)?.map_or_else(String::new, |minimum| format!(">={minimum}, "));
+    let install = format!(
+        "cargo install {} --version '{floor}<{FRAMEWORK_MEMBERS_CLI_VERSION}' --locked",
+        env!("CARGO_PKG_NAME")
+    );
+    bail!(
+        "{origin} declares no {}: its backends are not members of the framework tree, and \
+         waterui-cli {} scaffolds only a framework that carries them.\n\
+         Select a framework revision that does — `water create <name> --channel dev` for a new \
+         project, `water channel dev` in an existing one — or scaffold this framework with the \
+         CLI line it was published for: {install}",
+        missing.join(", "),
+        env!("CARGO_PKG_VERSION"),
+    );
+}
+
 pub(crate) async fn validate_local_cli(root: &Path) -> Result<()> {
     let contents = smol::fs::read_to_string(root.join("Cargo.toml")).await?;
     let manifest = toml::from_str(&contents)?;
@@ -2705,68 +2775,6 @@ pub(crate) mod test_fixtures {
         std::fs::write(manifest_path, toml::to_string(&manifest).unwrap()).unwrap();
     }
 
-    /// The same fixture as it existed while the backends still rode
-    /// gitlinks: no `apple-backend-path` and no `android-backend-revision`
-    /// in the manifest, the submodule pins recorded in the index.
-    pub fn write_pre_decoupling_checkout(root: &Path) {
-        write_local_checkout(root);
-        write_submodule_pin(root, "backends/apple", 'b');
-        write_submodule_pin(root, "backends/android", 'c');
-        let manifest = local_checkout_manifest()
-            .lines()
-            .filter(|line| {
-                let line = line.trim_start();
-                !(line.starts_with("apple-backend-path")
-                    || line.starts_with("android-backend-revision"))
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            !manifest.contains("apple-backend-path")
-                && !manifest.contains("android-backend-revision"),
-            "the fixture manifest moved; the pre-decoupling rewrite must be revisited"
-        );
-        std::fs::write(root.join("Cargo.toml"), manifest).expect("manifest");
-        let git = |args: &[&str]| {
-            let status = StdCommand::new("git")
-                .arg("-C")
-                .arg(root)
-                .args(args)
-                .status()
-                .expect("git must run");
-            assert!(status.success(), "git {args:?} failed");
-        };
-        git(&["add", "Cargo.toml"]);
-        // Synthetic pins are no real commit: the host's hooks must not run.
-        git(&[
-            "-c",
-            "user.name=waterui-test",
-            "-c",
-            "user.email=waterui-test@waterui.dev",
-            "commit",
-            "--no-verify",
-            "-qm",
-            "pre-decoupling manifest",
-        ]);
-    }
-
-    /// Record a gitlink pin the way a checked-out submodule records it —
-    /// `160000` is the mode `git submodule` writes into the index.
-    fn write_submodule_pin(root: &Path, path: &str, seed: char) {
-        let status = StdCommand::new("git")
-            .arg("-C")
-            .arg(root)
-            .args([
-                "update-index",
-                "--add",
-                "--cacheinfo",
-                &format!("160000,{},{}", seed.to_string().repeat(40), path),
-            ])
-            .status()
-            .expect("git must run");
-        assert!(status.success(), "git update-index failed");
-    }
-
     /// The manifest a local checkout fixture carries: the framework's own
     /// metadata and the workspace requirements `scaffold-packages` names.
     fn local_checkout_manifest() -> &'static str {
@@ -3181,6 +3189,13 @@ fn verify_certification(
         };
         validate_installed_cli(minimum, &update)?;
     }
+    // The certification carries the framework's metadata verbatim, so a
+    // framework this CLI cannot scaffold is rejected before its tree is
+    // fetched.
+    require_framework_members(
+        &certification.metadata,
+        &format!("the {channel} framework {}", certification.tag),
+    )?;
     Ok(())
 }
 
@@ -3534,7 +3549,7 @@ fn same_git_source(source: &str, repository: &str) -> bool {
 mod tests {
     use test_fixtures::{
         dev_framework, nightly_framework, package, stable_framework, test_lock,
-        write_apple_pathless_checkout, write_local_checkout, write_pre_decoupling_checkout,
+        write_apple_pathless_checkout, write_local_checkout,
     };
 
     use super::*;
@@ -4133,6 +4148,36 @@ mod tests {
         invalid.metadata["android-min-api-level"] = toml::Value::String("31".to_owned());
         let error = invalid.android_min_api_level().unwrap_err().to_string();
         assert!(error.contains("android-min-api-level"), "{error}");
+    }
+
+    #[test]
+    fn a_rejected_recorded_selection_reports_the_inner_error() {
+        let mut framework = stable_framework();
+        framework.metadata.remove("android-min-api-level");
+        let mut manifest = crate::project::Manifest::new(crate::project::Package {
+            name: "Water Example".to_string(),
+            bundle_identifier: crate::project_types::BundleIdentifier::try_from(
+                "dev.waterui.waterexample",
+            )
+            .expect("bundle identifier"),
+            assets_path: "assets".to_string(),
+            accessory: false,
+            embedded: false,
+        });
+        manifest.framework = Some(framework);
+
+        let error = smol::block_on(ResolvedFramework::for_manifest(&manifest, Path::new(".")))
+            .expect_err("the saved framework record is missing required metadata");
+        let message = error.to_string();
+        assert!(
+            message.contains("does not declare package.metadata.waterui.android-min-api-level"),
+            "{message}"
+        );
+        assert!(
+            message.contains("Water.toml records a framework selection"),
+            "{message}"
+        );
+        assert!(!message.contains("re-run `water channel`"), "{message}");
     }
 
     #[test]
@@ -5301,6 +5346,8 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
             "metadata": {
                 "minimum-cli-version": "0.1.0",
                 "android-min-api-level": 31,
+                "apple-backend-path": "backends/apple",
+                "hydrolysis-path": "backends/hydrolysis",
             },
         });
         std::fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
@@ -5628,18 +5675,29 @@ hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "d887
     }
 
     /// A checkout from before the backend's return declares no
-    /// `apple-backend-path`: it supplies no native Apple backend — nothing
-    /// is invented from an old gitlink or a separate repository.
+    /// `apple-backend-path`: the CLI cannot scaffold it, so resolution
+    /// rejects it before anything is written — nothing is invented from an
+    /// old gitlink or a separate repository — and names the missing key and
+    /// the ways forward.
     #[test]
-    fn a_checkout_without_apple_backend_path_carries_no_native_backend() {
+    fn a_checkout_without_a_member_declaration_is_rejected() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("waterui");
         write_apple_pathless_checkout(&root);
 
-        let framework = smol::block_on(ResolvedFramework::for_local_checkout(&root)).unwrap();
-        assert!(framework.member_path(APPLE_BACKEND).is_none());
-        assert!(!framework.scaffold.contains_key("apple-backend-revision"));
-        assert!(!framework.scaffold.contains_key("apple-backend-version"));
+        let error = smol::block_on(ResolvedFramework::for_local_checkout(&root))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("declares no `apple-backend-path`:"),
+            "{error}"
+        );
+        assert!(!error.contains("hydrolysis-path"), "{error}");
+        assert!(error.contains("--channel dev"), "{error}");
+        assert!(
+            error.contains(&format!("<{FRAMEWORK_MEMBERS_CLI_VERSION}' --locked")),
+            "{error}"
+        );
     }
 
     #[test]
@@ -5673,24 +5731,6 @@ hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "d887
         );
         assert_eq!(framework.scaffold_value("waterui-version"), "0.4.1");
         assert!(framework.git_source().is_none());
-    }
-
-    /// A checkout from before the backends left the tree: its manifest
-    /// declares no `android-backend-revision`, and the retired `backends/android`
-    /// gitlink supplies nothing — the pin comes only from the declared scaffold
-    /// fact. The `backends/apple` gitlink a pre-extraction tree carries pins
-    /// nothing either — the in-tree member needs no revision, and a checkout that
-    /// does not declare `apple-backend-path` has no native Apple backend.
-    #[test]
-    fn local_checkout_predating_the_revision_declaration_reads_no_gitlink() {
-        let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("waterui");
-        write_pre_decoupling_checkout(&root);
-
-        let framework = smol::block_on(ResolvedFramework::for_local_checkout(&root)).unwrap();
-        assert!(framework.member_path(APPLE_BACKEND).is_none());
-        assert!(!framework.scaffold.contains_key("apple-backend-revision"));
-        assert!(!framework.scaffold.contains_key("android-backend-revision"));
     }
 
     #[test]

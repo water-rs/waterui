@@ -251,8 +251,7 @@ impl NodeCell {
         if let Some(retained) = self.retained.borrow().upgrade() {
             let _ = retained.layers.borrow_mut().take();
         }
-        self.own
-            .set(self.own.get() | Dirty::PAINT | Dirty::COMMIT);
+        self.own.set(self.own.get() | Dirty::PAINT | Dirty::COMMIT);
     }
 
     /// [`unmount`](Self::unmount) over this cell's whole subtree: every

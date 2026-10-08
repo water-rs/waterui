@@ -270,6 +270,29 @@ pub trait ViewExt: View + Sized {
         background.apply_background(self)
     }
 
+    /// Groups the backdrop materials in this view's subtree.
+    ///
+    /// The materials inside share one capture of what lies behind the
+    /// group, and the style may merge them into one shape where they come
+    /// close, as a toolbar's glass controls do. The style decides whether
+    /// and how they merge; the nearest enclosing group wins. See
+    /// [`MaterialGroup`](crate::background::MaterialGroup) for the contract.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    ///
+    /// hstack((
+    ///     text!("Back").padding().background(Glass::regular()),
+    ///     text!("Share").padding().background(Glass::regular()),
+    /// ))
+    /// .material_group();
+    /// ```
+    fn material_group(self) -> IgnorableMetadata<crate::background::MaterialGroup> {
+        IgnorableMetadata::new(AnyView::new(self), crate::background::MaterialGroup)
+    }
+
     /// Sets the foreground color for this view and all its descendants.
     ///
     /// This injects the color into the environment as the `Foreground` color token,

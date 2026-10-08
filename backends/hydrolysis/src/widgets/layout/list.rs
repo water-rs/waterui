@@ -13,7 +13,7 @@ use crate::renderer::{
     list_row_height_for_content, local_interaction_state, materialize_list_item,
     measure_list_intrinsic, measure_transient_view_intrinsic,
 };
-use crate::scroll::ScrollHandle;
+use crate::scroll::{ScrollHandle, ScrollRun, ScrollRunOutcome};
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, NodeId as AccessibilityNodeId,
@@ -23,6 +23,8 @@ use accesskit::{
 use waterui::accessibility::{AccessibilityHidden, AccessibilityStateSignal};
 use waterui::component::list::{ListConfig, ListItem, ListSelection, Move};
 use waterui::gesture::{DragEvent, DragGesture, Gesture, GesturePhase};
+use waterui_backend_core::scroll::animated_row_scroll_approach;
+use waterui_core::animation::Animation;
 use waterui_core::handler::{BoxedAction, boxed_action};
 use waterui_core::id::{Id as RawId, SelfId};
 use waterui_core::interaction::Selected;
@@ -50,6 +52,37 @@ struct ListViewportAnchor {
     id: ListItemId,
     index: usize,
     offset_within_row: f64,
+    /// The offset the moment this anchor was recorded — or, once a
+    /// membership change resolved it, its offset under the new membership.
+    /// The next frame's glide/fling tick moves the offset before the
+    /// membership shift applies, so the shift must translate from this
+    /// recording — not the live offset — to keep the tick's motion.
+    recorded_offset: f64,
+}
+
+/// A pending programmatic scroll to a row: the request's generation, row
+/// index and animation, and how far applying it has progressed. The first
+/// apply arms the animation; later applies only refine its target, so a
+/// re-issue refines the destination instead of restarting the clock.
+#[derive(Clone)]
+struct PendingScroll {
+    generation: i32,
+    index: usize,
+    animation: Option<Animation>,
+    state: PendingScrollState,
+}
+
+/// How far a [`PendingScroll`] has progressed against the scroll handle.
+#[derive(Clone)]
+enum PendingScrollState {
+    /// No run has been armed for this request yet.
+    Unarmed,
+    /// The request armed `run`; [`ScrollHandle::scroll_run_outcome`] answers
+    /// whether it still drives the offset, landed, or was interrupted —
+    /// asking the handle instead of guessing from the offset is what keeps
+    /// a membership re-anchor or a clamped landing from looking like the
+    /// user scrolled.
+    Armed { run: ScrollRun },
 }
 
 /// Fraction of the row's width a swipe must cross to dismiss on release.
@@ -69,13 +102,6 @@ const SWIPE_SETTLE_EPSILON: f64 = 0.5;
 /// Elevation handed to the theme while a row is lifted for reordering. Material
 /// raises a dragged list item to level 3.
 const REORDER_LIFT_ELEVATION: f64 = 3.0;
-
-/// Rows a programmatic jump animates over. A target further away than this is
-/// closed instantly first and only the last stretch is animated, so the glide
-/// stays legible and cannot drag the list through a whole dataset. This is
-/// Compose's `NumberOfItemsToTeleport`, the same bound `animateScrollToItem`
-/// applies.
-const ROWS_BEFORE_JUMP_TELEPORT: usize = 100;
 
 /// Distance the pointer must travel before a row drag is recognized, matching
 /// Android's `ViewConfiguration` touch slop. Without it a row could not be
@@ -275,16 +301,19 @@ pub struct ListRenderState {
     replaced_row_ids: Rc<RefCell<std::collections::HashSet<ListItemId>>>,
     /// Last programmatic scroll generation applied to this semantic list.
     applied_scroll_generation: Cell<i32>,
-    /// A requested index stays pending until its measured row intersects the
+    /// A requested row stays pending until its measured extent intersects the
     /// concrete viewport. This is required when estimated and measured row
     /// heights differ, especially for a jump to the final row.
-    pending_scroll: Cell<Option<(i32, usize)>>,
+    pending_scroll: RefCell<Option<PendingScroll>>,
     /// Stable top-row identity and intra-row offset from the previous frame.
     /// Membership changes use this anchor so delete/move operations do not
     /// visibly jump the viewport.
     viewport_anchor: Cell<Option<ListViewportAnchor>>,
-    /// Concrete offset resolved from `viewport_anchor` after an extent reset.
-    pending_membership_offset: Cell<Option<f64>>,
+    /// The anchor's target offset under the new membership plus the offset
+    /// it was recorded at: `(rebased, recorded)` — the pure translation
+    /// `bind_scroll` hands `rebind` is `rebased - recorded`, regardless of
+    /// how far this frame's tick already moved the offset.
+    pending_membership_offset: Cell<Option<(f64, f64)>>,
     /// A backend move action keeps the viewport's index fixed for the next
     /// membership reconcile so the moved row visibly changes position.
     preserve_anchor_index_once: Cell<bool>,
@@ -422,7 +451,7 @@ impl ListRenderState {
             rows_dirty,
             replaced_row_ids,
             applied_scroll_generation: Cell::new(0),
-            pending_scroll: Cell::new(None),
+            pending_scroll: RefCell::new(None),
             viewport_anchor: Cell::new(None),
             pending_membership_offset: Cell::new(None),
             preserve_anchor_index_once: Cell::new(false),
@@ -583,10 +612,18 @@ impl ListRenderState {
                         .find(|index| snapshot.get_id(*index) == Some(anchor.id))
                         .unwrap_or_else(|| anchor.index.min(len - 1))
                 };
-                Some(
-                    self.extent_index.borrow().offset_of(index)
-                        + anchor.offset_within_row.min(estimate),
-                )
+                let rebased = self.extent_index.borrow().offset_of(index)
+                    + anchor.offset_within_row.min(estimate);
+                // Written back in the new coordinates: `prepare_rows` runs
+                // twice a frame — the semantic pass, then the render pass —
+                // and a collection update between them must translate by its
+                // own change only, not this one again.
+                self.viewport_anchor.set(Some(ListViewportAnchor {
+                    index,
+                    recorded_offset: rebased,
+                    ..anchor
+                }));
+                Some((rebased, anchor.recorded_offset))
             });
             self.pending_membership_offset.set(membership_offset);
         }
@@ -610,6 +647,15 @@ impl ListRenderState {
             kurbo::Size::new(viewport_width, viewport_height),
             kurbo::Size::new(viewport_width, content_height),
         );
+        // The membership anchor always applies — `prepare_rows`' extent
+        // reset discarded measured heights, so skipping it leaves the offset
+        // in the old coordinates and the viewport jumps. It is a pure
+        // translation inside the rebind, ahead of the new extents' clamp, and
+        // claims nothing, so a live run or fling keeps driving through it.
+        let shift = self
+            .pending_membership_offset
+            .take()
+            .map_or(0.0, |(rebased, recorded)| rebased - recorded);
         let mut scroll = self.scroll.borrow_mut();
         if let Some(handle) = scroll.as_mut() {
             handle.rebind(
@@ -618,6 +664,7 @@ impl ListRenderState {
                 viewport.height,
                 content.width,
                 content.height,
+                (0.0, shift),
             )
         } else {
             let handle = ScrollHandle::new(
@@ -634,7 +681,7 @@ impl ListRenderState {
     }
 
     /// Applies the pending scroll request, if there is one. `animate` selects
-    /// between the rendered glide and the semantic jump: nothing ticks the
+    /// between the rendered animation and the semantic jump: nothing ticks the
     /// list's smooth scroll on the semantic runtime, so a request there lands
     /// in place instead.
     fn apply_scroll_request(
@@ -651,16 +698,22 @@ impl ListRenderState {
         if generation != self.applied_scroll_generation.get()
             && self
                 .pending_scroll
-                .get()
-                .is_none_or(|(pending_generation, _)| pending_generation != generation)
+                .borrow()
+                .as_ref()
+                .is_none_or(|pending| pending.generation != generation)
         {
-            let index = renderer.read_signal(&controller.target());
-            self.pending_scroll.set(Some((generation, index)));
+            let request = renderer.read_signal(&controller.request());
+            *self.pending_scroll.borrow_mut() = Some(PendingScroll {
+                generation,
+                index: request.target,
+                animation: request.animation,
+                state: PendingScrollState::Unarmed,
+            });
         }
-        let Some((pending_generation, index)) = self.pending_scroll.get() else {
+        let Some(pending) = self.pending_scroll.borrow().clone() else {
             return;
         };
-        if index >= row_count {
+        if pending.index >= row_count {
             // A scroll request names a row the contents may not have yet: a
             // list materializing mid-flush can be shorter than its pending
             // target, and a signal-driven collection can shrink below it. The
@@ -668,48 +721,89 @@ impl ListRenderState {
             // a newer generation supersedes it.
             return;
         }
-        // Ease toward the row rather than teleporting. Re-issuing the target
-        // every frame is what keeps a virtualized jump accurate: rows measured
-        // while the glide passes over them move `offset_of(index)`, so the
-        // destination is refined until the animation actually settles.
-        let offset = self.extent_index.borrow().offset_of(index);
-        if animate {
-            let metrics = handle.metrics();
-            let current = self
-                .extent_index
-                .borrow()
-                .visible_window(metrics.offset_y, metrics.offset_y + metrics.viewport_height)
-                .start;
-            if index.abs_diff(current) > ROWS_BEFORE_JUMP_TELEPORT {
-                // Animating the whole way across a 100k-row dataset would drag the
-                // list through every viewport between here and there, and read as a
-                // blur regardless. Compose solves this the same way: its
-                // `animateScrollToItem` snaps to within `NumberOfItemsToTeleport`
-                // items of the target and animates only that final stretch.
-                let approach_index = if index > current {
-                    index - ROWS_BEFORE_JUMP_TELEPORT
-                } else {
-                    index + ROWS_BEFORE_JUMP_TELEPORT
-                };
-                let approach = self.extent_index.borrow().offset_of(approach_index);
-                let _ = handle.scroll_to(0.0, approach);
+        // Re-issuing the target every frame is what keeps a virtualized
+        // request accurate: rows measured while the list moves past them move
+        // `offset_of(index)`, so the destination is refined until it actually
+        // lands.
+        let offset = self.extent_index.borrow().offset_of(pending.index);
+        match pending.animation.clone() {
+            Some(animation) if animate => match pending.state {
+                PendingScrollState::Armed { run } => match handle.scroll_run_outcome(&run) {
+                    ScrollRunOutcome::Running => {
+                        // Already gliding: refine the destination without
+                        // restarting the run's clock. Only the run this
+                        // request armed answers — a different owner's
+                        // animation on the same surface is never steered.
+                        let _ = handle.retarget_animated_scroll(&run, 0.0, offset);
+                    }
+                    ScrollRunOutcome::Landed => {
+                        // The motion is over; settling the final position
+                        // as rows re-measure is a correction, so it jumps
+                        // rather than arming a second full-duration run.
+                        let _ = handle.scroll_to(0.0, offset);
+                    }
+                    ScrollRunOutcome::Interrupted => {
+                        // Something else claimed the offset — user input,
+                        // a jump, or another owner's run (keyboard
+                        // clearance). The request is spent; consuming its
+                        // generation keeps the supersede rule uniform.
+                        self.applied_scroll_generation.set(pending.generation);
+                        self.pending_scroll.take();
+                        return;
+                    }
+                },
+                PendingScrollState::Unarmed => {
+                    let metrics = handle.metrics();
+                    let current = self
+                        .extent_index
+                        .borrow()
+                        .visible_window(
+                            metrics.offset_y,
+                            metrics.offset_y + metrics.viewport_height,
+                        )
+                        .start;
+                    // Animating the whole way across a large dataset would
+                    // drag the list through every viewport between here and
+                    // there, and read as a blur regardless: jump to within
+                    // the approach bound of the target and animate only that
+                    // final stretch.
+                    if let Some(approach_index) =
+                        animated_row_scroll_approach(current, pending.index)
+                    {
+                        let approach = self.extent_index.borrow().offset_of(approach_index);
+                        let _ = handle.scroll_to(0.0, approach);
+                    }
+                    // Arming starts the run's clock at the frame instant —
+                    // the very next tick already shows motion, and keeps
+                    // requesting frames until the run lands. The handle is
+                    // bound live this frame, and the pending request being
+                    // applied is the one still stored — both hold.
+                    let run = handle
+                        .scroll_to_animated(0.0, offset, animation, renderer.frame_instant())
+                        .expect(
+                            "the list binds a live scroll handle before arming a request on it",
+                        );
+                    self.pending_scroll
+                        .borrow_mut()
+                        .as_mut()
+                        .expect("the pending request being applied is still stored")
+                        .state = PendingScrollState::Armed { run };
+                }
+            },
+            _ => {
+                // `None` (a jump) or the semantic runtime, whose pump never
+                // registers the list's handle in its scroll targets — either
+                // way the request lands in place. Re-issuing while pending
+                // keeps it self-correcting as rows measure.
+                let _ = handle.scroll_to(0.0, offset);
             }
-            // The pump ticks smooth scrolls before rendering and the present already
-            // wakes the loop, so arming here is enough — the next tick advances the
-            // glide and keeps requesting frames until it settles.
-            let _ = handle.scroll_to_animated(0.0, offset);
-        } else {
-            // The semantic runtime's pump never registers the list's handle in
-            // its scroll targets, so a glide armed here would never tick; the
-            // request lands in place.
-            let _ = handle.scroll_to(0.0, offset);
         }
         let extent_index = self.extent_index.borrow();
-        let Some(extent) = extent_index.measured(index) else {
+        let Some(extent) = extent_index.measured(pending.index) else {
             return;
         };
         let metrics = handle.metrics();
-        let row_start = extent_index.offset_of(index);
+        let row_start = extent_index.offset_of(pending.index);
         let row_end = row_start + extent;
         // The surface's safe-area extension covers rows a `scroll_to` was
         // asked to reveal, so the visibility check ends before the bands it
@@ -718,17 +812,8 @@ impl ListRenderState {
             metrics.offset_y + metrics.viewport_height - self.surface.extension().vertical();
         let row_visible = row_end > metrics.offset_y && row_start < viewport_end;
         if row_visible && !handle.is_smooth_scrolling() {
-            self.applied_scroll_generation.set(pending_generation);
-            self.pending_scroll.set(None);
-        }
-    }
-
-    fn apply_membership_anchor(&self, handle: &ScrollHandle) {
-        if let Some(offset) = self.pending_membership_offset.take() {
-            // Re-anchoring after a delete or move keeps the viewport where the
-            // user left it; that is a correction, not a journey, so it lands
-            // immediately rather than gliding.
-            let _ = handle.scroll_to(0.0, offset);
+            self.applied_scroll_generation.set(pending.generation);
+            self.pending_scroll.take();
         }
     }
 
@@ -750,6 +835,7 @@ impl ListRenderState {
             id,
             index: window.start,
             offset_within_row: (metrics.offset_y - window.leading_offset).max(0.0),
+            recorded_offset: metrics.offset_y,
         }));
     }
 }
@@ -905,7 +991,6 @@ pub fn list_accessibility(
         .total_extent()
         .max(viewport.height());
     let handle = state.bind_scroll(viewport.width(), viewport.height(), content_height);
-    state.apply_membership_anchor(&handle);
     state.apply_scroll_request(renderer, &handle, row_count, is_rendered);
     #[cfg(feature = "accessibility")]
     {
@@ -1439,7 +1524,6 @@ pub fn render_list_parts(
     let handle = state
         .borrow()
         .bind_scroll(viewport.width(), viewport.height(), content_height);
-    state.borrow().apply_membership_anchor(&handle);
     state
         .borrow()
         .apply_scroll_request(ctx.renderer_mut(), &handle, row_count, true);
@@ -2040,8 +2124,9 @@ pub fn render_list_parts(
     if state
         .borrow()
         .pending_scroll
-        .get()
-        .is_some_and(|(_, index)| index < row_count)
+        .borrow()
+        .as_ref()
+        .is_some_and(|pending| pending.index < row_count)
     {
         let content_height = state
             .borrow()

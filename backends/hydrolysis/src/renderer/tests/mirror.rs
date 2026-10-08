@@ -18,7 +18,6 @@ use rustc_hash::FxHashMap;
 use crate::engine::GpuEngine;
 use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use crate::renderer::effects::{AppliedFilterMetrics, FilteredRuntime};
-use crate::renderer::material::MaterialRuntime;
 use crate::renderer::mount::layers::{LayerVisitor, visit};
 use crate::renderer::mount::target::LayerTarget;
 use crate::renderer::mount::{Mount, MountStats};
@@ -40,7 +39,6 @@ impl cherenkov::GpuInstalls for MirrorTarget {}
 pub struct Mirrored {
     tree: SurfaceTree,
     installs: FxHashMap<LayerId, (u32, u32)>,
-    backdrops: FxHashMap<LayerId, f64>,
 }
 
 /// Applies each drained change set to the mirrored tree.
@@ -76,26 +74,13 @@ pub struct MirrorHost {
     resources: Rc<SceneResources>,
     engine: Rc<GpuEngine>,
     metrics: Arc<AppliedFilterMetrics>,
-    mirrored: Rc<RefCell<Mirrored>>,
-}
-
-/// A material frame's recorded backdrop membership; dropping it leaves
-/// the group.
-pub struct MirrorMaterial {
-    layer: LayerId,
-    display_scale: f64,
-    mirrored: Rc<RefCell<Mirrored>>,
-}
-
-impl Drop for MirrorMaterial {
-    fn drop(&mut self) {
-        self.mirrored.borrow_mut().backdrops.remove(&self.layer);
-    }
 }
 
 impl LayerTarget for MirrorTarget {
     type Host = MirrorHost;
-    type Material = MirrorMaterial;
+    /// The mirror installs no backdrop group object — its table keeps the
+    /// membership bookkeeping, which `backdrops()` reads.
+    type Group = ();
 
     fn resources(host: &MirrorHost) -> &Rc<SceneResources> {
         &host.resources
@@ -137,34 +122,22 @@ impl LayerTarget for MirrorTarget {
     }
 
     fn mount_material(
-        host: &MirrorHost,
-        _tx: &mut Transaction<'_, Self>,
+        _host: &MirrorHost,
+        tx: &mut Transaction<'_, Self>,
+        groups: &mut crate::renderer::mount::backdrop::BackdropGroups<()>,
         layer: &Layer,
-        _runtime: &MaterialRuntime,
+        key: crate::renderer::mount::backdrop::BackdropGroupKey,
         display_scale: f64,
-        visible: bool,
-        state: &mut Option<MirrorMaterial>,
+        membership: &mut Option<crate::renderer::mount::backdrop::MaterialMembership>,
     ) {
-        if !visible {
-            *state = None;
-            return;
-        }
-        if state
-            .as_ref()
-            .is_some_and(|material| material.display_scale.to_bits() == display_scale.to_bits())
-        {
-            return;
-        }
-        *state = None;
-        host.mirrored
-            .borrow_mut()
-            .backdrops
-            .insert(layer.id(), display_scale);
-        *state = Some(MirrorMaterial {
-            layer: layer.id(),
+        groups.join(
+            tx,
+            layer,
+            key,
             display_scale,
-            mirrored: Rc::clone(&host.mirrored),
-        });
+            membership,
+            (|_runtime, _scale| (), |_tx, _member, _group| {}),
+        );
     }
 }
 
@@ -193,7 +166,6 @@ impl MirrorWindow {
         let mirrored = Rc::new(RefCell::new(Mirrored {
             tree: SurfaceTree::new(),
             installs: FxHashMap::default(),
-            backdrops: FxHashMap::default(),
         }));
         let shared = Rc::new(RefCell::new(Shared::new(
             SurfaceId::new(1),
@@ -206,7 +178,6 @@ impl MirrorWindow {
             resources: Rc::new(SceneResources::new(&engine)),
             engine,
             metrics: Arc::new(AppliedFilterMetrics::default()),
-            mirrored: Rc::clone(&mirrored),
         };
         Self {
             mount: Mount::new(shared),
@@ -279,12 +250,7 @@ impl MirrorWindow {
 
     /// Every backdrop member, by layer, with its group's display scale.
     pub fn backdrops(&self) -> Vec<(LayerId, f64)> {
-        self.mirrored
-            .borrow()
-            .backdrops
-            .iter()
-            .map(|(&layer, &scale)| (layer, scale))
-            .collect()
+        self.mount.groups().member_scales()
     }
 }
 
@@ -313,6 +279,7 @@ impl HydrolysisRenderer {
         let window = self.mirror.get_or_insert_with(MirrorWindow::new);
         let redraw = self.host_redraw_handle.clone();
         let core = &mut self.core;
+        let window_material = core.window_material;
         let mut wakes = |cell: &Rc<crate::renderer::mount::cell::NodeCell>| {
             core.producer_wake(cell, redraw.clone())
         };
@@ -322,6 +289,7 @@ impl HydrolysisRenderer {
             1.0,
             &roots,
             &mut wakes,
+            window_material.as_ref(),
         );
         let stats = window.mount.take_stats();
         self.core.clear_commit_marks();

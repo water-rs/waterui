@@ -21,6 +21,7 @@ mod prepared;
 pub mod present;
 mod projective;
 mod raster;
+mod reduce;
 mod resolve;
 pub mod shaders;
 mod shadow;
@@ -220,6 +221,13 @@ struct ScratchTarget {
     height: u32,
 }
 
+impl ScratchTarget {
+    /// Resident texel bytes at the texture's format.
+    fn bytes(&self) -> u64 {
+        target_bytes(self, 0)
+    }
+}
+
 /// Resident bytes of a transient depth texture. Metal exposes its actual
 /// backing allocation; memoryless attachments have no persistent backing.
 fn coverage_depth_bytes(texture: &wgpu::Texture) -> u64 {
@@ -293,8 +301,6 @@ struct SurfaceState {
     /// the window's output re-selection (#98).
     display: cherenkov::Display,
     size: (u32, u32),
-    /// The scratch texture format (set at creation).
-    scratch_format: wgpu::TextureFormat,
     target: wgpu::Texture,
     view: wgpu::TextureView,
     /// Scratch textures, one per isolation depth, sized to the largest
@@ -305,6 +311,25 @@ struct SurfaceState {
     /// Backdrop copies for blend composites: index 0 matches the surface
     /// format, index 1 the scratch format.
     backdrop: [Option<ScratchTarget>; 2],
+    /// The staged resolves' shared 1:1 device copies: every reduced
+    /// capture with looked-through composites to apply first copies its
+    /// device rect into the slot of its format, draws the composites
+    /// over it and resolves from it — its contents die with that pass's
+    /// resolve, so one texture per format serves every group, within
+    /// and across frames. Slot 0 matches the surface format (a capture
+    /// copying a part, projected image or plane), slot 1 the scratch
+    /// format when it differs from the surface format (a capture
+    /// copying a semantic isolation's scratch); otherwise slot 0
+    /// serves both. Each grows, never shrinks, to the largest staged
+    /// device rect of its format.
+    staging: [Option<ScratchTarget>; 2],
+    /// The staged-resolve bind group beside each staging slot: every
+    /// staged resolve binds the same globals buffer and staging view at
+    /// a dynamic offset, so one bind per slot serves all of them. It is
+    /// dropped and rebuilt with its texture — a stale entry would keep
+    /// the replaced view alive after the accounting says it is freed.
+    /// The per-region bind caches hold only direct resolves.
+    staging_bind: [Option<resolve::Bind>; 2],
     /// Backdrop groups registered on this surface by raw id.
     backdrop_groups: FxHashMap<u64, BackdropGroupState>,
     layers: FxHashMap<LayerId, ContentData>,
@@ -357,35 +382,59 @@ struct SurfaceState {
     waker: cherenkov::CompletionWaker,
 }
 
+/// One backdrop region's capture: the mipmapped texture whose mip 0 is
+/// level 0 — the resolve's target, optionally filtered in place — and
+/// whose deeper mips hold the pyramid's levels.
+struct Capture {
+    /// The texture and its level-0 view; `width`/`height` are the
+    /// allocation's texels, the region size aligned up to the deepest
+    /// level's grid.
+    target: ScratchTarget,
+    /// The whole-pyramid view `backdrop_sample_at` reads; `None` for a
+    /// one-level capture, whose `target.view` is read instead.
+    source: Option<wgpu::TextureView>,
+    /// `levels[k − 1]` is level `k`'s single-mip view, for `k` in `1..n`.
+    levels: Vec<wgpu::TextureView>,
+    /// `reduces[k − 1]` caches the level `k` step's bind group.
+    reduces: Vec<Option<reduce::Bind>>,
+}
+
+impl Capture {
+    /// The view the member composites sample.
+    fn sample_view(&self) -> &wgpu::TextureView {
+        self.source.as_ref().unwrap_or(&self.target.view)
+    }
+}
+
 /// A registered backdrop group: its optional capture filter, its capture
-/// scale and the capture textures, one per region (#117 sparse capture),
-/// each exactly sized to this frame's region.
+/// spec and the capture textures, one per region (#117 sparse capture),
+/// each exactly sized to this frame's region and level count.
 struct BackdropGroupState {
     /// The group's filter chain key, when registered with a filter.
     filter: Option<filter::FilterKey>,
-    /// The resolution the group captures at.
-    scale: cherenkov::CaptureScale,
+    /// The group's capture spec (scale and level count).
+    spec: cherenkov::BackdropSpec,
     /// The capture textures indexed by region, empty until a frame
     /// samples the group.
-    captures: Vec<ScratchTarget>,
-    /// A reduced capture's 1:1 device copy by region, where clip-only
-    /// composites draw before the resolve; `None` for a region that
-    /// resolves straight from its source.
-    staging: Vec<Option<ScratchTarget>>,
+    captures: Vec<Capture>,
     /// Each region's cached resolve bind group.
     resolves: Vec<Option<resolve::Bind>>,
 }
 
 impl BackdropGroupState {
-    /// Every texture the group holds: captures and staging copies.
-    fn textures(&self) -> impl Iterator<Item = &ScratchTarget> {
-        self.captures.iter().chain(self.staging.iter().flatten())
+    /// Bytes the group's capture textures hold: every region's capture
+    /// with its pyramid levels. Staging is the surface's, counted there.
+    fn bytes(&self) -> u64 {
+        let deep = self.spec.levels().get() - 1;
+        self.captures
+            .iter()
+            .map(|capture| target_bytes(&capture.target, deep))
+            .sum()
     }
 
     /// Keeps the first `regions` regions' textures and bind groups.
     fn truncate(&mut self, regions: usize) {
         self.captures.truncate(regions);
-        self.staging.truncate(regions);
         self.resolves.truncate(regions);
     }
 }
@@ -416,28 +465,29 @@ impl SurfaceState {
                             .map_or(Some(filtrate_core::Footprint::ZERO), |key| {
                                 filters.footprint_bound(key)
                             }),
-                        scale: state.scale,
+                        spec: state.spec,
                     },
                 )
             })
             .collect()
     }
 
+    /// Bytes held by the surface's shared backdrop staging textures.
+    fn staging_bytes(&self) -> u64 {
+        self.staging
+            .iter()
+            .flatten()
+            .map(ScratchTarget::bytes)
+            .sum()
+    }
+
     /// Bytes held by this surface's backdrop captures, summed over all
-    /// regions of all groups, staging copies included.
+    /// regions of all groups, pyramid levels included; the shared staging
+    /// is counted by [`staging_bytes`](Self::staging_bytes).
     fn backdrop_bytes(&self) -> u64 {
         self.backdrop_groups
             .values()
-            .flat_map(BackdropGroupState::textures)
-            .map(|c| {
-                u64::from(c.width)
-                    * u64::from(c.height)
-                    * if c.texture.format() == wgpu::TextureFormat::Rgba16Float {
-                        8
-                    } else {
-                        4
-                    }
-            })
+            .map(BackdropGroupState::bytes)
             .sum()
     }
 
@@ -508,27 +558,12 @@ impl SurfaceState {
     /// Bytes held by this surface's textures.
     fn gpu_bytes(&self) -> u64 {
         let surface_bytes = u64::from(self.size.0) * u64::from(self.size.1) * 8;
-        let scratch_texel = if self.scratch_format == wgpu::TextureFormat::Rgba8Unorm {
-            4
-        } else {
-            8
-        };
-        let scratch_bytes: u64 = self
-            .scratch
-            .values()
-            .map(|s| u64::from(s.width) * u64::from(s.height) * scratch_texel)
-            .sum();
+        let scratch_bytes: u64 = self.scratch.values().map(ScratchTarget::bytes).sum();
         let backdrop_bytes: u64 = self
             .backdrop
             .iter()
-            .enumerate()
-            .filter_map(|(i, b)| {
-                // Index 0 mirrors the surface format (f16), index 1 the
-                // scratch format.
-                let texel = if i == 0 { 8 } else { scratch_texel };
-                b.as_ref()
-                    .map(|b| u64::from(b.width) * u64::from(b.height) * texel)
-            })
+            .flatten()
+            .map(ScratchTarget::bytes)
             .sum();
         let shader_bytes = self
             .shader_textures
@@ -544,6 +579,7 @@ impl SurfaceState {
                 .map_or(0, |depth| coverage_depth_bytes(&depth.texture))
             + scratch_bytes
             + backdrop_bytes
+            + self.staging_bytes()
             + shader_bytes
             + self.projective_bytes()
             + self
@@ -593,6 +629,30 @@ fn source_view(surf: &SurfaceState, target: Target) -> Result<&wgpu::TextureView
     })
 }
 
+/// The format a capture takes: the surface format when its copy
+/// source is a part, a projected image or a plane; the scratch format
+/// when it is a semantic isolation's scratch. A capture never copies
+/// a capture.
+fn capture_format(
+    copy_from: Target,
+    scratch_format: wgpu::TextureFormat,
+) -> Result<wgpu::TextureFormat, RenderError> {
+    match copy_from {
+        Target::Part(_) | Target::Projected(_) | Target::Plane(_) => Ok(TARGET_FORMAT),
+        Target::Scratch(_) => Ok(scratch_format),
+        Target::Backdrop { group, .. } => Err(RenderError::Render(format!(
+            "backdrop group {group} copies from a capture"
+        ))),
+    }
+}
+
+/// The staging slot a texture format uses: slot 1 the scratch format's
+/// staging when it differs from the surface format; otherwise slot 0
+/// serves both.
+fn staging_slot(format: wgpu::TextureFormat) -> usize {
+    usize::from(format != TARGET_FORMAT)
+}
+
 /// Prepares pass `index`'s resolve when its capture is reduced: a direct
 /// resolve reads `copy_from` inside the pass, a staged one reads the
 /// staging texture after it.
@@ -602,6 +662,7 @@ fn prepare_resolve(
     globals: &wgpu::Buffer,
     surf: &mut SurfaceState,
     index: usize,
+    scratch_format: wgpu::TextureFormat,
 ) -> Result<Option<ResolveDraw>, RenderError> {
     let pass = &surf.frame.passes[index];
     let (Some(capture), Target::Backdrop { group, region }) = (pass.capture, pass.target) else {
@@ -613,33 +674,38 @@ fn prepare_resolve(
     let staged = resolve::staged(pass);
     let size = (pass.region[2], pass.region[3]);
     let state = &surf.backdrop_groups[&group];
-    let target = &state.captures[region as usize];
+    let target = &state.captures[region as usize].target;
     let pipeline = pipelines.pipeline(device, target.texture.format()).clone();
     let capture_view = target.view.clone();
-    let source = if staged {
-        state.staging[region as usize]
+    let bind = if staged {
+        // A staged resolve reads the staging slot of its capture's
+        // format; one bind beside the slot serves every staged resolve.
+        let slot = staging_slot(capture_format(capture.copy_from, scratch_format)?);
+        let staging = &surf.staging[slot]
             .as_ref()
             .expect("staging allocated before encode")
-            .view
+            .view;
+        pipelines
+            .bind(device, &mut surf.staging_bind[slot], globals, staging)
             .clone()
     } else {
-        source_view(surf, capture.copy_from)?.clone()
+        let source = source_view(surf, capture.copy_from)?.clone();
+        let state = surf
+            .backdrop_groups
+            .get_mut(&group)
+            .expect("looked up above");
+        if state.resolves.len() <= region as usize {
+            state.resolves.resize_with(region as usize + 1, || None);
+        }
+        pipelines
+            .bind(
+                device,
+                &mut state.resolves[region as usize],
+                globals,
+                &source,
+            )
+            .clone()
     };
-    let state = surf
-        .backdrop_groups
-        .get_mut(&group)
-        .expect("looked up above");
-    if state.resolves.len() <= region as usize {
-        state.resolves.resize_with(region as usize + 1, || None);
-    }
-    let bind = pipelines
-        .bind(
-            device,
-            &mut state.resolves[region as usize],
-            globals,
-            &source,
-        )
-        .clone();
     Ok(Some(ResolveDraw {
         pipeline,
         bind,
@@ -740,6 +806,57 @@ fn retire_binds1(
     surf.binds1_stamp = (surf.bind_gen, images_gen, mask_gen);
 }
 
+impl SurfaceState {
+    /// Drops every cached bind group of the surface: all the views they
+    /// sample were just replaced or freed. The group-1 cache was counted
+    /// by the caller; the direct-resolve drops report their own count.
+    fn retire_binds(&mut self, device: &wgpu::Device) {
+        self.binds1.clear();
+        self.drop_resolve_binds(device, "backdrop resolve");
+    }
+
+    /// Drops every backdrop group's cached direct-resolve binds: the views
+    /// they read are all gone. Kept, a cached bind would retain its
+    /// source's retired texture past the accounting that says it is freed.
+    fn drop_resolve_binds(&mut self, device: &wgpu::Device, reason: &'static str) {
+        let dropped = self
+            .backdrop_groups
+            .values()
+            .flat_map(|group| group.resolves.iter())
+            .flatten()
+            .count() as u64;
+        for group in self.backdrop_groups.values_mut() {
+            group.resolves.clear();
+        }
+        if dropped > 0 {
+            diag::bind_groups_dropped(device, dropped, reason);
+        }
+    }
+
+    /// The `drop_resolve_binds` of one view: only the groups' entries
+    /// built on `view` are dropped — the source the regenerated texture
+    /// replaced.
+    fn drop_resolve_binds_on(
+        &mut self,
+        device: &wgpu::Device,
+        view: &wgpu::TextureView,
+        reason: &'static str,
+    ) {
+        let mut dropped = 0u64;
+        for group in self.backdrop_groups.values_mut() {
+            for bind in &mut group.resolves {
+                if bind.as_ref().is_some_and(|bind| bind.source() == view) {
+                    *bind = None;
+                    dropped += 1;
+                }
+            }
+        }
+        if dropped > 0 {
+            diag::bind_groups_dropped(device, dropped, reason);
+        }
+    }
+}
+
 /// All render-thread state.
 pub struct GpuRenderer {
     instance: wgpu::Instance,
@@ -785,6 +902,9 @@ pub struct GpuRenderer {
     /// The reduced-capture resolve pipelines — `None` until a frame
     /// resolves a backdrop group captured below device resolution.
     resolve: Option<resolve::Pipelines>,
+    /// The capture pyramid reduce pipelines — `None` until a frame
+    /// reduces a levelled capture.
+    reduce: Option<reduce::Pipelines>,
     last_frame: Option<Instant>,
     origin: Option<Instant>,
     device: wgpu::Device,
@@ -1978,6 +2098,15 @@ pub fn texel_bytes(format: wgpu::TextureFormat) -> u64 {
     u64::from(format.block_copy_size(None).unwrap_or(0))
 }
 
+/// `c`'s bytes at its format's texel size, including the `deep` deeper
+/// pyramid levels of `⌈d / 2^k⌉` texels each.
+fn target_bytes(c: &ScratchTarget, deep: u32) -> u64 {
+    let texels: u64 = (0..=deep)
+        .map(|k| u64::from(c.width).div_ceil(1 << k) * u64::from(c.height).div_ceil(1 << k))
+        .sum();
+    texels * texel_bytes(c.texture.format())
+}
+
 /// `{0, 1, 2, 2, 1, 3}`: the coverage partial pass's indexed draw replays
 /// the painter path's ordered triangles while the vertex shader runs once
 /// per corner.
@@ -2217,6 +2346,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             filters: filter::Registry::default(),
             shadow_blur: None,
             resolve: None,
+            reduce: None,
             last_frame: None,
             origin: None,
             max_texture: device.limits().max_texture_dimension_2d,
@@ -2540,6 +2670,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         filters: filter::Registry::default(),
         shadow_blur: None,
         resolve: None,
+        reduce: None,
         last_frame: None,
         origin: None,
         max_texture: device.limits().max_texture_dimension_2d,
@@ -2777,12 +2908,13 @@ impl Renderer for GpuRenderer {
                 present_pending: false,
                 display: cherenkov::Display::default(),
                 size,
-                scratch_format: self.scratch_format,
                 target,
                 view,
                 scratch: FxHashMap::default(),
                 coverage_depth: None,
                 backdrop: [None, None],
+                staging: [None, None],
+                staging_bind: [None, None],
                 backdrop_groups: FxHashMap::default(),
                 layers: FxHashMap::default(),
                 bindings: FxHashMap::default(),
@@ -2870,6 +3002,7 @@ impl Renderer for GpuRenderer {
         for (label, bytes) in [
             ("isolation scratch", scratch_bytes),
             ("blend backdrop", backdrop_bytes),
+            ("backdrop staging", state.staging_bytes()),
             (
                 "coverage depth",
                 state
@@ -2915,7 +3048,9 @@ impl Renderer for GpuRenderer {
         #[cfg(target_vendor = "apple")]
         state.tile_targets.clear();
         state.backdrop = [None, None];
-        state.binds1.clear();
+        state.staging = [None, None];
+        state.staging_bind = [None, None];
+        state.retire_binds(&self.device);
         state.painter_replays.clear();
         state.bind_gen += 1;
         diag::grow(
@@ -2938,23 +3073,15 @@ impl Renderer for GpuRenderer {
                 * u64::from(state.size.1)
                 * texel_bytes(state.target.format())
                 * (1 + state.parts.len() as u64);
-            let scratch_bytes: u64 = state
-                .scratch
-                .values()
-                .map(|s| u64::from(s.width) * u64::from(s.height) * texel_bytes(s.texture.format()))
-                .sum();
+            let scratch_bytes: u64 = state.scratch.values().map(ScratchTarget::bytes).sum();
             let backdrop_bytes: u64 = state
                 .backdrop
                 .iter()
                 .flatten()
-                .map(|s| u64::from(s.width) * u64::from(s.height) * texel_bytes(s.texture.format()))
+                .map(ScratchTarget::bytes)
                 .sum();
-            let capture_bytes: u64 = state
-                .backdrop_groups
-                .values()
-                .flat_map(BackdropGroupState::textures)
-                .map(|s| u64::from(s.width) * u64::from(s.height) * texel_bytes(s.texture.format()))
-                .sum();
+            let capture_bytes = state.backdrop_bytes();
+            let staging_bytes = state.staging_bytes();
             let dropped = state.binds1.len() as u64;
             if dropped > 0 {
                 diag::bind_groups_dropped(&self.device, dropped, "destroy");
@@ -2963,6 +3090,7 @@ impl Renderer for GpuRenderer {
                 ("surface target", target_bytes),
                 ("isolation scratch", scratch_bytes),
                 ("blend backdrop", backdrop_bytes),
+                ("backdrop staging", staging_bytes),
                 ("backdrop capture", capture_bytes),
                 ("projective image", state.projective_bytes()),
             ] {
@@ -3231,23 +3359,15 @@ impl Renderer for GpuRenderer {
             blur.trim();
         }
         for surf in self.surfaces.values_mut() {
-            let scratch_bytes: u64 = surf
-                .scratch
-                .values()
-                .map(|s| u64::from(s.width) * u64::from(s.height) * texel_bytes(s.texture.format()))
-                .sum();
+            let scratch_bytes: u64 = surf.scratch.values().map(ScratchTarget::bytes).sum();
             let backdrop_bytes: u64 = surf
                 .backdrop
                 .iter()
                 .flatten()
-                .map(|s| u64::from(s.width) * u64::from(s.height) * texel_bytes(s.texture.format()))
+                .map(ScratchTarget::bytes)
                 .sum();
-            let capture_bytes: u64 = surf
-                .backdrop_groups
-                .values()
-                .flat_map(BackdropGroupState::textures)
-                .map(|s| u64::from(s.width) * u64::from(s.height) * texel_bytes(s.texture.format()))
-                .sum();
+            let capture_bytes = surf.backdrop_bytes();
+            let staging_bytes = surf.staging_bytes();
             let dropped = surf.binds1.len() as u64;
             if dropped > 0 {
                 diag::bind_groups_dropped(&self.device, dropped, "trim");
@@ -3255,6 +3375,7 @@ impl Renderer for GpuRenderer {
             for (label, bytes) in [
                 ("isolation scratch", scratch_bytes),
                 ("blend backdrop", backdrop_bytes),
+                ("backdrop staging", staging_bytes),
                 ("backdrop capture", capture_bytes),
                 (
                     "coverage depth",
@@ -3285,6 +3406,8 @@ impl Renderer for GpuRenderer {
             }
             surf.coverage_depth = None;
             surf.backdrop = [None, None];
+            surf.staging = [None, None];
+            surf.staging_bind = [None, None];
             for state in surf.backdrop_groups.values_mut() {
                 state.truncate(0);
             }
@@ -3472,7 +3595,7 @@ impl Renderer for GpuRenderer {
             .values()
             .flat_map(|surf| surf.backdrop_groups.values())
             .flat_map(|g| &g.captures)
-            .map(|c| format_name(c.texture.format()))
+            .map(|c| format_name(c.target.texture.format()))
             .next();
         let cpu = self.atlas.cpu_bytes()
             + self
@@ -4074,7 +4197,9 @@ impl GpuRenderer {
             if let Some(surf) = self.surfaces.get(&id) {
                 inst_base += u32::try_from(surf.frame.instances.len()).unwrap_or(u32::MAX);
                 stop_base += u32::try_from(surf.frame.stops.len()).unwrap_or(u32::MAX);
-                globals_base += u32::try_from(surf.frame.passes.len()).unwrap_or(u32::MAX);
+                globals_base += u32::try_from(surf.frame.passes.len())
+                    .unwrap_or(u32::MAX)
+                    .saturating_add(surf.frame.reduce_slots());
             }
         }
         let wait = stats.phases.wait_seconds;
@@ -4231,7 +4356,9 @@ impl GpuRenderer {
             if let Some(surf) = self.surfaces.get(&id) {
                 inst_base += u32::try_from(surf.frame.instances.len()).unwrap_or(u32::MAX);
                 stop_base += u32::try_from(surf.frame.stops.len()).unwrap_or(u32::MAX);
-                globals_base += u32::try_from(surf.frame.passes.len()).unwrap_or(u32::MAX);
+                globals_base += u32::try_from(surf.frame.passes.len())
+                    .unwrap_or(u32::MAX)
+                    .saturating_add(surf.frame.reduce_slots());
             }
         }
         let wait = stats.phases.wait_seconds;
@@ -4360,7 +4487,7 @@ impl GpuRenderer {
         surface: SurfaceId,
         id: cherenkov::BackdropId,
         source: Option<Box<dyn filter::Source>>,
-        scale: cherenkov::CaptureScale,
+        spec: cherenkov::BackdropSpec,
     ) {
         let Some(surf) = self.surfaces.get_mut(&surface) else {
             return;
@@ -4377,9 +4504,8 @@ impl GpuRenderer {
             id.raw(),
             BackdropGroupState {
                 filter,
-                scale,
+                spec,
                 captures: Vec::new(),
-                staging: Vec::new(),
                 resolves: Vec::new(),
             },
         );
@@ -6586,7 +6712,11 @@ impl GpuRenderer {
                     reason: "plan",
                 },
             );
-            surf.parts.truncate(parts);
+            // A cached direct-resolve bind on a retired part would keep
+            // its texture alive past the retire above.
+            for (_, view) in surf.parts.split_off(parts) {
+                surf.drop_resolve_binds_on(&self.device, &view, "backdrop resolve");
+            }
         }
         #[cfg(target_vendor = "apple")]
         {
@@ -6709,6 +6839,7 @@ impl GpuRenderer {
                 0,
                 true,
             );
+            let replaced_view = surf.scratch.get(&i).map(|s| s.view.clone());
             surf.scratch.insert(i, target);
             surf.bind_gen += 1;
             // #169 A4: unsubmitted group-1 bind groups referencing the
@@ -6721,25 +6852,25 @@ impl GpuRenderer {
                 "scratch regen",
                 |key| key.0 == Some(Source::Scratch(i)),
             );
+            // A cached direct-resolve bind holds its source view the
+            // same way: drop every group's entry that reads the
+            // replaced scratch's view so its texture frees with it.
+            if let Some(replaced_view) = replaced_view {
+                surf.drop_resolve_binds_on(&self.device, &replaced_view, "backdrop resolve");
+            }
         }
         // Backdrop-group captures are exactly their pass's region, in the
         // format of the target the capture copies from, and sampled by
-        // later passes.
+        // later passes. The shared staging needs one allocation per
+        // format, so the loop also accumulates the largest staged
+        // device rect of each.
+        let mut staged_max = [None, None];
         for pass in &surf.frame.passes {
             let Some(capture) = pass.capture else {
                 continue;
             };
             let (w, h) = (pass.region[2], pass.region[3]);
-            let format = match capture.copy_from {
-                Target::Part(_) | Target::Projected(_) | Target::Plane(_) => TARGET_FORMAT,
-                Target::Scratch(_) => self.scratch_format,
-                Target::Backdrop { .. } => {
-                    return Err(RenderError::Render(format!(
-                        "backdrop group {} copies from a capture",
-                        capture.group
-                    )));
-                }
-            };
+            let format = capture_format(capture.copy_from, self.scratch_format)?;
             let Some(group_state) = surf.backdrop_groups.get_mut(&capture.group) else {
                 return Err(RenderError::Render(format!(
                     "backdrop group {} was not registered",
@@ -6751,39 +6882,79 @@ impl GpuRenderer {
             // regrown around an animated region size — it grows only
             // when the frame needs more, and `trim` releases it outside
             // the hot path.
+            // A levelled group captures into a mipmapped texture whose
+            // level-0 size is the region aligned up to the deepest
+            // level's grid; the tail past the spec extent is never
+            // written or read.
+            let levels = group_state.spec.levels().get();
+            let grid = 1 << (levels - 1);
             let (nw, nh) = (
-                w.max(group_state.captures.get(r).map_or(0, |c| c.width)),
-                h.max(group_state.captures.get(r).map_or(0, |c| c.height)),
+                w.max(group_state.captures.get(r).map_or(0, |c| c.target.width))
+                    .next_multiple_of(grid),
+                h.max(group_state.captures.get(r).map_or(0, |c| c.target.height))
+                    .next_multiple_of(grid),
             );
-            if group_state
-                .captures
-                .get(r)
-                .is_none_or(|c| c.width < w || c.height < h || c.texture.format() != format)
-            {
-                let old_capture = group_state.captures.get(r).map_or(0, |c| {
-                    u64::from(c.width) * u64::from(c.height) * texel_bytes(c.texture.format())
-                });
-                let (texture, view) = create_target(
-                    &self.device,
-                    "backdrop capture",
-                    (nw, nh),
-                    TARGET_USAGES | wgpu::TextureUsages::COPY_DST,
+            if group_state.captures.get(r).is_none_or(|c| {
+                c.target.width < nw || c.target.height < nh || c.target.texture.format() != format
+            }) {
+                let old_capture = group_state
+                    .captures
+                    .get(r)
+                    .map_or(0, |c| target_bytes(&c.target, levels - 1));
+                let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("backdrop capture"),
+                    size: wgpu::Extent3d {
+                        width: nw,
+                        height: nh,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: levels,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
                     format,
-                );
-                let target = ScratchTarget {
-                    texture,
-                    view,
-                    width: nw,
-                    height: nh,
+                    usage: TARGET_USAGES | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                });
+                let view = texture.create_view(&wgpu::TextureViewDescriptor {
+                    mip_level_count: Some(1),
+                    ..wgpu::TextureViewDescriptor::default()
+                });
+                let source = (levels > 1)
+                    .then(|| texture.create_view(&wgpu::TextureViewDescriptor::default()));
+                let levels_views: Vec<wgpu::TextureView> = (1..levels)
+                    .map(|level| {
+                        texture.create_view(&wgpu::TextureViewDescriptor {
+                            base_mip_level: level,
+                            mip_level_count: Some(1),
+                            ..wgpu::TextureViewDescriptor::default()
+                        })
+                    })
+                    .collect();
+                let target = Capture {
+                    target: ScratchTarget {
+                        view,
+                        texture,
+                        width: nw,
+                        height: nh,
+                    },
+                    source,
+                    levels: levels_views,
+                    reduces: (1..levels).map(|_| None).collect(),
                 };
+                let new = target_bytes(&target.target, levels - 1);
                 if r < group_state.captures.len() {
                     group_state.captures[r] = target;
                 } else {
-                    group_state.captures.resize_with(r, || ScratchTarget {
-                        texture: surf.target.clone(),
-                        view: surf.view.clone(),
-                        width: 0,
-                        height: 0,
+                    group_state.captures.resize_with(r, || Capture {
+                        target: ScratchTarget {
+                            texture: surf.target.clone(),
+                            view: surf.view.clone(),
+                            width: 0,
+                            height: 0,
+                        },
+                        source: None,
+                        levels: Vec::new(),
+                        reduces: Vec::new(),
                     });
                     group_state.captures.push(target);
                 }
@@ -6792,7 +6963,7 @@ impl GpuRenderer {
                     "backdrop capture",
                     diag::Class::Target,
                     old_capture,
-                    u64::from(nw) * u64::from(nh) * texel_bytes(format),
+                    new,
                     0,
                     true,
                 );
@@ -6815,49 +6986,54 @@ impl GpuRenderer {
                     self.atlas.mask_texture_generation(),
                 );
             }
-            // A staged resolve's 1:1 device copy, grown like the capture.
             if let Some(resolve) = resolve::of(pass).filter(|_| resolve::staged(pass)) {
-                let (dw, dh) = (resolve.device[2], resolve.device[3]);
-                if group_state.staging.len() <= r {
-                    group_state.staging.resize_with(r + 1, || None);
-                }
-                let slot = &mut group_state.staging[r];
-                if slot
-                    .as_ref()
-                    .is_none_or(|c| c.width < dw || c.height < dh || c.texture.format() != format)
-                {
-                    let (old, nw, nh) = slot.as_ref().map_or((0, dw, dh), |c| {
-                        (
-                            u64::from(c.width)
-                                * u64::from(c.height)
-                                * texel_bytes(c.texture.format()),
-                            dw.max(c.width),
-                            dh.max(c.height),
-                        )
-                    });
-                    let (texture, view) = create_target(
-                        &self.device,
-                        "backdrop staging",
-                        (nw, nh),
-                        TARGET_USAGES,
-                        format,
-                    );
-                    *slot = Some(ScratchTarget {
-                        texture,
-                        view,
-                        width: nw,
-                        height: nh,
-                    });
-                    diag::grow(
-                        &self.device,
-                        "backdrop capture",
-                        diag::Class::Target,
-                        old,
-                        u64::from(nw) * u64::from(nh) * texel_bytes(format),
-                        0,
-                        true,
-                    );
-                }
+                let entry = staged_max[staging_slot(format)].get_or_insert((format, 0, 0));
+                entry.1 = entry.1.max(resolve.device[2]);
+                entry.2 = entry.2.max(resolve.device[3]);
+            }
+        }
+        // A staged resolve's 1:1 device copy, one per format, shared by
+        // every staged resolve on the surface and grown like a capture:
+        // allocated once for the frame's largest staged device rect.
+        for (i, entry) in staged_max.into_iter().enumerate() {
+            let Some((format, dw, dh)) = entry else {
+                continue;
+            };
+            let slot = &mut surf.staging[i];
+            if slot
+                .as_ref()
+                .is_none_or(|c| c.width < dw || c.height < dh || c.texture.format() != format)
+            {
+                let (old, nw, nh) = slot.as_ref().map_or((0, dw, dh), |c| {
+                    (c.bytes(), dw.max(c.width), dh.max(c.height))
+                });
+                let (texture, view) = create_target(
+                    &self.device,
+                    "backdrop staging",
+                    (nw, nh),
+                    TARGET_USAGES,
+                    format,
+                );
+                let target = ScratchTarget {
+                    texture,
+                    view,
+                    width: nw,
+                    height: nh,
+                };
+                let new = target.bytes();
+                *slot = Some(target);
+                // The slot's staged-resolve bind reads the replaced view:
+                // drop it with the texture so the predecessor is freed.
+                surf.staging_bind[i] = None;
+                diag::grow(
+                    &self.device,
+                    "backdrop staging",
+                    diag::Class::Target,
+                    old,
+                    new,
+                    0,
+                    true,
+                );
             }
         }
         // Regions dropped between frames drop their textures too.
@@ -7078,7 +7254,7 @@ impl GpuRenderer {
         for surf in dirty.iter().filter_map(|sf| self.surfaces.get(&sf.id)) {
             instances += surf.frame.instances.len() as u64;
             stops += surf.frame.stops.len() as u64;
-            passes += surf.frame.passes.len() as u64;
+            passes += surf.frame.passes.len() as u64 + u64::from(surf.frame.reduce_slots());
         }
         let sizes = [
             (
@@ -7158,6 +7334,29 @@ impl GpuRenderer {
                     entry[..g.len()].copy_from_slice(g);
                     entry[g.len()..g.len() + params.len()].copy_from_slice(params);
                     put(&entry);
+                }
+                // The pyramid steps' slots follow the pass slots: one
+                // per reduce, in pass and level order, reading the
+                // level above's spec extent.
+                for &(index, levels) in &surf.frame.reduces {
+                    let pass = &surf.frame.passes[index];
+                    for k in 1..levels {
+                        let dst = (
+                            pass.region[2].div_ceil(1 << k),
+                            pass.region[3].div_ceil(1 << k),
+                        );
+                        let src = (
+                            pass.region[2].div_ceil(1 << (k - 1)),
+                            pass.region[3].div_ceil(1 << (k - 1)),
+                        );
+                        let g = lower::globals([dst.0 as f32, dst.1 as f32], [0.0; 2], pass.space);
+                        let params = reduce::params(src);
+                        let g = bytemuck::bytes_of(&g);
+                        let params = bytemuck::bytes_of(&params);
+                        entry[..g.len()].copy_from_slice(g);
+                        entry[g.len()..g.len() + params.len()].copy_from_slice(params);
+                        put(&entry);
+                    }
                 }
             }
         });
@@ -7352,6 +7551,10 @@ impl GpuRenderer {
             .retain(|index, _| *index < surf.frame.passes.len());
         let mask_gen = self.atlas.mask_texture_generation();
         let mut i = 0;
+        // The pyramid steps' globals-slot index within this surface:
+        // `write_uploads` lays them out in pass and level order after the
+        // pass slots.
+        let mut reduce_slot = 0u32;
         while i < surf.frame.passes.len() {
             #[cfg(target_vendor = "apple")]
             if let Some(epoch) = surf.composition.epoch_at(i) {
@@ -7400,7 +7603,14 @@ impl GpuRenderer {
                 let pipelines = self.resolve.get_or_insert_with(|| {
                     resolve::Pipelines::new(&self.device, self.shader_delivery)
                 });
-                prepare_resolve(&self.device, pipelines, &self.globals, surf, i)?
+                prepare_resolve(
+                    &self.device,
+                    pipelines,
+                    &self.globals,
+                    surf,
+                    i,
+                    self.scratch_format,
+                )?
             } else {
                 None
             };
@@ -7478,11 +7688,17 @@ impl GpuRenderer {
                 Target::Backdrop { group, region } => {
                     let group_state = &surf.backdrop_groups[&group];
                     let capture = if resolve::of(pass).is_some() && resolve::staged(pass) {
-                        group_state.staging[region as usize]
+                        let slot = staging_slot(capture_format(
+                            pass.capture
+                                .expect("a staged resolve implies a capture")
+                                .copy_from,
+                            self.scratch_format,
+                        )?);
+                        surf.staging[slot]
                             .as_ref()
                             .expect("staging allocated before encode")
                     } else {
-                        &group_state.captures[region as usize]
+                        &group_state.captures[region as usize].target
                     };
                     (&capture.view, &capture.texture)
                 }
@@ -7519,7 +7735,7 @@ impl GpuRenderer {
                     Target::Scratch(k) => (&surf.scratch[&k].texture, 0, 0),
                     Target::Backdrop { group, region } => {
                         let capture = &surf.backdrop_groups[&group].captures[region as usize];
-                        (&capture.texture, 0, 0)
+                        (&capture.target.texture, 0, 0)
                     }
                 };
                 debug_assert!(draw_region[0] + draw_region[2] <= src.width());
@@ -8208,9 +8424,9 @@ impl GpuRenderer {
                             &self.dummy_view,
                             range.source.map(|s| match s {
                                 Source::Scratch(i) => &surf.scratch[&i].view,
-                                Source::Backdrop { group, region } => {
-                                    &surf.backdrop_groups[&group].captures[region as usize].view
-                                }
+                                Source::Backdrop { group, region } => surf.backdrop_groups[&group]
+                                    .captures[region as usize]
+                                    .sample_view(),
                                 Source::Projected(_) => {
                                     unreachable!("local images draw with the projective pipeline")
                                 }
@@ -8251,7 +8467,8 @@ impl GpuRenderer {
                 ri += 1;
             }
             drop(render_pass);
-            // A staged resolve runs once the clip-only composites landed.
+            // A staged resolve runs once the looked-through composites
+            // from the painted levels landed.
             if let Some(ResolveDraw {
                 pipeline,
                 bind,
@@ -8301,7 +8518,7 @@ impl GpuRenderer {
                 let capture = match pass.target {
                     Target::Scratch(depth) => &surf.scratch[&depth],
                     Target::Backdrop { group, region } => {
-                        &surf.backdrop_groups[&group].captures[region as usize]
+                        &surf.backdrop_groups[&group].captures[region as usize].target
                     }
                     Target::Part(_) | Target::Projected(_) | Target::Plane(_) => {
                         return Err(RenderError::Render(format!(
@@ -8322,6 +8539,69 @@ impl GpuRenderer {
                     timing,
                     &mut encoder,
                 )?;
+            }
+            // A levelled group's pyramid: each level reduces the filtered
+            // level above by an exact 2×2 box, appended in pass and level
+            // order after `write_uploads`' pass slots.
+            if let Some(capture) = pass.capture {
+                let levels = capture.levels;
+                if levels > 1 {
+                    let pipelines = self.reduce.get_or_insert_with(|| {
+                        reduce::Pipelines::new(&self.device, self.shader_delivery)
+                    });
+                    let target = &mut surf
+                        .backdrop_groups
+                        .get_mut(&capture.group)
+                        .expect("registered group")
+                        .captures[capture.region as usize];
+                    let pipeline = pipelines
+                        .pipeline(&self.device, target.target.texture.format())
+                        .clone();
+                    for k in 1..levels {
+                        let size = (
+                            pass.region[2].div_ceil(1 << k),
+                            pass.region[3].div_ceil(1 << k),
+                        );
+                        let source = if k == 1 {
+                            &target.target.view
+                        } else {
+                            &target.levels[(k - 2) as usize]
+                        };
+                        let bind = pipelines
+                            .bind(
+                                &self.device,
+                                &mut target.reduces[(k - 1) as usize],
+                                &self.globals,
+                                source,
+                            )
+                            .clone();
+                        let mut level_pass =
+                            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                label: Some("backdrop level"),
+                                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                    view: &target.levels[(k - 1) as usize],
+                                    resolve_target: None,
+                                    ops: wgpu::Operations {
+                                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                                        store: wgpu::StoreOp::Store,
+                                    },
+                                    depth_slice: None,
+                                })],
+                                depth_stencil_attachment: None,
+                                timestamp_writes: None,
+                                occlusion_query_set: None,
+                                multiview_mask: None,
+                            });
+                        let offset = (surf.globals_base
+                            + u32::try_from(surf.frame.passes.len()).unwrap_or(u32::MAX)
+                            + reduce_slot)
+                            * 256;
+                        reduce::draw(&mut level_pass, &pipeline, &bind, offset, size);
+                        drop(level_pass);
+                        reduce_slot += 1;
+                        stats.passes += 1;
+                    }
+                }
             }
             for (_, key) in surf.frame.mips.iter().filter(|(pass, _)| *pass == i) {
                 let pipes = self
@@ -9204,6 +9484,7 @@ impl GpuRenderer {
                     Target::Scratch(depth) => surface.scratch[&depth].texture.format(),
                     Target::Backdrop { group, region } => surface.backdrop_groups[&group].captures
                         [region as usize]
+                        .target
                         .texture
                         .format(),
                     Target::Part(_) | Target::Projected(_) | Target::Plane(_) => TARGET_FORMAT,

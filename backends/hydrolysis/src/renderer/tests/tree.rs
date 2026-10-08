@@ -1122,6 +1122,10 @@ fn lifecycle_hooks_fire_after_first_flush_and_on_drop() {
 /// active animation instead of binding the already-settled value on the first
 /// frame and popping directly to the final state.
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the entrance target is the binding's literal value read back, not a sampled interpolation"
+)]
 fn lifecycle_appear_updates_animate_after_initial_signal_binding() {
     use core::time::Duration;
     use std::time::Instant;
@@ -1143,10 +1147,11 @@ fn lifecycle_appear_updates_animate_after_initial_signal_binding() {
     renderer.set_frame_instant(start);
     renderer.prepare_window_tree(view, &env);
 
-    assert_eq!(
+    assert!(
+        opacity.snapshot() == 0.0,
+        "the entrance target must remain hidden until the child first flushes: left {:?}, right {:?}",
         opacity.snapshot(),
-        0.0,
-        "the entrance target must remain hidden until the child first flushes"
+        0.0
     );
     assert!(
         !renderer.animations_active(),
@@ -1164,10 +1169,11 @@ fn lifecycle_appear_updates_animate_after_initial_signal_binding() {
     );
     renderer.finish_rebuild_frame();
 
-    assert_eq!(
+    assert!(
+        opacity.snapshot() == 1.0,
+        "on_appear must update the entrance target after the initial sample: left {:?}, right {:?}",
         opacity.snapshot(),
-        1.0,
-        "on_appear must update the entrance target after the initial sample"
+        1.0
     );
     assert!(
         renderer.animations_active(),
@@ -1371,6 +1377,10 @@ fn menu_picker_draws_its_label_above_the_value() {
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
+#[expect(
+    clippy::float_cmp,
+    reason = "the labelled row must keep exactly the unlabelled row's height; any drift is the regression under test"
+)]
 fn radio_picker_draws_its_label_above_the_option_rows() {
     use accesskit::Role;
     use std::time::Instant;
@@ -1461,9 +1471,9 @@ fn radio_picker_draws_its_label_above_the_option_rows() {
         .reduce(|a, b| if a.y0 <= b.y0 { a } else { b })
         .map(|rect| rect.y1 - rect.y0)
         .expect("radio option nodes must carry bounds");
-    assert_eq!(
-        labelled_first_row_height, hidden_first_row_height,
-        "the labelled first row must keep exactly the unlabelled row's height"
+    assert!(
+        labelled_first_row_height == hidden_first_row_height,
+        "the labelled first row must keep exactly the unlabelled row's height: left {labelled_first_row_height:?}, right {hidden_first_row_height:?}"
     );
     let snapshot = result.snapshot.expect("a snapshot must be captured");
     let bands = text_ink_bands(&snapshot, group);
@@ -1492,6 +1502,10 @@ fn radio_picker_draws_its_label_above_the_option_rows() {
 #[expect(
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
+#[expect(
+    clippy::float_cmp,
+    reason = "the labelled row must keep exactly the unlabelled row's height; any drift is the regression under test"
 )]
 fn segmented_picker_draws_its_label_above_the_segment_row() {
     use accesskit::Role;
@@ -1610,9 +1624,9 @@ fn segmented_picker_draws_its_label_above_the_segment_row() {
         .map(|rect| rect.y1 - rect.y0)
         .reduce(f64::min)
         .expect("segment nodes must carry bounds");
-    assert_eq!(
-        labelled_segment_height, hidden_segment_height,
-        "the labelled segment row must keep exactly the unlabelled row's height"
+    assert!(
+        labelled_segment_height == hidden_segment_height,
+        "the labelled segment row must keep exactly the unlabelled row's height: left {labelled_segment_height:?}, right {hidden_segment_height:?}"
     );
 }
 

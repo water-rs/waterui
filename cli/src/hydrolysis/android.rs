@@ -557,10 +557,11 @@ pub async fn package_with_abis(
     let android_dir = android_dir(&project.backend_path::<HydrolysisBackend>());
 
     // Kotlin helpers and Maven coordinates declared by the dependency graph go
-    // on the app module's classpath so Gradle compiles them into the dex. The
-    // scan mirrors the Rust build's feature selection so helpers behind
-    // optional features are not missed.
-    crate::assets::stage_android_classpath(
+    // on the app module's classpath so Gradle compiles them into the dex, and
+    // its manifest components into the app manifest. The scan mirrors the
+    // Rust build's feature selection so helpers behind optional features are
+    // not missed.
+    crate::assets::stage_android_declarations(
         project,
         &project.ffi_crate_path().join("Cargo.toml"),
         &android_dir.join("app"),
@@ -872,9 +873,11 @@ mod tests {
                 ),
                 "gpu painter substitution: {settings}"
             );
+            crate::assets::assert_settings_plugin_markers(settings);
 
             let gradle = files["app/build.gradle.kts"].as_str();
             assert!(gradle.contains("minSdk = 31"), "gpu api floor: {gradle}");
+            crate::assets::assert_module_plugin_markers(gradle);
             assert!(
                 gradle.contains("\"dev.waterui.hydrolysis:host\""),
                 "{gradle}"
@@ -904,6 +907,7 @@ mod tests {
                 "{manifest}"
             );
             assert!(manifest.contains("android:exported=\"true\""), "{manifest}");
+            crate::assets::assert_component_markers_inside_application(manifest);
 
             let activity = files["app/src/main/java/MainActivity.kt"].as_str();
             assert!(

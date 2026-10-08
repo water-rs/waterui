@@ -8,6 +8,8 @@ use futures_util::StreamExt;
 
 #[cfg(target_os = "macos")]
 use jiff::Timestamp;
+#[cfg(target_os = "macos")]
+use waterui_cli::device::Crash;
 
 use super::{TargetBackend, detect_sccache_path};
 use crate::shell::Shell;
@@ -25,7 +27,7 @@ use waterui_cli::{
         toolchain::AppleSdk,
     },
     build::{BuildOptions, BuildProfile, BuildProgress},
-    device::{Artifact, Device, DeviceEvent, Local, LogLevel, RunOptions, Running},
+    device::{Artifact, CrashCause, Device, DeviceEvent, Local, LogLevel, RunOptions, Running},
     esp32::platform::run_esp32,
     gtk4::platform::{build_gtk4, package_gtk4},
     hydrolysis::{
@@ -437,43 +439,55 @@ const fn resolve_platform(platform_override: Option<TargetPlatform>) -> TargetPl
 }
 
 /// Run the run command.
-pub async fn run(shell: &Shell, args: Args) -> Result<()> {
+///
+/// `interrupts` is the process's Ctrl-C channel: the supervised run owns
+/// its shutdown through [`Running::supervise`], and the non-supervised
+/// paths (web dev server, esp32) race it so an interrupt ends them the
+/// way the command-level cancel used to.
+pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<()>) -> Result<()> {
     if args.tui {
-        return run_tui_app(shell, args).await;
+        return Box::pin(crate::until_interrupt(
+            run_tui_app(shell, args),
+            &interrupts,
+        ))
+        .await
+        .map(|_| ());
     }
 
     let host = waterui_cli::toolchain::Host::current();
-    // The run context carries the opened project, the resolved device, backend
-    // and build options; on Windows that future crosses clippy's `large_futures`
-    // threshold (16 KiB), so it is pinned on the heap instead of the caller's stack.
-    let Some(context) = Box::pin(prepare_run_context(shell, &args)).await? else {
-        return Ok(());
-    };
-    print_run_header(shell, &context);
-    check_run_toolchain(shell, &host, context.platform, context.backend).await?;
+    let launch = Box::pin(async {
+        let Some(context) = Box::pin(prepare_run_context(shell, &args)).await? else {
+            return Ok(None);
+        };
+        print_run_header(shell, &context);
+        check_run_toolchain(shell, &host, context.platform, context.backend).await?;
 
-    if context.platform == TargetPlatform::Web {
-        return run_web_app(shell, &context.project).await;
-    }
+        if context.platform == TargetPlatform::Web {
+            run_web_app(shell, &context.project).await?;
+            return Ok(None);
+        }
+        if context.platform.esp32_chip().is_some() {
+            run_esp32_app(shell, &context.project, args.device.as_deref()).await?;
+            return Ok(None);
+        }
 
-    if context.platform.esp32_chip().is_some() {
-        return run_esp32_app(shell, &context.project, args.device.as_deref()).await;
-    }
+        let selection = select_run_device(
+            shell,
+            &host,
+            context.platform,
+            context.backend,
+            &context.project,
+            args.device.as_deref(),
+        )
+        .await?;
+        let config = build_run_config(shell, &host, &args, &context.project, context.backend).await;
 
-    let selection = select_run_device(
-        shell,
-        &host,
-        context.platform,
-        context.backend,
-        &context.project,
-        args.device.as_deref(),
-    )
-    .await?;
-    let config = build_run_config(shell, &host, &args, &context.project, context.backend).await;
-
-    #[cfg(target_os = "macos")]
-    let mut crash_ctx =
-        match CrashReportContext::try_new(&context.project, context.platform, context.backend) {
+        #[cfg(target_os = "macos")]
+        let crash_ctx = match CrashReportContext::try_new(
+            &context.project,
+            context.platform,
+            context.backend,
+        ) {
             Ok(ctx) => ctx,
             Err(e) => {
                 warn!(shell, "Crash report augmentation disabled: {e}");
@@ -481,19 +495,37 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
             }
         };
 
-    // The dev-server guard is held for the app's whole run: dropping it —
-    // on app exit, normal return, or the Ctrl-C future-drop — kills the
-    // bundler child (`kill_on_drop`).
-    let (running, _dev_server) = Box::pin(shell.display_output(build_and_run(
-        shell,
-        &host,
-        &context.project,
-        context.platform,
-        context.backend,
-        selection,
-        config,
-    )))
-    .await?;
+        // The dev-server guard is held for the app's whole run. Cancelling
+        // this future drops it and the app's monitor acknowledges the kill.
+        let (running, dev_server) = Box::pin(shell.display_output(build_and_run(
+            shell,
+            &host,
+            &context.project,
+            context.platform,
+            context.backend,
+            selection,
+            config,
+        )))
+        .await?;
+        Ok(Some(RunReady {
+            backend: context.backend,
+            running,
+            dev_server,
+            #[cfg(target_os = "macos")]
+            crash_ctx,
+        }))
+    });
+
+    let Some(Some(RunReady {
+        backend,
+        running,
+        dev_server: _dev_server,
+        #[cfg(target_os = "macos")]
+        mut crash_ctx,
+    })) = crate::until_interrupt(launch, &interrupts).await?
+    else {
+        return Ok(());
+    };
 
     line!(shell);
     note!(shell, "Press Ctrl+C to stop the application");
@@ -501,11 +533,19 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
 
     // Stream device events
     #[cfg(target_os = "macos")]
-    stream_running_events(shell, &host, running, context.backend, &mut crash_ctx).await?;
+    stream_running_events(shell, &host, running, interrupts, backend, &mut crash_ctx).await?;
     #[cfg(not(target_os = "macos"))]
-    stream_running_events(shell, running, context.backend).await?;
+    stream_running_events(shell, running, interrupts, backend).await?;
 
     Ok(())
+}
+
+struct RunReady {
+    backend: TargetBackend,
+    running: Running,
+    dev_server: Option<web::WebDevServer>,
+    #[cfg(target_os = "macos")]
+    crash_ctx: Option<CrashReportContext>,
 }
 
 /// Build and launch the experimental TUI backend in the invoking terminal.
@@ -729,82 +769,107 @@ const fn run_profile(args: &Args, backend: TargetBackend) -> BuildProfile {
     }
 }
 
+/// Print the run's device events until the run ends.
+///
+/// Shutdown policy lives in [`Running::supervise`]: the first interrupt
+/// stops the app and keeps the stream alive for shutdown output, a second
+/// kills it, and queued events behind a terminal event still arrive
+/// before the stream ends. This loop prints, and fails the run once it ends
+/// if the monitor reported an error.
 #[cfg(target_os = "macos")]
 async fn stream_running_events(
     shell: &Shell,
     host: &waterui_cli::toolchain::Host,
     running: Running,
+    interrupts: smol::channel::Receiver<()>,
     backend: TargetBackend,
     crash_ctx: &mut Option<CrashReportContext>,
 ) -> Result<()> {
-    let mut running = std::pin::pin!(running);
     let backend_log_name = backend_name(backend);
+    let mut events = std::pin::pin!(running.supervise(interrupts));
+    let mut monitor_errors = MonitorErrors::default();
 
-    loop {
-        let event = running.next().await;
-
-        #[cfg(target_os = "macos")]
-        let mut event = event;
-
-        #[cfg(target_os = "macos")]
-        if matches!(event.as_ref(), Some(DeviceEvent::Started))
+    while let Some(event) = events.next().await {
+        monitor_errors.observe(&event);
+        if matches!(event, DeviceEvent::Started)
             && let Some(ctx) = crash_ctx.as_mut()
         {
             ctx.refresh_start();
         }
 
-        #[cfg(target_os = "macos")]
-        if let Some(ctx) = crash_ctx.as_ref() {
-            event = augment_event_with_crash_report(host, event, ctx).await;
-        }
+        let event = if let Some(ctx) = crash_ctx.as_ref() {
+            augment_event_with_crash_report(host, event, ctx).await
+        } else {
+            event
+        };
 
-        if handle_device_event(shell, event, backend_log_name)? {
-            break;
-        }
+        handle_device_event(shell, event, backend_log_name)?;
     }
-    Ok(())
+    monitor_errors.into_result()
 }
 
+/// Print the run's device events until the run ends — the non-macOS
+/// twin of the function above, without crash-report augmentation.
 #[cfg(not(target_os = "macos"))]
 async fn stream_running_events(
     shell: &Shell,
     running: Running,
+    interrupts: smol::channel::Receiver<()>,
     backend: TargetBackend,
 ) -> Result<()> {
-    let mut running = std::pin::pin!(running);
     let backend_log_name = backend_name(backend);
+    let mut events = std::pin::pin!(running.supervise(interrupts));
+    let mut monitor_errors = MonitorErrors::default();
 
-    loop {
-        if handle_device_event(shell, running.next().await, backend_log_name)? {
-            break;
+    while let Some(event) = events.next().await {
+        monitor_errors.observe(&event);
+        handle_device_event(shell, event, backend_log_name)?;
+    }
+    monitor_errors.into_result()
+}
+
+/// The number of monitor errors; each message is printed as it arrives.
+#[derive(Default)]
+struct MonitorErrors(usize);
+
+impl MonitorErrors {
+    const fn observe(&mut self, event: &DeviceEvent) {
+        if matches!(event, DeviceEvent::MonitorError { .. }) {
+            self.0 += 1;
         }
     }
-    Ok(())
+
+    fn into_result(self) -> Result<()> {
+        if self.0 == 0 {
+            Ok(())
+        } else {
+            bail!("the run's monitor reported {} error(s)", self.0)
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
 async fn augment_event_with_crash_report(
     host: &waterui_cli::toolchain::Host,
-    event: Option<DeviceEvent>,
+    event: DeviceEvent,
     ctx: &CrashReportContext,
-) -> Option<DeviceEvent> {
-    use std::fmt::Write as _;
-
+) -> DeviceEvent {
     match event {
-        Some(DeviceEvent::Exited(exit)) => {
-            if let Some(report) = find_latest_ips_report(host, ctx).await {
-                return Some(DeviceEvent::Crashed(report.to_string()));
-            }
-            Some(DeviceEvent::Exited(exit))
-        }
-        Some(DeviceEvent::Crashed(mut msg)) => {
-            if !msg.contains("Crash report:")
-                && let Some(report) = find_latest_ips_report(host, ctx).await
-            {
-                write!(msg, "\n\nCrash report: {}", report.log_path().display())
-                    .expect("write to String");
-            }
-            Some(DeviceEvent::Crashed(msg))
+        DeviceEvent::Exited(exit) => find_latest_ips_report(host, ctx)
+            .await
+            .map_or(DeviceEvent::Exited(exit), |report| {
+                DeviceEvent::Crashed(Crash::new(CrashCause::Report(Box::new(report))))
+            }),
+        DeviceEvent::Crashed(crash)
+            if crash.report.is_none() && !matches!(crash.cause, CrashCause::Report(_)) =>
+        {
+            let Some(report) = find_latest_ips_report(host, ctx).await else {
+                return DeviceEvent::Crashed(crash);
+            };
+            DeviceEvent::Crashed(Crash {
+                report: Some(Box::new(report)),
+                ..crash
+            })
         }
         other => other,
     }
@@ -1778,47 +1843,52 @@ fn validate_log_pipeline_args(
 
 /// Handle a device event.
 ///
-/// Returns `true` if the event loop should break.
-fn handle_device_event(
-    shell: &Shell,
-    event: Option<DeviceEvent>,
-    platform_name: &str,
-) -> Result<bool> {
+fn handle_device_event(shell: &Shell, event: DeviceEvent, platform_name: &str) -> Result<()> {
     match event {
-        Some(DeviceEvent::Started) => {
+        DeviceEvent::Started => {
             let _ = shell.status("*", "Application started");
-            Ok(false)
+            Ok(())
         }
-        Some(DeviceEvent::Stopped) => {
+        DeviceEvent::Stopped => {
             let _ = shell.status("o", "Application stopped");
-            Ok(true)
+            Ok(())
         }
-        Some(DeviceEvent::Stdout { message }) => {
+        DeviceEvent::Stdout { message } => {
             line!(shell, "[stdout] {message}");
-            Ok(false)
+            Ok(())
         }
-        Some(DeviceEvent::Stderr { message }) => {
+        DeviceEvent::Stderr { message } => {
             warn!(shell, "[stderr] {message}");
-            Ok(false)
+            Ok(())
         }
-        Some(DeviceEvent::Log { level, message }) => {
+        DeviceEvent::Log { level, message } => {
             let _ = shell.device_log(platform_name, level, message);
-            Ok(false)
+            Ok(())
         }
-        Some(DeviceEvent::Exited(exit)) => {
+        DeviceEvent::MonitorError { message } => {
+            error!(shell, "{message}");
+            Ok(())
+        }
+        DeviceEvent::Exited(exit) => {
             let _ = shell.status("o", exit.terminal_message());
-            Ok(true)
+            Ok(())
         }
-        Some(DeviceEvent::Crashed(msg)) => {
-            // Use panic_report for panic messages, regular error for others
-            if msg.starts_with("Panic:") {
-                shell.panic_message(&msg);
+        DeviceEvent::Crashed(crash) => {
+            if let CrashCause::Panic(panic) = &crash.cause {
+                let extra = crash.panic_note();
+                shell.panic(
+                    panic,
+                    extra.as_deref(),
+                    crash
+                        .report
+                        .as_deref()
+                        .map(waterui_cli::debug::CrashReport::log_path),
+                );
             } else {
-                error!(shell, "Application crashed: {msg}");
+                error!(shell, "Application crashed: {crash}");
             }
             bail!("application crashed");
         }
-        None => Ok(true),
     }
 }
 
@@ -1828,13 +1898,13 @@ mod tests {
         Args, DeviceCandidate, DeviceChoice, SelectedDevice, TargetBackend, TargetPlatform,
         default_backend, device_android_abi, device_choice, handle_device_event, lib_platform,
         parse_env_assignment, prompt_for_device, resolve_backend, resolve_platform, run_profile,
-        validate_device_arg,
+        stream_running_events, validate_device_arg,
     };
     use clap::Parser as _;
     use waterui_cli::android::device::AndroidDevice;
     use waterui_cli::android::platform::AndroidAbi;
     use waterui_cli::build::BuildProfile;
-    use waterui_cli::device::{ApplicationExit, DeviceEvent, Local};
+    use waterui_cli::device::{ApplicationExit, DeviceEvent, Local, StopRequest};
 
     /// The run `Args` wrapped in a `Parser` so tests can exercise the real
     /// flag surface instead of constructing the clap struct field by field.
@@ -2016,13 +2086,79 @@ mod tests {
     #[test]
     fn clean_device_exit_stops_without_error() {
         let shell = crate::shell::Shell::new(false);
-        let should_stop = handle_device_event(
+        handle_device_event(
             &shell,
-            Some(DeviceEvent::Exited(ApplicationExit::completed())),
+            DeviceEvent::Exited(ApplicationExit::completed()),
             "test",
         )
         .expect("clean device exit should not fail water run");
-        assert!(should_stop);
+    }
+
+    fn monitored_stop_result(
+        report_monitor_error: bool,
+    ) -> (eyre::Result<()>, Option<waterui_cli::device::StopRequest>) {
+        let shell = crate::shell::Shell::new(false);
+        let (running, sender, control) = waterui_cli::device::Running::new();
+        let (request_tx, request_rx) = smol::channel::bounded(1);
+        let (interrupt_sender, interrupts) = smol::channel::unbounded();
+        interrupt_sender
+            .try_send(())
+            .expect("queue the stop interrupt");
+
+        smol::spawn(async move {
+            let request = control.recv().await.ok();
+            let _ = request_tx.try_send(request);
+            if report_monitor_error {
+                sender
+                    .send(DeviceEvent::MonitorError {
+                        message:
+                            "The app did not exit within the 5s termination grace period; killing it"
+                                .to_string(),
+                    })
+                    .await
+                    .expect("send the monitor error");
+            }
+            sender
+                .send(DeviceEvent::Exited(ApplicationExit::user_closed()))
+                .await
+                .expect("send the terminal event");
+        })
+        .detach();
+
+        let backend = TargetBackend::Hydrolysis;
+        #[cfg(target_os = "macos")]
+        let result = {
+            let host = waterui_cli::toolchain::Host::current();
+            let mut crash_ctx = None;
+            smol::block_on(stream_running_events(
+                &shell,
+                &host,
+                running,
+                interrupts,
+                backend,
+                &mut crash_ctx,
+            ))
+        };
+        #[cfg(not(target_os = "macos"))]
+        let result = smol::block_on(stream_running_events(&shell, running, interrupts, backend));
+
+        let request = request_rx.try_recv().ok().flatten();
+        (result, request)
+    }
+
+    #[test]
+    fn stop_after_a_monitor_error_fails_the_run() {
+        let (result, request) = monitored_stop_result(true);
+        assert_eq!(request, Some(StopRequest::Terminate));
+        let error = result.expect_err("a stop that reported an error fails water run");
+        assert_eq!(error.to_string(), "the run's monitor reported 1 error(s)");
+    }
+
+    #[test]
+    fn plain_stop_succeeds() {
+        let (result, request) = monitored_stop_result(false);
+        assert_eq!(request, Some(StopRequest::Terminate));
+        result.expect("a plain stop exits 0");
     }
 
     #[test]

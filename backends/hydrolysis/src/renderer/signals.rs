@@ -433,6 +433,31 @@ impl SemanticCore {
             .retain(|_, entry| entry.last_seen == generation);
     }
 
+    /// Subscribes `signal` so every update marks the root cell for a
+    /// re-layout — the same mark `watch_signal` puts on a signal read
+    /// outside any node — and answers the [`Retain`] the caller keeps for
+    /// as long as the signal must be observed.
+    ///
+    /// `watch_signal`'s subscriptions live for the frame that registers
+    /// them; a binding that must stay subscribed across idle frames — the
+    /// window declaration's own signals, which the runner watches for the
+    /// window's whole lifetime — cannot reach a frame to re-register from,
+    /// so it takes this path and holds the guard itself.
+    pub(crate) fn refresh_watch<S>(&self, signal: &S) -> Retain
+    where
+        S: Signal + Clone + 'static,
+    {
+        // A signal read outside any node marks `mark_layout()` on the root
+        // cell (§B.1): the mark is what `is_settled` and the pump poll for
+        // pending work — `mark_layout` carries the `request_refresh` wake.
+        let root = self.root_weak();
+        subscribe_signal(signal, move |_| {
+            if let Some(root) = root.upgrade() {
+                root.mark_layout();
+            }
+        })
+    }
+
     pub(crate) fn read_signal<S>(&mut self, signal: &S) -> S::Output
     where
         S: Signal + Clone + 'static,

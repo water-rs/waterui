@@ -9,7 +9,7 @@ use cherenkov::{FilterId, Layer, Transaction};
 use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use crate::renderer::ProducerWake;
 use crate::renderer::effects::{AppliedFilterMetrics, FilteredRuntime};
-use crate::renderer::material::MaterialRuntime;
+use crate::renderer::mount::backdrop::{BackdropGroupKey, BackdropGroups, MaterialMembership};
 use crate::renderer::recording::SceneResources;
 
 /// A layer target: recorded runs land through `Transaction`, and the
@@ -17,9 +17,10 @@ use crate::renderer::recording::SceneResources;
 pub trait LayerTarget: cherenkov::Target {
     /// What the target installs against (engine, resources, devices).
     type Host;
-    /// The backdrop state a material frame holds; dropping it releases
-    /// the backdrop group.
-    type Material: 'static;
+    /// The backdrop-group object the mount's [`BackdropGroups`] table
+    /// holds — on the GPU target a [`cherenkov::BackdropGroup`], whose
+    /// drop unregisters it.
+    type Group: 'static;
 
     fn resources(host: &Self::Host) -> &Rc<SceneResources>;
 
@@ -45,18 +46,26 @@ pub trait LayerTarget: cherenkov::Target {
 
     fn filter(host: &Self::Host, runtime: &mut FilteredRuntime) -> FilterId;
 
-    /// Makes `layer` a member of the material's backdrop group while
-    /// `visible`, (re)building the group when `display_scale` changes;
-    /// releases it when not visible.
+    /// Joins `layer` to the backdrop group `key` names, sharing the
+    /// group's filtered capture with every member under the same key,
+    /// rebuilding it when `display_scale` changes. The membership the
+    /// layer's node holds ends with its layers.
     fn mount_material(
         host: &Self::Host,
         tx: &mut Transaction<'_, Self>,
+        groups: &mut BackdropGroups<Self::Group>,
         layer: &Layer,
-        runtime: &MaterialRuntime,
+        key: BackdropGroupKey,
         display_scale: f64,
-        visible: bool,
-        state: &mut Option<Self::Material>,
+        membership: &mut Option<MaterialMembership>,
     );
+
+    /// Clears the backdrop membership [`mount_material`](Self::mount_material)
+    /// installed on `layer`. Targets that never install one leave the
+    /// default no-op.
+    fn clear_material(tx: &mut Transaction<'_, Self>, layer: &Layer) {
+        let _ = (tx, layer);
+    }
 }
 
 /// The Cherenkov GPU target's host: one per engine window surface.
@@ -71,22 +80,9 @@ pub struct CherenkovHost {
     pub queue: wgpu::Queue,
 }
 
-/// A GPU material frame's backdrop group membership.
-pub struct GpuMaterial {
-    _group: cherenkov::BackdropGroup,
-    display_scale: u64,
-}
-
-impl GpuMaterial {
-    #[cfg(test)]
-    pub(crate) const fn display_scale(&self) -> f64 {
-        f64::from_bits(self.display_scale)
-    }
-}
-
 impl LayerTarget for cherenkov_gpu::Gpu {
     type Host = CherenkovHost;
-    type Material = GpuMaterial;
+    type Group = cherenkov::BackdropGroup;
 
     fn resources(host: &CherenkovHost) -> &Rc<SceneResources> {
         &host.resources
@@ -159,38 +155,38 @@ impl LayerTarget for cherenkov_gpu::Gpu {
     fn mount_material(
         host: &CherenkovHost,
         tx: &mut Transaction<'_, Self>,
+        groups: &mut BackdropGroups<cherenkov::BackdropGroup>,
         layer: &Layer,
-        runtime: &MaterialRuntime,
+        key: BackdropGroupKey,
         display_scale: f64,
-        visible: bool,
-        state: &mut Option<GpuMaterial>,
+        membership: &mut Option<MaterialMembership>,
     ) {
-        if !visible {
-            if state.take().is_some() {
-                tx[layer].clear_backdrop();
-            }
-            return;
-        }
-        let bits = display_scale.to_bits();
-        if state
-            .as_ref()
-            .is_some_and(|material| material.display_scale == bits)
-        {
-            return;
-        }
         let surface = host
             .surface
             .upgrade()
             .expect("hydrolysis material: the engine surface was dropped during its commit");
-        let group = surface.backdrop_group(
-            runtime.chain(display_scale),
-            crate::renderer::material::capture_scale(),
+        groups.join(
+            tx,
+            layer,
+            key,
+            display_scale,
+            membership,
+            (
+                |runtime, scale| {
+                    surface.backdrop_group(
+                        runtime.chain(scale),
+                        crate::renderer::material::capture_scale(),
+                    )
+                },
+                |tx, layer, group| {
+                    tx[layer].backdrop(group.sample());
+                },
+            ),
         );
-        tx[layer].backdrop(group.sample());
-        *state = Some(GpuMaterial {
-            _group: group,
-            display_scale: bits,
-        });
+    }
+
+    fn clear_material(tx: &mut Transaction<'_, Self>, layer: &Layer) {
+        tx[layer].clear_backdrop();
     }
 }
 

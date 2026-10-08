@@ -1,7 +1,5 @@
 use super::{HydrolysisRenderer, TailMark};
 
-use crate::renderer::Edge;
-use crate::renderer::EdgeOffsets;
 use crate::renderer::HydroState;
 use crate::renderer::SafeAreaLayout;
 use crate::renderer::grow_rect;
@@ -117,20 +115,6 @@ impl<'a> WidgetRenderContext<'a> {
             .map(|area| area.hosted(self.hosted_frame(area, rect)))
     }
 
-    /// The §7.1 paint extension a bar the widget draws at `rect` in its own
-    /// bounds space earns — "Chrome": a bar extends its background under the
-    /// regions of every edge it touches, to the window edge. The answer is
-    /// [`SafeAreaLayout::touched_edge_offsets`] on the bar's own window-space
-    /// frame — the same computation a slot fill's layout-recorded extension
-    /// runs — so a bar whose edge clears the subtree's boundary extends
-    /// nowhere, and a widget with no context (inside a scroll surface's
-    /// content) extends nothing.
-    fn chrome_extension(&self, rect: kurbo::Rect) -> EdgeOffsets {
-        self.safe_area_for(rect)
-            .map(|area| area.touched_edge_offsets())
-            .unwrap_or_default()
-    }
-
     /// `self.bounds` grown by the touched-edge offsets of the area its
     /// content paints — the reach a transition clip and a stack backdrop
     /// fill must both cover so an extended bar surface is never clipped and
@@ -145,31 +129,42 @@ impl<'a> WidgetRenderContext<'a> {
         )
     }
 
-    /// The surface rect a bar docked at `dock` paints — `rect` grown by
-    /// [`Self::chrome_extension`] on every edge except `dock`'s opposite,
-    /// the one boundary a bar docked at `dock` can never reach. The mask
-    /// matters when a bar's measured frame is clamped to the widget's
-    /// bounds — a top bar on a `NavigationView` shorter than the bar lands
-    /// its inner edge on the bottom boundary and would otherwise extend
-    /// through that inset.
-    pub(crate) fn chrome_surface(&self, rect: kurbo::Rect, dock: Edge) -> kurbo::Rect {
-        self.chrome_surface_except(rect, &[dock.opposite()])
-    }
-
-    /// `rect` grown by [`Self::chrome_extension`] with every edge in
-    /// `except` cleared — the surface of a bar that must keep some edges it
-    /// touches unextended, e.g. because a decoration the `WidgetTheme`
-    /// contract receives no placement for would move off its edge.
-    pub(crate) fn chrome_surface_except(&self, rect: kurbo::Rect, except: &[Edge]) -> kurbo::Rect {
-        grow_rect(
-            rect,
-            except
-                .iter()
-                .copied()
-                .fold(self.chrome_extension(rect), EdgeOffsets::cleared),
+    /// §7.1's chrome split over every `(edge, extent)` in `bars` for
+    /// this widget's [`bounds`](Self::bounds), derived in one call: each
+    /// bar's [`ChromeBar`] — band, context, surface and per-rect area
+    /// bound together — plus the one content rect `bounds` leaves once
+    /// every band is carved and the one composed content context — see
+    /// [`SafeAreaLayout::chrome_splits`]. A widget with no safe-area
+    /// context keeps `bounds`' own edges, the placement every
+    /// context-free chrome container gets: the bars come back
+    /// [`ChromeBar::contextless`] and `content_area` stays `None`.
+    pub(crate) fn chrome_splits<const N: usize>(
+        &self,
+        bars: [(crate::renderer::Edge, f64); N],
+    ) -> ChromeGroup<N> {
+        self.safe_area.as_ref().map_or_else(
+            || {
+                let bars = bars.map(|(edge, extent)| {
+                    crate::renderer::ChromeBar::contextless(self.bounds, edge, extent)
+                });
+                ChromeGroup {
+                    content: bars
+                        .iter()
+                        .fold(self.bounds, |content, bar| content.intersect(bar.rest)),
+                    bars,
+                    content_area: None,
+                }
+            },
+            |area| {
+                let splits = area.chrome_splits(self.bounds, bars);
+                ChromeGroup {
+                    bars: splits.bars,
+                    content: splits.content,
+                    content_area: Some(splits.content_area),
+                }
+            },
         )
     }
-
     pub(crate) const fn render_context(&self) -> RenderContext {
         RenderContext {
             local: self.local,
@@ -307,4 +302,22 @@ impl<'a> WidgetRenderContext<'a> {
             state, scene, child_ctx, styled, env,
         );
     }
+}
+
+/// The pieces of [`WidgetRenderContext::chrome_splits`]: each bar's
+/// [`ChromeBar`] — its band and its context bound together, so a band is
+/// never paired with another bar's context — plus the one content rect
+/// and composed content context; a context-free widget's bars come back
+/// [`ChromeBar::contextless`] and `content_area` `None`.
+pub struct ChromeGroup<const N: usize> {
+    /// Each bar's share of the split, in the order the edges were given.
+    pub bars: [crate::renderer::ChromeBar; N],
+    /// The remainder of `bounds` outside every band — always inside
+    /// `bounds`, clear of both regions.
+    pub content: kurbo::Rect,
+    /// The hosted content's context: `hosted` plus every bar's `Docked`
+    /// boundary — nothing inside touches, releases or extends through an
+    /// edge a bar sits on, and a nested bar whose frame lands on a dock
+    /// edge stacks on the outer bar.
+    pub content_area: Option<SafeAreaLayout>,
 }

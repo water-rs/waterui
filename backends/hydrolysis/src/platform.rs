@@ -462,9 +462,11 @@ pub enum InputEvent {
         x: f32,
         /// Vertical position in logical points.
         y: f32,
-        /// Horizontal scroll delta.
+        /// Horizontal scroll delta; winit's sign is positive when the content moves right,
+        /// revealing content to the left.
         dx: f32,
-        /// Vertical scroll delta.
+        /// Vertical scroll delta; winit's sign is positive when the content moves down,
+        /// revealing content above.
         dy: f32,
         /// Whether the deltas are in lines (`true`) or pixels (`false`).
         is_line_delta: bool,
@@ -475,9 +477,11 @@ pub enum InputEvent {
         x: f32,
         /// Vertical position in logical points.
         y: f32,
-        /// Horizontal scroll delta.
+        /// Horizontal scroll delta; winit's sign is positive when the content moves right,
+        /// revealing content to the left.
         dx: f32,
-        /// Vertical scroll delta.
+        /// Vertical scroll delta; winit's sign is positive when the content moves down,
+        /// revealing content above.
         dy: f32,
         /// The gesture's touch phase.
         phase: TouchPhase,
@@ -909,6 +913,18 @@ pub fn validated_window_frame(frame: waterui_core::layout::Rect) -> waterui_core
         );
     }
     frame
+}
+
+/// Resolves the title-bar buttons `Window::closable` leaves enabled.
+///
+/// Only the close button toggles: minimize and maximize are always enabled.
+#[cfg(hydrolysis_winit)]
+pub fn enabled_window_buttons(closable: bool) -> winit::window::WindowButtons {
+    if closable {
+        winit::window::WindowButtons::all()
+    } else {
+        winit::window::WindowButtons::MINIMIZE | winit::window::WindowButtons::MAXIMIZE
+    }
 }
 
 /// Window host-services contract consumed by hydrolysis runner: window
@@ -2230,8 +2246,8 @@ mod winit_impl {
     use super::{
         CursorStyle, DeviceLoss, GpuSurfaceWindow, InputEvent, KeyCode, KeyState, Modifiers,
         PlatformWindow, PointerButton, PointerKind, RedrawHandle, SurfaceError, SurfaceFrame,
-        SurfaceProvider, TextInputPurpose, TextInputState, TouchPhase, reclaim_device,
-        validated_window_frame,
+        SurfaceProvider, TextInputPurpose, TextInputState, TouchPhase, enabled_window_buttons,
+        reclaim_device, validated_window_frame,
     };
 
     #[derive(Clone, Debug)]
@@ -2766,6 +2782,7 @@ mod winit_impl {
     struct AppliedWindowProperties {
         title: waterui::Str,
         resizable: bool,
+        closable: bool,
         decorations: bool,
         /// Whether the key went down (`Pressed`) or came up (`Released`).
         state: WindowState,
@@ -3661,6 +3678,7 @@ mod winit_impl {
             let properties = AppliedWindowProperties {
                 title,
                 resizable: window.resizable,
+                closable: window.closable,
                 decorations,
                 state,
                 frame,
@@ -3678,6 +3696,10 @@ mod winit_impl {
             }
             if applied.is_none_or(|p| p.resizable != properties.resizable) {
                 self.window.set_resizable(properties.resizable);
+            }
+            if applied.is_none_or(|p| p.closable != properties.closable) {
+                self.window
+                    .set_enabled_buttons(enabled_window_buttons(properties.closable));
             }
             if applied.is_none_or(|p| p.decorations != properties.decorations) {
                 self.window.set_decorations(properties.decorations);
@@ -4297,6 +4319,39 @@ mod winit_impl {
             }));
         }
 
+        /// The space bar is the character `" "` in the W3C vocabulary, not a
+        /// named key: winit's `NamedKey::Space` must reach the renderer as
+        /// that character so a `Shortcut::new(' ')` chord matches it
+        /// (water-rs/waterui#2038).
+        #[test]
+        fn the_space_bar_reports_the_w3c_space_character() {
+            let space = Key::Named(winit::keyboard::NamedKey::Space);
+            let mut events = Vec::new();
+            queue_keyboard_input(
+                &mut events,
+                Modifiers {
+                    control: true,
+                    ..Modifiers::default()
+                },
+                WinitKeyInput {
+                    is_synthetic: false,
+                    state: ElementState::Pressed,
+                    repeat: false,
+                    text: Some(" "),
+                    logical_key: &space,
+                    physical_key: PhysicalKey::Code(winit::keyboard::KeyCode::Space),
+                },
+            );
+            let Some(InputEvent::Key { logical_key, .. }) = events.first() else {
+                panic!("a space-bar press queues a key event first: {events:?}");
+            };
+            assert_eq!(*logical_key, keyboard_types::Key::Character(" ".to_owned()));
+            assert!(
+                waterui_controls::menu::ShortcutKey::from(' ').matches(logical_key),
+                "a space shortcut matches the space bar's logical key"
+            );
+        }
+
         /// water-rs/hydrolysis#211: on X11, `XI_FocusIn` replays every held
         /// key as a synthetic `KeyboardInput` press and `XI_FocusOut` as a
         /// synthetic release — state synchronisation, not keystrokes. The
@@ -4473,6 +4528,49 @@ mod winit_impl {
                 ),
                 Mode::Opaque
             );
+        }
+
+        /// A behind-window material window is transparent, so its surface
+        /// takes a multiplied composite alpha mode — premultiplied first, the
+        /// postmultiplied mode Metal offers otherwise — while a within-window
+        /// material window keeps the opaque surface every other window has.
+        #[test]
+        fn a_behind_window_material_window_gets_a_multiplied_alpha_mode() {
+            use waterui::background::Material;
+            use waterui::window::{Window, WindowState};
+            use wgpu::CompositeAlphaMode as Mode;
+
+            let env = waterui_core::Environment::new();
+            let window = |material| {
+                Window::new("", waterui_core::binding(WindowState::Normal), || ())
+                    .background(material)
+            };
+            let select = |material, modes: &[Mode]| {
+                super::WinitSurface::select_alpha_mode(
+                    &caps_with_alpha_modes(modes),
+                    crate::runner::window_requires_transparency(&window(material), &env),
+                    &fake_adapter_info(),
+                )
+            };
+            for level in [Material::UltraThin, Material::Thin] {
+                assert_eq!(
+                    select(
+                        level,
+                        &[Mode::Opaque, Mode::PostMultiplied, Mode::PreMultiplied]
+                    ),
+                    Mode::PreMultiplied
+                );
+                assert_eq!(
+                    select(level, &[Mode::Opaque, Mode::PostMultiplied]),
+                    Mode::PostMultiplied
+                );
+            }
+            for level in [Material::Regular, Material::Thick, Material::UltraThick] {
+                assert_eq!(
+                    select(level, &[Mode::Opaque, Mode::PreMultiplied]),
+                    Mode::Opaque
+                );
+            }
         }
 
         /// water-rs/hydrolysis#118: a depth-32 X11 window on a Mesa

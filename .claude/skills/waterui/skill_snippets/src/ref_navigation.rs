@@ -391,8 +391,9 @@ pub fn navigation_block_11(env: Environment) -> App {
 // ---------------------------------------------------------------------------
 // navigation.md § "## Windows" (prose): the `Window` builder — `.style(..)`
 // with a `WindowStyle` or a `Binding<WindowStyle>`, `handle().set_style(..)`,
-// `.background(..)` with a `Binding<WindowBackground>`, `set_background(..)`,
-// `.background(..)` with a Color or a Material, `.resizable(bool)`,
+// `.background(..)` with a `Binding<WindowBackground>`, `set_background(..)`
+// with a colour and a material, `.background(..)` with a Color or a Material,
+// the three `WindowBackground` variants, `.resizable(bool)`,
 // `.min_size(..)` / `.max_size(..)` (one `impl IntoComputed<Size>` each),
 // `.level(..)` / `.resize_increments(..)`, the `WindowState` variants, and the
 // `WindowHandle` controls. Not counted as a rust block.
@@ -429,6 +430,9 @@ pub fn navigation_window_builder_prose() {
     window
         .handle()
         .set_background(Color::srgb(0, 0, 0).with_opacity(0.8));
+    window.handle().set_background(Material::UltraThin);
+    background.set(WindowBackground::Material(Material::Thin));
+    background.set(WindowBackground::Color(Color::transparent()));
 
     let _ = WindowStyle::FullSizeContentView;
     let _ = WindowState::Normal;

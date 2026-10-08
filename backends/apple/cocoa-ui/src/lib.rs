@@ -64,6 +64,7 @@ mod callback;
 pub mod capture;
 pub mod color;
 pub mod color_scheme;
+pub mod content_type;
 pub mod core_animation;
 pub mod date;
 pub mod display_link;
@@ -87,6 +88,10 @@ pub mod map;
 pub mod material;
 pub mod menu;
 pub mod metal;
+pub mod metal_presenter;
+#[cfg(feature = "native-test")]
+#[doc(hidden)]
+pub mod native_test;
 pub mod notification;
 pub mod path;
 pub mod picker;
@@ -94,10 +99,12 @@ pub mod pointer;
 pub mod process;
 pub mod progress;
 pub mod scroll;
+pub(crate) mod scroll_flight;
 pub mod shape;
 pub mod signal;
 pub mod slider;
 pub mod system_font;
+pub mod teardown;
 pub mod text;
 #[cfg(target_os = "ios")]
 pub mod uikit;
@@ -121,6 +128,7 @@ pub type PlatformView = objc2_ui_kit::UIView;
 pub use action::ActionTarget;
 pub use color::Rgba;
 pub use color_scheme::ColorScheme;
+pub use content_type::ContentType;
 pub use font::Font;
 pub use geometry::{EdgeInsets, Point, Rect, Size};
 pub use image::{Image, ScaleMode};
@@ -149,3 +157,4 @@ pub use objc2_ui_kit;
 #[cfg(feature = "webview")]
 pub use objc2_web_kit;
 pub use system_font::{FontMetrics, TextStyle};
+pub use teardown::{HandlerSlots, HandlerTeardown};

@@ -3,19 +3,30 @@
 //! `WaterUI` ships a known set of resource fonts (Roboto plus script-specific
 //! Noto Sans families). Classification and fallback installation are shared by the
 //! native loader (which scans `resources/fonts` directories) and the web
-//! loader in [`super::web_runner`] (which fetches fonts from a manifest).
+//! loader in [`super::web_fonts`] (which registers fonts fetched from a
+//! manifest).
 //!
 //! The result is built **once per application**, installed into the root
-//! environment as the shared [`FontCollection`], and every window's renderer is
-//! seeded from it by [`seed_renderer`]. Building it per window meant scanning
+//! environment as the shared `FontCollection`, and every window's text engine
+//! is constructed from it. Building it per window meant scanning
 //! the resource directories and enumerating the system's fonts again for each
 //! one, and a self-drawn component reading the environment would have had no
 //! single collection to read.
 
+#[cfg(any(not(target_arch = "wasm32"), feature = "web"))]
 use parley::fontique::{Collection, FallbackKey, FamilyId, FontInfo, GenericFamily, Script};
 use waterui_text::FontCollection;
 
+#[cfg(not(target_arch = "wasm32"))]
+use super::super::DeclaredFonts;
+
+#[cfg(target_os = "android")]
+pub use super::android_fonts::android_collection;
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+pub use super::web_fonts::web_collection;
+
 /// Font-family buckets recognized from `WaterUI`'s bundled resource fonts.
+#[cfg(any(not(target_arch = "wasm32"), feature = "web"))]
 #[derive(Default)]
 pub(super) struct ResourceFontFamilies {
     generic: Vec<FamilyId>,
@@ -30,10 +41,12 @@ pub(super) struct ResourceFontFamilies {
     devanagari: Vec<FamilyId>,
 }
 
+#[cfg(any(not(target_arch = "wasm32"), feature = "web"))]
 fn extend_family_ids(target: &mut Vec<FamilyId>, families: &[(FamilyId, Vec<FontInfo>)]) {
     target.extend(families.iter().map(|(family_id, _)| *family_id));
 }
 
+#[cfg(any(not(target_arch = "wasm32"), feature = "web"))]
 fn set_fallbacks(collection: &mut Collection, key: impl Into<FallbackKey>, families: &[FamilyId]) {
     if families.is_empty() {
         return;
@@ -44,6 +57,7 @@ fn set_fallbacks(collection: &mut Collection, key: impl Into<FallbackKey>, famil
     );
 }
 
+#[cfg(any(not(target_arch = "wasm32"), feature = "web"))]
 impl ResourceFontFamilies {
     /// Classify registered font families into fallback buckets by font name.
     ///
@@ -117,20 +131,22 @@ impl ResourceFontFamilies {
 }
 
 /// The system's fonts plus every `.ttf`/`.otf` under the application's staged
-/// fonts directory, with the recognized script fallbacks installed.
+/// fonts directory and every file of the environment's [`DeclaredFonts`],
+/// with the recognized script fallbacks installed.
 ///
-/// `resources` is the application's own [`waterui_core::ResourceContext`]: the
-/// fonts directory is owned by that context and is never probed from the
-/// process's working directory or executable location, so an embedded host's
-/// fonts come from the roots it installed.
+/// The fonts directory is the one owned by the environment's required
+/// [`waterui_core::ResourceContext`] and is never probed from the process's
+/// working directory or executable location, so an embedded host's fonts come
+/// from the roots it installed.
+///
+/// # Panics
+///
+/// Panics if the environment carries no `ResourceContext`, or if the fonts
+/// directory or a declared font file cannot be read, naming the path.
 #[cfg(not(target_arch = "wasm32"))]
-pub(super) fn native_resource_fonts(
-    resources: &waterui_core::ResourceContext,
-) -> parley::FontContext {
-    use parley::fontique::Blob;
-    use std::sync::Arc;
-
-    let root = resources.fonts();
+#[must_use]
+pub fn native_collection(env: &waterui_core::Environment) -> FontCollection {
+    let root = waterui_core::ResourceContext::from_environment(env).fonts();
     let mut font_cx = parley::FontContext::new();
     let mut resource_fonts = ResourceFontFamilies::default();
     if root.is_dir() {
@@ -154,43 +170,84 @@ pub(super) fn native_resource_fonts(
             if !extension.eq_ignore_ascii_case("ttf") && !extension.eq_ignore_ascii_case("otf") {
                 continue;
             }
-            let font_data = std::fs::read(&path).unwrap_or_else(|error| {
-                panic!(
-                    "hydrolysis native font loader failed to read `{}`: {error}",
-                    path.display()
-                )
-            });
-            let families = font_cx
-                .collection
-                .register_fonts(Blob::new(Arc::new(font_data)), None);
-            let file_name = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or_else(|| {
-                    panic!(
-                        "hydrolysis native font loader found a font path without UTF-8 file name: `{}`",
-                        path.display()
-                    )
-                });
-            resource_fonts.classify(file_name, &families);
-            tracing::debug!(
-                target: "waterui::hydrolysis::fonts",
-                path = %path.display(),
-                families = families.len(),
-                "registered native Hydrolysis font"
-            );
+            register_font_file(&mut font_cx, &mut resource_fonts, &path);
+        }
+    }
+    if let Some(declared) = env.get::<DeclaredFonts>() {
+        for path in declared.paths() {
+            register_font_file(&mut font_cx, &mut resource_fonts, path);
         }
     }
     resource_fonts.install(&mut font_cx.collection);
-    font_cx
+    FontCollection::new(font_cx)
 }
 
-/// Gives `core` the application's fonts to shape with.
-///
-/// Every window shapes against the one collection the runner installed, so a
-/// popup opened later measures text exactly as the window that opened it does.
-/// The renderer keeps its own copy because it shapes across worker threads and
-/// `parley`'s contexts are not `Sync`; the faces in it are the same ones.
-pub(super) fn seed_core(core: &mut crate::renderer::SemanticCore, fonts: &FontCollection) {
-    *core.state_mut().text_fonts_mut() = fonts.use_fonts(|fonts| fonts.clone());
+/// Registers the font file at `path` into `font_cx` and classifies its
+/// families into `resource_fonts` by file name.
+#[cfg(not(target_arch = "wasm32"))]
+fn register_font_file(
+    font_cx: &mut parley::FontContext,
+    resource_fonts: &mut ResourceFontFamilies,
+    path: &std::path::Path,
+) {
+    use parley::fontique::Blob;
+    use std::sync::Arc;
+
+    let font_data = std::fs::read(path).unwrap_or_else(|error| {
+        panic!(
+            "hydrolysis native font loader failed to read `{}`: {error}",
+            path.display()
+        )
+    });
+    let families = font_cx
+        .collection
+        .register_fonts(Blob::new(Arc::new(font_data)), None);
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_else(|| {
+            panic!(
+                "hydrolysis native font loader found a font path without UTF-8 file name: `{}`",
+                path.display()
+            )
+        });
+    resource_fonts.classify(file_name, &families);
+    tracing::debug!(
+        target: "waterui::hydrolysis::fonts",
+        path = %path.display(),
+        families = families.len(),
+        "registered native Hydrolysis font"
+    );
+}
+
+/// A collection carrying only the faces fontique discovers on the system —
+/// for a wasm32 window without a font manifest, where there is no resource
+/// directory to scan and no `web_collection` result to build on.
+#[cfg(target_arch = "wasm32")]
+pub fn system_collection() -> FontCollection {
+    FontCollection::new(parley::FontContext::new())
+}
+
+/// Raw data of the default face of an installed font `family`, resolved
+/// through system font discovery as a runtime resolves a named family. The
+/// repository commits no fonts: `backends/hydrolysis/test-fonts/install.py`
+/// installs the fixtures, and a family that is not installed fails naming it.
+#[cfg(test)]
+pub fn installed_font_bytes(family: &str) -> std::sync::Arc<[u8]> {
+    let mut collection =
+        parley::fontique::Collection::new(parley::fontique::CollectionOptions::default());
+    let info = collection.family_by_name(family).unwrap_or_else(|| {
+        panic!(
+            "font family `{family}` is not installed; install the test fonts with \
+             `uv run backends/hydrolysis/test-fonts/install.py`"
+        )
+    });
+    let face = info
+        .default_font()
+        .unwrap_or_else(|| panic!("the installed `{family}` family carries no face"));
+    std::sync::Arc::from(
+        face.load(None)
+            .unwrap_or_else(|| panic!("the installed `{family}` face failed to load"))
+            .as_ref(),
+    )
 }
