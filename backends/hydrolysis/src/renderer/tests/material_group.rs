@@ -1144,9 +1144,14 @@ fn a_scope_moving_between_lists_keeps_one_owner() {
 
     // Removing the row moves its scope cell from the collection's item
     // list into the departing entry's `Item::Scope` list — pump one frame
-    // into the exit transition, before the entry retires.
+    // into the exit transition, before the entry retires. A synthetic
+    // clock keeps the assert mid-transition: `pump` runs on wall time,
+    // which can run the 1 s animation out under suite load.
     let _ = rows.remove(0);
-    pump(&mut runtime);
+    let start = Instant::now();
+    for step in 0..64 {
+        let _ = runtime.pump_at(false, start + Duration::from_millis(step * 15));
+    }
     let registrations = mounts(&runtime).anchor_registrations();
     assert_eq!(
         registrations.len(),
