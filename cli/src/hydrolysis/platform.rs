@@ -239,7 +239,7 @@ pub async fn build_hydrolysis_with_envs_and_features(
     copy_assets_and_fonts(
         project,
         &backend_path,
-        &built_target.app_symbols()?,
+        &built_target.app_symbols().await?,
         options.uses_dev_server(),
     )
     .await?;
@@ -371,7 +371,7 @@ pub async fn package_hydrolysis(
     copy_assets_and_fonts(
         project,
         &backend_path,
-        &built.app_symbols()?,
+        &built.app_symbols().await?,
         options.uses_dev_server(),
     )
     .await?;

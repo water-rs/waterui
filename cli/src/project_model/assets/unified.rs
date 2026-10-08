@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use askama::Template;
 use eyre::{Context, bail};
+use futures_util::{StreamExt as _, TryStreamExt as _};
 use image::ImageEncoder;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -24,6 +25,14 @@ use crate::artifact_symbols::ArtifactSymbols;
 use crate::project::Project;
 
 pub const ASSET_ROOT_DIR: &str = "waterui_assets";
+/// The file inside a staged bundle naming what it was staged from — see
+/// [`stage_bundle`].
+const SYNC_STAMP_FILE: &str = "waterui-sync-stamp";
+/// The version of what staging writes for a given source: the copy and
+/// [`optimize_image`]'s re-encoding. It is part of every bundle stamp, so
+/// raising it restages every bundle; raise it with any change to the bytes
+/// staging produces from unchanged sources.
+const STAGING_VERSION: u32 = 1;
 /// The accent every platform falls back to when `[theme]` names none.
 const DEFAULT_ACCENT: HexColor = HexColor::from_rgb([0x0A, 0x84, 0xFF]);
 /// Point size of the iOS launch image, rendered at 1x, 2x and 3x.
@@ -115,10 +124,8 @@ pub async fn write_library_resources(
     manifest: &BundleManifest,
     dest_dir: &Path,
 ) -> eyre::Result<()> {
-    let assets_dest = dest_dir.join(ASSET_ROOT_DIR);
-    reset_dir(&assets_dest).await?;
-    copy_manifest_assets(manifest, &assets_dest).await?;
-    write_manifest_stamp(manifest, &assets_dest).await
+    stage_bundle(manifest, &dest_dir.join(ASSET_ROOT_DIR)).await?;
+    Ok(())
 }
 
 /// The project's launch screen, resolved, with the artwork it shows.
@@ -232,9 +239,7 @@ pub async fn stage_for_android(
     let assets_dest = backend_path
         .join("app/src/main/assets")
         .join(ASSET_ROOT_DIR);
-    reset_dir(&assets_dest).await?;
-    copy_manifest_assets(&manifest, &assets_dest).await?;
-    write_manifest_stamp(&manifest, &assets_dest).await?;
+    stage_bundle(&manifest, &assets_dest).await?;
 
     let res_root = backend_path.join("app/src/main/res");
     fs::create_dir_all(&res_root).await?;
@@ -271,11 +276,16 @@ pub async fn stage_for_android_library(
     let manifest = build_manifest(project, symbols, dev_server).await?;
     let root = module_dir.join("src/main/assets");
     let bundle = root.join(ASSET_ROOT_DIR);
-    reset_dir(&bundle).await?;
-    copy_manifest_assets(&manifest, &bundle).await?;
-    write_manifest_stamp(&manifest, &bundle).await?;
+    let stamp = stage_bundle(&manifest, &bundle).await?;
 
-    Ok((manifest, StagedAndroidAssets { root, bundle }))
+    Ok((
+        manifest,
+        StagedAndroidAssets {
+            root,
+            bundle,
+            stamp,
+        },
+    ))
 }
 
 /// Where [`stage_for_android_library`] staged a library's assets.
@@ -286,6 +296,10 @@ pub struct StagedAndroidAssets {
     /// The staged bundle itself, the [`ASSET_ROOT_DIR`] directory in
     /// `root` — always present once staging returns.
     pub bundle: PathBuf,
+    /// The bundle's stamp: a digest of everything the staged bytes are a
+    /// function of, so it identifies the bundle's contents without reading
+    /// them back.
+    pub stamp: String,
 }
 
 /// Renders the project's macOS `.icns` app icon for hand-assembled bundles
@@ -328,9 +342,7 @@ pub async fn stage_for_gtk(
 ) -> eyre::Result<BundleManifest> {
     let manifest = build_manifest(project, symbols, dev_server).await?;
     let assets_dest = resources_dir.join(ASSET_ROOT_DIR);
-    reset_dir(&assets_dest).await?;
-    copy_manifest_assets(&manifest, &assets_dest).await?;
-    write_manifest_stamp(&manifest, &assets_dest).await?;
+    stage_bundle(&manifest, &assets_dest).await?;
 
     // Self-drawn desktop backends read this at startup to set the runtime
     // window icon (taskbars on X11 and Windows show it; macOS uses the
@@ -472,26 +484,96 @@ pub async fn build_manifest(
     })
 }
 
-async fn copy_manifest_assets(manifest: &BundleManifest, dest_root: &Path) -> eyre::Result<()> {
-    for asset in &manifest.assets {
-        let dest = dest_root.join(&asset.logical_path);
-        copy_asset(asset, &dest).await?;
+/// Bring the bundle directory `bundle` up to date with `manifest` and
+/// answer its stamp.
+///
+/// The stamp is computed from the sources alone — see [`manifest_stamp`] —
+/// and recorded as the bundle's [`SYNC_STAMP_FILE`]. A bundle whose
+/// recorded stamp matches is current and left as it is: nothing is
+/// re-encoded, copied or read back. Any other bundle is rebuilt from
+/// scratch, and its stamp is written last, so a rebuild cut short is never
+/// taken for a current bundle.
+async fn stage_bundle(manifest: &BundleManifest, bundle: &Path) -> eyre::Result<String> {
+    let stamp = manifest_stamp(manifest).await?;
+    let stamp_path = bundle.join(SYNC_STAMP_FILE);
+    match fs::read(&stamp_path).await {
+        Ok(staged) if staged == stamp.as_bytes() => return Ok(stamp),
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).wrap_err_with(|| format!("failed to read {}", stamp_path.display()));
+        }
     }
-    Ok(())
+    reset_dir(bundle).await?;
+    copy_manifest_assets(manifest, bundle).await?;
+    fs::write(&stamp_path, stamp.as_bytes())
+        .await
+        .wrap_err_with(|| format!("failed to write {}", stamp_path.display()))?;
+    Ok(stamp)
 }
 
-async fn copy_asset(asset: &PlannedAsset, dest: &Path) -> eyre::Result<()> {
+/// The digest a staged bundle is a function of: [`STAGING_VERSION`], then
+/// every asset's logical path and its source's length and bytes, in
+/// manifest order. The sources are read on a blocking thread.
+async fn manifest_stamp(manifest: &BundleManifest) -> eyre::Result<String> {
+    let sources: Vec<(PathBuf, PathBuf)> = manifest
+        .assets
+        .iter()
+        .map(|asset| (asset.logical_path.clone(), asset.source_path.clone()))
+        .collect();
+    smol::unblock(move || {
+        let mut hasher = Sha256::new();
+        hasher.update(STAGING_VERSION.to_le_bytes());
+        for (logical_path, source_path) in &sources {
+            hasher.update(logical_path.to_string_lossy().as_bytes());
+            hasher.update([0]);
+            crate::utils::hash_file_into(&mut hasher, source_path)
+                .wrap_err("failed to read an asset for the bundle stamp")?;
+        }
+        Ok(hex::encode(hasher.finalize()))
+    })
+    .await
+}
+
+/// Copy every asset of `manifest` into `dest_root`. Image re-encoding is
+/// CPU-bound, so the copies run at most one per available core.
+async fn copy_manifest_assets(manifest: &BundleManifest, dest_root: &Path) -> eyre::Result<()> {
+    let workers = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    let copies: Vec<_> = manifest
+        .assets
+        .iter()
+        .map(|asset| {
+            copy_asset(
+                asset.kind,
+                asset.source_path.clone(),
+                dest_root.join(&asset.logical_path),
+            )
+        })
+        .collect();
+    futures_util::stream::iter(copies)
+        .buffer_unordered(workers)
+        .try_collect()
+        .await
+}
+
+/// Copy one asset of `kind` from `source` to `dest`, re-encoding an image
+/// on a blocking thread.
+async fn copy_asset(kind: AssetKind, source: PathBuf, dest: PathBuf) -> eyre::Result<()> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).await?;
     }
-    match asset.kind {
+    match kind {
         AssetKind::Image => {
-            let bytes = fs::read(&asset.source_path).await?;
-            let optimized = optimize_image(&bytes, &asset.source_path)?;
-            super::super::templates::write_file_if_changed(dest, &optimized).await?;
+            let optimized = smol::unblock(move || {
+                let bytes = std::fs::read(&source)
+                    .wrap_err_with(|| format!("failed to read {}", source.display()))?;
+                optimize_image(&bytes, &source)
+            })
+            .await?;
+            super::super::templates::write_file_if_changed(&dest, &optimized).await?;
         }
         _ => {
-            crate::utils::copy_file_if_changed(&asset.source_path, dest).await?;
+            crate::utils::copy_file_if_changed(&source, &dest).await?;
         }
     }
     Ok(())
@@ -542,27 +624,6 @@ fn optimize_image(bytes: &[u8], source: &Path) -> eyre::Result<Vec<u8>> {
         }
         _ => Ok(bytes.to_vec()),
     }
-}
-
-async fn write_manifest_stamp(manifest: &BundleManifest, dest_root: &Path) -> eyre::Result<()> {
-    let mut hasher = Sha256::new();
-    for asset in &manifest.assets {
-        hasher.update(asset.logical_path.to_string_lossy().as_bytes());
-        let bytes = std::fs::read(&asset.source_path).wrap_err_with(|| {
-            format!(
-                "Failed to read '{}' for asset stamp",
-                asset.source_path.display()
-            )
-        })?;
-        hasher.update(&bytes);
-    }
-    let stamp = hex::encode(hasher.finalize());
-    super::super::templates::write_file_if_changed(
-        &dest_root.join("waterui-sync-stamp"),
-        stamp.as_bytes(),
-    )
-    .await?;
-    Ok(())
 }
 
 async fn reset_dir(path: &Path) -> eyre::Result<()> {

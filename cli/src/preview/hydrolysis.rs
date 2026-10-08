@@ -113,7 +113,7 @@ pub async fn render_preview_with_hydrolysis(
     }
     let (width, height, theme) = (request.width, request.height, request.theme);
     let (project, built) = build_preview_session(&request, None).await?;
-    stage_hydrolysis_resources(&project, theme, &built.app_symbols()?).await?;
+    stage_hydrolysis_resources(&project, theme, &built.app_symbols().await?).await?;
     stage_hydrolysis_shared_runtime(&project, &built, request.platform).await?;
     run_preview_binary(
         &project,
@@ -136,7 +136,7 @@ pub async fn test_preview_with_hydrolysis(
 ) -> Result<String> {
     let (width, height, theme) = (request.width, request.height, request.theme);
     let (project, built) = build_preview_session(&request, Some(automation_body)).await?;
-    stage_hydrolysis_resources(&project, theme, &built.app_symbols()?).await?;
+    stage_hydrolysis_resources(&project, theme, &built.app_symbols().await?).await?;
     stage_hydrolysis_shared_runtime(&project, &built, request.platform).await?;
     run_preview_test_binary(&project, built.executable()?, width, height).await
 }
@@ -204,7 +204,10 @@ pub async fn discover_hydrolysis_preview_exports(
         progress,
     };
     let (_project, built) = build_preview_session(&request, None).await?;
-    Ok(built.app_symbols()?.leaves_with_prefix("waterui_preview_"))
+    Ok(built
+        .app_symbols()
+        .await?
+        .leaves_with_prefix("waterui_preview_"))
 }
 
 /// Stages the project's assets and the selected theme's fonts into the

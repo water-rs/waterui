@@ -84,7 +84,7 @@ pub async fn build_winui(project: &Project, options: BuildOptions) -> eyre::Resu
     copy_assets_and_fonts(
         project,
         &backend_path,
-        &built_target.app_symbols()?,
+        &built_target.app_symbols().await?,
         options.uses_dev_server(),
     )
     .await?;
@@ -152,7 +152,7 @@ pub async fn package_winui(
     copy_assets_and_fonts(
         project,
         &backend_path,
-        &built.app_symbols()?,
+        &built.app_symbols().await?,
         options.uses_dev_server(),
     )
     .await?;

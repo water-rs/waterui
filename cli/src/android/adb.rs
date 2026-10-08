@@ -86,12 +86,34 @@ impl Adb {
     /// [`AdbError::NotFound`] when the SDK has no `adb`; the other variants
     /// when the server could not be started.
     pub async fn locate(host: &Host) -> Result<Self, AdbError> {
-        let path = AndroidSdk::adb_path(host).ok_or(AdbError::NotFound)?;
-        let status = host.run_detached(&path, ["start-server"]).await?;
+        let adb = Self {
+            path: AndroidSdk::adb_path(host).ok_or(AdbError::NotFound)?,
+        };
+        adb.start_server(host).await?;
+        Ok(adb)
+    }
+
+    /// Run `adb start-server` through
+    /// [`Host::run_detached`](crate::toolchain::Host::run_detached): a no-op
+    /// against a running server, and a fresh server that inherits none of
+    /// our handles when the one this client found has since died.
+    ///
+    /// A device phase that follows a long build calls this first — a server
+    /// killed while the build ran would otherwise be relaunched by the
+    /// phase's first ordinary client command, which hands it our pipes.
+    ///
+    /// # Errors
+    /// [`AdbError::ServerLauncher`] when the launcher cannot be run,
+    /// [`AdbError::ServerStart`] when it reports failure.
+    pub async fn start_server(&self, host: &Host) -> Result<(), AdbError> {
+        let status = host.run_detached(&self.path, ["start-server"]).await?;
         if !status.success() {
-            return Err(AdbError::ServerStart { adb: path, status });
+            return Err(AdbError::ServerStart {
+                adb: self.path.clone(),
+                status,
+            });
         }
-        Ok(Self { path })
+        Ok(())
     }
 
     /// The client executable.

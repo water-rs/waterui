@@ -624,7 +624,12 @@ pub async fn package_with_abis(
     let host_project_dir = require_painter_module(host, project, painter).await?;
     scaffold_android_project(project, painter, &host_project_dir).await?;
 
-    copy_assets(project, &built.app_symbols()?, options.uses_dev_server()).await?;
+    copy_assets(
+        project,
+        &built.app_symbols().await?,
+        options.uses_dev_server(),
+    )
+    .await?;
 
     let android_dir = android_dir(&project.backend_path::<HydrolysisBackend>());
 

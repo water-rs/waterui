@@ -104,7 +104,7 @@ pub async fn build_aar(
     };
 
     // Assets and fonts ship inside the AAR exactly as they ship inside an APK.
-    stage_embedded_assets(project, &module_dir, &built.app_symbols()?).await?;
+    stage_embedded_assets(project, &module_dir, &built.app_symbols().await?).await?;
 
     // Kotlin helpers and Maven dependencies likewise belong on the classpath
     // the host app resolves classes from; `api` exports them through the

@@ -821,7 +821,7 @@ pub async fn package_apple(
     copy_assets_and_fonts(
         project,
         &staging_dir,
-        &built.app_symbols()?,
+        &built.app_symbols().await?,
         options.uses_dev_server(),
     )
     .await?;

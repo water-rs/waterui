@@ -321,6 +321,32 @@ pub async fn copy_file(from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Resu
     unblock(move || copy_file_overwriting(&from, &to)).await
 }
 
+/// Feed `path`'s length and then its bytes into `hasher`, streamed in
+/// chunks so a large file is never held in memory. The length prefix keeps
+/// consecutive files in one digest from running into each other.
+///
+/// Blocking: call it inside `smol::unblock`.
+///
+/// # Errors
+/// - If `path` cannot be opened or read; the error names the path.
+pub(crate) fn hash_file_into(hasher: &mut sha2::Sha256, path: &Path) -> io::Result<()> {
+    use sha2::Digest as _;
+    use std::io::Read as _;
+
+    let named =
+        |error: io::Error| io::Error::new(error.kind(), format!("{}: {error}", path.display()));
+    let mut file = std::fs::File::open(path).map_err(named)?;
+    hasher.update(file.metadata().map_err(named)?.len().to_le_bytes());
+    let mut chunk = vec![0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut chunk).map_err(named)?;
+        if read == 0 {
+            return Ok(());
+        }
+        hasher.update(&chunk[..read]);
+    }
+}
+
 /// Copy `from` onto `to` only when its bytes differ.
 ///
 /// The write-on-change path for file-to-file copies — the counterpart of

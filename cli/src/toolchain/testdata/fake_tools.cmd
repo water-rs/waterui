@@ -350,7 +350,6 @@ if "%*"=="start-server" (if defined WATERUI_FAKE_ADB_START_SERVER_STATUS (exit /
 set "args=%*"
 call :contains args "emu avd name" && (call :respond_or_empty ADB_EMU_AVD_NAME & exit /b 0)
 call :contains args getprop && (call :respond_or_empty ADB_GETPROP & exit /b 0)
-call :contains args wait-for-device && exit /b 0
 exit /b 0
 
 :emulator

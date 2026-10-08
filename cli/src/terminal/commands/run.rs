@@ -966,7 +966,7 @@ async fn start_web_dev_server(
     built: &waterui_cli::build::BuiltTarget,
     expose_on_lan: bool,
 ) -> Result<Option<web::WebDevServer>> {
-    let Some(meta) = web::web_mount(&built.app_symbols()?)? else {
+    let Some(meta) = web::web_mount(&built.app_symbols().await?)? else {
         return Ok(None);
     };
     let root = meta
@@ -1913,6 +1913,10 @@ mod tests {
         stream_running_events, validate_device_arg,
     };
     use clap::Parser as _;
+    #[cfg(unix)]
+    use waterui_cli::android::adb::Adb;
+    #[cfg(unix)]
+    use waterui_cli::android::device::AndroidDevice;
     use waterui_cli::android::device::AndroidEmulator;
     use waterui_cli::android::platform::AndroidAbi;
     use waterui_cli::build::BuildProfile;
@@ -2177,31 +2181,56 @@ mod tests {
     fn android_abi_follows_the_device() {
         // The ABI is a property of the selected device: a desktop run
         // selects the local machine and resolves no ABI, whatever backend
-        // the run uses — Hydrolysis included. A connected device exists only
-        // once an adb server reported it, so the Android side is an AVD,
-        // whose ABI its config declares.
-        let home = std::env::temp_dir().join(format!(
-            "waterui-run-abi-follows-the-device-{}",
-            std::process::id()
-        ));
-        let avd = home.join(".android/avd/Pixel_API_37.avd");
+        // the run uses — Hydrolysis included. An AVD's ABI comes from its
+        // config.
+        let home = tempfile::tempdir().expect("a scratch home");
+        let avd = home.path().join(".android/avd/Pixel_API_37.avd");
         std::fs::create_dir_all(&avd).expect("create the AVD dir");
         std::fs::write(avd.join("config.ini"), "abi.type=arm64-v8a\n").expect("write the AVD");
         let host = waterui_cli::toolchain::Host::new(
             std::iter::empty::<std::path::PathBuf>(),
             [
-                ("HOME", home.as_os_str()),
-                ("USERPROFILE", home.as_os_str()),
+                ("HOME", home.path().as_os_str()),
+                ("USERPROFILE", home.path().as_os_str()),
             ],
         );
         let emulator = smol::block_on(AndroidEmulator::open(&host, "Pixel_API_37".to_string()))
             .expect("the AVD opens");
-        std::fs::remove_dir_all(&home).expect("remove the scratch home");
         assert_eq!(
             device_android_abi(&SelectedDevice::AndroidEmulator(emulator)),
             Some(AndroidAbi::Arm64V8a)
         );
         assert_eq!(device_android_abi(&SelectedDevice::Local(Local)), None);
+    }
+
+    /// A connected device's ABI is the one its scan read. The device holds an
+    /// `adb` client, which exists only once `start-server` ran — here a
+    /// stand-in `adb` in a scratch SDK, so no live server is involved. A
+    /// Windows `adb.exe` cannot be a script, so this half is Unix-only.
+    #[test]
+    #[cfg(unix)]
+    fn android_abi_follows_a_connected_device() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let sdk = tempfile::tempdir().expect("a scratch SDK");
+        let adb = sdk.path().join("platform-tools/adb");
+        std::fs::create_dir_all(adb.parent().expect("platform-tools")).expect("platform-tools");
+        std::fs::write(&adb, "#!/bin/sh\nexit 0\n").expect("write the stand-in adb");
+        std::fs::set_permissions(&adb, std::fs::Permissions::from_mode(0o755))
+            .expect("make the stand-in adb executable");
+        let host = waterui_cli::toolchain::Host::new(
+            std::iter::empty::<std::path::PathBuf>(),
+            [("ANDROID_SDK_ROOT", sdk.path().as_os_str())],
+        );
+        let adb = smol::block_on(Adb::locate(&host)).expect("the stand-in adb starts");
+        assert_eq!(
+            device_android_abi(&SelectedDevice::AndroidDevice(AndroidDevice::new(
+                String::from("serial-1"),
+                AndroidAbi::Arm64V8a,
+                adb,
+            ))),
+            Some(AndroidAbi::Arm64V8a)
+        );
     }
 
     #[test]

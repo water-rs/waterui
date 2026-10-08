@@ -198,11 +198,8 @@ async fn assemble_slices(
         .await?;
         // Stage each target's actual symbol set: platform-gated asset
         // declarations must not disappear when a later slice is built.
-        let (archive, symbols) = smol::unblock(move || {
-            let symbols = built.app_symbols()?;
-            Ok::<_, eyre::Report>((built.artifact, symbols))
-        })
-        .await?;
+        let symbols = built.app_symbols().await?;
+        let archive = built.artifact;
         manifests.push(assets::plan_library_resources(project, &symbols, false).await?);
         let swift_platform = if slice.platform == TargetPlatform::MacOS {
             "macOS"

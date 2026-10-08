@@ -358,6 +358,30 @@ adb)
     if [ -n "${WATERUI_FAKE_ADB_HANG-}" ]; then
         while :; do :; done
     fi
+    # A scripted device: a `shell -T run-as <package> <words…>` runs its
+    # words for real inside the scratch private-files directory
+    # `WATERUI_FAKE_DEVICE_DATA` names, with the host's own tools — the one
+    # place this fixture runs external commands, on a PATH of its own:
+    # `WATERUI_FAKE_DEVICE_PATH` (shims a test stages) ahead of the system
+    # directories. `WATERUI_FAKE_DEVICE_STDIN_LIMIT` cuts the streamed
+    # stdin off after that many bytes.
+    if [ -n "${WATERUI_FAKE_DEVICE_DATA-}" ]; then
+        case "$*" in
+            *" run-as "*)
+                # `$5` is the run-as command, one shell-quoted word.
+                eval "set -- $5"
+                shift 2
+                cd "$WATERUI_FAKE_DEVICE_DATA" || exit 1
+                PATH="${WATERUI_FAKE_DEVICE_PATH:+$WATERUI_FAKE_DEVICE_PATH:}/usr/bin:/bin"
+                export PATH
+                if [ -n "${WATERUI_FAKE_DEVICE_STDIN_LIMIT-}" ]; then
+                    /usr/bin/head -c "$WATERUI_FAKE_DEVICE_STDIN_LIMIT" | "$@"
+                    exit $?
+                fi
+                exec "$@"
+                ;;
+        esac
+    fi
     case "$*" in
         version)
             printf 'Android Debug Bridge version 1.0.41\nVersion %s\n' "${WATERUI_FAKE_ADB_VERSION:-36.0.0-test}"
@@ -375,9 +399,6 @@ adb)
             ;;
         *getprop*)
             respond_or_empty ADB_GETPROP
-            ;;
-        *wait-for-device*)
-            exit 0
             ;;
         *"pm list packages"*)
             respond_or_empty ADB_PM_PACKAGES

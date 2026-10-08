@@ -32,10 +32,6 @@ enum AndroidRuntimeEvent {
 
 const ADB_DEVICE_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// `adb wait-for-device` waits until the device is online, so its bound
-/// covers a device mid-boot, not a stalled transport alone.
-const WAIT_FOR_DEVICE_TIMEOUT: Duration = Duration::from_secs(120);
-
 const ANDROID_ACTIVITY_FINISHED_MARKER: &str = "WATERUI_ACTIVITY_FINISHED";
 
 /// The launch-intent extra carrying the `--logs` level to a Hydrolysis
@@ -44,7 +40,11 @@ const ANDROID_ACTIVITY_FINISHED_MARKER: &str = "WATERUI_ACTIVITY_FINISHED";
 /// environment variable.
 const ANDROID_LOG_LEVEL_EXTRA: &str = "waterui.log.level";
 
-/// Represents an Android device (physical or emulator).
+/// An Android device (physical or emulator) that `adb` reported online.
+///
+/// Every value comes from an `adb devices` scan that listed the device in
+/// the `device` state — a connected device, or an emulator whose boot the
+/// launch waited out — so it needs no launch of its own.
 #[derive(Debug)]
 pub struct AndroidDevice {
     identifier: String,
@@ -91,20 +91,11 @@ impl Device for AndroidDevice {
         &self.identifier
     }
 
-    async fn launch(&self, host: &Host) -> eyre::Result<()> {
-        // `wait-for-device` returns only once the device is online — a
-        // device mid-boot legitimately spends the bound; the timeout is the
-        // backstop for a transport that never comes up, not the expected
-        // wait.
-        run_bounded_adb_command(
-            host,
-            &self.adb,
-            ["-s", self.identifier.as_str(), "wait-for-device"],
-            "waiting for the Android device",
-            WAIT_FOR_DEVICE_TIMEOUT,
-        )
-        .await?;
-        Ok(())
+    /// The scan that produced this device already saw it online, so there
+    /// is nothing to wait for: a device that dropped off since fails the
+    /// first command addressed to it, naming that command.
+    fn launch(&self, _host: &Host) -> impl Future<Output = eyre::Result<()>> + Send {
+        std::future::ready(Ok(()))
     }
 
     async fn run(
@@ -198,13 +189,18 @@ impl AndroidTarget {
         Ok(Self::Emulator(AndroidEmulator::open(host, avd_name).await?))
     }
 
-    /// The device the target is: a connected device itself, or the one the
-    /// emulator came up as once it has been launched.
-    #[must_use]
-    pub fn launched_device(&self) -> Option<&AndroidDevice> {
+    /// Bring the target up and answer the device it is: a connected device
+    /// itself, or the one the emulator booted as.
+    ///
+    /// # Errors
+    /// Returns an error when the emulator cannot be booted.
+    pub async fn launch(&self, host: &Host) -> eyre::Result<&AndroidDevice> {
         match self {
-            Self::Device(device) => Some(device),
-            Self::Emulator(emulator) => emulator.launched_device(),
+            Self::Device(device) => {
+                device.launch(host).await?;
+                Ok(device)
+            }
+            Self::Emulator(emulator) => emulator.boot(host).await,
         }
     }
 }
@@ -218,10 +214,7 @@ impl Device for AndroidTarget {
     }
 
     async fn launch(&self, host: &Host) -> eyre::Result<()> {
-        match self {
-            Self::Device(device) => device.launch(host).await,
-            Self::Emulator(emulator) => emulator.launch(host).await,
-        }
+        Self::launch(self, host).await.map(|_| ())
     }
 
     async fn run(
@@ -297,6 +290,11 @@ async fn run_on_android(
     artifact: Artifact,
     options: RunOptions,
 ) -> Result<Running, FailToRun> {
+    // The device was found before the build; a server that died while the
+    // build ran is restarted here, detached, before any command needs it.
+    adb.start_server(host)
+        .await
+        .map_err(|error| FailToRun::Launch(eyre!(error)))?;
     let env_vars = options
         .env_vars()
         .map(|(key, value)| (key.to_string(), value.to_string()))
@@ -1388,20 +1386,18 @@ impl AndroidEmulator {
         self.expected_abi
     }
 
-    /// The device this emulator came up as, once [`Device::launch`] has
-    /// returned.
-    #[must_use]
-    pub fn launched_device(&self) -> Option<&AndroidDevice> {
-        self.device.get()
-    }
-}
-
-impl Device for AndroidEmulator {
-    fn name(&self) -> &str {
-        &self.avd_name
-    }
-
-    async fn launch(&self, host: &Host) -> eyre::Result<()> {
+    /// Boot the AVD — or wait for the instance already running it — until
+    /// it is fully ready, and answer the device it came up as. A booted
+    /// emulator answers that device again without asking adb.
+    ///
+    /// # Errors
+    /// Returns an error when the emulator is missing, exits before it is
+    /// ready, reports a different ABI than its config, or is not ready
+    /// within five minutes.
+    pub async fn boot(&self, host: &Host) -> eyre::Result<&AndroidDevice> {
+        if let Some(device) = self.device.get() {
+            return Ok(device);
+        }
         let emulator_path = AndroidSdk::emulator_path(host)
             .ok_or_else(|| eyre::eyre!("Android emulator not found"))?;
         let adb = Adb::locate(host).await?;
@@ -1504,14 +1500,21 @@ impl Device for AndroidEmulator {
                     continue;
                 }
 
-                self.device
-                    .set(device)
-                    .map_err(|_| eyre::eyre!("Emulator device already initialized"))?;
-                return Ok(());
+                return Ok(self.device.get_or_init(|| device));
             }
 
             smol::Timer::after(std::time::Duration::from_secs(2)).await;
         }
+    }
+}
+
+impl Device for AndroidEmulator {
+    fn name(&self) -> &str {
+        &self.avd_name
+    }
+
+    async fn launch(&self, host: &Host) -> eyre::Result<()> {
+        self.boot(host).await.map(|_| ())
     }
 
     async fn run(
@@ -2121,17 +2124,14 @@ mod tests {
             matches!(target, super::AndroidTarget::Device(_)),
             "{target:?}"
         );
-        assert_eq!(
-            target
-                .launched_device()
-                .map(super::AndroidDevice::identifier),
-            Some("R5CX1234")
-        );
+        let device = smol::block_on(target.launch(&host)).expect("the device is online");
+        assert_eq!(device.identifier(), "R5CX1234");
     }
 
-    /// A connected device carries the client its scan located: launching it
-    /// reuses that running server, so the scan's `start-server` is the only
-    /// one a scan-then-launch issues.
+    /// A connected device carries the client its scan located, and the scan
+    /// already saw it online: launching it issues no adb command at all, so
+    /// the scan's `start-server` is the only server start and nothing waits
+    /// for the device.
     #[test]
     #[cfg(unix)]
     fn launching_a_scanned_device_starts_no_second_server() {
@@ -2167,7 +2167,6 @@ mod tests {
                 "start-server",
                 "devices -l",
                 "-s R5CX1234 shell getprop ro.product.cpu.abi",
-                "-s R5CX1234 wait-for-device",
             ],
             "{argv}"
         );
@@ -2192,10 +2191,6 @@ mod tests {
         assert_eq!(
             super::AndroidAbiProvider::android_abi(&target),
             crate::android::platform::AndroidAbi::Arm64V8a
-        );
-        assert!(
-            target.launched_device().is_none(),
-            "an emulator has no device before launch"
         );
     }
 
