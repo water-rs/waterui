@@ -50,6 +50,38 @@ impl PlatformView {
     }
 }
 
+/// What a placement asks the host to mount.
+///
+/// A placement either names a *factory* — the `kind` an application
+/// registered a `Context -> View` builder for — or an *instance* — the
+/// registration id of a native view that already exists and the host mounts
+/// where the leaf lays out. The instance form is how a backend-driven
+/// platform widget (the Android system `WebView`) reaches the overlay: the
+/// native side created the view itself, so there is no factory for the host
+/// to call.
+// Serialization exists only on hosts that push placements off-platform as
+// JSON — Android JNI today; serde is a target-scoped dependency — and in
+// tests, which exercise the wire shape on the host. Untagged so a placement
+// serializes flat: `{"kind":"map",…}` or `{"instance":7,…}`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    any(target_os = "android", target_arch = "wasm32", test),
+    derive(serde::Serialize),
+    serde(untagged)
+)]
+pub enum PlatformViewSource {
+    /// Resolve the named factory and mount the view it builds.
+    Factory {
+        /// The registry key from [`PlatformView::new`].
+        kind: Box<str>,
+    },
+    /// Mount the native view the host registered under this id.
+    Instance {
+        /// The host-side registration id of the already-constructed view.
+        instance: u64,
+    },
+}
+
 impl NativeView for PlatformView {
     /// A mounted platform child fills its proposal, like a `GpuSurface`.
     fn stretch_axis(&self) -> StretchAxis {
@@ -80,8 +112,10 @@ pub fn next_platform_view_id() -> u64 {
 pub struct PlatformViewPlacement {
     /// The retained node's stable placement id.
     pub id: u64,
-    /// The factory key from [`PlatformView::new`].
-    pub kind: Box<str>,
+    /// What the host mounts for this leaf — a factory `kind` or a registered
+    /// `instance`. Flattened so the JSON reads as before for factories.
+    #[cfg_attr(any(target_os = "android", target_arch = "wasm32"), serde(flatten))]
+    pub source: PlatformViewSource,
     /// The leaf's laid-out x origin under this frame's transforms.
     pub x: f32,
     /// The leaf's laid-out y origin under this frame's transforms.
@@ -182,5 +216,23 @@ impl PlatformViewSink {
 impl Default for PlatformViewSink {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The placement source's wire shape: a factory placement keeps its
+    /// `{"kind": ...}` JSON, an instance placement carries `{"instance": id}`
+    /// — flattened so the two read as one schema to the Kotlin registry.
+    #[test]
+    fn placement_source_wire_shape() {
+        let factory =
+            serde_json::to_value(PlatformViewSource::Factory { kind: "map".into() }).unwrap();
+        assert_eq!(factory, serde_json::json!({ "kind": "map" }));
+
+        let instance = serde_json::to_value(PlatformViewSource::Instance { instance: 7 }).unwrap();
+        assert_eq!(instance, serde_json::json!({ "instance": 7 }));
     }
 }

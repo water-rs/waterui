@@ -22,6 +22,8 @@ use std::sync::{Arc, mpsc};
 
 use executor_core::LocalExecutor;
 use executor_core::async_task::{AsyncTask, Runnable};
+#[cfg(hydrolysis_android_system_webview)]
+use jni::JNIEnv;
 use jni::JavaVM;
 use jni::objects::{GlobalRef, JValue};
 use nami::Signal;
@@ -686,6 +688,7 @@ impl AndroidSession {
         vm: JavaVM,
         host_view: GlobalRef,
         metrics: MetricsSnapshot,
+        #[cfg(hydrolysis_android_system_webview)] jni_env: &mut JNIEnv<'_>,
     ) -> Result<Box<Self>, JniError> {
         let inspector = init_main_thread_executors();
         let inspector_probe = inspector
@@ -736,6 +739,18 @@ impl AndroidSession {
         // into; the published table is what `nativePlatformViewFrames` serves.
         let platform_views = crate::platform_view::PlatformViewSink::new();
         env.insert(platform_views.clone());
+
+        // The system-WebView controller joins the same environment: a
+        // `WebView` opened through it mounts as a platform-view *instance*
+        // the registry resolves by id. Resolving the wrapper class must
+        // happen here, on the JNI thread — a thread that did not enter from
+        // Java cannot resolve app classes later.
+        #[cfg(hydrolysis_android_system_webview)]
+        crate::widgets::platform::webview::install_controller(
+            &mut env,
+            jni_env,
+            bridge.host_view.clone(),
+        )?;
 
         let mut windows = VecDeque::from(windows);
         let window = windows

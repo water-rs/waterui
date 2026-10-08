@@ -270,6 +270,44 @@ impl RenderNode {
     /// The macOS bridge is no different: `hydrolysis_macos_system_webview`'s
     /// record has no native-view layer to present the `WKWebView` through,
     /// so it panics at build like every other engine-less path.
+    /// Build the Android system-WebView leaf: the `HydrolysisWebView` wrapper
+    /// the controller opened mounts as a platform-view *instance* placement,
+    /// keyed by the id Kotlin registered it under. The `WebView` value rides
+    /// in the node as the instance owner so the native peer lives exactly as
+    /// long as the leaf that embeds it.
+    #[cfg(hydrolysis_android_system_webview)]
+    pub(super) fn build_webview(
+        webview: WebView,
+        env: &Environment,
+        renderer: &SemanticCore,
+    ) -> Self {
+        use crate::widgets::platform::platform_view::PlatformViewRenderState;
+        use crate::widgets::platform::webview::AndroidSystemWebViewHandle;
+
+        let instance = webview
+            .handle()
+            .downcast_ref::<AndroidSystemWebViewHandle>()
+            .map_or_else(
+                || {
+                    panic!(
+                        "hydrolysis android: a WebView handle that is not \
+                         AndroidSystemWebViewHandle reached the backend; the \
+                         Android system bridge only draws views `WebView::open` \
+                         made through its controller — another engine must \
+                         install its `Hook<WebView>` realization"
+                    )
+                },
+                AndroidSystemWebViewHandle::instance,
+            );
+        let stretch = waterui_core::NativeView::stretch_axis(&webview);
+        let owner: Rc<dyn core::any::Any> = Rc::new(webview);
+        let state = Rc::new(RefCell::new(PlatformViewRenderState::from_instance(
+            instance, owner, env,
+        )));
+        Self::build_widget(renderer, state, stretch, env)
+    }
+
+    #[cfg(not(hydrolysis_android_system_webview))]
     pub(super) fn build_webview(
         _webview: WebView,
         _env: &Environment,

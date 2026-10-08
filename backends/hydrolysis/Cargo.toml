@@ -260,6 +260,9 @@ serde_json.workspace = true
 # The published payload's `contentTypes` map serializes `ContentType`
 # (camelCase names) — the provider maps each onto `HintConstants`.
 waterui-controls = { workspace = true, features = ["serde"] }
+# The system `WebView` bridge's one-shot completions (`run_javascript`,
+# `call_async_javascript`, `get_cookies`) are `futures::channel::oneshot`.
+futures = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # The web runner fetches its fonts while the GPU device comes up; `join!` and
@@ -369,8 +372,10 @@ testing = []
 # exercise a software adapter for bring-up on a host without a GPU.
 frame-profile = ["testing"]
 inspector-signals = ["waterui/inspector-signals"]
-# The platform's own web engine, bridged as a native subview. Every other engine
-# is a crate the application links and installs; this backend never names one.
+# The platform's own web engine, bridged as a native subview (`WKWebView` on
+# macOS, the platform-view instance seam for `android.webkit.WebView` on
+# Android). Every other engine is a crate the application links and installs;
+# this backend never names one.
 webview-system = [
     "dep:block2",
     "dep:cookie",

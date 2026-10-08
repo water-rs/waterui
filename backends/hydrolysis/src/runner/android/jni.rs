@@ -42,8 +42,10 @@ use super::host::{AndroidSession, MetricsSnapshot};
 /// and report whether a back target is registered; 10 = `nativeSetMetrics`
 /// splits the window insets into the container and keyboard regions of
 /// layout-spec.md §7.1, and the host's `WindowInsetsAnimationCompat` progress
-/// pushes each IME animation frame.
-pub const JNI_SCHEMA: jint = 10;
+/// pushes each IME animation frame; 11 = a platform-view placement names
+/// either a factory `kind` or a registered `instance`, and the
+/// `HydrolysisWebView` natives join the edge.
+pub const JNI_SCHEMA: jint = 11;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -142,7 +144,7 @@ fn session(ptr: jlong) -> &'static mut AndroidSession {
 
 /// Runs `f` on the session, mapping `JniError` → `IllegalStateException` and a
 /// panic → `IllegalStateException` (with the panic payload in the message).
-fn guard<F>(env: &mut JNIEnv, f: F)
+pub fn guard<F>(env: &mut JNIEnv, f: F)
 where
     F: FnOnce(&mut JNIEnv) -> Result<(), JniError>,
 {
@@ -167,7 +169,7 @@ where
 
 /// `guard` for calls returning a value — the error path throws and returns
 /// `default`.
-fn guard_val<F, T>(env: &mut JNIEnv, default: T, f: F) -> T
+pub fn guard_val<F, T>(env: &mut JNIEnv, default: T, f: F) -> T
 where
     F: FnOnce(&mut JNIEnv) -> Result<T, JniError>,
 {
@@ -181,7 +183,7 @@ where
 
 /// `guard` for calls returning a value the caller converts first — throws
 /// and returns `default` on failure.
-fn guard_string<F>(env: &mut JNIEnv, f: F) -> jstring
+pub fn guard_string<F>(env: &mut JNIEnv, f: F) -> jstring
 where
     F: FnOnce(&mut JNIEnv) -> Result<Option<String>, JniError>,
 {
@@ -263,7 +265,13 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
             max_fling_velocity_px: 0.0,
             scroll_friction: 0.0,
         };
-        let session = AndroidSession::create(vm, host_view, metrics)?;
+        let session = AndroidSession::create(
+            vm,
+            host_view,
+            metrics,
+            #[cfg(hydrolysis_android_system_webview)]
+            env,
+        )?;
         Ok(Box::into_raw(session) as jlong)
     })
 }

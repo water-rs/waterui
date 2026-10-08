@@ -1,6 +1,8 @@
 package dev.waterui.hydrolysis
 
 import android.content.Context
+import android.view.View
+import dev.waterui.hydrolysis.MutableContextWrapper
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 
@@ -26,11 +28,60 @@ class HydrolysisSession internal constructor(context: Context) {
     internal var hostView: HydrolysisHostView? = null
         private set
 
+    /**
+     * The context of the bound host view — the JNI-side contract the
+     * platform-view instance modules create their views with (the `webview`
+     * module wraps it in a `MutableContextWrapper`). `null` while unbound.
+     */
+    val boundContext: Context?
+        get() = hostView?.context
+
+    /**
+     * The platform-view *instances* this session owns: native views the Rust
+     * side constructed over JNI — the system `WebView` — and registers here
+     * so a placement naming `{"instance": id}` can mount them. The JNI-side
+     * contract: `HydrolysisWebView.create` calls
+     * [registerPlatformViewInstance] and `release()` calls
+     * [unregisterPlatformViewInstance].
+     */
+    private val platformViewInstances = HashMap<Long, View>()
+
+    /**
+     * Registers `view` as the platform-view instance `id`. Public because the
+     * registering code lives in another Gradle module.
+     */
+    fun registerPlatformViewInstance(id: Long, view: View) {
+        check(platformViewInstances.putIfAbsent(id, view) == null) {
+            "hydrolysis: a platform-view instance is already registered under id $id"
+        }
+        // A placement naming this instance may already be waiting.
+        hostView?.platformViewRegistry?.notifyChanged()
+    }
+
+    /**
+     * Drops instance `id` from the registry; any slot currently holding it
+     * goes with it.
+     */
+    fun unregisterPlatformViewInstance(id: Long) {
+        platformViewInstances.remove(id)
+        hostView?.platformViewRegistry?.onInstanceUnregistered(id)
+    }
+
+    /** The instance a placement resolves, or none. Registry-side. */
+    internal fun platformViewInstance(id: Long): View? = platformViewInstances[id]
+
     internal fun bind(view: HydrolysisHostView) {
         check(hostView == null || hostView === view) {
             "a HydrolysisSession is bound to exactly one host view at a time"
         }
         hostView = view
+        // The new binding owns the Activity the instances draw on: retarget
+        // their `MutableContextWrapper`s, and let each re-observe what the
+        // old binding's context owned (the WebView's Lifecycle).
+        for (instance in platformViewInstances.values) {
+            (instance.context as? MutableContextWrapper)?.baseContext = view.context
+            (instance as? HostRebindAware)?.onHostRebound(view.context)
+        }
         // A session can bind after `onStart` already fired — a late mount
         // or a config-change rebind — and no later `setVisible` would ever
         // recover a false parked state. The lifecycle's current state is
@@ -42,7 +93,13 @@ class HydrolysisSession internal constructor(context: Context) {
     }
 
     internal fun unbind(view: HydrolysisHostView) {
-        if (hostView === view) hostView = null
+        if (hostView === view) {
+            // The registry dies with the view; the instances outlive it on a
+            // retained session, so they must be free of the old slots before
+            // the next binding mounts them.
+            view.platformViewRegistry.detachInstances()
+            hostView = null
+        }
     }
 
     /**

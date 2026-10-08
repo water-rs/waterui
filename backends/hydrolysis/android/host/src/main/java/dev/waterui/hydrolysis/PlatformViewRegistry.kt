@@ -113,7 +113,16 @@ class PlatformViewRegistry internal constructor(
             wanted.add(
                 Placement(
                     id = entry.getLong("id"),
-                    kind = entry.getString("kind"),
+                    // The source is either a factory `kind` or a registered
+                    // `instance` — flattened, so exactly one key is present.
+                    kind = entry.optString("kind").takeIf { it.isNotEmpty() },
+                    instance =
+                        if (entry.has("instance")) {
+                            entry.getLong("instance")
+                        } else {
+                            null
+                        },
+
                     x = entry.optDouble("x", 0.0).toFloat(),
                     y = entry.optDouble("y", 0.0).toFloat(),
                     width = entry.optDouble("width", 0.0).toFloat(),
@@ -128,18 +137,18 @@ class PlatformViewRegistry internal constructor(
 
         val stale = slots.keys - wanted.mapTo(HashSet()) { it.id }
         for (id in stale) {
-            slots.remove(id)?.let { container.removeView(it.view) }
+            slots.remove(id)?.let { removeSlot(it) }
         }
         var changed = false
         for (placement in wanted) {
             val slot =
                 slots.getOrPut(placement.id) {
                     changed = true
-                    val view = createSlot(placement)
+                    val slot = createSlot(placement)
                     // Attach before applySlot configures the generated
                     // FrameLayout.LayoutParams; orderSlots only reorders.
-                    container.addView(view)
-                    Slot(view)
+                    container.addView(slot.view)
+                    slot
                 }
             slot.placement = placement
             applySlot(slot)
@@ -175,31 +184,89 @@ class PlatformViewRegistry internal constructor(
      * with the frame), and clickable so unhandled touches cannot fall through
      * to the WaterUI scene under the view.
      */
-    @SuppressLint("ClickableViewAccessibility")
-    private fun createSlot(placement: Placement): FrameLayout {
-        val factory =
-            factories[placement.kind]
-                ?: throw IllegalStateException(
-                    "hydrolysis: no platform-view factory registered for " +
-                        "kind \"${placement.kind}\"; call " +
-                        "PlatformViewRegistry.registerFactory(kind) from the " +
-                        "application's host setup",
-                )
-        val view = factory(context)
-        return FrameLayout(context).apply {
-            addView(
-                view,
-                FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                ),
-            )
-            // The slot is not itself semantic: the mounted view inside keeps
-            // its own accessibility and the provider grafts it onto the host
-            // node, so there is exactly one node per native child.
-            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-            isClickable = true
+    /**
+     * Drops `slot` — and frees an instance for remount by removing it from
+     * the slot first. A View has exactly one parent; an instance that stayed
+     * attached to a discarded slot could never mount again.
+     */
+    private fun removeSlot(slot: Slot) {
+        slot.view.removeView(slot.mounted)
+        container.removeView(slot.view)
+    }
+
+    /** Detaches every mounted instance view, on session unbind. */
+    internal fun detachInstances() {
+        for (slot in slots.values) {
+            if (slot.placement.instance != null) {
+                slot.view.removeView(slot.mounted)
+            }
         }
+    }
+
+    /** `HydrolysisSession.unregisterPlatformViewInstance` under `id`. */
+    internal fun onInstanceUnregistered(id: Long) {
+        val holding = slots.keys.filter { slots[it]?.placement?.instance == id }
+        for (slotId in holding) {
+            slots.remove(slotId)?.let { removeSlot(it) }
+        }
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun createSlot(placement: Placement): Slot {
+        val mounted =
+            when {
+                placement.instance != null -> {
+                    val instanceId = placement.instance
+                    val session =
+                        session
+                            ?: throw IllegalStateException(
+                                "hydrolysis: a platform-view placement names " +
+                                    "instance $instanceId but this registry has no session",
+                            )
+                    session.platformViewInstance(instanceId)?.also { instance ->
+                        check(instance.parent == null) {
+                            "hydrolysis: platform-view instance $instanceId is already " +
+                                "mounted elsewhere — one View cannot have two parents"
+                        }
+                    }
+                        ?: throw IllegalStateException(
+                            "hydrolysis: platform-view instance $instanceId is not " +
+                                "registered on the session",
+                        )
+                }
+                placement.kind != null -> {
+                    val factory =
+                        factories[placement.kind]
+                            ?: throw IllegalStateException(
+                                "hydrolysis: no platform-view factory registered for " +
+                                    "kind \"${placement.kind}\"; call " +
+                                    "PlatformViewRegistry.registerFactory(kind) from the " +
+                                    "application's host setup",
+                            )
+                    factory(context)
+                }
+                else ->
+                    throw IllegalStateException(
+                        "hydrolysis: a platform-view placement names neither " +
+                            "a kind nor an instance",
+                    )
+            }
+        val slotView =
+            FrameLayout(context).apply {
+                addView(
+                    mounted,
+                    FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                    ),
+                )
+                // The slot is not itself semantic: the mounted view inside keeps
+                // its own accessibility and the provider grafts it onto the host
+                // node, so there is exactly one node per native child.
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                isClickable = true
+            }
+        return Slot(slotView, mounted)
     }
 
     private fun applySlot(slot: Slot) {
@@ -234,13 +301,14 @@ class PlatformViewRegistry internal constructor(
         view.visibility = if (placement.visible) View.VISIBLE else View.INVISIBLE
     }
 
-    private class Slot(val view: FrameLayout) {
+    private class Slot(val view: FrameLayout, val mounted: View) {
         lateinit var placement: Placement
     }
 
     private class Placement(
         val id: Long,
-        val kind: String,
+        val kind: String?,
+        val instance: Long?,
         val x: Float,
         val y: Float,
         val width: Float,
