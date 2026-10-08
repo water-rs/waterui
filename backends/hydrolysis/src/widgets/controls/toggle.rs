@@ -16,8 +16,8 @@ use waterui_core::layout::Size as LayoutSize;
 use waterui_core::layout::{ProposalSize, ViewDimensions};
 use waterui_core::{AnyView, Environment, Native};
 
-use crate::renderer::RetainedSubview;
 use crate::renderer::local_interaction_state;
+use crate::renderer::{RetainedIdentity, RetainedSubview};
 use crate::widgets::util::{label_beside_control_bounds, widget_disabled};
 
 /// The retained render state of a toggle: the cloneable [`ToggleConfig`] drives the
@@ -175,6 +175,13 @@ pub fn render_toggle_parts(
 ) {
     let visual_interaction_key = InteractionKey::for_rc(state, 0);
     let activation_interaction_key = InteractionKey::for_rc(state, 1);
+    // The thumb-progress slot keys off the retained node, not the toggle
+    // signal: `Binding::mapping`s minted at one call site share a
+    // `SignalIdentity`, so signal-keyed slots would collapse every same-site
+    // mapping onto one thumb position. The interaction key stored in the
+    // interaction engine holds the owner `Rc` for as long as the control
+    // binds, so the address cannot be reused while the slot lives.
+    let toggle_identity = RetainedIdentity::for_rc(state);
     let theme = ctx.theme();
     let mut state = state.borrow_mut();
     let style = state.config.style;
@@ -228,8 +235,11 @@ pub fn render_toggle_parts(
     // schedules a frame and this persistent node re-renders the new state.
     let (thumb_progress, selected) = {
         let binding = state.config.toggle.clone();
-        ctx.renderer_mut()
-            .resolve_toggle_progress(&binding, theme.toggle_value_animation())
+        ctx.renderer_mut().resolve_toggle_progress(
+            &binding,
+            &toggle_identity,
+            theme.toggle_value_animation(),
+        )
     };
     let visual_hit_bounds = control_bounds;
     let activation_hit_bounds = ctx.bounds;
