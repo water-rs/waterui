@@ -50,9 +50,10 @@ mod macos {
     use dispatch2::DispatchQueue;
     use libtest_mimic::Trial;
     use objc2::rc::Retained;
-    use objc2::runtime::{AnyObject, NSObjectProtocol as _, ProtocolObject};
-    use objc2::{MainThreadMarker, MainThreadOnly as _};
-    use objc2_app_kit::NSView;
+    #[expect(unused_imports)]
+    use objc2::runtime::{AnyObject, NSObjectProtocol, NSObjectProtocol as _, ProtocolObject};
+    use objc2::{AnyThread as _, MainThreadMarker, MainThreadOnly as _};
+    use objc2_app_kit::{NSBackingStoreType, NSView, NSWindow, NSWindowStyleMask};
     use objc2_av_foundation::{AVQueuedSampleBufferRenderingStatus, AVSampleBufferDisplayLayer};
     use objc2_core_foundation::{
         CFDictionary, CFRetained, CFRunLoop, CFString, CFType, CGAffineTransform, CGPoint, CGRect,
@@ -73,7 +74,7 @@ mod macos {
         MTLCommandBuffer as _, MTLCommandQueue, MTLDevice, MTLPixelFormat, MTLRegion,
         MTLStorageMode, MTLTexture, MTLTextureDescriptor, MTLTextureUsage,
     };
-    use objc2_quartz_core::{CALayer, CAMetalLayer, CARenderer, CATransaction};
+    use objc2_quartz_core::{CALayer, CALayerDelegate, CAMetalLayer, CARenderer, CATransaction};
 
     /// The surface in device pixels, its scale, and the video in pixels.
     const SIZE: (u32, u32) = (96, 64);
@@ -177,8 +178,20 @@ mod macos {
                 a_hosted_layer_sits_between_its_parts_and_moves_in_place,
             ),
             case(
-                "a_hosted_view_answers_hits_and_the_engine_views_do_not",
-                a_hosted_view_answers_hits_and_the_engine_views_do_not,
+                "a_part_over_the_hosted_view_claims_the_overlap",
+                a_part_over_the_hosted_view_claims_the_overlap,
+            ),
+            case(
+                "a_layer_switching_between_frame_and_hosted_rebuilds_its_nodes",
+                a_layer_switching_between_frame_and_hosted_rebuilds_its_nodes,
+            ),
+            case(
+                "a_scrolled_hosted_view_hits_only_where_it_is_visible",
+                a_scrolled_hosted_view_hits_only_where_it_is_visible,
+            ),
+            case(
+                "a_negative_or_zero_scale_on_the_path_is_unplaceable",
+                a_negative_or_zero_scale_on_the_path_is_unplaceable,
             ),
             case(
                 "a_rotation_and_a_skew_on_the_path_are_unplaceable",
@@ -431,6 +444,55 @@ mod macos {
         }
     }
 
+    objc2::define_class!(
+        // SAFETY: `NSObject` has no subclassing requirements; the class
+        // implements no Drop.
+        #[unsafe(super(objc2::runtime::NSObject))]
+        #[name = "CherenkovWindowlessSurfaceHost"]
+        #[ivars = ()]
+        struct WindowlessHost;
+
+        impl WindowlessHost {
+            // wgpu's macOS acquire probes the hosting window's
+            // `occlusionState` and refuses the drawable while it is not
+            // visible: correct for a real window, but the test window is
+            // never ordered on screen, so every acquire would be
+            // occluded forever. A delegate answering `window` with nil
+            // reads as "no hosting window" — the windowless behaviour
+            // the harness had before — letting parts present inside the
+            // hidden window.
+            #[unsafe(method(window))]
+            fn window(&self) -> *mut NSWindow {
+                std::ptr::null_mut()
+            }
+        }
+
+        unsafe impl NSObjectProtocol for WindowlessHost {}
+        unsafe impl CALayerDelegate for WindowlessHost {}
+    );
+
+    /// Gives every `CAMetalLayer` under `layer` a delegate whose
+    /// `window` is nil, so wgpu's occlusion probe never finds the
+    /// never-shown test window (see [`WindowlessHost`]).
+    fn unocclude(layer: &CALayer, stub: &ProtocolObject<dyn CALayerDelegate>) {
+        for sub in sublayers(layer) {
+            match sub.downcast::<CAMetalLayer>() {
+                Ok(metal) => metal.setDelegate(Some(stub)),
+                Err(layer) => unocclude(&layer, stub),
+            }
+        }
+    }
+
+    /// A windowless-host delegate for part surfaces (see
+    /// [`WindowlessHost`]).
+    fn windowless_stub() -> Retained<ProtocolObject<dyn CALayerDelegate>> {
+        let this = WindowlessHost::alloc().set_ivars(());
+        // SAFETY: `init` on the freshly allocated delegate; documented
+        // `NSObject` init pattern.
+        let this: Retained<WindowlessHost> = unsafe { objc2::msg_send![super(this), init] };
+        ProtocolObject::from_retained(this)
+    }
+
     /// Drives the main run loop until `flag` is set — the completion
     /// signal a queued block, like a display layer's attach, leaves
     /// behind.
@@ -500,7 +562,14 @@ mod macos {
         renderer: Retained<CARenderer>,
         target: Retained<ProtocolObject<dyn MTLTexture>>,
         queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
+        // Keeps the renderer's root alive; all staging goes through
+        // `points`, which the display pass cannot reclaim.
+        #[expect(dead_code)]
         stage: Retained<CALayer>,
+        /// The points-scaled layer `host` parents under: kept so a
+        /// composite can re-stage the layer after `AppKit`'s display pass
+        /// reclaims it for the never-shown window.
+        points: Retained<CALayer>,
     }
 
     impl SystemCompositor {
@@ -583,27 +652,47 @@ mod macos {
                 target,
                 queue,
                 stage,
+                points,
             }
         }
 
         /// Composites what is committed, returning premultiplied linear
         /// Display P3 pixels, row 0 at the top of the screen.
         ///
+        /// `AppKit`'s display pass reclaims a windowed view's layer for the
+        /// window's own context, which a `CARenderer` cannot see — so the
+        /// host is re-staged under `points` here before rendering. Its
+        /// `AppKit`-wired subtree comes along whole; the next
+        /// `displayIfNeeded` takes it back and syncs the view order
+        /// again.
+        ///
+        /// The first frame after a layer joins the renderer's context from
+        /// another context composites nearly-transparent content, so one
+        /// warm-up frame is rendered and discarded before the read below.
+        ///
         /// The renderer writes layer space bottom-up (row 0 is `y = 0`, the
         /// bottom of an unflipped layer), so rows are reversed.
-        fn composite(&self) -> Vec<[f32; 4]> {
-            settle(&self.stage);
+        fn composite(&self, host: &CALayer) -> Vec<[f32; 4]> {
+            // No runloop turn before `render()`: any `drive` lets the
+            // window's display pass reclaim `host` for its own context,
+            // leaving `stage` empty again.
             let bounds = self.renderer.bounds();
-            // SAFETY: a null timestamp is allowed.
-            unsafe {
-                self.renderer.beginFrameAtTime_timeStamp(
-                    objc2_quartz_core::CACurrentMediaTime(),
-                    std::ptr::null_mut(),
-                );
-            }
-            self.renderer.addUpdateRect(bounds);
-            self.renderer.render();
-            self.renderer.endFrame();
+            let frame = || {
+                self.points.addSublayer(host);
+                CATransaction::flush();
+                // SAFETY: a null timestamp is allowed.
+                unsafe {
+                    self.renderer.beginFrameAtTime_timeStamp(
+                        objc2_quartz_core::CACurrentMediaTime(),
+                        std::ptr::null_mut(),
+                    );
+                }
+                self.renderer.addUpdateRect(bounds);
+                self.renderer.render();
+                self.renderer.endFrame();
+            };
+            frame();
+            frame();
             let fence = self.queue.commandBuffer().expect("fence");
             fence.commit();
             fence.waitUntilCompleted();
@@ -658,13 +747,18 @@ mod macos {
         }
     }
 
-    /// An engine with a window surface over a view that is never shown, the
-    /// view's layer staged for the system compositor.
+    /// An engine with a window surface over a view inside an `NSWindow`
+    /// that is never ordered on screen — `AppKit` wires the subview layers
+    /// itself — the host layer staged for the system compositor.
     struct Fixture {
         metal: Metal,
         engine: Engine<Gpu>,
         window: Surface<Gpu>,
         system: SystemCompositor,
+        /// Never ordered on screen; `displayIfNeeded` makes `AppKit` wire
+        /// and mirror the view hierarchy's layers.
+        app_window: Retained<NSWindow>,
+        windowless: Retained<ProtocolObject<dyn CALayerDelegate>>,
         view: Retained<NSView>,
         /// Set by the window surface's wake: an attach landing on the
         /// main queue asks for the frame that promotes its candidate.
@@ -693,6 +787,23 @@ mod macos {
                 ),
             );
             view.setWantsLayer(true);
+            // Never ordered on screen: no `makeKeyAndOrderFront`, no
+            // `orderFront` — a window off-screen still runs AppKit's own
+            // layer wiring for the view hierarchy.
+            // SAFETY: init with a content rect; the window is never shown.
+            let app_window = unsafe {
+                NSWindow::initWithContentRect_styleMask_backing_defer(
+                    NSWindow::alloc(mtm),
+                    CGRect::new(
+                        CGPoint::new(0.0, 0.0),
+                        CGSize::new(f64::from(SIZE.0) / SCALE, f64::from(SIZE.1) / SCALE),
+                    ),
+                    NSWindowStyleMask::empty(),
+                    NSBackingStoreType::Buffered,
+                    false,
+                )
+            };
+            app_window.setContentView(Some(&view));
             let host = view.layer().expect("a layer-backed view");
             host.setContentsScale(SCALE);
             let system = SystemCompositor::attach(&metal, &host);
@@ -718,6 +829,8 @@ mod macos {
                 engine,
                 window,
                 system,
+                app_window,
+                windowless: windowless_stub(),
                 view,
                 woke,
             }
@@ -727,17 +840,30 @@ mod macos {
             self.view.layer().expect("a layer-backed view")
         }
 
-        /// The host's backing layer: the engine's parts and plane tops
-        /// are its direct sublayers, and a candidate's pending display
-        /// layer parks beside them.
+        /// The host's backing layer: `AppKit` wires the engine's part and
+        /// plane views' layers into it in subview order, and a
+        /// candidate's pending display parks inside the probes view's
+        /// layer below them.
         fn root(&self) -> Retained<CALayer> {
             self.host()
         }
 
+        /// Drains queued main work, lets `AppKit` wire any new subview
+        /// layers, and stubs the window probe on every part surface:
+        /// `addSubview` wires a part's layer under the window's layer
+        /// synchronously, so the stub has to be re-applied after every
+        /// drain, before the next render can acquire.
+        fn sync(&self) {
+            drain_main();
+            unocclude(&self.host(), &self.windowless);
+            self.app_window.displayIfNeeded();
+            unocclude(&self.host(), &self.windowless);
+        }
+
         fn render(&self) {
-            drain_main();
+            self.sync();
             self.engine.render(FrameTime::now()).expect("rendered");
-            drain_main();
+            self.sync();
             settle(&self.host());
         }
 
@@ -758,7 +884,7 @@ mod macos {
         /// a ready probe left in the engine is a planner rejection of an
         /// eligible scene, which fails here rather than skipping.
         fn promote(&self) -> bool {
-            drain_main();
+            self.sync();
             self.woke.store(false, Ordering::Relaxed);
             self.engine.render(FrameTime::now()).expect("rendered");
             assert!(
@@ -790,9 +916,9 @@ mod macos {
                 // armed waker leaves the callback's flag — no signal
                 // from the notification is lost either way.
                 self.woke.store(false, Ordering::Relaxed);
-                drain_main();
+                self.sync();
                 self.engine.render(FrameTime::now()).expect("rendered");
-                drain_main();
+                self.sync();
                 if !displays(&self.root()).is_empty() {
                     break;
                 }
@@ -809,14 +935,15 @@ mod macos {
                 // ready probe is a planner rejection of an eligible
                 // scene; a not-ready probe's wake was a down-flip and
                 // the loop waits for the next evaluation.
-                drain_main();
+                self.sync();
                 self.engine.render(FrameTime::now()).expect("rendered");
-                drain_main();
+                self.sync();
                 if !displays(&self.root()).is_empty() {
                     break;
                 }
+                let probes = probes(&self.host());
                 assert!(
-                    !probes(&self.host())
+                    !probes
                         .iter()
                         // SAFETY: the display layers are read on the main
                         // thread.
@@ -898,20 +1025,21 @@ mod macos {
     }
 
     /// The engine's top-level elements under the host: parts and plane
-    /// tops in paint order — `zPosition`, not sublayer order, sorts
-    /// them; a candidate's pending display parked beside them is not an
-    /// element.
+    /// tops in paint order — the host view's subview order is the paint
+    /// order, and `AppKit` orders their layers to match. The probes view,
+    /// whose layer holds parked pending displays, is not an element.
     fn stack(fixture: &Fixture) -> Vec<Retained<CALayer>> {
-        let mut stack: Vec<_> = sublayers(&fixture.host())
-            .into_iter()
+        fixture
+            .view
+            .subviews()
+            .iter()
+            .filter_map(|view| view.layer())
             .filter(|layer| {
                 layer
                     .name()
-                    .is_none_or(|name| *name != *objc2_foundation::ns_string!("cherenkov-pending"))
+                    .is_none_or(|name| *name != *objc2_foundation::ns_string!("cherenkov-probes"))
             })
-            .collect();
-        stack.sort_by_key(|layer| layer.zPosition().to_bits());
-        stack
+            .collect()
     }
 
     /// A top-level part: a container whose sublayer is the metal layer.
@@ -1056,13 +1184,21 @@ mod macos {
             engine_parity(&fixture, &offscreen, "engine-composited frame");
             return;
         }
-        let _ = fixture.system.composite();
+        let _ = fixture.system.composite(&fixture.host());
         let [display] = &displays(&fixture.root())[..] else {
             panic!("one display");
         };
         // SAFETY: renderer and buffer attachments are read on main.
-        let shown = unsafe { display.sampleBufferRenderer().copyDisplayedPixelBuffer() }
-            .expect("displayed buffer");
+        let mut shown = unsafe { display.sampleBufferRenderer().copyDisplayedPixelBuffer() };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while shown.is_none() {
+            assert!(Instant::now() < deadline, "displayed buffer never arrived");
+            // SAFETY: the mode is an immutable static.
+            CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, 0.005, true);
+            // SAFETY: as above.
+            shown = unsafe { display.sampleBufferRenderer().copyDisplayedPixelBuffer() };
+        }
+        let shown = shown.expect("displayed buffer");
         assert_eq!(
             CVPixelBufferGetIOSurface(Some(&buffer))
                 .expect("source")
@@ -1587,7 +1723,7 @@ mod macos {
     /// error above 0.25.
     fn engine_parity(fixture: &Fixture, offscreen: &Surface<Gpu>, what: &str) {
         let engine = offscreen.readback().expect("engine composition");
-        let system = fixture.system.composite();
+        let system = fixture.system.composite(&fixture.host());
         let image = |pixels: Vec<[f32; 4]>| cherenkov_oracle::F32Image {
             width: SIZE.0,
             height: SIZE.1,
@@ -1747,16 +1883,17 @@ mod macos {
         assert!(!is_part(plane_a) && !is_part(plane_b));
     }
 
-    /// An `NSView` a host would supply: layer-hosting, so code may manage
-    /// its layer — a solid colour for the composition check.
+    /// An `NSView` a host would supply: layer-backed, the way a
+    /// `WKWebView` is — `AppKit` owns its layer; the engine may never
+    /// touch it. The colour on the backing layer is the app's own.
     fn hosted_view(mtm: MainThreadMarker, color: (f64, f64, f64)) -> Retained<NSView> {
         let view = NSView::new(mtm);
-        let layer = CALayer::new();
-        layer.setBackgroundColor(Some(&objc2_core_graphics::CGColor::new_srgb(
-            color.0, color.1, color.2, 1.0,
-        )));
-        view.setLayer(Some(&layer));
         view.setWantsLayer(true);
+        view.layer()
+            .expect("a layer-backed view")
+            .setBackgroundColor(Some(&objc2_core_graphics::CGColor::new_srgb(
+                color.0, color.1, color.2, 1.0,
+            )));
         view
     }
 
@@ -1838,7 +1975,7 @@ mod macos {
     /// The system composition shows the hosted colour between the
     /// parts' colours: the hosted green over the backdrop's blue.
     fn assert_hosted_composite(fixture: &Fixture) {
-        let pixels = fixture.system.composite();
+        let pixels = fixture.system.composite(&fixture.host());
         let at = |x: usize, y: usize| pixels[y * SIZE.0 as usize + x];
         let hosted_px = at(30, 20);
         assert!(
@@ -1897,21 +2034,25 @@ mod macos {
         let clip_ptr = view_superview(leaf).expect("the clip");
         let clip = as_view(clip_ptr);
         assert_eq!(view_superview(clip), Some(Retained::as_ptr(&container)));
-        // The hosted view is layer-hosting: its layer is the app's, wired
-        // into the engine's tree at the leaf's position the way `AppKit`
-        // wires a subview's layer on layout — which a windowless fixture
-        // never runs.
-        if web.layer().and_then(|l| l.superlayer()).is_none() {
-            let layer = web.layer().expect("a layer-hosting view");
-            layer.setFrame(CGRect::new(
-                CGPoint::new(12.0, 8.0),
-                CGSize::new(EXTENT.width, EXTENT.height),
-            ));
-            container
-                .layer()
-                .expect("container layer")
-                .addSublayer(&layer);
-        }
+        // The hosted view is layer-backed: `AppKit` owns and wires its
+        // layer — under the leaf's layer, untransformed, alone. The
+        // engine never touches it.
+        let hosted_layer = web.layer().expect("a layer-backed hosted view");
+        assert_eq!(
+            hosted_layer.superlayer().map(|s| Retained::as_ptr(&s)),
+            leaf.layer().map(|l| Retained::as_ptr(&l)),
+            "AppKit wired the hosted layer under the leaf's"
+        );
+        assert!(sublayers(&hosted_layer).is_empty(), "no engine sublayers");
+        assert_eq!(hosted_layer.affineTransform().tx, 0.0);
+        assert_eq!(hosted_layer.affineTransform().ty, 0.0);
+        assert_eq!(
+            (
+                hosted_layer.affineTransform().a,
+                hosted_layer.affineTransform().d
+            ),
+            (1.0, 1.0)
+        );
         let clip_frame = clip.frame();
         assert!(
             (clip_frame.origin.x - 12.0).abs() < 1e-12 && (clip_frame.origin.y - 8.0).abs() < 1e-12,
@@ -1954,14 +2095,15 @@ mod macos {
         );
     }
 
-    /// A point inside the hosted view hits the host's own view — the
-    /// engine's views decline the hit — and a point beside it inside the
-    /// surface reaches the host view itself, never one of the engine's.
-    fn a_hosted_view_answers_hits_and_the_engine_views_do_not() {
+    /// A part painted above the hosted view claims the hits inside its
+    /// frame for the host view — the engine's pixels answer, not the
+    /// hosted view beneath them. With no part above it the hosted view
+    /// takes its own hits, and a point beside it reaches the host view.
+    fn a_part_over_the_hosted_view_claims_the_overlap() {
         let mtm = MainThreadMarker::new().expect("the cases run on the main thread");
         let fixture = Fixture::new();
         let web = hosted_view(mtm, (0.1, 0.9, 0.2));
-        let [_below, _holder, _hosted, _above] = hosted_scene(&fixture, &web);
+        let [_below, holder, hosted, _above] = hosted_scene(&fixture, &web);
         render_until(
             &fixture,
             &|| view_superview(&web).is_some(),
@@ -1969,20 +2111,158 @@ mod macos {
         );
         // The host view is y-up; the hosted view covers px
         // (12,8)-(52.5,32) — points (6,4)-(26.25,16) in the engine's
-        // y-down space — so (15, 20) in host coordinates.
+        // y-down space — so (15, 20) in host coordinates. The bar's
+        // part is above it and claims the hit for the host view.
         let inside = fixture.view.hitTest(CGPoint::new(15.0, 20.0));
         assert_eq!(
             inside.as_ref().map(Retained::as_ptr),
+            Some(Retained::as_ptr(&fixture.view)),
+            "the part above claims the hit for the host view"
+        );
+        // Move the hosted plane above the last part: the hosted view
+        // then answers the hit inside its frame.
+        let surface = &fixture.window;
+        surface.update(|tx| {
+            tx[surface.root()].push(&holder);
+        });
+        let _ = &hosted;
+        render_until(
+            &fixture,
+            &|| view_superview(&web).is_some(),
+            "the hosted view on top",
+        );
+        let top_hit = fixture.view.hitTest(CGPoint::new(15.0, 20.0));
+        assert_eq!(
+            top_hit.as_ref().map(Retained::as_ptr),
             Some(Retained::as_ptr(&web)),
             "the hosted view answers the hit"
         );
-        let outside = fixture.view.hitTest(CGPoint::new(45.0, 20.0));
-        let outside_ptr = outside.as_ref().map(Retained::as_ptr);
+        let outside = fixture.view.hitTest(CGPoint::new(46.0, 30.0));
         assert_eq!(
-            outside_ptr,
+            outside.as_ref().map(Retained::as_ptr),
             Some(Retained::as_ptr(&fixture.view)),
             "the host view takes the hit, not an engine view"
         );
+    }
+
+    /// A layer holding an external frame then a hosted view — and back
+    /// — rebuilds its native nodes each way: the reuse key includes the
+    /// plane kind, so a `Layers` path never keeps serving a `Views`
+    /// plane or the reverse.
+    fn a_layer_switching_between_frame_and_hosted_rebuilds_its_nodes() {
+        let mtm = MainThreadMarker::new().expect("the cases run on the main thread");
+        let fixture = Fixture::new();
+        let surface = &fixture.window;
+        let web = hosted_view(mtm, (0.1, 0.9, 0.2));
+        let layer = surface.layer();
+        let (video, sink) = fixture.engine.frame_producer();
+        sink.submit(bgra(&fixture.metal, &bgra_buffer(), FrameColor::SRGB));
+        surface.update(|tx| {
+            tx[surface.root()].push(&layer);
+            tx[&layer].content(video.at(VIDEO_SIZE));
+        });
+        fixture.render();
+        assert!(view_superview(&web).is_none(), "a frame plane is layers");
+
+        let object = Hosted::<Gpu>::new(HostedView::new(web.clone(), mtm));
+        surface.update(|tx| {
+            tx[&layer].content(object.at(EXTENT));
+        });
+        render_until(
+            &fixture,
+            &|| view_superview(&web).is_some(),
+            "the frame-to-hosted switch",
+        );
+
+        let (video, sink) = fixture.engine.frame_producer();
+        sink.submit(bgra(&fixture.metal, &bgra_buffer(), FrameColor::SRGB));
+        surface.update(|tx| {
+            tx[&layer].content(video.at(VIDEO_SIZE));
+        });
+        fixture.render();
+        assert_eq!(
+            view_superview(&web),
+            None,
+            "the hosted-to-frame switch released the view"
+        );
+    }
+
+    /// A scrolled hosted view is hittable exactly where it is visible:
+    /// the leaf's bounds are the extent clipped by the scroll, and the
+    /// hosted view inside sits at `-scroll` — a hit on its scrolled-out
+    /// part reaches the host view, not the hosted view.
+    fn a_scrolled_hosted_view_hits_only_where_it_is_visible() {
+        let mtm = MainThreadMarker::new().expect("the cases run on the main thread");
+        let fixture = Fixture::new();
+        let web = hosted_view(mtm, (0.1, 0.9, 0.2));
+        let [_below, holder, hosted, _above] = hosted_scene(&fixture, &web);
+        let surface = &fixture.window;
+        surface.update(|tx| {
+            tx[surface.root()].push(&holder);
+            tx[&hosted].scroll_offset(Vec2::new(10.0, 0.0));
+        });
+        render_until(
+            &fixture,
+            &|| view_superview(&web).is_some(),
+            "the hosted view",
+        );
+        let leaf = as_view(view_superview(&web).expect("the leaf"));
+        // The leaf covers exactly the visible hosted area: extent 40.5
+        // minus the scrolled-out 10, at the scroll's own origin.
+        let bounds = leaf.bounds();
+        assert!((bounds.size.width - 30.5).abs() < 1e-12, "{bounds:?}");
+        // The hosted view sits at -scroll and keeps its own extent — a
+        // leaf frame change never resizes it.
+        let frame = web.frame();
+        assert_eq!((frame.origin.x, frame.origin.y), (-10.0, 0.0));
+        assert_eq!((frame.size.width, frame.size.height), (40.5, 24.0));
+        let _ = &hosted;
+        // Hits: a visible point reaches the hosted view; the scrolled-off
+        // region past the leaf's edge does not — the clip view passes it
+        // through to the host.
+        // The host is not flipped: engine point (20, 12) in its y-down
+        // space is (20, 32 - 12) in the host's coordinates.
+        let visible = fixture.view.hitTest(CGPoint::new(20.0, 20.0));
+        assert_eq!(
+            visible.as_ref().map(Retained::as_ptr),
+            Some(Retained::as_ptr(&web)),
+            "the visible area is hittable"
+        );
+        let scrolled_off = fixture.view.hitTest(CGPoint::new(45.0, 12.0));
+        assert_eq!(
+            scrolled_off.as_ref().map(Retained::as_ptr),
+            Some(Retained::as_ptr(&fixture.view)),
+            "the scrolled-out part is not"
+        );
+    }
+
+    /// A negative or a zero scale on the hosted plane's path fails the
+    /// render naming the transform rule: a view's bounds size carries
+    /// only a positive axis-aligned scale, and a scale animating through
+    /// zero is unplaceable for its duration.
+    fn a_negative_or_zero_scale_on_the_path_is_unplaceable() {
+        let mtm = MainThreadMarker::new().expect("the cases run on the main thread");
+        let fixture = Fixture::new();
+        let web = hosted_view(mtm, (0.1, 0.9, 0.2));
+        let [_below, holder, hosted, _above] = hosted_scene(&fixture, &web);
+        for transform in [
+            Affine::scale_non_uniform(-1.0, 1.0),
+            Affine::scale_non_uniform(1.0, -1.0),
+            Affine::scale_non_uniform(0.0, 1.0),
+        ] {
+            fixture.window.update(|tx| {
+                tx[&holder].transform(transform);
+            });
+            drain_main();
+            match fixture.engine.render(FrameTime::now()) {
+                Err(RenderError::Unplaceable { layer, reason }) => {
+                    assert_eq!(layer, hosted.id());
+                    assert!(reason.contains("transform"), "{reason}");
+                }
+                other => panic!("an unplaceable hosted view, got {other:?}"),
+            }
+            assert!(view_superview(&web).is_none(), "never shown");
+        }
     }
 
     /// A rotation and a skew on the hosted plane's path each fail the
