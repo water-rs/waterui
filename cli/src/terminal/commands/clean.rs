@@ -16,7 +16,6 @@ use indicatif::{ProgressBar, ProgressStyle};
 use crate::shell::Shell;
 use crate::{header, note, success, warn};
 use waterui_cli::{
-    android::platform::clean_android,
     apple::platform::clean_apple,
     gtk4::platform::clean_gtk4,
     hydrolysis::platform::clean_hydrolysis,
@@ -31,8 +30,6 @@ use waterui_cli::{
 pub enum TargetBackend {
     /// Apple backend (iOS/macOS).
     Apple,
-    /// Android backend.
-    Android,
     /// GTK4 backend (Linux).
     Gtk4,
     /// Hydrolysis backend (self-drawn renderer).
@@ -138,14 +135,6 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
             }
             success!(shell, "Cleaned Apple build artifacts");
         }
-        TargetBackend::Android => {
-            let spinner = shell.spinner("Cleaning Android build artifacts...");
-            clean_android(&project).await?;
-            if let Some(pb) = spinner {
-                pb.finish_and_clear();
-            }
-            success!(shell, "Cleaned Android build artifacts");
-        }
         TargetBackend::Gtk4 => {
             let spinner = shell.spinner("Cleaning GTK4 build artifacts...");
             clean_gtk4(&project).await?;
@@ -180,7 +169,6 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
 const fn managed_backends(backend: TargetBackend) -> ManagedBackends {
     match backend {
         TargetBackend::Apple => ManagedBackends::for_backend(LibTargetBackend::Apple),
-        TargetBackend::Android => ManagedBackends::for_backend(LibTargetBackend::Android),
         TargetBackend::Gtk4 => ManagedBackends::for_backend(LibTargetBackend::Gtk4),
         TargetBackend::Hydrolysis => ManagedBackends::for_backend(LibTargetBackend::Hydrolysis),
         TargetBackend::WinUi => ManagedBackends::for_backend(LibTargetBackend::WinUi),

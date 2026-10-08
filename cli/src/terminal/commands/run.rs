@@ -319,28 +319,22 @@ fn resolve_backend(
     // Validate backend supports platform
     let supported = matches!(
         (platform, backend),
-        (TargetPlatform::Ios, TargetBackend::Apple)
-            | (
-                TargetPlatform::Macos,
-                TargetBackend::Apple | TargetBackend::Hydrolysis
-            )
-            | (
-                TargetPlatform::Android,
-                TargetBackend::Android | TargetBackend::Hydrolysis
-            )
-            | (
-                TargetPlatform::Linux,
-                TargetBackend::Gtk4 | TargetBackend::Hydrolysis
-            )
-            | (
-                TargetPlatform::Windows,
-                TargetBackend::Hydrolysis | TargetBackend::WinUi
-            )
-            | (TargetPlatform::Web, TargetBackend::Hydrolysis)
-            | (
-                TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4,
-                TargetBackend::Dew
-            )
+        (
+            TargetPlatform::Ios | TargetPlatform::Macos,
+            TargetBackend::Apple
+        ) | (
+            TargetPlatform::Macos | TargetPlatform::Android | TargetPlatform::Web,
+            TargetBackend::Hydrolysis
+        ) | (
+            TargetPlatform::Linux,
+            TargetBackend::Gtk4 | TargetBackend::Hydrolysis
+        ) | (
+            TargetPlatform::Windows,
+            TargetBackend::Hydrolysis | TargetBackend::WinUi
+        ) | (
+            TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4,
+            TargetBackend::Dew
+        )
     );
 
     if !supported {
@@ -349,7 +343,7 @@ fn resolve_backend(
              Valid combinations:\n  \
              - iOS: apple\n  \
              - macOS: apple, hydrolysis\n  \
-             - Android: hydrolysis, android\n  \
+             - Android: hydrolysis\n  \
              - Linux: gtk4, hydrolysis\n  \
              - Windows: hydrolysis, winui\n  \
              - Web: hydrolysis\n  \
@@ -1102,13 +1096,6 @@ async fn build_for_backend(
         TargetBackend::Apple => {
             Box::pin(build_rust_lib(project, plan.lib_platform, build_options)).await
         }
-        TargetBackend::Android => {
-            let abi = plan
-                .android_abi
-                .ok_or_else(|| eyre::eyre!("Internal error: missing Android ABI for build"))?;
-            AndroidPlatform::clean_jni_libs(project).await?;
-            Box::pin(AndroidPlatform::new(abi).build(project, build_options)).await
-        }
         TargetBackend::Gtk4 => Box::pin(build_gtk4(project, build_options)).await,
         TargetBackend::Hydrolysis => {
             if plan.lib_platform == LibTargetPlatform::Android {
@@ -1157,21 +1144,6 @@ async fn package_for_backend(
                 plan.lib_platform,
                 package_options,
                 built,
-            ))
-            .await
-        }
-        TargetBackend::Android => {
-            let abi = plan
-                .android_abi
-                .ok_or_else(|| eyre::eyre!("Internal error: missing Android ABI for packaging"))?;
-            Box::pin(AndroidPlatform::package_with_abis(
-                project,
-                package_options,
-                &[abi],
-                built,
-                prepared_signing.ok_or_else(|| {
-                    eyre::eyre!("Internal error: Android packaging has no signing plan")
-                })?,
             ))
             .await
         }
@@ -1283,7 +1255,6 @@ struct DeviceCandidate {
 const fn device_memory_key(backend: TargetBackend, platform: TargetPlatform) -> &'static str {
     match (backend, platform) {
         (TargetBackend::Apple, TargetPlatform::Ios) => "apple/ios",
-        (TargetBackend::Android, TargetPlatform::Android) => "android/android",
         (TargetBackend::Hydrolysis, TargetPlatform::Android) => "hydrolysis/android",
         // Device memory only exists for targets with a device dimension.
         _ => unreachable!(),
@@ -1623,12 +1594,6 @@ async fn check_toolchain_for_backend(
             };
             toolchain_checks::check_apple(host, sdk).await?;
         }
-        TargetBackend::Android => {
-            if platform != TargetPlatform::Android {
-                bail!("Internal error: Android backend is not supported on {platform:?}");
-            }
-            toolchain_checks::check_android_run(host).await?;
-        }
         TargetBackend::Gtk4 => {
             if platform != TargetPlatform::Linux {
                 bail!("Internal error: GTK4 backend is not supported on {platform:?}");
@@ -1795,7 +1760,6 @@ const fn platform_name(platform: TargetPlatform) -> &'static str {
 const fn backend_name(backend: TargetBackend) -> &'static str {
     match backend {
         TargetBackend::Apple => "Apple",
-        TargetBackend::Android => "Android",
         TargetBackend::Gtk4 => "GTK4",
         TargetBackend::Hydrolysis => "Hydrolysis",
         TargetBackend::WinUi => "WinUI",

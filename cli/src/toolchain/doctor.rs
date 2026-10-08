@@ -583,8 +583,8 @@ impl BackendScope {
 ///
 /// A [`TargetBackend`] keys on itself; a [`TargetPlatform`] keys on the
 /// platform itself. The Android toolchain — SDK, NDK, Java, Kotlin and
-/// friends — is a platform requirement the Kotlin runtime and Hydrolysis
-/// share, so the Android group keys on the platform and is in scope
+/// friends — is a platform requirement, so the Android group keys on the
+/// platform and is in scope
 /// wherever Android is targeted — which on a bare host is never.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DoctorScope {
@@ -625,14 +625,13 @@ impl ProjectContext {
     /// command selects. Outside a project the host decides: the backends
     /// the machine can build for — Apple on macOS, `WinUI` on Windows,
     /// GTK4 on Linux, Hydrolysis on every desktop host — are
-    /// [`BackendScope::HostDefault`]; the Kotlin Android backend and Dew
-    /// need a project to select them and are optional everywhere.
+    /// [`BackendScope::HostDefault`]; Dew needs a project to select it and
+    /// is optional everywhere.
     ///
     /// A [`DoctorScope::Platform`] key is host-default only when the host
     /// itself builds for the platform — never for Android: Hydrolysis
     /// cross-compiling to Android does not mean the host targets Android,
-    /// so the Android group stays optional without a project, exactly as
-    /// the Kotlin backend does.
+    /// so the Android group stays optional without a project.
     fn scope(&self, key: impl Into<DoctorScope>) -> BackendScope {
         match key.into() {
             DoctorScope::Backend(backend) => self.backend_scope(backend),
@@ -666,7 +665,7 @@ impl ProjectContext {
                     TargetBackend::WinUi => cfg!(target_os = "windows"),
                     TargetBackend::Gtk4 => cfg!(target_os = "linux"),
                     TargetBackend::Hydrolysis => true,
-                    TargetBackend::Android | TargetBackend::Dew => false,
+                    TargetBackend::Dew => false,
                 };
                 if host_builds {
                     BackendScope::HostDefault
@@ -890,9 +889,8 @@ async fn apple_rust_targets_check(host: &Host, project: &ProjectContext) -> Doct
 /// follow the SDK probe; the rustup targets, run targets, and the `CMake` /
 /// Java / Kotlin helpers are independent of it and run alongside.
 ///
-/// The group serves every Android backend — the Kotlin runtime and
-/// Hydrolysis alike — so the probes are unconditional and the items'
-/// [`DoctorItem::optional`] flag carries the scope.
+/// The probes are unconditional and the items' [`DoctorItem::optional`]
+/// flag carries the scope.
 async fn android_checks(host: &Host) -> Vec<DoctorItem> {
     let components = async {
         let sdk = toolchain_check(
@@ -1772,18 +1770,13 @@ mod tests {
     }
 
     /// Outside a project the host decides: Hydrolysis everywhere, Apple on
-    /// macOS, GTK4 on Linux, `WinUI` on Windows; the Kotlin Android backend
-    /// and Dew optional.
+    /// macOS, GTK4 on Linux, `WinUI` on Windows; Dew optional.
     #[test]
     fn scope_outside_a_project_follows_the_host() {
         let project = project_less();
         assert_eq!(
             project.scope(TargetBackend::Hydrolysis),
             BackendScope::HostDefault
-        );
-        assert_eq!(
-            project.scope(TargetBackend::Android),
-            BackendScope::Optional
         );
         assert_eq!(project.scope(TargetBackend::Dew), BackendScope::Optional);
         let host_only = |backend, on_host: bool| {
@@ -1799,18 +1792,13 @@ mod tests {
         host_only(TargetBackend::WinUi, cfg!(target_os = "windows"));
     }
 
-    /// The Android group's scope keys on the platform, whichever backend
-    /// serves it: no host targets Android natively — Hydrolysis merely
-    /// cross-compiles to it — so the platform and its toolchain items are
-    /// optional without a project and selected inside one.
+    /// The Android group's scope keys on the platform: no host targets
+    /// Android natively — Hydrolysis merely cross-compiles to it — so the
+    /// platform and its toolchain items are optional without a project and
+    /// selected inside one.
     #[test]
     fn android_scope_covers_whichever_backend_serves_it() {
         let project = project_less();
-        assert_eq!(
-            project.scope(TargetBackend::Android),
-            BackendScope::Optional,
-            "selecting the Kotlin backend still takes a project"
-        );
         assert_eq!(
             project.scope(TargetPlatform::Android),
             BackendScope::Optional,
@@ -1851,7 +1839,6 @@ mod tests {
         let project = project_with("");
         for backend in [
             TargetBackend::Apple,
-            TargetBackend::Android,
             TargetBackend::Gtk4,
             TargetBackend::Hydrolysis,
             TargetBackend::WinUi,
