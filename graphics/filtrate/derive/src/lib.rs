@@ -17,7 +17,15 @@
 //!   classification, which executors trust when pushing a filter down.
 //!   `cpu = <path>` names a CPU kernel,
 //!   `fn([f32; N], &WorkingSpace, &mut [[f32; 4]])`, and implements
-//!   `CpuKernel` with it.
+//!   `CpuKernel` with it. The kernel runs on the stage's operating space:
+//!   `apply_cpu` receives working-space pixels and, for a `space = srgb`
+//!   stage, the generated implementation converts into sRGB before the
+//!   kernel and back after it, the way a GPU executor brackets the stage
+//!   with conversion passes. The bracket calls `filtrate-core`'s
+//!   conversion, resolved like every other `filtrate_core` name the
+//!   generated code uses.
+//!   `linear = true` does not combine with `space = srgb`: bracketed by
+//!   conversions, the filter is not a linear map of the working space.
 //! - `spatial, shader = "<path>"` declares a spatial filter, with either
 //!   `footprint = <expr>` and/or `footprint_extent = <expr>` (the constant
 //!   pixel and extent components of a [`Footprint`](filtrate_core::Footprint);
@@ -200,6 +208,11 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         quote! { #core::OperatingSpace::Working }
     };
 
+    // A `cpu` kernel for an sRGB stage is bracketed by the working-space
+    // conversion in `filtrate-core`, so the kernel itself runs on its
+    // declared operating space, as the GPU executor's conversion passes
+    // bracket the stage.
+    let conversion = attrs.srgb && matches!(&attrs.kind, KindAttrs::Color { cpu: Some(_), .. });
     let stage = StageTokens {
         core: &core,
         name: ident.to_string(),
@@ -212,7 +225,9 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         quote! { impl #impl_generics #trait_path for #ident #ty_generics #where_clause }
     };
     let (kind, stage, kind_impls) = match &attrs.kind {
-        KindAttrs::Color { linear, cpu } => stage.color(*linear, cpu.as_ref(), &impl_for),
+        KindAttrs::Color { linear, cpu } => {
+            stage.color(*linear, cpu.as_ref(), conversion, &impl_for)
+        }
         KindAttrs::Spatial { footprint, shape } => {
             stage.spatial(footprint, shape.as_ref(), &impl_for)
         }
@@ -254,10 +269,12 @@ struct StageTokens<'a> {
 impl StageTokens<'_> {
     /// The kind, the `collect_stages` body, and the `ColorFilter`,
     /// `CpuKernel`, and `CpuFilter` implementations of a colour filter.
+    /// `conversion` wraps an sRGB kernel in the working-space conversion.
     fn color(
         &self,
         linear: bool,
         cpu: Option<&Path>,
+        conversion: bool,
         impl_for: &dyn Fn(TokenStream2) -> TokenStream2,
     ) -> (TokenStream2, TokenStream2, TokenStream2) {
         let Self {
@@ -280,6 +297,14 @@ impl StageTokens<'_> {
         let kernel = cpu.map(|path| {
             let kernel_header = impl_for(quote! { #core::CpuKernel });
             let filter_header = impl_for(quote! { #core::CpuFilter });
+            let (before, after) = if conversion {
+                (
+                    quote! { #core::space::to_srgb(pixels); },
+                    quote! { #core::space::from_srgb(pixels); },
+                )
+            } else {
+                (TokenStream2::new(), TokenStream2::new())
+            };
             quote! {
                 #kernel_header {
                     fn apply_cpu(
@@ -287,7 +312,9 @@ impl StageTokens<'_> {
                         space: &#core::WorkingSpace,
                         pixels: &mut [[f32; 4]],
                     ) {
+                        #before
                         #path(*params, space, pixels);
+                        #after
                     }
                 }
                 #filter_header {
@@ -548,6 +575,13 @@ impl RawAttrs {
                 cpu: self.cpu,
             }
         };
+        if self.srgb == Some(true) && matches!(kind, KindAttrs::Color { linear: true, .. }) {
+            return Err(syn::Error::new_spanned(
+                attr,
+                "`linear = true` does not combine with `space = srgb`: bracketed by \
+                 the working-space conversion, the filter is not a linear map",
+            ));
+        }
         Ok(FilterAttrs {
             kind,
             shader_path,

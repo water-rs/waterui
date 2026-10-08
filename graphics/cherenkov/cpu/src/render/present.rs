@@ -10,6 +10,8 @@
 //! `oracle/src/gamut.rs` is the `f64` reference of the same algorithm, and
 //! `oracle/src/tone.rs` the `f64` reference of the tone map.
 
+use filtrate_core::space::{srgb_encode, transform};
+
 /// Linear Display P3 → linear sRGB — the Bradford-adapted D65 matrix of
 /// `present.wgsl`, in `f32`.
 const P3_TO_LINEAR_SRGB: [[f32; 3]; 3] = [
@@ -17,23 +19,6 @@ const P3_TO_LINEAR_SRGB: [[f32; 3]; 3] = [
     [-0.042_056_95, 1.042_056_9, 0.0],
     [-0.019_637_55, -0.078_636_05, 1.098_273_6],
 ];
-
-fn mat3(m: &[[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
-    [
-        m[0][0].mul_add(v[0], m[0][1].mul_add(v[1], m[0][2] * v[2])),
-        m[1][0].mul_add(v[0], m[1][1].mul_add(v[1], m[1][2] * v[2])),
-        m[2][0].mul_add(v[0], m[2][1].mul_add(v[1], m[2][2] * v[2])),
-    ]
-}
-
-/// The sRGB transfer on an in-gamut channel.
-fn srgb_encode(x: f32) -> f32 {
-    if x <= 0.003_130_8 {
-        x * 12.92
-    } else {
-        1.055f32.mul_add(x.powf(1.0 / 2.4), -0.055)
-    }
-}
 
 /// Signed cube root — the `OKLab` LMS nonlinearity for possibly-negative
 /// components an out-of-gamut colour produces.
@@ -324,7 +309,7 @@ pub fn present_srgb8(headroom: f32, pixels: &[[f32; 4]]) -> Vec<u8> {
         } else {
             [0.0; 3]
         };
-        let mapped = gamut_map(mat3(&P3_TO_LINEAR_SRGB, straight));
+        let mapped = gamut_map(transform(&P3_TO_LINEAR_SRGB, straight));
         for c in mapped {
             out.push((srgb_encode(c) * a * 255.0).round() as u8);
         }

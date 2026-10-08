@@ -33,4 +33,12 @@ cargo = { level = "warn", priority = -1 }
 undocumented_unsafe_blocks = "warn"
 multiple_crate_versions = "allow"
 
+[features]
+default = ["std"]
+# `std` swaps `libm::powf` for the platform `f32::powf` in `space`'s
+# transfer functions — the same per-pixel cost curve as the WGSL; off,
+# the crate is `no_std` and `libm` supplies `powf`.
+std = []
+
 [dependencies]
+libm = "0.2"
