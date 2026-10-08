@@ -42,7 +42,6 @@ CLI keeps it consistent with the backends it builds.
 ```bash
 water create "My App"
 water create "My App" --bundle-id dev.example.myapp
-water create "My App" --backends apple,android,hydrolysis
 ```
 
 There are no modes or package types to choose: every project is entry-owning — WaterUI
@@ -255,7 +254,7 @@ the app crashed** — read the log tail rather than treating it as success.
 | Platform | Default backend | Also possible |
 |---|---|---|
 | macOS, iOS, tvOS, watchOS, visionOS (+ simulators) | `apple` (UIKit/AppKit) | `hydrolysis` |
-| Android | `android` (Android View) | `hydrolysis` |
+| Android | `hydrolysis` | `android` (Kotlin runtime, Android View) |
 | Linux | `gtk4` | `hydrolysis` |
 | Windows | `hydrolysis` | — |
 | Web | WASM + WebGPU | — |
