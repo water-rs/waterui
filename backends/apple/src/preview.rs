@@ -138,6 +138,12 @@ fn drive(
                 let env = &mut *env_ptr;
                 crate::embedding::install_services(env);
                 let env = compose(env.clone());
+                #[cfg(feature = "webview")]
+                let env = {
+                    let mut env = env;
+                    crate::components::webview::install_service(&mut env);
+                    env
+                };
                 executor_core::spawn_local(async move {
                     *outcome.borrow_mut() =
                         Some(render_and_write(&env, mtm, view, size, &output).await);
