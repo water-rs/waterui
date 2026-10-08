@@ -1471,7 +1471,9 @@ mod tests {
     #[test]
     fn the_launcher_manifest_enables_webview_system_for_a_webview_app() {
         smol::block_on(async {
-            let (temporary, project) = fixture_project("").await;
+            let (_machine, host) =
+                machine_with_staged_host(Path::new("staged"), &["gpu", "webview"]);
+            let (temporary, project) = fixture_project(&host, "").await;
             stage_webview_feature(&temporary, &project);
 
             let resolved = project
@@ -1507,12 +1509,9 @@ mod tests {
                 "android hydrolysis features: {features:?}"
             );
 
-            let (_machine, host) =
-                machine_with_staged_host(Path::new("staged"), &["gpu", "webview"]);
-            let host_project_dir =
-                require_painter_module(&host, &project, HydrolysisAndroidPainter::Gpu)
-                    .await
-                    .expect("host project dir");
+            let host_project_dir = require_painter_module(&project, HydrolysisAndroidPainter::Gpu)
+                .await
+                .expect("host project dir");
             let ctx = android_template_context(
                 &project,
                 HydrolysisAndroidPainter::Gpu,
@@ -1531,15 +1530,14 @@ mod tests {
     #[test]
     fn the_scaffold_composites_the_webview_module_for_a_webview_app() {
         smol::block_on(async {
-            let (temporary, project) = fixture_project("").await;
-            stage_webview_feature(&temporary, &project);
-
             let (_machine, host) =
                 machine_with_staged_host(Path::new("staged"), &["gpu", "webview"]);
-            let host_project_dir =
-                require_painter_module(&host, &project, HydrolysisAndroidPainter::Gpu)
-                    .await
-                    .expect("host project dir");
+            let (temporary, project) = fixture_project(&host, "").await;
+            stage_webview_feature(&temporary, &project);
+
+            let host_project_dir = require_painter_module(&project, HydrolysisAndroidPainter::Gpu)
+                .await
+                .expect("host project dir");
 
             let files = rendered_files(
                 rendered_android_outputs(
@@ -1568,13 +1566,12 @@ mod tests {
             // a Gradle failure downstream. A fresh fixture keeps the pinned
             // checkout from the first half out of the way — it is keyed by
             // project and fake-git only overlays into it.
-            let (temporary2, project2) = fixture_project("").await;
-            stage_webview_feature(&temporary2, &project2);
             let (_machine2, host) = machine_with_staged_host(Path::new("staged"), &["gpu"]);
-            let missing_dir =
-                require_painter_module(&host, &project2, HydrolysisAndroidPainter::Gpu)
-                    .await
-                    .expect("host project dir");
+            let (temporary2, project2) = fixture_project(&host, "").await;
+            stage_webview_feature(&temporary2, &project2);
+            let missing_dir = require_painter_module(&project2, HydrolysisAndroidPainter::Gpu)
+                .await
+                .expect("host project dir");
             let error =
                 rendered_android_outputs(&project2, HydrolysisAndroidPainter::Gpu, &missing_dir)
                     .await
@@ -1591,12 +1588,11 @@ mod tests {
     #[test]
     fn a_non_webview_app_composites_no_webview_module() {
         smol::block_on(async {
-            let (_temporary, project) = fixture_project("").await;
             let (_machine, host) = machine_with_staged_host(Path::new("staged"), &["gpu"]);
-            let host_project_dir =
-                require_painter_module(&host, &project, HydrolysisAndroidPainter::Gpu)
-                    .await
-                    .expect("host project dir");
+            let (_temporary, project) = fixture_project(&host, "").await;
+            let host_project_dir = require_painter_module(&project, HydrolysisAndroidPainter::Gpu)
+                .await
+                .expect("host project dir");
 
             let files = rendered_files(
                 rendered_android_outputs(
