@@ -269,7 +269,7 @@ pub(crate) fn mount_content(
     let placed = Rc::clone(&content);
     crate::inspector::install(root, env, keepalive);
     root.set_layout_handler(move |root| {
-        let frame = crate::native_layout::content_frame(placed.view(), root);
+        let frame = crate::native_layout::LayoutContext::of(root).content_frame(placed.view());
         #[expect(
             clippy::cast_possible_truncation,
             reason = "the layout contract uses f32 points"

@@ -564,14 +564,6 @@ pub fn render_table_parts(
             resolve_visible_column_window(&slot.column_widths, column_span.start, column_span.end);
     }
 
-    ctx.open_scope(
-        crate::renderer::mount::ScopeKey {
-            role: "viewport",
-            item: 0,
-        },
-        1.0,
-        surface_viewport,
-    );
     // Register before the cells flush: scroll-target dispatch walks the
     // frame's targets newest-first, so a scroll region inside a cell wins the
     // delta until it hits its own edge, where it falls through to the table.
@@ -581,8 +573,60 @@ pub fn render_table_parts(
         &handle,
     );
 
-    let origin_x = viewport.x0 - scroll_metrics.offset_x;
-    let origin_y = viewport.y0 - scroll_metrics.offset_y;
+    // The cells scroll as the widget's inner layer `ScrollOffset`, exactly as
+    // a `scroll` node's content does (decision 1): they paint and place at
+    // their resting positions in content space and the inner layer shifts
+    // them, so a scroll frame writes the one scroll-offset property instead of
+    // re-placing every visible cell. The viewport placement carries the same
+    // offset so the cells' hit regions and emitted bounds follow it without a
+    // re-record.
+    let offset = kurbo::Vec2::new(scroll_metrics.offset_x, scroll_metrics.offset_y);
+    {
+        let renderer = ctx.renderer_mut();
+        renderer.push_placement_scope(
+            crate::renderer::mount::ScopeDelta::RECORD_SPACE,
+            Some(surface_viewport),
+        );
+        let viewport_placement = renderer.current_placement();
+        viewport_placement.set_content_offset(-offset);
+        renderer.program().begin_inner(
+            surface_viewport,
+            offset,
+            std::rc::Rc::clone(&viewport_placement),
+        );
+        // The cells record at `viewport.origin + content`: the content's local
+        // transform is the frame's origin — the relation `ScrollNode`
+        // publishes through `content_ctx.local` — so the lazy window maps the
+        // content-space spans through it before the scroll shift.
+        let world = renderer.record_world(kurbo::Affine::translate(kurbo::Vec2::new(
+            viewport.x0,
+            viewport.y0,
+        )));
+        // The spans resolve against the post-rebind metrics — the surface can
+        // have shifted the range when the measured extent arrived.
+        let lazy_row_span = state
+            .borrow()
+            .surface
+            .visible_span(&scroll_metrics, ScrollAxis::Vertical);
+        let lazy_column_span = state
+            .borrow()
+            .surface
+            .visible_span(&scroll_metrics, ScrollAxis::Horizontal);
+        renderer.push_lazy_viewport(crate::renderer::LazyViewport {
+            bounds: kurbo::Rect::new(
+                lazy_column_span.start,
+                lazy_row_span.start,
+                lazy_column_span.end,
+                lazy_row_span.end,
+            ),
+            transform: world * kurbo::Affine::translate(-offset),
+        });
+    }
+
+    // The cell origin is the table's content corner in content space: column
+    // and row offsets accumulate from it unshifted.
+    let origin_x = viewport.x0;
+    let origin_y = viewport.y0;
     {
         let table_rect = kurbo::Rect::new(
             origin_x,
@@ -682,7 +726,12 @@ pub fn render_table_parts(
     // Evict content sub-views for cells no longer in the visible window.
     state.borrow().item_cache.borrow_mut().end_frame();
 
-    ctx.close_scope();
+    {
+        let renderer = ctx.renderer_mut();
+        renderer.pop_lazy_viewport("hydrolysis table");
+        renderer.program().end_inner();
+        renderer.pop_placement_scope();
+    }
 
     // The focused-field clearance runs after recording, over the retained
     // input targets (§7.1).

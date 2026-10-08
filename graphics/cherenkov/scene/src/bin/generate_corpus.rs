@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use cherenkov_scene::corpus;
 use cherenkov_scene::kurbo::{
-    Affine, BezPath, Ellipse, Line, Point, Rect, RoundedRect, RoundedRectRadii, Vec2,
+    Affine, BezPath, Circle, Ellipse, Line, Point, Rect, RoundedRect, RoundedRectRadii, Vec2,
 };
 use cherenkov_scene::{
     BackdropEffectSpec, BackdropFilter, BlendMode, Color, ColorSpace, Draw, Extend, FillRule,
@@ -6453,6 +6453,133 @@ fn run() -> Result<(), SceneError> {
             m.fill(
                 Shape::rect(44.0, 220.0, 96.0, 22.0),
                 solid(srgb(0.95, 0.45, 0.10)),
+            );
+        });
+    });
+
+    // Union field (#1787): the two members' clips stay apart — 8 px
+    // between them, under the k = 28 field's k/2 joining distance — so
+    // the smoothed field bridges the gap and both composites cover the
+    // bridge as one continuous shape, each weighted by ownership.
+    // Refraction reads the shared field: the displacement runs smoothly
+    // across the bridge instead of restarting at the member edge.
+    corpus.scene_setup("backdrop-union-bridge", 256, 256, white, |b| {
+        b.backdrop_union_group(
+            1,
+            vec![BackdropFilter::GaussianBlur { sigma: 6.0 }],
+            1.0,
+            1,
+            28.0,
+        );
+        let l = &mut b.root();
+        backdrop_background(l);
+        l.layer(|m| {
+            m.clip(Shape::RoundedRect(RoundedRect::new(
+                24.0, 72.0, 124.0, 184.0, 20.0,
+            )));
+            m.backdrop(1);
+            m.backdrop_effect(BackdropEffectSpec::Refraction {
+                depth: 12.0,
+                strength: 6.0,
+            });
+            m.fill(
+                Shape::rect(40.0, 96.0, 60.0, 40.0),
+                solid(srgba(1.0, 1.0, 1.0, 0.15)),
+            );
+        });
+        l.layer(|m| {
+            m.clip(Shape::RoundedRect(RoundedRect::new(
+                132.0, 72.0, 232.0, 184.0, 20.0,
+            )));
+            m.backdrop(1);
+            m.backdrop_effect(BackdropEffectSpec::Refraction {
+                depth: 12.0,
+                strength: 6.0,
+            });
+            m.fill(
+                Shape::rect(156.0, 120.0, 60.0, 40.0),
+                solid(srgba(1.0, 1.0, 1.0, 0.15)),
+            );
+        });
+    });
+
+    // Three members in a triangle, r = 44 at centre distances 96 — the
+    // pockets between them are 8 px wide and the k = 40 field closes
+    // them. `Level` reads the field's distance, so the pyramid level
+    // walks from the shared silhouette inward instead of per member.
+    corpus.scene_setup("backdrop-union-pocket", 256, 256, white, |b| {
+        b.backdrop_union_group(
+            1,
+            vec![BackdropFilter::GaussianBlur { sigma: 6.0 }],
+            1.0,
+            3,
+            40.0,
+        );
+        let l = &mut b.root();
+        backdrop_background(l);
+        for (cx, cy) in [(80.0, 94.0), (176.0, 94.0), (128.0, 177.0)] {
+            l.layer(|m| {
+                m.clip(Shape::Circle(Circle::new((cx, cy), 44.0)));
+                m.backdrop(1);
+                m.backdrop_effect(BackdropEffectSpec::Level {
+                    depth: 14.0,
+                    edge_level: 2.0,
+                    interior_level: 0.0,
+                });
+                m.fill(
+                    Shape::rect(cx - 24.0, cy - 12.0, 48.0, 24.0),
+                    solid(srgba(1.0, 1.0, 1.0, 0.15)),
+                );
+            });
+        }
+    });
+
+    // The outer extent: a lone member samples its backdrop in an 8-px
+    // band outside its own clip (group 1), and two union members carry
+    // 6-px bands whose outer silhouette is the union field's (group 2) —
+    // the band runs around the union field's outer edge, not each clip.
+    corpus.scene_setup("backdrop-outer-band", 256, 256, white, |b| {
+        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 6.0 }], 1.0, 1);
+        b.backdrop_union_group(
+            2,
+            vec![BackdropFilter::GaussianBlur { sigma: 6.0 }],
+            1.0,
+            1,
+            20.0,
+        );
+        let l = &mut b.root();
+        backdrop_background(l);
+        l.layer(|m| {
+            m.clip(Shape::RoundedRect(RoundedRect::new(
+                24.0, 24.0, 232.0, 96.0, 16.0,
+            )));
+            m.backdrop(1);
+            m.backdrop_outer(8.0);
+            m.fill(
+                Shape::rect(48.0, 48.0, 48.0, 24.0),
+                solid(srgba(1.0, 1.0, 1.0, 0.15)),
+            );
+        });
+        l.layer(|m| {
+            m.clip(Shape::RoundedRect(RoundedRect::new(
+                40.0, 140.0, 122.0, 232.0, 16.0,
+            )));
+            m.backdrop(2);
+            m.backdrop_outer(6.0);
+            m.fill(
+                Shape::rect(56.0, 164.0, 34.0, 32.0),
+                solid(srgba(1.0, 1.0, 1.0, 0.15)),
+            );
+        });
+        l.layer(|m| {
+            m.clip(Shape::RoundedRect(RoundedRect::new(
+                134.0, 140.0, 216.0, 232.0, 16.0,
+            )));
+            m.backdrop(2);
+            m.backdrop_outer(6.0);
+            m.fill(
+                Shape::rect(166.0, 164.0, 34.0, 32.0),
+                solid(srgba(1.0, 1.0, 1.0, 0.15)),
             );
         });
     });

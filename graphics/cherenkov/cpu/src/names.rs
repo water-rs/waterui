@@ -22,6 +22,12 @@ pub const BACKDROP_MEMBER_OUTSIDE_ANCHOR_CANVAS: &str = "backdrop-member-outside
 pub const BACKDROP_EFFECT_SDF_PATH: &str = "backdrop-effect-sdf-path";
 /// A backdrop effect shader — a GPU-only capability.
 pub const BACKDROP_SHADER: &str = "backdrop-shader";
+/// A backdrop union group with more members than the per-pixel fold can
+/// evaluate in registers.
+pub const BACKDROP_UNION_MEMBERS: &str = "backdrop-union-members";
+/// A union member whose clip's analytic shape is degenerate (a
+/// zero-radius circle or ellipse): no SDF exists to fold.
+pub const BACKDROP_UNION_DEGENERATE_MEMBER: &str = "backdrop-union-degenerate-member";
 /// A stroked glyph run.
 pub const GLYPH_STROKE: &str = "glyph-stroke";
 /// A colour font construct this backend cannot render: a bitmap-only

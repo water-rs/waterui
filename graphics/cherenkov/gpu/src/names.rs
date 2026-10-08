@@ -25,5 +25,11 @@ pub const GLYPH_STROKE: &str = "glyph-stroke";
 pub const BACKDROP_EFFECT_SDF_PATH: &str = "backdrop-effect-sdf-path";
 /// A colour font (COLR, CBDT or sbix).
 pub const COLOR_FONT: &str = "color-font";
+/// A backdrop union group with more members than the fragment-side fold
+/// can evaluate in registers.
+pub const BACKDROP_UNION_MEMBERS: &str = "backdrop-union-members";
+/// A union member whose clip's analytic shape is degenerate (a
+/// zero-radius circle or ellipse): no SDF exists to fold.
+pub const BACKDROP_UNION_DEGENERATE_MEMBER: &str = "backdrop-union-degenerate-member";
 /// A path clip whose rasterized mask does not fit the atlas.
 pub const PATH_CLIP_TOO_LARGE: &str = "path-clip-too-large";

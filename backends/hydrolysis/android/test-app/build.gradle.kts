@@ -25,6 +25,14 @@ android {
         }
     }
 
+    buildTypes {
+        release {
+            // Minified builds exercise the host library's consumer keep
+            // rules: the @CalledFromNative members must survive R8.
+            isMinifyEnabled = true
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_21
         targetCompatibility = JavaVersion.VERSION_21

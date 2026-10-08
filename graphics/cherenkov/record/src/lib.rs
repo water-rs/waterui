@@ -48,8 +48,8 @@ pub use crate::animation::{
     settled, spring_step,
 };
 pub use crate::backdrop::{
-    BackdropEffect, BackdropSample, BackdropShaderEffect, ColorMatrix, LevelRamp, LevelRampError,
-    Refraction, Rim,
+    BackdropEffect, BackdropOuter, BackdropOuterError, BackdropSample, BackdropShaderEffect,
+    ColorMatrix, LevelRamp, LevelRampError, Refraction, Rim,
 };
 pub use crate::color::{
     Color, ColorSpace, DisplayP3, DynColor, LinearDisplayP3, LinearSrgb, Rec2020, Srgb,
@@ -67,7 +67,8 @@ pub use crate::image::{
     Rgba16F,
 };
 pub use crate::ops::{
-    BackdropId, ChangeSet, ContentOp, Install, LayerId, LayerOp, Op, Prop, SurfaceId,
+    AnimationStart, BackdropId, ChangeSet, ContentOp, Install, LayerId, LayerOp, Op, Prop,
+    SurfaceId,
 };
 pub use crate::paint::{
     ColorStop, Extend, ImageId, ImagePattern, Interpolation, LinearGradient,

@@ -468,6 +468,8 @@ struct PrepLayer {
     backdrop_effect: Option<cherenkov::BackdropEffect>,
     /// The `Layer::id` a backdrop group's `anchor` can name, if any.
     id: Option<u32>,
+    /// The member's outer extent in device pixels (`0` for none).
+    backdrop_outer: cherenkov::BackdropOuter,
     /// The layer's projective pose.
     projection: Option<LayerProjection>,
     /// The layer's one-time motion.
@@ -846,6 +848,8 @@ fn cherenkov_features() -> Vec<Feature> {
         Feature::BackdropScale,
         Feature::BackdropLevels,
         Feature::BackdropAnchor,
+        Feature::BackdropUnion,
+        Feature::BackdropOuter,
         Feature::Projective,
         // `sRGB` maps to `SrgbEncoded`; `linear-p3` and `linear-srgb` are
         // both linear interpolation, which is the working space already.
@@ -1252,7 +1256,11 @@ fn prep_layer(
             .as_ref()
             .map(crate::convert::backdrop_effect)
             .transpose()?,
-        id: layer.id,
+        id: layer.id.map(std::num::NonZeroU32::get),
+        backdrop_outer: match layer.backdrop {
+            Some(group) => crate::convert::backdrop_outer(layer.backdrop_outer, group)?,
+            None => cherenkov::BackdropOuter::ZERO,
+        },
         // A `Motion::Paint` animates a content operand, not a layer
         // property — `paint_motion` binds it inside the content run.
         motion: match &layer.motion {
@@ -1445,7 +1453,12 @@ fn build_layer(
     prep: PrepLayer,
     content_layers: &mut Vec<ContentLayer>,
     filter_handles: &mut Vec<cherenkov::Filter>,
-    pending: &mut Vec<(usize, u32, Option<cherenkov::BackdropEffect>)>,
+    pending: &mut Vec<(
+        usize,
+        u32,
+        Option<cherenkov::BackdropEffect>,
+        cherenkov::BackdropOuter,
+    )>,
 ) {
     let owned = parent.map(|_| surface.layer());
     let layer = owned.as_ref().unwrap_or_else(|| surface.root());
@@ -1510,7 +1523,12 @@ fn build_layer(
     // names its anchor layer, so the group's handle exists only once
     // every layer is built. The index is this layer's `ContentLayer`.
     if let Some(gid) = prep.backdrop {
-        pending.push((content_layers.len() - 1, gid, prep.backdrop_effect));
+        pending.push((
+            content_layers.len() - 1,
+            gid,
+            prep.backdrop_effect,
+            prep.backdrop_outer,
+        ));
     }
 }
 
@@ -1592,22 +1610,21 @@ fn build_backdrop_groups(
 /// Points each pending member layer's backdrop at its group.
 fn apply_backdrop_members(
     surface: &Surface<Gpu>,
-    pending: Vec<(usize, u32, Option<cherenkov::BackdropEffect>)>,
+    pending: Vec<(
+        usize,
+        u32,
+        Option<cherenkov::BackdropEffect>,
+        cherenkov::BackdropOuter,
+    )>,
     content_layers: &[ContentLayer],
     backdrop_groups: &HashMap<u32, cherenkov::BackdropGroup>,
 ) {
     surface.update(|tx| {
-        for (index, gid, effect) in pending {
+        for (index, gid, effect, outer) in pending {
             let edit = &mut tx[content_layers[index].handle(surface)];
             let group = &backdrop_groups[&gid];
-            match effect {
-                None => {
-                    edit.backdrop(group.sample());
-                }
-                Some(effect) => {
-                    edit.backdrop(group.sample_with(effect));
-                }
-            }
+            let sample = effect.map_or_else(|| group.sample(), |effect| group.sample_with(effect));
+            edit.backdrop(sample.outer(outer));
         }
     });
 }

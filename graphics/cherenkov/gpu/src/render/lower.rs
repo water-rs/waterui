@@ -22,7 +22,7 @@ use crate::render::filter::FilterKey;
 use crate::render::glyph::{self, Atlas, FontData, MaskCell, PathEmit, PendingRaster, glyph_key};
 use crate::render::instance::{
     FLAG_BLEND_SRC, FLAG_HAS_CLIP, FLAG_HAS_INNER, FLAG_HAS_MASK, FLAG_MASK_TEXTURE, FLAG_TEX_SRGB,
-    Globals, Instance, KIND_FILL, KIND_GLYPH, KIND_REGION, KIND_SHADOW, KIND_SPAN,
+    FLAG_UNION, Globals, Instance, KIND_FILL, KIND_GLYPH, KIND_REGION, KIND_SHADOW, KIND_SPAN,
     KIND_STROKE_DIST, KIND_STROKE_OFFSET, PAINT_IMAGE, PAINT_PROJECTIVE, PAINT_SOLID,
     PAINT_TEXTURE, Shape, Stop, affine, blend_code,
 };
@@ -86,6 +86,9 @@ pub enum ShaderVariant {
     Shadow,
     /// Everything else: clips, masks, strokes, gradients, composites.
     Full,
+    /// `Full` plus the backdrop union field: the module carries the
+    /// member-record fold and its ownership weights.
+    Union,
 }
 
 /// A texture identity scoped to its resource owner.
@@ -384,12 +387,16 @@ fn aa_margin(transform: Affine) -> f64 {
     if lmin <= 1e-9 { 0.0 } else { 2.0 / lmin }
 }
 
-/// The specialised fragment pipeline `inst` requires: the uber-shader
-/// when it reads rare fields (clip, mask, inner, strokes, non-solid
-/// paint), the shadow kernel otherwise for shadows, and the trivial
-/// coverage path for solid fills, spans, and glyphs.
+/// The specialised fragment pipeline `inst` requires: the union variant
+/// for a backdrop member drawing against the group's shared field, the
+/// uber-shader when it reads rare fields (clip, mask, inner, strokes,
+/// non-solid paint), the shadow kernel otherwise for shadows, and the
+/// trivial coverage path for solid fills, spans, and glyphs.
 const fn variant_of(inst: &Instance) -> ShaderVariant {
     let flags = inst.meta[3] >> 24;
+    if (flags & FLAG_UNION) != 0 {
+        return ShaderVariant::Union;
+    }
     if (flags & (FLAG_HAS_CLIP | FLAG_HAS_MASK | FLAG_HAS_INNER)) != 0
         || inst.meta[1] != PAINT_SOLID
         || matches!(inst.meta[0], KIND_STROKE_OFFSET | KIND_STROKE_DIST)
@@ -1042,13 +1049,41 @@ struct BackdropPlan {
     /// The capture regions in capture texels, one per cluster; the
     /// single-region case is exactly the union rect of the old plan.
     regions: Vec<[u32; 4]>,
-    /// Each member layer's device-space clip bounds and region index.
-    members: FxHashMap<LayerId, (Rect, u32)>,
+    /// Each member layer's plan entry.
+    members: FxHashMap<LayerId, MemberEntry>,
+    /// The member paint-order counter: `ord` is the union field's fold
+    /// order and its earlier-member tie-break.
+    next_ord: u32,
     /// Each member's paint-order record for an anchored group's range
     /// check: the compositing canvas it paints in (`None` at the surface
     /// level), its paint-order index, and whether the group's anchor is
     /// one of its ancestors.
     pos: FxHashMap<LayerId, (Option<LayerId>, usize, bool)>,
+}
+
+/// One backdrop member's plan entry.
+#[derive(Clone, Copy)]
+struct MemberEntry {
+    /// The member's device-space clip bounds — its `size` input and the
+    /// draw bound's base.
+    bounds: Rect,
+    /// The composite's draw bound: `bounds` inflated by `r(n) + outer +
+    /// 1` for a union-field member, `bounds` unchanged otherwise.
+    draw: Rect,
+    /// The member's capture region index.
+    region: u32,
+    /// The member's index in the union record run (paint order).
+    ord: u32,
+    /// The member record run's base `Stop` index in `Frame::stops`;
+    /// `None` on a plain member.
+    union: Option<u32>,
+    /// The member's own clip record for the union field — `Some` when
+    /// its group has a union field or it draws an `outer` band.
+    record: Option<DeviceClip>,
+    /// The member's outer extent, device pixels.
+    outer: f32,
+    /// The member effect's sampling reach, device pixels.
+    reach: f32,
 }
 
 /// The plan for one anchor layer: the groups anchored at it and the
@@ -1099,6 +1134,18 @@ pub struct Lowering<'a> {
     mask_key: Option<u64>,
     /// The current clip's pending mask raster index, if any.
     mask_pending: Option<u32>,
+    /// The clip in force outside the innermost layer clip of the
+    /// current target — a member layer's ancestors in the enclosing
+    /// target, `None` inside a fresh scratch whose composite applies
+    /// those ancestors itself. The layer walk refreshes it to `clip`
+    /// at each layer boundary, `run_clipped`'s merge arms set it to the
+    /// pre-merge clip and its isolate arms to `None`, and every scratch
+    /// opening (`isolate_direct`, `silhouette_scope`) takes it to `None`
+    /// for the body's lifetime — all restoring it afterwards. A union
+    /// member's sample instance carries it, so the instance never names
+    /// a clip mask `mask_pending` does not hold and never multiplies an
+    /// ancestor coverage the composite applies again.
+    member_outer_clip: Option<DeviceClip>,
     /// Atlas writes and cache updates to commit, in lowering order.
     pub(crate) pending: Vec<PendingRaster>,
     /// Path identities admitted during this lowering, before atlas commit.
@@ -1184,6 +1231,7 @@ impl<'a> Lowering<'a> {
             clip: None,
             mask_key: None,
             mask_pending: None,
+            member_outer_clip: None,
             depth: 0,
             glyphs: 0,
             paths: 0,
@@ -1278,6 +1326,14 @@ impl<'a> Lowering<'a> {
             None,
             &mut ancestors,
         )?;
+        // Union-field members need the group's full membership before
+        // their footprints and bounds inflate: the union fold's `r(n)`
+        // depends on the member count. Rebuild each touched plan's
+        // footprint union and aproned rects and write the member record
+        // runs into `frame.stops`.
+        for plan in self.backdrops.values_mut() {
+            plan_union(plan, &mut self.frame.stops)?;
+        }
         let (width, height) = (f64::from(self.width), f64::from(self.height));
         for (gid, plan) in &mut self.backdrops {
             let s = f64::from(plan.spec.scale().get());
@@ -1321,7 +1377,7 @@ impl<'a> Lowering<'a> {
             if footprint.extent > 0.0 {
                 plan.regions = aproned(plan.union, a).into_iter().collect();
                 for (i, _) in &plan.aproned {
-                    plan.members.entry(*i).and_modify(|e| e.1 = 0);
+                    plan.members.entry(*i).and_modify(|e| e.region = 0);
                 }
                 continue;
             }
@@ -1344,7 +1400,7 @@ impl<'a> Lowering<'a> {
             for (r, c) in clusters.iter().enumerate() {
                 for &m in &c.members {
                     let id = rects[have[m as usize]].0;
-                    plan.members.entry(id).and_modify(|e| e.1 = r as u32);
+                    plan.members.entry(id).and_modify(|e| e.region = r as u32);
                 }
             }
         }
@@ -1465,6 +1521,32 @@ impl<'a> Lowering<'a> {
                 f64::from(reach.unwrap_or(0.0)),
             );
             let spec = groups[&g].spec;
+            let outer = sample.outer_extent().get();
+            // A union-field member's own clip is a group datum the
+            // composite reads back through the union records in `stops`:
+            // its analytic shape and inverse must exist — a path clip has
+            // none (`backdrop-effect-sdf-path`), and neither does a
+            // degenerate one (`backdrop-union-degenerate-member`).
+            let record = (spec.union_field().is_some() || outer > 0.0)
+                .then(|| {
+                    box_shape(clip)
+                        .map_err(|e| match e {
+                            RenderError::Unsupported(names::PATH) => {
+                                RenderError::Unsupported(names::BACKDROP_EFFECT_SDF_PATH)
+                            }
+                            other => other,
+                        })?
+                        .ok_or(RenderError::Unsupported(
+                            names::BACKDROP_UNION_DEGENERATE_MEMBER,
+                        ))
+                        .map(|boxed| DeviceClip {
+                            inv: (transform * boxed.extra).inverse(),
+                            shape: boxed.shape,
+                            aligned_rect: None,
+                            mask: None,
+                        })
+                })
+                .transpose()?;
             let plan = self.backdrops.entry(g).or_insert_with(|| BackdropPlan {
                 first: id,
                 spec,
@@ -1473,10 +1555,25 @@ impl<'a> Lowering<'a> {
                 regions: Vec::new(),
                 members: FxHashMap::default(),
                 pos: FxHashMap::default(),
+                next_ord: 0,
             });
             plan.union = plan.union.union(footprint);
             plan.aproned.push((id, footprint));
-            plan.members.insert(id, (member, 0));
+            let ord = plan.next_ord;
+            plan.next_ord += 1;
+            plan.members.insert(
+                id,
+                MemberEntry {
+                    bounds: member,
+                    draw: member,
+                    region: 0,
+                    ord,
+                    union: None,
+                    record,
+                    outer,
+                    reach: reach.unwrap_or(0.0),
+                },
+            );
             plan.pos.insert(
                 id,
                 (
@@ -2039,8 +2136,10 @@ impl<'a> Lowering<'a> {
     ) -> Result<(), RenderError> {
         self.depth += 1;
         let scratch = self.depth - 1;
-        let outer_clip = self.clip;
+        let (outer_clip, outer_member_clip) = (self.clip, self.member_outer_clip.take());
         self.set_clip(inner_clip);
+        // A member's union sample inside this scratch carries no
+        // ancestor clip — the composite applies them itself.
         // Nested isolations split this scratch's open pass into segments;
         // every segment at this depth needs the region.
         let passes_start = self.frame.passes.len();
@@ -2068,8 +2167,7 @@ impl<'a> Lowering<'a> {
         self.scratch_space[scratch] = storage;
         self.begin_pass(Target::Scratch(scratch), Some([0.0; 4]));
         let inst_start = self.frame.instances.len();
-        let saved_capture = self.capture_isolation;
-        let saved_target = self.semantic_target;
+        let (saved_capture, saved_target) = (self.capture_isolation, self.semantic_target);
         let saved_scratches = std::mem::take(&mut self.looked_through_scratches);
         self.capture_isolation = false;
         if semantic {
@@ -2084,8 +2182,9 @@ impl<'a> Lowering<'a> {
         self.finish_pass();
         self.depth -= 1;
         self.set_clip(outer_clip);
+        self.member_outer_clip = outer_member_clip;
         let inner_capture = self.capture_isolation;
-        self.capture_isolation = saved_capture || inner_capture;
+        self.capture_isolation |= saved_capture;
         self.semantic_target = saved_target;
         self.looked_through_scratches = saved_scratches;
         let outer_target = self.current_target();
@@ -2198,7 +2297,11 @@ impl<'a> Lowering<'a> {
                 "shadow capture exceeds addressable extent".into(),
             ));
         }
+        // The silhouette is a scratch too: clips in force at its open
+        // apply when its shadow composites, so the body's member outer
+        // clip is `None` for the same reason `isolate_direct`'s is.
         let saved = (self.transform, self.width, self.height, self.clip);
+        let saved_member_outer = self.member_outer_clip.take();
         self.finish_pass();
         self.depth += 1;
         let scratch = self.depth - 1;
@@ -2226,9 +2329,10 @@ impl<'a> Lowering<'a> {
             },
         ));
         (self.transform, self.width, self.height, self.clip) = saved;
+        self.member_outer_clip = saved_member_outer;
         self.depth -= 1;
         self.begin_pass(self.current_target(), None);
-        let mut instance = self.base(KIND_SPAN, affine(Affine::IDENTITY));
+        let mut instance = Self::base(KIND_SPAN, affine(Affine::IDENTITY), self.clip);
         instance.bounds = [0.0, 0.0, self.width, self.height];
         instance.meta[1] = PAINT_TEXTURE;
         instance.grad[0] = -(px as f32);
@@ -2560,6 +2664,17 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Whether `member` draws against group `gid`'s union field: its
+    /// sample's instance clip carries `member_outer_clip` — the clip in
+    /// force outside the member's own clip scope — so a non-destructive
+    /// member may emit it outside the member clip scope.
+    fn union_member(&self, gid: u64, member: LayerId) -> bool {
+        self.backdrops
+            .get(&gid)
+            .and_then(|plan| plan.members.get(&member))
+            .is_some_and(|entry| entry.union.is_some())
+    }
+
     /// Emits a member's composite of the shared capture as the
     /// bottom-most draw inside its clip, covering `member ∩ region`,
     /// at full strength — the member's own scope attenuates it at
@@ -2577,10 +2692,10 @@ impl<'a> Lowering<'a> {
         let Some(plan) = self.backdrops.get(&gid) else {
             return Ok(());
         };
-        let Some(&(member_bounds, r)) = plan.members.get(&member) else {
+        let Some(&entry) = plan.members.get(&member) else {
             return Ok(());
         };
-        let Some(&region) = plan.regions.get(r as usize) else {
+        let Some(&region) = plan.regions.get(entry.region as usize) else {
             return Ok(());
         };
         if region[2] == 0 || region[3] == 0 {
@@ -2596,7 +2711,7 @@ impl<'a> Lowering<'a> {
             region[3] as f32,
         );
         // The device rect the region's texels cover.
-        let bounds = member_bounds.intersect(Rect::new(
+        let bounds = entry.draw.intersect(Rect::new(
             f64::from(region[0]) / s,
             f64::from(region[1]) / s,
             f64::from(region[0] + region[2]) / s,
@@ -2605,7 +2720,17 @@ impl<'a> Lowering<'a> {
         if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
             return Ok(());
         }
-        let mut inst = self.base(KIND_SPAN, affine(Affine::IDENTITY));
+        let mut inst = if entry.union.is_some() {
+            // A union-field member's instance clip carries the clip in
+            // force outside the member's own clip scope: the member's
+            // own clip is in its union record, and the ownership-weighted
+            // field replaces its coverage term. The scope tracks it — a
+            // value captured earlier could name a mask `mask_pending`
+            // no longer holds.
+            Self::base(KIND_SPAN, affine(Affine::IDENTITY), self.member_outer_clip)
+        } else {
+            Self::base(KIND_SPAN, affine(Affine::IDENTITY), self.clip)
+        };
         inst.bounds = [
             f32_f64(bounds.x0),
             f32_f64(bounds.y0),
@@ -2618,7 +2743,7 @@ impl<'a> Lowering<'a> {
         inst.grad[0] = rx;
         inst.grad[1] = ry;
         let mut pipeline = PipelineKind::SrcOver;
-        if effect.is_some() || !scale.is_full() {
+        if effect.is_some() || !scale.is_full() || entry.union.is_some() {
             inst.meta[1] = super::instance::PAINT_BACKDROP;
             // `grad.z` maps device points onto the capture grid.
             inst.grad[2] = scale.get();
@@ -2630,8 +2755,8 @@ impl<'a> Lowering<'a> {
             inst.grad2 = [
                 rw,
                 rh,
-                f32_f64(member_bounds.width()),
-                f32_f64(member_bounds.height()),
+                f32_f64(entry.bounds.width()),
+                f32_f64(entry.bounds.height()),
             ];
             if effect.is_none() {
                 // A reduced capture is a bilinear sample at `p · s`, never
@@ -2639,10 +2764,21 @@ impl<'a> Lowering<'a> {
                 inst.meta[3] |= super::instance::EFFECT_SAMPLE;
             }
         }
+        if let Some(base) = entry.union {
+            // `uv.xy` bitcast carries the record run's base and the
+            // member's index; `params.x` the member's outer extent.
+            inst.meta[3] |= FLAG_UNION << 24;
+            inst.uv[0] = f32::from_bits(base);
+            inst.uv[1] = f32::from_bits(entry.ord);
+            inst.params[0] = entry.outer;
+        }
         if let Some(effect) = effect {
             // Refraction and shader effects evaluate the member clip's
-            // SDF; a path/mask clip has no analytic shape to read.
+            // SDF; a path/mask clip has no analytic shape to read. A
+            // union-field member reads its own clip from its record, so
+            // a mask on the *ancestors'* merged clip stays legal.
             if !matches!(effect, cherenkov::BackdropEffect::Color(_))
+                && entry.union.is_none()
                 && self.clip.is_none_or(|c| c.mask.is_some())
             {
                 return Err(RenderError::Unsupported(names::BACKDROP_EFFECT_SDF_PATH));
@@ -2661,7 +2797,7 @@ impl<'a> Lowering<'a> {
         }
         self.set_source(Some(Source::Backdrop {
             group: gid,
-            region: r,
+            region: entry.region,
         }));
         self.set_pipeline(pipeline);
         self.push_instance(&inst);
@@ -2697,7 +2833,7 @@ impl<'a> Lowering<'a> {
         // into a half-covered rim — wrong under a non-Normal blend.
         // Bounds are device-space for spans and the texture paint reads
         // `pixel`, so the affine is irrelevant.
-        let mut inst = self.base(KIND_SPAN, affine(Affine::IDENTITY));
+        let mut inst = Self::base(KIND_SPAN, affine(Affine::IDENTITY), self.clip);
         inst.bounds = [rx, ry, rx + rw, ry + rh];
         inst.meta[1] = PAINT_TEXTURE;
         inst.params[1] = opacity;
@@ -2733,10 +2869,13 @@ impl<'a> Lowering<'a> {
     }
 
     /// An instance of `kind` under the current transform and clip.
-    const fn base(&self, kind: u32, local_to_device: [f32; 8]) -> Instance {
+    /// A bare instance in `kind` with `clip` applied — callers that do
+    /// not pass `self.clip` override the clip state, like the union
+    /// member whose instance clip carries only the ancestors.
+    const fn base(kind: u32, local_to_device: [f32; 8], clip: Option<DeviceClip>) -> Instance {
         let mut inst = Instance::new(kind);
         inst.affine = local_to_device;
-        Self::apply_clip(&mut inst, self.clip);
+        Self::apply_clip(&mut inst, clip);
         inst
     }
 
@@ -2844,12 +2983,21 @@ impl<'a> Lowering<'a> {
                 if clip.mask.is_none()
                     && let (Some(cr), Some(dr)) = (cur.aligned_rect, clip.aligned_rect)
                 {
+                    // A member's sample inside keeps the pre-merge clip:
+                    // the merged clip's mask is `cur`'s, so its patch
+                    // still resolves through `mask_pending`.
+                    let outer = self.member_outer_clip.replace(cur);
                     self.set_clip(Some(merged_rect(cr, dr, cur.mask)));
-                    body(self, glyphs)?;
+                    let result = body(self, glyphs);
+                    self.member_outer_clip = outer;
                     self.set_clip(Some(cur));
-                    return Ok(());
+                    return result;
                 }
-                self.isolate(
+                // Inside the isolated clip scope the member's sample
+                // clip is `None`: the scratch's composite applies the
+                // outer clip itself.
+                let outer = self.member_outer_clip.take();
+                let result = self.isolate(
                     Some(clip),
                     None,
                     1.0,
@@ -2857,43 +3005,56 @@ impl<'a> Lowering<'a> {
                     cherenkov::BlendSpace::Linear,
                     body,
                     glyphs,
-                )
+                );
+                self.member_outer_clip = outer;
+                result
             }
             Some(cur) => match (clip.mask, cur.aligned_rect, clip.aligned_rect) {
                 // A new masked clip merges with an aligned rect clip (or
                 // attaches to the current clip's analytic shape).
                 (Some(mask), Some(cr), Some(dr)) => {
+                    let outer = self.member_outer_clip.replace(cur);
                     self.set_clip(Some(merged_rect(cr, dr, Some(mask))));
-                    body(self, glyphs)?;
+                    let result = body(self, glyphs);
+                    self.member_outer_clip = outer;
                     self.set_clip(Some(cur));
-                    Ok(())
+                    result
                 }
                 (Some(mask), _, _) => {
+                    let outer = self.member_outer_clip.replace(cur);
                     self.set_clip(Some(DeviceClip {
                         inv: cur.inv,
                         shape: cur.shape,
                         aligned_rect: cur.aligned_rect,
                         mask: Some(mask),
                     }));
-                    body(self, glyphs)?;
+                    let result = body(self, glyphs);
+                    self.member_outer_clip = outer;
                     self.set_clip(Some(cur));
-                    Ok(())
+                    result
                 }
                 (None, Some(cr), Some(dr)) => {
+                    let outer = self.member_outer_clip.replace(cur);
                     self.set_clip(Some(merged_rect(cr, dr, None)));
-                    body(self, glyphs)?;
+                    let result = body(self, glyphs);
+                    self.member_outer_clip = outer;
                     self.set_clip(Some(cur));
-                    Ok(())
+                    result
                 }
-                _ => self.isolate(
-                    Some(clip),
-                    None,
-                    1.0,
-                    cherenkov::BlendMode::Normal,
-                    cherenkov::BlendSpace::Linear,
-                    body,
-                    glyphs,
-                ),
+                _ => {
+                    let outer = self.member_outer_clip.take();
+                    let result = self.isolate(
+                        Some(clip),
+                        None,
+                        1.0,
+                        cherenkov::BlendMode::Normal,
+                        cherenkov::BlendSpace::Linear,
+                        body,
+                        glyphs,
+                    );
+                    self.member_outer_clip = outer;
+                    result
+                }
             },
         }
     }
@@ -2956,6 +3117,7 @@ impl<'a> Lowering<'a> {
                 self.emit_capture(gid, self.semantic_target);
             }
         }
+        let member_outer = std::mem::replace(&mut self.member_outer_clip, self.clip);
         let result = self.layer_body(
             id,
             node,
@@ -2968,6 +3130,7 @@ impl<'a> Lowering<'a> {
             blend,
             isolates,
         );
+        self.member_outer_clip = member_outer;
         self.transform = saved;
         self.animating = saved_animating;
         result
@@ -2987,6 +3150,10 @@ impl<'a> Lowering<'a> {
     #[expect(
         clippy::too_many_arguments,
         reason = "the layer walk's fixed context, not real complexity"
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the union-member scope cases each need their own few lines"
     )]
     fn layer_body(
         &mut self,
@@ -3038,11 +3205,25 @@ impl<'a> Lowering<'a> {
                     // in the enclosing level's linear storage.
                     cherenkov::BlendSpace::Linear,
                     |s, glyphs| {
+                        // As in the `None` arm below: a union member's
+                        // sample composites under the ancestors only, so
+                        // it emits before the member clip scope opens —
+                        // a member clip that isolates cannot clip its
+                        // bridge and band to the member's own shape.
+                        let union_member = node
+                            .backdrop
+                            .as_ref()
+                            .is_some_and(|sample| s.union_member(sample.group().raw(), id));
+                        if union_member && let Some(sample) = &node.backdrop {
+                            s.emit_backdrop_sample(sample.group().raw(), id, sample.effect())?;
+                        }
                         s.with_clip(
                             clip,
                             |s, glyphs| {
                                 s.transform = content_space;
-                                if let Some(sample) = &node.backdrop {
+                                if let Some(sample) = &node.backdrop
+                                    && !union_member
+                                {
                                     s.emit_backdrop_sample(
                                         sample.group().raw(),
                                         id,
@@ -3058,12 +3239,29 @@ impl<'a> Lowering<'a> {
                 )
             }
             None => {
+                // A union member's sample composites under the ancestors
+                // only — the ownership-weighted union field replaces its
+                // clip coverage — so a non-destructive member emits it
+                // before the member clip scope opens: a member clip that
+                // isolates (a masked ancestor clip it cannot merge, or a
+                // non-rect clip) cannot clip the bridge and band to the
+                // member's own shape. A destructive member's sample stays
+                // inside: its operator domain is the member clip.
+                let outside = node
+                    .backdrop
+                    .as_ref()
+                    .is_some_and(|sample| self.union_member(sample.group().raw(), id))
+                    && !is_destructive(blend);
+                if outside && let Some(sample) = &node.backdrop {
+                    self.emit_backdrop_sample(sample.group().raw(), id, sample.effect())?;
+                }
                 self.with_clip(
                     clip,
                     |s, glyphs| {
                         s.transform = content_space;
                         if let Some(sample) = &node.backdrop
                             && (node.filter.is_some() || !isolates)
+                            && !outside
                         {
                             // An opaque `Normal`-blended filtered member's
                             // sample — or one nothing isolates — lands in
@@ -3082,6 +3280,7 @@ impl<'a> Lowering<'a> {
                                 |s, glyphs| {
                                     if let Some(sample) = &node.backdrop
                                         && node.filter.is_none()
+                                        && !outside
                                     {
                                         // An unfiltered member's sample is
                                         // its canvas's bottom-most content.
@@ -3257,7 +3456,7 @@ impl<'a> Lowering<'a> {
                 open.backdrop_copy = Some([x0, y0, x1 - x0, y1 - y0]);
             }
         }
-        let mut inst = self.base(KIND_SPAN, affine(Affine::IDENTITY));
+        let mut inst = Self::base(KIND_SPAN, affine(Affine::IDENTITY), self.clip);
         inst.bounds = [x0 as f32, y0 as f32, x1 as f32, y1 as f32];
         inst.meta[1] = PAINT_PROJECTIVE;
         inst.params[1] = opacity;
@@ -3330,7 +3529,7 @@ impl<'a> Lowering<'a> {
                 );
                 if let Some(boxed) = box_shape(&ShapeData::Rect(bounds))? {
                     let transform = self.transform * boxed.extra;
-                    let mut inst = self.base(KIND_FILL, affine(transform));
+                    let mut inst = Self::base(KIND_FILL, affine(transform), self.clip);
                     let margin = self.margin(self.transform);
                     let b = boxed.bounds.inflate(margin, margin);
                     inst.bounds = [f32_f64(b.x0), f32_f64(b.y0), f32_f64(b.x1), f32_f64(b.y1)];
@@ -3834,7 +4033,7 @@ impl<'a> Lowering<'a> {
                 if b.width() <= 0.0 || b.height() <= 0.0 {
                     return Ok(());
                 }
-                let mut inst = self.base(*kind, affine(self.transform * *local));
+                let mut inst = Self::base(*kind, affine(self.transform * *local), self.clip);
                 inst.bounds = [f32_f64(b.x0), f32_f64(b.y0), f32_f64(b.x1), f32_f64(b.y1)];
                 inst.shape = *shape;
                 if let Some(inner) = inner {
@@ -3860,7 +4059,7 @@ impl<'a> Lowering<'a> {
             } => {
                 let margin = sigma_eff.mul_add(3.0, 1.0) + self.margin(self.transform * *ambient);
                 let b = bounds.inflate(margin, margin);
-                let mut inst = self.base(KIND_SHADOW, affine(self.transform * *local));
+                let mut inst = Self::base(KIND_SHADOW, affine(self.transform * *local), self.clip);
                 inst.bounds = [f32_f64(b.x0), f32_f64(b.y0), f32_f64(b.x1), f32_f64(b.y1)];
                 inst.shape = *shape;
                 inst.params[0] = f32_f64(*sigma_eff);
@@ -4030,7 +4229,7 @@ impl<'a> Lowering<'a> {
         let to_device = transform * boxed.extra;
         let margin = self.margin(transform);
         let bounds = boxed.bounds.inflate(margin, margin);
-        let mut inst = self.base(KIND_FILL, affine(to_device));
+        let mut inst = Self::base(KIND_FILL, affine(to_device), self.clip);
         inst.bounds = [
             f32_f64(bounds.x0),
             f32_f64(bounds.y0),
@@ -4323,7 +4522,7 @@ impl<'a> Lowering<'a> {
         let paint = shader_data
             .copied()
             .unwrap_or_else(|| self.resolved_paint(paint));
-        let mut template = self.base(KIND_SPAN, affine(self.transform));
+        let mut template = Self::base(KIND_SPAN, affine(self.transform), self.clip);
         template.color = paint.color;
         template.grad = paint.grad;
         template.grad2 = paint.grad2;
@@ -4582,7 +4781,7 @@ impl<'a> Lowering<'a> {
             self.transform,
         )?;
         for (entry, pending, rect) in entries {
-            let mut inst = self.base(KIND_GLYPH, affine(self.transform));
+            let mut inst = Self::base(KIND_GLYPH, affine(self.transform), self.clip);
             inst.grad = data.grad;
             inst.grad2 = data.grad2;
             inst.meta[1] = data.kind;
@@ -4644,7 +4843,7 @@ impl<'a> Lowering<'a> {
                 continue;
             }
             let mut inst = *template.get_or_insert_with(|| {
-                let mut inst = self.base(KIND_GLYPH, affine(self.transform));
+                let mut inst = Self::base(KIND_GLYPH, affine(self.transform), self.clip);
                 let data = self.resolved_paint(paint);
                 inst.color = data.color;
                 inst.grad = data.grad;
@@ -4721,6 +4920,125 @@ fn effect_reach(effect: &cherenkov::BackdropEffect) -> Result<f32, RenderError> 
             }
         }
     }
+}
+
+/// Pushes a union member's record into `stops` — exactly two `Stop`s:
+/// `(clip_inv[0], clip_inv[1], shape_a, shape_b)` packed across the
+/// `color`/`offset`/`pad` lanes — the member's own device-to-clip
+/// inverse and centred shape the fragment reads back through
+/// `union_member_dist`.
+fn push_union_record(stops: &mut Vec<Stop>, record: DeviceClip) {
+    let inv = affine(record.inv);
+    stops.push(Stop {
+        color: [inv[0], inv[1], inv[2], inv[3]],
+        offset: inv[4],
+        pad: [inv[5], inv[6], inv[7]],
+    });
+    stops.push(Stop {
+        color: [
+            record.shape.half[0],
+            record.shape.half[1],
+            record.shape.aspect,
+            record.shape.exponent,
+        ],
+        offset: record.shape.radii[0],
+        pad: [
+            record.shape.radii[1],
+            record.shape.radii[2],
+            record.shape.radii[3],
+        ],
+    });
+}
+
+/// Inflates a backdrop plan's members for the union field and writes
+/// the group's member records: a union-field member's draw bounds grow
+/// by `r(n) + outer + 1.5px` and its aproned footprint by `reach + r(n) +
+/// outer + 1.5px`, and the capture union rebuilds from the footprints. A
+/// member with no union behind it and no `outer` extent is not
+/// inflated. A union group's members then share one `[k, n, 0, 0]`-headed
+/// run of clip records in `stops` (one header `Stop`, two per member);
+/// a lone `outer` member of a non-union group draws against its own
+/// field through a one-member run (`k = 0`).
+fn plan_union(plan: &mut BackdropPlan, stops: &mut Vec<Stop>) -> Result<(), RenderError> {
+    let union_spec = plan.spec.union_field();
+    let union_k = union_spec.map(cherenkov::BackdropUnion::get);
+    let n = plan.aproned.len();
+    let has_outer = plan.members.values().any(|m| m.outer > 0.0);
+    if union_spec.is_none() && !has_outer {
+        return Ok(());
+    }
+    if union_spec.is_some() && n > cherenkov::BackdropUnion::MAX_MEMBERS as usize {
+        return Err(RenderError::Unsupported(names::BACKDROP_UNION_MEMBERS));
+    }
+    let r = union_spec.map_or(0.0, |u| u.inflation(n));
+    let mut union = Rect::new(
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    );
+    for (id, fp) in &mut plan.aproned {
+        let entry = plan
+            .members
+            .get_mut(id)
+            .expect("an aproned member is planned");
+        // Union-field members inflate by `r(n) + outer + 1.5`; members
+        // with no field behind them are not inflated at all.
+        let pad = if union_spec.is_some() || entry.outer > 0.0 {
+            r + f64::from(entry.outer) + 1.5
+        } else {
+            0.0
+        };
+        entry.draw = entry.bounds.inflate(pad, pad);
+        *fp = entry
+            .bounds
+            .inflate(f64::from(entry.reach) + pad, f64::from(entry.reach) + pad);
+        union = union.union(*fp);
+    }
+    plan.union = union;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        reason = "member runs stay below u32 and member counts below 2^24"
+    )]
+    if let Some(k) = union_k {
+        let base = stops.len() as u32;
+        stops.push(Stop {
+            color: [k, n as f32, 0.0, 0.0],
+            offset: 0.0,
+            pad: [0.0; 3],
+        });
+        for (id, _) in &plan.aproned {
+            let entry = plan
+                .members
+                .get_mut(id)
+                .expect("an aproned member is planned");
+            push_union_record(stops, entry.record.expect("union members carry records"));
+            entry.union = Some(base);
+        }
+    } else {
+        // A lone `outer` member of a non-union group still draws
+        // against its own field: a one-member record run, pushed in
+        // paint order like the union branch above.
+        for i in 0..plan.aproned.len() {
+            let id = plan.aproned[i].0;
+            let entry = plan
+                .members
+                .get_mut(&id)
+                .expect("an aproned member is planned");
+            if entry.outer > 0.0 {
+                let base = stops.len() as u32;
+                stops.push(Stop {
+                    color: [0.0, 1.0, 0.0, 0.0],
+                    offset: 0.0,
+                    pad: [0.0; 3],
+                });
+                push_union_record(stops, entry.record.expect("outer members carry records"));
+                entry.union = Some(base);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Pushes a member effect's parameters into `stops` and returns its
@@ -5609,6 +5927,7 @@ mod tests {
                     path: Vec::new(),
                 })
                 .collect(),
+            unplaced: Vec::new(),
             rejected: Vec::new(),
             trailing,
         }

@@ -34,10 +34,13 @@ impl From<CliInspectorPlatform> for InspectorPlatform {
 /// Arguments for `water inspector`.
 #[derive(ClapArgs, Debug)]
 pub struct Args {
-    /// Runtime app debug endpoint (`host:port`).
+    /// Runtime app debug endpoint (`host:port`), dialled from the device the
+    /// inspector runs on.
     ///
     /// Omit it to attach to a debug build running on this machine, which
-    /// publishes where it is listening.
+    /// publishes where it is listening. `--platform android` requires it: the
+    /// inspector runs on the device, so an app on that same device is
+    /// `127.0.0.1:<port>`.
     #[arg(long)]
     target: Option<String>,
 
@@ -56,6 +59,9 @@ pub struct Args {
 
 /// Run the inspector command.
 pub async fn run(shell: &Shell, args: Args) -> Result<()> {
+    let platform = InspectorPlatform::from(args.platform);
+    require_device_endpoint(platform, args.target.as_deref(), args.token.as_deref())?;
+
     let project_path = crate::project_path::canonicalize(&args.path)?;
 
     header!(shell, "Inspector");
@@ -80,7 +86,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
 
     let mut session = launch_inspector_session(
         &project_path,
-        args.platform.into(),
+        platform,
         InspectorLaunchOptions {
             target_addr: target.to_string(),
             token: token.clone(),
@@ -96,6 +102,25 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         shell,
         "Ensure the target app runs with WATERUI_INSPECTOR_TOKEN={token} and matching inspector endpoint."
     );
+    Ok(())
+}
+
+/// An Android inspector needs the endpoint and token spelled out.
+///
+/// Discovery lists the endpoints advertised on this computer, and the device
+/// the inspector runs on cannot dial their loopback addresses, so there is
+/// nothing to discover for it.
+fn require_device_endpoint(
+    platform: InspectorPlatform,
+    target: Option<&str>,
+    token: Option<&str>,
+) -> Result<()> {
+    if platform == InspectorPlatform::Android && (target.is_none() || token.is_none()) {
+        eyre::bail!(
+            "`--platform android` needs --target <addr:port> (the endpoint as the device sees it; \
+             127.0.0.1:<port> for an app on the same device) and --token <token>"
+        );
+    }
     Ok(())
 }
 
@@ -166,4 +191,40 @@ fn token_for(addr: SocketAddr) -> Result<String> {
             },
             Ok,
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use waterui_cli::inspector::InspectorPlatform;
+
+    use super::require_device_endpoint;
+
+    const ANDROID_ERROR: &str = "`--platform android` needs --target <addr:port> (the endpoint as \
+        the device sees it; 127.0.0.1:<port> for an app on the same device) and --token <token>";
+
+    #[test]
+    fn android_requires_both_the_target_and_the_token() {
+        for (target, token) in [
+            (None, None),
+            (Some("127.0.0.1:47123"), None),
+            (None, Some("token")),
+        ] {
+            let error = require_device_endpoint(InspectorPlatform::Android, target, token)
+                .expect_err("an Android inspector cannot discover its endpoint");
+            assert_eq!(error.to_string(), ANDROID_ERROR);
+        }
+        require_device_endpoint(
+            InspectorPlatform::Android,
+            Some("127.0.0.1:47123"),
+            Some("token"),
+        )
+        .expect("both flags given");
+    }
+
+    #[test]
+    fn desktop_platforms_may_discover_their_endpoint() {
+        for platform in [InspectorPlatform::Macos, InspectorPlatform::IosSimulator] {
+            require_device_endpoint(platform, None, None).expect("discovery is available");
+        }
+    }
 }

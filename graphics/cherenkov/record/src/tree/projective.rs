@@ -92,6 +92,7 @@ mod tests {
         Prop {
             target,
             animation: None,
+            start: None,
         }
     }
 
@@ -155,6 +156,7 @@ mod tests {
             Prop {
                 target: Vec2::new(0.0, 2.0 * PI),
                 animation: Some(Curve::linear(Duration::from_secs(1)).into()),
+                start: None,
             },
         ));
         let stamp = tree.content_stamp(root);

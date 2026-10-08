@@ -84,7 +84,7 @@ pub struct Layer {
     /// An optional identifier a [`crate::BackdropGroup::anchor`] names:
     /// the group's capture is taken beneath the layer carrying it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub id: Option<u32>,
+    pub id: Option<std::num::NonZeroU32>,
     /// The id of the [`crate::BackdropGroup`] this layer samples, if any.
     /// A member layer must have a `clip`; the group's capture runs through
     /// the group's filters and is drawn as the bottom-most content inside
@@ -100,6 +100,13 @@ pub struct Layer {
     /// `None` is the plain bilinear sample.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backdrop_effect: Option<BackdropEffectSpec>,
+    /// How far the member's own field extends its backdrop composite past
+    /// the clip edge, in device pixels: the composite covers where the
+    /// field is below `backdrop_outer` — a band `backdrop_outer` wide
+    /// beyond the clip, antialiased from the field. `0` (the default)
+    /// keeps the clip's coverage. Only meaningful with `backdrop`.
+    #[serde(default, skip_serializing_if = "f64_is_zero")]
+    pub backdrop_outer: f64,
     /// The layer's scroll offset: content and children are translated by
     /// `-scroll_offset` inside the layer's clip; `transform` is untouched.
     /// Zero (the default) draws them untranslated.
@@ -416,6 +423,7 @@ impl Default for Layer {
             backdrop: None,
             filter: None,
             backdrop_effect: None,
+            backdrop_outer: 0.0,
             scroll_offset: Vec2::ZERO,
             projection: None,
             motion: None,

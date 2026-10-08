@@ -12,7 +12,7 @@
 //! [`check`] act on the answer.
 //!
 //! The passive check is a separate surface: [`passive_update_notice`] runs at
-//! most once per [`PASSIVE_CHECK_INTERVAL`], records the attempt in the CLI's
+//! most once per `PASSIVE_CHECK_INTERVAL`, records the attempt in the CLI's
 //! own state directory (`~/.water/config.toml`), and is silent on failure.
 
 use std::{
@@ -258,7 +258,7 @@ pub fn cli_update_command(fallback: &str) -> String {
 
 /// The passive version check behind every non-hot-path command.
 ///
-/// At most one release query per [`PASSIVE_CHECK_INTERVAL`], recorded in the
+/// At most one release query per `PASSIVE_CHECK_INTERVAL`, recorded in the
 /// CLI's state directory, silent on any failure. Returns the notice to print
 /// when a newer release exists, `None` otherwise.
 #[must_use]

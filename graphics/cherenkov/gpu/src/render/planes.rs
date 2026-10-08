@@ -16,6 +16,12 @@
 //! made before rendering, never a fallback after a failure: a platform that
 //! rejects a plane the plan chose reports an error naming the cause.
 //!
+//! Content the engine cannot composite — a hosted system layer — is a
+//! *mandatory* candidate ([`Source::mandatory`]): it is judged by the
+//! mandatory-plane rule, receives the budget first, and a mandatory
+//! candidate that fails is not kept in the engine but listed in
+//! [`Plan::unplaced`], which the renderer turns into a render error.
+//!
 //! A platform implements [`SystemPlanes`] and realizes the ordered stack of
 //! engine parts and promoted planes a [`Composition`] describes.
 
@@ -41,14 +47,35 @@ pub struct Candidate {
     pub size: (u32, u32),
     /// Buffer texels to layer content coordinates.
     pub raster: Affine,
-    /// External frames receive the budget before recorded captures.
+    /// What the plane shows, which orders the budget: mandatory content
+    /// first, then external frames, then recorded captures.
     pub source: Source,
 }
 
+/// What a plane shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
+    /// A system layer the host supplies (`cherenkov::HostedLayers`): the
+    /// engine has no pixels of it, so it is shown on a plane or not at all.
+    Hosted,
+    /// An external frame the system layer shows itself.
     Frame,
+    /// An immutable capture of a recorded layer.
     Recorded,
+}
+
+impl Source {
+    /// The budget order: mandatory content, then frames, then captures.
+    const BUDGET_ORDER: [Self; 3] = [Self::Hosted, Self::Frame, Self::Recorded];
+
+    /// Whether the content can only be shown on a plane: it is judged by
+    /// the mandatory-plane rule, is never pending a realization, and a
+    /// failed verdict is an error ([`Plan::unplaced`]) rather than
+    /// composition in the engine.
+    #[must_use]
+    pub const fn mandatory(self) -> bool {
+        matches!(self, Self::Hosted)
+    }
 }
 
 impl From<(u32, u32)> for Candidate {
@@ -76,6 +103,16 @@ pub trait Compositor {
     /// own space, exactly.
     fn expresses_clip(clip: &ShapeData) -> bool;
 
+    /// Whether a hosted system layer — a layer the host draws, which has no
+    /// buffer of the engine's — carries `transform`, a local matrix on its
+    /// path, exactly.
+    fn hosts_transform(transform: Affine) -> bool {
+        Self::expresses_transform(transform)
+    }
+
+    /// Whether a hosted system layer carries an opacity below one.
+    const HOSTS_OPACITY: bool;
+
     /// Whether a system layer shows `frame` itself, with the colour the
     /// frame declares: its planes are a buffer the system compositor can
     /// scan out. Only such frames are candidates.
@@ -86,7 +123,7 @@ pub trait Compositor {
 ///
 /// Each cause names the rule it failed. Opportunistic promotion keeps such
 /// a layer in the engine; content that can only be shown on a plane turns
-/// the same cause into a render error.
+/// the same cause into a render error ([`Plan::unplaced`]).
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Ineligible {
     /// An ancestor composites its subtree through an offscreen (opacity
@@ -122,6 +159,10 @@ pub enum Ineligible {
     /// to the group, which a plane and the part above it cannot share.
     #[error("its opacity applies to a group of child layers")]
     GroupOpacity,
+    /// Its opacity is below one, and the system compositor cannot fade a
+    /// hosted layer.
+    #[error("its opacity is below one, which the system compositor cannot apply to a hosted layer")]
+    Opacity,
     /// A transform on the path to the layer is not expressible by the
     /// system layer.
     #[error("layer {0:?}'s transform is not expressible by the system compositor")]
@@ -208,6 +249,10 @@ pub struct Plan {
     pub planes: Vec<Placement>,
     /// The candidates kept in the engine, in paint order, with their cause.
     pub rejected: Vec<(LayerId, Ineligible)>,
+    /// The mandatory candidates that cannot be placed on a plane, in paint
+    /// order, with their cause. Nothing shows them: a plan with any is a
+    /// render error, never presented.
+    pub unplaced: Vec<(LayerId, Ineligible)>,
     /// Whether any layer is painted after the last promoted one, so an
     /// engine part exists above it.
     pub trailing: bool,
@@ -311,6 +356,19 @@ fn paint_order<'a>(
     order
 }
 
+/// The first layer in paint order the tree draws that `hit` selects — on a
+/// surface without planes, the hosted layer that fails its render.
+pub fn first_in_paint_order(tree: &SurfaceTree, hit: impl Fn(LayerId) -> bool) -> Option<LayerId> {
+    let mut stack = vec![tree.root()];
+    while let Some(id) = stack.pop() {
+        if hit(id) {
+            return Some(id);
+        }
+        stack.extend(tree.layer(id).children.iter().rev());
+    }
+    None
+}
+
 /// Every visit's content-space transform and device-space clip bounds —
 /// the footprint a "layer above" check intersects a candidate's rect
 /// against.
@@ -387,9 +445,10 @@ fn suffixes(
 
 /// Each offered candidate's verdict in paint order as its `order`
 /// index — `Err(Budget)` once `C::BUDGET` promotions are taken. The
-/// offered set is `candidates` intersected with `ready`: a candidate
-/// whose realization is still pending is absent from the verdicts
-/// entirely, not rejected.
+/// offered set is `candidates` intersected with `ready`, plus every
+/// mandatory candidate: a candidate whose realization is still pending is
+/// absent from the verdicts entirely, not rejected, and mandatory content
+/// is never pending.
 fn verdicts<'a, C: Compositor>(
     tree: &'a SurfaceTree,
     order: &'a [Visit],
@@ -403,7 +462,7 @@ fn verdicts<'a, C: Compositor>(
     decisions.clear();
     decisions.extend(order.iter().enumerate().filter_map(move |(i, visit)| {
         let &size = candidates.get(&visit.id)?;
-        if !ready.contains(&visit.id) {
+        if !size.source.mandatory() && !ready.contains(&visit.id) {
             return None;
         }
         let verdict = judge::<C>(
@@ -418,7 +477,7 @@ fn verdicts<'a, C: Compositor>(
         Some((i, verdict))
     }));
     let mut promoted = 0;
-    for source in [Source::Frame, Source::Recorded] {
+    for source in Source::BUDGET_ORDER {
         for (i, verdict) in decisions.iter_mut() {
             if candidates[&order[*i].id].source == source && verdict.is_ok() {
                 if promoted < C::BUDGET {
@@ -436,8 +495,9 @@ fn verdicts<'a, C: Compositor>(
 /// reports `ready` are promoted this frame on a surface realized by
 /// compositor `C`.
 ///
-/// Eligible external frames receive the budget before recorded captures;
-/// ties within each class use paint order. Output remains in paint order.
+/// Eligible mandatory candidates receive the budget first, then external
+/// frames, then recorded captures; ties within each class use paint order.
+/// Output remains in paint order.
 #[must_use]
 pub fn plan<C: Compositor>(
     tree: &SurfaceTree,
@@ -464,6 +524,7 @@ pub fn plan_with<C: Compositor>(
     plan: &mut Plan,
 ) {
     plan.rejected.clear();
+    plan.unplaced.clear();
     if candidates.is_empty() {
         plan.planes.clear();
         plan.trailing = false;
@@ -508,6 +569,9 @@ pub fn plan_with<C: Compositor>(
                 }
                 placement(tree, order, i, size, &mut plan.planes[promoted]);
                 promoted += 1;
+            }
+            Err(cause) if candidates[&order[i].id].source.mandatory() => {
+                plan.unplaced.push((order[i].id, cause));
             }
             Err(cause) => plan.rejected.push((order[i].id, cause)),
         }
@@ -558,6 +622,9 @@ fn same_plan<C: Compositor>(
     if candidates.is_empty() {
         return *committed == Plan::default();
     }
+    if !committed.unplaced.is_empty() {
+        return false;
+    }
     let PlanScratch {
         order,
         pool,
@@ -592,6 +659,9 @@ fn same_plan<C: Compositor>(
                 }
                 last = Some(i);
             }
+            // A plan with unplaced content is never presented, so it is
+            // never the committed one.
+            Err(_) if candidates[&order[i].id].source.mandatory() => return false,
             Err(cause) => {
                 if rejected.next() != Some(&(order[i].id, cause)) {
                     return false;
@@ -605,7 +675,9 @@ fn same_plan<C: Compositor>(
 }
 
 /// The eligibility rules for the candidate at `order[i]`, in a fixed order
-/// so the named cause is deterministic.
+/// so the named cause is deterministic: the mandatory-plane rule every
+/// candidate must pass, then — for content the engine can composite
+/// instead — the rules that keep promotion invisible.
 fn judge<C: Compositor>(
     tree: &SurfaceTree,
     order: &[Visit],
@@ -614,6 +686,25 @@ fn judge<C: Compositor>(
     backdrop_above: Option<LayerId>,
     blend_above: Option<LayerId>,
     device: &[VisitDevice],
+) -> Result<(), Ineligible> {
+    mandatory_plane::<C>(tree, order, i, size.source, backdrop_above, blend_above)?;
+    if size.source.mandatory() {
+        return Ok(());
+    }
+    invisible::<C>(tree, order, i, size, device)
+}
+
+/// The mandatory-plane rule: whether the system compositor can show the
+/// candidate at `order[i]` where the engine would, with nothing the engine
+/// composites needing its pixels. Content that is shown only on a plane
+/// fails with exactly these causes.
+fn mandatory_plane<C: Compositor>(
+    tree: &SurfaceTree,
+    order: &[Visit],
+    i: usize,
+    source: Source,
+    backdrop_above: Option<LayerId>,
+    blend_above: Option<LayerId>,
 ) -> Result<(), Ineligible> {
     let visit = &order[i];
     let node = tree.layer(visit.id);
@@ -642,34 +733,58 @@ fn judge<C: Compositor>(
     if node.opacity < 1.0 && !node.children.is_empty() {
         return Err(Ineligible::GroupOpacity);
     }
-    // The engine merges nested clips in place only while at most one of
-    // them is not a device-aligned rectangle (`Lowering::run_clipped`).
-    let mut shaped_clip = false;
-    let mut space = Affine::IDENTITY;
-    for id in visit
-        .ancestors
-        .iter()
-        .map(|&a| order[a].id)
-        .chain([visit.id])
-    {
+    let hosted = source == Source::Hosted;
+    if hosted && node.opacity < 1.0 && !C::HOSTS_OPACITY {
+        return Err(Ineligible::Opacity);
+    }
+    for id in path(order, visit) {
         let level = tree.layer(id);
         // A projective level's placement is its pose, not `transform` —
         // a plane's affine levels cannot carry it. An isolating ancestor
         // was already named `Isolated`, so this can only be the candidate.
-        if tree.projective_pose(id).is_some() || !C::expresses_transform(level.transform) {
+        let expressed = if hosted {
+            C::hosts_transform(level.transform)
+        } else {
+            C::expresses_transform(level.transform)
+        };
+        if tree.projective_pose(id).is_some() || !expressed {
             return Err(Ineligible::Transform(id));
         }
+        if level
+            .clip
+            .as_ref()
+            .is_some_and(|clip| !C::expresses_clip(clip))
+        {
+            return Err(Ineligible::Clip(id));
+        }
+    }
+    Ok(())
+}
+
+/// The rules that keep an opportunistic promotion invisible: the engine
+/// would composite the candidate at `order[i]` at the surface level, and
+/// nothing painted above it blends differently on the system compositor.
+fn invisible<C: Compositor>(
+    tree: &SurfaceTree,
+    order: &[Visit],
+    i: usize,
+    size: Candidate,
+    device: &[VisitDevice],
+) -> Result<(), Ineligible> {
+    // The engine merges nested clips in place only while at most one of
+    // them is not a device-aligned rectangle (`Lowering::run_clipped`).
+    let mut shaped_clip = false;
+    let mut space = Affine::IDENTITY;
+    for id in path(order, &order[i]) {
+        let level = tree.layer(id);
         let own = space * level.transform;
-        if let Some(clip) = &level.clip {
-            if !C::expresses_clip(clip) {
-                return Err(Ineligible::Clip(id));
+        if let Some(clip) = &level.clip
+            && !(matches!(clip, ShapeData::Rect(_)) && axis_aligned(own))
+        {
+            if shaped_clip {
+                return Err(Ineligible::NestedClip(id));
             }
-            if !(matches!(clip, ShapeData::Rect(_)) && axis_aligned(own)) {
-                if shaped_clip {
-                    return Err(Ineligible::NestedClip(id));
-                }
-                shaped_clip = true;
-            }
+            shaped_clip = true;
         }
         space = own * Affine::translate(-level.scroll_offset);
     }
@@ -695,6 +810,15 @@ fn judge<C: Compositor>(
         }
     }
     Ok(())
+}
+
+/// The layers from the root to `visit`, root first.
+fn path<'a>(order: &'a [Visit], visit: &'a Visit) -> impl Iterator<Item = LayerId> + 'a {
+    visit
+        .ancestors
+        .iter()
+        .map(|&a| order[a].id)
+        .chain([visit.id])
 }
 
 fn placement(
@@ -781,6 +905,64 @@ pub enum PlaneContent<'a> {
         /// Bumped every time a new frame is installed on the layer.
         generation: u64,
     },
+    /// A system layer the host supplies and draws: the realization places
+    /// the object itself. This is the only place a hosted object reaches —
+    /// it is no texture, so nothing in the engine can sample it.
+    Hosted {
+        /// The host's platform object.
+        object: &'a Hosted,
+        /// Its extent in the layer's content coordinates.
+        extent: kurbo::Size,
+    },
+}
+
+/// The platform object a hosted plane shows
+/// (`cherenkov::HostedLayers::Object`).
+#[cfg(target_vendor = "apple")]
+pub type Hosted = crate::interop::apple::HostedLayer;
+/// The platform object a hosted plane shows
+/// (`cherenkov::HostedLayers::Object`).
+#[cfg(target_os = "android")]
+pub type Hosted = crate::interop::android::HostedSurface;
+/// No hosted object exists where the platform has no plane realization.
+#[cfg(not(any(target_vendor = "apple", target_os = "android")))]
+pub type Hosted = NoHosted;
+
+/// Stands in for a hosted object on platforms without plane realization:
+/// no value exists, so no layer there hosts one.
+#[cfg(not(any(target_vendor = "apple", target_os = "android")))]
+#[derive(Debug)]
+pub enum NoHosted {}
+
+/// A layer's hosted content: the platform object and its extent.
+#[derive(Debug)]
+pub struct HostedBinding {
+    /// The host's platform object.
+    pub object: Hosted,
+    /// Its extent in the layer's content coordinates.
+    pub extent: kurbo::Size,
+}
+
+impl HostedBinding {
+    /// The plane candidate the binding offers: its extent rounded out to
+    /// whole units, placed at the content origin.
+    #[must_use]
+    pub const fn candidate(&self) -> Candidate {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a hosted extent is a finite, non-negative layout size"
+        )]
+        let size = (
+            self.extent.width.ceil() as u32,
+            self.extent.height.ceil() as u32,
+        );
+        Candidate {
+            size,
+            raster: Affine::IDENTITY,
+            source: Source::Hosted,
+        }
+    }
 }
 
 /// One promoted plane of a [`Composition`].
@@ -983,6 +1165,7 @@ pub enum NoPlanes {}
 #[cfg(not(any(target_vendor = "apple", target_os = "android")))]
 impl Compositor for NoPlanes {
     const BUDGET: usize = 0;
+    const HOSTS_OPACITY: bool = false;
     fn expresses_transform(_: Affine) -> bool {
         false
     }

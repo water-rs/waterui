@@ -209,8 +209,9 @@ pub fn sweep_t(p: Point, g: &SweepGradient) -> f64 {
 /// linear Display P3.
 ///
 /// # Errors
-/// [`SceneError`] if an image resource is missing or undecodable, or a
-/// radial gradient with identical circles repeats or reflects.
+/// [`SceneError`](cherenkov_scene::SceneError) if an image resource is
+/// missing or undecodable, or a radial gradient with identical circles
+/// repeats or reflects.
 pub fn eval_paint(
     paint: &Paint,
     p: Point,

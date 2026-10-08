@@ -62,6 +62,7 @@ impl SceneBuilder {
             scale,
             levels,
             anchor: None,
+            union: None,
         });
         self
     }
@@ -83,6 +84,29 @@ impl SceneBuilder {
             scale,
             levels,
             anchor: Some(anchor),
+            union: None,
+        });
+        self
+    }
+
+    /// Declare a backdrop group whose members composite against the
+    /// shared union field smoothed over `union` device pixels
+    /// ([`BackdropGroup::union`]).
+    pub fn backdrop_union_group(
+        &mut self,
+        id: u32,
+        filters: Vec<BackdropFilter>,
+        scale: f64,
+        levels: u32,
+        union: f64,
+    ) -> &mut Self {
+        self.scene.backdrop_groups.push(BackdropGroup {
+            id,
+            filters,
+            scale,
+            levels,
+            anchor: None,
+            union: Some(union),
         });
         self
     }
@@ -124,6 +148,7 @@ impl SceneBuilder {
         fn blend(blend: BlendMode);
         fn backdrop(group: u32);
         fn backdrop_effect(effect: crate::BackdropEffectSpec);
+        fn backdrop_outer(px: f64);
         fn fill(shape: Shape, paint: Paint);
         fn fill_rule(shape: Shape, rule: FillRule, paint: Paint);
         fn stroke(shape: Shape, stroke: StrokeStyle, paint: Paint);
@@ -186,6 +211,13 @@ impl LayerBuilder<'_> {
         self
     }
 
+    /// Set the member's outer extent in device pixels
+    /// ([`crate::Layer::backdrop_outer`]).
+    pub const fn backdrop_outer(&mut self, px: f64) -> &mut Self {
+        self.layer.backdrop_outer = px;
+        self
+    }
+
     /// Set the scroll offset: content and children draw translated by
     /// `-offset` inside the layer's clip.
     pub const fn scroll_offset(&mut self, offset: Vec2) -> &mut Self {
@@ -222,8 +254,12 @@ impl LayerBuilder<'_> {
 
     /// Give the layer the `id` a [`crate::BackdropGroup::anchor`] can
     /// name: the group's capture is taken beneath this layer.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `id` is `0`.
     pub const fn id(&mut self, id: u32) -> &mut Self {
-        self.layer.id = Some(id);
+        self.layer.id = Some(std::num::NonZeroU32::new(id).expect("layer id must be non-zero"));
         self
     }
 

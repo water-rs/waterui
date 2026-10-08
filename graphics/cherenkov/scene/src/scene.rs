@@ -102,6 +102,12 @@ pub enum Feature {
     /// A backdrop group anchors its capture at a named layer
     /// ([`BackdropGroup::anchor`]).
     BackdropAnchor,
+    /// A backdrop group composites its members against a shared union
+    /// field (`BackdropGroup::union`).
+    BackdropUnion,
+    /// A member layer extends its backdrop composite past its clip edge
+    /// (`Layer::backdrop_outer`).
+    BackdropOuter,
     /// A layer with a projective pose.
     Projective,
 }
@@ -199,6 +205,9 @@ impl Scene {
             }
             if group.anchor.is_some() {
                 f.insert(Feature::BackdropAnchor);
+            }
+            if group.union.is_some() {
+                f.insert(Feature::BackdropUnion);
             }
             for filter in &group.filters {
                 match filter {
@@ -356,9 +365,9 @@ impl Scene {
     fn validate_backdrops(&self) -> Result<(), SceneError> {
         fn ids(layer: &Layer, seen: &mut std::collections::HashSet<u32>) -> Result<(), SceneError> {
             if let Some(id) = layer.id
-                && !seen.insert(id)
+                && !seen.insert(id.get())
             {
-                return Err(SceneError::DuplicateBackdropAnchor(id));
+                return Err(SceneError::DuplicateBackdropAnchor(id.get()));
             }
             for item in &layer.items {
                 if let Item::Layer(l) = item {
@@ -375,6 +384,11 @@ impl Scene {
                 if !groups.iter().any(|g| g.id == id) {
                     return Err(SceneError::UnknownBackdropGroup(id));
                 }
+                if !(layer.backdrop_outer.is_finite() && layer.backdrop_outer >= 0.0) {
+                    return Err(SceneError::InvalidBackdropOuter(id));
+                }
+            } else if layer.backdrop_outer != 0.0 {
+                return Err(SceneError::BackdropOuterWithoutGroup);
             }
             if let Some(effect) = &layer.backdrop_effect {
                 if layer.backdrop.is_none() {
@@ -411,6 +425,13 @@ impl Scene {
             .find(|g| g.anchor.is_some_and(|a| !seen.contains(&a)))
         {
             return Err(SceneError::UnknownBackdropAnchor(group.id));
+        }
+        if let Some(group) = self
+            .backdrop_groups
+            .iter()
+            .find(|g| g.union.is_some_and(|k| !(k.is_finite() && k > 0.0)))
+        {
+            return Err(SceneError::InvalidBackdropUnion(group.id));
         }
         walk(&self.root, &self.backdrop_groups)
     }
@@ -798,6 +819,9 @@ fn collect_layer_features(layer: &Layer, f: &mut BTreeSet<Feature>) {
     }
     if layer.backdrop_effect.is_some() {
         f.insert(Feature::BackdropEffect);
+    }
+    if layer.backdrop_outer != 0.0 {
+        f.insert(Feature::BackdropOuter);
     }
     if layer.projection.is_some() {
         f.insert(Feature::Projective);

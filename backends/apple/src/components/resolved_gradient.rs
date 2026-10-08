@@ -235,6 +235,10 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let view = HostView::new(mtm, cocoa_ui::Rect::ZERO);
         #[cfg(target_os = "macos")]
         cocoa_ui::view::ensure_layer_backed(&view);
+        // A gradient's whole painted surface is one fill — the fill rule
+        // extends it into the touched edge's regions when a background
+        // slot holds it.
+        view.set_is_fill(true);
         let layer = Rc::new(GradientLayer::new(mtm, layer_paint(gradient.paint())));
         cocoa_ui::view::layer(&view)
             .expect("host view is layer-backed")
