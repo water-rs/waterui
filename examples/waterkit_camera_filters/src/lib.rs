@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use futures::{FutureExt, StreamExt, future::LocalBoxFuture};
 use shaderloom::CompiledShader;
-use waterkit_camera::Camera;
+use waterkit_camera::{Camera, FrameConverter};
 use waterkit_permission::{Permission, PermissionStatus, check, request};
 use waterui::app::App;
 use waterui::graphics::{Context, Frame, GpuContent, GpuContentView, bytemuck};
@@ -312,6 +312,7 @@ struct CameraFilterRenderer {
 
     camera: Option<Camera>,
     camera_open_task: Option<LocalBoxFuture<'static, Result<Camera, String>>>,
+    converter: Option<FrameConverter>,
     shared: Arc<Mutex<CameraShared>>,
 }
 
@@ -344,6 +345,7 @@ impl CameraFilterRenderer {
             camera_started: false,
             camera: None,
             camera_open_task: None,
+            converter: None,
             shared: Arc::new(Mutex::new(CameraShared {
                 gpu_handles: None,
                 uniforms: FilterUniforms(filter_params(0, 0.75)),
@@ -390,7 +392,7 @@ impl CameraFilterRenderer {
         }
 
         self.poll_camera_open();
-        self.pull_latest_frame();
+        self.pull_latest_frame(&device, &queue);
     }
 
     fn start_camera_open(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, reconnect: bool) {
@@ -435,7 +437,7 @@ impl CameraFilterRenderer {
         };
     }
 
-    fn pull_latest_frame(&mut self) {
+    fn pull_latest_frame(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         let Some(camera) = self.camera.as_ref() else {
             return;
         };
@@ -448,11 +450,31 @@ impl CameraFilterRenderer {
         };
 
         match poll_result {
-            std::task::Poll::Ready(Some(frame)) => {
+            std::task::Poll::Ready(Some(Ok(frame))) => {
+                // Frames arrive in the platform's plane layout and
+                // orientation, so convert each to an upright RGBA texture
+                // before the filter pass samples it.
+                let converter = self.converter.get_or_insert_with(|| {
+                    FrameConverter::check_device(device).expect(
+                        "the GPU runtime's device loads the converter's precompiled shaders",
+                    );
+                    FrameConverter::new(device)
+                });
+                let texture = converter.convert(device, queue, &frame);
                 self.shared
                     .lock()
                     .expect("camera mailbox poisoned")
-                    .latest_texture = Some(frame.into_texture());
+                    .latest_texture = Some(texture);
+            }
+            std::task::Poll::Ready(Some(Err(error))) => {
+                // A capture failure is the stream's last item, then it ends.
+                self.camera = None;
+                self.shared
+                    .lock()
+                    .expect("camera mailbox poisoned")
+                    .latest_texture = None;
+                self.preview_status
+                    .set(format!("Camera stream failed: {error}").into());
             }
             std::task::Poll::Ready(None) => {
                 self.camera = None;

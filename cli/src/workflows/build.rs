@@ -2197,10 +2197,10 @@ Automatic meson installation failed: {install_err}\n\n{}",
     /// itself.
     fn apply_default_envs(&self, cmd: &mut Command) {
         with_managed_tools_path(cmd);
-        if let Some((key, value)) =
-            crate::apple::platform::apple_deployment_target_env(&self.triple)
-        {
-            cmd.env(key, value);
+        if let Some(envs) = crate::apple::platform::apple_deployment_target_env(&self.triple) {
+            for (key, value) in envs {
+                cmd.env(key, value);
+            }
         }
     }
 

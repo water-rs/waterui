@@ -61,6 +61,16 @@ struct AppleTarget {
     sdk: &'static str,
     deployment_variable: &'static str,
     deployment_version: String,
+    /// The `metal -target` a Catalyst build must pass: deployment variables
+    /// alone only select ios vs macosx airs, so `aarch64-apple-ios-macabi`
+    /// names its air target `air64-apple-ios<version>-macabi` explicitly.
+    /// `None` for every other platform, where the deployment variable
+    /// already resolves the air target.
+    metal_target: Option<String>,
+    /// Whether the air target belongs to the iOS platform family — the
+    /// Metal language dialect is ios-keyed for iOS, its simulator and
+    /// Catalyst, and macos-keyed only for macOS itself.
+    ios_family: bool,
 }
 
 /// Every Apple deployment-target variable the Metal compiler reads. It picks
@@ -753,23 +763,26 @@ fn compile_metal(out_dir: &Path, name: &str, input: &Path, apple: &AppleTarget, 
     // Metal 3 unified the platform-specific language dialects.
     let dialect = if version >= (3, 0) {
         "metal"
-    } else if sdk == "macosx" {
-        "macos-metal"
-    } else {
+    } else if apple.ios_family {
         "ios-metal"
+    } else {
+        "macos-metal"
     };
+    let mut metal = apple.xcrun();
+    metal
+        .args(["-sdk", sdk, "metal", "-c", "-o"])
+        .arg(&air)
+        // Match the language naga emitted instead of inheriting
+        // the build SDK's newest version, which older supported
+        // operating systems cannot load.
+        .arg(format!("-std={dialect}{}.{}", version.0, version.1))
+        .arg("-I")
+        .arg(out_dir);
+    if let Some(target) = &apple.metal_target {
+        metal.arg("-target").arg(target);
+    }
     run(
-        apple
-            .xcrun()
-            .args(["-sdk", sdk, "metal", "-c", "-o"])
-            .arg(&air)
-            // Match the language naga emitted instead of inheriting
-            // the build SDK's newest version, which older supported
-            // operating systems cannot load.
-            .arg(format!("-std={dialect}{}.{}", version.0, version.1))
-            .arg("-I")
-            .arg(out_dir)
-            .arg(input),
+        metal.arg(input),
         name,
         "xcrun metal is required to build cherenkov-gpu for Apple \
              targets: engine shaders are precompiled (issue #57).",
@@ -864,10 +877,14 @@ fn resource_map(spec: &Spec, module: &naga::Module) -> msl::EntryPointResourceMa
 fn apple_target() -> Option<AppleTarget> {
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
     let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
-    let (sdk, deployment_variable) = match target_os.as_str() {
-        "macos" => ("macosx", "MACOSX_DEPLOYMENT_TARGET"),
-        "ios" if target_env == "sim" => ("iphonesimulator", "IPHONEOS_DEPLOYMENT_TARGET"),
-        "ios" => ("iphoneos", "IPHONEOS_DEPLOYMENT_TARGET"),
+    let (sdk, deployment_variable, ios_family) = match target_os.as_str() {
+        "macos" => ("macosx", "MACOSX_DEPLOYMENT_TARGET", false),
+        "ios" if target_env == "sim" => ("iphonesimulator", "IPHONEOS_DEPLOYMENT_TARGET", true),
+        // Catalyst links the macOS SDK's iOSSupport frameworks, so `metal`
+        // runs on the macosx SDK — but the air target and language dialect
+        // stay ios-keyed.
+        "ios" if target_env == "macabi" => ("macosx", "IPHONEOS_DEPLOYMENT_TARGET", true),
+        "ios" => ("iphoneos", "IPHONEOS_DEPLOYMENT_TARGET", true),
         "tvos" | "watchos" | "visionos" => panic!(
             "cherenkov-gpu precompiles Metal shaders for Apple targets (issue \
              #57): no Metal SDK mapping exists for target-os {target_os}"
@@ -899,10 +916,14 @@ fn apple_target() -> Option<AppleTarget> {
         .expect("rustc reports the target platform's deployment variable")
         .to_owned();
     deployment::require_floor(&deployment_version);
+    let metal_target = (target_env == "macabi")
+        .then(|| format!("air64-apple-ios{deployment_version}-macabi"));
     Some(AppleTarget {
         sdk,
         deployment_variable,
         deployment_version,
+        metal_target,
+        ios_family,
     })
 }
 

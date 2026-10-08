@@ -269,7 +269,7 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           components: clippy, rustfmt
-          targets: aarch64-apple-darwin, aarch64-apple-ios, aarch64-apple-ios-sim
+          targets: aarch64-apple-darwin, aarch64-apple-ios, aarch64-apple-ios-sim, aarch64-apple-ios-macabi
           cache: "false"
       - name: Rust toolchain fingerprint
         id: rustc-fingerprint
@@ -309,6 +309,17 @@ jobs:
         run: cargo clippy -p cocoa-ui --all-targets --locked --features native-test --target aarch64-apple-ios -- -D warnings
       - name: Clippy (cocoa-ui, iOS simulator)
         run: cargo clippy -p cocoa-ui --all-targets --locked --features native-test --target aarch64-apple-ios-sim -- -D warnings
+      # Mac Catalyst compiles the same two packages' production graphs for
+      # `aarch64-apple-ios-macabi`, where UIKit arrives through the macOS
+      # SDK's iOSSupport frameworks — a compile error the per-OS legs above
+      # cannot see. A `cargo check` is the whole leg: the `native` harness
+      # target is macOS-only, so `--all-targets` has nothing extra to
+      # compile there, and the `.cargo/config.toml` `[env]` table supplies
+      # the 26.0 deployment floor cherenkov-gpu's build script asserts.
+      - name: Check (Mac Catalyst)
+        run: cargo check -p waterui-apple --locked --target aarch64-apple-ios-macabi
+      - name: Check (cocoa-ui, Mac Catalyst)
+        run: cargo check -p cocoa-ui --locked --target aarch64-apple-ios-macabi
       # The component shapes the Swift `WATERUI_MAP`/`WATERUI_NO_GPU` legs
       # used to cover are Cargo features now (waterui#343 reasoned the same
       # way), so they lint under -D warnings like the production legs —
