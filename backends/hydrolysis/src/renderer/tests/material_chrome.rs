@@ -1329,10 +1329,13 @@ fn a_rebound_member_tracks_the_signals_value_after_recording() {
     );
 }
 
-/// A theme whose uniforms depend on `WidgetInteractionState`: a real
-/// press — the pointer-down input dispatch `InputEvent::PointerDown`
-/// takes — re-records the chrome with the pressed uniforms, and the
-/// member's rebound sample carries them (water-rs/waterui#1788).
+/// A theme whose uniforms depend on `WidgetInteractionState`: a press
+/// re-records the chrome with the pressed uniforms, and the member's
+/// rebound sample carries them (water-rs/waterui#1788). The mirror mount
+/// has no runtime window to dispatch an `InputEvent` through, so the test
+/// calls the renderer entry that dispatch calls for
+/// `InputEvent::PointerDown`; `a_press_rebinds_the_same_member_and_group`
+/// covers the dispatched event on a runtime.
 #[test]
 fn a_press_rebinds_the_members_new_effect() {
     let mut renderer = test_renderer_with_theme(MinimalTestTheme {
@@ -1368,8 +1371,16 @@ fn a_press_rebinds_the_members_new_effect() {
     };
     assert_eq!(bound(&renderer), [0.0]);
 
-    // The dispatch `InputEvent::PointerDown` reaches.
-    renderer.handle_pointer_down(80.0, 60.0, PointerButton::Primary, &chrome_env());
+    // What the window's dispatch calls for an `InputEvent::PointerDown`
+    // with these fields.
+    renderer.handle_pointer_down_with_source(
+        9,
+        PointerKind::Mouse,
+        80.0,
+        60.0,
+        PointerButton::Primary,
+        &chrome_env(),
+    );
     mirror_frame(&mut renderer, tap_view());
     assert_eq!(
         bound(&renderer),
