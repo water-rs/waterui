@@ -561,7 +561,8 @@ pub async fn sign_apple_app(
                 &layout.app_path,
                 &bundle_id,
                 &signing,
-            ).await?;
+            )
+            .await?;
             return Ok(());
         }
         #[cfg(not(target_os = "macos"))]
