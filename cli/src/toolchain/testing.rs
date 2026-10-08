@@ -268,33 +268,16 @@ impl TestMachine {
 
 /// The real toolchain with the Water home redirected to `home`: a project
 /// test that needs real `cargo`/`rustc` runs on the declared host and writes
-/// nothing under `~/.water`. `Host::with_env` cannot serve here — a host's
-/// home is fixed at construction, not derived from a rebound `HOME`.
+/// nothing under `~/.water`.
 pub fn real_toolchain_host(home: impl AsRef<Path>) -> Host {
     let real = Host::current();
-    let path_dirs: Vec<PathBuf> = real
-        .env("PATH")
-        .map(|path| std::env::split_paths(path).collect())
-        .unwrap_or_default();
     let vars = real
         .envs()
-        .filter(|(key, _)| {
-            !key.eq_ignore_ascii_case("HOME")
-                && !key.eq_ignore_ascii_case("USERPROFILE")
-                && !key.eq_ignore_ascii_case("PATH")
-        })
-        .map(|(key, value)| (key.to_os_string(), value.to_os_string()))
-        .chain([
-            (
-                std::ffi::OsString::from("HOME"),
-                home.as_ref().as_os_str().to_os_string(),
-            ),
-            (
-                std::ffi::OsString::from("USERPROFILE"),
-                home.as_ref().as_os_str().to_os_string(),
-            ),
-        ]);
-    Host::new(path_dirs, vars).with_cwd(home.as_ref().to_path_buf())
+        .filter(|(key, _)| !key.eq_ignore_ascii_case("PATH"))
+        .map(|(key, value)| (key.to_os_string(), value.to_os_string()));
+    Host::new(real.path_entries(), vars)
+        .with_home(home.as_ref())
+        .with_cwd(home.as_ref().to_path_buf())
 }
 
 /// The per-process copy of the dispatcher that fake tools link to.
