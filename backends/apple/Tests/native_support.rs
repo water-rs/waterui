@@ -20,6 +20,51 @@ pub use cocoa_ui::native_test::pump_main_until;
 /// answers within a few run-loop turns.
 pub const MAIN_QUEUE_DEADLINE: f64 = 5.0;
 
+/// Drives a `!Send` future to completion on the main thread while
+/// pumping the run loop.
+///
+/// A bare `block_on` parks the thread it polls on; the central
+/// capture's completions and wakes land on `DispatchQueue::main()`,
+/// which only a turning run loop services — so the future's polls
+/// interleave with short `pump_main_until` turns, re-polling on the
+/// wake flag as soon as a callback delivers. Bounded at `seconds`
+/// overall: a future that never settles panics naming the bound
+/// instead of hanging the case.
+///
+/// # Panics
+///
+/// When `future` is not ready within `seconds`.
+pub fn block_on_main<F: core::future::Future>(seconds: f64, future: F) -> F::Output {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::task::{Context, Poll, Wake, Waker};
+    use std::time::Instant;
+
+    struct Flag(Arc<AtomicBool>);
+    impl Wake for Flag {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    let woken = Arc::new(AtomicBool::new(false));
+    let waker = Waker::from(Arc::new(Flag(Arc::clone(&woken))));
+    let mut cx = Context::from_waker(&waker);
+    let mut future = core::pin::pin!(future);
+    let start = Instant::now();
+    loop {
+        woken.store(false, Ordering::Release);
+        if let Poll::Ready(output) = future.as_mut().poll(&mut cx) {
+            return output;
+        }
+        assert!(
+            start.elapsed().as_secs_f64() < seconds,
+            "a main-thread future did not settle within {seconds}s"
+        );
+        pump_main_until(0.05, || woken.load(Ordering::Acquire));
+    }
+}
+
 /// The least wall-clock time a native `Animation::Default` scroll takes.
 ///
 /// Measured from the request to the landing, it is well under `AppKit`'s
@@ -343,7 +388,9 @@ pub fn bind_root_window_wires_a_live_window(mtm: MainThreadMarker) {
 /// completion settlement paths on it.
 #[cfg(all(target_os = "macos", feature = "gpu_surface"))]
 pub mod gpu_surface {
-    pub use crate::components::gpu_surface::native_test::{MountedSceneSurface, WakeProbe};
+    pub use crate::components::gpu_surface::native_test::{
+        MountedSceneSurface, WakeProbe, fixture_env, fixture_scene_view,
+    };
 
     /// Performs the once-per-process `startup::initialize` — called
     /// once from the `Tests/native.rs` harness's true main thread
@@ -352,6 +399,83 @@ pub mod gpu_surface {
     pub fn initialize_process() {
         let _ = crate::startup::initialize();
     }
+}
+
+/// Re-exports the pieces a `ViewRenderer::render` trial needs.
+///
+/// The service installer, the shared-runtime handles a sealed generation
+/// is reached through, and the failure carriers the cause chain asserts
+/// on.
+#[cfg(all(target_os = "macos", feature = "gpu_surface"))]
+pub mod view_renderer {
+    pub use crate::components::view_renderer::install_service;
+    pub use crate::gpu_runtime::{EngineGeneration, SceneEngine, scene_engine};
+    pub use waterui_graphics::gpu::GpuRuntime;
+    pub use waterui_graphics::gpu::runtime::HostedLayerError;
+}
+
+/// Re-exports the filtered mounted-surface fixtures.
+///
+/// The `native_test` module inside `components::filtered` mounts a filtered
+/// leaf over a real `SceneView` GPU-surface child through the production
+/// `build_filtered_parts` construction, for the settle-contract trials.
+#[cfg(all(target_os = "macos", feature = "gpu_surface"))]
+pub mod filtered {
+    pub use crate::components::filtered::native_test::{MountedFilteredSurface, WakeProbe};
+}
+
+/// Counts `tracing` ERROR events one module emits — a settle contract
+/// that must log exactly once per failure asserts on the count.
+///
+/// Used as a `tracing::Subscriber` inside `with_default`, so only the
+/// events the wrapped closure raises are observed.
+#[cfg(all(target_os = "macos", feature = "gpu_surface"))]
+#[derive(Debug)]
+pub struct ErrorLog {
+    target: &'static str,
+    count: alloc::sync::Arc<core::sync::atomic::AtomicU32>,
+}
+
+#[cfg(all(target_os = "macos", feature = "gpu_surface"))]
+impl ErrorLog {
+    /// An ERROR counter for events whose target is `target` (the
+    /// emitting module path, e.g.
+    /// `"waterui_apple::components::gpu_surface"`).
+    #[must_use]
+    pub fn new(target: &'static str) -> (Self, alloc::sync::Arc<core::sync::atomic::AtomicU32>) {
+        let count = alloc::sync::Arc::new(core::sync::atomic::AtomicU32::new(0));
+        (
+            Self {
+                target,
+                count: count.clone(),
+            },
+            count,
+        )
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "gpu_surface"))]
+impl tracing::Subscriber for ErrorLog {
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+        *metadata.level() == tracing::Level::ERROR && metadata.target() == self.target
+    }
+    fn new_span(&self, _attrs: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+    fn register_callsite(
+        &self,
+        _meta: &'static tracing::Metadata<'static>,
+    ) -> tracing::subscriber::Interest {
+        tracing::subscriber::Interest::always()
+    }
+    fn event(&self, _event: &tracing::Event<'_>) {
+        self.count
+            .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+    }
+    fn enter(&self, _span: &tracing::span::Id) {}
+    fn exit(&self, _span: &tracing::span::Id) {}
 }
 
 /// The minimum environment a real render needs.
@@ -492,4 +616,76 @@ pub fn row_list(
         .expect("a List renders the kit's table surface")
         .retain();
     (leaf, table)
+}
+
+/// Reads the standard menu bar as `menus::install` builds it — for the
+/// native suite to assert the standard items' rows without an `AppKit`
+/// handle of its own.
+#[cfg(target_os = "macos")]
+pub mod menus {
+    use cocoa_ui::MainThreadMarker;
+    use cocoa_ui::appkit::Application;
+    use cocoa_ui::objc2_app_kit::{NSApplication, NSEventModifierFlags};
+    use cocoa_ui::objc2_foundation::NSString;
+    use waterui::component::menu::{CloseWindowPlacement, Shortcut};
+
+    /// One row of a built menu — what a case asserts without touching
+    /// `NSMenuItem`.
+    #[derive(Debug)]
+    pub struct MenuRow {
+        /// The row's title.
+        pub title: String,
+        /// Its key equivalent — `""` for none.
+        pub key_equivalent: String,
+        /// The modifiers its key equivalent takes.
+        pub modifiers: NSEventModifierFlags,
+        /// The name of the selector the row sends, when it sends one —
+        /// `performClose:` on the standard Close item.
+        pub action: Option<String>,
+        /// Whether the row reports enabled after a validation pass.
+        pub enabled: bool,
+        /// Whether the row is a separator.
+        pub separator: bool,
+    }
+
+    /// The Window menu's rows in the standard bar `menus::install` builds.
+    ///
+    /// Installs that bar — the default menus plus nothing declared, with
+    /// `close_chord` the chord its Close item carries — then runs an
+    /// `update()` validation pass on the Window menu, so `enabled`
+    /// answers what the responder chain can take.
+    #[must_use]
+    pub fn window_menu_rows(
+        mtm: MainThreadMarker,
+        close_window: CloseWindowPlacement,
+        close_chord: Option<&Shortcut>,
+    ) -> Vec<MenuRow> {
+        let application = Application::shared(mtm);
+        crate::menus::install(mtm, &application, &[], close_window, close_chord);
+        let main = NSApplication::sharedApplication(mtm)
+            .mainMenu()
+            .expect("install sets the main menu");
+        let window_menu = main
+            .itemWithTitle(&NSString::from_str("Window"))
+            .and_then(|item| item.submenu())
+            .expect("the standard bar's Window item opens a submenu");
+        window_menu.update();
+        window_menu
+            .itemArray()
+            .iter()
+            .map(|item| MenuRow {
+                title: item.title().to_string(),
+                key_equivalent: item.keyEquivalent().to_string(),
+                modifiers: item.keyEquivalentModifierMask(),
+                action: item.action().map(|sel| {
+                    sel.name()
+                        .to_str()
+                        .expect("selector names are ASCII")
+                        .into()
+                }),
+                enabled: item.isEnabled(),
+                separator: item.isSeparatorItem(),
+            })
+            .collect()
+    }
 }

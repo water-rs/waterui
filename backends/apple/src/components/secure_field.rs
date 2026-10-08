@@ -8,7 +8,7 @@
 //! assistive technology, `Disabled` pushes `set_enabled`, and the theme
 //! `Body` font drives the field's font. The measure is
 //! `WuiSecureField.sizeThatFits`: a 100pt-width floor, the label stacked
-//! over the field with 4pt of spacing, height always at least intrinsic.
+//! over the field with 4pt of spacing, always the intrinsic height.
 //!
 //! The plaintext lives only inside the platform control and the `Secure`
 //! wrapper: watcher copies are scoped to the setter call, and edit
@@ -171,8 +171,8 @@ fn layout_children(view: &PlatformView, state: &FieldState) {
 }
 
 /// The container's layout face: reports `WuiSecureField.sizeThatFits`'s
-/// answer — the proposed width floored at `max(label, 100pt)` and height
-/// never below intrinsic — stretching horizontally at priority 0.
+/// answer — the proposed width floored at `max(label, 100pt)` and always
+/// the intrinsic height — stretching horizontally at priority 0.
 struct SecureFieldSubView {
     state: Rc<FieldState>,
 }
@@ -222,10 +222,7 @@ impl SubView for SecureFieldSubView {
         let width = proposal
             .width
             .map_or(min_width, |w| f64::from(w).max(min_width));
-        let height = proposal
-            .height
-            .map_or(intrinsic_height, |h| f64::from(h).max(intrinsic_height));
-        ViewDimensions::new(Size::new(width as f32, height as f32))
+        ViewDimensions::new(Size::new(width as f32, intrinsic_height as f32))
     }
 
     fn stretch_axis(&self) -> StretchAxis {

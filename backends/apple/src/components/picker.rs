@@ -249,14 +249,7 @@ impl SubView for PickerSubView {
         } else {
             intrinsic_width
         };
-        let height = if wheel {
-            intrinsic_height
-        } else {
-            proposal
-                .height
-                .map_or(intrinsic_height, |h| f64::from(h).max(intrinsic_height))
-        };
-        ViewDimensions::new(Size::new(width as f32, height as f32))
+        ViewDimensions::new(Size::new(width as f32, intrinsic_height as f32))
     }
 
     fn stretch_axis(&self) -> StretchAxis {

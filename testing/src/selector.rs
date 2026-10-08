@@ -5,6 +5,7 @@ use std::fmt::Write as _;
 
 use accesskit::{Action as AccessibilityAction, ActionData as AccessibilityActionData};
 use hydrolysis::{AccessibilityActivationPointError, HeadlessRuntime};
+use waterui::component::text_field::ContentType;
 
 use crate::app::SemanticApp;
 use crate::driver::RuntimeDriver;
@@ -25,6 +26,7 @@ pub struct Selector {
     value_exact: Option<String>,
     value_contains: Option<String>,
     hidden: Option<bool>,
+    content_type: Option<ContentType>,
     scope: Option<QueryScope>,
 }
 
@@ -43,6 +45,7 @@ impl Default for Selector {
             value_exact: None,
             value_contains: None,
             hidden: Some(false),
+            content_type: None,
             scope: None,
         }
     }
@@ -144,6 +147,13 @@ impl Selector {
         self
     }
 
+    /// Restricts matches to a declared text-field content type.
+    #[must_use]
+    pub const fn content_type(mut self, content_type: ContentType) -> Self {
+        self.content_type = Some(content_type);
+        self
+    }
+
     /// Restricts matches to descendants of `handle`.
     #[must_use]
     pub fn within<R>(mut self, handle: ElementRef<R>) -> Self {
@@ -201,6 +211,9 @@ impl Selector {
         }
         if let Some(hidden) = self.hidden {
             parts.push(format!("hidden={hidden}"));
+        }
+        if let Some(content_type) = self.content_type {
+            parts.push(format!("content_type={content_type:?}"));
         }
         if let Some(scope) = self.scope() {
             parts.push(scope.describe());
@@ -283,6 +296,12 @@ impl Selector {
 
         if let Some(expected) = self.hidden
             && node.hidden() != expected
+        {
+            return false;
+        }
+
+        if let Some(expected) = self.content_type
+            && node.content_type() != Some(expected)
         {
             return false;
         }

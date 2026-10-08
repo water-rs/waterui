@@ -17,10 +17,10 @@ use waterui_cli::preview::request::{
     ResolvedPreviewBackend,
 };
 use waterui_cli::preview::{
-    HydrolysisPreviewEventKind, HydrolysisPreviewPointerButton, HydrolysisPreviewRequest,
-    HydrolysisPreviewScenario, HydrolysisPreviewScenarioEvent, HydrolysisPreviewTheme,
-    discover_hydrolysis_preview_exports, launch_preview_session, render_preview_with_hydrolysis,
-    test_preview_with_hydrolysis,
+    ApplePreviewRequest, HydrolysisPreviewEventKind, HydrolysisPreviewPointerButton,
+    HydrolysisPreviewRequest, HydrolysisPreviewScenario, HydrolysisPreviewScenarioEvent,
+    HydrolysisPreviewTheme, discover_hydrolysis_preview_exports, launch_preview_session,
+    render_preview_with_apple, render_preview_with_hydrolysis, test_preview_with_hydrolysis,
 };
 use waterui_cli::project::read_project_crate_name;
 
@@ -56,7 +56,7 @@ async fn run_preview_test(shell: &Shell, args: PreviewTestArgs) -> Result<()> {
         let output = test_preview_with_hydrolysis(
             HydrolysisPreviewRequest {
                 project_path: &project_path,
-                source: target.hydrolysis_source(),
+                source: target.source(),
                 theme: args.theme.into(),
                 platform: target_platform,
                 width,
@@ -230,7 +230,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         render_preview_with_hydrolysis(
             HydrolysisPreviewRequest {
                 project_path: &project_path,
-                source: request.target.hydrolysis_source(),
+                source: request.target.source(),
                 theme: request
                     .hydrolysis_theme
                     .expect("hydrolysis preview theme must be resolved"),
@@ -261,6 +261,27 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
 
     if args.scenario.is_some() || args.output_dir.is_some() {
         bail!("`--scenario` and `--output-dir` are supported only with `--backend hydrolysis`.");
+    }
+
+    if request.backend == ResolvedPreviewBackend::Apple {
+        let spinner = shell.spinner("Building and rendering with the Apple backend...");
+        render_preview_with_apple(
+            ApplePreviewRequest {
+                project_path: &project_path,
+                source: request.target.source(),
+                width: request.width,
+                height: request.height,
+                sccache_path,
+                progress: Some(shell.build_progress()),
+            },
+            &args.output,
+        )
+        .await?;
+        if let Some(s) = spinner {
+            s.finish_and_clear();
+        }
+        success!(shell, "Preview saved to {}", args.output.display());
+        return Ok(());
     }
 
     let PreviewTarget::Function {

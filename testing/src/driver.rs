@@ -5,8 +5,8 @@ use accesskit::{
     ActionRequest as AccessibilityActionRequest, TreeUpdate as AccessibilityTreeUpdate,
 };
 use hydrolysis::{
-    FrameProfile, HeadlessRuntime, InputEvent, KeyCode, KeyState, Modifiers, PointerButton,
-    PointerKind, SemanticRuntime, TouchPhase,
+    AccessibilityContentTypes, FrameProfile, HeadlessRuntime, InputEvent, KeyCode, KeyState,
+    Modifiers, PointerButton, PointerKind, SemanticRuntime, TouchPhase,
 };
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, get_current_pid};
 
@@ -62,13 +62,15 @@ pub trait RuntimeDriver {
 }
 
 /// What one pump produced: whether it rebuilt, the phase timings, the
-/// accessibility tree update, the captured snapshot when one was requested,
-/// and the UI focus target when the runtime tracks one.
+/// accessibility tree update plus the content types its nodes declared, the
+/// captured snapshot when one was requested, and the UI focus target when
+/// the runtime tracks one.
 #[derive(Debug)]
 pub struct DriverPumpResult {
     pub(crate) rebuilt: bool,
     pub(crate) profile: FrameProfile,
     pub(crate) tree_update: Option<AccessibilityTreeUpdate>,
+    pub(crate) content_types: AccessibilityContentTypes,
     pub(crate) snapshot: Option<Snapshot>,
     pub(crate) ui_focus: Option<NodeId>,
 }
@@ -80,6 +82,7 @@ impl RuntimeDriver for SemanticRuntime {
             rebuilt: result.rebuilt,
             profile: result.profile,
             tree_update: result.tree_update,
+            content_types: result.content_types,
             snapshot: None,
             ui_focus: result.ui_focus.map(NodeId::from),
         }
@@ -117,6 +120,7 @@ impl RuntimeDriver for HeadlessRuntime {
             rebuilt: result.rebuilt,
             profile: result.profile,
             tree_update: result.tree_update,
+            content_types: result.content_types,
             snapshot: result.snapshot.map(|snapshot| Snapshot {
                 width: snapshot.width,
                 height: snapshot.height,

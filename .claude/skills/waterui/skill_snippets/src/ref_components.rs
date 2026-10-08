@@ -4,6 +4,7 @@
 extern crate alloc;
 
 use waterui::Identifiable;
+use waterui::component::text_field::{ContentType, KeyboardType};
 use waterui::prelude::*;
 
 use waterui_icons_lucide as lucide;
@@ -283,6 +284,7 @@ pub fn components_block_12() {
     let address = Binding::container(Str::from(""));
     let query = Binding::container(Str::from(""));
     let name = Binding::container(Str::from(""));
+    let code = Binding::container(Str::from(""));
     let fraction = 0.5_f64;
 
     let _ = {
@@ -334,6 +336,13 @@ pub fn components_block_12() {
     let _ = {
         // placeholder ≠ label
         TextField::new("Username", &name).prompt("Enter your username")
+    };
+    let _ = {
+        // .content_type declares what the field means, for autofill — it is
+        // what makes Apple offer the received SMS code; pair with .keyboard(..)
+        TextField::new("Verification code", &code)
+            .keyboard(KeyboardType::Number)
+            .content_type(ContentType::OneTimeCode)
     };
     let _ = {
         progress(fraction) // impl IntoComputed<f64>
@@ -442,6 +451,21 @@ pub fn components_command_builder_prose() {
         .shortcut(Shortcut::new('c').command());
     let _ = Shortcut::new('s').command();
     let _ = Shortcut::new(NamedKey::Delete);
+}
+
+// ---------------------------------------------------------------------------
+// components.md § "## Menus, commands, context menus" (prose): the platform
+// items `MenuItem::Quit` and `MenuItem::CloseWindow` — Close Window's chord
+// is decided once for the application from its menu bar (⌘W, or ⇧⌘W/none
+// when declared commands bind it). Not counted as a rust block.
+// ---------------------------------------------------------------------------
+pub fn components_platform_menu_items_prose(env: Environment) -> waterui::app::App {
+    use waterui::component::menu::MenuItem;
+
+    waterui::app::App::new(move || text("demo"), env).menu_bar(Menu::new(
+        "File",
+        vec![MenuItem::CloseWindow, MenuItem::Divider, MenuItem::Quit],
+    ))
 }
 
 // ---------------------------------------------------------------------------

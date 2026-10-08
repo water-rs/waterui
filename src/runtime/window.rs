@@ -53,7 +53,12 @@ pub struct Window {
     pub title: Computed<Str>,
     /// Whether the window is closable.
     ///
-    /// Notice that it may not be supported on all platforms.
+    /// How each platform honours `false`:
+    ///
+    /// - **macOS and Windows:** the close button is disabled.
+    /// - **Linux (X11 and Wayland):** the button stays drawn and enabled,
+    ///   but the close request it sends is ignored.
+    /// - **iOS, Android and web:** there is no window close.
     pub closable: bool,
     /// Whether the window is resizable.
     ///
@@ -364,9 +369,14 @@ pub enum WindowBackground {
     ///   surface transparent and composites the level's colour treatment as
     ///   the closest source-over tint under the content; blurring the desktop
     ///   is the compositor's job. The desktop is blurred where the platform's
-    ///   blur-behind is wired and shows through tinted but unblurred
-    ///   elsewhere; X11 and Wayland on Linux and the system backdrop on
-    ///   Windows are water-rs/waterui#1856, #1857 and #1858.
+    ///   blur-behind is wired — an `NSVisualEffectView` behind the window on
+    ///   macOS, the DWM's acrylic system backdrop on Windows 11 22H2 and
+    ///   later, `_KDE_NET_WM_BLUR_BEHIND_REGION` under a window manager that
+    ///   honours it (`KWin`) on X11, and `ext-background-effect-v1` on
+    ///   Wayland, whose compositor applies blur by its own policy — and
+    ///   shows through tinted but unblurred elsewhere: older Windows, other
+    ///   X11 window managers and Wayland compositors not advertising the
+    ///   global.
     /// - **Hydrolysis on Android**: a within-window level is realized as on a
     ///   desktop. Window transparency is not realized on Android yet, so a
     ///   behind-window level renders as an opaque window

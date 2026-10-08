@@ -297,7 +297,7 @@ struct CameraShared {
     uniforms: FilterUniforms,
     /// The newest camera frame the UI side pulled; `None` once the render
     /// side took it.
-    latest_texture: Option<wgpu::Texture>,
+    latest_frame: Option<waterkit_camera::Frame>,
 }
 
 /// UI-side half of the camera filter: owns the camera, its open future, and
@@ -312,7 +312,6 @@ struct CameraFilterRenderer {
 
     camera: Option<Camera>,
     camera_open_task: Option<LocalBoxFuture<'static, Result<Camera, String>>>,
-    converter: Option<FrameConverter>,
     shared: Arc<Mutex<CameraShared>>,
 }
 
@@ -324,6 +323,9 @@ struct CameraFilterContent {
     bind_group_layout: Option<wgpu::BindGroupLayout>,
     sampler: Option<wgpu::Sampler>,
     uniform_buffer: Option<wgpu::Buffer>,
+    /// Turns each captured frame into an upright filterable texture on the
+    /// render device's GPU.
+    converter: Option<FrameConverter>,
     latest_texture: Option<wgpu::Texture>,
     latest_bind_group: Option<wgpu::BindGroup>,
     pipeline_format: Option<wgpu::TextureFormat>,
@@ -345,11 +347,10 @@ impl CameraFilterRenderer {
             camera_started: false,
             camera: None,
             camera_open_task: None,
-            converter: None,
             shared: Arc::new(Mutex::new(CameraShared {
                 gpu_handles: None,
                 uniforms: FilterUniforms(filter_params(0, 0.75)),
-                latest_texture: None,
+                latest_frame: None,
             })),
         }
     }
@@ -363,6 +364,7 @@ impl CameraFilterRenderer {
             bind_group_layout: None,
             sampler: None,
             uniform_buffer: None,
+            converter: None,
             latest_texture: None,
             latest_bind_group: None,
             pipeline_format: None,
@@ -392,7 +394,7 @@ impl CameraFilterRenderer {
         }
 
         self.poll_camera_open();
-        self.pull_latest_frame(&device, &queue);
+        self.pull_latest_frame();
     }
 
     fn start_camera_open(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, reconnect: bool) {
@@ -406,7 +408,7 @@ impl CameraFilterRenderer {
         self.shared
             .lock()
             .expect("camera mailbox poisoned")
-            .latest_texture = None;
+            .latest_frame = None;
 
         let device = Arc::new(device.clone());
         let queue = Arc::new(queue.clone());
@@ -437,7 +439,7 @@ impl CameraFilterRenderer {
         };
     }
 
-    fn pull_latest_frame(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+    fn pull_latest_frame(&mut self) {
         let Some(camera) = self.camera.as_ref() else {
             return;
         };
@@ -451,28 +453,18 @@ impl CameraFilterRenderer {
 
         match poll_result {
             std::task::Poll::Ready(Some(Ok(frame))) => {
-                // Frames arrive in the platform's plane layout and
-                // orientation, so convert each to an upright RGBA texture
-                // before the filter pass samples it.
-                let converter = self.converter.get_or_insert_with(|| {
-                    FrameConverter::check_device(device).expect(
-                        "the GPU runtime's device loads the converter's precompiled shaders",
-                    );
-                    FrameConverter::new(device)
-                });
-                let texture = converter.convert(device, queue, &frame);
                 self.shared
                     .lock()
                     .expect("camera mailbox poisoned")
-                    .latest_texture = Some(texture);
+                    .latest_frame = Some(frame);
             }
             std::task::Poll::Ready(Some(Err(error))) => {
-                // A capture failure is the stream's last item, then it ends.
+                // A failed capture is the stream's last item.
                 self.camera = None;
                 self.shared
                     .lock()
                     .expect("camera mailbox poisoned")
-                    .latest_texture = None;
+                    .latest_frame = None;
                 self.preview_status
                     .set(format!("Camera stream failed: {error}").into());
             }
@@ -481,7 +473,7 @@ impl CameraFilterRenderer {
                 self.shared
                     .lock()
                     .expect("camera mailbox poisoned")
-                    .latest_texture = None;
+                    .latest_frame = None;
                 self.preview_status
                     .set(Str::from("Camera stream ended unexpectedly."));
             }
@@ -601,6 +593,9 @@ impl CameraFilterContent {
 impl GpuContent for CameraFilterContent {
     fn setup(&mut self, context: &Context<'_>) {
         self.ensure_pipeline(context);
+        // The GPU runtime requests `FrameConverter::required_features`, so
+        // the render device always satisfies `check_device`.
+        self.converter = Some(FrameConverter::new(context.device));
         self.shared
             .lock()
             .expect("camera mailbox poisoned")
@@ -610,11 +605,31 @@ impl GpuContent for CameraFilterContent {
     fn render(&mut self, frame: &mut Frame<'_>) {
         let (incoming, uniforms) = {
             let mut shared = self.shared.lock().expect("camera mailbox poisoned");
-            (shared.latest_texture.take(), shared.uniforms)
+            (shared.latest_frame.take(), shared.uniforms)
         };
-        if incoming.is_some() {
-            self.latest_texture = incoming;
-            self.latest_bind_group = None;
+        if let Some(camera_frame) = incoming {
+            let output = FrameConverter::create_output(frame.device, &camera_frame);
+            let mut encoder =
+                frame
+                    .device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("Camera Frame Convert Encoder"),
+                    });
+            match self
+                .converter
+                .as_mut()
+                .expect("converter created in setup")
+                .encode(frame.device, &mut encoder, &camera_frame, &output)
+            {
+                Ok(()) => {
+                    frame.queue.submit([encoder.finish()]);
+                    self.latest_texture = Some(output);
+                    self.latest_bind_group = None;
+                }
+                Err(error) => {
+                    tracing::error!("could not convert camera frame: {error}");
+                }
+            }
         }
 
         if let Some(uniform_buffer) = &self.uniform_buffer {

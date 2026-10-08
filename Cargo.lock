@@ -2135,7 +2135,6 @@ dependencies = [
  "objc2-core-media",
  "objc2-core-text",
  "objc2-foundation 0.3.2",
- "objc2-io-surface",
  "objc2-map-kit",
  "objc2-metal 0.3.2",
  "objc2-quartz-core 0.3.2",
@@ -2156,7 +2155,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.1.14",
+ "unicode-width 0.2.2",
 ]
 
 [[package]]
@@ -4352,7 +4351,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.21",
- "windows 0.56.0",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -4706,6 +4705,8 @@ dependencies = [
  "waterui-text",
  "waterui-url",
  "waterui-webview",
+ "wayland-client",
+ "wayland-protocols",
  "web-sys",
  "wgpu 30.0.1",
  "windows-sys 0.52.0",
@@ -4856,7 +4857,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.56.0",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -10179,6 +10180,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "shaderloom"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a8c154d4b181547cb1f51464df6aefd0b002d8d5778fddc0311820122d790bc3"
+dependencies = [
+ "naga 30.0.1",
+ "prettyplease 0.3.0",
+ "proc-macro2",
+ "quote",
+ "serde",
+ "syn 3.0.6",
+ "toml 1.1.6+spec-1.1.0",
+ "wgpu 30.0.1",
+]
+
+[[package]]
 name = "shape-example"
 version = "0.1.0"
 dependencies = [
@@ -12357,7 +12374,7 @@ dependencies = [
 [[package]]
 name = "waterkit-audio"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=fe8fb288444385f1bb7199c0ef11ee4c8a23aef0#fe8fb288444385f1bb7199c0ef11ee4c8a23aef0"
+source = "git+https://github.com/water-rs/waterkit?rev=be9e15dffc6bc229bcd6777f8853079190d7ae9b#be9e15dffc6bc229bcd6777f8853079190d7ae9b"
 dependencies = [
  "async-channel",
  "cpal 0.18.2",
@@ -12393,8 +12410,9 @@ dependencies = [
 [[package]]
 name = "waterkit-build"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=fe8fb288444385f1bb7199c0ef11ee4c8a23aef0#fe8fb288444385f1bb7199c0ef11ee4c8a23aef0"
+source = "git+https://github.com/water-rs/waterkit?rev=be9e15dffc6bc229bcd6777f8853079190d7ae9b#be9e15dffc6bc229bcd6777f8853079190d7ae9b"
 dependencies = [
+ "futures-channel",
  "jni 0.22.4",
  "ndk-context",
  "swift-bridge-build",
@@ -12404,7 +12422,7 @@ dependencies = [
 [[package]]
 name = "waterkit-camera"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=fe8fb288444385f1bb7199c0ef11ee4c8a23aef0#fe8fb288444385f1bb7199c0ef11ee4c8a23aef0"
+source = "git+https://github.com/water-rs/waterkit?rev=be9e15dffc6bc229bcd6777f8853079190d7ae9b#be9e15dffc6bc229bcd6777f8853079190d7ae9b"
 dependencies = [
  "async-channel",
  "core-graphics-types 0.2.0",
@@ -12418,7 +12436,7 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-core-video",
  "objc2-io-surface",
- "shaderloom",
+ "shaderloom 0.2.1",
  "swift-bridge",
  "thiserror 2.0.21",
  "tracing",
@@ -12428,7 +12446,7 @@ dependencies = [
  "waterkit-video-container",
  "waterkit-video-core",
  "wgpu 30.0.1",
- "wgpu-external-frame 0.2.0",
+ "wgpu-external-frame",
  "yuv",
 ]
 
@@ -12437,7 +12455,8 @@ name = "waterkit-camera-filters-example"
 version = "0.1.0"
 dependencies = [
  "futures",
- "shaderloom",
+ "shaderloom 0.2.1",
+ "tracing",
  "waterkit-camera",
  "waterkit-permission",
  "waterui",
@@ -12447,7 +12466,7 @@ dependencies = [
 [[package]]
 name = "waterkit-clipboard"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=fe8fb288444385f1bb7199c0ef11ee4c8a23aef0#fe8fb288444385f1bb7199c0ef11ee4c8a23aef0"
+source = "git+https://github.com/water-rs/waterkit?rev=be9e15dffc6bc229bcd6777f8853079190d7ae9b#be9e15dffc6bc229bcd6777f8853079190d7ae9b"
 dependencies = [
  "async-channel",
  "blocking",
@@ -12471,7 +12490,7 @@ dependencies = [
 [[package]]
 name = "waterkit-codec"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=fe8fb288444385f1bb7199c0ef11ee4c8a23aef0#fe8fb288444385f1bb7199c0ef11ee4c8a23aef0"
+source = "git+https://github.com/water-rs/waterkit?rev=be9e15dffc6bc229bcd6777f8853079190d7ae9b#be9e15dffc6bc229bcd6777f8853079190d7ae9b"
 dependencies = [
  "avif-parse",
  "cfg_aliases",
@@ -12482,6 +12501,7 @@ dependencies = [
  "moxcms",
  "ndk",
  "ndk-sys",
+ "num-traits",
  "objc2 0.6.4",
  "objc2-core-foundation",
  "objc2-core-media",
@@ -12492,7 +12512,7 @@ dependencies = [
  "objc2-video-toolbox",
  "rav1d",
  "rav1e",
- "shaderloom",
+ "shaderloom 0.2.1",
  "swift-bridge",
  "thiserror 2.0.21",
  "tracing",
@@ -12507,7 +12527,7 @@ dependencies = [
 [[package]]
 name = "waterkit-core"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=fe8fb288444385f1bb7199c0ef11ee4c8a23aef0#fe8fb288444385f1bb7199c0ef11ee4c8a23aef0"
+source = "git+https://github.com/water-rs/waterkit?rev=be9e15dffc6bc229bcd6777f8853079190d7ae9b#be9e15dffc6bc229bcd6777f8853079190d7ae9b"
 dependencies = [
  "executor-core",
  "jiff",
@@ -12519,11 +12539,10 @@ dependencies = [
 [[package]]
 name = "waterkit-dialog"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=fe8fb288444385f1bb7199c0ef11ee4c8a23aef0#fe8fb288444385f1bb7199c0ef11ee4c8a23aef0"
+source = "git+https://github.com/water-rs/waterkit?rev=be9e15dffc6bc229bcd6777f8853079190d7ae9b#be9e15dffc6bc229bcd6777f8853079190d7ae9b"
 dependencies = [
  "futures",
  "jni 0.22.4",
- "ndk-context",
  "rfd",
  "roxmltree 0.21.1",
  "swift-bridge",
@@ -12535,7 +12554,7 @@ dependencies = [
 [[package]]
 name = "waterkit-fs"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=fe8fb288444385f1bb7199c0ef11ee4c8a23aef0#fe8fb288444385f1bb7199c0ef11ee4c8a23aef0"
+source = "git+https://github.com/water-rs/waterkit?rev=be9e15dffc6bc229bcd6777f8853079190d7ae9b#be9e15dffc6bc229bcd6777f8853079190d7ae9b"
 dependencies = [
  "async-fs",
  "dirs 6.0.0",
@@ -12553,7 +12572,7 @@ dependencies = [
 [[package]]
 name = "waterkit-haptic"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=fe8fb288444385f1bb7199c0ef11ee4c8a23aef0#fe8fb288444385f1bb7199c0ef11ee4c8a23aef0"
+source = "git+https://github.com/water-rs/waterkit?rev=be9e15dffc6bc229bcd6777f8853079190d7ae9b#be9e15dffc6bc229bcd6777f8853079190d7ae9b"
 dependencies = [
  "futures",
  "jni 0.22.4",
@@ -12569,7 +12588,7 @@ dependencies = [
 [[package]]
 name = "waterkit-location"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=fe8fb288444385f1bb7199c0ef11ee4c8a23aef0#fe8fb288444385f1bb7199c0ef11ee4c8a23aef0"
+source = "git+https://github.com/water-rs/waterkit?rev=be9e15dffc6bc229bcd6777f8853079190d7ae9b#be9e15dffc6bc229bcd6777f8853079190d7ae9b"
 dependencies = [
  "async-channel",
  "async-io",
@@ -12592,7 +12611,7 @@ dependencies = [
 [[package]]
 name = "waterkit-permission"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=fe8fb288444385f1bb7199c0ef11ee4c8a23aef0#fe8fb288444385f1bb7199c0ef11ee4c8a23aef0"
+source = "git+https://github.com/water-rs/waterkit?rev=be9e15dffc6bc229bcd6777f8853079190d7ae9b#be9e15dffc6bc229bcd6777f8853079190d7ae9b"
 dependencies = [
  "async-channel",
  "futures",
@@ -12612,7 +12631,7 @@ dependencies = [
 [[package]]
 name = "waterkit-screen"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=fe8fb288444385f1bb7199c0ef11ee4c8a23aef0#fe8fb288444385f1bb7199c0ef11ee4c8a23aef0"
+source = "git+https://github.com/water-rs/waterkit?rev=be9e15dffc6bc229bcd6777f8853079190d7ae9b#be9e15dffc6bc229bcd6777f8853079190d7ae9b"
 dependencies = [
  "async-channel",
  "blocking",
@@ -12636,7 +12655,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=fe8fb288444385f1bb7199c0ef11ee4c8a23aef0#fe8fb288444385f1bb7199c0ef11ee4c8a23aef0"
+source = "git+https://github.com/water-rs/waterkit?rev=be9e15dffc6bc229bcd6777f8853079190d7ae9b#be9e15dffc6bc229bcd6777f8853079190d7ae9b"
 dependencies = [
  "waterkit-video-container",
  "waterkit-video-core",
@@ -12647,7 +12666,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video-container"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=fe8fb288444385f1bb7199c0ef11ee4c8a23aef0#fe8fb288444385f1bb7199c0ef11ee4c8a23aef0"
+source = "git+https://github.com/water-rs/waterkit?rev=be9e15dffc6bc229bcd6777f8853079190d7ae9b#be9e15dffc6bc229bcd6777f8853079190d7ae9b"
 dependencies = [
  "broadcast-common",
  "byteorder",
@@ -12662,7 +12681,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video-core"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=fe8fb288444385f1bb7199c0ef11ee4c8a23aef0#fe8fb288444385f1bb7199c0ef11ee4c8a23aef0"
+source = "git+https://github.com/water-rs/waterkit?rev=be9e15dffc6bc229bcd6777f8853079190d7ae9b#be9e15dffc6bc229bcd6777f8853079190d7ae9b"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -12670,7 +12689,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video-player"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=fe8fb288444385f1bb7199c0ef11ee4c8a23aef0#fe8fb288444385f1bb7199c0ef11ee4c8a23aef0"
+source = "git+https://github.com/water-rs/waterkit?rev=be9e15dffc6bc229bcd6777f8853079190d7ae9b#be9e15dffc6bc229bcd6777f8853079190d7ae9b"
 dependencies = [
  "aes",
  "async-channel",
@@ -12693,7 +12712,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video-streaming"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=fe8fb288444385f1bb7199c0ef11ee4c8a23aef0#fe8fb288444385f1bb7199c0ef11ee4c8a23aef0"
+source = "git+https://github.com/water-rs/waterkit?rev=be9e15dffc6bc229bcd6777f8853079190d7ae9b#be9e15dffc6bc229bcd6777f8853079190d7ae9b"
 dependencies = [
  "async-fs",
  "base64 0.22.1",
@@ -12741,6 +12760,7 @@ dependencies = [
  "libtest-mimic",
  "native-executor",
  "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-foundation 0.3.2",
@@ -12759,6 +12779,7 @@ dependencies = [
  "waterui-graphics",
  "waterui-locale",
  "waterui-map",
+ "waterui-preview-protocol",
  "waterui-video",
  "waterui-webview",
  "wgpu-hal 30.0.1",
@@ -12888,7 +12909,7 @@ dependencies = [
  "waterui-watcher-set",
  "waterui-webview",
  "wgpu 30.0.1",
- "wgpu-external-frame 0.3.0",
+ "wgpu-external-frame",
 ]
 
 [[package]]
@@ -12915,7 +12936,7 @@ dependencies = [
  "waterui-watcher-set",
  "waterui-webview",
  "wgpu 30.0.1",
- "wgpu-external-frame 0.3.0",
+ "wgpu-external-frame",
  "xkeysym",
 ]
 
@@ -13072,6 +13093,7 @@ version = "0.5.1"
 dependencies = [
  "executor-core",
  "nami",
+ "serde",
  "thiserror 2.0.21",
  "waterui",
  "waterui-core",
@@ -13220,7 +13242,7 @@ dependencies = [
  "objc2-metal 0.3.2",
  "pastey 0.2.3",
  "pollster 1.0.1",
- "shaderloom",
+ "shaderloom 0.2.1",
  "thiserror 2.0.21",
  "tracing",
  "ttf-parser",
@@ -13542,6 +13564,7 @@ dependencies = [
  "serde_json",
  "tracing",
  "waterui",
+ "waterui-controls",
  "waterui-mcp-protocol",
  "waterui-testing",
 ]
@@ -13616,7 +13639,7 @@ dependencies = [
  "fastrand",
  "glam",
  "num-traits",
- "shaderloom",
+ "shaderloom 0.1.2",
  "waterui-core",
  "waterui-graphics",
 ]
@@ -13632,7 +13655,6 @@ dependencies = [
  "blocking",
  "executor-core",
  "futures-lite",
- "image",
  "indexmap 2.14.2",
  "libloading 0.9.0",
  "serde_json",
@@ -13652,6 +13674,7 @@ dependencies = [
  "dirs 7.0.0",
  "futures-lite",
  "hex",
+ "image",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -13823,7 +13846,7 @@ dependencies = [
  "jni 0.22.4",
  "nami",
  "num-traits",
- "shaderloom",
+ "shaderloom 0.1.2",
  "tracing",
  "uuid",
  "waterkit-audio",
@@ -14280,27 +14303,6 @@ version = "30.0.1"
 source = "git+https://github.com/water-rs/wgpu?rev=4b35d8bc968f6968b3cbae65b6e2e2ee132aa038#4b35d8bc968f6968b3cbae65b6e2e2ee132aa038"
 dependencies = [
  "wgpu-hal 30.0.1",
-]
-
-[[package]]
-name = "wgpu-external-frame"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8248db9730eb67fcfdd414da3bfd7efe6a2c0c4f9f1d1ae3796e874646ea8252"
-dependencies = [
- "ash",
- "glow",
- "libc",
- "libloading 0.9.0",
- "ndk",
- "objc2 0.6.4",
- "objc2-core-foundation",
- "objc2-io-surface",
- "objc2-metal 0.3.2",
- "sync_wrapper",
- "thiserror 2.0.21",
- "wgpu 30.0.1",
- "windows 0.62.2",
 ]
 
 [[package]]
