@@ -643,6 +643,34 @@ async fn exclusive_lock_file(
     .await
 }
 
+/// The lock serializing connect-or-start of the per-user sccache server.
+///
+/// `SCCACHE_SERVER_UDS` points every build of one user at one socket path,
+/// and every sccache client that finds no listener spawns a server itself —
+/// racing daemons whose binds on the fixed path collide, which reports as
+/// `Server startup failed: File exists` on the hosts that return `EEXIST`
+/// for a colliding create. Held across the client's connect-or-start, the
+/// loser of a process race waits for the winner's server and connects to
+/// it instead of binding over it. `~/.water/locks/` keeps the lock beside
+/// the socket's Water home; like `.build-lease` the file is never deleted —
+/// it is the thing being locked — so `water clean` dropping the build cache
+/// cannot unlink it under a running startup.
+///
+/// # Errors
+/// Returns an error if the Water home cannot be resolved, the lock
+/// directory or the lock file cannot be created, or the lock cannot be
+/// taken.
+pub async fn sccache_server_lock(host: &crate::toolchain::Host) -> eyre::Result<std::fs::File> {
+    let water_home = water_home_dir(host)?;
+    exclusive_lock_file(
+        locks_dir_in(&water_home).join("sccache-server.lock"),
+        || {
+            info!("Waiting for another sccache server startup to finish");
+        },
+    )
+    .await
+}
+
 /// The lock serializing `water preview --platform android` runs of one
 /// project.
 ///
