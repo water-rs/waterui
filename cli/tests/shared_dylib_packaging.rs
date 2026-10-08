@@ -34,6 +34,7 @@ use waterui_cli::build::{
     needed_shared_libraries,
 };
 use waterui_cli::project::{ManagedBackends, Project};
+use waterui_cli::toolchain::Host;
 
 /// Write `contents` to `path`, creating parent directories.
 fn write(path: &Path, contents: &str) {
@@ -41,30 +42,25 @@ fn write(path: &Path, contents: &str) {
     std::fs::write(path, contents).expect("write file");
 }
 
-/// A fresh `CARGO_HOME` under `root`, installed in the test's
-/// environment so every `cargo` the fixture spawns — directly or inside
-/// the CLI, which inherits this environment — is hermetic with respect
-/// to the machine's global Cargo configuration. A
-/// `target.<triple|cfg>.rustflags` table in `$CARGO_HOME/config.toml`
-/// — e.g. a linker selection like `-C link-arg=-fuse-ld=mold` —
-/// outranks the fixture's own `[build] rustflags` (Cargo's rustflags
-/// sources are mutually exclusive and `target.*` wins), silently
-/// discarding the flags the fixture relies on. The toolchain still
-/// resolves through rustup's `RUSTUP_HOME`, which `CARGO_HOME` does not
-/// affect.
-fn hermetic_cargo_home(root: &Path) {
+/// This machine with a fresh `CARGO_HOME` under `root`, so every `cargo`
+/// the fixture spawns — directly or inside the CLI, which spawns through
+/// the same host — is hermetic with respect to the machine's global Cargo
+/// configuration. A `target.<triple|cfg>.rustflags` table in
+/// `$CARGO_HOME/config.toml` — e.g. a linker selection like
+/// `-C link-arg=-fuse-ld=mold` — outranks the fixture's own
+/// `[build] rustflags` (Cargo's rustflags sources are mutually exclusive
+/// and `target.*` wins), silently discarding the flags the fixture relies
+/// on. The toolchain still resolves through rustup's `RUSTUP_HOME`, which
+/// `CARGO_HOME` does not affect.
+fn hermetic_host(root: &Path) -> Host {
     let home = root.join("cargo-home");
     std::fs::create_dir_all(&home).expect("create hermetic CARGO_HOME");
-    // SAFETY: nextest runs each test in its own process, and this runs
-    // on the test's only thread before `smol::block_on` spawns the
-    // executor threads that could read the environment concurrently.
-    unsafe { std::env::set_var("CARGO_HOME", home) };
+    Host::current().with_env("CARGO_HOME", home)
 }
 
 /// Run a fixture command to success or fail the test with its output.
 fn run(command: &mut Command, what: &str) -> Output {
     let output = command
-        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -79,12 +75,12 @@ fn run(command: &mut Command, what: &str) -> Output {
 }
 
 /// The executable Cargo reported building for `app`'s `--bin` unit.
-fn built_executable(app_dir: &Path) -> PathBuf {
-    let mut child = Command::new("cargo")
+fn built_executable(host: &Host, app_dir: &Path) -> PathBuf {
+    let mut child = host
+        .std_command("cargo")
         .args(["build", "--message-format=json"])
         .current_dir(app_dir)
         .env("CARGO_TERM_COLOR", "never")
-        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
@@ -236,7 +232,7 @@ fn shared_runtime_name(triple: &Triple) -> String {
 /// Vendor the fixture `waterui-dylib` crate into a git repository under
 /// `root` — so Cargo hashes the source into every `deps/` file name — and
 /// return its `file://` URL.
-fn scaffold_dylib(root: &Path) -> String {
+fn scaffold_dylib(host: &Host, root: &Path) -> String {
     let dylib_dir = root.join("waterui-dylib");
     write(
         &dylib_dir.join("Cargo.toml"),
@@ -247,19 +243,19 @@ fn scaffold_dylib(root: &Path) -> String {
         "/// Marker the fixture binary calls so the linker keeps the dependency.\npub extern \"C\" fn fixture_marker() -> u8 {\n    42\n}\n",
     );
     run(
-        Command::new("git")
+        host.std_command("git")
             .args(["init", "-q"])
             .current_dir(&dylib_dir),
         "git init",
     );
     run(
-        Command::new("git")
+        host.std_command("git")
             .args(["add", "-A"])
             .current_dir(&dylib_dir),
         "git add",
     );
     run(
-        Command::new("git")
+        host.std_command("git")
             .args([
                 "-c",
                 "user.email=fixture@example.invalid",
@@ -279,8 +275,8 @@ fn scaffold_dylib(root: &Path) -> String {
 /// Scaffold the fixture app under `root` and return its directory: a `dylib`
 /// crate vendored in a local git repository — so Cargo hashes the source
 /// into the dylib's `deps/` names — and a binary linking it dynamically.
-fn scaffold_fixture(root: &Path) -> PathBuf {
-    let dylib_url = scaffold_dylib(root);
+fn scaffold_fixture(host: &Host, root: &Path) -> PathBuf {
+    let dylib_url = scaffold_dylib(host, root);
     let app_dir = root.join("app");
     write(
         &app_dir.join("Cargo.toml"),
@@ -310,8 +306,8 @@ fn scaffold_fixture(root: &Path) -> PathBuf {
 /// `waterui-dylib` dependency and the `dev` feature `with_linkage` enables,
 /// and a standalone-workspace `backend` crate whose `--bin` calls into it —
 /// the shape `build_hydrolysis` compiles for a project.
-fn scaffold_run_fixture(root: &Path) -> (PathBuf, PathBuf) {
-    let dylib_url = scaffold_dylib(root);
+fn scaffold_run_fixture(host: &Host, root: &Path) -> (PathBuf, PathBuf) {
+    let dylib_url = scaffold_dylib(host, root);
 
     let app_dir = root.join("app");
     write(
@@ -368,24 +364,28 @@ fn assert_dist_satisfies_needed(executable: &Path, dist: &Path) {
     }
 }
 
+/// A command that runs `executable` on `host` with `library_dir` on the
+/// platform loader's search path.
+fn command_with_library_dir(host: &Host, executable: &Path, library_dir: &Path) -> Command {
+    let mut command = host.std_command(executable);
+    if cfg!(windows) {
+        let mut paths = vec![library_dir.to_path_buf()];
+        paths.extend(host.path_entries());
+        command.env("PATH", std::env::join_paths(paths).expect("join PATH"));
+    } else if cfg!(target_os = "macos") {
+        command.env("DYLD_FALLBACK_LIBRARY_PATH", library_dir);
+    } else {
+        command.env("LD_LIBRARY_PATH", library_dir);
+    }
+    command
+}
+
 /// Run the staged `executable` with `dist` on the library search path and
 /// assert it exits successfully.
-fn assert_staged_binary_runs(executable: &Path, dist: &Path) {
+fn assert_staged_binary_runs(host: &Host, executable: &Path, dist: &Path) {
     let staged_exe = dist.join(executable.file_name().expect("exe name"));
     std::fs::copy(executable, &staged_exe).expect("stage executable");
-    let mut run = Command::new(&staged_exe);
-    if cfg!(windows) {
-        let path = std::env::var_os("PATH").unwrap_or_default();
-        let mut paths = vec![dist.to_path_buf()];
-        paths.extend(std::env::split_paths(&path));
-        run.env("PATH", std::env::join_paths(paths).expect("join PATH"));
-    } else if cfg!(target_os = "macos") {
-        run.env("DYLD_FALLBACK_LIBRARY_PATH", dist);
-    } else {
-        run.env("LD_LIBRARY_PATH", dist);
-    }
-    let output = run
-        .stdin(Stdio::null())
+    let output = command_with_library_dir(host, &staged_exe, dist)
         .output()
         .expect("launch staged binary");
     assert!(
@@ -399,20 +399,8 @@ fn assert_staged_binary_runs(executable: &Path, dist: &Path) {
 /// Run `executable` where it already lives, with `runtime_dir` — the profile
 /// directory it sits in — on the loader search path, the way `water mcp`
 /// spawns the binary it just staged.
-fn assert_binary_runs_in_place(executable: &Path, runtime_dir: &Path) {
-    let mut run = Command::new(executable);
-    if cfg!(windows) {
-        let path = std::env::var_os("PATH").unwrap_or_default();
-        let mut paths = vec![runtime_dir.to_path_buf()];
-        paths.extend(std::env::split_paths(&path));
-        run.env("PATH", std::env::join_paths(paths).expect("join PATH"));
-    } else if cfg!(target_os = "macos") {
-        run.env("DYLD_FALLBACK_LIBRARY_PATH", runtime_dir);
-    } else {
-        run.env("LD_LIBRARY_PATH", runtime_dir);
-    }
-    let output = run
-        .stdin(Stdio::null())
+fn assert_binary_runs_in_place(host: &Host, executable: &Path, runtime_dir: &Path) {
+    let output = command_with_library_dir(host, executable, runtime_dir)
         .output()
         .expect("launch rebuilt binary");
     assert!(
@@ -430,12 +418,12 @@ fn assert_binary_runs_in_place(executable: &Path, runtime_dir: &Path) {
 #[test]
 fn packaged_binary_finds_every_shared_library_it_records() {
     let temporary: TempDir = tempdir().expect("tempdir");
-    hermetic_cargo_home(temporary.path());
+    let host = hermetic_host(temporary.path());
     smol::block_on(async {
         let root = temporary.path();
-        let app_dir = scaffold_fixture(root);
+        let app_dir = scaffold_fixture(&host, root);
 
-        let executable = built_executable(&app_dir);
+        let executable = built_executable(&host, &app_dir);
         let profile_dir = app_dir.join("target/debug");
         let triple = Triple::host();
         let shared_runtime = profile_dir.join(shared_runtime_name(&triple));
@@ -454,13 +442,9 @@ fn packaged_binary_finds_every_shared_library_it_records() {
             app_library: None,
             cef_helper: None,
         };
-        let project = Project::open(
-            &waterui_cli::toolchain::Host::current(),
-            &app_dir,
-            ManagedBackends::NONE,
-        )
-        .await
-        .expect("open fixture project");
+        let project = Project::open(&host, &app_dir, ManagedBackends::NONE)
+            .await
+            .expect("open fixture project");
 
         let libraries = RustDynamicLibraries::resolve(&built, &triple, &project)
             .await
@@ -472,7 +456,7 @@ fn packaged_binary_finds_every_shared_library_it_records() {
             .expect("stage shared libraries");
 
         assert_dist_satisfies_needed(&executable, &dist);
-        assert_staged_binary_runs(&executable, &dist);
+        assert_staged_binary_runs(&host, &executable, &dist);
     });
 }
 
@@ -486,29 +470,21 @@ fn packaged_binary_finds_every_shared_library_it_records() {
 #[test]
 fn run_built_binary_finds_every_shared_library_it_records() {
     let temporary: TempDir = tempdir().expect("tempdir");
-    hermetic_cargo_home(temporary.path());
+    let host = hermetic_host(temporary.path());
     smol::block_on(async {
         let root = temporary.path();
-        let (app_dir, backend_dir) = scaffold_run_fixture(root);
+        let (app_dir, backend_dir) = scaffold_run_fixture(&host, root);
 
         let triple = Triple::host();
-        let built = RustBuild::new(
-            &waterui_cli::toolchain::Host::current(),
-            &backend_dir,
-            triple.clone(),
-        )
-        .with_target_dir(root.join("target"))
-        .with_linkage(RustLinkage::SharedRuntime, "app/dev", &["$ORIGIN"])
-        .build_binary("backend", false)
-        .await
-        .expect("build the fixture backend binary");
-        let project = Project::open(
-            &waterui_cli::toolchain::Host::current(),
-            &app_dir,
-            ManagedBackends::NONE,
-        )
-        .await
-        .expect("open fixture project");
+        let built = RustBuild::new(&host, &backend_dir, triple.clone())
+            .with_target_dir(root.join("target"))
+            .with_linkage(RustLinkage::SharedRuntime, "app/dev", &["$ORIGIN"])
+            .build_binary("backend", false)
+            .await
+            .expect("build the fixture backend binary");
+        let project = Project::open(&host, &app_dir, ManagedBackends::NONE)
+            .await
+            .expect("open fixture project");
 
         let libraries = RustDynamicLibraries::resolve(&built, &triple, &project)
             .await
@@ -520,7 +496,7 @@ fn run_built_binary_finds_every_shared_library_it_records() {
             .expect("stage shared libraries");
 
         assert_dist_satisfies_needed(&built.artifact, &dist);
-        assert_staged_binary_runs(&built.artifact, &dist);
+        assert_staged_binary_runs(&host, &built.artifact, &dist);
     });
 }
 
@@ -533,18 +509,14 @@ fn run_built_binary_finds_every_shared_library_it_records() {
 #[test]
 fn a_second_shared_runtime_build_finds_the_dylib_dep_info() {
     let temporary: TempDir = tempdir().expect("tempdir");
-    hermetic_cargo_home(temporary.path());
+    let host = hermetic_host(temporary.path());
     smol::block_on(async {
         let root = temporary.path();
-        let (_app_dir, backend_dir) = scaffold_run_fixture(root);
+        let (_app_dir, backend_dir) = scaffold_run_fixture(&host, root);
 
-        let build = RustBuild::new(
-            &waterui_cli::toolchain::Host::current(),
-            &backend_dir,
-            Triple::host(),
-        )
-        .with_target_dir(root.join("target"))
-        .with_linkage(RustLinkage::SharedRuntime, "app/dev", &["$ORIGIN"]);
+        let build = RustBuild::new(&host, &backend_dir, Triple::host())
+            .with_target_dir(root.join("target"))
+            .with_linkage(RustLinkage::SharedRuntime, "app/dev", &["$ORIGIN"]);
         build
             .build_binary("backend", false)
             .await
@@ -564,17 +536,13 @@ fn a_second_shared_runtime_build_finds_the_dylib_dep_info() {
 #[test]
 fn an_unchanged_build_leaves_the_binary_artifact_untouched() {
     let temporary: TempDir = tempdir().expect("tempdir");
-    hermetic_cargo_home(temporary.path());
+    let host = hermetic_host(temporary.path());
     smol::block_on(async {
         let root = temporary.path();
-        let (_app_dir, backend_dir) = scaffold_run_fixture(root);
-        let build = RustBuild::new(
-            &waterui_cli::toolchain::Host::current(),
-            &backend_dir,
-            Triple::host(),
-        )
-        .with_target_dir(root.join("target"))
-        .with_linkage(RustLinkage::SharedRuntime, "app/dev", &["$ORIGIN"]);
+        let (_app_dir, backend_dir) = scaffold_run_fixture(&host, root);
+        let build = RustBuild::new(&host, &backend_dir, Triple::host())
+            .with_target_dir(root.join("target"))
+            .with_linkage(RustLinkage::SharedRuntime, "app/dev", &["$ORIGIN"]);
 
         let first = build
             .build_binary("backend", false)
@@ -617,20 +585,20 @@ fn an_unchanged_build_leaves_the_binary_artifact_untouched() {
 /// package id hashes into a new `-C metadata` suffix on every `deps/` name,
 /// the way a framework update does between two `water mcp` runs sharing one
 /// target directory.
-fn bump_vendored_dylib(root: &Path, backend_dir: &Path) {
+fn bump_vendored_dylib(host: &Host, root: &Path, backend_dir: &Path) {
     let dylib_dir = root.join("waterui-dylib");
     write(
         &dylib_dir.join("Cargo.toml"),
         "[package]\nname = \"waterui-dylib\"\nversion = \"0.2.0\"\nedition = \"2021\"\n\n[lib]\nname = \"waterui_dylib\"\ncrate-type = [\"dylib\", \"rlib\"]\n",
     );
     run(
-        Command::new("git")
+        host.std_command("git")
             .args(["add", "-A"])
             .current_dir(&dylib_dir),
         "git add",
     );
     run(
-        Command::new("git")
+        host.std_command("git")
             .args([
                 "-c",
                 "user.email=fixture@example.invalid",
@@ -642,7 +610,7 @@ fn bump_vendored_dylib(root: &Path, backend_dir: &Path) {
         "git commit",
     );
     run(
-        Command::new("cargo")
+        host.std_command("cargo")
             .args(["update", "-p", "waterui-dylib"])
             .current_dir(backend_dir),
         "cargo update waterui-dylib",
@@ -686,30 +654,22 @@ fn staged_waterui_names(dir: &Path) -> Vec<String> {
 #[test]
 fn restaging_replaces_a_stale_hashed_shared_runtime() {
     let temporary: TempDir = tempdir().expect("tempdir");
-    hermetic_cargo_home(temporary.path());
+    let host = hermetic_host(temporary.path());
     smol::block_on(async {
         let root = temporary.path();
-        let (app_dir, backend_dir) = scaffold_run_fixture(root);
+        let (app_dir, backend_dir) = scaffold_run_fixture(&host, root);
         let triple = Triple::host();
         let target_dir = root.join("target");
-        let project = Project::open(
-            &waterui_cli::toolchain::Host::current(),
-            &app_dir,
-            ManagedBackends::NONE,
-        )
-        .await
-        .expect("open fixture project");
+        let project = Project::open(&host, &app_dir, ManagedBackends::NONE)
+            .await
+            .expect("open fixture project");
 
-        let built = RustBuild::new(
-            &waterui_cli::toolchain::Host::current(),
-            &backend_dir,
-            triple.clone(),
-        )
-        .with_target_dir(target_dir.clone())
-        .with_linkage(RustLinkage::SharedRuntime, "app/dev", &["$ORIGIN"])
-        .build_binary("backend", false)
-        .await
-        .expect("first fixture build");
+        let built = RustBuild::new(&host, &backend_dir, triple.clone())
+            .with_target_dir(target_dir.clone())
+            .with_linkage(RustLinkage::SharedRuntime, "app/dev", &["$ORIGIN"])
+            .build_binary("backend", false)
+            .await
+            .expect("first fixture build");
         let runtime_dir = built.profile_dir.clone();
         RustDynamicLibraries::resolve(&built, &triple, &project)
             .await
@@ -732,20 +692,16 @@ fn restaging_replaces_a_stale_hashed_shared_runtime() {
             "first stage must leave exactly the recorded runtime name"
         );
 
-        bump_vendored_dylib(root, &backend_dir);
+        bump_vendored_dylib(&host, root, &backend_dir);
 
         // `built`'s artifact lock must close before the rebuild waits on it.
         drop(built);
-        let rebuilt = RustBuild::new(
-            &waterui_cli::toolchain::Host::current(),
-            &backend_dir,
-            triple.clone(),
-        )
-        .with_target_dir(target_dir)
-        .with_linkage(RustLinkage::SharedRuntime, "app/dev", &["$ORIGIN"])
-        .build_binary("backend", false)
-        .await
-        .expect("rebuild after dylib bump");
+        let rebuilt = RustBuild::new(&host, &backend_dir, triple.clone())
+            .with_target_dir(target_dir)
+            .with_linkage(RustLinkage::SharedRuntime, "app/dev", &["$ORIGIN"])
+            .build_binary("backend", false)
+            .await
+            .expect("rebuild after dylib bump");
         let rebuilt_needed: Vec<String> = needed_shared_libraries(&rebuilt.artifact)
             .expect("rebuilt needed")
             .into_iter()
@@ -772,6 +728,7 @@ fn restaging_replaces_a_stale_hashed_shared_runtime() {
             "restaging must replace the stale hashed runtime with the recorded one"
         );
         assert_binary_runs_in_place(
+            &host,
             rebuilt
                 .executable()
                 .expect("the rebuilt unit reports an executable"),
