@@ -1,6 +1,7 @@
 //! Per-frame flush: [`RenderNode::flush`] records the laid-out subtree
 //! into the nodes' programs using the cached placements.
 
+#[cfg(feature = "accessibility")]
 use super::layout::kurbo_rect;
 use std::num::NonZeroU64;
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
