@@ -13,7 +13,7 @@ use crate::renderer::tests::MinimalTestTheme;
 use crate::renderer::{FontFamilyResolution, HydrolysisRenderer, InteractionKey};
 use crate::text::SessionTextEngine;
 use core::time::Duration;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Instant;
 use waterui::component::list::{List, ListItem};
@@ -1349,4 +1349,64 @@ fn debounced_on_change_fires_after_the_quiet_period() {
         &[1],
         "debounce never re-emitted: the upstream watch died with the combinator"
     );
+}
+
+/// A `Binding::set` outside a frame must schedule one
+/// (water-rs/waterui#2286): the host wake installed at mount fires on the
+/// none→some pending-request edge — once per burst — and the pump's drain
+/// re-arms it. The headless window's own wake is a documented no-op, so
+/// this installs a counting one to observe the edge the real runners
+/// rely on.
+#[test]
+fn a_binding_set_outside_a_frame_fires_the_installed_wake_once() {
+    let fires = Rc::new(Cell::new(0u32));
+    let mut runtime = runtime_window_for(Window::new("", binding(WindowState::Normal), || ()));
+    runtime.renderer.install_host_wake({
+        let fires = Rc::clone(&fires);
+        Rc::new(move || fires.set(fires.get() + 1))
+    });
+
+    runtime.window.state.set(WindowState::Minimized);
+    assert_eq!(fires.get(), 1, "the first set fires the installed wake");
+    assert!(runtime.renderer.has_pending_frame_request());
+
+    runtime.window.state.set(WindowState::Normal);
+    assert_eq!(
+        fires.get(),
+        1,
+        "a set while the request is pending fires nothing"
+    );
+
+    // The pump's drain re-arms the edge.
+    assert!(runtime.renderer.take_patch_request());
+    assert!(!runtime.renderer.has_pending_frame_request());
+    runtime.window.state.set(WindowState::Minimized);
+    assert_eq!(fires.get(), 2);
+}
+
+/// The wake's gate, shared by every waker host: suppressed inside the
+/// host's frame transaction (the request is counted into `wants_next_frame`
+/// instead of posting into a frame already running) and while occluded
+/// (it stays armed for the restore frame).
+#[test]
+fn frame_wake_posts_only_outside_a_transaction_and_unoccluded() {
+    use super::window::frame_wake_may_post;
+    assert!(frame_wake_may_post(false, false));
+    assert!(!frame_wake_may_post(true, false));
+    assert!(!frame_wake_may_post(false, true));
+    assert!(!frame_wake_may_post(true, true));
+}
+
+/// `wants_next_frame` counts a `FrameSignals` request still pending at
+/// the transaction's end — one raised inside it fired no wake (the gate
+/// is closed while it runs) and would otherwise be lost.
+#[test]
+fn wants_next_frame_counts_a_request_raised_inside_the_transaction() {
+    use super::window::wants_next_frame;
+    assert!(wants_next_frame(false, false, false, true));
+    assert!(!wants_next_frame(false, false, false, false));
+    assert!(wants_next_frame(false, true, false, false));
+    assert!(wants_next_frame(false, false, true, false));
+    // Hidden: the armed request waits for the restore frame — no post.
+    assert!(!wants_next_frame(true, true, true, true));
 }
