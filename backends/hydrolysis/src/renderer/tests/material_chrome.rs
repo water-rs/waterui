@@ -666,6 +666,44 @@ fn members_under_different_canvases_never_share() {
     );
 }
 
+/// A commit that carries no program re-keys a filtered node's members
+/// under the canvas their lowering keyed them with — the node's own
+/// filtered frame — so an idle commit neither moves them to the parent's
+/// canvas nor rebuilds their group (water-rs/waterui#1788).
+#[test]
+fn a_no_program_commit_keeps_a_filtered_members_canvas() {
+    let mut renderer = mirrored(
+        tap_color("#27272A").blur(2.0f32),
+        MinimalTestTheme {
+            chrome: glass_plan(vec![chrome_draw(GLASS, GLASS_SHADER, vec![])]),
+            ..Default::default()
+        },
+    );
+    let member = mirror_chrome_layers(&renderer)[0];
+    let group = |renderer: &crate::renderer::HydrolysisRenderer| {
+        *renderer
+            .mirror()
+            .chrome_groups()
+            .chrome_group(member)
+            .expect("the member holds a group membership")
+    };
+    let before = group(&renderer);
+    assert_eq!(renderer.mirror().union_log().len(), 1);
+
+    renderer.commit_mirror();
+    assert_eq!(
+        group(&renderer),
+        before,
+        "the member stays keyed under its filtered canvas",
+    );
+    assert_eq!(
+        renderer.mirror().union_log().len(),
+        1,
+        "the idle commit built no group",
+    );
+    assert_eq!(renderer.mirror().chrome_groups().chrome_group_count(), 1);
+}
+
 /// A display-scale change rebuilds the group: the capture terms are in
 /// capture texels, so the members re-key under a fresh group for the new
 /// scale.

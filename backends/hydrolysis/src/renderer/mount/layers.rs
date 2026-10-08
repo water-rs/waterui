@@ -751,7 +751,7 @@ pub fn commit_cell<T: LayerTarget>(
             .is_some()
             .then(|| layers.frame.id())
             .or(canvas);
-        commit_chrome(cx, &mut layers, canvas);
+        commit_chrome(cx, &mut layers, child_canvas);
         for child in committed_cells(&layers) {
             commit_cell(cx, &child, child_canvas, true);
         }
