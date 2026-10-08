@@ -30,7 +30,6 @@ use crate::{
         toolchain::{AppleSdk, Xcode},
     },
     device::Device,
-    esp32::{chip::Esp32Chip, toolchain::Esp32Toolchain},
     framework::manifest_rust_version,
     gtk4::toolchain::Gtk4Toolchain,
     platform::TargetPlatform,
@@ -105,8 +104,6 @@ pub enum DoctorGroup {
     Gtk4,
     /// The Android SDK chain and its Java/Kotlin/CMake helpers.
     Android,
-    /// The Espressif toolchain the Dew backend flashes with.
-    Esp32,
     /// Build accelerators and cargo helper binaries.
     Helpers,
 }
@@ -122,7 +119,6 @@ impl DoctorGroup {
         Self::WinUi,
         Self::Gtk4,
         Self::Android,
-        Self::Esp32,
         Self::Helpers,
     ];
 
@@ -137,7 +133,6 @@ impl DoctorGroup {
             Self::WinUi => "winui",
             Self::Gtk4 => "gtk4",
             Self::Android => "android",
-            Self::Esp32 => "esp32",
             Self::Helpers => "helpers",
         }
     }
@@ -153,7 +148,6 @@ impl DoctorGroup {
             Self::WinUi => "WinUI",
             Self::Gtk4 => "GTK4",
             Self::Android => "Android",
-            Self::Esp32 => "ESP32 (Dew)",
             Self::Helpers => "Build helpers",
         }
     }
@@ -173,7 +167,6 @@ impl DoctorGroup {
             Self::WinUi => Some(DoctorScope::Backend(TargetBackend::WinUi)),
             Self::Gtk4 => Some(DoctorScope::Backend(TargetBackend::Gtk4)),
             Self::Android => Some(DoctorScope::Platform(TargetPlatform::Android)),
-            Self::Esp32 => Some(DoctorScope::Backend(TargetBackend::Dew)),
         }
     }
 
@@ -213,7 +206,6 @@ impl DoctorGroup {
             | ids::CMAKE
             | ids::JAVA
             | ids::KOTLIN => Self::Android,
-            ids::ESP32_TOOLCHAIN => Self::Esp32,
             ids::SCCACHE | ids::CARGO_HELPERS => Self::Helpers,
             other => unreachable!("doctor item id `{other}` is not in `ids::ALL`"),
         }
@@ -487,9 +479,6 @@ pub mod ids {
     pub const WASM32_TARGET: &str = "wasm32-target";
     /// `wasm-pack` binary.
     pub const WASM_PACK: &str = "wasm-pack";
-    /// The Espressif `esp` toolchain, its clang/GCC/`rust-src` pieces, and the
-    /// `espflash`/`ldproxy` helpers an ESP32 build drives.
-    pub const ESP32_TOOLCHAIN: &str = "esp32-toolchain";
     /// Cargo-installed helper binaries the CLI's workflows invoke
     /// (`cargo-nextest` for `water bench`).
     pub const CARGO_HELPERS: &str = "cargo-helpers";
@@ -547,7 +536,6 @@ pub mod ids {
         CMAKE,
         JAVA,
         KOTLIN,
-        ESP32_TOOLCHAIN,
         SCCACHE,
         CARGO_HELPERS,
     ];
@@ -625,8 +613,8 @@ impl ProjectContext {
     /// command selects. Outside a project the host decides: the backends
     /// the machine can build for — Apple on macOS, `WinUI` on Windows,
     /// GTK4 on Linux, Hydrolysis on every desktop host — are
-    /// [`BackendScope::HostDefault`]; the Kotlin Android backend and Dew
-    /// need a project to select them and are optional everywhere.
+    /// [`BackendScope::HostDefault`]; the Kotlin Android backend needs a
+    /// project to select it and is optional everywhere.
     ///
     /// A [`DoctorScope::Platform`] key is host-default only when the host
     /// itself builds for the platform — never for Android: Hydrolysis
@@ -666,7 +654,7 @@ impl ProjectContext {
                     TargetBackend::WinUi => cfg!(target_os = "windows"),
                     TargetBackend::Gtk4 => cfg!(target_os = "linux"),
                     TargetBackend::Hydrolysis => true,
-                    TargetBackend::Android | TargetBackend::Dew => false,
+                    TargetBackend::Android => false,
                 };
                 if host_builds {
                     BackendScope::HostDefault
@@ -689,21 +677,6 @@ impl ProjectContext {
         format!(
             "Optional: checked inside a WaterUI project, which can build with the {backend} backend."
         )
-    }
-
-    /// The chips the project's ESP32 (Dew) backend can target: the chip
-    /// `[esp32]` declares, or every supported chip. `None` when no project
-    /// is present.
-    fn esp32_chips(&self) -> Option<eyre::Result<Vec<Esp32Chip>>> {
-        let manifest = self.manifest.as_ref()?;
-        if let Some(config) = &manifest.esp32 {
-            return Some(config.resolved_chip().map(|chip| vec![chip]));
-        }
-        Some(Ok(vec![
-            Esp32Chip::Esp32S3,
-            Esp32Chip::Esp32C3,
-            Esp32Chip::Esp32P4,
-        ]))
     }
 }
 
@@ -1180,46 +1153,9 @@ async fn spirv_opt_check(host: &Host) -> DoctorItem {
     }
 }
 
-/// The Espressif-side toolchain — `esp` Rust fork, clang/GCC, `rust-src`,
-/// `espflash`/`ldproxy`, QEMU — when the project selects a Dew/ESP32 backend.
-async fn esp32_check(host: &Host, project: &ProjectContext) -> DoctorItem {
-    const NAME: &str = "ESP32 toolchain";
-    let Some(chips) = project.esp32_chips() else {
-        return DoctorItem::skipped_with_message(
-            ids::ESP32_TOOLCHAIN,
-            NAME,
-            ProjectContext::out_of_scope_message("ESP32"),
-        );
-    };
-    let chips = match chips {
-        Ok(chips) => chips,
-        Err(error) => {
-            return DoctorItem::missing(
-                ids::ESP32_TOOLCHAIN,
-                NAME,
-                format!("Invalid `[esp32]` configuration: {error}"),
-            );
-        }
-    };
-    match Esp32Toolchain::new(chips).check(host).await {
-        Ok(()) => DoctorItem::ok(ids::ESP32_TOOLCHAIN, NAME),
-        Err(ToolchainError::Fixable(installation)) => DoctorItem::fixable(
-            ids::ESP32_TOOLCHAIN,
-            NAME,
-            installation.describe(),
-            installation,
-            host,
-        ),
-        Err(ToolchainError::Unfixable(error)) => {
-            DoctorItem::missing(ids::ESP32_TOOLCHAIN, NAME, unfixable_message(&error))
-        }
-    }
-}
-
 /// The cargo-installed helper binaries a project's workflows invoke —
 /// `cargo-nextest` for `water bench`. Platform helpers that are also cargo
-/// installs (`wasm-pack`, `espflash`/`ldproxy`) are covered by their own
-/// platform items.
+/// installs (`wasm-pack`) are covered by their own platform items.
 async fn cargo_helpers_check(host: &Host) -> DoctorItem {
     const NAME: &str = "Cargo helpers";
     match CargoHelpers::new(["cargo-nextest"]).check(host).await {
@@ -1376,7 +1312,6 @@ pub async fn doctor(host: &Host) -> Vec<DoctorItem> {
         hydrolysis,
         winui,
         android,
-        esp32,
         sccache,
         cargo_helpers,
     ) = join!(
@@ -1387,7 +1322,6 @@ pub async fn doctor(host: &Host) -> Vec<DoctorItem> {
         Box::pin(hydrolysis_checks(host, &project)),
         Box::pin(winui_check(host)),
         Box::pin(android_checks(host)),
-        Box::pin(esp32_check(host, &project)),
         Box::pin(toolchain_check(
             host,
             ids::SCCACHE,
@@ -1406,7 +1340,6 @@ pub async fn doctor(host: &Host) -> Vec<DoctorItem> {
     items.push(winui);
     items.push(gtk4);
     items.extend(android);
-    items.push(esp32);
     items.push(sccache);
     items.push(cargo_helpers);
     for item in &mut items {
@@ -1501,7 +1434,7 @@ mod tests {
     ];
 
     /// A minimal `Water.toml` app manifest; `extra` is appended verbatim
-    /// (`[esp32]`, `[web]`, ...).
+    /// (`[web]`, `[hydrolysis]`, ...).
     fn manifest(extra: &str) -> String {
         format!(
             "[package]\nname = \"Fixture\"\nbundle_identifier = \"dev.waterui.fixture\"\n\n{extra}"
@@ -1773,7 +1706,7 @@ mod tests {
 
     /// Outside a project the host decides: Hydrolysis everywhere, Apple on
     /// macOS, GTK4 on Linux, `WinUI` on Windows; the Kotlin Android backend
-    /// and Dew optional.
+    /// optional.
     #[test]
     fn scope_outside_a_project_follows_the_host() {
         let project = project_less();
@@ -1785,7 +1718,7 @@ mod tests {
             project.scope(TargetBackend::Android),
             BackendScope::Optional
         );
-        assert_eq!(project.scope(TargetBackend::Dew), BackendScope::Optional);
+
         let host_only = |backend, on_host: bool| {
             let expected = if on_host {
                 BackendScope::HostDefault
@@ -1855,7 +1788,6 @@ mod tests {
             TargetBackend::Gtk4,
             TargetBackend::Hydrolysis,
             TargetBackend::WinUi,
-            TargetBackend::Dew,
         ] {
             assert_eq!(
                 project.scope(backend),
@@ -1866,8 +1798,7 @@ mod tests {
     }
 
     /// Outside a project the host's backends are probed — the Android
-    /// toolchain is not: no host targets Android without a project — and
-    /// ESP32 is reported as optional rather than skipped-as-unselected.
+    /// toolchain is not: no host targets Android without a project.
     #[test]
     fn doctor_checks_the_hosts_backends_outside_a_project() {
         let machine = TestMachine::new();
@@ -1895,14 +1826,6 @@ mod tests {
                 "{id} is optional without a project"
             );
         }
-        assert!(
-            item(&items, ids::ESP32_TOOLCHAIN).optional,
-            "esp32-toolchain is optional without a project"
-        );
-        assert_eq!(
-            item(&items, ids::ESP32_TOOLCHAIN).status,
-            CheckStatus::Skipped
-        );
     }
 
     /// The terminal groups follow the new-user order: Rust, the host's
@@ -1924,12 +1847,6 @@ mod tests {
         {
             assert!(last_required < first_optional);
         }
-        assert!(
-            sections
-                .iter()
-                .find(|section| section.group == DoctorGroup::Esp32)
-                .is_some_and(|section| section.optional)
-        );
         // No host targets Android without a project — Hydrolysis merely
         // cross-compiles to it — so the Android group is optional.
         assert!(
@@ -1950,7 +1867,7 @@ mod tests {
     #[test]
     fn doctor_probes_every_backend_inside_a_project() {
         let machine = TestMachine::new();
-        machine.file("Water.toml", &manifest("[esp32]\nchip = \"esp32c3\"\n"));
+        machine.file("Water.toml", &manifest(""));
         let host = machine.host(Vec::<(String, String)>::new());
         let items = smol::block_on(doctor(&host));
 
@@ -1958,7 +1875,6 @@ mod tests {
             ids::ANDROID_RUST_TARGETS,
             ids::WASM32_TARGET,
             ids::WASM_PACK,
-            ids::ESP32_TOOLCHAIN,
         ] {
             assert_eq!(
                 item(&items, id).status,
@@ -1972,27 +1888,6 @@ mod tests {
                 CheckStatus::Missing
             );
         }
-    }
-
-    /// An `[esp32]` chip the CLI does not support is a diagnostic,
-    /// not a skipped item.
-    #[test]
-    fn doctor_reports_invalid_esp32_chip() {
-        let machine = TestMachine::new();
-        machine.file("Water.toml", &manifest("[esp32]\nchip = \"atmega328p\"\n"));
-        let host = machine.host(Vec::<(String, String)>::new());
-        let items = smol::block_on(doctor(&host));
-
-        let esp32 = item(&items, ids::ESP32_TOOLCHAIN);
-        assert_eq!(esp32.status, CheckStatus::Missing);
-        assert!(
-            esp32
-                .message
-                .as_deref()
-                .is_some_and(|message| message.contains("Invalid")),
-            "the invalid chip must be diagnosed: {:?}",
-            esp32.message
-        );
     }
 
     /// A `--fix` pass runs each fixable item's install; a re-diagnosis must

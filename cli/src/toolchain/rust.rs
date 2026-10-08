@@ -373,15 +373,6 @@ fn cargo_bin_dir(host: &Host) -> Option<PathBuf> {
     host.home_dir().map(|home| home.join(".cargo/bin"))
 }
 
-/// The directory rustup unpacks toolchains into on this host:
-/// `$RUSTUP_HOME/toolchains`, falling back to `~/.rustup/toolchains`.
-pub(crate) fn rustup_toolchains_dir(host: &Host) -> Option<PathBuf> {
-    host.env_string("RUSTUP_HOME")
-        .map(PathBuf::from)
-        .or_else(|| host.home_dir().map(|home| home.join(".rustup")))
-        .map(|root| root.join("toolchains"))
-}
-
 /// When `rustup` is reachable but `cargo`/`rustc` are not, the rustup proxies
 /// either sit in a directory missing from PATH or were never created. Both
 /// are manual repairs: doctor does not edit shell profiles or reinstall
