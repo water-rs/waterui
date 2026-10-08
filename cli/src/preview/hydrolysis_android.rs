@@ -1189,10 +1189,13 @@ mod tests {
         assert_eq!(device.stamp(), None);
     }
 
-    /// A stream whose decoding fails fails the script, and leaves the
-    /// device holding no stamp, even when `tar` succeeds: the corruption
-    /// follows the whole archive, so only the decoder's own status reports
-    /// it — the case `pipefail` exists for.
+    /// A failing decoder fails the script, and leaves the device holding
+    /// no stamp, even when `tar` succeeds — what the test pins is that
+    /// `set -o pipefail` is there, so `base64 -d`'s exit status reaches
+    /// the script. The host's decoder rejects the appended `!!!!`; the
+    /// device's toybox `base64 -d` would skip those bytes and exit 0 —
+    /// the right outcome there, the archive is intact — and on the device
+    /// `sha256sum -c` is what catches corruption.
     #[test]
     #[cfg(unix)]
     fn a_corrupted_base64_stream_installs_no_stamp() {
