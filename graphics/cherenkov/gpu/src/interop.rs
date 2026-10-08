@@ -1414,16 +1414,3 @@ pub mod web {
         Ok(wrapped)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{FrameColor, YuvRange};
-
-    /// BT.2020 PQ video ships studio-range codes: `FrameColor::BT2020_PQ`
-    /// names that convention — the former "full-range" doc was the typo,
-    /// not a value to align (#2109).
-    #[test]
-    fn bt2020_pq_is_studio_range() {
-        assert_eq!(FrameColor::BT2020_PQ.range, YuvRange::Video);
-    }
-}

@@ -487,17 +487,21 @@ fn solid(
     )?)
 }
 
-/// #2107: a studio-range HLG frame's footroom — luma codes below
-/// nominal black — decodes to black, not to the positive light that
-/// squaring a negative signal produces. `cherenkov_oracle::yuv::decode`
-/// is the f64 reference for every column; the footroom columns must be
-/// exactly black.
+/// A studio-range HLG frame's footroom — luma codes below nominal black —
+/// decodes to black, not to the positive light that squaring a negative
+/// signal produces (#2107). The frame targets a 300-nit display, where
+/// the OOTF exponent `gamma - 1` is negative and scene black must still
+/// decode to black rather than `0 * inf = NaN` (#2108).
+/// `cherenkov_oracle::yuv::decode` is the f64 reference for every column;
+/// the footroom and nominal-black columns must be exactly black.
 #[test]
 #[expect(
     clippy::cast_possible_truncation,
     reason = "codes are 10-bit values shifted into 16-bit words by construction"
 )]
-fn hlg_footroom_decodes_to_black() -> Result<(), Box<dyn std::error::Error>> {
+fn hlg_black_and_footroom_decode_to_black() -> Result<(), Box<dyn std::error::Error>> {
+    // Below ~334 nits the OOTF exponent `gamma - 1` is negative.
+    const PEAK: f32 = 300.0;
     let Some((engine, device, queue)) = engine()? else {
         return Ok(());
     };
@@ -511,7 +515,7 @@ fn hlg_footroom_decodes_to_black() -> Result<(), Box<dyn std::error::Error>> {
         .map(|_| HLG_LUMA.iter().map(|&code| code << 6).collect())
         .collect();
     let uv = vec![vec![[512u32 << 6, 512u32 << 6]; (SIZE / 2) as usize]; (SIZE / 2) as usize];
-    let color = FrameColor::bt2020_hlg(1000.0);
+    let color = FrameColor::bt2020_hlg(PEAK);
     let y_plane = plane(
         &device,
         &queue,
@@ -563,7 +567,7 @@ fn hlg_footroom_decodes_to_black() -> Result<(), Box<dyn std::error::Error>> {
             primaries: cherenkov_oracle::yuv::Primaries::Bt2020,
             transfer: cherenkov_oracle::yuv::Transfer::Hlg {
                 reference_white: 203.0,
-                peak: 1000.0,
+                peak: f64::from(PEAK),
             },
         },
     )?;
@@ -573,16 +577,17 @@ fn hlg_footroom_decodes_to_black() -> Result<(), Box<dyn std::error::Error>> {
         "hlg",
     );
 
-    // A footroom code decodes to exactly black: a negative signal
-    // squared into positive light — however small — is the defect.
+    // A footroom or nominal-black code decodes to exactly black: a
+    // negative signal squared into positive light — however small, below
+    // `compare`'s tolerance — is #2107, and NaN at scene black is #2108.
     for (x, &code) in HLG_LUMA.iter().enumerate() {
-        if code < 64 {
+        if code <= 64 {
             for y in 0..SIZE {
                 let got = pixels[(y * SIZE + x as u32) as usize];
                 assert_eq!(
                     got,
                     [0.0, 0.0, 0.0, 1.0],
-                    "hlg footroom code {code} at ({x}, {y})"
+                    "hlg black or footroom code {code} at ({x}, {y})"
                 );
             }
         }
