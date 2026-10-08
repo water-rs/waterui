@@ -3151,8 +3151,12 @@ mod permission_audit_tests {
         );
 
         assert!(
-            smol::block_on(package_feature_enabled(&launcher_manifest, "theme", "extra"))
-                .expect("scan the launcher graph")
+            smol::block_on(package_feature_enabled(
+                &launcher_manifest,
+                "theme",
+                "extra"
+            ))
+            .expect("scan the launcher graph")
         );
         assert!(
             !smol::block_on(package_feature_enabled(&app_manifest, "theme", "extra"))
@@ -3399,7 +3403,10 @@ mod permission_audit_tests {
             .gradle_plugins
             .render_settings_block()
             .expect("render the enabled plugin block");
-        assert!(enabled_plugins.contains("com.google.gms.google-services"), "{enabled_plugins}");
+        assert!(
+            enabled_plugins.contains("com.google.gms.google-services"),
+            "{enabled_plugins}"
+        );
         assert!(enabled_plugins.contains("4.4.2"), "{enabled_plugins}");
 
         write_crate(

@@ -122,7 +122,11 @@ mod backend_parser_tests {
     fn removed_android_backend_error_names_hydrolysis_and_keeps_supported_choices() {
         let parser = RemovedAndroidBackendParser::<TargetBackend>::new();
         let error = Command::new("water")
-            .arg(Arg::new("backend").long("backend").value_parser(parser.clone()))
+            .arg(
+                Arg::new("backend")
+                    .long("backend")
+                    .value_parser(parser.clone()),
+            )
             .try_get_matches_from(["water", "--backend", "android"])
             .expect_err("the removed backend must be rejected")
             .to_string();
