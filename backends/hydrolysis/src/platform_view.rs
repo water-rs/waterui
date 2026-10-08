@@ -108,7 +108,7 @@ pub fn next_platform_view_id() -> u64 {
 // JSON — Android JNI today; serde is a target-scoped dependency.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
-    any(target_os = "android", target_arch = "wasm32"),
+    any(test, target_os = "android", target_arch = "wasm32"),
     derive(serde::Serialize)
 )]
 pub struct PlatformViewPlacement {
@@ -116,7 +116,10 @@ pub struct PlatformViewPlacement {
     pub id: u64,
     /// What the host mounts for this leaf — a factory `kind` or a registered
     /// `instance`. Flattened so the JSON reads as before for factories.
-    #[cfg_attr(any(target_os = "android", target_arch = "wasm32"), serde(flatten))]
+    #[cfg_attr(
+        any(test, target_os = "android", target_arch = "wasm32"),
+        serde(flatten)
+    )]
     pub source: PlatformViewSource,
     /// The leaf's laid-out x origin under this frame's transforms.
     pub x: f32,
@@ -130,7 +133,7 @@ pub struct PlatformViewPlacement {
     /// `.clip()`), as `[x, y, width, height]` — present only when it actually
     /// cuts the frame.
     #[cfg_attr(
-        any(target_os = "android", target_arch = "wasm32"),
+        any(test, target_os = "android", target_arch = "wasm32"),
         serde(skip_serializing_if = "Option::is_none")
     )]
     pub clip: Option<[f32; 4]>,
@@ -190,7 +193,7 @@ impl PlatformViewTable {
 
 /// How many mounted platform-view children currently hold UI focus — the
 /// system `WebView` editing inside the page. While nonzero a mounted child
-/// owns the IME: the runner clears the WaterUI text-input focus (a Hydrolysis
+/// owns the IME: the runner clears the `WaterUI` text-input focus (a Hydrolysis
 /// field must not claim focus it does not hold) and drives no show/hide of
 /// its own — the child manages the keyboard itself.
 ///
@@ -207,6 +210,10 @@ pub struct PlatformViewFocus {
 impl PlatformViewFocus {
     /// A platform-view child gained (`true`) or lost (`false`) UI focus.
     /// Balanced per view: a gain pairs the later loss.
+    ///
+    /// Only the system `WebView` feeds this today, so the binding stays
+    /// behind its cfg while the count itself is read unconditionally.
+    #[cfg(hydrolysis_android_system_webview)]
     pub fn note(&self, focused: bool) {
         let holding = self.holding.get();
         self.holding.set(if focused {

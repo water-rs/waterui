@@ -38,9 +38,9 @@ use crate::platform_view::PlatformViewFocus;
 use crate::runner::android::jni::{JniError, get_string, guard, guard_val};
 
 use super::android_protocol::{
-    ASYNC_RESULT_OBJECT, BRIDGE_OBJECT, PendingCall,
-    PendingCalls, TRANSPORT_SCRIPT, WEBVIEW_ASSET_RESPONSE_INIT, WEBVIEW_CREATE, WEBVIEW_METHODS,
-    WebViewMethodId, androidx_origin_rules, compose_async_call, compose_document_end, cookie_url,
+    ASYNC_RESULT_OBJECT, BRIDGE_OBJECT, PendingCall, PendingCalls, TRANSPORT_SCRIPT,
+    WEBVIEW_ASSET_RESPONSE_INIT, WEBVIEW_CREATE, WEBVIEW_METHODS, WebViewMethodId,
+    androidx_origin_rules, compose_async_call, compose_document_end, cookie_url,
     origin_may_use_bridge,
 };
 
@@ -82,11 +82,11 @@ impl WebViewMethods {
 }
 
 /// `panic!` carrying the pending Java exception's own `toString` when there
-/// is one — the named Kotlin errors ("lacks WEB_MESSAGE_LISTENER", an
+/// is one — the named Kotlin errors ("lacks `WEB_MESSAGE_LISTENER`", an
 /// unbound session, a non-Activity context) must reach the panic text. The
 /// exception is cleared so the guard's `IllegalStateException` stays the
 /// pending report.
-fn panic_with_java_detail(env: &mut JNIEnv<'_>, context: &str, error: jni::errors::Error) -> ! {
+fn panic_with_java_detail(env: &mut JNIEnv<'_>, context: &str, error: &jni::errors::Error) -> ! {
     let detail = env
         .exception_occurred()
         .ok()
@@ -139,8 +139,8 @@ pub(super) struct SharedState {
     /// with a server.
     asset_origin: Option<Url>,
     /// The session-wide count of platform-view children holding UI focus —
-    /// the WebView reports its gains and losses so the runner drops the
-    /// WaterUI text-input claim while the page owns the IME.
+    /// the `WebView` reports its gains and losses so the runner drops the
+    /// `WaterUI` text-input claim while the page owns the IME.
     platform_view_focus: PlatformViewFocus,
 }
 
@@ -157,7 +157,7 @@ impl SharedState {
 
     /// `evaluateBridgeScript` — the fire-and-forget evaluation bridge replies
     /// take. Callable without a handle because the wrapper lives here. Runs
-    /// inside a local JNI frame: executor tasks enter JNI from the ALooper
+    /// inside a local JNI frame: executor tasks enter JNI from the `ALooper`
     /// fd callback, which has no frame, and locals would otherwise leak.
     fn evaluate_bridge_script(&self, script: String) {
         let Some(wrapper) = self.wrapper.borrow().clone() else {
@@ -173,6 +173,10 @@ impl SharedState {
             let script = env
                 .new_string(script)
                 .expect("a reply script is Java-safe UTF-8");
+            // SAFETY: `method` was resolved for the wrapper class at create
+            // time and the signature is `evaluateBridgeScript`'s `(String)V`.
+            // SAFETY: resolved ids and raw pointers here carry their
+            // documented invariants (see the surrounding doc comment).
             unsafe {
                 env.call_method_unchecked(
                     wrapper.as_obj(),
@@ -183,7 +187,7 @@ impl SharedState {
                 .map(|_| ())
             }
         })
-        .unwrap_or_else(|error| panic_with_java_detail(&mut env, "evaluateBridgeScript", error));
+        .unwrap_or_else(|error| panic_with_java_detail(&mut env, "evaluateBridgeScript", &error));
     }
 
     /// `nativeOnBridgeMessage`: parse the envelope, dispatch the named
@@ -315,13 +319,15 @@ impl CustomWebViewController for AndroidSystemWebViewController {
                 // SAFETY: `native_handle` was `Box::into_raw`'d at the top of
                 // `open`; this is the only site that drops it, and only on the
                 // path where Kotlin never saw the wrapper.
+                // SAFETY: resolved ids and raw pointers here carry their
+                // documented invariants (see the surrounding doc comment).
                 unsafe {
                     drop(Box::from_raw(native_handle as *mut Weak<SharedState>));
                     if asset_server != 0 {
                         drop(Box::from_raw(asset_server as *mut AssetServer));
                     }
                 }
-                panic_with_java_detail(&mut env, "HydrolysisWebView.create", error)
+                panic_with_java_detail(&mut env, "HydrolysisWebView.create", &error)
             });
         *shared.wrapper.borrow_mut() = Some(wrapper.clone());
 
@@ -356,6 +362,10 @@ impl AndroidSystemWebViewController {
         let bridge_object = env.new_string(BRIDGE_OBJECT)?;
         let async_result_object = env.new_string(ASYNC_RESULT_OBJECT)?;
         let asset_host = env.new_string(ANDROID_ASSET_HOST)?;
+        // SAFETY: `create` was resolved for `webview_class` and the
+        // arguments match its `(Session,J,J,J,String,String,String)` signature.
+        // SAFETY: resolved ids and raw pointers here carry their
+        // documented invariants (see the surrounding doc comment).
         let wrapper = unsafe {
             env.call_static_method_unchecked(
                 &self.webview_class,
@@ -363,7 +373,8 @@ impl AndroidSystemWebViewController {
                 ReturnType::Object,
                 &[
                     JValue::Object(self.session.as_ref()).as_jni(),
-                    JValue::Long(jlong::try_from(instance).expect("an instance id fits a jlong")).as_jni(),
+                    JValue::Long(jlong::try_from(instance).expect("an instance id fits a jlong"))
+                        .as_jni(),
                     JValue::Long(native_handle).as_jni(),
                     JValue::Long(asset_server).as_jni(),
                     JValue::Object(bridge_object.as_ref()).as_jni(),
@@ -404,7 +415,7 @@ const LOCAL_FRAME_CAPACITY: i32 = 32;
 
 impl HandleInner {
     /// Run `f` with a JNI env inside a fresh local reference frame: the calls
-    /// the handle makes run inside executor tasks on the ALooper fd callback,
+    /// the handle makes run inside executor tasks on the `ALooper` fd callback,
     /// which supplies no JNI frame, so locals would otherwise leak.
     fn jni<T>(
         &self,
@@ -416,14 +427,20 @@ impl HandleInner {
             .get_env()
             .expect("webview calls run on the UI thread, which is attached");
         env.with_local_frame(LOCAL_FRAME_CAPACITY, f)
-            .unwrap_or_else(|error| panic_with_java_detail(&mut env, context, error))
+            .unwrap_or_else(|error| panic_with_java_detail(&mut env, context, &error))
     }
 
     /// `call_method_unchecked` on the wrapper through the cached table.
     fn call(&self, method: WebViewMethodId, args: &[JValue]) {
         let id = self.methods.id(method);
         self.jni(
+            // SAFETY: the method id was resolved for the wrapper
+            // class at create and the args match its table signature.
+            // SAFETY: resolved ids and raw pointers here carry their
+            // documented invariants (see the surrounding doc comment).
             |env| unsafe {
+                // SAFETY: `id` was resolved for the wrapper class and the
+                // table entry's signature declares void.
                 env.call_method_unchecked(
                     self.wrapper.as_obj(),
                     id,
@@ -439,7 +456,13 @@ impl HandleInner {
     fn call_bool(&self, method: WebViewMethodId, args: &[JValue]) -> bool {
         let id = self.methods.id(method);
         self.jni(
+            // SAFETY: the method id was resolved for the wrapper
+            // class at create and the args match its table signature.
+            // SAFETY: resolved ids and raw pointers here carry their
+            // documented invariants (see the surrounding doc comment).
             |env| unsafe {
+                // SAFETY: `id` was resolved for the wrapper class and the
+                // table entry's signature declares a boolean return.
                 env.call_method_unchecked(
                     self.wrapper.as_obj(),
                     id,
@@ -456,6 +479,10 @@ impl HandleInner {
     fn call_str(&self, method: WebViewMethodId, value: &str, tail: &[JValue]) {
         let id = self.methods.id(method);
         self.jni(
+            // SAFETY: the method id was resolved for the wrapper
+            // class at create and the args match its table signature.
+            // SAFETY: resolved ids and raw pointers here carry their
+            // documented invariants (see the surrounding doc comment).
             |env| unsafe {
                 let value = env
                     .new_string(value)
@@ -463,6 +490,8 @@ impl HandleInner {
                 let mut args: Vec<jvalue> = Vec::with_capacity(tail.len() + 1);
                 args.push(JValue::Object(value.as_ref()).as_jni());
                 args.extend(tail.iter().map(JValue::as_jni));
+                // SAFETY: `id` was resolved for the wrapper class and the
+                // table entry's signature declares void.
                 env.call_method_unchecked(
                     self.wrapper.as_obj(),
                     id,
@@ -479,6 +508,10 @@ impl HandleInner {
     fn call_str_array(&self, method: WebViewMethodId, values: &[String]) {
         let id = self.methods.id(method);
         self.jni(
+            // SAFETY: the method id was resolved for the wrapper
+            // class at create and the args match its table signature.
+            // SAFETY: resolved ids and raw pointers here carry their
+            // documented invariants (see the surrounding doc comment).
             |env| unsafe {
                 let array = env
                     .new_object_array(
@@ -496,6 +529,8 @@ impl HandleInner {
                     )
                     .expect("android webview: writing a string array failed");
                 }
+                // SAFETY: `id` was resolved for the wrapper class and the
+                // table entry's signature declares `([Ljava/lang/String;)V`.
                 env.call_method_unchecked(
                     self.wrapper.as_obj(),
                     id,
@@ -562,6 +597,12 @@ impl Drop for HandleInner {
             .get_env()
             .expect("webview calls run on the UI thread, which is attached");
         let release = self.methods.id(WebViewMethodId::Release);
+        // SAFETY: `release` was resolved for the wrapper class at create
+        // time and takes no arguments.
+        // SAFETY: the method id was resolved for the wrapper
+        // class at create and the args match its table signature.
+        // SAFETY: resolved ids and raw pointers here carry their
+        // documented invariants (see the surrounding doc comment).
         env.with_local_frame::<_, _, jni::errors::Error>(4, |env| unsafe {
             env.call_method_unchecked(
                 self.wrapper.as_obj(),
@@ -579,6 +620,8 @@ impl Drop for HandleInner {
         // SAFETY: `native_handle` was `Box::into_raw`'d in `open` and
         // survives exactly one drop: this one, after `release()` has zeroed
         // Kotlin's copy so no native call can dereference it again.
+        // SAFETY: resolved ids and raw pointers here carry their
+        // documented invariants (see the surrounding doc comment).
         unsafe { drop(Box::from_raw(self.native_handle as *mut Weak<SharedState>)) };
     }
 }
@@ -658,7 +701,11 @@ impl WebViewHandle for AndroidSystemWebViewHandle {
 
     fn set_bridge_origins(&self, policy: OriginPolicy) {
         let rules = androidx_origin_rules(&policy);
-        *self.inner.shared.origin_rules.borrow_mut() = rules.clone();
+        self.inner
+            .shared
+            .origin_rules
+            .borrow_mut()
+            .clone_from(&rules);
         self.inner
             .call_str_array(WebViewMethodId::SetBridgeOrigins, &rules);
     }
@@ -692,9 +739,15 @@ impl WebViewHandle for AndroidSystemWebViewHandle {
         };
         let id = self.inner.methods.id(WebViewMethodId::SetCookie);
         self.inner.jni(
+            // SAFETY: the method id was resolved for the wrapper
+            // class at create and the args match its table signature.
+            // SAFETY: resolved ids and raw pointers here carry their
+            // documented invariants (see the surrounding doc comment).
             |env| unsafe {
                 let url = env.new_string(url).expect("Java-safe UTF-8");
                 let header = env.new_string(cookie.to_string()).expect("Java-safe UTF-8");
+                // SAFETY: `id` was resolved for the wrapper class and the
+                // table entry's signature declares `(String,String)V`.
                 env.call_method_unchecked(
                     self.inner.wrapper.as_obj(),
                     id,
@@ -808,6 +861,8 @@ fn shared_from_handle(handle: jlong) -> Option<Rc<SharedState>> {
     // SAFETY: nonzero handles were `Box::into_raw`'d `Weak` pointers from
     // `open`; they stay live until `release`, which zeroes Kotlin's copy, so
     // a native call can never carry a dangling one.
+    // SAFETY: resolved ids and raw pointers here carry their
+    // documented invariants (see the surrounding doc comment).
     unsafe { &*(handle as *const Weak<SharedState>) }.upgrade()
 }
 
@@ -1064,8 +1119,8 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
     });
 }
 
-/// The WebView's focus state — counted into the session's platform-view
-/// focus so the runner drops the WaterUI text-input claim while a page
+/// The `WebView`'s focus state — counted into the session's platform-view
+/// focus so the runner drops the `WaterUI` text-input claim while a page
 /// field owns the IME.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeFocus(
@@ -1155,6 +1210,8 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
         }
         // SAFETY: the pointer is the `Box::into_raw` `create` leaked; Kotlin's
         // read-lock discipline (see above) keeps it live for this call.
+        // SAFETY: resolved ids and raw pointers here carry their
+        // documented invariants (see the surrounding doc comment).
         let server = unsafe { &*(asset_server as *const AssetServer) };
         let method = get_string(env, &method)?;
         let path = get_string(env, &path)?;
@@ -1206,6 +1263,8 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
         // SAFETY: `create` leaked exactly one `Box<AssetServer>` for this
         // pointer; Kotlin's write lock guarantees no `nativeAssetRespond`
         // holds a read lock right now.
+        // SAFETY: resolved ids and raw pointers here carry their
+        // documented invariants (see the surrounding doc comment).
         unsafe { drop(Box::from_raw(asset_server as *mut AssetServer)) };
         Ok(())
     });

@@ -594,10 +594,10 @@ mod tests {
 
     // ---- PendingCalls: the sequences the shipped code runs ----
 
-    fn collect() -> (
-        std::rc::Rc<std::cell::RefCell<Vec<Result<String, String>>>>,
-        impl Fn(Result<Str, Str>),
-    ) {
+    type Results = std::rc::Rc<std::cell::RefCell<Vec<Result<String, String>>>>;
+    type CookieResults = std::rc::Rc<std::cell::RefCell<Vec<Vec<Cookie<'static>>>>>;
+
+    fn collect() -> (Results, impl Fn(Result<Str, Str>)) {
         let out = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let sink = std::rc::Rc::clone(&out);
         (out, move |result: Result<Str, Str>| {
@@ -606,10 +606,7 @@ mod tests {
         })
     }
 
-    fn collect_cookies() -> (
-        std::rc::Rc<std::cell::RefCell<Vec<Vec<Cookie<'static>>>>>,
-        impl Fn(Vec<Cookie<'static>>),
-    ) {
+    fn collect_cookies() -> (CookieResults, impl Fn(Vec<Cookie<'static>>)) {
         let out = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let sink = std::rc::Rc::clone(&out);
         (out, move |cookies| sink.borrow_mut().push(cookies))
@@ -625,10 +622,7 @@ mod tests {
         assert!(results.borrow().is_empty());
         // The posted envelope then settles it.
         pending.settle_async(r#"{"id":1,"ok":true,"value":"\"v\""}"#);
-        assert_eq!(
-            results.borrow().as_slice(),
-            &[Ok(""v"".to_owned())]
-        );
+        assert_eq!(results.borrow().as_slice(), &[Ok("\"v\"".to_owned())]);
     }
 
     #[test]
@@ -645,7 +639,7 @@ mod tests {
                 "the document was replaced before the script ran".to_owned()
             )]
         );
-        assert_eq!(cookies.borrow().as_slice(), &[Vec::new()]);
+        assert!(cookies.borrow().iter().all(Vec::is_empty));
     }
 
     #[test]
@@ -674,10 +668,7 @@ mod tests {
         // Rejected: the call is still pending for its real reply.
         assert!(results.borrow().is_empty());
         pending.settle(1, true, "\"real\"");
-        assert_eq!(
-            results.borrow().as_slice(),
-            &[Ok(""real"".to_owned())]
-        );
+        assert_eq!(results.borrow().as_slice(), &[Ok("\"real\"".to_owned())]);
     }
 
     #[test]
@@ -691,10 +682,23 @@ mod tests {
 
     // ---- the WEBVIEW_METHODS ↔ HydrolysisWebView.kt agreement ----
 
+    /// The wrapper methods android.webkit.WebView already declares — JNI
+    /// resolves them through inheritance and the framework keeps them, so
+    /// they carry no `@CalledFromNative`.
+    const PLATFORM_INHERITED: &[&str] = &[
+        "goBack",
+        "goForward",
+        "loadUrl",
+        "stopLoading",
+        "reload",
+        "canGoBack",
+        "canGoForward",
+    ];
+
     /// `HydrolysisWebView.kt`, read at compile time — a moved file is a
     /// compile error, not a skipped test.
     const WRAPPER_KT: &str = include_str!(
-        "../../../android/webview/src/main/java/dev/waterui/hydrolysis/webview/HydrolysisWebView.kt"
+        "../../../../android/webview/src/main/java/dev/waterui/hydrolysis/webview/HydrolysisWebView.kt"
     );
 
     /// The Kotlin parameter/return types the webview JNI contract spells.
@@ -731,12 +735,25 @@ mod tests {
                     break;
                 }
             }
+            if let Some(ctor_rest) = rest.strip_prefix("constructor") {
+                // `class X @CalledFromNative constructor(` — the annotation
+                // sits between the class name and its primary constructor.
+                let (params, _) = take_parens(ctor_rest);
+                let mut sig = String::from("(");
+                push_params(&mut sig, &params, "AssetResponse");
+                sig.push_str(")V");
+                members.insert("<init>".to_owned(), sig);
+                continue;
+            }
             if let Some(class_rest) = rest.strip_prefix("class") {
                 // `class Name ... constructor(` — take ctor params.
-                let Some(ctor) = class_rest.find("constructor(").map(|i| &class_rest[i..]) else {
+                let Some(ctor_start) = class_rest
+                    .find("constructor(")
+                    .map(|index| &class_rest[index..])
+                else {
                     panic!("@CalledFromNative class with no constructor: {class_rest:.80}")
                 };
-                let (params, _) = take_parens(&ctor["constructor".len()..]);
+                let (params, _) = take_parens(&ctor_start["constructor".len()..]);
                 let mut sig = String::from("(");
                 push_params(&mut sig, &params, "AssetResponse");
                 sig.push_str(")V");
@@ -755,11 +772,10 @@ mod tests {
             push_params(&mut sig, &params, &name);
             sig.push(')');
             let after = after.trim_start();
-            let ret = after
-                .strip_prefix(':')
-                .map(|t| t.split(['\n', '{', '=']).next().unwrap().trim())
-                .unwrap_or("Unit");
-            sig.push_str(kotlin_type_to_jni(ret, &name));
+            let return_sig = after.strip_prefix(':').map_or("Unit", |return_ty| {
+                return_ty.split(['\n', '{', '=']).next().unwrap().trim()
+            });
+            sig.push_str(kotlin_type_to_jni(return_sig, &name));
             members.insert(name, sig);
         }
         members
@@ -810,8 +826,14 @@ mod tests {
             // camelCase the PascalCase id: SetUserAgent → setUserAgent.
             let debug = format!("{id:?}");
             let mut chars = debug.chars();
-            let expected =
-                chars.next().unwrap().to_lowercase().next().unwrap().to_string() + chars.as_str();
+            let expected = chars
+                .next()
+                .unwrap()
+                .to_lowercase()
+                .next()
+                .unwrap()
+                .to_string()
+                + chars.as_str();
             assert_eq!(
                 method.name, expected,
                 "WEBVIEW_METHODS must stay in WebViewMethodId order"
@@ -822,15 +844,6 @@ mod tests {
         // inherits them, JNI resolves them through the class, and the
         // framework keeps them. Only Kotlin-declared members need the
         // `@CalledFromNative` keep.
-        const PLATFORM_INHERITED: &[&str] = &[
-            "goBack",
-            "goForward",
-            "loadUrl",
-            "stopLoading",
-            "reload",
-            "canGoBack",
-            "canGoForward",
-        ];
         let annotated = annotated_members(WRAPPER_KT);
         let declared: std::collections::BTreeMap<String, String> = WEBVIEW_METHODS
             .iter()

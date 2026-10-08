@@ -38,8 +38,8 @@ private val LOG_TAG = HydrolysisWebViewClient.LOG_TAG
  * One asset reply crossing JNI: the status line's numeric code, the header
  * block as newline-joined `Name: value` lines, and the body.
  *
- * Constructed by `nativeAssetRespond` on the Rust side by name;
- * `@CalledFromNative` keeps the constructor's signature through R8.
+ * Constructed by `nativeAssetRespond` on the Rust side by name; the keep
+ * annotation preserves the constructor's signature through R8.
  */
 class AssetResponse
 @CalledFromNative

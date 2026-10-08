@@ -753,8 +753,12 @@ impl TemplateContext {
     /// Whether the app bridges the system `WebView` — the pinned host's
     /// `webview/` module substitutes and joins the classpath.
     #[must_use]
-    pub const fn hydrolysis_android_has_system_webview(&self) -> bool {
-        self.hydrolysis_android_entry().system_webview
+    pub fn hydrolysis_android_has_system_webview(&self) -> bool {
+        // The Cargo.toml renderer asks for every project; a context that
+        // never scaffolds Android has no entry and no bridge.
+        self.hydrolysis_android
+            .as_ref()
+            .is_some_and(|entry| entry.system_webview)
     }
 
     #[must_use]
@@ -2827,7 +2831,21 @@ mod tests {
             (true, vec!["accessibility", "webview-system"]),
             (false, vec!["accessibility"]),
         ] {
-            let ctx = project_ctx().with_webview_enabled(webview_enabled);
+            // `system_webview` is the one decision `template_entry` records
+            // from the resolved webview backend; the Cargo feature follows it.
+            let ctx = project_ctx()
+                .with_webview_enabled(webview_enabled)
+                .with_hydrolysis_android(super::HydrolysisAndroidTemplateEntry {
+                    native_library_name: "waterui_test_hydrolysis".to_string(),
+                    host_project_dir: "../android-host/rev/android".to_string(),
+                    project_root: "..".to_string(),
+                    painter_dependency: "dev.waterui.hydrolysis:gpu".to_string(),
+                    painter_module: "gpu".to_string(),
+                    min_api_level: 31,
+                    painter_band_import: None,
+                    painter_band_class: None,
+                    system_webview: webview_enabled,
+                });
             let cargo_toml =
                 crate::templates::hydrolysis::rendered_outputs(&ctx, "waterui-test-hydrolysis")
                     .expect("hydrolysis outputs should render")
@@ -6060,12 +6078,7 @@ pub mod hydrolysis {
         ctx: &TemplateContext,
     ) -> io::Result<BTreeMap<String, GeneratedDependencyValue>> {
         let mut hydrolysis_features = vec!["winit"];
-        // One decision drives both surfaces: the Gradle `webview/` substitution
-        // and the Cargo `webview-system` feature read the entry flag the
-        // resolved webview backend already decided.
-        if ctx.hydrolysis_android_has_system_webview() {
-            hydrolysis_features.push("webview-system");
-        }
+        hydrolysis_features.extend(ctx.webview_backend_feature());
         let mut dependencies: BTreeMap<String, GeneratedDependencyValue> = BTreeMap::from([
             (
                 "hydrolysis".to_string(),

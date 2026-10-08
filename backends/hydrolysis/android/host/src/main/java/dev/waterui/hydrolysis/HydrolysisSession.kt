@@ -2,7 +2,6 @@ package dev.waterui.hydrolysis
 
 import android.content.Context
 import android.view.View
-import dev.waterui.hydrolysis.MutableContextWrapper
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 
@@ -31,7 +30,8 @@ class HydrolysisSession internal constructor(context: Context) {
     /**
      * The context of the bound host view — the JNI-side contract the
      * platform-view instance modules create their views with (the `webview`
-     * module wraps it in a `MutableContextWrapper`). `null` while unbound.
+     * module wraps it in an `android.content.MutableContextWrapper`).
+     * `null` while unbound.
      */
     val boundContext: Context?
         get() = hostView?.context
@@ -75,11 +75,10 @@ class HydrolysisSession internal constructor(context: Context) {
             "a HydrolysisSession is bound to exactly one host view at a time"
         }
         hostView = view
-        // The new binding owns the Activity the instances draw on: retarget
-        // their `MutableContextWrapper`s, and let each re-observe what the
-        // old binding's context owned (the WebView's Lifecycle).
+        // The new binding owns the Activity the instances draw on: each
+        // `HostRebindAware` retargets its own context wrapper and re-observes
+        // what the old binding's context owned (the WebView's Lifecycle).
         for (instance in platformViewInstances.values) {
-            (instance.context as? MutableContextWrapper)?.baseContext = view.context
             (instance as? HostRebindAware)?.onHostRebound(view.context)
         }
         // A session can bind after `onStart` already fired — a late mount
