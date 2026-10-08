@@ -1230,6 +1230,10 @@ impl Compositor for Planes {
 }
 
 impl SystemPlanes for Planes {
+    // Android parts present inside `Transaction::apply` on the render
+    // thread; nothing travels to a platform compositor thread.
+    type Commit = ();
+
     fn captured_bytes(&self) -> u64 {
         self.parts
             .iter()
@@ -1242,12 +1246,12 @@ impl SystemPlanes for Planes {
     fn compose(
         &mut self,
         composition: Composition<'_>,
-    ) -> Result<crate::render::planes::Presentation, RenderError> {
+    ) -> Result<(crate::render::planes::Presentation, ()), RenderError> {
         self.present(composition).map(|shown| {
             if shown {
-                crate::render::planes::Presentation::Presented
+                (crate::render::planes::Presentation::Presented, ())
             } else {
-                crate::render::planes::Presentation::Retry
+                (crate::render::planes::Presentation::Retry, ())
             }
         })
     }
