@@ -13,7 +13,13 @@ import java.io.File
  * The contract is the CLI's: `water build`/`water run` stages the asset tree
  * named `waterui_assets` into the packaged `assets`, with a
  * `waterui-sync-stamp` file recording the staged content's stamp — the sync
- * compares that stamp so an unchanged tree is never recopied.
+ * compares that stamp so an unchanged tree is never recopied. A packaged
+ * app that misses the stamp is a build defect and fails loudly; the sync
+ * never substitutes an empty asset root for it.
+ *
+ * The sync and the `Os.setenv` calls run on the main thread inside the
+ * host process — the environment variables are process-global, so they
+ * must land before the first session spawns native threads that read them.
  *
  * [prepare] runs once per process. Callers that hand extra environment
  * variables to the native library — the generated `MainActivity`'s
@@ -45,9 +51,12 @@ object HydrolysisEnvironment {
         val stampAsset = "waterui_assets/waterui-sync-stamp"
         val bundledStamp = try {
             context.assets.open(stampAsset).bufferedReader().use { it.readText() }
-        } catch (_: Exception) {
-            assetRoot.mkdirs()
-            return assetRoot
+        } catch (e: Exception) {
+            throw IllegalStateException(
+                "hydrolysis: packaged asset '$stampAsset' is missing or unreadable — " +
+                    "the build did not stage the waterui_assets tree",
+                e,
+            )
         }
 
         val localStamp = File(assetRoot, "waterui-sync-stamp")
