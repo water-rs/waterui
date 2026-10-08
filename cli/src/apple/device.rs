@@ -1065,11 +1065,8 @@ impl AppleSimulator {
     /// project, when `simctl` cannot be queried, when a `device` query matches
     /// nothing or only simulators below the target or several qualifying ones,
     /// or when no simulator satisfies the target.
-    pub async fn select_ios(
-        host: &Host,
-        project: &Project,
-        device: Option<&str>,
-    ) -> eyre::Result<Self> {
+    pub async fn select_ios(project: &Project, device: Option<&str>) -> eyre::Result<Self> {
+        let host = project.host();
         let (_, target) = apple_deployment_target(project, TargetPlatform::IOSSimulator).await?;
         let deployment_target = parse_semver_version(&target).wrap_err_with(|| {
             format!("Failed to parse the project's IPHONEOS_DEPLOYMENT_TARGET `{target}`")

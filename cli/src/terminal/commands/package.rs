@@ -247,7 +247,12 @@ async fn prepare_packaging_context(shell: &Shell, args: &Args) -> Result<Option<
         } else {
             ManagedBackends::for_platform(lib_platform(args.platform))
         };
-    let project = Project::open(&project_path, managed_backends).await?;
+    let project = Project::open(
+        &waterui_cli::toolchain::Host::current(),
+        &project_path,
+        managed_backends,
+    )
+    .await?;
     if project.manifest().package.embedded {
         bail!(
             "`water package` does not apply to embedded projects: `water build` already produces the host-consumable artifact"
@@ -515,7 +520,6 @@ async fn build_hydrolysis_packaging_artifacts(
             let target = shell
                 .display_output(hydrolysis_android::build(
                     project,
-                    &waterui_cli::toolchain::Host::current(),
                     abi,
                     build_options.clone(),
                 ))
@@ -576,7 +580,7 @@ async fn package_artifact(
                 artifact.path().display()
             )
         })?;
-        stage_dxc_runtime(destination).await?;
+        stage_dxc_runtime(context.project.host(), destination).await?;
     }
     if let Some(pb) = spinner {
         pb.finish_and_clear();
@@ -646,7 +650,6 @@ async fn package_artifact_inner(
                 let painter = hydrolysis_android::resolve_painter(&context.project, args.painter);
                 hydrolysis_android::package_with_abis(
                     &context.project,
-                    &waterui_cli::toolchain::Host::current(),
                     painter,
                     &package_options,
                     &abis,

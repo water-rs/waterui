@@ -7,7 +7,6 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 
 use eyre::{Context as _, bail, eyre};
 use smol::fs;
@@ -21,7 +20,7 @@ use crate::{
     esp32::{backend::Esp32Backend, chip::Esp32Chip},
     platform::{PackageOptions, TargetPlatform},
     project::Project,
-    utils::{command, run_command_os, which},
+    utils::command,
 };
 
 const ESP32_INIT_HINT: &str = "water run --platform esp32s3";
@@ -106,8 +105,10 @@ pub async fn detect_esp_serial_port() -> eyre::Result<Option<String>> {
     Ok(candidates.into_iter().next().map(|port| port.port_name))
 }
 
-fn home_dir() -> eyre::Result<PathBuf> {
-    dirs::home_dir().ok_or_else(|| eyre!("Failed to resolve the user home directory"))
+fn home_dir(host: &crate::toolchain::Host) -> eyre::Result<PathBuf> {
+    host.home_dir()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| eyre!("Failed to resolve the user home directory"))
 }
 
 /// Find the newest versioned subdirectory of `base` containing `relative`.
@@ -122,8 +123,15 @@ pub(crate) fn newest_toolchain_subpath(base: &Path, relative: &Path) -> Option<P
     versions.pop().map(|path| path.join(relative))
 }
 
-fn espup_component_dir(component: &str, relative: &Path, what: &str) -> eyre::Result<PathBuf> {
-    let base = home_dir()?.join(".rustup/toolchains/esp").join(component);
+fn espup_component_dir(
+    host: &crate::toolchain::Host,
+    component: &str,
+    relative: &Path,
+    what: &str,
+) -> eyre::Result<PathBuf> {
+    let base = home_dir(host)?
+        .join(".rustup/toolchains/esp")
+        .join(component);
     newest_toolchain_subpath(&base, relative).ok_or_else(|| {
         eyre!(
             "{what} not found under {}. Install the Espressif Rust toolchain with `espup install`.",
@@ -138,16 +146,17 @@ fn espup_component_dir(component: &str, relative: &Path, what: &str) -> eyre::Re
 /// (`~/.rustup/toolchains/esp/xtensa-esp-elf/...`); the RISC-V GCC is installed
 /// by ESP-IDF under `~/.espressif/tools/riscv32-esp-elf/...`. Both are
 /// version-discovered rather than pinned.
-fn gcc_bin_dir(chip: Esp32Chip) -> eyre::Result<PathBuf> {
+fn gcc_bin_dir(host: &crate::toolchain::Host, chip: Esp32Chip) -> eyre::Result<PathBuf> {
     let component = chip.gcc_component();
     match chip.arch() {
         crate::esp32::chip::Esp32Arch::Xtensa => espup_component_dir(
+            host,
             component.component,
             Path::new(component.bin_subpath),
             component.what,
         ),
         crate::esp32::chip::Esp32Arch::RiscV => {
-            let base = home_dir()?
+            let base = home_dir(host)?
                 .join(".espressif/tools")
                 .join(component.component);
             newest_toolchain_subpath(&base, Path::new(component.bin_subpath)).ok_or_else(|| {
@@ -172,18 +181,20 @@ fn gcc_bin_dir(chip: Esp32Chip) -> eyre::Result<PathBuf> {
 ///
 /// # Errors
 /// Returns an error when the Espressif toolchain components are not installed.
-pub fn esp_toolchain_envs(chip: Esp32Chip) -> eyre::Result<Vec<(String, OsString)>> {
-    let gcc_bin = gcc_bin_dir(chip)?;
+pub fn esp_toolchain_envs(
+    host: &crate::toolchain::Host,
+    chip: Esp32Chip,
+) -> eyre::Result<Vec<(String, OsString)>> {
+    let gcc_bin = gcc_bin_dir(host, chip)?;
     let libclang = espup_component_dir(
+        host,
         "xtensa-esp32-elf-clang",
         Path::new("esp-clang/lib"),
         "Espressif clang libraries",
     )?;
 
     let mut paths = vec![gcc_bin];
-    if let Some(current) = std::env::var_os("PATH") {
-        paths.extend(std::env::split_paths(&current));
-    }
+    paths.extend(host.path_entries());
     let path_value =
         std::env::join_paths(paths).wrap_err("Failed to compose PATH for the ESP toolchain")?;
 
@@ -202,8 +213,8 @@ fn esp32_chip(project: &Project) -> eyre::Result<Esp32Chip> {
         .resolved_chip()
 }
 
-async fn espflash_path() -> eyre::Result<PathBuf> {
-    which("espflash")
+async fn espflash_path(host: &crate::toolchain::Host) -> eyre::Result<PathBuf> {
+    host.which("espflash")
         .await
         .map_err(|_| eyre!("espflash not found. Install it with `cargo install espflash`."))
 }
@@ -240,8 +251,9 @@ pub async fn build_esp32(project: &Project, options: BuildOptions) -> eyre::Resu
     }
 
     let chip = esp32_chip(project)?;
+    let host = project.host();
 
-    let mut cargo = smol::process::Command::new("cargo");
+    let mut cargo = host.command("cargo");
     cargo.current_dir(&backend_path);
     cargo.arg("build");
     // The harness lives outside the project, so Cargo's discovery never
@@ -256,9 +268,10 @@ pub async fn build_esp32(project: &Project, options: BuildOptions) -> eyre::Resu
     cargo.arg("--target-dir").arg(&backend_target_dir);
     crate::build::configure_generated_crate_compilation(&mut cargo);
     if let Some(sccache_path) = options.sccache_path() {
-        crate::toolchain::sccache::configure_compilation_cache(&mut cargo, sccache_path).await?;
+        crate::toolchain::sccache::configure_compilation_cache(host, &mut cargo, sccache_path)
+            .await?;
     }
-    for (key, value) in esp_toolchain_envs(chip)? {
+    for (key, value) in esp_toolchain_envs(host, chip)? {
         cargo.env(key, value);
     }
     if options.is_release() {
@@ -266,7 +279,7 @@ pub async fn build_esp32(project: &Project, options: BuildOptions) -> eyre::Resu
     }
     // Piped stdio strips rustc diagnostics of their colors; restore cargo's
     // coloring while the terminal renders the output.
-    if crate::utils::std_output_enabled() && std::env::var_os("CARGO_TERM_COLOR").is_none() {
+    if crate::utils::std_output_enabled() && host.env("CARGO_TERM_COLOR").is_none() {
         cargo.env("CARGO_TERM_COLOR", "always");
     }
 
@@ -350,7 +363,7 @@ pub async fn run_esp32(
                     return flash_and_monitor(project, &elf.artifact, Some(&port)).await;
                 }
             }
-            if locate_qemu(chip).await.is_some() {
+            if locate_qemu(project.host(), chip).await.is_some() {
                 info!("No ESP32 board connected; running under QEMU");
                 return qemu_esp32(project, chip, &elf.artifact).await;
             }
@@ -368,9 +381,11 @@ pub async fn run_esp32(
 
 async fn flash_and_monitor(project: &Project, elf: &Path, port: Option<&str>) -> eyre::Result<()> {
     let backend_path = project.backend_path::<Esp32Backend>();
-    let espflash = espflash_path().await?;
+    let espflash = espflash_path(project.host()).await?;
 
-    let mut espflash_cmd = smol::process::Command::new(espflash);
+    // `--monitor` attaches espflash's serial console to the user's terminal.
+    let mut espflash_cmd =
+        smol::process::Command::from(project.host().interactive_command(&espflash));
     espflash_cmd
         .current_dir(&backend_path)
         .arg("flash")
@@ -380,12 +395,7 @@ async fn flash_and_monitor(project: &Project, elf: &Path, port: Option<&str>) ->
     if let Some(port) = port {
         espflash_cmd.arg("--port").arg(port);
     }
-    espflash_cmd
-        .arg(elf)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .kill_on_drop(true);
+    espflash_cmd.arg(elf).kill_on_drop(true);
 
     let status = espflash_cmd.status().await?;
     if !status.success() {
@@ -398,15 +408,15 @@ async fn flash_and_monitor(project: &Project, elf: &Path, port: Option<&str>) ->
 ///
 /// Prefers the Espressif QEMU fork bundled under `~/.local/esp-qemu/qemu/bin`,
 /// falling back to the binary on `PATH`.
-async fn locate_qemu(chip: Esp32Chip) -> Option<PathBuf> {
+async fn locate_qemu(host: &crate::toolchain::Host, chip: Esp32Chip) -> Option<PathBuf> {
     let binary = chip.qemu_binary();
-    if let Ok(home) = home_dir() {
+    if let Some(home) = host.home_dir() {
         let bundled = home.join(".local/esp-qemu/qemu/bin").join(binary);
         if bundled.exists() {
             return Some(bundled);
         }
     }
-    which(binary).await.ok()
+    host.which(binary).await.ok()
 }
 
 /// eFuse image for QEMU: ADC calibration version 1 (BLK2 word 4 bits 0..3).
@@ -430,7 +440,8 @@ fn qemu_efuse_image() -> Vec<u8> {
 /// Returns an error when QEMU or espflash is missing, image generation fails,
 /// or the emulator exits with a failure status.
 pub async fn qemu_esp32(project: &Project, chip: Esp32Chip, elf: &Path) -> eyre::Result<()> {
-    let qemu = locate_qemu(chip).await.ok_or_else(|| {
+    let host = project.host();
+    let qemu = locate_qemu(host, chip).await.ok_or_else(|| {
         eyre!(
             "QEMU for {} not found. Expected ~/.local/esp-qemu/qemu/bin/{binary} \
              or {binary} on PATH (Espressif fork with the {machine} machine).",
@@ -447,9 +458,10 @@ pub async fn qemu_esp32(project: &Project, chip: Esp32Chip, elf: &Path) -> eyre:
         .wrap_err("Failed to create QEMU staging directory")?;
     let flash_image = staging.path().join("flash.bin");
 
-    save_flash_image(&backend_path, chip, elf, &flash_image).await?;
+    save_flash_image(host, &backend_path, chip, elf, &flash_image).await?;
 
-    let mut qemu_cmd = smol::process::Command::new(qemu);
+    // `-nographic` puts the firmware's serial console on the user's terminal.
+    let mut qemu_cmd = smol::process::Command::from(host.interactive_command(&qemu));
     qemu_cmd
         .arg("-nographic")
         .arg("-machine")
@@ -473,11 +485,7 @@ pub async fn qemu_esp32(project: &Project, chip: Esp32Chip, elf: &Path) -> eyre:
             ));
     }
 
-    qemu_cmd
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .kill_on_drop(true);
+    qemu_cmd.kill_on_drop(true);
 
     let status = qemu_cmd.status().await?;
     if !status.success() {
@@ -487,13 +495,14 @@ pub async fn qemu_esp32(project: &Project, chip: Esp32Chip, elf: &Path) -> eyre:
 }
 
 async fn save_flash_image(
+    host: &crate::toolchain::Host,
     backend_path: &Path,
     chip: Esp32Chip,
     elf: &Path,
     image_path: &Path,
 ) -> eyre::Result<()> {
-    let espflash = espflash_path().await?;
-    let mut save = smol::process::Command::new(espflash);
+    let espflash = espflash_path(host).await?;
+    let mut save = host.command(espflash);
     let save = command(&mut save);
     save.current_dir(backend_path)
         .arg("save-image")
@@ -541,7 +550,7 @@ pub async fn package_esp32(
     // The image ships under the product name; the tagged crate name is
     // internal to the shared Cargo target directory.
     let image_path = dist_dir.join(format!("{}.bin", project.esp32_binary_name()));
-    save_flash_image(&backend_path, chip, elf, &image_path).await?;
+    save_flash_image(project.host(), &backend_path, chip, elf, &image_path).await?;
 
     Ok(Artifact::new(project.bundle_identifier(), image_path))
 }
@@ -566,7 +575,7 @@ pub async fn clean_esp32(project: &Project) -> eyre::Result<()> {
         "--target-dir".into(),
         backend_target_dir.as_os_str().to_owned(),
     ];
-    run_command_os("cargo", args).await?;
+    project.host().run("cargo", args).await?;
 
     let dist_dir = backend_path.join("dist");
     if dist_dir.exists() {

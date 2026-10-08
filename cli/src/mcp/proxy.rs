@@ -48,6 +48,7 @@ const HYDROLYSIS_MCP_FEATURE: &str = "waterui-mcp-mode";
 /// Everything one build of the child needs, cloned into the build task.
 #[derive(Debug, Clone)]
 struct ChildConfig {
+    host: crate::toolchain::Host,
     /// `WaterUI` project directory.
     project_path: PathBuf,
     /// Viewport width in logical pixels.
@@ -100,6 +101,7 @@ impl ChildProxy {
     /// [`Self::rebuild`] runs.
     #[must_use]
     pub fn new(
+        host: crate::toolchain::Host,
         project_path: PathBuf,
         width: u32,
         height: u32,
@@ -108,6 +110,7 @@ impl ChildProxy {
     ) -> Self {
         Self {
             config: ChildConfig {
+                host,
                 project_path,
                 width,
                 height,
@@ -295,7 +298,7 @@ async fn build_and_drive(
 /// config, and performs the MCP handshake.
 async fn build_and_spawn(config: &ChildConfig) -> Result<(ChildTransport, Child)> {
     let platform = host_platform();
-    let project = backend::open_ready(&config.project_path).await?;
+    let project = backend::open_ready(&config.host, &config.project_path).await?;
 
     let mut build_options = BuildOptions::development(BuildProfile::Debug);
     if let Some(sccache_path) = &config.sccache_path {
@@ -328,7 +331,7 @@ async fn build_and_spawn(config: &ChildConfig) -> Result<(ChildTransport, Child)
 
     // stdout is the MCP link — never inherit it; stderr flows straight to the
     // parent's stderr so app logs and build diagnostics stay visible.
-    let mut command = smol::process::Command::new(binary_path);
+    let mut command = project.host().command(binary_path);
     command
         .kill_on_drop(true)
         .current_dir(&backend_path)
@@ -556,6 +559,7 @@ mod tests {
     fn rebuild_resolves_waiters_on_the_previous_readiness_cell() {
         smol::block_on(async {
             let proxy = ChildProxy::new(
+                crate::toolchain::Host::current(),
                 PathBuf::from("/definitely/not/a/project"),
                 390,
                 844,

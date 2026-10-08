@@ -8,12 +8,12 @@ use std::{
 };
 
 use crate::project::Project;
+use crate::toolchain::Host;
 use cargo_lock::{Dependency as LockedDependency, Lockfile};
 use cargo_toml::{Dependency, DependencyDetail, PatchSet};
 use eyre::{Result, WrapErr, bail, eyre};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use smol::process::Command;
 use zenwave::{Client as _, Method, StatusCode};
 
 /// A framework distribution channel, independent of the Rust toolchain.
@@ -343,6 +343,16 @@ pub(crate) fn rewrite_patch_tables(
     Ok(())
 }
 
+/// The seeded-lock inputs a resolved build is validated against.
+struct SeededLock<'a> {
+    /// Locked packages the seed is allowed to resolve.
+    allowed: &'a BTreeSet<LockedPackage>,
+    /// Canonical lock bytes the channel certifies.
+    canonical: Option<&'a [u8]>,
+    /// The project lockfile the seed replaces.
+    lock_path: &'a Path,
+}
+
 impl ResolvedFramework {
     /// The checkout root a local `waterui_path` framework resolves to —
     /// `None` for a channel selection, whose packages all have non-path
@@ -378,6 +388,7 @@ impl ResolvedFramework {
     /// saved selection is incompatible with this CLI, or the local checkout's
     /// framework facts cannot be read.
     pub(crate) async fn for_manifest(
+        host: &crate::toolchain::Host,
         manifest: &crate::project::Manifest,
         project_root: &Path,
     ) -> Result<Self> {
@@ -395,14 +406,17 @@ impl ResolvedFramework {
                  to select one or point `waterui_path` at a checkout"
             );
         };
-        Self::for_local_checkout(&project_root.join(waterui_path)).await
+        Self::for_local_checkout(host, &project_root.join(waterui_path)).await
     }
 
     /// The framework facts a local checkout supplies: its own
     /// `[package.metadata.waterui]` table, the scaffold requirements its
     /// `[workspace.dependencies]` declares, and the backend/workspace pins its
     /// gitlinks and lockfile record.
-    pub(crate) async fn for_local_checkout(root: &Path) -> Result<Self> {
+    pub(crate) async fn for_local_checkout(
+        host: &crate::toolchain::Host,
+        root: &Path,
+    ) -> Result<Self> {
         let manifest: toml::Value = toml::from_str(
             &smol::fs::read_to_string(root.join("Cargo.toml"))
                 .await
@@ -417,7 +431,7 @@ impl ResolvedFramework {
         let minimum_cli_version = minimum_cli_version(&metadata)?;
         let rust_version = manifest_rust_version(&manifest)?;
         if let Some(minimum) = &minimum_cli_version {
-            validate_installed_cli(minimum, &checkout_cli_update())?;
+            validate_installed_cli(host, minimum, &checkout_cli_update())?;
         }
         let mut scaffold = framework_scaffold(&manifest)?;
         let lock: Lockfile = smol::fs::read_to_string(root.join("Cargo.lock"))
@@ -475,15 +489,18 @@ impl ResolvedFramework {
     /// # Errors
     /// Returns an error when the file cannot be read or parsed, fails
     /// verification, or the revision it certifies cannot be fetched.
-    pub(crate) async fn resolve_manifest(path: &Path) -> Result<(Self, Option<Vec<u8>>)> {
+    pub(crate) async fn resolve_manifest(
+        host: &Host,
+        path: &Path,
+    ) -> Result<(Self, Option<Vec<u8>>)> {
         let repository = framework_repository();
         let slug = repository_slug(repository)?;
-        let certification = load_manifest(path, repository).await?;
+        let certification = load_manifest(host, path, repository).await?;
         let revision = certification.revision.clone();
-        Self::construct(repository, slug, &revision, Some(certification)).await
+        Self::construct(host, repository, slug, &revision, Some(certification)).await
     }
 
-    pub(crate) fn validate_cli(&self) -> Result<()> {
+    pub(crate) fn validate_cli(&self, host: &crate::toolchain::Host) -> Result<()> {
         if let Some(minimum) = &self.minimum_cli_version {
             let update = match &self.source {
                 Source::Stable { .. } => registry_cli_update(minimum),
@@ -491,7 +508,7 @@ impl ResolvedFramework {
                     checkout_cli_update()
                 }
             };
-            validate_installed_cli(minimum, &update)?;
+            validate_installed_cli(host, minimum, &update)?;
         }
         Ok(())
     }
@@ -1093,7 +1110,7 @@ impl ResolvedFramework {
         directory: &std::path::Path,
         features: &[String],
     ) -> Result<()> {
-        self.validate_cli()?;
+        self.validate_cli(project.host())?;
         let project_lockfile = project.lockfile_path().await?;
         let project_lock: Lockfile = smol::fs::read_to_string(&project_lockfile).await?.parse()?;
         // Cargo resolves a member's lockfile at the workspace root, so the
@@ -1101,16 +1118,14 @@ impl ResolvedFramework {
         // directory (a preview module under `managed_backends/ffi/modules`)
         // is never read (#197).
         let workspace_root = {
-            let manifest_dir = directory.to_path_buf();
-            smol::unblock(move || {
-                cargo_metadata::MetadataCommand::new()
-                    .current_dir(manifest_dir)
-                    .no_deps()
-                    .exec()
-            })
-            .await?
-            .workspace_root
-            .into_std_path_buf()
+            let mut command = cargo_metadata::MetadataCommand::new();
+            command.current_dir(directory).no_deps();
+            project
+                .host()
+                .cargo_metadata(&command)
+                .await?
+                .workspace_root
+                .into_std_path_buf()
         };
         let lock_path = workspace_root.join("Cargo.lock");
         let previous_lock = match smol::fs::read_to_string(&lock_path).await {
@@ -1175,12 +1190,15 @@ impl ResolvedFramework {
         let result = match seeded {
             Ok(()) => {
                 self.validate_seeded_build(
+                    project.host(),
                     directory,
                     features,
                     allow_new,
-                    &allowed,
-                    canonical.as_deref(),
-                    &lock_path,
+                    &SeededLock {
+                        allowed: &allowed,
+                        canonical: canonical.as_deref(),
+                        lock_path: &lock_path,
+                    },
                 )
                 .await
             }
@@ -1211,32 +1229,31 @@ impl ResolvedFramework {
     /// failure rolls the seeded lock and its stamp back together.
     async fn validate_seeded_build(
         &self,
+        host: &crate::toolchain::Host,
         root: &Path,
         features: &[String],
         allow_new: bool,
-        allowed: &BTreeSet<LockedPackage>,
-        canonical: Option<&[u8]>,
-        lock_path: &Path,
+        seeded: &SeededLock<'_>,
     ) -> Result<()> {
         // A previous lock resolved without the canonical pins can carry a
         // generation the seeded locks contradict — an `accesskit_winit`
         // wanting an `accesskit` newer than the pin the channel certifies
         // (#203). That is the project's state, not something to resolve
         // past: name it and say how the seed is regenerated.
-        let metadata = managed_crate_metadata(root, features)
+        let metadata = managed_crate_metadata(host, root, features)
             .await
             .map_err(|error| {
                 eyre!(
                     "the managed crate's lock at {} conflicts with the channel's pins and does not resolve ({error}); remove it and `Cargo.lock.seed` and build again to regenerate them from the channel's resolution",
-                    lock_path.display()
+                    seeded.lock_path.display()
                 )
             })?;
-        validate_resolved_cli(&metadata)?;
+        validate_resolved_cli(host, &metadata)?;
         if !allow_new {
             for package in &metadata.packages {
                 if package.source.is_some()
                     && replaces_locked_package(
-                        allowed,
+                        seeded.allowed,
                         &package.name,
                         &package.version,
                         package.source.as_ref().map(|source| source.repr.as_str()),
@@ -1249,7 +1266,7 @@ impl ResolvedFramework {
                 }
             }
         }
-        if let Some(canonical) = canonical {
+        if let Some(canonical) = seeded.canonical {
             self.validate_dependencies(&metadata, canonical)?;
         }
         Ok(())
@@ -1463,6 +1480,7 @@ impl ResolvedFramework {
     /// Returns an error when the channel has no eligible release, the manifest
     /// fails verification, or the certified revision cannot be fetched.
     pub(crate) async fn resolve(
+        host: &Host,
         channel: FrameworkChannel,
         rev: Option<&str>,
     ) -> Result<(Self, Option<Vec<u8>>)> {
@@ -1475,16 +1493,16 @@ impl ResolvedFramework {
                         "--rev pins a commit of the dev channel; a {channel} release is already an exact revision"
                     );
                 }
-                let certification = latest_certification(repository, channel).await?;
+                let certification = latest_certification(host, repository, channel).await?;
                 let revision = certification.revision.clone();
-                Self::construct(repository, slug, &revision, Some(certification)).await
+                Self::construct(host, repository, slug, &revision, Some(certification)).await
             }
             FrameworkChannel::Dev => {
                 let revision = match rev {
-                    Some(rev) => resolve_dev_at(repository, slug, rev).await?,
-                    None => resolve_dev(repository, slug).await?,
+                    Some(rev) => resolve_dev_at(host, repository, slug, rev).await?,
+                    None => resolve_dev(host, repository, slug).await?,
                 };
-                Self::construct(repository, slug, &revision, None).await
+                Self::construct(host, repository, slug, &revision, None).await
             }
         }
     }
@@ -1500,6 +1518,7 @@ impl ResolvedFramework {
     /// its scaffold table must agree with the manifest's, its lock hash with
     /// the fetched lock.
     async fn construct(
+        host: &Host,
         repository: &str,
         slug: &str,
         revision: &str,
@@ -1507,13 +1526,13 @@ impl ResolvedFramework {
     ) -> Result<(Self, Option<Vec<u8>>)> {
         validate_revision(revision)?;
         let base = format!("https://raw.githubusercontent.com/{slug}/{revision}");
-        let manifest_bytes = fetch(&format!("{base}/Cargo.toml")).await?;
+        let manifest_bytes = fetch(host, &format!("{base}/Cargo.toml")).await?;
         let root: toml::Value = toml::from_str(std::str::from_utf8(&manifest_bytes)?)?;
         let metadata = framework_metadata(&root)?;
         let minimum_cli_version = minimum_cli_version(&metadata)?;
         let rust_version = manifest_rust_version(&root)?;
         let mut scaffold = framework_scaffold(&root)?;
-        let lock_bytes = fetch(&format!("{base}/Cargo.lock")).await?;
+        let lock_bytes = fetch(host, &format!("{base}/Cargo.lock")).await?;
         let lock_sha256 = hex::encode(Sha256::digest(&lock_bytes));
         let lock: Lockfile = std::str::from_utf8(&lock_bytes)?.parse()?;
 
@@ -1535,7 +1554,7 @@ impl ResolvedFramework {
                 FrameworkChannel::Stable => registry_cli_update(minimum),
                 FrameworkChannel::Dev | FrameworkChannel::Nightly => checkout_cli_update(),
             };
-            validate_installed_cli(minimum, &update)?;
+            validate_installed_cli(host, minimum, &update)?;
         }
 
         // `.gitmodules` names each submodule path's repository at the
@@ -1545,7 +1564,7 @@ impl ResolvedFramework {
         let submodule_repositories = match channel {
             FrameworkChannel::Stable => BTreeMap::new(),
             FrameworkChannel::Dev | FrameworkChannel::Nightly => {
-                match fetch_optional(&format!("{base}/.gitmodules")).await? {
+                match fetch_optional(host, &format!("{base}/.gitmodules")).await? {
                     Some(bytes) => parse_gitmodules(std::str::from_utf8(&bytes)?),
                     // Every submodule was extracted; the revision records none.
                     None => BTreeMap::new(),
@@ -1573,7 +1592,7 @@ impl ResolvedFramework {
                     revision: revision.to_owned(),
                     lock_sha256,
                 },
-                dev_submodules(slug, revision, &submodule_repositories).await?,
+                dev_submodules(host, slug, revision, &submodule_repositories).await?,
             )
         };
         complete_scaffold(&mut scaffold, &lock)?;
@@ -1603,7 +1622,7 @@ impl ResolvedFramework {
                 patch_framework_members(&mut patches, &lock, repository, revision);
                 let packages = resolve_packages(&scaffold, &lock, repository, revision)?;
 
-                let foreign = foreign_locked_packages(&lock, &packages, repository).await?;
+                let foreign = foreign_locked_packages(host, &lock, &packages, repository).await?;
                 let lockfile = merge_foreign_lock(&lock, lock_bytes, foreign, &mut source);
                 (packages, patches, Some(lockfile))
             }
@@ -1629,18 +1648,15 @@ impl ResolvedFramework {
 /// Resolve a managed crate's dependency metadata for the feature selection
 /// the build was invoked with.
 async fn managed_crate_metadata(
+    host: &crate::toolchain::Host,
     root: &std::path::Path,
     features: &[String],
 ) -> std::result::Result<cargo_metadata::Metadata, cargo_metadata::Error> {
-    let root = root.to_path_buf();
-    let features = features.to_vec();
-    smol::unblock(move || {
-        cargo_metadata::MetadataCommand::new()
-            .current_dir(root)
-            .features(cargo_metadata::CargoOpt::SomeFeatures(features))
-            .exec()
-    })
-    .await
+    let mut command = cargo_metadata::MetadataCommand::new();
+    command
+        .current_dir(root)
+        .features(cargo_metadata::CargoOpt::SomeFeatures(features.to_vec()));
+    host.cargo_metadata(&command).await
 }
 
 /// Every version the framework's own lock records for a package name —
@@ -1830,6 +1846,7 @@ fn same_source(
 /// submodule revisions the revision was built against — every submodule
 /// `.gitmodules` names.
 async fn dev_submodules(
+    host: &Host,
     slug: &str,
     revision: &str,
     submodule_repositories: &BTreeMap<String, String>,
@@ -1840,7 +1857,7 @@ async fn dev_submodules(
     // repository at the gitlink's commit — the same record the
     // certification supplies for `nightly`.
     for path in submodule_repositories.keys() {
-        if let Some(commit) = submodule_pin(slug, revision, path).await? {
+        if let Some(commit) = submodule_pin(host, slug, revision, path).await? {
             submodules.insert(path.clone(), commit);
         }
     }
@@ -2187,14 +2204,19 @@ fn registry_cli_update(minimum: &cargo_toml::SemVer) -> String {
     )
 }
 
-fn validate_installed_cli(minimum: &cargo_toml::SemVer, update: &str) -> Result<()> {
+fn validate_installed_cli(
+    host: &crate::toolchain::Host,
+    minimum: &cargo_toml::SemVer,
+    update: &str,
+) -> Result<()> {
     let current = env!("CARGO_PKG_VERSION")
         .parse()
         .expect("CLI package version is valid");
-    validate_cli_version(minimum, &current, update)
+    validate_cli_version(host, minimum, &current, update)
 }
 
 fn validate_cli_version(
+    host: &crate::toolchain::Host,
     minimum: &cargo_toml::SemVer,
     current: &cargo_toml::SemVer,
     update: &str,
@@ -2203,7 +2225,7 @@ fn validate_cli_version(
         // The fallback command is what a registry or git source already
         // selected; the detected install source may replace it with `water
         // update` or `brew upgrade water`.
-        let update = crate::self_update::cli_update_command(update);
+        let update = crate::self_update::cli_update_command(host, update);
         bail!(
             "This WaterUI framework requires waterui-cli >= {minimum}, but the running CLI is {current}.\nUpdate the CLI: {update}\nThen verify the installed version with `water --version`."
         );
@@ -2260,16 +2282,19 @@ fn require_framework_members(metadata: &toml::Table, origin: &str) -> Result<()>
     );
 }
 
-pub(crate) async fn validate_local_cli(root: &Path) -> Result<()> {
+pub(crate) async fn validate_local_cli(host: &crate::toolchain::Host, root: &Path) -> Result<()> {
     let contents = smol::fs::read_to_string(root.join("Cargo.toml")).await?;
     let manifest = toml::from_str(&contents)?;
     if let Some(minimum) = minimum_cli_version(&framework_metadata(&manifest)?)? {
-        validate_installed_cli(&minimum, &checkout_cli_update())?;
+        validate_installed_cli(host, &minimum, &checkout_cli_update())?;
     }
     Ok(())
 }
 
-pub(crate) fn validate_resolved_cli(metadata: &cargo_metadata::Metadata) -> Result<()> {
+pub(crate) fn validate_resolved_cli(
+    host: &crate::toolchain::Host,
+    metadata: &cargo_metadata::Metadata,
+) -> Result<()> {
     for package in metadata
         .packages
         .iter()
@@ -2293,7 +2318,7 @@ pub(crate) fn validate_resolved_cli(metadata: &cargo_metadata::Metadata) -> Resu
             Some(source) if !source.is_git() => registry_cli_update(&minimum),
             Some(_) | None => checkout_cli_update(),
         };
-        validate_installed_cli(&minimum, &update)?;
+        validate_installed_cli(host, &minimum, &update)?;
     }
     Ok(())
 }
@@ -2457,10 +2482,16 @@ fn complete_scaffold(scaffold: &mut BTreeMap<String, String>, lock: &Lockfile) -
 /// The commit `path`'s gitlink records at `revision`, or `None` when `path`
 /// is not a submodule there — a `.gitmodules` entry can outlive the gitlink
 /// it once named, and the patch paths under it then belong in the tree.
-async fn submodule_pin(slug: &str, revision: &str, path: &str) -> Result<Option<String>> {
-    let Some(bytes) = fetch_optional(&format!(
-        "https://api.github.com/repos/{slug}/contents/{path}?ref={revision}"
-    ))
+async fn submodule_pin(
+    host: &Host,
+    slug: &str,
+    revision: &str,
+    path: &str,
+) -> Result<Option<String>> {
+    let Some(bytes) = fetch_optional(
+        host,
+        &format!("https://api.github.com/repos/{slug}/contents/{path}?ref={revision}"),
+    )
     .await?
     else {
         return Ok(None);
@@ -2553,8 +2584,8 @@ fn validate_host_subdirectory(subdirectory: &str) -> Result<()> {
     Ok(())
 }
 
-async fn fetch(url: &str) -> Result<Vec<u8>> {
-    fetch_optional(url)
+async fn fetch(host: &Host, url: &str) -> Result<Vec<u8>> {
+    fetch_optional(host, url)
         .await?
         .ok_or_else(|| eyre!("framework resolution returned HTTP 404 from {url}"))
 }
@@ -2563,12 +2594,12 @@ async fn fetch(url: &str) -> Result<Vec<u8>> {
 /// `.gitmodules` is absent on a revision whose submodules were all
 /// extracted. zenwave surfaces a non-success status as `Err`, so the 404
 /// arrives as an [`Error::Http`], never as a response to inspect.
-async fn fetch_optional(url: &str) -> Result<Option<Vec<u8>>> {
+async fn fetch_optional(host: &Host, url: &str) -> Result<Option<Vec<u8>>> {
     let mut client = zenwave::client();
     let mut request = client
         .method(Method::GET, url)?
         .header("User-Agent", env!("CARGO_PKG_NAME"))?;
-    if let Some(token) = github_api_token(url) {
+    if let Some(token) = github_api_token(host, url) {
         request = request.header("Authorization", &format!("Bearer {token}"))?;
     }
     let response = match request.await {
@@ -2587,20 +2618,21 @@ async fn fetch_optional(url: &str) -> Result<Option<Vec<u8>>> {
 /// cloud VMs first of all — and the same token `water update` sends. Only
 /// `api.github.com` sees it; release downloads and raw file reads are not
 /// metered and must not receive a credential.
-fn github_api_token(url: &str) -> Option<String> {
+fn github_api_token(host: &Host, url: &str) -> Option<String> {
     if !url.starts_with("https://api.github.com/") {
         return None;
     }
     ["WATERUI_GITHUB_TOKEN", "GITHUB_TOKEN"]
         .into_iter()
-        .filter_map(|name| std::env::var(name).ok())
+        .filter_map(|name| {
+            host.env(name)
+                .map(|value| value.to_string_lossy().into_owned())
+        })
         .find(|token| !token.trim().is_empty())
 }
 
 #[cfg(test)]
 pub(crate) mod test_fixtures {
-    use std::process::Command as StdCommand;
-
     use super::*;
 
     /// A stable-channel resolution carrying every scaffold fact the templates
@@ -2812,7 +2844,8 @@ pub(crate) mod test_fixtures {
         let lock = test_lock();
         std::fs::write(root.join("Cargo.lock"), lock.to_string()).expect("lockfile");
         let git = |args: &[String]| {
-            let status = StdCommand::new("git")
+            let status = crate::toolchain::Host::current()
+                .std_command("git")
                 .arg("-C")
                 .arg(root)
                 .args(args)
@@ -2903,8 +2936,8 @@ pub(crate) mod test_fixtures {
     }
 }
 
-async fn resolve_dev(repository: &str, slug: &str) -> Result<String> {
-    gated_dev_head(repository, slug, "dev.yml", "framework").await
+async fn resolve_dev(host: &Host, repository: &str, slug: &str) -> Result<String> {
+    gated_dev_head(host, repository, slug, "dev.yml", "framework").await
 }
 
 /// A `dev` selection pinned to an exact commit: `rev` names a commit of the
@@ -2912,13 +2945,13 @@ async fn resolve_dev(repository: &str, slug: &str) -> Result<String> {
 /// through the same GitHub API the tip resolution already uses. Anything
 /// else — a fork commit, another branch's tip, a commit `dev` never merged —
 /// is not dev history and cannot stand in for the channel.
-async fn resolve_dev_at(repository: &str, slug: &str, rev: &str) -> Result<String> {
+async fn resolve_dev_at(host: &Host, repository: &str, slug: &str, rev: &str) -> Result<String> {
     validate_rev(rev)?;
-    let head = remote_dev_head(repository, "framework").await?;
-    let revision = normalize_revision(slug, rev).await?;
-    let status = dev_ancestor_status(slug, &revision, &head).await?;
+    let head = remote_dev_head(host, repository, "framework").await?;
+    let revision = normalize_revision(host, slug, rev).await?;
+    let status = dev_ancestor_status(host, slug, &revision, &head).await?;
     ensure_dev_ancestor(&status, &revision, &head)?;
-    if !gate_passed(slug, "dev.yml", &revision).await? {
+    if !gate_passed(host, slug, "dev.yml", &revision).await? {
         bail!("no successful dev gate run exists for --rev {revision}");
     }
     Ok(revision)
@@ -2937,10 +2970,11 @@ fn validate_rev(rev: &str) -> Result<()> {
 /// The full commit id `rev` names in `slug` — the object the commits API
 /// names back, so an abbreviation `225259c80` persists the same forty
 /// characters the tip resolution would.
-async fn normalize_revision(slug: &str, rev: &str) -> Result<String> {
-    let response = fetch(&format!(
-        "https://api.github.com/repos/{slug}/commits/{rev}"
-    ))
+async fn normalize_revision(host: &Host, slug: &str, rev: &str) -> Result<String> {
+    let response = fetch(
+        host,
+        &format!("https://api.github.com/repos/{slug}/commits/{rev}"),
+    )
     .await
     .wrap_err_with(|| format!("--rev {rev} does not name a commit in {slug}"))?;
     let commit: serde_json::Value = serde_json::from_slice(&response)?;
@@ -2952,9 +2986,14 @@ async fn normalize_revision(slug: &str, rev: &str) -> Result<String> {
 
 /// The compare status of `revision...head` — the ancestry fact the compare
 /// API reports for the pin against the branch's own head.
-async fn dev_ancestor_status(slug: &str, revision: &str, head: &str) -> Result<String> {
+async fn dev_ancestor_status(
+    host: &Host,
+    slug: &str,
+    revision: &str,
+    head: &str,
+) -> Result<String> {
     let url = format!("https://api.github.com/repos/{slug}/compare/{revision}...{head}");
-    let response = fetch(&url).await?;
+    let response = fetch(host, &url).await?;
     let compare: serde_json::Value = serde_json::from_slice(&response)?;
     compare["status"]
         .as_str()
@@ -2976,8 +3015,9 @@ fn ensure_dev_ancestor(status: &str, revision: &str, head: &str) -> Result<()> {
 }
 
 /// The `dev` branch head of `repository` — the tip `git ls-remote` reports.
-async fn remote_dev_head(repository: &str, what: &str) -> Result<String> {
-    let output = Command::new("git")
+async fn remote_dev_head(host: &Host, repository: &str, what: &str) -> Result<String> {
+    let output = host
+        .command("git")
         .args(["ls-remote", repository, "refs/heads/dev"])
         .output()
         .await?;
@@ -3000,8 +3040,12 @@ async fn remote_dev_head(repository: &str, what: &str) -> Result<String> {
 /// behind the channel's promise that a resolved commit passed its
 /// compilation gate. `event=push` scopes the run to the branch itself: a
 /// pull-request run on the same commit is not the gate.
-async fn gate_passed(slug: &str, gate: &str, revision: &str) -> Result<bool> {
-    let response = fetch(&format!("https://api.github.com/repos/{slug}/actions/workflows/{gate}/runs?branch=dev&head_sha={revision}&status=success&event=push&per_page=1")).await?;
+async fn gate_passed(host: &Host, slug: &str, gate: &str, revision: &str) -> Result<bool> {
+    let response = fetch(
+        host,
+        &format!("https://api.github.com/repos/{slug}/actions/workflows/{gate}/runs?branch=dev&head_sha={revision}&status=success&event=push&per_page=1"),
+    )
+    .await?;
     let runs: serde_json::Value = serde_json::from_slice(&response)?;
     Ok(gate_run_succeeded(&runs, revision))
 }
@@ -3018,9 +3062,15 @@ fn gate_run_succeeded(runs: &serde_json::Value, revision: &str) -> bool {
 /// The `dev` HEAD of `repository`, held to the channel's promise that the
 /// resolved commit passed `gate` — the workflow file gating `dev` in that
 /// repository: `dev.yml` for the framework, `ci.yml` for a backend.
-async fn gated_dev_head(repository: &str, slug: &str, gate: &str, what: &str) -> Result<String> {
-    let revision = remote_dev_head(repository, what).await?;
-    if !gate_passed(slug, gate, &revision).await? {
+async fn gated_dev_head(
+    host: &Host,
+    repository: &str,
+    slug: &str,
+    gate: &str,
+    what: &str,
+) -> Result<String> {
+    let revision = remote_dev_head(host, repository, what).await?;
+    if !gate_passed(host, slug, gate, &revision).await? {
         bail!("{what} dev revision {revision} has not passed its compilation gate");
     }
     Ok(revision)
@@ -3037,20 +3087,22 @@ async fn gated_dev_head(repository: &str, slug: &str, gate: &str, what: &str) ->
 /// that paging through every crate release used to exhaust (#110). Nightly
 /// prereleases exist only on GitHub and are still listed there.
 async fn latest_certification(
+    host: &Host,
     repository: &str,
     channel: FrameworkChannel,
 ) -> Result<Certification> {
     let slug = repository_slug(repository)?;
     let (tag, manifest_url, release) = match channel {
         FrameworkChannel::Stable => {
-            let version = newest_registry_version(&fetch(&sparse_index_url("waterui")).await?)?;
+            let version =
+                newest_registry_version(&fetch(host, &sparse_index_url("waterui")).await?)?;
             let tag = format!("v{version}");
             let manifest_url =
                 format!("https://github.com/{slug}/releases/download/{tag}/framework.json");
             (tag, manifest_url, None)
         }
         FrameworkChannel::Nightly => {
-            let release = newest_nightly_release(slug).await?;
+            let release = newest_nightly_release(host, slug).await?;
             let asset = certification_asset(&release)?;
             (
                 release.tag_name.clone(),
@@ -3060,7 +3112,7 @@ async fn latest_certification(
         }
         FrameworkChannel::Dev => unreachable!("dev is not a certified channel"),
     };
-    let Some(bytes) = fetch_optional(&manifest_url).await? else {
+    let Some(bytes) = fetch_optional(host, &manifest_url).await? else {
         return Err(match channel {
             FrameworkChannel::Stable => StableReleaseWithoutManifest { tag }.into(),
             FrameworkChannel::Nightly => eyre!("nightly {tag} has no certification manifest"),
@@ -3071,7 +3123,7 @@ async fn latest_certification(
     if certification.tag != tag {
         bail!("{channel} certification does not match its release");
     }
-    verify_certification(&certification, release.as_ref(), repository)?;
+    verify_certification(host, &certification, release.as_ref(), repository)?;
     certifies_channel(&certification, channel)?;
     Ok(certification)
 }
@@ -3124,13 +3176,14 @@ fn newest_registry_version(index: &[u8]) -> Result<cargo_toml::SemVer> {
 }
 
 /// The newest published `nightly-*` prerelease of the framework repository.
-async fn newest_nightly_release(slug: &str) -> Result<Release> {
+async fn newest_nightly_release(host: &Host, slug: &str) -> Result<Release> {
     let mut releases = Vec::new();
     let mut page = 1;
     loop {
-        let bytes = fetch(&format!(
-            "https://api.github.com/repos/{slug}/releases?per_page=100&page={page}"
-        ))
+        let bytes = fetch(
+            host,
+            &format!("https://api.github.com/repos/{slug}/releases?per_page=100&page={page}"),
+        )
         .await?;
         let batch: Vec<Release> = serde_json::from_slice(&bytes)?;
         let complete = batch.len() < 100;
@@ -3218,13 +3271,17 @@ fn certification_asset(release: &Release) -> Result<&ReleaseAsset> {
 /// Read and verify a `framework.json` from disk: the same schema, channel,
 /// repository, revision and CLI checks a downloaded manifest passes, with no
 /// release for the tag to be checked against.
-async fn load_manifest(path: &Path, repository: &str) -> Result<Certification> {
+async fn load_manifest(
+    host: &crate::toolchain::Host,
+    path: &Path,
+    repository: &str,
+) -> Result<Certification> {
     let contents = smol::fs::read(path)
         .await
         .wrap_err_with(|| format!("failed to read framework manifest {}", path.display()))?;
     let certification = parse_certification(&contents)
         .wrap_err_with(|| format!("invalid framework manifest {}", path.display()))?;
-    verify_certification(&certification, None, repository)?;
+    verify_certification(host, &certification, None, repository)?;
     Ok(certification)
 }
 
@@ -3233,6 +3290,7 @@ async fn load_manifest(path: &Path, repository: &str) -> Result<Certification> {
 /// disk via `--framework-manifest`, where there is no release to check the
 /// tag against.
 fn verify_certification(
+    host: &crate::toolchain::Host,
     certification: &Certification,
     release: Option<&Release>,
     repository: &str,
@@ -3264,7 +3322,7 @@ fn verify_certification(
             FrameworkChannel::Stable => registry_cli_update(minimum),
             FrameworkChannel::Dev | FrameworkChannel::Nightly => checkout_cli_update(),
         };
-        validate_installed_cli(minimum, &update)?;
+        validate_installed_cli(host, minimum, &update)?;
     }
     // The certification carries the framework's metadata verbatim, so a
     // framework this CLI cannot scaffold is rejected before its tree is
@@ -3533,6 +3591,7 @@ fn annotate_workspace_lock(lock: &mut Lockfile, repository: &str, revision: &str
 /// the channel's lock owns every framework member identity at this
 /// revision.
 async fn foreign_locked_packages(
+    host: &Host,
     framework_lock: &Lockfile,
     packages: &BTreeMap<String, DependencyDetail>,
     repository: &str,
@@ -3569,9 +3628,10 @@ async fn foreign_locked_packages(
     let mut foreign = Vec::new();
     for (git, revision) in pins {
         let slug = repository_slug(&git)?;
-        let Some(bytes) = fetch_optional(&format!(
-            "https://raw.githubusercontent.com/{slug}/{revision}/Cargo.lock"
-        ))
+        let Some(bytes) = fetch_optional(
+            host,
+            &format!("https://raw.githubusercontent.com/{slug}/{revision}/Cargo.lock"),
+        )
         .await?
         else {
             // An extracted crate that keeps no lock of its own contributes
@@ -4319,7 +4379,7 @@ mod tests {
             let minimum = minimum.parse().unwrap();
             let current = current.parse().unwrap();
             let update = registry_cli_update(&minimum);
-            let result = validate_cli_version(&minimum, &current, &update);
+            let result = validate_cli_version(&Host::current(), &minimum, &current, &update);
             assert_eq!(result.is_ok(), compatible, "{current} against {minimum}");
             if let Err(error) = result {
                 let message = error.to_string();
@@ -4377,8 +4437,12 @@ mod tests {
         });
         manifest.framework = Some(framework);
 
-        let error = smol::block_on(ResolvedFramework::for_manifest(&manifest, Path::new(".")))
-            .expect_err("the saved framework record is missing required metadata");
+        let error = smol::block_on(ResolvedFramework::for_manifest(
+            &crate::toolchain::Host::current(),
+            &manifest,
+            Path::new("."),
+        ))
+        .expect_err("the saved framework record is missing required metadata");
         let message = error.to_string();
         assert!(
             message.contains("does not declare package.metadata.waterui.android-min-api-level"),
@@ -4399,7 +4463,10 @@ mod tests {
         framework.minimum_cli_version = Some(minimum.clone());
         let contents = toml::to_string(&framework).unwrap();
         let framework: ResolvedFramework = toml::from_str(&contents).unwrap();
-        let error = framework.validate_cli().unwrap_err().to_string();
+        let error = framework
+            .validate_cli(&crate::toolchain::Host::current())
+            .unwrap_err()
+            .to_string();
         assert!(error.contains(&registry_cli_update(&minimum)));
         assert_eq!(framework.minimum_cli_version, Some(minimum));
     }
@@ -5435,16 +5502,21 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
 
     #[test]
     fn only_github_api_requests_carry_the_token() {
+        let host = Host::current();
         assert!(
             github_api_token(
+                &host,
                 "https://github.com/water-rs/waterui/releases/download/v0.5.0/framework.json"
             )
             .is_none()
         );
-        assert!(github_api_token("https://index.crates.io/wa/te/waterui").is_none());
+        assert!(github_api_token(&host, "https://index.crates.io/wa/te/waterui").is_none());
         assert!(
-            github_api_token("https://raw.githubusercontent.com/water-rs/waterui/abc/Cargo.toml")
-                .is_none()
+            github_api_token(
+                &host,
+                "https://raw.githubusercontent.com/water-rs/waterui/abc/Cargo.toml"
+            )
+            .is_none()
         );
     }
 
@@ -5474,7 +5546,7 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
 
         let dev = certification(FrameworkChannel::Dev, "dev");
         assert!(
-            verify_certification(&dev, None, repository)
+            verify_certification(&crate::toolchain::Host::current(), &dev, None, repository)
                 .unwrap_err()
                 .to_string()
                 .contains("dev")
@@ -5483,10 +5555,15 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
         let mut wrong_schema = certification(FrameworkChannel::Stable, "v0.4.1");
         wrong_schema.schema_version = 1;
         assert!(
-            verify_certification(&wrong_schema, None, repository)
-                .unwrap_err()
-                .to_string()
-                .contains("schema")
+            verify_certification(
+                &crate::toolchain::Host::current(),
+                &wrong_schema,
+                None,
+                repository
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("schema")
         );
         let nightly_on_a_stable_tag = certification(FrameworkChannel::Nightly, "v0.4.1");
         let error = certifies_channel(&nightly_on_a_stable_tag, FrameworkChannel::Stable)
@@ -5511,25 +5588,47 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
         let mut wrong_repository = certification(FrameworkChannel::Stable, "v0.4.1");
         wrong_repository.repository = "water-rs/android-backend".to_owned();
         assert!(
-            verify_certification(&wrong_repository, None, repository)
-                .unwrap_err()
-                .to_string()
-                .contains("water-rs/android-backend")
+            verify_certification(
+                &crate::toolchain::Host::current(),
+                &wrong_repository,
+                None,
+                repository
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("water-rs/android-backend")
         );
 
         let wrong_tag = certification(FrameworkChannel::Stable, "v0.4.0");
         assert!(
-            verify_certification(&wrong_tag, Some(&release), repository)
-                .unwrap_err()
-                .to_string()
-                .contains("does not match its release")
+            verify_certification(
+                &crate::toolchain::Host::current(),
+                &wrong_tag,
+                Some(&release),
+                repository
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("does not match its release")
         );
 
         // A manifest read from disk has no release; the tag check is skipped.
-        verify_certification(&wrong_tag, None, repository).unwrap();
+        verify_certification(
+            &crate::toolchain::Host::current(),
+            &wrong_tag,
+            None,
+            repository,
+        )
+        .unwrap();
 
         let stable = certification(FrameworkChannel::Stable, "v0.4.1");
-        verify_certification(&stable, Some(&release), repository).unwrap();
+        verify_certification(
+            &crate::toolchain::Host::current(),
+            &stable,
+            Some(&release),
+            repository,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -5563,12 +5662,24 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
         });
         std::fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
         let repository = framework_repository();
-        let certification = smol::block_on(load_manifest(&path, repository)).unwrap();
+        let certification = smol::block_on(load_manifest(
+            &crate::toolchain::Host::current(),
+            &path,
+            repository,
+        ))
+        .unwrap();
         assert_eq!(certification.channel, FrameworkChannel::Stable);
         assert_eq!(certification.tag, "v0.4.1");
 
         std::fs::write(&path, b"not json").unwrap();
-        assert!(smol::block_on(load_manifest(&path, repository)).is_err());
+        assert!(
+            smol::block_on(load_manifest(
+                &crate::toolchain::Host::current(),
+                &path,
+                repository
+            ))
+            .is_err()
+        );
     }
 
     /// The Rust scaffold derivation and `framework_manifest.py`'s must produce
@@ -5880,7 +5991,11 @@ hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "d887
         let root = directory.path().join("waterui");
         write_local_checkout(&root);
 
-        let framework = smol::block_on(ResolvedFramework::for_local_checkout(&root)).unwrap();
+        let framework = smol::block_on(ResolvedFramework::for_local_checkout(
+            &crate::toolchain::Host::current(),
+            &root,
+        ))
+        .unwrap();
         assert_eq!(framework.member_path(APPLE_BACKEND), Some("backends/apple"));
         assert!(framework.git_source().is_none());
     }
@@ -5896,9 +6011,12 @@ hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "d887
         let root = directory.path().join("waterui");
         write_apple_pathless_checkout(&root);
 
-        let error = smol::block_on(ResolvedFramework::for_local_checkout(&root))
-            .unwrap_err()
-            .to_string();
+        let error = smol::block_on(ResolvedFramework::for_local_checkout(
+            &crate::toolchain::Host::current(),
+            &root,
+        ))
+        .unwrap_err()
+        .to_string();
         assert!(
             error.contains("declares no `apple-backend-path`:"),
             "{error}"
@@ -5916,7 +6034,11 @@ hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "d887
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("waterui");
         write_local_checkout(&root);
-        let framework = smol::block_on(ResolvedFramework::for_local_checkout(&root)).unwrap();
+        let framework = smol::block_on(ResolvedFramework::for_local_checkout(
+            &crate::toolchain::Host::current(),
+            &root,
+        ))
+        .unwrap();
         assert_eq!(framework.channel(), None);
         assert_eq!(
             framework.scaffold_value("hydrolysis-path"),
@@ -6006,9 +6128,13 @@ hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "d887
     #[test]
     fn a_certified_channel_rejects_a_rev_pin_before_resolving() {
         for channel in [FrameworkChannel::Stable, FrameworkChannel::Nightly] {
-            let message = smol::block_on(ResolvedFramework::resolve(channel, Some("225259c80")))
-                .unwrap_err()
-                .to_string();
+            let message = smol::block_on(ResolvedFramework::resolve(
+                &crate::toolchain::Host::current(),
+                channel,
+                Some("225259c80"),
+            ))
+            .unwrap_err()
+            .to_string();
             assert!(message.contains("dev"), "{message} must name dev");
         }
     }
