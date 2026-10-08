@@ -163,12 +163,14 @@ define_class!(
         /// SAFETY: see the module safety note.
         #[unsafe(method(setFrame:))]
         fn set_frame_override(&self, frame: CGRect) {
-            let changed = self.frame() != frame;
-            // SAFETY: see the module safety note.
-            let _: () = unsafe { msg_send![super(self), setFrame: frame] };
-            if changed {
-                self.setNeedsLayout();
-            }
+            guarded("ScrollView setFrame:", || {
+                let changed = self.frame() != frame;
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), setFrame: frame] };
+                if changed {
+                    self.setNeedsLayout();
+                }
+            });
         }
 
         /// The kit scroll-surface marker — only `ScrollView` and

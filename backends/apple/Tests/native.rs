@@ -2840,7 +2840,7 @@ mod safe_area {
         UIKeyboardAnimationDurationUserInfoKey, UIKeyboardFrameEndUserInfoKey,
         UIKeyboardWillChangeFrameNotification, UIKeyboardWillHideNotification,
         UIKeyboardWillShowNotification, UINavigationBar, UINavigationController, UIScrollView,
-        UITabBar, UITextView,
+        UITabBar, UITextView, UIView,
     };
     use cocoa_ui::uikit::view_controller::owning_controller;
     use cocoa_ui::uikit::{
@@ -3023,8 +3023,16 @@ mod safe_area {
                 a_toolbar_appearing_while_the_keyboard_is_up_rederives_the_inset,
             ),
             t(
-                "a_window_announced_keyboard_before_the_first_mount_is_not_stale",
-                a_window_announced_keyboard_before_the_first_mount_is_not_stale,
+                "a_keyboard_notification_before_mount_is_not_replayed",
+                a_keyboard_notification_before_mount_is_not_replayed,
+            ),
+            t(
+                "a_guide_frame_equal_to_the_bottom_band_seeds_zero",
+                a_guide_frame_equal_to_the_bottom_band_seeds_zero,
+            ),
+            t(
+                "a_guide_frame_above_the_bottom_band_seeds_the_frame",
+                a_guide_frame_above_the_bottom_band_seeds_the_frame,
             ),
         ]
     }
@@ -3202,10 +3210,18 @@ mod safe_area {
         mount.host.bounds().size.height - mount.host.safeAreaInsets().bottom
     }
 
+    /// The window's keyboard region frame — `CGRect::ZERO` until a
+    /// notification lands or the first layout pass seeds it.
+    fn region_frame(view: &UIView) -> CGRect {
+        keyboard::window_keyboard(view)
+            .expect("a windowed view reports its window's region")
+            .0
+    }
+
     /// The keyboard region's top boundary — `window.height` once the
     /// keyboard is gone.
     fn keyboard_top(mount: &UIKitMount) -> f64 {
-        keyboard::region_for(&mount.window).frame().origin.y
+        region_frame(&mount.host).origin.y
     }
 
     /// The `userInfo` a real keyboard notification carries: the end frame
@@ -3292,7 +3308,7 @@ mod safe_area {
     /// window root has applied the end frame.
     fn post_keyboard(mount: &UIKitMount, name: &'static NSString, end_frame: CGRect) {
         post_keyboard_raw(&mount.window, name, end_frame, || {
-            keyboard::region_for(&mount.window).frame() == end_frame
+            region_frame(&mount.host) == end_frame
         });
     }
 
@@ -3763,7 +3779,7 @@ mod safe_area {
                 // SAFETY: `UIKit` exports the name as a constant.
                 unsafe { UIKeyboardWillShowNotification },
                 end,
-                || keyboard::region_for(&mount.window).frame() == end,
+                || region_frame(&mount.host) == end,
             );
             let surface =
                 find_view::<ScrollView>(&mount.host).expect("scroll mounts a UIScrollView");
@@ -3806,14 +3822,83 @@ mod safe_area {
 
     /// A surface pushed into the keyboard band at a constant size — a
     /// banner moving it down — recomputes the covered depth from its
-    /// new window frame without a notification: the gate keys on the
-    /// frame in window coordinates, which a translate changes and a
-    /// content-offset scroll does not.
+    /// new window frame without a notification. The wrapper case is the
+    /// real shape: a container the vstack translates gives its scroll no
+    /// `setFrame:` of its own, so the wrapper's `setFrame:` marks the
+    /// region readers in its subtree — the surface re-reads the band it
+    /// moved into, and the wrapper's own fill re-extends. The bare case
+    /// — the surface's own `setFrame:` — keeps its mark too.
     fn a_scroll_pushed_into_the_band_at_constant_size_updates_its_inset() {
+        // The scroll sits inside a background wrapper the container
+        // region pushes down at constant size — a banner's exact move.
+        let mount = mount(vstack((
+            scroll(vstack((
+                spacer().size(390.0, 240.0),
+                card("row"),
+                spacer().size(390.0, 240.0),
+            )))
+            .size(390.0, 300.0)
+            .background(Color::new(Srgb::new(0.2, 0.4, 0.7))),
+            spacer(),
+        )));
+        show_keyboard(&mount);
+        let surface = find_view::<ScrollView>(&mount.host).expect("scroll mounts a UIScrollView");
+        let scroll_view = surface
+            .downcast_ref::<ScrollView>()
+            .expect("the found view is a scroll view");
+        let clear = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            mount.window.layoutIfNeeded();
+            scroll_view.contentInset().bottom.abs() <= TOLERANCE
+        });
+        assert!(clear, "precondition: the band does not reach the scroll");
+        // The wrapper's fill is the ColorView sibling of the scroll's
+        // surface; its frame is the container's own while it touches no
+        // region edge.
+        let fill = find_view::<ColorView>(&mount.host).expect("the wrapper mounts its fill");
+        let wrapper = fill.superview().expect("the fill sits inside the wrapper");
+        assert!(
+            (window_top(&fill) - window_top(&wrapper)).abs() <= TOLERANCE,
+            "precondition: the fill covers the wrapper — {:?} vs {:?}",
+            window_frame(&fill),
+            window_frame(&wrapper),
+        );
+
+        // The push: the wrapper goes down 300pt at constant size — the
+        // scroll's own `setFrame:` never runs (its superview-relative
+        // frame is unchanged), so the wrapper's mark is the only path.
+        let frame = window_frame(&wrapper);
+        view::set_frame(
+            &wrapper,
+            cocoa_ui::Rect::new(
+                frame.origin.x,
+                frame.origin.y + 300.0,
+                frame.size.width,
+                frame.size.height,
+            ),
+        );
+        let grew = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            mount.window.layoutIfNeeded();
+            scroll_view.contentInset().bottom > TOLERANCE
+        });
+        assert!(
+            grew,
+            "the wrapper's move re-derived the scroll's inset — {}",
+            scroll_view.contentInset().bottom,
+        );
+        // The wrapper's own layout pass re-derived its fill too: off the
+        // window's top edge, the fill's top re-docks at the container's
+        // moved top — a stale fill would still paint from the old y.
+        assert!(
+            (window_top(&fill) - window_top(&wrapper)).abs() <= TOLERANCE,
+            "the wrapper's fill followed the move — fill {:?} vs container {:?}",
+            window_frame(&fill),
+            window_frame(&wrapper),
+        );
+
+        // The bare surface: its own `setFrame:` marks it.
         let mtm = mtm();
         let scroll = ScrollView::new(mtm, true, false);
         let window = crate::leaf::attach(mtm, &scroll);
-        // A fixed-height surface sitting clear of the keyboard band.
         view::set_frame(&scroll, cocoa_ui::Rect::new(0.0, 100.0, 390.0, 400.0));
         window.layoutIfNeeded();
         let end = keyboard_end(&window);
@@ -3822,7 +3907,7 @@ mod safe_area {
             // SAFETY: `UIKit` exports the name as a constant.
             unsafe { UIKeyboardWillShowNotification },
             end,
-            || keyboard::region_for(&window).frame() == end,
+            || region_frame(&scroll) == end,
         );
         let clear = pump_main_until(MAIN_QUEUE_DEADLINE, || {
             window.layoutIfNeeded();
@@ -3831,8 +3916,6 @@ mod safe_area {
         assert!(clear, "precondition: the band does not reach the scroll");
         let before = scroll.contentInset().bottom;
 
-        // Push the surface down into the band at the same size — no
-        // notification follows, only a frame move.
         view::set_frame(&scroll, cocoa_ui::Rect::new(0.0, 200.0, 390.0, 400.0));
         let grown = pump_main_until(MAIN_QUEUE_DEADLINE, || {
             window.layoutIfNeeded();
@@ -3897,14 +3980,12 @@ mod safe_area {
         );
     }
 
-    /// The keyboard can be up before the first `WaterUI` view reaches a
-    /// window — an app-owned `UIWindow`. A notification that predates
-    /// the mount must not arrive as the region's frame: the region
-    /// seeds from the window's own `keyboardLayoutGuide` — reporting no
-    /// docked keyboard in this harness, which never docks a real one —
-    /// so it starts at `CGRect::ZERO`, and the first notification after
-    /// the mount lands on time.
-    fn a_window_announced_keyboard_before_the_first_mount_is_not_stale() {
+    /// A keyboard notification posted before the first `WaterUI` view
+    /// reaches a window is not replayed: the region comes into
+    /// existence with the mount and stays `CGRect::ZERO` — nothing is
+    /// docked in this harness — until the first real notification after
+    /// it arrives, which lands on time.
+    fn a_keyboard_notification_before_mount_is_not_replayed() {
         let mtm = mtm();
         let env = render_environment();
         let window = spawned_window(mtm);
@@ -3925,18 +4006,59 @@ mod safe_area {
             &env,
             window,
         );
-        let region = keyboard::region_for(&mount.window);
         assert_eq!(
-            region.frame(),
+            region_frame(&mount.host),
             CGRect::ZERO,
-            "a pre-mount notification must not fabricate the region's frame",
+            "a pre-mount notification must not replay into the region",
         );
         show_keyboard(&mount);
         assert_eq!(
-            region.frame(),
+            region_frame(&mount.host),
             end,
             "the first notification after the mount lands on time",
         );
+    }
+
+    /// The resting `keyboardLayoutGuide` reports the window's bottom
+    /// safe-area band — `usesBottomSafeArea` parks it there while no
+    /// keyboard is docked — and a band-equal guide frame must seed
+    /// nothing: it is the parked guide, not a keyboard.
+    fn a_guide_frame_equal_to_the_bottom_band_seeds_zero() {
+        let mtm = mtm();
+        let window = spawned_window(mtm);
+        window.makeKeyAndVisible();
+        window.layoutIfNeeded();
+        let band_top = window.bounds().size.height - window.safeAreaInsets().bottom;
+        let band = CGRect::new(
+            CGPoint::new(0.0, band_top),
+            CGSize::new(window.bounds().size.width, window.safeAreaInsets().bottom),
+        );
+        assert_eq!(
+            keyboard::guide_seed_frame(&window, band),
+            CGRect::ZERO,
+            "a frame parked inside the band is not a keyboard",
+        );
+        window.setHidden(true);
+    }
+
+    /// A `keyboardLayoutGuide` frame whose top edge sits above the
+    /// window's bottom safe-area band reports a docked keyboard and
+    /// seeds the region with the frame the guide reports.
+    fn a_guide_frame_above_the_bottom_band_seeds_the_frame() {
+        let mtm = mtm();
+        let window = spawned_window(mtm);
+        window.makeKeyAndVisible();
+        window.layoutIfNeeded();
+        let keyboard = CGRect::new(
+            CGPoint::new(0.0, 300.0),
+            CGSize::new(window.bounds().size.width, 200.0),
+        );
+        assert_eq!(
+            keyboard::guide_seed_frame(&window, keyboard),
+            keyboard,
+            "a frame above the band seeds as the docked keyboard",
+        );
+        window.setHidden(true);
     }
 
     /// A page pushed over while the keyboard is up and hidden under
@@ -4649,11 +4771,14 @@ mod safe_area {
             "the bar keeps the top-attached position that extends its \
              background over the status-bar band",
         );
-        let background = &view::subviews(&bar)[0];
+        let background = view::subviews(&bar).into_iter().find(|sub| {
+            let frame = window_frame(sub);
+            frame.origin.y <= TOLERANCE
+                && (frame.size.width - window_frame(&bar).size.width).abs() <= TOLERANCE
+        });
         assert!(
-            window_top(background).abs() <= TOLERANCE,
-            "the bar's background reaches the window's top edge — {:?}",
-            window_frame(background),
+            background.is_some(),
+            "the bar's background reaches the window's top edge spanning its width",
         );
         let bar_bottom = window_bottom(&bar);
         assert!(

@@ -360,9 +360,20 @@ define_class!(
         #[unsafe(method(setFrame:))]
         fn set_frame_override(&self, frame: CGRect) {
             guarded("HostView setFrame:", || {
+                let moved = self.frame().origin != frame.origin;
                 // SAFETY: see the module safety note.
                 let _: () = unsafe { msg_send![super(self), setFrame: frame] };
                 self.report_size();
+                // A parent's layout pass translating the host — a banner
+                // pushing a container down — gives the moved view no
+                // layout pass, so the region readers in its subtree (the
+                // host's own fill extension, every scroll surface) would
+                // keep positions and insets derived for the old window
+                // position; the move marks them the way a keyboard
+                // notification does.
+                if moved && self.window().is_some() {
+                    crate::uikit::keyboard::mark_region_readers(self);
+                }
             });
         }
 
