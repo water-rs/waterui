@@ -987,6 +987,14 @@ mod tests {
             );
             assert!(activity.contains("HydrolysisHostView"), "{activity}");
 
+            // The environment reaches the app through `waterui.env.*` intent
+            // extras applied by `Os.setenv`; nothing reads system properties.
+            assert!(
+                activity.contains("setupEnvironmentFromIntent(intent)"),
+                "{activity}"
+            );
+            assert!(!activity.contains("SystemProperties"), "{activity}");
+
             // The narrow JNI keep: only the Rust→Kotlin entry points survive
             // R8 — the class members HydrolysisSession calls back by name.
             let proguard = files["app/proguard-rules.pro"].as_str();
