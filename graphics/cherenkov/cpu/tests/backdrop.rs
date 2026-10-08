@@ -2335,7 +2335,9 @@ fn an_anchor_at_the_root_is_unsupported() {
     assert!(
         matches!(
             result,
-            Err(cherenkov::RenderError::Unsupported("backdrop-anchor-at-root"))
+            Err(cherenkov::RenderError::Unsupported(
+                "backdrop-anchor-at-root"
+            ))
         ),
         "unexpected result {result:?}"
     );

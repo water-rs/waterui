@@ -9733,8 +9733,7 @@ impl GpuRenderer {
                         .target
                         .texture
                         .format(),
-                    Target::Part(_) | Target::Projected(_)
-                    | Target::Plane(_) => TARGET_FORMAT,
+                    Target::Part(_) | Target::Projected(_) | Target::Plane(_) => TARGET_FORMAT,
                 };
                 (*id, format)
             })
