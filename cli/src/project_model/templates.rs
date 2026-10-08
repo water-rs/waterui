@@ -259,9 +259,6 @@ pub struct HydrolysisAndroidTemplateEntry {
     /// The band class [`painter_band_import`](Self::painter_band_import)
     /// supplies, when set.
     pub painter_band_class: Option<String>,
-    /// Whether the app bridges the system `WebView` — the pinned host's
-    /// `webview/` module substitutes and joins the classpath when set.
-    pub system_webview: bool,
 }
 
 /// The Hydrolysis Android preview host scaffold's parameters: the managed
@@ -814,12 +811,10 @@ impl TemplateContext {
     /// Whether the app bridges the system `WebView` — the pinned host's
     /// `webview/` module substitutes and joins the classpath.
     #[must_use]
-    pub fn hydrolysis_android_has_system_webview(&self) -> bool {
+    pub const fn hydrolysis_android_has_system_webview(&self) -> bool {
         // The Cargo.toml renderer asks for every project; a context that
         // never scaffolds Android has no entry and no bridge.
-        self.hydrolysis_android
-            .as_ref()
-            .is_some_and(|entry| entry.system_webview)
+        self.hydrolysis_android.is_some() && self.webview_backend_feature().is_some()
     }
 
     #[must_use]
@@ -2582,7 +2577,6 @@ mod tests {
                 min_api_level: 31,
                 painter_band_import: None,
                 painter_band_class: None,
-                system_webview: false,
             });
         let unsigned = render(&ctx);
         assert!(!unsigned.contains("signingConfigs"));
@@ -3004,8 +2998,8 @@ mod tests {
             (true, vec!["accessibility", "webview-system"]),
             (false, vec!["accessibility"]),
         ] {
-            // `webview_backend_feature` is the one decision: the Gradle entry's
-            // `system_webview` flag and the Cargo feature both read it.
+            // `webview_backend_feature` is the one decision: the Gradle
+            // flag and the Cargo feature both read it.
             let ctx = project_ctx()
                 .with_webview_enabled(webview_enabled)
                 .with_hydrolysis_android(super::HydrolysisAndroidTemplateEntry {
@@ -3017,7 +3011,6 @@ mod tests {
                     min_api_level: 31,
                     painter_band_import: None,
                     painter_band_class: None,
-                    system_webview: webview_enabled,
                 });
             let cargo_toml =
                 crate::templates::hydrolysis::rendered_outputs(&ctx, "waterui-test-hydrolysis")
@@ -6200,9 +6193,9 @@ pub mod hydrolysis {
         ctx: &TemplateContext,
     ) -> io::Result<BTreeMap<String, GeneratedDependencyValue>> {
         let mut hydrolysis_features = vec!["accessibility"];
-        // One predicate drives both surfaces: the Gradle `webview/`
-        // substitution records this same `webview_backend_feature` answer in
-        // the Android entry's `system_webview` flag.
+        // One predicate drives both surfaces: the Gradle `webview/` module
+        // substitution reads this same `webview_backend_feature` answer
+        // through `hydrolysis_android_has_system_webview`.
         hydrolysis_features.extend(ctx.webview_backend_feature());
         Ok(BTreeMap::from([
             (

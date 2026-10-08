@@ -307,7 +307,7 @@ async fn template_entry(
     host_project_dir: &Path,
     system_webview: bool,
 ) -> eyre::Result<HydrolysisAndroidTemplateEntry> {
-    // `system_webview` arrives already decided: the context's
+    // The system-WebView decision arrives already made: the context's
     // `webview_backend_feature` is the one predicate the Gradle module flag
     // and the Cargo `webview-system` feature both read. An engine this pair
     // cannot host is an error upstream in `browser_runtime_plan`, before the
@@ -354,7 +354,6 @@ async fn template_entry(
         min_api_level: framework_min.max(painter.min_api_level()),
         painter_band_import: painter.band_import(),
         painter_band_class: painter.band_class(),
-        system_webview,
     })
 }
 
@@ -1485,11 +1484,23 @@ mod tests {
             let cargo_toml = outputs
                 .iter()
                 .find(|(path, _)| path == Path::new("Cargo.toml"))
-                .map(|(_, content)| String::from_utf8_lossy(content))
+                .map(|(_, content)| String::from_utf8_lossy(content).into_owned())
                 .expect("a Cargo.toml output");
+            // Only the Android target's hydrolysis edge counts: the desktop
+            // section may carry the same feature name.
+            let manifest = cargo_toml
+                .parse::<toml::Table>()
+                .expect("launcher Cargo.toml should parse");
+            let features = manifest["target"]["cfg(target_os = \"android\")"]["dependencies"]
+                ["hydrolysis"]["features"]
+                .as_array()
+                .expect("hydrolysis dependency features should be an array")
+                .iter()
+                .map(|feature| feature.as_str().expect("feature should be a string"))
+                .collect::<Vec<_>>();
             assert!(
-                cargo_toml.contains("\"webview-system\""),
-                "launcher hydrolysis features: {cargo_toml}"
+                features.contains(&"webview-system"),
+                "android hydrolysis features: {features:?}"
             );
 
             let (_machine, host) =
