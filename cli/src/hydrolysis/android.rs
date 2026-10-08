@@ -569,10 +569,7 @@ pub async fn package_with_abis(
         crate::assets::AndroidDependencyScope::Implementation,
         &android_ffi_dependency_features(
             project,
-            &abis
-                .iter()
-                .map(|abi| crate::android::platform::AndroidPlatform::new(*abi).triple())
-                .collect::<Vec<_>>(),
+            &abis.iter().map(|abi| abi.triple()).collect::<Vec<_>>(),
         )
         .await?,
     )
@@ -708,7 +705,9 @@ mod tests {
     /// `waterui-apple` — a precise source `[patch]` cannot redirect — fetch
     /// from the mirror the way a real build fetches the channel's revision.
     fn stable_checkout_framework_mirror(dir: &Path) -> ResolvedFramework {
-        use crate::framework::test_fixtures::{write_local_checkout, write_vendor_stub};
+        use crate::framework::test_fixtures::{
+            git_commit_all, write_local_checkout, write_vendor_stub,
+        };
 
         let waterui_root = dir.join("waterui");
         write_local_checkout(&waterui_root);
@@ -737,27 +736,7 @@ mod tests {
             &["map", "media", "webview"],
         );
         write_vendor_stub(&waterui_root.join("backends/hydrolysis"), "hydrolysis", &[]);
-        let git = |args: &[&str]| -> String {
-            let output = std::process::Command::new("git")
-                .arg("-C")
-                .arg(&waterui_root)
-                .args(args)
-                .output()
-                .expect("git must run");
-            assert!(output.status.success(), "git {args:?} failed");
-            String::from_utf8(output.stdout).expect("git output is utf-8")
-        };
-        git(&["add", "-A"]);
-        git(&[
-            "-c",
-            "user.name=waterui-test",
-            "-c",
-            "user.email=waterui-test@waterui.dev",
-            "commit",
-            "-qm",
-            "stage member crates",
-        ]);
-        let revision = git(&["rev-parse", "HEAD"]).trim().to_owned();
+        let revision = git_commit_all(&waterui_root, "stage member crates");
         crate::framework::test_fixtures::stable_checkout_framework_at(
             &format!("file://{}", waterui_root.display()),
             &revision,
@@ -844,7 +823,12 @@ mod tests {
             .exec()
             .expect("offline metadata resolves the patched project");
 
-        let project = Project::open(&root, ManagedBackends::NONE)
+        // The ffi companion's feature probe and the Gradle staging resolve
+        // the framework mirror's `git` pins through the project's host, so
+        // point cargo at a per-test `CARGO_HOME`: a fetch into the real
+        // one is exactly the machine leak this seam exists to prevent.
+        let host = Host::current().with_env("CARGO_HOME", temporary.path().join("cargo-home"));
+        let project = Project::open_on(&host, &root, ManagedBackends::NONE)
             .await
             .expect("fixture project opens");
         (temporary, project)
@@ -911,9 +895,26 @@ mod tests {
             // The checkout clones the framework repository itself at the
             // selected revision — the host lives inside it — and the stamp
             // records the revision the checkout directory names.
-            let revision =
-                std::fs::read_to_string(checkout.join(HOST_STAMP_FILE)).expect("stamp file");
+            let revision = match project
+                .resolved_framework()
+                .await
+                .expect("the fixture framework resolves")
+                .hydrolysis_android_host()
+                .expect("the fixture pins a git host")
+            {
+                crate::framework::HydrolysisAndroidHost::Git { revision, .. } => {
+                    revision.to_owned()
+                }
+                crate::framework::HydrolysisAndroidHost::Local { .. } => {
+                    unreachable!("the fixture pins a git host, not a local one")
+                }
+            };
             assert!(checkout.ends_with(&revision));
+            assert_eq!(
+                std::fs::read_to_string(checkout.join(HOST_STAMP_FILE)).expect("stamp file"),
+                revision,
+                "the stamp records the revision the framework resolved"
+            );
             assert!(
                 checkout
                     .join("backends/hydrolysis/android/gpu/build.gradle.kts")

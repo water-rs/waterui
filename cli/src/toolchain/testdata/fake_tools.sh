@@ -252,24 +252,32 @@ cargo)
             respond CARGO_METADATA
             ;;
         tree)
-            # The graph is resolved per build target: `cargo tree --target
-            # <triple>` answers `CARGO_TREE_<triple>` when a per-target
-            # response file is staged, else `CARGO_TREE` — and fails when
-            # neither exists, so a target-less call can never pass as the
-            # host graph.
-            _tree_target=""
+            # The graph is resolved per build target: `cargo tree` answers
+            # `CARGO_TREE_<triple>` for each `--target` flag it is passed —
+            # a multi-target invocation's union is exactly its per-target
+            # answers — and a call naming no `--target` or a triple with no
+            # staged response fails, so a host-graph resolution can never
+            # pass as the target's.
+            _tree_targets=""
             _tree_prev=""
             for _tree_arg in "$@"; do
                 if [ "$_tree_prev" = "--target" ]; then
-                    _tree_target="$_tree_arg"
+                    _tree_targets="$_tree_targets $_tree_arg"
                 fi
                 _tree_prev="$_tree_arg"
             done
-            if [ -n "$_tree_target" ] && [ -f "${WATERUI_FAKE_RESPONSES:-/nonexistent}/CARGO_TREE_$_tree_target" ]; then
-                respond_file "CARGO_TREE_$_tree_target"
-            else
-                respond CARGO_TREE
+            if [ -z "$_tree_targets" ]; then
+                exit 2
             fi
+            for _tree_target in $_tree_targets; do
+                if [ ! -f "${WATERUI_FAKE_RESPONSES:-/nonexistent}/CARGO_TREE_$_tree_target" ]; then
+                    exit 1
+                fi
+            done
+            for _tree_target in $_tree_targets; do
+                print_file "${WATERUI_FAKE_RESPONSES}/CARGO_TREE_$_tree_target"
+            done
+            exit 0
             ;;
         install | binstall)
             # `cargo install <crate>` drops the crate's binary beside cargo —

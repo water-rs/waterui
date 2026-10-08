@@ -275,6 +275,9 @@ async fn configure_preview_module_build(
     )
     .await
     .wrap_err("Failed to open the preview support project")?;
+    // The ABI feature probe below resolves the support project's own
+    // generated FFI manifest — render it before anything reads it.
+    support_project.scaffold_ffi_companion().await?;
     let support_target_dir = support_project
         .water_target_dir(RustLinkage::SharedRuntime)
         .await?;

@@ -101,6 +101,31 @@ impl HydrolysisBackend {
             .filter(|c| c.is_alphanumeric())
             .collect::<String>();
         let framework = project.resolved_framework().await?;
+        let section = |os: crate::platform::NativeOs| crate::project::GraphSection {
+            manifest: "the generated Hydrolysis launcher manifest",
+            table: os.cfg(),
+        };
+        // The native table's serving set spans three OSes whose graphs
+        // legitimately differ — `waterui-browser-wpe` enters on Linux —
+        // so each OS's answers resolve from its own serving set while the
+        // engine-independent profile set resolves once for them all.
+        let targets = hydrolysis_targets();
+        let (project_packages, macos, linux, windows) = futures_util::future::try_join4(
+            project.project_packages_for(&framework, &targets),
+            project.native_browser_answers(
+                crate::platform::NativeOs::MacOs,
+                section(crate::platform::NativeOs::MacOs),
+            ),
+            project.native_browser_answers(
+                crate::platform::NativeOs::Linux,
+                section(crate::platform::NativeOs::Linux),
+            ),
+            project.native_browser_answers(
+                crate::platform::NativeOs::Windows,
+                section(crate::platform::NativeOs::Windows),
+            ),
+        )
+        .await?;
         Ok(TemplateContext::for_project_manifest(
             manifest,
             project.crate_name().clone(),
@@ -110,21 +135,10 @@ impl HydrolysisBackend {
         )
         .with_backend_project_path(project.backend_path::<Self>())
         .with_project_root_path(project.root().to_path_buf())
-        .with_project_packages(
-            project
-                .project_packages_for(&framework, &hydrolysis_targets())
-                .await?,
-        )
-        .with_webview_enabled(
-            project
-                .uses_standard_webview_for(&crate::platform::native_target_triples())
-                .await?,
-        )
-        .with_browser_engine(
-            project
-                .linked_browser_engine_for(&crate::platform::native_target_triples())
-                .await?,
-        ))
+        .with_project_packages(project_packages)
+        .with_browser_answers(crate::platform::NativeOs::MacOs, macos)
+        .with_browser_answers(crate::platform::NativeOs::Linux, linux)
+        .with_browser_answers(crate::platform::NativeOs::Windows, windows))
     }
 }
 

@@ -211,12 +211,12 @@ impl Backend for AppleBackend {
         platform: TargetPlatform,
         options: BuildOptions,
     ) -> eyre::Result<crate::build::BuiltTarget> {
-        let triple = options
-            .target_triple()
-            .cloned()
-            .unwrap_or_else(|| platform.triple());
         project
-            .browser_runtime_plan(platform, TargetBackend::Apple, &triple)
+            .browser_runtime_plan(
+                platform,
+                TargetBackend::Apple,
+                &crate::apple::platform::apple_build_triple(platform, &options),
+            )
             .await?;
         build_rust_lib(project, platform, options).await
     }

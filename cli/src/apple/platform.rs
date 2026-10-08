@@ -266,6 +266,20 @@ pub(crate) async fn apple_build_features(
     Ok(features)
 }
 
+/// The triple an Apple build produces — the explicitly requested target,
+/// or the platform's own. The backend build's `WebView` validation and
+/// the library build it drives share this one derivation so the two can
+/// never resolve different targets.
+pub(crate) fn apple_build_triple(
+    platform: TargetPlatform,
+    options: &crate::build::BuildOptions,
+) -> Triple {
+    options
+        .target_triple()
+        .cloned()
+        .unwrap_or_else(|| platform.triple())
+}
+
 /// Build Rust library for an Apple platform.
 ///
 /// # Errors
@@ -290,10 +304,7 @@ pub(crate) async fn build_rust_lib_with_links(
     platform: TargetPlatform,
     options: BuildOptions,
 ) -> eyre::Result<(BuiltTarget, Vec<crate::build::NativeLink>)> {
-    let triple = options
-        .target_triple()
-        .cloned()
-        .unwrap_or_else(|| platform.triple());
+    let triple = apple_build_triple(platform, &options);
     validate_architecture(triple.architecture)?;
     // A packaged app stamps the identifier as `CFBundleIdentifier`; reject an
     // Apple-invalid one before the Rust build pays for it. An embedded build

@@ -6,7 +6,6 @@
 use std::path::{Path, PathBuf};
 
 use eyre::{self, WrapErr as _, bail};
-use futures_util::FutureExt as _;
 use smol::{fs, unblock};
 use target_lexicon::{
     Aarch64Architecture, Architecture, BinaryFormat, Environment, OperatingSystem, Triple, Vendor,
@@ -348,8 +347,40 @@ impl AndroidAbi {
         }
     }
 
+    /// The Rust target triple this ABI builds for — the one mapping every
+    /// ABI-to-triple question reads; [`AndroidAbi::from_triple`] is its
+    /// inverse.
+    #[must_use]
+    pub const fn triple(self) -> Triple {
+        let (architecture, environment) = match self {
+            Self::Arm64V8a => (
+                Architecture::Aarch64(Aarch64Architecture::Aarch64),
+                Environment::Android,
+            ),
+            Self::X86_64 => (Architecture::X86_64, Environment::Android),
+            // rustc's armv7 Android target carries the `androideabi`
+            // environment (`armv7-linux-androideabi`); `android` alone names
+            // no target.
+            Self::ArmeabiV7a => (
+                Architecture::Arm(target_lexicon::ArmArchitecture::Armv7),
+                Environment::Androideabi,
+            ),
+            Self::X86 => (
+                Architecture::X86_32(target_lexicon::X86_32Architecture::I686),
+                Environment::Android,
+            ),
+        };
+        Triple {
+            architecture,
+            vendor: Vendor::Unknown,
+            operating_system: OperatingSystem::Linux,
+            environment,
+            binary_format: BinaryFormat::Elf,
+        }
+    }
+
     /// The ABI a Rust target triple names — the inverse of
-    /// [`AndroidPlatform::triple`], so call sites holding a triple never keep
+    /// [`AndroidAbi::triple`], so call sites holding a triple never keep
     /// a second copy of the architecture mapping.
     #[must_use]
     pub const fn from_triple(triple: &Triple) -> Option<Self> {
@@ -446,10 +477,7 @@ pub const ALL_ABIS: &[AndroidAbi] = &[
 /// manifest's `cfg(target_os = "android")` table serves, resolved one
 /// `cargo tree --target` evaluation per ABI.
 pub(crate) fn android_target_triples() -> Vec<Triple> {
-    ALL_ABIS
-        .iter()
-        .map(|abi| AndroidPlatform::new(*abi).triple())
-        .collect()
+    ALL_ABIS.iter().map(|abi| abi.triple()).collect()
 }
 
 impl AndroidPlatform {
@@ -462,31 +490,7 @@ impl AndroidPlatform {
     /// Get the target triple for this Android platform.
     #[must_use]
     pub const fn triple(&self) -> Triple {
-        let (architecture, environment) = match self.abi {
-            AndroidAbi::Arm64V8a => (
-                Architecture::Aarch64(Aarch64Architecture::Aarch64),
-                Environment::Android,
-            ),
-            AndroidAbi::X86_64 => (Architecture::X86_64, Environment::Android),
-            // rustc's armv7 Android target carries the `androideabi`
-            // environment (`armv7-linux-androideabi`); `android` alone names
-            // no target.
-            AndroidAbi::ArmeabiV7a => (
-                Architecture::Arm(target_lexicon::ArmArchitecture::Armv7),
-                Environment::Androideabi,
-            ),
-            AndroidAbi::X86 => (
-                Architecture::X86_32(target_lexicon::X86_32Architecture::I686),
-                Environment::Android,
-            ),
-        };
-        Triple {
-            architecture,
-            vendor: Vendor::Unknown,
-            operating_system: OperatingSystem::Linux,
-            environment,
-            binary_format: BinaryFormat::Elf,
-        }
+        self.abi.triple()
     }
 
     /// Build Rust library for this Android platform.
@@ -520,7 +524,8 @@ impl AndroidPlatform {
         // The audit resolves the ffi companion's graph — the crate the
         // Android build compiles — so it runs on the render this build made.
         let ffi_manifest = project.ffi_crate_path().join("Cargo.toml");
-        let required = crate::assets::scan_required_permissions(&ffi_manifest).await?;
+        let required =
+            crate::assets::scan_required_permissions(project.host(), &ffi_manifest).await?;
         crate::assets::warn_missing_permissions(project, &required, |key| {
             key.android_permission_name().is_some()
         });
@@ -637,10 +642,7 @@ impl AndroidPlatform {
             crate::assets::AndroidDependencyScope::Implementation,
             &android_ffi_dependency_features(
                 project,
-                &abis
-                    .iter()
-                    .map(|abi| Self::new(*abi).triple())
-                    .collect::<Vec<_>>(),
+                &abis.iter().map(|abi| abi.triple()).collect::<Vec<_>>(),
             )
             .await?,
         )
@@ -842,32 +844,39 @@ pub(crate) async fn android_ffi_dependency_features(
 ) -> eyre::Result<Vec<String>> {
     let build_manifest = project.ffi_crate_path().join("Cargo.toml");
     project
-        .unanimous_graph_answer(targets, "the Android FFI feature set", |project, target| {
-            let project = project.clone();
-            let build_manifest = build_manifest.clone();
-            async move {
-                let mut features = vec!["android-jni".to_string()];
-                features.extend(
-                    crate::project_model::assets::capability_ffi_features(
-                        &project,
-                        &build_manifest,
-                        &target,
-                    )
-                    .await?,
-                );
-                // Android has no player or map WaterUI bridges, so it draws both itself.
-                features.extend(
-                    crate::project_model::assets::self_drawn_realization_features(
-                        &project,
-                        &build_manifest,
-                        &target,
-                    )
-                    .await?,
-                );
-                Ok(features)
-            }
-            .boxed()
-        })
+        .unanimous_graph_answer(
+            targets,
+            "the Android FFI feature set",
+            crate::project::GraphSection {
+                manifest: "the generated FFI companion manifest",
+                table: "cfg(target_os = \"android\")",
+            },
+            |features: &Vec<String>| features.join(", "),
+            |project, target| {
+                let build_manifest = build_manifest.clone();
+                async move {
+                    let mut features = vec!["android-jni".to_string()];
+                    features.extend(
+                        crate::project_model::assets::capability_ffi_features(
+                            project,
+                            &build_manifest,
+                            &target,
+                        )
+                        .await?,
+                    );
+                    // Android has no player or map WaterUI bridges, so it draws both itself.
+                    features.extend(
+                        crate::project_model::assets::self_drawn_realization_features(
+                            project,
+                            &build_manifest,
+                            &target,
+                        )
+                        .await?,
+                    );
+                    Ok(features)
+                }
+            },
+        )
         .await
 }
 

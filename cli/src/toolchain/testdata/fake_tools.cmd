@@ -297,18 +297,21 @@ if "%1"=="install" goto :cargo_install
 if "%1"=="binstall" goto :cargo_install
 exit /b 0
 
-rem The graph is resolved per build target: `cargo tree --target <triple>`
-rem answers `CARGO_TREE_<triple>` when a per-target response file is staged,
-rem else `CARGO_TREE` - and fails when neither exists.
+rem The graph is resolved per build target: `cargo tree` answers
+rem `CARGO_TREE_<triple>` for each `--target` flag it is passed - a
+rem multi-target invocation's union is exactly its per-target answers - and
+rem a call naming no `--target` or a triple with no staged response fails.
 :cargo_tree
-set "tree_target="
+set "tree_targets="
 set "prev="
 for %%a in (%*) do (
-    if "!prev!"=="--target" set "tree_target=%%a"
+    if "!prev!"=="--target" set "tree_targets=!tree_targets! %%a"
     set "prev=%%a"
 )
-if defined tree_target if exist "%WATERUI_FAKE_RESPONSES%\CARGO_TREE_!tree_target!" (type "%WATERUI_FAKE_RESPONSES%\CARGO_TREE_!tree_target!" & exit /b 0)
-call :respond CARGO_TREE & exit /b !errorlevel!
+if not defined tree_targets exit /b 2
+for %%t in (!tree_targets!) do if not exist "%WATERUI_FAKE_RESPONSES%\CARGO_TREE_%%t" exit /b 1
+for %%t in (!tree_targets!) do type "%WATERUI_FAKE_RESPONSES%\CARGO_TREE_%%t"
+exit /b 0
 
 rem `cargo install <crate>` drops the crate's binary beside cargo - model that
 rem by copying this dispatcher under the crate's name.

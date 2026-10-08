@@ -1,10 +1,12 @@
 //! Project management and build utilities for `WaterUI` CLI.
 
+use std::fmt::Write as _;
+
 use cargo_toml::Manifest as CargoManifest;
 use eyre::WrapErr as _;
-use futures_util::FutureExt as _;
 use futures_util::future::{BoxFuture, Shared};
 use futures_util::stream::{self, StreamExt as _};
+use futures_util::{FutureExt as _, TryFutureExt as _};
 use target_lexicon::Triple;
 use tracing::info;
 
@@ -99,13 +101,18 @@ impl ManagedBackends {
 /// What `cargo metadata` reports about the tree a project builds in.
 ///
 /// Resolved once per [`Project`] and shared by everything that needs it, so
-/// one `cargo metadata` run serves the target directory and the lockfile.
+/// one `cargo metadata` run serves the target directory, the lockfile, and
+/// the package spec every `cargo tree` evaluation roots at.
 #[derive(Debug, Clone)]
 struct CargoLayout {
     target_dir: PathBuf,
     /// Root of the Cargo workspace the project belongs to — the project itself
     /// when it is not a workspace member. This is where its `Cargo.lock` lives.
     workspace_root: PathBuf,
+    /// The application package's resolved id — the `--package` spec every
+    /// `cargo tree` evaluation passes so the application crate, not the
+    /// workspace root, roots the printed graph.
+    root_package_id: String,
 }
 
 enum CargoResolution {
@@ -155,6 +162,181 @@ fn spawn_cargo_layout_resolution(
     .shared()
 }
 
+/// The lazily-shared future [`Project::graph_key`] resolves on the first
+/// graph evaluation — the inputs every persisted `cargo tree` answer keys
+/// on, computed once per project.
+fn spawn_graph_key(
+    host: &Host,
+    project_root: &Path,
+    cargo_layout: Shared<BoxFuture<'static, Result<CargoLayout, String>>>,
+) -> Shared<BoxFuture<'static, Result<GraphKey, String>>> {
+    let host = host.clone();
+    let project_root = project_root.to_path_buf();
+    async move {
+        resolve_graph_key(&host, &project_root, cargo_layout)
+            .await
+            .map_err(|error| error.to_string())
+    }
+    .boxed()
+    .shared()
+}
+
+/// The inputs every persisted `cargo tree` answer keys on: a different
+/// `cargo`, a different project manifest, or a different lockfile resolves
+/// a different graph, so each rides inside the cache key.
+#[derive(Debug, Clone)]
+struct GraphKey {
+    /// `cargo --version` output, trimmed.
+    cargo_version: String,
+    /// sha256 of the project's `Cargo.toml`.
+    manifest_sha256: String,
+    /// sha256 of the workspace `Cargo.lock`; `None` when none exists.
+    lockfile_sha256: Option<String>,
+}
+
+/// `cargo --version` plus the two files every `cargo tree` evaluation
+/// reads — the project manifest and its lockfile — resolved once and
+/// shared by all of them.
+async fn resolve_graph_key(
+    host: &Host,
+    project_root: &Path,
+    cargo_layout: Shared<BoxFuture<'static, Result<CargoLayout, String>>>,
+) -> eyre::Result<GraphKey> {
+    let layout = cargo_layout.await.map_err(|error| eyre::eyre!(error))?;
+    let (cargo_version, manifest, lockfile) = futures_util::future::try_join3(
+        host.run("cargo", ["--version"]).map_err(eyre::Report::from),
+        smol::fs::read(project_root.join("Cargo.toml")).map_err(eyre::Report::from),
+        async {
+            match smol::fs::read(layout.workspace_root.join("Cargo.lock")).await {
+                Ok(bytes) => Ok::<_, std::io::Error>(Some(bytes)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(error),
+            }
+        }
+        .map_err(eyre::Report::from),
+    )
+    .await?;
+    Ok(GraphKey {
+        cargo_version: cargo_version.trim().to_string(),
+        manifest_sha256: sha256_hex(&manifest),
+        lockfile_sha256: lockfile.map(|bytes| sha256_hex(&bytes)),
+    })
+}
+
+/// The subdirectory of the managed build cache the persisted `cargo tree`
+/// evaluations live in — one JSON entry per `(edges, target set)`.
+const GRAPH_CACHE_DIR: &str = "cargo-graph";
+
+/// A persisted `cargo tree` evaluation: the raw `{p}` output plus every
+/// input it resolved from — replayed only while all of them still hash
+/// the same.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct CachedTree {
+    /// The `--target` set the evaluation filtered by, joined the way its
+    /// cache key joins it — a guard against a renamed or colliding file.
+    targets: String,
+    /// `cargo --version` at resolve time.
+    cargo_version: String,
+    /// sha256 of the application's `Cargo.toml`.
+    manifest_sha256: String,
+    /// sha256 of the workspace `Cargo.lock`.
+    lockfile_sha256: Option<String>,
+    /// sha256 of every path package's `Cargo.toml` the tree carried,
+    /// keyed by manifest path — the recorded list is re-hashed on read,
+    /// so a path package that changed after the resolve replays nothing.
+    path_manifest_sha256: BTreeMap<String, String>,
+    /// The evaluation's raw stdout.
+    output: String,
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest as _;
+    hex::encode(sha2::Sha256::digest(bytes))
+}
+
+fn cached_tree_path(cache_dir: &Path, edges: &str, key: &str) -> PathBuf {
+    cache_dir.join(format!(
+        "{edges}-{}.json",
+        &sha256_hex(key.as_bytes())[..16]
+    ))
+}
+
+/// The recorded output of a `(edges, key)` evaluation whose inputs still
+/// hash the same — `None` on any miss: no entry, a stale input, a path
+/// manifest that no longer reads, or an entry that does not parse.
+async fn read_cached_tree(
+    cache_dir: &Path,
+    edges: &str,
+    key: &str,
+    graph_key: &GraphKey,
+) -> Option<String> {
+    let path = cached_tree_path(cache_dir, edges, key);
+    let contents = smol::fs::read(&path).await.ok()?;
+    let entry: CachedTree = serde_json::from_slice(&contents).ok()?;
+    if entry.targets != key
+        || entry.cargo_version != graph_key.cargo_version
+        || entry.manifest_sha256 != graph_key.manifest_sha256
+        || entry.lockfile_sha256 != graph_key.lockfile_sha256
+    {
+        return None;
+    }
+    for (manifest, recorded) in &entry.path_manifest_sha256 {
+        let bytes = smol::fs::read(manifest).await.ok()?;
+        if sha256_hex(&bytes) != *recorded {
+            return None;
+        }
+    }
+    Some(entry.output)
+}
+
+/// Persist a fresh `(edges, key)` evaluation — the recorded path-package
+/// manifests ride inside the entry so a later read re-hashes exactly the
+/// list the resolve picked up. A write that fails is a warning, not a
+/// failure: the disk layer is an accelerator the answer never depends on.
+async fn write_cached_tree(
+    cache_dir: &Path,
+    edges: &str,
+    key: &str,
+    graph_key: &GraphKey,
+    output: &str,
+) {
+    let result = async {
+        let mut path_manifest_sha256 = BTreeMap::new();
+        for directory in output.lines().filter_map(tree_package_directory) {
+            let manifest = directory.join("Cargo.toml");
+            let bytes = smol::fs::read(&manifest).await?;
+            path_manifest_sha256.insert(manifest.display().to_string(), sha256_hex(&bytes));
+        }
+        let entry = CachedTree {
+            targets: key.to_string(),
+            cargo_version: graph_key.cargo_version.clone(),
+            manifest_sha256: graph_key.manifest_sha256.clone(),
+            lockfile_sha256: graph_key.lockfile_sha256.clone(),
+            path_manifest_sha256,
+            output: output.to_string(),
+        };
+        smol::fs::create_dir_all(cache_dir).await?;
+        let bytes = serde_json::to_vec(&entry)?;
+        smol::fs::write(cached_tree_path(cache_dir, edges, key), bytes).await?;
+        Ok::<(), eyre::Report>(())
+    }
+    .await;
+    if let Err(error) = result {
+        tracing::warn!("could not persist the dependency graph for `{key}`: {error}");
+    }
+}
+
+/// The generated-manifest section a graph answer is written to, named in
+/// a disagreement error so the message says which table cannot express
+/// the per-target difference.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct GraphSection {
+    /// The generated manifest the section is written into.
+    pub manifest: &'static str,
+    /// The table the answer is written under — a `cfg(...)` key.
+    pub table: &'static str,
+}
+
 /// Represents a `WaterUI` project with its manifest and crate information.
 #[derive(Debug, Clone)]
 pub struct Project {
@@ -170,6 +352,15 @@ pub struct Project {
     /// same way — a feature answer resolved for one target is never served
     /// to a build for another.
     enabled_features: TargetGraph<BTreeSet<String>>,
+    /// The per-package enabled-feature sets of generated manifests —
+    /// `cargo metadata --filter-platform <triple>` — keyed by manifest and
+    /// triple, so Gradle's four ABI checks share one resolve each and an
+    /// answer resolved for one target is never served to another.
+    generated_features: TargetGraph<BTreeMap<String, BTreeSet<String>>>,
+    /// The inputs every persisted graph answer keys on — the cargo
+    /// version and the manifest/lockfile hashes — resolved on the first
+    /// evaluation and shared by all of them.
+    graph_key: Shared<BoxFuture<'static, Result<GraphKey, String>>>,
     managed_backends_root: PathBuf,
     /// The runtime backends this open generated — project-owned state, never
     /// persisted. Persisted backend-facing configuration lives in the
@@ -730,27 +921,60 @@ impl Project {
     /// I/O.
     const TARGET_GRAPH_CONCURRENCY: usize = 8;
 
-    /// The resolved `{p}` entries of the application's normal-edge
-    /// dependency graph for `target` — every printed occurrence, keyed by
-    /// package name. Each triple's `cargo tree --target <triple>`
-    /// evaluation is cached under its triple, so a graph resolved for one
-    /// build target is never served to another.
-    async fn linked_packages(&self, target: &Triple) -> eyre::Result<Arc<LinkedPackages>> {
-        let key = target.to_string();
+    /// The parsed `cargo tree --edges <edges>` evaluation for `targets`,
+    /// cached under the canonical join of the target list — one triple
+    /// keys on itself, a serving set on the whole set — so an evaluation
+    /// resolved for one build target is never served to another, and a
+    /// single-target call and the same single-element set share one
+    /// entry. Behind each key's `Shared` future sits the project build
+    /// cache: an entry whose recorded inputs still hash the same replays
+    /// its stored output without resolving anything.
+    async fn cached_tree_answer<T: Send + Sync + 'static>(
+        &self,
+        cache: &TargetGraph<T>,
+        edges: &'static str,
+        targets: &[Triple],
+        parse: fn(&str) -> eyre::Result<T>,
+    ) -> eyre::Result<Arc<T>> {
+        // The cache key names the exact set the evaluation filtered by;
+        // triples contain no commas, so the join is unambiguous.
+        let mut names: Vec<String> = targets.iter().map(ToString::to_string).collect();
+        names.sort_unstable();
+        names.dedup();
+        let key = names.join(",");
         let host = self.host.clone();
         let project_root = self.root.clone();
+        let cache_dir = self.managed_backends_root.join(GRAPH_CACHE_DIR);
         let cargo_layout = self.cargo_layout.clone();
-        let target = target.clone();
-        let shared = self
-            .linked_packages
+        let graph_key = self.graph_key.clone();
+        let targets = targets.to_vec();
+        let shared = cache
             .lock()
             .await
-            .entry(key)
+            .entry(key.clone())
             .or_insert_with(move || {
                 async move {
-                    cargo_layout.await?;
-                    resolve_linked_runtime_packages(&host, project_root, &target, false)
+                    let layout = cargo_layout.await?;
+                    let key_parts = graph_key.await?;
+                    let output = if let Some(output) =
+                        read_cached_tree(&cache_dir, edges, &key, &key_parts).await
+                    {
+                        output
+                    } else {
+                        let output = cargo_tree(
+                            &host,
+                            &project_root,
+                            &layout.root_package_id,
+                            edges,
+                            &targets,
+                            false,
+                        )
                         .await
+                        .map_err(|error| error.to_string())?;
+                        write_cached_tree(&cache_dir, edges, &key, &key_parts, &output).await;
+                        output
+                    };
+                    parse(&output)
                         .map(Arc::new)
                         .map_err(|error| error.to_string())
                 }
@@ -761,26 +985,90 @@ impl Project {
         shared.await.map_err(|error| eyre::eyre!(error))
     }
 
+    /// The resolved `{p}` entries of the application's normal-edge
+    /// dependency graph for `target` — every printed occurrence, keyed by
+    /// package name.
+    async fn linked_packages(&self, target: &Triple) -> eyre::Result<Arc<LinkedPackages>> {
+        self.cached_tree_answer(
+            &self.linked_packages,
+            "normal",
+            std::slice::from_ref(target),
+            |tree| Ok(linked_packages_from_tree(tree)),
+        )
+        .await
+    }
+
     /// The feature names the application's `cargo tree --edges features
-    /// --target <triple>` evaluation reports, cached under `target`.
+    /// --target <triple>` evaluation reports.
     async fn enabled_features(&self, target: &Triple) -> eyre::Result<Arc<BTreeSet<String>>> {
-        let key = target.to_string();
+        self.cached_tree_answer(
+            &self.enabled_features,
+            "features",
+            std::slice::from_ref(target),
+            |tree| Ok(enabled_features_from_tree(tree)),
+        )
+        .await
+    }
+
+    /// The host this project resolves and builds on — the `PATH`,
+    /// environment and working directory every probe goes through.
+    pub(crate) const fn host(&self) -> &Host {
+        &self.host
+    }
+
+    /// Every package's enabled features in `build_manifest`'s resolved
+    /// graph for `target` — `cargo metadata --filter-platform <triple>`,
+    /// cached per manifest and triple so a build's ABI-by-ABI feature
+    /// checks share one resolve each and an answer resolved for one
+    /// target is never served to another. Packages whose names repeat in
+    /// the graph merge their resolved feature sets, the question asked of
+    /// this map always being "is package X's feature Y enabled".
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `cargo metadata` cannot resolve the manifest.
+    pub(crate) async fn generated_manifest_features(
+        &self,
+        build_manifest: &Path,
+        target: &Triple,
+    ) -> eyre::Result<Arc<BTreeMap<String, BTreeSet<String>>>> {
+        // `\u{1f}` separates the manifest from the triple — neither side
+        // can contain it, so the key is unambiguous.
+        let key = format!("{}\u{1f}{target}", build_manifest.display());
         let host = self.host.clone();
-        let project_root = self.root.clone();
-        let cargo_layout = self.cargo_layout.clone();
+        let build_manifest = build_manifest.to_path_buf();
         let target = target.clone();
         let shared = self
-            .enabled_features
+            .generated_features
             .lock()
             .await
             .entry(key)
             .or_insert_with(move || {
                 async move {
-                    cargo_layout.await?;
-                    resolve_enabled_features(&host, project_root, &target, false)
-                        .await
-                        .map(Arc::new)
-                        .map_err(|error| error.to_string())
+                    let metadata = unblock(move || {
+                        let mut command = cargo_metadata::MetadataCommand::new();
+                        command.manifest_path(&build_manifest).other_options(vec![
+                            "--filter-platform".to_string(),
+                            target.to_string(),
+                        ]);
+                        metadata_on(&host, &command)
+                    })
+                    .await
+                    .map_err(|error| error.to_string())?;
+                    let mut features: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+                    if let Some(resolve) = &metadata.resolve {
+                        for node in &resolve.nodes {
+                            let Some(package) = metadata.packages.iter().find(|p| p.id == node.id)
+                            else {
+                                continue;
+                            };
+                            features
+                                .entry(package.name.to_string())
+                                .or_default()
+                                .extend(node.features.iter().map(ToString::to_string));
+                        }
+                    }
+                    Ok(Arc::new(features))
                 }
                 .boxed()
                 .shared()
@@ -794,23 +1082,29 @@ impl Project {
     /// evaluation — concurrently, bounded by
     /// [`Self::TARGET_GRAPH_CONCURRENCY`].
     ///
-    /// `targets` is the serving set of one generated-manifest section: the
-    /// answer is written once and must hold for every triple the section
-    /// compiles for, so it has to agree across the set. A query that
-    /// answers differently for two triples is an error naming the triples
-    /// and the differing answer — the manifest cannot express a per-target
+    /// `targets` is the serving set of the generated-manifest section
+    /// `section` names: the answer is written once and must hold for every
+    /// triple the section compiles for, so it has to agree across the set.
+    /// A query that answers differently for two triples fails naming the
+    /// manifest and table, every triple grouped by the answer it
+    /// resolved, and the remedy — the manifest cannot express a per-target
     /// difference, and silently picking one side would misrender it.
     ///
-    /// `query` owns a cloned `Project` in its future — the resolutions run
-    /// concurrently, so no borrow of `self` may ride one.
-    pub(crate) async fn unanimous_graph_answer<T>(
-        &self,
+    /// `query` runs against `self` and each triple; the futures it hands
+    /// back stay inside this call — they are polled by the bounded stream
+    /// and never escape — so they may borrow `self` but must be `Send`.
+    pub(crate) async fn unanimous_graph_answer<'q, T, F, Fut>(
+        &'q self,
         targets: &[Triple],
         what: &'static str,
-        query: impl Fn(&Self, Triple) -> BoxFuture<'static, eyre::Result<T>> + Send + Sync,
+        section: GraphSection,
+        describe: impl Fn(&T) -> String + Send + Sync,
+        query: F,
     ) -> eyre::Result<T>
     where
-        T: PartialEq + std::fmt::Debug,
+        T: PartialEq + Send,
+        F: Fn(&'q Self, Triple) -> Fut + Send + Sync,
+        Fut: Future<Output = eyre::Result<T>> + Send,
     {
         let mut resolved = stream::iter(targets.iter().cloned())
             .map(|target| {
@@ -818,21 +1112,40 @@ impl Project {
                 async move { answer.await.map(|answer| (target, answer)) }
             })
             .buffered(Self::TARGET_GRAPH_CONCURRENCY);
-        let mut agreed: Option<(Triple, T)> = None;
+        let mut answers = Vec::new();
         while let Some(next) = resolved.next().await {
-            let (triple, answer) = next?;
-            match &agreed {
-                None => agreed = Some((triple, answer)),
-                Some((first_triple, first)) if *first == answer => {}
-                Some((first_triple, first)) => eyre::bail!(
-                    "{what} differs across the build targets the generated manifest serves: \
-                     {first_triple} resolves {first:?}, {triple} resolves {answer:?}"
-                ),
-            }
+            answers.push(next?);
         }
-        agreed
-            .map(|(_, answer)| answer)
-            .ok_or_else(|| eyre::eyre!("{what} was queried for no build targets"))
+        let Some((_, first)) = answers.first() else {
+            eyre::bail!("{what} was queried for no build targets");
+        };
+        if answers.iter().all(|(_, answer)| answer == first) {
+            return Ok(answers.into_iter().next().expect("answers is non-empty").1);
+        }
+        // Every triple the table serves groups under the answer its own
+        // graph resolved — naming two would still leave the rest of the
+        // disagreement unnamed.
+        let mut groups: BTreeMap<String, Vec<&Triple>> = BTreeMap::new();
+        for (triple, answer) in &answers {
+            groups.entry(describe(answer)).or_default().push(triple);
+        }
+        let mut grouped = String::new();
+        for (answer, triples) in &groups {
+            let triples = triples
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            let _ = write!(grouped, "\n    {answer}: {triples}");
+        }
+        eyre::bail!(
+            "{what} differs across the build targets {manifest}'s `{table}` table serves:{grouped}\n\
+             the dependency graph answers differently per target, so that table needs a \
+             per-target split — `cfg(target_os = ...)` sections each resolved from their own \
+             serving set",
+            manifest = section.manifest,
+            table = section.table,
+        )
     }
 
     /// Returns whether the packaged application links `package_name` for
@@ -888,9 +1201,10 @@ impl Project {
     /// The application's own packages across `targets` — a union, not an
     /// agreement: a `[profile.dev.package]` override applies to whichever
     /// build's resolve carries the package, and an entry for a package a
-    /// given target does not link merely never applies. The per-triple
-    /// resolutions run concurrently, bounded by
-    /// [`Self::TARGET_GRAPH_CONCURRENCY`].
+    /// given target does not link merely never applies. One `cargo tree`
+    /// evaluation answers the whole set — every triple rides the same
+    /// resolve as its own `--target` flag, and the printed union is the
+    /// per-target union exactly.
     ///
     /// # Errors
     ///
@@ -901,14 +1215,16 @@ impl Project {
         framework: &ResolvedFramework,
         targets: &[Triple],
     ) -> eyre::Result<BTreeSet<String>> {
-        let mut resolved = stream::iter(targets.iter().cloned())
-            .map(|target| async move { self.project_packages(framework, &target).await })
-            .buffered(Self::TARGET_GRAPH_CONCURRENCY);
-        let mut packages = BTreeSet::new();
-        while let Some(next) = resolved.next().await {
-            packages.extend(next?);
+        if targets.is_empty() {
+            return Ok(BTreeSet::new());
         }
-        Ok(packages)
+        let packages = self
+            .cached_tree_answer(&self.linked_packages, "normal", targets, |tree| {
+                Ok(linked_packages_from_tree(tree))
+            })
+            .await?;
+        let framework_roots = framework_local_roots(&self.root, self.manifest(), framework)?;
+        project_packages_from_tree(self.crate_name.as_str(), &packages, &framework_roots)
     }
 
     /// Whether the application's graph turns on the standard `WebView`
@@ -930,18 +1246,52 @@ impl Project {
     }
 
     /// The one `WebView` answer for every target `targets` names — the
-    /// serving set of the generated manifest section the caller writes.
+    /// serving set of the generated manifest `section` the caller writes.
     ///
     /// # Errors
     ///
     /// Returns an error when Cargo cannot resolve the application graph, or
     /// when the answer differs across `targets`.
-    pub(crate) async fn uses_standard_webview_for(&self, targets: &[Triple]) -> eyre::Result<bool> {
-        self.unanimous_graph_answer(targets, "the standard WebView usage", |project, target| {
-            let project = project.clone();
-            async move { project.uses_standard_webview(&target).await }.boxed()
-        })
+    pub(crate) async fn uses_standard_webview_for(
+        &self,
+        targets: &[Triple],
+        section: GraphSection,
+    ) -> eyre::Result<bool> {
+        self.unanimous_graph_answer(
+            targets,
+            "the standard WebView usage",
+            section,
+            |enabled: &bool| enabled.to_string(),
+            |project, target| async move { project.uses_standard_webview(&target).await },
+        )
         .await
+    }
+
+    /// The two `WebView` answers `os`'s generated-manifest table gets from
+    /// the application's own graphs — usage and linked engine — resolved
+    /// together from `os`'s serving set. Every graph-derived answer a
+    /// table writes goes through this one resolution, so a table can never
+    /// read half its answers from a different set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Cargo cannot resolve the application graph or
+    /// an answer differs across `os`'s serving set.
+    pub(crate) async fn native_browser_answers(
+        &self,
+        os: crate::platform::NativeOs,
+        section: GraphSection,
+    ) -> eyre::Result<crate::templates::BrowserAnswers> {
+        let targets = os.serving_triples();
+        let (webview_enabled, engine) = futures_util::future::try_join(
+            self.uses_standard_webview_for(&targets, section),
+            self.linked_browser_engine_for(&targets, section),
+        )
+        .await?;
+        Ok(crate::templates::BrowserAnswers {
+            webview_enabled,
+            engine,
+        })
     }
 
     /// Resolve and validate the standard `WebView` engine for a build.
@@ -1008,7 +1358,7 @@ impl Project {
     }
 
     /// The one engine answer for every target `targets` names — the
-    /// serving set of the generated manifest section the caller writes.
+    /// serving set of the generated manifest `section` the caller writes.
     ///
     /// # Errors
     ///
@@ -1018,11 +1368,17 @@ impl Project {
     pub(crate) async fn linked_browser_engine_for(
         &self,
         targets: &[Triple],
+        section: GraphSection,
     ) -> eyre::Result<Option<ResolvedWebViewBackend>> {
-        self.unanimous_graph_answer(targets, "the linked browser engine", |project, target| {
-            let project = project.clone();
-            async move { project.linked_browser_engine(&target).await }.boxed()
-        })
+        self.unanimous_graph_answer(
+            targets,
+            "the linked browser engine",
+            section,
+            |engine: &Option<ResolvedWebViewBackend>| {
+                engine.map_or_else(|| "none".to_string(), |e| e.to_string())
+            },
+            |project, target| async move { project.linked_browser_engine(&target).await },
+        )
         .await
     }
 
@@ -1577,14 +1933,15 @@ impl Project {
     /// package read one context so their generated dependency tables cannot
     /// drift.
     ///
-    /// The render is a function of the project, not of the invocation:
-    /// the Apple pieces are emitted whenever this host can produce an
-    /// Apple build — a host that cannot must not resolve the Apple backend
-    /// crate merely because the project selected it — and the graph-derived
-    /// answers resolve from the triples each manifest section serves. The
-    /// `cfg(target_os = "macos")` CEF dependency answers for the macOS
-    /// build; `profile_targets` is the serving set of the shared
-    /// `[profile]` package overrides.
+    /// The render is a function of the project, not of the invocation: on
+    /// macOS the Apple pieces — the `waterui-apple` pin included — render
+    /// into every FFI companion render, whatever the invocation selected,
+    /// because that is the only host an Apple build can run from. A host
+    /// that cannot produce an Apple build must not resolve the Apple
+    /// backend crate. The graph-derived answers resolve from the triples
+    /// each manifest section serves: the `cfg(target_os = "macos")`
+    /// table's answers come from the macOS build, and `profile_targets`
+    /// is the serving set of the shared `[profile]` package overrides.
     async fn apple_managed_crate_context(
         &self,
         backend_project_path: PathBuf,
@@ -1598,14 +1955,19 @@ impl Project {
             .chars()
             .filter(|c| c.is_alphanumeric())
             .collect::<String>();
-        let browser_engine = self
-            .linked_browser_engine_for(&[TargetPlatform::MacOS.triple()])
-            .await
-            .map_err(crate::backend::FailToInitBackend::Config)?;
-        let framework = self
-            .resolved_framework()
-            .await
-            .map_err(crate::backend::FailToInitBackend::Config)?;
+        let (browser, framework) = futures_util::future::try_join(
+            self.native_browser_answers(
+                crate::platform::NativeOs::MacOs,
+                GraphSection {
+                    manifest: "the generated FFI companion manifest",
+                    table: crate::platform::NativeOs::MacOs.cfg(),
+                },
+            )
+            .map_err(crate::backend::FailToInitBackend::Config),
+            self.resolved_framework()
+                .map_err(crate::backend::FailToInitBackend::Config),
+        )
+        .await?;
         let ctx = TemplateContext::for_project_manifest(
             manifest,
             self.crate_name().clone(),
@@ -1621,7 +1983,8 @@ impl Project {
                 .map_err(crate::backend::FailToInitBackend::Config)?,
         )
         .with_apple_backend_selected(apple_selected)
-        .with_browser_engine(browser_engine);
+        .with_host(self.host.clone())
+        .with_browser_answers(crate::platform::NativeOs::MacOs, browser);
         Ok((ctx, framework))
     }
 
@@ -1867,37 +2230,7 @@ impl Project {
                 .map_err(FailToCreateProject::Scaffold)?;
         }
 
-        let manifest = Manifest {
-            package: Package {
-                name: options.name.clone(),
-                bundle_identifier: options.bundle_identifier.clone(),
-                assets_path,
-                accessory: false,
-                embedded: false,
-            },
-            esp32: None,
-            hydrolysis: None,
-            waterui_path: options
-                .waterui_path
-                .as_ref()
-                .map(|p| p.display().to_string()),
-            // The scaffold's copy of the checkout's tables is identical to the
-            // checkout's, which the first open adopts and records.
-            waterui_patches: cargo_toml::PatchSet::new(),
-            // A local checkout's framework is a filesystem source — never
-            // persisted; `waterui_path` above is the record.
-            framework: framework.channel().is_some().then_some(framework),
-            permissions: BTreeMap::default(),
-            app: None,
-            theme: None,
-            launch: None,
-            web: options.web.as_ref().map(|scaffold| web::WebConfig {
-                package_manager: scaffold.package_manager,
-            }),
-            signing: SigningConfig::default(),
-            assets: None,
-            app_values: crate::assets::AppValuesConfig::default(),
-        };
+        let manifest = created_manifest(&options, &framework, assets_path);
 
         // Save Water.toml
         manifest.save(&path).await?;
@@ -1924,6 +2257,7 @@ impl Project {
         } else {
             spawn_cargo_layout_resolution(host, &path, None, true)
         };
+        let graph_key = spawn_graph_key(host, &path, cargo_layout.clone());
         Ok(Self {
             host: host.clone(),
             root: path,
@@ -1932,6 +2266,8 @@ impl Project {
             cargo_layout,
             linked_packages: Arc::new(async_lock::Mutex::new(BTreeMap::new())),
             enabled_features: Arc::new(async_lock::Mutex::new(BTreeMap::new())),
+            generated_features: Arc::new(async_lock::Mutex::new(BTreeMap::new())),
+            graph_key,
             managed_backends_root,
             backends: Backends::default(),
             local_sources,
@@ -2226,6 +2562,7 @@ impl Project {
             "Project::open ensured project build cache"
         );
 
+        let graph_key = spawn_graph_key(&host, &path, cargo_layout.clone());
         let mut project = Self {
             host,
             root: path,
@@ -2234,6 +2571,8 @@ impl Project {
             cargo_layout,
             linked_packages: Arc::new(async_lock::Mutex::new(BTreeMap::new())),
             enabled_features: Arc::new(async_lock::Mutex::new(BTreeMap::new())),
+            generated_features: Arc::new(async_lock::Mutex::new(BTreeMap::new())),
+            graph_key,
             managed_backends_root,
             backends: Backends::default(),
             local_sources,
@@ -2383,9 +2722,28 @@ async fn resolve_cargo_layout(
         framework.validate_dependencies(&metadata, &lockfile)?;
     }
 
+    // `dunce`, not `std::fs::canonicalize`: on Windows the standard one
+    // returns an extended-length path (`\\?\D:\...`), while `cargo
+    // metadata` reports the plain one — comparing the two would never
+    // match the application package (part of #152).
+    let application_manifest = dunce::canonicalize(current_dir.join("Cargo.toml"))?;
+    let root_package_id = metadata
+        .packages
+        .iter()
+        .find(|package| package.manifest_path.as_std_path() == application_manifest)
+        .ok_or_else(|| {
+            eyre::eyre!(
+                "Cargo metadata omitted the application package at {}",
+                application_manifest.display()
+            )
+        })?
+        .id
+        .to_string();
+
     Ok(CargoLayout {
         target_dir: metadata.target_directory.into_std_path_buf(),
         workspace_root: metadata.workspace_root.into_std_path_buf(),
+        root_package_id,
     })
 }
 
@@ -2393,7 +2751,7 @@ async fn resolve_cargo_layout(
 /// environment and working directory, the command's own `current_dir`
 /// taking precedence — with [`cargo_metadata::MetadataCommand::exec`]'s
 /// error semantics.
-fn metadata_on(
+pub(crate) fn metadata_on(
     host: &Host,
     command: &cargo_metadata::MetadataCommand,
 ) -> Result<cargo_metadata::Metadata, cargo_metadata::Error> {
@@ -2419,46 +2777,25 @@ fn metadata_on(
 /// Run `cargo tree` for the application package rooted at `project_root`'s
 /// manifest, over the given edge kinds, and return the `{p}`-formatted tree.
 ///
+/// Every triple in `targets` rides the same resolve as its own `--target`
+/// flag — one `cargo tree` invocation answers a whole serving set, and the
+/// printed union is exactly the per-target union because a package line
+/// names its source, never the target that selected it. `package_spec` is
+/// the application package's resolved id — [`CargoLayout`] carries it at
+/// open for every evaluation this project runs.
+///
 /// `locked` passes `--locked` to the resolve: trees that are read-only input —
 /// the shared pinned-framework checkout — must fail loudly on a stale
 /// committed lockfile instead of letting cargo rewrite it in place.
 async fn cargo_tree(
     host: &Host,
     project_root: &Path,
+    package_spec: &str,
     edges: &str,
-    target: &Triple,
+    targets: &[Triple],
     locked: bool,
 ) -> eyre::Result<String> {
-    // `dunce`, not `std::fs::canonicalize`: on Windows the standard one returns
-    // an extended-length path (`\\?\D:\...`), while `cargo metadata` reports the
-    // plain one, so comparing the two never matched and the package below was
-    // always "omitted" (part of #152). Canonicalize before invoking metadata,
-    // not just on the looked-up side: metadata echoes the manifest path it is
-    // given, so under a symlinked `TMPDIR` (`/var` → `/private/var` on macOS)
-    // a non-canonical input can never match what metadata reports.
     let application_manifest = dunce::canonicalize(project_root.join("Cargo.toml"))?;
-    let metadata_manifest = application_manifest.clone();
-    let host_for_metadata = host.clone();
-    let metadata = unblock(move || {
-        let mut command = cargo_metadata::MetadataCommand::new();
-        command.no_deps().manifest_path(metadata_manifest);
-        if locked {
-            command.other_options(vec!["--locked".to_string()]);
-        }
-        metadata_on(&host_for_metadata, &command)
-    })
-    .await?;
-    let root = metadata
-        .packages
-        .iter()
-        .find(|package| package.manifest_path.as_std_path() == application_manifest)
-        .ok_or_else(|| {
-            eyre::eyre!(
-                "Cargo metadata omitted the application package at {}",
-                application_manifest.display()
-            )
-        })?;
-    let package_spec = root.id.to_string();
     let mut tree = host.command("cargo");
     tree.arg("tree")
         .arg("--manifest-path")
@@ -2467,13 +2804,14 @@ async fn cargo_tree(
         .arg(package_spec)
         .arg("--edges")
         .arg(edges)
-        .arg("--target")
-        .arg(target.to_string())
         .arg("--prefix")
         .arg("none")
         .arg("--format")
         .arg("{p}")
         .current_dir(project_root);
+    for target in targets {
+        tree.arg("--target").arg(target.to_string());
+    }
     if locked {
         tree.arg("--locked");
     }
@@ -2559,19 +2897,72 @@ fn framework_local_roots(
 /// the name alone, so a name's entries stay together until classification.
 type LinkedPackages = BTreeMap<String, Vec<String>>;
 
+/// The application package's resolved id at `project_root` — the spec
+/// [`cargo_tree`] passes to `--package`. [`CargoLayout`] carries the same
+/// value for every [`Project`] evaluation; this is the standalone path for
+/// callers that have no open project.
+#[cfg(test)]
+async fn application_package_spec(
+    host: &Host,
+    project_root: &Path,
+    locked: bool,
+) -> eyre::Result<String> {
+    let application_manifest = dunce::canonicalize(project_root.join("Cargo.toml"))?;
+    let metadata_manifest = application_manifest.clone();
+    let host_for_metadata = host.clone();
+    let metadata = unblock(move || {
+        let mut command = cargo_metadata::MetadataCommand::new();
+        command.no_deps().manifest_path(metadata_manifest);
+        if locked {
+            command.other_options(vec!["--locked".to_string()]);
+        }
+        metadata_on(&host_for_metadata, &command)
+    })
+    .await?;
+    Ok(metadata
+        .packages
+        .iter()
+        .find(|package| package.manifest_path.as_std_path() == application_manifest)
+        .ok_or_else(|| {
+            eyre::eyre!(
+                "Cargo metadata omitted the application package at {}",
+                application_manifest.display()
+            )
+        })?
+        .id
+        .to_string())
+}
+
+#[cfg(test)]
 async fn resolve_linked_runtime_packages(
     host: &Host,
     project_root: PathBuf,
     target: &Triple,
     locked: bool,
 ) -> eyre::Result<LinkedPackages> {
-    let tree = cargo_tree(host, &project_root, "normal", target, locked).await?;
+    let package_spec = application_package_spec(host, &project_root, locked).await?;
+    let tree = cargo_tree(
+        host,
+        &project_root,
+        &package_spec,
+        "normal",
+        std::slice::from_ref(target),
+        locked,
+    )
+    .await?;
+    Ok(linked_packages_from_tree(&tree))
+}
+
+/// The `{p}` lines of a normal-edge `cargo tree` evaluation keyed by
+/// package name — every printed occurrence, in print order. A multi-target
+/// invocation prints one tree per `--target`, blank lines separating the
+/// blocks; the union across blocks is the union across targets.
+fn linked_packages_from_tree(tree: &str) -> LinkedPackages {
     let mut linked: LinkedPackages = BTreeMap::new();
     for package in tree.lines() {
-        let name = package
-            .split_ascii_whitespace()
-            .next()
-            .ok_or_else(|| eyre::eyre!("Cargo emitted an empty runtime dependency entry"))?;
+        let Some(name) = package.split_ascii_whitespace().next() else {
+            continue;
+        };
         // A package repeated in the graph prints again — a path `foo` beside
         // a registry `foo` included — and every occurrence is kept:
         // `[profile.dev.package.<name>]` keys on the name alone, so whichever
@@ -2582,20 +2973,35 @@ async fn resolve_linked_runtime_packages(
             .push(package.to_string());
     }
 
-    Ok(linked)
+    linked
 }
 
 /// Feature names turned on inside the application's subtree. With `--edges
 /// features`, `cargo tree` reports each enabled feature as a
 /// `<package> feature "<name>"` node; only the names are kept, since the
 /// question asked of this set is always "is a feature named X enabled".
+#[cfg(test)]
 async fn resolve_enabled_features(
     host: &Host,
     project_root: PathBuf,
     target: &Triple,
     locked: bool,
 ) -> eyre::Result<BTreeSet<String>> {
-    let tree = cargo_tree(host, &project_root, "features", target, locked).await?;
+    let package_spec = application_package_spec(host, &project_root, locked).await?;
+    let tree = cargo_tree(
+        host,
+        &project_root,
+        &package_spec,
+        "features",
+        std::slice::from_ref(target),
+        locked,
+    )
+    .await?;
+    Ok(enabled_features_from_tree(&tree))
+}
+
+/// The feature names a `cargo tree --edges features` evaluation reported.
+fn enabled_features_from_tree(tree: &str) -> BTreeSet<String> {
     let mut features = BTreeSet::new();
     for node in tree.lines() {
         if let Some(feature) = node
@@ -2605,7 +3011,7 @@ async fn resolve_enabled_features(
             features.insert(feature.to_string());
         }
     }
-    Ok(features)
+    features
 }
 
 /// The package directory a `cargo tree --format {p}` line's annotation
@@ -2987,7 +3393,6 @@ mod project_package_tests {
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fmt::Write as _,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -3256,6 +3661,12 @@ pub enum ResolvedWebViewBackend {
     Cef,
 }
 
+impl std::fmt::Display for ResolvedWebViewBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Browser engines that must be staged for one resolved application graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BrowserRuntimePlan {
@@ -3466,6 +3877,47 @@ pub async fn read_project_crate_name(project_path: &Path) -> eyre::Result<String
 /// it is spelled.
 fn same_directory(left: &Path, right: &Path) -> std::io::Result<bool> {
     Ok(std::fs::canonicalize(left)? == std::fs::canonicalize(right)?)
+}
+
+/// The `Water.toml` `create` writes: package identity from the creation
+/// options, the resolved framework when a channel recorded one, and the
+/// defaults every created project shares.
+fn created_manifest(
+    options: &CreateOptions,
+    framework: &ResolvedFramework,
+    assets_path: String,
+) -> Manifest {
+    Manifest {
+        package: Package {
+            name: options.name.clone(),
+            bundle_identifier: options.bundle_identifier.clone(),
+            assets_path,
+            accessory: false,
+            embedded: false,
+        },
+        esp32: None,
+        hydrolysis: None,
+        waterui_path: options
+            .waterui_path
+            .as_ref()
+            .map(|p| p.display().to_string()),
+        // The scaffold's copy of the checkout's tables is identical to the
+        // checkout's, which the first open adopts and records.
+        waterui_patches: cargo_toml::PatchSet::new(),
+        // A local checkout's framework is a filesystem source — never
+        // persisted; `waterui_path` above is the record.
+        framework: framework.channel().is_some().then_some(framework.clone()),
+        permissions: BTreeMap::default(),
+        app: None,
+        theme: None,
+        launch: None,
+        web: options.web.as_ref().map(|scaffold| web::WebConfig {
+            package_manager: scaffold.package_manager,
+        }),
+        signing: SigningConfig::default(),
+        assets: None,
+        app_values: crate::assets::AppValuesConfig::default(),
+    }
 }
 
 fn default_assets_path() -> String {
@@ -3918,7 +4370,7 @@ mod target_graph_tests {
 
     use target_lexicon::Triple;
 
-    use crate::platform::TargetBackend;
+    use crate::platform::{TargetBackend, TargetPlatform};
     use crate::project::ResolvedWebViewBackend;
     use crate::toolchain::testing::TestMachine;
 
@@ -4076,6 +4528,66 @@ mod target_graph_tests {
         });
     }
 
+    /// Each OS's section reads its own serving set's graphs: the Hydrolysis
+    /// manifest's per-OS tables take Linux's `wpe` answer where macOS's
+    /// takes none — the per-target split the disagreement error names.
+    #[test]
+    fn native_browser_answers_resolve_per_os() {
+        smol::block_on(async {
+            let machine = TestMachine::new();
+            let root = fixture(&machine);
+
+            let macos = TargetPlatform::MacOS.triple();
+            for target in crate::platform::NativeOs::Linux.serving_triples() {
+                machine.respond(
+                    &format!("CARGO_TREE_{target}"),
+                    "demo_app v0.1.0 (/fixture/app)\n\
+                     waterui-webview v0.4.1 \
+                     (registry+https://github.com/rust-lang/crates.io-index)\n\
+                     waterui-browser-wpe v0.4.1 \
+                     (registry+https://github.com/rust-lang/crates.io-index)\n\
+                     waterui-webview feature \"webview\"\n",
+                );
+            }
+            machine.respond(
+                &format!("CARGO_TREE_{macos}"),
+                "demo_app v0.1.0 (/fixture/app)\n\
+                 waterui-webview v0.4.1 \
+                 (registry+https://github.com/rust-lang/crates.io-index)\n\
+                 waterui-webview feature \"webview\"\n",
+            );
+
+            let host = machine.host::<&'static str, &'static str>([]);
+            let project = Project::open_on(&host, &root, ManagedBackends::NONE)
+                .await
+                .expect("the project opens on the fixture machine");
+
+            let section = |os: crate::platform::NativeOs| super::GraphSection {
+                manifest: "the generated Hydrolysis launcher manifest",
+                table: os.cfg(),
+            };
+            let linux = project
+                .native_browser_answers(
+                    crate::platform::NativeOs::Linux,
+                    section(crate::platform::NativeOs::Linux),
+                )
+                .await
+                .expect("linux answers resolve");
+            assert_eq!(linux.engine, Some(ResolvedWebViewBackend::Wpe));
+            assert!(linux.webview_enabled);
+
+            let macos_answers = project
+                .native_browser_answers(
+                    crate::platform::NativeOs::MacOs,
+                    section(crate::platform::NativeOs::MacOs),
+                )
+                .await
+                .expect("macOS answers resolve");
+            assert_eq!(macos_answers.engine, None);
+            assert!(macos_answers.webview_enabled);
+        });
+    }
+
     /// A generated manifest's serving set must answer every triple it
     /// serves the same — the section cannot express a per-target
     /// difference — so a graph that resolves two ways fails, naming the
@@ -4105,13 +4617,31 @@ mod target_graph_tests {
                 .expect("the project opens on the fixture machine");
 
             let error = project
-                .linked_browser_engine_for(&[linux, windows])
+                .linked_browser_engine_for(
+                    &[linux, windows],
+                    super::GraphSection {
+                        manifest: "the generated Hydrolysis manifest",
+                        table: crate::platform::NativeOs::Linux.cfg(),
+                    },
+                )
                 .await
                 .expect_err("the serving set's graphs disagree")
                 .to_string();
             assert!(error.contains(LINUX), "{error}");
             assert!(error.contains(WINDOWS), "{error}");
-            assert!(error.contains("Wpe"), "{error}");
+            assert!(error.contains("wpe"), "{error}");
+            assert!(
+                error.contains("the generated Hydrolysis manifest"),
+                "the error names the generated manifest: {error}"
+            );
+            assert!(
+                error.contains("cfg(target_os = \"linux\")"),
+                "the error names the table: {error}"
+            );
+            assert!(
+                error.contains("per-target split"),
+                "the error states the remedy: {error}"
+            );
         });
     }
 
@@ -4149,39 +4679,6 @@ mod target_graph_tests {
                     .all(|line| !line.starts_with("cargo tree")),
                 "opening with managed backends must not run `cargo tree`: {invocations}"
             );
-        });
-    }
-}
-
-#[cfg(test)]
-mod render_timing_tests {
-    use std::time::Instant;
-
-    use super::Project;
-    use crate::project::ManagedBackends;
-
-    /// Manual measurement for the ffi companion render: opens the
-    /// repository's own `examples/form` and times the render the design
-    /// puts on the build path, cold-cache and warm.
-    #[test]
-    #[ignore = "manual render timing on examples/form"]
-    fn time_the_ffi_companion_render() {
-        smol::block_on(async {
-            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .expect("repo root")
-                .join("examples/form");
-            let project = Project::open(&root, ManagedBackends::NONE)
-                .await
-                .expect("examples/form opens");
-            for label in ["cold", "warm"] {
-                let start = Instant::now();
-                project
-                    .scaffold_ffi_companion()
-                    .await
-                    .expect("the render succeeds");
-                eprintln!("{label} ffi companion render: {:?}", start.elapsed());
-            }
         });
     }
 }

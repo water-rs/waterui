@@ -985,6 +985,18 @@ mod tests {
         .with_project_packages(std::collections::BTreeSet::from(["demo".to_string()]))
     }
 
+    /// `ctx` with `answers` recorded for every desktop OS — the hydrolysis
+    /// manifest writes a `cfg` section per OS, so all three must answer
+    /// for a render to compute.
+    fn all_os_browser(
+        ctx: TemplateContext,
+        answers: crate::templates::BrowserAnswers,
+    ) -> TemplateContext {
+        crate::platform::NativeOs::ALL
+            .into_iter()
+            .fold(ctx, |ctx, os| ctx.with_browser_answers(os, answers))
+    }
+
     fn rendered_bin_names(ctx: &TemplateContext, package_name: &str) -> Vec<String> {
         let cargo_toml = crate::templates::hydrolysis::rendered_outputs(ctx, package_name)
             .expect("hydrolysis outputs should render")
@@ -1011,9 +1023,13 @@ mod tests {
     /// instead of at packaging time on a user's machine.
     #[test]
     fn cef_helper_lookup_name_is_a_bin_the_manifest_declares() {
-        let ctx = demo_context()
-            .with_webview_enabled(true)
-            .with_browser_engine(Some(ResolvedWebViewBackend::Cef));
+        let ctx = all_os_browser(
+            demo_context(),
+            crate::templates::BrowserAnswers {
+                webview_enabled: true,
+                engine: Some(ResolvedWebViewBackend::Cef),
+            },
+        );
         let package_name = "demo-hydrolysis-deadbeef";
         let bin_names = rendered_bin_names(&ctx, package_name);
         let helper_name = super::hydrolysis_cef_helper_name(package_name);
@@ -1138,11 +1154,17 @@ mod tests {
 
         // Chromium linked, no engine crate: the runtime plan requires CEF
         // but the manifest declares only the main binary.
-        let ctx = demo_context();
+        let ctx = all_os_browser(demo_context(), crate::templates::BrowserAnswers::default());
         assert_eq!(rendered_bin_names(&ctx, package_name), [package_name]);
 
         // Chromium plus a non-CEF engine is the same shape.
-        let ctx = demo_context().with_browser_engine(Some(ResolvedWebViewBackend::Wpe));
+        let ctx = all_os_browser(
+            demo_context(),
+            crate::templates::BrowserAnswers {
+                webview_enabled: false,
+                engine: Some(ResolvedWebViewBackend::Wpe),
+            },
+        );
         assert_eq!(rendered_bin_names(&ctx, package_name), [package_name]);
 
         // The predicate the build and packaging gates consult agrees with

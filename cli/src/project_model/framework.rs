@@ -2820,6 +2820,40 @@ pub(crate) mod test_fixtures {
         framework
     }
 
+    /// Commit all of `root`'s content under the fixture identity and return
+    /// the `HEAD` revision — the git bookkeeping every repository fixture
+    /// shares. `root` must already be a worktree.
+    pub fn git_commit_all(root: &Path, message: &str) -> String {
+        let git = |args: &[&str]| -> String {
+            let output = StdCommand::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .output()
+                .expect("git must run");
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout)
+                .expect("git output is utf-8")
+                .trim()
+                .to_string()
+        };
+        git(&["add", "-A"]);
+        git(&[
+            "-c",
+            "user.name=waterui-test",
+            "-c",
+            "user.email=waterui-test@waterui.dev",
+            "commit",
+            "-qm",
+            message,
+        ]);
+        git(&["rev-parse", "HEAD"])
+    }
+
     /// A local framework checkout fixture: the repository's own root manifest
     /// and a lock naming the workspace crates, inside a git worktree. Like the
     /// repository today it carries no backend gitlink: both backend pins are
@@ -2829,30 +2863,14 @@ pub(crate) mod test_fixtures {
         std::fs::write(root.join("Cargo.toml"), local_checkout_manifest()).expect("manifest");
         let lock = test_lock();
         std::fs::write(root.join("Cargo.lock"), lock.to_string()).expect("lockfile");
-        let git = |args: &[String]| {
-            let status = StdCommand::new("git")
-                .arg("-C")
-                .arg(root)
-                .args(args)
-                .status()
-                .expect("git must run");
-            assert!(status.success(), "git {args:?} failed");
-        };
-        git(&["init".to_owned(), "-q".to_owned()]);
-        git(&[
-            "add".to_owned(),
-            "Cargo.toml".to_owned(),
-            "Cargo.lock".to_owned(),
-        ]);
-        git(&[
-            "-c".to_owned(),
-            "user.name=waterui-test".to_owned(),
-            "-c".to_owned(),
-            "user.email=waterui-test@waterui.dev".to_owned(),
-            "commit".to_owned(),
-            "-qm".to_owned(),
-            "init".to_owned(),
-        ]);
+        let status = StdCommand::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["init", "-q"])
+            .status()
+            .expect("git must run");
+        assert!(status.success(), "git init failed");
+        let _ = git_commit_all(root, "init");
     }
 
     /// A checkout whose manifest declares no `apple-backend-path` — a

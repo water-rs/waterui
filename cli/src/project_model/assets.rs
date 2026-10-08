@@ -348,10 +348,8 @@ pub async fn scan_fonts(
 /// # Errors
 ///
 /// Returns an error naming the path when `build_manifest` does not exist —
-/// every caller resolves a manifest it scaffolded; the one probe that can
-/// run before that (the Android permission audit on a first init) checks for
-/// it itself — and when the certified lock or the seed cannot be read or
-/// written.
+/// every caller resolves a manifest it scaffolded first — and when the
+/// certified lock or the seed cannot be read or written.
 pub async fn seed_managed_crate_lock(
     project: &Project,
     build_manifest: &Path,
@@ -385,23 +383,26 @@ pub async fn seed_managed_crate_lock(
     Ok(true)
 }
 
-/// `cargo metadata` on a manifest, on the blocking pool. `features` mirrors
-/// the feature selection the build invokes with — optional dependencies (and
-/// the metadata they declare) only enter the resolved graph under it; an
-/// empty slice resolves the manifest's default feature set.
+/// `cargo metadata` on a manifest, run under `host` on the blocking pool.
+/// `features` mirrors the feature selection the build invokes with —
+/// optional dependencies (and the metadata they declare) only enter the
+/// resolved graph under it; an empty slice resolves the manifest's
+/// default feature set.
 pub async fn crate_metadata(
+    host: &crate::toolchain::Host,
     build_manifest: &Path,
     features: &[String],
 ) -> eyre::Result<cargo_metadata::Metadata> {
     let manifest_path = build_manifest.to_path_buf();
     let features = features.to_vec();
+    let host = host.clone();
     smol::unblock(move || {
         let mut command = cargo_metadata::MetadataCommand::new();
         command.manifest_path(&manifest_path);
         if !features.is_empty() {
             command.features(cargo_metadata::CargoOpt::SomeFeatures(features));
         }
-        command.exec()
+        crate::project::metadata_on(&host, &command)
     })
     .await
     .map_err(Into::into)
@@ -478,7 +479,9 @@ async fn scan_crate_font_declarations(
 
     let managed = seed_managed_crate_lock(project, build_manifest).await?;
 
-    let metadata = crate_metadata(build_manifest, &[]).await.wrap_err_with(|| {
+    let metadata = crate_metadata(project.host(), build_manifest, &[])
+        .await
+        .wrap_err_with(|| {
         let mut message = format!(
             "Failed to run cargo metadata on {}",
             build_manifest.display()
@@ -568,7 +571,7 @@ pub async fn scan_android_declarations(
     features: &[String],
 ) -> eyre::Result<AndroidDeclarations> {
     seed_managed_crate_lock(project, build_manifest).await?;
-    let metadata = crate_metadata(build_manifest, features)
+    let metadata = crate_metadata(project.host(), build_manifest, features)
         .await
         .wrap_err_with(|| {
             format!(
@@ -692,7 +695,7 @@ pub async fn scan_apple_declarations(
     features: &[String],
 ) -> eyre::Result<AppleDeclarations> {
     seed_managed_crate_lock(project, build_manifest).await?;
-    let metadata = crate_metadata(build_manifest, features)
+    let metadata = crate_metadata(project.host(), build_manifest, features)
         .await
         .wrap_err_with(|| {
             format!(
@@ -2147,39 +2150,33 @@ pub async fn write_font_manifest(
 /// # Errors
 ///
 /// Returns an error when `cargo metadata` cannot be read.
+/// Whether `package`'s `feature` is enabled in `build_manifest`'s graph
+/// resolved for `target` — `cargo metadata --filter-platform`, cached per
+/// manifest and triple by
+/// [`Project::generated_manifest_features`].
+///
+/// # Errors
+///
+/// Returns an error when `cargo metadata` cannot resolve the manifest.
 pub async fn package_feature_enabled(
+    project: &Project,
     build_manifest: &Path,
     package: &str,
     feature: &str,
+    target: &Triple,
 ) -> eyre::Result<bool> {
-    let metadata = crate_metadata(build_manifest, &[])
+    let enabled = project
+        .generated_manifest_features(build_manifest, target)
         .await
         .wrap_err_with(|| {
             format!(
                 "Failed to run cargo metadata on {}",
                 build_manifest.display()
             )
-        })?;
-
-    let Some(resolve) = metadata.resolve.as_ref() else {
-        return Ok(false);
-    };
-    let enabled = metadata
-        .packages
-        .iter()
-        .filter(|candidate| candidate.name.as_str() == package)
-        .any(|candidate| {
-            resolve
-                .nodes
-                .iter()
-                .filter(|node| node.id == candidate.id)
-                .any(|node| {
-                    node.features
-                        .iter()
-                        .any(|enabled| enabled.as_str() == feature)
-                })
-        });
-    debug!("resolved feature {package}/{feature}: {enabled}");
+        })?
+        .get(package)
+        .is_some_and(|features| features.contains(feature));
+    debug!("resolved feature {package}/{feature} for {target}: {enabled}");
     Ok(enabled)
 }
 
@@ -2264,8 +2261,11 @@ const OPTIONAL_CAPABILITIES: &[Capability] = &[
 /// components whose symbols the dylib does export.
 ///
 /// `build_manifest` is the manifest of the crate being built — the resolved
-/// graph the feature check reads — and `target` the triple that build's
-/// `cargo tree` resolves.
+/// graph the feature check reads — and `target` the triple that build
+/// resolves it for: the feature branch runs `cargo metadata
+/// --filter-platform` through the project's host, cached per manifest and
+/// target, and the link branch reads the application's own `cargo tree
+/// --target` evaluation.
 ///
 /// # Errors
 ///
@@ -2283,7 +2283,8 @@ pub async fn capability_enabled(
     match capability.feature {
         Some(feature) => {
             seed_managed_crate_lock(project, build_manifest).await?;
-            package_feature_enabled(build_manifest, capability.package, feature).await
+            package_feature_enabled(project, build_manifest, capability.package, feature, target)
+                .await
         }
         None => {
             project
@@ -2360,7 +2361,8 @@ pub async fn self_drawn_realization_features(
 ) -> eyre::Result<Vec<String>> {
     let mut features = Vec::new();
     seed_managed_crate_lock(project, build_manifest).await?;
-    let opted_in = package_feature_enabled(build_manifest, "waterui", "video-gpu").await?
+    let opted_in = package_feature_enabled(project, build_manifest, "waterui", "video-gpu", target)
+        .await?
         || project
             .links_runtime_package(target, "waterui-video-gpu")
             .await?;
@@ -2905,9 +2907,10 @@ mod tests {
 ///
 /// Returns an error when `cargo metadata` cannot be read.
 pub async fn scan_required_permissions(
+    host: &crate::toolchain::Host,
     build_manifest: &Path,
 ) -> eyre::Result<Vec<RequiredPermission>> {
-    let metadata = crate_metadata(build_manifest, &[])
+    let metadata = crate_metadata(host, build_manifest, &[])
         .await
         .wrap_err_with(|| {
             format!(
@@ -3125,8 +3128,11 @@ mod permission_audit_tests {
             "[dependencies]\ntheme = { path = \"../theme\" }\n",
         );
 
-        let required = smol::block_on(scan_required_permissions(&backend_manifest))
-            .expect("scan the built crate's graph");
+        let required = smol::block_on(scan_required_permissions(
+            &crate::toolchain::Host::current(),
+            &backend_manifest,
+        ))
+        .expect("scan the built crate's graph");
         assert!(
             required
                 .iter()
@@ -3136,8 +3142,11 @@ mod permission_audit_tests {
             "the backend graph must report the permission `theme` declares"
         );
 
-        let ffi = smol::block_on(scan_required_permissions(&ffi_manifest))
-            .expect("scan the ffi crate's graph");
+        let ffi = smol::block_on(scan_required_permissions(
+            &crate::toolchain::Host::current(),
+            &ffi_manifest,
+        ))
+        .expect("scan the ffi crate's graph");
         assert!(
             ffi.is_empty(),
             "the ffi graph does not carry `theme` and must stay silent"
@@ -3149,26 +3158,60 @@ mod permission_audit_tests {
     /// there and absent from the FFI companion's.
     #[test]
     fn a_feature_enabled_in_the_built_crates_graph_is_seen() {
-        let project = tempdir().expect("temp project");
+        let directory = tempdir().expect("temp project");
         write_crate(
-            &project.path().join("theme"),
+            &directory.path().join("theme"),
             "theme",
             "[features]\nextra = []\n",
         );
-        let ffi_manifest = write_crate(&project.path().join("ffi"), "app-ffi", "");
+        let ffi_manifest = write_crate(&directory.path().join("ffi"), "app-ffi", "");
         let backend_manifest = write_crate(
-            &project.path().join("hydrolysis"),
+            &directory.path().join("hydrolysis"),
             "app-hydrolysis",
             "[dependencies]\ntheme = { path = \"../theme\", features = [\"extra\"] }\n",
         );
 
+        // `package_feature_enabled` resolves through the project's
+        // per-triple cache, so the fixture needs a project of its own.
+        std::fs::write(
+            directory.path().join("Water.toml"),
+            "[package]\nname = \"fixture\"\nbundle_identifier = \"dev.waterui.fixture\"\n",
+        )
+        .expect("Water.toml");
+        std::fs::write(
+            directory.path().join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .expect("Cargo.toml");
+        std::fs::create_dir_all(directory.path().join("src")).expect("src dir");
+        std::fs::write(directory.path().join("src/lib.rs"), "").expect("src lib");
+        let project = smol::block_on(crate::project::Project::open_on(
+            &crate::toolchain::Host::current(),
+            directory.path(),
+            crate::project::ManagedBackends::NONE,
+        ))
+        .expect("fixture project opens");
+        let target = crate::platform::TargetPlatform::MacOS.triple();
+
         assert!(
-            smol::block_on(package_feature_enabled(&backend_manifest, "theme", "extra"))
-                .expect("scan the built crate's graph")
+            smol::block_on(package_feature_enabled(
+                &project,
+                &backend_manifest,
+                "theme",
+                "extra",
+                &target,
+            ))
+            .expect("scan the built crate's graph")
         );
         assert!(
-            !smol::block_on(package_feature_enabled(&ffi_manifest, "theme", "extra"))
-                .expect("scan the ffi crate's graph")
+            !smol::block_on(package_feature_enabled(
+                &project,
+                &ffi_manifest,
+                "theme",
+                "extra",
+                &target,
+            ))
+            .expect("scan the ffi crate's graph")
         );
     }
 
@@ -3308,8 +3351,12 @@ mod permission_audit_tests {
         );
 
         let collect = |manifest: &Path| {
-            let metadata =
-                smol::block_on(crate_metadata(manifest, &[])).expect("resolve the fixture graph");
+            let metadata = smol::block_on(crate_metadata(
+                &crate::toolchain::Host::current(),
+                manifest,
+                &[],
+            ))
+            .expect("resolve the fixture graph");
             collect_android_declarations(&metadata)
         };
         let block = |declarations: AndroidDeclarations| {
@@ -3395,8 +3442,12 @@ mod permission_audit_tests {
             "[dependencies]\npush = { path = \"../push\", features = [\"remote\"] }\n",
         );
         let collect = |manifest: &Path| {
-            let metadata =
-                smol::block_on(crate_metadata(manifest, &[])).expect("resolve the fixture graph");
+            let metadata = smol::block_on(crate_metadata(
+                &crate::toolchain::Host::current(),
+                manifest,
+                &[],
+            ))
+            .expect("resolve the fixture graph");
             collect_android_declarations(&metadata)
         };
 
@@ -3462,8 +3513,12 @@ mod permission_audit_tests {
             "[dependencies]\npush = { path = \"../push\", features = [\"remote\"] }\n",
         );
         let collect = |manifest: &Path| {
-            let metadata =
-                smol::block_on(crate_metadata(manifest, &[])).expect("resolve the fixture graph");
+            let metadata = smol::block_on(crate_metadata(
+                &crate::toolchain::Host::current(),
+                manifest,
+                &[],
+            ))
+            .expect("resolve the fixture graph");
             collect_apple_declarations(&metadata)
         };
         let signed = |declarations: &AppleDeclarations| {
@@ -3524,8 +3579,14 @@ mod permission_audit_tests {
             .to_string();
         assert!(message.contains("`push`"), "{message}");
         assert!(message.contains("`other-push`"), "{message}");
+    }
 
-        // A feature table naming a cargo feature the crate does not declare.
+    /// A `feature.<name>` metadata table naming a cargo feature the crate
+    /// does not declare is a typo the collection must surface, naming both
+    /// the crate and the feature.
+    #[test]
+    fn a_feature_table_for_an_undeclared_feature_fails_naming_both() {
+        let project = tempdir().expect("temp project");
         write_crate(
             &project.path().join("typo"),
             "typo",
@@ -3537,7 +3598,13 @@ mod permission_audit_tests {
             "app-mistyped",
             "[dependencies]\ntypo = { path = \"../typo\" }\n",
         );
-        let message = collect(&mistyped)
+        let metadata = smol::block_on(crate_metadata(
+            &crate::toolchain::Host::current(),
+            &mistyped,
+            &[],
+        ))
+        .expect("resolve the fixture graph");
+        let message = collect_apple_declarations(&metadata)
             .expect_err("a feature table the crate does not declare must fail")
             .to_string();
         assert!(message.contains("typo"), "{message}");
@@ -3571,8 +3638,12 @@ mod permission_audit_tests {
             "[dependencies]\npush = { path = \"../push\", features = [\"remote\"] }\n",
         );
         let collect = |manifest: &Path| {
-            let metadata =
-                smol::block_on(crate_metadata(manifest, &[])).expect("resolve the fixture graph");
+            let metadata = smol::block_on(crate_metadata(
+                &crate::toolchain::Host::current(),
+                manifest,
+                &[],
+            ))
+            .expect("resolve the fixture graph");
             collect_android_declarations(&metadata).expect("collect the graph")
         };
         let push = ["push".to_owned()];
@@ -3615,8 +3686,12 @@ mod permission_audit_tests {
             "app",
             "[dependencies]\ntypo = { path = \"../typo\" }\n",
         );
-        let metadata =
-            smol::block_on(crate_metadata(&app, &[])).expect("resolve the fixture graph");
+        let metadata = smol::block_on(crate_metadata(
+            &crate::toolchain::Host::current(),
+            &app,
+            &[],
+        ))
+        .expect("resolve the fixture graph");
         let message = collect_apple_declarations(&metadata)
             .expect_err("an unknown key must fail")
             .to_string();
@@ -3634,8 +3709,12 @@ mod permission_audit_tests {
             "typo",
             "[[package.metadata.waterui.android.providers]]\nname = \"a.B\"\n",
         );
-        let metadata =
-            smol::block_on(crate_metadata(&manifest, &[])).expect("resolve the fixture graph");
+        let metadata = smol::block_on(crate_metadata(
+            &crate::toolchain::Host::current(),
+            &manifest,
+            &[],
+        ))
+        .expect("resolve the fixture graph");
         let error = collect_android_declarations(&metadata).expect_err("unknown key must fail");
         assert!(error.to_string().contains("providers"), "{error}");
     }

@@ -9,5 +9,12 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 fn main() {
+    // The `waterui-browser-cef` dependency lives in this manifest's per-OS
+    // tables — the dispatch compiles only where an OS's table provides the
+    // crate. On every other target the helper is never spawned; exiting
+    // keeps the bin compiling without the dep.
+    #[cfg({{ ctx.cef_helper_condition() }})]
     std::process::exit(waterui_browser_cef::run_packaged_subprocess());
+    #[cfg(not({{ ctx.cef_helper_condition() }}))]
+    std::process::exit(2);
 }
