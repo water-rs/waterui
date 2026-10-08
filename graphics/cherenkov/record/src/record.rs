@@ -429,10 +429,11 @@ impl<T> Live<T> {
     /// The value when the `Live` was made: the constant, or the signal's
     /// value at that point. A binding ([`watch`](Self::watch)) starts
     /// from the same value — the binding snapshots once, when the `Live`
-    /// is made, and a change between then and the watch starting lands
-    /// through the watch like any change. A `Live` stored and bound later
-    /// starts from the signal's value at the bind instead — see
-    /// [`SharedLive::rebound`].
+    /// is made. nami notifies only the watchers already registered, so a
+    /// change made between the `Live`'s making and the watch starting
+    /// never reaches the binding: a `Live` stored and bound later goes
+    /// through [`SharedLive::rebound`], which starts from the signal's
+    /// value at the bind.
     #[must_use]
     pub const fn value(&self) -> &T {
         &self.value

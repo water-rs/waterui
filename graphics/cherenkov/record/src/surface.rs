@@ -916,7 +916,9 @@ struct KeptBinding {
 /// body's setters already replaced or removed stay replaced or
 /// removed, and the `layout_size` writes it already applied stay
 /// applied. Ops a panicking body queued directly — layer creates and
-/// drops — are truncated with its edits.
+/// drops — are not stream edits, so they survive the unwind: an
+/// unwinding outermost transaction lands them in `pending` ahead of the
+/// deferred changes, and an inner one leaves them for the outermost.
 struct Open<'a, T: Target> {
     shared: &'a RefCell<Shared<T>>,
     /// Whether a transaction was already open when this one started: an
