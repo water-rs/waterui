@@ -111,12 +111,10 @@ pub async fn run_bench_suite(options: BenchRunOptions) -> Result<BenchSuiteRun> 
     // The bench build's `--target`-less compilation is for the host — an
     // Apple target on macOS — so it carries the same deployment-target floor
     // the managed builds do.
-    if let Some(envs) =
+    if let Some((key, value)) =
         crate::apple::platform::apple_deployment_target_env(&target_lexicon::Triple::host())
     {
-        for (key, value) in envs {
-            command.env(key, value);
-        }
+        command.env(key, value);
     }
     command
         .env(BENCH_SAMPLES_ENV, options.config.samples.to_string())

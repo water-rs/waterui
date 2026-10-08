@@ -354,35 +354,19 @@ impl TargetPlatform {
         }
     }
 
-    /// The directory inside this platform's SDK that ships the Catalyst-bridged
-    /// iOS frameworks, relative to the SDK root.
-    ///
-    /// Only Catalyst resolves its frameworks out of `macosx.sdk`'s
-    /// `System/iOSSupport`; every other platform links against its own SDK's
-    /// `System/Library/Frameworks` and needs nothing extra on the search
-    /// path.
-    #[must_use]
-    pub const fn ios_support_frameworks_dir(&self) -> Option<&'static str> {
-        match self {
-            Self::MacCatalyst => Some("System/iOSSupport/System/Library/Frameworks"),
-            _ => None,
-        }
-    }
-
     /// The platform name an xcodebuild `-destination` specifier uses
     /// (`platform=iOS,id=…`, `generic/platform=tvOS`) for this platform's
     /// device family.
     #[must_use]
     pub const fn xcode_destination_name(&self) -> Option<&'static str> {
         match self {
-            // A Catalyst app runs on the Mac it was launched from, so both
-            // share the `macOS` destination.
-            Self::MacOS | Self::MacCatalyst => Some("macOS"),
+            Self::MacOS => Some("macOS"),
             Self::IOS | Self::IOSSimulator => Some("iOS"),
             Self::TvOS | Self::TvOSSimulator => Some("tvOS"),
             Self::WatchOS | Self::WatchOSSimulator => Some("watchOS"),
             Self::VisionOS | Self::VisionOSSimulator => Some("visionOS"),
-            Self::Android
+            Self::MacCatalyst
+            | Self::Android
             | Self::Linux
             | Self::Windows
             | Self::Web
@@ -399,13 +383,11 @@ impl TargetPlatform {
     pub const fn targeted_device_family(&self) -> Option<&'static str> {
         match self {
             Self::IOS | Self::IOSSimulator => Some("1,2"),
-            // Catalyst apps declare the iPhone/iPad families plus `6`, the
-            // Apple-Silicon Mac family Xcode adds for `SUPPORTS_MACCATALYST`.
-            Self::MacCatalyst => Some("1,2,6"),
             Self::TvOS | Self::TvOSSimulator => Some("3"),
             Self::WatchOS | Self::WatchOSSimulator => Some("4"),
             Self::VisionOS | Self::VisionOSSimulator => Some("7"),
-            Self::MacOS
+            Self::MacCatalyst
+            | Self::MacOS
             | Self::Android
             | Self::Linux
             | Self::Windows
@@ -749,14 +731,13 @@ mod host_support_tests {
         // Catalyst builds against the macOS SDK's bridged iOS frameworks.
         assert_eq!(TargetPlatform::MacCatalyst.sdk_name(), Some("macosx"));
         assert_eq!(
-            TargetPlatform::MacCatalyst.ios_support_frameworks_dir(),
-            Some("System/iOSSupport/System/Library/Frameworks")
-        );
-        assert!(TargetPlatform::MacOS.ios_support_frameworks_dir().is_none());
-        assert_eq!(
             TargetPlatform::MacCatalyst.deployment_target_setting(),
             Some("IPHONEOS_DEPLOYMENT_TARGET")
         );
+        // Packaging answers stay unanswered — Xcode destinations and device
+        // families are #2103's job, so Catalyst fails fast on both.
+        assert_eq!(TargetPlatform::MacCatalyst.xcode_destination_name(), None);
+        assert_eq!(TargetPlatform::MacCatalyst.targeted_device_family(), None);
     }
 
     #[test]

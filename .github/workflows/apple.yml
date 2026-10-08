@@ -312,14 +312,14 @@ jobs:
       # Mac Catalyst compiles the same two packages' production graphs for
       # `aarch64-apple-ios-macabi`, where UIKit arrives through the macOS
       # SDK's iOSSupport frameworks — a compile error the per-OS legs above
-      # cannot see. A `cargo check` is the whole leg: the `native` harness
-      # target is macOS-only, so `--all-targets` has nothing extra to
-      # compile there, and the `.cargo/config.toml` `[env]` table supplies
-      # the 26.0 deployment floor cherenkov-gpu's build script asserts.
-      - name: Check (Mac Catalyst)
-        run: cargo check -p waterui-apple --locked --target aarch64-apple-ios-macabi
-      - name: Check (cocoa-ui, Mac Catalyst)
-        run: cargo check -p cocoa-ui --locked --target aarch64-apple-ios-macabi
+      # cannot see. It lints like they do rather than merely `cargo check`:
+      # the `native`/`native_app`/`preview` harnesses stay out of
+      # `--all-targets` on their own `required-features = ["native-test"]`,
+      # which this leg does not enable — no macOS-only gate was involved.
+      # The `.cargo/config.toml` `[env]` table supplies the 26.0 deployment
+      # floor cherenkov-gpu's build script asserts.
+      - name: Clippy (Mac Catalyst)
+        run: cargo clippy -p waterui-apple -p cocoa-ui --all-targets --locked --target aarch64-apple-ios-macabi -- -D warnings
       # The component shapes the Swift `WATERUI_MAP`/`WATERUI_NO_GPU` legs
       # used to cover are Cargo features now (waterui#343 reasoned the same
       # way), so they lint under -D warnings like the production legs —

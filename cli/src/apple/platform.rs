@@ -561,22 +561,19 @@ pub async fn apple_deployment_target(
     Ok((environment, target.to_string()))
 }
 
-/// The `*_DEPLOYMENT_TARGET` environment variables a Cargo compilation for
+/// The `*_DEPLOYMENT_TARGET` environment variable a Cargo compilation for
 /// `triple` must carry, when `triple` names an Apple platform.
 ///
 /// Every cargo process the CLI starts whose compilation target is Apple gets
-/// them — including host builds, where the host triple *is* the Apple target.
+/// this — including host builds, where the host triple *is* the Apple target.
 /// A simulator triple shares its device variant's setting name and floor, so
 /// `Environment::Sim` reaches the same pair as `Environment::Unknown`.
-///
-/// Mac Catalyst is the one target that carries two variables: the build
-/// scripts an `aarch64-apple-ios-macabi` compilation runs key on either side
-/// of the bridge — iOS-keyed scripts read `IPHONEOS_DEPLOYMENT_TARGET`,
-/// macOS-keyed ones read `MACOSX_DEPLOYMENT_TARGET` — so the macabi triple
-/// sets each to its own floor.
+/// Mac Catalyst keys on the iOS variable: the build scripts a macabi
+/// compilation runs read `IPHONEOS_DEPLOYMENT_TARGET`, and no consumer in
+/// the graph reads `MACOSX_DEPLOYMENT_TARGET` for it.
 pub(crate) fn apple_deployment_target_env(
     triple: &target_lexicon::Triple,
-) -> Option<Vec<(&'static str, &'static str)>> {
+) -> Option<(&'static str, &'static str)> {
     use target_lexicon::{Environment, OperatingSystem};
     let platform = match triple.operating_system {
         OperatingSystem::Darwin(_) | OperatingSystem::MacOSX(_) => TargetPlatform::MacOS,
@@ -589,17 +586,10 @@ pub(crate) fn apple_deployment_target_env(
         OperatingSystem::VisionOS(_) | OperatingSystem::XROS(_) => TargetPlatform::VisionOS,
         _ => return None,
     };
-    let floor = apple_deployment_target_for(platform)?;
-    if platform == TargetPlatform::MacCatalyst {
-        return Some(vec![
-            (platform.deployment_target_setting()?, floor),
-            (
-                TargetPlatform::MacOS.deployment_target_setting()?,
-                apple_deployment_target_for(TargetPlatform::MacOS)?,
-            ),
-        ]);
-    }
-    Some(vec![(platform.deployment_target_setting()?, floor)])
+    Some((
+        platform.deployment_target_setting()?,
+        apple_deployment_target_for(platform)?,
+    ))
 }
 
 // ============================================================================
