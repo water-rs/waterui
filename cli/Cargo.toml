@@ -168,6 +168,10 @@ preview = ["dep:notify"]
 zenwave = { version = "0.6.1", default-features = false, features = ["hyper-backend", "native-tls"] }
 core-graphics = "0.25"
 core-foundation = "0.10"
+# `confstr(_CS_DARWIN_USER_TEMP_DIR)`: the per-user temp directory `std` falls
+# back to when `TMPDIR` is unset, which `Host::temp_dir` reproduces without
+# reading the process environment.
+libc = "0.2"
 
 [target.'cfg(unix)'.dependencies]
 # Process-group signalling for the `water run` web dev server (SIGTERM/SIGKILL

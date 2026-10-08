@@ -78,6 +78,7 @@ impl WinUiBackend {
             .collect::<String>();
         let framework = project.resolved_framework().await?;
         Ok(TemplateContext::for_project_manifest(
+            project.host(),
             manifest,
             project.crate_name().clone(),
             app_name,

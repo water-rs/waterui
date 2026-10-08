@@ -111,20 +111,11 @@ const fn default_build_cache_cleanup_after_unused_days() -> u64 {
 #[error("Could not determine home directory")]
 pub struct HomeDirError;
 
-/// Return the Water home directory root at `~/.water`.
-///
-/// # Errors
-/// Returns an error if the current user's home directory cannot be determined.
-pub fn water_home_dir() -> Result<PathBuf, HomeDirError> {
-    let home = dirs::home_dir().ok_or(HomeDirError)?;
-    Ok(home.join(".water"))
-}
-
 /// Return the Water home directory root at `~/.water` for `host`.
 ///
 /// # Errors
 /// Returns an error if the host's home directory cannot be determined.
-pub fn water_home_dir_in(host: &crate::toolchain::Host) -> Result<PathBuf, HomeDirError> {
+pub fn water_home_dir(host: &crate::toolchain::Host) -> Result<PathBuf, HomeDirError> {
     let home = host.home_dir().ok_or(HomeDirError)?;
     Ok(home.join(".water"))
 }
@@ -133,8 +124,8 @@ pub fn water_home_dir_in(host: &crate::toolchain::Host) -> Result<PathBuf, HomeD
 ///
 /// # Errors
 /// Returns an error if the Water home cannot be created or the config cannot be read or written.
-pub async fn ensure_global_config() -> eyre::Result<WaterConfig> {
-    let water_home = water_home_dir()?;
+pub async fn ensure_global_config(host: &crate::toolchain::Host) -> eyre::Result<WaterConfig> {
+    let water_home = water_home_dir(host)?;
     ensure_global_config_in(&water_home).await
 }
 
@@ -142,8 +133,8 @@ pub async fn ensure_global_config() -> eyre::Result<WaterConfig> {
 ///
 /// # Errors
 /// Returns an error if the Water config cannot be loaded or the cache root cannot be created.
-pub async fn build_cache_root() -> eyre::Result<PathBuf> {
-    let water_home = water_home_dir()?;
+pub async fn build_cache_root(host: &crate::toolchain::Host) -> eyre::Result<PathBuf> {
+    let water_home = water_home_dir(host)?;
     let (_, cache_root) = resolved_build_cache_root_in(&water_home).await?;
     Ok(cache_root)
 }
@@ -173,8 +164,8 @@ pub async fn build_cache_root() -> eyre::Result<PathBuf> {
 /// # Errors
 /// Returns an error if the Water home cannot be determined, the global config
 /// cannot be loaded, or the cache directory cannot be created.
-pub async fn shared_target_dir() -> eyre::Result<PathBuf> {
-    let cache_root = build_cache_root().await?;
+pub async fn shared_target_dir(host: &crate::toolchain::Host) -> eyre::Result<PathBuf> {
+    let cache_root = build_cache_root(host).await?;
     ensure_shared_target_dir_in(&cache_root).await
 }
 
@@ -183,8 +174,8 @@ pub async fn shared_target_dir() -> eyre::Result<PathBuf> {
 ///
 /// # Errors
 /// Returns an error if the Water home or the global config cannot be resolved.
-pub async fn shared_target_dir_path() -> eyre::Result<PathBuf> {
-    let water_home = water_home_dir()?;
+pub async fn shared_target_dir_path(host: &crate::toolchain::Host) -> eyre::Result<PathBuf> {
+    let water_home = water_home_dir(host)?;
     let (_, cache_root) = resolved_build_cache_root_in(&water_home).await?;
     Ok(cache_root.join(SHARED_TARGET_DIR_NAME))
 }
@@ -281,8 +272,8 @@ fn metadata_lock_path(cache_dir: &Path) -> PathBuf {
 /// # Errors
 /// Returns an error if the cache root cannot be resolved, a Cargo build is
 /// using the directory, or the directory cannot be removed.
-pub async fn remove_shared_target_dir() -> eyre::Result<Option<u64>> {
-    let water_home = water_home_dir()?;
+pub async fn remove_shared_target_dir(host: &crate::toolchain::Host) -> eyre::Result<Option<u64>> {
+    let water_home = water_home_dir(host)?;
     let (_, cache_root) = resolved_build_cache_root_in(&water_home).await?;
     remove_shared_target_dir_in(&cache_root).await
 }
@@ -328,9 +319,10 @@ async fn remove_shared_target_dir_in(cache_root: &Path) -> eyre::Result<Option<u
 /// Returns an error if the cache root cannot be resolved, a Cargo build is
 /// using the directory, or an entry cannot be removed.
 pub async fn remove_project_units_from_shared_target(
+    host: &crate::toolchain::Host,
     packages: &[String],
 ) -> eyre::Result<Vec<PathBuf>> {
-    remove_project_units_in(&shared_target_dir_path().await?, packages).await
+    remove_project_units_in(&shared_target_dir_path(host).await?, packages).await
 }
 
 async fn remove_project_units_in(
@@ -715,7 +707,7 @@ async fn path_keyed_lock(
 ) -> eyre::Result<std::fs::File> {
     use sha2::Digest as _;
 
-    let water_home = water_home_dir_in(host)?;
+    let water_home = water_home_dir(host)?;
     let canonical = fs::canonicalize(path)
         .await
         .wrap_err_with(|| format!("Failed to canonicalize {}", path.display()))?;
@@ -745,7 +737,7 @@ pub async fn android_preview_device_lock(
     host: &crate::toolchain::Host,
     device_key: &str,
 ) -> eyre::Result<std::fs::File> {
-    let water_home = water_home_dir_in(host)?;
+    let water_home = water_home_dir(host)?;
     let name = format!(
         "android-preview-device-{}.lock",
         sanitize_os_str(device_key.as_ref())
@@ -759,34 +751,19 @@ pub async fn android_preview_device_lock(
     .await
 }
 
-/// Return the managed build-cache directory for a project.
-///
-/// # Errors
-/// Returns an error if the project root cannot be canonicalized or the global cache root cannot be resolved.
-pub async fn project_build_cache_dir(project_root: &Path) -> eyre::Result<PathBuf> {
-    let water_home = water_home_dir()?;
-    project_build_cache_dir_from_home(project_root, &water_home).await
-}
-
-/// Return the managed build-cache directory for a project under `host`'s Water home.
+/// Return the managed build-cache directory for a project under `host`'s
+/// Water home.
 ///
 /// # Errors
 /// Returns an error if the host has no home directory, the project root cannot
 /// be canonicalized, or the global cache root cannot be resolved.
-pub async fn project_build_cache_dir_on(
+pub async fn project_build_cache_dir(
     host: &crate::toolchain::Host,
     project_root: &Path,
 ) -> eyre::Result<PathBuf> {
-    let water_home = water_home_dir_in(host)?;
-    project_build_cache_dir_from_home(project_root, &water_home).await
-}
-
-async fn project_build_cache_dir_from_home(
-    project_root: &Path,
-    water_home: &Path,
-) -> eyre::Result<PathBuf> {
+    let water_home = water_home_dir(host)?;
     let project_root = canonicalize_project_root(project_root)?;
-    let (_, cache_root) = resolved_build_cache_root_in(water_home).await?;
+    let (_, cache_root) = resolved_build_cache_root_in(&water_home).await?;
     Ok(project_build_cache_dir_in(&project_root, &cache_root))
 }
 
@@ -802,8 +779,11 @@ async fn project_build_cache_dir_from_home(
 /// # Errors
 /// Returns an error if no ancestor of `project_root` can be canonicalized or the
 /// global cache root cannot be resolved.
-pub async fn build_cache_container_for(project_root: &Path) -> eyre::Result<PathBuf> {
-    let cache_root = build_cache_root().await?;
+pub async fn build_cache_container_for(
+    host: &crate::toolchain::Host,
+    project_root: &Path,
+) -> eyre::Result<PathBuf> {
+    let cache_root = build_cache_root(host).await?;
     build_cache_container_for_in(project_root, &cache_root)
 }
 
@@ -818,7 +798,7 @@ pub fn build_cache_container_for_on(
     host: &crate::toolchain::Host,
     project_root: &Path,
 ) -> eyre::Result<PathBuf> {
-    let water_home = water_home_dir_in(host)?;
+    let water_home = water_home_dir(host)?;
     let cache_root = water_home.join(BUILD_CACHE_DIR_NAME);
     build_cache_container_for_in(project_root, &cache_root)
 }
@@ -852,9 +832,12 @@ fn build_cache_container_for_in(project_root: &Path, cache_root: &Path) -> eyre:
 ///
 /// # Errors
 /// Returns an error if the project root cannot be canonicalized, config loading fails, or cache directories cannot be created.
-pub async fn ensure_project_build_cache(project_root: &Path) -> eyre::Result<PathBuf> {
+pub async fn ensure_project_build_cache(
+    host: &crate::toolchain::Host,
+    project_root: &Path,
+) -> eyre::Result<PathBuf> {
     let project_root = canonicalize_project_root(project_root)?;
-    let water_home = water_home_dir()?;
+    let water_home = water_home_dir(host)?;
     let (config, cache_root) = resolved_build_cache_root_in(&water_home).await?;
     ensure_project_build_cache_in(&project_root, &cache_root, &config).await
 }
@@ -865,10 +848,11 @@ pub async fn ensure_project_build_cache(project_root: &Path) -> eyre::Result<Pat
 /// Returns an error if the project root cannot be canonicalized, config loading fails,
 /// or stale cache removal fails.
 pub async fn cleanup_stale_build_caches_for_project(
+    host: &crate::toolchain::Host,
     project_root: &Path,
 ) -> eyre::Result<BuildCacheGcOutcome> {
     let project_root = canonicalize_project_root(project_root)?;
-    let water_home = water_home_dir()?;
+    let water_home = water_home_dir(host)?;
     let (config, cache_root) = resolved_build_cache_root_in(&water_home).await?;
     cleanup_stale_caches_if_idle(&cache_root, &project_root, &config).await
 }
@@ -939,9 +923,12 @@ pub fn spawn_build_cache_cleanup(
 ///
 /// # Errors
 /// Returns an error if the project root cannot be canonicalized or cache entries cannot be removed.
-pub async fn remove_project_build_cache(project_root: &Path) -> eyre::Result<()> {
+pub async fn remove_project_build_cache(
+    host: &crate::toolchain::Host,
+    project_root: &Path,
+) -> eyre::Result<()> {
     let project_root = canonicalize_project_root(project_root)?;
-    let cache_root = build_cache_root().await?;
+    let cache_root = build_cache_root(host).await?;
     remove_project_build_cache_in(&project_root, &cache_root).await
 }
 
@@ -977,8 +964,11 @@ pub(crate) async fn ensure_global_config_in(water_home: &Path) -> eyre::Result<W
 ///
 /// # Errors
 /// Returns an error if the config cannot be serialized or written.
-pub async fn write_global_config(config: &WaterConfig) -> eyre::Result<()> {
-    let water_home = water_home_dir()?;
+pub async fn write_global_config(
+    host: &crate::toolchain::Host,
+    config: &WaterConfig,
+) -> eyre::Result<()> {
+    let water_home = water_home_dir(host)?;
     write_global_config_in(&water_home, config).await
 }
 
@@ -1214,9 +1204,10 @@ pub struct BuildCacheUsageReport {
 /// # Errors
 /// Returns an error if the cache root cannot be read or the Water config cannot be loaded.
 pub async fn survey_build_cache_usage(
+    host: &crate::toolchain::Host,
     current_project_root: &Path,
 ) -> eyre::Result<BuildCacheUsageReport> {
-    let water_home = water_home_dir()?;
+    let water_home = water_home_dir(host)?;
     let (config, cache_root) = resolved_build_cache_root_in(&water_home).await?;
     let current_cache_dir = project_build_cache_dir_in(current_project_root, &cache_root);
     let max_unused_seconds = config

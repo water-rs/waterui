@@ -18,7 +18,7 @@ use target_lexicon::{Environment, OperatingSystem, Triple};
 use tracing::{info, warn};
 
 use crate::project::Project;
-use crate::utils::{run_command, std_output_enabled};
+use crate::utils::std_output_enabled;
 
 /// Get the dynamic library extension for a target triple.
 #[must_use]
@@ -57,7 +57,7 @@ const fn is_apple_triple(triple: &Triple) -> bool {
 /// # Errors
 /// Returns an error when rustup resolves no toolchain for the project.
 pub async fn project_toolchain(project: &Project) -> eyre::Result<String> {
-    Ok(crate::toolchain::rust::project_rustup_toolchain(project.root()).await?)
+    Ok(crate::toolchain::rust::project_rustup_toolchain(project.host(), project.root()).await?)
 }
 
 /// Resolve the Rust standard-library directory for a target triple under
@@ -65,9 +65,13 @@ pub async fn project_toolchain(project: &Project) -> eyre::Result<String> {
 ///
 /// # Errors
 /// Returns an error if rustc cannot resolve an existing target library directory.
-pub async fn rust_target_libdir(triple: &Triple, toolchain: &str) -> eyre::Result<PathBuf> {
+pub async fn rust_target_libdir(
+    host: &crate::toolchain::Host,
+    triple: &Triple,
+    toolchain: &str,
+) -> eyre::Result<PathBuf> {
     let target = triple.to_string();
-    let host = crate::toolchain::Host::current().with_env("RUSTUP_TOOLCHAIN", toolchain);
+    let host = host.with_env("RUSTUP_TOOLCHAIN", toolchain);
     let output = host
         .run(
             "rustc",
@@ -343,10 +347,8 @@ pub fn configure_generated_crate_compilation(command: &mut Command) {
 /// to the build's `PATH` so build scripts resolve a pinned `dxc`, JDK, and
 /// friends by name — the user never edits `PATH`. A no-op when nothing is
 /// installed (or the paths cannot join), so ambient `PATH` passes through.
-fn with_managed_tools_path(command: &mut Command) {
-    if let Some((key, value)) =
-        crate::toolchain::managed_tool::managed_tools_path_env(&crate::toolchain::Host::current())
-    {
+fn with_managed_tools_path(host: &crate::toolchain::Host, command: &mut Command) {
+    if let Some((key, value)) = crate::toolchain::managed_tool::managed_tools_path_env(host) {
         command.env(key, value);
     }
 }
@@ -459,7 +461,7 @@ impl RustDynamicLibraries {
         // dependency is the runtime dylib's own).
         let needed_std = needed.iter().find(|name| is_rust_standard_library(name));
         let toolchain = project_toolchain(project).await?;
-        let target_libdir = rust_target_libdir(triple, &toolchain).await?;
+        let target_libdir = rust_target_libdir(project.host(), triple, &toolchain).await?;
         let standard_library = if let Some(name) = needed_std {
             StagedDynamicLibrary::needed(
                 name,
@@ -666,16 +668,12 @@ const DXC_RUNTIME_LIBRARIES: [&str; 2] = ["dxcompiler.dll", "dxil.dll"];
 
 /// Resolve the `dxc` runtime pair to the copies installed beside the `dxc`
 /// executable (on `PATH` or under the managed tool directory).
-async fn resolve_dxc_runtime() -> eyre::Result<Vec<PathBuf>> {
-    let host = crate::toolchain::Host::current();
-    let dxc = crate::toolchain::dxc::Dxc
-        .path(&host)
-        .await
-        .ok_or_else(|| {
-            eyre::eyre!(
-                "the dxc tool is not installed; run `water doctor` to install it, then build again"
-            )
-        })?;
+async fn resolve_dxc_runtime(host: &crate::toolchain::Host) -> eyre::Result<Vec<PathBuf>> {
+    let dxc = crate::toolchain::dxc::Dxc.path(host).await.ok_or_else(|| {
+        eyre::eyre!(
+            "the dxc tool is not installed; run `water doctor` to install it, then build again"
+        )
+    })?;
     let dxc_dir = dxc.parent().ok_or_else(|| {
         eyre::eyre!(
             "the resolved dxc path {} has no parent directory",
@@ -718,9 +716,12 @@ fn resolve_dxc_runtime_in(dxc_dir: &Path) -> std::io::Result<Vec<PathBuf>> {
 /// # Errors
 /// Returns an error when `dxc` is not installed, a runtime library is missing
 /// beside it, or the destination cannot be created or written.
-pub async fn stage_dxc_runtime(destination: &Path) -> eyre::Result<()> {
+pub async fn stage_dxc_runtime(
+    host: &crate::toolchain::Host,
+    destination: &Path,
+) -> eyre::Result<()> {
     smol::fs::create_dir_all(destination).await?;
-    for source in resolve_dxc_runtime().await? {
+    for source in resolve_dxc_runtime(host).await? {
         let file_name = source.file_name().ok_or_else(|| {
             eyre::eyre!("dxc runtime path has no file name: {}", source.display())
         })?;
@@ -1000,6 +1001,9 @@ fn resolve_rust_standard_library_in(libdir: &Path, triple: &Triple) -> std::io::
 /// Represents a Rust build for a specific target triple.
 #[derive(Debug, Clone)]
 pub struct RustBuild {
+    /// The host every spawned tool runs under — its PATH, environment and
+    /// stdio policy reach cargo exactly as declared there.
+    host: crate::toolchain::Host,
     path: PathBuf,
     triple: Triple,
     project: Option<Project>,
@@ -1518,9 +1522,11 @@ async fn drain_cargo_stderr(
 }
 
 impl RustBuild {
-    /// Create a new rust build for the given path and target triple.
-    pub fn new(path: impl AsRef<Path>, triple: Triple) -> Self {
+    /// Create a new rust build for the given path and target triple,
+    /// spawning cargo on `host`.
+    pub fn new(host: &crate::toolchain::Host, path: impl AsRef<Path>, triple: Triple) -> Self {
         Self {
+            host: host.clone(),
             path: path.as_ref().to_path_buf(),
             triple,
             project: None,
@@ -1536,15 +1542,25 @@ impl RustBuild {
         }
     }
 
-    /// Build on behalf of `project`: its framework prepares the crate, and
-    /// cargo runs under the rustup toolchain the project's own directory
-    /// selects — the generated crate sits in the build cache, outside the
-    /// project tree, where rustup would fall back to its default toolchain and
-    /// link the runtime against a `libstd` the project's toolchain does not
-    /// have.
-    pub(crate) fn with_project(mut self, project: &Project) -> Self {
-        self.project = Some(project.clone());
-        self
+    /// Create a build on behalf of `project`, spawning cargo on the
+    /// project's host: its framework prepares the crate, and cargo runs under
+    /// the rustup toolchain the project's own directory selects — the
+    /// generated crate sits in the build cache, outside the project tree,
+    /// where rustup would fall back to its default toolchain and link the
+    /// runtime against a `libstd` the project's toolchain does not have.
+    ///
+    /// The host comes from `project`, so a build can never run under one
+    /// host on behalf of a project opened with another.
+    pub(crate) fn for_project(project: &Project, path: impl AsRef<Path>, triple: Triple) -> Self {
+        Self {
+            project: Some(project.clone()),
+            ..Self::new(project.host(), path, triple)
+        }
+    }
+
+    /// The host this build's spawned tools run under.
+    pub(crate) const fn host(&self) -> &crate::toolchain::Host {
+        &self.host
     }
 
     /// Use an explicit Cargo target directory.
@@ -1851,7 +1867,7 @@ impl RustBuild {
             }
 
             if !output.status.success() && should_auto_install_meson(&combined) {
-                match ensure_meson_installed_for_build().await {
+                match ensure_meson_installed_for_build(&self.host).await {
                     Ok(()) => {
                         output = self
                             .cargo_build_output(release, cargo_target, &user_rustflags)
@@ -1979,7 +1995,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
                 "discarding a shared dylib unit and rebuilding it: {}",
                 unit.reason
             );
-            clean_cargo_package(&self.path, &unit.package, &target_dir).await?;
+            clean_cargo_package(&self.host, &self.path, &unit.package, &target_dir).await?;
         }
         *output = self
             .cargo_build_output(release, cargo_target, user_rustflags)
@@ -2079,7 +2095,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
         &self,
         cargo_config_files: &[PathBuf],
     ) -> Result<Vec<String>, RustBuildError> {
-        let mut host = crate::toolchain::Host::current().with_cwd(&self.path);
+        let mut host = self.host.clone().with_cwd(&self.path);
         for (key, value) in &self.envs {
             host = host.with_env(key, value);
         }
@@ -2199,7 +2215,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
     /// target whether the build crosses or the host is the Apple target
     /// itself.
     fn apply_default_envs(&self, cmd: &mut Command) {
-        with_managed_tools_path(cmd);
+        with_managed_tools_path(&self.host, cmd);
         if let Some((key, value)) =
             crate::apple::platform::apple_deployment_target_env(&self.triple)
         {
@@ -2219,7 +2235,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
         } else {
             None
         };
-        let mut cmd = Command::new("cargo");
+        let mut cmd = self.host.command("cargo");
         // A `--bin` unit always builds through `cargo rustc`: link flags for
         // the final crate (`final_rustc_args`) can then be passed after `--`,
         // where they reach only the selected unit's compilation and leave
@@ -2269,7 +2285,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
 
         // Use sccache as rustc wrapper if configured
         if let Some(sccache_path) = &self.sccache_path {
-            crate::toolchain::sccache::configure_compilation_cache(cmd, sccache_path)
+            crate::toolchain::sccache::configure_compilation_cache(&self.host, cmd, sccache_path)
                 .await
                 .map_err(|error| {
                     RustBuildError::FailToBuildRustLibrary(std::io::Error::other(error.to_string()))
@@ -2311,7 +2327,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
         // passthrough echo — restore cargo's coloring unless the caller
         // configured it explicitly.
         if std_output_enabled()
-            && std::env::var_os("CARGO_TERM_COLOR").is_none()
+            && self.host.env("CARGO_TERM_COLOR").is_none()
             && !self.envs.iter().any(|(key, _)| key == "CARGO_TERM_COLOR")
         {
             cmd.env("CARGO_TERM_COLOR", "always");
@@ -2443,7 +2459,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
         // outside the shared root must not touch `~/.water` at all — the
         // ensure would stamp the shared target's metadata for a build that
         // never enters it, and that write races other processes on Windows.
-        let shared_root = crate::water_dir::shared_target_dir_path()
+        let shared_root = crate::water_dir::shared_target_dir_path(self.host())
             .await
             .map_err(|error| {
                 RustBuildError::FailToBuildRustLibrary(std::io::Error::other(format!(
@@ -2453,7 +2469,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
         if !target_dir.starts_with(&shared_root) {
             return Ok(None);
         }
-        let shared_root = crate::water_dir::shared_target_dir()
+        let shared_root = crate::water_dir::shared_target_dir(self.host())
             .await
             .map_err(|error| {
                 RustBuildError::FailToBuildRustLibrary(std::io::Error::other(format!(
@@ -2549,7 +2565,9 @@ Automatic meson installation failed: {install_err}\n\n{}",
         };
 
         // Get SDK path using xcrun
-        let sdk_path = run_command("xcrun", ["--sdk", sdk_name, "--show-sdk-path"])
+        let sdk_path = self
+            .host
+            .run("xcrun", ["--sdk", sdk_name, "--show-sdk-path"])
             .await
             .ok()
             .map(|s| s.trim().to_string())?;
@@ -3445,11 +3463,12 @@ fn artifact_package_name(package_id: &cargo_metadata::PackageId) -> &str {
 /// the package's units — including the unhashed artifact another source's
 /// build left behind — so the next build re-emits this graph's own.
 async fn clean_cargo_package(
+    host: &crate::toolchain::Host,
     crate_dir: &Path,
     package: &str,
     target_dir: &Path,
 ) -> Result<(), RustBuildError> {
-    let mut command = Command::new("cargo");
+    let mut command = host.command("cargo");
     command
         .arg("clean")
         .arg("-p")
@@ -3560,22 +3579,23 @@ fn remove_cmake_build_dirs_in(build_root: &Path) -> std::io::Result<usize> {
 }
 
 #[cfg(target_os = "macos")]
-async fn ensure_meson_installed_for_build() -> Result<(), String> {
+async fn ensure_meson_installed_for_build(host: &crate::toolchain::Host) -> Result<(), String> {
     use crate::toolchain::meson::Meson;
     use crate::toolchain::{Installation as _, Toolchain as _, ToolchainError};
 
-    let host = crate::toolchain::Host::current();
-    match Meson.check(&host).await {
+    match Meson.check(host).await {
         Ok(()) => Ok(()),
         Err(ToolchainError::Fixable(installation)) => {
-            installation.install(&host).await.map_err(|e| e.to_string())
+            installation.install(host).await.map_err(|e| e.to_string())
         }
         Err(ToolchainError::Unfixable(e)) => Err(e.to_string()),
     }
 }
 
 #[cfg(not(target_os = "macos"))]
-fn ensure_meson_installed_for_build() -> impl std::future::Future<Output = Result<(), String>> {
+fn ensure_meson_installed_for_build(
+    _host: &crate::toolchain::Host,
+) -> impl std::future::Future<Output = Result<(), String>> + use<> {
     std::future::ready(Err(
         "automatic meson installation is only supported on macOS".to_string(),
     ))
@@ -3583,7 +3603,6 @@ fn ensure_meson_installed_for_build() -> impl std::future::Future<Output = Resul
 
 #[cfg(test)]
 mod tests {
-    use smol::process::Command;
     use target_lexicon::Triple;
     use tempfile::tempdir;
 
@@ -4002,12 +4021,16 @@ mod tests {
                 )
                 .expect("main.rs");
 
-                let artifact = super::RustBuild::new(&crate_dir, Triple::host())
-                    .with_target_dir(&shared_target)
-                    .build_binary(package.as_str(), false)
-                    .await
-                    .expect("the generated crate builds")
-                    .artifact;
+                let artifact = super::RustBuild::new(
+                    &crate::toolchain::Host::current(),
+                    &crate_dir,
+                    Triple::host(),
+                )
+                .with_target_dir(&shared_target)
+                .build_binary(package.as_str(), false)
+                .await
+                .expect("the generated crate builds")
+                .artifact;
                 assert!(artifact.is_file(), "the reported artifact exists");
                 artifacts.push(artifact);
             }
@@ -4017,7 +4040,8 @@ mod tests {
                 "each same-named project resolves its own artifact"
             );
             for (artifact, marker) in artifacts.iter().zip(["first", "second"]) {
-                let ran = std::process::Command::new(artifact)
+                let ran = crate::toolchain::Host::current()
+                    .std_command(artifact)
                     .output()
                     .expect("the resolved artifact executes");
                 assert_eq!(
@@ -4070,16 +4094,21 @@ mod tests {
                 [("first", "first"), ("second", "second"), ("first", "first")]
             {
                 let crate_dir = temporary.path().join(directory).join("hydrolysis");
-                let artifact = super::RustBuild::new(&crate_dir, Triple::host())
-                    .with_target_dir(&shared_target)
-                    .build_binary(package, false)
-                    .await
-                    .expect("the generated crate builds")
-                    .artifact;
+                let artifact = super::RustBuild::new(
+                    &crate::toolchain::Host::current(),
+                    &crate_dir,
+                    Triple::host(),
+                )
+                .with_target_dir(&shared_target)
+                .build_binary(package, false)
+                .await
+                .expect("the generated crate builds")
+                .artifact;
                 // `deps/<name>-<marker>`: the marked name is unique per
                 // variant — running it checks the slot carries this
                 // build's output whether the unit compiled or stayed fresh.
-                let ran = Command::new(&artifact)
+                let ran = crate::toolchain::Host::current()
+                    .command(&artifact)
                     .output()
                     .await
                     .expect("the resolved artifact executes");
@@ -4128,12 +4157,16 @@ mod tests {
                 )
                 .await
                 .expect("main.rs");
-                let artifact = super::RustBuild::new(&crate_dir, Triple::host())
-                    .with_target_dir(&shared_target)
-                    .build_binary(package, false)
-                    .await
-                    .expect("the generated crate builds")
-                    .artifact;
+                let artifact = super::RustBuild::new(
+                    &crate::toolchain::Host::current(),
+                    &crate_dir,
+                    Triple::host(),
+                )
+                .with_target_dir(&shared_target)
+                .build_binary(package, false)
+                .await
+                .expect("the generated crate builds")
+                .artifact;
                 let file_name = artifact
                     .file_name()
                     .and_then(|name| name.to_str())
@@ -4160,7 +4193,8 @@ mod tests {
                     "the resolved artifact is `deps/<name>-<marker><suffix>`: {file_name}"
                 );
 
-                let ran = Command::new(&artifact)
+                let ran = crate::toolchain::Host::current()
+                    .command(&artifact)
                     .output()
                     .await
                     .expect("the resolved artifact executes");
@@ -5161,9 +5195,13 @@ mod tests {
         crate_dir: &std::path::Path,
         cargo_home: &std::path::Path,
     ) -> super::RustBuild {
-        super::RustBuild::new(crate_dir, Triple::host())
-            .with_preferred_dynamic_linking()
-            .with_env("CARGO_HOME", cargo_home)
+        super::RustBuild::new(
+            &crate::toolchain::Host::current(),
+            crate_dir,
+            Triple::host(),
+        )
+        .with_preferred_dynamic_linking()
+        .with_env("CARGO_HOME", cargo_home)
     }
 
     /// `cargo_build_output` for a probe build: resolves the user's
@@ -5312,11 +5350,15 @@ mod tests {
             let crate_dir = temporary.path().join("crate");
             std::fs::create_dir_all(&crate_dir).expect("crate dir");
 
-            let flags = super::RustBuild::new(&crate_dir, Triple::host())
-                .with_env("CARGO_HOME", temporary.path().join("cargo-home"))
-                .user_rustflags(&[config])
-                .await
-                .expect("the cli config layer resolves");
+            let flags = super::RustBuild::new(
+                &crate::toolchain::Host::current(),
+                &crate_dir,
+                Triple::host(),
+            )
+            .with_env("CARGO_HOME", temporary.path().join("cargo-home"))
+            .user_rustflags(&[config])
+            .await
+            .expect("the cli config layer resolves");
 
             assert_eq!(flags, ["--cfg=water_cli_probe"]);
         });
@@ -5345,6 +5387,7 @@ mod tests {
             let temporary = tempdir().expect("tempdir");
             let root = temporary.path().join("release-app");
             let project = crate::project::Project::create(
+                &crate::toolchain::Host::current(),
                 &root,
                 crate::project::CreateOptions {
                     name: "Release App".to_string(),

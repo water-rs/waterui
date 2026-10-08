@@ -17,6 +17,7 @@ use waterui_assets_planner::{BUNDLE_META_PREFIX, BundleMountMeta};
 
 use crate::artifact_symbols::ArtifactSymbols;
 use crate::project_model::templates::embedded;
+use crate::toolchain::Host;
 
 /// The JavaScript package manager a project declares in
 /// `[web] package_manager`.
@@ -49,18 +50,11 @@ impl PackageManager {
         }
     }
 
-    /// `<pm> run <script>` — every supported manager accepts this form.
-    #[must_use]
-    pub fn run(self, script: &str) -> Command {
-        let mut command = Command::new(self.binary());
-        command.arg("run").arg(script);
-        command
-    }
-
     /// `<pm> install` — installs the dependencies of the current directory.
+    /// Interactive: installers prompt on the terminal, so it inherits stdio.
     #[must_use]
-    pub fn install(self) -> Command {
-        let mut command = Command::new(self.binary());
+    pub fn install(self, host: &Host) -> Command {
+        let mut command = Command::from(host.interactive_command(self.binary()));
         command.arg("install");
         command
     }
@@ -69,10 +63,12 @@ impl PackageManager {
     ///
     /// `template`, when given, is forwarded to `create-vite` after a `--`
     /// separator (`--template <t>`), which every manager passes through and
-    /// which skips Vite's interactive framework picker.
+    /// which skips Vite's interactive framework picker. The command is
+    /// interactive either way — the picker reads the user's terminal when it
+    /// runs.
     #[must_use]
-    pub fn create_vite(self, dir: &str, template: Option<&str>) -> Command {
-        let mut command = Command::new(self.binary());
+    pub fn create_vite(self, host: &Host, dir: &str, template: Option<&str>) -> Command {
+        let mut command = Command::from(host.interactive_command(self.binary()));
         command.arg("create");
         match self {
             Self::Npm => command.arg("vite@latest"),
@@ -90,9 +86,9 @@ impl PackageManager {
         command
     }
 
-    /// Whether the manager's binary resolves on `PATH`.
-    pub async fn is_installed(self) -> bool {
-        crate::utils::which(self.binary()).await.is_ok()
+    /// Whether the manager's binary resolves on `host`'s `PATH`.
+    pub async fn is_installed(self, host: &Host) -> bool {
+        host.which(self.binary()).await.is_ok()
     }
 
     /// The official installation instruction, shown when the declared manager
@@ -170,6 +166,7 @@ pub fn decode_web_mount(symbols: &ArtifactSymbols) -> eyre::Result<Option<Bundle
 /// Panics when `meta` declares no `project` — callers only reach this for
 /// `include_web!` mounts.
 pub async fn build_frontend(
+    host: &Host,
     package_manager: PackageManager,
     meta: &BundleMountMeta,
 ) -> eyre::Result<()> {
@@ -178,16 +175,23 @@ pub async fn build_frontend(
         .as_ref()
         .expect("build_frontend is only called for mounts that declare a project");
     let pm = package_manager.binary();
-    let status = package_manager
-        .run("build")
-        .current_dir(root)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
+    // Not interactive: a bundler never reads the terminal. Under `water
+    // mcp` this path runs on the JSON-RPC stream, so the output is captured
+    // — echoed to a real terminal when there is one — and reported on
+    // failure, never inherited.
+    let output = host
+        .clone()
+        .with_cwd(root)
+        .output(pm, ["run", "build"])
         .await?;
-    if !status.success() {
-        bail!("`{pm} run build` failed in {}: {status}", root.display());
+    if !output.status.success() {
+        bail!(
+            "`{pm} run build` failed in {}: {}{}{}",
+            root.display(),
+            output.status,
+            crate::utils::format_failure_stream("stderr", &output.stderr),
+            crate::utils::format_failure_stream("stdout", &output.stdout),
+        );
     }
     if !meta.path.is_dir() {
         bail!(
@@ -426,6 +430,7 @@ impl WebDevServer {
     /// Panics if the spawned child has no piped stdout — impossible, since
     /// the spawn configures it above.
     pub async fn spawn(
+        host: &Host,
         package_manager: PackageManager,
         root: &Path,
         script: &str,
@@ -437,7 +442,7 @@ impl WebDevServer {
         let pm = package_manager.binary();
         // `std::process::Command`, not `smol`'s: the child must lead its own
         // process group so the guard's drop can signal the whole tree.
-        let mut command = std::process::Command::new(pm);
+        let mut command = host.std_command(pm);
         command.arg("run").arg(script).current_dir(root);
         if expose_on_lan {
             // npm needs `--` to forward args to the script; bun, pnpm and
@@ -448,10 +453,7 @@ impl WebDevServer {
             }
             command.args(["--host", "0.0.0.0"]);
         }
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
+        command.stdout(Stdio::piped()).stderr(Stdio::inherit());
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt as _;
@@ -1399,6 +1401,28 @@ mod tests {
     }
 
     #[test]
+    fn pm_run_build_does_not_inherit_stdio() {
+        // `water mcp` runs `build_frontend` on the JSON-RPC stream with
+        // standard output disabled: a bundler's output is captured and
+        // reported on failure, never inherited onto the protocol stream.
+        crate::utils::set_std_output(false);
+        let machine = crate::toolchain::testing::TestMachine::new();
+        machine.install("bun");
+        machine.respond("bun_run_build", "the bundler's complaint");
+        let host = machine.host([("WATERUI_FAKE_PM_EXIT", "1")]);
+        let meta = BundleMountMeta {
+            mount: "web".to_string(),
+            path: machine.dir("app/dist"),
+            project: Some(machine.dir("app")),
+        };
+        let error = smol::block_on(build_frontend(&host, PackageManager::Bun, &meta)).unwrap_err();
+        assert!(
+            error.to_string().contains("the bundler's complaint"),
+            "captured bundler output should be reported: {error}"
+        );
+    }
+
+    #[test]
     fn command_arg_vectors() {
         let args = |command: &Command| -> Vec<String> {
             std::iter::once(command.get_program().to_string_lossy().into_owned())
@@ -1409,21 +1433,22 @@ mod tests {
                 )
                 .collect()
         };
+        let host =
+            crate::toolchain::testing::TestMachine::new().host(Vec::<(String, String)>::new());
         assert_eq!(
-            args(&PackageManager::Bun.run("build")),
-            ["bun", "run", "build"]
+            args(&PackageManager::Pnpm.install(&host)),
+            ["pnpm", "install"]
         );
-        assert_eq!(args(&PackageManager::Pnpm.install()), ["pnpm", "install"]);
         assert_eq!(
-            args(&PackageManager::Yarn.create_vite("web", None)),
+            args(&PackageManager::Yarn.create_vite(&host, "web", None)),
             ["yarn", "create", "vite", "web"]
         );
         assert_eq!(
-            args(&PackageManager::Bun.create_vite("web", Some("react-ts"))),
+            args(&PackageManager::Bun.create_vite(&host, "web", Some("react-ts"))),
             ["bun", "create", "vite", "web", "--template", "react-ts"]
         );
         assert_eq!(
-            args(&PackageManager::Npm.create_vite("web", Some("vanilla-ts"))),
+            args(&PackageManager::Npm.create_vite(&host, "web", Some("vanilla-ts"))),
             [
                 "npm",
                 "create",
@@ -1707,9 +1732,9 @@ mod tests {
     fn dev_server_tree_signals_the_grandchild_and_refuses_a_shared_group() {
         use std::os::unix::process::CommandExt as _;
 
-        let mut leader = std::process::Command::new("sh")
+        let mut leader = crate::toolchain::Host::current()
+            .std_command("sh")
             .args(["-c", "sleep 30 & wait"])
-            .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .process_group(0)
@@ -1724,9 +1749,9 @@ mod tests {
             "SIGKILL to the group ends the leader: {status}"
         );
 
-        let mut shared = std::process::Command::new("sh")
+        let mut shared = crate::toolchain::Host::current()
+            .std_command("sh")
             .args(["-c", "exit 0"])
-            .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()

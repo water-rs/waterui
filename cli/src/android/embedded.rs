@@ -123,6 +123,7 @@ pub async fn build_aar(
     .await?;
 
     run_gradle_tasks(
+        project.host(),
         &backend_path,
         &[
             ":waterui:assembleRelease",
@@ -157,7 +158,7 @@ async fn stage_embedded_assets(
 
     let font_declarations =
         assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml")).await?;
-    let mut resolved_fonts = assets::resolve_fonts(font_declarations).await?;
+    let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
 
     if !resolved_fonts.is_empty() {

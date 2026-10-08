@@ -17,14 +17,11 @@ use crate::{
     project_model::assets::{AppleDeclarations, SigningEnvironment},
     project_model::templates::TemplateContext,
     project_types::AppleBundleIdentifier,
-    utils::{copy_file, run_command_os},
+    utils::copy_file,
 };
 
 #[cfg(target_os = "macos")]
 use crate::apple::provisioning;
-
-#[cfg(target_os = "macos")]
-use crate::toolchain::Host;
 
 /// The on-disk layout of an assembled application bundle.
 ///
@@ -317,8 +314,18 @@ fn apply_mobile_plist_entries(
     }
 }
 
-/// Assemble the `.app` directory: executable, copied resources, the
-/// `actool`-compiled asset catalog, `Info.plist`, `PkgInfo`.
+/// The SDK an Apple artifact is built and signed for: which SDK plus the
+/// deployment target the produced binary may run on.
+#[derive(Debug)]
+pub struct AppleSdkSpec<'a> {
+    /// SDK name (`iphoneos`, `iphonesimulator`, `macosx`, `xros`).
+    pub sdk_name: &'a str,
+    /// Minimum OS version the binary supports.
+    pub deployment_target: &'a str,
+}
+
+/// Assemble the `.app` directory for `sdk`: executable, copied resources,
+/// the `actool`-compiled asset catalog, `Info.plist`, `PkgInfo`.
 ///
 /// `staging_dir` is what `copy_assets_and_fonts` populated (`waterui_assets/`,
 /// `WaterUIAssets.xcassets/`, `fonts/`).
@@ -327,13 +334,13 @@ fn apply_mobile_plist_entries(
 /// Returns an error when the executable is missing, a copy fails, or `actool`
 /// fails to compile the asset catalog.
 pub async fn assemble_app_bundle(
+    host: &crate::toolchain::Host,
     layout: &AppleAppLayout,
     executable: &Path,
     product_name: &str,
     staging_dir: &Path,
     info_plist: &plist::Dictionary,
-    sdk_name: &str,
-    deployment_target: &str,
+    sdk: &AppleSdkSpec<'_>,
 ) -> eyre::Result<()> {
     if !executable.is_file() {
         bail!(
@@ -367,10 +374,10 @@ pub async fn assemble_app_bundle(
 
     let mut plist = info_plist.clone();
     compile_asset_catalog(
+        host,
         layout,
         &staging_dir.join("WaterUIAssets.xcassets"),
-        sdk_name,
-        deployment_target,
+        sdk,
         &mut plist,
     )
     .await?;
@@ -381,7 +388,7 @@ pub async fn assemble_app_bundle(
         .wrap_err("failed to serialize Info.plist")?;
     fs::write(&layout.info_plist_path, plist_file).await?;
 
-    if sdk_name == "macosx" {
+    if sdk.sdk_name == "macosx" {
         fs::write(
             layout.app_path.join("Contents").join("PkgInfo"),
             b"APPL????",
@@ -397,26 +404,26 @@ pub async fn assemble_app_bundle(
 /// (`CFBundleIconFile`, `CFBundleIconName`, …) into `info_plist`.
 #[cfg(target_os = "macos")]
 async fn compile_asset_catalog(
+    host: &crate::toolchain::Host,
     layout: &AppleAppLayout,
     xcassets: &Path,
-    sdk_name: &str,
-    deployment_target: &str,
+    sdk: &AppleSdkSpec<'_>,
     info_plist: &mut plist::Dictionary,
 ) -> eyre::Result<()> {
     if !xcassets.is_dir() {
         return Ok(());
     }
     let partial_plist = layout.resources_dir.join(".waterui-actool-partial.plist");
-    run_command_os(
+    host.run(
         "xcrun",
         [
             "actool".into(),
             "--compile".into(),
             layout.resources_dir.as_os_str().to_os_string(),
             "--platform".into(),
-            sdk_name.into(),
+            sdk.sdk_name.into(),
             "--minimum-deployment-target".into(),
-            deployment_target.into(),
+            sdk.deployment_target.into(),
             "--app-icon".into(),
             "AppIcon".into(),
             "--accent-color".into(),
@@ -450,10 +457,10 @@ async fn compile_asset_catalog(
     reason = "keeps the signature of the macOS implementation, which awaits"
 )]
 async fn compile_asset_catalog(
+    _host: &crate::toolchain::Host,
     _layout: &AppleAppLayout,
     _xcassets: &Path,
-    _sdk_name: &str,
-    _deployment_target: &str,
+    _sdk: &AppleSdkSpec<'_>,
     _info_plist: &mut plist::Dictionary,
 ) -> eyre::Result<()> {
     bail!("Apple packaging requires macOS (actool is part of the Xcode toolchain)")
@@ -549,7 +556,13 @@ pub async fn sign_apple_app(
                     )
                 }
             };
-            crate::macos_bundle::sign_macos_app(&layout.app_path, &bundle_id, &signing).await?;
+            crate::macos_bundle::sign_macos_app(
+                project.host(),
+                &layout.app_path,
+                &bundle_id,
+                &signing,
+            )
+            .await?;
             return Ok(());
         }
         #[cfg(not(target_os = "macos"))]
@@ -559,7 +572,15 @@ pub async fn sign_apple_app(
     }
 
     if platform.is_simulator() {
-        codesign_bundle(&layout.app_path, &layout.frameworks_dir, "-", None, None).await?;
+        codesign_bundle(
+            project.host(),
+            &layout.app_path,
+            &layout.frameworks_dir,
+            "-",
+            None,
+            None,
+        )
+        .await?;
         return Ok(());
     }
 
@@ -579,11 +600,14 @@ pub async fn sign_apple_app(
     )
     .await?;
     sign_device_app(
+        project.host(),
         layout,
-        &bundle_id,
-        options,
-        platform,
-        entitlements,
+        &DeviceSigningSpec {
+            bundle_id: &bundle_id,
+            options,
+            platform,
+            project_entitlements: entitlements,
+        },
         backend_root,
         deployment_target,
     )
@@ -652,6 +676,7 @@ async fn write_entitlements(path: &Path, entitlements: plist::Dictionary) -> eyr
 /// Run `codesign` over every member of `frameworks_dir`, then the bundle
 /// itself, inside-out the way `xcodebuild` signs.
 async fn codesign_bundle(
+    host: &crate::toolchain::Host,
     app_path: &Path,
     frameworks_dir: &Path,
     identity: &str,
@@ -676,13 +701,14 @@ async fn codesign_bundle(
         }
         members.sort();
         for member in members {
-            codesign_path(&member, identity, None, None).await?;
+            codesign_path(host, &member, identity, None, None).await?;
         }
     }
-    codesign_path(app_path, identity, entitlements, identifier).await
+    codesign_path(host, app_path, identity, entitlements, identifier).await
 }
 
 async fn codesign_path(
+    host: &crate::toolchain::Host,
     path: &Path,
     identity: &str,
     entitlements: Option<&Path>,
@@ -703,8 +729,18 @@ async fn codesign_path(
         arguments.push(std::ffi::OsString::from(identifier));
     }
     arguments.push(path.as_os_str().to_owned());
-    run_command_os("codesign", arguments).await?;
+    host.run("codesign", arguments).await?;
     Ok(())
+}
+
+/// The inputs a device signature is computed from. Its fields are read only
+/// by the macOS implementation — the stub signature holds them for parity.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+struct DeviceSigningSpec<'a> {
+    bundle_id: &'a AppleBundleIdentifier,
+    options: &'a PackageOptions,
+    platform: TargetPlatform,
+    project_entitlements: plist::Dictionary,
 }
 
 /// Sign a device build with the resolved development identity.
@@ -721,36 +757,33 @@ async fn codesign_path(
 /// reaches `codesign` — not copied from it verbatim.
 #[cfg(target_os = "macos")]
 async fn sign_device_app(
+    host: &crate::toolchain::Host,
     layout: &AppleAppLayout,
-    bundle_id: &AppleBundleIdentifier,
-    options: &PackageOptions,
-    platform: TargetPlatform,
-    project_entitlements: plist::Dictionary,
+    spec: &DeviceSigningSpec<'_>,
     backend_root: &Path,
     deployment_target: &str,
 ) -> eyre::Result<()> {
-    let host = Host::current();
-    let team = crate::apple::toolchain::development_team_id(&host).await?;
+    let team = crate::apple::toolchain::development_team_id(host).await?;
 
     let request = provisioning::SigningRequest {
         team: &team,
-        bundle_id: bundle_id.as_str(),
-        device_udid: options.device_udid(),
-        entitlements: &project_entitlements,
-        platform,
+        bundle_id: spec.bundle_id.as_str(),
+        device_udid: spec.options.device_udid(),
+        entitlements: &spec.project_entitlements,
+        platform: spec.platform,
     };
-    let selection = match provisioning::select_development_profile(&host, &request).await {
+    let selection = match provisioning::select_development_profile(host, &request).await {
         Ok(selection) => selection,
         Err(provisioning::SelectError::NoMatch(first)) => {
             info!("{first}; asking xcodebuild to provision one");
             provisioning::provision_via_xcodebuild(
-                &host,
+                host,
                 &request,
                 &backend_root.join("DerivedData/Provisioning"),
                 deployment_target,
             )
             .await?;
-            match provisioning::select_development_profile(&host, &request).await {
+            match provisioning::select_development_profile(host, &request).await {
                 Ok(selection) => selection,
                 Err(provisioning::SelectError::NoMatch(still)) => {
                     bail!(
@@ -783,11 +816,12 @@ async fn sign_device_app(
     write_entitlements(&merged, entitlements).await?;
 
     codesign_bundle(
+        host,
         &layout.app_path,
         &layout.frameworks_dir,
         identity,
         Some(&merged),
-        Some(bundle_id.as_str()),
+        Some(spec.bundle_id.as_str()),
     )
     .await?;
     info!(
@@ -804,11 +838,9 @@ async fn sign_device_app(
     reason = "keeps the signature of the macOS implementation, which awaits"
 )]
 async fn sign_device_app(
+    _host: &crate::toolchain::Host,
     _layout: &AppleAppLayout,
-    _bundle_id: &AppleBundleIdentifier,
-    _options: &PackageOptions,
-    _platform: TargetPlatform,
-    _project_entitlements: plist::Dictionary,
+    _spec: &DeviceSigningSpec<'_>,
     _backend_root: &Path,
     _deployment_target: &str,
 ) -> eyre::Result<()> {

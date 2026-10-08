@@ -29,7 +29,7 @@ use crate::{
         winget::{WingetInstallError, ensure_package_installed},
     },
     utils::{CommandError, command},
-    water_dir::{HomeDirError, water_home_dir_in},
+    water_dir::{HomeDirError, water_home_dir},
 };
 
 /// Errors from Android SDK/NDK inspection and installation pipelines.
@@ -1133,7 +1133,7 @@ fn kotlin_executable_from_home(home: &Path) -> Option<PathBuf> {
 }
 
 fn managed_kotlin_home(host: &Host, version: &str) -> Result<PathBuf, AndroidToolchainError> {
-    Ok(water_home_dir_in(host)?
+    Ok(water_home_dir(host)?
         .join("toolchains/kotlin")
         .join(version))
 }
