@@ -390,7 +390,13 @@ impl<B: Backend> Engine<B> {
         self.recycle_commits(&mut reply.commits);
         reply.commits.clear();
         *self.commits.borrow_mut() = reply.commits;
-        let (next, surface_next, stats) = reply.result?;
+        let (next, surface_next, stats, frame_commit) = reply.result?;
+        // The frame's main-thread work applies here, on the awaiting
+        // caller's thread, before `render` returns: a window surface's
+        // drawable presents land inside this call, ordered before the
+        // next frame's acquire. `RenderError` above drops the commit
+        // with its acquired drawables, which a later render re-acquires.
+        <B::Renderer as crate::backend::Renderer>::apply_frame_commit(frame_commit);
         super::publish_next(&self.surfaces.borrow(), &surface_next);
         *self.stats.borrow_mut() = stats;
         Ok(next)
@@ -983,6 +989,7 @@ mod tests {
                         Next::Idle,
                         rustc_hash::FxHashMap::default(),
                         FrameStats::default(),
+                        (),
                     )),
                     commits,
                     sender: reply.clone(),

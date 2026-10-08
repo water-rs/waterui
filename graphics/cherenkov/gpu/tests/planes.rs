@@ -169,6 +169,10 @@ mod macos {
                 "a_hosted_layer_without_planes_fails_the_render",
                 a_hosted_layer_without_planes_fails_the_render,
             ),
+            case(
+                "back_to_back_frames_present_without_a_runloop_turn",
+                back_to_back_frames_present_without_a_runloop_turn,
+            ),
         ]
     }
 
@@ -1871,6 +1875,37 @@ mod macos {
                     && is::<CAMetalLayer>(second)),
             "part, plane, part"
         );
+    }
+
+    /// Every frame's present lands inside its own `engine.render`, on this
+    /// thread: #2261's flood — renders back to back with no runloop turn
+    /// between them — so a frame's acquire never meets its predecessor's
+    /// drawable still acquired while a present block sits queued on the
+    /// main queue. `Next::Idle` per frame asserts each presented: a
+    /// `Retry` would have re-armed the surface's redraw.
+    fn back_to_back_frames_present_without_a_runloop_turn() {
+        let fixture = Fixture::new();
+        let layer = fixture.window.layer();
+        let fill = fixture.window.record(|c| {
+            c.fill(
+                Rect::new(0.0, 0.0, 16.0, 16.0),
+                WorkingColor::new([0.2, 0.4, 0.8, 1.0]),
+            );
+        });
+        fixture.window.update(|tx| {
+            tx[fixture.window.root()].push(&layer);
+            tx[&layer].content(fill);
+        });
+        for i in 0..32 {
+            fixture.window.update(|tx| {
+                tx[&layer].transform(Affine::translate((f64::from(i), 0.0)));
+            });
+            assert_eq!(
+                fixture.engine.render(FrameTime::now()).expect("rendered"),
+                cherenkov::Next::Idle,
+                "frame {i} did not present"
+            );
+        }
     }
 
     /// A surface with no system-compositor parent cannot show a hosted
