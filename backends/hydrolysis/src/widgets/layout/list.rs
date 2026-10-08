@@ -1572,7 +1572,15 @@ pub fn render_list_parts(
             offset,
             std::rc::Rc::clone(&viewport_placement),
         );
-        let world = renderer.record_world(kurbo::Affine::IDENTITY);
+        // The visible window resolves in content space while the rows record
+        // at `viewport.origin + content`: the content's local transform is the
+        // frame's origin — the relation `ScrollNode` publishes through
+        // `content_ctx.local` — so the lazy window maps content coordinates
+        // through it before the scroll shift.
+        let world = renderer.record_world(kurbo::Affine::translate(kurbo::Vec2::new(
+            viewport.x0,
+            viewport.y0,
+        )));
         renderer.push_lazy_viewport(crate::renderer::LazyViewport {
             bounds: kurbo::Rect::new(
                 span_horizontal.start,
@@ -1770,7 +1778,9 @@ pub fn render_list_parts(
             viewport.x1,
             resting_y + reorder_dy + row_height,
         );
-        if slot_rect.y1 <= span.start || slot_rect.y0 >= span.end {
+        // `slot_rect` rides in the frame's space (`viewport.origin + content`);
+        // shift the content-space span into the same space for the cull.
+        if slot_rect.y1 <= span.start + viewport.y0 || slot_rect.y0 >= span.end + viewport.y0 {
             continue;
         }
         let header_height = chrome.header_height(&list_metrics);

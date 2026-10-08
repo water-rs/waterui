@@ -594,7 +594,14 @@ pub fn render_table_parts(
             offset,
             std::rc::Rc::clone(&viewport_placement),
         );
-        let world = renderer.record_world(kurbo::Affine::IDENTITY);
+        // The cells record at `viewport.origin + content`: the content's local
+        // transform is the frame's origin — the relation `ScrollNode`
+        // publishes through `content_ctx.local` — so the lazy window maps the
+        // content-space spans through it before the scroll shift.
+        let world = renderer.record_world(kurbo::Affine::translate(kurbo::Vec2::new(
+            viewport.x0,
+            viewport.y0,
+        )));
         // The spans resolve against the post-rebind metrics — the surface can
         // have shifted the range when the measured extent arrived.
         let lazy_row_span = state
