@@ -118,6 +118,10 @@ class HydrolysisSession internal constructor(context: Context) {
     internal var lifecycleOwner: LifecycleOwner? = null
 
     internal fun bind(view: HydrolysisHostView) {
+        // A session whose owner was already cleared is doomed — its store
+        // only waits for the view to detach; a re-attaching view of such a
+        // session never takes over `hostView` or wakes the pump.
+        if (destroyRequested || destroyed) return
         check(hostView == null || hostView === view) {
             "a HydrolysisSession is bound to exactly one host view at a time"
         }
