@@ -338,7 +338,6 @@ impl<B: Backend> Engine<B> {
             shared: Rc::downgrade(&surface.shared),
             waker: Arc::clone(&surface.waker),
             next_frame: Rc::downgrade(&surface.next_frame),
-            present_pending: Rc::downgrade(&surface.present_pending),
         });
         Ok(surface)
     }

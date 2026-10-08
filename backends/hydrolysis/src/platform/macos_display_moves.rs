@@ -10,8 +10,9 @@
 //! engine call itself, so `display_moved` is reported exactly once per
 //! move on the thread that owns the surface.
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol};
@@ -22,7 +23,8 @@ use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window as NativeWindow;
 
 struct DisplayMoveIvars {
-    moved: Arc<AtomicBool>,
+    moved: Rc<Cell<bool>>,
+    window: Arc<NativeWindow>,
 }
 
 define_class!(
@@ -36,17 +38,26 @@ define_class!(
 
     impl DisplayMoveObserver {
         /// `NSWindowDidChangeScreenNotification`: the window crossed
-        /// displays; the flag is consumed by the next render frame.
+        /// displays; the flag is consumed by the next render frame and
+        /// winit is asked to redraw.
         #[unsafe(method(displayMoved:))]
         fn display_moved(&self, _notification: &NSNotification) {
-            self.ivars().moved.store(true, Ordering::Relaxed);
+            self.ivars().moved.set(true);
+            self.ivars().window.request_redraw();
         }
     }
 );
 
 impl DisplayMoveObserver {
-    fn new(mtm: MainThreadMarker, flag: Arc<AtomicBool>) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(DisplayMoveIvars { moved: flag });
+    fn new(
+        mtm: MainThreadMarker,
+        flag: Rc<Cell<bool>>,
+        window: Arc<NativeWindow>,
+    ) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(DisplayMoveIvars {
+            moved: flag,
+            window,
+        });
         // SAFETY: `msg_send!` to `super.init` is the designated superclass
         // initializer for a `define_class!` type, and the `-> Retained<Self>`
         // signature is the one objc2 expects here.
@@ -55,10 +66,10 @@ impl DisplayMoveObserver {
 }
 
 /// The flag the observer writes and the render frame clears.
-pub(super) type DisplayMoveFlag = Arc<AtomicBool>;
+pub(super) type DisplayMoveFlag = Rc<Cell<bool>>;
 
 /// Observes the window's screen-change notifications, recording each as a
-/// set bit on `flag` for the render frame to announce once.
+/// set bit on `flag` and requesting a redraw.
 pub(super) struct DisplayMoves {
     observer: Retained<DisplayMoveObserver>,
 }
@@ -71,25 +82,30 @@ impl core::fmt::Debug for DisplayMoves {
 
 impl DisplayMoves {
     /// Attaches an observer to the window's
-    /// `NSWindowDidChangeScreenNotification`. Returns `None` off the main
-    /// thread or on a window without an `NSWindow` handle — the flag then
-    /// simply never sets, and no move is ever announced.
-    pub(super) fn attach(window: &NativeWindow, flag: &DisplayMoveFlag) -> Option<Self> {
-        let mtm = MainThreadMarker::new()?;
-        let handle = window.window_handle().ok()?;
+    /// `NSWindowDidChangeScreenNotification`.
+    pub(super) fn attach(window: Arc<NativeWindow>, flag: DisplayMoveFlag) -> Self {
+        let mtm = MainThreadMarker::new()
+            .expect("hydrolysis display observer must be attached on the main thread");
+        let handle = window
+            .window_handle()
+            .expect("hydrolysis display observer requires a live window handle");
         let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
-            return None;
+            panic!("hydrolysis display observer expected an AppKit raw window handle");
         };
-        // SAFETY: winit hands out the window's live `NSWindow` pointer, and
+        // SAFETY: winit hands out the window's live `NSView` pointer, and
         // the borrow does not outlive the window handle it came from.
         let view = unsafe { appkit.ns_view.cast::<objc2_app_kit::NSView>().as_ref() };
-        let ns_window = view.window()?;
-        let observer = DisplayMoveObserver::new(mtm, Arc::clone(flag));
+        let ns_window = view
+            .window()
+            .expect("hydrolysis display observer requires the AppKit view's NSWindow");
+        let observer = DisplayMoveObserver::new(mtm, flag, window);
         let observer_object: &AnyObject = &observer;
         let window_object: &AnyObject = &ns_window;
         // SAFETY: registering the observer on the notification's source
-        // window; `displayMoved:` is defined on the class. The center holds
-        // the observer until `removeObserver` in `Drop`.
+        // window; `displayMoved:` is defined on the class. The selector-based
+        // notification center does not retain selector-based observers;
+        // `DisplayMoves` retains it for the registration's lifetime and
+        // removes it in `Drop`.
         unsafe {
             NSNotificationCenter::defaultCenter().addObserver_selector_name_object(
                 observer_object,
@@ -98,15 +114,16 @@ impl DisplayMoves {
                 Some(window_object),
             );
         }
-        Some(Self { observer })
+        Self { observer }
     }
 }
 
 impl Drop for DisplayMoves {
     fn drop(&mut self) {
         let observer_object: &AnyObject = &self.observer;
-        // SAFETY: this was the observer `attach` registered; unregistering
-        // it releases the center's hold.
+        // SAFETY: this is the observer `attach` registered; unregistering it
+        // removes the notification registration before the retained observer
+        // is dropped.
         unsafe {
             NSNotificationCenter::defaultCenter().removeObserver(observer_object);
         }

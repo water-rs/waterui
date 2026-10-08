@@ -439,20 +439,6 @@ impl crate::platform::GpuSurface for AndroidSurface {
             surface.configure(&self.gpu.inner.device, config);
         }
     }
-
-    fn gpu_context_id(&self) -> u64 {
-        self.gpu.inner.context_id
-    }
-
-    fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice {
-        let inner = &*self.gpu.inner;
-        cherenkov_gpu::interop::SharedDevice {
-            instance: inner.instance.clone(),
-            adapter: inner.adapter.clone(),
-            device: inner.device.clone(),
-            queue: inner.queue.clone(),
-        }
-    }
 }
 
 impl SurfaceProvider for AndroidSurface {

@@ -816,10 +816,9 @@ pub fn acquire_surface_texture(
 
 /// The GPU handles every presentation surface carries.
 ///
-/// Whichever way a surface's frame reaches the display — the
-/// host-acquired [`SurfaceProvider`]s and, on the one platform where the
-/// engine presents into a window itself, the [`EnginePresentedSurface`] —
-/// the pump, the resize path and the engine pool all consume this set;
+/// Whichever way a surface's frame reaches the display — a host-acquired
+/// [`SurfaceProvider`] or the macOS winit engine target — the pump, resize
+/// path and engine pool all consume this set;
 /// acquire/copy/present exist only on the host-acquired kind.
 pub trait GpuSurface {
     /// The wgpu adapter this surface renders through.
@@ -834,16 +833,6 @@ pub trait GpuSurface {
     fn size(&self) -> (u32, u32);
     /// Reconfigures the surface for a new pixel size.
     fn resize(&mut self, width: u32, height: u32);
-    /// The identity of the GPU context this surface's device belongs to: the
-    /// key that binds one shared Cherenkov engine to one device creation
-    /// chain.
-    fn gpu_context_id(&self) -> u64;
-    /// The instance/adapter/device/queue this surface's device was created
-    /// from — all four from the same creation chain, which the shared
-    /// Cherenkov engine requires of its [`SharedDevice`].
-    ///
-    /// [`SharedDevice`]: cherenkov_gpu::interop::SharedDevice
-    fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice;
 }
 
 /// Rendering surface abstraction consumed by hydrolysis runner/renderer:
@@ -883,43 +872,14 @@ pub trait SurfaceProvider: GpuSurface {
     }
 }
 
-/// A GPU window the Cherenkov engine presents on directly — the second
-/// [`GpuSurface`] presentation kind.
-///
-/// This is the macOS winit window (water-rs/waterui#2223): its engine
-/// surface is a [`cherenkov_gpu::WindowTarget`], so `Engine::render` both
-/// renders and presents the frame through the window's backing layer.
-/// Acquire, copy and present do not exist here — they are absent from the
-/// type rather than asserted away.
+/// The macOS winit target and lazy typed engine surface slot.
 #[cfg(all(hydrolysis_winit, target_os = "macos"))]
-pub trait EnginePresentedSurface: GpuSurface {
-    /// The `WindowTarget` construction inputs: the window the engine
-    /// presents through and whether it composites with alpha.
-    fn engine_window(&self) -> EngineWindowTarget;
-    /// Whether the window moved to another display since the last call —
-    /// the platform's `NSWindowDidChangeScreenNotification`, held as a
-    /// flag the render frame reads and clears so `cherenkov::Surface`'s
-    /// `display_moved` is announced exactly once per move.
-    fn take_display_move(&self) -> bool {
-        false
-    }
-}
-
-/// The `cherenkov_gpu::WindowTarget` inputs an [`EnginePresentedSurface`]
-/// reports: which window the engine presents through, and whether the
-/// window is transparent to the compositor.
-#[cfg(all(hydrolysis_winit, target_os = "macos"))]
-#[derive(Clone, Debug)]
-pub struct EngineWindowTarget {
-    /// The winit window the engine presents through.
-    pub window: std::sync::Arc<winit::window::Window>,
-    /// `WindowTarget::transparent`: whether the presented frame composites
-    /// with alpha. A change here rebuilds the engine surface.
-    pub transparent: bool,
-    /// The display's refresh range at construction, from the window's
-    /// current monitor — `WindowTarget::rate`; `None` keeps the engine's
-    /// default.
-    pub rate: Option<cherenkov::RefreshRange>,
+pub struct EngineWindowTarget<'a> {
+    pub(crate) window: std::sync::Arc<winit::window::Window>,
+    pub(crate) window_slot:
+        &'a mut Option<crate::renderer::CherenkovWindow<crate::engine::WindowCherenkovSurface>>,
+    pub(crate) display_moved: bool,
+    pub(crate) redraw: Option<RedrawHandle>,
 }
 
 /// The window's platform safe area in logical units.
@@ -1112,14 +1072,14 @@ pub trait PlatformWindow: 'static {
 /// How the frame reaches the display is the associated [`GpuSurface`]
 /// presentation type: [`SurfaceProvider`] — the pump acquires, renders into
 /// and presents each frame — for every surface except the macOS winit
-/// window, whose [`EnginePresentedSurface`] presents inside
-/// `Engine::render` through a `cherenkov_gpu::WindowTarget`. The absent
+/// window, whose `cherenkov_gpu::WindowTarget` presents inside
+/// `Engine::render`. The absent
 /// acquire/present calls on that kind are missing from the type, not
 /// asserted away at run time.
 pub trait GpuSurfaceWindow: PlatformWindow {
     /// How this window's GPU surface presents — host-acquired, or
     /// engine-presented on the macOS winit window.
-    type Presentation: GpuSurface;
+    type Presentation: GpuSurface + crate::runner::window::GpuSurfaceFrame;
     /// The GPU surface this window presents into.
     fn surface(&mut self) -> &mut Self::Presentation;
     /// Returns a thread-safe wake bridge for nested GPU surfaces.
@@ -1165,14 +1125,9 @@ pub struct OffscreenGpuContext {
 
 #[derive(Debug)]
 struct OffscreenGpuContextInner {
-    /// The instance this adapter came from — the shared Cherenkov engine
-    /// keeps it alive for as long as the device is in use.
-    instance: wgpu::Instance,
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    /// Identity of this device creation chain for the engine pool.
-    context_id: u64,
     /// Reports this device lost; taken when the device was opened.
     device_loss: DeviceLoss,
 }
@@ -1299,11 +1254,9 @@ impl OffscreenGpuContext {
 
         Self {
             inner: std::sync::Arc::new(OffscreenGpuContextInner {
-                instance,
                 adapter,
                 device,
                 queue,
-                context_id,
                 device_loss,
             }),
         }
@@ -1757,6 +1710,12 @@ impl core::fmt::Debug for OffscreenSurface {
 }
 
 impl OffscreenSurface {
+    /// The surface's current pixel size.
+    #[must_use]
+    pub const fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
     #[cfg_attr(
         target_arch = "wasm32",
         expect(
@@ -1888,20 +1847,6 @@ impl GpuSurface for OffscreenSurface {
             self.last_presented = None;
         }
     }
-
-    fn gpu_context_id(&self) -> u64 {
-        self.gpu.inner.context_id
-    }
-
-    fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice {
-        let inner = &*self.gpu.inner;
-        cherenkov_gpu::interop::SharedDevice {
-            instance: inner.instance.clone(),
-            adapter: inner.adapter.clone(),
-            device: inner.device.clone(),
-            queue: inner.queue.clone(),
-        }
-    }
 }
 
 impl SurfaceProvider for OffscreenSurface {
@@ -1970,7 +1915,7 @@ impl SurfaceProvider for OffscreenSurface {
 /// [`Self::engine`]'s `Engine::render`; nothing pumps or pumps-on-wake here.
 pub struct OffscreenSceneSurface {
     target: OffscreenSurface,
-    cherenkov: crate::engine::CherenkovSurface,
+    cherenkov: crate::engine::TextureCherenkovSurface,
     state: std::rc::Rc<crate::engine::SharedEngineState>,
 }
 
@@ -2020,7 +1965,7 @@ impl OffscreenSceneSurface {
         /// Creates the host on an already-requested [`OffscreenGpuContext`],
         /// so every surface built on one context shares its device and engine.
         ///
-        /// Async on wasm32, where `shared_engine` and `CherenkovSurface::new`
+        /// Async on wasm32, where `shared_engine` and the texture surface
         /// await the browser's GPU device.
         #[must_use]
         pub fn on_context(gpu: OffscreenGpuContext, width: u32, height: u32) -> Self {
@@ -2030,14 +1975,15 @@ impl OffscreenSceneSurface {
                 height,
                 wgpu::TextureFormat::Rgba8UnormSrgb,
             );
+            let context = target.device_loss().gpu_context();
             let state = crate::engine::engine_await!(crate::engine::shared_engine_state(
-                target.gpu_context_id(),
+                context.context_id,
                 target.adapter(),
-                target.shared_device(),
+                context.shared_device,
             ));
             // The caller drives `engine.render` itself: no host loop exists
             // for the surface to wake.
-            let cherenkov = crate::engine::engine_await!(crate::engine::CherenkovSurface::new(
+            let cherenkov = crate::engine::engine_await!(crate::engine::TextureCherenkovSurface::new(
                 std::rc::Rc::clone(&state.engine),
                 target.device(),
                 target.adapter().get_info().backend,
@@ -2063,7 +2009,7 @@ impl OffscreenSceneSurface {
     /// mounts and transactions route through it.
     #[must_use]
     pub fn surface(&self) -> &cherenkov::Surface<cherenkov_gpu::Gpu> {
-        self.cherenkov.engine_surface()
+        crate::engine::SurfaceCoreAccess::engine_surface(&self.cherenkov)
     }
 
     /// Presents the last rendered engine frame into the offscreen target and
@@ -2084,17 +2030,14 @@ impl OffscreenSceneSurface {
             .acquire()
             .expect("hydrolysis offscreen scene surface: acquire failed");
         let texture = frame.texture().clone();
-        self.cherenkov
-            .as_texture()
-            .expect("the scene surface is texture-backed")
-            .present_into(
-                self.target.device(),
-                self.target.queue(),
-                &texture,
-                crate::engine::format_output_color(texture.format()),
-                cherenkov_gpu::interop::OutputAlpha::Premultiplied,
-                1.0,
-            );
+        self.cherenkov.present_into(
+            self.target.device(),
+            self.target.queue(),
+            &texture,
+            crate::engine::format_output_color(texture.format()),
+            cherenkov_gpu::interop::OutputAlpha::Premultiplied,
+            1.0,
+        );
         crate::readback::readback_texture_rgba8(&self.target, &texture, width, height)
             .unwrap_or_else(|error| {
                 panic!(
@@ -2340,12 +2283,11 @@ mod winit_impl {
 
     #[derive(Clone, Debug)]
     pub struct WinitGpuContext {
+        #[cfg(not(target_os = "macos"))]
         instance: wgpu::Instance,
         adapter: wgpu::Adapter,
         device: wgpu::Device,
         queue: wgpu::Queue,
-        /// Identity of this device creation chain for the engine pool.
-        context_id: u64,
         /// Reports this device lost; taken when the device was opened.
         device_loss: DeviceLoss,
     }
@@ -2393,34 +2335,19 @@ mod winit_impl {
                 context_id,
             );
             Self {
+                #[cfg(not(target_os = "macos"))]
                 instance,
                 adapter,
                 device,
                 queue,
-                context_id,
                 device_loss,
-            }
-        }
-
-        /// The instance/adapter/device/queue this context was created
-        /// from — all four from the same creation chain, which the shared
-        /// Cherenkov engine requires of its [`SharedDevice`].
-        ///
-        /// [`SharedDevice`]: cherenkov_gpu::interop::SharedDevice
-        fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice {
-            cherenkov_gpu::interop::SharedDevice {
-                instance: self.instance.clone(),
-                adapter: self.adapter.clone(),
-                device: self.device.clone(),
-                queue: self.queue.clone(),
             }
         }
     }
 
     /// The window's presentation state. On macOS the window is
     /// engine-presented (water-rs/waterui#2223): no `wgpu::Surface` exists
-    /// on the winit view, and the struct carries the `WindowTarget` inputs —
-    /// window, pixel size and transparency — instead.
+    /// on the winit view, and the struct owns the lazy typed engine window.
     pub struct WinitSurface {
         /// The host's swapchain: absent on macOS, where the engine's
         /// `cherenkov_gpu::WindowTarget` presents the frame itself.
@@ -2443,19 +2370,19 @@ mod winit_impl {
         /// to it through `cherenkov::Surface::resize`.
         #[cfg(target_os = "macos")]
         size: (u32, u32),
-        /// The transparency the next engine surface is created with —
-        /// `WindowTarget::transparent`. A change rebuilds the surface.
-        #[cfg(target_os = "macos")]
-        transparent: bool,
         /// Set by the `NSWindowDidChangeScreenNotification` observer when
         /// the window crosses displays; the next render frame announces it
         /// through `cherenkov::Surface::display_moved` exactly once.
         #[cfg(target_os = "macos")]
-        display_moved: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        display_moved: std::rc::Rc<std::cell::Cell<bool>>,
+        /// The typed Cherenkov engine target, created on the first render.
+        #[cfg(target_os = "macos")]
+        engine_window:
+            Option<crate::renderer::CherenkovWindow<crate::engine::WindowCherenkovSurface>>,
         /// The screen-change observer that sets `display_moved`;
         /// unregisters itself on drop.
         #[cfg(target_os = "macos")]
-        _screen_observer: Option<super::macos_display_moves::DisplayMoves>,
+        _screen_observer: super::macos_display_moves::DisplayMoves,
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -2477,6 +2404,40 @@ mod winit_impl {
     }
 
     impl WinitSurface {
+        #[cfg(target_os = "macos")]
+        pub(crate) fn render_targets(
+            &mut self,
+            display_scale: f64,
+            base_color: waterui_graphics::draw::WorkingColor,
+        ) -> (
+            crate::renderer::FrameRenderTarget<'_>,
+            super::EngineWindowTarget<'_>,
+        ) {
+            let context = self.gpu.device_loss.gpu_context();
+            let window = Arc::clone(&self.window);
+            let redraw_window = Arc::clone(&window);
+            (
+                crate::renderer::FrameRenderTarget {
+                    adapter: &self.gpu.adapter,
+                    device: &self.gpu.device,
+                    queue: &self.gpu.queue,
+                    device_loss: self.gpu.device_loss.clone(),
+                    gpu_context_id: context.context_id,
+                    shared_device: context.shared_device,
+                    display_scale,
+                    width: self.size.0,
+                    height: self.size.1,
+                    base_color,
+                },
+                super::EngineWindowTarget {
+                    window,
+                    window_slot: &mut self.engine_window,
+                    display_moved: self.display_moved.replace(false),
+                    redraw: Some(RedrawHandle::new(move || redraw_window.request_redraw())),
+                },
+            )
+        }
+
         /// The composite alpha mode a surface is configured with.
         ///
         /// A window the compositor must see through needs a mode whose alpha
@@ -2676,7 +2637,7 @@ mod winit_impl {
         pub async fn new(
             window: Arc<NativeWindow>,
             shared_gpu: Option<&WinitGpuContext>,
-            requires_transparency: bool,
+            _requires_transparency: bool,
         ) -> (Self, WinitGpuContext) {
             let gpu = if let Some(gpu) = shared_gpu {
                 gpu.clone()
@@ -2689,16 +2650,18 @@ mod winit_impl {
                 WinitGpuContext::open(instance, adapter).await
             };
             let size = window.inner_size();
-            let display_moved = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let screen_observer =
-                super::macos_display_moves::DisplayMoves::attach(&window, &display_moved);
+            let display_moved = std::rc::Rc::new(std::cell::Cell::new(false));
+            let screen_observer = super::macos_display_moves::DisplayMoves::attach(
+                Arc::clone(&window),
+                std::rc::Rc::clone(&display_moved),
+            );
             (
                 Self {
                     gpu: gpu.clone(),
                     window,
                     size: (size.width.max(1), size.height.max(1)),
-                    transparent: requires_transparency,
                     display_moved,
+                    engine_window: None,
                     _screen_observer: screen_observer,
                 },
                 gpu,
@@ -2720,14 +2683,6 @@ mod winit_impl {
                 self.config.alpha_mode = alpha_mode;
                 self.surface.configure(&self.gpu.device, &self.config);
             }
-        }
-
-        /// The macOS transparency switch: recorded for the next engine
-        /// surface, whose `WindowTarget` is rebuilt with the new alpha by
-        /// the renderer's per-frame target check.
-        #[cfg(target_os = "macos")]
-        const fn set_transparent(&mut self, transparent: bool) {
-            self.transparent = transparent;
         }
     }
 
@@ -2755,38 +2710,6 @@ mod winit_impl {
 
         fn resize(&mut self, width: u32, height: u32) {
             self.size = (width.max(1), height.max(1));
-        }
-
-        fn gpu_context_id(&self) -> u64 {
-            self.gpu.context_id
-        }
-
-        fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice {
-            self.gpu.shared_device()
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    impl super::EnginePresentedSurface for WinitSurface {
-        fn engine_window(&self) -> super::EngineWindowTarget {
-            let rate = self
-                .window
-                .current_monitor()
-                .and_then(|monitor| monitor.refresh_rate_millihertz())
-                .map(|millihertz| {
-                    let hz = (millihertz / 1000).max(1);
-                    hz..=hz
-                });
-            super::EngineWindowTarget {
-                window: Arc::clone(&self.window),
-                transparent: self.transparent,
-                rate,
-            }
-        }
-
-        fn take_display_move(&self) -> bool {
-            self.display_moved
-                .swap(false, std::sync::atomic::Ordering::Relaxed)
         }
     }
 
@@ -2821,14 +2744,6 @@ mod winit_impl {
             self.config.width = width.max(1);
             self.config.height = height.max(1);
             self.surface.configure(&self.gpu.device, &self.config);
-        }
-
-        fn gpu_context_id(&self) -> u64 {
-            self.gpu.context_id
-        }
-
-        fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice {
-            self.gpu.shared_device()
         }
     }
 
@@ -4244,6 +4159,7 @@ mod winit_impl {
                 return;
             }
             self.window.set_transparent(transparent);
+            #[cfg(not(target_os = "macos"))]
             self.surface.set_transparent(transparent);
             self.transparent = transparent;
         }
@@ -4470,47 +4386,6 @@ mod winit_impl {
             self.current_cursor_style = style;
             self.window
                 .set_cursor(WinitCursor::Icon(map_cursor_style(style)));
-        }
-    }
-
-    /// The macOS window's frame function is [`render_engine_presented_frame`]
-    /// — the engine presents, so there is no acquire path.
-    #[cfg(target_os = "macos")]
-    impl crate::runner::window::GpuSurfaceFrame for WinitSurface {
-        fn render_frame(
-            &mut self,
-            renderer: &mut crate::renderer::HydrolysisRenderer,
-            clear_color: peniko::Color,
-            display_scale: f64,
-        ) -> Result<crate::runner::window::SurfaceRenderResult, crate::platform::SurfaceError>
-        {
-            Ok(crate::runner::window::render_engine_presented_frame(
-                renderer,
-                self,
-                clear_color,
-                display_scale,
-            ))
-        }
-    }
-
-    /// Every other winit platform's frame function is
-    /// [`render_host_acquired_frame`].
-    #[cfg(not(target_os = "macos"))]
-    impl crate::runner::window::GpuSurfaceFrame for WinitSurface {
-        fn render_frame(
-            &mut self,
-            renderer: &mut crate::renderer::HydrolysisRenderer,
-            clear_color: peniko::Color,
-            display_scale: f64,
-        ) -> Result<crate::runner::window::SurfaceRenderResult, crate::platform::SurfaceError>
-        {
-            crate::runner::window::render_host_acquired_frame(
-                renderer,
-                self,
-                clear_color,
-                display_scale,
-                false,
-            )
         }
     }
 
@@ -4924,8 +4799,8 @@ mod winit_impl {
         #[test]
         fn cursor_position_is_converted_to_logical_coordinates() {
             let (x, y) = map_cursor_position(&PhysicalPosition::new(384.5, 216.25), 2.0);
-            assert_eq!(x, 192.25);
-            assert_eq!(y, 108.125);
+            assert_eq!(x.to_bits(), 192.25_f32.to_bits());
+            assert_eq!(y.to_bits(), 108.125_f32.to_bits());
         }
 
         #[test]
@@ -4934,8 +4809,8 @@ mod winit_impl {
                 &MouseScrollDelta::PixelDelta(PhysicalPosition::new(120.0, -48.5)),
                 2.0,
             );
-            assert_eq!(dx, 60.0);
-            assert_eq!(dy, -24.25);
+            assert_eq!(dx.to_bits(), 60.0_f32.to_bits());
+            assert_eq!(dy.to_bits(), (-24.25_f32).to_bits());
             assert!(!is_line_delta);
         }
 
@@ -4943,8 +4818,8 @@ mod winit_impl {
         fn line_scroll_delta_is_preserved() {
             let (dx, dy, is_line_delta) =
                 map_scroll_delta(&MouseScrollDelta::LineDelta(-2.0, 3.5), 2.0);
-            assert_eq!(dx, -2.0);
-            assert_eq!(dy, 3.5);
+            assert_eq!(dx.to_bits(), (-2.0_f32).to_bits());
+            assert_eq!(dy.to_bits(), 3.5_f32.to_bits());
             assert!(is_line_delta);
         }
 
@@ -5632,3 +5507,5 @@ pub use winit_impl::ExportedWinitGpuContext as WinitGpuContext;
 #[cfg(hydrolysis_winit)]
 #[cfg(hydrolysis_winit)]
 pub use winit_impl::ExportedWinitWindow as WinitWindow;
+#[cfg(all(hydrolysis_winit, target_os = "macos"))]
+pub use winit_impl::WinitSurface;

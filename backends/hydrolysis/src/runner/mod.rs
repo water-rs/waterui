@@ -117,7 +117,7 @@ use window::{RuntimeWindow, advance_runtime, handle_input_events};
 use window::render_window;
 // Only the native headless/capture paths read frames back; the browser surface presents directly.
 #[cfg(not(target_arch = "wasm32"))]
-use window::{FrameReader, render_window_with_capture};
+use window::render_window_with_capture;
 // `runtime_window_origin` is reached by the winit runner and by headless's
 // accessibility-action path.
 #[cfg(any(

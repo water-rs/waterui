@@ -198,12 +198,23 @@ impl HydrolysisRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
     ) {
-        let Some(profiler) = self
+        let profiler = self
             .cherenkov_window
             .as_ref()
             .filter(|window| window.context_id() == gpu_context_id)
-            .and_then(|window| window.gpu_profiler.as_ref())
-        else {
+            .and_then(|window| window.gpu_profiler.as_ref());
+        self.finish_gpu_frame_profile_with(profiler, device, queue);
+    }
+
+    /// Resolves markers for a typed engine-window slot, whose profiler is
+    /// deliberately separate from the renderer's texture window.
+    pub(crate) fn finish_gpu_frame_profile_with(
+        &mut self,
+        profiler: Option<&GpuFrameProfiler>,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) {
+        let Some(profiler) = profiler else {
             return;
         };
         let wait_started_at = Instant::now();

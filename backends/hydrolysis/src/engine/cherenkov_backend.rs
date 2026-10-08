@@ -1,10 +1,10 @@
 //! The concrete Cherenkov GPU runtime (water-rs/hydrolysis#205, H1).
 //!
 //! One [`cherenkov::Engine<cherenkov_gpu::Gpu>`] per shared GPU context: every
-//! surface a provider hands out carries a [`gpu_context_id`](crate::platform::SurfaceProvider)
-//! naming the device creation chain its handles came from, and the pool here
+//! surface's `DeviceLoss` carries the device creation chain its handles came
+//! from, and the pool here
 //! binds one engine to each. Surfaces a window presents through are
-//! [`CherenkovSurface`]s — an engine `TextureTarget` whose premultiplied
+//! `TextureCherenkovSurface`s — engine `TextureTarget`s whose premultiplied
 //! linear Display P3 texture the presenter converts into the host-acquired
 //! frame. Acquisition stays host-owned: the provider acquires, the presenter
 //! blits, the provider presents exactly once per presented frame.
@@ -129,7 +129,7 @@ cfg_async_fn! {
     /// The shared engine state for `context_id`'s GPU context, created on
     /// first use: one engine and one resource table, alive while any window
     /// or capture mount on this context holds it. Each window's surface on
-    /// it carries that window's own host wake ([`CherenkovSurface::new`]).
+    /// it carries that window's own host wake.
     ///
     /// Async on wasm32, where `Engine::new` awaits the browser's GPU device.
     pub fn shared_engine_state(
@@ -174,34 +174,70 @@ const fn pipeline_cache_path(_adapter: &wgpu::Adapter) -> Option<std::path::Path
     None
 }
 
-/// A window's output surface — one of the two presentation kinds, fixed
-/// when the surface is created:
-///
-/// - [`Self::Texture`]: the engine renders into an engine-owned
-///   `Rgba16Float` linear-P3 texture whose notification channel fires on
-///   creation and on every resize; the host acquires, presents into and
-///   presents its own surface frame.
-/// - [`Self::Window`]: the engine presents through
-///   `cherenkov_gpu::WindowTarget` (the macOS winit window, #2223). No
-///   texture channel exists and [`TextureCherenkovSurface::present_into`]
-///   is unreachable in types: the window kind has no `present_into`,
-///   acquire or present calls.
-pub enum CherenkovSurface {
-    /// Texture-backed presentation: the host presents a copy of the
-    /// rendered texture.
-    Texture(Box<TextureCherenkovSurface>),
-    /// Window-backed presentation: `Engine::render` presents the frame
-    /// through the window's own layers.
-    #[cfg(all(target_os = "macos", hydrolysis_winit))]
-    Window(WindowCherenkovSurface),
-}
-
-/// The fields both [`CherenkovSurface`] kinds share: engine, surface and
-/// the size whose change queues a resize.
-struct SurfaceCore {
+/// Engine, surface and size shared by both typed surface wrappers.
+pub struct SurfaceCore {
     engine: Rc<GpuEngine>,
     surface: Rc<cherenkov::Surface<cherenkov_gpu::Gpu>>,
     size: (u32, u32),
+}
+
+impl SurfaceCore {
+    pub(crate) fn engine_surface(&self) -> &cherenkov::Surface<cherenkov_gpu::Gpu> {
+        &self.surface
+    }
+
+    pub(crate) fn engine_surface_weak(
+        &self,
+    ) -> std::rc::Weak<cherenkov::Surface<cherenkov_gpu::Gpu>> {
+        Rc::downgrade(&self.surface)
+    }
+
+    pub(crate) fn begin_frame(&self) -> cherenkov::FrameScope {
+        self.surface.begin_frame()
+    }
+
+    pub(crate) fn resize(&mut self, size: (u32, u32)) {
+        if self.size != size {
+            self.size = size;
+            self.surface
+                .resize(size)
+                .expect("hydrolysis renderer: engine surface resize failed");
+        }
+    }
+
+    pub(crate) const fn size(&self) -> (u32, u32) {
+        self.size
+    }
+
+    pub(crate) fn clear_color(&self, color: waterui_graphics::draw::WorkingColor) {
+        self.surface.clear_color(color);
+    }
+}
+
+pub trait SurfaceCoreAccess {
+    fn core(&self) -> &SurfaceCore;
+    fn core_mut(&mut self) -> &mut SurfaceCore;
+    fn display(&mut self, scale: f64, headroom: f32);
+
+    fn engine_surface(&self) -> &cherenkov::Surface<cherenkov_gpu::Gpu> {
+        self.core().engine_surface()
+    }
+
+    fn engine_surface_weak(&self) -> std::rc::Weak<cherenkov::Surface<cherenkov_gpu::Gpu>> {
+        self.core().engine_surface_weak()
+    }
+
+    fn begin_frame(&self) -> cherenkov::FrameScope {
+        self.core().begin_frame()
+    }
+
+    fn resize(&mut self, size: (u32, u32)) {
+        self.core_mut().resize(size);
+    }
+
+    fn clear_color(&self, color: waterui_graphics::draw::WorkingColor) {
+        self.core().clear_color(color);
+    }
 }
 
 /// Re-samples `probe`'s headroom into `last`: the probe is kept, never
@@ -209,23 +245,38 @@ struct SurfaceCore {
 /// way. Generic so a test can drive the state machine with a fake probe —
 /// a real [`DisplayProbe`] holds a live `wgpu::Surface`.
 #[cfg(all(target_os = "macos", hydrolysis_winit))]
-fn sample_headroom<P>(
-    slot: &std::cell::Cell<Option<P>>,
-    last: &std::cell::Cell<f32>,
+fn drain_and_sample<P>(
+    receiver: &mpsc::Receiver<P>,
+    slot: &mut Option<P>,
+    last: &mut f32,
     headroom_of: impl Fn(&P) -> Option<f32>,
-) -> f32 {
-    if let Some(headroom) = slot.take().and_then(|probe| {
-        let headroom = headroom_of(&probe);
-        slot.set(Some(probe));
-        headroom
-    }) {
-        last.set(headroom);
+) -> (f32, bool) {
+    let mut arrived = false;
+    while let Ok(probe) = receiver.try_recv() {
+        *slot = Some(probe);
+        arrived = true;
     }
-    last.get()
+    let previous = *last;
+    if let Some(headroom) = slot.as_ref().and_then(headroom_of) {
+        *last = headroom;
+    }
+    (*last, arrived || previous.to_bits() != last.to_bits())
 }
 
-/// The texture-backed [`CherenkovSurface`]: engine output in a texture the
-/// host presents a copy of.
+#[cfg(all(target_os = "macos", hydrolysis_winit))]
+fn update_display_after_render(
+    scale: f64,
+    (headroom, changed): (f32, bool),
+    display: impl FnOnce(cherenkov::Display),
+    wake: impl FnOnce(),
+) {
+    if changed {
+        display(cherenkov::Display { scale, headroom });
+        wake();
+    }
+}
+
+/// Engine output in a texture the host presents a copy of.
 pub struct TextureCherenkovSurface {
     core: SurfaceCore,
     /// The offscreen texture notifications — fires on creation and on
@@ -237,9 +288,8 @@ pub struct TextureCherenkovSurface {
     presenter: cherenkov_gpu::interop::Presenter,
 }
 
-/// The window-backed [`CherenkovSurface`]: the engine presents through
-/// `WindowTarget`, so the host's only live display input is the output
-/// probe it keeps and re-samples every frame.
+/// The macOS window target: the engine presents through `WindowTarget`, and
+/// the host keeps and re-samples the output probe.
 #[cfg(all(target_os = "macos", hydrolysis_winit))]
 pub struct WindowCherenkovSurface {
     core: SurfaceCore,
@@ -248,157 +298,35 @@ pub struct WindowCherenkovSurface {
     probe_rx: mpsc::Receiver<cherenkov_gpu::interop::DisplayProbe>,
     /// The latest probe, kept and re-sampled every frame — headroom
     /// follows brightness and display changes between pushes.
-    probe: std::cell::Cell<Option<cherenkov_gpu::interop::DisplayProbe>>,
+    probe: Option<cherenkov_gpu::interop::DisplayProbe>,
     /// The last headroom the probe reported; the engine's neutral
     /// `Display::default().headroom` until one has. A `None` from
     /// `tone_map_headroom` keeps it — SDR is never guessed.
-    last_headroom: std::cell::Cell<f32>,
+    last_headroom: f32,
+    wake: std::sync::Arc<dyn Fn() + Send + Sync>,
 }
 
-impl core::fmt::Debug for CherenkovSurface {
+impl core::fmt::Debug for TextureCherenkovSurface {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("CherenkovSurface")
-            .field("size", &self.size())
+        f.debug_struct("TextureCherenkovSurface")
+            .field("size", &self.core.size())
             .finish_non_exhaustive()
-    }
-}
-
-impl CherenkovSurface {
-    /// Creates the texture-backed surface at `size` (physical pixels) and
-    /// takes the presenter for `device`'s shader delivery. `wake` is the
-    /// host's display-link wake: the surface calls it, from whichever
-    /// thread the cause lands on, when its content — a GPU producer, a
-    /// filter, a submitted frame, a live operand — asks for a frame
-    /// between the renderer's own ([`TextureCherenkovSurface::begin_frame`],
-    /// forwarded here).
-    ///
-    /// Async on wasm32, where `Engine::surface` awaits the browser device.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn new(
-        engine: Rc<GpuEngine>,
-        device: &wgpu::Device,
-        backend: wgpu::Backend,
-        size: (u32, u32),
-        wake: impl Fn() + Send + Sync + 'static,
-    ) -> Self {
-        Self::Texture(Box::new(TextureCherenkovSurface::new(
-            engine, device, backend, size, wake,
-        )))
-    }
-
-    /// [`Self::new`], async on wasm32 where `Engine::surface` awaits the
-    /// browser device.
-    #[cfg(target_arch = "wasm32")]
-    #[allow(
-        clippy::future_not_send,
-        reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread"
-    )]
-    pub async fn new(
-        engine: Rc<GpuEngine>,
-        device: &wgpu::Device,
-        backend: wgpu::Backend,
-        size: (u32, u32),
-        wake: impl Fn() + Send + Sync + 'static,
-    ) -> Self {
-        Self::Texture(Box::new(
-            TextureCherenkovSurface::new(engine, device, backend, size, wake).await,
-        ))
-    }
-
-    /// The macOS winit window's surface (#2223): the engine presents
-    /// through `target`'s `WindowTarget`, so no texture channel exists and
-    /// `present_into` cannot exist on this kind. The probe channel the
-    /// target registered is kept for [`WindowCherenkovSurface::headroom`].
-    #[cfg(all(target_os = "macos", hydrolysis_winit))]
-    pub fn new_window(
-        engine: Rc<GpuEngine>,
-        target: cherenkov_gpu::WindowTarget,
-        wake: impl Fn() + Send + Sync + 'static,
-    ) -> Self {
-        Self::Window(WindowCherenkovSurface::new(engine, target, wake))
-    }
-
-    /// The engine surface behind this output target — mount, edit and
-    /// transaction calls route through it.
-    pub fn engine_surface(&self) -> &cherenkov::Surface<cherenkov_gpu::Gpu> {
-        &self.core().surface
-    }
-
-    /// The engine surface as the window's retained mount holds it: weak, so
-    /// the mount never extends the surface past its window.
-    pub fn engine_surface_weak(&self) -> std::rc::Weak<cherenkov::Surface<cherenkov_gpu::Gpu>> {
-        Rc::downgrade(&self.core().surface)
-    }
-
-    /// Opens the renderer's frame: while the scope is held, the edits it
-    /// makes to the surface before [`Self::render`] wake no host, because
-    /// that render draws them.
-    #[must_use = "dropping the scope ends the frame; keep it until the frame's render"]
-    pub fn begin_frame(&self) -> cherenkov::FrameScope {
-        self.core().surface.begin_frame()
-    }
-
-    /// Queues a resize when `size` changed.
-    pub fn resize(&mut self, size: (u32, u32)) {
-        let core = self.core_mut();
-        if core.size == size {
-            return;
-        }
-        core.size = size;
-        core.surface
-            .resize(size)
-            .expect("hydrolysis renderer: engine surface resize failed");
-    }
-
-    /// The pixel size this surface last reported.
-    const fn size(&self) -> (u32, u32) {
-        self.core().size
-    }
-
-    /// The colour the surface clears to before content.
-    pub fn clear_color(&self, color: waterui_graphics::draw::WorkingColor) {
-        self.core().surface.clear_color(color);
-    }
-
-    /// The texture-backed kind of this surface.
-    // Always `Some` off Apple, where `Window` is cfg'd out.
-    #[allow(clippy::unnecessary_wraps)]
-    pub const fn as_texture(&mut self) -> Option<&mut TextureCherenkovSurface> {
-        match self {
-            Self::Texture(surface) => Some(&mut **surface),
-            #[cfg(all(target_os = "macos", hydrolysis_winit))]
-            Self::Window(_) => None,
-        }
-    }
-
-    const fn core(&self) -> &SurfaceCore {
-        match self {
-            Self::Texture(surface) => &surface.core,
-            #[cfg(all(target_os = "macos", hydrolysis_winit))]
-            Self::Window(surface) => &surface.core,
-        }
-    }
-
-    const fn core_mut(&mut self) -> &mut SurfaceCore {
-        match self {
-            Self::Texture(surface) => &mut surface.core,
-            #[cfg(all(target_os = "macos", hydrolysis_winit))]
-            Self::Window(surface) => &mut surface.core,
-        }
     }
 }
 
 #[cfg(all(target_os = "macos", hydrolysis_winit))]
 impl WindowCherenkovSurface {
-    fn new(
+    pub(crate) fn new(
         engine: Rc<GpuEngine>,
         mut target: cherenkov_gpu::WindowTarget,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Self {
         let size = target.size();
         let probe_rx = target.output_probe();
+        let wake = std::sync::Arc::new(wake);
+        let engine_wake = std::sync::Arc::clone(&wake);
         let surface = engine
-            .surface(target, wake)
+            .surface(target, move || engine_wake())
             .expect("hydrolysis renderer: failed to create the Cherenkov window surface");
         Self {
             core: SurfaceCore {
@@ -407,8 +335,9 @@ impl WindowCherenkovSurface {
                 size,
             },
             probe_rx,
-            probe: std::cell::Cell::new(None),
-            last_headroom: std::cell::Cell::new(cherenkov::Display::default().headroom),
+            probe: None,
+            last_headroom: cherenkov::Display::default().headroom,
+            wake,
         }
     }
 
@@ -417,13 +346,11 @@ impl WindowCherenkovSurface {
     /// `tone_map_headroom`, and a `None` — no report for the current
     /// output configuration — keeps the last known value rather than
     /// guessing SDR.
-    pub fn headroom(&self) -> f32 {
-        while let Ok(latest) = self.probe_rx.try_recv() {
-            self.probe.set(Some(latest));
-        }
-        sample_headroom(
-            &self.probe,
-            &self.last_headroom,
+    pub(crate) fn headroom(&mut self) -> (f32, bool) {
+        drain_and_sample(
+            &self.probe_rx,
+            &mut self.probe,
+            &mut self.last_headroom,
             cherenkov_gpu::interop::DisplayProbe::tone_map_headroom,
         )
     }
@@ -431,38 +358,58 @@ impl WindowCherenkovSurface {
     /// The display's properties: `scale` is the logical-to-physical factor
     /// applied exactly once at the surface root; the headroom is the
     /// retained probe's latest sample, kept between samples.
-    pub fn display(&self, scale: f64) {
+    pub(crate) fn display(&mut self, scale: f64) {
+        let (headroom, _) = self.headroom();
         self.core
             .surface
-            .display(cherenkov::Display {
-                scale,
-                headroom: self.headroom(),
-            })
+            .display(cherenkov::Display { scale, headroom })
             .expect("hydrolysis renderer: engine surface display update failed");
     }
 
     /// Announces a display move the platform observed
     /// (`NSWindowDidChangeScreenNotification`): the engine re-runs output
     /// negotiation and pushes a fresh probe.
-    pub fn display_moved(&self) {
+    pub(crate) fn display_moved(&self) {
         self.core
             .surface
             .display_moved()
             .expect("hydrolysis renderer: engine surface display move failed");
     }
+}
 
-    /// Whether the frame's presentation is still pending — the drawable
-    /// could not be acquired or a queued operation is presenting it — so
-    /// the frame did not reach the display.
-    pub fn presentation_pending(&self) -> bool {
-        self.core.surface.presentation_pending()
+impl SurfaceCoreAccess for TextureCherenkovSurface {
+    fn core(&self) -> &SurfaceCore {
+        &self.core
+    }
+
+    fn core_mut(&mut self) -> &mut SurfaceCore {
+        &mut self.core
+    }
+
+    fn display(&mut self, scale: f64, headroom: f32) {
+        Self::display(self, scale, headroom);
+    }
+}
+
+#[cfg(all(target_os = "macos", hydrolysis_winit))]
+impl SurfaceCoreAccess for WindowCherenkovSurface {
+    fn core(&self) -> &SurfaceCore {
+        &self.core
+    }
+
+    fn core_mut(&mut self) -> &mut SurfaceCore {
+        &mut self.core
+    }
+
+    fn display(&mut self, scale: f64, _headroom: f32) {
+        Self::display(self, scale);
     }
 }
 
 impl TextureCherenkovSurface {
-    /// Creates the texture-backed surface (see [`CherenkovSurface::new`]).
+    /// Creates the texture-backed surface for the shared engine.
     #[cfg(not(target_arch = "wasm32"))]
-    fn new(
+    pub(crate) fn new(
         engine: Rc<GpuEngine>,
         device: &wgpu::Device,
         backend: wgpu::Backend,
@@ -483,7 +430,7 @@ impl TextureCherenkovSurface {
         clippy::future_not_send,
         reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread"
     )]
-    async fn new(
+    pub(crate) async fn new(
         engine: Rc<GpuEngine>,
         device: &wgpu::Device,
         backend: wgpu::Backend,
@@ -525,7 +472,7 @@ impl TextureCherenkovSurface {
     /// The display's properties: `scale` is the logical-to-physical factor
     /// applied exactly once at the surface root, `headroom` the HDR
     /// headroom the display reaches.
-    pub fn display(&self, scale: f64, headroom: f32) {
+    pub(crate) fn display(&self, scale: f64, headroom: f32) {
         self.core
             .surface
             .display(cherenkov::Display { scale, headroom })
@@ -545,7 +492,7 @@ impl TextureCherenkovSurface {
     /// Returns the engine's [`cherenkov::RenderError`] when the frame fails
     /// to render.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn render(&mut self) -> Result<cherenkov::Next, cherenkov::RenderError> {
+    pub(crate) fn render(&mut self) -> Result<cherenkov::Next, cherenkov::RenderError> {
         let next = self.core.engine.render(cherenkov::FrameTime::now())?;
         Ok(self.render_inner(next))
     }
@@ -557,7 +504,7 @@ impl TextureCherenkovSurface {
         clippy::future_not_send,
         reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread"
     )]
-    pub async fn render(&mut self) -> Result<cherenkov::Next, cherenkov::RenderError> {
+    pub(crate) async fn render(&mut self) -> Result<cherenkov::Next, cherenkov::RenderError> {
         let next = self.core.engine.render(cherenkov::FrameTime::now()).await?;
         Ok(self.render_inner(next))
     }
@@ -579,7 +526,7 @@ impl TextureCherenkovSurface {
     /// presenter — the one presentation path the plan names. The host still
     /// owns acquire and `present`; this writes into the acquired texture
     /// exactly once.
-    pub fn present_into(
+    pub(crate) fn present_into(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -616,54 +563,29 @@ impl WindowCherenkovSurface {
     ///
     /// Returns the engine's [`cherenkov::RenderError`] when the frame fails
     /// to render.
-    pub fn render(&self) -> Result<cherenkov::Next, cherenkov::RenderError> {
-        self.core.engine.render(cherenkov::FrameTime::now())
+    pub(crate) fn render(&mut self, scale: f64) -> Result<cherenkov::Next, cherenkov::RenderError> {
+        let next = self.core.engine.render(cherenkov::FrameTime::now())?;
+        update_display_after_render(
+            scale,
+            self.headroom(),
+            |display| {
+                self.core
+                    .surface
+                    .display(display)
+                    .expect("hydrolysis renderer: engine surface display update failed");
+            },
+            || (self.wake)(),
+        );
+        Ok(next)
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl CherenkovSurface {
-    /// Renders the committed change set — on a texture-backed surface this
-    /// also drains the texture notifications (see
-    /// [`TextureCherenkovSurface::render`]); on a window-backed surface the
-    /// engine presents the frame itself.
-    ///
-    /// # Errors
-    /// Returns the engine's [`cherenkov::RenderError`] when the frame fails
-    /// to render.
-    pub fn render(&mut self) -> Result<cherenkov::Next, cherenkov::RenderError> {
-        match self {
-            Self::Texture(surface) => surface.render(),
-            #[cfg(all(target_os = "macos", hydrolysis_winit))]
-            Self::Window(surface) => surface.render(),
-        }
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-impl CherenkovSurface {
-    /// [`CherenkovSurface::render`], async on wasm32 where `Engine::render`
-    /// awaits the browser device.
-    ///
-    /// # Errors
-    /// Returns the engine's [`cherenkov::RenderError`] when the frame fails
-    /// to render.
-    #[allow(
-        clippy::future_not_send,
-        reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread"
-    )]
-    pub async fn render(&mut self) -> Result<cherenkov::Next, cherenkov::RenderError> {
-        match self {
-            Self::Texture(surface) => surface.render().await,
-        }
-    }
-}
-
 #[cfg(all(test, target_os = "macos", hydrolysis_winit))]
 mod tests {
     use std::cell::Cell;
 
-    use super::sample_headroom;
+    use super::{drain_and_sample, update_display_after_render};
 
     /// A stand-in `DisplayProbe`: a real probe holds a live `wgpu::Surface`
     /// and needs a window, so the test drives the sampling state machine
@@ -682,52 +604,125 @@ mod tests {
 
     #[test]
     fn the_probe_is_retained_and_resampled() {
-        let probe = Cell::new(Some(FakeProbe {
-            report: Cell::new(Some(2.0)),
-            reads: Cell::new(0),
-        }));
-        let last = Cell::new(1.0);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender
+            .send(FakeProbe {
+                report: Cell::new(Some(2.0)),
+                reads: Cell::new(0),
+            })
+            .unwrap();
+        let mut probe = None;
+        let mut last = 1.0;
 
         // Every call re-samples the kept probe — the first report lands.
-        assert_eq!(sample_headroom(&probe, &last, FakeProbe::headroom), 2.0);
+        assert_eq!(
+            drain_and_sample(&receiver, &mut probe, &mut last, FakeProbe::headroom),
+            (2.0, true)
+        );
         let kept = probe.take().expect("the probe is kept, not consumed");
         assert_eq!(kept.reads.get(), 1);
         // Let the display report a new headroom: the next sample follows it
         // without a new probe arriving.
         kept.report.set(Some(4.0));
-        probe.set(Some(kept));
-        assert_eq!(sample_headroom(&probe, &last, FakeProbe::headroom), 4.0);
+        probe = Some(kept);
+        assert_eq!(
+            drain_and_sample(&receiver, &mut probe, &mut last, FakeProbe::headroom),
+            (4.0, true)
+        );
         assert_eq!(probe.take().expect("still kept").reads.get(), 2);
     }
 
     #[test]
     fn a_none_report_keeps_the_last_headroom() {
-        let probe = Cell::new(Some(FakeProbe {
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        let mut probe = Some(FakeProbe {
             report: Cell::new(None),
             reads: Cell::new(0),
-        }));
-        let last = Cell::new(3.0);
-        assert_eq!(sample_headroom(&probe, &last, FakeProbe::headroom), 3.0);
-        assert_eq!(last.get(), 3.0);
+        });
+        let mut last = 3.0;
+        assert_eq!(
+            drain_and_sample(&receiver, &mut probe, &mut last, FakeProbe::headroom),
+            (3.0, false)
+        );
+        assert_eq!(last.to_bits(), 3.0_f32.to_bits());
         // And an empty slot — before the first probe lands — still never
         // guesses SDR: it returns the initial `Display::default` value.
-        let empty: Cell<Option<FakeProbe>> = Cell::new(None);
-        assert_eq!(sample_headroom(&empty, &last, FakeProbe::headroom), 3.0);
+        let mut empty: Option<FakeProbe> = None;
+        assert_eq!(
+            drain_and_sample(&receiver, &mut empty, &mut last, FakeProbe::headroom),
+            (3.0, false)
+        );
     }
 
     #[test]
     fn a_newer_probe_replaces_the_kept_one() {
-        let slot: Cell<Option<FakeProbe>> = Cell::new(Some(FakeProbe {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let mut slot: Option<FakeProbe> = Some(FakeProbe {
             report: Cell::new(Some(2.0)),
             reads: Cell::new(0),
-        }));
-        let last = Cell::new(1.0);
-        // The drain loop delivers a new probe: `WindowCherenkovSurface`
-        // overwrites the slot, and the next sample reads the new one.
-        slot.set(Some(FakeProbe {
-            report: Cell::new(Some(5.0)),
-            reads: Cell::new(0),
-        }));
-        assert_eq!(sample_headroom(&slot, &last, FakeProbe::headroom), 5.0);
+        });
+        let mut last = 1.0;
+        // The drain loop delivers every queued probe: the newest replaces
+        // the kept one and is the only one sampled.
+        sender
+            .send(FakeProbe {
+                report: Cell::new(Some(4.0)),
+                reads: Cell::new(0),
+            })
+            .unwrap();
+        sender
+            .send(FakeProbe {
+                report: Cell::new(Some(5.0)),
+                reads: Cell::new(0),
+            })
+            .unwrap();
+        assert_eq!(
+            drain_and_sample(&receiver, &mut slot, &mut last, FakeProbe::headroom),
+            (5.0, true)
+        );
+    }
+
+    #[test]
+    fn first_probe_requests_an_update_even_when_headroom_is_unchanged() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender
+            .send(FakeProbe {
+                report: Cell::new(Some(2.0)),
+                reads: Cell::new(0),
+            })
+            .unwrap();
+        let mut probe = None;
+        let mut last = 2.0;
+
+        assert_eq!(
+            drain_and_sample(&receiver, &mut probe, &mut last, FakeProbe::headroom),
+            (2.0, true)
+        );
+    }
+
+    #[test]
+    fn a_probe_arriving_after_render_updates_display_and_requests_redraw() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender
+            .send(FakeProbe {
+                report: Cell::new(Some(2.0)),
+                reads: Cell::new(0),
+            })
+            .unwrap();
+        let mut probe = None;
+        let mut last = 2.0;
+        let sample = drain_and_sample(&receiver, &mut probe, &mut last, FakeProbe::headroom);
+        let display_updates = Cell::new(0);
+        let redraws = Cell::new(0);
+
+        update_display_after_render(
+            1.5,
+            sample,
+            |_| display_updates.set(display_updates.get() + 1),
+            || redraws.set(redraws.get() + 1),
+        );
+
+        assert_eq!(display_updates.get(), 1);
+        assert_eq!(redraws.get(), 1);
     }
 }

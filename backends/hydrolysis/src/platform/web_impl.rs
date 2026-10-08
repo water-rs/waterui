@@ -28,9 +28,6 @@ struct PendingResize {
 }
 
 pub struct BrowserSurface {
-    instance: wgpu::Instance,
-    /// Identity of this device creation chain for the engine pool.
-    context_id: u64,
     surface: wgpu::Surface<'static>,
     adapter: wgpu::Adapter,
     device: wgpu::Device,
@@ -131,8 +128,6 @@ impl BrowserSurface {
         surface.configure(&device, &config);
 
         Self {
-            instance,
-            context_id,
             surface,
             adapter,
             device,
@@ -170,19 +165,6 @@ impl crate::platform::GpuSurface for BrowserSurface {
         self.config.height = height.max(1);
         self.surface.configure(&self.device, &self.config);
     }
-
-    fn gpu_context_id(&self) -> u64 {
-        self.context_id
-    }
-
-    fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice {
-        cherenkov_gpu::interop::SharedDevice {
-            instance: self.instance.clone(),
-            adapter: self.adapter.clone(),
-            device: self.device.clone(),
-            queue: self.queue.clone(),
-        }
-    }
 }
 
 impl SurfaceProvider for BrowserSurface {
@@ -217,30 +199,6 @@ impl SurfaceProvider for BrowserSurface {
 
     fn output_alpha(&self) -> cherenkov_gpu::interop::OutputAlpha {
         cherenkov_gpu::interop::surface_output_alpha(self.config.alpha_mode)
-    }
-}
-
-impl crate::runner::window::GpuSurfaceFrame for BrowserSurface {
-    #[allow(
-        clippy::future_not_send,
-        reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread"
-    )]
-    async fn render_frame(
-        &mut self,
-        renderer: &mut crate::renderer::HydrolysisRenderer,
-        clear_color: peniko::Color,
-        display_scale: f64,
-    ) -> Result<crate::runner::window::SurfaceRenderResult, crate::platform::SurfaceError> {
-        {
-            crate::runner::window::render_host_acquired_frame(
-                renderer,
-                self,
-                clear_color,
-                display_scale,
-                false,
-            )
-            .await
-        }
     }
 }
 

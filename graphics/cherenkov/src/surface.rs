@@ -99,11 +99,6 @@ pub struct Surface<B: Backend> {
     /// The next frame this surface asked for, published by each
     /// [`Engine::render`](crate::Engine::render).
     pub(crate) next_frame: Rc<RefCell<crate::frame::Next>>,
-    /// Whether the last frame's presentation is still pending — the
-    /// drawable could not be acquired or a queued operation completes it —
-    /// published by each [`Engine::render`](crate::Engine::render) beside
-    /// `next_frame`.
-    pub(crate) present_pending: Rc<Cell<bool>>,
     /// The surface's host wake-up — held here too so dropping the handle
     /// retires it without borrowing the shared state.
     pub(crate) waker: Arc<SurfaceWaker>,
@@ -139,7 +134,6 @@ impl<B: Backend> Surface<B> {
             max_dimension: info.max_dimension,
             root,
             next_frame: Rc::new(RefCell::new(crate::frame::Next::Idle)),
-            present_pending: Rc::new(Cell::new(false)),
             waker,
             tx,
         }
@@ -231,15 +225,6 @@ impl<B: Backend> Surface<B> {
     #[must_use]
     pub fn next_frame(&self) -> crate::frame::Next {
         self.next_frame.borrow().clone()
-    }
-
-    /// Whether the surface's last rendered frame has not fully presented:
-    /// its drawable could not be acquired, or a queued operation will
-    /// complete the presentation. `false` once a frame has presented (or
-    /// when nothing was asked to present).
-    #[must_use]
-    pub fn presentation_pending(&self) -> bool {
-        self.present_pending.get()
     }
 
     /// Announces whether the user can see the surface, from the platform's

@@ -848,11 +848,11 @@ fn finish_frame<B: Backend>(
     surfaces: &mut FxHashMap<SurfaceId, SurfaceState>,
     time: crate::Instant,
     redraw: &FrameRedraw,
-) -> (Next, FxHashMap<SurfaceId, (Next, bool)>) {
+) -> (Next, FxHashMap<SurfaceId, Next>) {
     let mut rate = None;
     // Keyed by surface: one entry per visible surface, so publication
     // stays linear in the surface count instead of rescanning a Vec.
-    let mut surface_next: FxHashMap<SurfaceId, (Next, bool)> = FxHashMap::default();
+    let mut surface_next: FxHashMap<SurfaceId, Next> = FxHashMap::default();
     for (id, state) in surfaces
         .iter_mut()
         .filter(|(_, state)| state.visibility == Visibility::Visible)
@@ -875,13 +875,7 @@ fn finish_frame<B: Backend>(
                 Some(crate::backend::union_rate(running, request.clone()))
             }
         };
-        surface_next.insert(
-            *id,
-            (
-                mine.map_or(Next::Idle, |rate| next_at(time, rate)),
-                state.present_pending(),
-            ),
-        );
+        surface_next.insert(*id, mine.map_or(Next::Idle, |rate| next_at(time, rate)));
         match running {
             Some(r) if r == cherenkov_record::tree::RATE_FAST => {
                 rate = Some(cherenkov_record::tree::RATE_FAST);

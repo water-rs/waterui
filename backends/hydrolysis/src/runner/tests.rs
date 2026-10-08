@@ -1,13 +1,13 @@
 use super::headless::HeadlessPlatformWindow;
 use super::{
-    FrameMode, FrameReader, RenderDiagnosticsConfig, RuntimeWindow, acquire_surface_frame,
-    advance_runtime, axes_whose_limits_changed, clamp_window_size, handle_input_events,
-    pump_window_semantics, render_window, render_window_with_capture, reports_ui_idle,
-    schedule_animation_update, schedule_redraw_or_refresh, surface_error_requires_reconfigure,
+    FrameMode, RenderDiagnosticsConfig, RuntimeWindow, acquire_surface_frame, advance_runtime,
+    axes_whose_limits_changed, clamp_window_size, handle_input_events, pump_window_semantics,
+    render_window, render_window_with_capture, reports_ui_idle, schedule_animation_update,
+    schedule_redraw_or_refresh, surface_error_requires_reconfigure,
 };
 use crate::platform::{
-    GpuSurface as _, GpuSurfaceWindow as _, InputEvent, OffscreenSurface, PlatformWindow as _,
-    SurfaceError, SurfaceFrame, SurfaceProvider,
+    GpuSurfaceWindow as _, InputEvent, OffscreenSurface, PlatformWindow as _, SurfaceError,
+    SurfaceFrame, SurfaceProvider,
 };
 use crate::renderer::tests::MinimalTestTheme;
 use crate::renderer::{FontFamilyResolution, HydrolysisRenderer, InteractionKey};
@@ -872,10 +872,9 @@ fn an_idle_window_repaints_when_its_background_changes() {
         runtime.mode.is_pending(),
         "the binding's update must arm a refresh frame"
     );
-    let snapshot =
-        render_window_with_capture(&mut runtime, &env, FrameReader::Snapshot, &mut || false)
-            .snapshot
-            .expect("the refresh frame captures a snapshot");
+    let snapshot = render_window_with_capture(&mut runtime, &env, &mut || false)
+        .snapshot
+        .expect("the refresh frame captures a snapshot");
     let pixel = &snapshot.rgba8[0..4];
     assert!(
         pixel[0] > 200 && pixel[1] < 60 && pixel[2] < 60 && pixel[3] == 255,
@@ -1263,14 +1262,6 @@ impl crate::platform::GpuSurface for RecoveringSurface {
     fn resize(&mut self, width: u32, height: u32) {
         self.resize_count += 1;
         self.inner.resize(width, height);
-    }
-
-    fn gpu_context_id(&self) -> u64 {
-        self.inner.gpu_context_id()
-    }
-
-    fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice {
-        self.inner.shared_device()
     }
 }
 
