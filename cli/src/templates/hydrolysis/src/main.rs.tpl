@@ -1,5 +1,13 @@
 //! Hydrolysis entry point for {{ ctx.app_display_name }}.
 
+// Windows builds link the GUI subsystem: a console window must not appear
+// beside the application window, and launch tooling such as
+// `WaitForInputIdle` treats console-subsystem executables as non-GUI.
+// `water run` still streams the app's stdout and stderr because inherited
+// pipe handles work without a console; the preview, preview-test and MCP
+// mains below share this crate root and need only stdio pipes.
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 #[cfg(all(feature = "waterui-preview-mode", feature = "waterui-preview-test-mode"))]
 compile_error!("enable only one Hydrolysis run feature at a time");
 
