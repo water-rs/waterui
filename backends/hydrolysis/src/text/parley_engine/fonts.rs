@@ -130,6 +130,29 @@ impl ResourceFontFamilies {
     }
 }
 
+/// The collection this platform shapes text with: on Android the faces the
+/// platform font directories ship, elsewhere [`native_collection`] — the
+/// system's fonts plus the application's staged font resources.
+///
+/// Android has no resource-directory scan: `native_collection` would only
+/// look where nothing on that platform stages fonts, so the collection the
+/// Android session builds from `/system/fonts` and its overlay partitions
+/// answers instead. The environment is unused there — Android collections
+/// carry no `ResourceContext`-rooted files — and used everywhere else.
+#[cfg(target_os = "android")]
+#[must_use]
+pub fn platform_collection(_env: &waterui_core::Environment) -> FontCollection {
+    android_collection()
+}
+
+/// The collection this platform shapes text with — [`native_collection`] on
+/// every non-Android, non-wasm target. See the Android variant above.
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+#[must_use]
+pub fn platform_collection(env: &waterui_core::Environment) -> FontCollection {
+    native_collection(env)
+}
+
 /// The system's fonts plus every `.ttf`/`.otf` under the application's staged
 /// fonts directory and every file of the environment's [`DeclaredFonts`],
 /// with the recognized script fallbacks installed.

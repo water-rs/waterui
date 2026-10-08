@@ -27,7 +27,7 @@ use super::protocol::PreviewTcpConfig;
 use crate::build::BuildProgress;
 
 use crate::apple::dynamic_runtime;
-use crate::build::{BuildOptions, BuildProfile, BuiltTarget, RustBuild, RustLinkage};
+use crate::build::{BuiltTarget, RustBuild, RustLinkage};
 use crate::device::{
     Crash, Device, DeviceEvent, Local, LogLevel, RunOptions, Running, StopRequest,
 };
@@ -108,20 +108,10 @@ impl PreviewLinkMode {
         abi_feature: crate::templates::preview_ffi::APPLE_ABI_FEATURE,
         signature_tag: "preview-cdylib+shared-waterui-dylib+prefer-dynamic",
     };
-    const ANDROID_DYNAMIC: Self = Self {
-        crate_type_override: Some("cdylib"),
-        prefer_dynamic: true,
-        abi_feature: crate::templates::preview_ffi::ANDROID_ABI_FEATURE,
-        // `std` comes from a `-Zbuild-std` dylib linked 16 KB-aligned, not
-        // from rustup's 4 KB-aligned prebuilt.
-        signature_tag: "preview-cdylib+shared-waterui-dylib+prefer-dynamic+build-std-16k",
-    };
-
     const fn for_platform(platform: PreviewPlatform) -> Self {
         match platform {
             PreviewPlatform::Macos => Self::MACOS_DYNAMIC,
             PreviewPlatform::Ios | PreviewPlatform::IosSimulator => Self::PORTABLE_DYNAMIC,
-            PreviewPlatform::Android => Self::ANDROID_DYNAMIC,
         }
     }
 
@@ -258,17 +248,11 @@ impl PreviewSession {
 /// Cargo folds both the deployment target and the unified feature set into that
 /// same `-C metadata` hash, so a module that disagrees with its host on either
 /// one links against symbols the host does not have.
-/// Returns the configured build and, when the module compiles under a
-/// `-Zbuild-std` toolchain, that toolchain's `rustc -vV` identity so the
-/// module signature can pin the exact compiler — a `rustup update` changes
-/// what `nightly` resolves to without changing its name, and a cached module
-/// built against the previous `libstd-<hash>.so` would fail `dlopen`.
 async fn configure_preview_module_build(
     preview_crate_path: &Path,
-    platform: PreviewPlatform,
     target: TargetPlatform,
     link_mode: PreviewLinkMode,
-) -> Result<(RustBuild, Option<String>)> {
+) -> Result<RustBuild> {
     let support_project = Project::open(
         &preview_support_path()?,
         ManagedBackends::for_platform(target),
@@ -283,56 +267,16 @@ async fn configure_preview_module_build(
             RustBuild::new(preview_crate_path, target.triple()).with_project(&support_project),
         )
         .with_target_dir(support_target_dir);
-    if matches!(platform, PreviewPlatform::Android) {
-        let host = crate::toolchain::Host::current();
-        let triple = target.triple();
-        let abi = crate::android::platform::AndroidAbi::from_triple(&triple).ok_or_else(|| {
-            eyre::eyre!("the Android preview module needs a supported ABI; `{triple}` has none")
-        })?;
-        let rust_envs = crate::android::platform::android_rust_build_envs(
-            &host,
-            &support_project,
-            abi,
-            &triple,
-            true,
-        )
+    let browser_runtime = support_project
+        .browser_runtime_plan(target, crate::platform::TargetBackend::Apple)
         .await?;
-        // The module dlopens into a process whose `libstd` was built from
-        // source — it has to resolve against that exact dylib, so it builds
-        // under the same nightly, the same `-Zbuild-std` wrapper, and the
-        // same 16 KB page-size link flag as the support app.
-        let nightly = crate::toolchain::rust::nightly_toolchain_with_rust_src(&host).await?;
-        let toolchain_identity =
-            crate::toolchain::rust::rustc_verbose_version(&host, &nightly).await?;
-        Ok((
-            rust_build
-                .with_envs(rust_envs)
-                .with_rustc_flag(crate::android::platform::ANDROID_MAX_PAGE_SIZE_LINK_ARG)
-                .with_build_std(nightly)
-                .with_features(
-                    crate::android::platform::android_ffi_dependency_features(&support_project)
-                        .await?,
-                ),
-            Some(toolchain_identity),
-        ))
-    } else {
-        let browser_runtime = support_project
-            .browser_runtime_plan(target, crate::platform::TargetBackend::Apple)
-            .await?;
-        // The deployment-target env the module once carried explicitly now
-        // comes from the triple inside `cargo_build_output`, so a module and
-        // the support app it loads into cannot drift on it.
-        Ok((
-            rust_build.with_features(
-                crate::apple::platform::apple_dependency_features(
-                    &support_project,
-                    browser_runtime,
-                )
-                .await?,
-            ),
-            None,
-        ))
-    }
+    // The deployment-target env the module once carried explicitly now
+    // comes from the triple inside `cargo_build_output`, so a module and
+    // the support app it loads into cannot drift on it.
+    Ok(rust_build.with_features(
+        crate::apple::platform::apple_dependency_features(&support_project, browser_runtime)
+            .await?,
+    ))
 }
 
 async fn build_preview_dylib(
@@ -380,8 +324,7 @@ async fn build_preview_dylib(
 
     ensure_project_dev_feature_for_preview(&project).await?;
 
-    let (rust_build, toolchain_identity) =
-        configure_preview_module_build(&preview_crate_path, platform, target, link_mode).await?;
+    let rust_build = configure_preview_module_build(&preview_crate_path, target, link_mode).await?;
     let dylib_path_start = Instant::now();
     let expected_path = rust_build
         .dylib_path(preview_crate_name.as_str(), false)
@@ -401,7 +344,6 @@ async fn build_preview_dylib(
         &target_triple,
         preview_crate_name.as_str(),
         link_mode,
-        toolchain_identity.as_deref(),
     );
     let built_path = if dylib_is_up_to_date(&candidate_path, &dylib_signature).await? {
         candidate_path
@@ -410,7 +352,6 @@ async fn build_preview_dylib(
             rust_build,
             sccache_path,
             link_mode,
-            platform,
             &dylib_signature,
             &preview_crate_path,
             &preview_crate_name,
@@ -438,7 +379,6 @@ async fn build_preview_module_dylib(
     mut rust_build: RustBuild,
     sccache_path: Option<&PathBuf>,
     link_mode: PreviewLinkMode,
-    platform: PreviewPlatform,
     dylib_signature: &str,
     preview_crate_path: &Path,
     preview_crate_name: &str,
@@ -455,7 +395,7 @@ async fn build_preview_module_dylib(
         .build_dylib(false)
         .await
         .wrap_err("Failed to build dylib")?;
-    prepare_preview_module_linkage(&built, link_mode, platform).await?;
+    prepare_preview_module_linkage(&built, link_mode).await?;
     write_dylib_signature(&built.artifact, dylib_signature).await?;
     info!(
         build_crate_path = %preview_crate_path.display(),
@@ -470,17 +410,7 @@ async fn build_preview_module_dylib(
 async fn prepare_preview_module_linkage(
     built: &BuiltTarget,
     link_mode: PreviewLinkMode,
-    platform: PreviewPlatform,
 ) -> Result<()> {
-    if platform == PreviewPlatform::Android {
-        // The module is pushed to a device that may run 16 KB pages; a
-        // 4 KB-aligned LOAD segment would fail `dlopen` there.
-        return smol::unblock({
-            let built_path = built.artifact.clone();
-            move || crate::elf::require_aligned_load_segments(&built_path)
-        })
-        .await;
-    }
     if !link_mode.prefer_dynamic {
         return Ok(());
     }
@@ -522,37 +452,30 @@ fn dylib_build_signature(
     target_triple: &str,
     crate_name: &str,
     link_mode: PreviewLinkMode,
-    toolchain_identity: Option<&str>,
 ) -> String {
     let link_mode = link_mode.signature_tag();
-    let toolchain = toolchain_identity.unwrap_or("ambient");
     format!(
-        "inputs={project_inputs}\nruntime={runtime_fingerprint}\ntarget={target_triple}\ncrate={crate_name}\nlink_mode={link_mode}\ntoolchain={toolchain}"
+        "inputs={project_inputs}\nruntime={runtime_fingerprint}\ntarget={target_triple}\ncrate={crate_name}\nlink_mode={link_mode}"
     )
 }
 
-fn preview_run_options(platform: PreviewPlatform) -> RunOptions {
+fn preview_run_options() -> RunOptions {
     let mut run_options = RunOptions::new();
     run_options.set_replace_existing_macos_app_instances(false);
     run_options.set_log_level(LogLevel::Info);
-    if platform != PreviewPlatform::Android {
-        // Point the support app's registry at the cache directory the CLI
-        // watches. This is a host path: on Android it would resolve inside the
-        // app's sandbox to a location it cannot create, and the server task
-        // would exit right after binding. The Android template installs its
-        // own on-device default instead.
-        let preview_cache_root = waterui_preview_protocol::registry::preview_cache_root_dir();
-        let water_cache_dir = preview_cache_root.parent().unwrap_or_else(|| {
-            panic!(
-                "preview cache root must have a parent directory: {}",
-                preview_cache_root.display()
-            )
-        });
-        run_options.insert_env_var(
-            "WATER_CACHE_DIR".to_string(),
-            water_cache_dir.display().to_string(),
-        );
-    }
+    // Point the support app's registry at the cache directory the CLI
+    // watches.
+    let preview_cache_root = waterui_preview_protocol::registry::preview_cache_root_dir();
+    let water_cache_dir = preview_cache_root.parent().unwrap_or_else(|| {
+        panic!(
+            "preview cache root must have a parent directory: {}",
+            preview_cache_root.display()
+        )
+    });
+    run_options.insert_env_var(
+        "WATER_CACHE_DIR".to_string(),
+        water_cache_dir.display().to_string(),
+    );
     for (key, value) in PREVIEW_RUNTIME_ENV_VARS {
         run_options.insert_env_var(key.to_string(), value.to_string());
     }
@@ -670,8 +593,7 @@ pub async fn launch_preview_session(
     }
 
     let project = open_preview_support_project(&requirements, platform).await?;
-    let running =
-        launch_preview_app_for_platform(&project, platform, tcp_config, progress.as_ref()).await?;
+    let running = launch_preview_app_for_platform(&project, platform, progress.as_ref()).await?;
     build_preview_session_from_launch(
         running,
         platform,
@@ -699,7 +621,7 @@ async fn try_connect_existing_preview_app(
             )
             .await?
         }
-        PreviewPlatform::IosSimulator | PreviewPlatform::Ios | PreviewPlatform::Android => {
+        PreviewPlatform::IosSimulator | PreviewPlatform::Ios => {
             PreviewAppClient::probe_ports(
                 tcp_config,
                 expected_fingerprint,
@@ -738,7 +660,6 @@ const fn preview_runtime_platform(platform: PreviewPlatform) -> PreviewRuntimePl
         PreviewPlatform::Macos => PreviewRuntimePlatform::Macos,
         PreviewPlatform::IosSimulator => PreviewRuntimePlatform::IosSimulator,
         PreviewPlatform::Ios => PreviewRuntimePlatform::Ios,
-        PreviewPlatform::Android => PreviewRuntimePlatform::Android,
     }
 }
 
@@ -803,7 +724,6 @@ const fn preview_target_platform(platform: PreviewPlatform) -> TargetPlatform {
         PreviewPlatform::Macos => TargetPlatform::MacOS,
         PreviewPlatform::IosSimulator => TargetPlatform::IOSSimulator,
         PreviewPlatform::Ios => TargetPlatform::IOS,
-        PreviewPlatform::Android => TargetPlatform::Android,
     }
 }
 
@@ -838,7 +758,6 @@ async fn open_preview_support_project(
 async fn launch_preview_app_for_platform(
     project: &Project,
     platform: PreviewPlatform,
-    tcp_config: PreviewTcpConfig,
     progress: Option<&BuildProgress>,
 ) -> Result<Running> {
     match platform {
@@ -847,7 +766,6 @@ async fn launch_preview_app_for_platform(
         PreviewPlatform::Ios => {
             bail!("Physical iOS devices are not yet supported for preview");
         }
-        PreviewPlatform::Android => launch_preview_on_android(project, tcp_config, progress).await,
     }
 }
 
@@ -861,7 +779,7 @@ async fn launch_preview_on_macos(
     let host = crate::toolchain::Host::current();
     let device = Local;
     device.launch(&host).await?;
-    let mut run_options = preview_run_options(PreviewPlatform::Macos);
+    let mut run_options = preview_run_options();
     // The support app detaches and outlives this command; its stdout/stderr go
     // to a log file the next `water preview` reopens and appends, never a pipe
     // whose reader is gone (water-rs/cli#197).
@@ -895,63 +813,7 @@ async fn launch_preview_on_ios_simulator(
             backend,
             TargetPlatform::IOSSimulator,
             simulator,
-            preview_run_options(PreviewPlatform::IosSimulator),
-            progress.cloned(),
-        )
-        .await
-        .map_err(|e| eyre::eyre!("Failed to run preview app: {e}"))
-}
-
-async fn launch_preview_on_android(
-    project: &Project,
-    tcp_config: PreviewTcpConfig,
-    progress: Option<&BuildProgress>,
-) -> Result<Running> {
-    let backend = project
-        .android_backend()
-        .ok_or_else(|| eyre::eyre!("Android backend not configured"))?;
-    let host = crate::toolchain::Host::current();
-
-    let mut run_options = preview_run_options(PreviewPlatform::Android);
-    // The support app's TCP server binds the device's loopback; forward every
-    // candidate port so the CLI's probe reaches it.
-    run_options.set_forward_tcp_ports(tcp_config.ports());
-
-    if let Some(device) = crate::android::device::AndroidDevice::scan(&host)
-        .await?
-        .into_iter()
-        .next()
-    {
-        device.launch(&host).await?;
-        info!("Building and running preview app on Android device...");
-        return project
-            .run_android_with_options(
-                backend,
-                device,
-                run_options,
-                // The preview support app dlopens the pushed module, so the
-                // shared Rust runtime must be built and packaged.
-                BuildOptions::development(BuildProfile::Debug).with_dynamic_module_loading(),
-                progress.cloned(),
-            )
-            .await
-            .map_err(|e| eyre::eyre!("Failed to run preview app: {e}"));
-    }
-
-    let avd_name = crate::android::platform::AndroidPlatform::list_avds(&host)
-        .await?
-        .into_iter()
-        .next()
-        .ok_or_else(|| eyre::eyre!("No Android devices or emulators available."))?;
-    let emulator = crate::android::device::AndroidEmulator::open(&host, avd_name).await?;
-    emulator.launch(&host).await?;
-    info!("Building and running preview app on Android emulator...");
-    project
-        .run_android_with_options(
-            backend,
-            emulator,
-            run_options,
-            BuildOptions::development(BuildProfile::Debug).with_dynamic_module_loading(),
+            preview_run_options(),
             progress.cloned(),
         )
         .await
@@ -1091,7 +953,7 @@ async fn wait_for_connection_or_crash(
             )
             .await
         }
-        PreviewPlatform::IosSimulator | PreviewPlatform::Ios | PreviewPlatform::Android => {
+        PreviewPlatform::IosSimulator | PreviewPlatform::Ios => {
             wait_for_polled_preview_ready(
                 running,
                 tcp_config,
@@ -2062,45 +1924,5 @@ mod tests {
                 "preview-cdylib+shared-waterui-dylib+prefer-dynamic"
             );
         }
-    }
-
-    #[test]
-    fn android_preview_uses_the_jni_shared_runtime_abi() {
-        let link_mode = PreviewLinkMode::for_platform(PreviewPlatform::Android);
-        assert_eq!(link_mode, PreviewLinkMode::ANDROID_DYNAMIC);
-        assert_eq!(link_mode.crate_type_override, Some("cdylib"));
-        assert!(link_mode.prefer_dynamic);
-        assert_eq!(
-            link_mode.abi_feature,
-            crate::templates::preview_ffi::ANDROID_ABI_FEATURE
-        );
-    }
-
-    #[test]
-    fn dylib_signature_pins_the_build_std_toolchain() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("src")).unwrap();
-        std::fs::write(dir.path().join("src/lib.rs"), "fn main() {}").unwrap();
-        let inputs = smol::block_on(super::project_inputs_fingerprint(dir.path())).unwrap();
-
-        let signature = |toolchain| {
-            super::dylib_build_signature(
-                inputs,
-                "runtime",
-                "aarch64-linux-android",
-                "preview_ffi",
-                PreviewLinkMode::ANDROID_DYNAMIC,
-                toolchain,
-            )
-        };
-
-        // A `rustup update` keeps the channel name but changes `rustc -vV` —
-        // the cached module then names a libstd soname that no longer exists,
-        // so the identity, not the name, is what must land in the signature.
-        assert_ne!(
-            signature(Some("rustc 1.100.0-nightly (aaa 2026-08-30)")),
-            signature(Some("rustc 1.101.0-nightly (bbb 2026-10-04)")),
-        );
-        assert_ne!(signature(None), signature(Some("rustc 1.100.0-nightly")));
     }
 }

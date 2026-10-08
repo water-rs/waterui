@@ -43,8 +43,6 @@ pub enum PreviewRuntimePlatform {
     IosSimulator,
     /// Physical iOS preview support app.
     Ios,
-    /// Android preview support app.
-    Android,
     /// Other platform.
     Other,
 }
@@ -59,8 +57,6 @@ impl PreviewRuntimePlatform {
             Self::IosSimulator
         } else if cfg!(target_os = "ios") {
             Self::Ios
-        } else if cfg!(target_os = "android") {
-            Self::Android
         } else {
             Self::Other
         }

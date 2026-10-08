@@ -475,7 +475,7 @@ impl HeadlessRuntime {
         // Every window's renderer is seeded from this collection, and a
         // self-drawn component that typesets text itself reads it out of the
         // environment instead of enumerating the system's fonts for itself.
-        let fonts = crate::text::fonts::native_collection(&env);
+        let fonts = crate::text::fonts::platform_collection(&env);
         fonts.clone().install(&mut env);
 
         // Headless binaries (preview, tests) have no platform runner to install
