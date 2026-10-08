@@ -556,10 +556,6 @@ pub struct Project {
     /// resolution this project's cached answers drive.
     cargo_resolve_permits: Arc<async_lock::Semaphore>,
     managed_backends_root: PathBuf,
-    /// The persisted `cargo tree` evaluations' directory — a sibling of
-    /// `managed_backends_root`: it holds cached answers, not a generated
-    /// backend.
-    graph_cache_dir: PathBuf,
     /// The runtime backends this open generated — project-owned state, never
     /// persisted. Persisted backend-facing configuration lives in the
     /// manifest's typed tables (`[esp32]`, `[hydrolysis]`).
@@ -967,6 +963,13 @@ impl Project {
         self.managed_backends_root.join("ffi")
     }
 
+    /// The persisted `cargo tree` answers' directory. It lives inside the
+    /// managed build cache, so the version wipe, garbage collection and
+    /// `water clean` that remove the cache remove it with it.
+    fn graph_cache_dir(&self) -> PathBuf {
+        self.managed_backends_root.join("dependency_graph")
+    }
+
     /// Get the full path to the managed Apple in-process preview package.
     ///
     /// It sits next to the FFI companion crate: the two share one
@@ -1099,7 +1102,7 @@ impl Project {
         let key = names.join(",");
         let host = self.host.clone();
         let project_root = self.root.clone();
-        let cache_dir = self.graph_cache_dir.clone();
+        let cache_dir = self.graph_cache_dir();
         let cargo_layout = self.cargo_layout.clone();
         let permits = Arc::clone(&self.cargo_resolve_permits);
         let targets = targets.to_vec();
@@ -2441,8 +2444,6 @@ impl Project {
         } else {
             spawn_cargo_layout_resolution(host, &path, None, true)
         };
-        let graph_cache_dir = crate::water_dir::project_graph_cache_dir_on(host, &path)
-            .map_err(FailToCreateProject::BuildCache)?;
         Ok(Self {
             host: host.clone(),
             root: path,
@@ -2456,7 +2457,6 @@ impl Project {
                 Self::CARGO_RESOLVE_PERMITS,
             )),
             managed_backends_root,
-            graph_cache_dir,
             backends: Backends::default(),
             local_sources,
         })
@@ -2764,8 +2764,6 @@ impl Project {
         let managed_backends_root = crate::water_dir::ensure_project_build_cache(host, &path)
             .await
             .map_err(FailToOpenProject::BuildCache)?;
-        let graph_cache_dir = crate::water_dir::project_graph_cache_dir_on(&host, &path)
-            .map_err(FailToOpenProject::BuildCache)?;
         info!(
             path = %path.display(),
             open_mode = ?open_mode,
@@ -2786,7 +2784,6 @@ impl Project {
                 Self::CARGO_RESOLVE_PERMITS,
             )),
             managed_backends_root,
-            graph_cache_dir,
             backends: Backends::default(),
             local_sources,
         };

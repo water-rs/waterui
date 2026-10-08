@@ -34,7 +34,6 @@ pub const CLI_COMMIT: &str = env!("WATERUI_CLI_COMMIT");
 const BUILD_CACHE_DIR_NAME: &str = "build_cache";
 const LOCKS_DIR_NAME: &str = "locks";
 const MANAGED_BACKENDS_DIR_NAME: &str = "managed_backends";
-const GRAPH_CACHE_DIR_NAME: &str = "dependency_graph";
 const SHARED_TARGET_DIR_NAME: &str = "target";
 const CONFIG_FILE_NAME: &str = "config.toml";
 const METADATA_FILE_NAME: &str = "metadata.toml";
@@ -766,26 +765,6 @@ pub async fn project_build_cache_dir(
     let project_root = canonicalize_project_root(project_root)?;
     let (_, cache_root) = resolved_build_cache_root_in(&water_home).await?;
     Ok(project_build_cache_dir_in(&project_root, &cache_root))
-}
-
-/// Return the persisted `cargo tree` answers' directory for a project under
-/// `host`'s Water home.
-///
-/// The directory sits beside `managed_backends` inside the project's cache
-/// container — its entries are cached graph answers, not a generated backend,
-/// so they do not live inside the backends' directory. This resolves the path
-/// only; it creates nothing.
-///
-/// # Errors
-/// Returns an error if the host has no home directory or no ancestor of
-/// `project_root` can be canonicalized.
-pub fn project_graph_cache_dir_on(
-    host: &crate::toolchain::Host,
-    project_root: &Path,
-) -> eyre::Result<PathBuf> {
-    let water_home = water_home_dir(host)?;
-    let cache_root = water_home.join(BUILD_CACHE_DIR_NAME);
-    Ok(build_cache_container_for_in(project_root, &cache_root)?.join(GRAPH_CACHE_DIR_NAME))
 }
 
 /// Return the whole managed cache container for a project directory, which need
