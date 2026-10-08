@@ -321,10 +321,6 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     // ------------------------------------------------------------------
     // Close — native asks through the session bridge.
 
-    internal fun closeRequested() {
-        (context as? android.app.Activity)?.finish()
-    }
-
     // ------------------------------------------------------------------
     // Input — decoded MotionEvents become session input events.
 
