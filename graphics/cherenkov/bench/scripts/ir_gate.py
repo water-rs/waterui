@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
-"""Callgrind Ir gate for `lower` and `encode` on the five perf scenes.
+"""Callgrind Ir gate for `lower`, `encode` and `run_transaction` on the five
+perf scenes.
 
 Each profile runs `cherenkov-bench measure --pause-at P` under Callgrind with
 instrumentation off. At the pause (a fixed frame index, not wall-clock time)
 instrumentation is switched on and the bench resumes. `--dump-before` and
-`--dump-after` on each root make every dump cover exactly one call of that
-root on its thread. The k-th dump after a root returns is sample k; sample 2
-is the gate's "second steady frame" and sample 3 its stability check.
+`--dump-after` on each root cut a dump at every entry and return. One call of
+a root is the span between consecutive `--dump-after` triggers on its own
+thread; a root nested inside it (`run_transaction` runs inside `encode`)
+writes its own dumps within that span, so a sample sums the root's incoming
+edge and cost over every dump in its span. The k-th call is sample k; sample 2
+is the gate's "second steady frame" and sample 3 its stability check. Only
+the first span may hold no complete call — the call in flight when
+instrumentation switched on — so any later skip is an error, never a silent
+shift of which frame is sampled.
 
 Per sample it reports the root's inclusive Ir; the allocator's share of it
 (the inclusive cost of every call from other code into the Rust allocator
@@ -239,14 +246,17 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup):
         bounds = sorted(after[phase])
         samples = []
         prev = 0
-        for number, thread in bounds:
+        for index, (number, thread) in enumerate(bounds):
             span = [p for n in range(prev + 1, number + 1)
                     for p in dump_files(out, prefix.name, n) if p.name.endswith('-' + thread)]
             prev = number
             found = [m for m in (measure(p, symbol) for p in span) if m]
             if not found or sum(m['ncalls'] for m in found) != 1:
                 # A call in flight when instrumentation switched on has
-                # no incoming edge — not a sample.
+                # no incoming edge — not a sample. Only the first span
+                # can be one: skipping a later span would shift every
+                # sample to a later frame.
+                assert index == 0, (tag, scene, phase, number, 'only the first span may be skipped')
                 continue
             merged = {k: sum(m[k] for m in found)
                       for k in ('ir', 'ncalls', 'alloc_ir', 'mem_ir', 'mem_calls',
