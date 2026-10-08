@@ -159,15 +159,18 @@ impl Host {
 
     /// Per-user cache directory for this host.
     ///
-    /// `dirs::cache_dir` semantics read through the host's environment:
-    /// `XDG_CACHE_HOME` on Unix, `LOCALAPPDATA` on Windows, `~/Library/Caches`
-    /// on macOS, `$HOME/.cache` elsewhere — `None` when the host declares
-    /// neither the variable nor a home.
+    /// `dirs::cache_dir` semantics read through the host's environment, so
+    /// the CLI and a build script that asks `dirs` agree on the path:
+    /// `~/Library/Caches` on macOS; on other Unix systems `XDG_CACHE_HOME`
+    /// when it is an absolute path, else `$HOME/.cache`; on Windows the
+    /// local application-data folder, which this host reads from its
+    /// `LOCALAPPDATA` (`dirs` asks the known-folder API, which reports the
+    /// same folder). `None` when the host declares no usable value.
     #[must_use]
     pub fn cache_dir(&self) -> Option<PathBuf> {
         #[cfg(target_os = "windows")]
         {
-            self.env("LOCALAPPDATA").map(PathBuf::from)
+            self.absolute_env_path("LOCALAPPDATA")
         }
         #[cfg(target_os = "macos")]
         {
@@ -175,8 +178,9 @@ impl Host {
         }
         #[cfg(all(unix, not(target_os = "macos")))]
         {
-            self.env("XDG_CACHE_HOME")
-                .map(PathBuf::from)
+            // `dirs` ignores an empty or relative `XDG_CACHE_HOME`, as the
+            // XDG base-directory specification requires.
+            self.absolute_env_path("XDG_CACHE_HOME")
                 .or_else(|| self.home_dir().map(|home| home.join(".cache")))
         }
         #[cfg(not(any(unix, target_os = "windows")))]
@@ -187,24 +191,42 @@ impl Host {
 
     /// Temporary directory for this host.
     ///
-    /// `std::env::temp_dir` semantics read through the host's environment:
-    /// `TMPDIR` on Unix; `TMP`, `TEMP`, or `USERPROFILE` on Windows; the
-    /// platform default only when the host declares none.
+    /// `std::env::temp_dir` rules, with every variable read from this host's
+    /// environment and never the process's:
+    /// - Unix: `TMPDIR` when set; otherwise the per-user directory
+    ///   `confstr(_CS_DARWIN_USER_TEMP_DIR)` reports on Apple platforms
+    ///   (`/tmp` if it reports none), `/data/local/tmp` on Android, and
+    ///   `/tmp` elsewhere.
+    /// - Windows (`GetTempPath2W`): the first of `TMP`, `TEMP` and
+    ///   `USERPROFILE` that is set and non-empty, else the Windows directory
+    ///   (`SystemRoot`, which every host carries as spawn plumbing).
+    ///
+    /// # Panics
+    /// On Windows, panics when the host declares none of those variables and
+    /// no `SystemRoot` either — a host no child process could start on.
     #[must_use]
     pub fn temp_dir(&self) -> PathBuf {
-        for key in ["TMPDIR", "TMP", "TEMP"] {
-            if let Some(value) = self.env(key).filter(|v| !v.is_empty()) {
-                return PathBuf::from(value);
-            }
-        }
         #[cfg(unix)]
         {
-            PathBuf::from("/tmp")
+            self.env("TMPDIR")
+                .map_or_else(unix_default_temp_dir, PathBuf::from)
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
         {
-            std::env::temp_dir()
+            ["TMP", "TEMP", "USERPROFILE", "SystemRoot"]
+                .into_iter()
+                .find_map(|key| self.env(key).filter(|value| !value.is_empty()))
+                .map(PathBuf::from)
+                .expect("a Windows host carries SystemRoot, the temp directory of last resort")
         }
+    }
+
+    /// `key` as a path, when this host sets it to an absolute one.
+    #[cfg(not(target_os = "macos"))]
+    fn absolute_env_path(&self, key: &str) -> Option<PathBuf> {
+        self.env(key)
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
     }
 
     /// Path of the running `water` executable.
@@ -326,19 +348,17 @@ impl Host {
     }
 
     /// A [`std::process::Command`] that inherits the terminal for output but
-    /// reads nothing.
+    /// reads nothing: stdin keeps the null default of
+    /// [`Host::std_command`].
     ///
-    /// For tools whose progress and errors the user watches live but that
-    /// never read stdin — `cargo nextest`, the package manager's
-    /// non-interactive runs — in contrast to [`Host::interactive_command`],
-    /// which owns the whole terminal.
+    /// For a tool whose progress and errors the user watches live but that
+    /// never reads stdin — `water bench` running `cargo nextest` — in
+    /// contrast to [`Host::interactive_command`], which owns the whole
+    /// terminal.
     #[must_use]
     pub fn monitored_command(&self, program: impl AsRef<OsStr>) -> std::process::Command {
         let mut command = self.std_command(program);
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit());
+        command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
         command
     }
 
@@ -641,6 +661,52 @@ fn home_dir_from_env(env: &BTreeMap<OsString, OsString>) -> Option<PathBuf> {
     }
 }
 
+/// The temp directory `std` uses on Unix when `TMPDIR` is unset.
+#[cfg(unix)]
+fn unix_default_temp_dir() -> PathBuf {
+    #[cfg(target_vendor = "apple")]
+    {
+        darwin_user_temp_dir().unwrap_or_else(|| PathBuf::from("/tmp"))
+    }
+    #[cfg(target_os = "android")]
+    {
+        PathBuf::from("/data/local/tmp")
+    }
+    #[cfg(not(any(target_vendor = "apple", target_os = "android")))]
+    {
+        PathBuf::from("/tmp")
+    }
+}
+
+/// The per-user temp directory Darwin reports through
+/// `confstr(_CS_DARWIN_USER_TEMP_DIR)`, or `None` when it reports none.
+#[cfg(target_vendor = "apple")]
+fn darwin_user_temp_dir() -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStringExt as _;
+
+    let mut buffer = vec![0_u8; 64];
+    loop {
+        // SAFETY: `buffer` is valid for writes of `buffer.len()` bytes, the
+        // length `confstr` is told it may fill.
+        let needed = unsafe {
+            libc::confstr(
+                libc::_CS_DARWIN_USER_TEMP_DIR,
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+            )
+        };
+        if needed == 0 {
+            return None;
+        }
+        if needed <= buffer.len() {
+            // `needed` counts the terminating NUL.
+            buffer.truncate(needed - 1);
+            return Some(PathBuf::from(OsString::from_vec(buffer)));
+        }
+        buffer.resize(needed, 0);
+    }
+}
+
 /// Application-install roots for the real machine.
 fn default_app_dirs() -> Vec<PathBuf> {
     if cfg!(target_os = "macos") {
@@ -774,5 +840,68 @@ mod tests {
         let error = smol::block_on(host.run("rustup", ["frobnicate"]))
             .expect_err("a failing tool must surface as an error");
         assert!(error.to_string().contains("rustup"));
+    }
+
+    fn declared(vars: &[(&str, &str)]) -> Host {
+        Host::new(Vec::<std::path::PathBuf>::new(), vars.iter().copied())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn temp_dir_is_the_declared_tmpdir() {
+        assert_eq!(
+            declared(&[("TMPDIR", "/declared/tmp")]).temp_dir(),
+            std::path::Path::new("/declared/tmp")
+        );
+    }
+
+    #[cfg(all(unix, not(target_vendor = "apple"), not(target_os = "android")))]
+    #[test]
+    fn temp_dir_without_tmpdir_is_slash_tmp() {
+        assert_eq!(declared(&[]).temp_dir(), std::path::Path::new("/tmp"));
+    }
+
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn temp_dir_without_tmpdir_is_the_darwin_user_temp_dir() {
+        let temp = declared(&[]).temp_dir();
+        assert!(temp.is_absolute(), "{}", temp.display());
+        assert!(temp.is_dir(), "{} must exist", temp.display());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn temp_dir_follows_get_temp_path_order() {
+        let all = [
+            ("TMP", r"C:\tmp-var"),
+            ("TEMP", r"C:\temp-var"),
+            ("USERPROFILE", r"C:\Users\declared"),
+            ("SystemRoot", r"C:\Windows-declared"),
+        ];
+        for skipped in 0..all.len() {
+            let host = declared(&all[skipped..]);
+            assert_eq!(host.temp_dir(), std::path::Path::new(all[skipped].1));
+        }
+        assert_eq!(
+            declared(&[("TMP", ""), ("TEMP", r"C:\temp-var")]).temp_dir(),
+            std::path::Path::new(r"C:\temp-var"),
+            "an empty variable is skipped"
+        );
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn cache_dir_ignores_a_relative_or_empty_xdg_cache_home() {
+        for value in ["", "relative/cache"] {
+            assert_eq!(
+                declared(&[("HOME", "/home/declared"), ("XDG_CACHE_HOME", value)]).cache_dir(),
+                Some(std::path::PathBuf::from("/home/declared/.cache")),
+                "XDG_CACHE_HOME={value:?}"
+            );
+        }
+        assert_eq!(
+            declared(&[("HOME", "/home/declared"), ("XDG_CACHE_HOME", "/xdg/cache")]).cache_dir(),
+            Some(std::path::PathBuf::from("/xdg/cache"))
+        );
     }
 }
