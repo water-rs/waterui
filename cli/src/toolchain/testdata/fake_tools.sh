@@ -649,6 +649,19 @@ uname)
     esac
     exit 0
     ;;
+bun | npm | pnpm | yarn)
+    case "$1" in
+        run)
+            if [ -f "${WATERUI_FAKE_RESPONSES:-/nonexistent}/${tool}_run_$2" ]; then
+                print_file "${WATERUI_FAKE_RESPONSES}/${tool}_run_$2"
+            fi
+            exit "${WATERUI_FAKE_PM_EXIT:-0}"
+            ;;
+        *)
+            exit 0
+            ;;
+    esac
+    ;;
 *)
     exit 0
     ;;

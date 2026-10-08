@@ -236,7 +236,7 @@ impl PreparedSigning {
                 resolve_release_signing(
                     project.manifest(),
                     project.root(),
-                    &Host::current(),
+                    project.host(),
                     options.device_signing(),
                 )
             })
@@ -600,7 +600,7 @@ mod tests {
         let dir = tempdir().expect("temp dir");
         let host = crate::toolchain::testing::real_toolchain_host(dir.path());
         let root = dir.path().join("water-example");
-        let project = smol::block_on(crate::project::Project::create_on(
+        let project = smol::block_on(crate::project::Project::create(
             &host,
             &root,
             crate::project::CreateOptions {
@@ -642,7 +642,7 @@ mod tests {
         // it is an error at the API boundary, not a transplant.
         let other_dir = tempdir().expect("temp dir");
         let other_root = other_dir.path().join("other-app");
-        let other = smol::block_on(crate::project::Project::create_on(
+        let other = smol::block_on(crate::project::Project::create(
             &crate::toolchain::testing::real_toolchain_host(other_dir.path()),
             &other_root,
             crate::project::CreateOptions {

@@ -89,6 +89,7 @@ impl Backend for AndroidBackend {
         let android_permissions = manifest_permissions(manifest);
 
         let ctx = TemplateContext::for_project_manifest(
+            project.host(),
             manifest,
             project.crate_name().clone(),
             app_name,
@@ -108,11 +109,15 @@ impl Backend for AndroidBackend {
                     .await
                     .map_err(crate::backend::FailToInitBackend::Config)?,
             );
-            templates::android_embedded::scaffold(&project.backend_path::<Self>(), &ctx)
-                .await
-                .map_err(crate::backend::FailToInitBackend::Io)?;
+            templates::android_embedded::scaffold(
+                project.host(),
+                &project.backend_path::<Self>(),
+                &ctx,
+            )
+            .await
+            .map_err(crate::backend::FailToInitBackend::Io)?;
         } else {
-            templates::android::scaffold(&project.backend_path::<Self>(), &ctx)
+            templates::android::scaffold(project.host(), &project.backend_path::<Self>(), &ctx)
                 .await
                 .map_err(crate::backend::FailToInitBackend::Io)?;
         }
@@ -199,7 +204,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let host = crate::toolchain::testing::real_toolchain_host(dir.path());
         let root = dir.path().join("liquid-glass");
-        let project = smol::block_on(Project::create_on(
+        let project = smol::block_on(Project::create(
             &host,
             &root,
             CreateOptions {

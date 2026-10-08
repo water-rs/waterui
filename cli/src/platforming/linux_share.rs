@@ -65,7 +65,7 @@ mod tests {
             let dir = tempfile::tempdir().expect("temp dir");
             let host = crate::toolchain::testing::real_toolchain_host(dir.path());
             let root = dir.path().join("share-example");
-            let project = Project::create_on(
+            let project = Project::create(
                 &host,
                 &root,
                 CreateOptions {

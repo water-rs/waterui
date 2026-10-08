@@ -32,6 +32,7 @@ fn create_rejects_the_published_stable_manifest_without_backend_members() {
     }
 
     let result = smol::block_on(Project::create(
+        &waterui_cli::toolchain::Host::current(),
         &project,
         CreateOptions {
             name: "Stable Probe".to_owned(),

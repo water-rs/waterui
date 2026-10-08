@@ -509,6 +509,28 @@ fn kotlin_string_literal(value: &str) -> String {
         .replace('$', "\\$")
 }
 
+/// Local checkouts of the experimental backends, the escape hatch for
+/// developing a backend itself: a generated launcher depends on the checkout
+/// in place of the backend's published coordinate.
+#[derive(Debug, Clone, Default)]
+pub struct BackendDevCheckouts {
+    /// `WATERUI_WINUI_PATH`: a `water-rs/waterui-winui` checkout.
+    pub winui: Option<PathBuf>,
+    /// `WATERUI_TUI_PATH`: a `water-rs/tui` checkout.
+    pub tui: Option<PathBuf>,
+}
+
+impl BackendDevCheckouts {
+    /// The checkouts `host`'s environment names.
+    #[must_use]
+    pub fn from_host(host: &crate::toolchain::Host) -> Self {
+        Self {
+            winui: host.env("WATERUI_WINUI_PATH").map(PathBuf::from),
+            tui: host.env("WATERUI_TUI_PATH").map(PathBuf::from),
+        }
+    }
+}
+
 /// Context for rendering templates with type-safe substitutions.
 #[derive(Debug, Clone)]
 pub struct TemplateContext {
@@ -534,6 +556,8 @@ pub struct TemplateContext {
     pub apple_backend_selected: bool,
     /// Path to local `WaterUI` repository (for dev mode)
     pub waterui_path: Option<PathBuf>,
+    /// Local checkouts of the experimental backends the host points at.
+    pub backend_checkouts: BackendDevCheckouts,
     /// The canonical local backend sources the `waterui_path` checkout
     /// supplies, resolved before the context was built.
     pub local_sources: LocalBackendSources,
@@ -608,6 +632,7 @@ impl TemplateContext {
     /// Build a template context for a new root project scaffold.
     #[must_use]
     pub fn for_create_options(
+        host: &crate::toolchain::Host,
         options: &crate::project::CreateOptions,
         crate_name: CrateName,
         framework: &ResolvedFramework,
@@ -623,6 +648,7 @@ impl TemplateContext {
             author: options.author.clone(),
             apple_backend_selected: false,
             waterui_path,
+            backend_checkouts: BackendDevCheckouts::from_host(host),
             local_sources: local_sources.clone(),
             framework: framework.clone(),
             browser: BrowserTemplateContext::default(),
@@ -651,6 +677,7 @@ impl TemplateContext {
     /// checkout carrying a malformed canonical slot already failed there.
     #[must_use]
     pub fn for_project_manifest(
+        host: &crate::toolchain::Host,
         manifest: &crate::project::Manifest,
         crate_name: CrateName,
         app_name: impl Into<String>,
@@ -667,6 +694,7 @@ impl TemplateContext {
             // Selected at invocation, never from declared config.
             apple_backend_selected: false,
             waterui_path: manifest.waterui_path.as_ref().map(PathBuf::from),
+            backend_checkouts: BackendDevCheckouts::from_host(host),
             local_sources: local_sources.clone(),
             framework: framework.clone(),
             browser: BrowserTemplateContext::default(),
@@ -696,6 +724,7 @@ impl TemplateContext {
     /// Build a context for the CLI's own support applications.
     #[must_use]
     pub fn for_support_app(
+        host: &crate::toolchain::Host,
         identity: SupportAppIdentity,
         waterui_path: Option<PathBuf>,
         framework: &ResolvedFramework,
@@ -726,6 +755,7 @@ impl TemplateContext {
             author: String::new(),
             apple_backend_selected: false,
             waterui_path,
+            backend_checkouts: BackendDevCheckouts::from_host(host),
             local_sources: local_sources.clone(),
             framework: framework.clone(),
             browser: BrowserTemplateContext::default(),
@@ -1688,6 +1718,7 @@ mod tests {
             author: String::new(),
             apple_backend_selected: true,
             waterui_path,
+            backend_checkouts: super::BackendDevCheckouts::default(),
             local_sources,
             framework: stable_framework(),
             browser,
@@ -1858,6 +1889,7 @@ mod tests {
             ))
             .expect("fixture checkout resolves canonical backend sources");
             TemplateContext::for_project_manifest(
+                &crate::toolchain::Host::current(),
                 manifest,
                 CrateName::try_from("demo").expect("crate name"),
                 "Demo",
@@ -1928,6 +1960,7 @@ mod tests {
         // them, through `manifest_permissions`, so the template sees the
         // fully qualified names a real build hands it.
         let ctx = TemplateContext::for_project_manifest(
+            &crate::toolchain::Host::current(),
             &manifest,
             CrateName::try_from("demo").expect("crate name"),
             "Demo",
@@ -2009,6 +2042,7 @@ mod tests {
 
     fn support_ctx() -> TemplateContext {
         TemplateContext::for_support_app(
+            &crate::toolchain::Host::current(),
             SupportAppIdentity {
                 display_name: "WaterUIApp".to_string(),
                 crate_name: CrateName::try_from("waterui_app")
@@ -2648,7 +2682,11 @@ mod tests {
             Some(PathBuf::from("managed_backends/apple")),
             None,
         );
-        context.framework = smol::block_on(ResolvedFramework::for_local_checkout(&root)).unwrap();
+        context.framework = smol::block_on(ResolvedFramework::for_local_checkout(
+            &crate::toolchain::Host::current(),
+            &root,
+        ))
+        .unwrap();
 
         let error = context
             .waterui_apple_dependency()
@@ -3748,12 +3786,11 @@ mod tests {
     /// fails instead of forwarding the unfiltered set.
     #[test]
     fn resolved_forward_tables_reads_the_resolved_package_from_cargo_metadata() {
-        use std::process::Command as StdCommand;
-
         let tempdir = tempdir().expect("temporary probe fixture dir");
 
         let git = |dir: &Path, args: &[&str]| {
-            let output = StdCommand::new("git")
+            let output = crate::toolchain::Host::current()
+                .std_command("git")
                 .arg("-C")
                 .arg(dir)
                 .args(args)
@@ -5795,7 +5832,11 @@ pub mod android {
     ///
     /// # Errors
     /// Returns an error if file operations fail.
-    pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
+    pub async fn scaffold(
+        host: &crate::toolchain::Host,
+        base_dir: &Path,
+        ctx: &TemplateContext,
+    ) -> io::Result<()> {
         scaffold_dir(
             TemplateNamespace::Android,
             &embedded::ANDROID,
@@ -5835,7 +5876,7 @@ pub mod android {
         }
 
         // Generate local.properties with Android SDK path
-        if let Some(sdk_path) = AndroidSdk::detect_path(&crate::toolchain::Host::current()) {
+        if let Some(sdk_path) = AndroidSdk::detect_path(host) {
             let local_props = base_dir.join("local.properties");
             let content = format!("sdk.dir={}\n", normalize_path_for_config(&sdk_path));
             write_file_if_changed(&local_props, content.as_bytes()).await?;
@@ -5862,7 +5903,11 @@ pub mod android_embedded {
     /// # Errors
     ///
     /// Returns an error if file operations fail.
-    pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
+    pub async fn scaffold(
+        host: &crate::toolchain::Host,
+        base_dir: &Path,
+        ctx: &TemplateContext,
+    ) -> io::Result<()> {
         scaffold_dir(
             TemplateNamespace::AndroidEmbedded,
             &embedded::ANDROID_EMBEDDED,
@@ -5899,7 +5944,7 @@ pub mod android_embedded {
         }
 
         // Generate local.properties with Android SDK path
-        if let Some(sdk_path) = AndroidSdk::detect_path(&crate::toolchain::Host::current()) {
+        if let Some(sdk_path) = AndroidSdk::detect_path(host) {
             let local_props = base_dir.join("local.properties");
             let content = format!("sdk.dir={}\n", normalize_path_for_config(&sdk_path));
             write_file_if_changed(&local_props, content.as_bytes()).await?;
@@ -6111,7 +6156,7 @@ pub mod winui {
     /// it by patching `gpu-allocator` to the same git revision or checkout the
     /// backend dependency itself resolved to, so both come out of one source.
     fn winui_backend_dependency(ctx: &TemplateContext) -> io::Result<(Dependency, Dependency)> {
-        if let Some(path) = std::env::var_os("WATERUI_WINUI_PATH") {
+        if let Some(path) = ctx.backend_checkouts.winui.as_deref() {
             let path = dunce::canonicalize(path)?;
             return Ok((
                 path_dependency(&path),
@@ -6742,6 +6787,7 @@ fn hydrolysis_android_rendered_outputs(
 /// nothing new dirties no Gradle input, then finish with `gradlew`'s
 /// executable bit and `local.properties`.
 async fn scaffold_hydrolysis_android_project(
+    host: &crate::toolchain::Host,
     base_dir: &Path,
     namespace: TemplateNamespace,
     module: &Dir<'static>,
@@ -6754,7 +6800,7 @@ async fn scaffold_hydrolysis_android_project(
         }
         write_file_if_changed(&path, &contents).await?;
     }
-    finish_hydrolysis_android_scaffold(base_dir).await
+    finish_hydrolysis_android_scaffold(host, base_dir).await
 }
 
 pub mod hydrolysis_android {
@@ -6765,8 +6811,13 @@ pub mod hydrolysis_android {
     /// # Errors
     ///
     /// Returns an error if file operations fail.
-    pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
+    pub async fn scaffold(
+        host: &crate::toolchain::Host,
+        base_dir: &Path,
+        ctx: &TemplateContext,
+    ) -> io::Result<()> {
         super::scaffold_hydrolysis_android_project(
+            host,
             base_dir,
             TemplateNamespace::HydrolysisAndroid,
             &embedded::HYDROLYSIS_ANDROID,
@@ -6807,8 +6858,13 @@ pub mod hydrolysis_android_preview {
     /// # Errors
     ///
     /// Returns an error if template rendering or file writing fails.
-    pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
+    pub async fn scaffold(
+        host: &crate::toolchain::Host,
+        base_dir: &Path,
+        ctx: &TemplateContext,
+    ) -> io::Result<()> {
         super::scaffold_hydrolysis_android_project(
+            host,
             base_dir,
             TemplateNamespace::HydrolysisAndroidPreview,
             &embedded::HYDROLYSIS_ANDROID_PREVIEW,
@@ -6837,7 +6893,10 @@ pub mod hydrolysis_android_preview {
 ///
 /// `gradle-wrapper.jar` materializes at first Gradle run, so no binary lands
 /// in the worktree.
-async fn finish_hydrolysis_android_scaffold(base_dir: &Path) -> io::Result<()> {
+async fn finish_hydrolysis_android_scaffold(
+    host: &crate::toolchain::Host,
+    base_dir: &Path,
+) -> io::Result<()> {
     // Make gradlew executable
     #[cfg(unix)]
     {
@@ -6851,9 +6910,7 @@ async fn finish_hydrolysis_android_scaffold(base_dir: &Path) -> io::Result<()> {
     }
 
     // Generate local.properties with Android SDK path
-    if let Some(sdk_path) =
-        crate::android::toolchain::AndroidSdk::detect_path(&crate::toolchain::Host::current())
-    {
+    if let Some(sdk_path) = crate::android::toolchain::AndroidSdk::detect_path(host) {
         let local_props = base_dir.join("local.properties");
         let content = format!("sdk.dir={}\n", normalize_path_for_config(&sdk_path));
         write_file_if_changed(&local_props, content.as_bytes()).await?;
@@ -6997,7 +7054,7 @@ pub mod tui {
     /// itself), a `water-rs/tui` checkout beside a local `waterui_path`, and
     /// the pinned backend revision otherwise.
     fn tui_backend_dependency(ctx: &TemplateContext) -> io::Result<Dependency> {
-        if let Some(path) = std::env::var_os("WATERUI_TUI_PATH") {
+        if let Some(path) = ctx.backend_checkouts.tui.as_deref() {
             return Ok(path_dependency(&dunce::canonicalize(path)?));
         }
         if let Some(root) = ctx
@@ -9162,6 +9219,7 @@ pub mod inspector {
                     .expect("inspector app crate dir");
                 let app = temporary.path().join("app");
                 let ctx = crate::templates::TemplateContext::for_support_app(
+                    &crate::toolchain::Host::current(),
                     crate::templates::SupportAppIdentity {
                         display_name: "WaterUI Inspector".to_string(),
                         crate_name: crate::project_types::CrateName::try_from("waterui_inspector")

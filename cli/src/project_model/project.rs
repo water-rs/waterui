@@ -578,6 +578,7 @@ impl Project {
     /// # Errors
     /// Returns an error when resolution, native-project merging, or dependency verification fails.
     pub async fn select_channel(
+        host: &Host,
         path: impl AsRef<Path>,
         channel: FrameworkChannel,
         rev: Option<&str>,
@@ -590,7 +591,7 @@ impl Project {
         let previous = Manifest::parse(&water.to_string())?;
         let mut cargo: toml_edit::DocumentMut =
             smol::fs::read_to_string(&cargo_path).await?.parse()?;
-        let (framework, lockfile) = ResolvedFramework::resolve(channel, rev).await?;
+        let (framework, lockfile) = ResolvedFramework::resolve(host, channel, rev).await?;
         // A configured backend whose scaffold packages the target channel
         // withholds could never be regenerated — refuse the switch before a
         // manifest is rewritten.
@@ -625,8 +626,10 @@ impl Project {
         {
             updates.push((path.join("Water.lock"), None));
         }
-        apply_channel_selection(&path, framework, updates).await?;
-        Self::open_for_preview_build(path).await.map_err(Into::into)
+        apply_channel_selection(host, &path, framework, updates).await?;
+        Self::open_for_preview_build(host, path)
+            .await
+            .map_err(Into::into)
     }
 
     /// Run the `WaterUI` project on the specified device.
@@ -691,19 +694,18 @@ impl Project {
             .await
             .map_err(FailToRun::Package)?;
 
-        Self::run_packaged(device, artifact, run_options).await
+        self.run_packaged(device, artifact, run_options).await
     }
 
     async fn run_packaged<D: Device>(
+        &self,
         device: D,
         artifact: Artifact,
         run_options: RunOptions,
     ) -> Result<Running, FailToRun> {
         info!("Running on device");
 
-        let running = device
-            .run(&crate::toolchain::Host::current(), artifact, run_options)
-            .await?;
+        let running = device.run(self.host(), artifact, run_options).await?;
         Ok(running)
     }
 
@@ -713,6 +715,13 @@ impl Project {
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The host the project was opened on — the machine its toolchain
+    /// probes, builds, and launches run against.
+    #[must_use]
+    pub const fn host(&self) -> &Host {
+        &self.host
     }
 
     /// Get the target directory for Rust build artifacts.
@@ -782,7 +791,9 @@ impl Project {
             RustLinkage::SharedRuntime => "shared",
             RustLinkage::Static => "static",
         };
-        Ok(crate::water_dir::shared_target_dir().await?.join(variant))
+        Ok(crate::water_dir::shared_target_dir(self.host())
+            .await?
+            .join(variant))
     }
 
     /// Resolve an isolated target directory for a backend built by a different Rust
@@ -796,7 +807,7 @@ impl Project {
     ///
     /// Returns an error when the shared build-cache directory cannot be resolved.
     pub async fn toolchain_target_dir(&self, toolchain: &str) -> eyre::Result<PathBuf> {
-        Ok(crate::water_dir::shared_target_dir()
+        Ok(crate::water_dir::shared_target_dir(self.host())
             .await?
             .join(format!("toolchain-{toolchain}")))
     }
@@ -1019,7 +1030,7 @@ impl Project {
     /// saved selection is invalid, or the local checkout's framework facts
     /// cannot be read.
     pub async fn resolved_framework(&self) -> eyre::Result<ResolvedFramework> {
-        ResolvedFramework::for_manifest(self.manifest(), &self.root).await
+        ResolvedFramework::for_manifest(self.host(), self.manifest(), &self.root).await
     }
 
     /// Assert the selected framework channel distributes every scaffold
@@ -1655,6 +1666,7 @@ impl Project {
     /// dependency artifacts stay for the other projects that resolve them.
     async fn clean_shared_target_units(&self) -> Result<(), eyre::Report> {
         let removed = crate::water_dir::remove_project_units_from_shared_target(
+            self.host(),
             &self.generated_crate_names(),
         )
         .await?;
@@ -1679,7 +1691,7 @@ impl Project {
         // The generated backends' units go first: once the managed manifests
         // below are gone, nothing else names them.
         self.clean_shared_target_units().await?;
-        crate::water_dir::remove_project_build_cache(self.root()).await?;
+        crate::water_dir::remove_project_build_cache(self.host(), self.root()).await?;
         // What remains to sweep is the `water-backends` subtree older CLI
         // layouts left under the project's own Cargo target directory — never
         // the user's other compiled artifacts.
@@ -2052,7 +2064,10 @@ impl CreateOptions {
     /// selection, or the checkout `waterui_path` names. A checkout's framework
     /// is a filesystem source, so it is never persisted into `Water.toml`;
     /// `waterui_path` itself is the record.
-    async fn resolve_framework(&mut self) -> eyre::Result<(ResolvedFramework, Option<Vec<u8>>)> {
+    async fn resolve_framework(
+        &mut self,
+        host: &Host,
+    ) -> eyre::Result<(ResolvedFramework, Option<Vec<u8>>)> {
         let selected = [
             self.waterui_path.is_some(),
             self.channel.is_some(),
@@ -2076,15 +2091,18 @@ impl CreateOptions {
             let path = path.clone();
             let root = unblock(move || dunce::canonicalize(path)).await?;
             self.waterui_path = Some(root.clone());
-            return Ok((ResolvedFramework::for_local_checkout(&root).await?, None));
+            return Ok((
+                ResolvedFramework::for_local_checkout(host, &root).await?,
+                None,
+            ));
         }
         if let Some(path) = &self.framework_manifest {
-            return ResolvedFramework::resolve_manifest(path).await;
+            return ResolvedFramework::resolve_manifest(host, path).await;
         }
         if let Some(framework) = &self.framework {
             return Ok((framework.clone(), self.framework_lock.take()));
         }
-        ResolvedFramework::resolve(self.channel.unwrap_or_default(), None).await
+        ResolvedFramework::resolve(host, self.channel.unwrap_or_default(), None).await
     }
 }
 
@@ -2136,6 +2154,7 @@ impl Project {
         )
         .await?;
         let ctx = TemplateContext::for_project_manifest(
+            self.host(),
             manifest,
             self.crate_name().clone(),
             app_name,
@@ -2258,6 +2277,7 @@ impl Project {
             .await
             .map_err(crate::backend::FailToInitBackend::Config)?;
         let ctx = TemplateContext::for_project_manifest(
+            self.host(),
             manifest,
             self.crate_name().clone(),
             app_name,
@@ -2287,11 +2307,11 @@ impl Project {
     /// - `FailToCreateProject::SaveManifest`: If saving the manifest fails.
     /// - `FailToCreateProject::Rollback`: If the partial project cannot be removed after failure.
     pub async fn create(
+        host: &Host,
         path: impl AsRef<Path>,
         options: CreateOptions,
     ) -> Result<Self, FailToCreateProject> {
-        let host = Host::current();
-        Self::create_on(&host, path, options).await
+        Self::create_on(host, path, options).await
     }
 
     pub(crate) async fn create_on(
@@ -2322,10 +2342,10 @@ impl Project {
     ///   exists and would be overwritten.
     /// - the [`Project::create`] scaffold errors.
     pub async fn init(
+        host: &Host,
         path: impl AsRef<Path>,
         options: CreateOptions,
     ) -> Result<Self, FailToCreateProject> {
-        let host = Host::current();
         let path = path.as_ref().to_path_buf();
         if path.join("Water.toml").exists() {
             return Err(FailToCreateProject::AlreadyProject(path));
@@ -2333,7 +2353,7 @@ impl Project {
         if path.join("Cargo.toml").exists() {
             return Err(FailToCreateProject::CargoManifestExists(path));
         }
-        Self::scaffold_project(&host, path, options).await
+        Self::scaffold_project(host, path, options).await
     }
 
     async fn scaffold_project(
@@ -2344,7 +2364,7 @@ impl Project {
         // Derive crate name from display name
         let crate_name = options.crate_name()?;
         let (framework, lockfile) = options
-            .resolve_framework()
+            .resolve_framework(host)
             .await
             .map_err(FailToCreateProject::Framework)?;
 
@@ -2365,6 +2385,7 @@ impl Project {
 
         // Build template context for root files
         let ctx = TemplateContext::for_create_options(
+            host,
             &options,
             crate_name.clone(),
             &framework,
@@ -2399,7 +2420,7 @@ impl Project {
                 .map_err(FailToCreateProject::Scaffold)?;
         }
 
-        let manifest = created_manifest(&options, &framework, assets_path);
+        let manifest = Self::scaffold_manifest(&options, framework, assets_path);
 
         // Save Water.toml
         manifest.save(&path).await?;
@@ -2407,7 +2428,7 @@ impl Project {
         // Initialize git repository if not already in one
         Self::ensure_git_init(host, &path).await?;
 
-        let managed_backends_root = crate::water_dir::project_build_cache_dir_on(host, &path)
+        let managed_backends_root = crate::water_dir::project_build_cache_dir(host, &path)
             .await
             .map_err(FailToCreateProject::BuildCache)?;
 
@@ -2445,6 +2466,46 @@ impl Project {
             backends: Backends::default(),
             local_sources,
         })
+    }
+
+    /// The `Water.toml` a scaffold records: the create options' identity and
+    /// web section, the resolved framework's channel when it names one.
+    fn scaffold_manifest(
+        options: &CreateOptions,
+        framework: ResolvedFramework,
+        assets_path: String,
+    ) -> Manifest {
+        Manifest {
+            package: Package {
+                name: options.name.clone(),
+                bundle_identifier: options.bundle_identifier.clone(),
+                assets_path,
+                accessory: false,
+                embedded: false,
+            },
+            esp32: None,
+            hydrolysis: None,
+            waterui_path: options
+                .waterui_path
+                .as_ref()
+                .map(|p| p.display().to_string()),
+            // The scaffold's copy of the checkout's tables is identical to the
+            // checkout's, which the first open adopts and records.
+            waterui_patches: cargo_toml::PatchSet::new(),
+            // A local checkout's framework is a filesystem source — never
+            // persisted; `waterui_path` above is the record.
+            framework: framework.channel().is_some().then_some(framework),
+            permissions: BTreeMap::default(),
+            app: None,
+            theme: None,
+            launch: None,
+            web: options.web.as_ref().map(|scaffold| web::WebConfig {
+                package_manager: scaffold.package_manager,
+            }),
+            signing: SigningConfig::default(),
+            assets: None,
+            app_values: crate::assets::AppValuesConfig::default(),
+        }
     }
 
     /// Ensure the project is initialized with git.
@@ -2513,10 +2574,11 @@ impl Project {
     /// - `FailToOpenProject::CargoManifest`: If there was an error reading the `Cargo.toml` file.
     /// - `FailToOpenProject::MissingCrateName`: If the crate name is missing in `Cargo.toml`.
     pub async fn open(
+        host: &Host,
         path: impl AsRef<Path>,
         backends: ManagedBackends,
     ) -> Result<Self, FailToOpenProject> {
-        Self::open_with_mode(path, OpenMode::Full, backends).await
+        Self::open_with_mode(host, path, OpenMode::Full, backends).await
     }
 
     /// Open a project on `host`, the [`Self::open`] path under a supplied
@@ -2542,8 +2604,11 @@ impl Project {
     /// - `FailToOpenProject::Manifest`: If there was an error opening the `Water.toml` manifest.
     /// - `FailToOpenProject::CargoManifest`: If there was an error reading the `Cargo.toml` file.
     /// - `FailToOpenProject::MissingCrateName`: If the crate name is missing in `Cargo.toml`.
-    pub async fn open_for_preview_build(path: impl AsRef<Path>) -> Result<Self, FailToOpenProject> {
-        Self::open_with_mode(path, OpenMode::PreviewBuild, ManagedBackends::NONE).await
+    pub async fn open_for_preview_build(
+        host: &Host,
+        path: impl AsRef<Path>,
+    ) -> Result<Self, FailToOpenProject> {
+        Self::open_with_mode(host, path, OpenMode::PreviewBuild, ManagedBackends::NONE).await
     }
 
     /// Keep the checkout's entries in a local-checkout project's `[patch]`
@@ -2651,7 +2716,7 @@ impl Project {
         clippy::too_many_lines,
         reason = "each open mode is one linear sequence; splitting the dispatch would scatter the mode table"
     )]
-    async fn open_with_mode_on(
+    async fn open_with_mode(
         host: &Host,
         path: impl AsRef<Path>,
         open_mode: OpenMode,
@@ -2659,7 +2724,6 @@ impl Project {
     ) -> Result<Self, FailToOpenProject> {
         use crate::backend::Backend;
 
-        let host = host.clone();
         let total_start = std::time::Instant::now();
         let path = path.as_ref().to_path_buf();
 
@@ -2669,7 +2733,7 @@ impl Project {
             .map_err(FailToOpenProject::Manifest)?;
         if let Some(framework) = &manifest.framework {
             framework
-                .validate_cli()
+                .validate_cli(host)
                 .map_err(FailToOpenProject::Framework)?;
         }
         let local_sources = crate::templates::project_local_backend_sources(
@@ -2679,7 +2743,7 @@ impl Project {
         .await
         .map_err(FailToOpenProject::LocalSources)?;
         if let Some(local) = &manifest.waterui_path {
-            validate_local_cli(&path.join(local))
+            validate_local_cli(host, &path.join(local))
                 .await
                 .map_err(FailToOpenProject::Framework)?;
             Self::refresh_local_patches(&path, Path::new(local), &manifest.waterui_patches)
@@ -2714,7 +2778,7 @@ impl Project {
             })?;
 
         let cargo_layout = spawn_cargo_layout_resolution(
-            &host,
+            host,
             &path,
             manifest.framework.clone(),
             manifest.waterui_path.is_some(),
@@ -2728,7 +2792,7 @@ impl Project {
         // The create path resolves the same directory without creating it —
         // the scaffolds that write under it create it then — and a project
         // open must never write to `~/.water` merely to exist.
-        let managed_backends_root = crate::water_dir::project_build_cache_dir_on(&host, &path)
+        let managed_backends_root = crate::water_dir::project_build_cache_dir(host, &path)
             .await
             .map_err(FailToOpenProject::BuildCache)?;
         let graph_cache_dir = crate::water_dir::project_graph_cache_dir_on(&host, &path)
@@ -2741,7 +2805,7 @@ impl Project {
         );
 
         let mut project = Self {
-            host,
+            host: host.clone(),
             root: path,
             manifest,
             crate_name,
@@ -2766,10 +2830,12 @@ impl Project {
         // 1. Running inside Xcode's sandboxed build script phase (WATERUI_SKIP_RUST_BUILD=1)
         // 2. Running inside any sandbox (sandbox-exec sets __XCODE_BUILT_PRODUCTS_DIR_PATHS or similar)
         // 3. Xcode is the current build tool (ACTION env var is set by Xcode)
-        let skip_backend_init = std::env::var("WATERUI_SKIP_RUST_BUILD")
-            .is_ok_and(|value| value == "1")
-            || std::env::var("ACTION").is_ok() // Xcode sets this during builds
-            || std::env::var("XCODE_PRODUCT_BUILD_VERSION").is_ok();
+        let skip_backend_init = project
+            .host()
+            .env("WATERUI_SKIP_RUST_BUILD")
+            .is_some_and(|value| value == "1")
+            || project.host().env("ACTION").is_some() // Xcode sets this during builds
+            || project.host().env("XCODE_PRODUCT_BUILD_VERSION").is_some();
 
         if !skip_backend_init && open_mode == OpenMode::Full {
             // Rendering target-derived scaffolds is not part of opening a
@@ -2822,6 +2888,7 @@ impl Project {
 }
 
 async fn apply_channel_selection(
+    host: &Host,
     root: &Path,
     framework: ResolvedFramework,
     updates: Vec<(PathBuf, Option<Vec<u8>>)>,
@@ -2843,8 +2910,7 @@ async fn apply_channel_selection(
         for (file, contents) in &updates {
             write_channel_file(file, contents.as_deref()).await?;
         }
-        let host = Host::current();
-        resolve_cargo_layout(&host, root, Some(framework), CargoResolution::Update).await?;
+        resolve_cargo_layout(host, root, Some(framework), CargoResolution::Update).await?;
         Ok(())
     }
     .await;
@@ -2878,7 +2944,7 @@ async fn resolve_cargo_layout(
     mode: CargoResolution,
 ) -> eyre::Result<CargoLayout> {
     let root = current_dir.to_path_buf();
-    let host = host.clone();
+    let metadata_host = host.clone();
     let metadata = unblock(move || {
         let mut command = cargo_metadata::MetadataCommand::new();
         command.current_dir(root);
@@ -2891,10 +2957,10 @@ async fn resolve_cargo_layout(
             }
             CargoResolution::Update => {}
         }
-        metadata_on(&host, &command)
+        metadata_on(&metadata_host, &command)
     })
     .await?;
-    validate_resolved_cli(&metadata)?;
+    validate_resolved_cli(host, &metadata)?;
     if let Some(framework) = framework
         && framework.channel() != Some(FrameworkChannel::Stable)
     {
@@ -4229,7 +4295,7 @@ mod channel_tests {
                 web: None,
             };
             let machine = crate::toolchain::testing::TestMachine::new();
-            let error = Project::create_on(&real_toolchain_host(&machine), &project_root, options)
+            let error = Project::create(&real_toolchain_host(&machine), &project_root, options)
                 .await
                 .unwrap_err()
                 .to_string();
@@ -4250,10 +4316,11 @@ mod channel_tests {
             });
             manifest.waterui_path = Some("../framework".into());
             manifest.save(&project_root).await.unwrap();
-            let error = Project::open_for_preview_build(&project_root)
-                .await
-                .unwrap_err()
-                .to_string();
+            let error =
+                Project::open_for_preview_build(&crate::toolchain::Host::current(), &project_root)
+                    .await
+                    .unwrap_err()
+                    .to_string();
             assert!(error.contains(&format!("requires waterui-cli >= {minimum}")));
             assert!(!project_root.join("Cargo.lock").exists());
         });
@@ -4278,6 +4345,7 @@ mod channel_tests {
                 .collect();
             assert!(
                 apply_channel_selection(
+                    &Host::current(),
                     root,
                     crate::framework::test_fixtures::stable_framework(),
                     updates
@@ -5114,7 +5182,7 @@ mod scaffold_tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let root = dir.path().join("water-example");
 
-        let project = smol::block_on(Project::create_on(
+        let project = smol::block_on(Project::create(
             &real_toolchain_host(&machine),
             &root,
             CreateOptions {
@@ -5160,7 +5228,7 @@ mod scaffold_tests {
         let machine = crate::toolchain::testing::TestMachine::new();
         let dir = tempfile::tempdir().expect("temp dir");
         let root = dir.path().join("water-example");
-        let project = smol::block_on(Project::create_on(
+        let project = smol::block_on(Project::create(
             &real_toolchain_host(&machine),
             &root,
             CreateOptions {
@@ -5271,7 +5339,7 @@ mod scaffold_tests {
         vendor_dir: &Path,
         apple_backend: bool,
     ) -> Project {
-        let project = smol::block_on(Project::create_on(
+        let project = smol::block_on(Project::create(
             host,
             root,
             CreateOptions {
@@ -5361,7 +5429,7 @@ mod scaffold_tests {
                 apple_expected,
             );
 
-            let project = smol::block_on(Project::open_on(
+            let project = smol::block_on(Project::open(
                 &real_toolchain_host(&machine),
                 &root,
                 ManagedBackends::for_platform(platform),
@@ -5457,7 +5525,7 @@ mod scaffold_tests {
         // Resolve the build cache the way the open path does — a test never
         // writes to the real `~/.water`; the scaffold seeds the files it
         // needs under it itself.
-        let ffi_dir = smol::block_on(crate::water_dir::project_build_cache_dir_on(
+        let ffi_dir = smol::block_on(crate::water_dir::project_build_cache_dir(
             &real_toolchain_host(&machine),
             &root,
         ))
@@ -5481,7 +5549,7 @@ mod scaffold_tests {
         std::fs::write(ffi_dir.join("src/bin/waterui-apple-main.rs"), "")
             .expect("seed the stale apple entry file");
 
-        let project = smol::block_on(Project::open_on(
+        let project = smol::block_on(Project::open(
             &real_toolchain_host(&machine),
             &root,
             ManagedBackends::for_platform(TargetPlatform::Android),
@@ -5568,7 +5636,7 @@ mod scaffold_tests {
         let host = real_toolchain_host(&machine);
         let dir = tempfile::tempdir().expect("temp dir");
         let create = |root: &Path| {
-            smol::block_on(Project::create_on(
+            smol::block_on(Project::create(
                 &host,
                 root,
                 CreateOptions {

@@ -52,10 +52,11 @@ use crate::{
 /// the server does not come up — every compile would fail on the same thing,
 /// so it fails here where the reason is still legible.
 pub async fn configure_compilation_cache(
+    host: &Host,
     command: &mut Command,
     sccache_path: &Path,
 ) -> eyre::Result<()> {
-    let water_home = crate::project_model::water_dir::water_home_dir().ok();
+    let water_home = crate::project_model::water_dir::water_home_dir(host).ok();
     #[cfg(unix)]
     let env = compilation_cache_env_in(sccache_path, water_home.as_deref())?;
     #[cfg(not(unix))]
@@ -63,7 +64,7 @@ pub async fn configure_compilation_cache(
     for (key, value) in &env {
         command.env(key, value);
     }
-    start_server(sccache_path, &env).await
+    start_server(host, sccache_path, &env).await
 }
 
 /// Connect to the per-user server, starting it when it is not listening.
@@ -75,13 +76,16 @@ pub async fn configure_compilation_cache(
 /// # Errors
 /// Returns an error when the client cannot be spawned, or when it reports
 /// that the server is not available.
-async fn start_server(sccache_path: &Path, env: &[(&'static str, OsString)]) -> eyre::Result<()> {
+async fn start_server(
+    host: &Host,
+    sccache_path: &Path,
+    env: &[(&'static str, OsString)],
+) -> eyre::Result<()> {
     use eyre::WrapErr as _;
 
-    let mut client = Command::new(sccache_path);
+    let mut client = host.command(sccache_path);
     client
         .arg("--show-stats")
-        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped());
     for (key, value) in env {

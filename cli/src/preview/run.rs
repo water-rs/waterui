@@ -38,12 +38,13 @@ pub async fn write_run_config(dir: &Path, config: &PreviewRunConfig) -> Result<P
 /// Returns an error when the binary cannot be spawned or exits non-zero —
 /// the error carries its stderr, else its stdout, else the exit status.
 pub async fn run_preview_binary(
+    host: &crate::toolchain::Host,
     working_dir: &Path,
     binary_path: &Path,
     run_config_path: &Path,
     label: &str,
 ) -> Result<Output> {
-    let mut child = smol::process::Command::new(binary_path);
+    let mut child = host.command(binary_path);
     let child = command(&mut child);
     child.current_dir(working_dir);
     child.env(PREVIEW_RUN_CONFIG_ENV, run_config_path);
@@ -69,11 +70,11 @@ pub async fn run_preview_binary(
 }
 
 /// `path` as an absolute path, resolved against the current directory.
-pub fn absolute_output_path(path: &Path) -> Result<PathBuf> {
+pub fn absolute_output_path(host: &crate::toolchain::Host, path: &Path) -> PathBuf {
     if path.is_absolute() {
-        return Ok(path.to_path_buf());
+        return path.to_path_buf();
     }
-    Ok(std::env::current_dir()?.join(path))
+    host.cwd().join(path)
 }
 
 /// Checks the preview wrote a non-empty `what` at `path`.

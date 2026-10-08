@@ -16,7 +16,6 @@ use crate::{
     platform::{PackageOptions, TargetBackend, TargetPlatform},
     project::{ManagedBackends, Project},
     templates::{self, TemplateContext},
-    toolchain::Host,
 };
 
 /// Every triple the generated launcher crate's manifest serves — the
@@ -133,6 +132,7 @@ impl HydrolysisBackend {
         )
         .await?;
         Ok(TemplateContext::for_project_manifest(
+            project.host(),
             manifest,
             project.crate_name().clone(),
             app_name,
@@ -212,13 +212,7 @@ impl Backend for HydrolysisBackend {
         options: BuildOptions,
     ) -> eyre::Result<crate::build::BuiltTarget> {
         if platform == TargetPlatform::Android {
-            return crate::hydrolysis::android::build(
-                project,
-                &Host::current(),
-                AndroidAbi::Arm64V8a,
-                options,
-            )
-            .await;
+            return crate::hydrolysis::android::build(project, AndroidAbi::Arm64V8a, options).await;
         }
         project
             .browser_runtime_plan(platform, TargetBackend::Hydrolysis, &platform.triple())
@@ -237,7 +231,6 @@ impl Backend for HydrolysisBackend {
             let prepared = crate::android::signing::PreparedSigning::resolve(project, &options)?;
             return crate::hydrolysis::android::package_with_abis(
                 project,
-                &Host::current(),
                 crate::hydrolysis::android::resolve_painter(project, None),
                 &options,
                 &[AndroidAbi::Arm64V8a],
@@ -265,8 +258,12 @@ impl Backend for HydrolysisBackend {
 ///
 /// Returns an error when the project cannot be opened or the backend cannot
 /// be regenerated.
-pub async fn open_ready(project_path: &Path) -> eyre::Result<Project> {
+pub async fn open_ready(
+    host: &crate::toolchain::Host,
+    project_path: &Path,
+) -> eyre::Result<Project> {
     let project = Project::open(
+        host,
         project_path,
         ManagedBackends::for_backend(TargetBackend::Hydrolysis),
     )

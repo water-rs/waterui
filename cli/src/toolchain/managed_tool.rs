@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 use waterui_assets_core::{AssetError, download_remote_bytes, write_bytes_atomically};
 
 use crate::{
-    project_model::water_dir::{HomeDirError, water_home_dir_in},
+    project_model::water_dir::{HomeDirError, water_home_dir},
     toolchain::Host,
 };
 
@@ -55,7 +55,7 @@ impl ManagedTool {
     /// # Errors
     /// Returns [`HomeDirError`] when the host declares no home directory.
     pub fn install_dir(&self, host: &Host) -> Result<PathBuf, HomeDirError> {
-        Ok(water_home_dir_in(host)?
+        Ok(water_home_dir(host)?
             .join("tools")
             .join(self.name)
             .join(self.version))
@@ -93,7 +93,7 @@ impl ManagedTool {
             return Ok(dir);
         }
 
-        let tool_dir = water_home_dir_in(host)?.join("tools").join(self.name);
+        let tool_dir = water_home_dir(host)?.join("tools").join(self.name);
         let install_dir = tool_dir.join(self.version);
         smol::unblock({
             let tool_dir = tool_dir.clone();

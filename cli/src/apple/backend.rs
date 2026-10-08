@@ -132,6 +132,7 @@ impl AppleBackend {
             has_image: launch.has_artwork(),
         };
         Ok(TemplateContext::for_project_manifest(
+            project.host(),
             manifest,
             crate_name_for_template,
             app_name,
@@ -345,7 +346,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let host = crate::toolchain::testing::real_toolchain_host(dir.path());
         let root = dir.path().join("water-example");
-        smol::block_on(Project::create_on(
+        smol::block_on(Project::create(
             &host,
             &root,
             CreateOptions {
@@ -365,7 +366,7 @@ mod tests {
 
         vendor_offline_resolution(&root, &dir.path().join("vendor"));
 
-        let project = smol::block_on(Project::open_on(
+        let project = smol::block_on(Project::open(
             &host,
             &root,
             ManagedBackends::for_backend(TargetBackend::Apple),
@@ -417,7 +418,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let host = crate::toolchain::testing::real_toolchain_host(dir.path());
         let root = dir.path().join("menu-example");
-        let project = smol::block_on(Project::create_on(
+        let project = smol::block_on(Project::create(
             &host,
             &root,
             CreateOptions {
@@ -451,7 +452,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let host = crate::toolchain::testing::real_toolchain_host(dir.path());
         let root = dir.path().join("liquid-glass");
-        smol::block_on(Project::create_on(
+        smol::block_on(Project::create(
             &host,
             &root,
             CreateOptions {
@@ -471,7 +472,7 @@ mod tests {
 
         vendor_offline_resolution(&root, &dir.path().join("vendor"));
 
-        let project = smol::block_on(Project::open_on(
+        let project = smol::block_on(Project::open(
             &host,
             &root,
             ManagedBackends::for_backend(TargetBackend::Apple),
@@ -501,7 +502,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let host = crate::toolchain::testing::real_toolchain_host(dir.path());
         let root = dir.path().join("water-example");
-        smol::block_on(Project::create_on(
+        smol::block_on(Project::create(
             &host,
             &root,
             CreateOptions {
@@ -521,7 +522,7 @@ mod tests {
 
         vendor_offline_resolution(&root, &dir.path().join("vendor"));
 
-        let project = smol::block_on(Project::open_on(
+        let project = smol::block_on(Project::open(
             &host,
             &root,
             ManagedBackends::for_backend(TargetBackend::Apple),
