@@ -12,7 +12,7 @@ jobs:
       - name: Probe Metal simulator linking
         shell: bash
         run: |
-          set -uo pipefail
+          set +e +o pipefail
           xcodebuild -version
           xcrun -sdk iphonesimulator -f metal
           xcodebuild -showComponent MetalToolchain -json || true
@@ -26,7 +26,7 @@ jobs:
                env $(printf '%s\n' "$@" | grep '=' ) xcrun --sdk iphonesimulator metallib p.air -o p.metallib >l.log 2>&1; then
               echo "PASS  $label"
             else
-              echo "FAIL  $label"; grep -E 'error|ERROR|sysroot' c.log l.log | head -3
+              echo "FAIL  $label"; grep -shE 'error|ERROR|sysroot' c.log l.log | cut -c1-300 | head -3
             fi
           }
           for std in ios-metal1.0 ios-metal2.0 ios-metal2.1 ios-metal2.4 metal3.0; do
