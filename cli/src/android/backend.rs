@@ -107,7 +107,8 @@ impl Backend for AndroidBackend {
 
         if manifest.package.embedded {
             return Err(crate::backend::FailToInitBackend::Config(eyre::eyre!(
-                "embedded Android libraries are built by Hydrolysis: pass `--backend hydrolysis`"
+                "{}",
+                crate::hydrolysis::android::embedded::EMBEDDED_REQUIRES_HYDROLYSIS
             )));
         }
 

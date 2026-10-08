@@ -371,6 +371,7 @@ async fn android_template_context(
 /// Returns an error when template rendering or file writing fails.
 pub async fn scaffold_android_project(
     project: &Project,
+    host: &Host,
     painter: HydrolysisAndroidPainter,
     host_project_dir: &Path,
 ) -> eyre::Result<()> {
@@ -383,7 +384,7 @@ pub async fn scaffold_android_project(
         &android_dir(&backend_path),
     )
     .await?;
-    templates::hydrolysis_android::scaffold(&android_dir(&backend_path), &ctx).await?;
+    templates::hydrolysis_android::scaffold(&android_dir(&backend_path), &ctx, host).await?;
     Ok(())
 }
 
@@ -626,7 +627,7 @@ pub async fn package_with_abis(
         .map_err(|error| eyre::eyre!("{error}"))?;
 
     let host_project_dir = require_painter_module(host, project, painter).await?;
-    scaffold_android_project(project, painter, &host_project_dir).await?;
+    scaffold_android_project(project, host, painter, &host_project_dir).await?;
 
     copy_assets(project, &built.app_symbols()?, options.uses_dev_server()).await?;
 
@@ -679,7 +680,7 @@ pub async fn package_with_abis(
         // included — writes too.
         let _host_build =
             crate::water_dir::android_host_build_lock(host, &host_project_dir).await?;
-        run_gradle_tasks(&android_dir, &[command_name], &envs).await?;
+        run_gradle_tasks(&android_dir, &[command_name], &envs, host).await?;
     }
 
     let path = packaged_artifact(&android_dir, output_kind, variant).await?;
@@ -921,7 +922,7 @@ pub async fn ensure_preview_host_apk(
     })
     .await?;
     let version_code = fingerprint.version_code();
-    composite.write(version_code).await?;
+    composite.write(version_code, host).await?;
 
     let stamp = host_dir.join(PREVIEW_HOST_STAMP_FILE);
     if fs::read_to_string(&stamp)
@@ -936,7 +937,7 @@ pub async fn ensure_preview_host_apk(
         let _host_build =
             crate::water_dir::android_host_build_lock(host, &composite.host_project_dir).await?;
         info!("Building the hydrolysis preview host APK");
-        run_gradle_tasks(&host_dir, &[":app:assembleDebug"], &[]).await?;
+        run_gradle_tasks(&host_dir, &[":app:assembleDebug"], &[], host).await?;
     }
     fs::write(&stamp, fingerprint.to_string()).await?;
     let apk = packaged_artifact(&host_dir, OutputKind::Apk, "debug").await?;
@@ -969,7 +970,7 @@ pub async fn render_preview_host(
 ) -> eyre::Result<()> {
     PreviewHostComposite::prepare(project, host, out)
         .await?
-        .write(version_code)
+        .write(version_code, host)
         .await
 }
 
@@ -1038,9 +1039,13 @@ impl PreviewHostComposite {
     }
 
     /// Write the composite stamped with `version_code` into `out`.
-    async fn write(&self, version_code: u32) -> eyre::Result<()> {
-        templates::hydrolysis_android_preview::scaffold(&self.out, &self.context(version_code))
-            .await?;
+    async fn write(&self, version_code: u32, host: &Host) -> eyre::Result<()> {
+        templates::hydrolysis_android_preview::scaffold(
+            &self.out,
+            &self.context(version_code),
+            host,
+        )
+        .await?;
         Ok(())
     }
 }
@@ -1520,9 +1525,14 @@ mod tests {
                     .await
                     .expect("host project dir");
 
-            scaffold_android_project(&project, HydrolysisAndroidPainter::Gpu, &host_project_dir)
-                .await
-                .expect("android scaffold renders");
+            scaffold_android_project(
+                &project,
+                &host,
+                HydrolysisAndroidPainter::Gpu,
+                &host_project_dir,
+            )
+            .await
+            .expect("android scaffold renders");
 
             assert!(
                 project.ffi_crate_path().join("Cargo.toml").exists(),
@@ -1661,12 +1671,22 @@ mod tests {
                 assert!(module.contains("artifactId = \"fixture\""), "{module}");
                 assert!(module.contains("version = \"0.1.0\""), "{module}");
                 assert!(module.contains("from(components[\"release\"])"), "{module}");
+                // WaterUi.kt pulls in no androidx.core API — the library
+                // declares no `core-ktx` dependency.
+                assert!(!module.contains("core-ktx"), "{module}");
 
                 let waterui_kt = files["waterui/src/main/java/WaterUi.kt"].as_str();
                 assert!(
                     waterui_kt.contains("NATIVE_LIBRARY: String = \""),
                     "{waterui_kt}"
                 );
+                // Two mounts under one owner need distinct session keys —
+                // both overloads expose `key`.
+                assert!(
+                    waterui_kt.contains("key: String = NATIVE_LIBRARY"),
+                    "{waterui_kt}"
+                );
+                assert!(waterui_kt.contains("key = key"), "{waterui_kt}");
                 match painter {
                     HydrolysisAndroidPainter::Gpu => {
                         assert!(

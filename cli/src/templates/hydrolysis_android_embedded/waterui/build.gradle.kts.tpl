@@ -32,9 +32,9 @@ dependencies {
 
     // Exported (`api`) so the host's compile classpath sees WaterUi and the
     // Hydrolysis embedding types it wraps.
-    api("dev.waterui.hydrolysis:host:{{ ctx.hydrolysis_android_embedded().host_version }}")
-    api("{{ ctx.hydrolysis_android_embedded().app.painter_dependency }}:{{ ctx.hydrolysis_android_embedded().host_version }}")
-    implementation("androidx.core:core-ktx:1.19.0")
+{% for module in ctx.hydrolysis_android_embedded().host_modules -%}
+    api("dev.waterui.hydrolysis:{{ module }}:{{ ctx.hydrolysis_android_embedded().host_version }}")
+{% endfor -%}
 }
 
 publishing {

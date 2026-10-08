@@ -36,12 +36,36 @@ use crate::{
 use super::{HydrolysisAndroidPainter, require_painter_module, template_entry};
 
 /// Every ABI the embedded AAR carries when `--arch` does not narrow the set.
-pub const ALL_ABIS: [AndroidAbi; 4] = [
-    AndroidAbi::Arm64V8a,
-    AndroidAbi::X86_64,
-    AndroidAbi::ArmeabiV7a,
-    AndroidAbi::X86,
-];
+pub use crate::android::platform::ALL_ABIS;
+
+/// The routing rule for embedded Android builds: Hydrolysis only.
+///
+/// The Kotlin Android backend has no `com.android.library` output, so
+/// selecting it is a configuration error, raised here and in
+/// `AndroidBackend::init` before either path scaffolds a project.
+pub const EMBEDDED_REQUIRES_HYDROLYSIS: &str =
+    "embedded Android libraries are built by Hydrolysis: pass `--backend hydrolysis`";
+
+/// Enforce [`EMBEDDED_REQUIRES_HYDROLYSIS`] for the caller's resolved
+/// backend choice.
+///
+/// # Errors
+/// Returns the routing error when `backend_is_hydrolysis` is false.
+pub fn require_hydrolysis_backend(backend_is_hydrolysis: bool) -> Result<()> {
+    if backend_is_hydrolysis {
+        Ok(())
+    } else {
+        bail!("{EMBEDDED_REQUIRES_HYDROLYSIS}")
+    }
+}
+
+/// The host checkout's Gradle modules an embedded build substitutes,
+/// fingerprints (see [`host_version`]) and publishes — one table so a new
+/// host module (e.g. the system-WebView module) joins with a single entry
+/// here.
+pub(crate) fn publish_modules(painter: HydrolysisAndroidPainter) -> Vec<&'static str> {
+    vec!["host", painter.host_module()]
+}
 
 /// The artifact `water build` produces for an embedded project, handed back
 /// to the terminal for its summary.
@@ -53,8 +77,11 @@ pub struct EmbeddedArtifact {
     /// `group:artifact:version`.
     pub coordinate: String,
     /// The `dev.waterui.hydrolysis` coordinates this build published the
-    /// `host` and painter modules under — the versions the AAR's POM names.
+    /// host modules under — the versions the AAR's POM names.
     pub host_coordinates: Vec<String>,
+    /// The validated Android package name (`group` of `coordinate`); the
+    /// generated `WaterUi` entry point lives in its `.waterui` subpackage.
+    pub android_package_name: String,
 }
 
 /// Build the embedded AAR.
@@ -85,9 +112,10 @@ pub async fn build_aar(
     let host_project_dir = require_painter_module(host, project, painter).await?;
     project.scaffold_ffi_companion(false).await?;
 
+    let modules = publish_modules(painter);
     let backend_path = project.backend_path::<HydrolysisBackend>();
     let dir = backend_path.join("android-embedded");
-    let version = host_version(&host_project_dir, painter)?;
+    let version = host_version(&host_project_dir, &modules).await?;
     let crate_version = read_crate_version(project.root()).await?;
     let ctx = embedded_template_context(
         project,
@@ -96,9 +124,10 @@ pub async fn build_aar(
         &dir,
         &version,
         &crate_version,
+        &modules,
     )
     .await?;
-    templates::hydrolysis_android_embedded::scaffold(&dir, &ctx).await?;
+    templates::hydrolysis_android_embedded::scaffold(&dir, &ctx, host).await?;
 
     // Drop libraries from earlier builds so an ABI no longer built does not
     // linger in the AAR.
@@ -157,35 +186,36 @@ pub async fn build_aar(
     )
     .await?;
 
-    let painter_publish = format!(
-        ":hydrolysis-host:{}:publishReleasePublicationToMavenLocal",
-        painter.host_module()
-    );
+    let mut tasks: Vec<String> = modules
+        .iter()
+        .map(|module| format!(":hydrolysis-host:{module}:publishReleasePublicationToMavenLocal"))
+        .collect();
+    tasks.extend([
+        ":waterui:assembleRelease".to_owned(),
+        ":waterui:publishReleasePublicationToMavenLocal".to_owned(),
+    ]);
     run_gradle_tasks(
         &dir,
-        &[
-            ":hydrolysis-host:host:publishReleasePublicationToMavenLocal",
-            &painter_publish,
-            ":waterui:assembleRelease",
-            ":waterui:publishReleasePublicationToMavenLocal",
-        ],
+        &tasks.iter().map(String::as_str).collect::<Vec<_>>(),
         &[("WATERUI_HYDROLYSIS_HOST_VERSION", version.clone())],
+        host,
     )
     .await?;
 
     let module_dir = dir.join("waterui");
     let aar_path = copy_aar_to_package(project, &module_dir, &crate_version).await?;
     let coordinate = format!("{package_name}:{}:{crate_version}", project.crate_name());
-    let host_coordinates = vec![
-        format!("dev.waterui.hydrolysis:host:{version}"),
-        format!("{}:{version}", painter.gradle_dependency()),
-    ];
+    let host_coordinates = modules
+        .iter()
+        .map(|module| format!("dev.waterui.hydrolysis:{module}:{version}"))
+        .collect();
 
     info!(aar = %aar_path.display(), coordinate, "embedded Android artifact built");
     Ok(EmbeddedArtifact {
         aar_path,
         coordinate,
         host_coordinates,
+        android_package_name: package_name.to_string(),
     })
 }
 
@@ -200,6 +230,7 @@ async fn embedded_template_context(
     dir: &Path,
     version: &str,
     crate_version: &str,
+    modules: &[&str],
 ) -> Result<crate::templates::TemplateContext> {
     Ok(HydrolysisBackend::template_context(project, &project.resolved_framework().await?)
         .await?
@@ -208,6 +239,7 @@ async fn embedded_template_context(
         .with_hydrolysis_android_embedded(HydrolysisAndroidEmbeddedTemplateEntry {
             app: template_entry(project, painter, host_project_dir, dir).await?,
             host_version: version.to_owned(),
+            host_modules: modules.iter().map(|module| (*module).to_owned()).collect(),
         }))
 }
 
@@ -235,28 +267,36 @@ pub async fn rendered_embedded_outputs(
         &dir,
         version,
         crate_version,
+        &publish_modules(painter),
     )
     .await?;
     templates::hydrolysis_android_embedded::rendered_outputs(&ctx)
         .map_err(|error| eyre::eyre!("{error}"))
 }
 
-/// The version this build publishes the Hydrolysis `host` and painter modules
-/// under: `0.0.0-<first 16 hex of the sources' sha256>`, so a host that
-/// changed never collides with an earlier publish of the same coordinate.
+/// The version this build publishes the Hydrolysis host modules under:
+/// `0.0.0-<first 16 hex of the sources' sha256>`, so a host that changed
+/// never collides with an earlier publish of the same coordinate.
 ///
-/// The hash covers `<host>/settings.gradle.kts` and every file under the
-/// `host` and painter modules, sorted by relative path and skipping Gradle
-/// `build/` and `.gradle/` outputs.
-pub(crate) fn host_version(
-    host_project_dir: &Path,
-    painter: HydrolysisAndroidPainter,
-) -> Result<String> {
+/// The hash covers the checkout's `settings.gradle.kts`, `gradle.properties`,
+/// the Gradle wrapper files, and every file under `modules`, sorted by
+/// relative path and skipping Gradle `build/` and `.gradle/` outputs.
+async fn host_version(host_project_dir: &Path, modules: &[&str]) -> Result<String> {
     use sha2::{Digest, Sha256};
 
     let mut files = vec![host_project_dir.join("settings.gradle.kts")];
-    collect_host_files(&host_project_dir.join("host"), &mut files)?;
-    collect_host_files(&host_project_dir.join(painter.host_module()), &mut files)?;
+    for top_level in ["gradle.properties", "gradle"] {
+        let path = host_project_dir.join(top_level);
+        if fs::metadata(&path).await.is_ok_and(|meta| meta.is_file()) {
+            files.push(path);
+        } else if fs::metadata(&path).await.is_ok_and(|meta| meta.is_dir()) {
+            // The Gradle wrapper (`gradle/wrapper/`) fingerprints too.
+            collect_host_files(&path, &mut files).await?;
+        }
+    }
+    for module in modules {
+        collect_host_files(&host_project_dir.join(module), &mut files).await?;
+    }
     files.sort();
 
     let mut hasher = Sha256::new();
@@ -267,7 +307,7 @@ pub(crate) fn host_version(
         hasher.update(relative.to_string_lossy().replace('\\', "/").as_bytes());
         hasher.update([0u8]);
         hasher.update(
-            std::fs::read(file).map_err(|error| {
+            fs::read(file).await.map_err(|error| {
                 eyre::eyre!("cannot hash host file {}: {error}", file.display())
             })?,
         );
@@ -279,23 +319,31 @@ pub(crate) fn host_version(
 
 /// Appends every regular file under `dir` to `out`, skipping Gradle `build/`
 /// and `.gradle/` directories.
-fn collect_host_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
-    for entry in std::fs::read_dir(dir)
-        .map_err(|error| eyre::eyre!("cannot list {}: {error}", dir.display()))?
-    {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            let name = entry.file_name();
-            if name == "build" || name == ".gradle" {
-                continue;
+fn collect_host_files<'a>(
+    dir: &'a Path,
+    out: &'a mut Vec<PathBuf>,
+) -> futures_util::future::BoxFuture<'a, Result<()>> {
+    use futures_util::StreamExt as _;
+
+    Box::pin(async move {
+        let mut entries = fs::read_dir(dir)
+            .await
+            .map_err(|error| eyre::eyre!("cannot list {}: {error}", dir.display()))?;
+        while let Some(entry) = entries.next().await {
+            let entry = entry?;
+            let path = entry.path();
+            if entry.file_type().await?.is_dir() {
+                let name = entry.file_name();
+                if name == "build" || name == ".gradle" {
+                    continue;
+                }
+                collect_host_files(&path, &mut *out).await?;
+            } else {
+                out.push(path);
             }
-            collect_host_files(&path, out)?;
-        } else {
-            out.push(path);
         }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Copy the assembled `waterui-release.aar` into the project's
@@ -353,9 +401,10 @@ pub async fn read_crate_version(project_root: &Path) -> Result<String> {
 mod tests {
     use super::*;
 
-    /// A minimal pinned-host checkout: `settings.gradle.kts` plus `host/` and
-    /// `gpu/` module sources, optionally with Gradle `build/` output a hash
-    /// must ignore.
+    /// A minimal pinned-host checkout: `settings.gradle.kts`,
+    /// `gradle.properties`, the Gradle wrapper, plus `host/` and `gpu/`
+    /// module sources, optionally with Gradle `build/` output a hash must
+    /// ignore.
     fn stage_fake_host(dir: &Path) -> PathBuf {
         let host = dir.join("hydrolysis-android");
         let write = |path: PathBuf, content: &str| {
@@ -365,6 +414,11 @@ mod tests {
         write(
             host.join("settings.gradle.kts"),
             "include(\":host\", \":gpu\")",
+        );
+        write(host.join("gradle.properties"), "org.gradle.jvmargs=-Xmx4g");
+        write(
+            host.join("gradle/wrapper/gradle-wrapper.properties"),
+            "distributionUrl=https\\://services.gradle.org/distributions/gradle-9.3.0-bin.zip",
         );
         write(
             host.join("host/build.gradle.kts"),
@@ -381,31 +435,67 @@ mod tests {
         host
     }
 
+    /// The modules [`publish_modules`] reports for the GPU painter.
+    const GPU_MODULES: [&str; 2] = ["host", "gpu"];
+
     #[test]
     fn host_version_is_stable_and_ignores_build_output() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let host = stage_fake_host(dir.path());
-        // A `build/` output directory inside `host/` must not move the hash.
-        std::fs::create_dir_all(host.join("host/build/intermediates")).expect("build dir");
-        std::fs::write(host.join("host/build/intermediates/x"), "stale").expect("build file");
-        std::fs::create_dir_all(host.join(".gradle")).expect("gradle dir");
-        std::fs::write(host.join(".gradle/state"), "stale").expect("gradle file");
+        smol::block_on(async {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let host = stage_fake_host(dir.path());
+            // A `build/` output directory inside `host/` must not move the
+            // hash.
+            std::fs::create_dir_all(host.join("host/build/intermediates")).expect("build dir");
+            std::fs::write(host.join("host/build/intermediates/x"), "stale").expect("build file");
+            std::fs::create_dir_all(host.join(".gradle")).expect("gradle dir");
+            std::fs::write(host.join(".gradle/state"), "stale").expect("gradle file");
 
-        let first = host_version(&host, HydrolysisAndroidPainter::Gpu).expect("hash");
-        let second = host_version(&host, HydrolysisAndroidPainter::Gpu).expect("hash");
-        assert_eq!(first, second);
-        assert!(first.starts_with("0.0.0-"), "{first}");
-        assert_eq!(first.len(), "0.0.0-".len() + 16, "{first}");
+            let first = host_version(&host, &GPU_MODULES).await.expect("hash");
+            let second = host_version(&host, &GPU_MODULES).await.expect("hash");
+            assert_eq!(first, second);
+            assert!(first.starts_with("0.0.0-"), "{first}");
+            assert_eq!(first.len(), "0.0.0-".len() + 16, "{first}");
+        });
     }
 
     #[test]
     fn host_version_changes_with_host_sources() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let host = stage_fake_host(dir.path());
-        let before = host_version(&host, HydrolysisAndroidPainter::Gpu).expect("hash");
-        std::fs::write(host.join("host/src/main/new.kt"), "// changed").expect("edit");
-        let after = host_version(&host, HydrolysisAndroidPainter::Gpu).expect("hash");
-        assert_ne!(before, after);
+        smol::block_on(async {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let host = stage_fake_host(dir.path());
+            let before = host_version(&host, &GPU_MODULES).await.expect("hash");
+            std::fs::write(host.join("host/src/main/new.kt"), "// changed").expect("edit");
+            let after = host_version(&host, &GPU_MODULES).await.expect("hash");
+            assert_ne!(before, after);
+        });
+    }
+
+    #[test]
+    fn host_version_covers_gradle_properties_and_wrapper() {
+        smol::block_on(async {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let host = stage_fake_host(dir.path());
+            let before = host_version(&host, &GPU_MODULES).await.expect("hash");
+            std::fs::write(host.join("gradle.properties"), "org.gradle.jvmargs=-Xmx8g")
+                .expect("edit");
+            let after_properties = host_version(&host, &GPU_MODULES).await.expect("hash");
+            assert_ne!(before, after_properties);
+
+            std::fs::write(
+                host.join("gradle/wrapper/gradle-wrapper.properties"),
+                "distributionUrl=wrapper-changed",
+            )
+            .expect("edit");
+            let after_wrapper = host_version(&host, &GPU_MODULES).await.expect("hash");
+            assert_ne!(after_properties, after_wrapper);
+        });
+    }
+
+    #[test]
+    fn embedded_routing_accepts_only_hydrolysis() {
+        require_hydrolysis_backend(true).expect("hydrolysis routes");
+        let error = require_hydrolysis_backend(false).expect_err("kotlin backend rejects");
+        assert_eq!(error.to_string(), EMBEDDED_REQUIRES_HYDROLYSIS);
     }
 
     #[test]

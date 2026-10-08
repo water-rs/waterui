@@ -181,9 +181,7 @@ async fn run_embedded_build(shell: &Shell, args: &Args, context: &BuildContext) 
     if args.platform != TargetPlatform::Android {
         bail!("embedded projects support the Apple and Android backends");
     }
-    if context.backend != TargetBackend::Hydrolysis {
-        bail!("embedded Android libraries are built by Hydrolysis: pass `--backend hydrolysis`");
-    }
+    embedded::require_hydrolysis_backend(context.backend == TargetBackend::Hydrolysis)?;
 
     let abis: Vec<AndroidAbi> = args.arch.map_or_else(
         || embedded::ALL_ABIS.to_vec(),
@@ -235,7 +233,7 @@ async fn run_embedded_build(shell: &Shell, args: &Args, context: &BuildContext) 
             line!(
                 shell,
                 "then mount the WaterUI root with `WaterUi` (in `{}.waterui`):",
-                context.project.bundle_identifier()
+                artifact.android_package_name
             );
             line!(
                 shell,

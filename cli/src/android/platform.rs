@@ -45,6 +45,7 @@ pub(crate) async fn run_gradle_tasks(
     backend_path: &Path,
     tasks: &[&str],
     extra_envs: &[(&str, String)],
+    host: &Host,
 ) -> eyre::Result<()> {
     // The scaffold ships the wrapper scripts and properties but not the jar
     // — the repository carries no binary files, so the jar is materialized
@@ -64,11 +65,10 @@ pub(crate) async fn run_gradle_tasks(
     // Set JAVA_HOME to Android Studio's bundled JDK to avoid JDK version conflicts
     // (e.g., Homebrew's JDK 25 is not supported by Android Gradle Plugin)
     let mut cmd = gradle_cmd(&gradlew, backend_path, tasks);
-    let host = Host::current();
-    if let Some(java_home) = Java::detect_home(&host).await {
+    if let Some(java_home) = Java::detect_home(host).await {
         cmd.env("JAVA_HOME", java_home);
     }
-    if let Some(sdk_path) = AndroidSdk::detect_path(&host) {
+    if let Some(sdk_path) = AndroidSdk::detect_path(host) {
         cmd.env("ANDROID_HOME", &sdk_path)
             .env("ANDROID_SDK_ROOT", &sdk_path);
     }
@@ -80,7 +80,7 @@ pub(crate) async fn run_gradle_tasks(
     for (key, value) in extra_envs {
         cmd.env(key, value);
     }
-    apply_gradle_proxy_env(&host, &mut cmd)?;
+    apply_gradle_proxy_env(host, &mut cmd)?;
 
     let output = cmd.output().await?;
 
@@ -605,7 +605,7 @@ impl AndroidPlatform {
             envs.push((crate::android::signing::UNSIGNED_ENV, "1".to_string()));
         }
 
-        run_gradle_tasks(&backend_path, &[command_name], &envs).await?;
+        run_gradle_tasks(&backend_path, &[command_name], &envs, &Host::current()).await?;
 
         let path = packaged_artifact(&backend_path, output_kind, variant).await?;
         Ok(Artifact::new(project.bundle_identifier(), path))
