@@ -182,7 +182,7 @@ pub async fn copy_frontend(source: &Path, dest: &Path) -> Result<()> {
                 if let Some(parent) = target.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
-                waterui_cli::utils::copy_file_if_changed_sync(item.path(), &target)?;
+                std::fs::copy(item.path(), &target)?;
             }
         }
         Ok::<_, color_eyre::eyre::Error>(())

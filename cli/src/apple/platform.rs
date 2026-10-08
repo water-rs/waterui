@@ -424,9 +424,14 @@ pub(crate) async fn build_rust_lib_with_links(
             .with_final_rustc_arg(link_search_flag(runtime_dir.as_os_str()))
             .with_final_rustc_arg(format!("-Clink-arg=-l{runtime_link_name}"));
     }
-    executable
-        .build_binary(APPLE_ENTRY_BINARY_NAME, options.is_release())
-        .await?;
+    // The entry `[[bin]]`'s own `BuiltTarget` rides on this build's result
+    // so packaging reads its reported `executable`, never a name
+    // reconstructed under the profile directory.
+    built_target.entry_binary = Some(Box::new(
+        executable
+            .build_binary(APPLE_ENTRY_BINARY_NAME, options.is_release())
+            .await?,
+    ));
 
     // The helper `[[bin]]` exists only when the manifest declared it — the
     // application's linked engine, not chromium alone — so the build gates
@@ -758,7 +763,15 @@ pub async fn package_apple(
     let ctx = AppleBackend::template_context(project).await?;
     let layout = app_bundle::AppleAppLayout::for_app(&app_path, sdk_name);
 
-    let executable = built.profile_dir.join(APPLE_ENTRY_BINARY_NAME);
+    let executable = built
+        .entry_binary
+        .as_deref()
+        .ok_or_else(|| {
+            eyre::eyre!(
+                "the build produced no `{APPLE_ENTRY_BINARY_NAME}` entry binary; package the result of `build_rust_lib`"
+            )
+        })?
+        .executable()?;
     let mut info_plist = app_bundle::apple_info_plist(
         &ctx,
         project,
@@ -771,7 +784,7 @@ pub async fn package_apple(
 
     app_bundle::assemble_app_bundle(
         &layout,
-        &executable,
+        executable,
         &product_name,
         &staging_dir,
         &info_plist,
@@ -787,6 +800,8 @@ pub async fn package_apple(
         let bin_built = BuiltTarget {
             profile_dir: built.profile_dir.clone(),
             artifact: layout.executable_file(&product_name),
+            executable: Some(layout.executable_file(&product_name)),
+            entry_binary: None,
             shared_runtime: built.shared_runtime.clone(),
             app_library: None,
             cef_helper: None,

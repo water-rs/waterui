@@ -309,7 +309,9 @@ pub async fn build_esp32(project: &Project, options: BuildOptions) -> eyre::Resu
     })?;
     Ok(BuiltTarget {
         profile_dir: profile_dir.to_path_buf(),
-        artifact,
+        artifact: artifact.clone(),
+        executable: Some(artifact),
+        entry_binary: None,
         shared_runtime: None,
         app_library: crate::build::app_library_artifact(
             &output.stdout,

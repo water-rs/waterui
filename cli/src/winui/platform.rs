@@ -231,7 +231,7 @@ async fn copy_dir(source: &Path, destination: &Path) -> eyre::Result<()> {
             if entry.path().is_dir() {
                 stack.push((entry.path(), target));
             } else {
-                crate::utils::copy_file_if_changed(entry.path(), &target).await?;
+                fs::copy(entry.path(), &target).await?;
             }
         }
     }

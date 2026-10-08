@@ -8,7 +8,7 @@ use crate::backend::reinit_backend;
 use crate::build::{BuildOptions, BuildProfile, BuildProgress, BuiltTarget};
 use crate::hydrolysis::backend::HydrolysisBackend;
 use crate::hydrolysis::platform::{
-    build_hydrolysis_with_envs_and_features, profile_binary_path, stage_hydrolysis_shared_runtime,
+    build_hydrolysis_with_envs_and_features, stage_hydrolysis_shared_runtime,
 };
 use crate::platform::{TargetBackend, TargetPlatform};
 use crate::project::{ManagedBackends, Project};
@@ -127,7 +127,7 @@ pub async fn render_preview_with_hydrolysis(
     stage_hydrolysis_shared_runtime(&project, &built, request.platform).await?;
     run_preview_binary(
         &project,
-        &profile_binary_path(&project, &built),
+        built.executable()?,
         width,
         height,
         output_path,
@@ -148,13 +148,7 @@ pub async fn test_preview_with_hydrolysis(
     let (project, built) = build_preview_session(&request, Some(automation_body)).await?;
     stage_hydrolysis_resources(&project, theme, &built.app_symbols()?).await?;
     stage_hydrolysis_shared_runtime(&project, &built, request.platform).await?;
-    run_preview_test_binary(
-        &project,
-        &profile_binary_path(&project, &built),
-        width,
-        height,
-    )
-    .await
+    run_preview_test_binary(&project, built.executable()?, width, height).await
 }
 
 /// Build the managed hydrolysis binary for a preview request: write the

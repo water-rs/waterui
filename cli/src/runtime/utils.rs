@@ -342,6 +342,7 @@ pub fn copy_file_if_changed_sync(from: &Path, to: &Path) -> io::Result<()> {
 }
 
 fn copy_file_overwriting(from: &Path, to: &Path) -> io::Result<()> {
+    let from_modified = std::fs::metadata(from)?.modified()?;
     // `reflink_or_copy` refuses to overwrite; every caller expects the
     // staged file at `to` to carry `from`'s contents afterwards.
     match std::fs::remove_file(to) {
@@ -349,35 +350,37 @@ fn copy_file_overwriting(from: &Path, to: &Path) -> io::Result<()> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
-    reflink_copy::reflink_or_copy(from, to).map(|_| ())
+    reflink_or_copy_stamped(from, to, from_modified)
 }
 
-/// Whether `from` and `to` hold the same bytes — `false` when `to` does
-/// not exist, an error for any other read failure on either side.
-fn files_identical(from: &Path, to: &Path) -> io::Result<bool> {
-    use std::io::Read as _;
+/// `reflink_or_copy` plus the source's mtime stamped on the copy: the
+/// destination's metadata then says which source state it carries, the
+/// stamp `files_identical` compares against without reading either file.
+fn reflink_or_copy_stamped(
+    from: &Path,
+    to: &Path,
+    from_modified: std::time::SystemTime,
+) -> io::Result<()> {
+    reflink_copy::reflink_or_copy(from, to).map(|_| ())?;
+    std::fs::File::options()
+        .write(true)
+        .open(to)?
+        .set_modified(from_modified)
+}
 
-    let mut to_file = match std::fs::File::open(to) {
-        Ok(file) => file,
+/// Whether `to` still stages `from`'s bytes: same size and the same mtime
+/// [`copy_file_overwriting`] stamped on it when it made the copy. A file
+/// whose metadata matches has no reason to be read, so a no-change build
+/// neither reads nor rewrites the staged copy — `false` when `to` does not
+/// exist, an error for any other stat failure on either side.
+fn files_identical(from: &Path, to: &Path) -> io::Result<bool> {
+    let from_meta = std::fs::metadata(from)?;
+    let to_meta = match std::fs::metadata(to) {
+        Ok(meta) => meta,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error),
     };
-    if to_file.metadata()?.len() != std::fs::metadata(from)?.len() {
-        return Ok(false);
-    }
-    let mut from_file = std::fs::File::open(from)?;
-    let mut from_buf = vec![0_u8; 64 * 1024].into_boxed_slice();
-    let mut to_buf = vec![0_u8; 64 * 1024].into_boxed_slice();
-    loop {
-        let from_read = from_file.read(&mut from_buf)?;
-        if from_read == 0 {
-            return Ok(true);
-        }
-        to_file.read_exact(&mut to_buf[..from_read])?;
-        if from_buf[..from_read] != to_buf[..from_read] {
-            return Ok(false);
-        }
-    }
+    Ok(to_meta.len() == from_meta.len() && to_meta.modified()? == from_meta.modified()?)
 }
 
 #[cfg(test)]

@@ -3703,12 +3703,22 @@ mod tests {
             ))
             .expect("seeding the managed lockfile should succeed");
         };
-        let managed = || std::fs::read_to_string(&managed_lock).expect("managed Cargo.lock");
         // The seed path parses the recorded resolutions, so the fixtures are
-        // real lockfiles.
+        // real lockfiles. The managed lock is compared as a package set: the
+        // seed writes `cargo_lock`'s own emit layout, not the fixture's.
         let lock = |name: &str, version: &str| {
             format!("version = 4\n\n[[package]]\nname = \"{name}\"\nversion = \"{version}\"\n")
         };
+        let packages = |lock: &str| -> std::collections::BTreeSet<(String, String)> {
+            lock.parse::<cargo_lock::Lockfile>()
+                .expect("fixture lockfile parses")
+                .packages
+                .into_iter()
+                .map(|package| (package.name.to_string(), package.version.to_string()))
+                .collect()
+        };
+        let managed =
+            || packages(&std::fs::read_to_string(&managed_lock).expect("managed Cargo.lock"));
         let pins_v1 = lock("pins", "1.0.0");
         let pins_v1_with_ffi =
             format!("{pins_v1}\n[[package]]\nname = \"ffi-entries\"\nversion = \"0.1.0\"\n");
@@ -3720,46 +3730,101 @@ mod tests {
 
         std::fs::write(&project_lock, &pins_v1).expect("project lock");
         seed();
-        assert_eq!(managed(), pins_v1);
+        assert_eq!(managed(), packages(&pins_v1));
 
         // Cargo rewrote the managed lockfile (pruned the project's unused entries,
-        // added the FFI crate's own); an unchanged project lockfile leaves that alone.
+        // added the FFI crate's own); unchanged seed inputs leave that alone.
         std::fs::write(&managed_lock, &pins_v1_with_ffi).expect("managed lock");
         seed();
-        assert_eq!(managed(), pins_v1_with_ffi);
+        assert_eq!(
+            std::fs::read_to_string(&managed_lock).expect("managed Cargo.lock"),
+            pins_v1_with_ffi
+        );
 
-        // The project re-resolved: the managed crate follows it.
+        // The project re-resolved: the managed crate follows it, and the
+        // entries only the managed crate resolves stay put.
         std::fs::write(&project_lock, &pins_v2).expect("project lock");
         seed();
-        assert_eq!(managed(), pins_v2);
+        assert_eq!(
+            managed(),
+            std::collections::BTreeSet::from([
+                ("ffi-entries".to_owned(), "0.1.0".to_owned()),
+                ("pins".to_owned(), "1.0.0".to_owned()),
+                ("pins".to_owned(), "2.0.0".to_owned()),
+            ]),
+            "the previous lock's own entries stay beside the new project pins"
+        );
 
         // A managed lockfile that went missing is re-seeded from the current pins.
         std::fs::remove_file(&managed_lock).expect("remove managed lock");
         seed();
-        assert_eq!(managed(), pins_v2);
+        assert_eq!(managed(), packages(&pins_v2));
+    }
 
-        // A pure `[[patch.unused]]` reorder is Cargo's own emit nondeterminism,
-        // not a new resolution: it re-seeds nothing (#2073).
-        let patch = |name: &str| {
-            format!(
-                "[[patch.unused]]\nname = \"{name}\"\nversion = \"0.1.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n\n"
-            )
+    /// A managed `Cargo.lock` Cargo already pruned into its own layout still
+    /// reads as inputs-unchanged: the seed gate is the recorded project lock
+    /// and canonical checksum, never the pruned output's equality with the
+    /// seed — so a no-change run writes neither the lock nor the stamp
+    /// (#2073).
+    #[test]
+    fn an_unchanged_seed_input_writes_nothing_over_the_pruned_lock() {
+        let tempdir = tempdir().expect("temporary ffi seed dir");
+        let project_lock = tempdir.path().join("Cargo.lock");
+        let ffi_dir = tempdir.path().join("managed_backends/ffi");
+        std::fs::create_dir_all(&ffi_dir).expect("ffi dir");
+        let managed_lock = ffi_dir.join("Cargo.lock");
+        let seed = || {
+            smol::block_on(crate::templates::seed_lockfile(
+                &ffi_dir,
+                &project_lock,
+                None,
+            ))
+            .expect("seeding the managed lockfile should succeed");
+        };
+        let lock = |name: &str, version: &str| {
+            format!("[[package]]\nname = \"{name}\"\nversion = \"{version}\"\n")
         };
         std::fs::write(
-            ffi_dir.join(super::LOCKFILE_SEED),
-            format!("{pins_v2}{}{}", patch("b"), patch("a")),
-        )
-        .expect("seed copy");
-        std::fs::write(
             &project_lock,
-            format!("{pins_v2}{}{}", patch("a"), patch("b")),
+            format!(
+                "version = 4\n\n{}{}",
+                lock("pins", "1.0.0"),
+                lock("unused-dep", "0.4.0")
+            ),
         )
         .expect("project lock");
         seed();
+
+        // Cargo resolved the seed into its own layout: the project's unused
+        // entries pruned and the managed crate's own package added — a lock
+        // no seed-merge equality could recognise.
+        let pruned = format!(
+            "version = 4\n\n{}\n[[package]]\nname = \"ffi-entries\"\nversion = \"0.1.0\"\n",
+            lock("pins", "1.0.0")
+        );
+        std::fs::write(&managed_lock, &pruned).expect("pruned managed lock");
+        let epoch =
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        std::fs::File::options()
+            .write(true)
+            .open(&managed_lock)
+            .expect("open managed lock")
+            .set_modified(epoch)
+            .expect("stamp managed lock mtime");
+
+        seed();
         assert_eq!(
-            managed(),
-            pins_v2,
-            "an emit reorder must not re-seed the managed lock"
+            std::fs::read_to_string(&managed_lock).expect("managed Cargo.lock"),
+            pruned,
+            "an unchanged seed input must not rewrite the managed lock"
+        );
+        assert_eq!(
+            std::fs::metadata(&managed_lock)
+                .expect("managed lock metadata")
+                .modified()
+                .expect("managed lock mtime"),
+            epoch,
+            "an unchanged seed input must leave the managed lock's mtime alone"
         );
     }
 
@@ -6367,8 +6432,9 @@ pub fn with_project_patches(
     Ok(crate::patch_tables::merge(framework, project))
 }
 
-/// The copy of the application's lockfile a managed crate was last seeded
-/// from, kept beside the crate's own `Cargo.lock`.
+/// The stamp recording what a managed crate's `Cargo.lock` was last seeded
+/// from — the project's lockfile plus the canonical lock's checksum — kept
+/// beside the crate's own `Cargo.lock`.
 pub const LOCKFILE_SEED: &str = "Cargo.lock.seed";
 
 /// Seed a managed crate's `Cargo.lock` from the application's lockfile.
@@ -6386,15 +6452,16 @@ pub const LOCKFILE_SEED: &str = "Cargo.lock.seed";
 /// build (the create-time and `water fetch` font scans) cannot pin a
 /// generation the channel contradicts (#203).
 ///
-/// Cargo rewrites `Cargo.lock` on every resolution, so the seed cannot be
-/// compared against it. A copy of the seed is kept as [`LOCKFILE_SEED`]
-/// instead, and the crate is re-seeded only when the project's lockfile
-/// records a different resolution than that copy — a pure `[[patch.unused]]`
-/// reorder is not a difference
-/// ([`crate::framework::lockfile_semantically_equal`]) — or when the crate
-/// has no `Cargo.lock` at all.
-/// A project without a lockfile has nothing to pin yet and is left to
-/// resolve on its own.
+/// The write is gated on the seed's inputs, never on the managed
+/// `Cargo.lock` itself: Cargo rewrites the lock on every resolution — the
+/// `cargo_lock` serialisation this writes is not the layout Cargo re-emits —
+/// so the file on disk holds Cargo's merge of the seed, which a comparison
+/// against the seed reads as a change on every run and re-seeds forever
+/// (#2073). The stamp at [`LOCKFILE_SEED`] records the inputs instead, and
+/// the crate is re-seeded only when the project's lockfile or the canonical
+/// lock changed since the last seed, or when the crate has no `Cargo.lock`
+/// at all. A project without a lockfile has nothing to pin yet and is left
+/// to resolve on its own.
 ///
 /// # Errors
 ///
@@ -6418,14 +6485,9 @@ pub async fn seed_lockfile(
 
     let seed_copy = base_dir.join(LOCKFILE_SEED);
     let managed_lockfile = base_dir.join("Cargo.lock");
-    // Cargo re-orders `[[patch.unused]]` on every re-emit, so a byte
-    // comparison treats a pure reorder as a new resolution and re-seeds on
-    // every run; compare the parsed resolutions instead (#2073).
+    let stamp = seed_stamp(&seed, canonical);
     let seeded_from = match fs::read(&seed_copy).await {
-        Ok(previous) => crate::framework::lockfile_semantically_equal(
-            &parse_lockfile(&previous)?,
-            &parse_lockfile(&seed)?,
-        ),
+        Ok(previous) => previous == stamp,
         Err(error) if error.kind() == io::ErrorKind::NotFound => false,
         Err(error) => return Err(error),
     };
@@ -6438,35 +6500,42 @@ pub async fn seed_lockfile(
         Err(error) if error.kind() == io::ErrorKind::NotFound => None,
         Err(error) => return Err(error),
     };
-    let (seeded, contents) = match canonical {
-        // The project's pins do not name the packages only the managed crate
-        // resolves; without the channel's certified pins Cargo takes whatever
-        // the registry holds newest — an `accesskit` generation `Water.lock`
-        // contradicts (#203).
-        Some(canonical) => {
-            let project = parse_lockfile(&seed)?;
-            let mut merged = project.clone();
-            merged.packages =
-                crate::framework::seed_packages(Some(canonical), &project, previous.as_ref());
-            let contents = merged.to_string().into_bytes();
-            (merged, contents)
-        }
-        None => (parse_lockfile(&seed)?, seed.clone()),
-    };
-    if previous
-        .as_ref()
-        .is_none_or(|previous| !crate::framework::lockfile_semantically_equal(previous, &seeded))
-    {
-        tracing::debug!(
-            lockfile = %project_lockfile.display(),
-            "seeding the managed crate's Cargo.lock from the project lockfile"
-        );
-        fs::write(&managed_lockfile, contents).await?;
+    // The project's pins do not name the packages only the managed crate
+    // resolves; without the channel's certified pins Cargo takes whatever
+    // the registry holds newest — an `accesskit` generation `Water.lock`
+    // contradicts (#203). `previous` fills what neither lock names so
+    // packages only the managed crate adds stay put.
+    let mut merged = parse_lockfile(&seed)?;
+    merged.packages = crate::framework::seed_packages(canonical, &merged, previous.as_ref());
+
+    tracing::debug!(
+        lockfile = %project_lockfile.display(),
+        "seeding the managed crate's Cargo.lock from the project lockfile"
+    );
+    write_file_if_changed(&managed_lockfile, merged.to_string().as_bytes()).await?;
+    write_file_if_changed(&seed_copy, &stamp).await
+}
+
+/// The [`LOCKFILE_SEED`] stamp recording the last seed's inputs: the
+/// project's lock bytes followed by a comment naming the canonical lock's
+/// checksum, so the stamp still parses as the lockfile it copies. A changed
+/// project lock or canonical checksum fails the byte comparison and
+/// re-seeds.
+fn seed_stamp(project_lock: &[u8], canonical: Option<&cargo_lock::Lockfile>) -> Vec<u8> {
+    use sha2::Digest as _;
+    let mut stamp = project_lock.to_vec();
+    if !stamp.ends_with(b"\n") {
+        stamp.push(b'\n');
     }
-    if !seeded_from {
-        fs::write(&seed_copy, &seed).await?;
+    stamp.extend_from_slice(b"# canonical-lock-sha256: ");
+    match canonical {
+        Some(canonical) => stamp.extend_from_slice(
+            hex::encode(sha2::Sha256::digest(canonical.to_string().as_bytes())).as_bytes(),
+        ),
+        None => stamp.extend_from_slice(b"none"),
     }
-    Ok(())
+    stamp.push(b'\n');
+    stamp
 }
 
 /// Parse `contents` as a `Cargo.lock` — the format both Cargo and the CLI

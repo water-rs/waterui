@@ -769,34 +769,35 @@ async fn stage_classpath_files(
 
     let java_dir = module_dir.join("src/main/java/waterui");
     let mut staged = HashSet::new();
-    for source in &classpath.kotlin_sources {
-        let Some(name) = source.file_name() else {
-            eyre::bail!("Kotlin source {} has no file name", source.display());
-        };
-        eyre::ensure!(
-            staged.insert(name.to_owned()),
-            "two crates declare a Kotlin source named `{}`",
-            name.to_string_lossy()
-        );
-        let package = fs::read_to_string(source)
-            .await?
-            .lines()
-            .find_map(|line| line.strip_prefix("package "))
-            .map(|rest| rest.trim().trim_end_matches(';').to_owned())
-            .ok_or_else(|| {
-                eyre::eyre!(
-                    "Kotlin source {} has no `package` declaration; the staged-class keep rule cannot name it",
-                    source.display()
-                )
-            })?;
-        keep_packages.insert(package);
-    }
     if classpath.kotlin_sources.is_empty() {
         if java_dir.exists() {
             fs::remove_dir_all(&java_dir).await?;
         }
     } else {
         fs::create_dir_all(&java_dir).await?;
+        for source in &classpath.kotlin_sources {
+            let Some(name) = source.file_name() else {
+                eyre::bail!("Kotlin source {} has no file name", source.display());
+            };
+            eyre::ensure!(
+                staged.insert(name.to_owned()),
+                "two crates declare a Kotlin source named `{}`",
+                name.to_string_lossy()
+            );
+            let package = fs::read_to_string(source)
+                .await?
+                .lines()
+                .find_map(|line| line.strip_prefix("package "))
+                .map(|rest| rest.trim().trim_end_matches(';').to_owned())
+                .ok_or_else(|| {
+                    eyre::eyre!(
+                        "Kotlin source {} has no `package` declaration; the staged-class keep rule cannot name it",
+                        source.display()
+                    )
+                })?;
+            keep_packages.insert(package);
+            crate::utils::copy_file_if_changed(source, &java_dir.join(name)).await?;
+        }
         // Files an earlier classpath staged that no source still declares
         // would keep a stale `keep` rule — drop them. The rest write only
         // on change, so an unchanged build leaves Gradle's inputs alone.
@@ -807,15 +808,11 @@ async fn stage_classpath_files(
                 continue;
             }
             let path = entry.path();
-            if path.is_dir() {
+            if entry.metadata().await?.is_dir() {
                 fs::remove_dir_all(&path).await?;
             } else {
                 fs::remove_file(&path).await?;
             }
-        }
-        for source in &classpath.kotlin_sources {
-            let name = source.file_name().expect("validated above");
-            crate::utils::copy_file_if_changed(source, &java_dir.join(name)).await?;
         }
         info!(
             "Staged {} Kotlin sources into {}",

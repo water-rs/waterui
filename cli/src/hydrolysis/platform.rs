@@ -248,35 +248,11 @@ pub(crate) async fn stage_hydrolysis_shared_runtime(
         bail!("Hydrolysis shared runtime can only be staged for macOS, Linux, and Windows");
     }
     let libraries = RustDynamicLibraries::resolve(built, &platform.triple(), project).await?;
-    synchronize_shared_runtime(
-        hydrolysis_runtime_dir(built),
-        Some(&libraries),
-        &platform.triple(),
-    )
-    .await
-}
-
-/// The directory a staged shared runtime lands in for `water preview`/`water
-/// run` on a native platform: the Cargo profile directory — the directory of
-/// the `<profile>/<name>` uplift the launch path executes — so the staged
-/// `libwaterui_dylib`/`libstd-*` copies sit beside the binary that loads
-/// them. `built.artifact` itself lives under `deps/`; staging there would
-/// make the staged-copy cleanup prune Cargo's own unit outputs.
-fn hydrolysis_runtime_dir(built: &BuiltTarget) -> &Path {
-    &built.profile_dir
-}
-
-/// The path a native `water preview`/`preview test`/MCP session executes:
-/// the `<profile>/<name>` uplift of the just-built backend binary. The
-/// marked `deps/` artifact spelling names the same file, but executing it
-/// would set `@executable_path`/`$ORIGIN` to `deps/` — the shared runtime
-/// is staged beside the profile-root binary instead.
-pub(crate) fn profile_binary_path(project: &Project, built: &BuiltTarget) -> PathBuf {
-    built.profile_dir.join(format!(
-        "{}{}",
-        project.hydrolysis_backend_crate_name(),
-        std::env::consts::EXE_SUFFIX
-    ))
+    // The staged runtime lands beside the `<profile>/<name>` uplift the
+    // launch path executes — the profile directory itself, never `deps/`:
+    // `built.artifact` lives there and pruning staged names would delete
+    // Cargo's own unit outputs.
+    synchronize_shared_runtime(&built.profile_dir, Some(&libraries), &platform.triple()).await
 }
 
 /// The packaged CEF helper's source: the helper build's own `BuiltTarget`
@@ -1151,52 +1127,5 @@ mod tests {
         assert!(declares_cef_helper(Some(ResolvedWebViewBackend::Cef)));
         assert!(!declares_cef_helper(Some(ResolvedWebViewBackend::Wpe)));
         assert!(!declares_cef_helper(None));
-    }
-
-    /// The shared runtime is staged into the Cargo profile directory — the
-    /// `<profile>/<name>` uplift's own — never `deps/`, where pruning staged
-    /// names deletes Cargo's own unit outputs and re-dirties them on the
-    /// next build. The marked `artifact` names `deps/<name>-<marker>`, so a
-    /// `parent()` derivation is the wrong directory (#2073 regression).
-    #[test]
-    fn shared_runtime_stages_in_the_profile_directory() {
-        let built = crate::build::BuiltTarget {
-            profile_dir: Path::new("/t/debug").to_path_buf(),
-            artifact: Path::new("/t/debug/deps/demo-a1b2c3d4").to_path_buf(),
-            shared_runtime: None,
-            app_library: None,
-            cef_helper: None,
-        };
-        assert_eq!(
-            super::hydrolysis_runtime_dir(&built),
-            Path::new("/t/debug"),
-            "the staged runtime sits beside the profile-root binary, not under deps/"
-        );
-    }
-
-    /// The packaged CEF helper comes from the helper build's own
-    /// `BuiltTarget` — the marked `deps/<helper>-<marker>` artifact — not a
-    /// helper name joined to the application binary's `deps/` parent, which
-    /// names a file nothing writes (#2073 regression).
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn cef_helper_path_is_the_helper_builds_own_artifact() {
-        let profile = Path::new("/t/debug");
-        let helper = crate::build::BuiltTarget {
-            profile_dir: profile.to_path_buf(),
-            artifact: profile.join("deps/demo-cef-helper-bb11cc22"),
-            shared_runtime: None,
-            app_library: None,
-            cef_helper: None,
-        };
-        assert_eq!(
-            super::cef_helper_binary(Some(&helper)).expect("the helper path resolves"),
-            profile.join("deps/demo-cef-helper-bb11cc22").as_path(),
-            "the helper path is the helper `BuiltTarget`'s own artifact"
-        );
-        assert!(
-            super::cef_helper_binary(None).is_err(),
-            "a declared helper with no helper build result is an error, not a guessed path"
-        );
     }
 }

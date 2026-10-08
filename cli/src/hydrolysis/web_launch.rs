@@ -136,18 +136,9 @@ pub(super) async fn write_web_shell(project: &Project, site_root: &Path) -> eyre
         .render()
         .map_err(|error| eyre::eyre!("Failed to render hydrolysis index template: {error}"))?;
 
-    crate::templates::write_file_if_changed(&site_root.join("index.html"), index.as_bytes())
-        .await?;
-    crate::templates::write_file_if_changed(
-        &site_root.join("bootstrap.js"),
-        BOOTSTRAP_TEMPLATE.as_bytes(),
-    )
-    .await?;
-    crate::templates::write_file_if_changed(
-        &site_root.join("style.css"),
-        STYLE_TEMPLATE.as_bytes(),
-    )
-    .await?;
+    fs::write(site_root.join("index.html"), index).await?;
+    fs::write(site_root.join("bootstrap.js"), BOOTSTRAP_TEMPLATE).await?;
+    fs::write(site_root.join("style.css"), STYLE_TEMPLATE).await?;
     Ok(())
 }
 

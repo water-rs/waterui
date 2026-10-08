@@ -168,6 +168,18 @@ pub struct BuiltTarget {
     /// exports `crate::artifact_symbols::ArtifactSymbols` reads. `None` when
     /// no project is attached or Cargo reported no library unit for it.
     pub app_library: Option<PathBuf>,
+    /// The `executable` Cargo's `compiler-artifact` message reported for the
+    /// selected binary target — the unhashed `<profile>/<name>` uplift.
+    /// `None` when this build selected a library target, which emits no
+    /// executable. Launchers execute this path, never the `deps/` artifact:
+    /// the staged shared runtime sits beside the uplift in the profile
+    /// directory, so `@executable_path`/`$ORIGIN` resolves it.
+    pub executable: Option<PathBuf>,
+    /// The entry `[[bin]]` an Apple build produces beside the companion
+    /// library — `Some` only on a non-embedded Apple build. Its own
+    /// `BuiltTarget` carries the reported `executable`, so packaging never
+    /// reconstructs `<profile>/<name>` itself.
+    pub entry_binary: Option<Box<Self>>,
     /// The CEF helper `[[bin]]` the generated hydrolysis backend crate
     /// builds next to the application binary — `Some` only on a hydrolysis
     /// build whose project declared one. Its own `BuiltTarget` carries the
@@ -177,6 +189,22 @@ pub struct BuiltTarget {
 }
 
 impl BuiltTarget {
+    /// The `executable` Cargo reported for this build's binary target — the
+    /// `<profile>/<name>` uplift a launcher executes so the staged shared
+    /// runtime resolves beside it.
+    ///
+    /// # Errors
+    /// Returns an error when this build selected no binary target or Cargo
+    /// reported no executable for it.
+    pub fn executable(&self) -> eyre::Result<&Path> {
+        self.executable.as_deref().ok_or_else(|| {
+            eyre::eyre!(
+                "Cargo reported no executable for the build in {}",
+                self.profile_dir.display()
+            )
+        })
+    }
+
     /// Return the shared `WaterUI` runtime Cargo reported for this build.
     ///
     /// # Errors
@@ -1857,7 +1885,10 @@ Automatic meson installation failed: {install_err}\n\n{}",
         .await?;
         // Relink under the still-held artifact lock: the `executable`
         // report names the shared uplift, so the variant-stable path has
-        // to be taken while no same-named build can overwrite it.
+        // to be taken while no same-named build can overwrite it. The
+        // reported uplift path is kept on `executable` — the launcher
+        // spelling whose directory holds the staged shared runtime.
+        let executable = matches!(cargo_target, CargoTarget::Binary(_)).then(|| artifact.clone());
         let artifact = match cargo_target {
             CargoTarget::Binary(name) => {
                 let marker = self.artifact_marker(release, cargo_target, &user_rustflags);
@@ -1876,6 +1907,8 @@ Automatic meson installation failed: {install_err}\n\n{}",
         Ok(BuiltTarget {
             profile_dir,
             artifact,
+            executable,
+            entry_binary: None,
             shared_runtime,
             app_library,
             cef_helper: None,
@@ -2693,23 +2726,19 @@ async fn marked_binary_artifact(
 
     // `rename` may do nothing when source and destination are links to
     // the same file — macOS takes that no-op branch — which would leave
-    // the staging name behind on a same-inode relink. When the marked
-    // path already names this run's inode the link is already correct:
-    // drop any stale staging name instead.
-    if same_file(uplift, &marked_path).await? {
-        match smol::fs::remove_file(&staging).await {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(RustBuildError::FailToBuildRustLibrary(error)),
-        }
+    // the staging name behind on a same-inode relink. And Cargo rewrites
+    // the shared uplift on every run — `fresh` units included — so a
+    // different inode is not a different artifact: identical bytes mean the
+    // marked path already names this run's output, and keeping it preserves
+    // the variant's inode and mtime for whatever watches `deps/` (#2073).
+    if same_file(uplift, &marked_path).await?
+        || file_contents_identical(uplift, &marked_path).await?
+    {
+        remove_staging_link(&staging).await?;
         return Ok(marked_path);
     }
 
-    match smol::fs::remove_file(&staging).await {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(RustBuildError::FailToBuildRustLibrary(error)),
-    }
+    remove_staging_link(&staging).await?;
     smol::fs::hard_link(uplift, &staging)
         .await
         .map_err(RustBuildError::FailToBuildRustLibrary)?;
@@ -2717,6 +2746,29 @@ async fn marked_binary_artifact(
         .await
         .map_err(RustBuildError::FailToBuildRustLibrary)?;
     Ok(marked_path)
+}
+
+/// Remove `marked_binary_artifact`'s staging name if a previous run left
+/// one behind.
+async fn remove_staging_link(staging: &Path) -> Result<(), RustBuildError> {
+    match smol::fs::remove_file(staging).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(RustBuildError::FailToBuildRustLibrary(error)),
+    }
+}
+
+/// Whether `a` and `b` hold the same bytes — `false` when `b` does not
+/// exist, an error for any other read failure.
+async fn file_contents_identical(a: &Path, b: &Path) -> Result<bool, RustBuildError> {
+    match smol::fs::read(b).await {
+        Ok(contents) => Ok(contents
+            == smol::fs::read(a)
+                .await
+                .map_err(RustBuildError::FailToBuildRustLibrary)?),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(RustBuildError::FailToBuildRustLibrary(error)),
+    }
 }
 
 /// Whether `a` and `b` name the same file — `false` when `b` does not
@@ -3644,6 +3696,8 @@ mod tests {
         let error = BuiltTarget {
             profile_dir: profile_dir.clone(),
             artifact: temporary.path().join("app"),
+            executable: None,
+            entry_binary: None,
             shared_runtime: None,
             app_library: None,
             cef_helper: None,
