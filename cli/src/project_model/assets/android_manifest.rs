@@ -325,16 +325,6 @@ pub(super) struct DeclaredComponents {
     pub(super) meta_data: Vec<MetaData>,
 }
 
-impl DeclaredComponents {
-    pub(super) const fn is_empty(&self) -> bool {
-        self.activities.is_empty()
-            && self.providers.is_empty()
-            && self.services.is_empty()
-            && self.receivers.is_empty()
-            && self.meta_data.is_empty()
-    }
-}
-
 /// A merged entry and the crate that declared it first.
 #[derive(Debug)]
 struct Declared<T> {
