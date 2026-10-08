@@ -144,7 +144,7 @@ pub fn config_chain_dir(build_dir: &Path, files: &[PathBuf]) -> Result<PathBuf> 
         let cargo_dir = dir.join(".cargo");
         std::fs::create_dir_all(&cargo_dir)
             .wrap_err_with(|| format!("cannot create config chain dir {}", cargo_dir.display()))?;
-        std::fs::copy(file, cargo_dir.join("config.toml"))
+        crate::utils::copy_file_if_changed_sync(file, &cargo_dir.join("config.toml"))
             .wrap_err_with(|| format!("cannot copy {} into the config chain", file.display()))?;
     }
     Ok(dir)

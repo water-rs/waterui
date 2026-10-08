@@ -136,22 +136,22 @@ class HydrolysisSession internal constructor(context: Context) {
 
     // ---- native → host callbacks (names are the JNI contract) ----
 
-    @Suppress("unused") // called from native
+    @CalledFromNative
     fun onNativeRequestRedraw() {
         hostView?.requestFrame()
     }
 
-    @Suppress("unused") // called from native
+    @CalledFromNative
     fun onNativeSoftInput(visible: Boolean) {
         hostView?.setSoftInputVisible(visible)
     }
 
-    @Suppress("unused") // called from native
+    @CalledFromNative
     fun onNativeAccessibilityTreeChanged(diffJson: String) {
         hostView?.notifyAccessibilityTreeChanged(diffJson)
     }
 
-    @Suppress("unused") // called from native
+    @CalledFromNative
     fun onNativePlatformViewsChanged() {
         hostView?.notifyPlatformViewsChanged()
     }
@@ -162,24 +162,24 @@ class HydrolysisSession internal constructor(context: Context) {
      * thread — a crash with a named cause is the honest surface for a session
      * that can no longer present.
      */
-    @Suppress("unused") // called from native
+    @CalledFromNative
     fun onNativeFatalError(message: String) {
         throw IllegalStateException(message)
     }
 
-    @Suppress("unused") // called from native
+    @CalledFromNative
     fun onNativeCloseRequested() {
         hostView?.closeRequested()
     }
 
     /** Native pushes the authoritative editing state for the IME mirror. */
-    @Suppress("unused") // called from native
+    @CalledFromNative
     fun onNativeEditingState(json: String) {
         hostView?.applyEditingState(json)
     }
 
     /** Native pushes a subscribed cursor-anchor update for the IME. */
-    @Suppress("unused") // called from native
+    @CalledFromNative
     fun onNativeCursorAnchorInfo(json: String) {
         hostView?.applyCursorAnchorInfo(json)
     }
@@ -189,7 +189,7 @@ class HydrolysisSession internal constructor(context: Context) {
      * its back callback from this; a disabled callback leaves back to the
      * system, which finishes the activity.
      */
-    @Suppress("unused") // called from native
+    @CalledFromNative
     fun onNativeBackAvailable(available: Boolean) {
         backAvailable = available
         onBackAvailable?.invoke(available)

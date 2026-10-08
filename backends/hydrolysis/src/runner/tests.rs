@@ -1067,8 +1067,16 @@ fn an_animated_list_scroll_keeps_the_window_awake_until_it_settles() {
     let _ = advance_runtime(&mut runtime, &env, now);
     render_window(&mut runtime, &env, &mut || false);
 
-    // Everything after this point has to be self-sustaining.
-    let animation_frames = drive_until_idle(&mut runtime, &env, &mut now, MAX_FRAMES);
+    // Everything after this point has to be self-sustaining. The flight is
+    // continuation work, never an unapplied change: no frame of it may leave
+    // the tree it emitted stale (water-rs/waterui#2243).
+    let animation_frames =
+        drive_until_idle_checking(&mut runtime, &env, &mut now, MAX_FRAMES, |runtime| {
+            assert!(
+                !runtime.renderer.has_pending_semantic_update(),
+                "a gliding list scroll must not leave a pending semantic update after its frame"
+            );
+        });
 
     assert!(
         animation_frames < MAX_FRAMES,
@@ -1092,6 +1100,17 @@ fn drive_until_idle(
     now: &mut Instant,
     max_frames: usize,
 ) -> usize {
+    drive_until_idle_checking(runtime, env, now, max_frames, |_| {})
+}
+
+/// [`drive_until_idle`], running `check` on the window after every frame.
+fn drive_until_idle_checking(
+    runtime: &mut RuntimeWindow<HeadlessPlatformWindow>,
+    env: &Environment,
+    now: &mut Instant,
+    max_frames: usize,
+    mut check: impl FnMut(&RuntimeWindow<HeadlessPlatformWindow>),
+) -> usize {
     for frame in 0..max_frames {
         let wake = runtime.mode.is_pending() | runtime.platform.take_redraw_request();
         if !wake {
@@ -1100,6 +1119,7 @@ fn drive_until_idle(
         *now += Duration::from_millis(16);
         let _ = advance_runtime(runtime, env, *now);
         render_window(runtime, env, &mut || false);
+        check(runtime);
     }
     max_frames
 }
