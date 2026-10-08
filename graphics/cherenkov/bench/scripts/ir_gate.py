@@ -98,7 +98,11 @@ def measure(path, symbol):
     root = ids[0]
     ncalls = sum(c for (a, b), c in calls.items() if b == root)
     ir = sum(c for (a, b), c in edge.items() if b == root)
-    assert ncalls == 1 and ir > 0, (path, ncalls, ir)
+    if ncalls != 1 or ir == 0:
+        # A call already in flight when instrumentation switched on
+        # leaves a dump-after with the fn record but no incoming call
+        # edge — not a sample.
+        return None
     is_alloc = lambda k: bool(ALLOC.search(names.get(k, '')))
     is_mem = lambda k: bool(MEM.search(names.get(k, '')))
     excluded = lambda k: is_alloc(k) or is_mem(k)
@@ -232,10 +236,15 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup):
               'pause_at': pause_at, 'command': command}
     for phase, symbol in roots.items():
         samples = []
-        for number in sorted(after[phase])[:3]:
+        for number in sorted(after[phase]):
             found = [m for m in (measure(p, symbol) for p in dump_files(out, prefix.name, number)) if m]
+            if not found:
+                continue
             assert len(found) == 1, (tag, scene, phase, number, len(found))
             samples.append(found[0])
+            if len(samples) == 3:
+                break
+        assert len(samples) == 3, (tag, scene, phase, len(samples))
         second, third = samples[1], samples[2]
         result[phase] = {'root': symbol, 'first': samples[0], 'second': second, 'third': third,
                          'third_delta_percent': 100 * (third['rust_ir'] / second['rust_ir'] - 1)}
