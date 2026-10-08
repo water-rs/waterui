@@ -986,6 +986,32 @@ mod tests {
                 "gpu band mounts on the gpu painter: {activity}"
             );
             assert!(activity.contains("HydrolysisHostView"), "{activity}");
+            // Intent extras are applied before `super.onCreate`, which loads
+            // the native library. Nothing reads `waterui.env.*` properties.
+            assert!(
+                activity.contains("setupEnvironmentFromIntent(intent)"),
+                "{activity}"
+            );
+            assert!(activity.contains("Os.setenv"), "{activity}");
+            assert!(
+                activity
+                    .find("setupEnvironmentFromIntent(intent)")
+                    .expect("intent extras")
+                    < activity
+                        .find("super.onCreate(savedInstanceState)")
+                        .expect("native library load"),
+                "{activity}"
+            );
+            assert!(
+                activity.contains(r#"envVar == "WATERUI_DEV_URL" && !BuildConfig.DEBUG"#),
+                "{activity}"
+            );
+            assert!(
+                !activity.contains("setupEnvironmentFromProperties"),
+                "{activity}"
+            );
+            assert!(!activity.contains("SystemProperties"), "{activity}");
+            assert!(!activity.contains("setprop"), "{activity}");
 
             // The narrow JNI keep: only the Rust→Kotlin entry points survive
             // R8 — the class members HydrolysisSession calls back by name.

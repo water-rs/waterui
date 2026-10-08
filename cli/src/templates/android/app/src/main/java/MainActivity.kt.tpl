@@ -46,43 +46,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        /**
-         * Read system properties with prefix "waterui.env." and set them as environment variables.
-         *
-         * Older CLI versions set these properties via `adb shell setprop waterui.env.<KEY> <VALUE>`
-         * before launching the app. This allows passing environment variables to the native
-         * Rust code since Android doesn't support direct environment variable passing.
-         */
-        @Suppress("PrivateApi")
-        private fun setupEnvironmentFromProperties() {
-            try {
-                // Use reflection to access SystemProperties (hidden API)
-                val systemProperties = Class.forName("android.os.SystemProperties")
-                val getMethod = systemProperties.getMethod("get", String::class.java, String::class.java)
-
-                // Known environment variables that might be set by the CLI
-                val knownEnvVars = listOf(
-                    "RUST_LOG",
-                    "RUST_BACKTRACE"
-                )
-
-                for (envVar in knownEnvVars) {
-                    val propKey = ENV_PREFIX + envVar
-                    val value = getMethod.invoke(null, propKey, "") as String
-                    if (value.isNotEmpty()) {
-                        try {
-                            Os.setenv(envVar, value, true)
-                            Log.d(TAG, "Set environment variable $envVar from system property")
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Failed to set environment variable $envVar: ${e.message}")
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to read system properties: ${e.message}")
-            }
-        }
-
         private fun loadWaterUiLibraries() {
             try {
                 // waterui_app is the standardized name used by `water build android`
@@ -121,12 +84,11 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        // Bundled asset sync + the runtime's env defaults; the intent/property
-        // overrides below still win by overwriting them.
+        // Bundled asset sync + the runtime's env defaults; the intent extras
+        // below still win by overwriting them.
         installWaterUiProcessEnvironment(this)
 
         setupEnvironmentFromIntent(intent)
-        setupEnvironmentFromProperties()
         loadWaterUiLibraries()
         val waterUiApplication = application as? WaterUiApplication
             ?: error("WaterUI requires WaterUiApplication")

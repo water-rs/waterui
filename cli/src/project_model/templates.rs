@@ -2539,6 +2539,31 @@ mod tests {
         assert!(activity.contains("enableEdgeToEdge()"));
         // The dev-server URL is forwarded only on debuggable builds.
         assert!(activity.contains(r#"envVar == "WATERUI_DEV_URL" && !BuildConfig.DEBUG"#));
+        // Intent extras overwrite the process defaults and land before the
+        // native library loads. `loadWaterUiLibraries` is declared above
+        // `onCreate`, so the call is the last match. Nothing reads
+        // `waterui.env.*` properties.
+        assert!(activity.contains("setupEnvironmentFromIntent(intent)"));
+        assert!(activity.contains("Os.setenv"));
+        assert!(
+            activity
+                .find("installWaterUiProcessEnvironment(this)")
+                .expect("process environment")
+                < activity
+                    .find("setupEnvironmentFromIntent(intent)")
+                    .expect("intent extras")
+        );
+        assert!(
+            activity
+                .find("setupEnvironmentFromIntent(intent)")
+                .expect("intent extras")
+                < activity
+                    .rfind("loadWaterUiLibraries()")
+                    .expect("native library load")
+        );
+        assert!(!activity.contains("setupEnvironmentFromProperties"));
+        assert!(!activity.contains("SystemProperties"));
+        assert!(!activity.contains("setprop"));
         assert!(activity.contains("waterUiApplication.acquireRuntime(this)"));
         assert!(activity.contains("androidRuntimeLease.close()"));
         assert!(activity.contains("val reportActivityFinished = !isChangingConfigurations"));
