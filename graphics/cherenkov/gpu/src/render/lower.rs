@@ -1169,16 +1169,6 @@ pub struct Lowering<'a> {
     painted_scratches: Vec<usize>,
     /// The nearest semantic isolation's target the capture copies from.
     semantic_target: Target,
-    /// The semantic target each semantic isolation's scratch replaced —
-    /// the canvas it composites into. An anchor that is the first item
-    /// of an isolating canvas copies from this parent target: the
-    /// canvas's own target is still empty at its start, and what a
-    /// member anchored there shows through is the content beneath the
-    /// level (water-rs/waterui#2097).
-    scratch_parent: Vec<Target>,
-    /// The lowest paint order seen per compositing canvas in the plan
-    /// walk — an anchor holding it is the canvas's first item.
-    canvas_first_order: FxHashMap<Option<LayerId>, usize>,
     /// The storage space of the enclosing level, innermost last; the
     /// surface renders in `Linear` (the implicit base).
     space_stack: Vec<cherenkov::BlendSpace>,
@@ -1249,8 +1239,6 @@ impl<'a> Lowering<'a> {
             looked_through_scratches: Vec::new(),
             painted_scratches: Vec::new(),
             semantic_target: Target::Part(0),
-            scratch_parent: Vec::new(),
-            canvas_first_order: FxHashMap::default(),
             part: 0,
             promoted: Vec::new(),
             opens: Vec::new(),
@@ -1466,7 +1454,6 @@ impl<'a> Lowering<'a> {
         let node = tree.layer(id);
         self.plan_order += 1;
         let order = self.plan_order;
-        self.canvas_first_order.entry(canvas).or_insert(order);
         if self.anchor_refs.contains(&id) {
             self.anchor_pos.insert(id, (canvas, order));
         }
@@ -1708,8 +1695,6 @@ impl<'a> Lowering<'a> {
         self.backdrops.clear();
         self.anchors.clear();
         self.anchor_pos.clear();
-        self.canvas_first_order.clear();
-        self.scratch_parent.clear();
         self.anchor_refs.clear();
         self.backdrop_filters = groups
             .iter()
@@ -2067,16 +2052,6 @@ impl<'a> Lowering<'a> {
 
     /// [`isolate`](Self::isolate) without the pass-through speculation:
     /// for a body that can never fold into the parent pass — the member
-    /// Records the semantic target a semantic isolation's scratch
-    /// replaced — the canvas it composites into (see
-    /// [`Lowering::scratch_parent`]).
-    fn mark_scratch_parent(&mut self, scratch: usize, parent: Target) {
-        if self.scratch_parent.len() <= scratch {
-            self.scratch_parent.resize(scratch + 1, parent);
-        }
-        self.scratch_parent[scratch] = parent;
-    }
-
     /// scope of a filtered member always opens its nested filter scope.
     #[expect(
         clippy::cast_possible_truncation,
@@ -2134,7 +2109,6 @@ impl<'a> Lowering<'a> {
         self.capture_isolation = false;
         if semantic {
             self.semantic_target = Target::Scratch(scratch);
-            self.mark_scratch_parent(scratch, saved_target);
         } else {
             self.looked_through_scratches.clone_from(&saved_scratches);
             self.looked_through_scratches.push((scratch, passes_start));
@@ -2949,21 +2923,8 @@ impl<'a> Lowering<'a> {
         // anchor's own content and children — and read the semantic
         // target directly, like an unanchored capture at the member.
         if let Some(plan) = self.anchors.get(&id) {
-            // An anchor that is its canvas's first item in an isolating
-            // canvas captures the target the canvas composites into —
-            // the canvas's own target is still empty at its start, so
-            // members see through to what lies beneath the level
-            // (water-rs/waterui#2097).
-            let source = match (self.anchor_pos.get(&id), self.semantic_target) {
-                (Some(&(canvas, order)), Target::Scratch(scratch))
-                    if self.canvas_first_order.get(&canvas) == Some(&order) =>
-                {
-                    self.scratch_parent[scratch]
-                }
-                _ => self.semantic_target,
-            };
             for gid in plan.groups.clone() {
-                self.emit_capture(gid, source);
+                self.emit_capture(gid, self.semantic_target);
             }
         }
         let node = tree.layer(id);

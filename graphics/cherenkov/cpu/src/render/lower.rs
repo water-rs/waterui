@@ -230,11 +230,6 @@ pub struct CaptureItem {
     /// nearest semantic level: pass-through and `opacity < 1` levels
     /// alike, composited as though each were at full opacity.
     pub flatten: usize,
-    /// The capture reads the canvas beneath an enclosing filter scope —
-    /// an anchor that is a filter scope's first item captures the level
-    /// the scope composites into: the scope's own canvas is still empty
-    /// at its start (water-rs/waterui#2097).
-    pub underlay: bool,
 }
 
 /// How a backdrop sample composites into the member's layer. `None` is
@@ -609,9 +604,6 @@ pub struct Lowering<'a, 'b> {
     /// Each anchor layer's compositing canvas, paint-order index and
     /// innermost filter scope, as planned.
     anchor_pos: FxHashMap<LayerId, (Option<LayerId>, usize, Option<LayerId>)>,
-    /// The lowest paint order seen per compositing canvas in the plan
-    /// walk — an anchor holding it is the canvas's first item.
-    canvas_first_order: FxHashMap<Option<LayerId>, usize>,
     /// The layer ids any planned group anchors at.
     anchor_refs: FxHashSet<LayerId>,
     /// The planning walk's paint-order counter.
@@ -937,7 +929,6 @@ impl<'a, 'b> Lowering<'a, 'b> {
             backdrops: FxHashMap::default(),
             scope_aprons: FxHashMap::default(),
             anchor_groups: FxHashMap::default(),
-            canvas_first_order: FxHashMap::default(),
             anchor_pos: FxHashMap::default(),
             anchor_refs: FxHashSet::default(),
             plan_order: 0,
@@ -1052,7 +1043,6 @@ impl<'a, 'b> Lowering<'a, 'b> {
         }
         self.plan_order += 1;
         let order = self.plan_order;
-        self.canvas_first_order.entry(canvas).or_insert(order);
         if self.anchor_refs.contains(&id) {
             self.anchor_pos
                 .insert(id, (canvas, order, scopes.last().copied()));
@@ -1183,7 +1173,6 @@ impl<'a, 'b> Lowering<'a, 'b> {
         let mut groups = FxHashMap::default();
         self.anchor_refs = filters.backdrop_anchors(surface).collect();
         self.plan_order = 0;
-        self.canvas_first_order.clear();
         let start = self.start(tree);
         self.plan_layer(
             start,
@@ -1805,21 +1794,9 @@ impl<'a, 'b> Lowering<'a, 'b> {
         let Some(gids) = self.anchor_groups.get(&id) else {
             return;
         };
-        // An anchor that is the first item of an isolating canvas — the
-        // enclosing level's own canvas is still empty at its start —
-        // captures the canvas the level composites into instead: what
-        // lies beneath the level (water-rs/waterui#2097).
-        let beneath = self.anchor_pos.get(&id).is_some_and(|&(canvas, order, _)| {
-            canvas.is_some()
-                && self.canvas_first_order.get(&canvas) == Some(&order)
-                && matches!(
-                    self.items.last(),
-                    Some(Item::PushFilter { end: 0, .. } | Item::PushIsolate { .. })
-                )
-        });
         let gids = gids.clone();
         for gid in gids {
-            self.push_capture(gid, beneath);
+            self.push_capture(gid);
         }
     }
 
@@ -1832,12 +1809,12 @@ impl<'a, 'b> Lowering<'a, 'b> {
             .get(&gid)
             .is_some_and(|plan| plan.spec.anchor_layer().is_none() && plan.first == id)
         {
-            self.push_capture(gid, false);
+            self.push_capture(gid);
         }
     }
 
     /// Pushes group `gid`'s capture item at the current position.
-    fn push_capture(&mut self, gid: u64, beneath: bool) {
+    fn push_capture(&mut self, gid: u64) {
         if let Some(plan) = self.backdrops.get(&gid)
             && plan.region.x0 < plan.region.x1
             && plan.region.y0 < plan.region.y1
@@ -1848,12 +1825,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             let reach = plan.reach;
             let spec = plan.spec;
             let filter = plan.filter.clone();
-            // `beneath` over a filter scope reads the underlay rows; over
-            // an in-stack semantic isolate it flattens the level itself.
-            let underlay = beneath && matches!(self.items.last(), Some(Item::PushFilter { .. }));
-            let extra = beneath && !underlay && self.iso_kinds.last() == Some(&false);
-            let flatten =
-                self.iso_kinds.iter().rev().take_while(|&&k| k).count() + usize::from(extra);
+            let flatten = self.iso_kinds.iter().rev().take_while(|&&k| k).count();
             self.items.push(Item::Capture(Box::new(CaptureItem {
                 group: gid,
                 scale: spec.scale(),
@@ -1884,7 +1856,6 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 reach,
                 filter,
                 flatten,
-                underlay,
             })));
         }
     }
