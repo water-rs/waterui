@@ -39,7 +39,7 @@ use std::num::NonZeroU64;
 
 use rustc_hash::FxHashMap;
 
-use crate::backdrop::{BackdropShaderSource, CaptureScale};
+use crate::backdrop::{BackdropShaderSource, CaptureLevels, CaptureScale};
 use crate::record::{Content, Live};
 use crate::shape::ShapeData;
 
@@ -98,6 +98,10 @@ impl CaptureClass {
 pub struct MaterialCapture {
     /// The resolution the class's groups capture at.
     pub scale: CaptureScale,
+    /// How many capture levels the class's group pyramids keep
+    /// ([`CaptureLevels`]): the pyramid a `backdrop_sample_level` shader
+    /// reads.
+    pub levels: CaptureLevels,
     /// How the class's members form groups inside a material scope.
     pub grouping: MaterialGrouping,
 }
@@ -207,7 +211,7 @@ impl MaterialScope {
 /// to the shape and its backdrop sample to the effect (through
 /// [`Live::map`]), so a signal change reaches the member with no
 /// re-recording. A binding starts from its signal's value when it binds.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct BackdropMaterial {
     shape: Live<ShapeData>,
     shader: MaterialShader,
@@ -262,6 +266,13 @@ impl BackdropMaterial {
     #[must_use]
     pub const fn scope(&self) -> MaterialScope {
         self.scope
+    }
+
+    /// Rebinds the shape and effect lives: a host realizing the member
+    /// binds clones so a group rebuild can rebind the same signal later.
+    #[must_use]
+    pub fn lives(&self) -> (Live<ShapeData>, Live<MaterialEffect>) {
+        (self.shape.clone(), self.effect.clone())
     }
 
     /// The live shape and effect, for the host to bind to the member
@@ -683,6 +694,7 @@ mod tests {
     fn a_duplicate_capture_class_key_panics() {
         let capture = MaterialCapture {
             scale: CaptureScale::FULL,
+            levels: CaptureLevels::ONE,
             grouping: MaterialGrouping::Shared,
         };
         MaterialRegistry::new()
@@ -694,6 +706,7 @@ mod tests {
     fn a_registry_answers_for_its_keys() {
         let capture = MaterialCapture {
             scale: CaptureScale::new(0.25).expect("in range"),
+            levels: CaptureLevels::new(3).expect("in range"),
             grouping: MaterialGrouping::Solo,
         };
         let mut registry = MaterialRegistry::new();

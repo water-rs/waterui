@@ -9,17 +9,18 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use cherenkov::{
-    FilterId, Layer, LayerContent, LayerId, LayerNode, Realize, Shared, SurfaceId, SurfaceTree,
-    Transaction,
+    BackdropId, BackdropSample, FilterId, Layer, LayerContent, LayerId, LayerNode, Realize, Shared,
+    SurfaceId, SurfaceTree, Transaction,
 };
-use cherenkov_record::ChangeSet;
+use cherenkov_record::{ChangeSet, MaterialRegistry};
 use rustc_hash::FxHashMap;
 
 use crate::engine::GpuEngine;
 use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use crate::renderer::effects::{AppliedFilterMetrics, FilteredRuntime};
-use crate::renderer::mount::layers::{LayerVisitor, visit};
-use crate::renderer::mount::target::LayerTarget;
+use crate::renderer::mount::backdrop::MemberJoin;
+use crate::renderer::mount::layers::{LayerVisitor, NodeLayers, visit};
+use crate::renderer::mount::target::{LayerTarget, MaterialTerms, attach_material_shaders};
 use crate::renderer::mount::{Mount, MountStats};
 use crate::renderer::recording::{Recording, SceneResources};
 use crate::renderer::{HydrolysisRenderer, ProducerWake};
@@ -33,7 +34,15 @@ impl cherenkov::Target for MirrorTarget {
     type Install = (u32, u32);
 }
 
+impl std::fmt::Debug for MirrorTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MirrorTarget").finish_non_exhaustive()
+    }
+}
+
 impl cherenkov::GpuInstalls for MirrorTarget {}
+
+impl cherenkov::BackdropSampling for MirrorTarget {}
 
 /// What the mirror's consumer side holds.
 pub struct Mirrored {
@@ -46,12 +55,14 @@ pub struct MirrorQueue {
     mirrored: Rc<RefCell<Mirrored>>,
 }
 
-impl cherenkov::Queue<MirrorTarget> for MirrorQueue {
-    fn drains_inline(&self) -> bool {
-        true
+impl std::fmt::Debug for MirrorQueue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MirrorQueue").finish_non_exhaustive()
     }
+}
 
-    fn apply(&self, changes: ChangeSet<MirrorTarget>) {
+impl MirrorQueue {
+    fn apply_changes<T: cherenkov::Target<Install = (u32, u32)>>(&self, changes: ChangeSet<T>) {
         let mut mirrored = self.mirrored.borrow_mut();
         for op in changes.ops {
             match mirrored.tree.apply_op(op) {
@@ -65,6 +76,28 @@ impl cherenkov::Queue<MirrorTarget> for MirrorQueue {
             }
         }
     }
+}
+
+impl cherenkov::Queue<MirrorTarget> for MirrorQueue {
+    fn drains_inline(&self) -> bool {
+        true
+    }
+
+    fn apply(&self, changes: ChangeSet<MirrorTarget>) {
+        self.apply_changes(changes);
+    }
+
+    fn wake(&self) {}
+}
+
+impl cherenkov::Queue<NoShaderTarget> for MirrorQueue {
+    fn drains_inline(&self) -> bool {
+        true
+    }
+
+    fn apply(&self, changes: ChangeSet<NoShaderTarget>) {
+        self.apply_changes(changes);
+    }
 
     fn wake(&self) {}
 }
@@ -74,13 +107,24 @@ pub struct MirrorHost {
     resources: Rc<SceneResources>,
     engine: Rc<GpuEngine>,
     metrics: Arc<AppliedFilterMetrics>,
+    materials: MaterialTerms<MirrorTarget>,
+}
+
+impl std::fmt::Debug for MirrorHost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MirrorHost").finish_non_exhaustive()
+    }
 }
 
 impl LayerTarget for MirrorTarget {
     type Host = MirrorHost;
-    /// The mirror installs no backdrop group object — its table keeps the
-    /// membership bookkeeping, which `backdrops()` reads.
-    type Group = ();
+    /// The mirror's chrome-group object is a synthetic `BackdropId` the
+    /// sample binds — the install a member commits carries it, so a test
+    /// reads membership and identity off the mirrored tree.
+    type Group = BackdropId;
+    /// The mirror's engine realizes real backdrop shaders.
+    type Shader = cherenkov::BackdropShader;
+    const BACKDROP_SHADERS: bool = true;
 
     fn resources(host: &MirrorHost) -> &Rc<SceneResources> {
         &host.resources
@@ -124,7 +168,7 @@ impl LayerTarget for MirrorTarget {
     fn mount_material(
         _host: &MirrorHost,
         tx: &mut Transaction<'_, Self>,
-        groups: &mut crate::renderer::mount::backdrop::BackdropGroups<()>,
+        groups: &mut crate::renderer::mount::backdrop::MaterialBackdropGroups<BackdropId>,
         layer: &Layer,
         key: crate::renderer::mount::backdrop::BackdropGroupKey,
         display_scale: f64,
@@ -132,13 +176,79 @@ impl LayerTarget for MirrorTarget {
     ) {
         groups.join(
             tx,
-            layer,
             key,
+            key.runtime(),
             display_scale,
-            membership,
-            (|_runtime, _scale| (), |_tx, _member, _group| {}),
+            MemberJoin {
+                layer,
+                membership,
+                resolve: NodeLayers::frame_layer,
+            },
+            (|_runtime, _scale| key_id(&key), |_tx, _member, _group| {}),
         );
     }
+
+    fn material_terms(host: &MirrorHost) -> &MaterialTerms<Self> {
+        &host.materials
+    }
+
+    fn mount_chrome(
+        host: &MirrorHost,
+        tx: &mut Transaction<'_, Self>,
+        groups: &mut crate::renderer::mount::backdrop::ChromeBackdropGroups<BackdropId>,
+        layer: &Layer,
+        key: crate::renderer::mount::backdrop::ChromeGroupKey,
+        params: cherenkov_record::MaterialCapture,
+        display_scale: f64,
+        membership: &crate::renderer::mount::backdrop::MaterialMembership,
+        chrome: &crate::renderer::mount::program::ChromeMaterial,
+    ) {
+        // The mirror's group id is the id its members' samples carry: the
+        // install binds `BackdropSample::with_effect(id, …)` from the
+        // engine-side shader handle, exactly as the GPU target's.
+        let shader = host
+            .materials
+            .shaders
+            .get(&chrome.material.shader())
+            .expect("hydrolysis mirror: a mounted chrome member's shader is registered")
+            .clone();
+        let (_, effect) = chrome.material.lives();
+        groups.join(
+            tx,
+            key,
+            params,
+            display_scale,
+            MemberJoin {
+                layer,
+                membership,
+                resolve: NodeLayers::member_layer,
+            },
+            (
+                |_params, _scale| key_id(&key),
+                move |tx: &mut Transaction<'_, Self>, member: &Layer, id: &BackdropId| {
+                    let id = *id;
+                    let shader = shader.clone();
+                    tx[member].backdrop(effect.clone().map(move |effect| {
+                        BackdropSample::with_effect(id, shader.effect(effect.uniforms().to_vec()))
+                    }));
+                },
+            ),
+        );
+    }
+
+    fn clear_chrome(tx: &mut Transaction<'_, Self>, layer: &Layer) {
+        tx[layer].clear_backdrop();
+    }
+}
+
+/// A synthetic group id for a mirror group: stable across the group's
+/// rebuilds and distinct from any other key's. The top bit keeps it clear
+/// of ids a real surface allocates.
+fn key_id(key: &impl std::hash::Hash) -> BackdropId {
+    use std::hash::Hasher;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(key, &mut hasher);
+    BackdropId::new(hasher.finish() | (1 << 63))
 }
 
 thread_local! {
@@ -162,7 +272,7 @@ impl std::fmt::Debug for MirrorWindow {
 }
 
 impl MirrorWindow {
-    fn new() -> Self {
+    fn new(registry: &Rc<MaterialRegistry>) -> Self {
         let mirrored = Rc::new(RefCell::new(Mirrored {
             tree: SurfaceTree::new(),
             installs: FxHashMap::default(),
@@ -176,11 +286,15 @@ impl MirrorWindow {
         let engine = ENGINE.with(Rc::clone);
         let host = MirrorHost {
             resources: Rc::new(SceneResources::new(&engine)),
-            engine,
+            engine: Rc::clone(&engine),
             metrics: Arc::new(AppliedFilterMetrics::default()),
+            materials: MaterialTerms {
+                registry: Rc::clone(registry),
+                shaders: attach_material_shaders(&engine, registry),
+            },
         };
         Self {
-            mount: Mount::new(shared),
+            mount: Mount::new(shared, registry),
             host,
             mirrored,
         }
@@ -252,6 +366,131 @@ impl MirrorWindow {
     pub fn backdrops(&self) -> Vec<(LayerId, f64)> {
         self.mount.groups().member_scales()
     }
+
+    /// The theme's material terms on the mirror's engine.
+    pub fn materials(&self) -> &MaterialTerms<MirrorTarget> {
+        &self.host.materials
+    }
+
+    /// The member's parent layer's committed children, in paint order.
+    pub fn siblings(&self, id: LayerId) -> Vec<LayerId> {
+        let path = self.path(id);
+        let parent = path[path.len() - 2];
+        self.mirrored.borrow().tree.layer(parent).children.clone()
+    }
+}
+
+/// Runs `f` on the test engine — engine-level checks that need no window.
+pub fn mirror_engine<T>(f: impl FnOnce(&Rc<GpuEngine>) -> T) -> T {
+    ENGINE.with(|engine| f(engine))
+}
+
+/// A layer target whose engine lacks backdrop shaders — the CPU-engine
+/// attach rule (water-rs/waterui#1788) mounts against it.
+pub struct NoShaderTarget;
+
+impl cherenkov::Target for NoShaderTarget {
+    type Queue = MirrorQueue;
+    type Install = (u32, u32);
+}
+
+impl std::fmt::Debug for NoShaderTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NoShaderTarget").finish_non_exhaustive()
+    }
+}
+
+/// The no-shader target's host: the mirror's engine terms with no shader
+/// handles — `Shader` is `()`.
+pub struct NoShaderHost {
+    resources: Rc<SceneResources>,
+    engine: Rc<GpuEngine>,
+    metrics: Arc<AppliedFilterMetrics>,
+    materials: MaterialTerms<NoShaderTarget>,
+}
+
+impl std::fmt::Debug for NoShaderHost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NoShaderHost").finish_non_exhaustive()
+    }
+}
+
+/// A `Mount<NoShaderTarget>` under construction against `registry` — the
+/// CPU-engine attach rule's panic lives in `Mount::new`.
+pub fn no_shader_mount(registry: &MaterialRegistry) -> Mount<NoShaderTarget> {
+    let shared = Rc::new(RefCell::new(Shared::new(
+        SurfaceId::new(2),
+        MirrorQueue {
+            mirrored: Rc::new(RefCell::new(Mirrored {
+                tree: SurfaceTree::new(),
+                installs: FxHashMap::default(),
+            })),
+        },
+    )));
+    Mount::new(shared, registry)
+}
+
+impl LayerTarget for NoShaderTarget {
+    type Host = NoShaderHost;
+    type Group = ();
+    type Shader = ();
+    const BACKDROP_SHADERS: bool = false;
+
+    fn resources(host: &NoShaderHost) -> &Rc<SceneResources> {
+        &host.resources
+    }
+
+    fn mount_gpu_content(
+        _host: &NoShaderHost,
+        _tx: &mut Transaction<'_, Self>,
+        _layer: &Layer,
+        _runtime: &mut GpuContentRuntime,
+        _pixels: (u32, u32),
+        _wake: ProducerWake,
+    ) {
+    }
+
+    fn mount_external_frame(
+        _host: &NoShaderHost,
+        _tx: &mut Transaction<'_, Self>,
+        _layer: &Layer,
+        _runtime: &mut ExternalFrameRuntime,
+        _wake: ProducerWake,
+    ) -> Option<(u32, u32)> {
+        None
+    }
+
+    fn filter(host: &NoShaderHost, runtime: &mut FilteredRuntime) -> FilterId {
+        runtime.filter(&host.engine, &host.metrics).id()
+    }
+
+    fn mount_material(
+        _host: &NoShaderHost,
+        _tx: &mut Transaction<'_, Self>,
+        _groups: &mut crate::renderer::mount::backdrop::MaterialBackdropGroups<()>,
+        _layer: &Layer,
+        _key: crate::renderer::mount::backdrop::BackdropGroupKey,
+        _display_scale: f64,
+        _membership: &crate::renderer::mount::backdrop::MaterialMembership,
+    ) {
+    }
+
+    fn material_terms(host: &NoShaderHost) -> &MaterialTerms<Self> {
+        &host.materials
+    }
+
+    fn mount_chrome(
+        _host: &NoShaderHost,
+        _tx: &mut Transaction<'_, Self>,
+        _groups: &mut crate::renderer::mount::backdrop::ChromeBackdropGroups<()>,
+        _layer: &Layer,
+        _key: crate::renderer::mount::backdrop::ChromeGroupKey,
+        _params: cherenkov_record::MaterialCapture,
+        _display_scale: f64,
+        _membership: &crate::renderer::mount::backdrop::MaterialMembership,
+        _chrome: &crate::renderer::mount::program::ChromeMaterial,
+    ) {
+    }
 }
 
 /// Flattens every committed run into one window-space recording.
@@ -276,7 +515,10 @@ impl HydrolysisRenderer {
     /// and returns that commit's stats with the mounted layers' census.
     pub fn commit_mirror(&mut self) -> MountStats {
         let roots = self.mount_roots();
-        let window = self.mirror.get_or_insert_with(MirrorWindow::new);
+        let registry = Rc::clone(&self.material_registry);
+        let window = self
+            .mirror
+            .get_or_insert_with(|| MirrorWindow::new(&registry));
         let redraw = self.host_redraw_handle.clone();
         let core = &mut self.core;
         let window_material = core.window_material;

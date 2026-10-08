@@ -49,6 +49,7 @@ mod list_row_metrics;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod list_visibility;
 mod material;
+mod material_chrome;
 mod material_group;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod menu_shortcuts;
@@ -124,7 +125,10 @@ use waterui_backend_core::widget::{
 };
 use waterui_core::EasingCurve;
 use waterui_core::handler::SharedAction;
-use waterui_graphics::draw::{Draw, Paint, Recorder, Shadow, WorkingColor};
+use waterui_graphics::draw::{
+    BackdropShaderSource, CaptureClass, Draw, Live, MaterialCapture, MaterialEffect,
+    MaterialRegistry, MaterialShader, Paint, Recorder, Shadow, WorkingColor,
+};
 
 fn test_renderer() -> HydrolysisRenderer {
     test_renderer_with_theme(MinimalTestTheme::default())
@@ -300,7 +304,7 @@ pub fn window_mount(runtime: &crate::HeadlessRuntime) -> &mount::Mount<cherenkov
 /// The window's backdrop-group table — the test renders one window.
 pub fn mounts(
     runtime: &crate::HeadlessRuntime,
-) -> &mount::backdrop::BackdropGroups<cherenkov::BackdropGroup> {
+) -> &mount::backdrop::MaterialBackdropGroups<cherenkov::BackdropGroup> {
     window_mount(runtime).groups()
 }
 
@@ -2468,6 +2472,37 @@ pub struct MinimalTestTheme {
     slider_track_draws: Rc<RefCell<Vec<Rect>>>,
     /// Every `draw_interaction_state_layer` call, as `(state, resolved radii)`.
     state_layer_draws: Rc<RefCell<Vec<(WidgetInteractionState, RoundedRectRadii)>>>,
+    /// The backdrop-material plan a chrome test installs
+    /// (water-rs/waterui#1788): the registry entries and the materials the
+    /// state-layer draw replays.
+    chrome: ChromePlan,
+}
+
+/// One `backdrop_material` a chrome test's theme replays per
+/// `draw_interaction_state_layer` call (water-rs/waterui#1788).
+#[derive(Clone)]
+pub struct ChromeDraw {
+    /// The member's live clip shape — a signal for the signal-rebind test.
+    pub shape: Live<kurbo::RoundedRect>,
+    /// The shader key the material names.
+    pub shader: MaterialShader,
+    /// The capture class the material names.
+    pub capture: CaptureClass,
+    /// The member's live effect — its uniforms.
+    pub effect: Live<MaterialEffect>,
+}
+
+/// The backdrop-material terms a chrome test's theme declares: the
+/// registry `register_backdrop_shaders` fills and the materials the
+/// state-layer draw replays per call.
+#[derive(Clone, Default)]
+pub struct ChromePlan {
+    /// `(key, source)` pairs the registry registers.
+    pub shaders: Vec<(MaterialShader, BackdropShaderSource)>,
+    /// `(key, capture)` pairs the registry registers.
+    pub captures: Vec<(CaptureClass, MaterialCapture)>,
+    /// The materials `draw_interaction_state_layer` records per call.
+    pub draws: Vec<ChromeDraw>,
 }
 
 impl crate::Style for MinimalTestTheme {
@@ -2545,15 +2580,34 @@ impl WidgetTheme for MinimalTestTheme {
     ) {
     }
 
+    /// Fills `registry` with the test's shader sources and capture
+    /// classes — the renderer calls this once at `with_engine`.
+    fn register_backdrop_shaders(&self, registry: &mut MaterialRegistry) {
+        for (key, source) in &self.chrome.shaders {
+            registry.register_shader(*key, source.clone());
+        }
+        for (key, capture) in &self.chrome.captures {
+            registry.register_capture_class(*key, *capture);
+        }
+    }
+
     fn draw_interaction_state_layer(
         &self,
-        _draw: &mut Recorder,
+        draw: &mut Recorder,
         _bounds: Rect,
         radii: RoundedRectRadii,
         _color: WorkingColor,
         state: WidgetInteractionState,
     ) {
         self.state_layer_draws.borrow_mut().push((state, radii));
+        for chrome in &self.chrome.draws {
+            draw.backdrop_material(
+                chrome.shape.clone(),
+                chrome.shader,
+                chrome.capture,
+                chrome.effect.clone(),
+            );
+        }
     }
 
     fn toggle_metrics(&self, _style: ToggleStyle) -> ToggleMetrics {

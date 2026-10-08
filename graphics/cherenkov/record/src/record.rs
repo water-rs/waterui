@@ -276,7 +276,11 @@ impl<T> Watch<T> {
 }
 
 /// A signal's subscription factory and the guard keeping it alive.
-struct Subscribe<T>(Option<Box<dyn Subscription<T>>>);
+/// `Rc` so a `Live` is `Clone`: a host may bind one `Live` to more than
+/// one layer property — or rebind it — and each binding gets its own
+/// watch of the shared subscription.
+#[derive(Clone)]
+struct Subscribe<T>(Option<Rc<dyn Subscription<T>>>);
 
 impl<T> std::fmt::Debug for Subscribe<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -295,7 +299,7 @@ trait Subscription<T> {
     /// watch of a subscription that cannot fire.
     fn fires(&self) -> bool;
 
-    fn start(self: Box<Self>, watch: Watch<T>) -> Option<Box<dyn Any>>;
+    fn start(&self, watch: Watch<T>) -> Option<Box<dyn Any>>;
 }
 
 struct SignalSubscription<S>(S);
@@ -315,7 +319,7 @@ impl<S: Signal> Subscription<S::Output> for SignalSubscription<S> {
         reason = "erase constant watches after devirtualizing the subscription"
     )]
     #[inline(always)]
-    fn start(self: Box<Self>, watch: Watch<S::Output>) -> Option<Box<dyn Any>> {
+    fn start(&self, watch: Watch<S::Output>) -> Option<Box<dyn Any>> {
         let guard = self.0.watch(move |context| watch.notify(context));
         // The watch always runs. Only guards with neither size nor drop glue
         // can be discarded instead of retained for unsubscription.
@@ -336,7 +340,9 @@ impl<T> Subscribe<T> {
     // Starts a recorder's slot subscription.
     #[must_use]
     fn start(self, watch: Watch<T>) -> Option<Box<dyn Any>> {
-        self.0.and_then(|subscription| subscription.start(watch))
+        self.0
+            .as_ref()
+            .and_then(|subscription| subscription.start(watch))
     }
 }
 
@@ -346,6 +352,10 @@ impl<T> Subscribe<T> {
 /// Outside a recording, a target binds a property to a `Live` through
 /// [`Live::watch`]: layer properties take `impl Into<Live<T>>`, so a bound
 /// signal keeps updating the property with no further transaction.
+///
+/// `Clone` so a host may bind one `Live` to more than one property — or
+/// rebind it — where the recording hands it a single handle.
+#[derive(Clone)]
 pub struct Live<T> {
     value: T,
     subscription: Subscribe<T>,
@@ -379,7 +389,7 @@ impl<T: 'static, S: Signal<Output = T>> From<S> for Live<T> {
         let value = signal.snapshot();
         Self {
             value,
-            subscription: Subscribe(Some(Box::new(SignalSubscription(signal)))),
+            subscription: Subscribe(Some(Rc::new(SignalSubscription(signal)))),
         }
     }
 }
@@ -480,7 +490,10 @@ impl<T> Live<T> {
         Live {
             value,
             subscription: Subscribe(subscription.0.map(|inner| {
-                Box::new(MappedSubscription { inner, f }) as Box<dyn Subscription<U>>
+                Rc::new(MappedSubscription {
+                    inner,
+                    f: Rc::new(f),
+                }) as Rc<dyn Subscription<U>>
             })),
         }
     }
@@ -489,8 +502,8 @@ impl<T> Live<T> {
 /// A subscription whose changes pass through a map before they reach the
 /// watch: what [`Live::map`] leaves.
 struct MappedSubscription<T, F> {
-    inner: Box<dyn Subscription<T>>,
-    f: F,
+    inner: Rc<dyn Subscription<T>>,
+    f: Rc<F>,
 }
 
 impl<T: 'static, U: 'static, F: Fn(T) -> U + 'static> Subscription<U> for MappedSubscription<T, F> {
@@ -502,11 +515,11 @@ impl<T: 'static, U: 'static, F: Fn(T) -> U + 'static> Subscription<U> for Mapped
         self.inner.fires()
     }
 
-    fn start(self: Box<Self>, watch: Watch<U>) -> Option<Box<dyn Any>> {
-        let Self { inner, f } = *self;
-        inner.start(Watch::binding(
+    fn start(&self, watch: Watch<U>) -> Option<Box<dyn Any>> {
+        let f = Rc::clone(&self.f);
+        self.inner.start(Watch::binding(
             move |context: nami_core::watcher::Context<T>| {
-                watch.notify(context.map(&f));
+                watch.notify(context.map(&*f));
             },
         ))
     }

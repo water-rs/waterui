@@ -40,6 +40,9 @@ waterui-locale.workspace = true
 waterui-url = { workspace = true, features = ["std"] }
 cherenkov.workspace = true
 cherenkov-gpu.workspace = true
+# `MaterialRegistry`/`MaterialScope`/`MaterialCapture`/`Live` — the widget
+# theme's chrome terms the mount installs per member (water-rs/waterui#1788).
+cherenkov-record.workspace = true
 kurbo.workspace = true
 peniko = "0.6"
 # `imageops::resize` fits a decoded image to the engine's image limits
