@@ -251,6 +251,10 @@ jobs:
       # The `create --template web` tests scaffold and build a Vite frontend.
       - uses: oven-sh/setup-bun@v2
       - run: cargo nextest run --locked --profile ci -p waterui-cli --run-ignored ignored-only
+      # The hydrolysis ignored suite — the Android WebView bridge's
+      # composed-script round trip through a real JS engine. `bun` is on
+      # PATH from the step above.
+      - run: cargo nextest run --locked --profile ci -p hydrolysis --run-ignored ignored-only
 
   # The cli's fresh-user end-to-end suite (water-rs/cli's nightly `e2e` job,
   # #1446): the installed CLI as a brand-new OS user. `water doctor --fix`
