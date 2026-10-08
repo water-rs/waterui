@@ -58,7 +58,8 @@ pub async fn build_winui(project: &Project, options: BuildOptions) -> eyre::Resu
     )
     .await?;
 
-    let mut build = RustBuild::new(&backend_path, TargetPlatform::Windows.triple())
+    let mut build =
+        RustBuild::new(project.host(), &backend_path, TargetPlatform::Windows.triple())
         .with_project(project)
         .with_target_dir(project.water_target_dir(options.linkage()).await?)
         .with_linkage(

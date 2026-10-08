@@ -99,7 +99,14 @@ async fn run_preview_binary(
         },
     };
     let run_config_path = write_run_config(&crate_dir, &run_config).await?;
-    run::run_preview_binary(&crate_dir, binary, &run_config_path, "Apple preview").await?;
+    run::run_preview_binary(
+        project.host(),
+        &crate_dir,
+        binary,
+        &run_config_path,
+        "Apple preview",
+    )
+    .await?;
     Ok(())
 }
 
@@ -132,7 +139,8 @@ pub async fn render_preview_with_apple(
         apple_build_features(&project, browser_runtime, RustLinkage::SharedRuntime).await?;
     let triple = TargetPlatform::MacOS.triple();
     let target_dir = project.water_target_dir(RustLinkage::SharedRuntime).await?;
-    let mut rust_build = RustBuild::new(project.apple_preview_crate_path(), triple.clone())
+    let mut rust_build =
+        RustBuild::new(project.host(), project.apple_preview_crate_path(), triple.clone())
         .with_project(&project)
         .with_features(features)
         .with_preferred_dynamic_linking()

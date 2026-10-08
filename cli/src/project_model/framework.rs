@@ -8,12 +8,12 @@ use std::{
 };
 
 use crate::project::Project;
+use crate::toolchain::Host;
 use cargo_lock::{Dependency as LockedDependency, Lockfile};
 use cargo_toml::{Dependency, DependencyDetail, PatchSet};
 use eyre::{Result, WrapErr, bail, eyre};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use smol::process::Command;
 use zenwave::{Client as _, Method, StatusCode};
 
 /// A framework distribution channel, independent of the Rust toolchain.
@@ -1463,6 +1463,7 @@ impl ResolvedFramework {
     /// Returns an error when the channel has no eligible release, the manifest
     /// fails verification, or the certified revision cannot be fetched.
     pub(crate) async fn resolve(
+        host: &Host,
         channel: FrameworkChannel,
         rev: Option<&str>,
     ) -> Result<(Self, Option<Vec<u8>>)> {
@@ -1481,8 +1482,8 @@ impl ResolvedFramework {
             }
             FrameworkChannel::Dev => {
                 let revision = match rev {
-                    Some(rev) => resolve_dev_at(repository, slug, rev).await?,
-                    None => resolve_dev(repository, slug).await?,
+                    Some(rev) => resolve_dev_at(host, repository, slug, rev).await?,
+                    None => resolve_dev(host, repository, slug).await?,
                 };
                 Self::construct(repository, slug, &revision, None).await
             }
@@ -2599,8 +2600,6 @@ fn github_api_token(url: &str) -> Option<String> {
 
 #[cfg(test)]
 pub(crate) mod test_fixtures {
-    use std::process::Command as StdCommand;
-
     use super::*;
 
     /// A stable-channel resolution carrying every scaffold fact the templates
@@ -2812,7 +2811,8 @@ pub(crate) mod test_fixtures {
         let lock = test_lock();
         std::fs::write(root.join("Cargo.lock"), lock.to_string()).expect("lockfile");
         let git = |args: &[String]| {
-            let status = StdCommand::new("git")
+            let status = crate::toolchain::Host::current()
+                .std_command("git")
                 .arg("-C")
                 .arg(root)
                 .args(args)
@@ -2903,8 +2903,8 @@ pub(crate) mod test_fixtures {
     }
 }
 
-async fn resolve_dev(repository: &str, slug: &str) -> Result<String> {
-    gated_dev_head(repository, slug, "dev.yml", "framework").await
+async fn resolve_dev(host: &Host, repository: &str, slug: &str) -> Result<String> {
+    gated_dev_head(host, repository, slug, "dev.yml", "framework").await
 }
 
 /// A `dev` selection pinned to an exact commit: `rev` names a commit of the
@@ -2912,9 +2912,14 @@ async fn resolve_dev(repository: &str, slug: &str) -> Result<String> {
 /// through the same GitHub API the tip resolution already uses. Anything
 /// else — a fork commit, another branch's tip, a commit `dev` never merged —
 /// is not dev history and cannot stand in for the channel.
-async fn resolve_dev_at(repository: &str, slug: &str, rev: &str) -> Result<String> {
+async fn resolve_dev_at(
+    host: &Host,
+    repository: &str,
+    slug: &str,
+    rev: &str,
+) -> Result<String> {
     validate_rev(rev)?;
-    let head = remote_dev_head(repository, "framework").await?;
+    let head = remote_dev_head(host, repository, "framework").await?;
     let revision = normalize_revision(slug, rev).await?;
     let status = dev_ancestor_status(slug, &revision, &head).await?;
     ensure_dev_ancestor(&status, &revision, &head)?;
@@ -2976,8 +2981,9 @@ fn ensure_dev_ancestor(status: &str, revision: &str, head: &str) -> Result<()> {
 }
 
 /// The `dev` branch head of `repository` — the tip `git ls-remote` reports.
-async fn remote_dev_head(repository: &str, what: &str) -> Result<String> {
-    let output = Command::new("git")
+async fn remote_dev_head(host: &Host, repository: &str, what: &str) -> Result<String> {
+    let output = host
+        .command("git")
         .args(["ls-remote", repository, "refs/heads/dev"])
         .output()
         .await?;
@@ -3018,8 +3024,14 @@ fn gate_run_succeeded(runs: &serde_json::Value, revision: &str) -> bool {
 /// The `dev` HEAD of `repository`, held to the channel's promise that the
 /// resolved commit passed `gate` — the workflow file gating `dev` in that
 /// repository: `dev.yml` for the framework, `ci.yml` for a backend.
-async fn gated_dev_head(repository: &str, slug: &str, gate: &str, what: &str) -> Result<String> {
-    let revision = remote_dev_head(repository, what).await?;
+async fn gated_dev_head(
+    host: &Host,
+    repository: &str,
+    slug: &str,
+    gate: &str,
+    what: &str,
+) -> Result<String> {
+    let revision = remote_dev_head(host, repository, what).await?;
     if !gate_passed(slug, gate, &revision).await? {
         bail!("{what} dev revision {revision} has not passed its compilation gate");
     }
@@ -6006,7 +6018,11 @@ hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "d887
     #[test]
     fn a_certified_channel_rejects_a_rev_pin_before_resolving() {
         for channel in [FrameworkChannel::Stable, FrameworkChannel::Nightly] {
-            let message = smol::block_on(ResolvedFramework::resolve(channel, Some("225259c80")))
+            let message = smol::block_on(ResolvedFramework::resolve(
+                &crate::toolchain::Host::current(),
+                channel,
+                Some("225259c80"),
+            ))
                 .unwrap_err()
                 .to_string();
             assert!(message.contains("dev"), "{message} must name dev");

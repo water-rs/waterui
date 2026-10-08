@@ -328,7 +328,7 @@ async fn build_and_spawn(config: &ChildConfig) -> Result<(ChildTransport, Child)
 
     // stdout is the MCP link — never inherit it; stderr flows straight to the
     // parent's stderr so app logs and build diagnostics stay visible.
-    let mut command = smol::process::Command::new(binary_path);
+    let mut command = project.host().command(binary_path);
     command
         .kill_on_drop(true)
         .current_dir(&backend_path)

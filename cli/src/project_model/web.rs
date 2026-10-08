@@ -50,17 +50,21 @@ impl PackageManager {
     }
 
     /// `<pm> run <script>` — every supported manager accepts this form.
+    ///
+    /// The command is interactive: a bundler renders to and prompts on the
+    /// user's terminal, so it inherits stdio.
     #[must_use]
-    pub fn run(self, script: &str) -> Command {
-        let mut command = Command::new(self.binary());
+    pub fn run(self, host: &Host, script: &str) -> Command {
+        let mut command = Command::from(host.interactive_command(self.binary()));
         command.arg("run").arg(script);
         command
     }
 
     /// `<pm> install` — installs the dependencies of the current directory.
+    /// Interactive like [`Self::run`]: installers prompt on the terminal.
     #[must_use]
-    pub fn install(self) -> Command {
-        let mut command = Command::new(self.binary());
+    pub fn install(self, host: &Host) -> Command {
+        let mut command = Command::from(host.interactive_command(self.binary()));
         command.arg("install");
         command
     }
@@ -69,10 +73,12 @@ impl PackageManager {
     ///
     /// `template`, when given, is forwarded to `create-vite` after a `--`
     /// separator (`--template <t>`), which every manager passes through and
-    /// which skips Vite's interactive framework picker.
+    /// which skips Vite's interactive framework picker. The command is
+    /// interactive either way — the picker reads the user's terminal when it
+    /// runs.
     #[must_use]
-    pub fn create_vite(self, dir: &str, template: Option<&str>) -> Command {
-        let mut command = Command::new(self.binary());
+    pub fn create_vite(self, host: &Host, dir: &str, template: Option<&str>) -> Command {
+        let mut command = Command::from(host.interactive_command(self.binary()));
         command.arg("create");
         match self {
             Self::Npm => command.arg("vite@latest"),
@@ -90,9 +96,9 @@ impl PackageManager {
         command
     }
 
-    /// Whether the manager's binary resolves on `PATH`.
-    pub async fn is_installed(self) -> bool {
-        crate::utils::which(self.binary()).await.is_ok()
+    /// Whether the manager's binary resolves on `host`'s `PATH`.
+    pub async fn is_installed(self, host: &Host) -> bool {
+        host.which(self.binary()).await.is_ok()
     }
 
     /// The official installation instruction, shown when the declared manager
@@ -170,6 +176,7 @@ pub fn decode_web_mount(symbols: &ArtifactSymbols) -> eyre::Result<Option<Bundle
 /// Panics when `meta` declares no `project` — callers only reach this for
 /// `include_web!` mounts.
 pub async fn build_frontend(
+    host: &Host,
     package_manager: PackageManager,
     meta: &BundleMountMeta,
 ) -> eyre::Result<()> {
@@ -179,11 +186,8 @@ pub async fn build_frontend(
         .expect("build_frontend is only called for mounts that declare a project");
     let pm = package_manager.binary();
     let status = package_manager
-        .run("build")
+        .run(host, "build")
         .current_dir(root)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
         .status()
         .await?;
     if !status.success() {

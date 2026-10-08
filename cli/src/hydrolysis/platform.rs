@@ -26,7 +26,7 @@ use crate::{
     platform::{PackageOptions, TargetPlatform},
     project::Project,
     toolchain::{ToolchainError, windows_arm64_llvm::WindowsArm64LlvmToolchain},
-    utils::{command, run_command_os, which},
+    utils::{command, run_command_os},
 };
 #[cfg(target_os = "macos")]
 use crate::{
@@ -173,7 +173,7 @@ pub async fn build_hydrolysis_with_envs_and_features(
     .await?;
 
     let llvm_envs = WindowsArm64LlvmToolchain
-        .cargo_envs(&crate::toolchain::Host::current())
+        .cargo_envs(project.host())
         .await
         .map_err(|error| match error {
             ToolchainError::Fixable(_) => eyre::eyre!(
@@ -184,7 +184,7 @@ pub async fn build_hydrolysis_with_envs_and_features(
             }
         })?;
 
-    let mut build = RustBuild::new(&backend_path, platform.triple())
+    let mut build = RustBuild::new(project.host(), &backend_path, platform.triple())
         .with_project(project)
         .with_target_dir(project.water_target_dir(options.linkage()).await?)
         .with_features(extra_features.iter().copied())
@@ -273,7 +273,13 @@ pub(crate) async fn stage_hydrolysis_shared_runtime(
     // launch path executes — the profile directory itself, never `deps/`:
     // `built.artifact` lives there and pruning staged names would delete
     // Cargo's own unit outputs.
-    synchronize_shared_runtime(&built.profile_dir, Some(&libraries), &platform.triple()).await
+    synchronize_shared_runtime(
+        project.host(),
+        &built.profile_dir,
+        Some(&libraries),
+        &platform.triple(),
+    )
+    .await
 }
 
 /// The packaged CEF helper's source: the helper build's own `BuiltTarget`
@@ -415,7 +421,13 @@ pub async fn package_hydrolysis(
         Some(profile),
     );
     fs::create_dir_all(&runtime_dir).await?;
-    synchronize_shared_runtime(&runtime_dir, shared_libraries.as_ref(), &platform.triple()).await?;
+    synchronize_shared_runtime(
+        project.host(),
+        &runtime_dir,
+        shared_libraries.as_ref(),
+        &platform.triple(),
+    )
+    .await?;
     browser_runtime::stage(runtime_plan, platform, profile_directory, &runtime_dir).await?;
 
     // Ship the binary under the product name; the tagged Cargo artifact name
@@ -540,6 +552,7 @@ async fn package_hydrolysis_macos(
     )
     .await?;
     synchronize_shared_runtime(
+        project.host(),
         &app_path.join("Contents/Frameworks"),
         shared_libraries,
         &platform.triple(),
@@ -573,6 +586,7 @@ async fn package_hydrolysis_macos(
 }
 
 async fn synchronize_shared_runtime(
+    host: &crate::toolchain::Host,
     destination: &Path,
     libraries: Option<&RustDynamicLibraries>,
     triple: &Triple,
@@ -583,7 +597,7 @@ async fn synchronize_shared_runtime(
         // DirectX 12 backend `LoadLibrary`s `dxcompiler.dll` and `dxil.dll`
         // by name at run time; the pair has to sit beside the executable.
         if triple.operating_system == OperatingSystem::Windows {
-            stage_dxc_runtime(destination).await?;
+            stage_dxc_runtime(host, destination).await?;
         }
         Ok(())
     } else {
@@ -755,7 +769,7 @@ async fn package_hydrolysis_web_site(
     fs::create_dir_all(&site_root).await?;
 
     // The shell is written after the bundle so the page knows the wasm size.
-    build_hydrolysis_web_bundle(&backend_path, &site_root, debug).await?;
+    build_hydrolysis_web_bundle(project.host(), &backend_path, &site_root, debug).await?;
     super::web_launch::write_web_shell(project, &site_root).await?;
     copy_web_assets_and_fonts(project, &backend_path, &site_root).await?;
 
@@ -763,17 +777,19 @@ async fn package_hydrolysis_web_site(
 }
 
 async fn build_hydrolysis_web_bundle(
+    host: &crate::toolchain::Host,
     backend_path: &Path,
     site_root: &Path,
     debug: bool,
 ) -> eyre::Result<()> {
-    let wasm_pack = which("wasm-pack")
+    let wasm_pack = host
+        .which("wasm-pack")
         .await
         .wrap_err("wasm-pack is required to build Hydrolysis web bundles")?;
     let pkg_dir = site_root.join("pkg");
     fs::create_dir_all(&pkg_dir).await?;
 
-    let mut wasm_pack_cmd = smol::process::Command::new(wasm_pack);
+    let mut wasm_pack_cmd = host.command(wasm_pack);
     let wasm_pack_cmd = command(&mut wasm_pack_cmd);
     wasm_pack_cmd
         .current_dir(backend_path)
@@ -1090,7 +1106,11 @@ mod tests {
             .expect("backend manifest");
             std::fs::write(backend_path.join("src/main.rs"), "fn main() {}\n").expect("main.rs");
 
-            let built = crate::build::RustBuild::new(&backend_path, target_lexicon::Triple::host())
+            let built = crate::build::RustBuild::new(
+                project.host(),
+                &backend_path,
+                target_lexicon::Triple::host(),
+            )
                 .with_target_dir(temporary.path().join("target"))
                 .build_binary(backend_crate.as_str(), false)
                 .await

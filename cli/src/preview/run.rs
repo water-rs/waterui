@@ -38,12 +38,13 @@ pub async fn write_run_config(dir: &Path, config: &PreviewRunConfig) -> Result<P
 /// Returns an error when the binary cannot be spawned or exits non-zero —
 /// the error carries its stderr, else its stdout, else the exit status.
 pub async fn run_preview_binary(
+    host: &crate::toolchain::Host,
     working_dir: &Path,
     binary_path: &Path,
     run_config_path: &Path,
     label: &str,
 ) -> Result<Output> {
-    let mut child = smol::process::Command::new(binary_path);
+    let mut child = host.command(binary_path);
     let child = command(&mut child);
     child.current_dir(working_dir);
     child.env(PREVIEW_RUN_CONFIG_ENV, run_config_path);

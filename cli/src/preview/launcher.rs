@@ -280,7 +280,8 @@ async fn configure_preview_module_build(
         .await?;
     let rust_build = link_mode
         .configure_build(
-            RustBuild::new(preview_crate_path, target.triple()).with_project(&support_project),
+            RustBuild::new(support_project.host(), preview_crate_path, target.triple())
+                .with_project(&support_project),
         )
         .with_target_dir(support_target_dir);
     if matches!(platform, PreviewPlatform::Android) {
@@ -639,8 +640,10 @@ pub async fn launch_preview_session(
     sccache_path: Option<PathBuf>,
     progress: Option<BuildProgress>,
 ) -> Result<PreviewSession> {
+    let host = crate::toolchain::Host::current();
     let requirements_start = Instant::now();
-    let requirements = Box::pin(resolve_preview_requirements(project_path, platform)).await?;
+    let requirements =
+        Box::pin(resolve_preview_requirements(&host, project_path, platform)).await?;
     info!(
         project_path = %project_path.display(),
         elapsed_ms = requirements_start.elapsed().as_millis(),
@@ -747,9 +750,9 @@ const fn preview_runtime_platform(platform: PreviewPlatform) -> PreviewRuntimePl
 /// crate's directory, read exactly as the crate's own `build.rs` reads it
 /// (`git log -1 --format=%h --abbrev=12 -- .`). A directory that is not a git
 /// worktree answers `unknown`, which is also what the build script stamps.
-async fn preview_protocol_commit(manifest_dir: &Path) -> String {
+async fn preview_protocol_commit(host: &crate::toolchain::Host, manifest_dir: &Path) -> String {
     use std::ffi::OsStr;
-    let commit = crate::toolchain::Host::current()
+    let commit = host
         .run(
             "git",
             [
@@ -780,7 +783,10 @@ async fn preview_protocol_commit(manifest_dir: &Path) -> String {
 /// The directory the `waterui-preview-protocol` manifest lives in for a
 /// `waterui` package root — either the checkout itself or the package the
 /// app's own metadata resolved.
-async fn protocol_commit_from_metadata(metadata: &cargo_metadata::Metadata) -> Result<String> {
+async fn protocol_commit_from_metadata(
+    host: &crate::toolchain::Host,
+    metadata: &cargo_metadata::Metadata,
+) -> Result<String> {
     let protocol = metadata
         .packages
         .iter()
@@ -794,7 +800,7 @@ async fn protocol_commit_from_metadata(metadata: &cargo_metadata::Metadata) -> R
         .parent()
         .ok_or_else(|| eyre::eyre!("waterui-preview-protocol manifest has no parent directory"))?
         .to_path_buf();
-    Ok(preview_protocol_commit(&dir).await)
+    Ok(preview_protocol_commit(host, &dir).await)
 }
 
 /// The build target a preview on `platform` links its module for.
@@ -1441,7 +1447,7 @@ fn preview_support_log_path() -> Result<PathBuf> {
 /// than read from an opened [`Project`] because the module has to exist before the
 /// support application is scaffolded: resolving the runtime's requirements reads
 /// the module's own Cargo metadata.
-async fn preview_support_ffi_crate_path() -> Result<PathBuf> {
+async fn preview_support_ffi_crate_path(host: &crate::toolchain::Host) -> Result<PathBuf> {
     // The support application's root has to exist before its build-cache path can
     // be derived, because deriving it canonicalizes the root. On the very first
     // preview nothing has scaffolded it yet, and an empty directory is exactly
@@ -1457,7 +1463,7 @@ async fn preview_support_ffi_crate_path() -> Result<PathBuf> {
     // written into it: the module was deleted out from under the `cargo
     // metadata` that reads it, and the first preview after any change to the
     // CLI failed with a manifest path that does not exist.
-    Ok(crate::water_dir::ensure_project_build_cache(&support_path)
+    Ok(crate::water_dir::ensure_project_build_cache(host, &support_path)
         .await?
         .join("ffi"))
 }
@@ -1484,7 +1490,7 @@ async fn scaffold_preview_module(project: &Project, platform: PreviewPlatform) -
         .map(|path| project.root().join(path));
     support_app::discard_support_app_for_other_runtime(&support_path, runtime_path.as_deref())
         .await?;
-    let workspace_root = preview_support_ffi_crate_path().await?;
+    let workspace_root = preview_support_ffi_crate_path(project.host()).await?;
     let modules_root = workspace_root.join(crate::templates::PREVIEW_MODULES_DIR);
     let crate_path = project.preview_dylib_crate_path(&workspace_root);
     if let Ok(mut entries) = smol::fs::read_dir(&modules_root).await {
@@ -1672,6 +1678,7 @@ fn preview_signature(requirements: &PreviewRequirements) -> String {
 }
 
 async fn resolve_preview_requirements(
+    host: &crate::toolchain::Host,
     project_path: &Path,
     platform: PreviewPlatform,
 ) -> Result<PreviewRequirements> {
@@ -1682,6 +1689,7 @@ async fn resolve_preview_requirements(
     let graph_fingerprint = resolved_graph_fingerprint(metadata)?;
 
     if let Some(requirements) = resolve_preview_requirements_from_manifest(
+        host,
         project_path,
         &runtime_features,
         &graph_fingerprint,
@@ -1705,14 +1713,15 @@ async fn resolve_preview_requirements(
             .parent()
             .map(Path::to_path_buf)
             .ok_or_else(|| eyre::eyre!("Failed to derive waterui package root path"))?;
-        let fingerprint = compute_runtime_fingerprint(&waterui_root, &runtime_identity).await?;
+        let fingerprint =
+            compute_runtime_fingerprint(host, &waterui_root, &runtime_identity).await?;
         info!(
             waterui_root = %waterui_root.display(),
             elapsed_ms = runtime_fingerprint_start.elapsed().as_millis(),
             "Preview computed dev-mode runtime fingerprint"
         );
         let protocol_dir = waterui_root.join("components/devtools/preview/protocol");
-        let expected_protocol_commit = preview_protocol_commit(&protocol_dir).await;
+        let expected_protocol_commit = preview_protocol_commit(host, &protocol_dir).await;
         return Ok(PreviewRequirements {
             waterui_path: Some(waterui_root),
             framework: resolved.framework,
@@ -1751,7 +1760,7 @@ async fn resolve_preview_requirements(
                 .wrap_err("the project's Water.lock could not be read")?,
         ),
         framework: resolved.framework,
-        expected_protocol_commit: protocol_commit_from_metadata(metadata).await?,
+        expected_protocol_commit: protocol_commit_from_metadata(host, metadata).await?,
         runtime_fingerprint: runtime_fingerprint(
             &runtime_fingerprint_base,
             &runtime_features,
@@ -1765,6 +1774,7 @@ async fn resolve_preview_requirements(
 }
 
 async fn resolve_preview_requirements_from_manifest(
+    host: &crate::toolchain::Host,
     project_path: &Path,
     runtime_features: &[String],
     graph_fingerprint: &str,
@@ -1810,7 +1820,7 @@ async fn resolve_preview_requirements_from_manifest(
 
     let runtime_fingerprint_start = Instant::now();
     let runtime_fingerprint = runtime_fingerprint(
-        &compute_runtime_fingerprint(&waterui_root, &runtime_identity).await?,
+        &compute_runtime_fingerprint(host, &waterui_root, &runtime_identity).await?,
         runtime_features,
         graph_fingerprint,
     );
@@ -1822,7 +1832,7 @@ async fn resolve_preview_requirements_from_manifest(
     );
 
     let protocol_dir = waterui_root.join("components/devtools/preview/protocol");
-    let expected_protocol_commit = preview_protocol_commit(&protocol_dir).await;
+    let expected_protocol_commit = preview_protocol_commit(host, &protocol_dir).await;
     Ok(Some(PreviewRequirements {
         waterui_path: Some(waterui_root),
         framework: framework.clone(),

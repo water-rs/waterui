@@ -277,6 +277,7 @@ async fn run_preview_binary(
     let backend_path = project.backend_path::<HydrolysisBackend>();
     let config_path = write_run_config(&backend_path, &config).await?;
     run::run_preview_binary(
+        project.host(),
         &backend_path,
         binary_path,
         &config_path,
@@ -320,6 +321,7 @@ async fn run_preview_test_binary(
     let backend_path = project.backend_path::<HydrolysisBackend>();
     let config_path = write_run_config(&backend_path, &config).await?;
     let output = run::run_preview_binary(
+        project.host(),
         &backend_path,
         binary_path,
         &config_path,

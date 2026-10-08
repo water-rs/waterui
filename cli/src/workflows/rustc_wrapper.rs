@@ -77,12 +77,15 @@ fn run_wrapper() -> i32 {
         return 1;
     }
 
+    let host = crate::toolchain::Host::current();
     let status = match std::env::var_os(WRAPPER_CHAIN_ENV) {
-        Some(chain) => std::process::Command::new(chain)
+        Some(chain) => host
+            .std_command(chain)
             .arg(&rustc)
             .args(&rewritten.args)
             .status(),
-        None => std::process::Command::new(&rustc)
+        None => host
+            .std_command(&rustc)
             .args(&rewritten.args)
             .status(),
     };

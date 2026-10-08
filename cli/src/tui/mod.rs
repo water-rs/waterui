@@ -109,7 +109,7 @@ pub async fn build(
     sccache_path: Option<PathBuf>,
     progress: Option<BuildProgress>,
 ) -> eyre::Result<BuiltTarget> {
-    let mut build = RustBuild::new(launcher_dir, target_lexicon::Triple::host())
+    let mut build = RustBuild::new(project.host(), launcher_dir, target_lexicon::Triple::host())
         .with_project(project)
         .with_target_dir(project.water_target_dir(RustLinkage::Static).await?);
     if let Some(sccache_path) = sccache_path {
@@ -140,13 +140,14 @@ pub async fn build(
 ///
 /// Returns an error if the launcher cannot be started; on Unix a successful
 /// `exec` never returns.
-pub fn exec(built: BuiltTarget) -> eyre::Result<()> {
+pub fn exec(host: &crate::toolchain::Host, built: BuiltTarget) -> eyre::Result<()> {
     use std::io::Write as _;
     // Anything still buffered in the CLI's stdout would be lost (exec) or
     // interleave with the launcher's own escape sequences (spawn), so flush
     // before handing over the terminal.
     let _ = std::io::stdout().flush();
     let binary = built.executable()?.to_path_buf();
+    let mut command = host.interactive_command(&binary);
     #[cfg(unix)]
     {
         use eyre::WrapErr as _;
@@ -154,7 +155,7 @@ pub fn exec(built: BuiltTarget) -> eyre::Result<()> {
         // A successful `exec` never returns: the process image swaps with the
         // lock fd still open, and CLOEXEC releases it in the swap. `built` is
         // dropped only on the error path, which is the one place this reaches.
-        let result = std::process::Command::new(&binary).exec();
+        let result = command.exec();
         drop(built);
         Err(result)
             .wrap_err_with(|| format!("failed to launch the TUI binary {}", binary.display()))
@@ -163,7 +164,7 @@ pub fn exec(built: BuiltTarget) -> eyre::Result<()> {
     {
         // Blocking here is the point: the launcher owns the terminal until it
         // exits, and nothing runs after this call.
-        let mut child = std::process::Command::new(&binary).spawn()?;
+        let mut child = command.spawn()?;
         // The child's image is mapped — the uplift may re-write now.
         // Holding the artifact lock for the app's lifetime would stall a
         // concurrent same-named build instead.

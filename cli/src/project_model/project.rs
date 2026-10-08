@@ -170,6 +170,7 @@ impl Project {
     /// # Errors
     /// Returns an error when resolution, native-project merging, or dependency verification fails.
     pub async fn select_channel(
+        host: &Host,
         path: impl AsRef<Path>,
         channel: FrameworkChannel,
         rev: Option<&str>,
@@ -182,7 +183,7 @@ impl Project {
         let previous = Manifest::parse(&water.to_string())?;
         let mut cargo: toml_edit::DocumentMut =
             smol::fs::read_to_string(&cargo_path).await?.parse()?;
-        let (framework, lockfile) = ResolvedFramework::resolve(channel, rev).await?;
+        let (framework, lockfile) = ResolvedFramework::resolve(host, channel, rev).await?;
         // A configured backend whose scaffold packages the target channel
         // withholds could never be regenerated — refuse the switch before a
         // manifest is rewritten.
@@ -362,6 +363,13 @@ impl Project {
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The host the project was opened on — the machine its toolchain
+    /// probes, builds, and launches run against.
+    #[must_use]
+    pub const fn host(&self) -> &Host {
+        &self.host
     }
 
     /// Get the target directory for Rust build artifacts.
@@ -1358,7 +1366,10 @@ impl CreateOptions {
     /// selection, or the checkout `waterui_path` names. A checkout's framework
     /// is a filesystem source, so it is never persisted into `Water.toml`;
     /// `waterui_path` itself is the record.
-    async fn resolve_framework(&mut self) -> eyre::Result<(ResolvedFramework, Option<Vec<u8>>)> {
+    async fn resolve_framework(
+        &mut self,
+        host: &Host,
+    ) -> eyre::Result<(ResolvedFramework, Option<Vec<u8>>)> {
         let selected = [
             self.waterui_path.is_some(),
             self.channel.is_some(),
@@ -1390,7 +1401,7 @@ impl CreateOptions {
         if let Some(framework) = &self.framework {
             return Ok((framework.clone(), self.framework_lock.take()));
         }
-        ResolvedFramework::resolve(self.channel.unwrap_or_default(), None).await
+        ResolvedFramework::resolve(host, self.channel.unwrap_or_default(), None).await
     }
 }
 
@@ -1637,7 +1648,7 @@ impl Project {
         // Derive crate name from display name
         let crate_name = options.crate_name()?;
         let (framework, lockfile) = options
-            .resolve_framework()
+            .resolve_framework(host)
             .await
             .map_err(FailToCreateProject::Framework)?;
 
@@ -2019,7 +2030,7 @@ impl Project {
             .map_err(|error| FailToOpenProject::Framework(eyre::eyre!(error)))?;
 
         let build_cache_start = std::time::Instant::now();
-        let managed_backends_root = crate::water_dir::ensure_project_build_cache(&path)
+        let managed_backends_root = crate::water_dir::ensure_project_build_cache(&host, &path)
             .await
             .map_err(FailToOpenProject::BuildCache)?;
         info!(
@@ -4077,7 +4088,10 @@ mod scaffold_tests {
         // wipes any cache directory whose metadata does not match, so only a
         // companion left inside a shaped cache survives to the
         // `ffi_companion_preexisting` check that arms the backend's audit.
-        let ffi_dir = smol::block_on(crate::water_dir::ensure_project_build_cache(&root))
+        let ffi_dir = smol::block_on(crate::water_dir::ensure_project_build_cache(
+            &crate::toolchain::Host::current(),
+            &root,
+        ))
             .expect("build cache dir")
             .join("ffi");
 

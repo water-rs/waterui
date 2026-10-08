@@ -436,7 +436,7 @@ pub async fn build(
         .android_min_api_level()?;
     let context = resolve_android_build_context(host, abi, &triple, min_api_level).await?;
 
-    let rust_build = RustBuild::new(&backend_path, triple.clone())
+    let rust_build = RustBuild::new(host, &backend_path, triple.clone())
         .with_project(project)
         .with_crate_type_override("cdylib")
         .with_rustc_flag(ANDROID_MAX_PAGE_SIZE_LINK_ARG)
@@ -598,7 +598,7 @@ pub async fn package_with_abis(
     if release_signing == Some(crate::android::signing::ReleaseSigning::Suppressed) {
         envs.push((crate::android::signing::UNSIGNED_ENV, "1".to_owned()));
     }
-    run_gradle_tasks(&android_dir, &[command_name], &envs).await?;
+    run_gradle_tasks(host, &android_dir, &[command_name], &envs).await?;
 
     let path = packaged_artifact(&android_dir, output_kind, variant).await?;
     Ok(Artifact::new(project.bundle_identifier(), path))

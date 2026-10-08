@@ -684,11 +684,14 @@ fn build_cache_container_for_in(project_root: &Path, cache_root: &Path) -> eyre:
 ///
 /// # Errors
 /// Returns an error if the project root cannot be canonicalized, config loading fails, or cache directories cannot be created.
-pub async fn ensure_project_build_cache(project_root: &Path) -> eyre::Result<PathBuf> {
+pub async fn ensure_project_build_cache(
+    host: &crate::toolchain::Host,
+    project_root: &Path,
+) -> eyre::Result<PathBuf> {
     let project_root = canonicalize_project_root(project_root)?;
-    let water_home = water_home_dir()?;
+    let water_home = water_home_dir_in(host)?;
     let (config, cache_root) = resolved_build_cache_root_in(&water_home).await?;
-    if let Err(error) = spawn_build_cache_cleanup_process(&project_root).await {
+    if let Err(error) = spawn_build_cache_cleanup_process(host, &project_root).await {
         warn!(
             current_project_root = %project_root.display(),
             "Failed to spawn build-cache cleanup process: {error}"
@@ -711,20 +714,24 @@ pub async fn cleanup_stale_build_caches_for_project(
     cleanup_stale_caches_if_idle(&cache_root, &project_root, &config).await
 }
 
-async fn spawn_build_cache_cleanup_process(project_root: &Path) -> eyre::Result<()> {
+async fn spawn_build_cache_cleanup_process(
+    host: &crate::toolchain::Host,
+    project_root: &Path,
+) -> eyre::Result<()> {
     let current_executable = std::env::current_exe()
         .wrap_err("Failed to resolve current water executable for build-cache cleanup")?;
     let project_root = project_root.to_path_buf();
+    let mut command = host.std_command(&current_executable);
+    command
+        .arg("gc")
+        .arg("build-cache")
+        .arg("--path")
+        .arg(&project_root)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
 
     smol::unblock(move || -> eyre::Result<()> {
-        std::process::Command::new(&current_executable)
-            .arg("gc")
-            .arg("build-cache")
-            .arg("--path")
-            .arg(&project_root)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+        command
             .spawn()
             .map(|_| ())
             .map_err(eyre::Report::from)

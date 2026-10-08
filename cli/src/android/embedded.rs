@@ -123,6 +123,7 @@ pub async fn build_aar(
     .await?;
 
     run_gradle_tasks(
+        project.host(),
         &backend_path,
         &[
             ":waterui:assembleRelease",

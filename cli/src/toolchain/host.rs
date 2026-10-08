@@ -254,6 +254,27 @@ impl Host {
         command
     }
 
+    /// A [`std::process::Command`] that runs `program` under this host with
+    /// the invoking terminal attached: stdin, stdout and stderr all
+    /// inherited.
+    ///
+    /// This is the deliberate exception to the null-stdin default of
+    /// [`Host::command`] — for the tools that interact with the user's
+    /// terminal: the `create vite` framework picker, `<pm> install` and
+    /// `<pm> run build`, `espflash flash --monitor`, QEMU's `-nographic`
+    /// serial console, and launchers that take the TTY over entirely. The
+    /// `std` type is returned so callers that `exec` or group the child can;
+    /// async callers wrap it with `smol::process::Command::from`.
+    #[must_use]
+    pub fn interactive_command(&self, program: impl AsRef<OsStr>) -> std::process::Command {
+        let mut command = self.std_command(program);
+        command
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+        command
+    }
+
     /// A [`Command`] that spawns `program` as the leader of a new process
     /// group.
     ///

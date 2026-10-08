@@ -122,7 +122,8 @@ pub async fn launch_inspector_session(
     options: InspectorLaunchOptions,
     progress: Option<BuildProgress>,
 ) -> Result<InspectorSession> {
-    let requirements = resolve_inspector_requirements(project_path).await?;
+    let host = crate::toolchain::Host::current();
+    let requirements = resolve_inspector_requirements(&host, project_path).await?;
 
     let inspector_app_path = inspector_support_path()?;
     ensure_inspector_support_app(&inspector_app_path, &requirements).await?;
@@ -136,7 +137,6 @@ pub async fn launch_inspector_session(
     );
     run_options.insert_env_var("WATERUI_INSPECTOR_TOKEN".to_string(), options.token.clone());
 
-    let host = crate::toolchain::Host::current();
     let running = match platform {
         InspectorPlatform::Macos => {
             let backend = project
@@ -331,7 +331,10 @@ fn inspector_signature(requirements: &InspectorRequirements) -> String {
     )
 }
 
-async fn resolve_inspector_requirements(project_path: &Path) -> Result<InspectorRequirements> {
+async fn resolve_inspector_requirements(
+    host: &crate::toolchain::Host,
+    project_path: &Path,
+) -> Result<InspectorRequirements> {
     let current_dir = project_path.to_path_buf();
     let metadata = smol::unblock(move || {
         cargo_metadata::MetadataCommand::new()
@@ -352,7 +355,8 @@ async fn resolve_inspector_requirements(project_path: &Path) -> Result<Inspector
             .parent()
             .map(Path::to_path_buf)
             .ok_or_else(|| eyre::eyre!("Failed to derive waterui package root path"))?;
-        let fingerprint = compute_runtime_fingerprint(&waterui_root, &runtime_identity).await?;
+        let fingerprint =
+            compute_runtime_fingerprint(host, &waterui_root, &runtime_identity).await?;
         return Ok(InspectorRequirements {
             waterui_path: Some(waterui_root),
             runtime_fingerprint: format!("{fingerprint}|profile={}", runtime_profile_tag()),
