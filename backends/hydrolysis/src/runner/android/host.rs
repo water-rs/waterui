@@ -685,9 +685,7 @@ impl UiThreadServices {
             ),
         )
         .map_err(|_| {
-            JniError(
-                "hydrolysis android: the UI thread's executor is already attached".to_owned(),
-            )
+            JniError("hydrolysis android: the UI thread's executor is already attached".to_owned())
         })?;
         let mut env = Environment::new();
         waterui::inspector::install(&mut env, inspector);
