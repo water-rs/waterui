@@ -89,8 +89,6 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // resolved `metadata.content` against `metadata.value` alone.
         let env = metadata.value;
         let mounted = ctx.with_env(&env).render(metadata.content).mount(host_view);
-        // §7.1: the fill answer resolves through the `cocoaUiPrimaryContent`
-        // chain — `Color.opacity(..)` in a background slot stays a fill.
         view::set_translates_autoresizing(mounted.view(), true);
 
         let state = Rc::new(WithEnvState { child: mounted });
@@ -105,7 +103,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
         });
 
         // `WuiPrimaryContentProviding`: the primary-content chain descends
-        // into the content.
+        // into the content — §7.1's fill answer resolves through it, so
+        // `Color.opacity(..)` in a background slot stays a fill.
         crate::primary_content::forward(&host, state.child.view());
 
         // `setPlacementProposal`: the proposal selected for this wrapper is

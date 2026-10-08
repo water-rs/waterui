@@ -672,12 +672,19 @@ mod leaf {
                 )
             ]
         };
-        window.addSubview(content);
-        // Size the content to the window's bounds the way
+        // Content mounts inside a kit `HostView` — the shape every
+        // production mount path takes — so kit surfaces find a keyboard
+        // owner. The host answers tracking for its whole subtree even
+        // under this bare, controller-less window.
+        let host = cocoa_ui::uikit::HostView::new(mtm, cocoa_ui::Rect::ZERO);
+        host.addSubview(content);
+        window.addSubview(&host);
+        cocoa_ui::view::set_frame(&host, cocoa_ui::view::bounds(&window));
+        // Size the content to the host's bounds the way
         // `set_content_view` does on macOS — `addSubview` alone leaves it
         // at its zero frame, so surfaces that read their viewport (lazy
         // containers especially) would see an empty window.
-        cocoa_ui::view::set_frame(content, cocoa_ui::view::bounds(&window));
+        cocoa_ui::view::set_frame(content, cocoa_ui::view::bounds(&host));
         window
     }
 }
@@ -2670,7 +2677,7 @@ mod safe_area {
         NSDictionary, NSNotificationCenter, NSNumber, NSObjectProtocol, NSString, NSValue,
     };
     use cocoa_ui::objc2_ui_kit::{
-        UIEdgeInsets, UIKeyboardAnimationCurveUserInfoKey, UIKeyboardAnimationDurationUserInfoKey,
+        UIKeyboardAnimationCurveUserInfoKey, UIKeyboardAnimationDurationUserInfoKey,
         UIKeyboardFrameEndUserInfoKey, UIKeyboardWillChangeFrameNotification,
         UIKeyboardWillHideNotification, UIKeyboardWillShowNotification, UINavigationBar, UITabBar,
         UITextView,
@@ -2691,7 +2698,7 @@ mod safe_area {
     use waterui::reactive::{Binding, binding};
     use waterui::{AnyView, Color, Str};
     use waterui_apple::native_test_support::{
-        MAIN_QUEUE_DEADLINE, UIKitMount, mount_uikit_with_insets, pump_main_until,
+        MAIN_QUEUE_DEADLINE, UIKitMount, mount_uikit, mount_uikit_embedded, pump_main_until,
         render_environment,
     };
 
@@ -2918,6 +2925,27 @@ mod safe_area {
                     Ok(())
                 },
             ),
+            libtest_mimic::Trial::test(
+                "safe_area::a_moving_container_re_extends_its_fill_to_each_region_boundary",
+                || {
+                    a_moving_container_re_extends_its_fill_to_each_region_boundary();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "safe_area::a_user_scroll_under_the_keyboard_is_not_undone_by_the_layout_pass",
+                || {
+                    a_user_scroll_under_the_keyboard_is_not_undone_by_the_layout_pass();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "safe_area::an_embedded_host_tracks_the_keyboard_in_either_mount_order",
+                || {
+                    an_embedded_host_tracks_the_keyboard_in_either_mount_order();
+                    Ok(())
+                },
+            ),
         ]
     }
 
@@ -2941,29 +2969,15 @@ mod safe_area {
     /// Frame-comparison slack — within one point of the expected edge.
     const TOLERANCE: f64 = 1.0;
 
-    /// The container bands every trial mounts with: a status-bar band
-    /// above and a home-indicator band below. A spawned `UIWindow`
-    /// reports no ambient insets, so the mount installs them on the root
-    /// controller's `additionalSafeAreaInsets` — the covered chrome bands,
-    /// the navigation bar's band and the home indicator stay exercised.
-    const TEST_INSETS: UIEdgeInsets = UIEdgeInsets {
-        top: 59.0,
-        left: 0.0,
-        bottom: 34.0,
-        right: 0.0,
-    };
-
     /// Mounts `content` through the real embedding path and lays the
-    /// window out once.
+    /// window out once. The window carries the iPhone 17's real
+    /// `safeAreaInsets` — the notch band above and the home-indicator
+    /// band below — so the covered chrome bands, the navigation bar's
+    /// band and the home indicator stay exercised by the container
+    /// region the window itself reports.
     fn mount(content: impl View) -> UIKitMount {
         let env = render_environment();
-        let mount = mount_uikit_with_insets(
-            mtm(),
-            AnyView::new(content),
-            &env,
-            WINDOW_FRAME,
-            TEST_INSETS,
-        );
+        let mount = mount_uikit(mtm(), AnyView::new(content), &env, WINDOW_FRAME);
         mount.window.layoutIfNeeded();
         mount
     }
@@ -3032,8 +3046,8 @@ mod safe_area {
     }
 
     /// The container region's top boundary: the root host's
-    /// `safeAreaInsets` — `TEST_INSETS` on the controller plus whatever
-    /// `UIKit` adds — the same boundary the layout's region context reads.
+    /// `safeAreaInsets` — the window's ambient insets — the same
+    /// boundary the layout's region context reads.
     fn container_top(mount: &UIKitMount) -> f64 {
         mount.host.safeAreaInsets().top
     }
@@ -3088,7 +3102,19 @@ mod safe_area {
     /// out. `UIKit` posts `UIKeyboardWillChangeFrameNotification` for
     /// every transition alongside the semantic name, so the helpers post
     /// both when the semantic name is not the frame change itself.
-    fn post_keyboard(mount: &UIKitMount, name: &'static NSString, end_frame: CGRect) {
+    /// Posts a keyboard `notification` with `end_frame` into `window` —
+    /// the way `UIKit` announces the keyboard, duration and curve
+    /// included — and pumps the main queue until `applied` holds, the
+    /// tracked frame or laid-out geometry the caller waits on. `UIKit`
+    /// posts `UIKeyboardWillChangeFrameNotification` for every
+    /// transition alongside the semantic name, so the post sends both
+    /// when the semantic name is not the frame change itself.
+    fn post_keyboard_raw(
+        window: &cocoa_ui::objc2_ui_kit::UIWindow,
+        name: &'static NSString,
+        end_frame: CGRect,
+        applied: impl Fn() -> bool,
+    ) {
         let user_info = keyboard_user_info(end_frame, KEYBOARD_ANIMATION.0, KEYBOARD_ANIMATION.1);
         // SAFETY: `UIKit` exports the name as a constant.
         let frame_change: &'static NSString = unsafe { UIKeyboardWillChangeFrameNotification };
@@ -3109,10 +3135,18 @@ mod safe_area {
             }
         }
         let landed = pump_main_until(MAIN_QUEUE_DEADLINE, || {
-            mount.window.layoutIfNeeded();
+            window.layoutIfNeeded();
+            applied()
+        });
+        assert!(landed, "the keyboard frame never reached its tracker");
+    }
+
+    /// Posts `notification` into `mount`'s window and pumps until the
+    /// window root has applied the end frame.
+    fn post_keyboard(mount: &UIKitMount, name: &'static NSString, end_frame: CGRect) {
+        post_keyboard_raw(&mount.window, name, end_frame, || {
             mount.host.keyboard_frame() == end_frame
         });
-        assert!(landed, "the keyboard frame never reached the window root");
     }
 
     /// Posts `UIKeyboardWillShowNotification` for `end_frame`.
@@ -3466,15 +3500,102 @@ mod safe_area {
         show_keyboard(&mount, KEYBOARD_END);
         let cover = window_bottom(&surface) - keyboard_top(&mount);
         let want = (cover - surface.safeAreaInsets().bottom).max(0.0);
-        // The foreign parent is invisible to the region-layout cascade,
-        // so the surface's own pass is driven directly — the pass must
-        // still apply the inset: `nested_in_scroll` must not count the
-        // `UITextView` as an enclosing surface.
-        scroll_view.setNeedsLayout();
+        // The notification's own mark walk crosses the foreign parent —
+        // no manual drive: the surface's pass must apply the inset, and
+        // `nested_in_scroll` must not count the `UITextView` as an
+        // enclosing surface.
         pump_layout(&mount, || {
             (scroll_view.contentInset().bottom - want).abs() <= TOLERANCE
         });
         focus_and_clear(&mount, &field, || keyboard_top(&mount));
+    }
+
+    /// The region mark reaches a background-slot container that moves
+    /// without resizing: pinned at the region's bottom, the strip holds
+    /// its height while the keyboard band lifts its position — a pure
+    /// move gives the container no `layoutSubviews` of its own, so the
+    /// tracking owner's per-notification mark is what re-places the
+    /// fill against each new boundary.
+    fn a_moving_container_re_extends_its_fill_to_each_region_boundary() {
+        let mount = mount(vstack((
+            spacer(),
+            spacer()
+                .size(390.0, 48.0)
+                .background(Color::new(Srgb::new(0.3, 0.5, 0.9))),
+        )));
+        let fill = find_view::<ColorView>(&mount.host).expect("the fill is mounted");
+        show_keyboard(&mount, KEYBOARD_END);
+        expect_top(
+            &fill,
+            keyboard_top(&mount) - 48.0,
+            "the fill follows the moved container to the keyboard band",
+        );
+        hide_keyboard(&mount);
+        expect_top(
+            &fill,
+            container_bottom(&mount) - 48.0,
+            "the fill re-extends when the container moves back",
+        );
+    }
+
+    /// A user scroll that pushes the focused field under the keyboard
+    /// is not undone by the layout pass: the pass re-clears the field
+    /// only when the keyboard contribution itself changes — never
+    /// because a content-offset change re-ran it.
+    fn a_user_scroll_under_the_keyboard_is_not_undone_by_the_layout_pass() {
+        let value = binding(Str::from(""));
+        let mount = mount(scroll(vstack((
+            spacer().size(390.0, 560.0),
+            field("Message", &value).size(350.0, 44.0),
+            spacer().size(390.0, 380.0),
+        ))));
+        show_keyboard(&mount, KEYBOARD_END);
+        let surface = find_view::<ScrollView>(&mount.host).expect("scroll mounts a UIScrollView");
+        let scroll_view = surface
+            .downcast_ref::<ScrollView>()
+            .expect("the found view is a scroll view");
+        let field = find_view::<TextField>(&mount.host).expect("the form mounts the field");
+        focus_and_clear(&mount, &field, || keyboard_top(&mount));
+
+        // The user's own scroll pushes the field back under the band.
+        scroll_view.setContentOffset_animated(CGPoint::new(0.0, 0.0), false);
+        assert!(
+            window_bottom(&field) > keyboard_top(&mount) + TOLERANCE,
+            "precondition: the offset pushed the field back under the keyboard"
+        );
+        mount.window.layoutIfNeeded();
+        assert!(
+            scroll_view.contentOffset().y.abs() <= TOLERANCE,
+            "the layout pass left the user's offset alone — {:?}",
+            scroll_view.contentOffset(),
+        );
+    }
+
+    /// The keyboard owner binds in either mount order: an embedded host
+    /// joined to its container before the container reaches the window,
+    /// and one joined into an already-windowed container, both take
+    /// tracking — `didMoveToWindow` walks a subtree in an undocumented
+    /// order, so ownership resolves through `tracker_for`, never the
+    /// walk order.
+    fn an_embedded_host_tracks_the_keyboard_in_either_mount_order() {
+        for attach_first in [true, false] {
+            let env = render_environment();
+            let mount = mount_uikit_embedded(
+                mtm(),
+                AnyView::new(text("embedded")),
+                &env,
+                WINDOW_FRAME,
+                attach_first,
+            );
+            mount.window.layoutIfNeeded();
+            post_keyboard_raw(
+                &mount.window,
+                // SAFETY: `UIKit` exports the name as a constant.
+                unsafe { UIKeyboardWillShowNotification },
+                KEYBOARD_END,
+                || mount.host.keyboard_frame() == KEYBOARD_END,
+            );
+        }
     }
 
     /// §7.1 "Layout avoids the regions": the root leaf's children lay

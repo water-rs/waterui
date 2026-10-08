@@ -192,6 +192,10 @@ impl Drop for UIKitMount {
 
 /// Hosts real content through embedding's shared mount/primary-content/layout path.
 #[cfg(target_os = "ios")]
+#[expect(
+    deprecated,
+    reason = "the native test process supplies its own window without a scene"
+)]
 #[must_use]
 pub fn mount_uikit(
     mtm: MainThreadMarker,
@@ -199,41 +203,8 @@ pub fn mount_uikit(
     env: &Environment,
     frame: cocoa_ui::Rect,
 ) -> UIKitMount {
-    mount_uikit_with_insets(
-        mtm,
-        view,
-        env,
-        frame,
-        cocoa_ui::objc2_ui_kit::UIEdgeInsets {
-            top: 0.0,
-            left: 0.0,
-            bottom: 0.0,
-            right: 0.0,
-        },
-    )
-}
-
-/// [`mount_uikit`] with `additional_insets` applied to the root
-/// controller — a spawned `UIWindow` reports no ambient safe-area
-/// insets, so trials that exercise the container region install them on
-/// the controller, which adds them to its view's `safeAreaInsets` the
-/// way the status bar and home indicator do on a real device.
-#[cfg(target_os = "ios")]
-#[expect(
-    deprecated,
-    reason = "the native test process supplies its own window without a scene"
-)]
-#[must_use]
-pub fn mount_uikit_with_insets(
-    mtm: MainThreadMarker,
-    view: waterui::AnyView,
-    env: &Environment,
-    frame: cocoa_ui::Rect,
-    additional_insets: cocoa_ui::objc2_ui_kit::UIEdgeInsets,
-) -> UIKitMount {
     use objc2::{MainThreadOnly, Message};
     let controller = cocoa_ui::uikit::ViewController::new(mtm, cocoa_ui::uikit::window_root(mtm));
-    controller.setAdditionalSafeAreaInsets(additional_insets);
     let host = controller.host_view().retain();
     let window = cocoa_ui::objc2_ui_kit::UIWindow::initWithFrame(
         cocoa_ui::objc2_ui_kit::UIWindow::alloc(mtm),
@@ -252,6 +223,87 @@ pub fn mount_uikit_with_insets(
         content,
         window,
         _controller: controller,
+        _keepalive: keepalive,
+    }
+}
+
+/// A kit subtree embedded under a foreign window root.
+///
+/// The window's root view controller is a plain `UIViewController` and
+/// the `HostView` sits inside a plain `UIView` container, so no kit
+/// window root exists and the embedded host must own the subtree's
+/// keyboard state itself.
+#[cfg(target_os = "ios")]
+#[derive(Debug)]
+pub struct EmbeddedMount {
+    /// The embedded host — the subtree's keyboard owner.
+    pub host: cocoa_ui::Retained<cocoa_ui::uikit::HostView>,
+    /// The foreign-rooted window holding the subtree.
+    pub window: cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
+    /// The mounted content inside `host`.
+    pub content: alloc::rc::Rc<crate::contract::Mounted>,
+    _keepalive: crate::contract::KeepAlive,
+}
+
+#[cfg(target_os = "ios")]
+impl Drop for EmbeddedMount {
+    fn drop(&mut self) {
+        self.window.setHidden(true);
+        self.window.setRootViewController(None);
+    }
+}
+
+/// Mounts `view` into an embedded `HostView` under a foreign window
+/// root in either attachment order.
+///
+/// `attach_first` joins the host to its container before the container
+/// reaches the window; otherwise the host joins an already-windowed
+/// container. `didMoveToWindow` walks a subtree in an undocumented
+/// order, so trials prove the keyboard owner resolves the same either
+/// way.
+#[cfg(target_os = "ios")]
+#[expect(
+    deprecated,
+    reason = "the native test process supplies its own window without a scene"
+)]
+#[must_use]
+pub fn mount_uikit_embedded(
+    mtm: MainThreadMarker,
+    view: waterui::AnyView,
+    env: &Environment,
+    frame: cocoa_ui::Rect,
+    attach_first: bool,
+) -> EmbeddedMount {
+    use cocoa_ui::objc2_ui_kit::{UIView, UIViewController, UIWindow};
+    use cocoa_ui::uikit::HostView;
+    use objc2::{MainThreadOnly, msg_send};
+
+    // SAFETY: `init` is `UIViewController`'s plain designated initializer.
+    let foreign: cocoa_ui::Retained<UIViewController> =
+        unsafe { msg_send![UIViewController::alloc(mtm), init] };
+    let container = UIView::initWithFrame(UIView::alloc(mtm), frame.into());
+    let host = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+    let window = UIWindow::initWithFrame(UIWindow::alloc(mtm), frame.into());
+    if attach_first {
+        container.addSubview(&host);
+    }
+    window.setRootViewController(Some(&foreign));
+    foreign
+        .view()
+        .expect("a root view controller creates its view")
+        .addSubview(&container);
+    if !attach_first {
+        container.addSubview(&host);
+    }
+    cocoa_ui::view::set_frame(&host, cocoa_ui::view::bounds(&container));
+    let mut keepalive = crate::contract::KeepAlive::default();
+    let content = crate::embedding::mount_content(&host, view, env, &mut keepalive);
+    window.makeKeyAndVisible();
+    window.layoutIfNeeded();
+    EmbeddedMount {
+        host,
+        window,
+        content,
         _keepalive: keepalive,
     }
 }

@@ -76,7 +76,7 @@ pub struct HostViewIvars {
     /// the container `Edges` mask, bits 4–7 the keyboard `Edges` mask, bit 8
     /// marking the view an ignore-safe-area wrapper so a reader can tell
     /// "ignores nothing" from "not an ignorer".
-    ignored_safe_area_edges: Cell<isize>,
+    ignored_safe_area_edges: Cell<u16>,
     /// Whether this view declares itself a fill — a view whose painted
     /// surface is a color, a gradient or a material — through
     /// `cocoaUiIsFill`.
@@ -252,17 +252,6 @@ define_class!(
                 if let Some(handler) = handler {
                     handler(self);
                 }
-                // A pass that reached this view may have moved the region
-                // boundaries — the keyboard band above all — so every
-                // descendant whose placement reads them gets the same chance
-                // to re-place itself: `mark_region_layout` descends through
-                // the foreign containers UIKit interposes (transition,
-                // container and wrapper views inside navigation and tab
-                // controllers, which never run kit `layoutSubviews`) and
-                // marks the region-managed kit views under them.
-                for subview in &self.subviews() {
-                    mark_region_layout(&subview);
-                }
                 self.track_intrinsic_width();
             });
         }
@@ -345,19 +334,8 @@ define_class!(
         // mask, bits 4–7 the keyboard `Edges` mask, bit 8 marks the view an
         // ignore-safe-area wrapper.
         #[unsafe(method(cocoaUiIgnoredSafeAreaEdges))]
-        fn ignored_safe_area_edges_override(&self) -> isize {
+        fn ignored_safe_area_edges_override(&self) -> u16 {
             self.ivars().ignored_safe_area_edges.get()
-        }
-
-        // SAFETY: see the module safety note. The own-flags half of
-        // `needs_region_layout`: the view lays out against the region
-        // boundaries when it manages the safe area or carries an
-        // ignore-safe-area declaration; transparent wrappers are found by
-        // descending their primary content.
-        #[unsafe(method(cocoaUiNeedsRegionLayout))]
-        fn needs_region_layout_override(&self) -> bool {
-            let ivars = self.ivars();
-            ivars.manages_safe_area.get() || ivars.ignored_safe_area_edges.get() != 0
         }
 
         // SAFETY: see the module safety note. Whether the view currently
@@ -427,33 +405,6 @@ define_class!(
                 let _: () = unsafe { msg_send![super(self), setBounds: bounds] };
                 self.report_size();
             });
-        }
-
-        // SAFETY: see the module safety note.
-        #[unsafe(method(safeAreaInsets))]
-        fn safe_area_insets_override(&self) -> UIEdgeInsets {
-            guarded("HostView safeAreaInsets", || {
-                // A window root never reports less than its window's insets:
-                // content filling the window learns where it is obscured
-                // even when the root controller contributes nothing (a real
-                // `additionalSafeAreaInsets` on the controller lands through
-                // `super`'s answer and is kept).
-                if self.ivars().fills_window.get()
-                    && let Some(window) = self.window()
-                {
-                    let window_insets = window.safeAreaInsets();
-                    // SAFETY: see the module safety note.
-                    let own: UIEdgeInsets = unsafe { msg_send![super(self), safeAreaInsets] };
-                    return UIEdgeInsets {
-                        top: window_insets.top.max(own.top),
-                        left: window_insets.left.max(own.left),
-                        bottom: window_insets.bottom.max(own.bottom),
-                        right: window_insets.right.max(own.right),
-                    };
-                }
-                // SAFETY: see the module safety note.
-                unsafe { msg_send![super(self), safeAreaInsets] }
-            })
         }
 
         // SAFETY: see the module safety note.
@@ -728,17 +679,12 @@ impl HostView {
     }
 
     /// Whether this view is a fill — the color, gradient and material
-    /// leaves mark themselves through `cocoaUiIsFill`, and the wrappers the
-    /// sibling backend considers transparent propagate the answer.
+    /// leaves mark themselves through `cocoaUiIsFill`; the sibling backend
+    /// reads the answer through the `cocoaUiPrimaryContent` chain, so a
+    /// transparent wrapper stays a fill without the wrapper copying the
+    /// bit.
     pub fn set_is_fill(&self, fill: bool) {
         self.ivars().is_fill.set(fill);
-    }
-
-    /// Whether this view answers `cocoaUiIsFill` — reads the ivar directly
-    /// for a caller holding the typed view.
-    #[must_use]
-    pub fn is_fill(&self) -> bool {
-        self.ivars().is_fill.get()
     }
 
     /// Which `BackgroundLayout` slot this host renders — the child index
@@ -762,7 +708,7 @@ impl HostView {
     pub fn set_ignored_safe_area_edges(&self, container: Edges, keyboard: Edges) {
         self.ivars()
             .ignored_safe_area_edges
-            .set(isize::from(container.mask()) | (isize::from(keyboard.mask()) << 4) | 0x100);
+            .set(u16::from(container.mask()) | (u16::from(keyboard.mask()) << 4) | 0x100);
     }
 
     /// The software keyboard's frame in the window's coordinates, kept
@@ -772,56 +718,19 @@ impl HostView {
         self.ivars().keyboard_frame.get()
     }
 
-    /// Whether this view should own its window's keyboard observers,
-    /// evaluated on every window move: a host at the window's root site
-    /// (`fills_window`) always does; under a foreign root the outermost
-    /// host view of an embedded subtree does — the nearest ancestor host
-    /// view that already tracks wins it, so kit content under a
-    /// `UITabBarController`-style foreign root still finds its owner.
-    fn should_track_keyboard(&self) -> bool {
-        let Some(window) = self.window() else {
-            return false;
-        };
-        if self.ivars().fills_window.get() {
-            return true;
-        }
-        // A root that tracks covers the whole window: the search for an
-        // embedded owner only runs while the root reports no tracking —
-        // a non-kit root answers the selector absent, which reads the
-        // same as false.
-        if window
-            .rootViewController()
-            .and_then(|controller| controller.view())
-            .is_some_and(|root| {
-                root.respondsToSelector(sel!(cocoaUiTracksKeyboard))
-                    // SAFETY: kit host classes declare the selector as a
-                    // `bool` report of live keyboard tracking.
-                    && unsafe { msg_send![&*root, cocoaUiTracksKeyboard] }
-            })
-        {
-            return false;
-        }
-        // The outermost tracking ancestor owns it; this view takes it
-        // only when no ancestor above it already does.
-        let mut ancestor = self.superview();
-        while let Some(candidate) = ancestor {
-            if candidate.respondsToSelector(sel!(cocoaUiTracksKeyboard))
-                // SAFETY: kit host classes declare the selector as a
-                // `bool` report of live keyboard tracking.
-                && unsafe { msg_send![&*candidate, cocoaUiTracksKeyboard] }
-            {
-                return false;
-            }
-            ancestor = candidate.superview();
-        }
-        true
-    }
-
-    /// Re-evaluates `should_track_keyboard` after a window move and
-    /// applies the answer — a window attach may start tracking, a
-    /// detach always ends it.
+    /// Re-evaluates the tracking decision after a window move and
+    /// applies the answer: this view tracks when it sits in a window no
+    /// owner covers — the window root when it is one of ours, else the
+    /// outermost kit host in a foreign-rooted subtree. The answer never
+    /// depends on the order `didMoveToWindow` visits a subtree: a host
+    /// arriving above an already-tracking subtree adopts it
+    /// (`adopt_keyboard_tracking`). A detach always ends it.
     fn refresh_keyboard_tracking(&self) {
-        if self.should_track_keyboard() {
+        let this: &UIView = self;
+        let ownerless = self.window().is_some()
+            && crate::uikit::keyboard::tracker_for(this)
+                .is_none_or(|owner| ptr::eq(&raw const *owner, this));
+        if ownerless {
             self.track_keyboard();
         } else {
             self.untrack_keyboard();
@@ -854,6 +763,32 @@ impl HostView {
                 },
             ));
         }
+        drop(observers);
+        self.adopt_keyboard_tracking();
+    }
+
+    /// Takes the keyboard state over from any tracker inside `self`'s
+    /// subtree: a host that attached above an already-tracking subtree —
+    /// the order `didMoveToWindow` walks a tree is undocumented — adopts
+    /// the earlier tracker's frame and duration and retires its
+    /// observers, so one subtree keeps one owner and no reported frame
+    /// is lost between the handoff and the next notification.
+    fn adopt_keyboard_tracking(&self) {
+        let mut stack = self.subviews().to_vec();
+        while let Some(candidate) = stack.pop() {
+            if crate::uikit::keyboard::is_tracking(&candidate) {
+                let host = candidate
+                    .downcast_ref::<Self>()
+                    .expect("only a kit host view tracks the keyboard");
+                self.ivars().keyboard_frame.set(host.keyboard_frame());
+                self.ivars()
+                    .keyboard_duration
+                    .set(host.ivars().keyboard_duration.get());
+                host.untrack_keyboard();
+            } else {
+                stack.extend(candidate.subviews().to_vec());
+            }
+        }
     }
 
     /// Ends keyboard tracking: the observers are dropped and the frame
@@ -870,10 +805,10 @@ impl HostView {
     /// frame already resolved into window coordinates by
     /// [`crate::uikit::keyboard::change`] — animating the stored frame
     /// and the layout pass it drives with the notification's own
-    /// animation. Only this view is marked: every host view's own
-    /// `layoutSubviews` forwards the mark to the subviews whose
-    /// placement reads the region boundaries, so the pass reaches
-    /// them without walking the window.
+    /// animation. The owner marks every region reader in its subtree
+    /// once per notification — a `FixedContainer` that moves without
+    /// resizing gets no `layoutSubviews` of its own — then flushes the
+    /// pass with `layoutIfNeeded`.
     fn apply_keyboard_frame(&self, note: &NSNotification) {
         let Some(window) = self.window() else {
             return;
@@ -884,7 +819,7 @@ impl HostView {
             move || {
                 host.ivars().keyboard_frame.set(change.frame);
                 host.ivars().keyboard_duration.set(change.duration);
-                host.setNeedsLayout();
+                mark_region_readers(&host);
                 host.layoutIfNeeded();
             }
         });
@@ -1062,34 +997,30 @@ pub fn window_root(mtm: MainThreadMarker) -> Retained<HostView> {
     )
 }
 
-/// Marks `view` and every region-managed kit descendant of it for a
-/// layout pass: only views answering [`needs_region_layout`] are marked,
-/// while the walk descends through everything — the foreign containers a
-/// `UINavigationController` or `UITabBarController` interposes run no kit
-/// `layoutSubviews`, so a level-at-a-time cascade dies at the first one
-/// and the hosts inside never re-place.
-fn mark_region_layout(view: &UIView) {
-    if needs_region_layout(view) {
+/// Marks every region reader in `view`'s subtree for the layout pass a
+/// keyboard region change drives: every kit `HostView` that runs a
+/// layout handler — its children's placement reads the boundaries
+/// through the sibling backend's region context — and every kit scroll
+/// surface, whose content insets do. The walk descends through the
+/// foreign containers `UIKit` interposes (transition, container and
+/// wrapper views inside navigation and tab controllers), which never
+/// run kit `layoutSubviews`; a scroll surface's own subtree is not
+/// walked — it owns the safe-area contract inside itself and nothing
+/// under it reads the regions. Runs once per keyboard notification from
+/// the tracking owner's animation block, not on every `HostView` pass:
+/// the container region's own changes already reach every view through
+/// `UIKit`'s `safeAreaInsetsDidChange` propagation.
+fn mark_region_readers(view: &UIView) {
+    if crate::view::is_scroll_surface(view) {
+        view.setNeedsLayout();
+        return;
+    }
+    if let Some(host) = view.downcast_ref::<HostView>()
+        && host.ivars().layout.borrow().is_some()
+    {
         view.setNeedsLayout();
     }
     for subview in &view.subviews() {
-        mark_region_layout(&subview);
+        mark_region_readers(&subview);
     }
-}
-
-/// Whether `view` — or the content it forwards as its primary — lays out
-/// against the region boundaries: a kit scroll surface, a view that
-/// reports `cocoaUiNeedsRegionLayout` (a safe-area manager or an ignorer),
-/// or a transparent wrapper whose primary content is one. Drives the
-/// `layoutSubviews` mark that cascades a pass to the views the keyboard
-/// region's motion re-places.
-fn needs_region_layout(view: &UIView) -> bool {
-    (view.respondsToSelector(sel!(cocoaUiIsScrollSurface))
-        // SAFETY: kit scroll surfaces declare the selector as a boolean.
-        && unsafe { msg_send![view, cocoaUiIsScrollSurface] })
-        || (view.respondsToSelector(sel!(cocoaUiNeedsRegionLayout))
-            // SAFETY: `HostView` declares the selector as a boolean
-            // report of its own region flags.
-            && unsafe { msg_send![view, cocoaUiNeedsRegionLayout] })
-        || crate::view::primary_content(view).is_some_and(|child| needs_region_layout(&child))
 }

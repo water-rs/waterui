@@ -96,11 +96,16 @@ mod scroll_animation {
     }
 
     /// A key, visible window in the application's scene with `content`
-    /// filling it, laid out.
+    /// filling it, laid out. `content` mounts inside a kit `HostView` —
+    /// the shape every production mount path takes — so kit surfaces
+    /// find a keyboard owner.
     fn scene_window(mtm: MainThreadMarker, content: &PlatformView) -> Retained<UIWindow> {
         let window = native_test::window(mtm, Rect::new(0.0, 0.0, 390.0, 844.0));
-        window.addSubview(content);
-        view::set_frame(content, view::bounds(&window));
+        let host = cocoa_ui::uikit::HostView::new(mtm, Rect::ZERO);
+        host.addSubview(content);
+        window.addSubview(&host);
+        view::set_frame(&host, view::bounds(&window));
+        view::set_frame(content, view::bounds(&host));
         window.makeKeyAndVisible();
         window.layoutIfNeeded();
         window

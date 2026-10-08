@@ -9,12 +9,12 @@
 //! content by them. `docs/layout-spec.md` §7.1 is the normative contract.
 //!
 //! `UIKit` reports the container region through `safeAreaInsets`. The
-//! keyboard region is geometric: the window root tracks the keyboard's
-//! frame from `UIKit`'s keyboard notifications (`cocoaUiKeyboardFrame`)
-//! and the inset a view measures is the depth of that rect inside the
-//! view's own window frame, on the edges the rect covers. A scroll surface
-//! owns the safe-area contract for its whole subtree, so inside one the
-//! regions read zero.
+//! keyboard region is geometric: the window's keyboard owner tracks the
+//! keyboard's frame from `UIKit`'s keyboard notifications
+//! (`cocoaUiKeyboardFrame`) and the inset a view measures is the depth of
+//! that rect inside the view's own window frame, on the edges the rect
+//! covers. A scroll surface owns the safe-area contract for its whole
+//! subtree, so inside one the regions read zero.
 //!
 //! Ignored regions accumulate down the view tree as a mask — bits 0–3 the
 //! container `Edges` mask, bits 4–7 the keyboard `Edges` mask — that a
@@ -89,15 +89,10 @@ fn is_ignorer(view: &PlatformView) -> bool {
 #[cfg(target_os = "ios")]
 fn declared_mask(view: &PlatformView) -> u16 {
     if view.respondsToSelector(objc2::sel!(cocoaUiIgnoredSafeAreaEdges)) {
-        // SAFETY: cocoa-ui declares this selector as an NSInteger edge mask.
-        let mask: isize = unsafe { objc2::msg_send![view, cocoaUiIgnoredSafeAreaEdges] };
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "the AND keeps only the nine declared bits, so no value is lost"
-        )]
-        let bits = (mask & 0x1ff) as u16;
-        bits
+        // SAFETY: cocoa-ui declares this selector as an unsigned-short
+        // edge mask — bits 0–3 container, bits 4–7 keyboard, bit 8 the
+        // ignorer mark.
+        unsafe { objc2::msg_send![view, cocoaUiIgnoredSafeAreaEdges] }
     } else {
         0
     }
@@ -282,14 +277,14 @@ impl WindowContext {
                 keyboard: EdgeInsets::ZERO,
             };
         };
-        let container = window
-            .rootViewController()
-            .and_then(|controller| controller.view())
-            .map_or_else(|| window.safeAreaInsets(), |root| root.safeAreaInsets());
         let window: &PlatformView = &window;
         Self {
             window: window.bounds(),
-            container: EdgeInsets::from(container),
+            // The container region is the window's own `safeAreaInsets` —
+            // the bands system bars, cutouts and the home indicator
+            // reserve; a root controller's `additionalSafeAreaInsets` are
+            // the app's layout choice, not region geometry.
+            container: EdgeInsets::from(window.safeAreaInsets()),
             // `keyboard_rect` resolves the window from the view it is
             // given: a `UIWindow` is inside no window, so the lookup must
             // run on `view` itself.

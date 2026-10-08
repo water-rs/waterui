@@ -12,10 +12,10 @@
 //! host view when the window root is not one of ours — tracks the last
 //! reported frame and duration and reports them through
 //! `cocoaUiKeyboardFrame`, `cocoaUiKeyboardDuration` and
-//! `cocoaUiTracksKeyboard`. Scroll surfaces read that shared state in
-//! their own layout passes instead of keeping a private copy, so a
-//! surface's inset follows its current frame and never depends on
-//! notification delivery order.
+//! `cocoaUiTracksKeyboard`. [`tracker_for`] resolves that owner for any
+//! view; scroll surfaces read the shared state in their own layout passes
+//! instead of keeping a private copy, so a surface's inset follows its
+//! current frame and never depends on notification delivery order.
 //!
 //! # Safety
 //!
@@ -24,19 +24,17 @@
 //! frame key names into a `CGRect`, a copy `NSValue` documents as typed.
 
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
 
 use block2::RcBlock;
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::AnyObject;
-use objc2::{MainThreadMarker, msg_send, sel};
+use objc2::{MainThreadMarker, MainThreadOnly, msg_send, sel};
 use objc2_core_foundation::{CGPoint, CGRect};
 use objc2_foundation::{NSNotification, NSNumber, NSObjectProtocol, NSString, NSValue};
 use objc2_ui_kit::{
     UICoordinateSpace, UIKeyboardAnimationCurveUserInfoKey, UIKeyboardAnimationDurationUserInfoKey,
-    UIKeyboardFrameEndUserInfoKey, UIKeyboardWillChangeFrameNotification, UIScrollView,
-    UITextFieldTextDidBeginEditingNotification, UITextViewTextDidBeginEditingNotification, UIView,
-    UIViewAnimationOptions, UIWindow,
+    UIKeyboardFrameEndUserInfoKey, UIScrollView, UITextFieldTextDidBeginEditingNotification,
+    UITextViewTextDidBeginEditingNotification, UIView, UIViewAnimationOptions, UIWindow,
 };
 
 use crate::notification::{NotificationName, NotificationObserver, observe_with_notification};
@@ -113,8 +111,8 @@ pub fn change(notification: &NSNotification, window: &UIWindow) -> KeyboardChang
 
 /// Whether `candidate` currently tracks the keyboard for its window —
 /// `cocoaUiTracksKeyboard` is `true` only while a window owner (a kit
-/// host view, or an orphaned scroll surface) holds live observers.
-fn is_tracking(candidate: &UIView) -> bool {
+/// host view) holds live observers.
+pub(crate) fn is_tracking(candidate: &UIView) -> bool {
     candidate.respondsToSelector(sel!(cocoaUiTracksKeyboard))
         // SAFETY: only kit classes declare the selector, as a `bool`
         // report of live keyboard tracking.
@@ -137,14 +135,39 @@ unsafe fn read_tracked(owner: &UIView) -> (CGRect, f64) {
     }
 }
 
+/// The view owning the keyboard state for `view`'s window.
+///
+/// The window root when it tracks, or the nearest strict ancestor of
+/// `view` that does — a kit view inside a window whose root is foreign
+/// still finds the embedded host view that took tracking. `view` itself
+/// answers last, for the tracker asking about itself.
+///
+/// Ownership never depends on the order `didMoveToWindow` visits a
+/// subtree: a host arriving above an already-tracking subtree adopts the
+/// earlier tracker's state and takes the ownership over, so the answer
+/// is the same whatever order the two attached in. `None` while `view`
+/// is outside any window, or when nothing in it tracks.
+#[must_use]
+pub fn tracker_for(view: &UIView) -> Option<Retained<UIView>> {
+    let window = view.window()?;
+    if let Some(root) = window.rootViewController().and_then(|c| c.view())
+        && is_tracking(&root)
+    {
+        return Some(root);
+    }
+    let mut current = view.superview();
+    while let Some(candidate) = current {
+        if is_tracking(&candidate) {
+            return Some(candidate);
+        }
+        current = candidate.superview();
+    }
+    is_tracking(view).then(|| Retained::from(view))
+}
+
 /// The keyboard's window-space frame and last animation duration the
 /// window's keyboard owner tracks for `view`. `None` while `view` is
 /// outside any window, where there is no keyboard to see.
-///
-/// The owner is the window root when it tracks (`cocoaUiTracksKeyboard`),
-/// or the nearest ancestor host view that took tracking for an embedded
-/// subtree — a kit view inside a window whose root is foreign still finds
-/// its own tracker.
 ///
 /// # Panics
 ///
@@ -155,71 +178,15 @@ unsafe fn read_tracked(owner: &UIView) -> (CGRect, f64) {
 /// host.
 #[must_use]
 pub fn window_keyboard(view: &UIView) -> Option<(CGRect, f64)> {
-    let window = view.window()?;
-    Some(tracked_keyboard(view, &window))
-}
-
-/// The tracker `view`'s window resolves to — see [`window_keyboard`].
-///
-/// The lookup prefers the shared owner — the window root, then `view`'s
-/// strict ancestors — and consults `view` itself last, so an orphaned
-/// surface's own tracking answers only when no real owner exists. A
-/// surface under an owner therefore always reads the tree's single
-/// source, never its own cells.
-fn tracked_keyboard(view: &UIView, window: &UIWindow) -> (CGRect, f64) {
-    if let Some(root) = window.rootViewController().and_then(|c| c.view())
-        && is_tracking(&root)
-    {
-        // SAFETY: `root` reports live tracking.
-        return unsafe { read_tracked(&root) };
-    }
-    // An embedded subtree under a foreign root: the nearest host view
-    // that took tracking owns the keyboard state for it.
-    let mut current = view.superview();
-    while let Some(candidate) = current {
-        if is_tracking(&candidate) {
-            // SAFETY: `candidate` reports live tracking.
-            return unsafe { read_tracked(&candidate) };
-        }
-        current = candidate.superview();
-    }
-    // An orphaned scroll surface is its own keyboard owner — the
-    // fallback a bare `UIScrollView` subtree mounted without a kit host
-    // needs (a foreign window, a fixture window).
-    if is_tracking(view) {
-        // SAFETY: `view` reports live tracking.
-        return unsafe { read_tracked(view) };
-    }
-    panic!(
+    view.window()?;
+    let owner = tracker_for(view).expect(
         "no keyboard tracking is live in this window: the window root does \
-         not answer `cocoaUiTracksKeyboard` and neither {view:?} nor any \
-         ancestor of it tracks — kit content laid out in a window must sit \
-         under a kit host view that took tracking in `didMoveToWindow`"
+         not answer `cocoaUiTracksKeyboard` and no ancestor of the view \
+         tracks — kit content laid out in a window must sit under a kit \
+         host view that took tracking in `didMoveToWindow`",
     );
-}
-
-/// Whether a tracker already serves `view`'s window — the window root
-/// tracking, or a strict ancestor of `view` that does. Evaluated when a
-/// scroll surface attaches so an orphaned surface can take ownership.
-fn has_tracker(view: &UIView) -> bool {
-    let Some(window) = view.window() else {
-        return false;
-    };
-    if window
-        .rootViewController()
-        .and_then(|controller| controller.view())
-        .is_some_and(|root| is_tracking(&root))
-    {
-        return true;
-    }
-    let mut ancestor = view.superview();
-    while let Some(candidate) = ancestor {
-        if is_tracking(&candidate) {
-            return true;
-        }
-        ancestor = candidate.superview();
-    }
-    false
+    // SAFETY: `owner` reports live tracking.
+    Some(unsafe { read_tracked(&owner) })
 }
 
 /// A scroll surface's keyboard state (layout-spec §7.1 "scroll
@@ -246,21 +213,9 @@ pub struct KeyboardTracking {
     /// `contentInset.bottom` — kept so the next pass shifts the inset by
     /// the delta instead of clobbering other bottom-inset terms.
     applied_inset: Cell<f64>,
-    /// The notification observers — the text-editing focus observers
-    /// always, plus the surface's own `WillChangeFrame` observer while
-    /// it self-tracks — live while the surface sits in a window.
+    /// The text-editing focus observers, live while the surface sits in
+    /// a window.
     observers: RefCell<Vec<NotificationObserver>>,
-    /// Whether the surface currently carries its own `WillChangeFrame`
-    /// observer — the answer `cocoaUiTracksKeyboard` reports: true only
-    /// while the surface is its window's keyboard owner because no
-    /// tracker exists above it.
-    self_tracking: Cell<bool>,
-    /// The frame and duration the surface's own observer last stored —
-    /// what `cocoaUiKeyboardFrame`/`cocoaUiKeyboardDuration` report
-    /// while self-tracking; unread while an owner above answers first.
-    tracked_frame: Cell<CGRect>,
-    /// The duration paired with [`Self::tracked_frame`].
-    tracked_duration: Cell<f64>,
 }
 
 impl std::fmt::Debug for KeyboardTracking {
@@ -282,36 +237,24 @@ impl KeyboardTracking {
         Self {
             applied_inset: Cell::new(0.0),
             observers: RefCell::new(Vec::new()),
-            self_tracking: Cell::new(false),
-            tracked_frame: Cell::new(CGRect::ZERO),
-            tracked_duration: Cell::new(0.0),
         }
     }
 
     /// Drops the observers: the surface left its window, or its handlers
-    /// were cleared. Self-tracking ends with them — the frame and
-    /// duration return to zero. The applied contribution stays — the
-    /// next pass the surface runs reconciles the inset against it.
+    /// were cleared. The applied contribution stays — the next pass the
+    /// surface runs reconciles the inset against it.
     pub fn clear(&self) {
         self.observers.borrow_mut().clear();
-        self.self_tracking.set(false);
-        self.tracked_frame.set(CGRect::ZERO);
-        self.tracked_duration.set(0.0);
     }
 
     /// Arms the surface for its window — called from `didMoveToWindow`
     /// after [`Self::clear`], so a surface that moves windows never
-    /// holds two sets of registrations.
-    ///
-    /// Always installs the text-editing focus observers. When no
-    /// tracker exists in the window — the root does not track and no
-    /// ancestor host does either — the surface also observes
-    /// `UIKeyboardWillChangeFrameNotification` itself and becomes its
-    /// own window's keyboard owner: the shape a bare `UIScrollView`
-    /// subtree mounted under a foreign root takes. A surface under a
-    /// kit host never installs this observer — one observer per tree
-    /// keeps the frame single-sourced.
-    pub fn attach(self: &Rc<Self>, scroll: &UIScrollView, mtm: MainThreadMarker) {
+    /// holds two sets of registrations. Installs only the text-editing
+    /// focus observers: the keyboard frame itself comes from the
+    /// window's tracking owner at layout time (`window_keyboard`), and
+    /// the owner's notification already drives the layout passes that
+    /// re-read it, so a surface needs no observer of its own.
+    pub fn attach(&self, scroll: &UIScrollView, mtm: MainThreadMarker) {
         let mut observers = self.observers.borrow_mut();
         // SAFETY: `UIKit` exports the text-editing notification names as
         // constants for the process's lifetime.
@@ -322,87 +265,25 @@ impl KeyboardTracking {
             ]
         } {
             let weak_scroll = Weak::new(scroll);
-            let tracking = Rc::downgrade(self);
             observers.push(observe_with_notification(
                 mtm,
                 &NotificationName::framework(name),
                 move |_note| {
-                    if let Some(scroll) = weak_scroll.load()
-                        && tracking.upgrade().is_some()
-                    {
+                    if let Some(scroll) = weak_scroll.load() {
                         Self::scroll_focused_clear(&scroll, true);
                     }
                 },
             ));
         }
-        if has_tracker(scroll) {
-            return;
-        }
-        self.self_tracking.set(true);
-        let weak_scroll = Weak::new(scroll);
-        let tracking = Rc::downgrade(self);
-        observers.push(observe_with_notification(
-            mtm,
-            // SAFETY: `UIKit` exports the notification name as a
-            // constant for the process's lifetime. WillChangeFrame alone
-            // carries every transition — show, hide and resize post it
-            // alongside their semantic notifications.
-            &NotificationName::framework(unsafe { UIKeyboardWillChangeFrameNotification }),
-            move |note| {
-                let Some(scroll) = weak_scroll.load() else {
-                    return;
-                };
-                let Some(tracking) = tracking.upgrade() else {
-                    return;
-                };
-                let Some(window) = scroll.window() else {
-                    return;
-                };
-                let change = change(note, &window);
-                tracking.tracked_frame.set(change.frame);
-                tracking.tracked_duration.set(change.duration);
-                let block = RcBlock::new(move || {
-                    scroll.setNeedsLayout();
-                    scroll.layoutIfNeeded();
-                });
-                UIView::animateWithDuration_delay_options_animations_completion(
-                    change.duration,
-                    0.0,
-                    change.options,
-                    &block,
-                    None,
-                    mtm,
-                );
-            },
-        ));
-    }
-
-    /// Whether the surface currently carries its own keyboard observer
-    /// — the answer `cocoaUiTracksKeyboard` reports.
-    #[must_use]
-    pub const fn tracks(&self) -> bool {
-        self.self_tracking.get()
-    }
-
-    /// The frame the surface's own observer last stored — the answer
-    /// `cocoaUiKeyboardFrame` reports.
-    #[must_use]
-    pub const fn tracked_frame(&self) -> CGRect {
-        self.tracked_frame.get()
-    }
-
-    /// The duration the surface's own observer last stored — the answer
-    /// `cocoaUiKeyboardDuration` reports.
-    #[must_use]
-    pub const fn tracked_duration(&self) -> f64 {
-        self.tracked_duration.get()
     }
 
     /// Recomputes the keyboard contribution in `scroll`'s own layout
     /// pass: the covered band depth becomes the bottom content inset —
     /// shifted by the delta from the last pass so other
-    /// `contentInset.bottom` terms survive — and a focused field inside
-    /// is scrolled clear.
+    /// `contentInset.bottom` terms survive. The focused field is
+    /// scrolled clear only when the contribution itself grows; a pass
+    /// that re-runs because the user scrolled must leave the offset
+    /// alone.
     pub fn apply_layout(&self, scroll: &UIScrollView) {
         let contribution = if Self::nested_in_scroll(scroll) {
             0.0
@@ -414,9 +295,9 @@ impl KeyboardTracking {
             let mut inset = scroll.contentInset();
             inset.bottom += contribution - previous;
             scroll.setContentInset(inset);
-        }
-        if contribution > 0.0 {
-            Self::scroll_focused_clear(scroll, false);
+            if contribution > previous {
+                Self::scroll_focused_clear(scroll, false);
+            }
         }
     }
 
@@ -505,8 +386,7 @@ impl KeyboardTracking {
                 // one, so the same write runs inside a `UIView`
                 // animation of the keyboard's own duration instead of an
                 // instantaneous snap.
-                let mtm = MainThreadMarker::new()
-                    .expect("the keyboard layout pass runs on the main thread");
+                let mtm = scroll.mtm();
                 let scroll: Retained<UIScrollView> = Retained::from(scroll);
                 let block = RcBlock::new(move || {
                     scroll.setContentOffset_animated(target, false);

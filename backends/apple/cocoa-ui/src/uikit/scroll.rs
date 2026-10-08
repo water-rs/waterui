@@ -47,9 +47,10 @@ pub struct ScrollViewIvars {
     scroll: RefCell<Option<ScrollHandler>>,
     /// The scroll animation state: at most one flight per surface.
     flight: Rc<ScrollFlight>,
-    /// The keyboard tracking (§7.1 scroll surfaces): the band's depth
-    /// becomes the bottom content inset and a focused field inside
-    /// scrolls clear.
+    /// The keyboard tracking (§7.1 scroll surfaces): the covered band's
+    /// depth becomes the bottom content inset in the surface's own layout
+    /// pass, read from the window's keyboard owner; the focus observers
+    /// scroll a focused field clear of the keyboard region.
     keyboard: Rc<KeyboardTracking>,
 }
 
@@ -157,31 +158,6 @@ define_class!(
         #[unsafe(method(cocoaUiIsScrollSurface))]
         fn is_scroll_surface_override(&self) -> bool {
             true
-        }
-
-        /// SAFETY: see the module safety note. Whether the surface owns
-        /// its window's keyboard state itself — true only while no
-        /// tracker exists above it (an orphaned surface under a foreign
-        /// or fixture root); under a kit host the owner answers instead.
-        #[unsafe(method(cocoaUiTracksKeyboard))]
-        fn tracks_keyboard_override(&self) -> bool {
-            self.ivars().keyboard.tracks()
-        }
-
-        /// SAFETY: see the module safety note. The keyboard frame the
-        /// surface's own observer stored — read by
-        /// `keyboard::window_keyboard` only while `cocoaUiTracksKeyboard`
-        /// reports true.
-        #[unsafe(method(cocoaUiKeyboardFrame))]
-        fn keyboard_frame_override(&self) -> CGRect {
-            self.ivars().keyboard.tracked_frame()
-        }
-
-        /// SAFETY: see the module safety note. The animation duration
-        /// paired with `cocoaUiKeyboardFrame`.
-        #[unsafe(method(cocoaUiKeyboardDuration))]
-        fn keyboard_duration_override(&self) -> f64 {
-            self.ivars().keyboard.tracked_duration()
         }
 
         /// The scroll view offers no intrinsic size: it fills the space its
