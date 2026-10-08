@@ -996,6 +996,7 @@ pub mod dmabuf {
 #[cfg(target_os = "android")]
 pub mod android {
     pub use crate::render::surface_control::ffi::{ASurfaceControl, CreateFailed, SurfaceControl};
+    pub use crate::render::surface_control::planes::HostedSurface;
 
     /// A surface realized as child surface controls of a host's parent
     /// surface control.
@@ -1061,6 +1062,12 @@ pub mod android {
             Self::SurfaceControl(target)
         }
     }
+}
+
+/// Apple interop: system layers hosted on the engine's planes.
+#[cfg(target_vendor = "apple")]
+pub mod apple {
+    pub use crate::render::planes::apple::HostedLayer;
 }
 
 /// Apple interop: importing Metal resources onto the shared device.

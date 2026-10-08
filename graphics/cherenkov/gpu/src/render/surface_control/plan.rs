@@ -287,6 +287,16 @@ pub fn expresses_transform(transform: Affine) -> bool {
     buffer_transform(transform).is_ok()
 }
 
+/// Whether a hosted surface control — a container the host draws into,
+/// placed by its position, scale and crop rather than a buffer geometry —
+/// carries a layer's local `transform` exactly: a translation and a
+/// positive axis-aligned scale. A buffer transform's mirrors and quarter
+/// turns apply to a buffer only, not to a container's children.
+#[must_use]
+pub fn hosts_transform(transform: Affine) -> bool {
+    buffer_transform(transform) == Ok(BufferTransform::default())
+}
+
 /// Whether a child surface control carries `clip` exactly: a crop, which is
 /// a rectangle.
 #[must_use]
@@ -426,6 +436,120 @@ pub fn placement(
     }))
 }
 
+/// Where a hosted surface control lands: its crop in its own space, then
+/// its scale and position into the parent's.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HostedFrame {
+    /// The crop, in the hosted surface's own pixels.
+    pub crop: IRect,
+    /// The scale about its origin.
+    pub scale: (f32, f32),
+    /// Its origin in the parent's (the engine surface's device) space.
+    pub position: (i32, i32),
+}
+
+/// A hosted surface control's placement: shown with a frame, or hidden
+/// because nothing of it is visible.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum HostedPlacement {
+    /// Shown.
+    Visible(HostedFrame),
+    /// Clipped away entirely.
+    Hidden,
+}
+
+/// The placement on `surface` of a hosted layer [`planes::plan`] promoted,
+/// whose own space spans `(0, 0)..extent`.
+///
+/// The position rounds to the device pixel grid and the crop to whole
+/// pixels of the hosted surface, as a buffer plane's geometry does.
+///
+/// # Errors
+/// [`Inexpressible`] when the path's transform is not a translation and
+/// positive scale, or a clip on it is not a rectangle — which the plan's
+/// [`hosts_transform`] and [`expresses_clip`] checks exclude.
+pub fn hosted(
+    promoted: &planes::Placement,
+    extent: cherenkov::kurbo::Size,
+    surface: (u32, u32),
+) -> Result<HostedPlacement, Inexpressible> {
+    let transform = promoted.content_to_device();
+    if buffer_transform(transform)? != BufferTransform::default() {
+        return Err(Inexpressible::Transform);
+    }
+    let local = Rect::from_origin_size((0.0, 0.0), extent);
+    let bounds = Rect::new(0.0, 0.0, f64::from(surface.0), f64::from(surface.1));
+    let mut visible = transform.transform_rect_bbox(local).intersect(bounds);
+    if let Some(clip) = device_clip(&promoted.path)? {
+        visible = visible.intersect(clip);
+    }
+    if visible.width() <= 0.0 || visible.height() <= 0.0 {
+        return Ok(HostedPlacement::Hidden);
+    }
+    let crop = IRect::round(
+        transform
+            .inverse()
+            .transform_rect_bbox(visible)
+            .intersect(local),
+    );
+    if crop.is_empty() {
+        return Ok(HostedPlacement::Hidden);
+    }
+    let [sx, _, _, sy, tx, ty] = transform.as_coeffs();
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a device position is bounded by the surface size; a scale is an f32 property"
+    )]
+    Ok(HostedPlacement::Visible(HostedFrame {
+        crop,
+        scale: (sx as f32, sy as f32),
+        position: (tx.round() as i32, ty.round() as i32),
+    }))
+}
+
+/// Every property a transaction sets on a hosted surface control.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HostedProperties {
+    /// The z-order among the engine surface's planes.
+    pub z: i32,
+    /// Shown with a frame, or hidden.
+    pub placement: HostedPlacement,
+}
+
+/// Appends to `ops` what a transaction must set to move a hosted surface
+/// control from `prev` (`None` for one never set) to `next`.
+pub fn diff_hosted(prev: Option<&HostedProperties>, next: &HostedProperties, ops: &mut Vec<Op>) {
+    if prev.is_none_or(|p| p.z != next.z) {
+        ops.push(Op::Z(next.z));
+    }
+    let was = prev.map(|p| p.placement);
+    match next.placement {
+        HostedPlacement::Hidden => {
+            if was != Some(HostedPlacement::Hidden) {
+                ops.push(Op::Visible(false));
+            }
+        }
+        HostedPlacement::Visible(frame) => {
+            let shown = match was {
+                Some(HostedPlacement::Visible(shown)) => Some(shown),
+                Some(HostedPlacement::Hidden) | None => {
+                    ops.push(Op::Visible(true));
+                    None
+                }
+            };
+            if shown.is_none_or(|s| s.crop != frame.crop) {
+                ops.push(Op::Crop(frame.crop));
+            }
+            if shown.is_none_or(|s| s.scale != frame.scale) {
+                ops.push(Op::Scale(frame.scale.0, frame.scale.1));
+            }
+            if shown.is_none_or(|s| s.position != frame.position) {
+                ops.push(Op::Position(frame.position.0, frame.position.1));
+            }
+        }
+    }
+}
+
 /// One slot of a surface's stack of system layers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Slot {
@@ -486,6 +610,12 @@ pub enum Op {
     Visible(bool),
     /// `setGeometry`.
     Geometry(Geometry),
+    /// `setCrop`: a container's bounds in its own space.
+    Crop(IRect),
+    /// `setPosition`, in the parent's space.
+    Position(i32, i32),
+    /// `setScale`, about the surface's origin.
+    Scale(f32, f32),
     /// `setBufferAlpha`.
     Alpha(f32),
     /// `setBufferTransparency`: opaque or translucent.
@@ -835,6 +965,7 @@ mod tests {
 
     impl planes::Compositor for Android {
         const BUDGET: usize = BUDGET;
+        const HOSTS_OPACITY: bool = false;
         fn expresses_transform(transform: Affine) -> bool {
             expresses_transform(transform)
         }
@@ -1075,5 +1206,173 @@ mod tests {
             unreachable!()
         };
         assert_eq!(ops, [Op::Visible(true), Op::Geometry(geometry)]);
+    }
+
+    /// A hosted placement at `transform` under the root, clipped by
+    /// `clip` in the root's space.
+    fn hosted_at(transform: Affine, clip: Option<Rect>) -> planes::Placement {
+        planes::Placement {
+            layer: ROOT,
+            source: planes::Source::Hosted,
+            size: (200, 100),
+            raster: Affine::IDENTITY,
+            opacity: 1.0,
+            path: vec![
+                Level {
+                    layer: ROOT,
+                    transform: Affine::IDENTITY,
+                    clip: clip.map(ShapeData::Rect),
+                    scroll: Vec2::ZERO,
+                },
+                Level {
+                    layer: PARENT,
+                    transform,
+                    clip: None,
+                    scroll: Vec2::ZERO,
+                },
+            ],
+        }
+    }
+
+    const EXTENT: cherenkov::kurbo::Size = cherenkov::kurbo::Size::new(200.0, 100.0);
+
+    fn hosted_frame(placement: HostedPlacement) -> HostedFrame {
+        match placement {
+            HostedPlacement::Visible(frame) => frame,
+            HostedPlacement::Hidden => panic!("expected a visible hosted placement"),
+        }
+    }
+
+    /// A container carries translations and positive scales; a buffer
+    /// transform's mirrors and quarter turns do not reach its children.
+    #[test]
+    fn a_hosted_container_carries_translation_and_positive_scale_only() {
+        assert!(hosts_transform(
+            Affine::translate((3.0, 4.0)) * Affine::scale_non_uniform(2.0, 0.5)
+        ));
+        assert!(!hosts_transform(Affine::scale_non_uniform(-1.0, 1.0)));
+        assert!(!hosts_transform(Affine::rotate(
+            std::f64::consts::FRAC_PI_2
+        )));
+        assert!(!hosts_transform(Affine::rotate(0.3)));
+        assert!(!hosts_transform(Affine::scale(0.0)));
+        assert!(expresses_transform(Affine::scale_non_uniform(-1.0, 1.0)));
+    }
+
+    /// The whole extent shows at the device position and scale of its
+    /// path; a clip crops it in its own pixels.
+    #[test]
+    fn a_hosted_surface_is_positioned_scaled_and_cropped() {
+        let frame = hosted_frame(
+            hosted(
+                &hosted_at(Affine::translate((40.0, 30.0)) * Affine::scale(2.0), None),
+                EXTENT,
+                (1000, 1000),
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            frame,
+            HostedFrame {
+                crop: rect(0, 0, 200, 100),
+                scale: (2.0, 2.0),
+                position: (40, 30),
+            }
+        );
+        // The root clips device (0, 0)..(140, 80): hosted pixels
+        // (0, 0)..(50, 25) remain.
+        let frame = hosted_frame(
+            hosted(
+                &hosted_at(
+                    Affine::translate((40.0, 30.0)) * Affine::scale(2.0),
+                    Some(Rect::new(0.0, 0.0, 140.0, 80.0)),
+                ),
+                EXTENT,
+                (1000, 1000),
+            )
+            .unwrap(),
+        );
+        assert_eq!(frame.crop, rect(0, 0, 50, 25));
+        assert_eq!(frame.position, (40, 30));
+        // The surface bounds crop too.
+        let frame = hosted_frame(
+            hosted(
+                &hosted_at(Affine::translate((-50.0, 0.0)), None),
+                EXTENT,
+                (100, 1000),
+            )
+            .unwrap(),
+        );
+        assert_eq!(frame.crop, rect(50, 0, 150, 100));
+        assert_eq!(frame.position, (-50, 0));
+    }
+
+    #[test]
+    fn a_hosted_surface_clipped_away_is_hidden_and_a_mirror_is_inexpressible() {
+        assert_eq!(
+            hosted(
+                &hosted_at(
+                    Affine::translate((500.0, 0.0)),
+                    Some(Rect::new(0.0, 0.0, 100.0, 100.0))
+                ),
+                EXTENT,
+                (1000, 1000),
+            ),
+            Ok(HostedPlacement::Hidden)
+        );
+        assert_eq!(
+            hosted(
+                &hosted_at(Affine::scale_non_uniform(-1.0, 1.0), None),
+                EXTENT,
+                (1000, 1000),
+            ),
+            Err(Inexpressible::Transform)
+        );
+    }
+
+    /// The first transaction sets every hosted property; a move after it
+    /// sets only the position — the surface control stays, and so does
+    /// its crop and scale.
+    #[test]
+    fn moving_a_hosted_surface_sets_only_its_position() {
+        let at = |x: f64| HostedProperties {
+            z: 1,
+            placement: hosted(
+                &hosted_at(Affine::translate((x, 0.0)), None),
+                EXTENT,
+                (1000, 1000),
+            )
+            .unwrap(),
+        };
+        let first = at(0.0);
+        let mut ops = Vec::new();
+        diff_hosted(None, &first, &mut ops);
+        assert_eq!(
+            ops,
+            [
+                Op::Z(1),
+                Op::Visible(true),
+                Op::Crop(rect(0, 0, 200, 100)),
+                Op::Scale(1.0, 1.0),
+                Op::Position(0, 0),
+            ]
+        );
+        ops.clear();
+        diff_hosted(Some(&first), &at(24.0), &mut ops);
+        assert_eq!(ops, [Op::Position(24, 0)]);
+        ops.clear();
+        diff_hosted(Some(&first), &first, &mut ops);
+        assert!(ops.is_empty(), "{ops:?}");
+        // Above another plane it moves in z alone.
+        ops.clear();
+        diff_hosted(Some(&first), &HostedProperties { z: 3, ..first }, &mut ops);
+        assert_eq!(ops, [Op::Z(3)]);
+        ops.clear();
+        let hidden = HostedProperties {
+            placement: HostedPlacement::Hidden,
+            ..first
+        };
+        diff_hosted(Some(&first), &hidden, &mut ops);
+        assert_eq!(ops, [Op::Visible(false)]);
     }
 }

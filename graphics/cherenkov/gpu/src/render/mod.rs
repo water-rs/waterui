@@ -337,6 +337,10 @@ struct SurfaceState {
     /// binds one producer, a producer serves bindings on any surface,
     /// and every binding samples the producer's current frame.
     bindings: FxHashMap<LayerId, gpu_content::Binding>,
+    /// Hosted system layers by layer (`cherenkov::HostedLayers`): shown
+    /// only on planes. Lowering never sees them — the map reaches nothing
+    /// but the plan's candidates and the plane stack.
+    hosted: FxHashMap<LayerId, planes::HostedBinding>,
     shader_textures: FxHashMap<std::sync::Arc<paint::Key>, paint::Texture>,
     frame: LoweredFrame,
     /// Image lifetimes and attachment assignment, before physical allocation.
@@ -2766,6 +2770,15 @@ fn plane_stack<'a, 'p: 'a>(
         .iter()
         .filter(move |placement| updates.is_none_or(|updates| updates.contains(&placement.layer)))
         .map(|placement| {
+            if let Some(hosted) = surface.hosted.get(&placement.layer) {
+                return planes::Plane {
+                    placement,
+                    content: planes::PlaneContent::Hosted {
+                        object: &hosted.object,
+                        extent: hosted.extent,
+                    },
+                };
+            }
             let content = surface
                 .bindings
                 .get(&placement.layer)
@@ -2790,15 +2803,21 @@ fn plane_stack<'a, 'p: 'a>(
         })
 }
 
-/// `surf`'s promotion candidates — the producer bindings whose current
-/// frame a plane can show, each at its binding's output size — filled
-/// into `candidates`, which keeps its allocation between fills (#90).
+/// `surf`'s promotion candidates — its hosted layers, the producer
+/// bindings whose current frame a plane can show, each at its binding's
+/// output size, and its quiet recorded layers — filled into `candidates`,
+/// which keeps its allocation between fills (#90).
 fn plane_candidates<'a>(
     surf: &SurfaceState,
     producers: &FxHashMap<ProducerId, &external::Slot>,
     candidates: &'a mut FxHashMap<LayerId, planes::Candidate>,
 ) -> &'a FxHashMap<LayerId, planes::Candidate> {
     candidates.clear();
+    candidates.extend(
+        surf.hosted
+            .iter()
+            .map(|(&layer, hosted)| (layer, hosted.candidate())),
+    );
     candidates.extend(surf.bindings.iter().filter_map(|(layer, binding)| {
         let slot = producers.get(&binding.producer()).copied()?;
         slot.on_plane.then_some((
@@ -2918,6 +2937,7 @@ impl Renderer for GpuRenderer {
                 backdrop_groups: FxHashMap::default(),
                 layers: FxHashMap::default(),
                 bindings: FxHashMap::default(),
+                hosted: FxHashMap::default(),
                 shader_textures: FxHashMap::default(),
                 frame: LoweredFrame::default(),
                 #[cfg(target_vendor = "apple")]
@@ -3183,6 +3203,7 @@ impl Renderer for GpuRenderer {
             self.atlas.mask_texture_generation(),
             layer,
         );
+        state.hosted.remove(&layer);
         match content {
             Some(ContentOp::Replace(list)) => {
                 if let Some(content) = state.layers.get_mut(&layer) {
@@ -3215,6 +3236,7 @@ impl Renderer for GpuRenderer {
             state.static_layers.remove(&layer);
             state.projective.remove(&layer);
             state.composed.retain(|key| key.layer != layer);
+            state.hosted.remove(&layer);
             Self::unbind_producer(
                 state,
                 &self.device,
@@ -4959,6 +4981,7 @@ impl GpuRenderer {
         let _diag_guard = diag::Guard::scope(self.diag.as_ref());
         let state = self.surfaces.get_mut(&surface).expect("GPU surface exists");
         state.layers.remove(&layer);
+        state.hosted.remove(&layer);
         Self::unbind_producer(
             state,
             &self.device,
@@ -4975,6 +4998,43 @@ impl GpuRenderer {
         producer
             .and_then(gpu_content::Producer::current)
             .map(|slot| slot.frame.alpha() == crate::interop::RgbAlpha::Opaque)
+    }
+
+    /// Binds a layer on `surface` to a hosted system layer at `extent` in
+    /// its content coordinates (`cherenkov::HostedLayers`). A layer has one
+    /// content kind at a time. The object shows in one place: a binding of
+    /// it on another layer — of this surface or another — is released, and
+    /// that surface lowers again so its planes let it go.
+    #[cfg(any(target_vendor = "apple", target_os = "android"))]
+    pub fn bind_hosted(
+        &mut self,
+        surface: SurfaceId,
+        layer: LayerId,
+        object: planes::Hosted,
+        extent: kurbo::Size,
+    ) {
+        for (&id, state) in &mut self.surfaces {
+            let before = state.hosted.len();
+            state
+                .hosted
+                .retain(|&at, bound| (id, at) == (surface, layer) || !bound.object.is(&object));
+            if state.hosted.len() != before {
+                state.plan_dirty = true;
+            }
+        }
+        let state = self.surfaces.get_mut(&surface).expect("GPU surface exists");
+        state.layers.remove(&layer);
+        Self::unbind_producer(
+            state,
+            &self.device,
+            self.images_gen,
+            self.atlas.mask_texture_generation(),
+            layer,
+        );
+        state
+            .hosted
+            .insert(layer, planes::HostedBinding { object, extent });
+        state.interop += 1;
     }
 
     /// Releases `layer`'s binding, if any: the bind groups sampling the
@@ -5978,6 +6038,11 @@ impl GpuRenderer {
                 continue;
             };
             if !surface.promotes {
+                // A hosted layer the surface could not place keeps failing
+                // its renders until it is gone.
+                if surface.plan_dirty {
+                    dirty.push(sf);
+                }
                 continue;
             }
             let Some(system) = self.planes.get_mut(&sf.id) else {
@@ -6032,6 +6097,30 @@ impl GpuRenderer {
         }
     }
 
+    /// The first hosted layer `surf` cannot place this frame, with the
+    /// rule it fails. Content shown only on a plane is never composited
+    /// instead: such a layer fails the render, and every render after it
+    /// until the layer is placeable or gone.
+    fn unplaced(surf: &SurfaceState, tree: &cherenkov::SurfaceTree) -> Option<(LayerId, String)> {
+        if surf.promotes {
+            surf.plan
+                .unplaced
+                .first()
+                .map(|(layer, cause)| (*layer, cause.to_string()))
+        } else if surf.hosted.is_empty() {
+            None
+        } else {
+            planes::first_in_paint_order(tree, |layer| surf.hosted.contains_key(&layer)).map(
+                |layer| {
+                    (
+                        layer,
+                        "the surface has no system-compositor parent".to_owned(),
+                    )
+                },
+            )
+        }
+    }
+
     #[inline(never)]
     fn lower_content(
         surf: &mut SurfaceState,
@@ -6050,6 +6139,10 @@ impl GpuRenderer {
         } else {
             planes::Plan::default()
         };
+        if let Some((layer, reason)) = Self::unplaced(surf, frame.tree) {
+            surf.plan_dirty = true;
+            return Err(RenderError::Unplaceable { layer, reason });
+        }
         if surf.promotes {
             for plane in &surf.plan.planes {
                 tracing::debug!(target: "cherenkov::planes", layer = ?plane.layer, decision = "promoted", "plane decision");
