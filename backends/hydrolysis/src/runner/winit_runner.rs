@@ -50,6 +50,7 @@ use crate::runner::{
 };
 use crate::text::SessionTextEngine;
 
+#[derive(Debug)]
 pub(super) enum RunnerEvent {
     PollLocalTasks,
     MountPendingWindows,
