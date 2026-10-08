@@ -141,9 +141,10 @@ pub(crate) struct KeyboardRegionIvars {
     /// their semantic notifications.
     observers: RefCell<Vec<NotificationObserver>>,
     /// Whether the region's pre-notification frame already resolved —
-    /// either the window's first layout pass seeded it from the
-    /// keyboard layout guide or the first notification arrived first;
-    /// the guide is consulted once.
+    /// either a `window_keyboard` read seeded it from the resolved
+    /// keyboard layout guide or the first notification arrived first.
+    /// An unresolved guide leaves this clear and the next read asks
+    /// again; once set, the guide is never consulted again.
     seeded: Cell<bool>,
 }
 
@@ -175,6 +176,11 @@ impl KeyboardRegion {
             .window
             .set(Weak::new(window))
             .expect("a fresh region has no window yet");
+        // The keyboard's own layout guide is instantiated now —
+        // outside any layout pass — so `UIKit` resolves it as the
+        // window lays out; its `layoutFrame` is only ever read later,
+        // by `seed_from_guide` on a `window_keyboard` read.
+        let _ = <UIWindow as AsRef<UIView>>::as_ref(window).keyboardLayoutGuide();
         let weak = Weak::new(&*this);
         // SAFETY: `UIKit` exports the notification name as a constant for
         // the process's lifetime.
@@ -204,24 +210,46 @@ impl KeyboardRegion {
         self.ivars().duration.get()
     }
 
-    /// Resolves the frame the region starts with on its window's first
-    /// layout pass: a window whose keyboard is already docked when the
-    /// first `WaterUI` view arrives — an app-owned window — has no
-    /// notification to seed from, so the keyboard's own layout guide
-    /// answers once the window has laid out and the guide's frame is
-    /// resolved. A notification that lands first wins and the guide is
-    /// never consulted again. The guide is only read — its
-    /// `usesBottomSafeArea` and every other property stay `UIKit`'s.
+    /// Resolves the frame the region starts with from the window's
+    /// keyboard layout guide — created when the region was, resolved
+    /// by the window's first layouts. A zero-width `layoutFrame` means
+    /// the guide is still resolving: the region stays unseeded and
+    /// asks again on the next read. A notification that lands first
+    /// wins and the guide is never consulted again. The guide is only
+    /// ever read — its `usesBottomSafeArea` and every other property
+    /// stay `UIKit`'s.
     fn seed_from_guide(&self, window: &UIWindow) {
-        if self.ivars().seeded.replace(true) {
+        if self.ivars().seeded.get() {
             return;
         }
         let guide_frame = <UIWindow as AsRef<UIView>>::as_ref(window)
             .keyboardLayoutGuide()
             .layoutFrame();
+        self.apply_guide_frame(window, guide_frame);
+    }
+
+    /// Resolves `guide_frame` into the seed [`guide_seed_frame`]
+    /// classifies: an unresolved frame leaves `seeded` clear; a
+    /// resolved one seals it, and a non-zero seed walks the window's
+    /// readers once — the root and every container re-place in the
+    /// next pass, not only the reader that seeded.
+    fn apply_guide_frame(&self, window: &UIWindow, guide_frame: CGRect) {
+        if guide_frame.size.width <= 0.0 {
+            tracing::debug!(?guide_frame, resolved = false, "keyboard region guide seed");
+            return;
+        }
         let seed = guide_seed_frame(window, guide_frame);
-        tracing::debug!(?guide_frame, ?seed, "keyboard region guide seed");
+        tracing::debug!(
+            ?guide_frame,
+            ?seed,
+            resolved = true,
+            "keyboard region guide seed"
+        );
+        self.ivars().seeded.set(true);
         self.ivars().frame.set(seed);
+        if seed != CGRect::ZERO {
+            mark_region_readers(window);
+        }
     }
 
     /// Applies a keyboard notification: stores the change and relayouts
@@ -321,11 +349,30 @@ pub fn guide_seed_frame(window: &UIWindow, guide_frame: CGRect) -> CGRect {
 /// The keyboard state `view`'s window reports: the frame in window
 /// coordinates and the last animation's duration. `None` while `view`
 /// sits outside any window, where there is no keyboard to see.
+///
+/// Every region read goes through here, so it is also where the
+/// region's pre-notification frame seeds: the first read after the
+/// window's guide resolves — or any read after a notification —
+/// answers the resolved frame. A scroll surface reaches this only
+/// after its layout gate passes.
 #[must_use]
 pub fn window_keyboard(view: &UIView) -> Option<(CGRect, f64)> {
     let window = view.window()?;
     let region = region_for(&window);
+    region.seed_from_guide(&window);
     Some((region.frame(), region.duration()))
+}
+
+/// The native-test feed for a resolved guide frame.
+///
+/// The simulator's `keyboardLayoutGuide` never docks a keyboard, so
+/// trials push the frame one would report through the same resolution
+/// `window_keyboard`'s seed applies — classification, `seeded`, the
+/// non-zero mark. Deliberately overrides a settled seed: the trial
+/// needs the keyboard the guide cannot show.
+#[cfg(feature = "native-test")]
+pub fn feed_guide_frame(window: &UIWindow, guide_frame: CGRect) {
+    region_for(window).apply_guide_frame(window, guide_frame);
 }
 
 /// Marks every region reader in `view`'s subtree for the layout pass a
@@ -478,13 +525,6 @@ impl KeyboardTracking {
     /// contribution itself grows; a pass that re-runs because the user
     /// scrolled must leave the offset alone.
     pub fn apply_layout(&self, scroll: &UIScrollView) {
-        // The window's region resolves its pre-notification frame once,
-        // on the first layout pass any surface in the window runs — a
-        // pass means the window has laid out and the guide's frame is
-        // resolved.
-        if let Some(window) = scroll.window() {
-            region_for(&window).seed_from_guide(&window);
-        }
         let frame = scroll.convertRect_toView(scroll.bounds(), None);
         let safe_bottom = scroll.safeAreaInsets().bottom;
         if !self.marked.replace(false)

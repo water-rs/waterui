@@ -3034,6 +3034,10 @@ mod safe_area {
                 "a_guide_frame_above_the_bottom_band_seeds_the_frame",
                 a_guide_frame_above_the_bottom_band_seeds_the_frame,
             ),
+            t(
+                "a_stacks_only_window_seeds_its_region_and_replaces_above_the_band",
+                a_stacks_only_window_seeds_its_region_and_replaces_above_the_band,
+            ),
         ]
     }
 
@@ -3885,14 +3889,14 @@ mod safe_area {
             "the wrapper's move re-derived the scroll's inset — {}",
             scroll_view.contentInset().bottom,
         );
-        // The wrapper's own layout pass re-derived its fill too: off the
-        // window's top edge, the fill's top re-docks at the container's
-        // moved top — a stale fill would still paint from the old y.
+        // The wrapper's own pass re-derived its fill: the moved
+        // container's bottom edge now sits inside the keyboard band, so
+        // the fill releases through it to the window's bottom edge — a
+        // stale fill would still end at the old container bottom.
         assert!(
-            (window_top(&fill) - window_top(&wrapper)).abs() <= TOLERANCE,
-            "the wrapper's fill followed the move — fill {:?} vs container {:?}",
+            (window_bottom(&fill) - mount.window.bounds().size.height).abs() <= TOLERANCE,
+            "the wrapper's fill re-extended to the window's bottom edge — {:?}",
             window_frame(&fill),
-            window_frame(&wrapper),
         );
 
         // The bare surface: its own `setFrame:` marks it.
@@ -4059,6 +4063,54 @@ mod safe_area {
             "a frame above the band seeds as the docked keyboard",
         );
         window.setHidden(true);
+    }
+
+    /// A window with no kit scroll surface still seeds its keyboard
+    /// region: a `window_keyboard` read resolves the guide — here, the
+    /// frame a resolved guide would report — and a non-zero seed marks
+    /// the window's readers once, so the next pass re-places the
+    /// stacks-only content above the band. The simulator's guide never
+    /// resolves to a keyboard (it parks in the bottom safe-area band),
+    /// so the trial feeds the resolved frame through the same
+    /// function the read applies.
+    fn a_stacks_only_window_seeds_its_region_and_replaces_above_the_band() {
+        let draft = binding(Str::from(""));
+        // Stacks only — a spacer over a composer row; no scroll
+        // surface anywhere in the tree.
+        let mount = mount(vstack((
+            spacer(),
+            hstack((
+                field("Message", &draft),
+                button("Send").action(move || draft.set(Str::from(""))),
+            ))
+            .padding_with(12.0),
+        )));
+        let field = find_view::<cocoa_ui::uikit::TextField>(&mount.host)
+            .expect("the composer mounts a text field");
+        let resting = window_bottom(&field);
+        assert!(
+            resting > 700.0,
+            "precondition: the composer sits at the window's bottom — {resting}",
+        );
+
+        // The frame the guide would report for a docked keyboard.
+        let keyboard = keyboard_end(&mount.window);
+        keyboard::feed_guide_frame(&mount.window, keyboard);
+        assert_eq!(
+            region_frame(&mount.host),
+            keyboard,
+            "the feed seeds the window's region",
+        );
+        let band_top = keyboard.origin.y;
+        let above = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            mount.window.layoutIfNeeded();
+            window_bottom(&field) <= band_top + TOLERANCE
+        });
+        assert!(
+            above,
+            "the seeded region re-placed the stacks content above the band — field {:?}",
+            window_frame(&field),
+        );
     }
 
     /// A page pushed over while the keyboard is up and hidden under

@@ -370,8 +370,10 @@ define_class!(
                 // host's own fill extension, every scroll surface) would
                 // keep positions and insets derived for the old window
                 // position; the move marks them the way a keyboard
-                // notification does.
-                if moved && self.window().is_some() {
+                // notification does. A host under a scroll surface reads
+                // no regions — `mark_region_readers` never descends one —
+                // so marking there would only relayout the row.
+                if moved && self.window().is_some() && !has_scroll_ancestor(self) {
                     crate::uikit::keyboard::mark_region_readers(self);
                 }
             });
@@ -836,6 +838,21 @@ impl HostView {
             })
             .or(hit)
     }
+}
+
+/// Whether a kit scroll surface sits above `view` — the same walk
+/// `keyboard::mark_region_readers` refuses to descend: a scroll
+/// surface's subtree sees no keyboard region, so nothing under it is a
+/// region reader.
+fn has_scroll_ancestor(view: &UIView) -> bool {
+    let mut ancestor = view.superview();
+    while let Some(view) = ancestor {
+        if crate::view::is_scroll_surface(&view) {
+            return true;
+        }
+        ancestor = view.superview();
+    }
+    false
 }
 
 /// A host view for a controller at a window's root site.
