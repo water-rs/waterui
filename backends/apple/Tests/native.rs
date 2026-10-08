@@ -95,6 +95,7 @@ fn trials() -> Vec<Trial> {
         tests.extend(navigation::trials());
         tests.extend(controller_bounds::trials());
         tests.extend(safe_area::trials());
+        tests.extend(menus::trials());
     }
     tests.extend(migration::trials());
     tests.extend(owner_lifetimes::trials());
@@ -7035,6 +7036,162 @@ mod navigation {
         assert!(
             settles_with_bar(&nav, &root, true),
             "the buried page's recorded intent applies when it shows again"
+        );
+    }
+}
+
+/// `UIKit` menu commands arm their shortcuts as `UIKeyCommand`s — #2117:
+/// a chord parked on `UIAction.discoverabilityTitle` displayed its
+/// `UIKeyInput*` constant and never fired. These trials pin the element
+/// each builder produces: `menu`/`menu_with_identifier` (the menu bar and
+/// context menus) and `MenuAction::command` (the `Menu` component's
+/// element path).
+#[cfg(target_os = "ios")]
+mod menus {
+    use std::rc::Rc;
+
+    use cocoa_ui::Retained;
+    use cocoa_ui::menu::{Command, KeyModifiers, MenuTreeNode};
+    use cocoa_ui::objc2_ui_kit::{
+        UIAction, UIKeyCommand, UIKeyModifierFlags, UIMenuElement, UIMenuElementAttributes,
+        UIMenuElementState,
+    };
+    use cocoa_ui::uikit::{self, MenuAction};
+    use libtest_mimic::Trial;
+    use objc2::sel;
+
+    use super::mtm;
+
+    pub fn trials() -> Vec<Trial> {
+        vec![
+            Trial::test(
+                "menus::a_command_with_a_shortcut_builds_a_key_command",
+                || {
+                    a_command_with_a_shortcut_builds_a_key_command();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "menus::a_command_without_a_shortcut_builds_a_uiaction",
+                || {
+                    a_command_without_a_shortcut_builds_a_uiaction();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "menus::the_menu_components_action_arms_the_shortcut",
+                || {
+                    the_menu_components_action_arms_the_shortcut();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    /// Builds `nodes` into a `UIMenu` and reads back its only child.
+    fn single_element(nodes: &[MenuTreeNode]) -> Retained<UIMenuElement> {
+        let menu = uikit::menu(mtm(), &Command::default(), nodes);
+        let children = menu.children();
+        assert_eq!(children.len(), 1, "the menu holds one element");
+        children.objectAtIndex(0)
+    }
+
+    /// The menu-bar/context-menu builder arms the chord: the element is a
+    /// `UIKeyCommand` whose `input`/`modifierFlags` are the command's
+    /// shortcut and whose action routes `cocoaUiMenuCommandFired:` up the
+    /// responder chain; the rest of the command's presentation stays
+    /// intact.
+    fn a_command_with_a_shortcut_builds_a_key_command() {
+        let command = Command {
+            label: "Share".into(),
+            subtitle: Some("sends the selection".into()),
+            destructive: true,
+            enabled: false,
+            selected: true,
+            key_equivalent: "s".into(),
+            modifiers: KeyModifiers::COMMAND | KeyModifiers::SHIFT,
+            ..Command::default()
+        };
+        let element = single_element(&[MenuTreeNode::Command(command, Rc::new(|| {}))]);
+        let key = element
+            .downcast_ref::<UIKeyCommand>()
+            .expect("a shortcut arms a `UIKeyCommand`, not a `UIAction`");
+        assert_eq!(key.input().unwrap().to_string(), "s");
+        assert_eq!(
+            key.modifierFlags(),
+            UIKeyModifierFlags::Command | UIKeyModifierFlags::Shift
+        );
+        // SAFETY: `action` only reads the selector the element was built with.
+        let action = unsafe { key.action() };
+        assert_eq!(action, Some(sel!(cocoaUiMenuCommandFired:)));
+        assert_eq!(key.title().to_string(), "Share");
+        assert_eq!(
+            key.subtitle()
+                .map(|subtitle| subtitle.to_string())
+                .as_deref(),
+            Some("sends the selection")
+        );
+        assert_eq!(key.state(), UIMenuElementState::On);
+        assert!(
+            key.attributes().contains(UIMenuElementAttributes::Disabled)
+                && key
+                    .attributes()
+                    .contains(UIMenuElementAttributes::Destructive),
+            "the command's attributes carry onto the key command"
+        );
+    }
+
+    /// Without a shortcut the element stays a `UIAction` and its
+    /// discoverability title stays unset — a chord is never display text.
+    fn a_command_without_a_shortcut_builds_a_uiaction() {
+        let command = Command {
+            label: "Plain".into(),
+            enabled: true,
+            ..Command::default()
+        };
+        let element = single_element(&[MenuTreeNode::Command(command, Rc::new(|| {}))]);
+        assert!(
+            element.downcast_ref::<UIKeyCommand>().is_none(),
+            "a command without a shortcut is not a `UIKeyCommand`"
+        );
+        let action = element
+            .downcast_ref::<UIAction>()
+            .expect("a command without a shortcut builds a `UIAction`");
+        assert_eq!(action.title().to_string(), "Plain");
+        assert!(action.discoverabilityTitle().is_none());
+    }
+
+    /// The `Menu` component's element path (`MenuAction`) arms the chord
+    /// identically — every `KeyModifiers` flag lands on `modifierFlags`.
+    fn the_menu_components_action_arms_the_shortcut() {
+        let command = Command {
+            label: "Keys".into(),
+            enabled: true,
+            key_equivalent: "k".into(),
+            modifiers: KeyModifiers::COMMAND
+                | KeyModifiers::OPTION
+                | KeyModifiers::CONTROL
+                | KeyModifiers::SHIFT,
+            ..Command::default()
+        };
+        let action = MenuAction::command(mtm(), &command, || {});
+        let key = action
+            .element()
+            .downcast_ref::<UIKeyCommand>()
+            .expect("the `Menu` component's element arms the shortcut");
+        assert_eq!(key.input().unwrap().to_string(), "k");
+        assert_eq!(
+            key.modifierFlags(),
+            UIKeyModifierFlags::Command
+                | UIKeyModifierFlags::Alternate
+                | UIKeyModifierFlags::Control
+                | UIKeyModifierFlags::Shift
+        );
+
+        let plain = MenuAction::command(mtm(), &Command::default(), || {});
+        assert!(
+            plain.element().downcast_ref::<UIAction>().is_some(),
+            "a `Menu` component row without a shortcut stays a `UIAction`"
         );
     }
 }

@@ -25,9 +25,17 @@ fn main() {
     // runner keeps every trial on the application's main thread.
     arguments.test_threads = Some(1);
     #[cfg(target_os = "ios")]
-    cocoa_ui::uikit::native_test::run(arguments, scroll_animation::trials);
+    cocoa_ui::uikit::native_test::run(arguments, trials);
     #[cfg(target_os = "macos")]
     libtest_mimic::run(&arguments, Vec::new()).exit();
+}
+
+/// Every `native_app` case: trials that need a running `UIApplication`.
+#[cfg(target_os = "ios")]
+fn trials() -> Vec<libtest_mimic::Trial> {
+    let mut trials = scroll_animation::trials();
+    trials.extend(key_commands::trials());
+    trials
 }
 
 /// `UIKit`-driven animation (#2000): `setContentOffset(_:animated: true)`
@@ -200,5 +208,93 @@ mod scroll_animation {
             || list_row_top(&table, APPROACH_TARGET_ROW),
         );
         window.setHidden(true);
+    }
+}
+
+/// Key-command dispatch (#2117): `UIKit` sends a `UIKeyCommand`'s action
+/// untargeted through `sendAction:to:from:forEvent:` — the same channel a
+/// hardware chord takes — and the responder chain ends at `AppDelegate`,
+/// which resolves the sender's attached `MenuCommandTarget` into the
+/// command's callback. That chain only exists inside a running
+/// `UIApplication`, so the case lives here rather than in `native`'s bare
+/// spawn.
+#[cfg(target_os = "ios")]
+mod key_commands {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use cocoa_ui::Rect;
+    use cocoa_ui::Retained;
+    use cocoa_ui::menu::{Command, KeyModifiers, MenuTreeNode};
+    use cocoa_ui::objc2_ui_kit::{UIApplication, UIKeyCommand, UITextField, UIViewController};
+    use cocoa_ui::uikit::{self, native_test};
+    use libtest_mimic::Trial;
+    use objc2::runtime::AnyObject;
+    use objc2::{MainThreadMarker, Message};
+
+    /// The trial cases.
+    pub fn trials() -> Vec<Trial> {
+        vec![Trial::test(
+            "key_commands::a_pressed_chord_fires_the_commands_callback",
+            || {
+                a_pressed_chord_fires_the_commands_callback();
+                Ok(())
+            },
+        )]
+    }
+
+    /// Sends the element's own action the way a chord does: untargeted
+    /// through the responder chain, where `AppDelegate` resolves the
+    /// sender's attached `MenuCommandTarget` into the command's callback.
+    fn a_pressed_chord_fires_the_commands_callback() {
+        let mtm = MainThreadMarker::new().expect("the harness runs cases on the main thread");
+        let fired = Rc::new(Cell::new(false));
+        let callback = {
+            let fired = fired.clone();
+            Rc::new(move || fired.set(true))
+        };
+        let command = Command {
+            label: "Fire".into(),
+            enabled: true,
+            key_equivalent: "k".into(),
+            modifiers: KeyModifiers::COMMAND,
+            ..Command::default()
+        };
+        let menu = uikit::menu(
+            mtm,
+            &Command::default(),
+            &[MenuTreeNode::Command(command, callback)],
+        );
+        let child = menu.children().objectAtIndex(0);
+        let key = child
+            .downcast_ref::<UIKeyCommand>()
+            .expect("a shortcut command builds a `UIKeyCommand`");
+        // SAFETY: `action` only reads the selector the element was built with.
+        let action = unsafe { key.action() }.expect("the key command carries an action");
+        let sender: Retained<AnyObject> = key.retain().into();
+        let app = UIApplication::sharedApplication(mtm);
+        // A chord's action travels the real responder chain: a windowed
+        // scene with a first responder — the shape `UIKit` delivers a key
+        // event into — which ends at `AppDelegate`.
+        let window = native_test::window(mtm, Rect::new(0.0, 0.0, 400.0, 400.0));
+        let controller = UIViewController::new(mtm);
+        window.setRootViewController(Some(&controller));
+        window.makeKeyAndVisible();
+        let field = UITextField::new(mtm);
+        controller
+            .view()
+            .expect("the controller's view is loaded")
+            .addSubview(&field);
+        assert!(
+            field.becomeFirstResponder(),
+            "the scene's responder leads the chain a chord travels"
+        );
+        // SAFETY: the application outlives the run; `action` is the
+        // command's own selector and `sender` the command itself — the
+        // dispatch `UIKit` performs when the chord is pressed.
+        let handled =
+            unsafe { app.sendAction_to_from_forEvent(action, None, Some(&*sender), None) };
+        assert!(handled, "the responder chain takes the command's action");
+        assert!(fired.get(), "the command's callback ran");
     }
 }
