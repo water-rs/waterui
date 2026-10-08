@@ -164,7 +164,30 @@ pub enum Item {
         clip: Option<ClipRef>,
         /// What the sample becomes once composited.
         effect: SampleEffect,
+        /// The union field the member folds into, when the group has one
+        /// (or the member draws an `outer` band on its own).
+        union: Option<UnionSample>,
     },
+}
+
+/// The union-field data a member's sample composites against: every
+/// member's clip boundary edges in paint order, the smoothing distance,
+/// this member's index and its `outer` extent.
+#[derive(Clone, Debug)]
+pub struct UnionSample {
+    /// Each member's clip boundary edges in device space, in paint
+    /// order. A lone `outer`-band member of a non-union group is its
+    /// own one-member list with `k == 0`.
+    pub members: Arc<[Arc<[Edge]>]>,
+    /// The group's smoothing distance `k`; `0` folds to the member's
+    /// own distance.
+    pub k: f32,
+    /// This member's index in `members`.
+    pub ord: u32,
+    /// The member's `outer` extent: the composite's coverage is the
+    /// antialiased ownership weight times the coverage of
+    /// `field < outer`.
+    pub outer: f32,
 }
 
 /// A projected composite's payload, boxed inside [`Item::Project`].
@@ -325,6 +348,10 @@ pub struct GlyphReq {
     pub slot: crate::render::glyph::GlyphSlot,
 }
 
+/// The union group's member cap: the per-pixel fold keeps every member's
+/// distance and gradient in registers, matching the GPU shader's arrays.
+const UNION_MAX_MEMBERS: usize = cherenkov::BackdropUnion::MAX_MEMBERS as usize;
+
 /// The plan for one backdrop group: the capture point (its first member
 /// in paint order), the capture rect and every member's device bounds for
 /// its sampling composite.
@@ -351,6 +378,14 @@ struct BackdropPlan {
     filter: Option<FrameFilter>,
     /// Each member layer's plan entry, keyed by layer.
     members: FxHashMap<LayerId, Member>,
+    /// The members' layers in paint order: the union fold and the
+    /// ownership tie-break are index-stable.
+    order: Vec<LayerId>,
+    /// The group's union smoothing distance; `0` when the group has no
+    /// union field.
+    union_k: f32,
+    /// Every member's clip edges in `order`, when the group unions.
+    union_members: Arc<[Arc<[Edge]>]>,
     /// The innermost filter scope the capture item lands in.
     scope: Option<LayerId>,
 }
@@ -470,9 +505,22 @@ impl BackdropPlan {
 
 /// One backdrop member's plan entry.
 struct Member {
-    /// The member's device-space clip bounds, inflated by the effect's
-    /// sampling reach.
+    /// The member's device-space clip bounds.
     bounds: Rect,
+    /// The member's draw bounds: `bounds` further inflated by the
+    /// union's `r(n)` and `outer` plus 1.5px of antialiasing, so bridge
+    /// pixels between members are captured and painted.
+    draw: Rect,
+    /// The member's effect sampling reach — it inflates the capture
+    /// footprint, never the draw bounds.
+    reach: f64,
+    /// The member's own clip flattened to device-space edges, when the
+    /// group unions its members or the member draws an `outer` band.
+    edges: Option<Arc<[Edge]>>,
+    /// The member's `outer` extent.
+    outer: f32,
+    /// The member's index in the group's paint order.
+    ord: u32,
     /// The innermost enclosing filter scope.
     scope: Option<LayerId>,
     /// The member's resolved per-member effect.
@@ -602,6 +650,33 @@ fn member_effect(
             return Err(RenderError::Unsupported(names::BACKDROP_SHADER));
         }
     };
+    let edges = clip_edges(clip, transform)?;
+    Ok((
+        SampleEffect::Sdf(SdfEffect { edges, kind }),
+        f64::from(effect.reach()),
+    ))
+}
+
+/// Whether the clip's analytic shape is degenerate: a zero-radius
+/// circle or ellipse, or a line — the cases the GPU's `box_shape` maps
+/// to `None`. A union member's field cannot fold them.
+fn degenerate_clip(clip: &ShapeData) -> bool {
+    match clip {
+        ShapeData::Circle(c) => c.radius <= 0.0,
+        ShapeData::Ellipse(e) => {
+            let r = e.radii();
+            r.x <= 0.0 || r.y <= 0.0
+        }
+        ShapeData::Line(_) => true,
+        _ => false,
+    }
+}
+
+/// The clip's device-space boundary edges, with the same tolerance math
+/// [`member_effect`] uses. `Path`/`Line` clips have no analytic boundary:
+/// they fail with `backdrop-effect-sdf-path`, which is also a union
+/// member's error since the field cannot fold a mask.
+fn clip_edges(clip: &ShapeData, transform: Affine) -> Result<Arc<[Edge]>, RenderError> {
     let sm = sigma_max(transform).max(1e-12);
     let (path, _) = match clip {
         ShapeData::Rect(_)
@@ -612,11 +687,7 @@ fn member_effect(
         _ => None,
     }
     .ok_or(RenderError::Unsupported(names::BACKDROP_EFFECT_SDF_PATH))?;
-    let edges: Arc<[Edge]> = boundary_edges(transform * path, FLATTEN_TOL).into();
-    Ok((
-        SampleEffect::Sdf(SdfEffect { edges, kind }),
-        f64::from(effect.reach()),
-    ))
+    Ok(boundary_edges(transform * path, FLATTEN_TOL).into())
 }
 
 /// The path's flattened boundary edges, implicit-close applied.
@@ -941,9 +1012,28 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 .as_ref()
                 .ok_or(RenderError::Unsupported(names::BACKDROP_UNCLIPPED))?;
             let member = clip_device_bounds(transform, clip);
-            let (effect, reach) = member_effect(sample.effect(), clip, transform)?;
-            let member = member.inflate(reach, reach);
+            let outer = sample.outer_extent().get();
             let spec = prepared.spec;
+            let union_group = spec.union_field().is_some();
+            let field_member = union_group || outer > 0.0;
+            // A union member's clip must flatten to analytic edges — it
+            // feeds the fold — and so must a member drawing an `outer`
+            // band: its own field covers the band. A degenerate clip has
+            // no SDF to fold; the check precedes effect planning.
+            if field_member && degenerate_clip(clip) {
+                return Err(RenderError::Unsupported(
+                    names::BACKDROP_UNION_DEGENERATE_MEMBER,
+                ));
+            }
+            let (effect, reach) = member_effect(sample.effect(), clip, transform)?;
+            // An SDF effect already flattened the same clip; reuse its
+            // edges rather than flattening twice.
+            let edges = field_member
+                .then(|| match &effect {
+                    SampleEffect::Sdf(sdf) => Ok(sdf.edges.clone()),
+                    _ => clip_edges(clip, transform),
+                })
+                .transpose()?;
             let plan = self.backdrops.entry(g).or_insert_with(|| BackdropPlan {
                 first: id,
                 union: member,
@@ -960,13 +1050,26 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 reach: 0,
                 filter: prepared.filter.clone(),
                 members: FxHashMap::default(),
+                order: Vec::new(),
+                union_k: 0.0,
+                union_members: Arc::from([]),
                 scope: scopes.last().copied(),
             });
-            plan.union = plan.union.union(member);
+            // The capture footprint inflates the clip bounds by the
+            // effect's reach — the union pad lands in `plan_union`.
+            plan.union = plan.union.union(member.inflate(reach, reach));
+            let ord = u32::try_from(plan.order.len())
+                .expect("a group's members never exceed MAX_MEMBERS");
+            plan.order.push(id);
             plan.members.insert(
                 id,
                 Member {
                     bounds: member,
+                    draw: member,
+                    reach,
+                    edges,
+                    outer,
+                    ord,
                     scope: scopes.last().copied(),
                     effect,
                 },
@@ -1022,6 +1125,14 @@ impl<'a, 'b> Lowering<'a, 'b> {
             return Ok(());
         }
         let h = self.height;
+        // Union fields: inflate every member's draw bounds by `r(n) +
+        // outer` plus 1.5px of antialiasing so bridge pixels between
+        // members and the `outer` band are captured and drawn, then
+        // recompute the capture's union from the inflated bounds. The
+        // member edges, in paint order, become the fold's operands.
+        for plan in self.backdrops.values_mut() {
+            Self::plan_union(plan)?;
+        }
         for (gid, plan) in &mut self.backdrops {
             let footprint = groups[gid].footprint;
             if footprint.extent.partial_cmp(&0.5) != Some(std::cmp::Ordering::Less) {
@@ -1087,10 +1198,83 @@ impl<'a, 'b> Lowering<'a, 'b> {
         Ok(())
     }
 
-    /// Emits the member's `Sample` item, covering `member ∩ region` under
-    /// the clip in force, at full strength — the member's own scope
-    /// attenuates it at composite.
-    fn emit_backdrop_sample(&mut self, gid: u64, member: LayerId) {
+    /// Inflates a backdrop plan's members for the union field: draw bounds
+    /// grow by `r(n) + outer` plus 1.5px of antialiasing so bridge pixels
+    /// between members and the `outer` band are captured and drawn, and the
+    /// capture's union recomputes from the inflated bounds. The member
+    /// edges, in paint order, become the fold's operands.
+    fn plan_union(plan: &mut BackdropPlan) -> Result<(), RenderError> {
+        let union_spec = plan.spec.union_field();
+        let needs_field = union_spec.is_some() || plan.members.values().any(|m| m.outer > 0.0);
+        if !needs_field {
+            return Ok(());
+        }
+        let n = plan.order.len();
+        if union_spec.is_some() && n > UNION_MAX_MEMBERS {
+            return Err(RenderError::Unsupported(names::BACKDROP_UNION_MEMBERS));
+        }
+        let k = union_spec.map_or(0.0, |u| f64::from(u.get()));
+        let r = union_spec.map_or(0.0, |u| u.inflation(n));
+        let mut union = Rect::new(
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        );
+        // Member edges are fold operands, so they are collected only
+        // when the group has a union — a non-union member's outer band
+        // runs against its own field at raster time and no other
+        // member's edges exist.
+        let mut members = Vec::new();
+        if union_spec.is_some() {
+            members.reserve_exact(n);
+        }
+        for &id in &plan.order {
+            let member = plan
+                .members
+                .get_mut(&id)
+                .expect("order lists planned members");
+            let pad = if union_spec.is_some() || member.outer > 0.0 {
+                r + f64::from(member.outer) + 1.5
+            } else {
+                // No field: the member is not inflated at all.
+                0.0
+            };
+            member.draw = member.bounds.inflate(pad, pad);
+            // The capture footprint carries the effect's reach too;
+            // the draw bounds do not.
+            union = union.union(
+                member
+                    .bounds
+                    .inflate(member.reach + pad, member.reach + pad),
+            );
+            if union_spec.is_some() {
+                members.push(
+                    member
+                        .edges
+                        .clone()
+                        .expect("union members carry clip edges"),
+                );
+            }
+        }
+        plan.union = union;
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "smoothing distances fit in f32"
+        )]
+        if k > 0.0 {
+            plan.union_k = k as f32;
+            plan.union_members = members.into();
+        }
+        Ok(())
+    }
+
+    /// Emits the member's `Sample` item, covering the member's draw
+    /// bounds ∩ region, at full strength — the member's own scope
+    /// attenuates it at composite. A union member's item carries the
+    /// group's shared field and the ancestors-only clip (`ancestors`);
+    /// a non-union member's carries the clip in force, unchanged.
+    fn emit_backdrop_sample(&mut self, gid: u64, member: LayerId, ancestors: Option<&ClipRef>) {
         let Some(plan) = self.backdrops.get(&gid) else {
             return;
         };
@@ -1100,7 +1284,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
         let Some(entry) = plan.members.get(&member) else {
             return;
         };
-        let (bounds, effect) = (entry.bounds, entry.effect.clone());
+        let (bounds, effect) = (entry.draw, entry.effect.clone());
         // The device rect the region's texels cover.
         let s = f64::from(plan.spec.scale().get());
         let region = Rect::new(
@@ -1124,11 +1308,42 @@ impl<'a, 'b> Lowering<'a, 'b> {
             x1: (bounds.x1.ceil() as i32).clamp(0, self.width as i32),
             y1: (bounds.y1.ceil() as i32).clamp(0, self.height as i32),
         };
+        // The union-fold data and clip the item carries: a union member
+        // composites under the ancestors-only clip against the shared
+        // field; a lone `outer` member gets its own one-member field;
+        // anything else composes under the clip in force, as today.
+        let (clip, union) = if plan.union_k > 0.0 {
+            (
+                ancestors.cloned(),
+                Some(UnionSample {
+                    members: plan.union_members.clone(),
+                    k: plan.union_k,
+                    ord: entry.ord,
+                    outer: entry.outer,
+                }),
+            )
+        } else if entry.outer > 0.0 {
+            (
+                ancestors.cloned(),
+                Some(UnionSample {
+                    members: Arc::from([entry
+                        .edges
+                        .clone()
+                        .expect("outer members carry clip edges")]),
+                    k: 0.0,
+                    ord: 0,
+                    outer: entry.outer,
+                }),
+            )
+        } else {
+            (self.clip.clone(), None)
+        };
         self.items.push(Item::Sample {
             group: gid,
             bounds,
-            clip: self.clip.clone(),
+            clip,
             effect,
+            union,
         });
     }
 
@@ -1390,7 +1605,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
                     s.clip.clone(),
                     composite_clip,
                     |s| {
-                        s.emit_backdrop_sample(gid, id);
+                        s.emit_backdrop_sample(gid, id, outer.as_ref());
                         let clip = s.clip.clone();
                         s.filter_isolate(
                             filter,
@@ -1408,7 +1623,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
                         // the sample lands in the enclosing plane before the
                         // isolation — the filter never covers it.
                         if let Some(gid) = backdrop {
-                            s.emit_backdrop_sample(gid, id);
+                            s.emit_backdrop_sample(gid, id, outer.as_ref());
                         }
                         let clip = s.clip.clone();
                         s.filter_isolate(
@@ -1435,7 +1650,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
                             composite_clip,
                             |s| {
                                 if let Some(gid) = backdrop {
-                                    s.emit_backdrop_sample(gid, id);
+                                    s.emit_backdrop_sample(gid, id, outer.as_ref());
                                 }
                                 s.layer_items(id, node, tree, caches)
                             },
@@ -1444,7 +1659,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
                         if let Some(gid) = backdrop {
                             // Nothing isolates: the member's content plane is
                             // the enclosing one.
-                            s.emit_backdrop_sample(gid, id);
+                            s.emit_backdrop_sample(gid, id, outer.as_ref());
                         }
                         s.layer_items(id, node, tree, caches)
                     }

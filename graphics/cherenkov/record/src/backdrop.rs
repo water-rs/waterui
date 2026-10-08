@@ -223,6 +223,49 @@ impl BackdropEffect {
     }
 }
 
+/// A member composite's outer extent in device pixels: finite and
+/// non-negative. [`BackdropSample::outer`] draws the member's field a
+/// band this wide past its clip edge.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BackdropOuter(f32);
+
+/// Why a [`BackdropOuter`] could not be constructed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum BackdropOuterError {
+    /// The extent is NaN or infinite.
+    #[error("the outer extent is not finite")]
+    NonFinite,
+    /// The extent is below 0.
+    #[error("the outer extent must not be negative")]
+    Negative,
+}
+
+impl BackdropOuter {
+    /// No outer extent: the composite keeps the clip's coverage.
+    pub const ZERO: Self = Self(0.0);
+
+    /// An outer extent of `px` device pixels.
+    ///
+    /// # Errors
+    /// [`BackdropOuterError::NonFinite`] when `px` is NaN or infinite,
+    /// [`BackdropOuterError::Negative`] when it is below 0.
+    pub fn new(px: f32) -> Result<Self, BackdropOuterError> {
+        if !px.is_finite() {
+            return Err(BackdropOuterError::NonFinite);
+        }
+        if px < 0.0 {
+            return Err(BackdropOuterError::Negative);
+        }
+        Ok(Self(px))
+    }
+
+    /// The extent in device pixels; finite and non-negative.
+    #[must_use]
+    pub const fn get(self) -> f32 {
+        self.0
+    }
+}
+
 /// A layer's backdrop sample: the group it samples and an optional
 /// per-member effect evaluated in the member's composite against the
 /// shared filtered capture.
@@ -232,6 +275,9 @@ pub struct BackdropSample {
     group: BackdropId,
     /// The per-member effect applied in the member's composite.
     effect: Option<BackdropEffect>,
+    /// How far the member's own field extends its composite past the
+    /// clip edge, in device pixels.
+    outer: BackdropOuter,
 }
 
 impl BackdropSample {
@@ -241,6 +287,7 @@ impl BackdropSample {
         Self {
             group,
             effect: None,
+            outer: BackdropOuter::ZERO,
         }
     }
 
@@ -251,6 +298,22 @@ impl BackdropSample {
         Self {
             group,
             effect: Some(effect.into()),
+            outer: BackdropOuter::ZERO,
+        }
+    }
+
+    /// An outer extent of `extent`: the member's composite covers where
+    /// its field is below it, not only where the clip covers — a band
+    /// that wide beyond the clip edge, antialiased from the field.
+    /// [`BackdropOuter::ZERO`] keeps today's coverage on a standalone
+    /// member; under a union the member's coverage is its ownership
+    /// weight times `field < outer` either way.
+    #[must_use]
+    pub fn outer(self, extent: BackdropOuter) -> Self {
+        Self {
+            group: self.group,
+            effect: self.effect,
+            outer: extent,
         }
     }
 
@@ -265,5 +328,12 @@ impl BackdropSample {
     #[must_use]
     pub const fn effect(&self) -> Option<&BackdropEffect> {
         self.effect.as_ref()
+    }
+
+    /// The member's outer extent ([`BackdropOuter::ZERO`] unless
+    /// [`BackdropSample::outer`] set it).
+    #[must_use]
+    pub const fn outer_extent(&self) -> BackdropOuter {
+        self.outer
     }
 }

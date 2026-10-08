@@ -38,9 +38,19 @@ pub enum SceneError {
     /// A backdrop-group member layer has no clip.
     #[error("backdrop group {0} member layer has no clip")]
     BackdropMemberUnclipped(u32),
+    /// A backdrop group's union smoothing is not finite or not above 0.
+    #[error("backdrop group {0} has a union smoothing outside (0, ∞)")]
+    InvalidBackdropUnion(u32),
+    /// A backdrop-group member layer's outer extent is not finite or is
+    /// negative.
+    #[error("backdrop group {0} member layer has an outer extent outside [0, ∞)")]
+    InvalidBackdropOuter(u32),
     /// A layer has a `backdrop_effect` without a `backdrop` group.
     #[error("layer has a backdrop effect but no backdrop group")]
     BackdropEffectWithoutGroup,
+    /// A layer has a `backdrop_outer` without a `backdrop` group.
+    #[error("layer has a backdrop outer extent but no backdrop group")]
+    BackdropOuterWithoutGroup,
     /// A `backdrop_effect` parameter is non-finite or out of range.
     #[error("invalid backdrop effect: {0}")]
     InvalidBackdropEffect(&'static str),
