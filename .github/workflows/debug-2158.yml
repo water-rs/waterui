@@ -1,0 +1,38 @@
+name: debug-2158
+on:
+  push:
+    branches: [debug/2158-metal-sim]
+jobs:
+  probe:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/metal-toolchain
+      - name: Probe Metal simulator linking
+        shell: bash
+        run: |
+          set -uo pipefail
+          xcodebuild -version
+          xcrun -sdk iphonesimulator -f metal
+          xcodebuild -showComponent MetalToolchain -json || true
+          lib="$(dirname "$(xcrun -sdk iphonesimulator -f metal)")/../metal"
+          find "$lib" -name 'libmetal_rt*' | sort
+          src=.github/debug-2158/yuv_color.metal
+          probe() {
+            local label="$1"; shift
+            rm -f p.air p.metallib
+            if env "$@" -c -o p.air "$src" >c.log 2>&1 && \
+               env $(printf '%s\n' "$@" | grep '=' ) xcrun --sdk iphonesimulator metallib p.air -o p.metallib >l.log 2>&1; then
+              echo "PASS  $label"
+            else
+              echo "FAIL  $label"; grep -E 'error|ERROR|sysroot' c.log l.log | head -3
+            fi
+          }
+          for std in ios-metal1.0 ios-metal2.0 ios-metal2.1 ios-metal2.4 metal3.0; do
+            probe "std=$std" xcrun --sdk iphonesimulator metal -std=$std
+            probe "std=$std IPHONEOS_DEPLOYMENT_TARGET=26.0" IPHONEOS_DEPLOYMENT_TARGET=26.0 xcrun --sdk iphonesimulator metal -std=$std
+            probe "std=$std -target air64-apple-ios26.0-simulator" xcrun --sdk iphonesimulator metal -std=$std -target air64-apple-ios26.0-simulator
+          done
+          rm -f p.air; xcrun --sdk iphonesimulator metal -std=ios-metal1.0 -c -o p.air "$src" 2>/dev/null && xcrun --sdk iphonesimulator metal-objdump --macho --private-headers p.air 2>&1 | grep -iA4 'LC_BUILD_VERSION\|platform' | head -12 || true
+          env | grep -i deployment || echo "no deployment target env"
