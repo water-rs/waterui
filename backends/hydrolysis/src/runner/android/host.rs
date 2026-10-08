@@ -502,6 +502,11 @@ struct ExecutorWake {
     fd: Arc<OwnedFd>,
 }
 
+/// The local-reference capacity the wake drain's frame reserves. The
+/// `PushLocalFrame` contract is "at least this many", not a bound, so the
+/// usual JNI default covers a drain's bridge calls.
+const WAKE_DRAIN_LOCALS: i32 = 32;
+
 impl ExecutorWake {
     /// Registers the executor's own wake fd's drain callback on this thread's
     /// looper — must be the UI thread (its main looper exists already). The
@@ -521,7 +526,19 @@ impl ExecutorWake {
                 unsafe {
                     libc::eventfd_read(fd.as_raw_fd(), &raw mut count);
                 }
-                let drained = drain.drain();
+                // The looper's fd callback is not a Java-to-native entry
+                // point (`MessageQueue.nativePollOnce` is `@CriticalNative`
+                // and pushes no local frame), so locals the drained tasks'
+                // JNI calls create would never be freed. One frame around the
+                // drain gives these tasks the scope a JNI entry gives the
+                // frame callback's drain.
+                let drained = super::jni::java_vm()
+                    .get_env()
+                    .expect(
+                        "hydrolysis android: the looper callback runs on the attached UI thread",
+                    )
+                    .with_local_frame(WAKE_DRAIN_LOCALS, |_env| Ok::<_, JniError>(drain.drain()))
+                    .expect("hydrolysis android: PushLocalFrame around the executor drain failed");
                 tracing::debug!(
                     target: "waterui::hydrolysis::android",
                     count,
