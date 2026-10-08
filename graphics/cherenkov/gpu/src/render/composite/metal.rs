@@ -293,6 +293,12 @@ pub fn encode(
                 ShaderVariant::Simple => 0,
                 ShaderVariant::Shadow => 1,
                 ShaderVariant::Full => 2,
+                // A union member is `PAINT_BACKDROP` sampling its group's
+                // capture: a neighbourhood (or effect) read that
+                // `ExecutionPlan::epoch` never admits into a tile epoch.
+                ShaderVariant::Union => {
+                    unreachable!("a union sample reads its capture; no tile epoch admits it")
+                }
             };
             pass.set_pipeline(executor.pipeline(
                 resources.device,

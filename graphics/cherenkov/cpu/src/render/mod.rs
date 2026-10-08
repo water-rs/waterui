@@ -186,6 +186,7 @@ fn cpu_model() -> Option<String> {
 impl Renderer for RasterRenderer {
     type Target = RasterTarget;
     type Font = font::PreparedFont;
+    type FrameCommit = ();
 
     fn create_surface(
         &mut self,
@@ -470,8 +471,8 @@ impl Renderer for RasterRenderer {
         &mut self,
         frame: &Frame<'_>,
         stats: &mut FrameStats,
-    ) -> Result<FrameRedraw, RenderError> {
-        self.render_frame(frame, stats)
+    ) -> Result<(FrameRedraw, Self::FrameCommit), RenderError> {
+        self.render_frame(frame, stats).map(|redraw| (redraw, ()))
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -479,8 +480,9 @@ impl Renderer for RasterRenderer {
         &mut self,
         frame: &Frame<'_>,
         stats: &mut FrameStats,
-    ) -> impl core::future::Future<Output = Result<FrameRedraw, RenderError>> {
-        core::future::ready(self.render_frame(frame, stats))
+    ) -> impl core::future::Future<Output = Result<(FrameRedraw, Self::FrameCommit), RenderError>>
+    {
+        core::future::ready(self.render_frame(frame, stats).map(|redraw| (redraw, ())))
     }
 
     /// Materializes a surface's output buffer into `Readback` pixels.

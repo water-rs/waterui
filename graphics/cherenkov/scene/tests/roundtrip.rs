@@ -528,3 +528,111 @@ fn backdrop_levels_default_to_one_and_skip_one() {
     assert_eq!(Scene::load(&dir.join("pyramid")).unwrap(), pyramid);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn backdrop_union_and_outer_roundtrip_and_validate() {
+    use cherenkov_scene::{BackdropFilter, SceneError};
+    let dir = std::env::temp_dir().join(format!("cherenkov-scene-union-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // A union group plus an `outer` member round-trips.
+    let mut b = Scene::builder(64, 64);
+    b.backdrop_union_group(
+        3,
+        vec![BackdropFilter::GaussianBlur { sigma: 4.0 }],
+        1.0,
+        1,
+        12.0,
+    );
+    b.backdrop_group(4, Vec::new(), 1.0, 1);
+    let l = &mut b.root();
+    l.layer(|m| {
+        m.clip(Shape::rect(8.0, 8.0, 32.0, 32.0));
+        m.backdrop(3);
+    });
+    l.layer(|m| {
+        m.clip(Shape::rect(36.0, 8.0, 56.0, 32.0));
+        m.backdrop(3);
+        m.backdrop_outer(6.0);
+    });
+    l.layer(|m| {
+        m.clip(Shape::rect(8.0, 40.0, 56.0, 56.0));
+        m.backdrop(4);
+        m.backdrop_outer(2.5);
+    });
+    let scene = b.build();
+    assert!(scene.features.contains(&Feature::BackdropUnion));
+    assert!(scene.features.contains(&Feature::BackdropOuter));
+    let scene_dir = dir.join("union");
+    scene.save(&scene_dir).unwrap();
+    assert_eq!(Scene::load(&scene_dir).unwrap(), scene);
+
+    // A `backdrop_outer` of 0 is the default and stays out of the JSON.
+    let mut b = Scene::builder(64, 64);
+    b.backdrop_group(4, Vec::new(), 1.0, 1);
+    b.root().layer(|m| {
+        m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
+        m.backdrop(4);
+    });
+    let scene = b.build();
+    assert!(
+        !serde_json::to_string(&scene)
+            .unwrap()
+            .contains("backdrop_outer")
+    );
+
+    // Invalid values are rejected at load: a non-positive union, a
+    // negative outer, and an outer on a layer sampling no group.
+    let bad_union = {
+        let mut b = Scene::builder(64, 64);
+        b.backdrop_union_group(3, Vec::new(), 1.0, 1, 0.0);
+        b.root().layer(|m| {
+            m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
+            m.backdrop(3);
+        });
+        b.build()
+    };
+    let scene_dir = dir.join("bad-union");
+    bad_union.save(&scene_dir).unwrap();
+    let result = Scene::load(&scene_dir);
+    assert!(
+        matches!(result, Err(SceneError::InvalidBackdropUnion(3))),
+        "union 0 must be rejected, got {result:?}"
+    );
+
+    let bad_outer = {
+        let mut b = Scene::builder(64, 64);
+        b.backdrop_group(4, Vec::new(), 1.0, 1);
+        b.root().layer(|m| {
+            m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
+            m.backdrop(4);
+            m.backdrop_outer(-1.0);
+        });
+        b.build()
+    };
+    let scene_dir = dir.join("bad-outer");
+    bad_outer.save(&scene_dir).unwrap();
+    let result = Scene::load(&scene_dir);
+    assert!(
+        matches!(result, Err(SceneError::InvalidBackdropOuter(4))),
+        "outer −1 must be rejected, got {result:?}"
+    );
+
+    let lone_outer = {
+        let mut b = Scene::builder(64, 64);
+        b.root().layer(|m| {
+            m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
+            m.backdrop_outer(2.0);
+        });
+        b.build()
+    };
+    let scene_dir = dir.join("lone-outer");
+    lone_outer.save(&scene_dir).unwrap();
+    let result = Scene::load(&scene_dir);
+    assert!(
+        matches!(result, Err(SceneError::BackdropOuterWithoutGroup)),
+        "a group-less outer must be rejected, got {result:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
