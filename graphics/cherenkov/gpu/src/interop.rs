@@ -1064,10 +1064,13 @@ pub mod android {
     }
 }
 
-/// Apple interop: system layers hosted on the engine's planes.
+/// Apple interop: system objects hosted on the engine's planes.
 #[cfg(target_vendor = "apple")]
 pub mod apple {
+    #[cfg(not(target_os = "macos"))]
     pub use crate::render::planes::apple::HostedLayer;
+    #[cfg(target_os = "macos")]
+    pub use crate::render::planes::apple::HostedView;
 }
 
 /// Apple interop: importing Metal resources onto the shared device.

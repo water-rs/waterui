@@ -33,7 +33,7 @@ mod macos {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{Duration, Instant};
 
-    use cherenkov::kurbo::{Affine, Rect, RoundedRect, Size};
+    use cherenkov::kurbo::{Affine, Rect, RoundedRect, Size, Vec2};
     use cherenkov::{
         Display, Draw as _, Engine, FrameTime, Hosted, Layer, Offscreen, OffscreenFormat,
         RenderError, Surface, WorkingColor,
@@ -44,7 +44,7 @@ mod macos {
     };
     use cherenkov_gpu::interop::{
         ExternalFrame, FrameColor, GpuContent, GpuContentBox, RgbAlpha, SharedDevice, YuvRange,
-        apple::HostedLayer, metal::import_texture, wgpu,
+        apple::HostedView, metal::import_texture, wgpu,
     };
     use cherenkov_gpu::{DisplaySync, Gpu, GpuConfig, WindowTarget};
     use dispatch2::DispatchQueue;
@@ -157,9 +157,40 @@ mod macos {
                 "every_part_presents_with_the_requested_display_sync",
                 every_part_presents_with_the_requested_display_sync,
             ),
+        ]
+        .into_iter()
+        .chain(hosted_trials())
+        .collect()
+    }
+
+    /// The hosted-plane cases.
+    fn hosted_trials() -> Vec<Trial> {
+        let case = |name: &str, run: fn()| {
+            Trial::test(name, move || {
+                run();
+                Ok(())
+            })
+        };
+        vec![
             case(
                 "a_hosted_layer_sits_between_its_parts_and_moves_in_place",
                 a_hosted_layer_sits_between_its_parts_and_moves_in_place,
+            ),
+            case(
+                "a_hosted_view_answers_hits_and_the_engine_views_do_not",
+                a_hosted_view_answers_hits_and_the_engine_views_do_not,
+            ),
+            case(
+                "a_rotation_and_a_skew_on_the_path_are_unplaceable",
+                a_rotation_and_a_skew_on_the_path_are_unplaceable,
+            ),
+            case(
+                "opacity_below_one_renders_with_alpha_value",
+                opacity_below_one_renders_with_alpha_value,
+            ),
+            case(
+                "scroll_and_scale_update_the_bounds_in_place",
+                scroll_and_scale_update_the_bounds_in_place,
             ),
             case(
                 "an_unplaceable_hosted_layer_fails_every_render_until_placeable",
@@ -696,21 +727,11 @@ mod macos {
             self.view.layer().expect("a layer-backed view")
         }
 
-        /// The engine's root layer under the host — selected by its name:
-        /// a candidate's pending display layer attaches beside it.
+        /// The host's backing layer: the engine's parts and plane tops
+        /// are its direct sublayers, and a candidate's pending display
+        /// layer parks beside them.
         fn root(&self) -> Retained<CALayer> {
-            let layers: Vec<_> = sublayers(&self.host())
-                .into_iter()
-                .filter(|layer| {
-                    layer
-                        .name()
-                        .is_some_and(|name| *name == *objc2_foundation::ns_string!("cherenkov"))
-                })
-                .collect();
-            let [root] = &layers[..] else {
-                panic!("one engine root under the host, found {}", layers.len());
-            };
-            root.clone()
+            self.host()
         }
 
         fn render(&self) {
@@ -876,10 +897,29 @@ mod macos {
         layer.isKindOfClass(T::class())
     }
 
-    /// The layers directly under the engine root: parts and planes in paint
-    /// order.
+    /// The engine's top-level elements under the host: parts and plane
+    /// tops in paint order — `zPosition`, not sublayer order, sorts
+    /// them; a candidate's pending display parked beside them is not an
+    /// element.
     fn stack(fixture: &Fixture) -> Vec<Retained<CALayer>> {
-        sublayers(&fixture.root())
+        let mut stack: Vec<_> = sublayers(&fixture.host())
+            .into_iter()
+            .filter(|layer| {
+                layer
+                    .name()
+                    .is_none_or(|name| *name != *objc2_foundation::ns_string!("cherenkov-pending"))
+            })
+            .collect();
+        stack.sort_by_key(|layer| layer.zPosition().to_bits());
+        stack
+    }
+
+    /// A top-level part: a container whose sublayer is the metal layer.
+    fn is_part(layer: &CALayer) -> bool {
+        is::<CAMetalLayer>(layer)
+            || sublayers(layer)
+                .iter()
+                .any(|inner| is::<CAMetalLayer>(inner))
     }
 
     /// Every part's metal layer is configured with the present mode the
@@ -905,6 +945,7 @@ mod macos {
             let parts_expected = if fixture.promote() { 2 } else { 1 };
             let parts: Vec<_> = stack(&fixture)
                 .into_iter()
+                .flat_map(|layer| std::iter::once(layer.clone()).chain(sublayers(&layer)))
                 .filter_map(|layer| layer.downcast::<CAMetalLayer>().ok())
                 .collect();
             assert_eq!(parts.len(), parts_expected, "{sync:?}: the window's parts");
@@ -947,12 +988,14 @@ mod macos {
             return;
         }
 
-        let root = fixture.root();
-        assert!(root.isGeometryFlipped(), "engine space is y-down");
         let stack = stack(&fixture);
+        assert!(
+            stack.iter().all(|l| l.isGeometryFlipped()),
+            "engine space is y-down"
+        );
         assert_eq!(stack.len(), 3, "part, plane, part");
-        assert!(is::<CAMetalLayer>(&stack[0]) && is::<CAMetalLayer>(&stack[2]));
-        assert!(!is::<CAMetalLayer>(&stack[1]));
+        assert!(is_part(&stack[0]) && is_part(&stack[2]));
+        assert!(!is_part(&stack[1]));
         // Pixel space, then root → holder → player, each transform → [clip]
         // → scroll.
         let top = &stack[1];
@@ -1075,7 +1118,7 @@ mod macos {
         fixture.refusal_cycle();
         let stack = stack(fixture);
         assert_eq!(stack.len(), 1, "one part");
-        assert!(is::<CAMetalLayer>(&stack[0]));
+        assert!(is_part(&stack[0]));
         assert!(displays(&fixture.root()).is_empty(), "no plane");
     }
 
@@ -1652,8 +1695,8 @@ mod macos {
         let [part, plane] = &stack[..] else {
             panic!("one part under the plane, found {} layers", stack.len());
         };
-        assert!(is::<CAMetalLayer>(part));
-        assert!(!is::<CAMetalLayer>(plane));
+        assert!(is_part(part));
+        assert!(!is_part(plane));
         assert_eq!(displays(&fixture.root()).len(), 1, "one promoted plane");
     }
 
@@ -1699,14 +1742,27 @@ mod macos {
         let [first, plane_a, second, plane_b] = &stack[..] else {
             panic!("part, plane, part, plane — found {} layers", stack.len());
         };
-        assert!(is::<CAMetalLayer>(first));
-        assert!(is::<CAMetalLayer>(second));
-        assert!(!is::<CAMetalLayer>(plane_a) && !is::<CAMetalLayer>(plane_b));
+        assert!(is_part(first));
+        assert!(is_part(second));
+        assert!(!is_part(plane_a) && !is_part(plane_b));
     }
 
-    /// A host's layer, as the content of `web` at `EXTENT`, between a
+    /// An `NSView` a host would supply: layer-hosting, so code may manage
+    /// its layer — a solid colour for the composition check.
+    fn hosted_view(mtm: MainThreadMarker, color: (f64, f64, f64)) -> Retained<NSView> {
+        let view = NSView::new(mtm);
+        let layer = CALayer::new();
+        layer.setBackgroundColor(Some(&objc2_core_graphics::CGColor::new_srgb(
+            color.0, color.1, color.2, 1.0,
+        )));
+        view.setLayer(Some(&layer));
+        view.setWantsLayer(true);
+        view
+    }
+
+    /// A host's view, as the content of `web` at `EXTENT`, between a
     /// backdrop painted below it and a bar painted above it.
-    fn hosted_scene(fixture: &Fixture, web: &Retained<CALayer>) -> [Layer; 4] {
+    fn hosted_scene(fixture: &Fixture, web: &Retained<NSView>) -> [Layer; 4] {
         let mtm = MainThreadMarker::new().expect("the cases run on the main thread");
         let surface = &fixture.window;
         let below = surface.layer();
@@ -1725,7 +1781,7 @@ mod macos {
                 WorkingColor::new([0.5, 0.5, 0.5, 0.5]),
             );
         });
-        let object = Hosted::<Gpu>::new(HostedLayer::new(web.clone(), mtm));
+        let object = Hosted::<Gpu>::new(HostedView::new(web.clone(), mtm));
         surface.update(|tx| {
             tx[surface.root()].push(&below).push(&holder).push(&above);
             tx[&below].content(backdrop);
@@ -1766,71 +1822,270 @@ mod macos {
         }
     }
 
-    /// The host's layer is shown on a plane between the part painted below
+    /// The superview of `view`, as a raw pointer for identity checks.
+    fn view_superview(view: &NSView) -> Option<*const NSView> {
+        // SAFETY: the view hierarchy is read on the main thread.
+        unsafe { view.superview() }.map(|v| Retained::as_ptr(&v))
+    }
+
+    /// The view at `ptr`, read on the main thread while the engine's
+    /// scene owns it.
+    const fn as_view<'a>(ptr: *const NSView) -> &'a NSView {
+        // SAFETY: `ptr` names a live view in the hierarchy.
+        unsafe { &*ptr }
+    }
+
+    /// The system composition shows the hosted colour between the
+    /// parts' colours: the hosted green over the backdrop's blue.
+    fn assert_hosted_composite(fixture: &Fixture) {
+        let pixels = fixture.system.composite();
+        let at = |x: usize, y: usize| pixels[y * SIZE.0 as usize + x];
+        let hosted_px = at(30, 20);
+        assert!(
+            hosted_px[1] > 0.4 && hosted_px[0] < 0.3,
+            "hosted colour at its rect: {hosted_px:?}"
+        );
+        let below_px = at(30, 60);
+        assert!(
+            below_px[2] > 0.4 && below_px[1] < 0.4,
+            "backdrop colour below the hosted rect: {below_px:?}"
+        );
+    }
+
+    /// The host's view is shown on a plane between the part painted below
     /// it and the part painted above it — translucent controls included —
-    /// inside one node per tree level, at its extent; a move on its path
-    /// updates the same nodes, and clearing the content takes the layer
+    /// inside the engine's own views at its extent; a move on its path
+    /// updates the same views, and clearing the content takes the view
     /// and its plane out of the engine's tree.
     fn a_hosted_layer_sits_between_its_parts_and_moves_in_place() {
+        let mtm = MainThreadMarker::new().expect("the cases run on the main thread");
         let fixture = Fixture::new();
-        let web = CALayer::new();
+        let web = hosted_view(mtm, (0.1, 0.9, 0.2));
         let [_below, holder, hosted, _above] = hosted_scene(&fixture, &web);
-        render_until(&fixture, &|| web.superlayer().is_some(), "the hosted layer");
+        render_until(
+            &fixture,
+            &|| view_superview(&web).is_some(),
+            "the hosted view",
+        );
         // Part, hosted plane, part — and, once the bar above has been quiet
         // long enough, its static capture on a plane of its own.
         let layers = stack(&fixture);
         let [first, top, second, ..] = &layers[..] else {
             panic!("part, plane, part — found {} layers", layers.len());
         };
-        assert!(is::<CAMetalLayer>(first) && is::<CAMetalLayer>(second));
+        assert!(is_part(first) && is_part(second));
         let top = top.clone();
-        let root_node = &sublayers(&top)[0];
-        let root_scroll = &sublayers(root_node)[0];
-        let holder_node = sublayers(root_scroll)[0].clone();
-        assert!((holder_node.affineTransform().tx - 12.0).abs() < 1e-12);
-        let holder_clip = &sublayers(&holder_node)[0];
-        assert!(holder_clip.masksToBounds());
-        let holder_scroll = &sublayers(holder_clip)[0];
-        let hosted_node = &sublayers(holder_scroll)[0];
-        let hosted_scroll = &sublayers(hosted_node)[0];
-        let [engine_holder] = &sublayers(hosted_scroll)[..] else {
-            panic!("one hosted holder");
-        };
-        let [shown] = &sublayers(engine_holder)[..] else {
-            panic!("the host's layer in its holder");
-        };
-        assert!(same_layer(shown, &web), "the host's own layer");
-        let bounds = web.bounds();
+        // The plane's top is the outermost engine view's backing layer: a
+        // direct sublayer of the host between the parts' containers.
         assert_eq!(
-            (bounds.size.width, bounds.size.height),
+            top.superlayer().map(|s| Retained::as_ptr(&s)),
+            Some(Retained::as_ptr(&fixture.host()))
+        );
+        let container = fixture
+            .view
+            .subviews()
+            .iter()
+            .find(|v| {
+                v.layer()
+                    .is_some_and(|l| Retained::as_ptr(&l) == Retained::as_ptr(&top))
+            })
+            .expect("the container is a host subview");
+        // Its chain: a clip view for the one clipped level, carrying the
+        // path's translation, then the leaf, then the host's own view.
+        let leaf_ptr = view_superview(&web).expect("the leaf");
+        let leaf = as_view(leaf_ptr);
+        let clip_ptr = view_superview(leaf).expect("the clip");
+        let clip = as_view(clip_ptr);
+        assert_eq!(view_superview(clip), Some(Retained::as_ptr(&container)));
+        // The hosted view is layer-hosting: its layer is the app's, wired
+        // into the engine's tree at the leaf's position the way `AppKit`
+        // wires a subview's layer on layout — which a windowless fixture
+        // never runs.
+        if web.layer().and_then(|l| l.superlayer()).is_none() {
+            let layer = web.layer().expect("a layer-hosting view");
+            layer.setFrame(CGRect::new(
+                CGPoint::new(12.0, 8.0),
+                CGSize::new(EXTENT.width, EXTENT.height),
+            ));
+            container
+                .layer()
+                .expect("container layer")
+                .addSublayer(&layer);
+        }
+        let clip_frame = clip.frame();
+        assert!(
+            (clip_frame.origin.x - 12.0).abs() < 1e-12 && (clip_frame.origin.y - 8.0).abs() < 1e-12,
+            "the clip view carries the translation"
+        );
+        assert!(
+            clip.layer().expect("layer-backed").masksToBounds(),
+            "the clip view masks"
+        );
+        let frame = web.frame();
+        assert_eq!(
+            (frame.size.width, frame.size.height),
             (EXTENT.width, EXTENT.height)
         );
+        assert_hosted_composite(&fixture);
 
         fixture.window.update(|tx| {
             tx[&holder].transform(Affine::translate((20.0, 4.0)));
         });
         render_until(
             &fixture,
-            &|| (holder_node.affineTransform().tx - 20.0).abs() < 1e-12,
+            &|| (clip.frame().origin.x - 20.0).abs() < 1e-12,
             "the move",
         );
         assert!(same_layer(&stack(&fixture)[1], &top), "the plane stays");
-        let node = &sublayers(&sublayers(&sublayers(&top)[0])[0])[0];
-        assert!(same_layer(node, &holder_node), "its level nodes stay");
-        assert!(
-            web.superlayer()
-                .is_some_and(|s| same_layer(&s, engine_holder))
-        );
+        assert_eq!(view_superview(&web), Some(leaf_ptr), "the leaf stays");
+        assert_eq!(view_superview(leaf), Some(clip_ptr), "the clip stays");
 
         fixture.window.update(|tx| {
             tx[&hosted].clear_content();
         });
-        render_until(&fixture, &|| web.superlayer().is_none(), "the release");
+        render_until(&fixture, &|| view_superview(&web).is_none(), "the release");
         assert!(
-            top.superlayer().is_none(),
+            fixture
+                .view
+                .subviews()
+                .iter()
+                .all(|v| Retained::as_ptr(&v) != Retained::as_ptr(&container)),
             "the hosted plane left the stack"
         );
-        assert!(engine_holder.superlayer().is_none(), "and its holder");
+    }
+
+    /// A point inside the hosted view hits the host's own view — the
+    /// engine's views decline the hit — and a point beside it inside the
+    /// surface reaches the host view itself, never one of the engine's.
+    fn a_hosted_view_answers_hits_and_the_engine_views_do_not() {
+        let mtm = MainThreadMarker::new().expect("the cases run on the main thread");
+        let fixture = Fixture::new();
+        let web = hosted_view(mtm, (0.1, 0.9, 0.2));
+        let [_below, _holder, _hosted, _above] = hosted_scene(&fixture, &web);
+        render_until(
+            &fixture,
+            &|| view_superview(&web).is_some(),
+            "the hosted view",
+        );
+        // The host view is y-up; the hosted view covers px
+        // (12,8)-(52.5,32) — points (6,4)-(26.25,16) in the engine's
+        // y-down space — so (15, 20) in host coordinates.
+        let inside = fixture.view.hitTest(CGPoint::new(15.0, 20.0));
+        assert_eq!(
+            inside.as_ref().map(Retained::as_ptr),
+            Some(Retained::as_ptr(&web)),
+            "the hosted view answers the hit"
+        );
+        let outside = fixture.view.hitTest(CGPoint::new(45.0, 20.0));
+        let outside_ptr = outside.as_ref().map(Retained::as_ptr);
+        assert_eq!(
+            outside_ptr,
+            Some(Retained::as_ptr(&fixture.view)),
+            "the host view takes the hit, not an engine view"
+        );
+    }
+
+    /// A rotation and a skew on the hosted plane's path each fail the
+    /// render naming the transform rule: a view carries only a
+    /// translation and an axis-aligned scale.
+    fn a_rotation_and_a_skew_on_the_path_are_unplaceable() {
+        let mtm = MainThreadMarker::new().expect("the cases run on the main thread");
+        let fixture = Fixture::new();
+        let web = hosted_view(mtm, (0.1, 0.9, 0.2));
+        let [_below, holder, hosted, _above] = hosted_scene(&fixture, &web);
+        for transform in [Affine::rotate(0.4), Affine::skew(0.2, 0.0)] {
+            fixture.window.update(|tx| {
+                tx[&holder].transform(transform);
+            });
+            drain_main();
+            match fixture.engine.render(FrameTime::now()) {
+                Err(RenderError::Unplaceable { layer, reason }) => {
+                    assert_eq!(layer, hosted.id());
+                    assert!(reason.contains("transform"), "{reason}");
+                }
+                other => panic!("an unplaceable hosted view, got {other:?}"),
+            }
+            assert!(view_superview(&web).is_none(), "never shown");
+        }
+    }
+
+    /// Opacity below one on the hosted layer renders with `alphaValue`
+    /// on the leaf, the engine's own view: `AppKit` owns the backing
+    /// layer, the engine owns the view.
+    fn opacity_below_one_renders_with_alpha_value() {
+        let mtm = MainThreadMarker::new().expect("the cases run on the main thread");
+        let fixture = Fixture::new();
+        let web = hosted_view(mtm, (0.1, 0.9, 0.2));
+        let [_below, _holder, hosted, _above] = hosted_scene(&fixture, &web);
+        fixture.window.update(|tx| {
+            tx[&hosted].opacity(0.5f32);
+        });
+        render_until(
+            &fixture,
+            &|| view_superview(&web).is_some(),
+            "the hosted view",
+        );
+        let leaf = as_view(view_superview(&web).expect("the leaf"));
+        assert!((leaf.alphaValue() - 0.5).abs() < 1e-6);
+    }
+
+    /// Scroll moves the bounds origin and a scale the bounds size of the
+    /// clip view, with the same view objects and no rebuild; a second
+    /// binding of the same view elsewhere moves it.
+    fn scroll_and_scale_update_the_bounds_in_place() {
+        let mtm = MainThreadMarker::new().expect("the cases run on the main thread");
+        let fixture = Fixture::new();
+        let web = hosted_view(mtm, (0.1, 0.9, 0.2));
+        let [_below, holder, hosted, _above] = hosted_scene(&fixture, &web);
+        render_until(
+            &fixture,
+            &|| view_superview(&web).is_some(),
+            "the hosted view",
+        );
+        let leaf_ptr = view_superview(&web).expect("the leaf");
+        let leaf = as_view(leaf_ptr);
+        let clip = as_view(view_superview(leaf).expect("the clip"));
+
+        fixture.window.update(|tx| {
+            tx[&holder].scroll_offset(Vec2::new(3.0, 5.0));
+        });
+        render_until(
+            &fixture,
+            &|| (clip.bounds().origin.x - 3.0).abs() < 1e-12,
+            "the scroll",
+        );
+        let bounds = clip.bounds();
+        assert!((bounds.origin.x - 3.0).abs() < 1e-12);
+        assert!((bounds.origin.y - 5.0).abs() < 1e-12);
+        assert!((bounds.size.width - 72.0).abs() < 1e-12);
+
+        fixture.window.update(|tx| {
+            tx[&holder].transform(Affine::scale(1.5));
+        });
+        render_until(
+            &fixture,
+            &|| (clip.frame().size.width - 108.0).abs() < 1e-12,
+            "the scale",
+        );
+        assert!((clip.frame().size.width - 108.0).abs() < 1e-12);
+        assert!((clip.bounds().size.width - 72.0).abs() < 1e-12);
+        assert_eq!(view_superview(&web), Some(leaf_ptr));
+
+        // Binding the same view on a second layer moves it to the new
+        // leaf; the first plane's views leave with it.
+        let first_leaf_ptr = leaf_ptr;
+        let second = fixture.window.layer();
+        let object = Hosted::<Gpu>::new(HostedView::new(web.clone(), mtm));
+        fixture.window.update(|tx| {
+            tx[fixture.window.root()].push(&second);
+            tx[&hosted].clear_content();
+            tx[&second].content(object.at(EXTENT));
+        });
+        render_until(
+            &fixture,
+            &|| view_superview(&web).is_some_and(|p| p != first_leaf_ptr),
+            "the move to a second binding",
+        );
     }
 
     /// A hosted layer under an isolating ancestor cannot be placed: the
@@ -1838,8 +2093,9 @@ mod macos {
     /// too, and the first render after the ancestor stops isolating shows
     /// it.
     fn an_unplaceable_hosted_layer_fails_every_render_until_placeable() {
+        let mtm = MainThreadMarker::new().expect("the cases run on the main thread");
         let fixture = Fixture::new();
-        let web = CALayer::new();
+        let web = hosted_view(mtm, (0.1, 0.9, 0.2));
         let [_below, holder, hosted, _above] = hosted_scene(&fixture, &web);
         fixture.window.update(|tx| {
             tx[&holder].opacity(0.5f32);
@@ -1854,21 +2110,21 @@ mod macos {
                 other => panic!("an unplaceable hosted layer, got {other:?}"),
             }
         }
-        assert!(web.superlayer().is_none(), "never shown");
+        assert!(view_superview(&web).is_none(), "never shown");
         fixture.window.update(|tx| {
             tx[&holder].opacity(1.0f32);
         });
         render_until(
             &fixture,
-            &|| web.superlayer().is_some(),
-            "the placeable layer",
+            &|| view_superview(&web).is_some(),
+            "the placeable view",
         );
         let layers = stack(&fixture);
         assert!(
             matches!(&layers[..], [first, plane, second, ..]
-                if is::<CAMetalLayer>(first)
-                    && !is::<CAMetalLayer>(plane)
-                    && is::<CAMetalLayer>(second)),
+                if is_part(first)
+                    && !is_part(plane)
+                    && is_part(second)),
             "part, plane, part"
         );
     }
@@ -1887,7 +2143,8 @@ mod macos {
             .surface(Offscreen::new(SIZE, OffscreenFormat::LinearF16), || {})
             .expect("offscreen");
         let web = surface.layer();
-        let object = Hosted::<Gpu>::new(HostedLayer::new(CALayer::new(), mtm));
+        let object = Hosted::<Gpu>::new(HostedView::new(hosted_view(mtm, (0.0, 1.0, 0.0)), mtm));
+        let _ = &web;
         surface.update(|tx| {
             tx[surface.root()].push(&web);
             tx[&web].content(object.at(EXTENT));

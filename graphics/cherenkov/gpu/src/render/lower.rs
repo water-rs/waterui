@@ -2673,7 +2673,9 @@ impl<'a> Lowering<'a> {
             content_space = cherenkov::snap_animating(content_space);
         }
         let isolates = node.filter.is_some()
-            || opacity < 1.0
+            // A promoted layer draws nothing: its opacity lives on its
+            // system plane (`Placement::opacity`), never in an isolation.
+            || (opacity < 1.0 && !self.promoted.contains(&id))
             || blend != cherenkov::BlendMode::Normal
             // The root already renders into the surface target, and a
             // local root into its image.
