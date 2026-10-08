@@ -50,7 +50,6 @@ class MainActivity : HydrolysisActivity() {
         // first; the intent extras below still override this default.
         Os.setenv("WATER_CACHE_DIR", cacheDir.absolutePath, true)
         setupEnvironmentFromIntent(intent)
-        setupEnvironmentFromProperties()
 
         super.onCreate(savedInstanceState)
         Log.i(TAG, "WATERUI_ROOT_READY")
@@ -95,43 +94,6 @@ class MainActivity : HydrolysisActivity() {
                 } catch (e: Exception) {
                     Log.w(TAG, "Failed to set environment variable $envVar: ${e.message}")
                 }
-            }
-        }
-
-        /**
-         * Read system properties with prefix "waterui.env." and set them as environment variables.
-         *
-         * Older CLI versions set these properties via `adb shell setprop waterui.env.<KEY> <VALUE>`
-         * before launching the app. This allows passing environment variables to the native
-         * Rust code since Android doesn't support direct environment variable passing.
-         */
-        @Suppress("PrivateApi")
-        private fun setupEnvironmentFromProperties() {
-            try {
-                // Use reflection to access SystemProperties (hidden API)
-                val systemProperties = Class.forName("android.os.SystemProperties")
-                val getMethod = systemProperties.getMethod("get", String::class.java, String::class.java)
-
-                // Known environment variables that might be set by the CLI
-                val knownEnvVars = listOf(
-                    "RUST_LOG",
-                    "RUST_BACKTRACE"
-                )
-
-                for (envVar in knownEnvVars) {
-                    val propKey = ENV_PREFIX + envVar
-                    val value = getMethod.invoke(null, propKey, "") as String
-                    if (value.isNotEmpty()) {
-                        try {
-                            Os.setenv(envVar, value, true)
-                            Log.d(TAG, "Set environment variable $envVar from system property")
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Failed to set environment variable $envVar: ${e.message}")
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to read system properties: ${e.message}")
             }
         }
     }
