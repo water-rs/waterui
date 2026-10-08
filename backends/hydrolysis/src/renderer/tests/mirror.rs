@@ -601,6 +601,14 @@ impl HydrolysisRenderer {
         crate::renderer::mount::layers::census(&roots, stats)
     }
 
+    /// Drops the mirror mount, so the next
+    /// [`commit_mirror`](Self::commit_mirror) commits into a fresh one —
+    /// a device remount: every cell re-lowers the program it last
+    /// lowered, on a mount its layers never saw.
+    pub fn remount_mirror(&mut self) {
+        self.mirror = None;
+    }
+
     /// The mirror mount [`commit_mirror`](Self::commit_mirror) committed.
     ///
     /// # Panics

@@ -479,6 +479,40 @@ fn a_signal_shape_change_needs_no_flush() {
     );
 }
 
+/// A remount re-lowers the cached program: the member's clip rebinds
+/// from the shape signal's value now, not the value the recording stored
+/// (water-rs/waterui#1788).
+#[test]
+fn a_remount_rebinds_the_clip_from_the_shapes_value_now() {
+    let shape = nami::binding(chrome_rect());
+    let mut renderer = mirrored(
+        tap_view(),
+        MinimalTestTheme {
+            chrome: glass_plan(vec![ChromeDraw {
+                shape: Live::from(shape.map(|rect| rect)).into_shared(),
+                shader: GLASS_SHADER,
+                capture: GLASS,
+                effect: Live::from(MaterialEffect::new(vec![])).into_shared(),
+            }]),
+            ..Default::default()
+        },
+    );
+    let moved = Rect::new(0.0, 0.0, 40.0, 40.0);
+    shape.set(RoundedRect::from_rect(moved, 12.0));
+
+    renderer.remount_mirror();
+    renderer.commit_mirror();
+    let member = mirror_chrome_layers(&renderer)[0];
+    assert_eq!(
+        mirrored_node(&renderer, member)
+            .clip
+            .as_ref()
+            .map(ShapeData::bounds),
+        Some(moved),
+        "the remounted member's clip starts from the shape's value now",
+    );
+}
+
 /// A press re-records the chrome and rebinds shape and effect onto the same
 /// member and the same group — no new layer, group or capture.
 #[test]

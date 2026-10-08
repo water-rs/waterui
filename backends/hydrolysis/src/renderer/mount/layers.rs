@@ -1620,7 +1620,10 @@ fn lower_chrome<T: LayerTarget>(
         cx.tx[&member.layer].transform(chrome.transform);
         member.transform = chrome.transform;
     }
-    cx.tx[&member.layer].clip(chrome.material.shape().clone());
+    // The clip rebinds from the shape's value now: a re-lower of a
+    // cached program — a remount — must not restart from the value the
+    // recording stored.
+    cx.tx[&member.layer].clip(chrome.material.shape().rebound());
     member.chrome = Some(chrome.clone());
     if chrome.visible {
         let registry = &T::material_terms(cx.host).registry;
