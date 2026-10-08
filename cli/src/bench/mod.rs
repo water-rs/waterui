@@ -28,12 +28,11 @@ const BENCH_TEST_PREFIX: &str = "waterui_bench_";
 /// Resolves a path against the current directory without requiring it to exist.
 ///
 /// `canonicalize` is unusable here: the directory is created after this point.
-fn absolute_path(path: &Path) -> Result<PathBuf> {
+fn absolute_path(host: &crate::toolchain::Host, path: &Path) -> PathBuf {
     if path.is_absolute() {
-        return Ok(path.to_path_buf());
+        return path.to_path_buf();
     }
-    let cwd = std::env::current_dir().wrap_err("failed to resolve the current directory")?;
-    Ok(cwd.join(path))
+    host.cwd().join(path)
 }
 
 /// One `water bench` invocation.
@@ -86,7 +85,7 @@ pub async fn run_bench_suite(
         // therefore names two different directories on the two sides — the
         // benches write their reports under the crate, and collection then
         // finds nothing and reports the crate as having no benches at all.
-        let dir = absolute_path(dir)?;
+        let dir = absolute_path(host, dir);
         smol::fs::create_dir_all(&dir)
             .await
             .wrap_err_with(|| format!("failed to create report directory {}", dir.display()))?;
@@ -102,9 +101,9 @@ pub async fn run_bench_suite(
         path
     };
 
-    // nextest paints its progress UI on the user's terminal — interactive
-    // like `<pm> run build`.
-    let mut command = smol::process::Command::from(host.interactive_command("cargo"));
+    // nextest paints its progress UI on the user's terminal but never reads
+    // stdin — monitored, not interactive.
+    let mut command = smol::process::Command::from(host.monitored_command("cargo"));
     command
         .arg("nextest")
         .arg("run")
