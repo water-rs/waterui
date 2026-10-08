@@ -4283,8 +4283,6 @@ struct SupportCargoManifest {
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     features: std::collections::BTreeMap<String, Vec<String>>,
     dependencies: std::collections::BTreeMap<String, SupportDependencyValue>,
-    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    target: std::collections::BTreeMap<String, GeneratedTargetSection<SupportDependencyValue>>,
     workspace: SupportWorkspaceSection,
     /// `[patch]` inherited from the runtime's own workspace.
     ///
@@ -4467,16 +4465,6 @@ async fn write_support_cargo_toml(
         }
         None => framework.patches(),
     };
-    let mut dependencies = dependencies;
-    let mut target = std::collections::BTreeMap::new();
-    if let Some(ffi) = dependencies.remove("waterui-ffi") {
-        target.insert(
-            "cfg(not(target_vendor = \"apple\"))".to_string(),
-            GeneratedTargetSection {
-                dependencies: std::collections::BTreeMap::from([("waterui-ffi".to_string(), ffi)]),
-            },
-        );
-    }
     let manifest = SupportCargoManifest {
         package: SupportPackageSection {
             name: crate_name.to_string(),
@@ -4485,7 +4473,7 @@ async fn write_support_cargo_toml(
         },
         lib: SupportLibSection {
             // A support app's own crate is only ever consumed as a Rust dependency of
-            // the generated FFI crate, and that FFI crate is what the platform links.
+            // a generated backend crate, and that crate is what the platform links.
             // Emitting `staticlib`/`cdylib` here archived and relinked the entire
             // dependency graph twice more for products nothing ever loads.
             crate_type: vec!["rlib".to_string()],
@@ -4494,7 +4482,6 @@ async fn write_support_cargo_toml(
         features,
         dependencies,
         workspace: SupportWorkspaceSection {},
-        target,
         patch,
     };
 
@@ -8206,10 +8193,6 @@ pub mod inspector {
         let mut dependencies = BTreeMap::new();
         dependencies.insert("waterui".to_string(), dependency_path(waterui_path));
         dependencies.insert(
-            "waterui-ffi".to_string(),
-            dependency_path(&waterui_path.join("ffi")),
-        );
-        dependencies.insert(
             "waterui-inspector-app".to_string(),
             dependency_path(&inspector_app_path),
         );
@@ -8254,6 +8237,62 @@ pub mod inspector {
                 "inspector app crate is not at {}",
                 crate_path.display()
             );
+        }
+
+        /// The support crate is a plain Rust library: the generated backend
+        /// crate is what each platform links, so it carries neither the
+        /// widget-FFI dependency nor its export — under Hydrolysis on Android
+        /// that export would collide with the launcher's `JNI_OnLoad`.
+        #[test]
+        fn the_support_crate_carries_no_widget_ffi() {
+            smol::block_on(async {
+                let temporary = tempfile::tempdir().expect("tempdir");
+                let checkout = temporary.path().join("waterui");
+                std::fs::create_dir_all(checkout.join(super::INSPECTOR_APP_CRATE))
+                    .expect("inspector app crate dir");
+                let app = temporary.path().join("app");
+                let ctx = crate::templates::TemplateContext::for_support_app(
+                    crate::templates::SupportAppIdentity {
+                        display_name: "WaterUI Inspector".to_string(),
+                        crate_name: crate::project_types::CrateName::try_from("waterui_inspector")
+                            .expect("crate name"),
+                        bundle_identifier: crate::project_types::BundleIdentifier::try_from(
+                            "dev.waterui.inspector",
+                        )
+                        .expect("bundle identifier"),
+                    },
+                    Some(checkout),
+                    &crate::framework::test_fixtures::stable_framework(),
+                    false,
+                    None,
+                    &crate::templates::LocalBackendSources::default(),
+                )
+                .with_project_packages(std::collections::BTreeSet::from([
+                    "waterui_inspector".to_string()
+                ]));
+
+                super::scaffold(&app, &ctx)
+                    .await
+                    .expect("the inspector support crate scaffolds");
+
+                let cargo_toml =
+                    std::fs::read_to_string(app.join("Cargo.toml")).expect("Cargo.toml");
+                let manifest = cargo_toml
+                    .parse::<toml::Table>()
+                    .expect("Cargo.toml parses");
+                assert!(
+                    manifest["dependencies"]
+                        .get("waterui-inspector-app")
+                        .is_some(),
+                    "{cargo_toml}"
+                );
+                assert!(!cargo_toml.contains("waterui-ffi"), "{cargo_toml}");
+                assert!(manifest.get("target").is_none(), "{cargo_toml}");
+
+                let lib = std::fs::read_to_string(app.join("src/lib.rs")).expect("lib.rs");
+                assert!(lib.contains("waterui_inspector_app::app(env)"), "{lib}");
+                assert!(!lib.contains("waterui_ffi"), "{lib}");
+            });
         }
 
         /// The FFI scaffold generated beside this app declares

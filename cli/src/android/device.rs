@@ -227,6 +227,100 @@ impl AndroidDevice {
     }
 }
 
+/// The Android target a command runs on when the user names none: a
+/// connected device, or an AVD to boot.
+#[derive(Debug)]
+pub enum AndroidTarget {
+    /// A device `adb` already reports as connected.
+    Device(AndroidDevice),
+    /// An AVD that [`Device::launch`] boots.
+    Emulator(AndroidEmulator),
+}
+
+impl AndroidTarget {
+    /// The first connected device, or else the first AVD.
+    ///
+    /// # Errors
+    /// Returns an error when `adb` or the emulator cannot be queried, when the
+    /// chosen AVD's configuration cannot be read, or when there is neither a
+    /// connected device nor an AVD.
+    pub async fn first_available(host: &Host) -> eyre::Result<Self> {
+        if let Some(device) = AndroidDevice::scan(host).await?.into_iter().next() {
+            return Ok(Self::Device(device));
+        }
+        let avd_name = crate::android::platform::AndroidPlatform::list_avds(host)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| eyre!("No Android devices or emulators available."))?;
+        Ok(Self::Emulator(AndroidEmulator::open(host, avd_name).await?))
+    }
+
+    /// The `adb` serial of the target: the device's own, or the one the
+    /// emulator came up as once it has been launched.
+    #[must_use]
+    pub fn serial(&self) -> Option<&str> {
+        match self {
+            Self::Device(device) => Some(device.identifier()),
+            Self::Emulator(emulator) => emulator.launched_device().map(AndroidDevice::identifier),
+        }
+    }
+}
+
+impl Device for AndroidTarget {
+    fn name(&self) -> &str {
+        match self {
+            Self::Device(device) => device.name(),
+            Self::Emulator(emulator) => emulator.name(),
+        }
+    }
+
+    async fn launch(&self, host: &Host) -> eyre::Result<()> {
+        match self {
+            Self::Device(device) => device.launch(host).await,
+            Self::Emulator(emulator) => emulator.launch(host).await,
+        }
+    }
+
+    async fn run(
+        &self,
+        host: &Host,
+        artifact: Artifact,
+        options: RunOptions,
+    ) -> Result<Running, FailToRun> {
+        match self {
+            Self::Device(device) => device.run(host, artifact, options).await,
+            Self::Emulator(emulator) => emulator.run(host, artifact, options).await,
+        }
+    }
+
+    async fn scan(host: &Host) -> eyre::Result<Vec<Self>> {
+        let devices = AndroidDevice::scan(host).await?;
+        let emulators = AndroidEmulator::scan(host).await?;
+        Ok(devices
+            .into_iter()
+            .map(Self::Device)
+            .chain(emulators.into_iter().map(Self::Emulator))
+            .collect())
+    }
+
+    fn device_udid(&self) -> Option<&str> {
+        match self {
+            Self::Device(device) => device.device_udid(),
+            Self::Emulator(emulator) => emulator.device_udid(),
+        }
+    }
+}
+
+impl AndroidAbiProvider for AndroidTarget {
+    fn android_abi(&self) -> AndroidAbi {
+        match self {
+            Self::Device(device) => device.android_abi(),
+            Self::Emulator(emulator) => emulator.android_abi(),
+        }
+    }
+}
+
 /// Provides the Android ABI required to build/package for a target.
 pub trait AndroidAbiProvider {
     /// Return the device ABI used for building and packaging.
@@ -1358,6 +1452,13 @@ impl AndroidEmulator {
     pub const fn expected_abi(&self) -> AndroidAbi {
         self.expected_abi
     }
+
+    /// The device this emulator came up as, once [`Device::launch`] has
+    /// returned.
+    #[must_use]
+    pub fn launched_device(&self) -> Option<&AndroidDevice> {
+        self.device.get()
+    }
 }
 
 impl Device for AndroidEmulator {
@@ -2025,6 +2126,93 @@ mod tests {
                 "waterui.env.WATERUI_PATH",
                 "say \"hi\" $HOME",
             ]
+        );
+    }
+
+    /// A scratch machine with a staged SDK carrying the fake `adb` and
+    /// `emulator`, and the host that sees it.
+    #[cfg(unix)]
+    fn android_machine(
+        vars: &[(&str, &str)],
+    ) -> (
+        crate::toolchain::testing::TestMachine,
+        crate::toolchain::Host,
+    ) {
+        let machine = crate::toolchain::testing::TestMachine::new();
+        let sdk = machine.install_android_sdk();
+        machine.install_adb();
+        machine.install_android_emulator();
+        let mut declared = vec![(OsString::from("ANDROID_SDK_ROOT"), sdk.into_os_string())];
+        declared.extend(
+            vars.iter()
+                .map(|(key, value)| (OsString::from(key), OsString::from(value))),
+        );
+        let host = machine.host(declared);
+        (machine, host)
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_connected_device_wins_over_an_avd() {
+        let (machine, host) = android_machine(&[
+            (
+                "WATERUI_FAKE_ADB_DEVICES",
+                "R5CX1234 device product:caiman model:Pixel_9_Pro",
+            ),
+            ("WATERUI_FAKE_ADB_GETPROP", "arm64-v8a"),
+            ("WATERUI_FAKE_EMULATOR_AVDS", "Medium_Phone_API_37"),
+        ]);
+        machine.file(
+            "home/.android/avd/Medium_Phone_API_37.avd/config.ini",
+            "abi.type=arm64-v8a\n",
+        );
+
+        let target = smol::block_on(super::AndroidTarget::first_available(&host))
+            .expect("a target is available");
+        assert!(
+            matches!(target, super::AndroidTarget::Device(_)),
+            "{target:?}"
+        );
+        assert_eq!(target.serial(), Some("R5CX1234"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn without_a_device_the_first_avd_is_chosen() {
+        let (machine, host) =
+            android_machine(&[("WATERUI_FAKE_EMULATOR_AVDS", "Medium_Phone_API_37")]);
+        machine.file(
+            "home/.android/avd/Medium_Phone_API_37.avd/config.ini",
+            "abi.type=arm64-v8a\n",
+        );
+
+        let target = smol::block_on(super::AndroidTarget::first_available(&host))
+            .expect("the AVD is available");
+        let super::AndroidTarget::Emulator(emulator) = &target else {
+            panic!("expected the AVD, got {target:?}");
+        };
+        assert_eq!(emulator.avd_name(), "Medium_Phone_API_37");
+        assert_eq!(
+            super::AndroidAbiProvider::android_abi(&target),
+            crate::android::platform::AndroidAbi::Arm64V8a
+        );
+        assert_eq!(
+            target.serial(),
+            None,
+            "an emulator has no serial before launch"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn without_a_device_or_an_avd_there_is_no_target() {
+        let (_machine, host) = android_machine(&[]);
+
+        let error = smol::block_on(super::AndroidTarget::first_available(&host))
+            .expect_err("nothing to run on");
+        assert_eq!(
+            error.to_string(),
+            "No Android devices or emulators available."
         );
     }
 }
