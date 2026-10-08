@@ -765,7 +765,7 @@ struct MacSystemWebViewInner {
     asset_origin: Option<Url>,
 }
 
-/// A main-thread WKWebView handle used by Hydrolysis hybrid composition.
+/// A main-thread WKWebView handle owned by a Hydrolysis WebView node.
 #[derive(Clone)]
 pub(crate) struct MacSystemWebViewHandle {
     inner: Rc<MacSystemWebViewInner>,
@@ -829,10 +829,6 @@ impl MacSystemWebViewHandle {
         };
         handle.rebuild_user_scripts();
         handle
-    }
-
-    pub(crate) fn native_view(&self) -> Retained<WKWebView> {
-        self.inner.web_view.clone()
     }
 
     fn user_content_controller(&self) -> Retained<WKUserContentController> {

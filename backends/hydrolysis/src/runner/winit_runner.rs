@@ -1466,7 +1466,7 @@ impl WinitRunner {
 
     fn flush_cross_window_rebuild_requests(&mut self) {
         for runtime in self.windows.values_mut() {
-            if runtime.renderer.take_rebuild_request() {
+            if runtime.renderer.has_structure_marks() {
                 runtime.request_refresh();
                 runtime.request_redraw();
                 runtime.renderer.frame_work_counters_mut().host_wakeups += 1;

@@ -662,10 +662,11 @@ fn advance_semantic_window(window: &mut SemanticWindow, env: &Environment, now: 
         window.refresh_requested = true;
     }
     let _animations_active = window.core.advance_animations();
-    if window.core.take_patch_request() {
-        window.refresh_requested = true;
-    }
-    if window.core.take_rebuild_request() || window.core.take_next_frame_rebuild_request() {
+    window.core.drain_producer_wakes();
+    // Any mark — a reactive update, a structural patch, a rebuild-worthy
+    // change — lands on the root cell through the owner chain and arms the
+    // patch flag; structural marks persist until the emit clears them.
+    if window.core.take_patch_request() || window.core.has_structure_marks() {
         window.refresh_requested = true;
     }
 }
@@ -679,16 +680,15 @@ fn pump_semantic_window(window: &mut SemanticWindow, env: &Environment) -> bool 
     // `subscribe_window_declaration_signals` — the same shared
     // subscription the rendered `RuntimeWindow` installs — so a write while
     // the pump is parked arms `core`'s refresh flag and this pump re-emits.
-    // The guards never enter `signal_watches`: they drop with the window
-    // after `core` has released every frame-scoped subscription, so the
-    // teardown order the renderer releases watch guards in
-    // (water-rs/waterui#1213) is unchanged.
+    // The guards drop with the window after `core` has released every
+    // frame-scoped subscription, so the teardown order the renderer
+    // releases watch guards in (water-rs/waterui#1213) is unchanged.
     #[cfg(feature = "accessibility")]
     window
         .core
         .set_accessibility_root_label(window.window.title.snapshot().as_str());
 
-    if window.core.take_rebuild_request() {
+    if window.core.has_structure_marks() {
         window.refresh_requested = true;
     }
     let work_pending = window.refresh_requested

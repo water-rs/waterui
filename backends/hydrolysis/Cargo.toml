@@ -126,7 +126,6 @@ objc2-app-kit = { version = "0.3", optional = true, features = [
     "NSWindow",
     "objc2-quartz-core",
 ] }
-objc2-core-graphics = { version = "0.3", optional = true, features = ["CGPath"] }
 objc2-foundation = { workspace = true, optional = true, features = [
     "NSArray",
     "NSBundle",
@@ -286,6 +285,9 @@ web-sys = { version = "0.3", optional = true, features = [
 # `SceneView` before it reaches layout. The tests still author canvases, which
 # is what keeps that resolution honest.
 waterui-canvas.workspace = true
+# The tests' `MirrorTarget` implements `Queue`, whose `ChangeSet` the engine
+# crate does not re-export.
+cherenkov-record.workspace = true
 # The wayland examples need a widget theme; m3 is independently maintained.
 hydrolysis-m3.workspace = true
 waterui-testing.workspace = true
@@ -373,7 +375,6 @@ winit = [
     "dep:libc",
     "dep:objc2",
     "dep:objc2-app-kit",
-    "dep:objc2-core-graphics",
     "dep:objc2-foundation",
     "dep:objc2-quartz-core",
     "dep:muda",

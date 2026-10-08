@@ -237,9 +237,9 @@ pub fn render_gradient_parts(
     let width = crate::num_cast::f64_as_f32(bounds.width());
     let height = crate::num_cast::f64_as_f32(bounds.height());
     let paint = gradient_paint_in_bounds(gradient.borrow().paint().clone(), width, height);
-    let transform = ctx.transform;
+    let transform = ctx.local;
     ctx.renderer_mut()
-        .scene
+        .scene_mut()
         .fill_paint(peniko::Fill::NonZero, transform, paint, &bounds);
 }
 
@@ -285,9 +285,9 @@ pub fn render_shape_parts(
         )
     };
     let fill = waterui_graphics::draw::Paint::Solid(ctx.renderer_mut().read_signal(&fill_signal));
-    let transform = ctx.transform;
+    let transform = ctx.local;
     ctx.renderer_mut()
-        .scene
+        .scene_mut()
         .fill_paint(peniko::Fill::NonZero, transform, fill, &path);
 }
 
@@ -328,7 +328,7 @@ pub fn render_morph_shape_parts(
     _env: &Environment,
 ) {
     let bounds = ctx.bounds;
-    let transform = ctx.transform;
+    let transform = ctx.local;
     // Stable identity of this morph node: the retained shape `Rc`'s address keys the
     // time-based morph slot so it survives structural changes (no `render_depth`).
     let node_id = Rc::as_ptr(shape) as usize;
@@ -348,7 +348,7 @@ pub fn render_morph_shape_parts(
         )
     };
     renderer
-        .scene
+        .scene_mut()
         .fill_paint(peniko::Fill::NonZero, transform, fill, &path);
 }
 
@@ -442,7 +442,7 @@ pub fn render_str_parts(
 ) {
     let styled = StyledStr::plain(text.borrow().clone());
     let render_ctx = ctx.render_context();
-    let (state, scene) = ctx.renderer_mut().state_and_scene_mut();
+    let (state, scene) = ctx.renderer_mut().state_and_run_mut();
     HydrolysisRenderer::render_styled_text(
         state,
         scene,

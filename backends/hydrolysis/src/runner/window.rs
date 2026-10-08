@@ -487,9 +487,6 @@ pub(super) fn schedule_redraw_or_refresh<P: PlatformWindow>(
     if !changed {
         return;
     }
-    // A pending renderer-side rebuild request is subsumed by the refresh;
-    // consume it so it does not schedule a stale extra frame later.
-    let _ = runtime.renderer.take_rebuild_request();
     runtime.request_refresh();
     runtime.request_redraw();
     runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
@@ -718,21 +715,16 @@ fn build_window_scene<P: PlatformWindow>(
     phases.build_content += build_content_started_at.elapsed();
     let _ = drain_local_tasks();
     let scene_dispatch_started_at = Instant::now();
-    let safe_area = runtime.renderer.capture_window_tree_with_root(
+    // The capture records the presentation hosts too — an open text
+    // context menu or `.context_menu` presentation builds and places its
+    // sub-views there, under its host cell.
+    runtime.renderer.capture_window_tree(
         content,
         env,
         bounds,
         root_transform,
         kurbo::Affine::IDENTITY,
     );
-    runtime
-        .renderer
-        .render_active_text_context_menu_overlay(env, root_transform);
-    // The same for an open `.context_menu` presentation — this one-time build
-    // path is where its sub-views are first built and placed.
-    runtime
-        .renderer
-        .render_context_menu_presentation(root_transform, &safe_area);
     phases.scene_dispatch += scene_dispatch_started_at.elapsed();
     let scene_finish_started_at = Instant::now();
     runtime.renderer.finish_rebuild_frame();
@@ -764,8 +756,12 @@ pub(super) fn pump_window_scene<P: GpuSurfaceWindow>(
     let animations_active = runtime.renderer.advance_animations();
     schedule_animation_update(runtime, animations_active);
 
-    let renderer_requested_rebuild = runtime.renderer.take_rebuild_request();
-    if renderer_requested_rebuild {
+    // Producer wakes posted since the last frame mark their owners; the
+    // marks that brought this pump here then decide the work.
+    runtime.renderer.drain_producer_wakes();
+    // Structural marks raised since the last flush land on the root cell
+    // through the owner chain and still arm the full refresh.
+    if runtime.renderer.has_structure_marks() {
         runtime.request_refresh();
     }
 
@@ -791,13 +787,13 @@ pub(super) fn pump_window_scene<P: GpuSurfaceWindow>(
             if let Some((x, y)) = runtime.pointer_position
                 && runtime.renderer.sync_pointer_hover_state(x, y, env)
             {
-                if runtime.renderer.take_rebuild_request() {
+                if runtime.renderer.has_structure_marks() {
                     refresh_after_build = true;
                 } else {
                     runtime.renderer.request_redraw();
                 }
             }
-            if runtime.renderer.take_rebuild_request() {
+            if runtime.renderer.has_structure_marks() {
                 refresh_after_build = true;
             }
             if refresh_after_build {
@@ -809,8 +805,15 @@ pub(super) fn pump_window_scene<P: GpuSurfaceWindow>(
             runtime.clear_frame_mode();
         }
     }
-    if runtime.renderer.take_next_frame_rebuild_request() {
-        // An effect needs another frame.
+    // Every presented frame reports its platform-view set — an Idle pump
+    // re-presenting the retained layers included: the host publishes once
+    // per encoded frame, and a frame whose `current` is empty reads as
+    // "no views". The record is idempotent, so the build and refresh arms
+    // running their own frame-end step cost nothing here.
+    runtime.renderer.registries();
+    runtime.renderer.record_platform_views();
+    if runtime.renderer.has_structure_marks() {
+        // A structural mark raised mid-flush — an effect needs another frame.
         runtime.request_refresh();
         runtime.request_redraw();
         runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
@@ -845,7 +848,7 @@ pub(super) fn pump_window_semantics<P: GpuSurfaceWindow>(
         .renderer
         .set_accessibility_root_label(runtime.window.title.snapshot().as_str());
 
-    if runtime.renderer.take_rebuild_request() {
+    if runtime.renderer.has_structure_marks() {
         runtime.request_refresh();
     }
     let work_pending = runtime.mode.is_pending()
@@ -944,7 +947,6 @@ crate::engine::cfg_async_fn! {
             shared_device: context.shared_device,
             display_scale,
             headroom: surface.display_headroom(),
-            persistent: true,
             format,
             width,
             height,
@@ -1056,10 +1058,6 @@ impl FrameReader {
     const fn captures(self) -> bool {
         matches!(self, Self::Snapshot)
     }
-
-    const fn rasterizes(self) -> bool {
-        !matches!(self, Self::Nobody)
-    }
 }
 
 crate::engine::cfg_async_fn! {
@@ -1103,98 +1101,6 @@ crate::engine::cfg_async_fn! {
         rebuilt |= pump_outcome.built;
         apply_window_size_limits(runtime, env);
 
-        let root_transform = kurbo::Affine::scale(runtime.platform.scale_factor());
-        #[cfg(hydrolysis_macos_system_webview)]
-        let (width, height) = runtime.platform.content_size();
-        runtime
-            .renderer
-            .prepare_transient_text_input_overlay(env, root_transform);
-
-        #[cfg(hydrolysis_macos_system_webview)]
-        let mut hybrid_composition = runtime.renderer.take_hybrid_composition();
-
-        #[cfg(hydrolysis_macos_system_webview)]
-        let render_result = if let Some(composition) = hybrid_composition.as_mut() {
-            assert!(
-                !capture_snapshot,
-                "Hydrolysis cannot capture native WKWebView pixels through GPU readback"
-            );
-            let platform = (&mut runtime.platform as &mut dyn std::any::Any)
-                .downcast_mut::<crate::platform::WinitWindow>()
-                .expect("Hydrolysis native WebView composition requires a winit window");
-            platform.sync_hybrid_composition(&composition.native_views, width, height);
-
-            let segment_count = composition.segments.len();
-            let mut totals = SurfaceRenderResult {
-                acquire: Duration::ZERO,
-                render: Duration::ZERO,
-                present: Duration::ZERO,
-                snapshot: None,
-            };
-            let mut result = Ok(());
-            let scale_factor = platform.scale_factor();
-            for (index, segment) in composition.segments.iter_mut().enumerate() {
-                let transient_scene = (index + 1 == segment_count)
-                    .then(|| composition.transient_scene.take())
-                    .flatten();
-                let surface = if index == 0 {
-                    platform.surface()
-                } else {
-                    platform.hybrid_overlay_surface(index - 1)
-                };
-                let segment_clear_color = if index == 0 {
-                    clear_color
-                } else {
-                    peniko::Color::TRANSPARENT
-                };
-                match render_to_surface(
-                    &mut runtime.renderer,
-                    surface,
-                    segment_clear_color,
-                    scale_factor,
-                    false,
-                    |renderer, target| {
-                        renderer.render_hybrid_segment(segment, transient_scene, target)
-                    },
-                ) {
-                    Ok(rendered) => {
-                        totals.acquire += rendered.acquire;
-                        totals.render += rendered.render;
-                        totals.present += rendered.present;
-                    }
-                    Err(error) => {
-                        result = Err(error);
-                        break;
-                    }
-                }
-            }
-            composition.transient_scene.take();
-            result.map(|()| totals)
-        } else {
-            if let Some(platform) = (&mut runtime.platform as &mut dyn std::any::Any)
-                .downcast_mut::<crate::platform::WinitWindow>()
-            {
-                platform.clear_hybrid_composition();
-            }
-            let scale_factor = runtime.platform.scale_factor();
-            crate::engine::engine_await!(render_to_surface(
-                &mut runtime.renderer,
-                runtime.platform.surface(),
-                clear_color,
-                scale_factor,
-                capture_snapshot,
-                #[cfg(not(target_arch = "wasm32"))]
-                |renderer, target| renderer.render_engine_frame(target, reader.rasterizes()),
-                #[cfg(target_arch = "wasm32")]
-                async |renderer, target| {
-                    renderer
-                        .render_engine_frame(target, reader.rasterizes())
-                        .await
-                },
-            ))
-        };
-
-        #[cfg(not(hydrolysis_macos_system_webview))]
         let render_result = {
             let scale_factor = runtime.platform.scale_factor();
             crate::engine::engine_await!(render_to_surface(
@@ -1204,20 +1110,15 @@ crate::engine::cfg_async_fn! {
                 scale_factor,
                 capture_snapshot,
                 #[cfg(not(target_arch = "wasm32"))]
-                |renderer, target| renderer.render_engine_frame(target, reader.rasterizes()),
+                HydrolysisRenderer::render_engine_frame,
                 #[cfg(target_arch = "wasm32")]
                 async |renderer, target| {
                     renderer
-                        .render_engine_frame(target, reader.rasterizes())
+                        .render_engine_frame(target)
                         .await
                 },
             ))
         };
-
-        #[cfg(hydrolysis_macos_system_webview)]
-        if let Some(composition) = hybrid_composition.take() {
-            runtime.renderer.restore_hybrid_composition(composition);
-        }
 
         let rendered = match render_result {
             Ok(rendered) => rendered,
@@ -1232,8 +1133,7 @@ crate::engine::cfg_async_fn! {
                 runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
                 let (measurement_cache_hits, measurement_cache_misses) =
                     runtime.renderer.measurement_cache_stats();
-                let layer_stats = runtime.renderer.render_layer_stats();
-                let (clip_layers, max_clip_depth) = runtime.renderer.clip_layer_stats();
+                let mount_stats = runtime.renderer.mount_stats();
                 let (applied_filter_count, applied_filter_capture_us, applied_filter_effect_us) =
                     runtime.renderer.applied_filter_stats();
                 return RenderWindowResult {
@@ -1253,12 +1153,12 @@ crate::engine::cfg_async_fn! {
                             rebuild_iterations: u32::from(pump_outcome.built),
                             measurement_cache_hits,
                             measurement_cache_misses,
-                            scene_layers: layer_stats.composited_scene,
-                            scene_segment_layers: layer_stats.scene_segments,
-                            gpu_content_layers: layer_stats.gpu_content,
-                            filtered_layers: layer_stats.filtered_subtrees,
-                            clip_layers,
-                            max_clip_depth,
+                            scene_layers: mount_stats.scene_layers,
+                            scene_segment_layers: mount_stats.scene_segments,
+                            gpu_content_layers: mount_stats.gpu_content,
+                            filtered_layers: mount_stats.filtered,
+                            clip_layers: mount_stats.clip_layers,
+                            max_clip_depth: mount_stats.max_clip_depth,
                             applied_filter_count,
                             applied_filter_capture_us,
                             applied_filter_effect_us,
@@ -1284,8 +1184,7 @@ crate::engine::cfg_async_fn! {
         }
         let (measurement_cache_hits, measurement_cache_misses) =
             runtime.renderer.measurement_cache_stats();
-        let layer_stats = runtime.renderer.render_layer_stats();
-        let (clip_layers, max_clip_depth) = runtime.renderer.clip_layer_stats();
+        let mount_stats = runtime.renderer.mount_stats();
         let (applied_filter_count, applied_filter_capture_us, applied_filter_effect_us) =
             runtime.renderer.applied_filter_stats();
         profile = FrameProfile {
@@ -1303,12 +1202,12 @@ crate::engine::cfg_async_fn! {
                 rebuild_iterations: u32::from(pump_outcome.built),
                 measurement_cache_hits,
                 measurement_cache_misses,
-                scene_layers: layer_stats.composited_scene,
-                scene_segment_layers: layer_stats.scene_segments,
-                gpu_content_layers: layer_stats.gpu_content,
-                filtered_layers: layer_stats.filtered_subtrees,
-                clip_layers,
-                max_clip_depth,
+                scene_layers: mount_stats.scene_layers,
+                scene_segment_layers: mount_stats.scene_segments,
+                gpu_content_layers: mount_stats.gpu_content,
+                filtered_layers: mount_stats.filtered,
+                clip_layers: mount_stats.clip_layers,
+                max_clip_depth: mount_stats.max_clip_depth,
                 applied_filter_count,
                 applied_filter_capture_us,
                 applied_filter_effect_us,
@@ -1333,7 +1232,7 @@ crate::engine::cfg_async_fn! {
                     present: present_duration,
                     total: elapsed_or_zero(frame_started_at),
                     rebuild_iterations: u32::from(pump_outcome.built),
-                    filtered_layers: layer_stats.filtered_subtrees,
+                    filtered_layers: mount_stats.filtered,
                     rebuilt: pump_outcome.built,
                 },
             );
@@ -1435,7 +1334,7 @@ fn refresh_pending_input_geometry<P: GpuSurfaceWindow>(
     // only lags behind an *unapplied* content change — a pending reactive
     // patch or structural rebuild.
     let geometry_pending =
-        runtime.renderer.has_patch_request() || runtime.renderer.has_rebuild_request();
+        runtime.renderer.has_patch_request() || runtime.renderer.has_structure_marks();
     if !geometry_pending || !runtime.renderer.has_render_tree() {
         return;
     }
@@ -2010,13 +1909,14 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
         tracing::debug!("wake cause: animations active");
     }
     schedule_animation_update(runtime, animations_active);
-    // A pending fine-grained reactive patch composites through the window-refresh path,
-    // which re-dispatches only the dirty Dynamic nodes. If there is no retained window
-    // frame yet (or a structural rebuild is already pending), fall back to a rebuild.
+    // Producer wakes posted since the last frame mark their owners; the
+    // marks that brought this pump here then decide the work.
+    runtime.renderer.drain_producer_wakes();
+    // Marks raised since the last flush — reactive updates, structural
+    // patches, widget signals — land on the root cell; any mark still arms
+    // the full refresh.
     if runtime.renderer.take_patch_request() {
-        tracing::debug!("wake cause: reactive patch request");
-        // The refresh re-flushes the retained tree, which applies the pending
-        // Dynamic patch to only the affected subtree and relays out if it changed size.
+        tracing::debug!("wake cause: dirty mark");
         runtime.request_refresh();
         runtime.request_redraw();
         runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
@@ -2027,8 +1927,8 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
         runtime.request_redraw();
         runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
     }
-    if runtime.renderer.take_rebuild_request() {
-        tracing::debug!("wake cause: rebuild request");
+    if runtime.renderer.has_structure_marks() {
+        tracing::debug!("wake cause: structural mark");
         runtime.request_refresh();
     }
     let next_deadline = runtime.renderer.next_gesture_deadline();
