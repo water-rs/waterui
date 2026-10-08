@@ -11,8 +11,8 @@ import androidx.activity.enableEdgeToEdge
  *
  * The session lives in a `ViewModel` under this activity's store
  * ([HydrolysisEmbedding]), so it survives configuration changes; closing the
- * activity finishes it. Subclasses pick the painter through
- * [createContentView].
+ * activity finishes it. Subclasses name the library through [nativeLibraryName]
+ * and pick the painter through [createContentView].
  */
 abstract class HydrolysisActivity : ComponentActivity() {
 
@@ -20,8 +20,8 @@ abstract class HydrolysisActivity : ComponentActivity() {
         const val LOG_LEVEL_EXTRA = "waterui.log.level"
     }
 
-    protected open val nativeLibraryName: String
-        get() = BuildConfig.WATERUI_APP_LIBRARY
+    /** The app's Hydrolysis launcher cdylib, loaded by [NativeBridge.load]. */
+    protected abstract val nativeLibraryName: String
 
     /** The session's root view — the host view plus the painter's chrome. */
     protected abstract fun createContentView(session: HydrolysisSession): View

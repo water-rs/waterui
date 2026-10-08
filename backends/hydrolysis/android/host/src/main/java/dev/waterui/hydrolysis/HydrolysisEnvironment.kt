@@ -12,7 +12,7 @@ import java.io.File
  *
  * The contract is the CLI's: `water build`/`water run` stages the asset tree
  * named `waterui_assets` into the packaged `assets`, with a
- * `.waterui-sync-stamp` file recording the staged content's stamp — the sync
+ * `waterui-sync-stamp` file recording the staged content's stamp — the sync
  * compares that stamp so an unchanged tree is never recopied.
  *
  * [prepare] runs once per process. Callers that hand extra environment
@@ -42,7 +42,7 @@ object HydrolysisEnvironment {
 
     private fun syncBundledAssets(context: Context): File {
         val assetRoot = File(context.filesDir, "waterui_assets")
-        val stampAsset = "waterui_assets/.waterui-sync-stamp"
+        val stampAsset = "waterui_assets/waterui-sync-stamp"
         val bundledStamp = try {
             context.assets.open(stampAsset).bufferedReader().use { it.readText() }
         } catch (_: Exception) {
@@ -50,7 +50,7 @@ object HydrolysisEnvironment {
             return assetRoot
         }
 
-        val localStamp = File(assetRoot, ".waterui-sync-stamp")
+        val localStamp = File(assetRoot, "waterui-sync-stamp")
             .takeIf { it.exists() }
             ?.readText()
         if (localStamp == bundledStamp) {
@@ -60,7 +60,7 @@ object HydrolysisEnvironment {
         assetRoot.deleteRecursively()
         assetRoot.mkdirs()
         copyAssetTree(context, "waterui_assets", assetRoot)
-        File(assetRoot, ".waterui-sync-stamp").writeText(bundledStamp)
+        File(assetRoot, "waterui-sync-stamp").writeText(bundledStamp)
         Log.d(TAG, "Synced waterui_assets into $assetRoot")
         return assetRoot
     }
