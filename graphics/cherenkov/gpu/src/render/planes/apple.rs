@@ -1971,6 +1971,16 @@ impl LayerScene {
         for plane in self.planes.iter().skip(parts) {
             stack.push(Self::top_view(plane));
         }
+        // A part the plan no longer uses leaves the stack: its view
+        // detaches — along with its hit region, which a stale claim
+        // would keep answering — and the `Part` stays for reuse.
+        for part in self.parts.iter().skip(parts) {
+            // SAFETY: `superview` is a main-thread accessor.
+            if unsafe { part.view.superview() }.is_some() {
+                part.view.removeFromSuperview();
+                part.view.hit_region_mut().clear();
+            }
+        }
         let subviews = self.host_view.subviews();
         let mut above: Option<&NSView> = None;
         for view in stack {
@@ -1988,7 +1998,10 @@ impl LayerScene {
                                     )
                                 },
                                 |prev| {
-                                    std::ptr::eq(Retained::as_ptr(&before), std::ptr::from_ref(prev))
+                                    std::ptr::eq(
+                                        Retained::as_ptr(&before),
+                                        std::ptr::from_ref(prev),
+                                    )
                                 },
                             )
                         })

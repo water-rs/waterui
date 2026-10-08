@@ -596,6 +596,7 @@ pub fn plan_with<C: Compositor>(
     // Part boundaries are the promoted indices: a plane's own visit
     // contributes nothing to an engine part; every other layer that has
     // content contributes its clip to the region of the part it lands in.
+    plan.regions.clear();
     plan.regions.resize_with(plan.parts(), Vec::new);
     plan.plane_regions.clear();
     let mut part = 0;
@@ -603,10 +604,10 @@ pub fn plan_with<C: Compositor>(
     for (i, visit) in order.iter().enumerate() {
         if boundary.next_if_eq(&i).is_some() {
             plan.plane_regions.push(device[i].bounds);
+            // The plane opens the next part — the last part already
+            // exists even with nothing painted after the last plane.
+            part = (part + 1).min(plan.regions.len().saturating_sub(1));
             continue;
-        }
-        while boundary.next_if(|&p| p < i).is_some() {
-            part += 1;
         }
         if tree.layer(visit.id).has_content() {
             plan.regions[part].push(device[i].bounds);

@@ -1191,7 +1191,7 @@ mod macos {
         assert!((holder_node.affineTransform().tx - 12.0).abs() < 1e-12);
         let holder_clip = &sublayers(holder_node)[0];
         assert!(holder_clip.masksToBounds());
-        assert!((holder_clip.cornerRadius() - 8.0).abs() < 1e-12);
+        assert!((holder_clip.cornerRadius() - 6.0).abs() < 1e-12);
         let holder_scroll = &sublayers(holder_clip)[0];
         let player_node = &sublayers(holder_scroll)[0];
         assert!((player_node.affineTransform().a - 1.5).abs() < 1e-12);
@@ -2048,7 +2048,7 @@ mod macos {
     /// the hosted colour shows outside it, the holder's rounded clip
     /// cuts the hosted rect's corner to the backdrop, and `alphaValue`
     /// below one blends the hosted pixels onto it.
-    fn assert_hosted_composite(fixture: &Fixture, holder: &Layer, web: &NSView) {
+    fn assert_hosted_composite(fixture: &Fixture, hosted: &Layer, web: &NSView) {
         let pixels = fixture.system.composite(&fixture.host());
         let at = |x: usize, y: usize| pixels[y * SIZE.0 as usize + x];
         // Inside the bar's clip overlapping the hosted rect: the bar's
@@ -2064,10 +2064,11 @@ mod macos {
             hosted_px[1] > 0.4 && hosted_px[0] < 0.3,
             "hosted colour at its rect: {hosted_px:?}"
         );
-        // Inside the hosted rect but outside the rounded corner — px
-        // (14,10) sits 8.5 from the corner's centre (20,16), past the
-        // radius 8: the backdrop's blue shows.
-        let corner_px = at(14, 10);
+        // Inside the hosted rect but outside the rounded corner —
+        // px (13,9)'s centre is (13.5,9.5), clip-space (1.5,1.5), 9.19
+        // from the corner's centre (8,8): past the radius 8, so the
+        // backdrop's blue shows.
+        let corner_px = at(13, 9);
         assert!(
             corner_px[2] > 0.4 && corner_px[1] < 0.45,
             "the rounded corner shows the backdrop: {corner_px:?}"
@@ -2079,11 +2080,16 @@ mod macos {
             clipped_px[2] > 0.4 && clipped_px[1] < 0.45,
             "the clip bounds the hosted view: {clipped_px:?}"
         );
-        // `alphaValue` 0.5 on the holder blends the hosted pixels onto
-        // the backdrop: half green (0.1,0.9,0.2) over half blue
-        // (0.1,0.3,0.6), within the compositor's rounding of 0.06.
+        // `alphaValue` 0.5 on the hosted layer blends the hosted pixels
+        // onto the backdrop: AppKit mixes in the encoded (sRGB-gamma)
+        // domain, so the blend of the linear premultiplied endpoints is
+        // the sRGB-weighted mix back into linear — half hosted over
+        // half backdrop, within a tolerance of 0.06 that also covers the
+        // Display P3 primary shift.
+        let hosted_lin = at(18, 15);
+        let backdrop_lin = at(70, 40);
         fixture.window.update(|tx| {
-            tx[holder].opacity(0.5f32);
+            tx[hosted].opacity(0.5f32);
         });
         let leaf = as_view(view_superview(web).expect("the leaf"));
         render_until(
@@ -2094,7 +2100,25 @@ mod macos {
         let pixels = fixture.system.composite(&fixture.host());
         let at = |x: usize, y: usize| pixels[y * SIZE.0 as usize + x];
         let blended = at(18, 15);
-        let expected = [0.10_f32, 0.60, 0.40];
+        let srgb = |l: f32| -> f32 {
+            if l <= 0.003_130_8 {
+                12.92 * l
+            } else {
+                1.055f32.mul_add(l.powf(1.0 / 2.4), -0.055)
+            }
+        };
+        let linear = |s: f32| -> f32 {
+            if s <= 0.040_45 {
+                s / 12.92
+            } else {
+                ((s + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        let expected: Vec<f32> = hosted_lin
+            .iter()
+            .zip(&backdrop_lin)
+            .map(|(h, b)| linear(0.5f32.mul_add(srgb(*b), 0.5 * srgb(*h))))
+            .collect();
         assert!(
             blended
                 .iter()
@@ -2183,7 +2207,7 @@ mod macos {
             (frame.size.width, frame.size.height),
             (EXTENT.width, EXTENT.height)
         );
-        assert_hosted_composite(&fixture, &holder, &web);
+        assert_hosted_composite(&fixture, &hosted, &web);
 
         fixture.window.update(|tx| {
             tx[&holder].transform(Affine::translate((20.0, 4.0)));
@@ -2454,22 +2478,24 @@ mod macos {
         let mtm = MainThreadMarker::new().expect("the cases run on the main thread");
         let fixture = Fixture::new();
         let web = hosted_view(mtm, (0.1, 0.9, 0.2));
-        let [_below, _holder, hosted, _above, _above2] = hosted_scene(&fixture, &web);
+        let [_below, holder, hosted, _above, _above2] = hosted_scene(&fixture, &web);
         render_until(
             &fixture,
             &|| view_superview(&web).is_some(),
             "the hosted view",
         );
         let leaf = as_view(view_superview(&web).expect("the leaf"));
+        let surface = &fixture.window;
         for scroll in [10.0, -10.0] {
             fixture.window.update(|tx| {
+                tx[surface.root()].push(&holder);
                 tx[&hosted].scroll_offset(Vec2::new(scroll, 0.0));
             });
-            // The leaf's frame carries the scroll's shift: px (12-s,8),
-            // points (6-s/2,4).
+            // The leaf's frame carries the scroll's shift — `-scroll`
+            // inside the clip view, in the content's points.
             render_until(
                 &fixture,
-                &|| (leaf.frame().origin.x - (12.0 - scroll) / SCALE).abs() < 1e-6,
+                &|| (leaf.frame().origin.x + scroll).abs() < 1e-6,
                 "the scrolled leaf",
             );
             // The leaf's bounds are the whole extent and the hosted view
@@ -2480,20 +2506,23 @@ mod macos {
             let frame = web.frame();
             assert_eq!((frame.origin.x, frame.origin.y), (0.0, 0.0));
             assert_eq!((frame.size.width, frame.size.height), (40.5, 24.0));
-            // A point inside the shifted strip reaches the hosted view:
-            // px (30,15) is inside the leaf and the clip on either sign —
-            // pt (15,7.5), host (15,24.5).
-            let visible = fixture.view.hitTest(CGPoint::new(15.0, 24.5));
+            // A point inside the shifted strip reaches the hosted view.
+            // Scroll +10 leaves the leaf at clip-space x=-10, so the
+            // hosted content covers px (2,8)-(42.5,32); scroll -10 puts
+            // it at +10 — px (22,8)-(62.5,32). Engine px (32,20) — pt
+            // (16,10), host (16,22) — is inside the strip either way.
+            let inside = fixture.view.hitTest(CGPoint::new(16.0, 22.0));
             assert_eq!(
-                visible.as_ref().map(Retained::as_ptr),
+                inside.as_ref().map(Retained::as_ptr),
                 Some(Retained::as_ptr(&web)),
-                "the visible strip is hittable at scroll {scroll}"
+                "the shifted strip is hittable at scroll {scroll}"
             );
-            // Off the strip: past the clip for positive scroll, inside
-            // the clip but left of the leaf for negative — the host view.
+            // Off the strip: past the clip's right edge (px 44) for
+            // positive scroll, and inside the clip but left of the leaf
+            // (px 20 < 22) for negative — the host view.
             let off = fixture
                 .view
-                .hitTest(CGPoint::new(if scroll > 0.0 { 22.5 } else { 9.0 }, 24.5));
+                .hitTest(CGPoint::new(if scroll > 0.0 { 22.0 } else { 10.0 }, 22.0));
             assert_eq!(
                 off.as_ref().map(Retained::as_ptr),
                 Some(Retained::as_ptr(&fixture.view)),
@@ -2603,18 +2632,18 @@ mod macos {
         let bounds = clip.bounds();
         assert!((bounds.origin.x - 3.0).abs() < 1e-12);
         assert!((bounds.origin.y - 5.0).abs() < 1e-12);
-        assert!((bounds.size.width - 72.0).abs() < 1e-12);
+        assert!((bounds.size.width - 30.0).abs() < 1e-12);
 
         fixture.window.update(|tx| {
             tx[&holder].transform(Affine::scale(1.5));
         });
         render_until(
             &fixture,
-            &|| (clip.frame().size.width - 108.0).abs() < 1e-12,
+            &|| (clip.frame().size.width - 45.0).abs() < 1e-12,
             "the scale",
         );
-        assert!((clip.frame().size.width - 108.0).abs() < 1e-12);
-        assert!((clip.bounds().size.width - 72.0).abs() < 1e-12);
+        assert!((clip.frame().size.width - 45.0).abs() < 1e-12);
+        assert!((clip.bounds().size.width - 30.0).abs() < 1e-12);
         assert_eq!(view_superview(&web), Some(leaf_ptr));
 
         // Binding the same view on a second layer moves it to the new
