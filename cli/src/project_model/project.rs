@@ -2512,37 +2512,51 @@ mod project_package_tests {
         // 1.99.0 (b940084d7): a path proc-macro prints `(proc-macro)` ahead
         // of its directory, a repeated package ends in ` (*)`, a directory
         // containing parentheses prints raw, and a registry package
-        // annotates nothing.
+        // annotates nothing. The format prints the platform's own absolute
+        // paths, so the fixtures anchor theirs under a temp dir — a
+        // `/workspace` or `/private/tmp` literal is absolute only on Unix.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("workspace");
+        let probe = temp.path().join("p2072-tree-probe");
+        let weird = probe.join("weird (dir)");
         let cases = [
-            ("app v0.1.0 (/workspace/app)", Some("/workspace/app")),
-            ("dep v0.1.0 (/workspace/dep) (*)", Some("/workspace/dep")),
             (
-                "mymacro v0.1.0 (proc-macro) (/private/tmp/p2072-tree-probe/mymacro)",
-                Some("/private/tmp/p2072-tree-probe/mymacro"),
+                format!("app v0.1.0 ({})", workspace.join("app").display()),
+                Some(workspace.join("app")),
             ),
             (
-                "weirdname v0.1.0 (/private/tmp/p2072-tree-probe/weird (dir))",
-                Some("/private/tmp/p2072-tree-probe/weird (dir)"),
+                format!("dep v0.1.0 ({}) (*)", workspace.join("dep").display()),
+                Some(workspace.join("dep")),
             ),
             (
-                "bitflags v2.9.4 (/private/tmp/p2072-tree-probe/bitflags-fork)",
-                Some("/private/tmp/p2072-tree-probe/bitflags-fork"),
+                format!(
+                    "mymacro v0.1.0 (proc-macro) ({})",
+                    probe.join("mymacro").display()
+                ),
+                Some(probe.join("mymacro")),
             ),
-            ("serde v1.0.229", None),
-            ("bitflags v2.13.2", None),
-            ("serde_derive v1.0.229 (proc-macro)", None),
-            ("proc-macro2 v1.0.107 (*)", None),
             (
-                "wgpu v26.0.0 (git+https://github.com/gfx-rs/wgpu?rev=abc#abc)",
+                format!("weirdname v0.1.0 ({})", weird.display()),
+                Some(weird),
+            ),
+            (
+                format!(
+                    "bitflags v2.9.4 ({})",
+                    probe.join("bitflags-fork").display()
+                ),
+                Some(probe.join("bitflags-fork")),
+            ),
+            ("serde v1.0.229".to_string(), None),
+            ("bitflags v2.13.2".to_string(), None),
+            ("serde_derive v1.0.229 (proc-macro)".to_string(), None),
+            ("proc-macro2 v1.0.107 (*)".to_string(), None),
+            (
+                "wgpu v26.0.0 (git+https://github.com/gfx-rs/wgpu?rev=abc#abc)".to_string(),
                 None,
             ),
         ];
         for (entry, expected) in cases {
-            assert_eq!(
-                tree_package_directory(entry),
-                expected.map(PathBuf::from),
-                "entry: {entry}"
-            );
+            assert_eq!(tree_package_directory(&entry), expected, "entry: {entry}");
         }
     }
 
@@ -2551,12 +2565,14 @@ mod project_package_tests {
     #[test]
     fn project_packages_keep_only_path_packages() {
         let temp = tempfile::tempdir().expect("tempdir");
+        let app = temp.path().join("workspace").join("app");
+        std::fs::create_dir_all(&app).expect("app dir");
         let dep = temp.path().join("my_dep");
         std::fs::create_dir_all(&dep).expect("dep dir");
         let tree = BTreeMap::from([
             (
                 "app".to_string(),
-                vec!["app v0.1.0 (/workspace/app)".to_string()],
+                vec![format!("app v0.1.0 ({})", app.display())],
             ),
             (
                 "my_dep".to_string(),
@@ -2583,6 +2599,8 @@ mod project_package_tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let checkout = temp.path().join("checkout");
         std::fs::create_dir_all(checkout.join("waterui/core")).expect("framework dirs");
+        let app = temp.path().join("workspace").join("app");
+        std::fs::create_dir_all(&app).expect("app dir");
         let my_dep = temp.path().join("my_dep");
         std::fs::create_dir_all(&my_dep).expect("dep dir");
         let framework_roots =
@@ -2590,7 +2608,7 @@ mod project_package_tests {
         let tree = BTreeMap::from([
             (
                 "app".to_string(),
-                vec!["app v0.1.0 (/workspace/app)".to_string()],
+                vec![format!("app v0.1.0 ({})", app.display())],
             ),
             (
                 "my_dep".to_string(),
@@ -2657,10 +2675,12 @@ mod project_package_tests {
         let framework_roots = BTreeSet::from([
             dunce::canonicalize(&aliased_checkout).expect("checkout canonicalizes")
         ]);
+        let app = temp.path().join("workspace").join("app");
+        std::fs::create_dir_all(&app).expect("app dir");
         let tree = BTreeMap::from([
             (
                 "app".to_string(),
-                vec!["app v0.1.0 (/workspace/app)".to_string()],
+                vec![format!("app v0.1.0 ({})", app.display())],
             ),
             (
                 "waterui".to_string(),
@@ -2681,7 +2701,10 @@ mod project_package_tests {
     /// naming that directory.
     #[test]
     fn project_packages_fail_on_an_unresolvable_directory() {
-        let missing = PathBuf::from("/definitely/missing/path/package");
+        // The directory must be absolute on every platform and guaranteed
+        // missing: a not-yet-created path under a fresh temp dir is both.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let missing = temp.path().join("missing").join("path").join("package");
         let tree = BTreeMap::from([(
             "my_dep".to_string(),
             vec![format!("my_dep v0.1.0 ({})", missing.display())],
