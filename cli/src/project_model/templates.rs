@@ -102,8 +102,6 @@ pub mod embedded {
         include_dir!("$CARGO_MANIFEST_DIR/src/templates/hydrolysis_android_preview");
     pub static HYDROLYSIS_ANDROID_SHARED: Dir<'_> =
         include_dir!("$CARGO_MANIFEST_DIR/src/templates/hydrolysis_android_shared");
-    pub static HYDROLYSIS_ANDROID_SHARED: Dir<'_> =
-        include_dir!("$CARGO_MANIFEST_DIR/src/templates/hydrolysis_android_shared");
     pub static HYDROLYSIS_ANDROID_EMBEDDED: Dir<'_> =
         include_dir!("$CARGO_MANIFEST_DIR/src/templates/hydrolysis_android_embedded");
     pub static ESP32: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/esp32");
@@ -434,9 +432,14 @@ pub struct HydrolysisAndroidEmbeddedTemplateEntry {
     /// The shared host/painter parameters, rendered relative to the
     /// generated `android-embedded/` Gradle root.
     pub app: HydrolysisAndroidTemplateEntry,
-    /// The `dev.waterui.hydrolysis` version the host and painter modules
-    /// publish as for this build.
+    /// The `dev.waterui.hydrolysis` version the host modules publish as for
+    /// this build.
     pub host_version: String,
+    /// The host checkout's Gradle module names the embedded build
+    /// substitutes, fingerprints, and publishes — `host`, the painter
+    /// module, and any further host modules that join through
+    /// `embedded::publish_modules`.
+    pub host_modules: Vec<String>,
 }
 
 impl TemplateContext {
@@ -1110,7 +1113,6 @@ enum TemplateNamespace {
     Hydrolysis,
     HydrolysisAndroid,
     HydrolysisAndroidPreview,
-    HydrolysisAndroidShared,
     HydrolysisAndroidShared,
     HydrolysisAndroidEmbedded,
     Esp32,
@@ -6279,6 +6281,7 @@ async fn scaffold_hydrolysis_android_project(
     namespace: TemplateNamespace,
     module: &Dir<'static>,
     ctx: &TemplateContext,
+    host: &crate::toolchain::Host,
 ) -> io::Result<()> {
     for (relative, contents) in hydrolysis_android_rendered_outputs(namespace, module, ctx)? {
         let path = base_dir.join(relative);
@@ -6287,7 +6290,7 @@ async fn scaffold_hydrolysis_android_project(
         }
         write_file_if_changed(&path, &contents).await?;
     }
-    finish_hydrolysis_android_scaffold(base_dir).await
+    finish_hydrolysis_android_scaffold(base_dir, host).await
 }
 
 pub mod hydrolysis_android {
@@ -6298,12 +6301,17 @@ pub mod hydrolysis_android {
     /// # Errors
     ///
     /// Returns an error if file operations fail.
-    pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
+    pub async fn scaffold(
+        base_dir: &Path,
+        ctx: &TemplateContext,
+        host: &crate::toolchain::Host,
+    ) -> io::Result<()> {
         super::scaffold_hydrolysis_android_project(
             base_dir,
             TemplateNamespace::HydrolysisAndroid,
             &embedded::HYDROLYSIS_ANDROID,
             ctx,
+            host,
         )
         .await
     }
@@ -6333,12 +6341,17 @@ pub mod hydrolysis_android_embedded {
     /// # Errors
     ///
     /// Returns an error if file operations fail.
-    pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
+    pub async fn scaffold(
+        base_dir: &Path,
+        ctx: &TemplateContext,
+        host: &crate::toolchain::Host,
+    ) -> io::Result<()> {
         super::scaffold_hydrolysis_android_project(
             base_dir,
             TemplateNamespace::HydrolysisAndroidEmbedded,
             &embedded::HYDROLYSIS_ANDROID_EMBEDDED,
             ctx,
+            host,
         )
         .await
     }
@@ -6375,12 +6388,17 @@ pub mod hydrolysis_android_preview {
     /// # Errors
     ///
     /// Returns an error if template rendering or file writing fails.
-    pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
+    pub async fn scaffold(
+        base_dir: &Path,
+        ctx: &TemplateContext,
+        host: &crate::toolchain::Host,
+    ) -> io::Result<()> {
         super::scaffold_hydrolysis_android_project(
             base_dir,
             TemplateNamespace::HydrolysisAndroidPreview,
             &embedded::HYDROLYSIS_ANDROID_PREVIEW,
             ctx,
+            host,
         )
         .await
     }
@@ -6405,7 +6423,10 @@ pub mod hydrolysis_android_preview {
 ///
 /// `gradle-wrapper.jar` materializes at first Gradle run, so no binary lands
 /// in the worktree.
-async fn finish_hydrolysis_android_scaffold(base_dir: &Path) -> io::Result<()> {
+async fn finish_hydrolysis_android_scaffold(
+    base_dir: &Path,
+    host: &crate::toolchain::Host,
+) -> io::Result<()> {
     // Make gradlew executable
     #[cfg(unix)]
     {
@@ -6419,9 +6440,7 @@ async fn finish_hydrolysis_android_scaffold(base_dir: &Path) -> io::Result<()> {
     }
 
     // Generate local.properties with Android SDK path
-    if let Some(sdk_path) =
-        crate::android::toolchain::AndroidSdk::detect_path(&crate::toolchain::Host::current())
-    {
+    if let Some(sdk_path) = crate::android::toolchain::AndroidSdk::detect_path(host) {
         let local_props = base_dir.join("local.properties");
         let content = format!("sdk.dir={}\n", normalize_path_for_config(&sdk_path));
         write_file_if_changed(&local_props, content.as_bytes()).await?;

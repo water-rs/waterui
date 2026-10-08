@@ -31,7 +31,8 @@ include(":waterui")
 includeBuild("{{ ctx.hydrolysis_android_embedded().app.host_project_dir }}") {
     name = "hydrolysis-host"
     dependencySubstitution {
-        substitute(module("dev.waterui.hydrolysis:host")).using(project(":host"))
-        substitute(module("{{ ctx.hydrolysis_android_embedded().app.painter_dependency }}")).using(project(":{{ ctx.hydrolysis_android_embedded().app.painter_module }}"))
+{% for module in ctx.hydrolysis_android_embedded().host_modules -%}
+        substitute(module("dev.waterui.hydrolysis:{{ module }}")).using(project(":{{ module }}"))
+{% endfor -%}
     }
 }
