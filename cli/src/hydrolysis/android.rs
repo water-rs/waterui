@@ -987,15 +987,12 @@ mod tests {
             );
             assert!(activity.contains("HydrolysisHostView"), "{activity}");
 
-            // The narrow JNI keep: only the Rust→Kotlin entry points survive
-            // R8 — the class members HydrolysisSession calls back by name.
+            // The JNI keep travels with the host library: its
+            // consumer-rules.pro keeps every @CalledFromNative member, so
+            // the app's own rules carry no per-method list.
             let proguard = files["app/proguard-rules.pro"].as_str();
-            assert!(
-                proguard
-                    .contains("-keepclassmembers class dev.waterui.hydrolysis.HydrolysisSession"),
-                "{proguard}"
-            );
-            assert!(proguard.contains("onNativeRequestRedraw"), "{proguard}");
+            assert!(!proguard.contains("keepclassmembers"), "{proguard}");
+            assert!(proguard.contains("CalledFromNative"), "{proguard}");
 
             // The 16 KiB page alignment the plan requires of every staged
             // native library is asserted by build(), which reuses
