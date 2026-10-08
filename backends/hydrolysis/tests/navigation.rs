@@ -479,3 +479,123 @@ fn navigation_back_button_emits_on_offscreen_mount() {
         "the pushed stack must emit its back affordance"
     );
 }
+
+/// water-rs/waterui#2239: the collapsed split's semantic tree must carry an
+/// actionable back affordance — it was pointer-only — and must drop the
+/// panes it does not present, the same shape the rendered path produces.
+#[test]
+fn collapsed_split_emits_back_button_and_only_the_front_pane() {
+    let selection = Binding::container(None::<i32>);
+    let mut app = ui().viewport(390, 844).mount({
+        let selection = selection.clone();
+        move || {
+            NavigationSplitView::new(
+                &selection,
+                move || rows(20, "chat").a11y_label("chats"),
+                move |id| NavigationView::new(format!("Chat {id}"), detail_content()),
+            )
+        }
+    });
+    app.settle();
+    assert!(
+        app.query().role(Role::LIST).label("chats").exists(),
+        "with no selection the sidebar is the front pane"
+    );
+    assert!(
+        !app.query().role(Role::LIST).label("messages").exists(),
+        "the detail pane stays out of the tree while the sidebar shows"
+    );
+    assert!(
+        !app.query().role(Role::BUTTON).label("Back").exists(),
+        "the sidebar front emits no back button"
+    );
+
+    selection.set(Some(7));
+    app.settle();
+    let back = app.query().role(Role::BUTTON).label("Back").single();
+    assert!(
+        !app.query().role(Role::LIST).label("chats").exists(),
+        "the hidden sidebar must leave the accessibility tree"
+    );
+    assert!(
+        app.query().role(Role::LIST).label("messages").exists(),
+        "the front detail pane emits"
+    );
+
+    back.tap(&mut app);
+    app.settle();
+    assert!(
+        app.query().role(Role::LIST).label("chats").exists(),
+        "activating Back must present the sidebar again"
+    );
+    assert!(
+        !app.query().role(Role::BUTTON).label("Back").exists(),
+        "the back button leaves the tree with the detail pane"
+    );
+}
+
+/// The rendered path of the same fix: the collapsed split draws the back
+/// chevron itself, so the emitted node must carry the chevron's real bounds
+/// and its activation must navigate back to the sidebar.
+#[test]
+fn collapsed_split_back_button_navigates_on_offscreen_mount() {
+    let selection = Binding::container(None::<i32>);
+    let mut app = ui()
+        .viewport(390, 844)
+        .theme(Material3::defaults())
+        .mount_offscreen({
+            let selection = selection.clone();
+            move || {
+                NavigationSplitView::new(
+                    &selection,
+                    move || rows(20, "chat").a11y_label("chats"),
+                    move |id| NavigationView::new(format!("Chat {id}"), detail_content()),
+                )
+            }
+        });
+    app.settle();
+    selection.set(Some(7));
+    app.settle();
+    let back = app.query().role(Role::BUTTON).label("Back").single();
+    assert!(
+        back.bounds().width() > 0.0,
+        "the rendered back node must carry the drawn chevron's bounds"
+    );
+    assert!(
+        !app.query().role(Role::LIST).label("chats").exists(),
+        "the hidden sidebar must leave the accessibility tree"
+    );
+    back.tap(&mut app);
+    app.settle();
+    assert!(
+        app.query().role(Role::LIST).label("chats").exists(),
+        "activating Back must present the sidebar again"
+    );
+}
+
+/// The same split at desktop width stays expanded: every column emits and no
+/// back affordance appears — the collapsed tree is a narrow-viewport shape.
+#[test]
+fn expanded_split_emits_every_column_on_semantic_mount() {
+    let selection = Binding::container(Some(7i32));
+    let mut app = ui().viewport(WINDOW_WIDTH, WINDOW_HEIGHT).mount(move || {
+        NavigationSplitView::new(
+            &selection,
+            move || rows(20, "chat").a11y_label("chats"),
+            move |id| NavigationView::new(format!("Chat {id}"), detail_content()),
+        )
+    });
+    app.settle();
+    assert!(
+        app.query().role(Role::LIST).label("chats").exists(),
+        "the expanded split emits its sidebar"
+    );
+    assert!(
+        app.query().role(Role::LIST).label("messages").exists(),
+        "the expanded split emits the selected detail"
+    );
+    assert!(
+        !app.query().role(Role::BUTTON).label("Back").exists(),
+        "an expanded split has no back affordance"
+    );
+}
