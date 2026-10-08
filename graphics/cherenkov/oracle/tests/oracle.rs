@@ -1329,6 +1329,35 @@ fn an_anchor_at_a_projective_layer_is_unsupported() {
     }
 }
 
+#[test]
+fn a_member_inside_a_projective_anchor_is_unsupported() {
+    use cherenkov_scene::Projection;
+    let mut b = Scene::builder(W, H);
+    b.backdrop_group(BackdropGroup {
+        anchor: Some(std::num::NonZeroU32::MIN),
+        ..BackdropGroup::new(1, vec![], 1.0, 1)
+    });
+    b.root().layer(|a| {
+        a.id(std::num::NonZeroU32::MIN);
+        a.projection(Projection {
+            matrix: Projection::perspective(100.0),
+            ..Projection::default()
+        });
+        a.layer(|m| {
+            m.id(std::num::NonZeroU32::new(2).expect("nonzero id"));
+            m.backdrop(1);
+        });
+    });
+    let scene = b.build();
+    match Renderer::new(W as usize, H as usize).render(&scene, &tmp()) {
+        Err(e) => assert!(
+            e.to_string().contains("backdrop-anchor-projective"),
+            "unexpected error {e}"
+        ),
+        Ok(_) => panic!("a member inside a projective anchor must fail"),
+    }
+}
+
 /// An anchor naming a layer id nothing carries has no paint position:
 /// `backdrop-unknown-anchor`, the same error the engines report.
 #[test]

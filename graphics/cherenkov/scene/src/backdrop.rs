@@ -74,10 +74,9 @@ pub struct BackdropGroup {
     pub levels: u32,
     /// The [`crate::Layer::id`] of the layer the capture anchors at: the
     /// capture is taken beneath that layer, at its paint-order position
-    /// before the layer's own content and children. Every member must
-    /// then paint after the anchor in the anchor's compositing canvas —
-    /// its descendants or its later siblings there; any other member
-    /// fails the render
+    /// before the layer's own content and children. Every member may be
+    /// any layer painting after the anchor in the anchor's
+    /// compositing canvas; any other member fails the render
     /// (`backdrop-member-before-anchor` /
     /// `backdrop-member-outside-anchor-canvas`). `None` (the default)
     /// captures at the first member's paint-order position.

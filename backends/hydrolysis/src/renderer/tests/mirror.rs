@@ -253,6 +253,10 @@ impl MirrorWindow {
         self.mount.groups().member_scales()
     }
 
+    pub fn anchor_registrations(&self) -> Vec<(usize, Option<LayerId>, LayerId)> {
+        self.mount.groups().anchor_registrations()
+    }
+
     /// The window layer's child list, in paint order — a test-facing
     /// answer: stale anchor layers would show here as extra children.
     pub fn window_children(&self) -> Vec<LayerId> {
@@ -262,6 +266,18 @@ impl MirrorWindow {
             .layer(self.mount.window().id())
             .children
             .clone()
+    }
+
+    pub fn children(&self, parent: LayerId) -> Vec<LayerId> {
+        self.mirrored.borrow().tree.layer(parent).children.clone()
+    }
+
+    pub fn parent(&self, id: LayerId) -> Option<LayerId> {
+        self.mirrored
+            .borrow()
+            .tree
+            .layers()
+            .find_map(|(parent, node)| node.children.contains(&id).then_some(parent))
     }
 }
 

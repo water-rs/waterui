@@ -150,6 +150,8 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup):
     manifest.write_text(json.dumps({
         'file_format_version': '1.0.0',
         'layer': {'name': 'VK_LAYER_CHERENKOV_no_raster', 'type': 'GLOBAL', 'library_path': str(library),
+                  'functions': {'vkGetInstanceProcAddr': 'cherenkovGetInstanceProcAddr',
+                                'vkGetDeviceProcAddr': 'cherenkovGetDeviceProcAddr'},
                   'api_version': '1.3.0', 'implementation_version': '1',
                   'description': 'No-op GPU-work vkCmd* entry points (gate only)'}}, indent=1) + '\n')
     env = os.environ.copy()

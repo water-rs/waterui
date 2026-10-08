@@ -45,9 +45,6 @@ pub const fn staged(pass: &Pass) -> bool {
 pub fn params(pass: &Pass) -> Params {
     of(pass).map_or_else(Params::default, |resolve| Params {
         texel_origin: [pass.region[0] as f32, pass.region[1] as f32],
-        // A staged resolve reads the group's staging texture at the draw
-        // region's origin; a direct one reads `copy_from` at texel
-        // origin `[0, 0]` — every copy source is a device-target view.
         source_origin: if staged(pass) {
             [resolve.device[0] as f32, resolve.device[1] as f32]
         } else {

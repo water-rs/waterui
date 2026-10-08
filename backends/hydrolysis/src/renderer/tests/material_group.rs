@@ -38,8 +38,8 @@ use waterui_layout::scroll;
 use waterui_layout::stack::{VStack, hstack, vstack, zstack};
 
 use super::{
-    MinimalTestTheme, capture_bytes, material_layers, mounts, pumped_test_environment,
-    test_environment, window_mount,
+    MinimalTestTheme, capture_bytes, inner_layers, material_layers, mounted_anchor_parent_children,
+    mounts, pumped_test_environment, test_environment, window_mount,
 };
 use crate::HeadlessRuntime;
 use crate::engine::WidgetTheme;
@@ -147,6 +147,80 @@ fn pump_until_settled(runtime: &mut HeadlessRuntime) {
             break;
         }
     }
+}
+
+fn assert_anchor_children_match(runtime: &mut HeadlessRuntime, anchor: cherenkov::LayerId) -> bool {
+    let members = material_layers(runtime);
+    assert_eq!(members.len(), 1, "the fixture has one material member");
+    let member = members[0];
+    let (scope, canvas, _) = mounts(runtime)
+        .anchor_registrations()
+        .into_iter()
+        .find(|(_, _, layer)| *layer == anchor)
+        .expect("the anchor has a registration");
+    assert_eq!(canvas, None, "the fixture has no installation canvas");
+    let (_, engine_children, direct) =
+        mounted_anchor_parent_children(runtime, scope, canvas, anchor)
+            .expect("the anchor has committed children");
+    assert_eq!(
+        engine_children.len(),
+        2,
+        "the anchor parent has exactly one anchor and one member"
+    );
+    assert_eq!(
+        engine_children.iter().filter(|&&id| id == anchor).count(),
+        1,
+        "the engine child list has one anchor"
+    );
+    assert_eq!(
+        engine_children.iter().filter(|&&id| id == member).count(),
+        1,
+        "the engine child list has one member"
+    );
+
+    runtime.renderer_mut().commit_mirror();
+    let (mirror_anchor, mirror_member, mirror_children) = {
+        let mirror = runtime.renderer().mirror();
+        let mirror_anchor = mirror
+            .anchor_registrations()
+            .into_iter()
+            .find(|&(mirror_scope, mirror_canvas, _)| {
+                mirror_scope == scope && mirror_canvas == canvas
+            })
+            .map(|(_, _, layer)| layer)
+            .expect("the mirror has the matching anchor registration");
+        let mirror_members = mirror.backdrops();
+        assert_eq!(
+            mirror_members.len(),
+            1,
+            "the mirror fixture has one material member"
+        );
+        let mirror_member = mirror_members[0].0;
+        let mirror_parent = mirror
+            .parent(mirror_anchor)
+            .unwrap_or_else(|| panic!("mirror anchor {mirror_anchor:?} has no parent"));
+        (mirror_anchor, mirror_member, mirror.children(mirror_parent))
+    };
+    assert_ne!(mirror_anchor, mirror_member);
+    assert_eq!(
+        mirror_children.len(),
+        2,
+        "the mirror child list has exactly one anchor and one member"
+    );
+    let mapped = mirror_children
+        .iter()
+        .map(|&id| {
+            if id == mirror_anchor {
+                anchor
+            } else if id == mirror_member {
+                member
+            } else {
+                panic!("unmapped mirror child {id:?}");
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(mapped, engine_children);
+    direct
 }
 
 /// A dark member and a light member at one level inside one
@@ -949,7 +1023,10 @@ fn a_scopes_anchor_releases_with_the_scope() {
             MinimalTestTheme::default(),
         )
         .with_scale_factor(DISPLAY_SCALE);
-        pump(&mut runtime);
+        let start = Instant::now();
+        for step in 0..=80 {
+            let _ = runtime.pump_at(false, start + Duration::from_millis(step * 16));
+        }
         runtime
     };
     let layers = material_layers(&runtime);
@@ -1102,17 +1179,12 @@ fn a_partial_re_record_keeps_the_scope_anchored() {
     );
 }
 
-/// A `.material_group()` toggled between a `when` branch's scope list
-/// and a `zstack` child list keeps exactly one anchor registration —
-/// the previous list's keys are compare-removed by layer, so the move
-/// A `.material_group()` row that leaves a `collection_transition` stack
-/// moves between two mount lists mid-flight: while its exit transition
-/// runs, the row's scope cell flushes inside the departing entry's
-/// `Item::Scope` list instead of the collection's item list. The scope's
-/// anchor registration must keep exactly one owner throughout — the
-/// exited list's registration is compare-removed by layer — and the
-/// engine's window child list stays the mirror's commit (water-rs/
-/// waterui#2097, MEDIUM-1).
+/// A `.material_group()` row leaving a `collection_transition` stack moves
+/// between two mount lists mid-flight: while its exit transition runs, the
+/// row's scope cell flushes inside the departing entry's `Item::Scope` list
+/// instead of the collection's item list. The scope keeps exactly one anchor
+/// registration, and the final anchor-parent snapshot compares the complete
+/// ordered child list against the mirror (water-rs/waterui#2097, MEDIUM-1).
 #[test]
 fn a_scope_moving_between_lists_keeps_one_owner() {
     let rows: Membership<SelfId<u64>> = Membership::from(vec![SelfId::new(1)]);
@@ -1136,11 +1208,18 @@ fn a_scope_moving_between_lists_keeps_one_owner() {
             MinimalTestTheme::default(),
         )
         .with_scale_factor(DISPLAY_SCALE);
-        pump(&mut runtime);
+        let start = Instant::now();
+        for step in 0..=80 {
+            let _ = runtime.pump_at(false, start + Duration::from_millis(step * 16));
+        }
         runtime
     };
     assert_eq!(material_layers(&runtime).len(), 1);
     assert_eq!(mounts(&runtime).anchor_registration_count(), 1);
+    let old_member = material_layers(&runtime)[0];
+    let old_anchor = mounts(&runtime)
+        .backdrop_anchor(old_member)
+        .expect("the stable row has an anchor");
 
     // Removing the row moves its scope cell from the collection's item
     // list into the departing entry's `Item::Scope` list — pump one frame
@@ -1159,24 +1238,136 @@ fn a_scope_moving_between_lists_keeps_one_owner() {
         "one live registration while the row exits inside its scope item"
     );
     let member_layer = material_layers(&runtime)[0];
+    assert_eq!(member_layer, old_member);
+    let new_anchor = mounts(&runtime)
+        .backdrop_anchor(member_layer)
+        .expect("the departing member still has an anchor");
+    assert_ne!(new_anchor, old_anchor);
     assert_eq!(
-        mounts(&runtime).backdrop_anchor(member_layer),
+        Some(new_anchor),
         Some(registrations[0].2),
         "the departing member still anchors at its own scope's layer"
-    );
-    runtime.renderer_mut().commit_mirror();
-    assert_eq!(
-        window_mount(&runtime).window_children().len(),
-        runtime.renderer().mirror().window_children().len(),
-        "the engine's window child list matches the mirror's"
     );
 
     // Once the transition retires the entry, nothing stands: no member,
     // no group, no registration.
+    assert_anchor_children_match(&mut runtime, new_anchor);
     pump_until_settled(&mut runtime);
-    assert_eq!(material_layers(&runtime), [] as [cherenkov::LayerId; 0]);
+    assert_eq!(material_layers(&runtime).len(), 0);
     assert_eq!(mounts(&runtime).backdrop_group_count(), 0);
     assert_eq!(mounts(&runtime).anchor_registration_count(), 0);
+}
+
+#[test]
+fn a_scope_enter_completion_keeps_one_direct_owner() {
+    let rows: Membership<SelfId<u64>> = Membership::from(vec![]);
+    let builder = {
+        let rows = rows.clone();
+        AnyViewBuilder::<AnyView>::new(move || {
+            let rows = rows.clone();
+            let collection = VStack::for_each(rows, move |_| {
+                AnyView::new(member(Material::Regular).material_group())
+            });
+            AnyView::new(collection_transition(
+                collection,
+                Animation::linear(Duration::from_millis(1_000)),
+            ))
+        })
+    };
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        pumped_test_environment(),
+        builder,
+        WIDTH,
+        HEIGHT,
+        MinimalTestTheme::default(),
+    )
+    .with_scale_factor(DISPLAY_SCALE);
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+
+    rows.push(SelfId::new(1));
+    for step in 1..=16 {
+        let _ = runtime.pump_at(false, start + Duration::from_millis(step * 16));
+    }
+    let mid_member = material_layers(&runtime);
+    assert_eq!(mid_member.len(), 1);
+    assert_eq!(mounts(&runtime).anchor_registration_count(), 1);
+    let mid_member = mid_member[0];
+    let mid_anchor = mounts(&runtime)
+        .backdrop_anchor(mid_member)
+        .expect("the entering member has an anchor");
+    for step in 17..=80 {
+        let _ = runtime.pump_at(false, start + Duration::from_millis(step * 16));
+    }
+    let final_members = material_layers(&runtime);
+    assert_eq!(final_members.len(), 1);
+    assert_eq!(final_members[0], mid_member);
+    assert_eq!(mounts(&runtime).anchor_registration_count(), 1);
+    let final_anchor = mounts(&runtime)
+        .backdrop_anchor(final_members[0])
+        .expect("the settled member has an anchor");
+    assert_ne!(final_anchor, mid_anchor);
+    let registrations = mounts(&runtime).anchor_registrations();
+    assert_eq!(registrations.len(), 1);
+    assert_eq!(registrations[0].2, final_anchor);
+    assert!(
+        assert_anchor_children_match(&mut runtime, final_anchor),
+        "the settled anchor is in the direct frame list"
+    );
+}
+
+#[test]
+fn a_scope_reinserted_during_exit_keeps_one_direct_owner() {
+    let rows: Membership<SelfId<u64>> = Membership::from(vec![SelfId::new(1)]);
+    let builder = {
+        let rows = rows.clone();
+        AnyViewBuilder::<AnyView>::new(move || {
+            let rows = rows.clone();
+            let collection = VStack::for_each(rows, move |_| {
+                AnyView::new(member(Material::Regular).material_group())
+            });
+            AnyView::new(collection_transition(
+                collection,
+                Animation::linear(Duration::from_millis(1_000)),
+            ))
+        })
+    };
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        pumped_test_environment(),
+        builder,
+        WIDTH,
+        HEIGHT,
+        MinimalTestTheme::default(),
+    )
+    .with_scale_factor(DISPLAY_SCALE);
+    let start = Instant::now();
+    for step in 0..=80 {
+        let _ = runtime.pump_at(false, start + Duration::from_millis(step * 16));
+    }
+    assert_eq!(material_layers(&runtime).len(), 1);
+    assert_eq!(mounts(&runtime).anchor_registration_count(), 1);
+
+    let _ = rows.remove(0);
+    let _ = runtime.pump_at(false, start + Duration::from_millis(1_300));
+    assert_eq!(mounts(&runtime).anchor_registration_count(), 1);
+
+    rows.push(SelfId::new(1));
+    for step in 90..=160 {
+        let _ = runtime.pump_at(false, start + Duration::from_millis(step * 16));
+    }
+    let members = material_layers(&runtime);
+    assert_eq!(members.len(), 1);
+    assert_eq!(mounts(&runtime).anchor_registration_count(), 1);
+    let anchor = mounts(&runtime)
+        .backdrop_anchor(members[0])
+        .expect("the reinserted row has an anchor");
+    let registrations = mounts(&runtime).anchor_registrations();
+    assert_eq!(registrations.len(), 1);
+    assert_eq!(registrations[0].2, anchor);
+    assert!(
+        assert_anchor_children_match(&mut runtime, anchor),
+        "the settled reinserted anchor is in the direct frame list"
+    );
 }
 
 /// A scope unmounted and re-mounted gets a fresh anchor layer: the group
@@ -1379,14 +1570,17 @@ fn a_scope_inside_a_scroll_view_anchors_under_the_inner_layer() {
         .expect("the scrolled member's group anchors");
     // The spec anchor is a child of the inner layer: it and the member's
     // frame are siblings under the same parent.
-    runtime.renderer_mut().commit_mirror();
-    let mirror = runtime.renderer().mirror();
-    let chain = mirror.ancestry(anchor);
-    let parent = &chain[chain.len() - 2];
-    assert!(
-        parent.children.contains(&anchor) && parent.children.contains(&layers[0]),
-        "the anchor and the member mount as siblings under the scrolled inner layer"
-    );
+    let (scope, canvas, _) = mounts(&runtime)
+        .anchor_registrations()
+        .into_iter()
+        .find(|(_, _, layer)| *layer == anchor)
+        .expect("the scrolled anchor has a registration");
+    assert_eq!(canvas, None);
+    let (parent, _, _) = mounted_anchor_parent_children(&runtime, scope, canvas, anchor)
+        .expect("the scrolled anchor has a committed parent");
+    let inner = inner_layers(&runtime);
+    assert_eq!(inner.len(), 1);
+    assert_eq!(parent, inner[0]);
 
     // Pixels: the scrolled member paints its material over the backdrop —
     // the member's pixel differs from the same scene with no member.

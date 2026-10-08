@@ -203,6 +203,46 @@ impl NodeLayers {
         &self.frame
     }
 
+    #[cfg(test)]
+    pub(crate) fn committed_anchor_parent_children(
+        &self,
+        scope: usize,
+        canvas: Option<LayerId>,
+        anchor: LayerId,
+    ) -> Option<(LayerId, Vec<LayerId>, bool)> {
+        if self.anchor_keys.contains(&(scope, canvas, anchor)) {
+            return Some((
+                self.frame.id(),
+                self.committed.iter().map(|&(id, _)| id).collect(),
+                true,
+            ));
+        }
+        if self.inner_anchor_keys.contains(&(scope, canvas, anchor))
+            && let Some((inner, _)) = &self.inner
+        {
+            return Some((
+                inner.id(),
+                self.inner_committed.iter().map(|&(id, _)| id).collect(),
+                true,
+            ));
+        }
+        self.scopes
+            .iter()
+            .find(|registered| registered.anchor_keys.contains(&(scope, canvas, anchor)))
+            .map(|registered| {
+                (
+                    registered.layer.id(),
+                    registered.committed.iter().map(|&(id, _)| id).collect(),
+                    false,
+                )
+            })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inner_id(&self) -> Option<LayerId> {
+        self.inner.as_ref().map(|(inner, _)| inner.id())
+    }
+
     /// The member's frame layer id when the node holds a backdrop-group
     /// membership — a test-facing answer.
     #[cfg(test)]

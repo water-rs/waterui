@@ -391,7 +391,7 @@ struct BackdropPlan {
     /// Each member's paint-order record for an anchored group's range
     /// check: the member's compositing canvas (its innermost semantic
     /// level) and its paint-order index.
-    pos: FxHashMap<LayerId, (Option<LayerId>, usize)>,
+    pos: Vec<(Option<LayerId>, usize)>,
 }
 
 impl BackdropPlan {
@@ -425,7 +425,7 @@ impl BackdropPlan {
             union_k: 0.0,
             union_members: Arc::from([]),
             scope,
-            pos: FxHashMap::default(),
+            pos: Vec::new(),
         }
     }
 
@@ -599,16 +599,7 @@ pub struct Lowering<'a, 'b> {
     /// footprint, by layer: a scope that directly contains captures grows
     /// to cover their `apron + reach`.
     scope_aprons: FxHashMap<LayerId, usize>,
-    /// The groups anchored at each anchor layer, sorted by id.
-    anchor_groups: FxHashMap<LayerId, Vec<u64>>,
-    /// Each anchor layer's compositing canvas, paint-order index and
-    /// innermost filter scope, as planned.
-    anchor_pos: FxHashMap<LayerId, (Option<LayerId>, usize, Option<LayerId>)>,
-    /// Scratch for the anchored group ids `plan_anchors` sorts and
-    /// registers — reused across plans.
-    anchor_gids: Vec<u64>,
-    /// The layer ids any planned group anchors at.
-    anchor_refs: FxHashSet<LayerId>,
+    anchor_scratch: &'a mut AnchorScratch,
     /// The planning walk's paint-order counter.
     plan_order: usize,
     /// Source commands resolved this frame.
@@ -621,6 +612,31 @@ pub struct Lowering<'a, 'b> {
     local: Option<(LayerId, Affine)>,
     /// Projective layers' images placed in this raster, by layer.
     projected: FxHashMap<LayerId, crate::render::projective::Placed>,
+}
+
+#[derive(Default)]
+pub(super) struct AnchorScratch {
+    refs: FxHashSet<LayerId>,
+    pos: FxHashMap<LayerId, (Option<LayerId>, usize, Option<LayerId>)>,
+    group_ids: Vec<u64>,
+    links: Vec<(LayerId, u64)>,
+}
+
+impl AnchorScratch {
+    fn clear(&mut self) {
+        self.refs.clear();
+        self.pos.clear();
+        self.group_ids.clear();
+        self.links.clear();
+    }
+
+    pub(super) fn heap_bytes(&self) -> u64 {
+        (self.refs.capacity() * size_of::<LayerId>()
+            + self.pos.capacity()
+                * size_of::<(LayerId, (Option<LayerId>, usize, Option<LayerId>))>()
+            + self.group_ids.capacity() * size_of::<u64>()
+            + self.links.capacity() * size_of::<(LayerId, u64)>()) as u64
+    }
 }
 
 /// The largest singular value of `t`'s linear part — the worst-case factor
@@ -901,9 +917,9 @@ fn integer_edges(r: Rect) -> Option<IRect> {
 }
 
 impl<'a, 'b> Lowering<'a, 'b> {
-    /// Starts a lowering into `items` for a `w` × `h` surface.
+    /// Starts a lowering for a `w` × `h` surface using its output and anchor buffers.
     pub fn new(
-        items: &'a mut Vec<Item>,
+        buffers: (&'a mut Vec<Item>, &'a mut AnchorScratch),
         size: (u32, u32),
         filters: Option<&'a mut Registry>,
         frame: FrameId,
@@ -911,6 +927,8 @@ impl<'a, 'b> Lowering<'a, 'b> {
         bitmap_fonts: &'b FxHashMap<u64, Arc<super::bitmap::BitmapFont>>,
         bitmap_cache: &'b mut super::bitmap::BitmapCache,
     ) -> Self {
+        let (items, anchor_scratch) = buffers;
+        anchor_scratch.clear();
         Self {
             items,
             filters,
@@ -931,10 +949,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             iso_spaces: Vec::new(),
             backdrops: FxHashMap::default(),
             scope_aprons: FxHashMap::default(),
-            anchor_groups: FxHashMap::default(),
-            anchor_pos: FxHashMap::default(),
-            anchor_gids: Vec::new(),
-            anchor_refs: FxHashSet::default(),
+            anchor_scratch,
             plan_order: 0,
             commands_lowered: 0,
             layers_composed: 0,
@@ -1047,8 +1062,9 @@ impl<'a, 'b> Lowering<'a, 'b> {
         }
         self.plan_order += 1;
         let order = self.plan_order;
-        if !self.anchor_refs.is_empty() && self.anchor_refs.contains(&id) {
-            self.anchor_pos
+        if !self.anchor_scratch.refs.is_empty() && self.anchor_scratch.refs.contains(&id) {
+            self.anchor_scratch
+                .pos
                 .insert(id, (canvas, order, scopes.last().copied()));
         }
         let (transform, children) = self.placement(id, node, parent);
@@ -1125,7 +1141,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 },
             );
             if spec.anchor_layer().is_some() {
-                plan.pos.insert(id, (canvas, order));
+                plan.pos.push((canvas, order));
             }
         }
         // A semantically isolating layer — filtered or blended — is its
@@ -1175,7 +1191,12 @@ impl<'a, 'b> Lowering<'a, 'b> {
         filters: &mut Registry,
     ) -> Result<(), RenderError> {
         let mut groups = FxHashMap::default();
-        self.anchor_refs = filters.backdrop_anchors(surface).collect();
+        self.anchor_scratch.clear();
+        self.anchor_scratch
+            .refs
+            .extend(filters.backdrop_anchors(surface));
+        self.backdrops.clear();
+        self.scope_aprons.clear();
         self.plan_order = 0;
         let start = self.start(tree);
         self.plan_layer(
@@ -1207,7 +1228,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             }
             plan.place(footprint, (self.width, h));
         }
-        self.plan_anchors(start, tree)?;
+        self.plan_anchors(tree)?;
         // The apron a scope needs around each band — its own filter's
         // footprint, or `capture apron + reach` for scopes a capture
         // lands directly in.
@@ -1267,36 +1288,39 @@ impl<'a, 'b> Lowering<'a, 'b> {
     }
 
     /// Validates every anchored group's member range and sets its capture
-    /// scope to the anchor's, grouping the anchored groups under their
-    /// anchors. A member of an anchored group must paint after its
-    /// anchor in the anchor's compositing canvas — the anchor's
-    /// descendants or its later siblings there; an anchored group never
-    /// falls back to a capture at the member.
-    /// `backdrops` is a hash map: the anchored gids are sorted first so
-    /// the validation error and `anchor_groups` order are deterministic.
-    fn plan_anchors(&mut self, root: LayerId, tree: &SurfaceTree) -> Result<(), RenderError> {
-        let mut gids = std::mem::take(&mut self.anchor_gids);
-        gids.clear();
-        gids.extend(
+    /// scope to the anchor's. A member can be any layer painting after the
+    /// anchor in the anchor's compositing canvas; anchored groups never
+    /// fall back to a capture at the member.
+    fn plan_anchors(&mut self, tree: &SurfaceTree) -> Result<(), RenderError> {
+        let result = self.plan_anchors_inner(tree);
+        if result.is_err() {
+            self.anchor_scratch.group_ids.clear();
+            self.anchor_scratch.links.clear();
+        }
+        result
+    }
+
+    fn plan_anchors_inner(&mut self, tree: &SurfaceTree) -> Result<(), RenderError> {
+        let scratch = &mut *self.anchor_scratch;
+        scratch.group_ids.extend(
             self.backdrops
                 .iter()
                 .filter(|(_, plan)| plan.spec.anchor_layer().is_some())
                 .map(|(gid, _)| *gid),
         );
-        gids.sort_unstable();
-        let mut positions: Vec<(Option<LayerId>, usize)> = Vec::new();
-        for gid in gids.iter().copied() {
+        scratch.group_ids.sort_unstable();
+        for i in 0..scratch.group_ids.len() {
+            let gid = scratch.group_ids[i];
             let (anchor, anchor_scope) = {
                 let plan = &self.backdrops[&gid];
                 let anchor = plan.spec.anchor_layer().expect("anchored above");
-                if anchor == root {
+                if anchor == tree.root() {
                     return Err(RenderError::Unsupported(names::BACKDROP_ANCHOR_AT_ROOT));
                 }
-                if self.projects(anchor, tree) {
+                if tree.projective_pose(anchor).is_some() {
                     return Err(RenderError::Unsupported(names::BACKDROP_ANCHOR_PROJECTIVE));
                 }
-                let Some(&(anchor_canvas, anchor_order, anchor_scope)) =
-                    self.anchor_pos.get(&anchor)
+                let Some(&(anchor_canvas, anchor_order, anchor_scope)) = scratch.pos.get(&anchor)
                 else {
                     // The anchor is outside this walk: inside another
                     // projective image its members here are outside its
@@ -1309,12 +1333,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
                         },
                     ));
                 };
-                // The first offending member in paint order names the
-                // error — `pos` is a hash map, so it is sorted first.
-                positions.clear();
-                positions.extend(plan.pos.values().copied());
-                positions.sort_unstable_by_key(|&(_, order)| order);
-                for (canvas, order) in positions.iter().copied() {
+                for &(canvas, order) in &plan.pos {
                     if canvas == anchor_canvas && order > anchor_order {
                         continue;
                     }
@@ -1330,14 +1349,11 @@ impl<'a, 'b> Lowering<'a, 'b> {
             // The capture lands at the anchor — its scope is the
             // anchor's, not the first member's.
             plan.scope = anchor_scope;
-            self.anchor_groups.entry(anchor).or_default().push(gid);
+            scratch.links.push((anchor, gid));
         }
-        for gids in self.anchor_groups.values_mut() {
-            gids.sort_unstable();
-        }
-        // The scratch Vec keeps its capacity for the next plan.
-        gids.clear();
-        self.anchor_gids = gids;
+        scratch
+            .links
+            .sort_unstable_by_key(|&(anchor, gid)| (anchor.raw(), gid));
         Ok(())
     }
 
@@ -1818,11 +1834,16 @@ impl<'a, 'b> Lowering<'a, 'b> {
     }
 
     /// Emits every group's capture anchored at `id`, in group id order.
-    /// `push_capture` needs `&mut self`, so the gids are read back by
-    /// index instead of cloned out of the map.
     fn emit_anchor_captures(&mut self, id: LayerId) {
-        for i in 0..self.anchor_groups.get(&id).map_or(0, Vec::len) {
-            let gid = self.anchor_groups[&id][i];
+        let start = self
+            .anchor_scratch
+            .links
+            .partition_point(|&(anchor, _)| anchor.raw() < id.raw());
+        let end = start
+            + self.anchor_scratch.links[start..]
+                .partition_point(|&(anchor, _)| anchor.raw() == id.raw());
+        for i in start..end {
+            let gid = self.anchor_scratch.links[i].1;
             self.push_capture(gid);
         }
     }
@@ -2081,8 +2102,9 @@ impl<'a, 'b> Lowering<'a, 'b> {
             Some(Emission::Clip(_)) => unreachable!("structural changes replace the cache layout"),
         };
         items.clear();
+        let mut anchor_scratch = AnchorScratch::default();
         let mut compose = Lowering::new(
-            &mut items,
+            (&mut items, &mut anchor_scratch),
             (0, 0),
             None,
             FrameId::new(0),
@@ -2445,8 +2467,49 @@ pub fn silhouette_bytes(content: &ContentData) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::boundary_edges;
+    use super::{AnchorScratch, boundary_edges};
+    use cherenkov::LayerId;
     use cherenkov::kurbo::{RoundedRect, Shape as _};
+
+    #[test]
+    fn anchor_scratch_clear_retains_capacity_and_drops_old_links() {
+        let mut scratch = AnchorScratch::default();
+        assert_eq!(scratch.heap_bytes(), 0);
+        let first = LayerId::new(1);
+        scratch.refs.insert(first);
+        scratch.pos.insert(first, (None, 1, None));
+        scratch.group_ids.push(7);
+        scratch.links.push((first, 7));
+        let capacity = (
+            scratch.refs.capacity(),
+            scratch.pos.capacity(),
+            scratch.group_ids.capacity(),
+            scratch.links.capacity(),
+        );
+        assert!(scratch.heap_bytes() > 0);
+
+        scratch.clear();
+        assert!(scratch.refs.is_empty());
+        assert!(scratch.pos.is_empty());
+        assert_eq!(scratch.group_ids, [] as [u64; 0]);
+        assert_eq!(scratch.links, [] as [(cherenkov::LayerId, u64); 0]);
+
+        let next = LayerId::new(2);
+        scratch.refs.insert(next);
+        scratch.pos.insert(next, (None, 2, None));
+        scratch.group_ids.push(8);
+        scratch.links.push((next, 8));
+        assert_eq!(scratch.links, [(next, 8)]);
+        assert_eq!(
+            (
+                scratch.refs.capacity(),
+                scratch.pos.capacity(),
+                scratch.group_ids.capacity(),
+                scratch.links.capacity(),
+            ),
+            capacity
+        );
+    }
 
     /// SDF edges keep horizontal segments: coverage drops them as
     /// area-free, but distance effects measure to the real boundary.

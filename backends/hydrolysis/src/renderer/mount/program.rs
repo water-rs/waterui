@@ -28,8 +28,8 @@ pub struct ScopeKey {
 /// What a run sits directly beneath.
 #[derive(Clone)]
 pub enum ItemKey {
-    /// A `.material_group()` scope's anchor item — its cell's address.
-    Anchor(usize),
+    /// A `.material_group()` scope's anchor item — its cell identity.
+    Anchor(Rc<NodeCell>),
     Node(Rc<NodeCell>),
     Scope(ScopeKey),
 }
@@ -37,8 +37,7 @@ pub enum ItemKey {
 impl PartialEq for ItemKey {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Anchor(a), Self::Anchor(b)) => a == b,
-            (Self::Node(a), Self::Node(b)) => Rc::ptr_eq(a, b),
+            (Self::Anchor(a), Self::Anchor(b)) | (Self::Node(a), Self::Node(b)) => Rc::ptr_eq(a, b),
             (Self::Scope(a), Self::Scope(b)) => a == b,
             _ => false,
         }
@@ -85,7 +84,7 @@ pub enum Item {
 impl Item {
     pub(crate) fn key(&self) -> Option<ItemKey> {
         match self {
-            Self::Anchor(cell) => Some(ItemKey::Anchor(Rc::as_ptr(cell) as usize)),
+            Self::Anchor(cell) => Some(ItemKey::Anchor(Rc::clone(cell))),
             Self::Run(_) => None,
             Self::Node(cell) => Some(ItemKey::Node(Rc::clone(cell))),
             Self::Scope { key, .. } => Some(ItemKey::Scope(*key)),

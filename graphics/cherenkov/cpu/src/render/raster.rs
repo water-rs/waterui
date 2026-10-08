@@ -1494,9 +1494,7 @@ fn apply_filter(
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    reason = "device spans of texels inside the surface are small and
-    non-negative; one capture pass plans its window, resolves the grid
-    and runs the group's chain in one walk"
+    reason = "device spans of texels inside the surface are small and non-negative"
 )]
 fn capture_band(
     band: &Band<'_>,

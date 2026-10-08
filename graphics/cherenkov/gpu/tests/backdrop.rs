@@ -3310,6 +3310,38 @@ fn an_anchor_at_a_projective_layer_is_unsupported() -> Result<(), Box<dyn std::e
 }
 
 split_test! {
+fn a_member_inside_a_projective_anchor_is_unsupported() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
+    let anchor = surface.layer();
+    let group = surface.backdrop_group_unfiltered(
+        cherenkov::BackdropSpec::new(cherenkov::CaptureScale::FULL, cherenkov::CaptureLevels::ONE)
+            .anchor(anchor.id()),
+    );
+    let member = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].push(&anchor);
+        tx[&anchor]
+            .clip(Rect::new(0.0, 0.0, 32.0, 32.0))
+            .projection(cherenkov::Projective::perspective(100.0).expect("projection"));
+        tx[&anchor].push(&member);
+        tx[&member]
+            .clip(Rect::new(8.0, 8.0, 24.0, 24.0))
+            .backdrop(group.sample());
+    });
+    let result = wait!(engine.render(FrameTime::now()));
+    assert!(
+        matches!(
+            result,
+            Err(cherenkov::RenderError::Unsupported(name)) if name == "backdrop-anchor-projective"
+        ),
+        "unexpected result {result:?}"
+    );
+    Ok(())
+}
+}
+
+split_test! {
 /// An anchor naming a layer id nothing in the tree carries has no paint
 /// position. The engine rejects it by name,
 /// `backdrop-unknown-anchor` — the same case the scene format rejects

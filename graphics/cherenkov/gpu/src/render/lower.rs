@@ -902,61 +902,6 @@ fn bbox(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
     [x0, y0, x1 - x0, y1 - y0]
 }
 
-/// A member's device rect aproned on the capture grid in whole
-/// texels, `None` when it is empty or clipped fully off it:
-/// every level's read footprint, in level-0 texels, inflated
-/// by the filter's `apron` so each filtered texel any level
-/// reads is computed from uncut filter input — a member's
-/// result never depends on the other members.
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "region coordinates are finite, non-negative and below the surface size"
-)]
-fn aproned_rect(
-    rect: Rect,
-    apron: f64,
-    scale: f64,
-    capture_w: f64,
-    capture_h: f64,
-    levels: u32,
-    taps: f64,
-) -> Option<[u32; 4]> {
-    // Level 0: the member rect plus the bilinear taps.
-    let inflated = apron + taps;
-    let mut x0 = rect.x0.mul_add(scale, -inflated).floor().max(0.0);
-    let mut y0 = rect.y0.mul_add(scale, -inflated).floor().max(0.0);
-    let mut x1 = rect.x1.mul_add(scale, inflated).ceil().min(capture_w);
-    let mut y1 = rect.y1.mul_add(scale, inflated).ceil().min(capture_h);
-    // Levels 1..n: a bilinear read at level `k` taps level-k
-    // texels `floor(q·s/2^k − 0.5)` through `+1`, and level-k
-    // texel `t` reduces capture texels `[2^k·t, 2^k·(t+1))`.
-    for k in 1..levels {
-        let div = f64::from(1u32 << k);
-        x0 = x0
-            .min((rect.x0 * scale / div - 0.5).floor().mul_add(div, -apron))
-            .max(0.0);
-        y0 = y0
-            .min((rect.y0 * scale / div - 0.5).floor().mul_add(div, -apron))
-            .max(0.0);
-        x1 = x1
-            .max(((rect.x1 * scale / div - 0.5).floor() + 2.0).mul_add(div, apron))
-            .min(capture_w);
-        y1 = y1
-            .max(((rect.y1 * scale / div - 0.5).floor() + 2.0).mul_add(div, apron))
-            .min(capture_h);
-    }
-    // The region's origin sits on the deepest level's grid so
-    // level `k` texel `(i, j)` covers capture texels
-    // `[2^k·i, 2^k·(i+1))`; its far edge stays grid-clipped.
-    let grid = f64::from(1u32 << (levels - 1));
-    x0 = (x0 / grid).floor() * grid;
-    y0 = (y0 / grid).floor() * grid;
-    x1 = ((x1 / grid).ceil() * grid).min(capture_w);
-    y1 = ((y1 / grid).ceil() * grid).min(capture_h);
-    (x1 > x0 && y1 > y0).then_some([x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32])
-}
-
 /// Clusters aproned member rects into capture regions: agglomerative
 /// merge on `cost(cluster) = area(bbox) + overhead`, always taking the
 /// lowest-waste pair while `waste < overhead` — overlapping or touching
@@ -1050,7 +995,7 @@ struct BackdropPlan {
     /// Each member's paint-order record for an anchored group's range
     /// check: the compositing canvas it paints in (`None` at the surface
     /// level) and its paint-order index.
-    pos: FxHashMap<LayerId, (Option<LayerId>, usize)>,
+    pos: Vec<(Option<LayerId>, usize)>,
 }
 
 /// One backdrop member's plan entry.
@@ -1078,17 +1023,41 @@ struct MemberEntry {
     reach: f32,
 }
 
-/// The plan for one anchor layer: the groups anchored at it, each of
-/// which takes its own capture beneath the anchor.
-#[derive(Clone)]
-struct AnchorPlan {
-    /// The anchored groups, in id order.
-    groups: Vec<u64>,
+/// Reusable state for anchor planning and capture emission.
+#[derive(Default)]
+pub(super) struct AnchorScratch {
+    refs: FxHashSet<LayerId>,
+    pos: FxHashMap<LayerId, (Option<LayerId>, usize)>,
+    group_ids: Vec<u64>,
+    links: Vec<(LayerId, u64)>,
+}
+
+impl AnchorScratch {
+    fn clear(&mut self) {
+        self.refs.clear();
+        self.pos.clear();
+        self.group_ids.clear();
+        self.links.clear();
+    }
+
+    fn prepare(&mut self, groups: &FxHashMap<u64, BackdropGroupInfo>) {
+        self.clear();
+        self.refs
+            .extend(groups.values().filter_map(|info| info.spec.anchor_layer()));
+    }
+
+    pub(super) fn heap_bytes(&self) -> u64 {
+        (self.refs.capacity() * size_of::<LayerId>()
+            + self.pos.capacity() * size_of::<(LayerId, (Option<LayerId>, usize))>()
+            + self.group_ids.capacity() * size_of::<u64>()
+            + self.links.capacity() * size_of::<(LayerId, u64)>()) as u64
+    }
 }
 
 /// The lowering walk state for one surface frame.
 pub struct Lowering<'a> {
     frame: &'a mut Frame,
+    anchor_scratch: &'a mut AnchorScratch,
     width: f32,
     height: f32,
     transform: Affine,
@@ -1142,16 +1111,6 @@ pub struct Lowering<'a> {
     pub layers_composed: u32,
     /// Backdrop groups planned before lowering.
     backdrops: FxHashMap<u64, BackdropPlan>,
-    /// The anchor layers planned before lowering, by layer id.
-    anchors: FxHashMap<LayerId, AnchorPlan>,
-    /// Each anchor layer's compositing canvas and paint-order index, as
-    /// the planning walk recorded them.
-    anchor_pos: FxHashMap<LayerId, (Option<LayerId>, usize)>,
-    /// The layer ids any planned group anchors at.
-    anchor_refs: FxHashSet<LayerId>,
-    /// Scratch for the anchored group ids `plan_anchors` sorts and
-    /// emits — reused across frames.
-    anchor_gids: Vec<u64>,
     /// The planning walk's paint-order counter.
     plan_order: usize,
     /// The `FilterKey` of each filtered group's capture chain.
@@ -1210,9 +1169,15 @@ pub struct Lowering<'a> {
 impl<'a> Lowering<'a> {
     /// Starts a lowering into `frame` for a `width` × `height` surface.
     #[expect(clippy::cast_precision_loss, reason = "surface sizes fit f32")]
-    pub fn new(frame: &'a mut Frame, size: (u32, u32)) -> Self {
+    pub fn new(
+        frame: &'a mut Frame,
+        size: (u32, u32),
+        anchor_scratch: &'a mut AnchorScratch,
+    ) -> Self {
+        anchor_scratch.clear();
         Self {
             frame,
+            anchor_scratch,
             width: size.0 as f32,
             height: size.1 as f32,
             transform: Affine::IDENTITY,
@@ -1233,10 +1198,6 @@ impl<'a> Lowering<'a> {
             commands_lowered: 0,
             layers_composed: 0,
             backdrops: FxHashMap::default(),
-            anchors: FxHashMap::default(),
-            anchor_pos: FxHashMap::default(),
-            anchor_refs: FxHashSet::default(),
-            anchor_gids: Vec::new(),
             plan_order: 0,
             backdrop_filters: FxHashMap::default(),
             capture_isolation: false,
@@ -1296,6 +1257,7 @@ impl<'a> Lowering<'a> {
     /// always made.
     #[expect(
         clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
         reason = "region coordinates are finite, non-negative and below the surface size"
     )]
     fn plan_backdrops(
@@ -1303,9 +1265,7 @@ impl<'a> Lowering<'a> {
         tree: &SurfaceTree,
         groups: &FxHashMap<u64, BackdropGroupInfo>,
     ) -> Result<(), RenderError> {
-        self.anchor_refs.clear();
-        self.anchor_refs
-            .extend(groups.values().filter_map(|info| info.spec.anchor_layer()));
+        self.anchor_scratch.prepare(groups);
         self.plan_order = 0;
         let start = self.start(tree);
         self.plan_layer(start, tree, groups, Affine::IDENTITY, None)?;
@@ -1331,7 +1291,52 @@ impl<'a> Lowering<'a> {
             } else {
                 1.0
             };
-            let aproned = |r: Rect, apron: f64| aproned_rect(r, apron, s, w, h, levels, taps);
+            // A member's device rect aproned on the capture grid in whole
+            // texels, `None` when it is empty or clipped fully off it:
+            // every level's read footprint, in level-0 texels, inflated
+            // by the filter's `apron` so each filtered texel any level
+            // reads is computed from uncut filter input — a member's
+            // result never depends on the other members.
+            let aproned = |r: Rect, apron: f64| -> Option<[u32; 4]> {
+                // Level 0: the member rect plus the bilinear taps.
+                let a = apron + taps;
+                let mut x0 = r.x0.mul_add(s, -a).floor().max(0.0);
+                let mut y0 = r.y0.mul_add(s, -a).floor().max(0.0);
+                let mut x1 = r.x1.mul_add(s, a).ceil().min(w);
+                let mut y1 = r.y1.mul_add(s, a).ceil().min(h);
+                // Levels 1..n: a bilinear read at level `k` taps level-k
+                // texels `floor(q·s/2^k − 0.5)` through `+1`, and level-k
+                // texel `t` reduces capture texels `[2^k·t, 2^k·(t+1))`.
+                for k in 1..levels {
+                    let div = f64::from(1u32 << k);
+                    x0 = x0
+                        .min((r.x0 * s / div - 0.5).floor().mul_add(div, -apron))
+                        .max(0.0);
+                    y0 = y0
+                        .min((r.y0 * s / div - 0.5).floor().mul_add(div, -apron))
+                        .max(0.0);
+                    x1 = x1
+                        .max(((r.x1 * s / div - 0.5).floor() + 2.0).mul_add(div, apron))
+                        .min(w);
+                    y1 = y1
+                        .max(((r.y1 * s / div - 0.5).floor() + 2.0).mul_add(div, apron))
+                        .min(h);
+                }
+                // The region's origin sits on the deepest level's grid so
+                // level `k` texel `(i, j)` covers capture texels
+                // `[2^k·i, 2^k·(i+1))`; its far edge stays grid-clipped.
+                let grid = f64::from(1u32 << (levels - 1));
+                x0 = (x0 / grid).floor() * grid;
+                y0 = (y0 / grid).floor() * grid;
+                x1 = ((x1 / grid).ceil() * grid).min(w);
+                y1 = ((y1 / grid).ceil() * grid).min(h);
+                (x1 > x0 && y1 > y0).then_some([
+                    x0 as u32,
+                    y0 as u32,
+                    (x1 - x0) as u32,
+                    (y1 - y0) as u32,
+                ])
+            };
             let footprint = groups
                 .get(gid)
                 .and_then(|info| info.footprint)
@@ -1387,76 +1392,64 @@ impl<'a> Lowering<'a> {
                 }
             }
         }
-        self.plan_anchors(start, tree)
+        self.plan_anchors(tree)
     }
 
-    /// Validates every anchored group's member range, then builds each
-    /// anchor's [`AnchorPlan`]: the groups sharing it, in id order —
-    /// `backdrops` is a hash map, so the ids are sorted first for a
-    /// deterministic error and emission order. A member of an anchored
-    /// group must paint after its anchor in the anchor's compositing
-    /// canvas — the anchor's descendants or its later siblings there; an
-    /// anchored group never falls
-    /// back to a capture at the member.
-    fn plan_anchors(&mut self, root: LayerId, tree: &SurfaceTree) -> Result<(), RenderError> {
-        let mut gids = std::mem::take(&mut self.anchor_gids);
-        gids.clear();
-        gids.extend(
+    /// Validates every anchored group's member range. A member can be any
+    /// layer painting after the anchor in the anchor's compositing canvas;
+    /// anchored groups never fall back to a capture at the member.
+    fn plan_anchors(&mut self, tree: &SurfaceTree) -> Result<(), RenderError> {
+        let result = self.plan_anchors_inner(tree);
+        if result.is_err() {
+            self.anchor_scratch.group_ids.clear();
+            self.anchor_scratch.links.clear();
+        }
+        result
+    }
+
+    fn plan_anchors_inner(&mut self, tree: &SurfaceTree) -> Result<(), RenderError> {
+        let scratch = &mut *self.anchor_scratch;
+        scratch.group_ids.extend(
             self.backdrops
                 .iter()
                 .filter(|(_, plan)| plan.spec.anchor_layer().is_some())
                 .map(|(gid, _)| *gid),
         );
-        gids.sort_unstable();
-        let mut positions: Vec<(Option<LayerId>, usize)> = Vec::new();
-        for gid in gids.iter().copied() {
-            let anchor = {
-                let plan = &self.backdrops[&gid];
-                let anchor = plan.spec.anchor_layer().expect("anchored above");
-                if anchor == root {
-                    return Err(RenderError::Unsupported(names::BACKDROP_ANCHOR_AT_ROOT));
-                }
-                if self.projects(anchor, tree) {
-                    return Err(RenderError::Unsupported(names::BACKDROP_ANCHOR_PROJECTIVE));
-                }
-                let Some(&(anchor_canvas, anchor_order)) = self.anchor_pos.get(&anchor) else {
-                    // The anchor is outside this walk: inside another
-                    // projective image its members here are outside its
-                    // canvas; an `id` nothing carries names nothing.
-                    return Err(RenderError::Unsupported(
-                        if tree.layers().any(|(id, _)| id.raw() == anchor.raw()) {
-                            names::BACKDROP_MEMBER_OUTSIDE_ANCHOR_CANVAS
-                        } else {
-                            names::BACKDROP_UNKNOWN_ANCHOR
-                        },
-                    ));
-                };
-                // The first offending member in paint order names the
-                // error — `pos` is a hash map, so it is sorted first.
-                positions.clear();
-                positions.extend(plan.pos.values().copied());
-                positions.sort_unstable_by_key(|&(_, order)| order);
-                for (canvas, order) in positions.iter().copied() {
-                    if canvas == anchor_canvas && order > anchor_order {
-                        continue;
-                    }
-                    return Err(RenderError::Unsupported(if canvas == anchor_canvas {
-                        names::BACKDROP_MEMBER_BEFORE_ANCHOR
-                    } else {
+        scratch.group_ids.sort_unstable();
+        for i in 0..scratch.group_ids.len() {
+            let gid = scratch.group_ids[i];
+            let plan = &self.backdrops[&gid];
+            let anchor = plan.spec.anchor_layer().expect("anchored above");
+            if anchor == tree.root() {
+                return Err(RenderError::Unsupported(names::BACKDROP_ANCHOR_AT_ROOT));
+            }
+            if tree.projective_pose(anchor).is_some() {
+                return Err(RenderError::Unsupported(names::BACKDROP_ANCHOR_PROJECTIVE));
+            }
+            let Some(&(anchor_canvas, anchor_order)) = scratch.pos.get(&anchor) else {
+                return Err(RenderError::Unsupported(
+                    if tree.layers().any(|(id, _)| id.raw() == anchor.raw()) {
                         names::BACKDROP_MEMBER_OUTSIDE_ANCHOR_CANVAS
-                    }));
-                }
-                anchor
+                    } else {
+                        names::BACKDROP_UNKNOWN_ANCHOR
+                    },
+                ));
             };
-            self.anchors
-                .entry(anchor)
-                .or_insert_with(|| AnchorPlan { groups: Vec::new() })
-                .groups
-                .push(gid);
+            for &(canvas, order) in &plan.pos {
+                if canvas == anchor_canvas && order > anchor_order {
+                    continue;
+                }
+                return Err(RenderError::Unsupported(if canvas == anchor_canvas {
+                    names::BACKDROP_MEMBER_BEFORE_ANCHOR
+                } else {
+                    names::BACKDROP_MEMBER_OUTSIDE_ANCHOR_CANVAS
+                }));
+            }
+            scratch.links.push((anchor, gid));
         }
-        // The scratch Vec keeps its capacity for the next frame.
-        gids.clear();
-        self.anchor_gids = gids;
+        scratch
+            .links
+            .sort_unstable_by_key(|&(anchor, gid)| (anchor.raw(), gid));
         Ok(())
     }
 
@@ -1478,8 +1471,8 @@ impl<'a> Lowering<'a> {
         let node = tree.layer(id);
         self.plan_order += 1;
         let order = self.plan_order;
-        if !self.anchor_refs.is_empty() && self.anchor_refs.contains(&id) {
-            self.anchor_pos.insert(id, (canvas, order));
+        if !self.anchor_scratch.refs.is_empty() && self.anchor_scratch.refs.contains(&id) {
+            self.anchor_scratch.pos.insert(id, (canvas, order));
         }
         let (transform, children) = self.placement(id, node, parent);
         if let Some(sample) = &node.backdrop {
@@ -1536,7 +1529,7 @@ impl<'a> Lowering<'a> {
                 aproned: Vec::new(),
                 regions: Vec::new(),
                 members: FxHashMap::default(),
-                pos: FxHashMap::default(),
+                pos: Vec::new(),
                 next_ord: 0,
             });
             plan.union = plan.union.union(footprint);
@@ -1557,7 +1550,7 @@ impl<'a> Lowering<'a> {
                 },
             );
             if spec.anchor_layer().is_some() {
-                plan.pos.insert(id, (canvas, order));
+                plan.pos.push((canvas, order));
             }
         }
         // A semantically isolating layer — filtered or blended — is its
@@ -1717,10 +1710,7 @@ impl<'a> Lowering<'a> {
         self.animating = false;
         self.set_clip(None);
         self.backdrops.clear();
-        for plan in self.anchors.values_mut() {
-            plan.groups.clear();
-        }
-        self.anchor_pos.clear();
+        self.anchor_scratch.clear();
         self.backdrop_filters = groups
             .iter()
             .filter_map(|(g, info)| info.filter.map(|key| (*g, key)))
@@ -1921,7 +1911,7 @@ impl<'a> Lowering<'a> {
                     .get(&g)
                     .and_then(|plan| plan.regions.get(r as usize))
                     .copied()
-                    .expect("a capture pass's region is planned"),
+                    .unwrap_or([0, 0, 0, 0]),
             };
             if let Some(capture) = open.capture
                 && capture.levels > 1
@@ -2949,8 +2939,15 @@ impl<'a> Lowering<'a> {
         // target directly, like an unanchored capture at the member.
         // `emit_capture` needs `&mut self`, so the groups are read back
         // by index instead of cloned out of the map.
-        for i in 0..self.anchors.get(&id).map_or(0, |plan| plan.groups.len()) {
-            let gid = self.anchors[&id].groups[i];
+        let start = self
+            .anchor_scratch
+            .links
+            .partition_point(|&(anchor, _)| anchor.raw() < id.raw());
+        let end = start
+            + self.anchor_scratch.links[start..]
+                .partition_point(|&(anchor, _)| anchor.raw() == id.raw());
+        for i in start..end {
+            let gid = self.anchor_scratch.links[i].1;
             self.emit_capture(gid, self.semantic_target);
         }
         let node = tree.layer(id);
@@ -5212,7 +5209,8 @@ mod tests {
     #[test]
     fn cached_margin_preserves_exact_transform_results() {
         let mut frame = Frame::default();
-        let mut lowering = Lowering::new(&mut frame, (64, 64));
+        let mut anchor_scratch = AnchorScratch::default();
+        let mut lowering = Lowering::new(&mut frame, (64, 64), &mut anchor_scratch);
         let transforms = [
             Affine::IDENTITY,
             Affine::scale_non_uniform(2.0, 3.0),
@@ -5301,7 +5299,8 @@ mod tests {
         let images = FxHashMap::default();
         let bitmaps = FxHashMap::default();
         let mut frame = Frame::default();
-        let mut lowering = Lowering::new(&mut frame, (64, 64));
+        let mut anchor_scratch = AnchorScratch::default();
+        let mut lowering = Lowering::new(&mut frame, (64, 64), &mut anchor_scratch);
         lowering.begin_pass(Target::Part(0), None);
         let glyphs = GlyphContext {
             atlas: &atlas,
@@ -5398,7 +5397,8 @@ mod tests {
             content: &FxHashMap::default(),
         };
         let mut frame = Frame::default();
-        let mut lowering = Lowering::new(&mut frame, (64, 64));
+        let mut anchor_scratch = AnchorScratch::default();
+        let mut lowering = Lowering::new(&mut frame, (64, 64), &mut anchor_scratch);
         lowering.begin_pass(Target::Part(0), None);
         lowering
             .isolate(
@@ -5474,7 +5474,8 @@ mod tests {
             mask: None,
         };
         let mut frame = Frame::default();
-        let mut lowering = Lowering::new(&mut frame, (64, 64));
+        let mut anchor_scratch = AnchorScratch::default();
+        let mut lowering = Lowering::new(&mut frame, (64, 64), &mut anchor_scratch);
         lowering.begin_pass(Target::Part(0), None);
         lowering
             .isolate(
@@ -5559,7 +5560,8 @@ mod tests {
     #[test]
     fn a_collapsed_shadow_emits_no_quads() {
         let mut frame = Frame::default();
-        let mut lowering = Lowering::new(&mut frame, (64, 64));
+        let mut anchor_scratch = AnchorScratch::default();
+        let mut lowering = Lowering::new(&mut frame, (64, 64), &mut anchor_scratch);
         let Some((device, _queue)) = device_and_queue() else {
             return;
         };
@@ -5853,7 +5855,8 @@ mod tests {
                 content: &FxHashMap::default(),
             };
             let mut frame = Frame::default();
-            let mut lowering = Lowering::new(&mut frame, (32, 32));
+            let mut anchor_scratch = AnchorScratch::default();
+            let mut lowering = Lowering::new(&mut frame, (32, 32), &mut anchor_scratch);
             lowering.prepare(&mut caches, &glyphs).expect("prepared");
             lowering
                 .run(
@@ -5900,5 +5903,95 @@ mod tests {
                 (Target::Part(1), Some([0.0; 4]), 0),
             ]
         );
+    }
+
+    #[test]
+    fn anchor_scratch_reuses_capacity_without_stale_links() {
+        use cherenkov::SurfaceTree;
+
+        fn plan(anchor: LayerId, member: LayerId) -> BackdropPlan {
+            BackdropPlan {
+                first: member,
+                spec: cherenkov::BackdropSpec::FULL.anchor(anchor),
+                union: Rect::new(0.0, 0.0, 1.0, 1.0),
+                aproned: Vec::new(),
+                regions: Vec::new(),
+                members: FxHashMap::default(),
+                next_ord: 0,
+                pos: vec![(None, 2)],
+            }
+        }
+
+        let (anchor_a, anchor_b, member) =
+            (LayerId::new(100), LayerId::new(101), LayerId::new(102));
+        let mut tree = SurfaceTree::new();
+        for id in [anchor_a, anchor_b, member] {
+            tree.apply(cherenkov::testing::LayerOp::Create(id));
+            tree.apply(cherenkov::testing::LayerOp::Push {
+                parent: tree.root(),
+                child: id,
+            });
+        }
+        let mut frame = Frame::default();
+        let mut scratch = AnchorScratch::default();
+        assert_eq!(scratch.heap_bytes(), 0);
+        let mut lowering = Lowering::new(&mut frame, (32, 32), &mut scratch);
+        lowering.anchor_scratch.pos.insert(anchor_a, (None, 1));
+        lowering.backdrops.insert(7, plan(anchor_a, member));
+        lowering
+            .plan_anchors(&tree)
+            .expect("the first anchor plan is valid");
+        let capacity = (
+            lowering.anchor_scratch.pos.capacity(),
+            lowering.anchor_scratch.group_ids.capacity(),
+            lowering.anchor_scratch.links.capacity(),
+        );
+        assert!(lowering.anchor_scratch.heap_bytes() > 0);
+        assert_eq!(lowering.anchor_scratch.links, [(anchor_a, 7)]);
+
+        lowering.backdrops.clear();
+        lowering.anchor_scratch.clear();
+        lowering.anchor_scratch.pos.insert(anchor_b, (None, 1));
+        lowering.backdrops.insert(8, plan(anchor_b, member));
+        lowering
+            .plan_anchors(&tree)
+            .expect("the second anchor plan is valid");
+        assert_eq!(lowering.anchor_scratch.links, [(anchor_b, 8)]);
+        assert_eq!(
+            (
+                lowering.anchor_scratch.pos.capacity(),
+                lowering.anchor_scratch.group_ids.capacity(),
+                lowering.anchor_scratch.links.capacity(),
+            ),
+            capacity
+        );
+
+        lowering.backdrops.clear();
+        lowering.anchor_scratch.clear();
+        lowering.anchor_scratch.pos.insert(tree.root(), (None, 1));
+        lowering.backdrops.insert(9, plan(tree.root(), member));
+        assert!(lowering.plan_anchors(&tree).is_err());
+        assert_eq!(lowering.anchor_scratch.group_ids, [] as [u64; 0]);
+        assert_eq!(
+            lowering.anchor_scratch.links,
+            [] as [(cherenkov::LayerId, u64); 0]
+        );
+        assert_eq!(
+            (
+                lowering.anchor_scratch.pos.capacity(),
+                lowering.anchor_scratch.group_ids.capacity(),
+                lowering.anchor_scratch.links.capacity(),
+            ),
+            capacity
+        );
+
+        lowering.backdrops.clear();
+        lowering.anchor_scratch.clear();
+        lowering.anchor_scratch.pos.insert(anchor_a, (None, 1));
+        lowering.backdrops.insert(10, plan(anchor_a, member));
+        lowering
+            .plan_anchors(&tree)
+            .expect("a plan after an error has no stale links");
+        assert_eq!(lowering.anchor_scratch.links, [(anchor_a, 10)]);
     }
 }

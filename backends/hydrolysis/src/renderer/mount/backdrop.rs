@@ -140,6 +140,8 @@ struct MountedBackdrop<G> {
     members: FxHashSet<LayerId>,
 }
 
+type AnchorRegistration = (LayerId, Weak<NodeCell>, u64);
+
 /// The mount's live backdrop groups and member entries.
 pub struct BackdropGroups<G> {
     groups: FxHashMap<BackdropGroupKey, MountedBackdrop<G>>,
@@ -154,7 +156,8 @@ pub struct BackdropGroups<G> {
     /// anchor item pins the `Rc`, so the address cannot be reused and
     /// the weak stays live; a scope whose tree dropped releases here at
     /// the next sweep.
-    anchors: FxHashMap<(usize, Option<LayerId>), (LayerId, Weak<NodeCell>)>,
+    anchors: FxHashMap<(usize, Option<LayerId>), AnchorRegistration>,
+    epoch: u64,
 }
 
 /// The spec a group object was created with — the GPU target's
@@ -186,6 +189,7 @@ impl<G> BackdropGroups<G> {
             groups: FxHashMap::default(),
             members: FxHashMap::default(),
             anchors: FxHashMap::default(),
+            epoch: 0,
         }
     }
 
@@ -195,7 +199,7 @@ impl<G> BackdropGroups<G> {
     /// holds the scope's cell, so the address it keys can never name a
     /// different cell. One owner per key: a second live registration
     /// under the same `(scope, canvas)` names the same layer or it is a
-    /// bug; a dead owner's stale entry is replaced outright.
+    /// bug within one commit; an older registration is replaced outright.
     pub(crate) fn set_scope_anchor(
         &mut self,
         cell: &Rc<NodeCell>,
@@ -205,8 +209,8 @@ impl<G> BackdropGroups<G> {
         let scope = Rc::as_ptr(cell) as usize;
         match self.anchors.entry((scope, canvas)) {
             Entry::Occupied(mut entry) => {
-                if entry.get().1.upgrade().is_none() {
-                    entry.insert((layer, Rc::downgrade(cell)));
+                if entry.get().2 != self.epoch || entry.get().1.upgrade().is_none() {
+                    entry.insert((layer, Rc::downgrade(cell), self.epoch));
                 } else {
                     assert_eq!(
                         entry.get().0,
@@ -220,7 +224,7 @@ impl<G> BackdropGroups<G> {
                 }
             }
             Entry::Vacant(entry) => {
-                entry.insert((layer, Rc::downgrade(cell)));
+                entry.insert((layer, Rc::downgrade(cell), self.epoch));
             }
         }
     }
@@ -390,7 +394,8 @@ impl<G> BackdropGroups<G> {
     /// it renders, so the release and the mounts that replace it land
     /// together.
     pub(crate) fn sweep(&mut self) {
-        self.anchors.retain(|_, (_, cell)| cell.upgrade().is_some());
+        self.anchors
+            .retain(|_, (_, cell, _)| cell.upgrade().is_some());
         self.members
             .retain(|_, entry| entry.marker.upgrade().is_some());
         self.groups.retain(|_, group| {
@@ -399,6 +404,10 @@ impl<G> BackdropGroups<G> {
                 .retain(|member| self.members.contains_key(member));
             !group.members.is_empty()
         });
+        self.epoch = self
+            .epoch
+            .checked_add(1)
+            .expect("hydrolysis mounts: backdrop registration epoch overflow");
     }
 
     /// The scope `member`'s backdrop group is keyed by — `None` while the
@@ -450,7 +459,7 @@ impl<G> BackdropGroups<G> {
     pub(crate) fn anchor_registrations(&self) -> Vec<(usize, Option<LayerId>, LayerId)> {
         self.anchors
             .iter()
-            .map(|(&(s, c), &(l, _))| (s, c, l))
+            .map(|(&(s, c), &(l, _, _))| (s, c, l))
             .collect()
     }
 

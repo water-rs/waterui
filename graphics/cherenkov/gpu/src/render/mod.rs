@@ -332,6 +332,7 @@ struct SurfaceState {
     staging_bind: [Option<resolve::Bind>; 2],
     /// Backdrop groups registered on this surface by raw id.
     backdrop_groups: FxHashMap<u64, BackdropGroupState>,
+    anchor_scratch: lower::AnchorScratch,
     layers: FxHashMap<LayerId, ContentData>,
     /// GPU producer bindings by layer (`cherenkov::GpuContent`): a layer
     /// binds one producer, a producer serves bindings on any surface,
@@ -486,8 +487,8 @@ impl SurfaceState {
     }
 
     /// Bytes held by this surface's backdrop captures, summed over all
-    /// regions of all groups, pyramid levels included; the shared
-    /// staging is counted by [`staging_bytes`](Self::staging_bytes).
+    /// regions of all groups, pyramid levels included; the shared staging
+    /// is counted by [`staging_bytes`](Self::staging_bytes).
     fn backdrop_bytes(&self) -> u64 {
         self.backdrop_groups
             .values()
@@ -3001,6 +3002,7 @@ impl Renderer for GpuRenderer {
                 staging: [None, None],
                 staging_bind: [None, None],
                 backdrop_groups: FxHashMap::default(),
+                anchor_scratch: lower::AnchorScratch::default(),
                 layers: FxHashMap::default(),
                 bindings: FxHashMap::default(),
                 hosted: FxHashMap::default(),
@@ -3686,6 +3688,11 @@ impl Renderer for GpuRenderer {
             .map(|c| format_name(c.target.texture.format()))
             .next();
         let cpu = self.atlas.cpu_bytes()
+            + self
+                .surfaces
+                .values()
+                .map(|surface| surface.anchor_scratch.heap_bytes())
+                .sum::<u64>()
             + self
                 .surfaces
                 .values()
@@ -6272,7 +6279,7 @@ impl GpuRenderer {
                 bitmaps: resources.bitmaps,
                 content: &surf.bindings,
             };
-            let mut lowering = Lowering::new(&mut surf.frame, surf.size);
+            let mut lowering = Lowering::new(&mut surf.frame, surf.size, &mut surf.anchor_scratch);
             let result = lowering.prepare(&mut layers, &glyphs).and_then(|()| {
                 for placement in &surf.plan.planes {
                     if let Some(entry) = surf.static_layers.get(&placement.layer)
@@ -7917,8 +7924,8 @@ impl GpuRenderer {
             if let Some(capture) = pass.capture
                 && (capture.resolve.is_none() || resolve::staged(pass))
             {
-                let src = match capture.copy_from {
-                    Target::Plane(layer) => {
+                let (src, sx, sy) = match capture.copy_from {
+                    Target::Plane(layer) => (
                         &surf.static_layers[&layer]
                             .capture
                             .as_ref()
@@ -7926,15 +7933,18 @@ impl GpuRenderer {
                             .source
                             .as_ref()
                             .expect("capture source allocated before encode")
-                            .0
+                            .0,
+                        0,
+                        0,
+                    ),
+                    Target::Part(n) => (surf.part(n).1, 0, 0),
+                    Target::Projected(key) => {
+                        (&projective_entry(&surf.projective, key).texture, 0, 0)
                     }
-                    Target::Part(n) => surf.part(n).1,
-                    Target::Projected(key) => &projective_entry(&surf.projective, key).texture,
-                    Target::Scratch(k) => &surf.scratch[&k].texture,
+                    Target::Scratch(k) => (&surf.scratch[&k].texture, 0, 0),
                     Target::Backdrop { group, region } => {
-                        &surf.backdrop_groups[&group].captures[region as usize]
-                            .target
-                            .texture
+                        let capture = &surf.backdrop_groups[&group].captures[region as usize];
+                        (&capture.target.texture, 0, 0)
                     }
                 };
                 debug_assert!(draw_region[0] + draw_region[2] <= src.width());
@@ -7944,8 +7954,8 @@ impl GpuRenderer {
                         texture: src,
                         mip_level: 0,
                         origin: wgpu::Origin3d {
-                            x: draw_region[0],
-                            y: draw_region[1],
+                            x: draw_region[0].saturating_sub(sx),
+                            y: draw_region[1].saturating_sub(sy),
                             z: 0,
                         },
                         aspect: wgpu::TextureAspect::All,

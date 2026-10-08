@@ -230,11 +230,10 @@ impl BackdropSpec {
     /// the anchor's own content and its children: the group's capture reads
     /// the anchor's compositing canvas as it stands at the anchor's paint
     /// position — one capture per anchored group — so anchored members
-    /// never see each other — or content painted after the anchor — at
-    /// all. Every member
-    /// must then paint after the anchor inside its compositing canvas —
-    /// the anchor's descendants or its later siblings — or the frame fails
-    /// instead of falling back to the first-member rule.
+    /// never see each other or content painted after the anchor. A member
+    /// can be any layer painting after the anchor in the anchor's
+    /// compositing canvas, or the frame fails instead of falling back to
+    /// the first-member rule.
     ///
     /// A spec without an anchor keeps the first-member rule: the capture is
     /// taken where the group's first member paints.

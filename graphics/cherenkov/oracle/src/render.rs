@@ -500,9 +500,9 @@ impl Renderer {
     }
 
     /// Validates every anchored group's member range before rendering:
-    /// each member must paint after the group's anchor in the anchor's
-    /// compositing canvas — the anchor's descendants or its later
-    /// siblings — never falling back to a first-member capture.
+    /// each member can be any layer painting after the group's anchor in
+    /// the anchor's compositing canvas, never falling back to a
+    /// first-member capture.
     fn plan_anchors(scene: &Scene) -> Result<(), RenderError> {
         if scene
             .backdrop_groups
