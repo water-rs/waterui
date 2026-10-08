@@ -17,7 +17,7 @@ use std::rc::{Rc, Weak};
 use cherenkov::{Layer, LayerId, Transaction};
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use cherenkov_record::{CaptureClass, Live, MaterialEffect, MaterialGrouping};
+use cherenkov_record::{CaptureClass, MaterialEffect, MaterialGrouping, SharedLive};
 
 use crate::renderer::material::{MaterialRuntime, WithinWindowLevel};
 use crate::renderer::mount::{MaterialRequest, NodeCell};
@@ -261,7 +261,7 @@ pub struct ChromeMemberPayload<S> {
     pub shader: S,
     /// The member's live effect: the sample's uniforms re-read as it
     /// changes.
-    pub effect: Live<MaterialEffect>,
+    pub effect: SharedLive<MaterialEffect>,
 }
 
 /// The chrome groups a [`Mount`] keeps (water-rs/waterui#1788).

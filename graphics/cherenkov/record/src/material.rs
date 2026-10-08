@@ -40,7 +40,7 @@ use std::num::NonZeroU64;
 use rustc_hash::FxHashMap;
 
 use crate::backdrop::{BackdropShaderSource, CaptureLevels, CaptureScale};
-use crate::record::{Content, Live};
+use crate::record::{Content, SharedLive};
 use crate::shape::ShapeData;
 
 /// The key a widget theme chooses for one of its backdrop shaders.
@@ -346,25 +346,26 @@ impl MaterialScope {
 /// A backdrop material as a layered recording returns it, for its host to
 /// realize as a backdrop member layer.
 ///
-/// The shape and the effect are [`Live`]: the host binds the member's clip
-/// to the shape and its backdrop sample to the effect (through
-/// [`Live::map`]), so a signal change reaches the member with no
-/// re-recording. A binding starts from its signal's value when it binds.
+/// The shape and the effect are [`SharedLive`]: the host binds the member's
+/// clip to the shape and its backdrop sample to the effect (through
+/// [`SharedLive::map`]), so a signal change reaches the member with no
+/// re-recording. Each binding starts from the signal's value at the bind —
+/// [`SharedLive::rebound`] — so a group rebuild never restarts stale.
 #[derive(Clone, Debug)]
 pub struct BackdropMaterial {
-    shape: Live<ShapeData>,
+    shape: SharedLive<ShapeData>,
     shader: MaterialShader,
     capture: CaptureClass,
-    effect: Live<MaterialEffect>,
+    effect: SharedLive<MaterialEffect>,
     scope: MaterialScope,
 }
 
 impl BackdropMaterial {
     pub(crate) const fn new(
-        shape: Live<ShapeData>,
+        shape: SharedLive<ShapeData>,
         shader: MaterialShader,
         capture: CaptureClass,
-        effect: Live<MaterialEffect>,
+        effect: SharedLive<MaterialEffect>,
         scope: MaterialScope,
     ) -> Self {
         Self {
@@ -379,7 +380,7 @@ impl BackdropMaterial {
     /// The member's clip, in the recording's coordinates, and its later
     /// changes.
     #[must_use]
-    pub const fn shape(&self) -> &Live<ShapeData> {
+    pub const fn shape(&self) -> &SharedLive<ShapeData> {
         &self.shape
     }
 
@@ -397,7 +398,7 @@ impl BackdropMaterial {
 
     /// The member's per-member parameters and their later changes.
     #[must_use]
-    pub const fn effect(&self) -> &Live<MaterialEffect> {
+    pub const fn effect(&self) -> &SharedLive<MaterialEffect> {
         &self.effect
     }
 

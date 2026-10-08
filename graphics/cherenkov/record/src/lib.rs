@@ -90,7 +90,7 @@ pub use crate::paint::{
 pub use crate::projective::{Projective, ProjectiveError};
 pub use crate::record::{
     Animating, Binding, Content, ContentChange, ContentSpare, Draw, Fixed, Live, LiveOwner,
-    Recorder, SampleFlag, StaticRecorder,
+    Recorder, SampleFlag, SharedLive, StaticRecorder,
 };
 pub use crate::resource::{BackdropShaderId, ImageLimits, ResourceId};
 pub use crate::shape::{

@@ -128,8 +128,8 @@ use waterui_backend_core::widget::{
 use waterui_core::EasingCurve;
 use waterui_core::handler::SharedAction;
 use waterui_graphics::draw::{
-    BackdropShaderSource, CaptureClass, Draw, Live, MaterialCapture, MaterialEffect,
-    MaterialRegistry, MaterialShader, Paint, Recorder, Shadow, WorkingColor,
+    BackdropShaderSource, CaptureClass, Draw, MaterialCapture, MaterialEffect,
+    MaterialRegistry, MaterialShader, Paint, Recorder, Shadow, SharedLive, WorkingColor,
 };
 
 fn test_renderer() -> HydrolysisRenderer {
@@ -2587,13 +2587,13 @@ pub struct MinimalTestTheme {
 #[derive(Clone)]
 pub struct ChromeDraw {
     /// The member's live clip shape — a signal for the signal-rebind test.
-    pub shape: Live<kurbo::RoundedRect>,
+    pub shape: SharedLive<kurbo::RoundedRect>,
     /// The shader key the material names.
     pub shader: MaterialShader,
     /// The capture class the material names.
     pub capture: CaptureClass,
     /// The member's live effect — its uniforms.
-    pub effect: Live<MaterialEffect>,
+    pub effect: SharedLive<MaterialEffect>,
 }
 
 /// The backdrop-material terms a chrome test's theme declares: the

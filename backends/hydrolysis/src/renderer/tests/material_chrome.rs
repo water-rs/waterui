@@ -113,10 +113,10 @@ fn chrome_rect() -> RoundedRect {
 /// A fixed rounded-rect material of `class` under `shader`, with `uniforms`.
 fn chrome_draw(class: CaptureClass, shader: MaterialShader, uniforms: Vec<f32>) -> ChromeDraw {
     ChromeDraw {
-        shape: Live::from(chrome_rect()),
+        shape: Live::from(chrome_rect()).into_shared(),
         shader,
         capture: class,
-        effect: Live::from(MaterialEffect::new(uniforms)),
+        effect: Live::from(MaterialEffect::new(uniforms)).into_shared(),
     }
 }
 
@@ -445,10 +445,10 @@ fn a_signal_shape_change_needs_no_flush() {
         tap_view(),
         MinimalTestTheme {
             chrome: glass_plan(vec![ChromeDraw {
-                shape: Live::from(shape.map(|rect| rect)),
+                shape: Live::from(shape.map(|rect| rect)).into_shared(),
                 shader: GLASS_SHADER,
                 capture: GLASS,
-                effect: Live::from(MaterialEffect::new(vec![])),
+                effect: Live::from(MaterialEffect::new(vec![])).into_shared(),
             }]),
             ..Default::default()
         },
@@ -910,7 +910,8 @@ fn a_scale_change_rebuilds_union_smoothing_and_member_outer() {
         chrome: union_plan(vec![ChromeDraw {
             effect: Live::from(
                 MaterialEffect::new(vec![0.5]).outer(OuterExtent::new(3.0).expect("non-negative")),
-            ),
+            )
+            .into_shared(),
             ..chrome_draw(UNION_GLASS, GLASS_SHADER, vec![])
         }]),
         ..Default::default()
@@ -1032,7 +1033,8 @@ fn an_outer_extent_that_overflows_device_pixels_panics_at_bind() {
         chrome: glass_plan(vec![ChromeDraw {
             effect: Live::from(
                 MaterialEffect::new(vec![]).outer(OuterExtent::new(f32::MAX).expect("finite")),
-            ),
+            )
+            .into_shared(),
             ..chrome_draw(GLASS, GLASS_SHADER, vec![])
         }]),
         ..Default::default()
@@ -1123,7 +1125,9 @@ fn a_scale_rebuild_keeps_each_members_own_effect() {
 #[test]
 fn a_rebound_member_tracks_the_signals_value_after_recording() {
     let signal = nami::binding(1.0_f32);
-    let effect = Live::from(signal.clone()).map(|v: f32| MaterialEffect::new(vec![v]));
+    let effect = Live::from(signal.clone())
+        .map(|v: f32| MaterialEffect::new(vec![v]))
+        .into_shared();
     let mut renderer = test_renderer_with_theme(MinimalTestTheme {
         chrome: glass_plan(vec![ChromeDraw {
             effect,
