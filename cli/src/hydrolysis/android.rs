@@ -32,6 +32,7 @@ use crate::{
     assets::{self, AndroidThemeParent},
     build::{BuildOptions, BuildProgress, BuiltTarget, RustBuild},
     device::{Artifact, Device, FailToRun, RunOptions, Running},
+    framework::ResolvedFramework,
     hydrolysis::backend::HydrolysisBackend,
     platform::PackageOptions,
     project::Project,
@@ -175,7 +176,17 @@ fn android_dir(backend_path: &Path) -> PathBuf {
 /// Returns an error when the framework's host coordinates are missing or
 /// the git fetch fails.
 pub async fn ensure_android_host(project: &Project, host: &Host) -> eyre::Result<PathBuf> {
-    let resolved = project.resolved_framework().await?;
+    materialize_android_host(project, host, &project.resolved_framework().await?).await
+}
+
+/// [`ensure_android_host`] against a framework resolution the caller
+/// already holds, so a caller that also reads the resolution's other
+/// metadata resolves it once.
+async fn materialize_android_host(
+    project: &Project,
+    host: &Host,
+    resolved: &ResolvedFramework,
+) -> eyre::Result<PathBuf> {
     let (url, revision) = match resolved.hydrolysis_android_host()? {
         crate::framework::HydrolysisAndroidHost::Git { url, revision } => (url, revision),
         crate::framework::HydrolysisAndroidHost::Local { root } => return Ok(root.to_path_buf()),
@@ -261,8 +272,8 @@ async fn require_painter_module(
     project: &Project,
     painter: HydrolysisAndroidPainter,
 ) -> eyre::Result<PathBuf> {
-    let host_root = ensure_android_host(project, host).await?;
     let resolved = project.resolved_framework().await?;
+    let host_root = materialize_android_host(project, host, &resolved).await?;
     let subdirectory = resolved.hydrolysis_android_host_subdirectory()?;
     let host_project_dir = host_root.join(subdirectory);
     let module_dir = host_project_dir.join(painter.host_module());
@@ -334,10 +345,12 @@ async fn android_template_context(
         .bundle_identifier()
         .android_package_name()
         .map_err(|error| eyre::eyre!("{error}"))?;
-    Ok(HydrolysisBackend::template_context(project)
-        .await?
-        .with_hydrolysis_android(template_entry(project, painter, host_project_dir).await?)
-        .with_android_permissions(manifest_permissions(project.manifest())))
+    Ok(
+        HydrolysisBackend::template_context(project, &project.resolved_framework().await?)
+            .await?
+            .with_hydrolysis_android(template_entry(project, painter, host_project_dir).await?)
+            .with_android_permissions(manifest_permissions(project.manifest())),
+    )
 }
 
 /// Render the generated Gradle app into `<backend>/android` for `painter`.
@@ -861,6 +874,10 @@ fn preview_host_fingerprint(
 /// changed host `preview` module produces a different code and the device
 /// receives a reinstall. Returns the APK path and that `versionCode`.
 ///
+/// Every project's composite `includeBuild`s the one host checkout, whose
+/// Gradle build directories the builds share, so the Gradle build runs
+/// under the host's build lock.
+///
 /// # Errors
 ///
 /// Returns an error when the host checkout ships no `preview` module, the
@@ -869,36 +886,20 @@ pub async fn ensure_preview_host_apk(
     project: &Project,
     host: &Host,
 ) -> eyre::Result<(PathBuf, u32)> {
-    let host_root = ensure_android_host(project, host).await?;
-    let host_project_dir = host_root.join(
-        project
-            .resolved_framework()
-            .await?
-            .hydrolysis_android_host_subdirectory()?,
-    );
-    let preview_module = host_project_dir.join("preview");
-    fs::metadata(&preview_module).await.wrap_err_with(|| {
-        format!(
-            "the hydrolysis android host at {} ships no `preview` module: {} does not exist",
-            host_root.display(),
-            preview_module.display()
-        )
-    })?;
     let host_dir = preview_host_dir(&project.backend_path::<HydrolysisBackend>());
+    let composite = PreviewHostComposite::prepare(project, host, &host_dir).await?;
 
     // The fingerprint covers the rendered scaffold with `versionCode` held
     // constant — hashing the real code would feed the projection back into
     // its own input.
-    let rendered = templates::hydrolysis_android_preview::rendered_outputs(
-        &preview_host_context(project, &host_project_dir, &host_dir, 0).await?,
-    )?;
+    let rendered = templates::hydrolysis_android_preview::rendered_outputs(&composite.context(0))?;
     let fingerprint = smol::unblock({
-        let host_project_dir = host_project_dir.clone();
+        let host_project_dir = composite.host_project_dir.clone();
         move || preview_host_fingerprint(&host_project_dir, &rendered)
     })
     .await?;
     let version_code = fingerprint.version_code();
-    render_preview_host(project, &host_project_dir, &host_dir, version_code).await?;
+    composite.write(version_code).await?;
 
     let stamp = host_dir.join(PREVIEW_HOST_STAMP_FILE);
     if fs::read_to_string(&stamp)
@@ -909,65 +910,118 @@ pub async fn ensure_preview_host_apk(
         return Ok((apk, version_code));
     }
 
-    info!("Building the hydrolysis preview host APK");
-    run_gradle_tasks(&host_dir, &[":app:assembleDebug"], &[]).await?;
+    {
+        let _host_build =
+            crate::water_dir::android_preview_host_build_lock(host, &composite.host_project_dir)
+                .await?;
+        info!("Building the hydrolysis preview host APK");
+        run_gradle_tasks(&host_dir, &[":app:assembleDebug"], &[]).await?;
+    }
     fs::write(&stamp, fingerprint.to_string()).await?;
     let apk = packaged_artifact(&host_dir, OutputKind::Apk, "debug").await?;
     Ok((apk, version_code))
 }
 
-/// Render the preview-host composite Gradle project into `out`: the `:app`
-/// that packages the instrumentation, `includeBuild`ing the Hydrolysis
-/// Android host at `host_project_dir` and stamped with `version_code`.
+/// Render the preview-host composite Gradle project into `out`, stamped
+/// with `version_code`.
 ///
-/// [`ensure_preview_host_apk`] renders the managed host this way, and the
-/// `render_preview_host` example renders the same composite against this
-/// checkout's own host so CI can assemble it without a device.
+/// The composite's `:app` packages the instrumentation and
+/// `includeBuild`s the project's Hydrolysis Android host, resolved exactly
+/// as [`ensure_android_host`] and `hydrolysis-android-host-subdirectory`
+/// resolve it for every other build.
+///
+/// [`ensure_preview_host_apk`] renders the managed host through the same
+/// preparation, and the `render_preview_host` example calls this so CI can
+/// assemble the composite without a device.
 ///
 /// # Errors
 ///
-/// Returns an error when the project's framework resolution or template
-/// context cannot be built, `host_project_dir` cannot be expressed
-/// relative to `out`, or the scaffold cannot be written.
+/// Returns an error when the host checkout cannot be materialized or ships
+/// no `preview` module, the project's framework resolution or template
+/// context cannot be built, the host cannot be expressed relative to `out`,
+/// or the scaffold cannot be written.
 pub async fn render_preview_host(
     project: &Project,
-    host_project_dir: &Path,
+    host: &Host,
     out: &Path,
     version_code: u32,
 ) -> eyre::Result<()> {
-    let ctx = preview_host_context(project, host_project_dir, out, version_code).await?;
-    templates::hydrolysis_android_preview::scaffold(out, &ctx).await?;
-    Ok(())
+    PreviewHostComposite::prepare(project, host, out)
+        .await?
+        .write(version_code)
+        .await
 }
 
-/// The template context a preview-host composite renders from — the one
-/// place its host path, `minSdk` and `versionCode` are assembled, shared
-/// by [`render_preview_host`] and the fingerprint
-/// [`ensure_preview_host_apk`] hashes.
-async fn preview_host_context(
-    project: &Project,
-    host_project_dir: &Path,
-    out: &Path,
-    version_code: u32,
-) -> eyre::Result<TemplateContext> {
-    let relative_host = pathdiff::diff_paths(host_project_dir, out).ok_or_else(|| {
-        eyre::eyre!(
-            "cannot express the hydrolysis android host at {} relative to {}",
-            host_project_dir.display(),
-            out.display()
-        )
-    })?;
-    let min_api_level = project
-        .resolved_framework()
-        .await?
-        .android_min_api_level()?;
-    Ok(HydrolysisBackend::template_context(project)
-        .await?
-        .with_hydrolysis_android_preview(HydrolysisAndroidPreviewTemplateEntry {
+/// A preview-host composite ready to render into `out`: the host checkout
+/// materialized and its `preview` module verified, and the template context
+/// built once from one framework resolution — the only place its host path
+/// and `minSdk` are assembled. Only the `versionCode` varies per render.
+struct PreviewHostComposite {
+    out: PathBuf,
+    /// The host checkout's Gradle root the composite `includeBuild`s.
+    host_project_dir: PathBuf,
+    /// The launcher context, without the preview entry.
+    context: TemplateContext,
+    /// The preview entry, its `versionCode` filled in per render.
+    entry: HydrolysisAndroidPreviewTemplateEntry,
+}
+
+impl PreviewHostComposite {
+    async fn prepare(project: &Project, host: &Host, out: &Path) -> eyre::Result<Self> {
+        let resolved = project.resolved_framework().await?;
+        let host_root = materialize_android_host(project, host, &resolved).await?;
+        let host_project_dir = host_root.join(resolved.hydrolysis_android_host_subdirectory()?);
+        let preview_module = host_project_dir.join("preview");
+        let metadata = fs::metadata(&preview_module).await.wrap_err_with(|| {
+            format!(
+                "the hydrolysis android host at {} ships no `preview` module: {} does not exist",
+                host_root.display(),
+                preview_module.display()
+            )
+        })?;
+        if !metadata.is_dir() {
+            bail!(
+                "the hydrolysis android host at {} ships no `preview` module: {} is not a directory",
+                host_root.display(),
+                preview_module.display()
+            );
+        }
+        let relative_host = pathdiff::diff_paths(&host_project_dir, out).ok_or_else(|| {
+            eyre::eyre!(
+                "cannot express the hydrolysis android host at {} relative to {}",
+                host_project_dir.display(),
+                out.display()
+            )
+        })?;
+        let entry = HydrolysisAndroidPreviewTemplateEntry {
             host_project_dir: relative_host.to_string_lossy().replace('\\', "/"),
-            min_api_level,
-            version_code,
-        }))
+            min_api_level: resolved.android_min_api_level()?,
+            version_code: 0,
+        };
+        Ok(Self {
+            out: out.to_path_buf(),
+            host_project_dir,
+            context: HydrolysisBackend::template_context(project, &resolved).await?,
+            entry,
+        })
+    }
+
+    /// The template context stamped with `version_code`.
+    fn context(&self, version_code: u32) -> TemplateContext {
+        self.context.clone().with_hydrolysis_android_preview(
+            HydrolysisAndroidPreviewTemplateEntry {
+                version_code,
+                ..self.entry.clone()
+            },
+        )
+    }
+
+    /// Write the composite stamped with `version_code` into `out`.
+    async fn write(&self, version_code: u32) -> eyre::Result<()> {
+        templates::hydrolysis_android_preview::scaffold(&self.out, &self.context(version_code))
+            .await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

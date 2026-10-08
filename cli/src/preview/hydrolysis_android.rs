@@ -104,17 +104,15 @@ pub async fn render_preview_with_hydrolysis_android(
 
     // Everything local — the host APK and the launcher payload — builds
     // before the device is claimed, so a second preview waiting on this
-    // device still overlaps its own builds with this run's render. The
-    // device's own serial number keys the device lock, so one phone reached
-    // over USB and over `adb connect` serializes against itself.
+    // device still overlaps its own builds with this run's render.
     let device_dir = project
         .backend_path::<HydrolysisBackend>()
         .join("android-preview")
         .join("device");
-    let ((host_apk, version_code), libraries, device_serial) = futures_util::try_join!(
+    let ((host_apk, version_code), libraries, device_key) = futures_util::try_join!(
         hydrolysis_android::ensure_preview_host_apk(&project, &host),
         stage_device_payload(&project, &host, request, abi, &device_dir),
-        device_serial_number(&host, &adb, &serial),
+        device_lock_key(&host, &adb, &serial),
     )?;
 
     // Output paths in the run config are relative: the runtime resolves
@@ -150,42 +148,81 @@ pub async fn render_preview_with_hydrolysis_android(
         .to_string_lossy()
         .into_owned();
 
-    // `am instrument` force-stops the host package and an install replaces
-    // it, so a second run's install or instrumentation would kill the
-    // render already running: everything that touches the device holds
-    // this lease.
-    let _device_lease = water_dir::android_preview_device_lock(&host, &device_serial).await?;
+    render_on_device(
+        &host,
+        &DeviceRender {
+            adb: &adb,
+            serial: &serial,
+            device_key: &device_key,
+            host_apk: &host_apk,
+            version_code,
+            device_dir: &device_dir,
+            run: DeviceRun {
+                run_dir: FILES_PREVIEW_DIR,
+                config_name: &config_name,
+                libraries: &libraries,
+            },
+            output_path,
+            scenario,
+        },
+    )
+    .await
+}
+
+/// Everything one preview run does on the device, once its host APK and
+/// payload are built locally.
+struct DeviceRender<'a> {
+    adb: &'a Adb,
+    /// The adb transport serial every command addresses.
+    serial: &'a str,
+    /// The [`device_lock_key`] the device lease is taken under.
+    device_key: &'a str,
+    host_apk: &'a Path,
+    version_code: u32,
+    /// The staged payload `push_payload` sends.
+    device_dir: &'a Path,
+    run: DeviceRun<'a>,
+    output_path: &'a Path,
+    scenario: Option<&'a HydrolysisPreviewScenario>,
+}
+
+/// Take the device lease, then install the host if needed, push and stage
+/// the payload, run the instrumentation and pull its output.
+///
+/// `am instrument` force-stops the host package and an install replaces
+/// it, so a second run's install or instrumentation would kill the render
+/// already running: the whole sequence holds the lease.
+async fn render_on_device(host: &Host, render: &DeviceRender<'_>) -> Result<()> {
+    let DeviceRender {
+        adb,
+        serial,
+        device_key,
+        host_apk,
+        version_code,
+        device_dir,
+        ref run,
+        output_path,
+        scenario,
+    } = *render;
+    let _device_lease = water_dir::android_preview_device_lock(host, device_key).await?;
 
     // The install, the shell-side push and the `logcat -T` stamp bounding
     // the crash log to this run are independent; only the `run-as` copy
     // into the host's private files needs the host installed.
     let (_installed, (), since) = futures_util::try_join!(
-        install_host_if_needed(&host, &adb, &serial, &host_apk, version_code),
-        push_payload(&host, &adb, &serial, &device_dir),
-        device_time_stamp(&host, &adb, &serial),
+        install_host_if_needed(host, adb, serial, host_apk, version_code),
+        push_payload(host, adb, serial, device_dir),
+        device_time_stamp(host, adb, serial),
     )?;
-    copy_payload_into_host(&host, &adb, &serial).await?;
+    copy_payload_into_host(host, adb, serial).await?;
 
-    let run = DeviceRun {
-        run_dir: FILES_PREVIEW_DIR,
-        config_name: &config_name,
-        libraries: &libraries,
-    };
     // The shell-side copy is dead weight once `run-as` staged it — remove
     // it while the render runs.
-    let render = async {
-        run_instrumentation(&host, &adb, &serial, &run, &since).await?;
-        pull_outputs(
-            &host,
-            &adb,
-            &serial,
-            FILES_PREVIEW_DIR,
-            output_path,
-            scenario,
-        )
-        .await
+    let instrument_and_pull = async {
+        run_instrumentation(host, adb, serial, run, &since).await?;
+        pull_outputs(host, adb, serial, run.run_dir, output_path, scenario).await
     };
-    futures_util::try_join!(clear_device_tmp(&host, &adb, &serial), render)?;
+    futures_util::try_join!(clear_device_tmp(host, adb, serial), instrument_and_pull)?;
     Ok(())
 }
 
@@ -229,10 +266,18 @@ async fn install_host_if_needed(
     Ok(true)
 }
 
-/// The device's own `ro.serialno` — the same for every adb transport that
-/// reaches it, unlike the adb serial a wireless connection names by
-/// address.
-async fn device_serial_number(host: &Host, adb: &Adb, serial: &str) -> Result<String> {
+/// The key one device's preview lease is taken under.
+///
+/// A physical device answers its own `ro.serialno`, the same for every adb
+/// transport that reaches it — one phone over USB and over `adb connect`
+/// serializes against itself. An emulator's `ro.serialno` is not unique
+/// (every AVD of one system image reports the same value), while its
+/// `emulator-<port>` adb serial names exactly one running instance, so an
+/// emulator is keyed by that serial.
+async fn device_lock_key(host: &Host, adb: &Adb, serial: &str) -> Result<String> {
+    if serial.starts_with("emulator-") {
+        return Ok(serial.to_string());
+    }
     let serial_number = adb
         .shell_run(
             host,
@@ -644,40 +689,74 @@ mod tests {
         device_dir
     }
 
-    /// The device-side half of one run, under the per-serial lock the real
-    /// pipeline holds: push, instrument, pull.
-    async fn locked_device_run(
-        host: &Host,
-        adb: &Adb,
-        serial: &str,
-        device_dir: &Path,
-        out: &Path,
-    ) {
-        let _lease = water_dir::android_preview_device_lock(host, serial)
+    /// A fake device whose instrumentation succeeds, whose `cat` answers a
+    /// PNG, and whose installed host is already `versionCode` 7 — plus the
+    /// staged payload and host APK a run sends it.
+    struct RenderingDevice {
+        machine: TestMachine,
+        host: Host,
+        log: PathBuf,
+        adb: Adb,
+        device_dir: PathBuf,
+        apk: PathBuf,
+    }
+
+    impl RenderingDevice {
+        fn new() -> Self {
+            let (machine, host, log) = adb_test_machine();
+            machine.respond(
+                "ADB_AM_INSTRUMENT",
+                "INSTRUMENTATION_STATUS: stream=\nINSTRUMENTATION_CODE: -1\n",
+            );
+            machine.respond(
+                "ADB_PM_PACKAGES",
+                "package:dev.waterui.hydrolysis.preview versionCode:7",
+            );
+            // A PNG signature + filler — raw bytes, not a UTF-8 string.
+            std::fs::write(
+                machine.responses().join("ADB_CAT"),
+                b"\x89PNG\r\n\x1a\nfake-frame-bytes",
+            )
+            .expect("stage the canned cat");
+            let device_dir = staged_payload(&machine);
+            let apk = machine.file("host.apk", "apk");
+            let adb = smol::block_on(Adb::locate(&host)).expect("fake adb must locate");
+            Self {
+                machine,
+                host,
+                log,
+                adb,
+                device_dir,
+                apk,
+            }
+        }
+
+        /// One run's device-side half through the production
+        /// [`render_on_device`]; the installed `versionCode` matches, so it
+        /// goes straight to push, stage, instrument and pull.
+        async fn run(&self, out: &Path) {
+            let libraries = ["libx.so".to_string()];
+            render_on_device(
+                &self.host,
+                &DeviceRender {
+                    adb: &self.adb,
+                    serial: "serial",
+                    device_key: "serial",
+                    host_apk: &self.apk,
+                    version_code: 7,
+                    device_dir: &self.device_dir,
+                    run: DeviceRun {
+                        run_dir: FILES_PREVIEW_DIR,
+                        config_name: "preview-run.json",
+                        libraries: &libraries,
+                    },
+                    output_path: out,
+                    scenario: None,
+                },
+            )
             .await
-            .expect("device lock");
-        push_payload(host, adb, serial, device_dir)
-            .await
-            .expect("push_payload");
-        copy_payload_into_host(host, adb, serial)
-            .await
-            .expect("copy_payload_into_host");
-        run_instrumentation(
-            host,
-            adb,
-            serial,
-            &DeviceRun {
-                run_dir: FILES_PREVIEW_DIR,
-                config_name: "preview-run.json",
-                libraries: &["libx.so".to_string()],
-            },
-            "01-01 00:00:00.000",
-        )
-        .await
-        .expect("instrumentation succeeds");
-        pull_outputs(host, adb, serial, FILES_PREVIEW_DIR, out, None)
-            .await
-            .expect("pull_outputs");
+            .expect("the device run succeeds");
+        }
     }
 
     // Every adb-driven test below is `#[cfg(unix)]`: on Windows the staged
@@ -686,47 +765,12 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn the_pipeline_pushes_stages_instruments_and_pulls_in_order() {
-        let (machine, host, log) = adb_test_machine();
-        machine.respond(
-            "ADB_AM_INSTRUMENT",
-            "INSTRUMENTATION_STATUS: stream=\nINSTRUMENTATION_CODE: -1\n",
-        );
-        // A PNG signature + filler — raw bytes, not a UTF-8 string.
-        std::fs::write(
-            machine.responses().join("ADB_CAT"),
-            b"\x89PNG\r\n\x1a\nfake-frame-bytes",
-        )
-        .expect("stage the canned cat");
-        let device_dir = staged_payload(&machine);
-        let out = machine.root().join("preview.png");
-        let adb = smol::block_on(Adb::locate(&host)).expect("fake adb must locate");
+        let device = RenderingDevice::new();
+        let out = device.machine.root().join("preview.png");
 
-        smol::block_on(async {
-            push_payload(&host, &adb, "serial", &device_dir)
-                .await
-                .expect("push_payload");
-            copy_payload_into_host(&host, &adb, "serial")
-                .await
-                .expect("copy_payload_into_host");
-            run_instrumentation(
-                &host,
-                &adb,
-                "serial",
-                &DeviceRun {
-                    run_dir: FILES_PREVIEW_DIR,
-                    config_name: "preview-run.json",
-                    libraries: &["libx.so".to_string()],
-                },
-                "01-01 00:00:00.000",
-            )
-            .await
-            .expect("instrumentation succeeds");
-            pull_outputs(&host, &adb, "serial", FILES_PREVIEW_DIR, &out, None)
-                .await
-                .expect("pull_outputs");
-        });
+        smol::block_on(device.run(&out));
 
-        let argv = adb_argv(&log);
+        let argv = adb_argv(&device.log);
         let clear = argv
             .find("shell rm -rf /data/local/tmp/waterui-preview")
             .expect("the shell-side staging dir was cleared");
@@ -815,31 +859,17 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn concurrent_previews_on_one_serial_serialize() {
-        let (machine, host, log) = adb_test_machine();
-        machine.respond(
-            "ADB_AM_INSTRUMENT",
-            "INSTRUMENTATION_STATUS: stream=\nINSTRUMENTATION_CODE: -1\n",
-        );
-        std::fs::write(
-            machine.responses().join("ADB_CAT"),
-            b"\x89PNG\r\n\x1a\nfake-frame-bytes",
-        )
-        .expect("stage the canned cat");
-        let device_dir = staged_payload(&machine);
-        let adb = smol::block_on(Adb::locate(&host)).expect("fake adb must locate");
+        let device = RenderingDevice::new();
 
-        let out_a = machine.root().join("a.png");
-        let out_b = machine.root().join("b.png");
+        let out_a = device.machine.root().join("a.png");
+        let out_b = device.machine.root().join("b.png");
         smol::block_on(async {
-            futures_util::join!(
-                locked_device_run(&host, &adb, "serial", &device_dir, &out_a),
-                locked_device_run(&host, &adb, "serial", &device_dir, &out_b),
-            );
+            futures_util::join!(device.run(&out_a), device.run(&out_b));
         });
 
         // The loser's whole device run lands after the winner's pull —
         // its push never interleaves the winner's instrument/pull window.
-        let argv = adb_argv(&log);
+        let argv = adb_argv(&device.log);
         let second_push = argv.rfind(" push ").expect("two pushes ran");
         let first_pull = argv.find("cat files/").expect("the first run pulled");
         let first_instrument = argv.find("am instrument").expect("instrumented");
@@ -847,6 +877,39 @@ mod tests {
             first_pull < second_push && first_instrument < first_pull,
             "the second run waited for the first to finish:\n{argv}"
         );
+    }
+
+    /// A physical device is keyed by its own `ro.serialno`, whatever
+    /// transport reaches it; an emulator by its `emulator-<port>` serial,
+    /// because emulators share their `ro.serialno`.
+    #[test]
+    #[cfg(unix)]
+    fn device_lock_keys_name_one_device() {
+        let (machine, host, log) = adb_test_machine();
+        machine.respond("ADB_GETPROP", "R5CT1234ABC\n");
+        let adb = smol::block_on(Adb::locate(&host)).expect("fake adb must locate");
+        smol::block_on(async {
+            assert_eq!(
+                device_lock_key(&host, &adb, "emulator-5556")
+                    .await
+                    .expect("emulator key"),
+                "emulator-5556"
+            );
+            assert!(
+                !std::fs::read_to_string(&log)
+                    .unwrap_or_default()
+                    .contains("getprop"),
+                "an emulator is keyed without asking it"
+            );
+            for transport in ["R5CT1234ABC", "192.168.1.20:5555"] {
+                assert_eq!(
+                    device_lock_key(&host, &adb, transport)
+                        .await
+                        .expect("physical key"),
+                    "R5CT1234ABC"
+                );
+            }
+        });
     }
 
     /// A host APK installed from another machine's debug key rejects

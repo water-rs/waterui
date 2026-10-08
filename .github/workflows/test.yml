@@ -878,17 +878,20 @@ jobs:
   # `water preview --platform android` (#2216). Lint itself needs no Rust
   # build — it analyses the Kotlin sources against `compileSdk` — so it
   # runs beside the cross-target clippy above on the same scope. The job
-  # also assembles the generated preview-host app: the composite project
-  # is rendered by the CLI's `render_preview_host` example — the same
-  # function `water preview` renders the managed host with — into
+  # also assembles the generated preview-host app: the CLI's
+  # `render_preview_host` example renders the composite through the
+  # library's own host resolution — the same preparation `water preview`
+  # renders the managed host with — into
   # `backends/hydrolysis/android-preview-host` (never committed), then
   # `:app:assembleDebug` compiles it against the in-tree host checkout —
   # the only place the generated app's Kotlin↔Gradle wiring is checked.
-  # The wrapper JAR is not committed (the CLI materializes it), so the
-  # distribution the wrapper pins is installed directly.
+  # The CLI renders that app, so a CLI-only change runs the job too. The
+  # wrapper JARs are not committed (the CLI materializes them), so each
+  # build installs the distribution its own wrapper pins: the host's for
+  # the lint, the rendered app's — the Gradle users run — for the assemble.
   hydrolysis-android-host:
     name: Hydrolysis Android host lint
-    if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis')
+    if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis') || contains(inputs.affected, 'waterui-cli')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -900,15 +903,15 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
-      - name: Gradle version pinned by the wrapper
-        id: gradle-version
+      - name: Gradle version pinned by the host wrapper
+        id: host-gradle-version
         run: |
           version="$(sed -n 's|^distributionUrl=.*/gradle-\(.*\)-bin\.zip$|\1|p' gradle/wrapper/gradle-wrapper.properties)"
           test -n "$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: ${{ steps.gradle-version.outputs.version }}
+          gradle-version: ${{ steps.host-gradle-version.outputs.version }}
       - run: gradle :host:lintDebug :preview:lintDebug
       - uses: ./.github/actions/setup-rust
         with:
@@ -919,14 +922,24 @@ jobs:
       # compiles waterui-cli once.
       - name: Restore Cargo sources
         uses: ./.github/actions/cargo-sources
-      # The CLI's `render_preview_host` example renders the composite
-      # through the same function `ensure_preview_host_apk` calls — the
-      # project is generated, never hand-written. `examples/form` supplies
-      # the framework resolution (the in-tree checkout) the app's `minSdk`
-      # and JDK level come from.
+      # The project is generated, never hand-written: `examples/form` is on
+      # this checkout's `waterui_path`, so the library resolves the in-tree
+      # host and the app's `minSdk` and JDK level from it. The render
+      # reaches none of the CLI's optional features, and the default
+      # `esp32` one links libudev, which this runner does not carry.
       - name: Render the generated preview-host app
         working-directory: ${{ github.workspace }}
-        run: cargo run --locked --profile ci-check -p waterui-cli --example render_preview_host -- examples/form backends/hydrolysis/android-preview-host
+        run: cargo run --locked --profile ci-check -p waterui-cli --no-default-features --example render_preview_host -- examples/form backends/hydrolysis/android-preview-host
+      - name: Gradle version pinned by the rendered wrapper
+        id: app-gradle-version
+        working-directory: backends/hydrolysis/android-preview-host
+        run: |
+          version="$(sed -n 's|^distributionUrl=.*/gradle-\(.*\)-bin\.zip$|\1|p' gradle/wrapper/gradle-wrapper.properties)"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ steps.app-gradle-version.outputs.version }}
       - name: Assemble the generated preview-host app
         working-directory: backends/hydrolysis/android-preview-host
         run: gradle :app:assembleDebug

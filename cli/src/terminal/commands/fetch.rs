@@ -29,6 +29,13 @@ pub struct Args {
     backend: Option<TargetBackend>,
 }
 
+impl Args {
+    /// The project directory this command works on.
+    pub(crate) fn project_dir(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
 /// Run the fetch command.
 pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     let project_path = crate::project_path::canonicalize(&args.path)?;

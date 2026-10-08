@@ -83,6 +83,13 @@ pub struct Args {
     max_clip_layers: Option<u64>,
 }
 
+impl Args {
+    /// The project directory this command works on.
+    pub(crate) fn project_dir(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum BenchOutputFormat {
     /// Human-friendly terminal summary.

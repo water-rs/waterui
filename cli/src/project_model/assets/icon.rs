@@ -433,7 +433,7 @@ fn segment_distance(px: f64, py: f64, x1: f64, y1: f64, x2: f64, y2: f64) -> f64
     } else {
         ((px - x1).mul_add(dx, (py - y1) * dy) / len_sq).clamp(0.0, 1.0)
     };
-    (x1 + t * dx - px).hypot(y1 + t * dy - py)
+    (t.mul_add(dx, x1) - px).hypot(t.mul_add(dy, y1) - py)
 }
 
 /// Renders the bundled logo as black round-cap strokes on white by
@@ -452,7 +452,7 @@ fn render_default_logo(size: u32) -> image::RgbaImage {
             .iter()
             .map(|&(x1, y1, x2, y2)| segment_distance(px, py, x1, y1, x2, y2))
             .fold(f64::INFINITY, f64::min);
-        let coverage = (radius + 0.5 - distance * scale).clamp(0.0, 1.0);
+        let coverage = distance.mul_add(-scale, radius + 0.5).clamp(0.0, 1.0);
         let ink = scale_alpha(u8::MAX, coverage);
         *pixel = image::Rgba([255 - ink, 255 - ink, 255 - ink, u8::MAX]);
     }
