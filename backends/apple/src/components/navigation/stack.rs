@@ -366,11 +366,9 @@ mod platform {
                 });
             }
             {
-                let nav = self.nav.get().cloned();
+                let controller = controller.clone();
                 keep.bind(&bar.hidden, move |hidden| {
-                    if let Some(nav) = nav.as_ref() {
-                        nav.set_bar_hidden(hidden, false);
-                    }
+                    controller.set_bar_hidden(hidden, false);
                 });
             }
             Entry {
