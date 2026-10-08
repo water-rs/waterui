@@ -759,8 +759,9 @@ const fn preview_target_platform(platform: PreviewPlatform) -> TargetPlatform {
 }
 
 /// Every triple the preview support app and its module workspace can build
-/// for — the serving set of the support manifest's shared `[profile]`
-/// overrides and the workspace root that carries them.
+/// for — one per [`PreviewPlatform`], the serving set of the support
+/// manifest's shared `[profile]` overrides and the workspace root that
+/// carries them.
 fn preview_targets() -> Vec<target_lexicon::Triple> {
     [
         PreviewPlatform::Macos,
@@ -769,7 +770,6 @@ fn preview_targets() -> Vec<target_lexicon::Triple> {
     ]
     .iter()
     .map(|platform| preview_target_platform(*platform).triple())
-    .chain(crate::android::platform::android_target_triples())
     .collect()
 }
 
