@@ -18,6 +18,7 @@ use crate::renderer::accessibility::{
     AccessibilityContentTypes, MergedAccessibilityUpdate, WINDOW_ID_STRIDE,
 };
 use crate::renderer::{MenuShortcutRegistry, SemanticCore, WindowId};
+use std::rc::Rc;
 #[cfg(target_arch = "wasm32")]
 use std::sync::Arc;
 
@@ -84,6 +85,10 @@ impl SemanticWindow {
         );
         core.set_window_id(window_id);
         core.set_window_closable(window.closable);
+        // The semantic pump is driven explicitly by the harness — a request
+        // recorded on the frame signals is consumed by the next `pump` the
+        // test calls, so the host wake does nothing.
+        core.install_host_wake(Rc::new(|| {}));
         #[cfg(feature = "accessibility")]
         {
             core.use_semantic_keyboard_activation();

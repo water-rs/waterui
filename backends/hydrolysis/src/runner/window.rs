@@ -94,6 +94,12 @@ impl<P: GpuSurfaceWindow> RuntimeWindow<P> {
         mut renderer: HydrolysisRenderer,
         render_diagnostics_config: RenderDiagnosticsConfig,
     ) -> Self {
+        // The window's host wake, installed before any subscription can
+        // record a request: from here on, a `Binding::set` outside a frame
+        // — an executor drain, a platform-view callback, an accessibility
+        // action — fires it on the none→some edge and schedules the frame
+        // the request needs, by construction.
+        renderer.install_host_wake(platform.frame_wake());
         if let Some(handle) = platform.gpu_surface_redraw_handle() {
             renderer.set_host_redraw_handle(handle);
         }
@@ -188,6 +194,43 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
             self.platform.request_redraw();
         }
     }
+}
+
+/// Whether an installed frame-signals host wake may post its frame
+/// request right now — the two suppressions every waker host applies:
+///
+/// - inside the host's frame transaction (`transaction_open`), where a
+///   request raised mid-transaction is instead counted into
+///   [`wants_next_frame`], so posting would double-schedule the frame it
+///   already owed;
+/// - while the window is occluded, where the request stays armed for the
+///   frame that restores visibility (the #2183 contract).
+///
+/// Hosts with live access to both inputs read them at call time; the
+/// Android host folds them into the gate cell its shared wake closure
+/// reads (`AndroidHostWindow::sync_frame_wake_gate`).
+#[allow(dead_code)] // see is_hidden
+pub(super) const fn frame_wake_may_post(transaction_open: bool, occluded: bool) -> bool {
+    !transaction_open && !occluded
+}
+
+/// Whether a frame transaction's outcome must schedule another frame. The
+/// pump's armed `mode` and a redraw the window asked for that never
+/// reached the scheduler (`redraw_pending`) are the standing inputs;
+/// `signals_pending` counts a `FrameSignals` request still pending at the
+/// transaction's end — one raised inside it fired no wake (the wake is
+/// suppressed while the transaction runs), and without this count it
+/// would be lost. A hidden window schedules nothing: the armed work
+/// survives for the frame visibility restores.
+#[allow(dead_code)] // see is_hidden
+#[allow(clippy::fn_params_excessive_bools)] // the pending kinds are named, not interchangeable
+pub(super) const fn wants_next_frame(
+    hidden: bool,
+    mode_pending: bool,
+    redraw_pending: bool,
+    signals_pending: bool,
+) -> bool {
+    !hidden && (mode_pending || redraw_pending || signals_pending)
 }
 
 /// Whether a frame transaction may report the pump's "first frame presented;

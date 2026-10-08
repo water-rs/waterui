@@ -830,6 +830,23 @@ impl SemanticCore {
         self.signals.has_patch_request()
     }
 
+    /// Installs the window's host wake on the frame signals — the runner
+    /// calls it once at mount from `RuntimeWindow::new` with the closure
+    /// [`crate::platform::PlatformWindow::frame_wake`] supplies. See
+    /// [`FrameSignals::install_host_wake`].
+    pub(crate) fn install_host_wake(&self, wake: Rc<dyn Fn()>) {
+        self.signals.install_host_wake(wake);
+    }
+
+    /// Whether a frame request is still pending on the signals — what a
+    /// host that suppresses its wake inside the frame transaction (the
+    /// Android pump's `wants_next_frame`) counts into the transaction's
+    /// continuation, so a request raised mid-transaction is never lost.
+    #[allow(dead_code)] // read by the Android host and tests; see reports_ui_idle
+    pub(crate) fn has_pending_frame_request(&self) -> bool {
+        self.signals.has_pending_request()
+    }
+
     /// Reports whether the root cell carries a `STRUCTURE` mark — the
     /// scheduling input the deleted `take_rebuild_request` flags carried.
     /// A mark persists until the flush clears it, so peeking is correct.

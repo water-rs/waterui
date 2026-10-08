@@ -127,6 +127,13 @@ impl PlatformWindow for HeadlessPlatformWindow {
         self.redraw_requested.set(true);
     }
 
+    /// The headless pump is driven explicitly by the harness — a request
+    /// recorded on the frame signals is consumed by the next pump the test
+    /// calls, so the wake does nothing.
+    fn frame_wake(&self) -> Rc<dyn Fn()> {
+        Rc::new(|| {})
+    }
+
     fn is_occluded(&self) -> bool {
         self.occluded.get()
     }
