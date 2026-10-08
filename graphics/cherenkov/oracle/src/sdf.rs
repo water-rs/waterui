@@ -86,7 +86,7 @@ pub fn box_params(shape: &Shape) -> Option<(BoxShape, Affine)> {
         Shape::Ellipse(e) => {
             let radii = e.radii();
             let (a, b) = (radii.x, radii.y);
-            if a <= 0.0 {
+            if a <= 0.0 || b <= 0.0 {
                 return None;
             }
             (

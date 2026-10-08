@@ -1,6 +1,9 @@
 # Members the native library calls by name through JNI, kept by annotation:
 # the rule travels with this library instead of every app's own rules.
--keepclassmembers class * {
+# `keepclasseswithmembers`, not `keepclassmembers`: a class reachable only
+# through `FindClass` — `dev.waterui.hydrolysis.webview.HydrolysisWebView` —
+# would otherwise be dropped whole, taking its kept members with it.
+-keepclasseswithmembers class * {
     @dev.waterui.hydrolysis.CalledFromNative *;
 }
 

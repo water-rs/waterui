@@ -32,10 +32,13 @@ object NativeBridge {
      * 10 = `nativeSetMetrics` splits the window insets into the container
      * and keyboard regions of layout-spec.md §7.1, and the host's
      * `WindowInsetsAnimationCompat` progress pushes each IME animation frame;
-     * 11 = a platform-view placement names either a factory `kind` or a
-     * registered `instance`, and the `HydrolysisWebView` natives join the edge.
+     * 11 = [nativeUiThreadServices] creates the one executor per UI thread
+     * at load time, and [nativeCreateSession] takes its handle so every
+     * session shares it; 12 = a platform-view placement names either a
+     * factory `kind` or a registered `instance`, and the
+     * `HydrolysisWebView` natives join the edge.
      */
-    private const val SCHEMA: Int = 11
+    private const val SCHEMA: Int = 12
 
     /** [nativeBackEvent] phase: a predictive gesture began. */
     const val BACK_STARTED: Int = 0
@@ -52,6 +55,14 @@ object NativeBridge {
     private var initialized = false
 
     /**
+     * Opaque handle for the UI-thread services the load hook created once:
+     * the executor every session shares, registered with the main looper.
+     * Sessions receive it explicitly — the native side keeps no global.
+     */
+    internal var uiThreadServices: Long = 0
+        private set
+
+    /**
      * Loads the app's Hydrolysis-backed shared library and verifies the JNI
      * schema. The application names its own `cdylib` — the host never picks
      * one for it. `logLevel` is the `tracing` level name the launch intent's
@@ -66,20 +77,35 @@ object NativeBridge {
         check(nativeSchema == SCHEMA) {
             "hydrolysis JNI schema mismatch: host expects $SCHEMA, native library reports $nativeSchema"
         }
+        uiThreadServices = nativeUiThreadServices()
+        check(uiThreadServices != 0L) { "hydrolysis: the UI-thread executor was not created" }
         initialized = true
     }
 
     @JvmStatic private external fun nativeInit(schema: Int, logLevel: String?): Int
 
     /**
+     * Creates the one executor per UI thread — registered with the main
+     * looper through the same eventfd it writes — plus the process
+     * environment carrying the inspector. Called once from [load], which is
+     * why the executor exists for the process's life rather than per
+     * session. Returns the process-owned handle passed to
+     * [nativeCreateSession].
+     */
+    @JvmStatic private external fun nativeUiThreadServices(): Long
+
+    /**
      * `context` is any `Context` of the app — the native side resolves its
      * `Application` and publishes that, once per process, through
      * `ndk_context` so service backends (clipboard) can resolve it.
+     * `uiThreadServices` is the handle [load] created — every session
+     * shares that executor rather than installing its own.
      */
     @JvmStatic
     external fun nativeCreateSession(
         session: HydrolysisSession,
         context: Context,
+        uiThreadServices: Long,
     ): Long
 
     @JvmStatic external fun nativeDestroySession(sessionPtr: Long)

@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.MutableContextWrapper
 import android.graphics.Bitmap
 import android.net.Uri
 import android.util.Log
@@ -16,7 +17,6 @@ import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
-import dev.waterui.hydrolysis.MutableContextWrapper
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.LifecycleOwner
@@ -24,16 +24,13 @@ import androidx.webkit.ScriptHandler
 import androidx.webkit.WebMessageCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import dev.waterui.hydrolysis.CalledFromNative
 import dev.waterui.hydrolysis.HostRebindAware
 import dev.waterui.hydrolysis.HydrolysisSession
 import java.io.ByteArrayInputStream
-
-/**
- * The asset origin `waterui-webview` gives a page that was opened with an
- * `AssetServer` — `ASSET_HTTPS_ORIGIN` on the Rust side. Requests to its host
- * are intercepted and answered through `nativeAssetRespond`.
- */
-private const val ASSET_HTTPS_HOST = "waterui.localhost"
+import java.util.concurrent.locks.ReentrantReadWriteLock
+import kotlin.concurrent.read
+import kotlin.concurrent.write
 
 private val LOG_TAG = HydrolysisWebViewClient.LOG_TAG
 
@@ -41,10 +38,12 @@ private val LOG_TAG = HydrolysisWebViewClient.LOG_TAG
  * One asset reply crossing JNI: the status line's numeric code, the header
  * block as newline-joined `Name: value` lines, and the body.
  *
- * Constructed by `nativeAssetRespond` on the Rust side by name; the keep
- * rules in `consumer-rules.pro` preserve the constructor's signature.
+ * Constructed by `nativeAssetRespond` on the Rust side by name;
+ * `@CalledFromNative` keeps the constructor's signature through R8.
  */
-class AssetResponse(val status: Int, val headers: String, val body: ByteArray) {
+class AssetResponse
+@CalledFromNative
+constructor(val status: Int, val headers: String, val body: ByteArray) {
     fun toWebResourceResponse(): WebResourceResponse {
         var mimeType: String? = null
         var encoding: String? = null
@@ -102,9 +101,8 @@ private fun assetReasonPhrase(status: Int): String =
  *
  * The view is created with a [MutableContextWrapper] over the session's
  * bound host context: a retained session rebinds a new host view — a
- * configuration change — and `HydrolysisSession.bind` retargets the wrapper
- * and calls [onHostRebound] so the Lifecycle observer follows the new
- * Activity.
+ * configuration change — and [onHostRebound] retargets the wrapper and
+ * re-observes the Lifecycle of the new Activity.
  */
 // JavaScript is the WebView's contract, and WEB_MESSAGE_LISTENER is a
 // create-time invariant — the runtime carries these same suppressions on
@@ -118,11 +116,19 @@ private constructor(
     assetServer: Long,
     private val bridgeObjectName: String,
     asyncResultObjectName: String,
+    private val assetHost: String,
 ) : WebView(context), HostRebindAware {
     /** The `Box<Weak<SharedState>>` Rust leaked at `create`; zero after `release`. */
     private var nativeHandle: Long = 0
 
-    /** The `Box<AssetServer>` `create` was handed; freed in `release` after `destroy`. */
+    /**
+     * The `Box<AssetServer>` `create` was handed; freed in `release` after
+     * `destroy`. Guarded by [assetServerLock]: `destroy()` does not join
+     * Chromium's IO threads, so a `shouldInterceptRequest` can still be
+     * inside `nativeAssetRespond` — the read lock covers check-and-call,
+     * the write lock zero-and-free.
+     */
+    private val assetServerLock = ReentrantReadWriteLock()
     private var assetServerPtr: Long = assetServer
 
     /** Document-start sources in the order Rust pushed them, bridge sources first. */
@@ -164,6 +170,14 @@ private constructor(
         }
 
     init {
+        // Focus gain/loss crosses to Rust so the runner's text-input state
+        // never claims a Hydrolysis field while the page owns the IME.
+        setOnFocusChangeListener { _, hasFocus ->
+            val handle = nativeHandle
+            if (handle != 0L) {
+                nativeFocus(handle, hasFocus)
+            }
+        }
         CookieManager.getInstance().setAcceptCookie(true)
         settings.javaScriptEnabled = true
         settings.domStorageEnabled = true
@@ -184,6 +198,7 @@ private constructor(
          * session's bound host context, wires the listeners, and registers it
          * as platform-view instance `instanceId`.
          */
+        @CalledFromNative
         @JvmStatic
         fun create(
             session: HydrolysisSession,
@@ -192,6 +207,7 @@ private constructor(
             assetServer: Long,
             bridgeObject: String,
             asyncResultObject: String,
+            assetHost: String,
         ): HydrolysisWebView {
             requireWebMessageListener()
             val context =
@@ -212,6 +228,7 @@ private constructor(
                     assetServer,
                     bridgeObject,
                     asyncResultObject,
+                    assetHost,
                 )
             view.nativeHandle = nativeHandle
             view.observeLifecycle(context)
@@ -248,7 +265,7 @@ private constructor(
         @JvmStatic private external fun nativeError(handle: Long, message: String)
 
         @JvmStatic
-        private external fun nativeSslError(handle: Long, url: String, message: String)
+        private external fun nativeSslError(handle: Long, url: String?, message: String)
 
         @JvmStatic
         private external fun nativeNavigationState(
@@ -259,6 +276,13 @@ private constructor(
 
         @JvmStatic
         private external fun nativeOnBridgeMessage(handle: Long, envelope: String)
+
+        @JvmStatic
+        private external fun nativeOriginMayUseBridge(handle: Long, origin: String): Boolean
+
+        @JvmStatic private external fun nativeReleased(handle: Long)
+
+        @JvmStatic private external fun nativeFocus(handle: Long, focused: Boolean)
 
         @JvmStatic private external fun nativeAsyncResult(handle: Long, payload: String)
 
@@ -293,6 +317,7 @@ private constructor(
     // The surface Rust calls on the handle.
     // ------------------------------------------------------------------
 
+    @CalledFromNative
     fun setUserAgent(userAgent: String) {
         settings.userAgentString = userAgent
     }
@@ -302,6 +327,7 @@ private constructor(
      * the user scripts in first-injection order — the list `inject_script`
      * composes in Rust.
      */
+    @CalledFromNative
     fun setDocumentStartScripts(sources: Array<String>) {
         documentStartSources = sources.toList()
         rebuildDocumentStartScripts()
@@ -312,28 +338,32 @@ private constructor(
      * computed, then reinstalls the bridge listener and rebuilds the
      * document-start scripts under the new rules.
      */
+    @CalledFromNative
     fun setBridgeOrigins(rules: Array<String>) {
         originRules = rules.toList()
         installBridgeListener()
         rebuildDocumentStartScripts()
     }
 
+    @CalledFromNative
     fun setRedirectsEnabled(enabled: Boolean) {
         redirectsEnabled = enabled
     }
 
+    @CalledFromNative
     fun setCookie(url: String, cookie: String) {
         CookieManager.getInstance().setCookie(url, cookie)
     }
 
     /**
      * Replies through `nativeCookies` with the request header the cookie jar
-     * would send for the current document — one `name: value` pair per line.
+     * would send for the current document — one `name=value` pair per line.
      * Before the first navigation the jar has no document, so the reply is
-     * the empty header.
+     * the empty header. The reply is synchronous, so the call is never in
+     * `pendingCalls` — its settlement cannot be deferred.
      */
+    @CalledFromNative
     fun getCookies(callId: Long) {
-        pendingCalls += callId
         val header =
             url
                 ?.let { CookieManager.getInstance().getCookie(it) }
@@ -341,8 +371,9 @@ private constructor(
                 ?.map { it.trim() }
                 ?.filter { it.isNotEmpty() }
                 ?.joinToString("\n") ?: ""
-        pendingCalls -= callId
-        nativeCookies(nativeHandle, callId, header)
+        if (nativeHandle != 0L) {
+            nativeCookies(nativeHandle, callId, header)
+        }
     }
 
     /**
@@ -350,6 +381,7 @@ private constructor(
      * async-call wrapper makes the awaiting case settle through
      * `nativeAsyncResult` instead.
      */
+    @CalledFromNative
     fun evaluate(script: String, callId: Long) {
         pendingCalls += callId
         evaluateJavascript(script) { value ->
@@ -362,13 +394,18 @@ private constructor(
      * Evaluates a bridge reply: the `resolve_script` `nativeOnBridgeMessage`
      * composed for the call it answered.
      */
+    @CalledFromNative
     fun evaluateBridgeScript(script: String) {
         evaluateJavascript(script, null)
     }
 
-    /** A new host view bound: the lifecycle belongs to the new Activity. */
-    override fun onHostRebound(context: Context) {
-        observeLifecycle(context)
+    /**
+     * A new host view bound: the `MutableContextWrapper` retargets the new
+     * context and the lifecycle belongs to the new Activity.
+     */
+    override fun onHostRebound(newContext: Context) {
+        (context as MutableContextWrapper).baseContext = newContext
+        observeLifecycle(newContext)
     }
 
     private fun observeLifecycle(context: Context) {
@@ -382,18 +419,44 @@ private constructor(
     // ------------------------------------------------------------------
 
     private fun installAsyncResultListener(asyncResultObject: String) {
-        if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
-            return
-        }
         WebViewCompat.addWebMessageListener(
             this,
             asyncResultObject,
             setOf("*"),
-        ) { _, message, _, _, _ ->
+        ) { _, message, sourceOrigin, isMainFrame, _ ->
+            // The result envelope settles a Rust call id — only the main
+            // frame at the origin actually holding the call may post one;
+            // an iframe forging `{id, ok, value}` is dropped.
+            if (!isMainFrame) {
+                Log.w(LOG_TAG, "an async result from a subframe was dropped")
+                return@addWebMessageListener
+            }
+            val origin = sourceOrigin?.toString()
+            val expected = mainFrameOrigin()
+            if (origin == null || origin != expected) {
+                Log.w(
+                    LOG_TAG,
+                    "an async result from origin $origin was dropped " +
+                        "(main frame is $expected)",
+                )
+                return@addWebMessageListener
+            }
             val payload = message.data
             if (payload != null) {
                 nativeAsyncResult(nativeHandle, payload)
             }
+        }
+    }
+
+    /** The current main-frame document's `scheme://host[:port]`, or null. */
+    private fun mainFrameOrigin(): String? {
+        val current = url?.let(Uri::parse) ?: return null
+        val scheme = current.scheme ?: return null
+        val host = current.host ?: return null
+        return if (current.port > 0) {
+            "$scheme://$host:${current.port}"
+        } else {
+            "$scheme://$host"
         }
     }
 
@@ -416,9 +479,6 @@ private constructor(
     }
 
     private fun rebuildDocumentStartScripts() {
-        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
-            return
-        }
         installedScripts.forEach(ScriptHandler::remove)
         installedScripts.clear()
         if (originRules.isEmpty()) {
@@ -440,7 +500,7 @@ private constructor(
             return
         }
         val origin = sourceOrigin?.toString().orEmpty()
-        if (!originMayUseBridge(origin)) {
+        if (nativeHandle == 0L || !nativeOriginMayUseBridge(nativeHandle, origin)) {
             Log.w(LOG_TAG, "a bridge message from unadmitted origin \"$origin\" was dropped")
             return
         }
@@ -455,20 +515,6 @@ private constructor(
         }
         nativeOnBridgeMessage(nativeHandle, envelope)
     }
-
-    /**
-     * Whether `origin` — the source `addWebMessageListener` reports — may use
-     * the bridge. The rules here are already the androidx form: the runtime's
-     * `file:` token arrives converted to `file://`.
-     */
-    private fun originMayUseBridge(origin: String): Boolean =
-        originRules.any { rule ->
-            when (rule) {
-                "*" -> true
-                "file://" -> origin.startsWith("file://")
-                else -> rule == origin
-            }
-        }
 
     // ------------------------------------------------------------------
     // Events — one native callback per Rust `WebViewEvent`/`BackendEvent`.
@@ -515,7 +561,7 @@ private constructor(
         }
     }
 
-    private fun emitSslError(url: String, message: String) {
+    private fun emitSslError(url: String?, message: String) {
         if (nativeHandle != 0L) {
             nativeSslError(nativeHandle, url, message)
         }
@@ -539,7 +585,17 @@ private constructor(
     // Teardown — the Kotlin runtime's `release()` order.
     // ------------------------------------------------------------------
 
+    @CalledFromNative
     fun release() {
+        releaseInternal()
+        // Only the Rust-driven release unregisters: a render-process-gone
+        // teardown keeps the instance so the still-published placement does
+        // not crash `createSlot` — the leaf shows nothing until the Rust
+        // handle drops.
+        session.unregisterPlatformViewInstance(instanceId)
+    }
+
+    private fun releaseInternal() {
         // A dead render process tears this view down where it is reported,
         // and the Rust handle that owns the view is dropped afterwards all
         // the same.
@@ -554,6 +610,9 @@ private constructor(
         // sender it handed us, and a callback that is dropped rather than
         // called leaves that sender leaked and its task suspended forever.
         abandonPendingCalls("the web view was closed")
+        // Rust still holds the async call ids Kotlin forgot after the started
+        // sentinel — settle them before the handle zeroes.
+        nativeReleased(nativeHandle)
         nativeHandle = 0L
         originRules = emptyList()
         documentStartSources = emptyList()
@@ -566,14 +625,17 @@ private constructor(
         webViewClient = HydrolysisWebViewClient()
         (parent as? android.view.ViewGroup)?.removeView(this)
         destroy()
-        // `destroy` has stopped interception, so no `nativeAssetRespond` call
-        // can still be in flight on a WebView worker thread.
-        val server = assetServerPtr
-        assetServerPtr = 0L
-        if (server != 0L) {
-            nativeFreeAssetServer(server)
+        // `destroy()` does not join Chromium's IO threads: an interception
+        // can still be inside `nativeAssetRespond`, which is why the
+        // zero-and-free runs under the write lock the interception holds
+        // the read half of.
+        assetServerLock.write {
+            val server = assetServerPtr
+            assetServerPtr = 0L
+            if (server != 0L) {
+                nativeFreeAssetServer(server)
+            }
         }
-        session.unregisterPlatformViewInstance(instanceId)
     }
 
     // ------------------------------------------------------------------
@@ -585,20 +647,28 @@ private constructor(
             view: WebView,
             request: WebResourceRequest,
         ): WebResourceResponse? {
-            val server = assetServerPtr
             val uri = request.url
-            if (server == 0L || uri.scheme != "https" || uri.host != ASSET_HTTPS_HOST) {
+            if (uri.scheme != "https" || uri.host != assetHost) {
                 return null
             }
             // Runs on a WebView worker thread — `nativeAssetRespond` is the
-            // direct JNI entry point that exists precisely for that.
-            return nativeAssetRespond(
-                    server,
-                    request.method,
-                    uri.encodedPath ?: "/",
-                    uri.encodedQuery,
-                )
-                ?.toWebResourceResponse()
+            // direct JNI entry point that exists precisely for that. The
+            // read lock keeps `release`'s zero-and-free from running while
+            // this call is in flight.
+            return assetServerLock.read {
+                val server = assetServerPtr
+                if (server == 0L) {
+                    null
+                } else {
+                    nativeAssetRespond(
+                            server,
+                            request.method,
+                            uri.encodedPath ?: "/",
+                            uri.encodedQuery,
+                        )
+                        ?.toWebResourceResponse()
+                }
+            }
         }
 
         override fun shouldOverrideUrlLoading(
@@ -654,7 +724,7 @@ private constructor(
             handler: SslErrorHandler,
             error: SslError,
         ) {
-            emitSslError(error.url ?: "", error.toString())
+            emitSslError(error.url, error.toString())
             handler.cancel()
         }
 
@@ -670,7 +740,7 @@ private constructor(
                     "the system reclaimed the web content process"
                 },
             )
-            release()
+            releaseInternal()
             return true
         }
     }

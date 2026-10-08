@@ -25,16 +25,43 @@ use crate::renderer::{
     HydroNativeView, HydroState, WidgetRenderContext, graphics_dimensions_from_proposal,
 };
 
+/// Where a leaf's mounted view comes from — and, for an instance, the
+/// object whose lifetime keeps it alive: the invariant lives in the type.
+pub enum PlacementSource {
+    /// A host-side factory resolves `kind` into a fresh child view.
+    Factory(Box<str>),
+    /// The host already holds the native view under `id`; `owner` is what
+    /// keeps the peer alive — dropping the leaf drops it, which releases
+    /// the native view. The Android system-WebView bridge mounts this way.
+    #[cfg(hydrolysis_android_system_webview)]
+    Instance {
+        id: u64,
+        owner: Rc<dyn core::any::Any>,
+    },
+}
+
+impl PlacementSource {
+    /// The serialized source carried in the published placement.
+    fn wire(&self) -> PlatformViewSource {
+        match self {
+            Self::Factory(kind) => PlatformViewSource::Factory { kind: kind.clone() },
+            #[cfg(hydrolysis_android_system_webview)]
+            Self::Instance { id, owner } => {
+                // The owner is the point: the leaf carries it so the native
+                // peer outlives the placement that mounts it.
+                debug_assert!(Rc::strong_count(owner) >= 1);
+                PlatformViewSource::Instance { instance: *id }
+            }
+        }
+    }
+}
+
 /// The retained state of one platform-view leaf: what the host mounts, the
 /// stable placement id and the sink the runner installed.
 pub struct PlatformViewRenderState {
     id: u64,
-    source: PlatformViewSource,
+    source: PlacementSource,
     sink: PlatformViewSink,
-    /// For an instance placement, the object whose lifetime keeps the mounted
-    /// native view alive — the `WebView` clone for a system web view. Dropping
-    /// the leaf drops it, which releases the mounted view.
-    instance_owner: Option<Rc<dyn core::any::Any>>,
 }
 
 impl PlatformViewRenderState {
@@ -45,11 +72,8 @@ impl PlatformViewRenderState {
             .unwrap_or_else(|| crate::renderer::unsupported_platform_view());
         Self {
             id: next_platform_view_id(),
-            source: PlatformViewSource::Factory {
-                kind: view.kind().into(),
-            },
+            source: PlacementSource::Factory(view.kind().into()),
             sink,
-            instance_owner: None,
         }
     }
 
@@ -66,9 +90,11 @@ impl PlatformViewRenderState {
             .unwrap_or_else(|| crate::renderer::unsupported_platform_view());
         Self {
             id: next_platform_view_id(),
-            source: PlatformViewSource::Instance { instance },
+            source: PlacementSource::Instance {
+                id: instance,
+                owner,
+            },
             sink,
-            instance_owner: Some(owner),
         }
     }
 }
@@ -123,20 +149,12 @@ pub fn render_platform_view_node(
     // rank and writes the record into the table.
     let local_bounds = ctx.bounds;
     let state = state.borrow();
-    // The render state's invariant: an instance placement is the one source
-    // that carries an owner — the object keeping the native peer alive for
-    // as long as the leaf exists.
-    debug_assert_eq!(
-        matches!(state.source, PlatformViewSource::Instance { .. }),
-        state.instance_owner.is_some(),
-        "a platform-view instance placement must carry its owner, and a factory placement none"
-    );
     ctx.renderer_mut().register_platform_view_placement(
         local_bounds,
         Rc::clone(&state.sink.table),
         PlatformViewPlacement {
             id: state.id,
-            source: state.source.clone(),
+            source: state.source.wire(),
             x: 0.0,
             y: 0.0,
             width: 0.0,

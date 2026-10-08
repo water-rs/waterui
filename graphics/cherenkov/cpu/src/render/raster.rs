@@ -19,6 +19,7 @@ use cherenkov::FillRule;
 
 use crate::render::lower::{
     CaptureItem, ClipMask, ClipRef, FrameFilter, IRect, Item, SampleEffect, SdfEffect, SdfKind,
+    UnionSample,
 };
 use crate::render::paint::PaintData;
 use crate::{Band as BandOut, BandPixels};
@@ -593,16 +594,23 @@ fn color_matrix(m: &[f32; 12], s: [f32; 4]) -> [f32; 4] {
     ]
 }
 
-/// Evaluates an [`SdfEffect`] at pixel centre `(px + 0.5, py + 0.5)`:
-/// `Refraction` displaced-bilinear reads the capture, `Rim` adds the
-/// highlight to the sampled colour (alpha unchanged — gaining alpha
-/// would cancel under src-over).
+/// Evaluates an [`SdfEffect`] at pixel centre `(px + 0.5, py + 0.5)`
+/// given the field's signed distance `d` and unit outward normal
+/// `(nx, ny)` there: `Refraction` displaced-bilinear reads the capture,
+/// `Rim` adds the highlight to the sampled colour (alpha unchanged —
+/// gaining alpha would cancel under src-over).
 #[expect(
     clippy::cast_precision_loss,
     reason = "pixels stay well below f32's integer bound"
 )]
-fn sdf_sample(capture: &Capture, sdf: &SdfEffect, px: usize, py: usize, crow: usize) -> [f32; 4] {
-    let (d, nx, ny) = sdf_at(&sdf.edges, px as f32 + 0.5, py as f32 + 0.5);
+fn sdf_sample(
+    capture: &Capture,
+    sdf: &SdfEffect,
+    (d, nx, ny): (f32, f32, f32),
+    px: usize,
+    py: usize,
+    crow: usize,
+) -> [f32; 4] {
     match sdf.kind {
         SdfKind::Refraction { depth, strength } => {
             let t = d.mul_add(depth.recip(), 1.0).clamp(0.0, 1.0);
@@ -631,6 +639,88 @@ fn sdf_sample(capture: &Capture, sdf: &SdfEffect, px: usize, py: usize, crow: us
             capture_sample_level(capture, px as f32 + 0.5, py as f32 + 0.5, level)
         }
     }
+}
+
+/// The union field at `(x, y)`: `(field, nx, ny, w_own, w)` — every
+/// member's distance and gradient folded in ascending order with the
+/// quadratic smin, the folded gradient's unit normal, this member's
+/// ownership weight `a_ord / Σ_j a_j`, and the folded gradient's length
+/// (the field's pixel width). `k == 0` (a lone `outer` member) folds to
+/// the member's own field. `a_i = clamp(0.5 + f_i/|∇d₂ − ∇d_i|, 0, 1)`
+/// with `f_i = d₂ − d_i` against the member's nearest competitor — a
+/// hard step only where `|∇d₂ − ∇d_i| < 1e-6` (coincident shapes), an
+/// exact `f_i == 0` tie going to the earliest member in paint order.
+/// The same math as `union_field` in the GPU's `union.wgsl`, in f32.
+fn union_field_at(
+    union: &crate::render::lower::UnionSample,
+    x: f32,
+    y: f32,
+) -> (f32, f32, f32, f32, f32) {
+    const MAX: usize = cherenkov::BackdropUnion::MAX_MEMBERS as usize;
+    let count = union.members.len();
+    debug_assert!(count <= MAX, "the member cap is enforced at planning");
+    let mut dists = [0.0f32; MAX];
+    let mut grads = [(0.0f32, 0.0f32); MAX];
+    // Every member: the cap is enforced at planning, nothing is
+    // truncated here.
+    for (i, edges) in union.members.iter().enumerate() {
+        let (dist, nx, ny) = sdf_at(edges, x, y);
+        dists[i] = dist;
+        grads[i] = (nx, ny);
+    }
+    let ord = union.ord as usize;
+    // Insertion sort of member indexes by distance in `total_cmp`
+    // order — like the oracle's `sort_by` and the GPU fold: exact ties
+    // keep paint order, and a −0.0/+0.0 pair resolves the same on every
+    // engine.
+    let mut order = [0usize; MAX];
+    for i in 0..count {
+        let mut j = i;
+        while j > 0 && dists[order[j - 1]].total_cmp(&dists[i]) == std::cmp::Ordering::Greater {
+            order[j] = order[j - 1];
+            j -= 1;
+        }
+        order[j] = i;
+    }
+    let mut field = dists[order[0]];
+    let mut grad = grads[order[0]];
+    for &j in order.iter().take(count).skip(1) {
+        let blend = (union.k - (dists[j] - field)).max(0.0) / union.k;
+        field = (blend * blend * union.k).mul_add(-0.25, field);
+        let share = 0.5 * blend;
+        grad.0 = share.mul_add(grads[j].0 - grad.0, grad.0);
+        grad.1 = share.mul_add(grads[j].1 - grad.1, grad.1);
+    }
+    let width = grad.0.hypot(grad.1).max(1e-6);
+    let (nx, ny) = (grad.0 / width, grad.1 / width);
+    // `a_j` per member against its nearest competitor (`order[0]`, or
+    // `order[1]` when `j` is the argmin itself).
+    let w_own = if count == 1 {
+        1.0
+    } else {
+        let mut sum = 0.0f32;
+        let mut own = 0.0f32;
+        for j in 0..count {
+            let other = if order[0] == j { order[1] } else { order[0] };
+            let f = dists[other] - dists[j];
+            let slope = (grads[other].0 - grads[j].0).hypot(grads[other].1 - grads[j].1);
+            let a = if slope < 1e-6 {
+                if f > 0.0 || (f == 0.0 && j == order[0]) {
+                    1.0
+                } else {
+                    0.0
+                }
+            } else {
+                (0.5 + f / slope).clamp(0.0, 1.0)
+            };
+            sum += a;
+            if j == ord {
+                own = a;
+            }
+        }
+        own / sum
+    };
+    (field, nx, ny, w_own, width)
 }
 
 /// Signed distance and unit outward normal of `(x, y)` to a closed edge
@@ -1338,6 +1428,7 @@ fn run(
                 bounds,
                 clip,
                 effect,
+                union,
             } => {
                 if let Some(capture) = ctx.captures.get(group) {
                     band.sample(
@@ -1345,6 +1436,7 @@ fn run(
                         *bounds,
                         clip.as_ref(),
                         effect,
+                        union.as_ref(),
                         stack.as_mut_slice(),
                     );
                 }
@@ -1989,12 +2081,17 @@ impl Band<'_> {
     /// strength — the member's own scope attenuates it at composite.
     /// Writes are `clip`-coverage-gated: nothing lands outside the
     /// member clip.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "pixels stay well below f32's integer bound"
+    )]
     fn sample(
         &mut self,
         capture: &Capture,
         bounds: IRect,
         clip: Option<&ClipRef>,
         effect: &SampleEffect,
+        union: Option<&UnionSample>,
         stack: &mut [Plane],
     ) {
         let bh = self.fb.len() / self.w;
@@ -2024,14 +2121,37 @@ impl Band<'_> {
             // reads, whose device rows are its texel rows.
             let crow = py.saturating_sub(capture.y0) * capture.w;
             for px in x_lo..x_hi {
-                let cc = clip_cov(clip, self.w, px, py);
+                // A union member's composite coverage is its antialiased
+                // ownership weight times the AA coverage of
+                // `field < outer`, replacing the member's clip coverage
+                // (the item's clip then carries the ancestors only);
+                // the field is also what SDF effects read.
+                let mut field = (0.0f32, 0.0f32, 0.0f32, 1.0f32, 1.0f32);
+                let mut cc = clip_cov(clip, self.w, px, py);
                 if cc <= 0.0 {
                     continue;
                 }
+                if let Some(u) = union {
+                    field = union_field_at(u, px as f32 + 0.5, py as f32 + 0.5);
+                    let (_, _, _, w_own, w) = field;
+                    cc *= w_own * (0.5 - (field.0 - u.outer) / w).clamp(0.0, 1.0);
+                    if cc <= 0.0 {
+                        continue;
+                    }
+                }
+                let (d, nx, ny) = match union {
+                    Some(_) => (field.0, field.1, field.2),
+                    None => match effect {
+                        SampleEffect::Sdf(sdf) => {
+                            sdf_at(&sdf.edges, px as f32 + 0.5, py as f32 + 0.5)
+                        }
+                        _ => (0.0, 0.0, 0.0),
+                    },
+                };
                 let c = match effect {
                     SampleEffect::None => pixel_sample(capture, px, py, crow),
                     SampleEffect::Color(m) => color_matrix(m, pixel_sample(capture, px, py, crow)),
-                    SampleEffect::Sdf(sdf) => sdf_sample(capture, sdf, px, py, crow),
+                    SampleEffect::Sdf(sdf) => sdf_sample(capture, sdf, (d, nx, ny), px, py, crow),
                 };
                 let src = c.map(|v| v * cc);
                 dst[row + px] = src_over(dst[row + px], move_space(src, capture.space, space));

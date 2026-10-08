@@ -15,6 +15,8 @@
 //! node build, naming the missing piece — there is no stand-in rendering for
 //! a native child.
 
+#[cfg(target_os = "android")]
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -186,6 +188,40 @@ impl PlatformViewTable {
     }
 }
 
+/// How many mounted platform-view children currently hold UI focus — the
+/// system `WebView` editing inside the page. While nonzero a mounted child
+/// owns the IME: the runner clears the WaterUI text-input focus (a Hydrolysis
+/// field must not claim focus it does not hold) and drives no show/hide of
+/// its own — the child manages the keyboard itself.
+///
+/// The session installs one into the environment; the platform-view modules
+/// count their children's focus into it. Only Android realizes mounted
+/// children today, so the type builds there.
+#[cfg(target_os = "android")]
+#[derive(Clone, Debug, Default)]
+pub struct PlatformViewFocus {
+    holding: Rc<Cell<u32>>,
+}
+
+#[cfg(target_os = "android")]
+impl PlatformViewFocus {
+    /// A platform-view child gained (`true`) or lost (`false`) UI focus.
+    /// Balanced per view: a gain pairs the later loss.
+    pub fn note(&self, focused: bool) {
+        let holding = self.holding.get();
+        self.holding.set(if focused {
+            holding + 1
+        } else {
+            holding.saturating_sub(1)
+        });
+    }
+
+    /// Whether any mounted platform-view child holds UI focus.
+    pub fn is_holding(&self) -> bool {
+        self.holding.get() > 0
+    }
+}
+
 /// The environment value installing a [`PlatformViewTable`] into a window:
 /// a host inserts one at session create and [`PlatformView`] leaves record
 /// their frames into it.
@@ -234,5 +270,48 @@ mod tests {
 
         let instance = serde_json::to_value(PlatformViewSource::Instance { instance: 7 }).unwrap();
         assert_eq!(instance, serde_json::json!({ "instance": 7 }));
+    }
+
+    /// A whole placement on the wire — the object the Kotlin registry's
+    /// `createSlot` parses. Factory and instance leaves must read as the
+    /// same shape except for the flattened source field.
+    #[test]
+    fn placement_wire_shape() {
+        let base = serde_json::json!({
+            "x": 1.0,
+            "y": 2.0,
+            "width": 3.0,
+            "height": 4.0,
+            "order": 5,
+            "visible": true,
+        });
+        let placement = |source| PlatformViewPlacement {
+            id: 9,
+            source,
+            x: 1.0,
+            y: 2.0,
+            width: 3.0,
+            height: 4.0,
+            clip: None,
+            order: 5,
+            visible: true,
+        };
+        let mut factory = base.clone();
+        factory["id"] = serde_json::json!(9);
+        factory["kind"] = serde_json::json!("map");
+        assert_eq!(
+            serde_json::to_value(placement(PlatformViewSource::Factory {
+                kind: "map".into()
+            }))
+            .unwrap(),
+            factory
+        );
+        let mut instance = base;
+        instance["id"] = serde_json::json!(9);
+        instance["instance"] = serde_json::json!(7);
+        assert_eq!(
+            serde_json::to_value(placement(PlatformViewSource::Instance { instance: 7 })).unwrap(),
+            instance
+        );
     }
 }

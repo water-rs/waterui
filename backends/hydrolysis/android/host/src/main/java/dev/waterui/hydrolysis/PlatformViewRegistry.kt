@@ -122,7 +122,6 @@ class PlatformViewRegistry internal constructor(
                         } else {
                             null
                         },
-
                     x = entry.optDouble("x", 0.0).toFloat(),
                     y = entry.optDouble("y", 0.0).toFloat(),
                     width = entry.optDouble("width", 0.0).toFloat(),

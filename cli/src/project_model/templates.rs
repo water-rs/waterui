@@ -5982,7 +5982,12 @@ pub mod hydrolysis {
         let mut hydrolysis_features = vec!["accessibility"];
         // The system-WebView bridge joins the feature set only when the app
         // uses the standard WebView and links no engine of its own.
-        hydrolysis_features.extend(ctx.webview_backend_feature());
+        // One decision drives both surfaces: the Gradle `webview/` substitution
+        // and the Cargo `webview-system` feature read the entry flag the
+        // resolved webview backend already decided.
+        if ctx.hydrolysis_android_has_system_webview() {
+            hydrolysis_features.push("webview-system");
+        }
         Ok(BTreeMap::from([
             (
                 "hydrolysis".to_string(),
@@ -6055,7 +6060,12 @@ pub mod hydrolysis {
         ctx: &TemplateContext,
     ) -> io::Result<BTreeMap<String, GeneratedDependencyValue>> {
         let mut hydrolysis_features = vec!["winit"];
-        hydrolysis_features.extend(ctx.webview_backend_feature());
+        // One decision drives both surfaces: the Gradle `webview/` substitution
+        // and the Cargo `webview-system` feature read the entry flag the
+        // resolved webview backend already decided.
+        if ctx.hydrolysis_android_has_system_webview() {
+            hydrolysis_features.push("webview-system");
+        }
         let mut dependencies: BTreeMap<String, GeneratedDependencyValue> = BTreeMap::from([
             (
                 "hydrolysis".to_string(),

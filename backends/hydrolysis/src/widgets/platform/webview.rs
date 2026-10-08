@@ -123,8 +123,14 @@ pub fn install_controller(
     if env.get::<WebViewController>().is_some() {
         return Ok(());
     }
+    let platform_view_focus = env
+        .get::<crate::platform_view::PlatformViewFocus>()
+        .cloned()
+        .expect("the session installs PlatformViewFocus beside the PlatformViewSink");
     env.insert(WebViewController::new(AndroidSystemWebViewController::new(
-        jni_env, session,
+        jni_env,
+        session,
+        platform_view_focus,
     )?));
     Ok(())
 }

@@ -262,33 +262,28 @@ async fn require_painter_module(
     let resolved = project.resolved_framework().await?;
     let subdirectory = resolved.hydrolysis_android_host_subdirectory()?;
     let host_project_dir = host_root.join(subdirectory);
-    let module_dir = host_project_dir.join(painter.host_module());
-    if !module_dir.is_dir() {
-        bail!(
-            "the hydrolysis android host at {} ships no `{}` painter: {} does not exist; \
-             painter selection is explicit and never falls back",
-            host_root.display(),
-            painter,
-            module_dir.display()
-        );
-    }
+    require_host_module(
+        &host_project_dir,
+        painter.host_module(),
+        "painter selection is explicit and never falls back",
+    )?;
     Ok(host_project_dir)
 }
 
-/// `require_painter_module`'s sibling: the system `WebView` mounts through
-/// the host checkout's own `webview/` Gradle module, so an app whose feature
-/// selection needs it must error at scaffold time — never at Gradle's
-/// dependency substitution.
+/// The pinned host checkout must ship the Gradle `module` the selection
+/// needs — a painter band (`gpu`) or the system-WebView bridge (`webview`) —
+/// or the scaffold is an error here, never at Gradle's dependency
+/// substitution.
 ///
 /// # Errors
 ///
-/// Returns an error when the checkout ships no `webview/` module.
-fn require_webview_module(host_project_dir: &Path) -> eyre::Result<()> {
-    let module_dir = host_project_dir.join("webview");
+/// Returns an error when the checkout ships no `module/` directory.
+fn require_host_module(host_project_dir: &Path, module: &str, reason: &str) -> eyre::Result<()> {
+    let module_dir = host_project_dir.join(module);
     if !module_dir.is_dir() {
         bail!(
-            "the hydrolysis android host at {} ships no `webview` module: {} does not exist; \
-             the app's `webview` feature selection needs the system-WebView bridge",
+            "the hydrolysis android host at {} ships no `{module}` module: {} does not exist; \
+             {reason}",
             host_project_dir.display(),
             module_dir.display()
         );
@@ -313,7 +308,11 @@ async fn template_entry(
         Some(ResolvedWebViewBackend::System)
     );
     if system_webview {
-        require_webview_module(host_project_dir)?;
+        require_host_module(
+            host_project_dir,
+            "webview",
+            "the app's `webview` feature selection needs the system-WebView bridge",
+        )?;
     }
 
     let backend_path = project.backend_path::<HydrolysisBackend>();

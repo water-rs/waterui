@@ -7,6 +7,9 @@
 //! device. The Kotlin `HydrolysisWebView` mirrors these one-to-one — the
 //! semantics here are `WebViewComponent.kt`'s, ported.
 
+use std::collections::HashMap;
+
+use waterui_core::Str;
 use waterui_webview::{Cookie, OriginPolicy};
 
 /// The token `OriginRule::LocalFiles` crosses as; Android spells a local-file
@@ -80,7 +83,6 @@ pub fn androidx_origin_rules(policy: &OriginPolicy) -> Vec<String> {
 /// opaque origin — a `data:` document, a sandboxed frame — reports an empty
 /// origin and matches nothing but `*`, which is the point: it cannot be
 /// authenticated.
-#[cfg(test)]
 #[must_use]
 pub fn origin_may_use_bridge(rules: &[String], origin: &str) -> bool {
     rules.iter().any(|rule| match rule.as_str() {
@@ -161,6 +163,276 @@ pub fn parse_cookie_header(header: &str) -> Vec<Cookie<'static>> {
         })
         .collect()
 }
+
+/// A pending `run_javascript`/`call_async_javascript`/`get_cookies` call
+/// waiting on its matching native, keyed by call id. The Kotlin runtime's
+/// `JsCompletion` trio, flattened into one registry: Kotlin reports every
+/// settlement — completed or abandoned — through `nativeJsResult`, and only
+/// a live async call hears from `nativeAsyncResult` afterwards.
+///
+/// The settlers are `FnOnce` rather than a channel so this module stays
+/// JNI- and executor-free: the Android side wraps a `oneshot::Sender`, the
+/// tests collect what they are handed.
+pub enum PendingCall {
+    /// `run_javascript`: the synchronous `evaluateJavascript` reply is the
+    /// script's JSON answer.
+    JavaScript(Box<dyn FnOnce(Result<Str, Str>)>),
+    /// `call_async_javascript`: a reply of [`ASYNC_CALL_STARTED`] means the
+    /// promise was posted and the real result comes through
+    /// `nativeAsyncResult`; anything else failed at launch.
+    Async(Box<dyn FnOnce(Result<Str, Str>)>),
+    /// `get_cookies`: the reply is the `CookieManager` header the native
+    /// splits into pairs.
+    Cookies(Box<dyn FnOnce(Vec<Cookie<'static>>)>),
+}
+
+/// The in-flight calls of one web view, keyed by call id — the single place
+/// every settlement path consults, so navigation, release and teardown can
+/// settle all of them at once and a receiver is never left unsettled.
+#[derive(Default)]
+pub struct PendingCalls {
+    calls: HashMap<u64, PendingCall>,
+}
+
+impl PendingCalls {
+    /// Register `call` under `id` before the Kotlin call that answers it is
+    /// issued — the reply may land on the same call.
+    pub fn insert(&mut self, id: u64, call: PendingCall) {
+        self.calls.insert(id, call);
+    }
+
+    /// A synchronous `evaluateJavascript`-style reply (`nativeJsResult`,
+    /// `nativeCookies`, or Kotlin's per-call abandonment): `ok`/`value`
+    /// carry the JavaScript outcome for a script call, the failure message
+    /// for an abandoned call, and the cookie header for `get_cookies`.
+    /// An async call whose reply is the started sentinel is re-armed under
+    /// the same id for `settle_async`.
+    pub fn settle(&mut self, id: u64, ok: bool, value: &str) {
+        let Some(call) = self.calls.remove(&id) else {
+            tracing::debug!("android webview: a reply for call {id} arrived with nothing pending");
+            return;
+        };
+        match call {
+            PendingCall::JavaScript(settle) => settle(if ok {
+                Ok(Str::from(value.to_string()))
+            } else {
+                Err(Str::from(value.to_string()))
+            }),
+            PendingCall::Async(settle) => {
+                if ok && value == ASYNC_CALL_STARTED {
+                    // The promise posted: wait for `nativeAsyncResult`,
+                    // which carries the same id.
+                    self.calls.insert(id, PendingCall::Async(settle));
+                } else {
+                    // A launch failure — a parse error, a page gone under
+                    // the call, or Kotlin's abandonment of a live call.
+                    settle(Err(Str::from(value.to_string())));
+                }
+            }
+            PendingCall::Cookies(settle) => settle(parse_cookie_header(value)),
+        }
+    }
+
+    /// Settle an async call from its posted `{id, ok, value}` envelope —
+    /// accepted only for a re-armed [`PendingCall::Async`]: a script or
+    /// cookie call id arriving here was forged by a page, and it is dropped
+    /// rather than settled.
+    pub fn settle_async(&mut self, payload: &str) {
+        let result = match parse_async_result(payload) {
+            Ok(result) => result,
+            Err(error) => {
+                // A malformed envelope cannot identify its call; surface
+                // the breach rather than guess.
+                tracing::warn!("android webview: malformed async result: {error}");
+                return;
+            }
+        };
+        match self.calls.get(&result.id) {
+            // Only the re-armed async call may settle from here — a script
+            // or cookie id arriving in this envelope was forged by a page,
+            // so the entry stays for its real reply.
+            Some(PendingCall::Async(_)) => {
+                let Some(PendingCall::Async(settle)) = self.calls.remove(&result.id) else {
+                    unreachable!("the entry was checked above");
+                };
+                let value = Str::from(result.value);
+                settle(if result.ok { Ok(value) } else { Err(value) });
+            }
+            Some(_) => {
+                tracing::warn!(
+                    "android webview: an async result addressed call {}, not an async call",
+                    result.id
+                );
+            }
+            None => tracing::debug!(
+                "android webview: an async result for call {} arrived with nothing pending",
+                result.id
+            ),
+        }
+    }
+
+    /// Every outstanding call, settled at once — navigation replaced the
+    /// document, or the view is gone (`release`, a dead render process).
+    /// Script calls fail with `reason`; a cookie call gets the empty jar,
+    /// the answer a closed view can still give.
+    pub fn settle_all(&mut self, reason: &str) {
+        for (id, call) in self.calls.drain() {
+            match call {
+                PendingCall::JavaScript(settle) | PendingCall::Async(settle) => {
+                    tracing::debug!("android webview: call {id} abandoned: {reason}");
+                    settle(Err(Str::from(reason.to_string())));
+                }
+                PendingCall::Cookies(settle) => settle(Vec::new()),
+            }
+        }
+    }
+}
+
+/// The `HydrolysisWebView` members Rust calls by name — the webview module's
+/// half of `runner::android_methods`' host contract. `install_controller`
+/// resolves each entry with `GetMethodID` once per session, so a member R8
+/// stripped or renamed fails the create, not the first call that reaches for
+/// it; Kotlin keeps the same set under `@CalledFromNative` and the agreement
+/// test below reads them back out of `HydrolysisWebView.kt`.
+///
+/// A method's id in [`WEBVIEW_METHODS`] is its [`WebViewMethodId`] position —
+/// the only handle a call site names a wrapper method by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WebViewMethodId {
+    GoBack,
+    GoForward,
+    LoadUrl,
+    StopLoading,
+    Reload,
+    SetUserAgent,
+    CanGoBack,
+    CanGoForward,
+    SetDocumentStartScripts,
+    SetBridgeOrigins,
+    SetRedirectsEnabled,
+    SetCookie,
+    GetCookies,
+    Evaluate,
+    EvaluateBridgeScript,
+    Release,
+}
+
+impl WebViewMethodId {
+    /// Every id, in table order.
+    pub const ALL: [Self; 16] = [
+        Self::GoBack,
+        Self::GoForward,
+        Self::LoadUrl,
+        Self::StopLoading,
+        Self::Reload,
+        Self::SetUserAgent,
+        Self::CanGoBack,
+        Self::CanGoForward,
+        Self::SetDocumentStartScripts,
+        Self::SetBridgeOrigins,
+        Self::SetRedirectsEnabled,
+        Self::SetCookie,
+        Self::GetCookies,
+        Self::Evaluate,
+        Self::EvaluateBridgeScript,
+        Self::Release,
+    ];
+}
+
+/// One `HydrolysisWebView` method the native side calls: its JNI name and
+/// signature, resolved into a cached `jmethodID` once per session.
+pub struct WebViewMethod {
+    pub name: &'static str,
+    pub signature: &'static str,
+}
+
+/// The instance-method contract, in `WebViewMethodId` order.
+pub const WEBVIEW_METHODS: &[WebViewMethod] = &[
+    WebViewMethod {
+        name: "goBack",
+        signature: "()V",
+    },
+    WebViewMethod {
+        name: "goForward",
+        signature: "()V",
+    },
+    WebViewMethod {
+        name: "loadUrl",
+        signature: "(Ljava/lang/String;)V",
+    },
+    WebViewMethod {
+        name: "stopLoading",
+        signature: "()V",
+    },
+    WebViewMethod {
+        name: "reload",
+        signature: "()V",
+    },
+    WebViewMethod {
+        name: "setUserAgent",
+        signature: "(Ljava/lang/String;)V",
+    },
+    WebViewMethod {
+        name: "canGoBack",
+        signature: "()Z",
+    },
+    WebViewMethod {
+        name: "canGoForward",
+        signature: "()Z",
+    },
+    WebViewMethod {
+        name: "setDocumentStartScripts",
+        signature: "([Ljava/lang/String;)V",
+    },
+    WebViewMethod {
+        name: "setBridgeOrigins",
+        signature: "([Ljava/lang/String;)V",
+    },
+    WebViewMethod {
+        name: "setRedirectsEnabled",
+        signature: "(Z)V",
+    },
+    WebViewMethod {
+        name: "setCookie",
+        signature: "(Ljava/lang/String;Ljava/lang/String;)V",
+    },
+    WebViewMethod {
+        name: "getCookies",
+        signature: "(J)V",
+    },
+    WebViewMethod {
+        name: "evaluate",
+        signature: "(Ljava/lang/String;J)V",
+    },
+    WebViewMethod {
+        name: "evaluateBridgeScript",
+        signature: "(Ljava/lang/String;)V",
+    },
+    WebViewMethod {
+        name: "release",
+        signature: "()V",
+    },
+];
+
+/// `create` is the companion's static factory — `GetStaticMethodID`, beside
+/// the instance table. The trailing strings are the bridge and async-result
+/// object names, the local-file origin rule and the asset host Kotlin
+/// applies verbatim.
+pub const WEBVIEW_CREATE: WebViewMethod = WebViewMethod {
+    name: "create",
+    signature: "(Ldev/waterui/hydrolysis/HydrolysisSession;JJJLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ldev/waterui/hydrolysis/webview/HydrolysisWebView;",
+};
+
+/// The `AssetResponse` constructor `nativeAssetRespond` calls by name.
+pub const WEBVIEW_ASSET_RESPONSE_INIT: WebViewMethod = WebViewMethod {
+    name: "<init>",
+    signature: "(ILjava/lang/String;[B)V",
+};
+
+const _: () = assert!(
+    WEBVIEW_METHODS.len() == WebViewMethodId::ALL.len(),
+    "WEBVIEW_METHODS and WebViewMethodId disagree"
+);
 
 #[cfg(test)]
 mod tests {
@@ -318,5 +590,257 @@ mod tests {
         // `evaluateJavascript` hands replies back as JSON, so the settle
         // path matches the quoted form of the wrapper's return value.
         assert_eq!(ASYNC_CALL_STARTED, format!("\"{ASYNC_CALL_SENTINEL}\""));
+    }
+
+    // ---- PendingCalls: the sequences the shipped code runs ----
+
+    fn collect() -> (
+        std::rc::Rc<std::cell::RefCell<Vec<Result<String, String>>>>,
+        impl Fn(Result<Str, Str>),
+    ) {
+        let out = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let sink = std::rc::Rc::clone(&out);
+        (out, move |result: Result<Str, Str>| {
+            sink.borrow_mut()
+                .push(result.map(|v| v.to_string()).map_err(|e| e.to_string()));
+        })
+    }
+
+    fn collect_cookies() -> (
+        std::rc::Rc<std::cell::RefCell<Vec<Vec<Cookie<'static>>>>>,
+        impl Fn(Vec<Cookie<'static>>),
+    ) {
+        let out = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let sink = std::rc::Rc::clone(&out);
+        (out, move |cookies| sink.borrow_mut().push(cookies))
+    }
+
+    #[test]
+    fn pending_calls_the_sentinel_rearms_and_the_result_settles() {
+        let mut pending = PendingCalls::default();
+        let (results, settle) = collect();
+        pending.insert(1, PendingCall::Async(Box::new(settle)));
+        // The synchronous reply is the started sentinel: still in flight.
+        pending.settle(1, true, ASYNC_CALL_STARTED);
+        assert!(results.borrow().is_empty());
+        // The posted envelope then settles it.
+        pending.settle_async(r#"{"id":1,"ok":true,"value":"\"v\""}"#);
+        assert_eq!(
+            results.borrow().as_slice(),
+            &[Ok(""v"".to_owned())]
+        );
+    }
+
+    #[test]
+    fn pending_calls_navigation_abandons_everything() {
+        let mut pending = PendingCalls::default();
+        let (results, settle) = collect();
+        let (cookies, settle_cookies) = collect_cookies();
+        pending.insert(1, PendingCall::Async(Box::new(settle)));
+        pending.insert(2, PendingCall::Cookies(Box::new(settle_cookies)));
+        pending.settle_all("the document was replaced before the script ran");
+        assert_eq!(
+            results.borrow().as_slice(),
+            &[Err(
+                "the document was replaced before the script ran".to_owned()
+            )]
+        );
+        assert_eq!(cookies.borrow().as_slice(), &[Vec::new()]);
+    }
+
+    #[test]
+    fn pending_calls_a_release_settles_then_a_late_reply_drops() {
+        let mut pending = PendingCalls::default();
+        let (results, settle) = collect();
+        pending.insert(1, PendingCall::Async(Box::new(settle)));
+        pending.settle(1, true, ASYNC_CALL_STARTED);
+        // release(): the still-live async call fails at once.
+        pending.settle_all("the web view was closed");
+        assert_eq!(
+            results.borrow().as_slice(),
+            &[Err("the web view was closed".to_owned())]
+        );
+        // A reply for an already-settled id is dropped, not settled again.
+        pending.settle_async(r#"{"id":1,"ok":true,"value":"late"}"#);
+        assert_eq!(results.borrow().len(), 1);
+    }
+
+    #[test]
+    fn pending_calls_a_forged_async_result_never_settles_a_script_call() {
+        let mut pending = PendingCalls::default();
+        let (results, settle) = collect();
+        pending.insert(1, PendingCall::JavaScript(Box::new(settle)));
+        pending.settle_async(r#"{"id":1,"ok":true,"value":"forged"}"#);
+        // Rejected: the call is still pending for its real reply.
+        assert!(results.borrow().is_empty());
+        pending.settle(1, true, "\"real\"");
+        assert_eq!(
+            results.borrow().as_slice(),
+            &[Ok(""real"".to_owned())]
+        );
+    }
+
+    #[test]
+    fn pending_calls_a_malformed_async_result_settles_nothing() {
+        let mut pending = PendingCalls::default();
+        let (results, settle) = collect();
+        pending.insert(1, PendingCall::Async(Box::new(settle)));
+        pending.settle_async("not json");
+        assert!(results.borrow().is_empty());
+    }
+
+    // ---- the WEBVIEW_METHODS ↔ HydrolysisWebView.kt agreement ----
+
+    /// `HydrolysisWebView.kt`, read at compile time — a moved file is a
+    /// compile error, not a skipped test.
+    const WRAPPER_KT: &str = include_str!(
+        "../../../android/webview/src/main/java/dev/waterui/hydrolysis/webview/HydrolysisWebView.kt"
+    );
+
+    /// The Kotlin parameter/return types the webview JNI contract spells.
+    fn kotlin_type_to_jni(kotlin: &str, member: &str) -> &'static str {
+        match kotlin.trim() {
+            "Boolean" => "Z",
+            "Long" => "J",
+            "Int" => "I",
+            "String" => "Ljava/lang/String;",
+            "ByteArray" => "[B",
+            "Array<String>" => "[Ljava/lang/String;",
+            "HydrolysisSession" => "Ldev/waterui/hydrolysis/HydrolysisSession;",
+            "HydrolysisWebView" => "Ldev/waterui/hydrolysis/webview/HydrolysisWebView;",
+            "Unit" => "V",
+            other => panic!("@CalledFromNative member {member} uses unmapped Kotlin type {other}"),
+        }
+    }
+
+    /// Every `@CalledFromNative` member in `source` as `name → signature`.
+    /// Handles `fun name(...)`/`: ReturnType`, `@JvmStatic fun`s and the
+    /// `class X @CalledFromNative constructor(...)` form.
+    fn annotated_members(source: &str) -> std::collections::BTreeMap<String, String> {
+        let mut members = std::collections::BTreeMap::new();
+        let mut rest = source;
+        while let Some(at) = rest.find("@CalledFromNative") {
+            rest = &rest[at + "@CalledFromNative".len()..];
+            // Skip annotations until `fun` or `constructor`.
+            loop {
+                rest = rest.trim_start();
+                if rest.starts_with('@') {
+                    let end = rest.find(['\n', ' ']).unwrap_or(rest.len());
+                    rest = &rest[end..];
+                } else {
+                    break;
+                }
+            }
+            if let Some(class_rest) = rest.strip_prefix("class") {
+                // `class Name ... constructor(` — take ctor params.
+                let Some(ctor) = class_rest.find("constructor(").map(|i| &class_rest[i..]) else {
+                    panic!("@CalledFromNative class with no constructor: {class_rest:.80}")
+                };
+                let (params, _) = take_parens(&ctor["constructor".len()..]);
+                let mut sig = String::from("(");
+                push_params(&mut sig, &params, "AssetResponse");
+                sig.push_str(")V");
+                members.insert("<init>".to_owned(), sig);
+                continue;
+            }
+            let Some(fn_rest) = rest.strip_prefix("fun") else {
+                panic!("@CalledFromNative followed by neither fun nor constructor: {rest:.80}")
+            };
+            let fn_rest = fn_rest.trim_start();
+            // `create(...)` companion function: name then params.
+            let name_end = fn_rest.find('(').expect("@CalledFromNative fun has params");
+            let name = fn_rest[..name_end].trim().to_owned();
+            let (params, after) = take_parens(&fn_rest[name_end..]);
+            let mut sig = String::from("(");
+            push_params(&mut sig, &params, &name);
+            sig.push(')');
+            let after = after.trim_start();
+            let ret = after
+                .strip_prefix(':')
+                .map(|t| t.split(['\n', '{', '=']).next().unwrap().trim())
+                .unwrap_or("Unit");
+            sig.push_str(kotlin_type_to_jni(ret, &name));
+            members.insert(name, sig);
+        }
+        members
+    }
+
+    /// `(...)`, balance-aware; returns the inside and what follows `)`.
+    fn take_parens(mut s: &str) -> (String, &str) {
+        assert!(s.trim_start().starts_with('('), "expected '(' at {s:.40}");
+        s = s.trim_start();
+        let mut depth = 0;
+        for (i, c) in s.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return (s[1..i].to_owned(), &s[i + 1..]);
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("unbalanced parens in {s:.80}");
+    }
+
+    fn push_params(sig: &mut String, params: &str, member: &str) {
+        for param in params.split(',') {
+            let param = param.trim();
+            if param.is_empty() {
+                continue;
+            }
+            let param = param
+                .strip_prefix("private ")
+                .unwrap_or(param)
+                .trim_start_matches("val ")
+                .trim_start_matches("var ")
+                .trim();
+            let (_, ty) = param.split_once(':').unwrap_or_else(|| {
+                panic!("@CalledFromNative parameter {param} on {member} has no type")
+            });
+            sig.push_str(kotlin_type_to_jni(ty, member));
+        }
+    }
+
+    #[test]
+    fn the_webview_table_and_the_annotated_kotlin_members_agree() {
+        for (id, method) in WebViewMethodId::ALL.iter().zip(WEBVIEW_METHODS.iter()) {
+            // camelCase the PascalCase id: SetUserAgent → setUserAgent.
+            let debug = format!("{id:?}");
+            let mut chars = debug.chars();
+            let expected =
+                chars.next().unwrap().to_lowercase().next().unwrap().to_string() + chars.as_str();
+            assert_eq!(
+                method.name, expected,
+                "WEBVIEW_METHODS must stay in WebViewMethodId order"
+            );
+        }
+
+        // Members the platform `WebView` already declares — HydrolysisWebView
+        // inherits them, JNI resolves them through the class, and the
+        // framework keeps them. Only Kotlin-declared members need the
+        // `@CalledFromNative` keep.
+        const PLATFORM_INHERITED: &[&str] = &[
+            "goBack",
+            "goForward",
+            "loadUrl",
+            "stopLoading",
+            "reload",
+            "canGoBack",
+            "canGoForward",
+        ];
+        let annotated = annotated_members(WRAPPER_KT);
+        let declared: std::collections::BTreeMap<String, String> = WEBVIEW_METHODS
+            .iter()
+            .filter(|method| !PLATFORM_INHERITED.contains(&method.name))
+            .chain([WEBVIEW_CREATE, WEBVIEW_ASSET_RESPONSE_INIT].iter())
+            .map(|method| (method.name.to_owned(), method.signature.to_owned()))
+            .collect();
+        assert_eq!(
+            declared, annotated,
+            "every member Rust calls on HydrolysisWebView/AssetResponse needs a matching              @CalledFromNative member in HydrolysisWebView.kt, and vice versa"
+        );
     }
 }

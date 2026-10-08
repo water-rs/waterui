@@ -545,7 +545,10 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         val imm =
             context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         if (visible) {
-            if (!hasFocus()) requestFocus()
+            // `hasFocus` is also true while a platform-view child (the
+            // WebView) holds focus — `isFocused` asks for this view itself,
+            // which is what pulls the IME back to the Hydrolysis field.
+            if (!isFocused) requestFocus()
             imm.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
         } else {
             imm.hideSoftInputFromWindow(windowToken, 0)

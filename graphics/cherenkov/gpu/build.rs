@@ -30,6 +30,12 @@ mod deployment;
 
 #[path = "build_tile.rs"]
 mod tile;
+/// The union member cap the WGSL fold compiles against — the same
+/// definition `cherenkov::BackdropUnion::MAX_MEMBERS` re-exports, kept
+/// free of a crate dependency so this build script does not link the
+/// engine.
+#[path = "../src/union_cap.rs"]
+mod union_cap;
 
 use std::env;
 use std::num::NonZeroU32;
@@ -76,6 +82,36 @@ struct AppleTarget {
     ios_family: bool,
 }
 
+/// Removes every `// <marker>`-bracketed span from `source` — the mirror
+/// of the marker convention in `shaders.rs`: marker lines pair up, and
+/// the text between an opening and closing marker is a specialization's
+/// optional block (the union field today), dropped wholesale by variants
+/// that do not carry it.
+///
+/// Only a whole trimmed line equal to the marker toggles the span — a
+/// marker inside other text is not a marker. An unpaired marker is a
+/// build bug and panics. The stripped output must carry neither
+/// `union_field` nor `backdrop_field`: the check fails loudly if the
+/// spans drift from what the marker is supposed to remove.
+fn drop_marked(source: &str, marker: &str) -> String {
+    let tag = format!("// {marker}");
+    let mut out = String::with_capacity(source.len());
+    let mut dropping = false;
+    for line in source.split_inclusive('\n') {
+        if line.trim() == tag {
+            dropping = !dropping;
+        } else if !dropping {
+            out.push_str(line);
+        }
+    }
+    assert!(!dropping, "unpaired `{tag}` marker");
+    assert!(
+        !out.contains("union_field") && !out.contains("backdrop_field"),
+        "`{tag}` stripping left union code in the output"
+    );
+    out
+}
+
 /// Passthrough shaders carry no naga runtime checks: the source is
 /// controlled and validated here at build time.
 const UNCHECKED: naga::proc::BoundsCheckPolicies = naga::proc::BoundsCheckPolicies {
@@ -100,6 +136,7 @@ fn main() {
     let [
         shared,
         shader,
+        union,
         present,
         external,
         blend,
@@ -111,6 +148,7 @@ fn main() {
     ] = [
         "shared",
         "shader",
+        "union",
         "present",
         "external",
         "blend",
@@ -122,31 +160,95 @@ fn main() {
     ]
     .map(read);
 
-    // The three VARIANT specializations of shader.wgsl plus present.wgsl,
-    // external.wgsl, projective.wgsl, mip.wgsl and resolve.wgsl — the
-    // fixed module set
-    // `render` creates. The engine, external and projective modules share
-    // the `shared.wgsl` prelude; the engine and projective tails share the
-    // `blend.wgsl` compositing helpers.
-    let mut specs: Vec<Spec> = (0..3u32)
-        .map(|variant| Spec {
-            name: format!("engine{variant}"),
-            source: format!("const VARIANT: u32 = {variant}u;\n{shared}\n{shader}\n{blend}"),
-            groups: bindings::ENGINE_GROUPS,
-            metal: true,
-            merge_pair: None,
+    // The union member cap the WGSL fold is compiled against:
+    // `union_cap::UNION_MAX_MEMBERS` prepended like `VARIANT`, so the
+    // Rust constant stays the single definition. The runtime assembles
+    // the union module from this fragment and the non-union variants
+    // from `shader_no_union.wgsl` — `shader.wgsl` minus every
+    // `// union-stub`-bracketed span.
+    let union_max = format!(
+        "const UNION_MAX_MEMBERS: u32 = {}u;\n",
+        union_cap::UNION_MAX_MEMBERS
+    );
+    std::fs::write(out_dir.join("union_max_members.wgsl"), &union_max).unwrap();
+    let shader_no_union = drop_marked(&shader, "union-stub");
+    std::fs::write(out_dir.join("shader_no_union.wgsl"), &shader_no_union).unwrap();
+    let specs = module_specs(&Modules {
+        shared: &shared,
+        shader: &shader,
+        shader_no_union: &shader_no_union,
+        union: &union,
+        union_max: &union_max,
+        blend: &blend,
+        present: &present,
+        external: &external,
+        native: &native,
+        projective: &projective,
+        mip: &mip,
+        resolve: &resolve,
+        reduce: &reduce,
+    });
+
+    compile_specs(&out_dir, &specs);
+}
+
+/// The WGSL module sources `module_specs` splices into `Spec`s.
+struct Modules<'a> {
+    shared: &'a str,
+    shader: &'a str,
+    /// `shader` minus its `// union-stub` spans.
+    shader_no_union: &'a str,
+    union: &'a str,
+    /// The `UNION_MAX_MEMBERS` const fragment.
+    union_max: &'a str,
+    blend: &'a str,
+    present: &'a str,
+    external: &'a str,
+    native: &'a str,
+    projective: &'a str,
+    mip: &'a str,
+    resolve: &'a str,
+    reduce: &'a str,
+}
+
+/// The fixed module set `render` creates: four VARIANT specializations
+/// of `shader.wgsl` plus `present`, `external`, `external_native`,
+/// `projective`, `mip`, `resolve` and `reduce`. The engine, external
+/// and projective modules share the `shared.wgsl` prelude; the engine
+/// and projective tails share the `blend.wgsl` compositing helpers.
+/// Variant 3 (Union) additionally prepends `UNION_MAX_MEMBERS` and links
+/// `union.wgsl`; the plain variants drop every `// union-stub` span, so
+/// their modules carry no union fold or member-cap arrays.
+fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
+    let mut specs: Vec<Spec> = (0..4u32)
+        .map(|variant| {
+            let (cap, shader, union) = if variant == 3 {
+                (m.union_max, m.shader, m.union)
+            } else {
+                ("", m.shader_no_union, "")
+            };
+            Spec {
+                name: format!("engine{variant}"),
+                source: format!(
+                    "const VARIANT: u32 = {variant}u;\n{cap}{}\n{shader}\n{union}{}",
+                    m.shared, m.blend
+                ),
+                groups: bindings::ENGINE_GROUPS,
+                metal: true,
+                merge_pair: None,
+            }
         })
         .collect();
     specs.push(Spec {
         name: "present".into(),
-        source: present,
+        source: m.present.into(),
         groups: bindings::PRESENT_GROUPS,
         metal: true,
         merge_pair: None,
     });
     specs.push(Spec {
         name: "external".into(),
-        source: format!("{shared}\n{external}"),
+        source: format!("{}\n{}", m.shared, m.external),
         groups: bindings::EXTERNAL_GROUPS,
         metal: true,
         merge_pair: None,
@@ -157,41 +259,32 @@ fn main() {
     // `VkSamplerYcbcrConversion` immutable sampler occupies.
     specs.push(Spec {
         name: "external_native".into(),
-        source: format!("{shared}\n{external}\n{native}"),
+        source: format!("{}\n{}\n{}", m.shared, m.external, m.native),
         groups: bindings::NATIVE_EXTERNAL_GROUPS,
         metal: false,
         merge_pair: Some((5, 6)),
     });
     specs.push(Spec {
         name: "projective".into(),
-        source: format!("{shared}\n{blend}\n{projective}"),
+        source: format!("{}\n{}\n{}", m.shared, m.blend, m.projective),
         groups: bindings::PROJECTIVE_GROUPS,
         metal: true,
         merge_pair: None,
     });
-    specs.push(Spec {
-        name: "mip".into(),
-        source: mip,
-        groups: bindings::MIP_GROUPS,
-        metal: true,
-        merge_pair: None,
-    });
-    specs.push(Spec {
-        name: "resolve".into(),
-        source: resolve,
-        groups: bindings::RESOLVE_GROUPS,
-        metal: true,
-        merge_pair: None,
-    });
-    specs.push(Spec {
-        name: "reduce".into(),
-        source: reduce,
-        groups: bindings::REDUCE_GROUPS,
-        metal: true,
-        merge_pair: None,
-    });
-
-    compile_specs(&out_dir, &specs);
+    for (name, source, groups) in [
+        ("mip", m.mip, bindings::MIP_GROUPS),
+        ("resolve", m.resolve, bindings::RESOLVE_GROUPS),
+        ("reduce", m.reduce, bindings::REDUCE_GROUPS),
+    ] {
+        specs.push(Spec {
+            name: name.into(),
+            source: source.into(),
+            groups,
+            metal: true,
+            merge_pair: None,
+        });
+    }
+    specs
 }
 
 fn compile_specs(out_dir: &Path, specs: &[Spec]) {
@@ -212,6 +305,9 @@ fn compile_specs(out_dir: &Path, specs: &[Spec]) {
         compile(out_dir, spec, apple.as_ref(), wasm, spirv);
     }
     if let Some(apple) = apple.as_ref() {
+        // The tile executor's composition shaders. Only the stripped
+        // no-union variant: a union member samples its group's capture,
+        // a read `ExecutionPlan::epoch` never admits into a tile epoch.
         let spec = Spec {
             name: "engine_tile".into(),
             source: specs[2].source.clone(),

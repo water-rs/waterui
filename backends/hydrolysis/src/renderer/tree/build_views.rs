@@ -265,11 +265,6 @@ impl RenderNode {
         Self::build_widget(renderer, shape, stretch, env)
     }
 
-    /// A `WebView` reaching the backend without a `Hook<WebView>` engine has
-    /// nothing to draw it — a missing realization, not a drawable stand-in.
-    /// The macOS bridge is no different: `hydrolysis_macos_system_webview`'s
-    /// record has no native-view layer to present the `WKWebView` through,
-    /// so it panics at build like every other engine-less path.
     /// Build the Android system-WebView leaf: the `HydrolysisWebView` wrapper
     /// the controller opened mounts as a platform-view *instance* placement,
     /// keyed by the id Kotlin registered it under. The `WebView` value rides
@@ -307,6 +302,11 @@ impl RenderNode {
         Self::build_widget(renderer, state, stretch, env)
     }
 
+    /// A `WebView` reaching the backend without a `Hook<WebView>` engine has
+    /// nothing to draw it — a missing realization, not a drawable stand-in.
+    /// The macOS bridge is no different: `hydrolysis_macos_system_webview`'s
+    /// record has no native-view layer to present the `WKWebView` through,
+    /// so it panics at build like every other engine-less path.
     #[cfg(not(hydrolysis_android_system_webview))]
     pub(super) fn build_webview(
         _webview: WebView,
