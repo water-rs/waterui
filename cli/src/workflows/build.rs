@@ -540,7 +540,8 @@ impl RustDynamicLibraries {
     }
 
     /// Copy the resolved `waterui_dylib` into `destination` under the
-    /// canonical Apple name [`apple_canonical_waterui`] returns, alongside
+    /// canonical Apple name [`apple_canonical_waterui`](Self::apple_canonical_waterui)
+    /// returns, alongside
     /// the recorded name [`stage`](Self::stage) writes.
     ///
     /// The reported artifact can already occupy the canonical destination —
@@ -1779,7 +1780,7 @@ impl RustBuild {
     /// - `RustBuildError::FailToExecuteCargoBuild`: If there was an error executing the cargo build command.
     /// - `RustBuildError::FailToBuildRustLibrary`: If there was an error building the Rust library.
     pub async fn dev_build(&self) -> Result<BuiltTarget, RustBuildError> {
-        self.build_lib(false).await
+        Box::pin(self.build_lib(false)).await
     }
 
     /// Build rust library in release mode.
@@ -1788,7 +1789,7 @@ impl RustBuild {
     /// - `RustBuildError::FailToExecuteCargoBuild`: If there was an error executing the cargo build command.
     /// - `RustBuildError::FailToBuildRustLibrary`: If there was an error building the Rust library.
     pub async fn release_build(&self) -> Result<BuiltTarget, RustBuildError> {
-        self.build_lib(true).await
+        Box::pin(self.build_lib(true)).await
     }
 
     /// Build the crate's library target.
@@ -1802,8 +1803,7 @@ impl RustBuild {
     /// - `RustBuildError::FailToExecuteCargoBuild`: If there was an error executing the cargo build command.
     /// - `RustBuildError::FailToBuildRustLibrary`: If there was an error building the Rust library.
     pub async fn build_lib(&self, release: bool) -> Result<BuiltTarget, RustBuildError> {
-        self.build_inner(release, CargoTarget::Lib, self.lib_artifact_extension())
-            .await
+        Box::pin(self.build_inner(release, CargoTarget::Lib, self.lib_artifact_extension())).await
     }
 
     /// Build a dynamic library (cdylib) and return Cargo's reported build result.
@@ -1816,11 +1816,11 @@ impl RustBuild {
     /// - `RustBuildError::FailToExecuteCargoBuild`: If there was an error executing the cargo build command.
     /// - `RustBuildError::FailToBuildRustLibrary`: If the library was not found after building.
     pub async fn build_dylib(&self, release: bool) -> Result<BuiltTarget, RustBuildError> {
-        self.build_inner(
+        Box::pin(self.build_inner(
             release,
             CargoTarget::Lib,
             Some(lib_extension_for_triple(&self.triple)),
-        )
+        ))
         .await
     }
 
@@ -1837,11 +1837,11 @@ impl RustBuild {
     /// - `RustBuildError::FailToExecuteCargoBuild`: If there was an error executing the cargo build command.
     /// - `RustBuildError::FailToBuildRustLibrary`: If the library was not found after building.
     pub async fn build_staticlib(&self, release: bool) -> Result<BuiltTarget, RustBuildError> {
-        self.build_inner(
+        Box::pin(self.build_inner(
             release,
             CargoTarget::Lib,
             crate_type_artifact_extension("staticlib", &self.triple),
-        )
+        ))
         .await
     }
 
@@ -1853,7 +1853,7 @@ impl RustBuild {
     /// uplift the message names is shared by every same-named unit in the
     /// target directory, so it is only trusted while the lock is held; the
     /// marked link stays this variant's bytes afterwards. See
-    /// [`binary_artifact_lock`] and [`marked_binary_artifact`].
+    /// `binary_artifact_lock` and `marked_binary_artifact`.
     ///
     /// # Errors
     ///
@@ -1863,8 +1863,7 @@ impl RustBuild {
         binary_name: &str,
         release: bool,
     ) -> Result<BuiltTarget, RustBuildError> {
-        self.build_inner(release, CargoTarget::Binary(binary_name), None)
-            .await
+        Box::pin(self.build_inner(release, CargoTarget::Binary(binary_name), None)).await
     }
 
     /// Compute the expected dylib output path without building.

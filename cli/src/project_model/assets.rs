@@ -1397,8 +1397,8 @@ pub enum SeedFontCacheError {
 ///
 /// `water fetch` and the tail of `water create` share this one path:
 /// declarations resolve exactly as a build resolves them —
-/// [`manifest_font_declarations`] plus [`scan_crate_font_declarations`] over
-/// the manifest of each crate a build compiles, then [`resolve_declarations`]
+/// `manifest_font_declarations` plus `scan_crate_font_declarations` over
+/// the manifest of each crate a build compiles, then `resolve_declarations`
 /// — and whatever the cache does not already hold is downloaded into the
 /// entry the build then looks for. Builds keep their no-network guarantee;
 /// this is the explicit, opt-in network step.
