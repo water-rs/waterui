@@ -1111,10 +1111,10 @@ mod tests {
                 &backend_path,
                 target_lexicon::Triple::host(),
             )
-                .with_target_dir(temporary.path().join("target"))
-                .build_binary(backend_crate.as_str(), false)
-                .await
-                .expect("fixture backend builds");
+            .with_target_dir(temporary.path().join("target"))
+            .build_binary(backend_crate.as_str(), false)
+            .await
+            .expect("fixture backend builds");
             let artifact = super::package_hydrolysis(
                 &project,
                 crate::platform::TargetPlatform::Linux,

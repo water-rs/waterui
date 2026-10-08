@@ -139,12 +139,15 @@ pub async fn render_preview_with_apple(
         apple_build_features(&project, browser_runtime, RustLinkage::SharedRuntime).await?;
     let triple = TargetPlatform::MacOS.triple();
     let target_dir = project.water_target_dir(RustLinkage::SharedRuntime).await?;
-    let mut rust_build =
-        RustBuild::new(project.host(), project.apple_preview_crate_path(), triple.clone())
-        .with_project(&project)
-        .with_features(features)
-        .with_preferred_dynamic_linking()
-        .with_target_dir(target_dir);
+    let mut rust_build = RustBuild::new(
+        project.host(),
+        project.apple_preview_crate_path(),
+        triple.clone(),
+    )
+    .with_project(&project)
+    .with_features(features)
+    .with_preferred_dynamic_linking()
+    .with_target_dir(target_dir);
     if let Some(sccache) = request.sccache_path {
         rust_build = rust_build.with_sccache(sccache);
     }

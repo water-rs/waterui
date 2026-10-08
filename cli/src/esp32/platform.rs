@@ -107,6 +107,7 @@ pub async fn detect_esp_serial_port() -> eyre::Result<Option<String>> {
 
 fn home_dir(host: &crate::toolchain::Host) -> eyre::Result<PathBuf> {
     host.home_dir()
+        .map(Path::to_path_buf)
         .ok_or_else(|| eyre!("Failed to resolve the user home directory"))
 }
 
@@ -128,7 +129,9 @@ fn espup_component_dir(
     relative: &Path,
     what: &str,
 ) -> eyre::Result<PathBuf> {
-    let base = home_dir(host)?.join(".rustup/toolchains/esp").join(component);
+    let base = home_dir(host)?
+        .join(".rustup/toolchains/esp")
+        .join(component);
     newest_toolchain_subpath(&base, relative).ok_or_else(|| {
         eyre!(
             "{what} not found under {}. Install the Espressif Rust toolchain with `espup install`.",

@@ -3,7 +3,7 @@
 use std::ffi::OsStr;
 use std::{
     io,
-    path::{Path, PathBuf},
+    path::Path,
     process::{ExitStatus, Stdio},
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -36,16 +36,6 @@ pub enum CommandError {
         /// Formatted diagnostic tail of the captured output streams.
         report: String,
     },
-}
-
-/// Locate an executable in the real host's PATH.
-///
-/// Return the path to the executable if found.
-///
-/// # Errors
-/// - If the executable is not found in the PATH.
-pub(crate) async fn which(name: &'static str) -> Result<PathBuf, which::Error> {
-    Host::current().which(name).await
 }
 
 /// Enable or disable standard output for command executions.

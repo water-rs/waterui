@@ -83,7 +83,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     let plan = resolve_create_plan(shell, &args)?;
     if plan.template == CreateTemplate::Web {
         // The declared manager must exist before anything touches disk.
-        super::web::ensure_installed(plan.package_manager).await?;
+        super::web::ensure_installed(&Host::current(), plan.package_manager).await?;
     }
     header!(shell, "Creating WaterUI project: {}", plan.name);
     let draft = create_project(shell, &plan).await?;
@@ -198,6 +198,7 @@ async fn create_project(shell: &Shell, plan: &CreatePlan) -> Result<ProjectDraft
 
 async fn scaffold_web_frontend(shell: &Shell, plan: &CreatePlan, project: &Project) -> Result<()> {
     super::web::create_vite(
+        project.host(),
         shell,
         project.root(),
         "web",
@@ -206,7 +207,13 @@ async fn scaffold_web_frontend(shell: &Shell, plan: &CreatePlan, project: &Proje
     )
     .await?;
     super::web::brand_overlay(shell, &project.root().join("web"), &plan.name)?;
-    super::web::install_dependencies(shell, plan.package_manager, &project.root().join("web")).await
+    super::web::install_dependencies(
+        project.host(),
+        shell,
+        plan.package_manager,
+        &project.root().join("web"),
+    )
+    .await
 }
 
 fn print_create_summary(shell: &Shell, plan: &CreatePlan) {
@@ -297,6 +304,7 @@ mod tests {
         .expect("project scaffold");
 
         crate::commands::web::create_vite(
+            project.host(),
             &shell,
             project.root(),
             "web",
@@ -308,6 +316,7 @@ mod tests {
         crate::commands::web::brand_overlay(&shell, &project.root().join("web"), name)
             .expect("brand overlay");
         crate::commands::web::install_dependencies(
+            project.host(),
             &shell,
             super::PackageManager::Bun,
             &project.root().join("web"),

@@ -37,10 +37,15 @@ impl Args {
 
 pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     let manifest = if let Some(channel) = args.selection()? {
-        Project::select_channel(&args.path, channel, args.rev.as_deref())
-            .await?
-            .manifest()
-            .clone()
+        Project::select_channel(
+            &waterui_cli::toolchain::Host::current(),
+            &args.path,
+            channel,
+            args.rev.as_deref(),
+        )
+        .await?
+        .manifest()
+        .clone()
     } else {
         Manifest::open(args.path.join("Water.toml")).await?
     };

@@ -441,7 +441,7 @@ pub async fn build_manifest(
             if dev_server {
                 continue;
             }
-            crate::web::build_frontend(package_manager, &meta).await?;
+            crate::web::build_frontend(project.host(), package_manager, &meta).await?;
         }
         assets.extend(plan_mount(&meta.path, &meta.mount)?);
         mounts.push(BundleMount {

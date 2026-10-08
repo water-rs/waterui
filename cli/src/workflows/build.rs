@@ -691,14 +691,11 @@ const DXC_RUNTIME_LIBRARIES: [&str; 2] = ["dxcompiler.dll", "dxil.dll"];
 /// Resolve the `dxc` runtime pair to the copies installed beside the `dxc`
 /// executable (on `PATH` or under the managed tool directory).
 async fn resolve_dxc_runtime(host: &crate::toolchain::Host) -> eyre::Result<Vec<PathBuf>> {
-    let dxc = crate::toolchain::dxc::Dxc
-        .path(host)
-        .await
-        .ok_or_else(|| {
-            eyre::eyre!(
-                "the dxc tool is not installed; run `water doctor` to install it, then build again"
-            )
-        })?;
+    let dxc = crate::toolchain::dxc::Dxc.path(host).await.ok_or_else(|| {
+        eyre::eyre!(
+            "the dxc tool is not installed; run `water doctor` to install it, then build again"
+        )
+    })?;
     let dxc_dir = dxc.parent().ok_or_else(|| {
         eyre::eyre!(
             "the resolved dxc path {} has no parent directory",
@@ -2162,7 +2159,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
         &self,
         cargo_config_files: &[PathBuf],
     ) -> Result<Vec<String>, RustBuildError> {
-        let mut host = self.host.with_cwd(&self.path);
+        let mut host = self.host.clone().with_cwd(&self.path);
         for (key, value) in &self.envs {
             host = host.with_env(key, value);
         }
@@ -3718,9 +3715,7 @@ fn remove_cmake_build_dirs_in(build_root: &Path) -> std::io::Result<usize> {
 }
 
 #[cfg(target_os = "macos")]
-async fn ensure_meson_installed_for_build(
-    host: &crate::toolchain::Host,
-) -> Result<(), String> {
+async fn ensure_meson_installed_for_build(host: &crate::toolchain::Host) -> Result<(), String> {
     use crate::toolchain::meson::Meson;
     use crate::toolchain::{Installation as _, Toolchain as _, ToolchainError};
 
@@ -3744,7 +3739,6 @@ fn ensure_meson_installed_for_build(
 
 #[cfg(test)]
 mod tests {
-    use smol::process::Command;
     use target_lexicon::Triple;
     use tempfile::tempdir;
 
@@ -3900,9 +3894,9 @@ mod tests {
             dir.path(),
             triple("aarch64-linux-android"),
         )
-            .with_build_std(toolchain)
-            .with_target_dir(target_dir.clone())
-            .with_sccache(std::path::PathBuf::from("/fake/sccache"));
+        .with_build_std(toolchain)
+        .with_target_dir(target_dir.clone())
+        .with_sccache(std::path::PathBuf::from("/fake/sccache"));
         let mut cmd = smol::process::Command::new("cargo");
         smol::block_on(build.with_build_std_envs(&mut cmd, false)).expect("build-std envs apply");
 
@@ -5400,9 +5394,13 @@ mod tests {
         crate_dir: &std::path::Path,
         cargo_home: &std::path::Path,
     ) -> super::RustBuild {
-        super::RustBuild::new(&crate::toolchain::Host::current(), crate_dir, Triple::host())
-            .with_preferred_dynamic_linking()
-            .with_env("CARGO_HOME", cargo_home)
+        super::RustBuild::new(
+            &crate::toolchain::Host::current(),
+            crate_dir,
+            Triple::host(),
+        )
+        .with_preferred_dynamic_linking()
+        .with_env("CARGO_HOME", cargo_home)
     }
 
     /// `cargo_build_output` for a probe build: resolves the user's
@@ -5556,10 +5554,10 @@ mod tests {
                 &crate_dir,
                 Triple::host(),
             )
-                .with_env("CARGO_HOME", temporary.path().join("cargo-home"))
-                .user_rustflags(&[config])
-                .await
-                .expect("the cli config layer resolves");
+            .with_env("CARGO_HOME", temporary.path().join("cargo-home"))
+            .user_rustflags(&[config])
+            .await
+            .expect("the cli config layer resolves");
 
             assert_eq!(flags, ["--cfg=water_cli_probe"]);
         });

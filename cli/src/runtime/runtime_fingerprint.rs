@@ -30,10 +30,8 @@ pub(crate) async fn compute_runtime_fingerprint(
     let host = host.clone();
     let waterui_root = waterui_root.to_path_buf();
     let runtime_identity = runtime_identity.to_string();
-    smol::unblock(move || {
-        compute_runtime_fingerprint_sync(&host, &waterui_root, &runtime_identity)
-    })
-    .await
+    smol::unblock(move || compute_runtime_fingerprint_sync(&host, &waterui_root, &runtime_identity))
+        .await
 }
 
 fn compute_runtime_fingerprint_sync(
@@ -169,7 +167,8 @@ fn git_output<'a>(
 }
 
 fn is_git_work_tree(host: &Host, root: &Path) -> bool {
-    let inside_work_tree = host.std_command("git")
+    let inside_work_tree = host
+        .std_command("git")
         .arg("-C")
         .arg(root)
         .arg("rev-parse")
@@ -196,8 +195,9 @@ mod tests {
         write_runtime_file(dir.path(), "core/src/lib.rs", "pub fn a() {}\n");
         commit_all(dir.path(), "init");
 
-        let fingerprint = compute_runtime_fingerprint_sync(&Host::current(), dir.path(), "waterui-core@0.0.1")
-            .expect("fingerprint");
+        let fingerprint =
+            compute_runtime_fingerprint_sync(&Host::current(), dir.path(), "waterui-core@0.0.1")
+                .expect("fingerprint");
         assert!(fingerprint.contains(":git:"));
     }
 
@@ -208,16 +208,18 @@ mod tests {
         write_runtime_file(dir.path(), "core/src/lib.rs", "pub fn a() {}\n");
         commit_all(dir.path(), "init");
 
-        let clean = compute_runtime_fingerprint_sync(&Host::current(), dir.path(), "waterui-core@0.0.1")
-            .expect("clean fingerprint");
+        let clean =
+            compute_runtime_fingerprint_sync(&Host::current(), dir.path(), "waterui-core@0.0.1")
+                .expect("clean fingerprint");
 
         write_runtime_file(
             dir.path(),
             "core/src/lib.rs",
             "pub fn a() { let _x = 1; }\n",
         );
-        let dirty = compute_runtime_fingerprint_sync(&Host::current(), dir.path(), "waterui-core@0.0.1")
-            .expect("a worktree with uncommitted work still has a fingerprint");
+        let dirty =
+            compute_runtime_fingerprint_sync(&Host::current(), dir.path(), "waterui-core@0.0.1")
+                .expect("a worktree with uncommitted work still has a fingerprint");
 
         assert_ne!(clean, dirty, "an edit must not reuse the commit's key");
         assert!(dirty.contains(":dirty:"), "got {dirty}");
@@ -227,8 +229,9 @@ mod tests {
             "core/src/lib.rs",
             "pub fn a() { let _y = 2; }\n",
         );
-        let other = compute_runtime_fingerprint_sync(&Host::current(), dir.path(), "waterui-core@0.0.1")
-            .expect("fingerprint");
+        let other =
+            compute_runtime_fingerprint_sync(&Host::current(), dir.path(), "waterui-core@0.0.1")
+                .expect("fingerprint");
         assert_ne!(dirty, other, "two different edits must not share a key");
     }
 
@@ -239,12 +242,14 @@ mod tests {
         write_runtime_file(dir.path(), "core/src/lib.rs", "pub fn a() {}\n");
         commit_all(dir.path(), "init");
 
-        let clean = compute_runtime_fingerprint_sync(&Host::current(), dir.path(), "waterui-core@0.0.1")
-            .expect("clean fingerprint");
+        let clean =
+            compute_runtime_fingerprint_sync(&Host::current(), dir.path(), "waterui-core@0.0.1")
+                .expect("clean fingerprint");
 
         write_runtime_file(dir.path(), "core/src/new.rs", "pub fn b() {}\n");
-        let with_untracked = compute_runtime_fingerprint_sync(&Host::current(), dir.path(), "waterui-core@0.0.1")
-            .expect("an untracked file still has a fingerprint");
+        let with_untracked =
+            compute_runtime_fingerprint_sync(&Host::current(), dir.path(), "waterui-core@0.0.1")
+                .expect("an untracked file still has a fingerprint");
 
         assert_ne!(clean, with_untracked, "a new file must not reuse the key");
         assert!(with_untracked.contains(":dirty:"), "got {with_untracked}");
@@ -257,8 +262,9 @@ mod tests {
         write_runtime_file(dir.path(), "core/src/lib.rs", "pub fn a() {}\n");
         commit_all(dir.path(), "init");
 
-        let clean = compute_runtime_fingerprint_sync(&Host::current(), dir.path(), "waterui-core@0.0.1")
-            .expect("clean fingerprint");
+        let clean =
+            compute_runtime_fingerprint_sync(&Host::current(), dir.path(), "waterui-core@0.0.1")
+                .expect("clean fingerprint");
         write_runtime_file(
             dir.path(),
             "core/src/lib.rs",
@@ -292,8 +298,9 @@ mod tests {
             "pub fn preview() { let _changed = true; }\n",
         );
 
-        let fingerprint = compute_runtime_fingerprint_sync(&Host::current(), dir.path(), "waterui-core@0.0.1")
-            .expect("fingerprint");
+        let fingerprint =
+            compute_runtime_fingerprint_sync(&Host::current(), dir.path(), "waterui-core@0.0.1")
+                .expect("fingerprint");
         assert!(fingerprint.contains(":git:"));
     }
 
@@ -319,10 +326,12 @@ mod tests {
             cloned_repo.display()
         );
 
-        let original = compute_runtime_fingerprint_sync(&Host::current(), dir.path(), "waterui-core@0.0.1")
-            .expect("original fingerprint");
-        let cloned = compute_runtime_fingerprint_sync(&Host::current(), &cloned_repo, "waterui-core@0.0.1")
-            .expect("cloned fingerprint");
+        let original =
+            compute_runtime_fingerprint_sync(&Host::current(), dir.path(), "waterui-core@0.0.1")
+                .expect("original fingerprint");
+        let cloned =
+            compute_runtime_fingerprint_sync(&Host::current(), &cloned_repo, "waterui-core@0.0.1")
+                .expect("cloned fingerprint");
         assert_eq!(original, cloned);
     }
 
@@ -331,8 +340,9 @@ mod tests {
         let dir = tempdir().expect("temp dir");
         write_runtime_file(dir.path(), "core/src/lib.rs", "pub fn a() {}\n");
 
-        let error = compute_runtime_fingerprint_sync(&Host::current(), dir.path(), "waterui-core@0.0.1")
-            .expect_err("non-git root must fail");
+        let error =
+            compute_runtime_fingerprint_sync(&Host::current(), dir.path(), "waterui-core@0.0.1")
+                .expect_err("non-git root must fail");
         assert!(
             error
                 .to_string()

@@ -58,16 +58,19 @@ pub async fn build_winui(project: &Project, options: BuildOptions) -> eyre::Resu
     )
     .await?;
 
-    let mut build =
-        RustBuild::new(project.host(), &backend_path, TargetPlatform::Windows.triple())
-        .with_project(project)
-        .with_target_dir(project.water_target_dir(options.linkage()).await?)
-        .with_linkage(
-            options.linkage(),
-            &format!("{}/dev", project.crate_name()),
-            &[],
-        )
-        .with_envs(options.cargo_envs().iter().cloned());
+    let mut build = RustBuild::new(
+        project.host(),
+        &backend_path,
+        TargetPlatform::Windows.triple(),
+    )
+    .with_project(project)
+    .with_target_dir(project.water_target_dir(options.linkage()).await?)
+    .with_linkage(
+        options.linkage(),
+        &format!("{}/dev", project.crate_name()),
+        &[],
+    )
+    .with_envs(options.cargo_envs().iter().cloned());
     if let Some(sccache_path) = options.sccache_path() {
         build = build.with_sccache(sccache_path.to_path_buf());
     }

@@ -569,7 +569,7 @@ async fn package_artifact(
                 artifact.path().display()
             )
         })?;
-        stage_dxc_runtime(destination).await?;
+        stage_dxc_runtime(context.project.host(), destination).await?;
     }
     if let Some(pb) = spinner {
         pb.finish_and_clear();

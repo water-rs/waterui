@@ -84,10 +84,7 @@ fn run_wrapper() -> i32 {
             .arg(&rustc)
             .args(&rewritten.args)
             .status(),
-        None => host
-            .std_command(&rustc)
-            .args(&rewritten.args)
-            .status(),
+        None => host.std_command(&rustc).args(&rewritten.args).status(),
     };
     let status = match status {
         Ok(status) => status,

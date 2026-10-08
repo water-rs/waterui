@@ -488,12 +488,16 @@ fn run_built_binary_finds_every_shared_library_it_records() {
         let (app_dir, backend_dir) = scaffold_run_fixture(root);
 
         let triple = Triple::host();
-        let built = RustBuild::new(&backend_dir, triple.clone())
-            .with_target_dir(root.join("target"))
-            .with_linkage(RustLinkage::SharedRuntime, "app/dev", &["$ORIGIN"])
-            .build_binary("backend", false)
-            .await
-            .expect("build the fixture backend binary");
+        let built = RustBuild::new(
+            &waterui_cli::toolchain::Host::current(),
+            &backend_dir,
+            triple.clone(),
+        )
+        .with_target_dir(root.join("target"))
+        .with_linkage(RustLinkage::SharedRuntime, "app/dev", &["$ORIGIN"])
+        .build_binary("backend", false)
+        .await
+        .expect("build the fixture backend binary");
         let project = Project::open(&app_dir, ManagedBackends::NONE)
             .await
             .expect("open fixture project");
@@ -526,9 +530,13 @@ fn a_second_shared_runtime_build_finds_the_dylib_dep_info() {
         let root = temporary.path();
         let (_app_dir, backend_dir) = scaffold_run_fixture(root);
 
-        let build = RustBuild::new(&backend_dir, Triple::host())
-            .with_target_dir(root.join("target"))
-            .with_linkage(RustLinkage::SharedRuntime, "app/dev", &["$ORIGIN"]);
+        let build = RustBuild::new(
+            &waterui_cli::toolchain::Host::current(),
+            &backend_dir,
+            Triple::host(),
+        )
+        .with_target_dir(root.join("target"))
+        .with_linkage(RustLinkage::SharedRuntime, "app/dev", &["$ORIGIN"]);
         build
             .build_binary("backend", false)
             .await
@@ -552,9 +560,13 @@ fn an_unchanged_build_leaves_the_binary_artifact_untouched() {
     smol::block_on(async {
         let root = temporary.path();
         let (_app_dir, backend_dir) = scaffold_run_fixture(root);
-        let build = RustBuild::new(&backend_dir, Triple::host())
-            .with_target_dir(root.join("target"))
-            .with_linkage(RustLinkage::SharedRuntime, "app/dev", &["$ORIGIN"]);
+        let build = RustBuild::new(
+            &waterui_cli::toolchain::Host::current(),
+            &backend_dir,
+            Triple::host(),
+        )
+        .with_target_dir(root.join("target"))
+        .with_linkage(RustLinkage::SharedRuntime, "app/dev", &["$ORIGIN"]);
 
         let first = build
             .build_binary("backend", false)
@@ -676,12 +688,16 @@ fn restaging_replaces_a_stale_hashed_shared_runtime() {
             .await
             .expect("open fixture project");
 
-        let built = RustBuild::new(&backend_dir, triple.clone())
-            .with_target_dir(target_dir.clone())
-            .with_linkage(RustLinkage::SharedRuntime, "app/dev", &["$ORIGIN"])
-            .build_binary("backend", false)
-            .await
-            .expect("first fixture build");
+        let built = RustBuild::new(
+            &waterui_cli::toolchain::Host::current(),
+            &backend_dir,
+            triple.clone(),
+        )
+        .with_target_dir(target_dir.clone())
+        .with_linkage(RustLinkage::SharedRuntime, "app/dev", &["$ORIGIN"])
+        .build_binary("backend", false)
+        .await
+        .expect("first fixture build");
         let runtime_dir = built.profile_dir.clone();
         RustDynamicLibraries::resolve(&built, &triple, &project)
             .await
@@ -708,12 +724,16 @@ fn restaging_replaces_a_stale_hashed_shared_runtime() {
 
         // `built`'s artifact lock must close before the rebuild waits on it.
         drop(built);
-        let rebuilt = RustBuild::new(&backend_dir, triple.clone())
-            .with_target_dir(target_dir)
-            .with_linkage(RustLinkage::SharedRuntime, "app/dev", &["$ORIGIN"])
-            .build_binary("backend", false)
-            .await
-            .expect("rebuild after dylib bump");
+        let rebuilt = RustBuild::new(
+            &waterui_cli::toolchain::Host::current(),
+            &backend_dir,
+            triple.clone(),
+        )
+        .with_target_dir(target_dir)
+        .with_linkage(RustLinkage::SharedRuntime, "app/dev", &["$ORIGIN"])
+        .build_binary("backend", false)
+        .await
+        .expect("rebuild after dylib bump");
         let rebuilt_needed: Vec<String> = needed_shared_libraries(&rebuilt.artifact)
             .expect("rebuilt needed")
             .into_iter()

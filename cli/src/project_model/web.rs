@@ -17,6 +17,7 @@ use waterui_assets_planner::{BUNDLE_META_PREFIX, BundleMountMeta};
 
 use crate::artifact_symbols::ArtifactSymbols;
 use crate::project_model::templates::embedded;
+use crate::toolchain::Host;
 
 /// The JavaScript package manager a project declares in
 /// `[web] package_manager`.
@@ -430,6 +431,7 @@ impl WebDevServer {
     /// Panics if the spawned child has no piped stdout — impossible, since
     /// the spawn configures it above.
     pub async fn spawn(
+        host: &Host,
         package_manager: PackageManager,
         root: &Path,
         script: &str,
@@ -441,7 +443,7 @@ impl WebDevServer {
         let pm = package_manager.binary();
         // `std::process::Command`, not `smol`'s: the child must lead its own
         // process group so the guard's drop can signal the whole tree.
-        let mut command = std::process::Command::new(pm);
+        let mut command = host.std_command(pm);
         command.arg("run").arg(script).current_dir(root);
         if expose_on_lan {
             // npm needs `--` to forward args to the script; bun, pnpm and
@@ -452,10 +454,7 @@ impl WebDevServer {
             }
             command.args(["--host", "0.0.0.0"]);
         }
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
+        command.stdout(Stdio::piped()).stderr(Stdio::inherit());
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt as _;
@@ -1413,21 +1412,26 @@ mod tests {
                 )
                 .collect()
         };
+        let host =
+            crate::toolchain::testing::TestMachine::new().host(Vec::<(String, String)>::new());
         assert_eq!(
-            args(&PackageManager::Bun.run("build")),
+            args(&PackageManager::Bun.run(&host, "build")),
             ["bun", "run", "build"]
         );
-        assert_eq!(args(&PackageManager::Pnpm.install()), ["pnpm", "install"]);
         assert_eq!(
-            args(&PackageManager::Yarn.create_vite("web", None)),
+            args(&PackageManager::Pnpm.install(&host)),
+            ["pnpm", "install"]
+        );
+        assert_eq!(
+            args(&PackageManager::Yarn.create_vite(&host, "web", None)),
             ["yarn", "create", "vite", "web"]
         );
         assert_eq!(
-            args(&PackageManager::Bun.create_vite("web", Some("react-ts"))),
+            args(&PackageManager::Bun.create_vite(&host, "web", Some("react-ts"))),
             ["bun", "create", "vite", "web", "--template", "react-ts"]
         );
         assert_eq!(
-            args(&PackageManager::Npm.create_vite("web", Some("vanilla-ts"))),
+            args(&PackageManager::Npm.create_vite(&host, "web", Some("vanilla-ts"))),
             [
                 "npm",
                 "create",

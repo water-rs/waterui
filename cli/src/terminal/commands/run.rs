@@ -579,7 +579,7 @@ async fn run_tui_app(shell: &Shell, args: Args) -> Result<()> {
         "The TUI backend replaces this terminal until the app exits"
     );
     shell.clear();
-    waterui_cli::tui::exec(built)
+    waterui_cli::tui::exec(project.host(), built)
 }
 
 async fn prepare_run_context(shell: &Shell, args: &Args) -> Result<Option<RunContext>> {
@@ -971,7 +971,7 @@ async fn start_web_dev_server(
         .web
         .as_ref()
         .map_or_else(web::PackageManager::default, |web| web.package_manager);
-    if !package_manager.is_installed().await {
+    if !package_manager.is_installed(project.host()).await {
         bail!(
             "`{}` is not installed; run `water doctor`",
             package_manager.binary()
@@ -982,7 +982,14 @@ async fn start_web_dev_server(
         ">",
         format!("Starting `{} run {script}`", package_manager.binary()),
     );
-    let server = web::WebDevServer::spawn(package_manager, root, &script, expose_on_lan).await?;
+    let server = web::WebDevServer::spawn(
+        project.host(),
+        package_manager,
+        root,
+        &script,
+        expose_on_lan,
+    )
+    .await?;
     let _ = shell.status(">", format!("Dev server ready at {}", server.url()));
     Ok(Some(server))
 }

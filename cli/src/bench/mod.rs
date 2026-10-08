@@ -71,8 +71,11 @@ pub struct BenchSuiteRun {
 /// # Errors
 /// Returns an error when `cargo-nextest` is missing, the run cannot be
 /// spawned, or the collected reports cannot be read.
-pub async fn run_bench_suite(options: BenchRunOptions) -> Result<BenchSuiteRun> {
-    ensure_nextest_installed().await?;
+pub async fn run_bench_suite(
+    host: &crate::toolchain::Host,
+    options: BenchRunOptions,
+) -> Result<BenchSuiteRun> {
+    ensure_nextest_installed(host).await?;
 
     // Held so a temporary report directory outlives collection.
     let _temp_dir;
@@ -99,7 +102,9 @@ pub async fn run_bench_suite(options: BenchRunOptions) -> Result<BenchSuiteRun> 
         path
     };
 
-    let mut command = smol::process::Command::new("cargo");
+    // nextest paints its progress UI on the user's terminal — interactive
+    // like `<pm> run build`.
+    let mut command = smol::process::Command::from(host.interactive_command("cargo"));
     command
         .arg("nextest")
         .arg("run")
@@ -123,8 +128,6 @@ pub async fn run_bench_suite(options: BenchRunOptions) -> Result<BenchSuiteRun> 
             options.config.repetitions.to_string(),
         )
         .env(BENCH_REPORT_DIR_ENV, &report_dir)
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
         .kill_on_drop(true);
     apply_budget_cap_envs(&mut command, options.budget_caps);
 
@@ -154,8 +157,9 @@ pub async fn run_bench_suite(options: BenchRunOptions) -> Result<BenchSuiteRun> 
 }
 
 /// Fails fast with an install hint when `cargo-nextest` is unavailable.
-async fn ensure_nextest_installed() -> Result<()> {
-    let probe = smol::process::Command::new("cargo")
+async fn ensure_nextest_installed(host: &crate::toolchain::Host) -> Result<()> {
+    let probe = host
+        .command("cargo")
         .arg("nextest")
         .arg("--version")
         .stdout(Stdio::null())

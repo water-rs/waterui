@@ -532,7 +532,7 @@ fn dylib_build_signature(
     )
 }
 
-fn preview_run_options(platform: PreviewPlatform) -> RunOptions {
+fn preview_run_options(host: &crate::toolchain::Host, platform: PreviewPlatform) -> RunOptions {
     let mut run_options = RunOptions::new();
     run_options.set_replace_existing_macos_app_instances(false);
     run_options.set_log_level(LogLevel::Info);
@@ -557,7 +557,7 @@ fn preview_run_options(platform: PreviewPlatform) -> RunOptions {
     for (key, value) in PREVIEW_RUNTIME_ENV_VARS {
         run_options.insert_env_var(key.to_string(), value.to_string());
     }
-    if let Some(rust_log) = std::env::var_os("RUST_LOG") {
+    if let Some(rust_log) = host.env("RUST_LOG") {
         run_options.insert_env_var(
             "RUST_LOG".to_string(),
             rust_log.to_string_lossy().into_owned(),
@@ -867,7 +867,7 @@ async fn launch_preview_on_macos(
     let host = crate::toolchain::Host::current();
     let device = Local;
     device.launch(&host).await?;
-    let mut run_options = preview_run_options(PreviewPlatform::Macos);
+    let mut run_options = preview_run_options(&host, PreviewPlatform::Macos);
     // The support app detaches and outlives this command; its stdout/stderr go
     // to a log file the next `water preview` reopens and appends, never a pipe
     // whose reader is gone (water-rs/cli#197).
@@ -901,7 +901,7 @@ async fn launch_preview_on_ios_simulator(
             backend,
             TargetPlatform::IOSSimulator,
             simulator,
-            preview_run_options(PreviewPlatform::IosSimulator),
+            preview_run_options(&host, PreviewPlatform::IosSimulator),
             progress.cloned(),
         )
         .await
@@ -918,7 +918,7 @@ async fn launch_preview_on_android(
         .ok_or_else(|| eyre::eyre!("Android backend not configured"))?;
     let host = crate::toolchain::Host::current();
 
-    let mut run_options = preview_run_options(PreviewPlatform::Android);
+    let mut run_options = preview_run_options(&host, PreviewPlatform::Android);
     // The support app's TCP server binds the device's loopback; forward every
     // candidate port so the CLI's probe reaches it.
     run_options.set_forward_tcp_ports(tcp_config.ports());
@@ -1463,9 +1463,11 @@ async fn preview_support_ffi_crate_path(host: &crate::toolchain::Host) -> Result
     // written into it: the module was deleted out from under the `cargo
     // metadata` that reads it, and the first preview after any change to the
     // CLI failed with a manifest path that does not exist.
-    Ok(crate::water_dir::ensure_project_build_cache(host, &support_path)
-        .await?
-        .join("ffi"))
+    Ok(
+        crate::water_dir::ensure_project_build_cache(host, &support_path)
+            .await?
+            .join("ffi"),
+    )
 }
 
 /// Write the project's preview module into the support runtime's workspace.
@@ -1693,10 +1695,7 @@ async fn resolve_preview_requirements(
         project_path,
         &runtime_features,
         &graph_fingerprint,
-        &resolved.app_crate_name,
-        &resolved.app_path,
-        &resolved.framework,
-        &resolved.project_packages,
+        &resolved,
     )
     .await?
     {
@@ -1778,11 +1777,15 @@ async fn resolve_preview_requirements_from_manifest(
     project_path: &Path,
     runtime_features: &[String],
     graph_fingerprint: &str,
-    app_crate_name: &crate::project_types::CrateName,
-    app_path: &Path,
-    framework: &ResolvedFramework,
-    project_packages: &BTreeSet<String>,
+    resolved: &ResolvedPreviewMetadata,
 ) -> Result<Option<PreviewRequirements>> {
+    let ResolvedPreviewMetadata {
+        app_crate_name,
+        app_path,
+        framework,
+        project_packages,
+        ..
+    } = resolved;
     let manifest_open_start = Instant::now();
     let manifest = crate::project::Manifest::open(project_path.join("Water.toml"))
         .await
@@ -1841,7 +1844,7 @@ async fn resolve_preview_requirements_from_manifest(
         runtime_fingerprint,
         runtime_features: runtime_features.to_vec(),
         app_crate_name: app_crate_name.clone(),
-        app_path: app_path.to_path_buf(),
+        app_path: app_path.clone(),
         project_packages: project_packages.clone(),
     }))
 }

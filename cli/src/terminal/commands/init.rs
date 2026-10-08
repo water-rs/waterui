@@ -87,7 +87,8 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         .package_manager
         .expect("resolve_answers always settles the package manager");
 
-    super::web::ensure_installed(package_manager).await?;
+    let host = waterui_cli::toolchain::Host::current();
+    super::web::ensure_installed(&host, package_manager).await?;
 
     let name = match &args.name {
         Some(name) => name.clone(),
@@ -103,6 +104,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         project_root.display()
     );
     let include_arg = execute_plan(
+        &host,
         shell,
         &project_root,
         &actions,
@@ -226,6 +228,7 @@ fn prompt_web_mode() -> Result<ExistingFrontendMode> {
 /// Execute the planned actions in order; returns the `include_web!` argument
 /// the shell's root view must use.
 async fn execute_plan(
+    host: &waterui_cli::toolchain::Host,
     shell: &Shell,
     root: &std::path::Path,
     actions: &[InitAction],
@@ -237,11 +240,12 @@ async fn execute_plan(
     for action in actions {
         match action {
             InitAction::MoveFrontendToWeb { entries } => {
-                super::web::move_entries_to_web(root, entries).await?;
+                super::web::move_entries_to_web(host, root, entries).await?;
                 success!(shell, "Moved the frontend into web/");
             }
             InitAction::ScaffoldVite => {
                 super::web::create_vite(
+                    host,
                     shell,
                     root,
                     "web",
@@ -257,7 +261,8 @@ async fn execute_plan(
                 success!(shell, "Copied {} into web/", source.display());
             }
             InitAction::InstallDependencies => {
-                super::web::install_dependencies(shell, package_manager, &root.join("web")).await?;
+                super::web::install_dependencies(host, shell, package_manager, &root.join("web"))
+                    .await?;
             }
             InitAction::ScaffoldShell { web_arg } => {
                 include_arg = Some(web_arg.clone());
