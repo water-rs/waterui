@@ -262,6 +262,9 @@ waterkit-camera = "0.1.4"
 waterkit-codec = { version = "0.1.4", default-features = false }
 waterkit-video = { version = "0.1.4", features = ["streaming"] }
 waterkit-build = "0.1.4"
+# Unreleased: `0.1.4` is the crate's own manifest version, and the
+# `[patch.crates-io]` git pin below supplies the source.
+waterkit-menu = "0.1.4"
 waterui-backend-core = { version = "0.5.2", path = "backends/core", default-features = false }
 # The `filtrate` family — the filter library `.filter(F)`/`.effect(E)` and
 # Cherenkov share — lives in-tree under `graphics/filtrate/` (#1449). Every
@@ -675,23 +678,27 @@ waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "f43d
 waterui-particle = { git = "https://github.com/water-rs/particle", rev = "e0ea3655ad77c09ab1b149a7b8464748105a03d3" }
 waterui-image = { git = "https://github.com/water-rs/image", rev = "41bd909642a78c22aed55ba7c4ae362a439db4c6" }
 waterui-svg = { git = "https://github.com/water-rs/svg", rev = "16f99e021f735d0b1b31c95552b074e953d56418" }
-waterkit-build = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
-waterkit-camera = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
-waterkit-clipboard = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
-waterkit-dialog = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
-waterkit-fs = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
-waterkit-haptic = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
-waterkit-location = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
-waterkit-permission = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
-waterkit-screen = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
-waterkit-audio = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
-waterkit-codec = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
-waterkit-core = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
-waterkit-video = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
-waterkit-video-container = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
-waterkit-video-core = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
-waterkit-video-player = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
-waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
+waterkit-build = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
+waterkit-camera = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
+waterkit-clipboard = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
+waterkit-dialog = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
+waterkit-fs = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
+waterkit-haptic = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
+waterkit-location = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
+# Unreleased, so there is no registry version to resolve: the pin is a commit
+# on waterkit's `dev` carrying the crate (water-rs/waterkit#223), the same rev
+# as the rest of the family. Drop the pin once a release exists.
+waterkit-menu = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
+waterkit-permission = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
+waterkit-screen = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
+waterkit-audio = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
+waterkit-codec = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
+waterkit-core = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
+waterkit-video = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
+waterkit-video-container = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
+waterkit-video-core = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
+waterkit-video-player = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
+waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
 # `waterui-particle` and `waterui-video-gpu` still require `shaderloom`
 # ^0.1.2, whose registry release has no `runtime` feature; this rev is the
 # shaderloom dev that carries it in a 0.1.x manifest, so it patches only

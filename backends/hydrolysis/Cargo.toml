@@ -179,11 +179,14 @@ objc2-web-kit = { version = "0.3.2", optional = true, default-features = false, 
 ] }
 serde_json = { workspace = true, optional = true }
 
-# The native app menu-bar surface (`App::menu_bar`): muda builds the real
-# NSMenu on NSApp.mainMenu (macOS) and a Win32 HMENU on the window's HWND
+# The native app menu-bar surface (`App::menu_bar`): waterkit-menu builds the
+# real NSMenu on NSApp.mainMenu (macOS) and a Win32 HMENU on the window's HWND
 # (Windows). See src/platform/native_menu_bar.rs.
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
-muda = { version = "0.20", optional = true, default-features = false }
+waterkit-menu = { workspace = true, optional = true }
+# Each bar's `events()` stream is a `futures::Stream`; the event pump drains
+# it with a noop waker once per event-loop pass.
+futures = { workspace = true, optional = true }
 
 # Window placement (water-rs/waterui#1302): X11 reads the pointer position and
 # `_NET_WORKAREA` over the connection winit already holds — borrowed through
@@ -222,6 +225,16 @@ windows-sys = { version = "0.52", optional = true, features = [
     "Win32_System_Threading",
     "Win32_UI_Controls",
     "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+# `waterkit-menu::MenuBar::attach` takes the `windows` crate's `HWND` — a
+# different type from `windows-sys`'s alias.
+windows = { workspace = true, optional = true, features = ["Win32_Foundation"] }
+
+# The native menu bar's test creates real windows for its bars to attach to.
+[target.'cfg(windows)'.dev-dependencies]
+windows = { workspace = true, features = [
+    "Win32_System_LibraryLoader",
     "Win32_UI_WindowsAndMessaging",
 ] }
 
@@ -377,7 +390,9 @@ winit = [
     "dep:objc2-app-kit",
     "dep:objc2-foundation",
     "dep:objc2-quartz-core",
-    "dep:muda",
+    "dep:futures",
+    "dep:waterkit-menu",
+    "dep:windows",
     "dep:x11-dl",
     "dep:x11rb",
     "dep:wayland-client",
