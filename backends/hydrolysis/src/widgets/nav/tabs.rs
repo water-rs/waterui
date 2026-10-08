@@ -382,22 +382,35 @@ fn render_tabs_parts(
     let label_env = tab_label_env(env);
 
     // §7.1 "Chrome": the bar's surface extends through the regions of the
-    // edges it touches to the window edge. A leading-docked strip keeps
-    // only its top edge on its own frame — hydrolysis-m3 draws the
-    // sidebar's divider at the surface's *top* edge under `top_edge:
-    // false`, a boundary the strip touches, so extending the surface there
-    // would move the divider under the status band; no `top_edge` argument
-    // yields the vertical inner-edge rule a sidebar needs. Extending the
-    // strip's top edge and placing its divider is a `WidgetTheme` contract
-    // change tracked as a follow-up issue.
+    // edges it touches to the window edge — a leading-docked strip reaches
+    // the top, leading and bottom edges, a bottom bar the leading, bottom
+    // and trailing ones. The divider stays on the bar's inner edge — the
+    // top row of a bottom bar, the trailing column of a sidebar strip —
+    // spanning the surface's reach, so a strip's divider runs from the
+    // window's top edge to its bottom one.
     let bar_surface = match style {
-        NativeTabStyle::Sidebar => bar.surface_except(&[Edge::Top, Edge::Trailing]),
+        NativeTabStyle::Sidebar => bar.surface(Edge::Leading),
         NativeTabStyle::Automatic | NativeTabStyle::TabBar => bar.surface(Edge::Bottom),
     };
     {
         let theme = ctx.theme();
         ctx.draw_context(|draw| {
-            theme.draw_tabs_bar(&mut *draw, bar_surface, false);
+            theme.draw_tabs_bar(&mut *draw, bar_surface);
+            let divider = match style {
+                NativeTabStyle::Sidebar => kurbo::Rect::new(
+                    (bar_rect.x1 - 1.0).max(bar_rect.x0),
+                    bar_surface.y0,
+                    bar_rect.x1,
+                    bar_surface.y1,
+                ),
+                NativeTabStyle::Automatic | NativeTabStyle::TabBar => kurbo::Rect::new(
+                    bar_surface.x0,
+                    bar_rect.y0,
+                    bar_surface.x1,
+                    (bar_rect.y0 + 1.0).min(bar_rect.y1),
+                ),
+            };
+            theme.draw_tabs_bar_divider(&mut *draw, divider);
         });
     }
 

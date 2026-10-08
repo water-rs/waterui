@@ -18,7 +18,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::{
-    build::{BuildProgress, RustBuild, RustLinkage},
+    build::{BuildProgress, BuiltTarget, RustBuild, RustLinkage},
     project::Project,
     templates::{self, TemplateContext},
     water_dir,
@@ -87,11 +87,17 @@ pub async fn ensure_launcher(project: &Project) -> eyre::Result<PathBuf> {
     Ok(dir)
 }
 
-/// Build the launcher binary for the host and return its path.
+/// Build the launcher binary for the host and return its [`BuiltTarget`].
 ///
 /// The TUI launcher always builds the static-runtime variant: it is a leaf
 /// binary, not a plugin host, so the shared-runtime linkage has nothing to
 /// offer it.
+///
+/// The caller hands the whole `BuiltTarget` to [`exec`]: it carries the
+/// binary artifact lock, which keeps the shared `<profile>/<name>` uplift
+/// pinned to this build's bytes until the launcher is running — a
+/// same-named build that re-uplifted in between would put a different
+/// binary under the path `exec` hands the terminal to (#2073).
 ///
 /// # Errors
 ///
@@ -102,7 +108,7 @@ pub async fn build(
     launcher_dir: &Path,
     sccache_path: Option<PathBuf>,
     progress: Option<BuildProgress>,
-) -> eyre::Result<PathBuf> {
+) -> eyre::Result<BuiltTarget> {
     let mut build = RustBuild::new(launcher_dir, target_lexicon::Triple::host())
         .with_project(project)
         .with_target_dir(project.water_target_dir(RustLinkage::Static).await?);
@@ -115,7 +121,6 @@ pub async fn build(
     build
         .build_binary(project.tui_backend_crate_name().as_str(), false)
         .await
-        .map(|built| built.artifact)
         .map_err(|error| eyre::eyre!("failed to build the TUI launcher: {error}"))
 }
 
@@ -127,28 +132,43 @@ pub async fn build(
 /// the TTY after `water` itself dies on `SIGINT`. Elsewhere the launcher is
 /// spawned with inherited stdio and awaited.
 ///
+/// The artifact lock `built` carries releases exactly when the launcher's
+/// image loads: on Unix its fd is closed-on-exec, and off Unix the spawn
+/// has already mapped the binary before `built` is dropped.
+///
 /// # Errors
 ///
 /// Returns an error if the launcher cannot be started; on Unix a successful
 /// `exec` never returns.
-pub fn exec(binary: &Path) -> eyre::Result<()> {
+pub fn exec(built: BuiltTarget) -> eyre::Result<()> {
     use std::io::Write as _;
     // Anything still buffered in the CLI's stdout would be lost (exec) or
     // interleave with the launcher's own escape sequences (spawn), so flush
     // before handing over the terminal.
     let _ = std::io::stdout().flush();
+    let binary = built.executable()?.to_path_buf();
     #[cfg(unix)]
     {
         use eyre::WrapErr as _;
         use std::os::unix::process::CommandExt as _;
-        Err(std::process::Command::new(binary).exec())
+        // A successful `exec` never returns: the process image swaps with the
+        // lock fd still open, and CLOEXEC releases it in the swap. `built` is
+        // dropped only on the error path, which is the one place this reaches.
+        let result = std::process::Command::new(&binary).exec();
+        drop(built);
+        Err(result)
             .wrap_err_with(|| format!("failed to launch the TUI binary {}", binary.display()))
     }
     #[cfg(not(unix))]
     {
         // Blocking here is the point: the launcher owns the terminal until it
         // exits, and nothing runs after this call.
-        let status = std::process::Command::new(binary).status()?;
+        let mut child = std::process::Command::new(&binary).spawn()?;
+        // The child's image is mapped — the uplift may re-write now.
+        // Holding the artifact lock for the app's lifetime would stall a
+        // concurrent same-named build instead.
+        drop(built);
+        let status = child.wait()?;
         if !status.success() {
             eyre::bail!("the TUI application exited with {status}");
         }

@@ -490,8 +490,9 @@ fn resolve_backend(
         TargetPlatform::Ios | TargetPlatform::IosSimulator | TargetPlatform::Macos => {
             TargetBackend::Apple
         }
-        TargetPlatform::Android => TargetBackend::Android,
-        TargetPlatform::Linux | TargetPlatform::Windows => TargetBackend::Hydrolysis,
+        TargetPlatform::Android | TargetPlatform::Linux | TargetPlatform::Windows => {
+            TargetBackend::Hydrolysis
+        }
         TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4 => {
             TargetBackend::Dew
         }
@@ -525,7 +526,7 @@ fn resolve_backend(
             "Backend {:?} does not support platform {:?}.\n\
              Valid combinations:\n  \
              - iOS/iOS Simulator: apple\n  \
-             - Android: android, hydrolysis\n  \
+             - Android: hydrolysis, android\n  \
              - macOS: apple, hydrolysis\n  \
              - Linux: gtk4, hydrolysis\n  \
              - Windows: hydrolysis, winui\n  \
@@ -849,7 +850,7 @@ mod tests {
         );
         assert_eq!(
             resolve_backend(TargetPlatform::Android, None).expect("android backend"),
-            TargetBackend::Android
+            TargetBackend::Hydrolysis
         );
         assert_eq!(
             resolve_backend(TargetPlatform::Linux, None).expect("linux backend"),
