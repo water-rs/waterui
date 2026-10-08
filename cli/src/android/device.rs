@@ -57,9 +57,11 @@ pub struct AndroidDevice {
 
 impl AndroidDevice {
     /// Create a new Android device with the given identifier and ABI, reached
-    /// through `adb`.
+    /// through `adb`. Crate-private: [`Self::scan_with_adb`] is the only
+    /// caller, so a value can only ever come from a scan that saw the
+    /// device online.
     #[must_use]
-    pub const fn new(identifier: String, abi: AndroidAbi, adb: Adb) -> Self {
+    pub(crate) const fn new(identifier: String, abi: AndroidAbi, adb: Adb) -> Self {
         Self {
             identifier,
             abi,

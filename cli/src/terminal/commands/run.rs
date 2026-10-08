@@ -2205,8 +2205,9 @@ mod tests {
 
     /// A connected device's ABI is the one its scan read. The device holds an
     /// `adb` client, which exists only once `start-server` ran — here a
-    /// stand-in `adb` in a scratch SDK, so no live server is involved. A
-    /// Windows `adb.exe` cannot be a script, so this half is Unix-only.
+    /// stand-in `adb` in a scratch SDK that answers the scan, so no live
+    /// server is involved. A Windows `adb.exe` cannot be a script, so this
+    /// half is Unix-only.
     #[test]
     #[cfg(unix)]
     fn android_abi_follows_a_connected_device() {
@@ -2215,7 +2216,11 @@ mod tests {
         let sdk = tempfile::tempdir().expect("a scratch SDK");
         let adb = sdk.path().join("platform-tools/adb");
         std::fs::create_dir_all(adb.parent().expect("platform-tools")).expect("platform-tools");
-        std::fs::write(&adb, "#!/bin/sh\nexit 0\n").expect("write the stand-in adb");
+        std::fs::write(
+            &adb,
+            "#!/bin/sh\ncase \"$*\" in\n  \"devices -l\") printf 'List of devices attached\\nserial-1 device\\n' ;;\n  *getprop*) printf 'arm64-v8a\\n' ;;\nesac\nexit 0\n",
+        )
+        .expect("write the stand-in adb");
         std::fs::set_permissions(&adb, std::fs::Permissions::from_mode(0o755))
             .expect("make the stand-in adb executable");
         let host = waterui_cli::toolchain::Host::new(
@@ -2223,12 +2228,13 @@ mod tests {
             [("ANDROID_SDK_ROOT", sdk.path().as_os_str())],
         );
         let adb = smol::block_on(Adb::locate(&host)).expect("the stand-in adb starts");
+        let device = smol::block_on(AndroidDevice::scan_with_adb(&host, &adb))
+            .expect("the stand-in adb scans")
+            .into_iter()
+            .next()
+            .expect("the scan reports serial-1");
         assert_eq!(
-            device_android_abi(&SelectedDevice::AndroidDevice(AndroidDevice::new(
-                String::from("serial-1"),
-                AndroidAbi::Arm64V8a,
-                adb,
-            ))),
+            device_android_abi(&SelectedDevice::AndroidDevice(device)),
             Some(AndroidAbi::Arm64V8a)
         );
     }
