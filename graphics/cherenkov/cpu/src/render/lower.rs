@@ -1284,7 +1284,8 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 .map(|(gid, _)| *gid),
         );
         gids.sort_unstable();
-        for gid in gids.drain(..) {
+        let mut positions: Vec<(Option<LayerId>, usize)> = Vec::new();
+        for gid in gids.iter().copied() {
             let (anchor, anchor_scope) = {
                 let plan = &self.backdrops[&gid];
                 let anchor = plan.spec.anchor_layer().expect("anchored above");
@@ -1310,10 +1311,10 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 };
                 // The first offending member in paint order names the
                 // error — `pos` is a hash map, so it is sorted first.
-                let mut positions: Vec<(Option<LayerId>, usize)> =
-                    plan.pos.values().copied().collect();
+                positions.clear();
+                positions.extend(plan.pos.values().copied());
                 positions.sort_unstable_by_key(|&(_, order)| order);
-                for (canvas, order) in positions {
+                for (canvas, order) in positions.iter().copied() {
                     if canvas == anchor_canvas && order > anchor_order {
                         continue;
                     }
@@ -1335,6 +1336,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             gids.sort_unstable();
         }
         // The scratch Vec keeps its capacity for the next plan.
+        gids.clear();
         self.anchor_gids = gids;
         Ok(())
     }
@@ -1819,7 +1821,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
     /// `push_capture` needs `&mut self`, so the gids are read back by
     /// index instead of cloned out of the map.
     fn emit_anchor_captures(&mut self, id: LayerId) {
-        for i in 0..self.anchor_groups.get(&id).map_or(0, |gids| gids.len()) {
+        for i in 0..self.anchor_groups.get(&id).map_or(0, Vec::len) {
             let gid = self.anchor_groups[&id][i];
             self.push_capture(gid);
         }

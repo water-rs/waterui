@@ -1408,7 +1408,8 @@ impl<'a> Lowering<'a> {
                 .map(|(gid, _)| *gid),
         );
         gids.sort_unstable();
-        for gid in gids.drain(..) {
+        let mut positions: Vec<(Option<LayerId>, usize)> = Vec::new();
+        for gid in gids.iter().copied() {
             let anchor = {
                 let plan = &self.backdrops[&gid];
                 let anchor = plan.spec.anchor_layer().expect("anchored above");
@@ -1432,10 +1433,10 @@ impl<'a> Lowering<'a> {
                 };
                 // The first offending member in paint order names the
                 // error — `pos` is a hash map, so it is sorted first.
-                let mut positions: Vec<(Option<LayerId>, usize)> =
-                    plan.pos.values().copied().collect();
+                positions.clear();
+                positions.extend(plan.pos.values().copied());
                 positions.sort_unstable_by_key(|&(_, order)| order);
-                for (canvas, order) in positions {
+                for (canvas, order) in positions.iter().copied() {
                     if canvas == anchor_canvas && order > anchor_order {
                         continue;
                     }
@@ -1454,6 +1455,7 @@ impl<'a> Lowering<'a> {
                 .push(gid);
         }
         // The scratch Vec keeps its capacity for the next frame.
+        gids.clear();
         self.anchor_gids = gids;
         Ok(())
     }
