@@ -2152,7 +2152,6 @@ impl Project {
                 .map_err(crate::backend::FailToInitBackend::Config)?,
         )
         .with_apple_backend_selected(apple_selected)
-        .with_host(self.host.clone())
         .with_browser(crate::templates::BrowserTemplateContext::apple_managed(
             engine,
         ));

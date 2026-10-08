@@ -667,7 +667,7 @@ impl TemplateContext {
             launch: LaunchTemplateEntry::default(),
             hydrolysis_android: None,
             hydrolysis_android_preview: None,
-            host: crate::toolchain::Host::current(),
+            host: host.clone(),
         }
     }
 
@@ -717,7 +717,7 @@ impl TemplateContext {
             launch: LaunchTemplateEntry::default(),
             hydrolysis_android: None,
             hydrolysis_android_preview: None,
-            host: crate::toolchain::Host::current(),
+            host: host.clone(),
         }
     }
 
@@ -774,7 +774,7 @@ impl TemplateContext {
             launch: LaunchTemplateEntry::default(),
             hydrolysis_android: None,
             hydrolysis_android_preview: None,
-            host: crate::toolchain::Host::current(),
+            host: host.clone(),
         }
     }
 
@@ -806,13 +806,6 @@ impl TemplateContext {
     #[must_use]
     pub const fn with_apple_backend_selected(mut self, selected: bool) -> Self {
         self.apple_backend_selected = selected;
-        self
-    }
-
-    /// Set the host the manifest-generation probes run on.
-    #[must_use]
-    pub fn with_host(mut self, host: crate::toolchain::Host) -> Self {
-        self.host = host;
         self
     }
 
