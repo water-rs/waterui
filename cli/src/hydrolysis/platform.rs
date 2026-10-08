@@ -81,7 +81,14 @@ pub async fn build_hydrolysis(
     platform: TargetPlatform,
     options: BuildOptions,
 ) -> eyre::Result<BuiltTarget> {
-    build_hydrolysis_with_envs_and_features(project, platform, options, &[], &[]).await
+    Box::pin(build_hydrolysis_with_envs_and_features(
+        project,
+        platform,
+        options,
+        &[],
+        &[],
+    ))
+    .await
 }
 
 /// Build hydrolysis binary for the host platform with extra Cargo environment variables.
@@ -94,7 +101,14 @@ pub async fn build_hydrolysis_with_envs(
     options: BuildOptions,
     extra_envs: &[(String, OsString)],
 ) -> eyre::Result<BuiltTarget> {
-    build_hydrolysis_with_envs_and_features(project, platform, options, extra_envs, &[]).await
+    Box::pin(build_hydrolysis_with_envs_and_features(
+        project,
+        platform,
+        options,
+        extra_envs,
+        &[],
+    ))
+    .await
 }
 
 /// Build hydrolysis binary for the host platform with extra Cargo environment variables and features.
@@ -188,13 +202,12 @@ pub async fn build_hydrolysis_with_envs_and_features(
     if let Some(progress) = options.progress() {
         build = build.with_progress(progress.clone());
     }
-    let mut built_target = build
-        .build_binary(
-            project.hydrolysis_backend_crate_name().as_str(),
-            options.is_release(),
-        )
-        .await
-        .wrap_err("Failed to build hydrolysis backend with cargo")?;
+    let mut built_target = Box::pin(build.build_binary(
+        project.hydrolysis_backend_crate_name().as_str(),
+        options.is_release(),
+    ))
+    .await
+    .wrap_err("Failed to build hydrolysis backend with cargo")?;
 
     // The generated manifest declares the CEF helper as a second `[[bin]]`
     // when the application links the CEF engine crate; a `--bin <main>`
@@ -210,14 +223,16 @@ pub async fn build_hydrolysis_with_envs_and_features(
         // execs its shared `<profile>/<name>` uplift, so the artifact lock
         // is released once the marked link exists rather than held while
         // this `BuiltTarget` rides through packaging.
-        let helper = build
-            .with_artifact_lock_scope(ArtifactLockScope::UntilMarked)
-            .build_binary(
-                &hydrolysis_cef_helper_name(project.hydrolysis_backend_crate_name().as_str()),
-                options.is_release(),
-            )
-            .await
-            .wrap_err("Failed to build the hydrolysis CEF helper with cargo")?;
+        let helper = Box::pin(
+            build
+                .with_artifact_lock_scope(ArtifactLockScope::UntilMarked)
+                .build_binary(
+                    &hydrolysis_cef_helper_name(project.hydrolysis_backend_crate_name().as_str()),
+                    options.is_release(),
+                ),
+        )
+        .await
+        .wrap_err("Failed to build the hydrolysis CEF helper with cargo")?;
         built_target.cef_helper = Some(Box::new(helper));
     }
 
