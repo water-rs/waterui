@@ -3502,35 +3502,39 @@ mod tests {
     }
 
     #[test]
-    fn a_layer_created_inserted_and_dropped_in_one_body_only_queues_its_retain() {
+    fn a_layer_created_inserted_and_dropped_in_one_body_lands_only_its_create_and_remove() {
         // A body that creates a layer, inserts it and drops the handle
-        // queues [Create, Insert{p,c}, Remove]: the insert names the
-        // removed child and drops with it — Create + Remove land alone
+        // queues [Create, Insert{p,c}, Remove]: the create and the remove
+        // are direct ops, the insert a stream edit naming the removed
+        // child, so it drops with it — Create + Remove land alone
         // (water-rs/waterui#1788).
         let shared = shared();
         let mut tree = crate::SurfaceTree::new();
         let parent = layer(&shared);
         drain_layer_ops(&shared, &mut tree);
-        let child_id = {
+        let mut child_id = None;
+        Shared::run_transaction(&shared, None, None, |tx| {
             let child = Shared::layer(&shared);
-            let id = child.id();
-            Shared::run_transaction(&shared, None, None, move |tx| {
-                tx[&parent].insert(0, &child);
-                drop(child);
-            });
-            id
-        };
+            child_id = Some(child.id());
+            tx[&parent].insert(0, &child);
+            drop(child);
+        });
+        let child_id = child_id.expect("the body ran");
         let ops = drain_layer_ops(&shared, &mut tree);
+        let child_ops: Vec<_> = ops
+            .iter()
+            .filter(|op| match op {
+                LayerOp::Create(id) | LayerOp::Remove(id) => *id == child_id,
+                LayerOp::Insert { child, .. } => *child == child_id,
+                _ => false,
+            })
+            .collect();
         assert!(
-            ops.iter().all(|op| !matches!(op, LayerOp::Insert { .. })),
-            "the removed child's insert drops: {ops:?}"
-        );
-        assert!(
-            ops.iter().any(|op| matches!(
-                op,
-                LayerOp::Remove(id) if *id == child_id
-            )),
-            "its remove lands: {ops:?}"
+            matches!(
+                child_ops.as_slice(),
+                [LayerOp::Create(_), LayerOp::Remove(_)]
+            ),
+            "only the child's create and remove land: {ops:?}"
         );
     }
 }
