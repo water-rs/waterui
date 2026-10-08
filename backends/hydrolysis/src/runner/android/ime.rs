@@ -233,6 +233,13 @@ impl AndroidSession {
     /// the cursor anchor info. Both pushes are change-gated: an unchanged
     /// frame sends nothing.
     pub(crate) fn editing_sync(&mut self) {
+        // Focus is pulled, never pushed: a `findFocus` query once per sync.
+        // The Kotlin listener this replaced ran inside `requestFocus`/
+        // `removeView` and re-entered the session while it was borrowed —
+        // a second `&mut` during `sync_text_input_state` or a half-dropped
+        // session during `nativeDestroySession`. A pull can never re-enter.
+        let inside = self.runtime.platform.bridge.platform_view_focus_inside();
+        self.runtime.platform.platform_view_focus.set(inside);
         // A platform-view child taking UI focus — tapping a field inside the
         // system WebView — owns the IME now: clear the renderer's stale
         // `WaterUI` text-input claim on the gain edge so the state never

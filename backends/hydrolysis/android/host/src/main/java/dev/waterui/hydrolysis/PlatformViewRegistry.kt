@@ -49,18 +49,14 @@ class PlatformViewRegistry internal constructor(
     private var pendingJson: String? = null
     private var appliedJson: String? = null
 
-    init {
-        // One focus computation for every platform-view child: "focus sits
-        // inside this container" reported through the host native as a
-        // boolean. A removed child moves focus, so it reports its own loss —
-        // there is no per-view count to leak.
-        container.viewTreeObserver.addOnGlobalFocusChangeListener { _, _ ->
-            val inside = container.findFocus() != null
-            session?.withNativePtr(NativeBridge::nativePlatformViewFocus.name) { ptr ->
-                NativeBridge.nativePlatformViewFocus(ptr, inside)
-            }
-        }
-    }
+    /**
+     * Whether a mounted child inside this container currently holds UI
+     * focus. Read by the frame — reporting focus from the
+     * `OnGlobalFocusChangeListener` would re-enter the session while it is
+     * borrowed, since the listener fires synchronously inside
+     * `requestFocus`/`removeView` on the host's own paths.
+     */
+    internal fun focusInside(): Boolean = container.findFocus() != null
 
     /** Registers the view factory for platform views of `kind`. */
     fun registerFactory(kind: String, factory: (Context) -> View) {

@@ -196,6 +196,46 @@ impl HostBridge {
 
     /// `call` for a single `String` argument — the JSON pushes serialize
     /// into a `jstring` inside the env first.
+    /// The one query the bridge makes back into Kotlin: whether a mounted
+    /// platform-view child holds UI focus right now. A pull — the focus
+    /// listener that used to push this re-entered the session synchronously
+    /// from `requestFocus`/`removeView` on the host's own paths.
+    pub(crate) fn platform_view_focus_inside(&self) -> bool {
+        let method = self.methods[HostMethodId::PlatformViewFocus as usize];
+        let inside = |env: &mut JNIEnv| -> bool {
+            // SAFETY: `methods` holds the ids `GetMethodID` resolved on this
+            // object's class, in table order; `PlatformViewFocus`'s id
+            // matches the declared `()Z` signature.
+            unsafe {
+                env.call_method_unchecked(
+                    &self.host_view,
+                    method,
+                    ReturnType::Primitive(Primitive::Boolean),
+                    &[],
+                )
+            }
+            .expect("onNativePlatformViewFocus must not throw")
+            .z()
+            .expect("onNativePlatformViewFocus returns a boolean")
+        };
+        self.vm.get_env().map_or_else(
+            |_| match self.vm.attach_current_thread() {
+                Ok(mut guard) => inside(&mut guard),
+                Err(error) => {
+                    tracing::error!(
+                        target: "waterui::hydrolysis::android",
+                        %error,
+                        "platform_view_focus_inside could not attach a JNI env"
+                    );
+                    // An env that cannot attach answers "not holding": the
+                    // state a missing report leaves behind.
+                    false
+                }
+            },
+            |mut env| inside(&mut env),
+        )
+    }
+
     fn call_str(&self, method: HostMethodId, json: &str) {
         let Ok(mut env) = self.vm.get_env() else {
             return;
@@ -318,7 +358,7 @@ pub struct AndroidHostWindow {
     /// for; `None` while no field holds focus. The runner syncs text-input
     /// state on every frame, and only a change here reaches the IME.
     soft_input: Option<u64>,
-    /// The session-wide counter platform-view children (the system `WebView`)
+    /// The session-wide "a mounted platform-view child holds UI focus" flag
     /// report UI focus into; while it is held the IME channel belongs to the
     /// child and a stale cleared claim must not hide its keyboard.
     pub(crate) platform_view_focus: crate::platform_view::PlatformViewFocus,
@@ -772,7 +812,7 @@ impl AndroidSession {
         env.insert(platform_views.clone());
         // The session-wide "focus sits inside a platform-view container"
         // state the Kotlin registry reports through
-        // `nativePlatformViewFocus`: while a mounted child holds the IME,
+        // `onNativePlatformViewFocus`: while a mounted child holds the IME,
         // the renderer must not keep a `WaterUI` text-input claim, and the
         // window reads the same state to gate its soft-input pushes.
         let platform_view_focus = crate::platform_view::PlatformViewFocus::default();

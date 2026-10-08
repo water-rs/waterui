@@ -47,9 +47,10 @@ use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 /// takes its handle so every session shares it; 12 = a platform-view
 /// placement names either a factory `kind` or a registered `instance`, and
 /// the `HydrolysisWebView` natives join the edge; 13 =
-/// `nativePlatformViewFocus` reports whether a mounted platform-view child
-/// holds UI focus.
-pub const JNI_SCHEMA: jint = 13;
+/// `nativePlatformViewFocus` reported whether a mounted platform-view child
+/// held UI focus; 14 = the report reads through the frame instead —
+/// `platformViewFocusInside` replaces the pushed native, which left with it.
+pub const JNI_SCHEMA: jint = 14;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -820,29 +821,4 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativePlatformVi
             session_ptr,
         ))?))
     })
-}
-
-/// The `PlatformViewRegistry`'s focus report — "a mounted child inside the
-/// registry's container holds UI focus" as one session-wide boolean, so a
-/// removed view's focus move reports itself and no per-view count can leak.
-/// A change requests the frame that consumes the edge.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativePlatformViewFocus(
-    mut env: JNIEnv,
-    _class: JClass,
-    session_ptr: jlong,
-    focused: jboolean,
-) {
-    guard(&mut env, |_env| {
-        let session = session(session_ptr);
-        if session
-            .runtime
-            .platform
-            .platform_view_focus
-            .set(focused != 0)
-        {
-            session.runtime.platform.bridge.request_frame();
-        }
-        Ok(())
-    });
 }

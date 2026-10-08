@@ -191,16 +191,16 @@ impl PlatformViewTable {
     }
 }
 
-/// How many mounted platform-view children currently hold UI focus — the
+/// Whether a mounted platform-view child currently holds UI focus — the
 /// system `WebView` editing inside the page. While set a mounted child
 /// owns the IME: the runner clears the `WaterUI` text-input focus (a Hydrolysis
 /// field must not claim focus it does not hold) and drives no show/hide of
 /// its own — the child manages the keyboard itself.
 ///
-/// One boolean, not a count: the Kotlin `PlatformViewRegistry`'s single
-/// focus listener computes "focus sits inside the container" and reports it
-/// here — a removed child's focus move reports its own loss, so nothing can
-/// leak the way a per-view count could. Only Android realizes mounted
+/// One boolean, not a count: the frame reads "focus sits inside the
+/// container" from the Kotlin `PlatformViewRegistry` once per sync and sets
+/// it here — a removed child's focus move reports its own loss, so nothing
+/// can leak the way a per-view count could. Only Android realizes mounted
 /// children today, so the type builds there.
 #[cfg(target_os = "android")]
 #[derive(Clone, Debug, Default)]

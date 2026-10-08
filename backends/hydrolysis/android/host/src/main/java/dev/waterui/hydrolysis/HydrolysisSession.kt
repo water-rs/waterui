@@ -286,6 +286,15 @@ class HydrolysisSession internal constructor(context: Context) {
     }
 
     /**
+     * The one focus query the frame makes: whether a mounted platform-view
+     * child holds UI focus. A pull, never a push — the focus listener would
+     * re-enter the session synchronously from `requestFocus`/`removeView`.
+     */
+    @CalledFromNative
+    fun onNativePlatformViewFocus(): Boolean =
+        hostView?.platformViewRegistry?.focusInside() == true
+
+    /**
      * A fatal, unrecoverable failure on the native side (GPU device loss, an
      * explicit GPU error). The host raises it as an exception on the UI
      * thread — a crash with a named cause is the honest surface for a session
