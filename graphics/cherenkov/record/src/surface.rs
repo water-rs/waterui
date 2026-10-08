@@ -93,6 +93,12 @@ pub struct Shared<T: Target> {
     /// in the same order, drained one per `Content(.., None)`
     /// placeholder at the commit.
     edit_content: Vec<LayerContent<T>>,
+    /// Ops the open transaction queued that are not edits — layer
+    /// creates and removes go here, not into the stream: they sit
+    /// ahead of the stream at the commit, and an unwind keeps them —
+    /// the handles they belong to outlive the transaction, so the ops
+    /// must reach the tree. Only stream edits are ever truncated.
+    direct_ops: Vec<Op<T>>,
     /// The sequence counter stream entries are stamped from.
     next_edit_seq: u64,
     /// Layers removed while a transaction is open: their `Remove` already
@@ -171,6 +177,7 @@ impl<T: Target> Shared<T> {
             stream_start: 0,
             edit_seqs: Vec::new(),
             edit_content: Vec::new(),
+            direct_ops: Vec::new(),
             next_edit_seq: 0,
             removed_layers: FxHashSet::default(),
             contents: FxHashMap::default(),
@@ -241,6 +248,20 @@ impl<T: Target> Shared<T> {
         self.pending.push(op);
         self.flush();
         seq
+    }
+
+    /// Queues an op that is not an edit — a layer create or remove —
+    /// while a transaction is open: it buffers in [`Shared::direct_ops`]
+    /// ahead of the stream instead of joining it, so the outermost
+    /// commit applies it before the stream's edits and an unwind keeps
+    /// it rather than truncating it. Outside a transaction it queues
+    /// like any op.
+    fn push_direct(&mut self, op: Op<T>) {
+        if self.transaction_open {
+            self.direct_ops.push(op);
+        } else {
+            self.push(op);
+        }
     }
 
     /// Something was queued. A queue that drains inline gets the drained
@@ -427,6 +448,19 @@ impl<T: Target> Shared<T> {
                     // dropped a layer, so a steady-state commit pays one
                     // `is_empty`, not a hash probe.
                     let check_removed = !state.removed_layers.is_empty();
+                    // The transaction's direct ops — its creates and
+                    // removes — land ahead of the stream: pending is
+                    // [pre-open ops, direct ops, stream edits].
+                    if !state.direct_ops.is_empty() {
+                        let n = state.direct_ops.len();
+                        let start = state.stream_start;
+                        drop(
+                            state
+                                .pending
+                                .splice(start..start, state.direct_ops.drain(..)),
+                        );
+                        state.stream_start += n;
+                    }
                     // The stream's ops already sit in `pending` past
                     // `stream_start`: a commit with no content edits and
                     // no removals touches nothing of it. Otherwise the
@@ -599,7 +633,7 @@ impl<T: Target> Shared<T> {
         // under, taken before the watch starts: it fires only while the
         // property's current binding is still the one that registered it.
         // A constant binds no watcher, so it does no generation work.
-        let generation = if live.is_signal() {
+        let generation = if live.has_signal() {
             let mut shared = shared.borrow_mut();
             shared.next_generation += 1;
             shared.next_generation
@@ -787,6 +821,12 @@ impl<T: Target> Drop for Open<'_, T> {
         shared.edit_seqs.truncate(self.start.1);
         shared.edit_content.truncate(self.start.2);
         if !self.nested {
+            // The stream edits are gone; the body's direct ops are
+            // not — they were never stream entries. They land in
+            // `pending` now, ahead of the deferred changes that are
+            // edits.
+            let state = &mut *shared;
+            state.pending.append(&mut state.direct_ops);
             shared.removed_layers.clear();
             shared.resolve_deferred();
         }
@@ -821,7 +861,7 @@ impl<T: Target> LayerOwner for RefCell<Shared<T>> {
         let mut shared = self.borrow_mut();
         let id = LayerId::new(shared.next_layer.get());
         shared.next_layer.set(id.raw() + 1);
-        shared.push(Op::Layer(LayerOp::Create(id)));
+        shared.push_direct(Op::Layer(LayerOp::Create(id)));
         id
     }
 
@@ -844,7 +884,7 @@ impl<T: Target> LayerOwner for RefCell<Shared<T>> {
                 .collect();
             let slot = shared.contents.remove(&id);
             let size = shared.sizes.remove(&id);
-            shared.push(Op::Layer(LayerOp::Remove(id)));
+            shared.push_direct(Op::Layer(LayerOp::Remove(id)));
             (removed, slot, size)
         };
         drop((removed, slot, size));
@@ -1492,7 +1532,7 @@ impl<T: Target> LayerEdit<T> {
         // The same rule `Shared::bind` applies: only a binding whose
         // signal can fire draws a generation; a constant does no
         // generation work.
-        let generation = if live.is_signal() {
+        let generation = if live.has_signal() {
             let mut shared = self.shared.borrow_mut();
             shared.next_generation += 1;
             shared.next_generation
@@ -2481,11 +2521,18 @@ mod tests {
                 inner[&layer].opacity(0.5_f32);
                 created = Some(layer);
             });
+            let state = shared.borrow();
             assert_eq!(
-                shared.borrow().pending.len(),
-                2,
-                "mid-transaction the create and the inner's edit sit in the stream, undrained"
+                state.direct_ops.len(),
+                1,
+                "mid-transaction the create sits in the direct queue, undrained"
             );
+            assert_eq!(
+                state.pending.len(),
+                1,
+                "mid-transaction the inner's edit sits in the stream, undrained"
+            );
+            drop(state);
             tx[&outer_layer].opacity(0.8_f32);
         });
         let created = created.expect("the inner body ran");
@@ -3018,5 +3065,233 @@ mod tests {
             !shared.borrow().contents.contains_key(&id),
             "nothing of the removed layer is re-created"
         );
+    }
+
+    /// A layer created inside a transaction whose body panics: its
+    /// `Create` is a direct op, not a stream edit, so the unwind keeps
+    /// it — the handle outlives the transaction. When the handle drops
+    /// later, its `Remove` applies against a layer the tree did create.
+    #[test]
+    fn a_layer_created_in_a_lost_body_outlives_the_unwind() {
+        let shared = shared();
+        let mut tree = crate::SurfaceTree::new();
+        let mut created = None;
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            Shared::run_transaction(&shared, None, None, |tx| {
+                created = Some(layer(&shared));
+                tx[created.as_ref().expect("created")].opacity(0.5_f32);
+                panic!("the body is lost");
+            });
+        }));
+        assert!(panicked.is_err());
+        let created = created.expect("the body ran");
+
+        // The create survived; the body's edit to it did not.
+        let ops = drain_layer_ops(&shared, &mut tree);
+        assert!(
+            matches!(ops.as_slice(), [LayerOp::Create(id)] if *id == created.id()),
+            "only the direct create op landed: {ops:?}"
+        );
+
+        // Dropping the outlived handle queues the remove — for a layer
+        // the tree has, not one the truncated stream would have made.
+        drop(created);
+        let ops = drain_layer_ops(&shared, &mut tree);
+        assert!(
+            matches!(ops.as_slice(), [LayerOp::Remove(id)] if *id == ops[0].layer()),
+            "the remove lands against the created layer: {ops:?}"
+        );
+    }
+
+    /// Direct ops a body queues — creates and removes — land ahead of
+    /// the body's stream edits at the commit, in queue order.
+    #[test]
+    fn a_bodys_direct_ops_apply_ahead_of_its_edits() {
+        let shared = shared();
+        let mut tree = crate::SurfaceTree::new();
+        let anchor = layer(&shared);
+        let mut made = None;
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&anchor].opacity(0.5_f32);
+            let fresh = layer(&shared);
+            made = Some(fresh);
+            tx[made.as_ref().expect("made")].opacity(0.8_f32);
+        });
+        let made = made.expect("the body ran");
+        let ops = drain_layer_ops(&shared, &mut tree);
+        assert!(
+            matches!(
+                ops.as_slice(),
+                [
+                    LayerOp::Create(pre),
+                    LayerOp::Create(id),
+                    LayerOp::Opacity(a, _),
+                    LayerOp::Opacity(m, _),
+                ] if *pre == anchor.id()
+                    && *id == made.id()
+                    && *a == anchor.id()
+                    && *m == made.id()
+            ),
+            "the body's create lands ahead of its edits, behind the \
+                     pre-open queue: {ops:?}"
+        );
+    }
+
+    /// A nested transaction's direct ops survive its own unwind for the
+    /// outer commit — the handles outlive the inner unwind as they do
+    /// an outer one.
+    #[test]
+    fn an_inner_unwinds_direct_ops_still_apply() {
+        let shared = shared();
+        let mut tree = crate::SurfaceTree::new();
+        let mut created = None;
+        Shared::run_transaction(&shared, None, None, |_| {
+            let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                Shared::run_transaction(&shared, None, None, |inner| {
+                    created = Some(layer(&shared));
+                    inner[created.as_ref().expect("created")].opacity(0.5_f32);
+                    panic!("the inner body is lost");
+                });
+            }));
+            assert!(panicked.is_err());
+        });
+        let created = created.expect("the inner body ran");
+        let ops = drain_layer_ops(&shared, &mut tree);
+        assert!(
+            matches!(ops.as_slice(), [LayerOp::Create(id)] if *id == created.id()),
+            "the inner body's create applied, its edit did not: {ops:?}"
+        );
+        drop(created);
+        let ops = drain_layer_ops(&shared, &mut tree);
+        assert!(
+            matches!(ops.as_slice(), [LayerOp::Remove(_)]),
+            "the later remove lands: {ops:?}"
+        );
+    }
+
+    /// A transaction's `start` reaches every prop it edits (dev's test —
+    /// the merge dropped it while `Prop` moved fields).
+    #[test]
+    fn a_transaction_start_reaches_animated_props() {
+        let shared = shared();
+        let layer = layer(&shared);
+        let start = crate::Instant::now();
+        Shared::run_transaction(
+            &shared,
+            Some(Curve::linear(Duration::from_millis(400)).into()),
+            Some(start),
+            |tx| {
+                tx[&layer].opacity(0.5_f32);
+                tx[&layer].scale(Vec2::new(2.0, 2.0));
+            },
+        );
+        let Some(changes) = shared.borrow_mut().take_changes(crate::Instant::now()) else {
+            panic!("the transaction queued edits");
+        };
+        let mut seen = 0;
+        for op in &changes.ops {
+            match op {
+                Op::Layer(LayerOp::Opacity(_, prop)) => {
+                    assert_eq!(prop.start, Some(start));
+                    seen += 1;
+                }
+                Op::Layer(LayerOp::Scale(_, prop)) => {
+                    assert_eq!(prop.start, Some(start));
+                    seen += 1;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(seen, 2);
+    }
+
+    /// A bound change's `AnimationStart` metadata reaches the prop's
+    /// `start` (dev's test — the merge dropped it).
+    #[test]
+    fn a_bound_change_reads_its_animation_start_from_metadata() {
+        let shared = shared();
+        let layer = layer(&shared);
+        let start = crate::Instant::now();
+        let opacity = binding(1.0_f32);
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&layer].opacity(
+                opacity
+                    .clone()
+                    .with(Animation::from(Curve::linear(Duration::from_millis(400))))
+                    .with(AnimationStart(start)),
+            );
+        });
+        let _ = shared.borrow_mut().take_changes(crate::Instant::now());
+        opacity.set(0.5);
+        let Some(changes) = shared.borrow_mut().take_changes(crate::Instant::now()) else {
+            panic!("the bound change queued an op");
+        };
+        let [op] = changes.ops.as_slice() else {
+            panic!("one opacity op: {:?}", changes.ops);
+        };
+        let Op::Layer(LayerOp::Opacity(_, prop)) = op else {
+            panic!("an opacity op: {op:?}");
+        };
+        assert_eq!(prop.start, Some(start));
+        assert!(matches!(prop.animation, Some(Animation::Curve(_))));
+    }
+
+    /// A bound change that lands while a transaction is open defers to
+    /// the outermost commit — and still reads its `AnimationStart` from
+    /// the change's metadata.
+    #[test]
+    fn a_bound_change_deferred_in_a_transaction_reads_its_start() {
+        let shared = shared();
+        let layer = layer(&shared);
+        let start = crate::Instant::now();
+        let opacity = binding(1.0_f32);
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&layer].opacity(
+                opacity
+                    .clone()
+                    .with(Animation::from(Curve::linear(Duration::from_millis(400))))
+                    .with(AnimationStart(start)),
+            );
+        });
+        let _ = shared.borrow_mut().take_changes(crate::Instant::now());
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&layer].transform(Affine::scale(1.0));
+            opacity.set(0.5);
+        });
+        let Some(changes) = shared.borrow_mut().take_changes(crate::Instant::now()) else {
+            panic!("the commit resolved the deferred change");
+        };
+        let mut seen = 0;
+        for op in &changes.ops {
+            let Op::Layer(LayerOp::Opacity(_, prop)) = op else {
+                continue;
+            };
+            assert_eq!(prop.target.to_bits(), 0.5_f32.to_bits());
+            assert_eq!(prop.start, Some(start));
+            assert!(matches!(prop.animation, Some(Animation::Curve(_))));
+            seen += 1;
+        }
+        assert_eq!(seen, 1, "the deferred change kept its metadata");
+    }
+
+    #[test]
+    #[should_panic(expected = "detaching from the wrong parent")]
+    fn a_reparented_child_cannot_be_removed_by_its_first_parent() {
+        // `tx[a].push(c); tx[b].push(c); tx[a].remove(c)` records the ops in
+        // program order: the second push reparents `child` onto `b`, so the
+        // later detach still naming `a` is the invariant violation and the
+        // tree refuses it — the commit does not silently resolve it.
+        let shared = shared();
+        let mut tree = crate::SurfaceTree::new();
+        let parent_a = layer(&shared);
+        let parent_b = layer(&shared);
+        let child = layer(&shared);
+        drain_layer_ops(&shared, &mut tree);
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&parent_a].push(&child);
+            tx[&parent_b].push(&child);
+            tx[&parent_a].remove(&child);
+        });
+        drain_layer_ops(&shared, &mut tree);
     }
 }
